@@ -343,15 +343,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if err := jm.recoverForwardedTerminalEvents(); err != nil {
 			return nil, fmt.Errorf("nested job recovery: %w", err)
 		}
-		if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
-			return nil, fmt.Errorf("watch send retry: %w", err)
-		}
-		if err := jm.armPendingTerminalNotifications(); err != nil {
-			return nil, fmt.Errorf("job notifications: %w", err)
-		}
-		if err := jm.recoverForwardedPendingNotifications(); err != nil {
-			return nil, fmt.Errorf("nested job notifications: %w", err)
-		}
 	}
 
 	// Restore persisted goal state before initSessionState so the goal store is
@@ -410,6 +401,18 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			tw.SyncInterval = 1 * time.Second
 		}
 		s.transcript = tw
+	}
+
+	if !restoreCfg.deferRestoreSideEffects {
+		if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
+			return nil, fmt.Errorf("watch send retry: %w", err)
+		}
+		if err := jm.armPendingTerminalNotifications(); err != nil {
+			return nil, fmt.Errorf("job notifications: %w", err)
+		}
+		if err := jm.recoverForwardedPendingNotifications(); err != nil {
+			return nil, fmt.Errorf("nested job notifications: %w", err)
+		}
 	}
 
 	contextmgr.ApplyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)

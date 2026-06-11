@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -116,6 +117,13 @@ func (s *Session) repairOrphanedToolResults(reason string) int {
 		}
 		s.emit(events.EventWarning, events.WarningData{Message: msg})
 		s.maybeAutoSave()
+		s.retryPendingCallerWatchSendsAfterRepair(context.Background())
 	}
 	return repairs
+}
+
+func (s *Session) retryPendingCallerWatchSendsAfterRepair(ctx context.Context) {
+	if err := s.retryPendingCallerWatchSendsAtBoundary(ctx); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: "watch send retry after history repair failed: " + err.Error()})
+	}
 }

@@ -171,6 +171,18 @@ func (m *subagentManager) remove(id string) {
 	delete(m.subs, id)
 }
 
+func (m *subagentManager) sessions() []*Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sessions := make([]*Session, 0, len(m.subs))
+	for _, sub := range m.subs {
+		if sub != nil && sub.sess != nil {
+			sessions = append(sessions, sub.sess)
+		}
+	}
+	return sessions
+}
+
 // drainForClose collects all tracked subagents and clears the map under the
 // mutex, returning the collected slice. The caller closes each child OUTSIDE
 // the lock (the manager mutex must not be held while a child *Session closes).

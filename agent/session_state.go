@@ -110,6 +110,21 @@ func (s *Session) setStateIfOpenLocked(state SessionState) {
 	s.state = state
 }
 
+func (s *Session) finishProcessingAtBoundary(ctx context.Context, state SessionState) {
+	transitioned := false
+	s.mu.Lock()
+	if s.state == SessionProcessing && !s.closingOrClosedLocked() {
+		s.state = state
+		transitioned = true
+	}
+	s.mu.Unlock()
+	if transitioned {
+		if err := s.retryPendingCallerWatchSendsAtBoundary(ctx); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: "watch send retry at processing boundary failed: " + err.Error()})
+		}
+	}
+}
+
 func (s *Session) abortIfClosing(ctx context.Context) error {
 	s.mu.Lock()
 	closing := s.closingOrClosedLocked()

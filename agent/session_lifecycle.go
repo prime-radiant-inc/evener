@@ -315,12 +315,8 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 			// marker so the model sees, on the next turn, that the
 			// previous round was cut short.
 			if isTurnCancellation(processCtx, err) {
+				s.finishProcessingAtBoundary(processCtx, SessionIdle)
 				s.mu.Lock()
-				// Only flip back to idle when the session isn't already
-				// closed (e.g. daemon shutdown raced the interrupt).
-				if !s.closingOrClosedLocked() {
-					s.state = SessionIdle
-				}
 				closed := s.closingOrClosedLocked()
 				turns := s.modelResponses
 				emitEnd := !s.sessionEndEmitted && !closed
@@ -512,11 +508,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	select {
 	case <-ctx.Done():
 		s.emit(events.EventError, errorDataFromError(ctx.Err()))
-		s.mu.Lock()
-		if s.state == SessionProcessing && !s.closingOrClosedLocked() {
-			s.state = SessionIdle
-		}
-		s.mu.Unlock()
+		s.finishProcessingAtBoundary(ctx, SessionIdle)
 		return "", false, ctx.Err()
 	default:
 	}
@@ -553,11 +545,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		select {
 		case <-ctx.Done():
 			s.emit(events.EventError, errorDataFromError(ctx.Err()))
-			s.mu.Lock()
-			if s.state == SessionProcessing && !s.closingOrClosedLocked() {
-				s.state = SessionIdle
-			}
-			s.mu.Unlock()
+			s.finishProcessingAtBoundary(ctx, SessionIdle)
 			return "", progressed, ctx.Err()
 		default:
 		}
@@ -718,9 +706,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}
 
 	s.emit(events.EventTurnLimit, events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
-	s.mu.Lock()
-	s.setStateIfOpenLocked(SessionIdle)
-	s.mu.Unlock()
+	s.finishProcessingAtBoundary(ctx, SessionIdle)
 	return lastText, progressed, nil
 }
 
@@ -768,9 +754,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 
 	if s.cfg.MaxTurns > 0 && turns >= s.cfg.MaxTurns {
 		s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
-		s.mu.Lock()
-		s.setStateIfOpenLocked(SessionIdle)
-		s.mu.Unlock()
+		s.finishProcessingAtBoundary(ctx, SessionIdle)
 		return false
 	}
 
@@ -871,10 +855,8 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 }
 
 func (s *Session) finishNotificationNoop() {
+	s.finishProcessingAtBoundary(context.Background(), SessionIdle)
 	s.mu.Lock()
-	if s.state == SessionProcessing && !s.closingOrClosedLocked() {
-		s.state = SessionIdle
-	}
 	s.sessionEndEmitted = true
 	s.mu.Unlock()
 }

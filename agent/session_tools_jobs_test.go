@@ -517,13 +517,8 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 }
 
 func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
-	s := newTestSession(t)
+	s := newPersistentTestSession(t)
 	const token = "WATCH_OUTPUT_TOKEN_ONCE"
-	delivered := make(chan string, 4)
-	s.cfg.spawn.parentSteerDelivered = func(message string) bool {
-		delivered <- message
-		return true
-	}
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
@@ -569,20 +564,13 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 		t.Fatalf("job_watch returned error for returned job_id %s: %s", shellOut.JobID, watchRes.Output)
 	}
 
-	var first string
-	select {
-	case first = <-delivered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("watch did not deliver output_match frame")
-	}
+	first := waitForSteeringEntryContaining(t, s, token)
 	if !strings.Contains(first, token) || !strings.Contains(first, "output_match watch fired") {
 		t.Fatalf("watch delivery = %q, want configured message and token", first)
 	}
 	waitForShellDone(t, s.jobManager, shellOut.JobID)
-	select {
-	case extra := <-delivered:
-		t.Fatalf("watch delivered more than once; extra = %q", extra)
-	default:
+	if got := countSteeringEntriesContaining(s, token); got != 1 {
+		t.Fatalf("watch deliveries containing %q = %d, want 1", token, got)
 	}
 }
 

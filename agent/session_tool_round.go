@@ -49,9 +49,7 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 		}
 		err := &emptyResponseExhaustedError{retries: maxEmptyRetries}
 		s.emit(events.EventError, errorDataFromError(err))
-		s.mu.Lock()
-		s.setStateIfOpenLocked(SessionIdle)
-		s.mu.Unlock()
+		s.finishProcessingAtBoundary(context.Background(), SessionIdle)
 		return false, err
 	}
 
@@ -74,9 +72,7 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 		retries:  maxBareTextRetries,
 	}
 	s.emit(events.EventError, errorDataFromError(err))
-	s.mu.Lock()
-	s.setStateIfOpenLocked(SessionIdle)
-	s.mu.Unlock()
+	s.finishProcessingAtBoundary(context.Background(), SessionIdle)
 	return false, err
 }
 
@@ -328,6 +324,10 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		}
 	}
 
+	if err := s.retryPendingCallerWatchSendsAtBoundary(ctx); err != nil {
+		return err
+	}
+
 	// Inject any queued steering messages before the next model call.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
 		for _, msg := range s.drainSteering() {
@@ -385,14 +385,10 @@ func (s *Session) deliverIfCommunicated(ctx context.Context) (done bool, text st
 			return false, ""
 		}
 	}
-	s.mu.Lock()
-	if !s.closingOrClosedLocked() {
-		if awaitReply {
-			s.state = SessionAwaitingInput
-		} else {
-			s.state = SessionIdle
-		}
+	state := SessionIdle
+	if awaitReply {
+		state = SessionAwaitingInput
 	}
-	s.mu.Unlock()
+	s.finishProcessingAtBoundary(ctx, state)
 	return true, text
 }

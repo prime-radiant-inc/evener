@@ -3615,10 +3615,10 @@ func TestDelegateReconstructionWatchSendToCallerDuringParentCloseStaysPending(t 
 	releaseDelivery := make(chan struct{})
 	var deliveryOnce sync.Once
 	s.delegateRestoreBeforeSideEffects = func(child *Session) {
-		child.cfg.spawn.parentSteerDelivered = func(message string) bool {
+		child.cfg.spawn.parentWatchSteerDelivered = func(_ context.Context, message string) bool {
 			deliveryOnce.Do(func() { close(deliveryAttempt) })
 			<-releaseDelivery
-			return s.trySteer(message)
+			return s.deliverWatchCallerMessage(message)
 		}
 	}
 
@@ -3655,6 +3655,161 @@ func TestDelegateReconstructionWatchSendToCallerDuringParentCloseStaysPending(t 
 	}
 	if requests := adapter.Requests(); len(requests) != 0 {
 		t.Fatalf("adapter requests = %+v, want no model calls during reconstruction", requests)
+	}
+}
+
+func TestWatchCallerDeliveryWaitsForToolResultsBoundary(t *testing.T) {
+	s := newPersistentTestSession(t)
+	s.mu.Lock()
+	s.state = SessionProcessing
+	s.mu.Unlock()
+	if s.deliverWatchCallerMessage("delivery_id: delivery_waits") {
+		t.Fatal("watch caller delivery succeeded during active processing outside a safe boundary")
+	}
+	s.appendTurn(schema.TurnAssistant, llm.Message{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_1",
+				Name:      "shell",
+				Arguments: json.RawMessage(`{"command":"printf ready"}`),
+			},
+		}},
+	})
+
+	if s.deliverWatchCallerMessage("delivery_id: delivery_waits") {
+		t.Fatal("watch caller delivery succeeded before tool results were appended")
+	}
+	if got := countSteeringEntriesContaining(s, "delivery_waits"); got != 0 {
+		t.Fatalf("watch caller deliveries = %d, want 0 before tool results", got)
+	}
+
+	s.appendTurn(schema.TurnToolResults, llm.Message{
+		Role: llm.RoleTool,
+		Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_1",
+				Name:       "shell",
+				Content:    "ready",
+			},
+		}},
+	})
+	if s.deliverWatchCallerMessage("delivery_id: delivery_waits") {
+		t.Fatal("watch caller delivery succeeded during active processing without a boundary")
+	}
+	s.mu.Lock()
+	s.state = SessionIdle
+	s.mu.Unlock()
+	if !s.deliverWatchCallerMessage("delivery_id: delivery_waits") {
+		t.Fatal("watch caller delivery without boundary failed after session returned idle")
+	}
+	if got := countSteeringEntriesContaining(s, "delivery_waits"); got != 1 {
+		t.Fatalf("watch caller deliveries = %d, want 1 after idle delivery", got)
+	}
+
+	s2 := newPersistentTestSession(t)
+	s2.mu.Lock()
+	s2.state = SessionProcessing
+	s2.mu.Unlock()
+	s2.appendTurn(schema.TurnToolResults, llm.Message{
+		Role: llm.RoleTool,
+		Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_2",
+				Name:       "shell",
+				Content:    "ready",
+			},
+		}},
+	})
+	if !s2.deliverWatchCallerMessageAtBoundary("delivery_id: delivery_boundary", true) {
+		t.Fatal("watch caller delivery failed after tool results were appended")
+	}
+	if got := countSteeringEntriesContaining(s2, "delivery_boundary"); got != 1 {
+		t.Fatalf("watch caller deliveries = %d, want 1 after tool results", got)
+	}
+}
+
+func TestWatchCallerDeliveryFallsBackForNonPersistentSession(t *testing.T) {
+	s := newTestSession(t)
+	if !s.deliverWatchCallerMessage("delivery_id: delivery_nonpersistent") {
+		t.Fatal("watch caller delivery failed for non-persistent session")
+	}
+	queue := s.SteeringQueueSnapshot()
+	if len(queue) != 1 || !strings.Contains(queue[0].Text, "delivery_nonpersistent") {
+		t.Fatalf("steering queue = %+v, want non-persistent watch delivery", queue)
+	}
+}
+
+func TestWatchCallerDeliveryDoesNotUseJobNotificationWake(t *testing.T) {
+	s := newPersistentTestSession(t)
+	var notifyCalled bool
+	s.SetNotifyFunc(func() { notifyCalled = true })
+	if !s.deliverWatchCallerMessage("delivery_id: delivery_no_notify_wake") {
+		t.Fatal("watch caller delivery failed")
+	}
+	if notifyCalled {
+		t.Fatal("watch caller delivery used job notification wake callback")
+	}
+}
+
+func TestOrphanToolRepairRetriesPendingCallerWatchSends(t *testing.T) {
+	s := newPersistentTestSession(t)
+	s.appendTurn(schema.TurnAssistant, llm.Message{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_orphan",
+				Name:      "shell",
+				Arguments: json.RawMessage(`{"command":"printf ready"}`),
+			},
+		}},
+	})
+	now := time.Unix(4100, 0).UTC()
+	if err := s.jobManager.appendWatchSendEvents(restoredWatchSendPendingEvents(s.ID(), "job_child_observed", "caller", now)); err != nil {
+		t.Fatalf("append pending watch send: %v", err)
+	}
+	if err := s.jobManager.restoreWatchSendPending(); err != nil {
+		t.Fatalf("restore watch sends: %v", err)
+	}
+
+	if repairs := s.repairOrphanedToolResults("test"); repairs != 1 {
+		t.Fatalf("repairOrphanedToolResults repairs = %d, want 1", repairs)
+	}
+	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 1 {
+		t.Fatalf("watch caller deliveries = %d, want 1 after orphan repair", got)
+	}
+	if pending := loadWatchSendRecord(t, s.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("pending watch sends after orphan repair = %+v, want none", pending)
+	}
+}
+
+func TestProcessingExitRetriesPendingCallerWatchSends(t *testing.T) {
+	s := newPersistentTestSession(t)
+	s.mu.Lock()
+	s.state = SessionProcessing
+	s.mu.Unlock()
+	now := time.Unix(4200, 0).UTC()
+	if err := s.jobManager.appendWatchSendEvents(restoredWatchSendPendingEvents(s.ID(), "job_late_watch", "caller", now)); err != nil {
+		t.Fatalf("append pending watch send: %v", err)
+	}
+	if err := s.jobManager.restoreWatchSendPending(); err != nil {
+		t.Fatalf("restore watch sends: %v", err)
+	}
+
+	s.finishProcessingAtBoundary(context.Background(), SessionIdle)
+
+	if got := s.State(); got != SessionIdle {
+		t.Fatalf("state = %q, want idle", got)
+	}
+	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 1 {
+		t.Fatalf("watch caller deliveries = %d, want 1 after processing exit", got)
+	}
+	if pending := loadWatchSendRecord(t, s.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("pending watch sends after processing exit = %+v, want none", pending)
 	}
 }
 
@@ -4494,13 +4649,54 @@ func sessionStartHookPlugin(t *testing.T, command string) string {
 }
 
 func countSteeringEntriesContaining(s *Session, text string) int {
-	count := 0
+	return len(steeringEntriesContaining(s, text))
+}
+
+func newPersistentTestSession(t *testing.T) *Session {
+	t.Helper()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		StateDir:         dir,
+	})
+	if err != nil {
+		t.Fatalf("new persistent test session: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	return sess
+}
+
+func waitForSteeringEntryContaining(t *testing.T, s *Session, text string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if entries := steeringEntriesContaining(s, text); len(entries) > 0 {
+			return entries[0]
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no steering entry containing %q; queue = %+v", text, s.SteeringQueueSnapshot())
+	return ""
+}
+
+func steeringEntriesContaining(s *Session, text string) []string {
+	var entries []string
 	for _, entry := range s.SteeringQueueSnapshot() {
 		if strings.Contains(entry.Text, text) {
-			count++
+			entries = append(entries, entry.Text)
 		}
 	}
-	return count
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), text) {
+			entries = append(entries, turn.Message.Text())
+		}
+	}
+	return entries
 }
 
 func countFileLines(t *testing.T, path string) int {

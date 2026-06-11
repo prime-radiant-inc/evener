@@ -125,12 +125,15 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.
 	historyTurns := append([]schema.Turn{}, s.history...)
 	s.mu.Unlock()
 	if repaired, repairs := repairOrphanedToolResults(historyTurns); repairs > 0 {
-		historyTurns = repaired
 		s.mu.Lock()
 		s.history = repaired
 		s.mu.Unlock()
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("Recovered %d interrupted tool call(s) before model request", repairs)})
 		s.maybeAutoSave()
+		s.retryPendingCallerWatchSendsAfterRepair(ctx)
+		s.mu.Lock()
+		historyTurns = append([]schema.Turn{}, s.history...)
+		s.mu.Unlock()
 	}
 
 	// Apply context management before each LLM request.
@@ -218,11 +221,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	// forever from the daemon's /status endpoint (which would disable steer/send
 	// with no recovery path short of restarting the daemon, kata r6y9). meta.json
 	// flush happens via the deferred flush at the top of processOneInput (kata ztne).
-	s.mu.Lock()
-	if s.state == SessionProcessing && !s.closingOrClosedLocked() {
-		s.state = SessionIdle
-	}
-	s.mu.Unlock()
+	s.finishProcessingAtBoundary(ctx, SessionIdle)
 	return false, fmt.Errorf("provider error: %w", err)
 }
 

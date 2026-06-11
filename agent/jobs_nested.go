@@ -149,6 +149,28 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 		if !jm.shouldRecoverForwardedTerminalRecord(rec, parentJobID) {
 			continue
 		}
+		startedAt := rec.StartedAt
+		if err := forward(jobstore.Event{
+			Kind:             jobstore.EventJobStarted,
+			TS:               startedAt,
+			JobID:            rec.JobID,
+			Type:             rec.Type,
+			Command:          rec.Command,
+			Task:             rec.Task,
+			Description:      rec.Description,
+			ParentSessionID:  rec.ParentSessionID,
+			OwnerSessionID:   rec.OwnerSessionID,
+			VisibleToSession: rec.VisibleToSession,
+			ParentJobID:      rec.ParentJobID,
+			OriginTurnID:     rec.OriginTurnID,
+			OriginToolCallID: rec.OriginToolCallID,
+			DelegateRestore:  rec.DelegateRestore,
+			StartedAt:        &startedAt,
+			OutputPath:       rec.OutputPath,
+			TranscriptRef:    rec.TranscriptRef,
+		}); err != nil {
+			return err
+		}
 		finishedAt := jm.recoveredEventTime(rec)
 		if err := forward(jobstore.Event{
 			Kind:                   jobstore.EventJobFinished,

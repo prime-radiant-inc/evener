@@ -1787,6 +1787,71 @@ func TestDeferredRestoreSideEffectsRecoverNestedTerminalForward(t *testing.T) {
 	}
 }
 
+func TestRecoverForwardedTerminalReconstructsMissingParentStart(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+
+	startedAt := time.Unix(4700, 0).UTC()
+	endedAt := startedAt.Add(time.Second)
+	jobID := jobstore.NewJobID()
+	started := jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            jobID,
+		Type:             jobstore.JobShell,
+		Command:          "printf nested",
+		Description:      "nested start lost before parent forward",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: "CHILD",
+		ParentJobID:      "job_PARENTDELEGATE",
+		StartedAt:        &startedAt,
+		OutputPath:       "/tmp/nested.log",
+	}
+	if err := childJM.store.Append(started); err != nil {
+		t.Fatalf("append child started: %v", err)
+	}
+	if err := childJM.store.Append(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          endedAt,
+		JobID:       jobID,
+		Status:      jobstore.StatusCompleted,
+		Reason:      "exit_zero",
+		EndedAt:     &endedAt,
+		TerminalGen: jobstore.NewTerminalGeneration(),
+	}); err != nil {
+		t.Fatalf("append child finished: %v", err)
+	}
+
+	if err := childJM.recoverForwardedTerminalEvents(); err != nil {
+		t.Fatalf("recoverForwardedTerminalEvents: %v", err)
+	}
+	parentRecords, err := parentJM.store.Load()
+	if err != nil {
+		t.Fatalf("load parent store: %v", err)
+	}
+	parentRec := parentRecords[jobID]
+	if parentRec == nil {
+		t.Fatalf("parent record missing for recovered nested job %s", jobID)
+	}
+	if parentRec.Status != jobstore.StatusCompleted || parentRec.Type != jobstore.JobShell ||
+		parentRec.OwnerSessionID != "CHILD" || parentRec.VisibleToSession != "PARENT" ||
+		parentRec.ParentJobID != "job_PARENTDELEGATE" || parentRec.OutputPath != "/tmp/nested.log" {
+		t.Fatalf("parent recovered record = %+v, want started metadata plus completed terminal state", parentRec)
+	}
+}
+
 func TestDeferredRestoreSideEffectsForwardsReconciledNestedRuntimeLost(t *testing.T) {
 	var parentNotifications []jobNotification
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(n jobNotification) {

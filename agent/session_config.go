@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+
 	"primeradiant.com/serf/agent/internal/contextmgr"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
@@ -207,6 +209,9 @@ type spawnConfig struct {
 	// parentSteerDelivered reports whether a runtime alias message was accepted
 	// by the caller. It is used where durable watch-send state depends on delivery.
 	parentSteerDelivered func(string) bool
+
+	// parentWatchSteerDelivered durably injects watch-originated caller frames.
+	parentWatchSteerDelivered func(context.Context, string) bool
 
 	// subagentTask is the task description passed to delegate.
 	subagentTask string

@@ -956,13 +956,12 @@ func TestWatchSendRestoreRetriesPendingBeforeTerminalNotifications(t *testing.T)
 	}
 	defer restored.Close()
 
-	queue := restored.SteeringQueueSnapshot()
-	if len(queue) != 1 {
-		t.Fatalf("steering queue = %+v, want restored pending watch send", queue)
+	if queue := restored.SteeringQueueSnapshot(); len(queue) != 0 {
+		t.Fatalf("steering queue = %+v, want restored watch send durably appended", queue)
 	}
-	if !strings.Contains(queue[0].Text, "restored observe") ||
-		!strings.Contains(queue[0].Text, "delivery_id: delivery_restore_pending") {
-		t.Fatalf("restored watch send text = %q, want stored frame with delivery id", queue[0].Text)
+	restoredFrame := waitForSteeringEntryContaining(t, restored, "delivery_id: delivery_restore_pending")
+	if !strings.Contains(restoredFrame, "restored observe") {
+		t.Fatalf("restored watch send text = %q, want stored frame with delivery id", restoredFrame)
 	}
 	if pending := loadWatchSendRecord(t, restored.jobManager).Pending; len(pending) != 0 {
 		t.Fatalf("pending after restore retry = %+v, want none", pending)

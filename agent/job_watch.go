@@ -1722,6 +1722,27 @@ func (s *Session) retryRestoredPendingWatchSends(ctx context.Context) error {
 	return nil
 }
 
+func (s *Session) retryPendingCallerWatchSendsAtBoundary(ctx context.Context) error {
+	ctx = withWatchCallerDeliveryBoundary(ctx)
+	var errs []error
+	if s.jobManager != nil {
+		if err := s.jobManager.retryPendingWatchSendsForTarget(ctx, runtimeMessageAliasCaller); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if s.subagents != nil {
+		for _, child := range s.subagents.sessions() {
+			if child == nil || child.jobManager == nil {
+				continue
+			}
+			if err := child.jobManager.retryPendingWatchSendsForTarget(ctx, runtimeMessageAliasCaller); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliveryClass, string) {
 	target = strings.TrimSpace(target)
 	if isRuntimeMessageAlias(target) {
