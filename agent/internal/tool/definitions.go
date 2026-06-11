@@ -175,7 +175,8 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 	if kinds == "" {
 		kinds = "none available this session"
 	}
-	desc := "Add an extra trigger on a running job or a visible session. Omit `send` to get a notification " +
+	desc := "Add an extra trigger on a running job or a visible session. Set only the trigger fields you need; " +
+		"empty `events`, zero `progress_interval_ms`, and empty `trigger` are unnecessary. Omit `send` to get a notification " +
 		"yourself when the trigger fires; include `send` to deliver a bounded frame to another target, " +
 		"such as an observer delegate. Triggers: `output_match`, a regex over output produced while " +
 		"the watch is active; `progress_interval_ms`, periodic; or `events`/`trigger`, selected " +
@@ -211,7 +212,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 					"additionalProperties": false,
 					"description":          "Deliver to another target instead of notifying the caller.",
 					"properties": map[string]any{
-						"to":              map[string]any{"type": "string", "description": "job_id, `caller`, or contextual `watched` for the concrete watched target."},
+						"to":              map[string]any{"type": "string", "description": "job_id, `caller`, or contextual `watched` for the concrete watched target. `watched` resolves only when the trigger has a concrete job identity; session-only events are skipped for `watched`."},
 						"message":         map[string]any{"type": "string"},
 						"include_frame":   map[string]any{"type": "boolean"},
 						"include_excerpt": map[string]any{"type": "boolean"},
@@ -227,7 +228,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 func DefJobReadOutput() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_read_output",
-		Description: "Read a job's captured output and current status by job_id. Returns a bounded tail of shell stdout/stderr or a delegate final report; reads never consume or acknowledge output. Pass grep to search retained output with a regex. block=true performs one bounded wait for the next output or terminal state, not a polling loop.",
+		Description: "Read a job's captured output and current status by job_id. Returns a bounded tail of shell stdout/stderr or a delegate final report; reads never consume or acknowledge output. Pass grep to search retained output with a regex. block=true performs one bounded wait until new output is available or the job becomes terminal; it does not mean wait only for completion.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -250,7 +251,7 @@ func DefJobList() llm.ToolDefinition {
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List durable jobs for recovery and inspection. Filter by status or type; results are newest-first. Use this to find a job_id or inspect inventory, not to wait for completion. Cursor is accepted for forward-compatible calls; Phase 2 returns next_cursor as null.",
+		Description: "List durable jobs for recovery and inspection. Filter by status or type; results are newest-first. Use this to find a job_id or inspect inventory, not to wait for completion. Short jobs may complete before a running-only list observes them; list without status or read by job_id when recency matters. Terminal statuses are completed, failed, cancelled, and stopped.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -275,7 +276,7 @@ func DefJobList() llm.ToolDefinition {
 func DefJobStop() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_stop",
-		Description: "Request cancellation of a running job by job_id. Use it only to stop work; it does not delete output or history. block=true performs one bounded wait for the stop to finalize.",
+		Description: "Request cancellation of a running job by job_id. Use it only to stop work; it does not delete output or history. block=true performs one bounded wait for the stop to finalize. Explicitly stopped shell/delegate work normally becomes status=cancelled with reason=stopped_by_parent; status=stopped is reserved for foreground shell work cancelled before it becomes durable.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

@@ -453,7 +453,7 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 			delete(jm.running, run.rec.JobID)
 		}
 		jm.mu.Unlock()
-		close(run.done)
+		run.closeDone()
 		return err
 	}
 
@@ -474,7 +474,7 @@ func (jm *jobManager) discardDelayedShell(run *runningJob) {
 
 	_ = run.output.Close()
 	_ = jobstore.RemoveOutputArtifacts(run.rec.OutputPath)
-	close(run.done)
+	run.closeDone()
 }
 
 func (jm *jobManager) finalizeShellWhenDone(run *runningJob, waitCh <-chan shellWaitResult, runtimeTimedOut *atomic.Bool) {

@@ -516,6 +516,76 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 	}
 }
 
+func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
+	s := newTestSession(t)
+	const token = "WATCH_OUTPUT_TOKEN_ONCE"
+	delivered := make(chan string, 4)
+	s.cfg.spawn.parentSteerDelivered = func(message string) bool {
+		delivered <- message
+		return true
+	}
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 1; echo 'WATCH_OUTPUT_TOKEN_ONCE'; sleep 1","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	if shellOut.JobID == "" {
+		t.Fatal("background shell returned no job_id")
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	watchArgs, err := json.Marshal(map[string]any{
+		"target":       shellOut.JobID,
+		"output_match": token,
+		"send": map[string]any{
+			"to":              "caller",
+			"message":         "output_match watch fired",
+			"include_frame":   true,
+			"include_excerpt": true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	watchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch",
+		Name:      "job_watch",
+		Arguments: watchArgs,
+	})
+	if watchRes.IsError {
+		t.Fatalf("job_watch returned error for returned job_id %s: %s", shellOut.JobID, watchRes.Output)
+	}
+
+	var first string
+	select {
+	case first = <-delivered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watch did not deliver output_match frame")
+	}
+	if !strings.Contains(first, token) || !strings.Contains(first, "output_match watch fired") {
+		t.Fatalf("watch delivery = %q, want configured message and token", first)
+	}
+	waitForShellDone(t, s.jobManager, shellOut.JobID)
+	select {
+	case extra := <-delivered:
+		t.Fatalf("watch delivered more than once; extra = %q", extra)
+	default:
+	}
+}
+
 func TestJobWatchNoConditionErrors(t *testing.T) {
 	s := newTestSession(t)
 

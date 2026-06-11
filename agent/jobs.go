@@ -70,6 +70,7 @@ type runningJob struct {
 	output                  *jobstore.OutputStore
 	signal                  func()
 	done                    chan struct{}
+	doneOnce                sync.Once
 	durableStarted          bool
 	stopStatus              jobstore.Status
 	stopReason              string
@@ -90,6 +91,15 @@ type finalizeAttempt struct {
 	err  error
 }
 
+func (run *runningJob) closeDone() {
+	if run == nil {
+		return
+	}
+	run.doneOnce.Do(func() {
+		close(run.done)
+	})
+}
+
 type terminalJob struct {
 	status                       jobstore.Status
 	reason                       string
@@ -107,10 +117,11 @@ type terminalJob struct {
 }
 
 type jobRuntimeHandle struct {
-	jobID  string
-	signal func()
-	done   chan struct{}
-	output *jobstore.OutputStore
+	jobID     string
+	signal    func()
+	done      chan struct{}
+	closeDone func()
+	output    *jobstore.OutputStore
 }
 
 // jobNotification is the in-memory wake record for a durable job notification.
@@ -261,9 +272,10 @@ func (jm *jobManager) abandonRunningJobs() {
 	var targets []watchConfigTerminalSnapshot
 	for _, run := range jm.running {
 		running = append(running, jobRuntimeHandle{
-			jobID:  run.rec.JobID,
-			done:   run.done,
-			output: run.output,
+			jobID:     run.rec.JobID,
+			done:      run.done,
+			closeDone: run.closeDone,
+			output:    run.output,
 		})
 		delete(jm.running, run.rec.JobID)
 		targets = append(targets, jm.pruneWatchedTargetWatchesLocked(run.rec.JobID, "watched target pruned", jm.now())...)
@@ -285,7 +297,9 @@ func (jm *jobManager) abandonRunningJobs() {
 		if run.output != nil {
 			_ = run.output.Close()
 		}
-		close(run.done)
+		if run.closeDone != nil {
+			run.closeDone()
+		}
 	}
 }
 
@@ -316,7 +330,7 @@ func (jm *jobManager) abandonRunningJob(jobID string) {
 	if run.output != nil {
 		_ = run.output.Close()
 	}
-	close(run.done)
+	run.closeDone()
 }
 
 func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, error) {
@@ -953,7 +967,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	jm.mu.Unlock()
 
 	_ = run.output.Close()
-	close(run.done)
+	run.closeDone()
 
 	if jm.enqueue != nil {
 		jm.enqueue(jobNotification{

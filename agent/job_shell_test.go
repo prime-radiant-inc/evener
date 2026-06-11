@@ -285,12 +285,30 @@ func TestCommitDelayedShellAfterCloseAbandonmentFails(t *testing.T) {
 	defer func() {
 		_ = run.output.Close()
 		_ = jobstore.RemoveOutputArtifacts(run.rec.OutputPath)
-		close(run.done)
+		run.closeDone()
 	}()
 
 	if err := jm.commitDelayedShell(run); !errors.Is(err, errJobManagerClosing) {
 		t.Fatalf("commitDelayedShell error = %v, want %v", err, errJobManagerClosing)
 	}
+}
+
+func TestDiscardDelayedShellAfterAbandonDoesNotPanic(t *testing.T) {
+	jm := newTestJM(t)
+	run, err := jm.newDelayedShell(shellArgs{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("newDelayedShell: %v", err)
+	}
+	done := run.done
+
+	jm.abandonRunningJobs()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("abandonRunningJobs did not close delayed shell done channel")
+	}
+	jm.discardDelayedShell(run)
 }
 
 func waitForJobManagerClosing(t *testing.T, jm *jobManager) {
