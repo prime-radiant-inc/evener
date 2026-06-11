@@ -356,6 +356,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	subCfg.spawn.subagentTask = task
 	subCfg.spawn.depth = depth + 1
 	subCfg.spawn.parentSteer = s.Steer
+	subCfg.spawn.parentSteerDelivered = s.trySteer
 	if s.cfg.ShareTasksWithChildren {
 		subCfg.spawn.sharedTaskStore = s.getOrCreateTaskStore()
 	} else {

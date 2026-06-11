@@ -204,6 +204,10 @@ type spawnConfig struct {
 	// parentSteer routes runtime alias messages from a live sub-agent to its caller.
 	parentSteer func(string)
 
+	// parentSteerDelivered reports whether a runtime alias message was accepted
+	// by the caller. It is used where durable watch-send state depends on delivery.
+	parentSteerDelivered func(string) bool
+
 	// subagentTask is the task description passed to delegate.
 	subagentTask string
 

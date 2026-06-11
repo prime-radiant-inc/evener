@@ -59,24 +59,33 @@ func (s *Session) Steer(msg string) {
 	s.SteerWithImages(msg, nil)
 }
 
+func (s *Session) trySteer(msg string) bool {
+	return s.trySteerWithImages(msg, nil)
+}
+
 // SteerWithImages queues a steering message that carries optional image
 // attachments alongside the text. The combined message is appended to
 // session history as a TurnSteering with text + ContentImage parts when
 // the steering queue is drained (kata t5j6).
 func (s *Session) SteerWithImages(msg string, images []ImageAttachment) {
+	_ = s.trySteerWithImages(msg, images)
+}
+
+func (s *Session) trySteerWithImages(msg string, images []ImageAttachment) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closingOrClosedLocked() {
-		return
+		return false
 	}
 	if strings.TrimSpace(msg) == "" && len(images) == 0 {
-		return
+		return false
 	}
 	entry := steeringMessage{Text: msg}
 	if len(images) > 0 {
 		entry.Images = append([]ImageAttachment(nil), images...)
 	}
 	s.steeringQueue = append(s.steeringQueue, entry)
+	return true
 }
 
 // wrapHookContext frames hook-provided model context as a system reminder so the

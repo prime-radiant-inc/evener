@@ -212,10 +212,24 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return sendMessageFailed(target, errors.New("block_timeout_ms must be non-negative"))
 	}
 	if isRuntimeMessageAlias(target) {
-		if steer := s.cfg.spawn.parentSteer; steer != nil {
+		delivered := true
+		if steer := s.cfg.spawn.parentSteerDelivered; steer != nil {
+			delivered = steer(message)
+		} else if steer := s.cfg.spawn.parentSteer; steer != nil {
 			steer(message)
 		} else {
-			s.Steer(message)
+			delivered = s.trySteer(message)
+		}
+		if !delivered {
+			return sendMessageResult{
+				Target:                    target,
+				Action:                    "sent",
+				Delivered:                 false,
+				MessageType:               "runtime",
+				Err:                       errors.New("caller unavailable"),
+				WatchSendDeliveryClassSet: args.FromWatch,
+				WatchSendDeliveryClass:    watchSendBusy,
+			}
 		}
 		return sendMessageResult{
 			Target:      target,
@@ -544,6 +558,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 			parentJobID:             desc.ParentJobID,
 			forwardJobEvent:         s.jobManager.forwardEvent,
 			parentSteer:             s.Steer,
+			parentSteerDelivered:    s.trySteer,
 			subagentTask:            desc.Task,
 			depth:                   s.depth + 1,
 			rolePromptOverride:      desc.FrozenRolePrompt,

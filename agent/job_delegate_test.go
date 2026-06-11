@@ -3173,6 +3173,66 @@ func TestDelegateReconstructionSideEffectFailureAfterWatchDeliveryKeepsRuntime(t
 	}
 }
 
+func TestDelegateReconstructionWatchSendToCallerDuringParentCloseStaysPending(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	childID := rec.DelegateRestore.ChildSessionID
+	now := time.Unix(4000, 0).UTC()
+	appendSessionJobEvents(t, s.stateDir, childID, restoredWatchSendPendingEvents(childID, "job_child_observed", "caller", now)...)
+	beforeParentEvents := len(loadJobStoreEvents(t, s.jobManager))
+	preflight := requireDelegateRestorePreflight(t, s, rec)
+	deliveryAttempt := make(chan struct{})
+	releaseDelivery := make(chan struct{})
+	var deliveryOnce sync.Once
+	s.delegateRestoreBeforeSideEffects = func(child *Session) {
+		child.cfg.spawn.parentSteerDelivered = func(message string) bool {
+			deliveryOnce.Do(func() { close(deliveryAttempt) })
+			<-releaseDelivery
+			return s.trySteer(message)
+		}
+	}
+
+	restoreDone := make(chan error, 1)
+	go func() {
+		_, err := s.restoreTerminalDelegateChild(rec, childID, preflight)
+		restoreDone <- err
+	}()
+	select {
+	case <-deliveryAttempt:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restored watch send did not attempt caller delivery")
+	}
+	s.mu.Lock()
+	s.closing = true
+	s.state = SessionClosed
+	s.mu.Unlock()
+	close(releaseDelivery)
+	if err := <-restoreDone; err != nil {
+		t.Fatalf("restoreTerminalDelegateChild error = %v, want nil", err)
+	}
+	events := loadSessionJobStoreEvents(t, s.stateDir, childID)
+	if hasWatchSendEvent(events, jobstore.EventWatchSendDelivered, "delivery_restore_pending") {
+		t.Fatalf("watch send was marked delivered while parent was closing: %+v", events)
+	}
+	if pending := loadSessionWatchSendRecord(t, s.stateDir, childID).Pending; len(pending) != 1 {
+		t.Fatalf("child pending after parent-close caller delivery = %+v, want unchanged pending watch send", pending)
+	}
+	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 0 {
+		t.Fatalf("parent watch-frame steering deliveries = %d, want 0; queue = %+v", got, s.SteeringQueueSnapshot())
+	}
+	if got := len(loadJobStoreEvents(t, s.jobManager)); got != beforeParentEvents {
+		t.Fatalf("parent jobstore event count = %d, want unchanged %d", got, beforeParentEvents)
+	}
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("adapter requests = %+v, want no model calls during reconstruction", requests)
+	}
+}
+
 func TestTerminalDelegateRestoreRequiresStrictPreflightBeforeReconstruction(t *testing.T) {
 	cases := []struct {
 		status jobstore.Status
