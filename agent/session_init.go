@@ -319,6 +319,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := jm.reconcileLostJobs(); err != nil {
 		return nil, fmt.Errorf("job reconcile: %w", err)
 	}
+	jm.forward = cfg.spawn.forwardJobEvent
+	jm.parentJobID = cfg.spawn.parentJobID
 	jm.enqueue = s.enqueueJobNotificationAndNotify
 	jm.send = s.sendDelegateMessage
 	jm.emit = s.emit

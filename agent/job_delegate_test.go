@@ -2276,6 +2276,185 @@ func TestSendDelegateMessageRuntimeLostRestoreUsesDescriptorPreflightProfile(t *
 	}
 }
 
+func TestRestoreRuntimeLostDelegateNoAutoResumeNoModel(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	childID := rec.DelegateRestore.ChildSessionID
+	parentMeta := s.Meta()
+	stateDir := s.stateDir
+	beforeJobs := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate}))
+	s.Close()
+
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), parentMeta, RestoreSessionConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("adapter requests = %+v, want no model calls during restore", requests)
+	}
+	if jobs := restored.jobManager.list(listFilter{Type: jobstore.JobDelegate}); len(jobs) != beforeJobs {
+		t.Fatalf("delegate jobs after restore = %+v, want %d existing job only", jobs, beforeJobs)
+	}
+	if sub := restored.subagents.get(childID); sub != nil {
+		t.Fatalf("restored child runtime = %+v, want none before job_send_message", sub)
+	}
+}
+
+func TestJobSendMessageReconstructsRestoredDelegateRuntimeFromDescriptor(t *testing.T) {
+	var request llm.Request
+	workAdapter := &fakeAdapter{
+		name: "work",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				request = req
+				return communicateWithDefaultOutput("restored delegate complete")
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	c.Register(workAdapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	childID := rec.DelegateRestore.ChildSessionID
+	childWorkDir := t.TempDir()
+	parentRestoreWorkDir := t.TempDir()
+	resultSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"summary": map[string]any{"type": "string"},
+		},
+		"required": []string{"summary"},
+	}
+	rec.DelegateRestore.ResolvedProfileID = "work"
+	rec.DelegateRestore.ResolvedModel = "descriptor-model"
+	rec.DelegateRestore.ReasoningEffort = "high"
+	rec.DelegateRestore.WorkingDir = childWorkDir
+	rec.DelegateRestore.LocalEnvPolicy = "none"
+	rec.DelegateRestore.ResultSchema = resultSchema
+	rec.DelegateRestore.ExplicitToolGrants = []string{"shell"}
+	rec.DelegateRestore.FrozenToolNames = []string{"shell"}
+	replaceStoredDelegateRecord(t, s, rec)
+	parentMeta := s.Meta()
+	stateDir := s.stateDir
+	s.Close()
+
+	restoredParentEnv := execenv.NewLocalExecutionEnvironment(parentRestoreWorkDir)
+	restoredParentEnv.EnvPolicy = execenv.EnvPolicyAll
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), restoredParentEnv, parentMeta, RestoreSessionConfig{
+		StateDir: stateDir,
+		ResolveProfile: func(ref string) (*provider.Profile, error) {
+			if ref != "work/descriptor-model" {
+				return nil, fmt.Errorf("unexpected profile ref %s", ref)
+			}
+			return WithProviderID(NewOpenAIProfile("descriptor-model"), "work"), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+	if sub := restored.subagents.get(childID); sub != nil {
+		t.Fatalf("restored child runtime before send = %+v, want none", sub)
+	}
+
+	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         rec.JobID,
+		Message:        "new input after restore",
+		Background:     false,
+		BackgroundSet:  true,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+
+	sub := restored.subagents.get(childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("reconstructed child runtime = %+v, want retained child session", sub)
+	}
+	child := sub.sess
+	profile := child.currentProfile()
+	if profile.ID() != "work" || profile.Model() != "descriptor-model" {
+		t.Fatalf("child profile = %s/%s, want work/descriptor-model", profile.ID(), profile.Model())
+	}
+	if child.cfg.ReasoningEffort != "high" {
+		t.Fatalf("child reasoning effort = %q, want high", child.cfg.ReasoningEffort)
+	}
+	if child.env.WorkingDirectory() != childWorkDir {
+		t.Fatalf("child working dir = %q, want %q", child.env.WorkingDirectory(), childWorkDir)
+	}
+	if got := localEnvPolicyName(child.env); got != "none" {
+		t.Fatalf("child local env policy = %q, want none", got)
+	}
+	if child.cfg.spawn.parentSessionID != restored.ID() ||
+		child.cfg.spawn.parentJobID != rec.JobID ||
+		child.cfg.spawn.subagentTask != rec.DelegateRestore.Task ||
+		child.cfg.spawn.depth != restored.depth+1 ||
+		child.cfg.spawn.parentSteer == nil {
+		t.Fatalf("child spawn config = %+v, want descriptor parent linkage", child.cfg.spawn)
+	}
+	if child.jobManager.parentJobID != rec.JobID || child.jobManager.forward == nil {
+		t.Fatalf("child job manager linkage = parentJobID %q forwardSet %t, want parent job %q and forward hook", child.jobManager.parentJobID, child.jobManager.forward != nil, rec.JobID)
+	}
+	if child.reg.Get("shell") == nil {
+		t.Fatal("reconstructed child missing explicitly granted shell tool")
+	}
+	if !communicateOutputSchemaHasProperty(request, "summary") {
+		t.Fatalf("first restored request did not inherit result schema: %+v", request.Tools)
+	}
+	if request.Provider != "work" || request.Model != "descriptor-model" {
+		t.Fatalf("first restored request provider/model = %s/%s, want work/descriptor-model", request.Provider, request.Model)
+	}
+	if request.ReasoningEffort == nil || *request.ReasoningEffort != "high" {
+		t.Fatalf("first restored request reasoning = %#v, want high", request.ReasoningEffort)
+	}
+	if requestMessagesContain(request, rec.DelegateRestore.Task) {
+		t.Fatalf("old delegate task %q was submitted as a new restored turn: %+v", rec.DelegateRestore.Task, request.Messages)
+	}
+	if !requestMessagesContain(request, "new input after restore") {
+		t.Fatalf("new resumed input missing from first restored request: %+v", request.Messages)
+	}
+}
+
+func TestFailedPreflightDoesNotReconstructDelegateRuntime(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	childID := rec.DelegateRestore.ChildSessionID
+	removeChildSessionMeta(t, s, rec)
+	beforeEvents := len(loadJobStoreEvents(t, s.jobManager))
+	beforeJobs := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate}))
+
+	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  rec.JobID,
+		Message: "resume",
+	})
+
+	if res.Err == nil || res.Err.Error() != "target_not_resumable:missing_child_session_meta" {
+		t.Fatalf("error = %v, want missing_child_session_meta", res.Err)
+	}
+	if got := len(loadJobStoreEvents(t, s.jobManager)); got != beforeEvents {
+		t.Fatalf("jobstore event count = %d, want unchanged %d", got, beforeEvents)
+	}
+	if got := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate})); got != beforeJobs {
+		t.Fatalf("delegate job count = %d, want unchanged %d", got, beforeJobs)
+	}
+	if sub := s.subagents.get(childID); sub != nil {
+		t.Fatalf("retained child runtime = %+v, want none after failed preflight", sub)
+	}
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("adapter requests = %+v, want none", requests)
+	}
+}
+
 func TestSendDelegateMessageRunningDelegateTargetSteersWithoutNewJob(t *testing.T) {
 	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
 	c := llm.NewClient()
@@ -2990,6 +3169,15 @@ func communicateOutputSchemaHasProperty(req llm.Request, property string) bool {
 		}
 		_, ok = props[property]
 		return ok
+	}
+	return false
+}
+
+func requestMessagesContain(req llm.Request, text string) bool {
+	for _, msg := range req.Messages {
+		if strings.Contains(msg.Text(), text) {
+			return true
+		}
 	}
 	return false
 }

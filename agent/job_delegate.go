@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
@@ -473,6 +474,7 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 	if s.stateDir == "" {
 		return nil, errors.New("state directory is not configured")
 	}
+	desc := rec.DelegateRestore
 	var meta schema.SessionMeta
 	var profile *provider.Profile
 	var resumeHistory []schema.Turn
@@ -491,6 +493,14 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 			return nil, err
 		}
 	}
+	resultSchema := delegateResultSchemaMap(desc.ResultSchema)
+	if len(resultSchema) > 0 {
+		profile = provider.WithCommunicateOutputSchema(profile, resultSchema)
+	}
+	childEnv, err := s.restoreDelegateChildEnvironment(desc)
+	if err != nil {
+		return nil, err
+	}
 	restoreCfg := RestoreSessionConfig{
 		StateDir:       s.stateDir,
 		ResolveProfile: s.resolveProfile,
@@ -498,14 +508,23 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 		LLMRetryPolicy: s.cfg.LLMRetryPolicy,
 		LLMSleep:       s.cfg.LLMSleep,
 		spawn: spawnConfig{
-			parentSessionID: s.id,
-			subagentTask:    rec.DelegateRestore.Task,
-			depth:           s.depth + 1,
-			parentSteer:     s.Steer,
+			parentSessionID:         desc.ParentSessionID,
+			parentToolCallID:        desc.OriginToolCallID,
+			parentJobID:             desc.ParentJobID,
+			forwardJobEvent:         s.jobManager.forwardEvent,
+			parentSteer:             s.Steer,
+			subagentTask:            desc.Task,
+			depth:                   s.depth + 1,
+			rolePromptOverride:      desc.FrozenRolePrompt,
+			allowedToolNames:        restoredDelegateAllowedTools(desc),
+			communicateOutputSchema: cloneMap(resultSchema),
 		},
 		resumeHistory: resumeHistory,
 	}
-	child, err := RestoreSessionFromMetaWithConfig(s.client, profile, s.env, meta, restoreCfg)
+	if strings.TrimSpace(desc.ReasoningEffort) != "" {
+		meta.Config.ReasoningEffort = desc.ReasoningEffort
+	}
+	child, err := RestoreSessionFromMetaWithConfig(s.client, profile, childEnv, meta, restoreCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -524,6 +543,54 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 	}
 	s.subagents.track(sub)
 	return sub, nil
+}
+
+func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestoreDescriptor) (execenv.ExecutionEnvironment, error) {
+	if s == nil || s.env == nil {
+		return nil, errors.New("execution environment is not configured")
+	}
+	childEnv := s.env
+	if le, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
+		clone := le.WithWorkingDirectory(le.WorkingDirectory())
+		if workDir := strings.TrimSpace(desc.WorkingDir); workDir != "" {
+			clone = le.WithWorkingDirectory(workDir)
+		}
+		if policy, ok := localEnvPolicyFromName(desc.LocalEnvPolicy); ok {
+			clone.EnvPolicy = policy
+		}
+		childEnv = clone
+	} else if strings.TrimSpace(desc.WorkingDir) != "" && desc.WorkingDir != s.env.WorkingDirectory() {
+		return nil, errors.New("execution environment does not support restored working_dir")
+	}
+	return childEnv, nil
+}
+
+func restoredDelegateAllowedTools(desc *jobstore.DelegateRestoreDescriptor) []string {
+	if desc == nil || len(desc.FrozenToolNames) == 0 {
+		return nil
+	}
+	if len(desc.FrozenToolNames) == 1 && desc.FrozenToolNames[0] == "*" {
+		return nil
+	}
+	return appendUniqueStrings(append([]string(nil), desc.FrozenToolNames...), desc.ExplicitToolGrants...)
+}
+
+func delegateResultSchemaMap(schema any) map[string]any {
+	if schema == nil {
+		return nil
+	}
+	if m, ok := schema.(map[string]any); ok {
+		return cloneMap(m)
+	}
+	b, err := json.Marshal(schema)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func subagentStatusFromJobStatus(status jobstore.Status) SubagentStatus {

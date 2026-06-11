@@ -209,6 +209,21 @@ func localEnvPolicyName(env execenv.ExecutionEnvironment) string {
 	}
 }
 
+func localEnvPolicyFromName(name string) (execenv.EnvVarPolicy, bool) {
+	switch strings.TrimSpace(name) {
+	case "all":
+		return execenv.EnvPolicyAll, true
+	case "none":
+		return execenv.EnvPolicyNone, true
+	case "core_only":
+		return execenv.EnvPolicyCoreOnly, true
+	case "default":
+		return execenv.EnvPolicyDefault, true
+	default:
+		return execenv.EnvPolicyDefault, false
+	}
+}
+
 func cloneMap(in map[string]any) map[string]any {
 	if len(in) == 0 {
 		return nil
