@@ -2481,14 +2481,14 @@ func TestJobSendMessageReconstructsRestoredDelegateRuntimeFromDescriptor(t *test
 		t.Fatalf("child local env policy = %q, want none", got)
 	}
 	if child.cfg.spawn.parentSessionID != restored.ID() ||
-		child.cfg.spawn.parentJobID != rec.JobID ||
+		child.cfg.spawn.parentJobID != res.JobID ||
 		child.cfg.spawn.subagentTask != rec.DelegateRestore.Task ||
 		child.cfg.spawn.depth != restored.depth+1 ||
 		child.cfg.spawn.parentSteer == nil {
-		t.Fatalf("child spawn config = %+v, want descriptor parent linkage", child.cfg.spawn)
+		t.Fatalf("child spawn config = %+v, want descriptor parent linkage with resumed job %q", child.cfg.spawn, res.JobID)
 	}
-	if child.jobManager.parentJobID != rec.JobID || child.jobManager.forward == nil {
-		t.Fatalf("child job manager linkage = parentJobID %q forwardSet %t, want parent job %q and forward hook", child.jobManager.parentJobID, child.jobManager.forward != nil, rec.JobID)
+	if child.jobManager.parentJobID != res.JobID || child.jobManager.forward == nil {
+		t.Fatalf("child job manager linkage = parentJobID %q forwardSet %t, want resumed job %q and forward hook", child.jobManager.parentJobID, child.jobManager.forward != nil, res.JobID)
 	}
 	if child.reg.Get("shell") == nil {
 		t.Fatal("reconstructed child missing explicitly granted shell tool")
@@ -2634,6 +2634,130 @@ func TestRuntimeLostDelegateResumeAfterRestoreCreatesNewJobFromRetainedState(t *
 	}
 	if requests := adapter.Requests(); len(requests) != 2 {
 		t.Fatalf("adapter requests after send = %+v, want initial plus resumed request", requests)
+	}
+}
+
+func TestRuntimeLostDelegateResumeRelinksNestedJobsToNewJob(t *testing.T) {
+	const firstOutput = "old nested-link delegate output"
+	const resumedOutput = "new nested-link delegate output"
+	const nestedDescription = "runtime-lost resumed nested shell"
+
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput(firstOutput)
+			},
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(llm.ToolCallData{
+					ID:   "nested_shell",
+					Name: "shell",
+					Arguments: json.RawMessage(fmt.Sprintf(
+						`{"command":"printf 'runtime-lost-nested-ready\n'; sleep 30","description":%q,"background":true}`,
+						nestedDescription,
+					)),
+					Type: "function",
+				})
+			},
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput(resumedOutput)
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateTestSession(t, c)
+
+	first := s.createDelegate(context.Background(), delegateArgs{
+		Task:           "start runtime-lost nested-link delegate",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	oldRec := loadShellRecord(t, s.jobManager, first.JobID)
+	childID := oldRec.DelegateRestore.ChildSessionID
+	setStoredDelegateTerminalStatus(t, s, oldRec, jobstore.StatusStopped, "runtime_lost")
+	parentMeta := s.Meta()
+	stateDir := s.stateDir
+	s.Close()
+
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), parentMeta, RestoreSessionConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+	if sub := restored.subagents.get(childID); sub != nil {
+		t.Fatalf("restored child runtime = %+v, want none before job_send_message", sub)
+	}
+
+	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         first.JobID,
+		Message:        "resume and start a nested shell",
+		Background:     false,
+		BackgroundSet:  true,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+	if res.JobID == "" || res.JobID == first.JobID || res.Action != "resumed" || res.ResumedFromJobID != first.JobID {
+		t.Fatalf("resume result = %+v, want new resumed job from old runtime-lost job", res)
+	}
+	oldAfter := loadShellRecord(t, restored.jobManager, first.JobID)
+	if oldAfter.Status != jobstore.StatusStopped || oldAfter.Reason != "runtime_lost" {
+		t.Fatalf("old record = %+v, want stopped/runtime_lost", oldAfter)
+	}
+	oldOutput, _, _, err := restored.jobManager.readOutput(first.JobID, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read old output: %v", err)
+	}
+	if !strings.Contains(oldOutput, firstOutput) || strings.Contains(oldOutput, resumedOutput) {
+		t.Fatalf("old output = %q, want only old output", oldOutput)
+	}
+
+	sub := restored.subagents.get(childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("reconstructed child runtime = %+v, want retained child session", sub)
+	}
+	child := sub.sess
+	nested := findJobByDescription(t, child.jobManager, nestedDescription)
+	t.Cleanup(func() {
+		if rec, err := findJobRecord(child.jobManager, nested.JobID); err == nil && rec.Status == jobstore.StatusRunning {
+			_, _ = restored.stopNestedOrLocal(nested.JobID)
+			waitForShellDone(t, child.jobManager, nested.JobID)
+		}
+	})
+	if nested.ParentJobID != res.JobID {
+		t.Fatalf("child nested ParentJobID = %q, want new resumed job %q", nested.ParentJobID, res.JobID)
+	}
+	parentNested := loadShellRecord(t, restored.jobManager, nested.JobID)
+	if parentNested.ParentJobID != res.JobID {
+		t.Fatalf("forwarded nested ParentJobID = %q, want new resumed job %q", parentNested.ParentJobID, res.JobID)
+	}
+	if parentNested.ParentJobID == first.JobID {
+		t.Fatalf("forwarded nested job remained linked to old runtime-lost job %q", first.JobID)
+	}
+
+	stopOut, err := jobStopTool(context.Background(), restored, map[string]any{
+		"job_id":           res.JobID,
+		"include_children": true,
+	}, 20000)
+	if err != nil {
+		t.Fatalf("job_stop include_children on resumed job: %v", err)
+	}
+	var stop jobStopResult
+	if err := json.Unmarshal([]byte(stopOut), &stop); err != nil {
+		t.Fatalf("unmarshal job_stop: %v (output: %s)", err, stopOut)
+	}
+	if stop.JobID != res.JobID {
+		t.Fatalf("job_stop result = %+v, want resumed job %q", stop, res.JobID)
+	}
+	waitForShellDone(t, child.jobManager, nested.JobID)
+	stoppedNested := loadShellRecord(t, child.jobManager, nested.JobID)
+	if stoppedNested.Status != jobstore.StatusCancelled || stoppedNested.Reason != "stopped_by_parent" {
+		t.Fatalf("nested record after include_children = %+v, want cancelled/stopped_by_parent", stoppedNested)
 	}
 }
 
@@ -4486,4 +4610,16 @@ func lastUserMessageText(req llm.Request) string {
 		}
 	}
 	return ""
+}
+
+func findJobByDescription(t *testing.T, jm *jobManager, description string) *jobstore.JobRecord {
+	t.Helper()
+	jobs := jm.list(listFilter{IncludeNested: true})
+	for _, rec := range jobs {
+		if rec.Description == description {
+			return rec
+		}
+	}
+	t.Fatalf("jobs = %+v, want job with description %q", jobs, description)
+	return nil
 }

@@ -902,6 +902,7 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 		s.sendersWG.Done()
 		return nil, nil, nil, err
 	}
+	relinkDelegateChildToJob(sub.sess, run.rec.JobID)
 	resetSubagentForRunLockedFromWatch(sub, runCancel, resumeTime, fromWatch)
 	done := sub.done
 	sub.mu.Unlock()
@@ -913,6 +914,16 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 	}()
 	s.launchSubagentRun(runCtx, sub, runCancel, message, fromWatch)
 	return run, finalizeErr, nil, nil
+}
+
+func relinkDelegateChildToJob(child *Session, jobID string) {
+	if child == nil {
+		return
+	}
+	child.cfg.spawn.parentJobID = jobID
+	if child.jobManager != nil {
+		child.jobManager.parentJobID = jobID
+	}
 }
 
 func sendMessageFailed(target string, err error) sendMessageResult {
