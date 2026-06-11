@@ -2309,3 +2309,58 @@ func TestStrictChildTranscriptRejectsMalformedHeaderShape(t *testing.T) {
 		})
 	}
 }
+
+func setStrictTranscriptMaxLineBytesForTest(limit int) func() {
+	previous := strictTranscriptMaxLineBytes
+	strictTranscriptMaxLineBytes = limit
+	return func() {
+		strictTranscriptMaxLineBytes = previous
+	}
+}
+
+func TestStrictChildTranscriptRejectsOversizedHeaderLine(t *testing.T) {
+	restore := setStrictTranscriptMaxLineBytesForTest(64)
+	defer restore()
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", 65)+"\n"), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	if _, err := readStrictChildTranscript(path, "child-session"); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
+		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
+	}
+}
+
+func TestStrictChildTranscriptRejectsOversizedBodyLine(t *testing.T) {
+	restore := setStrictTranscriptMaxLineBytesForTest(64)
+	defer restore()
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{
+		SessionID: "child-session",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open transcript for append: %v", err)
+	}
+	if _, err := f.WriteString(strings.Repeat("x", 65) + "\n"); err != nil {
+		t.Fatalf("append oversized line: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close append handle: %v", err)
+	}
+
+	if _, err := readStrictChildTranscript(path, "child-session"); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
+		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
+	}
+	_, _, _, err = readTranscript(path)
+	if err != nil {
+		t.Fatalf("lenient readTranscript changed behavior: %v", err)
+	}
+}

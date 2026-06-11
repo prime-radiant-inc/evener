@@ -287,6 +287,15 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 			wantReason: "corrupt_child_transcript",
 		},
 		{
+			name: "oversized transcript line",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				restoreLimit := setStrictTranscriptMaxLineBytesForTest(512)
+				t.Cleanup(restoreLimit)
+				appendChildTranscript(t, s, rec, "\n"+strings.Repeat("x", 513)+"\n")
+			},
+			wantReason: "corrupt_child_transcript",
+		},
+		{
 			name: "session mismatch",
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
 				writeChildTranscript(t, s, rec, []byte(`{"kind":"header","format_version":1,"session_id":"other"}`+"\n"))
@@ -346,6 +355,15 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
 				rec.DelegateRestore.ResolvedProfileID = "openai"
 				rec.DelegateRestore.ResolvedModel = ""
+				replaceStoredDelegateRecord(t, s, rec)
+			},
+			wantReason: "profile_unavailable",
+		},
+		{
+			name: "descriptor model without profile id",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore.ResolvedProfileID = ""
+				rec.DelegateRestore.ResolvedModel = "gpt-5.2"
 				replaceStoredDelegateRecord(t, s, rec)
 			},
 			wantReason: "profile_unavailable",

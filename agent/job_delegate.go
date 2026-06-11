@@ -435,9 +435,6 @@ func (s *Session) resolveDelegateRestoreProfile(meta schema.SessionMeta, desc *j
 		if profileID != "" && model != "" {
 			return s.resolveDelegateRestoreProfileRef(base, profileID, model)
 		}
-		if model != "" {
-			return s.resolveDelegateRestoreModelRef(base, model)
-		}
 		return nil, errors.New("delegate restore descriptor missing resolved model")
 	}
 	return nil, errors.New("delegate restore descriptor missing resolved profile")
@@ -462,17 +459,6 @@ func (s *Session) resolveDelegateRestoreProfileRef(base *provider.Profile, profi
 		return nil, fmt.Errorf("profile %q unavailable", ref)
 	}
 	return base.WithModel(model), nil
-}
-
-func (s *Session) resolveDelegateRestoreModelRef(base *provider.Profile, ref string) (*provider.Profile, error) {
-	resolved, crossProvider, err := s.resolveProfileForRef(base, ref)
-	if err != nil {
-		return nil, err
-	}
-	if crossProvider {
-		resolved = resolved.WithCommunicateOverridesFrom(base)
-	}
-	return resolved, nil
 }
 
 func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID string, preflight *delegateRestorePreflight) (*subagent, error) {

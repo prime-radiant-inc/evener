@@ -2157,6 +2157,15 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 			want: "target_not_resumable:profile_unavailable",
 		},
 		{
+			name: "descriptor model without profile id",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore.ResolvedProfileID = ""
+				rec.DelegateRestore.ResolvedModel = "gpt-5.2"
+				replaceStoredDelegateRecord(t, s, rec)
+			},
+			want: "target_not_resumable:profile_unavailable",
+		},
+		{
 			name: "descriptor missing resolved profile fields",
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
 				rec.DelegateRestore.ResolvedProfileID = ""

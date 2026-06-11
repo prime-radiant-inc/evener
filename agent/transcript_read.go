@@ -15,6 +15,8 @@ import (
 
 const transcriptJSONLMaxLineBytes = 128 << 20
 
+var strictTranscriptMaxLineBytes = transcriptJSONLMaxLineBytes
+
 // readTranscript reads a transcript JSONL file, returning the header, all valid entries,
 // and the count of skipped (corrupt/partial) lines. Callers can use the skipped count
 // to decide whether to warn about data loss from crash recovery.
@@ -165,10 +167,13 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 	defer func() { _ = f.Close() }()
 
 	reader := bufio.NewReaderSize(f, 64*1024)
-	headerLine, err := reader.ReadBytes('\n')
+	headerLine, err := readStrictTranscriptLine(reader)
 	if err != nil && !(errors.Is(err, io.EOF) && len(headerLine) > 0) {
 		if errors.Is(err, io.EOF) {
 			return transcriptData{}, fmt.Errorf("%w: transcript file is empty", errStrictChildTranscriptCorrupt)
+		}
+		if errors.Is(err, errStrictChildTranscriptCorrupt) {
+			return transcriptData{}, err
 		}
 		return transcriptData{}, fmt.Errorf("reading transcript header: %w", err)
 	}
@@ -182,8 +187,11 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 	}
 
 	for {
-		line, readErr := reader.ReadBytes('\n')
+		line, readErr := readStrictTranscriptLine(reader)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			if errors.Is(readErr, errStrictChildTranscriptCorrupt) {
+				return transcriptData{}, readErr
+			}
 			return transcriptData{}, fmt.Errorf("reading transcript: %w", readErr)
 		}
 		if len(line) == 0 && errors.Is(readErr, io.EOF) {
@@ -244,6 +252,21 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 		return transcriptData{}, fmt.Errorf("%w: header session %q does not match %q", errStrictChildTranscriptSessionMismatch, data.Header.SessionID, expectedSessionID)
 	}
 	return data, nil
+}
+
+func readStrictTranscriptLine(reader *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(line)+len(fragment) > strictTranscriptMaxLineBytes {
+			return nil, fmt.Errorf("%w: transcript line exceeds %d bytes", errStrictChildTranscriptCorrupt, strictTranscriptMaxLineBytes)
+		}
+		line = append(line, fragment...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return line, err
+	}
 }
 
 // ResumeHistory extracts the history needed for session resume from transcript entries.
