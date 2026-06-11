@@ -2422,6 +2422,97 @@ func TestJobSendMessageReconstructsRestoredDelegateRuntimeFromDescriptor(t *test
 	}
 }
 
+func TestReconstructDelegateRuntimeCollisionReusesTrackedChild(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	childID := rec.DelegateRestore.ChildSessionID
+
+	first, err := s.restoreTerminalDelegateChild(rec, childID, nil)
+	if err != nil {
+		t.Fatalf("first restoreTerminalDelegateChild: %v", err)
+	}
+	second, err := s.restoreTerminalDelegateChild(rec, childID, nil)
+	if err != nil {
+		t.Fatalf("second restoreTerminalDelegateChild: %v", err)
+	}
+
+	if second != first {
+		t.Fatalf("second reconstruction returned %p, want existing tracked child %p", second, first)
+	}
+	if got := s.subagents.get(childID); got != first {
+		t.Fatalf("tracked child = %p, want original reconstructed child %p", got, first)
+	}
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("adapter requests = %+v, want no model calls during reconstruction", requests)
+	}
+}
+
+func TestJobSendMessageReconstructsDelegateFrozenSkills(t *testing.T) {
+	var request llm.Request
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				request = req
+				return communicateWithDefaultOutput("restored skill complete")
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	childID := rec.DelegateRestore.ChildSessionID
+	childWorkDir := t.TempDir()
+	skillDir := filepath.Join(childWorkDir, "skills", "review-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	const skillBody = "Use the frozen reviewer checklist before responding."
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: review-skill\ndescription: Review guidance\n---\n"+skillBody+"\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	rec.DelegateRestore.WorkingDir = childWorkDir
+	rec.DelegateRestore.FrozenSkillNames = []string{"review-skill"}
+	replaceStoredDelegateRecord(t, s, rec)
+	parentMeta := s.Meta()
+	stateDir := s.stateDir
+	s.Close()
+
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), parentMeta, RestoreSessionConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+
+	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         rec.JobID,
+		Message:        "continue with the checklist",
+		Background:     false,
+		BackgroundSet:  true,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+
+	sub := restored.subagents.get(childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("reconstructed child runtime = %+v, want retained child session", sub)
+	}
+	if bodies := sub.sess.cfg.spawn.activatedSkillBodies; len(bodies) != 1 || !strings.Contains(bodies[0], skillBody) {
+		t.Fatalf("activated skill bodies = %#v, want frozen review-skill body", bodies)
+	}
+	if !requestMessagesContain(request, skillBody) {
+		t.Fatalf("first restored request missing frozen skill body %q: %+v", skillBody, request.Messages)
+	}
+}
+
 func TestFailedPreflightDoesNotReconstructDelegateRuntime(t *testing.T) {
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()

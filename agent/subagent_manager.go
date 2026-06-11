@@ -50,6 +50,19 @@ func (m *subagentManager) track(sub *subagent) {
 	m.subs[sub.id] = sub
 }
 
+// trackIfAbsent registers sub unless another runtime already owns that child id.
+// The existing runtime is returned on collision; callers close the rejected
+// candidate outside the manager lock.
+func (m *subagentManager) trackIfAbsent(sub *subagent) (*subagent, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing := m.subs[sub.id]; existing != nil {
+		return existing, false
+	}
+	m.subs[sub.id] = sub
+	return sub, true
+}
+
 // get returns the subagent for id, or nil if absent. This is the single locked
 // accessor for child lookup; both the agent-management tools and the send_input
 // handler route through it so the read is always under the manager mutex.

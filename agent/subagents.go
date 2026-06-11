@@ -257,6 +257,31 @@ func subagentNeedsCommunicateNudge(agent *plugin.Agent) bool {
 	return agent.PluginName == "builtin" && agent.Name == "subagent"
 }
 
+func (s *Session) restoreFrozenSkillBodies(env execenv.ExecutionEnvironment, skillNames []string) ([]string, error) {
+	if len(skillNames) == 0 {
+		return nil, nil
+	}
+	skills := make(map[string]skill.SkillMeta, len(s.skills))
+	for name, meta := range s.skills {
+		skills[name] = meta
+	}
+	for name, meta := range skill.DiscoverSkills(env, s.cfg.SkillsDirs...) {
+		skills[name] = meta
+	}
+	var bodies []string
+	for _, skillName := range skillNames {
+		body, err := skill.ResolveSkillContent(skills, skillName)
+		if err != nil {
+			return nil, fmt.Errorf("restore frozen skill %q: %w", skillName, err)
+		}
+		if strings.TrimSpace(body) == "" {
+			return nil, fmt.Errorf("restore frozen skill %q: skill body unavailable", skillName)
+		}
+		bodies = append(bodies, body)
+	}
+	return bodies, nil
+}
+
 func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []taskpkg.TaskTemplate, grantTools []string) (any, error) {
 	prepared, err := s.prepareSubagentRun(ctx, task, model, workingDir, maxTurns, agentType, reasoningEffort, parentTasks, grantTools)
 	if err != nil {

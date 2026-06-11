@@ -501,6 +501,10 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 	if err != nil {
 		return nil, err
 	}
+	activatedSkillBodies, err := s.restoreFrozenSkillBodies(childEnv, desc.FrozenSkillNames)
+	if err != nil {
+		return nil, err
+	}
 	restoreCfg := RestoreSessionConfig{
 		StateDir:       s.stateDir,
 		ResolveProfile: s.resolveProfile,
@@ -516,6 +520,7 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 			subagentTask:            desc.Task,
 			depth:                   s.depth + 1,
 			rolePromptOverride:      desc.FrozenRolePrompt,
+			activatedSkillBodies:    activatedSkillBodies,
 			allowedToolNames:        restoredDelegateAllowedTools(desc),
 			communicateOutputSchema: cloneMap(resultSchema),
 		},
@@ -541,8 +546,15 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 		startedAt:    now,
 		endedAt:      &now,
 	}
-	s.subagents.track(sub)
-	return sub, nil
+	tracked, inserted := s.subagents.trackIfAbsent(sub)
+	if !inserted {
+		child.Close()
+		if tracked == nil || tracked.sess == nil {
+			return nil, errors.New("delegate session collision with unavailable retained runtime")
+		}
+		return tracked, nil
+	}
+	return tracked, nil
 }
 
 func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestoreDescriptor) (execenv.ExecutionEnvironment, error) {
