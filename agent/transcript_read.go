@@ -159,6 +159,9 @@ func readStrictChildTranscript(path, expectedSessionID string) (transcriptData, 
 	if err := json.Unmarshal(raw[:headerEnd], &data.Header); err != nil {
 		return transcriptData{}, fmt.Errorf("corrupt_child_transcript: parsing transcript header: %w", err)
 	}
+	if data.Header.Kind != "header" {
+		return transcriptData{}, fmt.Errorf("corrupt_child_transcript: transcript header kind %q", data.Header.Kind)
+	}
 	if data.Header.SessionID != expectedSessionID {
 		return transcriptData{}, fmt.Errorf("transcript_session_mismatch: header session %q does not match %q", data.Header.SessionID, expectedSessionID)
 	}

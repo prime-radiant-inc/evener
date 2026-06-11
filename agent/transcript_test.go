@@ -2244,3 +2244,33 @@ func TestStrictChildTranscriptSessionMismatch(t *testing.T) {
 		t.Fatalf("strict read error = %v, want transcript_session_mismatch", err)
 	}
 }
+
+func TestStrictChildTranscriptRejectsMalformedHeaderShape(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		line string
+	}{
+		{
+			name: "missing kind",
+			line: `{"session_id":"child-session","format_version":1}`,
+		},
+		{
+			name: "wrong kind",
+			line: `{"kind":"entry","session_id":"child-session","format_version":1}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "transcript.jsonl")
+			if err := os.WriteFile(path, []byte(tc.line+"\n"), 0o644); err != nil {
+				t.Fatalf("write transcript: %v", err)
+			}
+
+			if _, err := readStrictChildTranscript(path, "child-session"); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
+				t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
+			}
+			if _, _, _, err := readTranscript(path); err != nil {
+				t.Fatalf("lenient readTranscript changed behavior: %v", err)
+			}
+		})
+	}
+}

@@ -399,18 +399,45 @@ func (s *Session) resolveDelegateRestoreProfile(meta schema.SessionMeta, desc *j
 	if s == nil || s.profile == nil {
 		return nil, errors.New("profile unavailable")
 	}
-	ref := strings.TrimSpace(meta.Model)
-	if ref == "" && desc != nil {
-		ref = strings.TrimSpace(desc.ResolvedModel)
-	}
-	if desc != nil && strings.TrimSpace(desc.ResolvedProfileID) != "" && strings.TrimSpace(desc.ResolvedModel) != "" {
-		if desc.ResolvedProfileID != s.profile.ID() {
-			ref = strings.TrimSpace(desc.ResolvedProfileID) + "/" + strings.TrimSpace(desc.ResolvedModel)
+	if desc != nil {
+		profileID := strings.TrimSpace(desc.ResolvedProfileID)
+		model := strings.TrimSpace(desc.ResolvedModel)
+		if profileID != "" && model != "" {
+			return s.resolveDelegateRestoreProfileRef(profileID, model)
+		}
+		if model != "" {
+			return s.resolveDelegateRestoreModelRef(model)
 		}
 	}
+	ref := strings.TrimSpace(meta.Model)
 	if ref == "" {
 		return s.profile, nil
 	}
+	return s.resolveDelegateRestoreModelRef(ref)
+}
+
+func (s *Session) resolveDelegateRestoreProfileRef(profileID, model string) (*provider.Profile, error) {
+	ref := profileID + "/" + model
+	if s.resolveProfile != nil {
+		resolved, err := s.resolveProfile(ref)
+		if err != nil {
+			return nil, err
+		}
+		if resolved == nil {
+			return nil, fmt.Errorf("profile %q unavailable", ref)
+		}
+		if resolved.ID() != s.profile.ID() {
+			resolved = resolved.WithCommunicateOverridesFrom(s.profile)
+		}
+		return resolved, nil
+	}
+	if profileID != s.profile.ID() {
+		return nil, fmt.Errorf("profile %q unavailable", ref)
+	}
+	return s.profile.WithModel(model), nil
+}
+
+func (s *Session) resolveDelegateRestoreModelRef(ref string) (*provider.Profile, error) {
 	resolved, crossProvider, err := s.resolveProfileForRef(s.profile, ref)
 	if err != nil {
 		return nil, err

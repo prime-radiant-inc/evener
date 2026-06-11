@@ -249,9 +249,16 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 		{
 			name: "session mismatch",
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
-				writeChildTranscript(t, s, rec, []byte(`{"session_id":"other"}`+"\n"))
+				writeChildTranscript(t, s, rec, []byte(`{"kind":"header","format_version":1,"session_id":"other"}`+"\n"))
 			},
 			wantReason: "transcript_session_mismatch",
+		},
+		{
+			name: "corrupt transcript header shape",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				writeChildTranscript(t, s, rec, []byte(fmt.Sprintf(`{"session_id":%q}`+"\n", rec.DelegateRestore.ChildSessionID)))
+			},
+			wantReason: "corrupt_child_transcript",
 		},
 		{
 			name: "busy child",
@@ -276,6 +283,18 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 				if err := schema.SaveSessionMeta(s.stateDir, meta); err != nil {
 					t.Fatalf("save child meta: %v", err)
 				}
+				s.resolveProfile = func(ref string) (*provider.Profile, error) {
+					return nil, fmt.Errorf("no profile for %s", ref)
+				}
+			},
+			wantReason: "profile_unavailable",
+		},
+		{
+			name: "descriptor profile unavailable while meta model valid",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore.ResolvedProfileID = "openai"
+				rec.DelegateRestore.ResolvedModel = "stale-model"
+				replaceStoredDelegateRecord(t, s, rec)
 				s.resolveProfile = func(ref string) (*provider.Profile, error) {
 					return nil, fmt.Errorf("no profile for %s", ref)
 				}
