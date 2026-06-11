@@ -317,9 +317,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
-	if err := jm.reconcileLostJobs(); err != nil {
-		return nil, fmt.Errorf("job reconcile: %w", err)
-	}
 	jm.forward = cfg.spawn.forwardJobEvent
 	jm.parentJobID = cfg.spawn.parentJobID
 	jm.enqueue = s.enqueueJobNotificationAndNotify
@@ -327,6 +324,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	jm.emit = s.emit
 	s.jobManager = jm
 	if !restoreCfg.deferRestoreSideEffects {
+		if err := jm.reconcileLostJobs(); err != nil {
+			return nil, fmt.Errorf("job reconcile: %w", err)
+		}
 		if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
 			return nil, fmt.Errorf("watch send retry: %w", err)
 		}
@@ -714,6 +714,9 @@ func (s *Session) runSessionStartHooks(sessionStartKind plugin.SessionStartKind)
 func (s *Session) runDeferredRestoreSideEffects() error {
 	if s == nil || s.jobManager == nil {
 		return nil
+	}
+	if err := s.jobManager.reconcileLostJobs(); err != nil {
+		return fmt.Errorf("job reconcile: %w", err)
 	}
 	if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
 		return fmt.Errorf("watch send retry: %w", err)

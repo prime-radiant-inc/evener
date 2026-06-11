@@ -2784,6 +2784,68 @@ func TestReconstructDelegateChildRegistryMismatchDoesNotRunRestoreSideEffects(t 
 	}
 }
 
+func TestReconstructDelegateChildRegistryMismatchDoesNotReconcileChildJobs(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	if err := s.reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Name:        "parent_only_tool",
+			Description: "registered only on the parent test session",
+		}},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("register parent-only tool: %v", err)
+	}
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	childID := rec.DelegateRestore.ChildSessionID
+	rec.DelegateRestore.FrozenToolNames = []string{"parent_only_tool"}
+	replaceStoredDelegateRecord(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	startedAt := time.Unix(3600, 0).UTC()
+	appendSessionJobEvents(t, s.stateDir, childID, jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            "job_child_nested_running",
+		Type:             jobstore.JobShell,
+		Command:          "sleep 999",
+		Description:      "nested child job that must not reconcile on failed reconstruction",
+		OwnerSessionID:   childID,
+		VisibleToSession: childID,
+		StartedAt:        &startedAt,
+	})
+	beforeChildEvents := loadSessionJobStoreEvents(t, s.stateDir, childID)
+
+	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  rec.JobID,
+		Message: "resume",
+	})
+
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "parent_only_tool") {
+		t.Fatalf("error = %v, want parent_only_tool failure", res.Err)
+	}
+	afterChildEvents := loadSessionJobStoreEvents(t, s.stateDir, childID)
+	if len(afterChildEvents) != len(beforeChildEvents) {
+		t.Fatalf("child jobstore event count = %d, want unchanged %d; events = %+v", len(afterChildEvents), len(beforeChildEvents), afterChildEvents)
+	}
+	for _, event := range afterChildEvents {
+		if event.JobID == "job_child_nested_running" && (event.Kind == jobstore.EventJobFinished || event.Kind == jobstore.EventJobNotificationPending) {
+			t.Fatalf("failed reconstruction reconciled nested child job: %+v", event)
+		}
+	}
+	if sub := s.subagents.get(childID); sub != nil {
+		t.Fatalf("retained child runtime = %+v, want none after child registry validation failure", sub)
+	}
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("adapter requests = %+v, want none", requests)
+	}
+}
+
 func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T) {
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
@@ -2911,6 +2973,55 @@ func TestDelegateReconstructionRacingParentCloseDoesNotTrackOrRunSideEffects(t *
 	}
 	if got := len(loadJobStoreEvents(t, s.jobManager)); got != beforeParentEvents {
 		t.Fatalf("parent jobstore event count = %d, want unchanged %d", got, beforeParentEvents)
+	}
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("adapter requests = %+v, want none", requests)
+	}
+}
+
+func TestDelegateReconstructionParentCloseBeforeDeferredSideEffectsDoesNotRunThem(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	childID := rec.DelegateRestore.ChildSessionID
+	now := time.Unix(3700, 0).UTC()
+	appendSessionJobEvents(t, s.stateDir, childID, restoredWatchSendPendingEvents(childID, "job_child_observed", "caller", now)...)
+	beforeChildEvents := len(loadSessionJobStoreEvents(t, s.stateDir, childID))
+	beforeParentEvents := len(loadJobStoreEvents(t, s.jobManager))
+	pauseReached := false
+	s.delegateRestoreBeforeSideEffects = func(child *Session) {
+		pauseReached = true
+		if drained := s.subagents.drainForClose(); len(drained) != 1 || drained[0].sess != child {
+			t.Fatalf("drained subagents = %+v, want reconstructed child", drained)
+		}
+	}
+
+	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  rec.JobID,
+		Message: "resume while parent closes before side effects",
+	})
+
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "session is closed") {
+		t.Fatalf("sendDelegateMessage error = %v, want session is closed", res.Err)
+	}
+	if !pauseReached {
+		t.Fatal("test did not reach deferred side-effect pause")
+	}
+	if got := len(loadSessionJobStoreEvents(t, s.stateDir, childID)); got != beforeChildEvents {
+		t.Fatalf("child jobstore event count = %d, want unchanged %d", got, beforeChildEvents)
+	}
+	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 0 {
+		t.Fatalf("parent watch-frame steering deliveries = %d, want 0; queue = %+v", got, s.SteeringQueueSnapshot())
+	}
+	if got := len(loadJobStoreEvents(t, s.jobManager)); got != beforeParentEvents {
+		t.Fatalf("parent jobstore event count = %d, want unchanged %d", got, beforeParentEvents)
+	}
+	if sub := s.subagents.get(childID); sub != nil {
+		t.Fatalf("retained child runtime after parent close race = %+v, want none", sub)
 	}
 	if requests := adapter.Requests(); len(requests) != 0 {
 		t.Fatalf("adapter requests = %+v, want none", requests)

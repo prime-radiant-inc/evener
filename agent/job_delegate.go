@@ -589,10 +589,15 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 		}
 		return tracked, nil
 	}
-	if err := s.subagents.allowReconstructionSideEffects(childID, sub); err != nil {
+	if s.delegateRestoreBeforeSideEffects != nil {
+		s.delegateRestoreBeforeSideEffects(child)
+	}
+	endSideEffects, err := s.subagents.beginReconstructionSideEffects(childID, sub)
+	if err != nil {
 		child.discardRestoredCandidate()
 		return nil, err
 	}
+	defer endSideEffects()
 	if err := child.runDeferredRestoreSideEffects(); err != nil {
 		s.subagents.remove(childID)
 		child.close(false)

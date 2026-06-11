@@ -90,6 +90,7 @@ func (s *Session) close(cleanupEnv bool) {
 		subs := s.subagents.drainForClose()
 		s.mu.Unlock()
 		s.responseSideEffectsMu.Unlock()
+		s.subagents.waitForReconstructionSideEffects()
 
 		// Spec Appendix B graceful shutdown ordering:
 		// 1. Cancel in-flight LLM calls.

@@ -21,11 +21,13 @@ import (
 // manager mutex is never held while calling into a child's *Session (e.g.
 // sub.sess.Close()), which would deadlock against the child's own locking.
 type subagentManager struct {
-	mu             sync.Mutex
-	subs           map[string]*subagent
-	reconstructing map[string]*subagentReconstruction
-	closing        bool
-	emit           func(events.EventKind, events.EventData)
+	mu                       sync.Mutex
+	subs                     map[string]*subagent
+	reconstructing           map[string]*subagentReconstruction
+	closing                  bool
+	activeRestoreSideEffects int
+	restoreSideEffectsCond   *sync.Cond
+	emit                     func(events.EventKind, events.EventData)
 	// maxRetainedTerminal bounds how many terminal records (completed|failed|
 	// cancelled) the manager retains per parent; a closed record still counts until
 	// reclaimed. Enforced at spawn time via reserveSlot, which GCs reclaimable
@@ -41,12 +43,14 @@ var errSubagentManagerClosing = errors.New("session is closed")
 // newSubagentManager creates a manager that captures the parent session's emit
 // closure for forwarding subagent lifecycle events.
 func newSubagentManager(emit func(events.EventKind, events.EventData)) *subagentManager {
-	return &subagentManager{
+	m := &subagentManager{
 		subs:                map[string]*subagent{},
 		reconstructing:      map[string]*subagentReconstruction{},
 		emit:                emit,
 		maxRetainedTerminal: defaultMaxRetainedTerminal,
 	}
+	m.restoreSideEffectsCond = sync.NewCond(&m.mu)
+	return m
 }
 
 type subagentReconstruction struct {
@@ -111,16 +115,32 @@ func (m *subagentManager) trackIfAbsent(sub *subagent) (*subagent, bool, error) 
 	return sub, true, nil
 }
 
-func (m *subagentManager) allowReconstructionSideEffects(childID string, sub *subagent) error {
+func (m *subagentManager) beginReconstructionSideEffects(childID string, sub *subagent) (func(), error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closing {
 		if m.subs[childID] == sub {
 			delete(m.subs, childID)
 		}
-		return errSubagentManagerClosing
+		return nil, errSubagentManagerClosing
 	}
-	return nil
+	m.activeRestoreSideEffects++
+	return func() {
+		m.mu.Lock()
+		m.activeRestoreSideEffects--
+		if m.activeRestoreSideEffects == 0 {
+			m.restoreSideEffectsCond.Broadcast()
+		}
+		m.mu.Unlock()
+	}, nil
+}
+
+func (m *subagentManager) waitForReconstructionSideEffects() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for m.activeRestoreSideEffects > 0 {
+		m.restoreSideEffectsCond.Wait()
+	}
 }
 
 // get returns the subagent for id, or nil if absent. This is the single locked
