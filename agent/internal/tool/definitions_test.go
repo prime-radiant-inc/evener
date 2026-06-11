@@ -62,6 +62,16 @@ func TestDefDelegateNoEnumWhenNoTypes(t *testing.T) {
 	}
 }
 
+func TestDefDelegateResultSchemaDescriptionIncludesResumeFailureShape(t *testing.T) {
+	props := DefDelegate(nil).Parameters["properties"].(map[string]any)
+	desc := props["result_schema"].(map[string]any)["description"].(string)
+	for _, want := range []string{"resumed", "structured_result", "structured_result_reason"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("result_schema description = %q, want %q", desc, want)
+		}
+	}
+}
+
 func TestDefJobSendMessageParams(t *testing.T) {
 	def := DefJobSendMessage()
 	if def.Name != "job_send_message" {
@@ -84,6 +94,21 @@ func TestDefJobSendMessageParams(t *testing.T) {
 	}
 }
 
+func TestDefJobSendMessageDescriptionKeepsWatchedContextual(t *testing.T) {
+	def := DefJobSendMessage()
+	props := def.Parameters["properties"].(map[string]any)
+	targetDesc := props["target"].(map[string]any)["description"].(string)
+	combined := def.Description + "\n" + targetDesc
+	for _, want := range []string{"caller", "watched", "concrete watch"} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("job_send_message description = %q, want %q", combined, want)
+		}
+	}
+	if strings.Contains(combined, "main") {
+		t.Fatalf("job_send_message description must not mention main: %q", combined)
+	}
+}
+
 func TestDefJobWatchParamsAndKinds(t *testing.T) {
 	def := DefJobWatch([]string{"assistant.message", "job.notification"})
 	if def.Name != "job_watch" {
@@ -102,6 +127,24 @@ func TestDefJobWatchParamsAndKinds(t *testing.T) {
 	// The available event kinds are interpolated into the description.
 	if !strings.Contains(def.Description, "assistant.message") || !strings.Contains(def.Description, "job.notification") {
 		t.Errorf("description must enumerate the available event kinds:\n%s", def.Description)
+	}
+}
+
+func TestDefJobWatchDescriptionIncludesSendRetryContract(t *testing.T) {
+	def := DefJobWatch([]string{"assistant.message"})
+	if !strings.Contains(def.Description, "coalesce") || !strings.Contains(def.Description, "retry busy") {
+		t.Fatalf("job_watch description must mention coalescing and retry:\n%s", def.Description)
+	}
+	props := def.Parameters["properties"].(map[string]any)
+	sendProps := props["send"].(map[string]any)["properties"].(map[string]any)
+	toDesc := sendProps["to"].(map[string]any)["description"].(string)
+	for _, want := range []string{"caller", "watched", "concrete watched"} {
+		if !strings.Contains(toDesc, want) {
+			t.Fatalf("send.to description = %q, want %q", toDesc, want)
+		}
+	}
+	if strings.Contains(toDesc, "main") {
+		t.Fatalf("send.to description must not mention main: %q", toDesc)
 	}
 }
 

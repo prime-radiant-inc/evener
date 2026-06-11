@@ -129,7 +129,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 				"block_timeout_ms": map[string]any{"type": "integer", "description": "Foreground wait bound when background=false. A timeout leaves the job running."},
 				"result_schema": map[string]any{
 					"type":                 "object",
-					"description":          "JSON-Schema-like object for a structured result. Becomes the delegate's structured communicate output; Serf validates it and surfaces structured_result.",
+					"description":          "JSON-Schema-like object for structured delegate results. Serf validates it for initial and resumed turns, surfaces structured_result when valid, and reports structured_result_reason when invalid.",
 					"additionalProperties": true,
 				},
 			},
@@ -147,12 +147,12 @@ func DefJobSendMessage() llm.ToolDefinition {
 			"message steers the live run; if it has finished, Serf resumes the same conversation as a new " +
 			"job and returns the new `job_id`. Set `on_finished=\"fail\"` to require a live target — if the " +
 			"delegate has already finished, the call then fails (`target_terminal`) instead of resuming. " +
-			"The same tool delivers observer commentary to a session alias (`caller`, `watched`).",
+			"The same tool delivers observer commentary to `caller`, or to `watched` only from a concrete watch-delivery context.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"target":  map[string]any{"type": "string", "description": "A delegate job_id, or a session alias: caller | watched."},
+				"target":  map[string]any{"type": "string", "description": "A delegate job_id, `caller`, or contextual `watched` from concrete watch delivery."},
 				"message": map[string]any{"type": "string"},
 				"on_finished": map[string]any{
 					"type":        "string",
@@ -180,7 +180,8 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"such as an observer delegate. Triggers: `output_match`, a regex over output produced while " +
 		"the watch is active; `progress_interval_ms`, periodic; or `events`/`trigger`, selected " +
 		"session/job event frames (kinds available this session: " + kinds + ", or `*`). This is not how you " +
-		"learn a job finished — terminal notifications are automatic. Pass `clear=true` to remove a watch."
+		"learn a job finished — terminal notifications are automatic. Send deliveries coalesce by watch key " +
+		"and retry busy delegates. Pass `clear=true` to remove a watch."
 	return llm.ToolDefinition{
 		Name:        "job_watch",
 		Description: desc,
@@ -210,7 +211,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 					"additionalProperties": false,
 					"description":          "Deliver to another target instead of notifying the caller.",
 					"properties": map[string]any{
-						"to":              map[string]any{"type": "string", "description": "job_id or alias: caller | watched."},
+						"to":              map[string]any{"type": "string", "description": "job_id, `caller`, or contextual `watched` for the concrete watched target."},
 						"message":         map[string]any{"type": "string"},
 						"include_frame":   map[string]any{"type": "boolean"},
 						"include_excerpt": map[string]any{"type": "boolean"},

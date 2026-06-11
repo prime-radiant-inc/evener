@@ -87,7 +87,7 @@ The lifecycle/output/notification contract is generic enough for future job type
 6. **No model-facing ack.** Retention is automatic and policy-based.
 7. **No model-facing kill.** `job_stop` is the single model-facing stop primitive; forceful cleanup is an implementation detail when needed.
 8. **No automatic process resume after restart.** Durable job history survives; running processes do not have to. Serf must notify when a previously running job is discovered stopped/lost after restart.
-9. **Nested shell jobs are supported.** Subagents may start shell jobs. Nested delegate jobs are a future extension on the same parent-job machinery. Until nested delegate jobs are supported, observer sidecars should not themselves delegate unless explicitly configured/exempted by the implementation.
+9. **Nested shell jobs are supported.** Subagents may start shell jobs. Nested delegate jobs are a future extension on the same parent-job machinery. Until nested delegate jobs are supported, observer sidecars should not themselves delegate.
 10. **Delegate creation and follow-up are separate.** `delegate` starts a new delegate conversation; `job_send_message` follows up on an existing delegate job/session.
 11. **Watches can send messages.** `job_watch` defines conditions over output/events/progress; when a condition is met it may notify the caller or send a configured message/frame to a messageable target.
 12. **Observers are composed, not special.** An observer is a delegate job plus a watch that sends frames to it; the observer comments back with `job_send_message`.
@@ -301,7 +301,7 @@ Defaults:
 - `delegate` does not accept `target`, `mode`, `job_id`, or `transcript_ref` for continuation.
 - With `background=false`, `block_timeout_ms` has the same foreground wait semantics and bounds as shell creation: timeout leaves the delegate job running in the background. With `background=true`, Serf returns after creating/starting the delegate job and does not wait for terminal completion.
 - Delegates have no model-facing `max_runtime_ms` in v1. Delegate runtime limits, if any, are implementation policy rather than a tool argument.
-- `result_schema`, when supplied, is a JSON Schema-like contract for the initial delegate final result. The delegate output remains readable as prose/log text, but Serf should also validate and surface a structured result when possible. Open decision: whether resumed delegate jobs inherit the original schema, and the exact guaranteed shape when validation/capture fails, is not yet part of the shipped normative contract.
+- `result_schema`, when supplied, is a JSON Schema-like contract for the initial delegate final result and for resumed turns in the same delegate conversation. The delegate output remains readable as prose/log text, and Serf validates and surfaces a structured result when possible. When validation or capture fails for a schema-backed delegate result, Serf omits `structured_result`, sets `structured_result_valid:false`, and includes a machine-readable `structured_result_reason`.
 - Delegate interaction is turn-based in this target contract. A delegate that needs more input should finish with a request for that input; the parent follows up with `job_send_message`. Mid-turn interactive input/awaiting-input notifications are not a v1 guarantee. Delegate `status="completed"` means the delegate turn ended normally; it does not assert that the requested task succeeded. Agents must inspect `output`, `structured_result`, or task-specific schema fields for task success/failure.
 
 Background return shape:
@@ -376,16 +376,16 @@ Core target resolution:
 | --- | --- |
 | `job_...` | A concrete messageable job, initially delegate jobs. |
 
-Runtime aliases are available for observer/sidecar and runtime contexts, subject to permissions: `caller` and contextual `watched`. Ordinary delegate follow-up should target a concrete `job_id`. `main` is not a v1 alias.
+Runtime targets are available for observer/sidecar and runtime contexts, subject to permissions. `caller` is the normal runtime alias for the originating caller/current session. `watched` is contextual and is valid only during concrete watch-send delivery where Serf has a unique messageable watched identity. Ordinary delegate follow-up should target a concrete `job_id`. `main` is rejected with `target_not_found`.
 
 Semantics:
 
 - If `target` identifies a running delegate job, Serf injects the message into that active run, returns the same `job_id`, and does not create another terminal notification.
 - If `target` identifies a terminal/resumable delegate job and `on_finished="resume"` or is omitted, Serf creates a new delegate job in the same delegate session, with a new `job_id`.
 - If `target` identifies a terminal delegate job and `on_finished="fail"`, the call fails synchronously with `target_terminal`. Use this for live-only nudges that must not race into a new resumed job.
-- If `target` resolves to a session alias such as `caller` or contextual `watched`, Serf injects a runtime message into that session. The message is advisory/runtime-originated unless the target's tool description says otherwise; it must not impersonate the user.
+- If `target` resolves to `caller` or to contextual `watched` in a concrete watch-send delivery context, Serf injects a runtime message into that session. The message is advisory/runtime-originated unless the target's tool description says otherwise; it must not impersonate the user.
 - If `target` is a non-messageable job such as a shell job, the call fails synchronously with `target_not_messageable`.
-- If `target` is unknown, not authorized, not resumable, terminal without resume permission, or busy, the call fails synchronously without creating a job record.
+- If `target` is unknown, not authorized, not resumable, terminal without resume permission, or busy, the call fails synchronously without creating a job record. Direct `watched` sends outside a concrete watch-send delivery context fail as `target_not_found`; `main` also fails as `target_not_found`.
 - If another job is already running in the same delegate session and the target is not that running job, the call fails synchronously with `delegate_session_busy` unless an implementation explicitly supports concurrent child turns.
 - Target state is resolved atomically at delivery time. A race between terminal/running state and the tool call is resolved by the observed state at delivery.
 - `on_finished` defaults to `resume`. Allowed values are `resume` and `fail`. The return `action` must make the outcome explicit: `sent` for live injection, `resumed` for a new delegate job in the same session, or a synchronous error such as `target_terminal`.
@@ -521,7 +521,7 @@ Trigger sources:
 Delivery modes:
 
 - If `send` is omitted, the watch produces a normal notification to the caller when the condition is met.
-- If `send` is present, Serf sends `send.message` plus the requested bounded frame/excerpt to `send.to` using `job_send_message` target-resolution and authorization semantics. Watch sends use the normal `on_finished="resume"` behavior and default to background delivery for any newly resumed delegate job.
+- If `send` is present, Serf sends `send.message` plus the requested bounded frame/excerpt to `send.to` using `job_send_message` target-resolution and authorization semantics. Watch sends use the normal `on_finished="resume"` behavior and default to background delivery for any newly resumed delegate job. If the target sidecar/delegate is busy, Serf keeps one durable latest-frame-wins pending send per watch key and retries when the target is idle or resumable.
 - `include_frame=true` attaches a bounded event frame.
 - `include_excerpt=true` attaches a bounded output excerpt for output/job watches.
 - The sent message is the current configured message at the time the watch fires.
@@ -546,6 +546,7 @@ Rules:
 - `job_watch` fails synchronously with `target_not_watchable` for targets the caller is not allowed to watch.
 - Watches expire automatically when their concrete watched job reaches terminal state. Session-level watches remain active until their configured scope ends, the session/job manager closes, or retention policy removes them.
 - Watches are not required to survive Serf process restart unless an implementation explicitly marks them durable.
+- Already-fired watch-send frames are durable until delivered, replaced by a newer frame for the same durable key, evicted by watch cleanup, or dropped with a caller-visible diagnostic on hard/non-resumable failure. The durable key includes the visible session, configured watch target, resolved watched identity, resolved send target, and watch generation.
 - `job_watch(clear=true)` is the model-facing unwatch operation; there is no separate unwatch tool.
 - There is at most one active watch configuration per `(visible_session_id, target, send.to)` unless an implementation documents additive watches. For notify-caller watches, `send.to` is the implicit caller notification endpoint. A duplicate call with the same configuration is idempotent. A different call replaces the previous configuration for that key, and the return value must make replacement explicit with `replaced_existing=true`.
 - `output_match` is a Go/RE2 regular expression over output appended while the watch is active.
@@ -555,7 +556,7 @@ Rules:
 - For bytes successfully appended while a watch is active, Serf must not silently miss a regex match because of preview-window eviction. Implementations may use line-buffered append-stream matching, chunk-overlap matching, or another mechanism, but the contract is no silent miss for retained/appended watched output.
 - Event frames and output excerpts are bounded and filtered before notification or send delivery. Implementations may apply redaction/scrubbing for cross-session or observer delivery, but this contract does not promise perfect secret detection; callers must not treat frames as guaranteed secret-free.
 - Default `progress_interval_ms` is absent/no periodic progress wake-up. If supplied, minimum is `1000`, maximum is `3600000`, and omitted/`0` means no periodic progress notification. Negative values fail `invalid_request`.
-- Match/event/progress notifications are batched/throttled. Multiple triggers may be coalesced; latest preview/frame may win if so documented, but coalescing must not turn a matched condition into silence.
+- Match/event/progress notifications are batched/throttled. Multiple triggers may be coalesced. For watch sends, coalescing is latest-frame-wins by durable key and must not turn a matched condition into silence: Serf either delivers the current pending frame, replaces it with a newer pending frame for the same key, or emits a caller-visible diagnostic for hard failure.
 - Terminal notification ordering: flush any queued watch notification/send for a concrete job, then deliver the terminal notification.
 - If no watch condition is supplied (`output_match`, `events`, `trigger`, or `progress_interval_ms`) and `clear=true` is not supplied, the tool fails because terminal notifications are automatic and there is no condition to watch.
 
@@ -658,7 +659,7 @@ It then returns current status and bytes. Timeout does not stop the job.
 
 If output metadata exists but content was pruned, `job_read_output` returns durable status plus `output_unavailable=true` and reason `retention_pruned`, rather than pretending the job does not exist.
 
-For delegate jobs, output is the parent-visible execution log for that delegate invocation. It must include the delegate's final user-facing report or terminal error/cancellation diagnostic. If the delegate invocation captured a structured result, `job_read_output` should also expose `structured_result` and `structured_result_valid` when available. It may include streamed assistant text, tool-use summaries, permission/status diagnostics, and nested job notifications. It is not the complete child transcript. Open decision: resumed delegate jobs do not yet have a normative `result_schema` inheritance or validation-failure contract.
+For delegate jobs, output is the parent-visible execution log for that delegate invocation. It must include the delegate's final user-facing report or terminal error/cancellation diagnostic. If the delegate invocation captured a valid structured result, `job_read_output` exposes `structured_result` and `structured_result_valid:true`. If a schema-backed delegate result is invalid, missing, too large to persist, or cannot be captured, `job_read_output` omits `structured_result`, sets `structured_result_valid:false`, and includes `structured_result_reason`. Resumed delegate turns inherit the original delegate conversation's `result_schema`. Delegate output may include streamed assistant text, tool-use summaries, permission/status diagnostics, and nested job notifications. It is not the complete child transcript.
 
 ### `job_list`
 
@@ -684,7 +685,7 @@ Rules:
 - `job_list` is authoritative durable inventory for the visible session. Use it to recover known jobs, find `job_id`s, inspect durable state, or include nested jobs. Do not call it repeatedly to wait for completion. For completion, rely on automatic terminal notifications; for output, call `job_read_output` once for the relevant job.
 - The owning session can list its own jobs.
 - A parent session may list nested jobs owned by delegate child sessions only when those jobs have been forwarded into parent-visible durable job records.
-- Delegate records include `transcript_ref`, `resumable`, and optional `not_resumable_reason`. `job_send_message(target=...)` uses the same resumability contract when the target delegate job is terminal. Open decision: after restart reconciliation, `stopped/runtime_lost` delegate resumability from retained transcript state alone is not part of the shipped normative contract; current Serf requires retained live child-session bookkeeping as well as transcript state.
+- Delegate records include `transcript_ref`, `resumable`, and optional `not_resumable_reason`. `job_send_message(target=...)` uses the same resumability contract when the target delegate job is terminal. After restart reconciliation, `stopped/runtime_lost` delegate jobs are resumable from retained transcript/session state when strict restore preflight passes. If required retained state is missing, pruned, inconsistent, or otherwise fails strict preflight, Serf reports the delegate as not resumable and follow-up fails synchronously with `target_not_resumable`.
 - Most agents should ignore session identity fields and use only `job_id`, `status`, `type`, `reason`, `transcript_ref`, and output metadata. Session fields are for diagnostics and nested/routed job visibility.
 
 Good inventory example:
@@ -952,7 +953,7 @@ Rules:
 
 Terminal job notifications are automatic for notification-armed jobs. A model should not need to subscribe to learn that a background job finished.
 
-A job is notification-armed if its creating tool call returned before terminal state, including shell foreground calls that timed out and were promoted to durable background jobs. A job that completed synchronously before the creating tool returned is not required to inject a duplicate terminal notification; the terminal result is already in the tool result. `job_send_message` against a running job or session alias does not arm an additional terminal notification. `job_send_message` against a terminal/resumable delegate job creates a new notification-armed delegate job. Open decision: v1 does not yet define a model-facing/private sidecar marker that would hide or reroute terminal notifications for observer sidecars; until that exists, sidecars use ordinary delegate notification semantics unless an implementation-specific policy explicitly documents otherwise.
+A job is notification-armed if its creating tool call returned before terminal state, including shell foreground calls that timed out and were promoted to durable background jobs. A job that completed synchronously before the creating tool returned is not required to inject a duplicate terminal notification; the terminal result is already in the tool result. `job_send_message` against a running job or session alias does not arm an additional terminal notification. `job_send_message` against a terminal/resumable delegate job creates a new notification-armed delegate job. V1 sidecars are ordinary delegate jobs for public semantics and notification behavior; Serf keeps only internal watch-origin bookkeeping for frame routing and feedback-loop suppression.
 
 Notification example:
 
@@ -1011,6 +1012,8 @@ This is not command failure. It is supervision loss.
 
 Parent-visible forwarded nested jobs follow the same reconciliation rule: if the visible record says `running` and the owner runtime is absent after restore, Serf finalizes the parent-visible job exactly once as `stopped/runtime_lost` using the same parent-visible `job_id` and terminal notification dedupe key. Restart loss is never reported as job failure; active control attempts whose owner runtime is believed live but cannot route/control the job fail synchronously with `not_controllable`.
 
+Delegate jobs finalized as `stopped/runtime_lost` are not automatically resumed by restart reconciliation. They remain resumable through `job_send_message` when retained transcript/session state is present and strict restore preflight can reconstruct the delegate conversation safely. Missing or pruned retained state makes the delegate not resumable instead of triggering a best-effort replay.
+
 ```mermaid
 stateDiagram-v2
     [*] --> Reconstruct: restore session
@@ -1025,7 +1028,7 @@ stateDiagram-v2
 
 ## Nested jobs
 
-Subagents must be able to start shell jobs. Nested delegate jobs are a future extension on the same parent-job machinery. Until nested delegate jobs are supported, observer sidecars should not themselves delegate unless explicitly configured/exempted by the implementation.
+Subagents must be able to start shell jobs. Nested delegate jobs are a future extension on the same parent-job machinery. Until nested delegate jobs are supported, observer sidecars should not themselves delegate.
 
 Nested jobs use `parent_job_id` rather than a separate control plane.
 
@@ -1073,9 +1076,9 @@ flowchart TD
 
 ## Observer and sidecar composition
 
-Observer sidecars are a v1 Serf composition pattern. Claude Monitor covers only the basic stream-notification profile; Serf also supports sidecars that receive bounded event/output frames and comment back through normal message delivery. Serf does not need a separate observer-comment command or a Sprout-style raw handle model. The private-sidecar marker and separate sidecar capacity class remain open decisions; the shipped composition uses existing job primitives:
+Observer sidecars are a v1 Serf composition pattern. Claude Monitor covers only the basic stream-notification profile; Serf also supports sidecars that receive bounded event/output frames and comment back through normal message delivery. Serf does not need a separate observer-comment command or a Sprout-style raw handle model. The shipped composition uses existing job primitives:
 
-1. Start a sidecar with `delegate(...)`; this creates a normal delegate job unless an implementation-specific policy explicitly marks sidecars differently.
+1. Start a sidecar with `delegate(...)`; this creates an ordinary delegate job with no public marker.
 2. Configure `job_watch(...)` over a job, session alias, or `*`.
 3. Set `send.to` to the sidecar job and `include_frame=true` so the watch condition sends bounded event/output frames to the sidecar.
 4. The sidecar responds with `job_send_message(target="caller"|"watched", message=...)` when it has useful commentary or advice.
@@ -1093,7 +1096,8 @@ Safety and behavior rules:
 - Observer/sidecar telemetry should be excluded from frames by default to avoid feedback loops.
 - Observer advice is runtime-originated commentary, not user instruction.
 - Observer failures should not fail the watched session; they produce diagnostics or warnings. A failed watch send must surface as a caller-visible diagnostic notification rather than silently dropping the matched condition.
-- Access control is target-resolution based: aliases such as `caller` and contextual `watched` resolve according to caller context and permissions. `main` is not a v1 alias.
+- Watch sends to busy sidecars/delegates are retried from durable latest-frame-wins pending state. Hard/non-resumable delivery failure drops the pending frame only after emitting a caller-visible diagnostic.
+- Access control is target-resolution based: `caller` resolves to the runtime caller/current session; contextual `watched` resolves only from a concrete watch delivery context; `main` is rejected with `target_not_found`.
 - Broad watches such as `target="*"` are allowed only over events/jobs visible to the caller.
 
 ## Relationship to transcript tools
@@ -1158,7 +1162,7 @@ Implementations must enforce a documented concurrency policy for jobs. The polic
 - concurrent shell jobs;
 - concurrent delegate jobs;
 - total jobs visible/running in one session;
-- observer/sidecar work within the relevant delegate/job capacity class. A separate private sidecar capacity class remains an open decision.
+- observer work within the normal delegate/job concurrency limits.
 
 Exact limits are implementation/configuration details, but unbounded delegate fan-out or unbounded shell process creation is not part of the target contract.
 
