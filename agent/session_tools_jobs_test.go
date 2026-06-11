@@ -236,6 +236,14 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 			wantReason: "parent_linkage_unavailable",
 		},
 		{
+			name: "missing working dir",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore.WorkingDir = ""
+				replaceStoredDelegateRecord(t, s, rec)
+			},
+			wantReason: "parent_linkage_unavailable",
+		},
+		{
 			name: "missing meta",
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
 				removeChildSessionMeta(t, s, rec)

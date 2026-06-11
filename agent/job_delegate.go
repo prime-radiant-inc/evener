@@ -366,6 +366,9 @@ func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode deleg
 	if !hasValidDelegateRestoreLocalEnvPolicy(desc) {
 		return delegateResumability{Reason: notResumableParentLinkageUnavailable}
 	}
+	if !hasValidDelegateRestoreWorkingDir(desc) {
+		return delegateResumability{Reason: notResumableParentLinkageUnavailable}
+	}
 	if s.stateDir == "" {
 		return delegateResumability{Reason: notResumableMissingChildSessionMeta}
 	}
@@ -491,6 +494,9 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 	meta := preflight.Meta
 	profile := preflight.Profile
 	resumeHistory := preflight.History
+	if err := s.validateRestoredDelegateRequiredTools(desc); err != nil {
+		return nil, err
+	}
 	resultSchema := delegateResultSchemaMap(desc.ResultSchema)
 	if len(resultSchema) > 0 {
 		profile = provider.WithCommunicateOutputSchema(profile, resultSchema)
@@ -567,15 +573,16 @@ func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestore
 	if !ok {
 		return nil, errors.New("invalid delegate restore local_env_policy")
 	}
+	workDir, ok := delegateRestoreWorkingDir(desc)
+	if !ok {
+		return nil, errors.New("invalid delegate restore working_dir")
+	}
 	childEnv := s.env
 	if le, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
-		clone := le.WithWorkingDirectory(le.WorkingDirectory())
-		if workDir := strings.TrimSpace(desc.WorkingDir); workDir != "" {
-			clone = le.WithWorkingDirectory(workDir)
-		}
+		clone := le.WithWorkingDirectory(workDir)
 		clone.EnvPolicy = policy
 		childEnv = clone
-	} else if strings.TrimSpace(desc.WorkingDir) != "" && desc.WorkingDir != s.env.WorkingDirectory() {
+	} else if workDir != s.env.WorkingDirectory() {
 		return nil, errors.New("execution environment does not support restored working_dir")
 	}
 	return childEnv, nil
@@ -586,11 +593,27 @@ func hasValidDelegateRestoreLocalEnvPolicy(desc *jobstore.DelegateRestoreDescrip
 	return ok
 }
 
+func hasValidDelegateRestoreWorkingDir(desc *jobstore.DelegateRestoreDescriptor) bool {
+	_, ok := delegateRestoreWorkingDir(desc)
+	return ok
+}
+
 func delegateRestoreLocalEnvPolicy(desc *jobstore.DelegateRestoreDescriptor) (execenv.EnvVarPolicy, bool) {
 	if desc == nil {
 		return execenv.EnvPolicyDefault, false
 	}
 	return localEnvPolicyFromName(desc.LocalEnvPolicy)
+}
+
+func delegateRestoreWorkingDir(desc *jobstore.DelegateRestoreDescriptor) (string, bool) {
+	if desc == nil {
+		return "", false
+	}
+	workDir := strings.TrimSpace(desc.WorkingDir)
+	if workDir == "" {
+		return "", false
+	}
+	return workDir, true
 }
 
 func restoredDelegateAllowedTools(desc *jobstore.DelegateRestoreDescriptor) []string {
@@ -611,7 +634,25 @@ func validateRestoredDelegateTools(child *Session, desc *jobstore.DelegateRestor
 	if child == nil || child.reg == nil {
 		return errors.New("restored delegate tool registry unavailable")
 	}
-	registered := child.reg.RegisteredNames()
+	return validateRestoredDelegateRequiredToolNames(child.reg.RegisteredNames(), required)
+}
+
+func (s *Session) validateRestoredDelegateRequiredTools(desc *jobstore.DelegateRestoreDescriptor) error {
+	required := restoredDelegateRequiredTools(desc)
+	if len(required) == 0 {
+		return nil
+	}
+	if s == nil || s.reg == nil {
+		return errors.New("restored delegate tool registry unavailable")
+	}
+	registered := s.reg.RegisteredNames()
+	for _, name := range rootOnlySubagentTools() {
+		delete(registered, name)
+	}
+	return validateRestoredDelegateRequiredToolNames(registered, required)
+}
+
+func validateRestoredDelegateRequiredToolNames(registered map[string]bool, required []string) error {
 	var missing []string
 	for _, name := range required {
 		if !registered[name] {

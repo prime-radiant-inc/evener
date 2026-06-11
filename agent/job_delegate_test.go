@@ -2042,6 +2042,14 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 			want: "target_not_resumable:parent_linkage_unavailable",
 		},
 		{
+			name: "missing working dir",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore.WorkingDir = ""
+				replaceStoredDelegateRecord(t, s, rec)
+			},
+			want: "target_not_resumable:parent_linkage_unavailable",
+		},
+		{
 			name: "missing meta",
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
 				removeChildSessionMeta(t, s, rec)
@@ -2241,6 +2249,8 @@ func TestReconstructDelegateRuntimeCollisionDoesNotCleanupSharedEnv(t *testing.T
 	}
 	t.Cleanup(func() { s.close(false) })
 	rec := seedStoppedDelegateRestoreRecord(t, s)
+	rec.DelegateRestore.WorkingDir = workDir
+	replaceStoredDelegateRecord(t, s, rec)
 	markStoredDelegateResumable(t, s, rec)
 	rec = loadShellRecord(t, s.jobManager, rec.JobID)
 	childID := rec.DelegateRestore.ChildSessionID
@@ -2662,6 +2672,56 @@ func TestReconstructDelegateRuntimeMissingRequiredToolsFailsBeforeTracking(t *te
 				t.Fatalf("adapter requests = %+v, want none", requests)
 			}
 		})
+	}
+}
+
+func TestReconstructDelegateMissingToolsDoesNotRunChildRestoreWatchRetry(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	childID := rec.DelegateRestore.ChildSessionID
+	rec.DelegateRestore.FrozenToolNames = []string{"missing_frozen_tool"}
+	replaceStoredDelegateRecord(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	now := time.Unix(3200, 0).UTC()
+	appendSessionJobEvents(t, s.stateDir, childID, restoredWatchSendPendingEvents(childID, "job_child_observed", "caller", now)...)
+	beforeParentEvents := len(loadJobStoreEvents(t, s.jobManager))
+	beforeChildEvents := len(loadSessionJobStoreEvents(t, s.stateDir, childID))
+	if pending := loadSessionWatchSendRecord(t, s.stateDir, childID).Pending; len(pending) != 1 {
+		t.Fatalf("child pending before reconstruction = %+v, want 1", pending)
+	}
+
+	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  rec.JobID,
+		Message: "resume",
+	})
+
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "missing_frozen_tool") {
+		t.Fatalf("error = %v, want missing frozen tool failure", res.Err)
+	}
+	if got := len(loadJobStoreEvents(t, s.jobManager)); got != beforeParentEvents {
+		t.Fatalf("parent jobstore event count = %d, want unchanged %d", got, beforeParentEvents)
+	}
+	if got := len(loadSessionJobStoreEvents(t, s.stateDir, childID)); got != beforeChildEvents {
+		t.Fatalf("child jobstore event count = %d, want unchanged %d", got, beforeChildEvents)
+	}
+	if pending := loadSessionWatchSendRecord(t, s.stateDir, childID).Pending; len(pending) != 1 {
+		t.Fatalf("child pending after failed reconstruction = %+v, want unchanged pending watch send", pending)
+	}
+	for _, entry := range s.SteeringQueueSnapshot() {
+		if strings.Contains(entry.Text, "delivery_restore_pending") || strings.Contains(entry.Text, "restored observe") {
+			t.Fatalf("failed reconstruction delivered child watch frame to parent: queue = %+v", s.SteeringQueueSnapshot())
+		}
+	}
+	if sub := s.subagents.get(childID); sub != nil {
+		t.Fatalf("retained child runtime = %+v, want none after missing tool failure", sub)
+	}
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("adapter requests = %+v, want none", requests)
 	}
 }
 
@@ -3169,7 +3229,7 @@ func newDelegateRestorePreflightSession(t *testing.T, c *llm.Client) *Session {
 
 func seedStoppedDelegateRestoreRecord(t *testing.T, s *Session) *jobstore.JobRecord {
 	t.Helper()
-	childID := seedRetainedChildSession(t, s)
+	childID, childWorkDir := seedRetainedChildSessionWithWorkingDir(t, s)
 	jobID := jobstore.NewJobID()
 	now := time.Now().UTC()
 	ref := encodeRef("", childID)
@@ -3184,6 +3244,7 @@ func seedStoppedDelegateRestoreRecord(t *testing.T, s *Session) *jobstore.JobRec
 		Task:              "retained delegate",
 		ResolvedProfileID: "openai",
 		ResolvedModel:     "gpt-5.2",
+		WorkingDir:        childWorkDir,
 		LocalEnvPolicy:    "default",
 	}
 	if err := s.jobManager.appendEvent(jobstore.Event{
@@ -3253,6 +3314,13 @@ func requireDelegateRestorePreflight(t *testing.T, s *Session, rec *jobstore.Job
 
 func seedRetainedChildSession(t *testing.T, parent *Session) string {
 	t.Helper()
+	childID, _ := seedRetainedChildSessionWithWorkingDir(t, parent)
+	return childID
+}
+
+func seedRetainedChildSessionWithWorkingDir(t *testing.T, parent *Session) (string, string) {
+	t.Helper()
+	workDir := t.TempDir()
 	cfg := SessionConfig{
 		StateDir:         parent.stateDir,
 		MaxSubagentDepth: 1,
@@ -3260,7 +3328,7 @@ func seedRetainedChildSession(t *testing.T, parent *Session) string {
 	}
 	cfg.spawn.depth = parent.depth + 1
 	cfg.spawn.parentSessionID = parent.ID()
-	child, err := NewSession(parent.client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	child, err := NewSession(parent.client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), cfg)
 	if err != nil {
 		t.Fatalf("NewSession child: %v", err)
 	}
@@ -3271,7 +3339,7 @@ func seedRetainedChildSession(t *testing.T, parent *Session) string {
 		child.transcript = nil
 	}
 	t.Cleanup(func() { child.Close() })
-	return child.ID()
+	return child.ID(), workDir
 }
 
 func replaceStoredDelegateRecord(t *testing.T, s *Session, rec *jobstore.JobRecord) {
@@ -3365,6 +3433,46 @@ func appendChildTranscriptTurn(t *testing.T, s *Session, rec *jobstore.JobRecord
 		t.Fatalf("marshal child transcript entry: %v", err)
 	}
 	appendChildTranscript(t, s, rec, string(data)+"\n")
+}
+
+func appendSessionJobEvents(t *testing.T, stateDir, sessionID string, events ...jobstore.Event) {
+	t.Helper()
+	store, err := jobstore.Open(filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl"))
+	if err != nil {
+		t.Fatalf("open session job store: %v", err)
+	}
+	defer store.Close()
+	for _, event := range events {
+		if err := store.Append(event); err != nil {
+			t.Fatalf("append session job event %s: %v", event.Kind, err)
+		}
+	}
+}
+
+func loadSessionJobStoreEvents(t *testing.T, stateDir, sessionID string) []jobstore.Event {
+	t.Helper()
+	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read session jobs.jsonl: %v", err)
+	}
+	var events []jobstore.Event
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var event jobstore.Event
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("parse session job event %q: %v", line, err)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+func loadSessionWatchSendRecord(t *testing.T, stateDir, sessionID string) jobstore.WatchSendRecord {
+	t.Helper()
+	return jobstore.FoldWatchSends(loadSessionJobStoreEvents(t, stateDir, sessionID))
 }
 
 func completedDelegateSubagent(child *Session, result string) *subagent {
