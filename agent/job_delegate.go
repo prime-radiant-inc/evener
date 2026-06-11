@@ -33,7 +33,7 @@ const (
 	notResumableProfileUnavailable            = "profile_unavailable"
 )
 
-type DelegateResumability struct {
+type delegateResumability struct {
 	Resumable bool
 	Reason    string
 	Preflight *delegateRestorePreflight
@@ -336,13 +336,13 @@ func isRuntimeLostDelegate(rec *jobstore.JobRecord) bool {
 		rec.Reason == "runtime_lost"
 }
 
-func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode delegateResumabilityMode) DelegateResumability {
+func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode delegateResumabilityMode) delegateResumability {
 	if s == nil || rec == nil || rec.Type != jobstore.JobDelegate {
-		return DelegateResumability{Reason: notResumableMissingDelegateResumeMetadata}
+		return delegateResumability{Reason: notResumableMissingDelegateResumeMetadata}
 	}
 	desc := rec.DelegateRestore
 	if desc == nil {
-		return DelegateResumability{Reason: notResumableMissingDelegateResumeMetadata}
+		return delegateResumability{Reason: notResumableMissingDelegateResumeMetadata}
 	}
 	childID := strings.TrimSpace(desc.ChildSessionID)
 	if childID == "" || desc.TranscriptRef != rec.TranscriptRef ||
@@ -350,32 +350,32 @@ func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode deleg
 		desc.ParentJobID != rec.JobID ||
 		desc.OwnerSessionID != rec.OwnerSessionID ||
 		desc.VisibleSessionID != rec.VisibleToSession {
-		return DelegateResumability{Reason: notResumableParentLinkageUnavailable}
+		return delegateResumability{Reason: notResumableParentLinkageUnavailable}
 	}
 	if _, transcriptChildID, err := decodeRef(rec.TranscriptRef); err != nil || transcriptChildID != childID {
-		return DelegateResumability{Reason: notResumableParentLinkageUnavailable}
+		return delegateResumability{Reason: notResumableParentLinkageUnavailable}
 	}
 	if s.stateDir == "" {
-		return DelegateResumability{Reason: notResumableMissingChildSessionMeta}
+		return delegateResumability{Reason: notResumableMissingChildSessionMeta}
 	}
 
 	meta, err := schema.LoadSessionMeta(s.stateDir, childID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return DelegateResumability{Reason: notResumableMissingChildSessionMeta}
+			return delegateResumability{Reason: notResumableMissingChildSessionMeta}
 		}
-		return DelegateResumability{Reason: notResumableCorruptChildSessionMeta}
+		return delegateResumability{Reason: notResumableCorruptChildSessionMeta}
 	}
 	if strings.TrimSpace(meta.ID) != childID {
-		return DelegateResumability{Reason: notResumableCorruptChildSessionMeta}
+		return delegateResumability{Reason: notResumableCorruptChildSessionMeta}
 	}
 
 	transcriptPath := filepath.Join(s.stateDir, sessionsSubdir, childID+".transcript.jsonl")
 	if _, err := os.Stat(transcriptPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return DelegateResumability{Reason: notResumableMissingChildTranscript}
+			return delegateResumability{Reason: notResumableMissingChildTranscript}
 		}
-		return DelegateResumability{Reason: notResumableCorruptChildTranscript}
+		return delegateResumability{Reason: notResumableCorruptChildTranscript}
 	}
 	var transcriptData transcriptData
 	if mode == delegateResumabilityPreflight {
@@ -387,9 +387,9 @@ func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode deleg
 	}
 	if err != nil {
 		if errors.Is(err, errStrictChildTranscriptSessionMismatch) {
-			return DelegateResumability{Reason: notResumableTranscriptSessionMismatch}
+			return delegateResumability{Reason: notResumableTranscriptSessionMismatch}
 		}
-		return DelegateResumability{Reason: notResumableCorruptChildTranscript}
+		return delegateResumability{Reason: notResumableCorruptChildTranscript}
 	}
 
 	if sub := s.subagents.get(childID); sub != nil {
@@ -397,15 +397,15 @@ func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode deleg
 		running := sub.running
 		sub.mu.Unlock()
 		if running {
-			return DelegateResumability{Reason: notResumableChildSessionBusy}
+			return delegateResumability{Reason: notResumableChildSessionBusy}
 		}
 	}
 
 	profile, err := s.resolveDelegateRestoreProfile(meta, desc)
 	if err != nil {
-		return DelegateResumability{Reason: notResumableProfileUnavailable}
+		return delegateResumability{Reason: notResumableProfileUnavailable}
 	}
-	result := DelegateResumability{Resumable: true}
+	result := delegateResumability{Resumable: true}
 	if mode == delegateResumabilityPreflight {
 		result.Preflight = &delegateRestorePreflight{
 			Meta:       meta,
