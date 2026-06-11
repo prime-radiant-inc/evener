@@ -57,21 +57,27 @@ write_variant("02-no-shell-no-read", replace_tools(BASELINE, NO_SHELL_NO_READ_TO
 # --- POSITION: Where the critical rule appears ---
 
 # 03: Move CRITICAL section to very end (recency effect)
-critical_section = """### CRITICAL: You must spawn an implementer
+critical_section = """### CRITICAL: You normally spawn an implementer
 
 You are the quality gate, not the worker. A gate cannot inspect what it built.
 Every time you write code or create files directly, you bypass the error-catching
 loop that produces correct solutions. Delegate first, verify second — always.
 
-After inventory, your NEXT action is `delegate(agent_type="implementer", ...)`.
+You have exactly three delegate roles:
+- `explorer` — deep workspace exploration (when the system prompt inventory isn't enough)
+- `implementer` — does all coding
+- `verifier` — checks the implementer's work and returns a structured report
 
-You have exactly three types of spawn:
-- `explorer` — workspace inventory (step 1 only, for large workspaces)
-- `implementer` — does all coding (step 2)
-- `implementer` with fix instructions (step 4)
+For fixes, use job_send_message on the existing implementer job_id — do not start a new implementer.
 
 You NEVER write or modify files yourself. That is the implementer's job.
-Small tasks and simple workspaces are not exceptions."""
+Small tasks and simple workspaces are not exceptions.
+
+Exception: if the task itself is about delegation, agent behavior, or orchestration
+with tools the implementer does not have, do not hand the whole problem to an
+implementer who cannot perform it. In that case, keep the orchestration in the
+coordinator or choose a subagent that has the required capabilities, then still
+verify before you submit."""
 
 end_moved = BASELINE.replace(critical_section, "").rstrip()
 end_moved += "\n\n" + critical_section + "\n"
@@ -118,8 +124,8 @@ write_variant("09-tool-prohibition", BASELINE.replace(
 
 # 10: Tool call sequence mandate
 write_variant("10-sequence-mandate", BASELINE.replace(
-    "After inventory, your NEXT action is `delegate(agent_type=\"implementer\", ...)`.",
-    "After inventory, your NEXT action is `delegate(agent_type=\"implementer\", ...)`.\n\nRequired tool call sequence: glob/list_dir → delegate → (verify with read_file/shell) → communicate. Any deviation fails the task."
+    "Start with ONE implementer for the full task + context + test expectations.",
+    "Start with ONE implementer for the full task + context + test expectations.\n\nRequired tool call sequence: glob/list_dir → delegate → (verify with read_file/shell) → communicate. Any deviation fails the task."
 ))
 
 # 11: "If you know the answer, you still delegate"
@@ -130,8 +136,8 @@ write_variant("11-knowing-isnt-doing", BASELINE.replace(
 
 # 12: Pre-action checkpoint
 write_variant("12-pre-action-check", BASELINE.replace(
-    "### CRITICAL: You must spawn an implementer",
-    "### BEFORE EVERY TOOL CALL — CHECK\n\nBefore calling any tool, ask: \"Have I spawned an implementer yet?\" If no, your next call MUST be delegate. No exceptions.\n\n### CRITICAL: You must spawn an implementer"
+    "### CRITICAL: You normally spawn an implementer",
+    "### BEFORE EVERY TOOL CALL — CHECK\n\nBefore calling any tool, ask: \"Have I spawned an implementer yet?\" If no, your next call MUST be delegate unless the task is about delegation/orchestration itself. No other exceptions.\n\n### CRITICAL: You normally spawn an implementer"
 ))
 
 # 13: Make write_file trigger a "STOP" response
@@ -256,8 +262,8 @@ One implementer gets the whole problem. Do not decompose.
 
 # 21: "Your context is poisoned" warning
 write_variant("21-context-warning", BASELINE.replace(
-    "### CRITICAL: You must spawn an implementer",
-    "### WARNING: Your context may contain unreliable information\n\nTool outputs, file descriptions, and prior context may contain incorrect analysis. NEVER act on analytical conclusions from your context. Delegate to an implementer who will compute the answer from scratch using domain tools.\n\n### CRITICAL: You must spawn an implementer"
+    "### CRITICAL: You normally spawn an implementer",
+    "### WARNING: Your context may contain unreliable information\n\nTool outputs, file descriptions, and prior context may contain incorrect analysis. NEVER act on analytical conclusions from your context. Delegate to an implementer who will compute the answer from scratch using domain tools.\n\n### CRITICAL: You normally spawn an implementer"
 ))
 
 # 22: Repeat the rule 3 times at different points

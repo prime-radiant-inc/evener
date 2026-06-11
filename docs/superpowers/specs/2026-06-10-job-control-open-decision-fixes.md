@@ -15,8 +15,9 @@ except where the old implementation conflicts with these decisions.
    key and delivers the latest frame when the target is next idle/resumable.
    A frame is dropped only on hard/non-resumable failure, and that drop must
    produce a caller-visible diagnostic notification.
-2. **Alias vocabulary:** v1 exposes only `caller` and `watched` as runtime
-   aliases. `main` is not a v1 alias. Do not keep `main` as a synonym or
+2. **Alias vocabulary:** v1 exposes `caller` as the direct runtime alias and
+   accepts `watched` only as a `job_watch.send.to` alias resolved by watch
+   delivery. `main` is not a v1 alias. Do not keep `main` as a synonym or
    backward-compatible alias.
 3. **Structured result schema inheritance:** resumed delegate turns inherit the
    delegate session's original `result_schema`. If a resumed turn cannot
@@ -90,8 +91,9 @@ Current touchpoints include:
 Required behavior:
 
 - `caller` remains the runtime-originating session alias.
-- `watched` is valid only when Serf has an internal watch context for the
-  current delivery. Outside that context it fails synchronously. Session events
+- `watched` is valid only in `job_watch.send.to`, where Serf has an internal
+  watch context for the current delivery. Direct `job_send_message` and
+  `job_watch.target` calls with `watched` fail synchronously. Session events
   without a concrete messageable watched identity do not support `watched`;
   they fail at watch registration when that can be known from the event set,
   otherwise they emit a visible diagnostic at delivery time.
@@ -104,11 +106,11 @@ Alias resolution table:
 | Tool field | `caller` | `watched` | `main` |
 | --- | --- | --- | --- |
 | `job_send_message.target` from normal model/tool input | Send to the runtime-originating caller. In a root session this is the current session; in a delegate this is its parent/caller. | Fail synchronously with `target_not_found` because there is no watch context. | Fail synchronously with `target_not_found`; no compatibility synonym. |
-| `job_send_message.target` from watch-originated sidecar context | Same as above. | Send to the concrete watched session/job carried by the watch context. If the context has no unique concrete watched target, fail with `target_not_found`. | Fail synchronously with `target_not_found`; no compatibility synonym. |
 | `job_watch.target` from normal model/tool input | Watch the runtime-originating caller/current session. | Fail synchronously with `target_not_found`; `watched` cannot define a watch without already being inside one. | Fail synchronously with `target_not_found`; no compatibility synonym. |
 | `job_watch.send.to` | Send the watch frame to the runtime-originating caller/current session. | Send the watch frame to the concrete watched session/job that triggered this watch. For wildcard watches, the watch frame carries the concrete trigger identity. If that identity is missing or ambiguous, emit one visible diagnostic and do not guess. | Fail synchronously at watch registration with `target_not_found`; no compatibility synonym. |
 
-The internal watch context is not a public API field. It carries at least
+The internal watch context is not a public API field and is not available to
+direct `job_send_message` calls. It carries at least
 `caller_session_id`, the concrete watched job/session identity, the triggering
 event identity, and whether the target came from a wildcard watch. It exists
 only to resolve `watched` and to suppress observer feedback loops.
@@ -249,7 +251,7 @@ Required behavior:
     concrete event/job/session identity that caused the frame; it is mandatory,
     not optional.
   - `resolved_send_to` is the concrete job/session target after applying
-    `caller`/`watched` alias rules.
+    the `caller`/watch-send `watched` alias rules.
   - Replacing or clearing a watch increments/removes the watch generation and
     deletes stale pending frames for the old generation.
 - `watch_generation` is durable and never reused after restore. Allocate it at

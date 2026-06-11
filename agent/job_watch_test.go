@@ -55,6 +55,32 @@ func TestConfigureWatchTargetNotFound(t *testing.T) {
 	}
 }
 
+func TestConfigureWatchRejectsUnknownEventKinds(t *testing.T) {
+	jm := newTestJM(t)
+
+	_, err := jm.configureWatch(watchArgs{Target: "caller", Events: []string{"assistant.mesage"}})
+
+	if err == nil || !strings.Contains(err.Error(), "unknown event kind") {
+		t.Fatalf("error = %v, want unknown event kind", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0", jm.watchCount())
+	}
+}
+
+func TestConfigureWatchRejectsUnknownTriggerEvent(t *testing.T) {
+	jm := newTestJM(t)
+
+	_, err := jm.configureWatch(watchArgs{Target: "caller", TriggerEvent: "assistant.mesage"})
+
+	if err == nil || !strings.Contains(err.Error(), "unknown trigger event") {
+		t.Fatalf("error = %v, want unknown trigger event", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0", jm.watchCount())
+	}
+}
+
 func TestJobWatchMainAliasTargetFailsTargetNotFound(t *testing.T) {
 	jm := newTestJM(t)
 
@@ -2988,6 +3014,10 @@ func TestWatchSendAppendFailureDuringCloseKeepsPendingReachable(t *testing.T) {
 	if cfg == nil || len(cfg.pending) != 1 {
 		t.Fatalf("pending before close = %+v, want one", cfg)
 	}
+	running, err := jm.createShell(createShellOpts{Command: "during failed close"})
+	if err != nil {
+		t.Fatalf("create running shell: %v", err)
+	}
 	realAppend := jm.appendEvent
 	jm.appendEvent = func(e jobstore.Event) error {
 		if e.Kind == jobstore.EventWatchSendDropped {
@@ -3017,6 +3047,14 @@ func TestWatchSendAppendFailureDuringCloseKeepsPendingReachable(t *testing.T) {
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("folded pending after failed close append = %d, want 1", len(pending))
 	}
+	code := 0
+	if err := jm.finalize(running.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize running job after failed close: %v", err)
+	}
+	rec := findListedJob(jm.list(listFilter{}), running.JobID)
+	if rec == nil || rec.Status != jobstore.StatusCompleted || rec.Reason != "exit_zero" {
+		t.Fatalf("running job after failed close = %+v, want completed/exit_zero", rec)
+	}
 	jm.mu.Lock()
 	closing := jm.closing
 	jm.mu.Unlock()
@@ -3027,7 +3065,6 @@ func TestWatchSendAppendFailureDuringCloseKeepsPendingReachable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create after failed close: %v", err)
 	}
-	code := 0
 	if err := jm.finalize(later.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
 		t.Fatalf("finalize after failed close: %v", err)
 	}
@@ -3425,6 +3462,34 @@ func TestWatchSendToWatchedRejectsSessionEventsWithoutConcreteTarget(t *testing.
 				t.Fatalf("rejected watched send delivered sends: %#v", sent)
 			}
 		})
+	}
+}
+
+func TestWatchSendToWatchedAllowsWildcardJobNotificationTrigger(t *testing.T) {
+	jm := newTestJM(t)
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{Delivered: true, Action: "sent"}
+	}
+
+	_, err := jm.configureWatch(watchArgs{
+		Target:       "*",
+		Events:       []string{"*"},
+		TriggerEvent: "job.notification",
+		Send:         &watchSendArgs{To: "watched", Message: "observe"},
+	})
+	if err != nil {
+		t.Fatalf("configureWatch returned error: %v", err)
+	}
+
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger", JobType: "delegate", Status: "completed"})
+
+	if len(sent) != 1 {
+		t.Fatalf("sent = %#v, want one delivery", sent)
+	}
+	if sent[0].Target != "job_trigger" {
+		t.Fatalf("send target = %q, want concrete watched job", sent[0].Target)
 	}
 }
 

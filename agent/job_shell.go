@@ -338,6 +338,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 	startedAt := jm.now()
 	jobID := jobstore.NewJobID()
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
+	parentJobID := jm.currentParentJobID()
 	output, err := jobstore.OpenOutput(outputPath, maxJobOutputRetentionBytes)
 	if err != nil {
 		return nil, err
@@ -351,7 +352,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 			Description:      args.Description,
 			OwnerSessionID:   jm.sessionID,
 			VisibleToSession: jm.sessionID,
-			ParentJobID:      jm.parentJobID,
+			ParentJobID:      parentJobID,
 			StartedAt:        startedAt,
 			OutputPath:       outputPath,
 		},

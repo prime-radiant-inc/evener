@@ -163,6 +163,9 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if err := jm.validateWatchTarget(a.Target); err != nil {
 		return watchResult{}, err
 	}
+	if err := validateWatchEventArgs(a); err != nil {
+		return watchResult{}, err
+	}
 	if !a.Clear && !watchArgsHasCondition(a) {
 		return watchResult{}, errors.New("invalid_request: nothing to watch")
 	}
@@ -279,6 +282,23 @@ func watchArgsHasCondition(a watchArgs) bool {
 	return a.OutputMatch != "" || a.ProgressIntervalMS > 0 || len(a.Events) > 0 || a.TriggerEvent != ""
 }
 
+func validateWatchEventArgs(a watchArgs) error {
+	for _, name := range a.Events {
+		if name == "*" {
+			continue
+		}
+		if _, ok := modelEventKinds[name]; !ok {
+			return fmt.Errorf("invalid_request: unknown event kind %q", name)
+		}
+	}
+	if a.TriggerEvent != "" {
+		if _, ok := modelEventKinds[a.TriggerEvent]; !ok {
+			return fmt.Errorf("invalid_request: unknown trigger event %q", a.TriggerEvent)
+		}
+	}
+	return nil
+}
+
 func (jm *jobManager) validateWatchTarget(target string) error {
 	if isWatchSessionTarget(target) {
 		return nil
@@ -374,6 +394,13 @@ func watchCanResolveConcreteWatchedTarget(a watchArgs) bool {
 	}
 	if len(a.Events) == 0 {
 		return a.TriggerEvent == "job.notification"
+	}
+	if a.TriggerEvent == "job.notification" {
+		for _, eventName := range a.Events {
+			if eventName == "*" {
+				return true
+			}
+		}
 	}
 	for _, eventName := range a.Events {
 		if eventName != "job.notification" {

@@ -75,6 +75,29 @@ func TestSubagentManager_TrackGetRemove(t *testing.T) {
 	}
 }
 
+func TestSubagentManager_BeginReconstructionWaitsForPendingBeforePublishedChild(t *testing.T) {
+	m := newSubagentManager(nil)
+	childID := "child"
+	published := &subagent{id: childID}
+	pending := &subagentReconstruction{done: make(chan struct{})}
+	m.subs[childID] = published
+	m.reconstructing[childID] = pending
+
+	existing, gotPending, started, err := m.beginReconstruction(childID)
+	if err != nil {
+		t.Fatalf("beginReconstruction returned error: %v", err)
+	}
+	if existing != nil {
+		t.Fatalf("existing = %p, want nil while reconstruction is pending", existing)
+	}
+	if gotPending != pending {
+		t.Fatalf("pending = %p, want %p", gotPending, pending)
+	}
+	if started {
+		t.Fatal("started = true, want false while reconstruction is pending")
+	}
+}
+
 func TestSubagentManager_DrainForCloseReturnsAllAndClears(t *testing.T) {
 	fe := &fakeEmit{}
 	m := newSubagentManager(fe.emit)

@@ -94,15 +94,18 @@ func TestDefJobSendMessageParams(t *testing.T) {
 	}
 }
 
-func TestDefJobSendMessageDescriptionKeepsWatchedContextual(t *testing.T) {
+func TestDefJobSendMessageDescriptionKeepsDirectTargetsSmall(t *testing.T) {
 	def := DefJobSendMessage()
 	props := def.Parameters["properties"].(map[string]any)
 	targetDesc := props["target"].(map[string]any)["description"].(string)
 	combined := def.Description + "\n" + targetDesc
-	for _, want := range []string{"caller", "watched", "concrete watch"} {
+	for _, want := range []string{"delegate job_id", "caller"} {
 		if !strings.Contains(combined, want) {
 			t.Fatalf("job_send_message description = %q, want %q", combined, want)
 		}
+	}
+	if strings.Contains(combined, "watched") {
+		t.Fatalf("job_send_message description must not advertise watched: %q", combined)
 	}
 	if strings.Contains(combined, "main") {
 		t.Fatalf("job_send_message description must not mention main: %q", combined)

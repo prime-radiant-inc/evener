@@ -77,11 +77,11 @@ func (m *subagentManager) beginReconstruction(childID string) (*subagent, *subag
 	if m.closing {
 		return nil, nil, false, errSubagentManagerClosing
 	}
-	if existing := m.subs[childID]; existing != nil {
-		return existing, nil, false, nil
-	}
 	if pending := m.reconstructing[childID]; pending != nil {
 		return nil, pending, false, nil
+	}
+	if existing := m.subs[childID]; existing != nil {
+		return existing, nil, false, nil
 	}
 	pending := &subagentReconstruction{done: make(chan struct{})}
 	m.reconstructing[childID] = pending

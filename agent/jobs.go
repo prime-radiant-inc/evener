@@ -53,6 +53,18 @@ type jobManager struct {
 	now           func() time.Time
 }
 
+func (jm *jobManager) setParentJobID(jobID string) {
+	jm.mu.Lock()
+	jm.parentJobID = jobID
+	jm.mu.Unlock()
+}
+
+func (jm *jobManager) currentParentJobID() string {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.parentJobID
+}
+
 type runningJob struct {
 	rec                     *jobstore.JobRecord
 	output                  *jobstore.OutputStore
@@ -86,10 +98,12 @@ type terminalJob struct {
 }
 
 type jobRuntimeHandle struct {
-	jobID  string
-	signal func()
-	done   <-chan struct{}
-	output *jobstore.OutputStore
+	jobID      string
+	signal     func()
+	done       <-chan struct{}
+	output     *jobstore.OutputStore
+	stopStatus jobstore.Status
+	stopReason string
 }
 
 // jobNotification is the in-memory wake record for a durable job notification.
@@ -174,10 +188,12 @@ func (jm *jobManager) close() error {
 			run.stopReason = "stopped_by_parent"
 		}
 		running = append(running, jobRuntimeHandle{
-			jobID:  run.rec.JobID,
-			signal: run.signal,
-			done:   run.done,
-			output: run.output,
+			jobID:      run.rec.JobID,
+			signal:     run.signal,
+			done:       run.done,
+			output:     run.output,
+			stopStatus: run.stopStatus,
+			stopReason: run.stopReason,
 		})
 	}
 	jm.mu.Unlock()
@@ -189,6 +205,12 @@ func (jm *jobManager) close() error {
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
 		jm.mu.Lock()
 		jm.closing = false
+		for _, handle := range running {
+			if run := jm.running[handle.jobID]; run != nil {
+				run.stopStatus = handle.stopStatus
+				run.stopReason = handle.stopReason
+			}
+		}
 		jm.mu.Unlock()
 		return err
 	}
@@ -287,6 +309,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 	startedAt := jm.now()
 	jobID := jobstore.NewJobID()
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
+	parentJobID := jm.currentParentJobID()
 	rec := &jobstore.JobRecord{
 		JobID:            jobID,
 		Type:             jobstore.JobShell,
@@ -295,7 +318,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		Description:      opts.Description,
 		OwnerSessionID:   jm.sessionID,
 		VisibleToSession: jm.sessionID,
-		ParentJobID:      jm.parentJobID,
+		ParentJobID:      parentJobID,
 		StartedAt:        startedAt,
 		OutputPath:       outputPath,
 	}

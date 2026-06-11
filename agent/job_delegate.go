@@ -923,7 +923,7 @@ func relinkDelegateChildToJob(child *Session, jobID string) {
 	}
 	child.cfg.spawn.parentJobID = jobID
 	if child.jobManager != nil {
-		child.jobManager.parentJobID = jobID
+		child.jobManager.setParentJobID(jobID)
 	}
 }
 

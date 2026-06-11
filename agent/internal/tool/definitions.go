@@ -147,12 +147,12 @@ func DefJobSendMessage() llm.ToolDefinition {
 			"message steers the live run; if it has finished, Serf resumes the same conversation as a new " +
 			"job and returns the new `job_id`. Set `on_finished=\"fail\"` to require a live target — if the " +
 			"delegate has already finished, the call then fails (`target_terminal`) instead of resuming. " +
-			"The same tool delivers observer commentary to `caller`, or to `watched` only from a concrete watch-delivery context.",
+			"The same tool delivers observer commentary to `caller`.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"target":  map[string]any{"type": "string", "description": "A delegate job_id, `caller`, or contextual `watched` from concrete watch delivery."},
+				"target":  map[string]any{"type": "string", "description": "A delegate job_id or `caller`."},
 				"message": map[string]any{"type": "string"},
 				"on_finished": map[string]any{
 					"type":        "string",

@@ -47,6 +47,42 @@ func newNestedStopTestSession(t *testing.T, parentJobID string) (*Session, *jobM
 	return parent, childJM
 }
 
+func TestDelegateRelinkSynchronizesNestedShellParent(t *testing.T) {
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = childJM.store.Close()
+	})
+	child := &Session{id: "CHILD", jobManager: childJM}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 64; i++ {
+			relinkDelegateChildToJob(child, fmt.Sprintf("job_PARENT_%d", i))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 64; i++ {
+			run, err := childJM.newDelayedShell(shellArgs{Command: "true"})
+			if err != nil {
+				t.Errorf("newDelayedShell: %v", err)
+				return
+			}
+			childJM.discardDelayedShell(run)
+		}
+	}()
+	close(start)
+	wg.Wait()
+}
+
 func TestNestedShellForwardsJobStarted(t *testing.T) {
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
