@@ -668,7 +668,7 @@ func TestWatchSendRetryAfterIdleDeliversLatestCoalescedFrame(t *testing.T) {
 	}
 }
 
-func TestWatchSendRetryAfterResumedDelegateFinishesRetriesOriginalTarget(t *testing.T) {
+func TestWatchSendToResumedRunningDelegateSteersActiveRun(t *testing.T) {
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -710,33 +710,36 @@ func TestWatchSendRetryAfterResumedDelegateFinishesRetriesOriginalTarget(t *test
 		t.Fatalf("configure watch: %v", err)
 	}
 	sess.jobManager.feedJobOutput(source.JobID, []byte("server ready\n"))
-	pending := loadWatchSendRecord(t, sess.jobManager).Pending
-	if len(pending) != 1 {
-		t.Fatalf("pending while resumed delegate is busy = %+v, want one", pending)
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("pending after watch send to resumed delegate = %+v, want none", pending)
 	}
-	for _, state := range pending {
-		if state.Key.ResolvedSendTo != first.JobID {
-			t.Fatalf("pending send target = %q, want original job %q", state.Key.ResolvedSendTo, first.JobID)
-		}
+	_, childID, err := decodeRef(first.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	sub := sess.subagents.get(childID)
+	if sub == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	queue := sub.sess.SteeringQueueSnapshot()
+	if len(queue) != 1 {
+		t.Fatalf("resumed delegate steering queue = %+v, want one watch send", queue)
+	}
+	if !strings.Contains(queue[0].Text, "observe original target") || !strings.Contains(queue[0].Text, "output_match: server ready") {
+		t.Fatalf("resumed delegate steering message = %q, want watch message and frame", queue[0].Text)
 	}
 
 	_, _ = sess.jobManager.stop(second.JobID)
 	waitForShellDone(t, sess.jobManager, second.JobID)
 
 	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 0 {
-		t.Fatalf("pending after resumed delegate finished = %+v, want retried by original target", pending)
+		t.Fatalf("pending after resumed delegate finished = %+v, want none", pending)
 	}
-	var retried *jobstore.JobRecord
 	for _, rec := range sess.jobManager.list(listFilter{Type: jobstore.JobDelegate}) {
 		if rec.JobID != first.JobID && rec.JobID != second.JobID && rec.TranscriptRef == first.TranscriptRef {
-			retried = rec
+			t.Fatalf("watch send created unexpected retry delegate job %+v", rec)
 		}
 	}
-	if retried == nil {
-		t.Fatalf("missing retry-created delegate job for original target %s", first.JobID)
-	}
-	_, _ = sess.jobManager.stop(retried.JobID)
-	waitForShellDone(t, sess.jobManager, retried.JobID)
 }
 
 func TestWatchSendDeliveredAppendedOnlyAfterSendSucceeds(t *testing.T) {

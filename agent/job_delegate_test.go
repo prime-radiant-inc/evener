@@ -1751,6 +1751,51 @@ func TestWatchOriginatedRunningSendDoesNotMarkNonLiveDelegateFromWatch(t *testin
 	}
 }
 
+func TestWatchOriginatedRunningSendRejectedByClosingChildStaysBusy(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	sub := &subagent{
+		id:      child.ID(),
+		sess:    child,
+		running: true,
+		status:  SubagentRunning,
+		done:    make(chan struct{}),
+	}
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "closing child", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	t.Cleanup(func() {
+		sub.mu.Lock()
+		sub.running = false
+		sub.status = SubagentCompleted
+		sub.result = "closed"
+		sub.mu.Unlock()
+		if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+			t.Fatalf("cleanup finalizeDelegate: %v", err)
+		}
+		waitForShellDone(t, parent.jobManager, run.rec.JobID)
+	})
+	child.mu.Lock()
+	child.state = SessionClosed
+	child.mu.Unlock()
+
+	res := parent.sendRunningDelegateMessage(run.rec.JobID, "watch-originated steer", run.rec, true)
+	if res.Err != nil {
+		t.Fatalf("sendRunningDelegateMessage returned error: %v", res.Err)
+	}
+	if res.Action != "busy" || !res.WatchSendDeliveryClassSet || res.WatchSendDeliveryClass != watchSendBusy {
+		t.Fatalf("result = %+v, want retryable watch busy", res)
+	}
+	if run.fromWatch.Load() || sub.runFromWatch {
+		t.Fatalf("rejected watch send marked lifecycle fromWatch: run=%v sub=%v", run.fromWatch.Load(), sub.runFromWatch)
+	}
+	if queue := child.SteeringQueueSnapshot(); len(queue) != 0 {
+		t.Fatalf("closing child steering queue = %+v, want no delivery", queue)
+	}
+}
+
 func TestWatchOriginatedResumeMarksJobStartedFromWatch(t *testing.T) {
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
@@ -3764,7 +3809,7 @@ func TestSendDelegateMessageRunningDelegateTargetSteersWithoutNewJob(t *testing.
 	waitForShellDone(t, sess.jobManager, first.JobID)
 }
 
-func TestWatchOriginatedBusySendToRunningDelegateDoesNotMarkLifecycleFromWatch(t *testing.T) {
+func TestWatchOriginatedSendToRunningDelegateSteersAndMarksLifecycleFromWatch(t *testing.T) {
 	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -3809,8 +3854,20 @@ func TestWatchOriginatedBusySendToRunningDelegateDoesNotMarkLifecycleFromWatch(t
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
-	if !res.WatchSendDeliveryClassSet || res.WatchSendDeliveryClass != watchSendBusy {
-		t.Fatalf("sendDelegateMessage class = (%v, %v), want busy", res.WatchSendDeliveryClassSet, res.WatchSendDeliveryClass)
+	if res.Action != "sent" || res.JobID != first.JobID || res.Status != jobstore.StatusRunning || !res.RunningInBackground {
+		t.Fatalf("result = %+v, want sent to running delegate job %s", res, first.JobID)
+	}
+	_, childID, err := decodeRef(first.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	sub := sess.subagents.get(childID)
+	if sub == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	queue := sub.sess.SteeringQueueSnapshot()
+	if len(queue) != 1 || queue[0].Text != "watch-originated steer" {
+		t.Fatalf("steering queue = %+v, want watch-originated steer", queue)
 	}
 
 	_, _ = sess.jobManager.stop(first.JobID)
@@ -3831,11 +3888,11 @@ func TestWatchOriginatedBusySendToRunningDelegateDoesNotMarkLifecycleFromWatch(t
 	}
 
 gotEnd:
-	if end.FromWatch {
-		t.Fatalf("busy watch-originated send marked existing job finished FromWatch; event = %+v", end)
+	if !end.FromWatch {
+		t.Fatalf("watch-originated send did not mark existing job finished FromWatch; event = %+v", end)
 	}
-	if len(sent) != 1 {
-		t.Fatalf("ordinary running delegate completion watch sends = %d, want 1: %#v", len(sent), sent)
+	if len(sent) != 0 {
+		t.Fatalf("watch-originated running delegate completion watch sends = %d, want 0: %#v", len(sent), sent)
 	}
 }
 

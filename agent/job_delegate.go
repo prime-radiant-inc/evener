@@ -844,13 +844,14 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 		sub.mu.Unlock()
 		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but session %q is not live", target, childID))
 	}
-	if fromWatch {
-		if run == nil {
-			sub.mu.Unlock()
-			return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but runtime job is not live", target))
-		}
-		if rec.Status == jobstore.StatusRunning {
-			sub.mu.Unlock()
+	if fromWatch && run == nil {
+		sub.mu.Unlock()
+		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but runtime job is not live", target))
+	}
+	delivered := sub.sess.trySteer(message)
+	if !delivered {
+		sub.mu.Unlock()
+		if fromWatch {
 			return sendMessageResult{
 				Target:                    target,
 				JobID:                     rec.JobID,
@@ -858,15 +859,17 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 				Status:                    jobstore.StatusRunning,
 				RunningInBackground:       true,
 				Action:                    "busy",
+				Delivered:                 false,
 				WatchSendDeliveryClass:    watchSendBusy,
 				WatchSendDeliveryClassSet: true,
 			}
 		}
+		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but session is not accepting messages", target))
+	}
+	if fromWatch {
 		run.fromWatch.Store(true)
 		sub.runFromWatch = true
 	}
-
-	sub.sess.Steer(message)
 	sub.mu.Unlock()
 	return sendMessageResult{
 		Target:              target,
