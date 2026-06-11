@@ -98,12 +98,10 @@ type terminalJob struct {
 }
 
 type jobRuntimeHandle struct {
-	jobID      string
-	signal     func()
-	done       <-chan struct{}
-	output     *jobstore.OutputStore
-	stopStatus jobstore.Status
-	stopReason string
+	jobID  string
+	signal func()
+	done   <-chan struct{}
+	output *jobstore.OutputStore
 }
 
 // jobNotification is the in-memory wake record for a durable job notification.
@@ -183,19 +181,11 @@ func (jm *jobManager) close() error {
 	}
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
 	for _, run := range jm.running {
-		previousStopStatus := run.stopStatus
-		previousStopReason := run.stopReason
-		if run.stopStatus == "" {
-			run.stopStatus = jobstore.StatusCancelled
-			run.stopReason = "stopped_by_parent"
-		}
 		running = append(running, jobRuntimeHandle{
-			jobID:      run.rec.JobID,
-			signal:     run.signal,
-			done:       run.done,
-			output:     run.output,
-			stopStatus: previousStopStatus,
-			stopReason: previousStopReason,
+			jobID:  run.rec.JobID,
+			signal: run.signal,
+			done:   run.done,
+			output: run.output,
 		})
 	}
 	jm.mu.Unlock()
@@ -207,17 +197,19 @@ func (jm *jobManager) close() error {
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
 		jm.mu.Lock()
 		jm.closing = false
-		for _, handle := range running {
-			if run := jm.running[handle.jobID]; run != nil {
-				run.stopStatus = handle.stopStatus
-				run.stopReason = handle.stopReason
-			}
-		}
 		jm.mu.Unlock()
 		return err
 	}
 	jm.detachWatchConfigSnapshots(targets)
 	jm.removeWatchSendTerminalSnapshots(applied)
+	jm.mu.Lock()
+	for _, handle := range running {
+		if run := jm.running[handle.jobID]; run != nil && run.stopStatus == "" {
+			run.stopStatus = jobstore.StatusCancelled
+			run.stopReason = "stopped_by_parent"
+		}
+	}
+	jm.mu.Unlock()
 	for _, run := range running {
 		if run.signal != nil {
 			run.signal()
