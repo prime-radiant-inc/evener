@@ -70,6 +70,7 @@ func captureWatchSends(t *testing.T, jm *jobManager) func() []sendMessageArgs {
 	var mu sync.Mutex
 	var sent []sendMessageArgs
 
+	seedCommonWatchSendTargets(t, jm)
 	jm.mu.Lock()
 	original := jm.send
 	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {

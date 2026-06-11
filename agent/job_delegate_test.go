@@ -96,6 +96,42 @@ func TestCreateDelegateForegroundCompletesWithStructuredResult(t *testing.T) {
 	}
 }
 
+func TestCreateDelegateEmptyResultSchemaIsNoSchema(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return finalResponse("plain result")
+			},
+		},
+	})
+	sess := newDelegateTestSession(t, c)
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "plain delegate",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+		ResultSchema:   map[string]any{},
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", res.Err)
+	}
+	if res.StructuredResultValidSet {
+		t.Fatalf("structured_result_valid_set = true, want false for empty result_schema")
+	}
+	rec := findListedJob(sess.jobManager.list(listFilter{}), res.JobID)
+	if rec == nil {
+		t.Fatalf("job %q not found", res.JobID)
+	}
+	if rec.DelegateRestore != nil && rec.DelegateRestore.ResultSchema != nil {
+		t.Fatalf("durable result_schema = %#v, want nil", rec.DelegateRestore.ResultSchema)
+	}
+	if rec.StructuredResultValid != nil || rec.StructuredResultReason != "" {
+		t.Fatalf("durable structured result fields = valid:%v reason:%q, want unset", rec.StructuredResultValid, rec.StructuredResultReason)
+	}
+}
+
 func TestCreateDelegateBackgroundReturnsRunningJob(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
@@ -3752,6 +3788,7 @@ func TestWatchOriginatedBusySendToRunningDelegateDoesNotMarkLifecycleFromWatch(t
 	}
 
 	var sent []sendMessageArgs
+	seedCommonWatchSendTargets(t, sess.jobManager)
 	sess.jobManager.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}

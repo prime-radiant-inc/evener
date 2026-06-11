@@ -762,6 +762,9 @@ func delegateResultSchemaMap(schema any) map[string]any {
 		return nil
 	}
 	if m, ok := schema.(map[string]any); ok {
+		if len(m) == 0 {
+			return nil
+		}
 		return cloneMap(m)
 	}
 	b, err := json.Marshal(schema)
@@ -770,6 +773,9 @@ func delegateResultSchemaMap(schema any) map[string]any {
 	}
 	var out map[string]any
 	if err := json.Unmarshal(b, &out); err != nil {
+		return nil
+	}
+	if len(out) == 0 {
 		return nil
 	}
 	return out
@@ -1458,6 +1464,9 @@ func cloneDelegateResultSchema(schema any) any {
 	if schema == nil {
 		return nil
 	}
+	if m, ok := schema.(map[string]any); ok && len(m) == 0 {
+		return nil
+	}
 	b, err := json.Marshal(schema)
 	if err != nil {
 		return schema
@@ -1465,6 +1474,9 @@ func cloneDelegateResultSchema(schema any) any {
 	var cloned any
 	if err := json.Unmarshal(b, &cloned); err != nil {
 		return schema
+	}
+	if m, ok := cloned.(map[string]any); ok && len(m) == 0 {
+		return nil
 	}
 	return cloned
 }

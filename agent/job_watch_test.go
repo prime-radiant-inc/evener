@@ -55,6 +55,23 @@ func TestConfigureWatchTargetNotFound(t *testing.T) {
 	}
 }
 
+func TestConfigureWatchSendToMissingJobFailsTargetNotFound(t *testing.T) {
+	jm := newTestJM(t)
+
+	_, err := jm.configureWatch(watchArgs{
+		Target: "caller",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "job_missing_delegate", Message: "observe"},
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
+		t.Fatalf("error = %v, want target_not_found", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0", jm.watchCount())
+	}
+}
+
 func TestConfigureWatchRejectsUnknownEventKinds(t *testing.T) {
 	jm := newTestJM(t)
 
@@ -302,6 +319,7 @@ func TestEventWatchIgnoresUnwatchedKind(t *testing.T) {
 func TestEventWatchIgnoresWatchOriginatedSubagentEvents(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
@@ -328,6 +346,7 @@ func TestEventWatchIgnoresWatchOriginatedSubagentEvents(t *testing.T) {
 func TestWatchOriginSuppressesDelegateLifecycleWatchSends(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
@@ -351,6 +370,7 @@ func TestWatchOriginSuppressesDelegateLifecycleWatchSends(t *testing.T) {
 func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
@@ -456,6 +476,7 @@ func TestConcreteWatchFlushesBeforeTerminalNotification(t *testing.T) {
 func TestWatchSendDeliversFrameToTarget(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
@@ -492,6 +513,9 @@ func TestWatchSendDeliversFrameToTarget(t *testing.T) {
 func TestWatchSendBatchContinuesAfterNonTerminalPersistenceFailure(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
+	seedCommonWatchSendTargets(t, jm)
+	seedWatchSendDelegateTarget(t, jm, "job_obs_a")
+	seedWatchSendDelegateTarget(t, jm, "job_obs_b")
 	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
@@ -540,6 +564,7 @@ func TestWatchSendBatchContinuesAfterNonTerminalPersistenceFailure(t *testing.T)
 func TestWatchSendBusyKeepsPendingAndEmitsNoDiagnostic(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return busyWatchSendResult()
@@ -573,6 +598,7 @@ func TestWatchSendRetryAfterIdleDeliversLatestCoalescedFrame(t *testing.T) {
 	target := createRunningDelegateWatchTarget(t, jm)
 	busy := true
 	var delivered []sendMessageArgs
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		if busy {
 			return busyWatchSendResult()
@@ -701,6 +727,7 @@ func TestWatchSendDeliveredAppendedOnlyAfterSendSucceeds(t *testing.T) {
 		eventKinds = append(eventKinds, e.Kind)
 		return realAppend(e)
 	}
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		eventsBeforeSendReturn = append(eventsBeforeSendReturn, eventKinds...)
 		return sendMessageResult{}
@@ -732,6 +759,7 @@ func TestWatchSendCrashAfterSuccessBeforeDeliveredRetriesSameDeliveryID(t *testi
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
 	var sent []sendMessageArgs
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
@@ -1415,6 +1443,7 @@ func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testi
 		t.Fatalf("new job manager: %v", err)
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return hardWatchSendResult(errors.New("target_not_messageable"))
 	}
@@ -1470,6 +1499,7 @@ func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testi
 func TestWatchSendTerminalOrderingSendsFinalFrameBeforeTerminalNotification(t *testing.T) {
 	jm := newTestJM(t)
 	var order []string
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		order = append(order, "send")
 		return sendMessageResult{}
@@ -1503,6 +1533,7 @@ func TestWatchSendTerminalOrderingSendsFinalFrameBeforeTerminalNotification(t *t
 func TestWatchSendTerminalPendingPersistenceFailureRetriesFinalization(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
@@ -1536,11 +1567,12 @@ func TestWatchSendTerminalPendingPersistenceFailureRetriesFinalization(t *testin
 		t.Fatalf("final watch send delivered despite failed pending persistence: %#v", sent)
 	}
 	jobs := jm.list(listFilter{})
-	if len(jobs) != 1 || jobs[0].Status != jobstore.StatusCompleted {
+	job := findListedJob(jobs, rec.JobID)
+	if job == nil || job.Status != jobstore.StatusCompleted {
 		t.Fatalf("job state after failed finalization = %+v, want terminal retained", jobs)
 	}
-	if jobs[0].NotifyState != "" && jobs[0].NotifyState != jobstore.NotifyNotArmed {
-		t.Fatalf("notify state after failed finalization = %q, want not armed", jobs[0].NotifyState)
+	if job.NotifyState != "" && job.NotifyState != jobstore.NotifyNotArmed {
+		t.Fatalf("notify state after failed finalization = %q, want not armed", job.NotifyState)
 	}
 
 	blocked = false
@@ -1554,7 +1586,8 @@ func TestWatchSendTerminalPendingPersistenceFailureRetriesFinalization(t *testin
 		t.Fatalf("retried final watch frame = %q, want original final trigger", sent[0].Message)
 	}
 	jobs = jm.list(listFilter{})
-	if len(jobs) != 1 || jobs[0].NotifyState != jobstore.NotifyPending {
+	job = findListedJob(jobs, rec.JobID)
+	if job == nil || job.NotifyState != jobstore.NotifyPending {
 		t.Fatalf("job state after retry finalization = %+v, want notification pending", jobs)
 	}
 }
@@ -1562,6 +1595,9 @@ func TestWatchSendTerminalPendingPersistenceFailureRetriesFinalization(t *testin
 func TestWatchSendTerminalFlushBatchContinuesAfterPersistenceFailure(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
+	seedCommonWatchSendTargets(t, jm)
+	seedWatchSendDelegateTarget(t, jm, "job_obs_a")
+	seedWatchSendDelegateTarget(t, jm, "job_obs_b")
 	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
@@ -1623,7 +1659,8 @@ func TestWatchSendTerminalFlushBatchContinuesAfterPersistenceFailure(t *testing.
 		t.Fatal("failed terminal delivery was not retained for finalization retry")
 	}
 	jobs := jm.list(listFilter{})
-	if len(jobs) != 1 || jobs[0].NotifyState != "" && jobs[0].NotifyState != jobstore.NotifyNotArmed {
+	job := findListedJob(jobs, rec.JobID)
+	if job == nil || job.NotifyState != "" && job.NotifyState != jobstore.NotifyNotArmed {
 		t.Fatalf("job state after partial terminal failure = %+v, want terminal notification not armed", jobs)
 	}
 
@@ -1642,6 +1679,7 @@ func TestWatchSendTerminalFlushBatchContinuesAfterPersistenceFailure(t *testing.
 func TestWatchSendToWatchedDeliversFrameToConcreteTarget(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
@@ -1669,6 +1707,7 @@ func TestWatchSendToWatchedDeliversFrameToConcreteTarget(t *testing.T) {
 func TestWatchSendToWatchedWildcardJobNotificationDeliversConcreteTarget(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
@@ -1694,6 +1733,7 @@ func TestWatchSendToWatchedWildcardJobNotificationDeliversConcreteTarget(t *test
 
 func TestWatchSendPendingSnapshotCoalescesAndDoesNotRereadOutput(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -1738,6 +1778,7 @@ func TestWatchSendPendingSnapshotCoalescesAndDoesNotRereadOutput(t *testing.T) {
 
 func TestWatchSendPendingUsesTriggerTimeFrameSnapshot(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -1780,6 +1821,7 @@ func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *
 		t.Fatalf("new job manager: %v", err)
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -1852,6 +1894,7 @@ func TestWatchSendRestoreLoadsPendingStateForFutureRetry(t *testing.T) {
 		t.Fatalf("new job manager: %v", err)
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -1907,6 +1950,7 @@ func TestWatchSendRestoreClearDropsPendingState(t *testing.T) {
 		t.Fatalf("new job manager: %v", err)
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -1951,6 +1995,7 @@ func TestWatchSendRestoreClearDropsWatchedTargetedPendingState(t *testing.T) {
 		t.Fatalf("new job manager: %v", err)
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -1995,6 +2040,7 @@ func TestWatchSendRestoreReconfigureDropsWatchedPendingState(t *testing.T) {
 		t.Fatalf("new job manager: %v", err)
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2055,6 +2101,7 @@ func TestWatchSendRestoreReconfigureDropsWatchedPendingState(t *testing.T) {
 
 func TestWatchSendClearDropsPending(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2081,6 +2128,7 @@ func TestWatchSendClearDropsPending(t *testing.T) {
 
 func TestWatchSendWatchedTargetPruneDropsPending(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2109,6 +2157,7 @@ func TestWatchSendWatchedTargetPruneDropsPending(t *testing.T) {
 
 func TestWatchSendPruneAppendFailureKeepsPendingReachable(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2165,6 +2214,7 @@ func TestWatchSendPruneAppendFailureKeepsPendingReachable(t *testing.T) {
 
 func TestWatchSendTerminalFlushPersistsAlreadyFiredPending(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2201,6 +2251,7 @@ func TestWatchSendTerminalFlushPersistsAlreadyFiredPending(t *testing.T) {
 
 func TestWatchSendTerminalFlushCloseDropsPending(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2234,6 +2285,7 @@ func TestWatchSendTerminalFlushCloseDropsPending(t *testing.T) {
 
 func TestWatchSendTerminalFlushConfigureClearDropsPending(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2288,6 +2340,7 @@ func TestWatchSendTerminalExpiryWithoutPendingDoesNotRetainDetachedConfig(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			jm := newTestJM(t)
 			rec, _ := jm.createShell(createShellOpts{Command: "x"})
+			seedWatchSendDelegateTarget(t, jm, "job_obs")
 			tc.args.Target = rec.JobID
 			if _, err := jm.configureWatch(tc.args); err != nil {
 				t.Fatalf("configure: %v", err)
@@ -2313,6 +2366,7 @@ func TestWatchSendTerminalExpiryWithoutPendingDoesNotRetainDetachedConfig(t *tes
 
 func TestWatchSendTerminalExpiryWithInflightSendRemainsClearable(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2359,6 +2413,7 @@ func TestWatchSendClearNormalizesSendTarget(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			jm := newTestJM(t)
 			rec, _ := jm.createShell(createShellOpts{Command: "x"})
+			seedWatchSendDelegateTarget(t, jm, "job_obs")
 			if _, err := jm.configureWatch(watchArgs{
 				Target:      rec.JobID,
 				OutputMatch: "ready",
@@ -2382,6 +2437,7 @@ func TestWatchSendClearNormalizesSendTarget(t *testing.T) {
 
 func TestWatchSendTerminalFlushWatchedTargetedClearDropsPending(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2423,6 +2479,7 @@ func TestWatchSendTerminalFlushClearBeforeFailedSendDoesNotPersistPending(t *tes
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	cleared := false
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		if !cleared {
 			cleared = true
@@ -2456,6 +2513,7 @@ func TestWatchSendTerminalFlushClearBeforeFailedSendDoesNotPersistPending(t *tes
 
 func TestWatchSendTerminalExpiryCloseDropsExistingPending(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2494,6 +2552,7 @@ func TestWatchSendTerminalExpiryCloseDropsExistingPending(t *testing.T) {
 func TestWatchSendStaleDeliveryClearedDuringSendDoesNotPersistPending(t *testing.T) {
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
 			t.Fatalf("clear during send: %v", err)
@@ -2519,6 +2578,7 @@ func TestWatchSendStaleDeliveryClearedDuringSendDoesNotPersistPending(t *testing
 func TestWatchSendStaleDeliveryReplacedDuringSendDoesNotPersistPending(t *testing.T) {
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		if _, err := jm.configureWatch(watchArgs{
 			Target:      rec.JobID,
@@ -2548,6 +2608,7 @@ func TestWatchSendStaleDeliveryReplacedDuringSendDoesNotPersistPending(t *testin
 func TestWatchSendPendingDeliveredRemovesBeforeNextFailure(t *testing.T) {
 	jm := newTestJM(t)
 	failSend := true
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		if failSend {
 			return sendMessageResult{Err: errors.New("busy")}
@@ -2588,6 +2649,7 @@ func TestWatchSendPendingDeliveredRemovesBeforeNextFailure(t *testing.T) {
 func TestWatchSendOverlapOlderDeliveredDoesNotRemoveNewerPending(t *testing.T) {
 	jm := newTestJM(t)
 	sendErr := errors.New("busy")
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: sendErr}
 	}
@@ -2611,6 +2673,7 @@ func TestWatchSendOverlapOlderDeliveredDoesNotRemoveNewerPending(t *testing.T) {
 	}
 
 	sendErr = nil
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{}
 	}
@@ -2632,6 +2695,7 @@ func TestWatchSendOverlapOlderDeliveredDoesNotRemoveNewerPending(t *testing.T) {
 
 func TestWatchSendOverlapOlderFailedDoesNotOverwriteNewerPending(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2673,6 +2737,7 @@ func TestWatchSendOverlapOlderFailedDoesNotOverwriteNewerPending(t *testing.T) {
 
 func TestWatchSendStaleFailedDeliveryAfterNewerDeliveredDoesNotPersistPending(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{}
 	}
@@ -2692,6 +2757,7 @@ func TestWatchSendStaleFailedDeliveryAfterNewerDeliveredDoesNotPersistPending(t 
 		t.Fatalf("pending after newer delivered = %d, want 0", len(pending))
 	}
 
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2767,6 +2833,7 @@ func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *te
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			jm := newTestJM(t)
+			seedCommonWatchSendTargets(t, jm)
 			jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 				return sendMessageResult{Err: errors.New("busy")}
 			}
@@ -2809,6 +2876,7 @@ func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *te
 
 func TestWatchSendAppendFailureDuringClearKeepsPendingInMemory(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2867,6 +2935,7 @@ func TestWatchSendAppendFailureDuringClearKeepsPendingInMemory(t *testing.T) {
 
 func TestWatchSendPartialDroppedAppendReconcilesSuccessfulPrefix(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2929,6 +2998,7 @@ func TestWatchSendPartialDroppedAppendReconcilesSuccessfulPrefix(t *testing.T) {
 
 func TestWatchSendAppendFailureDuringReplaceLeavesOldWatchReachable(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -2996,6 +3066,7 @@ func TestWatchSendAppendFailureDuringReplaceLeavesOldWatchReachable(t *testing.T
 
 func TestWatchSendAppendFailureDuringCloseKeepsPendingReachable(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -3080,6 +3151,7 @@ func TestWatchSendAppendFailureDuringCloseKeepsPendingReachable(t *testing.T) {
 
 func TestWatchSendAppendFailureDuringDeliveredKeepsPendingInMemory(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -3103,6 +3175,7 @@ func TestWatchSendAppendFailureDuringDeliveredKeepsPendingInMemory(t *testing.T)
 		}
 		return realAppend(e)
 	}
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{}
 	}
@@ -3119,6 +3192,7 @@ func TestWatchSendAppendFailureDuringDeliveredKeepsPendingInMemory(t *testing.T)
 
 func TestWatchSendSettledTombstonesAreBounded(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{}
 	}
@@ -3147,6 +3221,7 @@ func TestWatchSendSettledTombstonesAreBounded(t *testing.T) {
 
 func TestWatchSendAppendFailureDuringEvictionKeepsMemoryAndDurableConsistent(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -3279,6 +3354,7 @@ func waitForTestError(t *testing.T, ch <-chan error, label string) error {
 
 func TestWatchSendCapEvictsOldestPendingAndNotifies(t *testing.T) {
 	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
@@ -3441,6 +3517,7 @@ func TestWatchSendToWatchedRejectsSessionEventsWithoutConcreteTarget(t *testing.
 		t.Run(eventName, func(t *testing.T) {
 			jm := newTestJM(t)
 			var sent []sendMessageArgs
+			seedCommonWatchSendTargets(t, jm)
 			jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 				sent = append(sent, a)
 				return sendMessageResult{}
@@ -3468,6 +3545,7 @@ func TestWatchSendToWatchedRejectsSessionEventsWithoutConcreteTarget(t *testing.
 func TestWatchSendToWatchedAllowsWildcardJobNotificationTrigger(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{Delivered: true, Action: "sent"}
@@ -3493,9 +3571,39 @@ func TestWatchSendToWatchedAllowsWildcardJobNotificationTrigger(t *testing.T) {
 	}
 }
 
+func seedCommonWatchSendTargets(t *testing.T, jm *jobManager) {
+	t.Helper()
+	seedWatchSendDelegateTarget(t, jm, "job_obs")
+}
+
+func seedWatchSendDelegateTarget(t *testing.T, jm *jobManager, jobID string) {
+	t.Helper()
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load jobs before seeding watch-send target: %v", err)
+	}
+	if rec := recs[jobID]; rec != nil {
+		return
+	}
+	now := jm.now()
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               now,
+		JobID:            jobID,
+		Type:             jobstore.JobDelegate,
+		Status:           jobstore.StatusRunning,
+		OwnerSessionID:   jm.sessionID,
+		VisibleToSession: jm.sessionID,
+		StartedAt:        &now,
+	}); err != nil {
+		t.Fatalf("seed watch-send delegate target %q: %v", jobID, err)
+	}
+}
+
 func TestWatchSendFailureNotifiesCaller(t *testing.T) {
 	jm := newTestJM(t)
 	sendErr := errors.New("target_not_messageable: job_obs")
+	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return hardWatchSendResult(sendErr)
 	}

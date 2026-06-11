@@ -355,7 +355,7 @@ func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error 
 		}
 		return nil
 	}
-	return nil
+	return watchTargetNotFoundError(target)
 }
 
 func (jm *jobManager) validateWatchedSendTarget(a watchArgs) error {
