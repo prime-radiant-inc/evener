@@ -1505,10 +1505,13 @@ func TestJobToolsDefinitions(t *testing.T) {
 		t.Fatalf("job_list cursor type = %#v, want string/null", cursor["type"])
 	}
 	stopProps := tooldefs.DefJobStop().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"job_id", "signal", "block", "block_timeout_ms", "include_children"} {
+	for _, param := range []string{"job_id", "block", "block_timeout_ms", "include_children"} {
 		if _, ok := stopProps[param]; !ok {
 			t.Fatalf("job_stop missing param %q", param)
 		}
+	}
+	if _, ok := stopProps["signal"]; ok {
+		t.Fatalf("job_stop exposes unsupported signal parameter")
 	}
 	delegateProps := tooldefs.DefDelegate([]string{"reviewer"}).Parameters["properties"].(map[string]any)
 	for _, param := range []string{"task", "background", "agent_type", "model", "reasoning_effort", "block_timeout_ms", "result_schema"} {
@@ -1818,7 +1821,7 @@ func TestJobListAcceptsNullCursor(t *testing.T) {
 	}
 }
 
-func TestJobStopRejectsUnsupportedSignal(t *testing.T) {
+func TestJobStopSchemaRejectsUnsupportedSignal(t *testing.T) {
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -1846,10 +1849,11 @@ func TestJobStopRejectsUnsupportedSignal(t *testing.T) {
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"signal":"KILL"}`, shellOut.JobID)),
 	})
 	if !res.IsError {
-		t.Fatalf("job_stop succeeded, want error: %s", res.Output)
+		t.Fatalf("job_stop accepted unsupported signal argument: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "signal is not supported") {
-		t.Fatalf("job_stop error = %q, want unsupported signal", res.Output)
+	rec := loadShellRecord(t, s.jobManager, shellOut.JobID)
+	if rec.Status != jobstore.StatusRunning {
+		t.Fatalf("job_stop with unsupported signal changed job state to %+v, want still running", rec)
 	}
 }
 

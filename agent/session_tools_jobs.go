@@ -358,9 +358,6 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 	if jobID == "" {
 		return "", errors.New("job_id is required")
 	}
-	if signal := strings.TrimSpace(stringArg(args, "signal")); signal != "" {
-		return "", errors.New("signal is not supported for job_stop in this phase")
-	}
 	timeoutMS, err := jobBlockTimeoutMS(args)
 	if err != nil {
 		return "", err
