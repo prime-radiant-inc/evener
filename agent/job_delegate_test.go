@@ -2555,7 +2555,6 @@ func TestRuntimeLostDelegateResumeAfterRestoreCreatesNewJobFromRetainedState(t *
 	oldRec := loadShellRecord(t, s.jobManager, first.JobID)
 	childID := oldRec.DelegateRestore.ChildSessionID
 	setStoredDelegateTerminalStatus(t, s, oldRec, jobstore.StatusStopped, "runtime_lost")
-	oldRec = loadShellRecord(t, s.jobManager, first.JobID)
 	parentMeta := s.Meta()
 	stateDir := s.stateDir
 	s.Close()
@@ -4159,12 +4158,6 @@ func requireDelegateRestorePreflight(t *testing.T, s *Session, rec *jobstore.Job
 		t.Fatalf("delegate restore preflight = %+v, want resumable with preflight", assessment)
 	}
 	return assessment.Preflight
-}
-
-func seedRetainedChildSession(t *testing.T, parent *Session) string {
-	t.Helper()
-	childID, _ := seedRetainedChildSessionWithWorkingDir(t, parent)
-	return childID
 }
 
 func seedRetainedChildSessionWithWorkingDir(t *testing.T, parent *Session) (string, string) {

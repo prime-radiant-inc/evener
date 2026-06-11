@@ -768,7 +768,7 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 	// re-enter session event emission.
 	deliveries = jm.snapshotWatchSendFrames(deliveries)
 	jm.enqueueWatchNotifications(notifications)
-	jm.deliverWatchSends(context.Background(), deliveries)
+	_ = jm.deliverWatchSends(context.Background(), deliveries)
 }
 
 func isWatchOriginEventData(data events.EventData) bool {
@@ -831,7 +831,7 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
 
 	deliveries = jm.snapshotWatchSendFrames(deliveries)
 	jm.enqueueWatchNotifications(notifications)
-	jm.deliverWatchSends(context.Background(), deliveries)
+	_ = jm.deliverWatchSends(context.Background(), deliveries)
 }
 
 func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, []watchSendDelivery) {
@@ -916,7 +916,7 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 
 	deliveries = jm.snapshotWatchSendFrames(deliveries)
 	jm.enqueueWatchNotifications(notifications)
-	jm.deliverWatchSends(context.Background(), deliveries)
+	_ = jm.deliverWatchSends(context.Background(), deliveries)
 	return true
 }
 

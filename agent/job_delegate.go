@@ -508,22 +508,23 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 	if s.stateDir == "" {
 		return nil, errors.New("state directory is not configured")
 	}
-	if existing, pending, started, err := s.subagents.beginReconstruction(childID); err != nil {
+	existing, pending, started, err := s.subagents.beginReconstruction(childID)
+	if err != nil {
 		return nil, err
-	} else if !started {
+	}
+	if !started {
 		if existing != nil {
 			return existing, nil
 		}
 		return pending.wait()
-	} else {
-		var tracked *subagent
-		var restoreErr error
-		defer func() {
-			s.subagents.finishReconstruction(childID, pending, tracked, restoreErr)
-		}()
-		tracked, restoreErr = s.restoreTerminalDelegateChildClaimed(rec, childID, preflight)
-		return tracked, restoreErr
 	}
+	var tracked *subagent
+	var restoreErr error
+	defer func() {
+		s.subagents.finishReconstruction(childID, pending, tracked, restoreErr)
+	}()
+	tracked, restoreErr = s.restoreTerminalDelegateChildClaimed(rec, childID, preflight)
+	return tracked, restoreErr
 }
 
 func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, childID string, preflight *delegateRestorePreflight) (*subagent, error) {
@@ -732,7 +733,7 @@ func restoredDelegateRequiredTools(desc *jobstore.DelegateRestoreDescriptor) []s
 		return nil
 	}
 	var required []string
-	if !(len(desc.FrozenToolNames) == 1 && desc.FrozenToolNames[0] == "*") {
+	if len(desc.FrozenToolNames) != 1 || desc.FrozenToolNames[0] != "*" {
 		required = append(required, desc.FrozenToolNames...)
 	}
 	required = appendUniqueStrings(required, desc.ExplicitToolGrants...)
@@ -1065,21 +1066,6 @@ func parseSpawnedAgentID(spawned any) (string, error) {
 	return out.AgentID, nil
 }
 
-func (s *Session) attachAndBridgeDelegateJob(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any) (*runningJob, <-chan error, <-chan struct{}, error) {
-	sub.mu.Lock()
-	done := sub.done
-	sub.mu.Unlock()
-	if done == nil {
-		return nil, nil, nil, fmt.Errorf("delegate session %q has no active run", childID)
-	}
-	run, err := s.attachDelegateJobWithID(jm, childID, task, sub, jobID, resultSchema, false)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	finalizeErr, bridgedDone := s.bridgeDelegateFinalization(run.rec.JobID, childID, sub)
-	return run, finalizeErr, bridgedDone, nil
-}
-
 func (s *Session) bridgeDelegateFinalization(jobID, childID string, sub *subagent) (<-chan error, <-chan struct{}) {
 	sub.mu.Lock()
 	done := sub.done
@@ -1255,17 +1241,6 @@ func (s *Session) resumedDelegateRestoreDescriptor(jobID, childID, transcriptRef
 		desc.ResultSchema = cloneDelegateResultSchema(resultSchema)
 	}
 	return desc
-}
-
-func cancelDelegateChild(s *Session, childID string) {
-	if s == nil {
-		return
-	}
-	sub := s.subagents.get(childID)
-	if sub == nil {
-		return
-	}
-	cancelDelegateSub(sub)
 }
 
 func cancelDelegateSub(sub *subagent) {
