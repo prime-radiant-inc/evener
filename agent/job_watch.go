@@ -1693,6 +1693,12 @@ func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliv
 	if !rec.Status.IsTerminal() || rec.Resumable == nil || !*rec.Resumable {
 		return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate job %q is %s", target, rec.Status)
 	}
+	if rec.DelegateRestore != nil {
+		assessment := s.assessDelegateResumability(rec, delegateResumabilityProjection)
+		if !assessment.Resumable {
+			return watchSendHardFailure, "target_not_resumable:" + assessment.Reason
+		}
+	}
 	// Delivering to a terminal delegate resumes it; restore may only project
 	// resumability, so keep the frame pending for an explicit later send/retry.
 	return watchSendBusy, ""
