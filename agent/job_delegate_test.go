@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/skill"
 	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
@@ -321,8 +322,8 @@ func TestCreateDelegateDescriptorDurableBeforeFirstModelRequest(t *testing.T) {
 	if !ok || schema["type"] != "object" {
 		t.Fatalf("descriptor result_schema = %#v, want object schema", desc.ResultSchema)
 	}
-	if len(desc.ExplicitToolGrants) != 0 || len(desc.FrozenSkillNames) != 0 || desc.FrozenTaskPrompt != "" {
-		t.Fatalf("descriptor optional fields must be empty when omitted: grants=%v skills=%v task_prompt=%q", desc.ExplicitToolGrants, desc.FrozenSkillNames, desc.FrozenTaskPrompt)
+	if len(desc.ExplicitToolGrants) != 0 || len(desc.FrozenSkillNames) != 0 || len(desc.FrozenSkillBodies) != 0 || desc.FrozenTaskPrompt != "" {
+		t.Fatalf("descriptor optional fields must be empty when omitted: grants=%v skills=%v bodies=%v task_prompt=%q", desc.ExplicitToolGrants, desc.FrozenSkillNames, desc.FrozenSkillBodies, desc.FrozenTaskPrompt)
 	}
 
 	releaseOnce.Do(func() { close(releaseModelResponse) })
@@ -380,8 +381,8 @@ func TestCreateDelegateDescriptorOmitsOptionalLaunchDefaults(t *testing.T) {
 	if desc.AgentType != "" || desc.RequestedModel != "" || desc.ReasoningEffort != "" {
 		t.Fatalf("optional launch settings = agent_type %q requested_model %q reasoning %q, want empty", desc.AgentType, desc.RequestedModel, desc.ReasoningEffort)
 	}
-	if len(desc.ExplicitToolGrants) != 0 || len(desc.FrozenSkillNames) != 0 || desc.FrozenTaskPrompt != "" {
-		t.Fatalf("optional descriptor fields = grants %v skills %v task_prompt %q, want empty", desc.ExplicitToolGrants, desc.FrozenSkillNames, desc.FrozenTaskPrompt)
+	if len(desc.ExplicitToolGrants) != 0 || len(desc.FrozenSkillNames) != 0 || len(desc.FrozenSkillBodies) != 0 || desc.FrozenTaskPrompt != "" {
+		t.Fatalf("optional descriptor fields = grants %v skills %v bodies %v task_prompt %q, want empty", desc.ExplicitToolGrants, desc.FrozenSkillNames, desc.FrozenSkillBodies, desc.FrozenTaskPrompt)
 	}
 
 	releaseOnce.Do(func() { close(release) })
@@ -1432,6 +1433,21 @@ func TestSendDelegateMessageResumedJobCopiesCompleteDelegateDescriptor(t *testin
 			PluginName:   "test-plugin",
 		},
 	}
+	skillDir := filepath.Join(workDir, "skills", "review-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	const reviewSkillBody = "Prefer concise review findings."
+	skillFile := filepath.Join(skillDir, "SKILL.md")
+	if err := os.WriteFile(skillFile, []byte("---\nname: review-skill\ndescription: Review guidance\n---\n"+reviewSkillBody+"\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	sess.skills["review-skill"] = skill.SkillMeta{
+		Name:        "review-skill",
+		Description: "Review guidance",
+		Dir:         skillDir,
+		SkillFile:   skillFile,
+	}
 	resultSchema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -1508,6 +1524,9 @@ func TestSendDelegateMessageResumedJobCopiesCompleteDelegateDescriptor(t *testin
 	}
 	if len(desc.FrozenSkillNames) != 1 || desc.FrozenSkillNames[0] != "review-skill" {
 		t.Fatalf("resumed frozen skill names = %+v, want [review-skill]", desc.FrozenSkillNames)
+	}
+	if len(desc.FrozenSkillBodies) != 1 || !strings.Contains(desc.FrozenSkillBodies[0], reviewSkillBody) {
+		t.Fatalf("resumed frozen skill bodies = %+v, want original review skill body", desc.FrozenSkillBodies)
 	}
 	if desc.WorkingDir != workDir || desc.LocalEnvPolicy != "core_only" {
 		t.Fatalf("resumed env fields = %q/%q, want %q/core_only", desc.WorkingDir, desc.LocalEnvPolicy, workDir)
@@ -2549,6 +2568,7 @@ func TestJobSendMessageReconstructsDelegateFrozenSkills(t *testing.T) {
 	}
 	rec.DelegateRestore.WorkingDir = childWorkDir
 	rec.DelegateRestore.FrozenSkillNames = []string{"review-skill"}
+	rec.DelegateRestore.FrozenSkillBodies = []string{skillBody}
 	replaceStoredDelegateRecord(t, s, rec)
 	parentMeta := s.Meta()
 	stateDir := s.stateDir
@@ -2580,6 +2600,76 @@ func TestJobSendMessageReconstructsDelegateFrozenSkills(t *testing.T) {
 	}
 	if !requestMessagesContain(request, skillBody) {
 		t.Fatalf("first restored request missing frozen skill body %q: %+v", skillBody, request.Messages)
+	}
+}
+
+func TestJobSendMessageReconstructsDelegateFrozenSkillBodiesFromDescriptor(t *testing.T) {
+	var request llm.Request
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				request = req
+				return communicateWithDefaultOutput("restored descriptor skill complete")
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	childID := rec.DelegateRestore.ChildSessionID
+	childWorkDir := t.TempDir()
+	skillDir := filepath.Join(childWorkDir, "skills", "review-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	const frozenBody = "Use the descriptor-frozen reviewer checklist before responding."
+	const currentBody = "Use the changed current reviewer checklist instead."
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: review-skill\ndescription: Review guidance\n---\n"+currentBody+"\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	rec.DelegateRestore.WorkingDir = childWorkDir
+	rec.DelegateRestore.FrozenSkillNames = []string{"review-skill"}
+	rec.DelegateRestore.FrozenSkillBodies = []string{frozenBody}
+	replaceStoredDelegateRecord(t, s, rec)
+	parentMeta := s.Meta()
+	stateDir := s.stateDir
+	s.Close()
+
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), parentMeta, RestoreSessionConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+
+	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         rec.JobID,
+		Message:        "continue with the descriptor checklist",
+		Background:     false,
+		BackgroundSet:  true,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+
+	sub := restored.subagents.get(childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("reconstructed child runtime = %+v, want retained child session", sub)
+	}
+	bodies := sub.sess.cfg.spawn.activatedSkillBodies
+	if len(bodies) != 1 || !strings.Contains(bodies[0], frozenBody) {
+		t.Fatalf("activated skill bodies = %#v, want descriptor frozen body", bodies)
+	}
+	if strings.Contains(bodies[0], currentBody) {
+		t.Fatalf("activated skill body used current skill file content: %#v", bodies)
+	}
+	if !requestMessagesContain(request, frozenBody) {
+		t.Fatalf("first restored request missing descriptor frozen skill body %q: %+v", frozenBody, request.Messages)
+	}
+	if requestMessagesContain(request, currentBody) {
+		t.Fatalf("first restored request used current skill file body %q: %+v", currentBody, request.Messages)
 	}
 }
 

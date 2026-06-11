@@ -149,6 +149,7 @@ func TestDelegateRestoreDescriptorSurvivesStoreReopenAndFold(t *testing.T) {
 		FrozenTaskPrompt:   "Check the patch.",
 		FrozenToolNames:    []string{"read_file", "task_list"},
 		FrozenSkillNames:   []string{"review-skill"},
+		FrozenSkillBodies:  []string{"Use the stored review checklist."},
 		WorkingDir:         "/work",
 		LocalEnvPolicy:     "core_only",
 		ResultSchema:       map[string]any{"type": "object", "required": []any{"message"}},
@@ -201,6 +202,12 @@ func TestDelegateRestoreDescriptorSurvivesStoreReopenAndFold(t *testing.T) {
 	}
 	if len(got.FrozenToolNames) != 2 || got.FrozenToolNames[0] != "read_file" || got.FrozenToolNames[1] != "task_list" {
 		t.Fatalf("frozen tool names = %+v", got.FrozenToolNames)
+	}
+	if len(got.FrozenSkillNames) != 1 || got.FrozenSkillNames[0] != "review-skill" {
+		t.Fatalf("frozen skill names = %+v", got.FrozenSkillNames)
+	}
+	if len(got.FrozenSkillBodies) != 1 || got.FrozenSkillBodies[0] != "Use the stored review checklist." {
+		t.Fatalf("frozen skill bodies = %+v", got.FrozenSkillBodies)
 	}
 	if len(got.ExplicitToolGrants) != 1 || got.ExplicitToolGrants[0] != "shell" {
 		t.Fatalf("explicit tool grants = %+v", got.ExplicitToolGrants)

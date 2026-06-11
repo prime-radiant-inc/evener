@@ -13,10 +13,11 @@ func TestJobRecordJSONRoundTripDelegateRestoreDescriptorAndStructuredReason(t *t
 		Type:   JobDelegate,
 		Status: StatusCompleted,
 		DelegateRestore: &DelegateRestoreDescriptor{
-			Version:        1,
-			ChildSessionID: "child_1",
-			TranscriptRef:  "transcript_1",
-			ResultSchema:   map[string]any{"type": "object"},
+			Version:           1,
+			ChildSessionID:    "child_1",
+			TranscriptRef:     "transcript_1",
+			FrozenSkillBodies: []string{"stored skill body"},
+			ResultSchema:      map[string]any{"type": "object"},
 		},
 		StructuredResultValid:  &valid,
 		StructuredResultReason: "schema_result_missing",
@@ -37,6 +38,9 @@ func TestJobRecordJSONRoundTripDelegateRestoreDescriptorAndStructuredReason(t *t
 	if _, ok := restoreWire["result_schema"]; !ok {
 		t.Fatalf("result_schema missing from wire delegate_restore: %+v", restoreWire)
 	}
+	if bodies, ok := restoreWire["frozen_skill_bodies"].([]any); !ok || len(bodies) != 1 || bodies[0] != "stored skill body" {
+		t.Fatalf("frozen_skill_bodies = %#v, want stored body", restoreWire["frozen_skill_bodies"])
+	}
 	if wire["structured_result_reason"] != "schema_result_missing" {
 		t.Fatalf("wire structured_result_reason = %#v", wire["structured_result_reason"])
 	}
@@ -52,6 +56,9 @@ func TestJobRecordJSONRoundTripDelegateRestoreDescriptorAndStructuredReason(t *t
 	}
 	if restore.Version != 1 || restore.ChildSessionID != "child_1" || restore.TranscriptRef != "transcript_1" {
 		t.Fatalf("delegate_restore mismatch: %+v", restore)
+	}
+	if len(restore.FrozenSkillBodies) != 1 || restore.FrozenSkillBodies[0] != "stored skill body" {
+		t.Fatalf("frozen_skill_bodies = %+v, want stored body", restore.FrozenSkillBodies)
 	}
 	schema, ok := restore.ResultSchema.(map[string]any)
 	if !ok || schema["type"] != "object" {

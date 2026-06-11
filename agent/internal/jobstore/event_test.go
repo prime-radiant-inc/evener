@@ -44,10 +44,11 @@ func TestEventJSONRoundTripDelegateRestoreDescriptorAndStructuredReason(t *testi
 			JobID: "job_X",
 			Type:  JobDelegate,
 			DelegateRestore: &DelegateRestoreDescriptor{
-				Version:        1,
-				ChildSessionID: "child_1",
-				TranscriptRef:  "transcript_1",
-				ResultSchema:   map[string]any{"type": "object"},
+				Version:           1,
+				ChildSessionID:    "child_1",
+				TranscriptRef:     "transcript_1",
+				FrozenSkillBodies: []string{"stored skill body"},
+				ResultSchema:      map[string]any{"type": "object"},
 			},
 		},
 		{
@@ -74,6 +75,9 @@ func TestEventJSONRoundTripDelegateRestoreDescriptorAndStructuredReason(t *testi
 	}
 	if _, ok := restoreWire["result_schema"]; !ok {
 		t.Fatalf("result_schema missing from wire delegate_restore: %+v", restoreWire)
+	}
+	if bodies, ok := restoreWire["frozen_skill_bodies"].([]any); !ok || len(bodies) != 1 || bodies[0] != "stored skill body" {
+		t.Fatalf("frozen_skill_bodies = %#v, want stored body", restoreWire["frozen_skill_bodies"])
 	}
 	if wire[1]["structured_result_reason"] != "schema_result_missing" {
 		t.Fatalf("wire structured_result_reason = %#v", wire[1]["structured_result_reason"])

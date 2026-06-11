@@ -883,55 +883,42 @@ func TestWatchSendRestoreRetriesPendingBeforeTerminalNotifications(t *testing.T)
 }
 
 func TestWatchSendRestoreKeepsConcreteTerminalResumableDelegatePending(t *testing.T) {
-	stateDir := t.TempDir()
-	sessionID := "S1"
-	jobID := "job_restore_delegate"
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	setStoredDelegateTerminalStatus(t, s, rec, jobstore.StatusCompleted, "exit_zero")
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	childID := rec.DelegateRestore.ChildSessionID
 	now := time.Unix(1000, 0).UTC()
-	resumable := true
-
-	jm, err := newJobManager(stateDir, sessionID, func(jobNotification) {})
-	if err != nil {
-		t.Fatalf("new job manager: %v", err)
-	}
-	for _, event := range restoredWatchSendDelegateEvents(sessionID, jobID, now, &resumable, jobID) {
-		if err := jm.appendEvent(event); err != nil {
+	for _, event := range restoredWatchSendPendingEvents(s.ID(), rec.JobID, rec.JobID, now) {
+		if err := s.jobManager.appendEvent(event); err != nil {
 			t.Fatalf("append %s: %v", event.Kind, err)
 		}
 	}
-	if err := jm.store.Close(); err != nil {
-		t.Fatalf("close seed store: %v", err)
-	}
+	parentMeta := s.Meta()
+	stateDir := s.stateDir
+	requestsBeforeRestore := len(adapter.Requests())
+	s.Close()
 
-	reopened, err := newJobManager(stateDir, sessionID, func(jobNotification) {})
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), parentMeta, RestoreSessionConfig{StateDir: stateDir})
 	if err != nil {
-		t.Fatalf("reopen job manager: %v", err)
+		t.Fatalf("restore session: %v", err)
 	}
-	defer reopened.store.Close()
-	var sent []sendMessageArgs
-	reopened.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
-		sent = append(sent, a)
-		return sendMessageResult{}
-	}
-	s := &Session{
-		id:         sessionID,
-		jobManager: reopened,
-		subagents:  newSubagentManager(nil),
-	}
+	defer restored.Close()
 
-	if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
-		t.Fatalf("retry restored pending: %v", err)
+	if sub := restored.subagents.get(childID); sub != nil {
+		t.Fatalf("restore reconstructed child runtime = %+v, want none before explicit job_send_message", sub)
 	}
-	if err := reopened.armPendingTerminalNotifications(); err != nil {
-		t.Fatalf("arm terminal notifications: %v", err)
+	if requests := adapter.Requests(); len(requests) != requestsBeforeRestore {
+		t.Fatalf("adapter requests after restore = %d, want unchanged %d", len(requests), requestsBeforeRestore)
 	}
-
-	if len(sent) != 0 {
-		t.Fatalf("restored concrete delegate sends = %d, want none during restore: %+v", len(sent), sent)
-	}
-	if pending := loadWatchSendRecord(t, reopened).Pending; len(pending) != 1 {
+	if pending := loadWatchSendRecord(t, restored.jobManager).Pending; len(pending) != 1 {
 		t.Fatalf("pending after restore retry = %+v, want retained watch send", pending)
 	}
-	events := loadJobStoreEvents(t, reopened)
+	events := loadJobStoreEvents(t, restored.jobManager)
 	deliveredSeq := int64(0)
 	notificationSeq := int64(0)
 	for _, event := range events {
@@ -1244,6 +1231,56 @@ func TestWatchSendRestoreDropsDynamicallyNonResumableTerminalDelegate(t *testing
 				t.Fatalf("dropped reason = %q, want dynamic missing child meta reason", droppedReason)
 			}
 		})
+	}
+}
+
+func TestWatchSendRestoreDropsTerminalResumableDelegateMissingRestoreDescriptor(t *testing.T) {
+	stateDir := t.TempDir()
+	sessionID := "S1"
+	jobID := "job_restore_delegate"
+	now := time.Unix(3300, 0).UTC()
+	resumable := true
+
+	jm, err := newJobManager(stateDir, sessionID, func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new job manager: %v", err)
+	}
+	for _, event := range restoredWatchSendDelegateEvents(sessionID, jobID, now, &resumable, jobID) {
+		if err := jm.appendEvent(event); err != nil {
+			t.Fatalf("append %s: %v", event.Kind, err)
+		}
+	}
+	if err := jm.store.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	reopened, err := newJobManager(stateDir, sessionID, func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("reopen job manager: %v", err)
+	}
+	defer reopened.store.Close()
+	s := &Session{
+		id:         sessionID,
+		stateDir:   stateDir,
+		jobManager: reopened,
+		subagents:  newSubagentManager(nil),
+	}
+
+	if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
+		t.Fatalf("retry restored pending: %v", err)
+	}
+
+	if pending := loadWatchSendRecord(t, reopened).Pending; len(pending) != 0 {
+		t.Fatalf("pending after restore retry = %+v, want dropped missing-restore-metadata watch send", pending)
+	}
+	var droppedReason string
+	for _, event := range loadJobStoreEvents(t, reopened) {
+		if event.Kind == jobstore.EventWatchSendDropped && event.WatchSend != nil {
+			droppedReason = event.WatchSend.DiagnosticReason
+		}
+	}
+	if !strings.Contains(droppedReason, "target_not_resumable:missing_delegate_resume_metadata") {
+		t.Fatalf("dropped reason = %q, want missing delegate resume metadata", droppedReason)
 	}
 }
 

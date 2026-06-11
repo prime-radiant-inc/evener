@@ -384,6 +384,9 @@ func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode deleg
 	if !hasValidDelegateRestoreWorkingDir(desc) {
 		return delegateResumability{Reason: notResumableParentLinkageUnavailable}
 	}
+	if _, err := restoreFrozenSkillBodies(desc.FrozenSkillNames, desc.FrozenSkillBodies); err != nil {
+		return delegateResumability{Reason: notResumableCorruptChildSessionMeta}
+	}
 	if s.stateDir == "" {
 		return delegateResumability{Reason: notResumableMissingChildSessionMeta}
 	}
@@ -542,7 +545,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 	if err != nil {
 		return nil, err
 	}
-	activatedSkillBodies, err := s.restoreFrozenSkillBodies(childEnv, desc.FrozenSkillNames)
+	activatedSkillBodies, err := restoreFrozenSkillBodies(desc.FrozenSkillNames, desc.FrozenSkillBodies)
 	if err != nil {
 		return nil, err
 	}
@@ -1190,6 +1193,7 @@ func (s *Session) delegateRestoreDescriptor(jobID, childID, task, transcriptRef 
 	desc.FrozenTaskPrompt = prepared.frozenTaskPrompt
 	desc.FrozenToolNames = append([]string(nil), prepared.frozenToolNames...)
 	desc.FrozenSkillNames = append([]string(nil), prepared.frozenSkillNames...)
+	desc.FrozenSkillBodies = append([]string(nil), prepared.frozenSkillBodies...)
 	desc.WorkingDir = prepared.workingDir
 	desc.LocalEnvPolicy = prepared.localEnvPolicy
 	desc.ExplicitToolGrants = append([]string(nil), prepared.explicitToolGrants...)
@@ -1230,6 +1234,7 @@ func (s *Session) resumedDelegateRestoreDescriptor(jobID, childID, transcriptRef
 		FrozenTaskPrompt:   previous.FrozenTaskPrompt,
 		FrozenToolNames:    append([]string(nil), previous.FrozenToolNames...),
 		FrozenSkillNames:   append([]string(nil), previous.FrozenSkillNames...),
+		FrozenSkillBodies:  append([]string(nil), previous.FrozenSkillBodies...),
 		WorkingDir:         previous.WorkingDir,
 		LocalEnvPolicy:     previous.LocalEnvPolicy,
 		ResultSchema:       cloneDelegateResultSchema(previous.ResultSchema),

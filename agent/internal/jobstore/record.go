@@ -67,6 +67,7 @@ type DelegateRestoreDescriptor struct {
 	FrozenTaskPrompt   string   `json:"frozen_task_prompt,omitempty"`
 	FrozenToolNames    []string `json:"frozen_tool_names,omitempty"`
 	FrozenSkillNames   []string `json:"frozen_skill_names,omitempty"`
+	FrozenSkillBodies  []string `json:"frozen_skill_bodies,omitempty"`
 	WorkingDir         string   `json:"working_dir,omitempty"`
 	LocalEnvPolicy     string   `json:"local_env_policy,omitempty"`
 	ResultSchema       any      `json:"result_schema,omitempty"`

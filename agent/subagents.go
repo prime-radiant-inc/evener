@@ -95,6 +95,7 @@ type preparedSubagentRun struct {
 	frozenTaskPrompt   string
 	frozenToolNames    []string
 	frozenSkillNames   []string
+	frozenSkillBodies  []string
 	workingDir         string
 	localEnvPolicy     string
 	resultSchema       map[string]any
@@ -185,13 +186,6 @@ func frozenSubagentToolNames(allTools bool, allowed, denied []string) []string {
 	}
 }
 
-func frozenSkillNames(agent *plugin.Agent) []string {
-	if agent == nil || len(agent.Skills) == 0 {
-		return nil
-	}
-	return append([]string(nil), agent.Skills...)
-}
-
 func localEnvPolicyName(env execenv.ExecutionEnvironment) string {
 	le, ok := env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -257,25 +251,23 @@ func subagentNeedsCommunicateNudge(agent *plugin.Agent) bool {
 	return agent.PluginName == "builtin" && agent.Name == "subagent"
 }
 
-func (s *Session) restoreFrozenSkillBodies(env execenv.ExecutionEnvironment, skillNames []string) ([]string, error) {
+func restoreFrozenSkillBodies(skillNames, skillBodies []string) ([]string, error) {
 	if len(skillNames) == 0 {
+		if len(skillBodies) != 0 {
+			return nil, errors.New("restore frozen skills: descriptor has skill bodies without skill names")
+		}
 		return nil, nil
 	}
-	skills := make(map[string]skill.SkillMeta, len(s.skills))
-	for name, meta := range s.skills {
-		skills[name] = meta
+	if len(skillBodies) == 0 {
+		return nil, errors.New("restore frozen skills: descriptor missing frozen skill bodies")
 	}
-	for name, meta := range skill.DiscoverSkills(env, s.cfg.SkillsDirs...) {
-		skills[name] = meta
+	if len(skillBodies) != len(skillNames) {
+		return nil, fmt.Errorf("restore frozen skills: descriptor has %d skill bodies for %d skill names", len(skillBodies), len(skillNames))
 	}
-	var bodies []string
-	for _, skillName := range skillNames {
-		body, err := skill.ResolveSkillContent(skills, skillName)
-		if err != nil {
-			return nil, fmt.Errorf("restore frozen skill %q: %w", skillName, err)
-		}
+	bodies := make([]string, 0, len(skillBodies))
+	for i, body := range skillBodies {
 		if strings.TrimSpace(body) == "" {
-			return nil, fmt.Errorf("restore frozen skill %q: skill body unavailable", skillName)
+			return nil, fmt.Errorf("restore frozen skill %q: skill body unavailable", skillNames[i])
 		}
 		bodies = append(bodies, body)
 	}
@@ -403,6 +395,8 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" && agent.PluginName != "builtin" {
 		subCfg.spawn.rolePromptOverride = rolePrompt
 	}
+	var activatedSkillNames []string
+	var activatedSkillBodies []string
 	if agent != nil && len(agent.Skills) > 0 {
 		for _, skillName := range agent.Skills {
 			body, err := skill.ResolveSkillContent(s.skills, skillName)
@@ -411,6 +405,8 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 			}
 			if strings.TrimSpace(body) != "" {
 				subCfg.spawn.activatedSkillBodies = append(subCfg.spawn.activatedSkillBodies, body)
+				activatedSkillNames = append(activatedSkillNames, skillName)
+				activatedSkillBodies = append(activatedSkillBodies, body)
 			}
 		}
 	}
@@ -543,7 +539,8 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		reasoningEffort:    reasoningEffort,
 		frozenRolePrompt:   rolePrompt,
 		frozenToolNames:    frozenSubagentToolNames(allTools, allowedTools, deniedTools),
-		frozenSkillNames:   frozenSkillNames(agent),
+		frozenSkillNames:   append([]string(nil), activatedSkillNames...),
+		frozenSkillBodies:  append([]string(nil), activatedSkillBodies...),
 		workingDir:         subEnv.WorkingDirectory(),
 		localEnvPolicy:     localEnvPolicyName(subEnv),
 		resultSchema:       cloneMap(subCfg.spawn.communicateOutputSchema),
