@@ -326,6 +326,30 @@ func TestEventWatchTriggerEveryNth(t *testing.T) {
 	}
 }
 
+func TestEventWatchTriggerEveryOnlyGatesTriggerKind(t *testing.T) {
+	jm := newTestJM(t)
+	var fires int
+	jm.enqueue = func(jobNotification) { fires++ }
+
+	_, err := jm.configureWatch(watchArgs{
+		Target:       "*",
+		Events:       []string{"assistant.message", "job.notification"},
+		TriggerEvent: "assistant.message",
+		TriggerEvery: 2,
+	})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_worker", JobType: "delegate", Status: "completed"})
+	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_worker_2", JobType: "delegate", Status: "completed"})
+	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+
+	if fires != 3 {
+		t.Errorf("mixed watch fires = %d, want both job notifications plus every second assistant.message", fires)
+	}
+}
+
 func TestEventWatchIgnoresUnwatchedKind(t *testing.T) {
 	jm := newTestJM(t)
 	var fires int
@@ -3654,6 +3678,10 @@ func TestWatchSendToWatchedAllowsWildcardJobNotificationTrigger(t *testing.T) {
 		t.Fatalf("configureWatch returned error: %v", err)
 	}
 
+	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	if len(sent) != 0 {
+		t.Fatalf("assistant.message sent = %#v, want no unresolved watched delivery", sent)
+	}
 	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger", JobType: "delegate", Status: "completed"})
 
 	if len(sent) != 1 {

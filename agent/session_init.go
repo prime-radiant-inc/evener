@@ -117,6 +117,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
+	closeJobManagerOnError := true
+	defer func() {
+		if closeJobManagerOnError {
+			_ = jm.closeStoreOnly()
+		}
+	}()
 	jm.forward = cfg.spawn.forwardJobEvent
 	jm.parentJobID = cfg.spawn.parentJobID
 	jm.send = s.sendDelegateMessage
@@ -212,6 +218,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// Write the initial meta.json so the hub's past index can discover this
 	// session immediately (without waiting for the first completed turn).
 	s.maybeAutoSave()
+	closeJobManagerOnError = false
 	return s, nil
 }
 
@@ -317,6 +324,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
+	closeJobManagerOnError := true
+	defer func() {
+		if closeJobManagerOnError {
+			_ = jm.closeStoreOnly()
+		}
+	}()
 	jm.forward = cfg.spawn.forwardJobEvent
 	jm.parentJobID = cfg.spawn.parentJobID
 	jm.enqueue = s.enqueueJobNotificationAndNotify
@@ -425,6 +438,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		LastInputTokens:   meta.LastInputTokens,
 		ContextWindowSize: profile.ContextWindowSize(),
 	}, promptSources)
+	closeJobManagerOnError = false
 	return s, nil
 }
 

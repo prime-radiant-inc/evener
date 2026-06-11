@@ -243,6 +243,13 @@ waitLoop:
 	return errors.Join(watchCleanupErr, waitErr)
 }
 
+func (jm *jobManager) closeStoreOnly() error {
+	if jm == nil || jm.store == nil {
+		return nil
+	}
+	return jm.store.Close()
+}
+
 func (jm *jobManager) abandonRunningJobs() {
 	jm.mu.Lock()
 	running := make([]jobRuntimeHandle, 0, len(jm.running))

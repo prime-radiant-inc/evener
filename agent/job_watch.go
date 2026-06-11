@@ -770,10 +770,7 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 		if !cfg.wildcardEvents && !cfg.eventKinds[kind] {
 			continue
 		}
-		if cfg.triggerEvent != "" {
-			if cfg.triggerKind != kind {
-				continue
-			}
+		if cfg.triggerEvent != "" && cfg.triggerKind == kind {
 			cfg.eventCount++
 			triggerEvery := cfg.triggerEvery
 			if triggerEvery <= 0 {
@@ -783,10 +780,13 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 				continue
 			}
 		}
+		watchedIdentity := watchEventWatchedIdentity(cfg.target, data)
 		if cfg.send != nil {
-			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, watchEventWatchedIdentity(cfg.target, data), fmt.Sprintf("event: %s", kind)))
+			if cfg.send.To == runtimeMessageAliasWatched && isWatchSessionTarget(watchedIdentity) {
+				continue
+			}
+			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, watchedIdentity, fmt.Sprintf("event: %s", kind)))
 		} else {
-			watchedIdentity := watchEventWatchedIdentity(cfg.target, data)
 			notifyJobID := watchedIdentity
 			if isWatchSessionTarget(notifyJobID) {
 				notifyJobID = ""
