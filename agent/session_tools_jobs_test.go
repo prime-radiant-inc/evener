@@ -220,6 +220,22 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 			wantReason: "parent_linkage_unavailable",
 		},
 		{
+			name: "missing local env policy",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore.LocalEnvPolicy = ""
+				replaceStoredDelegateRecord(t, s, rec)
+			},
+			wantReason: "parent_linkage_unavailable",
+		},
+		{
+			name: "invalid local env policy",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore.LocalEnvPolicy = "all-ish"
+				replaceStoredDelegateRecord(t, s, rec)
+			},
+			wantReason: "parent_linkage_unavailable",
+		},
+		{
 			name: "missing meta",
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
 				removeChildSessionMeta(t, s, rec)

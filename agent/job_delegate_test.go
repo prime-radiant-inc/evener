@@ -2025,6 +2025,22 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 			want: "target_not_resumable:parent_linkage_unavailable",
 		},
 		{
+			name: "missing local env policy",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore.LocalEnvPolicy = ""
+				replaceStoredDelegateRecord(t, s, rec)
+			},
+			want: "target_not_resumable:parent_linkage_unavailable",
+		},
+		{
+			name: "invalid local env policy",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore.LocalEnvPolicy = "all-ish"
+				replaceStoredDelegateRecord(t, s, rec)
+			},
+			want: "target_not_resumable:parent_linkage_unavailable",
+		},
+		{
 			name: "missing meta",
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
 				removeChildSessionMeta(t, s, rec)
@@ -2205,6 +2221,46 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 				t.Fatalf("adapter requests = %+v, want none", requests)
 			}
 		})
+	}
+}
+
+func TestReconstructDelegateRuntimeCollisionDoesNotCleanupSharedEnv(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	workDir := t.TempDir()
+	env := &cleanupCountingEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(workDir)}
+	s, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { s.close(false) })
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	childID := rec.DelegateRestore.ChildSessionID
+
+	first, err := s.restoreTerminalDelegateChild(rec, childID, nil)
+	if err != nil {
+		t.Fatalf("first restoreTerminalDelegateChild: %v", err)
+	}
+	second, err := s.restoreTerminalDelegateChild(rec, childID, nil)
+	if err != nil {
+		t.Fatalf("second restoreTerminalDelegateChild: %v", err)
+	}
+
+	if second != first {
+		t.Fatalf("second reconstruction returned %p, want existing tracked child %p", second, first)
+	}
+	if got := env.count(); got != 0 {
+		t.Fatalf("shared env cleanup count = %d, want loser candidate close to skip env cleanup", got)
+	}
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("adapter requests = %+v, want no model calls during reconstruction", requests)
 	}
 }
 
@@ -2965,6 +3021,7 @@ func seedStoppedDelegateRestoreRecord(t *testing.T, s *Session) *jobstore.JobRec
 		Task:              "retained delegate",
 		ResolvedProfileID: "openai",
 		ResolvedModel:     "gpt-5.2",
+		LocalEnvPolicy:    "default",
 	}
 	if err := s.jobManager.appendEvent(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,

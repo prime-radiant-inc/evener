@@ -356,6 +356,9 @@ func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode deleg
 	if _, transcriptChildID, err := decodeRef(rec.TranscriptRef); err != nil || transcriptChildID != childID {
 		return delegateResumability{Reason: notResumableParentLinkageUnavailable}
 	}
+	if !hasValidDelegateRestoreLocalEnvPolicy(desc) {
+		return delegateResumability{Reason: notResumableParentLinkageUnavailable}
+	}
 	if s.stateDir == "" {
 		return delegateResumability{Reason: notResumableMissingChildSessionMeta}
 	}
@@ -548,7 +551,7 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 	}
 	tracked, inserted := s.subagents.trackIfAbsent(sub)
 	if !inserted {
-		child.Close()
+		child.close(false)
 		if tracked == nil || tracked.sess == nil {
 			return nil, errors.New("delegate session collision with unavailable retained runtime")
 		}
@@ -561,20 +564,34 @@ func (s *Session) restoreDelegateChildEnvironment(desc *jobstore.DelegateRestore
 	if s == nil || s.env == nil {
 		return nil, errors.New("execution environment is not configured")
 	}
+	policy, ok := delegateRestoreLocalEnvPolicy(desc)
+	if !ok {
+		return nil, errors.New("invalid delegate restore local_env_policy")
+	}
 	childEnv := s.env
 	if le, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
 		clone := le.WithWorkingDirectory(le.WorkingDirectory())
 		if workDir := strings.TrimSpace(desc.WorkingDir); workDir != "" {
 			clone = le.WithWorkingDirectory(workDir)
 		}
-		if policy, ok := localEnvPolicyFromName(desc.LocalEnvPolicy); ok {
-			clone.EnvPolicy = policy
-		}
+		clone.EnvPolicy = policy
 		childEnv = clone
 	} else if strings.TrimSpace(desc.WorkingDir) != "" && desc.WorkingDir != s.env.WorkingDirectory() {
 		return nil, errors.New("execution environment does not support restored working_dir")
 	}
 	return childEnv, nil
+}
+
+func hasValidDelegateRestoreLocalEnvPolicy(desc *jobstore.DelegateRestoreDescriptor) bool {
+	_, ok := delegateRestoreLocalEnvPolicy(desc)
+	return ok
+}
+
+func delegateRestoreLocalEnvPolicy(desc *jobstore.DelegateRestoreDescriptor) (execenv.EnvVarPolicy, bool) {
+	if desc == nil {
+		return execenv.EnvPolicyDefault, false
+	}
+	return localEnvPolicyFromName(desc.LocalEnvPolicy)
 }
 
 func restoredDelegateAllowedTools(desc *jobstore.DelegateRestoreDescriptor) []string {
