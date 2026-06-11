@@ -2053,6 +2053,13 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 			want: "target_not_resumable:corrupt_child_transcript",
 		},
 		{
+			name: "corrupt transcript misleading kind",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				appendChildTranscript(t, s, rec, "\n{\"kind\":\"transcript_session_mismatch\"}\n")
+			},
+			want: "target_not_resumable:corrupt_child_transcript",
+		},
+		{
 			name: "session mismatch",
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
 				writeChildTranscript(t, s, rec, []byte(`{"kind":"header","format_version":1,"session_id":"other"}`+"\n"))
@@ -2139,6 +2146,74 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 				t.Fatalf("adapter requests = %+v, want none", requests)
 			}
 		})
+	}
+}
+
+func TestSendDelegateMessageRuntimeLostRestoreUsesDescriptorPreflightProfile(t *testing.T) {
+	openAIAdapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("wrong provider")
+			},
+		},
+	}
+	workAdapter := &fakeAdapter{
+		name: "work",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("descriptor provider")
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(openAIAdapter)
+	c.Register(workAdapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	rec.DelegateRestore.ResolvedProfileID = "work"
+	rec.DelegateRestore.ResolvedModel = "descriptor-model"
+	replaceStoredDelegateRecord(t, s, rec)
+	meta, err := schema.LoadSessionMeta(s.stateDir, rec.DelegateRestore.ChildSessionID)
+	if err != nil {
+		t.Fatalf("load child meta: %v", err)
+	}
+	meta.Model = "gpt-5.2"
+	if err := schema.SaveSessionMeta(s.stateDir, meta); err != nil {
+		t.Fatalf("save child meta: %v", err)
+	}
+	s.resolveProfile = func(ref string) (*provider.Profile, error) {
+		if ref != "work/descriptor-model" {
+			return nil, fmt.Errorf("unexpected profile ref %s", ref)
+		}
+		return WithProviderID(NewOpenAIProfile("descriptor-model"), "work"), nil
+	}
+
+	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         rec.JobID,
+		Message:        "resume using descriptor",
+		Background:     false,
+		BackgroundSet:  true,
+		BlockTimeoutMS: 5000,
+	})
+
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+	if res.Status != jobstore.StatusCompleted || !strings.Contains(res.Output, "descriptor provider") {
+		t.Fatalf("result = %+v, want descriptor provider completion", res)
+	}
+	workRequests := workAdapter.Requests()
+	if len(workRequests) != 1 {
+		t.Fatalf("work adapter requests = %+v, want one descriptor-profile request", workRequests)
+	}
+	if workRequests[0].Provider != "work" || workRequests[0].Model != "descriptor-model" {
+		t.Fatalf("work request provider/model = %s/%s, want work/descriptor-model", workRequests[0].Provider, workRequests[0].Model)
+	}
+	if openAIRequests := openAIAdapter.Requests(); len(openAIRequests) != 0 {
+		t.Fatalf("openai adapter requests = %+v, want none", openAIRequests)
 	}
 }
 
@@ -2588,6 +2663,20 @@ func seedStoppedDelegateRestoreRecord(t *testing.T, s *Session) *jobstore.JobRec
 		t.Fatalf("append delegate stopped: %v", err)
 	}
 	return loadShellRecord(t, s.jobManager, jobID)
+}
+
+func markStoredDelegateResumable(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+	t.Helper()
+	resumable := true
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:          jobstore.EventJobSessionAssigned,
+		TS:            time.Now().UTC(),
+		JobID:         rec.JobID,
+		TranscriptRef: rec.TranscriptRef,
+		Resumable:     &resumable,
+	}); err != nil {
+		t.Fatalf("append delegate resumable assignment: %v", err)
+	}
 }
 
 func seedRetainedChildSession(t *testing.T, parent *Session) string {

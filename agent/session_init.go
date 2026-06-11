@@ -225,6 +225,7 @@ type RestoreSessionConfig struct {
 	LLMRetryPolicy *llm.RetryPolicy
 	LLMSleep       llm.SleepFunc
 	spawn          spawnConfig
+	resumeHistory  []schema.Turn
 }
 
 // RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
@@ -267,7 +268,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []schema.Turn
-	if cfg.StateDir != "" {
+	if restoreCfg.resumeHistory != nil {
+		resumeHistory = append([]schema.Turn(nil), restoreCfg.resumeHistory...)
+	} else if cfg.StateDir != "" {
 		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
 		_, entries, _, readErr := readTranscript(tpath)
 		if readErr == nil && len(entries) > 0 {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"primeradiant.com/serf/agent/schema"
@@ -75,6 +76,11 @@ type transcriptData struct {
 	Skipped  int
 }
 
+var (
+	errStrictChildTranscriptCorrupt         = errors.New("corrupt_child_transcript")
+	errStrictChildTranscriptSessionMismatch = errors.New("transcript_session_mismatch")
+)
+
 // readTranscriptFull reads a transcript JSONL file, returning all line types:
 // header, entries, and API calls. Corrupt/partial lines are counted in Skipped.
 func readTranscriptFull(path string) (transcriptData, error) {
@@ -143,78 +149,99 @@ func readTranscriptFull(path string) (transcriptData, error) {
 }
 
 func readStrictChildTranscript(path, expectedSessionID string) (transcriptData, error) {
-	raw, err := os.ReadFile(path)
+	return readStrictChildTranscriptWithOptions(path, expectedSessionID, true)
+}
+
+func validateStrictChildTranscript(path, expectedSessionID string) (transcript.Header, error) {
+	data, err := readStrictChildTranscriptWithOptions(path, expectedSessionID, false)
+	return data.Header, err
+}
+
+func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retainLines bool) (transcriptData, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return transcriptData{}, fmt.Errorf("open transcript: %w", err)
 	}
-	if len(raw) == 0 {
-		return transcriptData{}, errors.New("corrupt_child_transcript: transcript file is empty")
+	defer func() { _ = f.Close() }()
+
+	reader := bufio.NewReaderSize(f, 64*1024)
+	headerLine, err := reader.ReadBytes('\n')
+	if err != nil && !(errors.Is(err, io.EOF) && len(headerLine) > 0) {
+		if errors.Is(err, io.EOF) {
+			return transcriptData{}, fmt.Errorf("%w: transcript file is empty", errStrictChildTranscriptCorrupt)
+		}
+		return transcriptData{}, fmt.Errorf("reading transcript header: %w", err)
 	}
 
-	headerEnd := bytes.IndexByte(raw, '\n')
-	if headerEnd < 0 {
-		headerEnd = len(raw)
-	}
 	var data transcriptData
-	if err := json.Unmarshal(raw[:headerEnd], &data.Header); err != nil {
-		return transcriptData{}, fmt.Errorf("corrupt_child_transcript: parsing transcript header: %w", err)
+	if err := json.Unmarshal(bytes.TrimSuffix(headerLine, []byte{'\n'}), &data.Header); err != nil {
+		return transcriptData{}, fmt.Errorf("%w: parsing transcript header: %v", errStrictChildTranscriptCorrupt, err)
 	}
 	if data.Header.Kind != "header" {
-		return transcriptData{}, fmt.Errorf("corrupt_child_transcript: transcript header kind %q", data.Header.Kind)
+		return transcriptData{}, fmt.Errorf("%w: transcript header kind %q", errStrictChildTranscriptCorrupt, data.Header.Kind)
 	}
 
-	if headerEnd == len(raw) {
-		if data.Header.SessionID != expectedSessionID {
-			return transcriptData{}, fmt.Errorf("transcript_session_mismatch: header session %q does not match %q", data.Header.SessionID, expectedSessionID)
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return transcriptData{}, fmt.Errorf("reading transcript: %w", readErr)
 		}
-		return data, nil
-	}
-	body := raw[headerEnd+1:]
-	lines := bytes.Split(body, []byte{'\n'})
-	finalComplete := bytes.HasSuffix(raw, []byte{'\n'})
-	for i, line := range lines {
+		if len(line) == 0 && errors.Is(readErr, io.EOF) {
+			break
+		}
+		finalIncomplete := errors.Is(readErr, io.EOF) && !bytes.HasSuffix(line, []byte{'\n'})
+		line = bytes.TrimSuffix(line, []byte{'\n'})
 		if len(line) == 0 {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
 			continue
 		}
-		isFinalIncomplete := i == len(lines)-1 && !finalComplete
 		var peek struct {
 			Kind string `json:"kind"`
 		}
 		if err := json.Unmarshal(line, &peek); err != nil {
-			if isFinalIncomplete {
+			if finalIncomplete {
 				data.Skipped++
 				break
 			}
-			return transcriptData{}, fmt.Errorf("corrupt_child_transcript: parsing transcript line: %w", err)
+			return transcriptData{}, fmt.Errorf("%w: parsing transcript line: %v", errStrictChildTranscriptCorrupt, err)
 		}
 		switch peek.Kind {
 		case "entry":
 			var entry transcript.Entry
 			if err := json.Unmarshal(line, &entry); err != nil {
-				if isFinalIncomplete {
+				if finalIncomplete {
 					data.Skipped++
 					break
 				}
-				return transcriptData{}, fmt.Errorf("corrupt_child_transcript: parsing transcript entry: %w", err)
+				return transcriptData{}, fmt.Errorf("%w: parsing transcript entry: %v", errStrictChildTranscriptCorrupt, err)
 			}
-			data.Entries = append(data.Entries, entry)
+			if retainLines {
+				data.Entries = append(data.Entries, entry)
+			}
 		case "api_call":
 			var call transcript.APICall
 			if err := json.Unmarshal(line, &call); err != nil {
-				if isFinalIncomplete {
+				if finalIncomplete {
 					data.Skipped++
 					break
 				}
-				return transcriptData{}, fmt.Errorf("corrupt_child_transcript: parsing transcript api_call: %w", err)
+				return transcriptData{}, fmt.Errorf("%w: parsing transcript api_call: %v", errStrictChildTranscriptCorrupt, err)
 			}
-			data.APICalls = append(data.APICalls, call)
+			if retainLines {
+				data.APICalls = append(data.APICalls, call)
+			}
 		default:
-			return transcriptData{}, fmt.Errorf("corrupt_child_transcript: unknown transcript line kind %q", peek.Kind)
+			return transcriptData{}, fmt.Errorf("%w: unknown transcript line kind %q", errStrictChildTranscriptCorrupt, peek.Kind)
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
 		}
 	}
 
 	if data.Header.SessionID != expectedSessionID {
-		return transcriptData{}, fmt.Errorf("transcript_session_mismatch: header session %q does not match %q", data.Header.SessionID, expectedSessionID)
+		return transcriptData{}, fmt.Errorf("%w: header session %q does not match %q", errStrictChildTranscriptSessionMismatch, data.Header.SessionID, expectedSessionID)
 	}
 	return data, nil
 }

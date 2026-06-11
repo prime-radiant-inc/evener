@@ -1078,7 +1078,7 @@ func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {
 	resumable := rec.Resumable
 	notResumableReason := stringPtrOrNil(rec.NotResumableWhy)
 	if isRuntimeLostDelegate(rec) {
-		assessment := s.AssessDelegateResumability(rec)
+		assessment := s.assessDelegateResumability(rec, delegateResumabilityProjection)
 		resumableValue := assessment.Resumable
 		resumable = &resumableValue
 		if assessment.Resumable {

@@ -12,6 +12,7 @@ import (
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -247,6 +248,13 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 			wantReason: "corrupt_child_transcript",
 		},
 		{
+			name: "corrupt transcript misleading kind",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				appendChildTranscript(t, s, rec, "\n{\"kind\":\"transcript_session_mismatch\"}\n")
+			},
+			wantReason: "corrupt_child_transcript",
+		},
+		{
 			name: "session mismatch",
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
 				writeChildTranscript(t, s, rec, []byte(`{"kind":"header","format_version":1,"session_id":"other"}`+"\n"))
@@ -342,6 +350,35 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 				t.Fatalf("not_resumable_reason = %v, want %s", listed.NotResumableReason, tc.wantReason)
 			}
 		})
+	}
+}
+
+func TestJobListStoppedDelegateResumabilityDoesNotBuildResumeHistory(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	original := delegateRestoreResumeHistory
+	delegateRestoreResumeHistory = func(entries []transcript.Entry) []schema.Turn {
+		t.Fatalf("job_list built resume history from %d entries", len(entries))
+		return nil
+	}
+	defer func() { delegateRestoreResumeHistory = original }()
+
+	raw, err := jobListTool(s, map[string]any{"type": []any{"delegate"}}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("jobListTool: %v", err)
+	}
+	var out jobListToolOutput
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatalf("unmarshal job_list: %v (output: %s)", err, raw)
+	}
+	listed := findJobListToolOutput(out.Jobs, rec.JobID)
+	if listed == nil {
+		t.Fatalf("job_list jobs = %+v, want %s", out.Jobs, rec.JobID)
+	}
+	if listed.Resumable == nil || !*listed.Resumable || listed.NotResumableReason != nil {
+		t.Fatalf("listed job = %+v, want resumable without building history", listed)
 	}
 }
 
