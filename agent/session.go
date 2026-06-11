@@ -107,6 +107,7 @@ type Session struct {
 	// subagents
 	depth                            int
 	subagents                        *subagentManager
+	delegateRestoreAfterClaim        func()
 	delegateRestoreBeforeTrack       func()
 	delegateRestoreBeforeSideEffects func(*Session)
 

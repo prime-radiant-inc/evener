@@ -509,6 +509,9 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 }
 
 func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, childID string, preflight *delegateRestorePreflight) (*subagent, error) {
+	if s.delegateRestoreAfterClaim != nil {
+		s.delegateRestoreAfterClaim()
+	}
 	desc := rec.DelegateRestore
 	meta := preflight.Meta
 	profile := preflight.Profile

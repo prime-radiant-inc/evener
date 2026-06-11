@@ -143,6 +143,18 @@ func (m *subagentManager) waitForReconstructionSideEffects() {
 	}
 }
 
+func (m *subagentManager) waitForReconstructions() {
+	m.mu.Lock()
+	pending := make([]*subagentReconstruction, 0, len(m.reconstructing))
+	for _, reconstruction := range m.reconstructing {
+		pending = append(pending, reconstruction)
+	}
+	m.mu.Unlock()
+	for _, reconstruction := range pending {
+		_, _ = reconstruction.wait()
+	}
+}
+
 // get returns the subagent for id, or nil if absent. This is the single locked
 // accessor for child lookup; both the agent-management tools and the send_input
 // handler route through it so the read is always under the manager mutex.

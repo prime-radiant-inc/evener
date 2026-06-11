@@ -2949,8 +2949,22 @@ func TestDelegateReconstructionRacingParentCloseDoesNotTrackOrRunSideEffects(t *
 	case <-time.After(2 * time.Second):
 		t.Fatal("reconstruction did not pause before parent tracking")
 	}
-	s.Close()
+	closeDone := make(chan struct{})
+	go func() {
+		s.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+		t.Fatal("parent Close returned before paused reconstruction reached tracking")
+	case <-time.After(100 * time.Millisecond):
+	}
 	close(release)
+	select {
+	case <-closeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("parent Close did not return after releasing reconstruction")
+	}
 
 	res := <-done
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "session is closed") {
@@ -2973,6 +2987,80 @@ func TestDelegateReconstructionRacingParentCloseDoesNotTrackOrRunSideEffects(t *
 	}
 	if got := len(loadJobStoreEvents(t, s.jobManager)); got != beforeParentEvents {
 		t.Fatalf("parent jobstore event count = %d, want unchanged %d", got, beforeParentEvents)
+	}
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("adapter requests = %+v, want none", requests)
+	}
+}
+
+func TestParentCloseWaitsForInFlightDelegateReconstructionClaim(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	childID := rec.DelegateRestore.ChildSessionID
+	now := time.Unix(3800, 0).UTC()
+	appendSessionJobEvents(t, s.stateDir, childID, restoredWatchSendPendingEvents(childID, "job_child_observed", "caller", now)...)
+	beforeParentEvents := len(loadJobStoreEvents(t, s.jobManager))
+	beforeChildEvents := len(loadSessionJobStoreEvents(t, s.stateDir, childID))
+	paused := make(chan struct{})
+	release := make(chan struct{})
+	var pauseOnce sync.Once
+	s.delegateRestoreAfterClaim = func() {
+		pauseOnce.Do(func() { close(paused) })
+		<-release
+	}
+
+	sendDone := make(chan sendMessageResult, 1)
+	go func() {
+		sendDone <- s.sendDelegateMessage(context.Background(), sendMessageArgs{
+			Target:  rec.JobID,
+			Message: "resume while close waits for reconstruction claim",
+		})
+	}()
+	select {
+	case <-paused:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconstruction did not pause after claim")
+	}
+	closeDone := make(chan struct{})
+	go func() {
+		s.Close()
+		close(closeDone)
+	}()
+	closeReturnedBeforeRelease := false
+	select {
+	case <-closeDone:
+		closeReturnedBeforeRelease = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-closeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("parent Close did not return after releasing reconstruction")
+	}
+	res := <-sendDone
+	if closeReturnedBeforeRelease {
+		t.Fatal("parent Close returned before in-flight reconstruction claim finished")
+	}
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "session is closed") {
+		t.Fatalf("sendDelegateMessage error = %v, want session is closed", res.Err)
+	}
+	if sub := s.subagents.get(childID); sub != nil {
+		t.Fatalf("retained child runtime after parent close race = %+v, want none", sub)
+	}
+	if got := len(loadJobStoreEvents(t, s.jobManager)); got != beforeParentEvents {
+		t.Fatalf("parent jobstore event count = %d, want unchanged %d", got, beforeParentEvents)
+	}
+	if got := len(loadSessionJobStoreEvents(t, s.stateDir, childID)); got != beforeChildEvents {
+		t.Fatalf("child jobstore event count = %d, want unchanged %d", got, beforeChildEvents)
+	}
+	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 0 {
+		t.Fatalf("parent watch-frame steering deliveries = %d, want 0; queue = %+v", got, s.SteeringQueueSnapshot())
 	}
 	if requests := adapter.Requests(); len(requests) != 0 {
 		t.Fatalf("adapter requests = %+v, want none", requests)
