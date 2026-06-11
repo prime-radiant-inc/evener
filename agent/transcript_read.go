@@ -168,7 +168,7 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 
 	reader := bufio.NewReaderSize(f, 64*1024)
 	headerLine, err := readStrictTranscriptLine(reader)
-	if err != nil && !(errors.Is(err, io.EOF) && len(headerLine) > 0) {
+	if err != nil && (!errors.Is(err, io.EOF) || len(headerLine) == 0) {
 		if errors.Is(err, io.EOF) {
 			return transcriptData{}, fmt.Errorf("%w: transcript file is empty", errStrictChildTranscriptCorrupt)
 		}
@@ -180,7 +180,7 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 
 	var data transcriptData
 	if err := json.Unmarshal(bytes.TrimSuffix(headerLine, []byte{'\n'}), &data.Header); err != nil {
-		return transcriptData{}, fmt.Errorf("%w: parsing transcript header: %v", errStrictChildTranscriptCorrupt, err)
+		return transcriptData{}, fmt.Errorf("%w: parsing transcript header: %w", errStrictChildTranscriptCorrupt, err)
 	}
 	if data.Header.Kind != "header" {
 		return transcriptData{}, fmt.Errorf("%w: transcript header kind %q", errStrictChildTranscriptCorrupt, data.Header.Kind)
@@ -213,7 +213,7 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 				data.Skipped++
 				break
 			}
-			return transcriptData{}, fmt.Errorf("%w: parsing transcript line: %v", errStrictChildTranscriptCorrupt, err)
+			return transcriptData{}, fmt.Errorf("%w: parsing transcript line: %w", errStrictChildTranscriptCorrupt, err)
 		}
 		switch peek.Kind {
 		case "entry":
@@ -223,7 +223,7 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 					data.Skipped++
 					break
 				}
-				return transcriptData{}, fmt.Errorf("%w: parsing transcript entry: %v", errStrictChildTranscriptCorrupt, err)
+				return transcriptData{}, fmt.Errorf("%w: parsing transcript entry: %w", errStrictChildTranscriptCorrupt, err)
 			}
 			if retainLines {
 				data.Entries = append(data.Entries, entry)
@@ -235,7 +235,7 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 					data.Skipped++
 					break
 				}
-				return transcriptData{}, fmt.Errorf("%w: parsing transcript api_call: %v", errStrictChildTranscriptCorrupt, err)
+				return transcriptData{}, fmt.Errorf("%w: parsing transcript api_call: %w", errStrictChildTranscriptCorrupt, err)
 			}
 			if retainLines {
 				data.APICalls = append(data.APICalls, call)
