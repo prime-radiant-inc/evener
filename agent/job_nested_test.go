@@ -151,6 +151,53 @@ func TestNestedShellForwardsJobStarted(t *testing.T) {
 	}
 }
 
+func TestParentRuntimeCloseKeepsStoreOpenForNestedTerminalForward(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+
+	rec, err := childJM.createShell(createShellOpts{Command: "sleep 1", Description: "nested"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	t.Cleanup(func() {
+		childJM.mu.Lock()
+		run := childJM.running[rec.JobID]
+		childJM.mu.Unlock()
+		if run != nil && run.output != nil {
+			_ = run.output.Close()
+		}
+	})
+
+	if err := parentJM.closeRuntimeState(); err != nil {
+		t.Fatalf("close parent runtime state: %v", err)
+	}
+	exitCode := 0
+	if err := childJM.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &exitCode); err != nil {
+		t.Fatalf("finalize child job: %v", err)
+	}
+
+	parentRec, err := findJobRecord(parentJM, rec.JobID)
+	if err != nil {
+		t.Fatalf("find parent forwarded record: %v", err)
+	}
+	if parentRec.Status != jobstore.StatusCompleted || parentRec.Reason != "exit_zero" {
+		t.Fatalf("parent forwarded record = %+v, want completed/exit_zero", parentRec)
+	}
+}
+
 func TestNestedShellStartReturnsForwardFailure(t *testing.T) {
 	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
 	if err != nil {

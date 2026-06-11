@@ -101,8 +101,11 @@ func (s *Session) close(cleanupEnv bool) {
 
 		// 2. Mark and stop durable jobs before environment cleanup can reap
 		// process handles and make deliberate shutdown look like runtime failure.
+		// Keep the parent store open while child sessions close; nested child
+		// jobs may still need to forward their terminal events to the parent.
+		var jobManagerCloseErr error
 		if s.jobManager != nil {
-			_ = s.jobManager.close()
+			jobManagerCloseErr = s.jobManager.closeRuntimeState()
 		}
 
 		// 3. Close subagents before shared environment cleanup; child sessions
@@ -110,6 +113,12 @@ func (s *Session) close(cleanupEnv bool) {
 		// parent owns cleanup of the shared env, so child closes skip env cleanup.
 		for _, sub := range subs {
 			sub.sess.close(false)
+		}
+		if s.jobManager != nil {
+			jobManagerCloseErr = errors.Join(jobManagerCloseErr, s.jobManager.closeStoreOnly())
+		}
+		if jobManagerCloseErr != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job manager close incomplete: %v", jobManagerCloseErr)})
 		}
 
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).

@@ -3907,14 +3907,17 @@ func TestProgressTimerFiresPeriodically(t *testing.T) {
 
 func TestProgressTimerStopsOnClose(t *testing.T) {
 	jm := newTestJM(t)
-	fired := make(chan struct{}, 16)
-	jm.enqueue = func(jobNotification) { fired <- struct{}{} }
+	fired := make(chan jobNotification, 16)
+	jm.enqueue = func(n jobNotification) { fired <- n }
 
 	if _, err := jm.configureWatch(watchArgs{Target: "caller", ProgressIntervalMS: minWatchProgressIntervalMS}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
 	select {
-	case <-fired:
+	case n := <-fired:
+		if n.JobID != "" {
+			t.Fatalf("session progress notification job_id = %q, want empty", n.JobID)
+		}
 	case <-time.After(1500 * time.Millisecond):
 		t.Fatal("progress timer did not fire before close")
 	}

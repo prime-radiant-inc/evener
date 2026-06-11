@@ -942,7 +942,11 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	if cfg.send != nil {
 		deliveries = append(deliveries, jm.watchSendSnapshot(cfg, cfg.target, "progress_tick"))
 	} else {
-		notifications = append(notifications, watchNotification(cfg.target, "progress_tick"))
+		notifyJobID := cfg.target
+		if isWatchSessionTarget(notifyJobID) {
+			notifyJobID = ""
+		}
+		notifications = append(notifications, watchNotification(notifyJobID, "progress_tick"))
 	}
 	jm.mu.Unlock()
 

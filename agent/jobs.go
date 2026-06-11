@@ -172,6 +172,12 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 }
 
 func (jm *jobManager) close() error {
+	runtimeErr := jm.closeRuntimeState()
+	storeErr := jm.closeStoreOnly()
+	return errors.Join(runtimeErr, storeErr)
+}
+
+func (jm *jobManager) closeRuntimeState() error {
 	jm.watchNotifyMu.Lock()
 	jm.mu.Lock()
 	jm.closing = true
@@ -236,10 +242,6 @@ waitLoop:
 			break waitLoop
 		}
 	}
-	if err := jm.store.Close(); err != nil {
-		err = fmt.Errorf("close store: %w", err)
-		return errors.Join(watchCleanupErr, waitErr, err)
-	}
 	return errors.Join(watchCleanupErr, waitErr)
 }
 
@@ -247,7 +249,10 @@ func (jm *jobManager) closeStoreOnly() error {
 	if jm == nil || jm.store == nil {
 		return nil
 	}
-	return jm.store.Close()
+	if err := jm.store.Close(); err != nil {
+		return fmt.Errorf("close store: %w", err)
+	}
+	return nil
 }
 
 func (jm *jobManager) abandonRunningJobs() {
