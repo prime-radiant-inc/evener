@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/provider"
@@ -1128,6 +1129,109 @@ func TestJobSendMessageForegroundResumeReturnsTerminalResult(t *testing.T) {
 	rec := loadShellRecord(t, s.jobManager, out.JobID)
 	if rec.Status != jobstore.StatusCompleted || rec.TranscriptRef != first.TranscriptRef {
 		t.Fatalf("resumed record = %+v, want completed with same transcript ref", rec)
+	}
+}
+
+func TestJobSendMessageRestoreRuntimeLostStructuredInvalidResult(t *testing.T) {
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithStructured("old structured output", map[string]any{"summary": "old"})
+			},
+			func(req llm.Request) llm.Response {
+				return communicateWithoutStructured("resumed prose without structured output")
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateTestSession(t, c)
+	resultSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"summary": map[string]any{"type": "string"},
+		},
+		"required": []string{"summary"},
+	}
+
+	first := s.createDelegate(context.Background(), delegateArgs{
+		Task:           "runtime-lost structured delegate",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+		ResultSchema:   resultSchema,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	rec := loadShellRecord(t, s.jobManager, first.JobID)
+	setStoredDelegateTerminalStatus(t, s, rec, jobstore.StatusStopped, "runtime_lost")
+	parentMeta := s.Meta()
+	stateDir := s.stateDir
+	s.Close()
+
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), parentMeta, RestoreSessionConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+
+	res := restored.reg.ExecuteCall(context.Background(), restored.env, llm.ToolCallData{
+		ID:        "send",
+		Name:      "job_send_message",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"resume without structured output","background":false,"block_timeout_ms":5000}`, first.JobID)),
+	})
+	if res.IsError {
+		t.Fatalf("job_send_message returned error: %s", res.Output)
+	}
+	var out struct {
+		Target                 string         `json:"target"`
+		JobID                  string         `json:"job_id"`
+		Type                   string         `json:"type"`
+		Status                 string         `json:"status"`
+		Action                 string         `json:"action"`
+		ResumedFromJobID       string         `json:"resumed_from_job_id"`
+		TranscriptRef          string         `json:"transcript_ref"`
+		Output                 string         `json:"output"`
+		StructuredResult       map[string]any `json:"structured_result"`
+		StructuredResultValid  *bool          `json:"structured_result_valid"`
+		StructuredResultReason string         `json:"structured_result_reason"`
+		RunningInBackground    bool           `json:"running_in_background"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal job_send_message output: %v (output: %s)", err, res.Output)
+	}
+	if out.Target != first.JobID ||
+		out.JobID == "" ||
+		out.JobID == first.JobID ||
+		out.Type != string(jobstore.JobDelegate) ||
+		out.Action != "resumed" ||
+		out.ResumedFromJobID != first.JobID ||
+		out.TranscriptRef != first.TranscriptRef ||
+		out.RunningInBackground {
+		t.Fatalf("job_send_message output = %+v, want foreground restored resume", out)
+	}
+	if out.Status != string(jobstore.StatusFailed) || !strings.Contains(out.Output, "model returned bare text") {
+		t.Fatalf("job_send_message output = %+v, want failed missing-structured resumed turn", out)
+	}
+	if out.StructuredResult != nil {
+		t.Fatalf("structured_result = %+v, want omitted", out.StructuredResult)
+	}
+	if out.StructuredResultValid == nil || *out.StructuredResultValid {
+		t.Fatalf("structured_result_valid = %v, want false", out.StructuredResultValid)
+	}
+	if out.StructuredResultReason != "schema_result_missing" {
+		t.Fatalf("structured_result_reason = %q, want schema_result_missing", out.StructuredResultReason)
+	}
+	newRec := loadShellRecord(t, restored.jobManager, out.JobID)
+	if newRec.DelegateRestore == nil || newRec.DelegateRestore.ResultSchema == nil || newRec.TranscriptRef != first.TranscriptRef {
+		t.Fatalf("resumed record = %+v, want inherited schema and transcript ref", newRec)
+	}
+	if newRec.StructuredResult != nil ||
+		newRec.StructuredResultValid == nil ||
+		*newRec.StructuredResultValid ||
+		newRec.StructuredResultReason != "schema_result_missing" {
+		t.Fatalf("durable structured result = value:%+v valid:%v reason:%q, want missing schema result", newRec.StructuredResult, newRec.StructuredResultValid, newRec.StructuredResultReason)
 	}
 }
 

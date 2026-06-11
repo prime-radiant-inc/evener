@@ -2510,6 +2510,133 @@ func TestJobSendMessageReconstructsRestoredDelegateRuntimeFromDescriptor(t *test
 	}
 }
 
+func TestRuntimeLostDelegateResumeAfterRestoreCreatesNewJobFromRetainedState(t *testing.T) {
+	const originalTask = "original runtime-lost delegate task"
+	const firstOutput = "old retained delegate output"
+	const resumedOutput = "new retained delegate output"
+	const resumedInput = "new input after restart"
+
+	var restoredRequest llm.Request
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithStructured(firstOutput, map[string]any{"summary": "old"})
+			},
+			func(req llm.Request) llm.Response {
+				restoredRequest = req
+				return communicateWithStructured(resumedOutput, map[string]any{"summary": "new"})
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateTestSession(t, c)
+	resultSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"summary": map[string]any{"type": "string"},
+		},
+		"required": []string{"summary"},
+	}
+
+	first := s.createDelegate(context.Background(), delegateArgs{
+		Task:           originalTask,
+		Background:     false,
+		BlockTimeoutMS: 5000,
+		ResultSchema:   resultSchema,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	if first.Status != jobstore.StatusCompleted || !strings.Contains(first.Output, firstOutput) {
+		t.Fatalf("first result = %+v, want completed old output", first)
+	}
+	oldRec := loadShellRecord(t, s.jobManager, first.JobID)
+	childID := oldRec.DelegateRestore.ChildSessionID
+	setStoredDelegateTerminalStatus(t, s, oldRec, jobstore.StatusStopped, "runtime_lost")
+	oldRec = loadShellRecord(t, s.jobManager, first.JobID)
+	parentMeta := s.Meta()
+	stateDir := s.stateDir
+	s.Close()
+
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), parentMeta, RestoreSessionConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+	if sub := restored.subagents.get(childID); sub != nil {
+		t.Fatalf("restored child runtime = %+v, want none before job_send_message", sub)
+	}
+	if requests := adapter.Requests(); len(requests) != 1 {
+		t.Fatalf("adapter requests before send = %+v, want only initial delegate request", requests)
+	}
+
+	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         first.JobID,
+		Message:        resumedInput,
+		Background:     false,
+		BackgroundSet:  true,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+	if res.JobID == "" || res.JobID == first.JobID ||
+		res.Action != "resumed" ||
+		res.ResumedFromJobID != first.JobID ||
+		res.Status != jobstore.StatusCompleted ||
+		res.TranscriptRef != first.TranscriptRef ||
+		!strings.Contains(res.Output, resumedOutput) ||
+		!res.StructuredResultValidSet ||
+		!res.StructuredResultValid {
+		t.Fatalf("resume result = %+v, want new completed resumed job", res)
+	}
+	oldAfter := loadShellRecord(t, restored.jobManager, first.JobID)
+	if oldAfter.Status != jobstore.StatusStopped || oldAfter.Reason != "runtime_lost" {
+		t.Fatalf("old record = %+v, want stopped/runtime_lost", oldAfter)
+	}
+	oldOutput, _, _, err := restored.jobManager.readOutput(first.JobID, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read old output: %v", err)
+	}
+	if !strings.Contains(oldOutput, firstOutput) || strings.Contains(oldOutput, resumedOutput) {
+		t.Fatalf("old output = %q, want only old output", oldOutput)
+	}
+	newOutput, _, _, err := restored.jobManager.readOutput(res.JobID, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read new output: %v", err)
+	}
+	if !strings.Contains(newOutput, resumedOutput) || strings.Contains(newOutput, firstOutput) {
+		t.Fatalf("new output = %q, want only resumed output", newOutput)
+	}
+	newRec := loadShellRecord(t, restored.jobManager, res.JobID)
+	if newRec.TranscriptRef != first.TranscriptRef {
+		t.Fatalf("new transcript_ref = %q, want %q", newRec.TranscriptRef, first.TranscriptRef)
+	}
+	if newRec.DelegateRestore == nil || newRec.DelegateRestore.ParentJobID != res.JobID {
+		t.Fatalf("new delegate restore = %+v, want parent job set to new job", newRec.DelegateRestore)
+	}
+	if !communicateOutputSchemaHasProperty(restoredRequest, "summary") {
+		t.Fatalf("restored request did not inherit result schema: %+v", restoredRequest.Tools)
+	}
+	if !requestMessagesContain(restoredRequest, originalTask) {
+		t.Fatalf("restored request missing retained original user turn %q: %+v", originalTask, restoredRequest.Messages)
+	}
+	if last := lastUserMessageText(restoredRequest); last != resumedInput {
+		t.Fatalf("last user message = %q, want fresh resumed input %q; messages = %+v", last, resumedInput, restoredRequest.Messages)
+	}
+	if strings.Contains(lastUserMessageText(restoredRequest), originalTask) {
+		t.Fatalf("original task was submitted as fresh input: %+v", restoredRequest.Messages)
+	}
+	if got := countRequestMessagesContaining(restoredRequest, resumedInput); got != 1 {
+		t.Fatalf("fresh input message count = %d, want 1; messages = %+v", got, restoredRequest.Messages)
+	}
+	if requests := adapter.Requests(); len(requests) != 2 {
+		t.Fatalf("adapter requests after send = %+v, want initial plus resumed request", requests)
+	}
+}
+
 func TestReconstructDelegateRuntimeCollisionReusesTrackedChild(t *testing.T) {
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
@@ -4340,4 +4467,23 @@ func requestMessagesContain(req llm.Request, text string) bool {
 		}
 	}
 	return false
+}
+
+func countRequestMessagesContaining(req llm.Request, text string) int {
+	var count int
+	for _, msg := range req.Messages {
+		if strings.Contains(msg.Text(), text) {
+			count++
+		}
+	}
+	return count
+}
+
+func lastUserMessageText(req llm.Request) string {
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == llm.RoleUser {
+			return strings.TrimSpace(req.Messages[i].Text())
+		}
+	}
+	return ""
 }
