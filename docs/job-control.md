@@ -955,7 +955,7 @@ Job job_... completed. Use job_read_output to inspect output.
 
 Rules:
 
-- Notifications carry `job_id`, `event` (the lifecycle/progress notification kind), `job_type` (`shell` or `delegate`), status, reason, output byte count, exit code when known, and optional transcript ref for delegate jobs. Notification `event` must not be named `type`, because durable job records already use `type` for the job class. The v1 event vocabulary is terminal statuses `completed`, `failed`, `cancelled`, and `stopped`, plus `watch` for watch output/event/progress notifications.
+- Terminal job notifications carry a concrete `job_id`, `event` (the lifecycle/progress notification kind), `job_type` (`shell` or `delegate`), status, reason, output byte count, exit code when known, and optional transcript ref for delegate jobs. Watch notifications use `event="watch"` and `job_type="watch"`; output/progress/job-event watches carry the concrete watched `job_id` when one exists, while session-level event watches may omit a concrete `job_id`. Notification `event` must not be named `type`, because durable job records already use `type` for the job class. The v1 event vocabulary is terminal statuses `completed`, `failed`, `cancelled`, and `stopped`, plus `watch` for watch output/event/progress notifications.
 - Notifications include a bounded excerpt/tail preview, not full output.
 - Notifications wake the visible session if idle. A child/delegate session with no live run queue must not be resumed solely to deliver a notification; its owner-side notification state remains durable and is delivered at the next safe run boundary for that session.
 - If the parent is mid-turn, notifications queue for a safe turn boundary.
