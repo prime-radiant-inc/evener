@@ -334,6 +334,80 @@ func TestJobManagerCloseMarksRunningJobsCancelled(t *testing.T) {
 	}
 }
 
+func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
+	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
+	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure watch: %v", err)
+	}
+	pendingKey := jobstore.WatchSendKey{
+		VisibleSessionID:        jm.sessionID,
+		WatchTarget:             rec.JobID,
+		ResolvedWatchedIdentity: rec.JobID,
+		ResolvedSendTo:          "job_obs",
+	}
+	jm.mu.Lock()
+	var cfg *watchConfig
+	for _, candidate := range jm.watches {
+		cfg = candidate
+	}
+	if cfg == nil {
+		jm.mu.Unlock()
+		t.Fatal("configured watch not found")
+	}
+	pendingKey.WatchGeneration = cfg.generation
+	if cfg.pending == nil {
+		cfg.pending = make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
+	}
+	cfg.pendingOrder = append(cfg.pendingOrder, pendingKey)
+	cfg.pending[pendingKey] = &jobstore.WatchSendState{
+		Key:        pendingKey,
+		DeliveryID: jobstore.NewWatchSendDeliveryID(),
+		Message:    "observe",
+	}
+	jm.mu.Unlock()
+	run := jm.running[rec.JobID]
+	run.signal = func() {
+		status, reason, exitCode := jm.shellTerminal(run, 143, false, nil)
+		_ = jm.finalize(rec.JobID, status, reason, exitCode)
+	}
+
+	cleanupErr := errors.New("drop watch send failed")
+	realAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventWatchSendDropped {
+			return cleanupErr
+		}
+		return realAppend(e)
+	}
+
+	if err := jm.close(); !errors.Is(err, cleanupErr) {
+		t.Fatalf("close error = %v, want watch cleanup error", err)
+	}
+
+	st, err := jobstore.Open(filepath.Join(jm.dir, "jobs.jsonl"))
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer st.Close()
+	recs, err := st.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := recs[rec.JobID]
+	if got.Status != jobstore.StatusCancelled || got.Reason != "stopped_by_parent" {
+		t.Fatalf("record = %+v, want cancelled/stopped_by_parent despite watch cleanup failure", got)
+	}
+}
+
 func TestGrepOutputFileSkipsOverlongLine(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "job_A.log")

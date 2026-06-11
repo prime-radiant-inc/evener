@@ -3088,7 +3088,7 @@ func TestWatchSendAppendFailureDuringReplaceLeavesOldWatchReachable(t *testing.T
 	}
 }
 
-func TestWatchSendAppendFailureDuringCloseKeepsPendingReachable(t *testing.T) {
+func TestWatchSendAppendFailureDuringCloseReturnsErrorAndClosesStore(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
@@ -3105,27 +3105,32 @@ func TestWatchSendAppendFailureDuringCloseKeepsPendingReachable(t *testing.T) {
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: "*", SendTo: "job_obs"}
 	jm.mu.Lock()
 	cfg := jm.watches[key]
+	if cfg != nil {
+		cfg.progressStop = make(chan struct{})
+	}
 	jm.mu.Unlock()
 	if cfg == nil || len(cfg.pending) != 1 {
 		t.Fatalf("pending before close = %+v, want one", cfg)
 	}
-	running, err := jm.createShell(createShellOpts{Command: "during failed close"})
-	if err != nil {
-		t.Fatalf("create running shell: %v", err)
-	}
+	storePath := jm.dir + "/jobs.jsonl"
 	realAppend := jm.appendEvent
+	appendErr := errors.New("append dropped failed")
 	jm.appendEvent = func(e jobstore.Event) error {
 		if e.Kind == jobstore.EventWatchSendDropped {
-			return errors.New("append dropped failed")
+			return appendErr
 		}
 		return realAppend(e)
 	}
 
-	if err := jm.close(); err == nil {
-		t.Fatal("close succeeded, want append failure")
+	if err := jm.close(); !errors.Is(err, appendErr) {
+		t.Fatalf("close error = %v, want append failure", err)
 	}
 	if _, err := jm.store.Load(); err != nil {
-		t.Fatalf("store after failed close = %v, want still open", err)
+		if !errors.Is(err, jobstore.ErrStoreClosed) {
+			t.Fatalf("store after close = %v, want closed", err)
+		}
+	} else {
+		t.Fatal("store load after close succeeded, want closed store")
 	}
 	if got := len(cfg.pending); got != 1 {
 		t.Fatalf("in-memory pending after failed close append = %d, want 1", got)
@@ -3135,41 +3140,31 @@ func TestWatchSendAppendFailureDuringCloseKeepsPendingReachable(t *testing.T) {
 	if !reachable && jm.terminalFlush != nil {
 		reachable = jm.terminalFlush[cfg]
 	}
+	progressArmed := cfg.progressStop != nil
 	jm.mu.Unlock()
 	if !reachable {
 		t.Fatal("pending watch config was unreachable after failed close append")
 	}
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+	if progressArmed {
+		t.Fatal("progress timer still armed after failed close append")
+	}
+	st, err := jobstore.Open(storePath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer st.Close()
+	record, err := st.LoadWatchSends()
+	if err != nil {
+		t.Fatalf("load watch sends: %v", err)
+	}
+	if pending := record.Pending; len(pending) != 1 {
 		t.Fatalf("folded pending after failed close append = %d, want 1", len(pending))
-	}
-	code := 0
-	if err := jm.finalize(running.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
-		t.Fatalf("finalize running job after failed close: %v", err)
-	}
-	rec := findListedJob(jm.list(listFilter{}), running.JobID)
-	if rec == nil || rec.Status != jobstore.StatusCompleted || rec.Reason != "exit_zero" {
-		t.Fatalf("running job after failed close = %+v, want completed/exit_zero", rec)
 	}
 	jm.mu.Lock()
 	closing := jm.closing
 	jm.mu.Unlock()
-	if closing {
-		t.Fatal("job manager remained closing after failed close append")
-	}
-	later, err := jm.createShell(createShellOpts{Command: "after failed close"})
-	if err != nil {
-		t.Fatalf("create after failed close: %v", err)
-	}
-	if err := jm.finalize(later.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
-		t.Fatalf("finalize after failed close: %v", err)
-	}
-
-	jm.appendEvent = realAppend
-	if err := jm.close(); err != nil {
-		t.Fatalf("retry close: %v", err)
-	}
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
-		t.Fatalf("folded pending after retry close = %d, want 0", len(pending))
+	if !closing {
+		t.Fatal("job manager closing flag = false after close")
 	}
 }
 

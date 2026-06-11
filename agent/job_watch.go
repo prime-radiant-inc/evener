@@ -1430,6 +1430,14 @@ func (jm *jobManager) rollbackWatchConfigSnapshotsRejecting(targets []watchConfi
 	}
 }
 
+func (jm *jobManager) closeWatchConfigSnapshots(targets []watchConfigTerminalSnapshot) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, target := range targets {
+		closeWatchConfig(target.cfg)
+	}
+}
+
 func (jm *jobManager) detachWatchConfigSnapshots(targets []watchConfigTerminalSnapshot) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()

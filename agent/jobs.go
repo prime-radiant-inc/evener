@@ -203,13 +203,12 @@ func (jm *jobManager) close() error {
 	if err != nil {
 		jm.removeWatchSendTerminalSnapshots(applied)
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
-		jm.mu.Lock()
-		jm.closing = false
-		jm.mu.Unlock()
-		return err
+		jm.closeWatchConfigSnapshots(targets)
+	} else {
+		jm.detachWatchConfigSnapshots(targets)
+		jm.removeWatchSendTerminalSnapshots(applied)
 	}
-	jm.detachWatchConfigSnapshots(targets)
-	jm.removeWatchSendTerminalSnapshots(applied)
+	watchCleanupErr := err
 	jm.mu.Lock()
 	for _, handle := range running {
 		if run := jm.running[handle.jobID]; run != nil && run.stopStatus == "" {
@@ -237,12 +236,10 @@ waitLoop:
 		}
 	}
 	if err := jm.store.Close(); err != nil {
-		if waitErr != nil {
-			return fmt.Errorf("%w; close store: %w", waitErr, err)
-		}
-		return err
+		err = fmt.Errorf("close store: %w", err)
+		return errors.Join(watchCleanupErr, waitErr, err)
 	}
-	return waitErr
+	return errors.Join(watchCleanupErr, waitErr)
 }
 
 func (jm *jobManager) abandonRunningJobs() {
