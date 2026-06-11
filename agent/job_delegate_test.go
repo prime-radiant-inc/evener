@@ -3116,6 +3116,63 @@ func TestDelegateReconstructionParentCloseBeforeDeferredSideEffectsDoesNotRunThe
 	}
 }
 
+func TestDelegateReconstructionSideEffectFailureAfterWatchDeliveryKeepsRuntime(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	childID := rec.DelegateRestore.ChildSessionID
+	now := time.Unix(3900, 0).UTC()
+	appendSessionJobEvents(t, s.stateDir, childID, restoredWatchSendPendingEvents(childID, "job_child_observed", "caller", now)...)
+	appendChildCompletedJobNeedingNotification(t, s.stateDir, childID, "job_child_completed_needs_notify", now.Add(time.Second))
+	preflight := requireDelegateRestorePreflight(t, s, rec)
+	sawWatchDelivered := false
+	s.delegateRestoreBeforeSideEffects = func(child *Session) {
+		origAppend := child.jobManager.appendEvent
+		child.jobManager.appendEvent = func(event jobstore.Event) error {
+			if event.Kind == jobstore.EventWatchSendDelivered {
+				sawWatchDelivered = true
+				return origAppend(event)
+			}
+			if sawWatchDelivered && event.Kind == jobstore.EventJobNotificationPending {
+				return errors.New("injected notification arm failure after watch delivery")
+			}
+			return origAppend(event)
+		}
+	}
+
+	sub, err := s.restoreTerminalDelegateChild(rec, childID, preflight)
+
+	if err != nil {
+		t.Fatalf("restoreTerminalDelegateChild error = %v, want retained runtime after committed watch delivery", err)
+	}
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("reconstructed child = %+v, want retained runtime", sub)
+	}
+	if got := s.subagents.get(childID); got != sub {
+		t.Fatalf("tracked child = %+v, want reconstructed child %p", got, sub)
+	}
+	if !sawWatchDelivered {
+		t.Fatal("test did not deliver restored watch send before injected failure")
+	}
+	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 1 {
+		t.Fatalf("parent watch-frame steering deliveries = %d, want 1; queue = %+v", got, s.SteeringQueueSnapshot())
+	}
+	events := loadSessionJobStoreEvents(t, s.stateDir, childID)
+	if !hasWatchSendEvent(events, jobstore.EventWatchSendDelivered, "delivery_restore_pending") {
+		t.Fatalf("child jobstore missing delivered watch event after committed side effect: %+v", events)
+	}
+	if hasJobEvent(events, jobstore.EventJobNotificationPending, "job_child_completed_needs_notify") {
+		t.Fatalf("injected notification failure still appended notification pending: %+v", events)
+	}
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("adapter requests = %+v, want no model calls during reconstruction", requests)
+	}
+}
+
 func TestTerminalDelegateRestoreRequiresStrictPreflightBeforeReconstruction(t *testing.T) {
 	cases := []struct {
 		status jobstore.Status
@@ -3840,6 +3897,34 @@ func appendSessionJobEvents(t *testing.T, stateDir, sessionID string, events ...
 	}
 }
 
+func appendChildCompletedJobNeedingNotification(t *testing.T, stateDir, childID, jobID string, ts time.Time) {
+	t.Helper()
+	terminalGen := jobstore.NewTerminalGeneration()
+	endedAt := ts.Add(time.Millisecond)
+	appendSessionJobEvents(t, stateDir, childID,
+		jobstore.Event{
+			Kind:             jobstore.EventJobStarted,
+			TS:               ts,
+			JobID:            jobID,
+			Type:             jobstore.JobShell,
+			Command:          "true",
+			Description:      "completed child job needing notification arm",
+			OwnerSessionID:   childID,
+			VisibleToSession: childID,
+			StartedAt:        &ts,
+		},
+		jobstore.Event{
+			Kind:        jobstore.EventJobFinished,
+			TS:          ts.Add(time.Millisecond),
+			JobID:       jobID,
+			Status:      jobstore.StatusCompleted,
+			Reason:      "exit_zero",
+			EndedAt:     &endedAt,
+			TerminalGen: terminalGen,
+		},
+	)
+}
+
 func loadSessionJobStoreEvents(t *testing.T, stateDir, sessionID string) []jobstore.Event {
 	t.Helper()
 	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
@@ -3864,6 +3949,24 @@ func loadSessionJobStoreEvents(t *testing.T, stateDir, sessionID string) []jobst
 func loadSessionWatchSendRecord(t *testing.T, stateDir, sessionID string) jobstore.WatchSendRecord {
 	t.Helper()
 	return jobstore.FoldWatchSends(loadSessionJobStoreEvents(t, stateDir, sessionID))
+}
+
+func hasWatchSendEvent(events []jobstore.Event, kind jobstore.EventKind, deliveryID string) bool {
+	for _, event := range events {
+		if event.Kind == kind && event.WatchSend != nil && event.WatchSend.DeliveryID == deliveryID {
+			return true
+		}
+	}
+	return false
+}
+
+func hasJobEvent(events []jobstore.Event, kind jobstore.EventKind, jobID string) bool {
+	for _, event := range events {
+		if event.Kind == kind && event.JobID == jobID {
+			return true
+		}
+	}
+	return false
 }
 
 func sessionStartHookPlugin(t *testing.T, command string) string {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provider"
@@ -602,9 +603,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 	}
 	defer endSideEffects()
 	if err := child.runDeferredRestoreSideEffects(); err != nil {
-		s.subagents.remove(childID)
-		child.close(false)
-		return nil, err
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restored delegate side effects incomplete for %s: %v", childID, err)})
 	}
 	return tracked, nil
 }
