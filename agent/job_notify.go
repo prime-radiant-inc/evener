@@ -48,6 +48,16 @@ func formatJobNotificationBlock(n jobNotification) string {
 		attrs = append(attrs, fmt.Sprintf("transcript_ref=%q", n.TranscriptRef))
 	}
 
+	if n.Status == jobNotificationEventWatch && n.JobID == "" {
+		return fmt.Sprintf(
+			"<job-notification %s>\n"+
+				"Watch event triggered: %s.\n"+
+				"</job-notification>",
+			strings.Join(attrs, " "),
+			n.Reason,
+		)
+	}
+
 	return fmt.Sprintf(
 		"<job-notification %s>\n"+
 			"Job %s %s. Use job_read_output to inspect output.\n"+

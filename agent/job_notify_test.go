@@ -28,6 +28,18 @@ func TestFormatJobNotification(t *testing.T) {
 		t.Errorf("must use job notification wording, not subagent")
 	}
 
+	watchBlock := formatJobNotificationBlock(jobNotification{
+		JobType: "watch",
+		Status:  "watch",
+		Reason:  "event: ASSISTANT_TEXT_END",
+	})
+	if !strings.Contains(watchBlock, "Watch event triggered") {
+		t.Fatalf("watch notification block = %q, want watch wording", watchBlock)
+	}
+	if strings.Contains(watchBlock, "job_read_output") {
+		t.Fatalf("watch notification without job_id must not suggest job_read_output:\n%s", watchBlock)
+	}
+
 	emptyReason := formatJobNotificationBlock(jobNotification{
 		JobID: "job_Y", JobType: "shell", Status: "completed",
 	})

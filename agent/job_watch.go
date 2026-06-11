@@ -786,7 +786,12 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 		if cfg.send != nil {
 			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, watchEventWatchedIdentity(cfg.target, data), fmt.Sprintf("event: %s", kind)))
 		} else {
-			notifications = append(notifications, watchNotification(cfg.target, fmt.Sprintf("event: %s", kind)))
+			watchedIdentity := watchEventWatchedIdentity(cfg.target, data)
+			notifyJobID := watchedIdentity
+			if isWatchSessionTarget(notifyJobID) {
+				notifyJobID = ""
+			}
+			notifications = append(notifications, watchNotification(notifyJobID, fmt.Sprintf("event: %s", kind)))
 		}
 	}
 	jm.mu.Unlock()

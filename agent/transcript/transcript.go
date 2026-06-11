@@ -235,6 +235,9 @@ func (w *Writer) rollbackAppendLocked(startOffset int64) error {
 	if seekErr != nil {
 		return fmt.Errorf("seek eof: %w", seekErr)
 	}
+	if syncErr := w.file.Sync(); syncErr != nil {
+		return fmt.Errorf("sync rollback truncate: %w", syncErr)
+	}
 	return nil
 }
 

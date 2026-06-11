@@ -281,6 +281,27 @@ func TestEventWatchFiresAndNotifiesCaller(t *testing.T) {
 	if len(notified) != 1 {
 		t.Fatalf("an assistant.message event must notify the caller once, got %d", len(notified))
 	}
+	if notified[0].JobID != "" {
+		t.Fatalf("session event notification job_id = %q, want empty", notified[0].JobID)
+	}
+}
+
+func TestWildcardJobEventWatchNotifiesConcreteJob(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	if _, err := jm.configureWatch(watchArgs{Target: "*", Events: []string{"job.notification"}}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_worker", JobType: "delegate", Status: "completed"})
+
+	if len(notified) != 1 {
+		t.Fatalf("job.notification event must notify the caller once, got %d", len(notified))
+	}
+	if notified[0].JobID != "job_worker" {
+		t.Fatalf("job event notification job_id = %q, want concrete triggering job", notified[0].JobID)
+	}
 }
 
 func TestEventWatchTriggerEveryNth(t *testing.T) {

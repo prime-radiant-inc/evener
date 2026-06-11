@@ -31,7 +31,7 @@ Stopping is handled by `job_stop`. Retention is policy-based, not model-acknowle
 
 This reference contract is not itself the runtime system prompt, but the following guidance **must** be reflected in the eventual tool descriptions and, if Serf has a job-control prompt section, in that system prompt section. These bullets are normative for model-facing documentation because they shape whether agents use jobs correctly:
 
-- Shell commands run foreground by default and return inline output for quick commands. Use `background=true` for deliberate background shell work; foreground shell commands that exceed `block_timeout_ms` are promoted to durable background jobs and announced with a system notification.
+- Shell commands run foreground by default and return inline output for quick commands. Use `background=true` for deliberate background shell work; foreground shell commands that exceed `block_timeout_ms` are promoted to durable background jobs and return a `job_id`.
 - Delegate work starts in the background by default; omit `background` unless intentionally overriding it. Shell and delegate defaults differ deliberately: shell commands are usually short decision-producing calls, while delegates are independent agentic work.
 - Use `delegate` to start a new delegate conversation/job. It does not continue an existing conversation.
 - Use `job_send_message` for follow-up on a messageable target: if a delegate target is running, it injects guidance; if a delegate target is terminal and resumable, it starts a new delegate job in that same delegate conversation by default. Use `on_finished="fail"` only for live-only nudges that must not resume terminal work.
@@ -177,7 +177,7 @@ Defaults and timeout semantics:
 - `background` defaults to `false` for shell.
 - With `background=false`, the tool blocks up to `block_timeout_ms` for terminal status.
 - A foreground shell command that completes before `block_timeout_ms` returns inline output and is ephemeral by default: no durable `job_id` is required and it does not appear in `job_list`.
-- If a foreground shell command exceeds `block_timeout_ms`, Serf promotes it to a durable background job, returns current bounded output/status with a `job_id`, and injects a system notification telling the agent that the command is still running in the background and which tools to use next.
+- If a foreground shell command exceeds `block_timeout_ms`, Serf promotes it to a durable background job and returns current bounded output/status with a `job_id`. The normal terminal notification remains armed for the eventual terminal state.
 - With `background=true`, the tool creates a durable background job immediately, returns after job creation/startup acknowledgement, and never waits for terminal completion. `block_timeout_ms` has no terminal-wait effect in this mode.
 - `block_timeout_ms` is a foreground wait/read timeout only. It is **not** a process runtime timeout.
 - `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Serf stops it and finalizes the job as `stopped` with reason `run_timeout`. The name is intentionally distinct from `block_timeout_ms`: `block_timeout_ms` controls how long the tool call waits; `max_runtime_ms` controls how long the process may run.
@@ -240,16 +240,6 @@ Foreground timeout / promotion return shape:
   "truncated": false
 }
 ```
-
-Promotion system notification example:
-
-```xml
-<job-notification job_id="job_..." event="running" job_type="shell" status="running" reason="foreground_timeout">
-Shell command exceeded the foreground wait and is still running in the background. Use job_read_output({"job_id":"job_..."}) to inspect output, job_watch({"target":"job_...", ...}) to watch it, or job_stop({"job_id":"job_..."}) to stop it.
-</job-notification>
-```
-
-This notification is not a terminal notification. It tells the agent that a formerly foreground command is now durable background work. The normal terminal notification remains armed.
 
 Shell approval is not fully designed here. If policy requires approval before a shell command may start, Serf must not execute before approval. The target contract permits either:
 
@@ -965,7 +955,7 @@ Job job_... completed. Use job_read_output to inspect output.
 
 Rules:
 
-- Notifications carry `job_id`, `event` (the lifecycle/progress notification kind), `job_type` (`shell` or `delegate`), status, reason, output byte count, exit code when known, and optional transcript ref for delegate jobs. Notification `event` must not be named `type`, because durable job records already use `type` for the job class. The v1 event vocabulary is `running` for foreground promotion, terminal statuses `completed`, `failed`, `cancelled`, and `stopped`, and `watch` for watch output/event/progress notifications.
+- Notifications carry `job_id`, `event` (the lifecycle/progress notification kind), `job_type` (`shell` or `delegate`), status, reason, output byte count, exit code when known, and optional transcript ref for delegate jobs. Notification `event` must not be named `type`, because durable job records already use `type` for the job class. The v1 event vocabulary is terminal statuses `completed`, `failed`, `cancelled`, and `stopped`, plus `watch` for watch output/event/progress notifications.
 - Notifications include a bounded excerpt/tail preview, not full output.
 - Notifications wake the visible session if idle. A child/delegate session with no live run queue must not be resumed solely to deliver a notification; its owner-side notification state remains durable and is delivered at the next safe run boundary for that session.
 - If the parent is mid-turn, notifications queue for a safe turn boundary.
