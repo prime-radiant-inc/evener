@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	taskpkg "primeradiant.com/serf/agent/task"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -2243,12 +2244,13 @@ func TestReconstructDelegateRuntimeCollisionDoesNotCleanupSharedEnv(t *testing.T
 	markStoredDelegateResumable(t, s, rec)
 	rec = loadShellRecord(t, s.jobManager, rec.JobID)
 	childID := rec.DelegateRestore.ChildSessionID
+	preflight := requireDelegateRestorePreflight(t, s, rec)
 
-	first, err := s.restoreTerminalDelegateChild(rec, childID, nil)
+	first, err := s.restoreTerminalDelegateChild(rec, childID, preflight)
 	if err != nil {
 		t.Fatalf("first restoreTerminalDelegateChild: %v", err)
 	}
-	second, err := s.restoreTerminalDelegateChild(rec, childID, nil)
+	second, err := s.restoreTerminalDelegateChild(rec, childID, preflight)
 	if err != nil {
 		t.Fatalf("second restoreTerminalDelegateChild: %v", err)
 	}
@@ -2487,12 +2489,13 @@ func TestReconstructDelegateRuntimeCollisionReusesTrackedChild(t *testing.T) {
 	markStoredDelegateResumable(t, s, rec)
 	rec = loadShellRecord(t, s.jobManager, rec.JobID)
 	childID := rec.DelegateRestore.ChildSessionID
+	preflight := requireDelegateRestorePreflight(t, s, rec)
 
-	first, err := s.restoreTerminalDelegateChild(rec, childID, nil)
+	first, err := s.restoreTerminalDelegateChild(rec, childID, preflight)
 	if err != nil {
 		t.Fatalf("first restoreTerminalDelegateChild: %v", err)
 	}
-	second, err := s.restoreTerminalDelegateChild(rec, childID, nil)
+	second, err := s.restoreTerminalDelegateChild(rec, childID, preflight)
 	if err != nil {
 		t.Fatalf("second restoreTerminalDelegateChild: %v", err)
 	}
@@ -2659,6 +2662,106 @@ func TestReconstructDelegateRuntimeMissingRequiredToolsFailsBeforeTracking(t *te
 				t.Fatalf("adapter requests = %+v, want none", requests)
 			}
 		})
+	}
+}
+
+func TestTerminalDelegateRestoreRequiresStrictPreflightBeforeReconstruction(t *testing.T) {
+	cases := []struct {
+		status jobstore.Status
+		reason string
+	}{
+		{status: jobstore.StatusCompleted, reason: "exit_zero"},
+		{status: jobstore.StatusCancelled, reason: "cancelled"},
+		{status: jobstore.StatusFailed, reason: "failed"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.status), func(t *testing.T) {
+			adapter := &fakeAdapter{name: "openai"}
+			c := llm.NewClient()
+			c.Register(adapter)
+			s := newDelegateRestorePreflightSession(t, c)
+			rec := seedStoppedDelegateRestoreRecord(t, s)
+			setStoredDelegateTerminalStatus(t, s, rec, tc.status, tc.reason)
+			markStoredDelegateResumable(t, s, rec)
+			rec = loadShellRecord(t, s.jobManager, rec.JobID)
+			childID := rec.DelegateRestore.ChildSessionID
+			appendChildTranscript(t, s, rec, "\n{not-json}\n")
+			beforeEvents := len(loadJobStoreEvents(t, s.jobManager))
+			beforeJobs := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate}))
+
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+				Target:  rec.JobID,
+				Message: "resume",
+			})
+
+			if res.Err == nil || res.Err.Error() != "target_not_resumable:corrupt_child_transcript" {
+				t.Fatalf("error = %v, want corrupt_child_transcript", res.Err)
+			}
+			if got := len(loadJobStoreEvents(t, s.jobManager)); got != beforeEvents {
+				t.Fatalf("jobstore event count = %d, want unchanged %d", got, beforeEvents)
+			}
+			if got := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate})); got != beforeJobs {
+				t.Fatalf("delegate job count = %d, want unchanged %d", got, beforeJobs)
+			}
+			if sub := s.subagents.get(childID); sub != nil {
+				t.Fatalf("retained child runtime = %+v, want none after failed strict preflight", sub)
+			}
+			if requests := adapter.Requests(); len(requests) != 0 {
+				t.Fatalf("adapter requests = %+v, want none", requests)
+			}
+		})
+	}
+}
+
+func TestTerminalDelegateRestoreUsesStrictPreflightHistory(t *testing.T) {
+	var request llm.Request
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				request = req
+				return communicateWithDefaultOutput("resumed from strict history")
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	setStoredDelegateTerminalStatus(t, s, rec, jobstore.StatusCompleted, "exit_zero")
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	childID := rec.DelegateRestore.ChildSessionID
+	appendChildTranscriptTurn(t, s, rec, schema.NewTurn(schema.TurnUserInput, llm.User("retained transcript source")))
+	original := delegateRestoreResumeHistory
+	delegateRestoreResumeHistory = func(entries []transcript.Entry) []schema.Turn {
+		if len(entries) != 1 {
+			t.Fatalf("strict preflight entries = %d, want 1", len(entries))
+		}
+		return []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("strict preflight history marker"))}
+	}
+	defer func() { delegateRestoreResumeHistory = original }()
+
+	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         rec.JobID,
+		Message:        "resume valid terminal delegate",
+		Background:     false,
+		BackgroundSet:  true,
+		BlockTimeoutMS: 5000,
+	})
+
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+	sub := s.subagents.get(childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("reconstructed child runtime = %+v, want retained child session", sub)
+	}
+	if !requestMessagesContain(request, "strict preflight history marker") {
+		t.Fatalf("first restored request missing strict preflight history marker: %+v", request.Messages)
+	}
+	if !requestMessagesContain(request, "resume valid terminal delegate") {
+		t.Fatalf("first restored request missing resumed input: %+v", request.Messages)
 	}
 }
 
@@ -3125,6 +3228,29 @@ func markStoredDelegateResumable(t *testing.T, s *Session, rec *jobstore.JobReco
 	}
 }
 
+func setStoredDelegateTerminalStatus(t *testing.T, s *Session, rec *jobstore.JobRecord, status jobstore.Status, reason string) {
+	t.Helper()
+	events := loadJobStoreEvents(t, s.jobManager)
+	for i := range events {
+		if events[i].JobID == rec.JobID && events[i].Kind == jobstore.EventJobFinished {
+			events[i].Status = status
+			events[i].Reason = reason
+			rewriteJobStoreEvents(t, s.jobManager, events)
+			return
+		}
+	}
+	t.Fatalf("terminal event for delegate job %s not found", rec.JobID)
+}
+
+func requireDelegateRestorePreflight(t *testing.T, s *Session, rec *jobstore.JobRecord) *delegateRestorePreflight {
+	t.Helper()
+	assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
+	if !assessment.Resumable || assessment.Preflight == nil {
+		t.Fatalf("delegate restore preflight = %+v, want resumable with preflight", assessment)
+	}
+	return assessment.Preflight
+}
+
 func seedRetainedChildSession(t *testing.T, parent *Session) string {
 	t.Helper()
 	cfg := SessionConfig{
@@ -3225,6 +3351,20 @@ func appendChildTranscript(t *testing.T, s *Session, rec *jobstore.JobRecord, da
 	if _, err := f.WriteString(data); err != nil {
 		t.Fatalf("append child transcript: %v", err)
 	}
+}
+
+func appendChildTranscriptTurn(t *testing.T, s *Session, rec *jobstore.JobRecord, turn schema.Turn) {
+	t.Helper()
+	entry := transcript.Entry{
+		Kind: "entry",
+		Seq:  1,
+		Turn: turn,
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal child transcript entry: %v", err)
+	}
+	appendChildTranscript(t, s, rec, string(data)+"\n")
 }
 
 func completedDelegateSubagent(child *Session, result string) *subagent {

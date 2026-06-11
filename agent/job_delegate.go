@@ -285,13 +285,19 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		}
 		restorePreflight = assessment.Preflight
 	}
-
 	_, childID, err := decodeRef(rec.TranscriptRef)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: invalid transcript_ref for job %q: %w", target, err))
 	}
 	sub := s.subagents.get(childID)
 	if sub == nil || sub.sess == nil {
+		if restorePreflight == nil {
+			assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
+			if !assessment.Resumable {
+				return sendMessageFailed(target, fmt.Errorf("target_not_resumable:%s", assessment.Reason))
+			}
+			restorePreflight = assessment.Preflight
+		}
 		sub, err = s.restoreTerminalDelegateChild(rec, childID, restorePreflight)
 		if err != nil {
 			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is not retained: %w", childID, err))
@@ -466,7 +472,10 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 	if s == nil || s.subagents == nil || rec == nil {
 		return nil, errors.New("delegate session restore unavailable")
 	}
-	if preflight == nil && (rec.Resumable == nil || !*rec.Resumable) {
+	if preflight == nil {
+		return nil, errors.New("strict delegate restore preflight is required")
+	}
+	if !isRuntimeLostDelegate(rec) && (rec.Resumable == nil || !*rec.Resumable) {
 		return nil, errors.New("delegate job is not resumable")
 	}
 	if rec.DelegateRestore == nil {
@@ -479,24 +488,9 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 		return nil, errors.New("state directory is not configured")
 	}
 	desc := rec.DelegateRestore
-	var meta schema.SessionMeta
-	var profile *provider.Profile
-	var resumeHistory []schema.Turn
-	if preflight != nil {
-		meta = preflight.Meta
-		profile = preflight.Profile
-		resumeHistory = preflight.History
-	} else {
-		var err error
-		meta, err = schema.LoadSessionMeta(s.stateDir, childID)
-		if err != nil {
-			return nil, err
-		}
-		profile, err = s.resolveDelegateRestoreProfile(meta, rec.DelegateRestore)
-		if err != nil {
-			return nil, err
-		}
-	}
+	meta := preflight.Meta
+	profile := preflight.Profile
+	resumeHistory := preflight.History
 	resultSchema := delegateResultSchemaMap(desc.ResultSchema)
 	if len(resultSchema) > 0 {
 		profile = provider.WithCommunicateOutputSchema(profile, resultSchema)
