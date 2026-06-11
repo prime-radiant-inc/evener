@@ -277,7 +277,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	}
 	var restorePreflight *delegateRestorePreflight
 	if isRuntimeLostDelegate(rec) {
-		assessment := s.AssessDelegateResumability(rec)
+		assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
 		if !assessment.Resumable {
 			return sendMessageFailed(target, fmt.Errorf("target_not_resumable:%s", assessment.Reason))
 		}
@@ -334,10 +334,6 @@ func isRuntimeLostDelegate(rec *jobstore.JobRecord) bool {
 		rec.Type == jobstore.JobDelegate &&
 		rec.Status == jobstore.StatusStopped &&
 		rec.Reason == "runtime_lost"
-}
-
-func (s *Session) AssessDelegateResumability(rec *jobstore.JobRecord) DelegateResumability {
-	return s.assessDelegateResumability(rec, delegateResumabilityPreflight)
 }
 
 func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode delegateResumabilityMode) DelegateResumability {
