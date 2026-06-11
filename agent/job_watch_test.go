@@ -206,8 +206,8 @@ func TestConfigureWatchRejectsTerminalizingConcreteJob(t *testing.T) {
 	if err == nil {
 		t.Fatal("a terminalizing concrete job must not accept new watches")
 	}
-	if !strings.Contains(err.Error(), "target_not_found") {
-		t.Fatalf("error = %v, want target_not_found", err)
+	if !strings.Contains(err.Error(), "target_terminal") {
+		t.Fatalf("error = %v, want target_terminal", err)
 	}
 	if jm.watchCount() != 0 {
 		t.Fatalf("terminalizing job watch was registered; count = %d", jm.watchCount())
@@ -2358,8 +2358,8 @@ func TestWatchSendTerminalFlushConfigureClearDropsPending(t *testing.T) {
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("pending before configure clear = %d, want 1", len(pending))
 	}
-	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err == nil || !strings.Contains(err.Error(), "target_not_found") {
-		t.Fatalf("terminal concrete watch registration error = %v, want target_not_found", err)
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err == nil || !strings.Contains(err.Error(), "target_terminal") {
+		t.Fatalf("terminal concrete watch registration error = %v, want target_terminal", err)
 	}
 
 	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
@@ -2405,8 +2405,8 @@ func TestWatchSendTerminalExpiryWithoutPendingDoesNotRetainDetachedConfig(t *tes
 			if detached != 0 {
 				t.Fatalf("detached terminal flush configs = %d, want 0", detached)
 			}
-			if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err == nil || !strings.Contains(err.Error(), "target_not_found") {
-				t.Fatalf("clear expired watch without pending = %v, want target_not_found", err)
+			if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err == nil || !strings.Contains(err.Error(), "target_terminal") {
+				t.Fatalf("clear expired watch without pending = %v, want target_terminal", err)
 			}
 		})
 	}

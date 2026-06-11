@@ -190,7 +190,14 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	jm.mu.Lock()
 	if !isWatchSessionTarget(key.Target) && !isWatchableConcreteJobLocked(jm.running[key.Target]) {
 		jm.mu.Unlock()
-		return watchResult{}, watchTargetNotFoundError(key.Target)
+		if err := jm.validateWatchTarget(key.Target); err != nil {
+			return watchResult{}, err
+		}
+		jm.mu.Lock()
+		if !isWatchableConcreteJobLocked(jm.running[key.Target]) {
+			jm.mu.Unlock()
+			return watchResult{}, watchTargetNotFoundError(key.Target)
+		}
 	}
 	existing := jm.watches[key]
 	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
@@ -310,6 +317,14 @@ func (jm *jobManager) validateWatchTarget(target string) error {
 		jm.mu.Unlock()
 		return nil
 	}
+	if run != nil && run.terminal != nil {
+		jm.mu.Unlock()
+		return watchTargetTerminalError(target, string(run.terminal.status))
+	}
+	if run != nil && run.finalize != nil {
+		jm.mu.Unlock()
+		return watchTargetTerminalError(target, "finalizing")
+	}
 	jm.mu.Unlock()
 	if run != nil {
 		return watchTargetNotFoundError(target)
@@ -320,8 +335,11 @@ func (jm *jobManager) validateWatchTarget(target string) error {
 		return err
 	}
 	rec := recs[target]
-	if rec == nil || rec.Status.IsTerminal() {
+	if rec == nil {
 		return watchTargetNotFoundError(target)
+	}
+	if rec.Status.IsTerminal() {
+		return watchTargetTerminalError(target, string(rec.Status))
 	}
 
 	// TODO(spec §5.9): enforce cross-session watch authorization when Phase 5
@@ -416,6 +434,10 @@ func isWatchableConcreteJobLocked(run *runningJob) bool {
 
 func watchTargetNotFoundError(target string) error {
 	return fmt.Errorf("target_not_found: job %q not found", target)
+}
+
+func watchTargetTerminalError(target, status string) error {
+	return fmt.Errorf("target_terminal: job %q is %s; watches can only attach to running jobs", target, status)
 }
 
 func isWatchSessionTarget(target string) bool {

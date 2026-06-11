@@ -586,6 +586,38 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	}
 }
 
+func TestJobWatchTerminalReturnedJobReportsTerminal(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"printf 'already-done\n'","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	waitForShellDone(t, s.jobManager, shellOut.JobID)
+
+	watchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"output_match":"already-done"}`, shellOut.JobID)),
+	})
+	if !watchRes.IsError {
+		t.Fatalf("job_watch succeeded for terminal job, want target_terminal: %s", watchRes.Output)
+	}
+	if !strings.Contains(watchRes.Output, "target_terminal") || strings.Contains(watchRes.Output, "target_not_found") {
+		t.Fatalf("job_watch terminal error = %q, want target_terminal without target_not_found", watchRes.Output)
+	}
+}
+
 func TestJobWatchNoConditionErrors(t *testing.T) {
 	s := newTestSession(t)
 

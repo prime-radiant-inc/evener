@@ -145,8 +145,8 @@ func DefJobSendMessage() llm.ToolDefinition {
 		Name: "job_send_message",
 		Description: "Send a follow-up message to a delegate by `job_id`. If that delegate is still running, your " +
 			"message steers the live run; if it has finished, Serf resumes the same conversation as a new " +
-			"job and returns the new `job_id`. Set `on_finished=\"fail\"` to require a live target — if the " +
-			"delegate has already finished, the call then fails (`target_terminal`) instead of resuming. " +
+			"job and returns the new `job_id`. Set `on_finished=\"fail\"` only when you require a currently live target — if the " +
+			"delegate finishes before this call is handled, the call fails (`target_terminal`) instead of resuming. " +
 			"The same tool delivers observer commentary to `caller`.",
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -181,7 +181,8 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"such as an observer delegate. Triggers: `output_match`, a regex over output produced while " +
 		"the watch is active; `progress_interval_ms`, periodic; or `events`/`trigger`, selected " +
 		"session/job event frames (kinds available this session: " + kinds + ", or `*`). This is not how you " +
-		"learn a job finished — terminal notifications are automatic. Send deliveries coalesce by watch key " +
+		"learn a job finished — terminal notifications are automatic, and a job that finishes before the watch " +
+		"attaches returns `target_terminal` rather than installing a replay watch. Send deliveries coalesce by watch key " +
 		"and retry busy delegates. Pass `clear=true` to remove a watch."
 	return llm.ToolDefinition{
 		Name:        "job_watch",
