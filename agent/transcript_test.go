@@ -2245,6 +2245,41 @@ func TestStrictChildTranscriptSessionMismatch(t *testing.T) {
 	}
 }
 
+func TestStrictChildTranscriptCorruptBodyPrecedesSessionMismatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{
+		SessionID: "other-session",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+		t.Fatalf("append turn: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+	lines := readTranscriptLines(t, path)
+	if len(lines) != 2 {
+		t.Fatalf("transcript lines = %d, want header and entry", len(lines))
+	}
+	if err := os.WriteFile(path, []byte(lines[0]+"\n{not-json}\n"+lines[1]+"\n"), 0o644); err != nil {
+		t.Fatalf("rewrite transcript: %v", err)
+	}
+
+	if _, err := readStrictChildTranscript(path, "child-session"); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
+		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
+	}
+	_, entries, skipped, err := readTranscript(path)
+	if err != nil {
+		t.Fatalf("lenient readTranscript: %v", err)
+	}
+	if len(entries) != 1 || skipped != 1 {
+		t.Fatalf("lenient entries/skipped = %d/%d, want 1/1", len(entries), skipped)
+	}
+}
+
 func TestStrictChildTranscriptRejectsMalformedHeaderShape(t *testing.T) {
 	for _, tc := range []struct {
 		name string

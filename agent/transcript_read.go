@@ -162,11 +162,11 @@ func readStrictChildTranscript(path, expectedSessionID string) (transcriptData, 
 	if data.Header.Kind != "header" {
 		return transcriptData{}, fmt.Errorf("corrupt_child_transcript: transcript header kind %q", data.Header.Kind)
 	}
-	if data.Header.SessionID != expectedSessionID {
-		return transcriptData{}, fmt.Errorf("transcript_session_mismatch: header session %q does not match %q", data.Header.SessionID, expectedSessionID)
-	}
 
 	if headerEnd == len(raw) {
+		if data.Header.SessionID != expectedSessionID {
+			return transcriptData{}, fmt.Errorf("transcript_session_mismatch: header session %q does not match %q", data.Header.SessionID, expectedSessionID)
+		}
 		return data, nil
 	}
 	body := raw[headerEnd+1:]
@@ -213,6 +213,9 @@ func readStrictChildTranscript(path, expectedSessionID string) (transcriptData, 
 		}
 	}
 
+	if data.Header.SessionID != expectedSessionID {
+		return transcriptData{}, fmt.Errorf("transcript_session_mismatch: header session %q does not match %q", data.Header.SessionID, expectedSessionID)
+	}
 	return data, nil
 }
 
