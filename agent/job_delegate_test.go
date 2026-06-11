@@ -211,6 +211,7 @@ func TestCreateDelegateStartupDoesNotLeaveUnreturnedRunningJob(t *testing.T) {
 		t.Fatalf("durable delegate = %+v, result = %+v; want same running job with transcript_ref", jobs[0], res)
 	}
 
+	sess.jobManager.appendEvent = origAppend
 	_, _ = sess.jobManager.stop(res.JobID)
 	waitForShellDone(t, sess.jobManager, res.JobID)
 }
@@ -383,6 +384,9 @@ func TestCreateDelegateDescriptorDurableBeforeFirstModelRequest(t *testing.T) {
 	reopenedRec := loadShellRecord(t, reopened, res.JobID)
 	if reopenedRec.DelegateRestore == nil || reopenedRec.DelegateRestore.ChildSessionID != childID {
 		t.Fatalf("reopened descriptor = %+v, want child %q", reopenedRec.DelegateRestore, childID)
+	}
+	if reopenedRec.Resumable == nil || !*reopenedRec.Resumable || reopenedRec.NotResumableWhy != "" {
+		t.Fatalf("reopened resumability = %v/%q, want resumable terminal delegate", reopenedRec.Resumable, reopenedRec.NotResumableWhy)
 	}
 }
 

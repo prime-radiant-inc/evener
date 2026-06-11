@@ -79,6 +79,7 @@ type runningJob struct {
 	finalize                *finalizeAttempt
 	delegateOutputAppended  bool
 	delegateOutputWritten   int
+	delegateResumeAssessed  bool
 	afterDurableFinish      func()
 	fromWatch               atomic.Bool
 	forwardDisabled         bool

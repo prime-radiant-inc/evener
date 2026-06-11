@@ -1355,9 +1355,51 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 			}
 		}
 
+		if err := s.persistDelegateResumability(jm, run); err != nil {
+			return "", "", nil, err
+		}
+
 		jobStatus, reason := delegateTerminalStatus(jm, run, status)
 		return jobStatus, reason, nil, nil
 	})
+}
+
+func (s *Session) persistDelegateResumability(jm *jobManager, run *runningJob) error {
+	if s == nil || jm == nil || run == nil || run.rec == nil || run.rec.Type != jobstore.JobDelegate {
+		return nil
+	}
+	jm.mu.Lock()
+	if run.delegateResumeAssessed {
+		jm.mu.Unlock()
+		return nil
+	}
+	rec := cloneJobRecord(run.rec)
+	jm.mu.Unlock()
+
+	assessment := s.assessDelegateResumability(rec, delegateResumabilityProjection)
+	resumable := assessment.Resumable
+	event := jobstore.Event{
+		Kind:          jobstore.EventJobSessionAssigned,
+		TS:            jm.now(),
+		JobID:         rec.JobID,
+		TranscriptRef: rec.TranscriptRef,
+		Resumable:     &resumable,
+	}
+	if !assessment.Resumable {
+		event.NotResumableWhy = assessment.Reason
+	}
+	if err := jm.appendEvent(event); err != nil {
+		return err
+	}
+
+	jm.mu.Lock()
+	if jm.running[run.rec.JobID] == run {
+		run.delegateResumeAssessed = true
+		run.rec.Resumable = &resumable
+		run.rec.NotResumableWhy = event.NotResumableWhy
+	}
+	jm.mu.Unlock()
+	return nil
 }
 
 func delegateFinalizeStopsRetry(jm *jobManager, err error) bool {
