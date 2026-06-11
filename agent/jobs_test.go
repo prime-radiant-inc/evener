@@ -39,6 +39,29 @@ func TestJobManagerCreateAndList(t *testing.T) {
 	}
 }
 
+func TestAbandonRunningJobsClosesCapturedDoneChannels(t *testing.T) {
+	jm := newTestJM(t)
+	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	done, ok := jobDone(jm, rec.JobID)
+	if !ok {
+		t.Fatalf("jobDone(%q) not found", rec.JobID)
+	}
+
+	jm.abandonRunningJobs()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("captured done channel did not close after abandon")
+	}
+	if _, ok := jobDone(jm, rec.JobID); ok {
+		t.Fatalf("job %q still has a running done channel after abandon", rec.JobID)
+	}
+}
+
 func TestJobManagerReadOutput(t *testing.T) {
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})

@@ -109,7 +109,7 @@ type terminalJob struct {
 type jobRuntimeHandle struct {
 	jobID  string
 	signal func()
-	done   <-chan struct{}
+	done   chan struct{}
 	output *jobstore.OutputStore
 }
 
@@ -262,6 +262,7 @@ func (jm *jobManager) abandonRunningJobs() {
 	for _, run := range jm.running {
 		running = append(running, jobRuntimeHandle{
 			jobID:  run.rec.JobID,
+			done:   run.done,
 			output: run.output,
 		})
 		delete(jm.running, run.rec.JobID)
@@ -284,6 +285,7 @@ func (jm *jobManager) abandonRunningJobs() {
 		if run.output != nil {
 			_ = run.output.Close()
 		}
+		close(run.done)
 	}
 }
 
