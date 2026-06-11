@@ -370,6 +370,9 @@ func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode deleg
 		}
 		return DelegateResumability{Reason: notResumableCorruptChildSessionMeta}
 	}
+	if strings.TrimSpace(meta.ID) != childID {
+		return DelegateResumability{Reason: notResumableCorruptChildSessionMeta}
+	}
 
 	transcriptPath := filepath.Join(s.stateDir, sessionsSubdir, childID+".transcript.jsonl")
 	if _, err := os.Stat(transcriptPath); err != nil {
@@ -435,12 +438,9 @@ func (s *Session) resolveDelegateRestoreProfile(meta schema.SessionMeta, desc *j
 		if model != "" {
 			return s.resolveDelegateRestoreModelRef(base, model)
 		}
+		return nil, errors.New("delegate restore descriptor missing resolved model")
 	}
-	ref := strings.TrimSpace(meta.Model)
-	if ref == "" {
-		return base, nil
-	}
-	return s.resolveDelegateRestoreModelRef(base, ref)
+	return nil, errors.New("delegate restore descriptor missing resolved profile")
 }
 
 func (s *Session) resolveDelegateRestoreProfileRef(base *provider.Profile, profileID, model string) (*provider.Profile, error) {

@@ -2039,6 +2039,38 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 			want: "target_not_resumable:corrupt_child_session_meta",
 		},
 		{
+			name: "wrong meta id",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				meta, err := schema.LoadSessionMeta(s.stateDir, rec.DelegateRestore.ChildSessionID)
+				if err != nil {
+					t.Fatalf("load child meta: %v", err)
+				}
+				meta.ID = "other-child"
+				data, err := json.Marshal(meta)
+				if err != nil {
+					t.Fatalf("marshal child meta: %v", err)
+				}
+				writeChildSessionMeta(t, s, rec, data)
+			},
+			want: "target_not_resumable:corrupt_child_session_meta",
+		},
+		{
+			name: "empty meta id",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				meta, err := schema.LoadSessionMeta(s.stateDir, rec.DelegateRestore.ChildSessionID)
+				if err != nil {
+					t.Fatalf("load child meta: %v", err)
+				}
+				meta.ID = ""
+				data, err := json.Marshal(meta)
+				if err != nil {
+					t.Fatalf("marshal child meta: %v", err)
+				}
+				writeChildSessionMeta(t, s, rec, data)
+			},
+			want: "target_not_resumable:corrupt_child_session_meta",
+		},
+		{
 			name: "missing transcript",
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
 				removeChildTranscript(t, s, rec)
@@ -2112,6 +2144,24 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 				s.resolveProfile = func(ref string) (*provider.Profile, error) {
 					return nil, fmt.Errorf("no profile for %s", ref)
 				}
+			},
+			want: "target_not_resumable:profile_unavailable",
+		},
+		{
+			name: "descriptor profile id without model",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore.ResolvedProfileID = "openai"
+				rec.DelegateRestore.ResolvedModel = ""
+				replaceStoredDelegateRecord(t, s, rec)
+			},
+			want: "target_not_resumable:profile_unavailable",
+		},
+		{
+			name: "descriptor missing resolved profile fields",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore.ResolvedProfileID = ""
+				rec.DelegateRestore.ResolvedModel = ""
+				replaceStoredDelegateRecord(t, s, rec)
 			},
 			want: "target_not_resumable:profile_unavailable",
 		},
