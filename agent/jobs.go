@@ -897,7 +897,7 @@ func validatedOutputStatsForRecord(path string, rec *jobstore.JobRecord) (total 
 	if err != nil {
 		return 0, 0, err
 	}
-	if rec != nil && rec.OutputBytes != total {
+	if rec != nil && rec.Status.IsTerminal() && rec.OutputBytes != total {
 		return 0, 0, fmt.Errorf("jobstore: output metadata total %d does not match job record total %d", total, rec.OutputBytes)
 	}
 	return total, retainedStart, nil

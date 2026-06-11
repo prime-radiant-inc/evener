@@ -397,7 +397,7 @@ func watchCanResolveConcreteWatchedTarget(a watchArgs) bool {
 	}
 	if a.TriggerEvent == "job.notification" {
 		for _, eventName := range a.Events {
-			if eventName == "*" {
+			if eventName == "*" || eventName == "job.notification" {
 				return true
 			}
 		}

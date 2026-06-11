@@ -154,6 +154,51 @@ func TestJobManagerTerminalOutputValidatesRetainedSidecar(t *testing.T) {
 	}
 }
 
+func TestJobManagerRunningRecordOutputUsesSidecarTotal(t *testing.T) {
+	jm := newTestJM(t)
+	jobID := "job_running_forwarded"
+	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
+	out, err := jobstore.OpenOutput(outputPath, maxJobOutputRetentionBytes)
+	if err != nil {
+		t.Fatalf("open output: %v", err)
+	}
+	if _, err := out.Append([]byte("still running\n")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatalf("close output: %v", err)
+	}
+
+	start := time.Unix(1, 0).UTC()
+	if err := jm.store.Append(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		JobID:            jobID,
+		Type:             jobstore.JobDelegate,
+		Status:           jobstore.StatusRunning,
+		OwnerSessionID:   "child",
+		VisibleToSession: "S1",
+		StartedAt:        &start,
+		OutputPath:       outputPath,
+	}); err != nil {
+		t.Fatalf("append start event: %v", err)
+	}
+
+	content, total, truncated, err := jm.readOutput(jobID, 1024)
+	if err != nil {
+		t.Fatalf("readOutput returned error: %v", err)
+	}
+	if content != "still running\n" || total != int64(len("still running\n")) || truncated {
+		t.Fatalf("readOutput = %q, %d, %v", content, total, truncated)
+	}
+	matches, err := jm.grepOutput(jobID, regexp.MustCompile(`running`), 1024)
+	if err != nil {
+		t.Fatalf("grepOutput returned error: %v", err)
+	}
+	if len(matches) != 1 || matches[0].Line != "still running" {
+		t.Fatalf("grepOutput matches = %+v, want retained running output", matches)
+	}
+}
+
 func TestJobOutputReadLimitRemainsModelFacingCap(t *testing.T) {
 	if maxJobOutputBytes != 1024*1024 {
 		t.Fatalf("maxJobOutputBytes = %d, want 1 MiB", maxJobOutputBytes)

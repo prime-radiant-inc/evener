@@ -3595,6 +3595,35 @@ func TestWatchSendToWatchedAllowsWildcardJobNotificationTrigger(t *testing.T) {
 	}
 }
 
+func TestWatchSendToWatchedAllowsMixedEventsWithJobNotificationTrigger(t *testing.T) {
+	jm := newTestJM(t)
+	var sent []sendMessageArgs
+	seedCommonWatchSendTargets(t, jm)
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{Delivered: true, Action: "sent"}
+	}
+
+	_, err := jm.configureWatch(watchArgs{
+		Target:       "*",
+		Events:       []string{"assistant.message", "job.notification"},
+		TriggerEvent: "job.notification",
+		Send:         &watchSendArgs{To: "watched", Message: "observe"},
+	})
+	if err != nil {
+		t.Fatalf("configureWatch returned error: %v", err)
+	}
+
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger", JobType: "delegate", Status: "completed"})
+
+	if len(sent) != 1 {
+		t.Fatalf("sent = %#v, want one delivery", sent)
+	}
+	if sent[0].Target != "job_trigger" {
+		t.Fatalf("send target = %q, want concrete watched job", sent[0].Target)
+	}
+}
+
 func seedCommonWatchSendTargets(t *testing.T, jm *jobManager) {
 	t.Helper()
 	seedWatchSendDelegateTarget(t, jm, "job_obs")
