@@ -170,6 +170,48 @@ func (s *Session) close(cleanupEnv bool) {
 	})
 }
 
+func (s *Session) discardRestoredCandidate() {
+	s.closeOnce.Do(func() {
+		s.responseSideEffectsMu.Lock()
+		s.mu.Lock()
+		s.sessionEndEmitted = true
+		s.closing = true
+		s.state = SessionClosed
+		subs := s.subagents.drainForClose()
+		s.mu.Unlock()
+		s.responseSideEffectsMu.Unlock()
+
+		if s.cancelFunc != nil {
+			s.cancelFunc()
+		}
+
+		if s.jobManager != nil && s.jobManager.store != nil {
+			_ = s.jobManager.store.Close()
+		}
+		for _, sub := range subs {
+			sub.sess.discardRestoredCandidate()
+		}
+		if s.mcpMgr != nil {
+			s.mcpMgr.Close()
+		}
+		if s.transcript != nil {
+			_ = s.transcript.Close()
+		}
+		if s.embeddedSkillsDir != "" {
+			_ = os.RemoveAll(s.embeddedSkillsDir)
+		}
+		s.mu.Lock()
+		s.state = SessionClosed
+		s.mu.Unlock()
+		s.toolEventsWG.Wait()
+		s.sendersWG.Wait()
+		s.eventsMu.Lock()
+		s.eventsClosed = true
+		close(s.events)
+		s.eventsMu.Unlock()
+	})
+}
+
 // EntryKind classifies how an input enters the drain loop: a user-typed turn
 // (EntryUserInput) or a system-framed continuation injected by the goal engine
 // (EntryContinuation). It is exported because it crosses the go.work module

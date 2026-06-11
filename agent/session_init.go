@@ -123,7 +123,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	jm.emit = s.emit
 	s.jobManager = jm
 
-	promptSources, err := s.initSessionState(cfg.SessionStartKind)
+	promptSources, err := s.initSessionState(cfg.SessionStartKind, true)
 	if err != nil {
 		return nil, err
 	}
@@ -219,13 +219,14 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 // persisted session. Persisted fields still come from SessionMeta.Config; this
 // struct layers non-serialized values such as StateDir and ResolveProfile.
 type RestoreSessionConfig struct {
-	StateDir       string
-	ResolveProfile func(ref string) (*provider.Profile, error)
-	ModelFallbacks []string
-	LLMRetryPolicy *llm.RetryPolicy
-	LLMSleep       llm.SleepFunc
-	spawn          spawnConfig
-	resumeHistory  []schema.Turn
+	StateDir                string
+	ResolveProfile          func(ref string) (*provider.Profile, error)
+	ModelFallbacks          []string
+	LLMRetryPolicy          *llm.RetryPolicy
+	LLMSleep                llm.SleepFunc
+	spawn                   spawnConfig
+	resumeHistory           []schema.Turn
+	deferRestoreSideEffects bool
 }
 
 // RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
@@ -325,11 +326,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	jm.send = s.sendDelegateMessage
 	jm.emit = s.emit
 	s.jobManager = jm
-	if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
-		return nil, fmt.Errorf("watch send retry: %w", err)
-	}
-	if err := jm.armPendingTerminalNotifications(); err != nil {
-		return nil, fmt.Errorf("job notifications: %w", err)
+	if !restoreCfg.deferRestoreSideEffects {
+		if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
+			return nil, fmt.Errorf("watch send retry: %w", err)
+		}
+		if err := jm.armPendingTerminalNotifications(); err != nil {
+			return nil, fmt.Errorf("job notifications: %w", err)
+		}
 	}
 
 	// Restore persisted goal state before initSessionState so the goal store is
@@ -345,7 +348,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		s.getOrCreateGoalStore().Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
 	}
 
-	promptSources, err := s.initSessionState(cfg.SessionStartKind)
+	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +427,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 // resolution, skills discovery, tool registry setup, and MCP connection.
 // The Session struct fields (client, profile, env, cfg) must already be set.
 // Returns the prompt sources so the caller can emit events after SessionStart.
-func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind) ([]promptSource, error) {
+func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) ([]promptSource, error) {
 	ei := envInfoFromEnv(s.env)
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
 	if inRepo, branch, mod, untracked, commits := snapshotGit(s.env, ei.WorkingDir); inRepo {
@@ -466,7 +469,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind) ([]
 	}
 
 	// Initialize plugins (skills, agents, hooks). Plugin agents override builtins.
-	if err := s.initPlugins(sessionStartKind); err != nil {
+	if err := s.initPlugins(sessionStartKind, runSessionStartHooks); err != nil {
 		return nil, fmt.Errorf("plugin initialization: %w", err)
 	}
 	s.applyAgentRolePromptOverride()
@@ -577,8 +580,8 @@ func (s *Session) applyAgentRolePromptOverride() {
 }
 
 // initPlugins loads configured plugin directories, merging their skills,
-// agents, and hooks into the session. Fires SessionStart hooks after setup.
-func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind) error {
+// agents, and hooks into the session. Fires SessionStart hooks after setup when requested.
+func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) error {
 	if len(s.cfg.PluginDirs) == 0 {
 		return nil
 	}
@@ -688,7 +691,17 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind) error {
 		s.pluginAgents[name] = agent
 	}
 
-	// Fire SessionStart hooks
+	if !runSessionStartHooks {
+		return nil
+	}
+	s.runSessionStartHooks(sessionStartKind)
+	return nil
+}
+
+func (s *Session) runSessionStartHooks(sessionStartKind plugin.SessionStartKind) {
+	if s == nil || s.hookRunner == nil {
+		return
+	}
 	result := s.hookRunner.RunSessionStartFor(context.Background(), s.hookInput(plugin.HookSessionStart), sessionStartKind)
 	for _, m := range result.ModelContext {
 		s.deliverHookContext(m)
@@ -696,7 +709,19 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind) error {
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessage(m)
 	}
+}
 
+func (s *Session) runDeferredRestoreSideEffects() error {
+	if s == nil || s.jobManager == nil {
+		return nil
+	}
+	if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
+		return fmt.Errorf("watch send retry: %w", err)
+	}
+	if err := s.jobManager.armPendingTerminalNotifications(); err != nil {
+		return fmt.Errorf("job notifications: %w", err)
+	}
+	s.runSessionStartHooks(s.cfg.SessionStartKind)
 	return nil
 }
 

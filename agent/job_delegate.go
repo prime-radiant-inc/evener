@@ -490,6 +490,23 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 	if s.stateDir == "" {
 		return nil, errors.New("state directory is not configured")
 	}
+	if existing, pending, started := s.subagents.beginReconstruction(childID); !started {
+		if existing != nil {
+			return existing, nil
+		}
+		return pending.wait()
+	} else {
+		var tracked *subagent
+		var restoreErr error
+		defer func() {
+			s.subagents.finishReconstruction(childID, pending, tracked, restoreErr)
+		}()
+		tracked, restoreErr = s.restoreTerminalDelegateChildClaimed(rec, childID, preflight)
+		return tracked, restoreErr
+	}
+}
+
+func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, childID string, preflight *delegateRestorePreflight) (*subagent, error) {
 	desc := rec.DelegateRestore
 	meta := preflight.Meta
 	profile := preflight.Profile
@@ -528,7 +545,8 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 			allowedToolNames:        restoredDelegateAllowedTools(desc),
 			communicateOutputSchema: cloneMap(resultSchema),
 		},
-		resumeHistory: resumeHistory,
+		resumeHistory:           resumeHistory,
+		deferRestoreSideEffects: true,
 	}
 	if strings.TrimSpace(desc.ReasoningEffort) != "" {
 		meta.Config.ReasoningEffort = desc.ReasoningEffort
@@ -538,7 +556,7 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 		return nil, err
 	}
 	if err := validateRestoredDelegateTools(child, desc); err != nil {
-		child.close(false)
+		child.discardRestoredCandidate()
 		return nil, err
 	}
 	now := time.Now()
@@ -556,11 +574,16 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 	}
 	tracked, inserted := s.subagents.trackIfAbsent(sub)
 	if !inserted {
-		child.close(false)
+		child.discardRestoredCandidate()
 		if tracked == nil || tracked.sess == nil {
 			return nil, errors.New("delegate session collision with unavailable retained runtime")
 		}
 		return tracked, nil
+	}
+	if err := child.runDeferredRestoreSideEffects(); err != nil {
+		s.subagents.remove(childID)
+		child.close(false)
+		return nil, err
 	}
 	return tracked, nil
 }

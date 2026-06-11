@@ -20,9 +20,10 @@ import (
 // manager mutex is never held while calling into a child's *Session (e.g.
 // sub.sess.Close()), which would deadlock against the child's own locking.
 type subagentManager struct {
-	mu   sync.Mutex
-	subs map[string]*subagent
-	emit func(events.EventKind, events.EventData)
+	mu             sync.Mutex
+	subs           map[string]*subagent
+	reconstructing map[string]*subagentReconstruction
+	emit           func(events.EventKind, events.EventData)
 	// maxRetainedTerminal bounds how many terminal records (completed|failed|
 	// cancelled) the manager retains per parent; a closed record still counts until
 	// reclaimed. Enforced at spawn time via reserveSlot, which GCs reclaimable
@@ -38,9 +39,21 @@ const defaultMaxRetainedTerminal = 128
 func newSubagentManager(emit func(events.EventKind, events.EventData)) *subagentManager {
 	return &subagentManager{
 		subs:                map[string]*subagent{},
+		reconstructing:      map[string]*subagentReconstruction{},
 		emit:                emit,
 		maxRetainedTerminal: defaultMaxRetainedTerminal,
 	}
+}
+
+type subagentReconstruction struct {
+	done chan struct{}
+	sub  *subagent
+	err  error
+}
+
+func (r *subagentReconstruction) wait() (*subagent, error) {
+	<-r.done
+	return r.sub, r.err
 }
 
 // track registers a subagent under its id.
@@ -48,6 +61,31 @@ func (m *subagentManager) track(sub *subagent) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.subs[sub.id] = sub
+}
+
+func (m *subagentManager) beginReconstruction(childID string) (*subagent, *subagentReconstruction, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing := m.subs[childID]; existing != nil {
+		return existing, nil, false
+	}
+	if pending := m.reconstructing[childID]; pending != nil {
+		return nil, pending, false
+	}
+	pending := &subagentReconstruction{done: make(chan struct{})}
+	m.reconstructing[childID] = pending
+	return nil, pending, true
+}
+
+func (m *subagentManager) finishReconstruction(childID string, pending *subagentReconstruction, sub *subagent, err error) {
+	m.mu.Lock()
+	if m.reconstructing[childID] == pending {
+		delete(m.reconstructing, childID)
+	}
+	pending.sub = sub
+	pending.err = err
+	close(pending.done)
+	m.mu.Unlock()
 }
 
 // trackIfAbsent registers sub unless another runtime already owns that child id.

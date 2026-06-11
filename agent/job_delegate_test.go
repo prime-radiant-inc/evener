@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
@@ -2725,6 +2726,124 @@ func TestReconstructDelegateMissingToolsDoesNotRunChildRestoreWatchRetry(t *test
 	}
 }
 
+func TestReconstructDelegateChildRegistryMismatchDoesNotRunRestoreSideEffects(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	if err := s.reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Name:        "parent_only_tool",
+			Description: "registered only on the parent test session",
+		}},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("register parent-only tool: %v", err)
+	}
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	childID := rec.DelegateRestore.ChildSessionID
+	rec.DelegateRestore.FrozenToolNames = []string{"parent_only_tool"}
+	replaceStoredDelegateRecord(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	now := time.Unix(3300, 0).UTC()
+	appendSessionJobEvents(t, s.stateDir, childID, restoredWatchSendPendingEvents(childID, "job_child_observed", "caller", now)...)
+	beforeParentEvents := len(loadJobStoreEvents(t, s.jobManager))
+	beforeChildEvents := len(loadSessionJobStoreEvents(t, s.stateDir, childID))
+
+	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  rec.JobID,
+		Message: "resume",
+	})
+
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "parent_only_tool") {
+		t.Fatalf("error = %v, want parent_only_tool failure", res.Err)
+	}
+	if got := len(loadJobStoreEvents(t, s.jobManager)); got != beforeParentEvents {
+		t.Fatalf("parent jobstore event count = %d, want unchanged %d", got, beforeParentEvents)
+	}
+	if got := len(loadSessionJobStoreEvents(t, s.stateDir, childID)); got != beforeChildEvents {
+		t.Fatalf("child jobstore event count = %d, want unchanged %d", got, beforeChildEvents)
+	}
+	if pending := loadSessionWatchSendRecord(t, s.stateDir, childID).Pending; len(pending) != 1 {
+		t.Fatalf("child pending after failed reconstruction = %+v, want unchanged pending watch send", pending)
+	}
+	for _, entry := range s.SteeringQueueSnapshot() {
+		if strings.Contains(entry.Text, "delivery_restore_pending") || strings.Contains(entry.Text, "restored observe") {
+			t.Fatalf("failed post-restore validation delivered child watch frame to parent: queue = %+v", s.SteeringQueueSnapshot())
+		}
+	}
+	if sub := s.subagents.get(childID); sub != nil {
+		t.Fatalf("retained child runtime = %+v, want none after child registry validation failure", sub)
+	}
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("adapter requests = %+v, want none", requests)
+	}
+}
+
+func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	childID := rec.DelegateRestore.ChildSessionID
+	hookMarker := filepath.Join(t.TempDir(), "session-start-hook")
+	pluginDir := sessionStartHookPlugin(t, "sh -c "+shellQuote("echo hook >> "+hookMarker+"; sleep 0.2"))
+	meta, err := schema.LoadSessionMeta(s.stateDir, childID)
+	if err != nil {
+		t.Fatalf("load child meta: %v", err)
+	}
+	meta.Config.PluginDirs = []string{pluginDir}
+	if err := schema.SaveSessionMeta(s.stateDir, meta); err != nil {
+		t.Fatalf("save child meta: %v", err)
+	}
+	now := time.Unix(3400, 0).UTC()
+	appendSessionJobEvents(t, s.stateDir, childID, restoredWatchSendPendingEvents(childID, "job_child_observed", "caller", now)...)
+	preflight := requireDelegateRestorePreflight(t, s, rec)
+	start := make(chan struct{})
+	type restoreResult struct {
+		sub *subagent
+		err error
+	}
+	results := make(chan restoreResult, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			sub, err := s.restoreTerminalDelegateChild(rec, childID, preflight)
+			results <- restoreResult{sub: sub, err: err}
+		}()
+	}
+	close(start)
+
+	first := <-results
+	second := <-results
+
+	if first.err != nil {
+		t.Fatalf("first restore error: %v", first.err)
+	}
+	if second.err != nil {
+		t.Fatalf("second restore error: %v", second.err)
+	}
+	if first.sub == nil || second.sub == nil || first.sub != second.sub {
+		t.Fatalf("reconstruction results = %p and %p, want same retained child", first.sub, second.sub)
+	}
+	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 1 {
+		t.Fatalf("parent watch-frame steering deliveries = %d, want 1; queue = %+v", got, s.SteeringQueueSnapshot())
+	}
+	if got := countFileLines(t, hookMarker); got != 1 {
+		t.Fatalf("SessionStart hook executions = %d, want 1", got)
+	}
+	if pending := loadSessionWatchSendRecord(t, s.stateDir, childID).Pending; len(pending) != 0 {
+		t.Fatalf("child pending after winning reconstruction = %+v, want delivered once", pending)
+	}
+}
+
 func TestTerminalDelegateRestoreRequiresStrictPreflightBeforeReconstruction(t *testing.T) {
 	cases := []struct {
 		status jobstore.Status
@@ -3473,6 +3592,66 @@ func loadSessionJobStoreEvents(t *testing.T, stateDir, sessionID string) []jobst
 func loadSessionWatchSendRecord(t *testing.T, stateDir, sessionID string) jobstore.WatchSendRecord {
 	t.Helper()
 	return jobstore.FoldWatchSends(loadSessionJobStoreEvents(t, stateDir, sessionID))
+}
+
+func sessionStartHookPlugin(t *testing.T, command string) string {
+	t.Helper()
+	dir := makePluginDir(t, "delegate-restore-hook")
+	hooksDir := filepath.Join(dir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	raw := map[string]any{
+		"hooks": map[string]any{
+			"SessionStart": []any{
+				map[string]any{
+					"matcher": "resume",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": command,
+						},
+					},
+				},
+			},
+		},
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("marshal hooks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "hooks.json"), data, 0o644); err != nil {
+		t.Fatalf("write hooks: %v", err)
+	}
+	return dir
+}
+
+func countSteeringEntriesContaining(s *Session, text string) int {
+	count := 0
+	for _, entry := range s.SteeringQueueSnapshot() {
+		if strings.Contains(entry.Text, text) {
+			count++
+		}
+	}
+	return count
+}
+
+func countFileLines(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	count := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count
 }
 
 func completedDelegateSubagent(child *Session, result string) *subagent {
