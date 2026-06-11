@@ -105,8 +105,9 @@ type Session struct {
 	comm communicateResult
 
 	// subagents
-	depth     int
-	subagents *subagentManager
+	depth                      int
+	subagents                  *subagentManager
+	delegateRestoreBeforeTrack func()
 
 	// pendingJobNotifs is the durable per-parent queue of pending job-completion
 	// notifications. It is drop-safe and drained later by a notification turn.

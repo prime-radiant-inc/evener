@@ -2844,6 +2844,79 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	}
 }
 
+func TestDelegateReconstructionRacingParentCloseDoesNotTrackOrRunSideEffects(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	childID := rec.DelegateRestore.ChildSessionID
+	hookMarker := filepath.Join(t.TempDir(), "session-start-hook")
+	pluginDir := sessionStartHookPlugin(t, "sh -c "+shellQuote("echo hook >> "+hookMarker))
+	meta, err := schema.LoadSessionMeta(s.stateDir, childID)
+	if err != nil {
+		t.Fatalf("load child meta: %v", err)
+	}
+	meta.Config.PluginDirs = []string{pluginDir}
+	if err := schema.SaveSessionMeta(s.stateDir, meta); err != nil {
+		t.Fatalf("save child meta: %v", err)
+	}
+	now := time.Unix(3500, 0).UTC()
+	appendSessionJobEvents(t, s.stateDir, childID, restoredWatchSendPendingEvents(childID, "job_child_observed", "caller", now)...)
+	beforeParentEvents := len(loadJobStoreEvents(t, s.jobManager))
+	beforeChildEvents := len(loadSessionJobStoreEvents(t, s.stateDir, childID))
+	paused := make(chan struct{})
+	release := make(chan struct{})
+	var pauseOnce sync.Once
+	s.delegateRestoreBeforeTrack = func() {
+		pauseOnce.Do(func() { close(paused) })
+		<-release
+	}
+
+	done := make(chan sendMessageResult, 1)
+	go func() {
+		done <- s.sendDelegateMessage(context.Background(), sendMessageArgs{
+			Target:  rec.JobID,
+			Message: "resume while parent closes",
+		})
+	}()
+	select {
+	case <-paused:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconstruction did not pause before parent tracking")
+	}
+	s.Close()
+	close(release)
+
+	res := <-done
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "session is closed") {
+		t.Fatalf("sendDelegateMessage error = %v, want session is closed", res.Err)
+	}
+	if sub := s.subagents.get(childID); sub != nil {
+		t.Fatalf("retained child runtime after parent close race = %+v, want none", sub)
+	}
+	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 0 {
+		t.Fatalf("parent watch-frame steering deliveries = %d, want 0; queue = %+v", got, s.SteeringQueueSnapshot())
+	}
+	if got := countFileLines(t, hookMarker); got != 0 {
+		t.Fatalf("SessionStart hook executions = %d, want 0", got)
+	}
+	if got := len(loadSessionJobStoreEvents(t, s.stateDir, childID)); got != beforeChildEvents {
+		t.Fatalf("child jobstore event count = %d, want unchanged %d", got, beforeChildEvents)
+	}
+	if pending := loadSessionWatchSendRecord(t, s.stateDir, childID).Pending; len(pending) != 1 {
+		t.Fatalf("child pending after parent close race = %+v, want unchanged pending watch send", pending)
+	}
+	if got := len(loadJobStoreEvents(t, s.jobManager)); got != beforeParentEvents {
+		t.Fatalf("parent jobstore event count = %d, want unchanged %d", got, beforeParentEvents)
+	}
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("adapter requests = %+v, want none", requests)
+	}
+}
+
 func TestTerminalDelegateRestoreRequiresStrictPreflightBeforeReconstruction(t *testing.T) {
 	cases := []struct {
 		status jobstore.Status

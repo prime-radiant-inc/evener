@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -23,6 +24,7 @@ type subagentManager struct {
 	mu             sync.Mutex
 	subs           map[string]*subagent
 	reconstructing map[string]*subagentReconstruction
+	closing        bool
 	emit           func(events.EventKind, events.EventData)
 	// maxRetainedTerminal bounds how many terminal records (completed|failed|
 	// cancelled) the manager retains per parent; a closed record still counts until
@@ -33,6 +35,8 @@ type subagentManager struct {
 
 // defaultMaxRetainedTerminal is the default cap on retained terminal child records.
 const defaultMaxRetainedTerminal = 128
+
+var errSubagentManagerClosing = errors.New("session is closed")
 
 // newSubagentManager creates a manager that captures the parent session's emit
 // closure for forwarding subagent lifecycle events.
@@ -63,18 +67,21 @@ func (m *subagentManager) track(sub *subagent) {
 	m.subs[sub.id] = sub
 }
 
-func (m *subagentManager) beginReconstruction(childID string) (*subagent, *subagentReconstruction, bool) {
+func (m *subagentManager) beginReconstruction(childID string) (*subagent, *subagentReconstruction, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closing {
+		return nil, nil, false, errSubagentManagerClosing
+	}
 	if existing := m.subs[childID]; existing != nil {
-		return existing, nil, false
+		return existing, nil, false, nil
 	}
 	if pending := m.reconstructing[childID]; pending != nil {
-		return nil, pending, false
+		return nil, pending, false, nil
 	}
 	pending := &subagentReconstruction{done: make(chan struct{})}
 	m.reconstructing[childID] = pending
-	return nil, pending, true
+	return nil, pending, true, nil
 }
 
 func (m *subagentManager) finishReconstruction(childID string, pending *subagentReconstruction, sub *subagent, err error) {
@@ -91,14 +98,29 @@ func (m *subagentManager) finishReconstruction(childID string, pending *subagent
 // trackIfAbsent registers sub unless another runtime already owns that child id.
 // The existing runtime is returned on collision; callers close the rejected
 // candidate outside the manager lock.
-func (m *subagentManager) trackIfAbsent(sub *subagent) (*subagent, bool) {
+func (m *subagentManager) trackIfAbsent(sub *subagent) (*subagent, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closing {
+		return nil, false, errSubagentManagerClosing
+	}
 	if existing := m.subs[sub.id]; existing != nil {
-		return existing, false
+		return existing, false, nil
 	}
 	m.subs[sub.id] = sub
-	return sub, true
+	return sub, true, nil
+}
+
+func (m *subagentManager) allowReconstructionSideEffects(childID string, sub *subagent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closing {
+		if m.subs[childID] == sub {
+			delete(m.subs, childID)
+		}
+		return errSubagentManagerClosing
+	}
+	return nil
 }
 
 // get returns the subagent for id, or nil if absent. This is the single locked
@@ -123,6 +145,7 @@ func (m *subagentManager) remove(id string) {
 func (m *subagentManager) drainForClose() []*subagent {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.closing = true
 	subs := make([]*subagent, 0, len(m.subs))
 	for id, sub := range m.subs {
 		subs = append(subs, sub)

@@ -490,7 +490,9 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 	if s.stateDir == "" {
 		return nil, errors.New("state directory is not configured")
 	}
-	if existing, pending, started := s.subagents.beginReconstruction(childID); !started {
+	if existing, pending, started, err := s.subagents.beginReconstruction(childID); err != nil {
+		return nil, err
+	} else if !started {
 		if existing != nil {
 			return existing, nil
 		}
@@ -572,13 +574,24 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 		startedAt:    now,
 		endedAt:      &now,
 	}
-	tracked, inserted := s.subagents.trackIfAbsent(sub)
+	if s.delegateRestoreBeforeTrack != nil {
+		s.delegateRestoreBeforeTrack()
+	}
+	tracked, inserted, err := s.subagents.trackIfAbsent(sub)
+	if err != nil {
+		child.discardRestoredCandidate()
+		return nil, err
+	}
 	if !inserted {
 		child.discardRestoredCandidate()
 		if tracked == nil || tracked.sess == nil {
 			return nil, errors.New("delegate session collision with unavailable retained runtime")
 		}
 		return tracked, nil
+	}
+	if err := s.subagents.allowReconstructionSideEffects(childID, sub); err != nil {
+		child.discardRestoredCandidate()
+		return nil, err
 	}
 	if err := child.runDeferredRestoreSideEffects(); err != nil {
 		s.subagents.remove(childID)
