@@ -183,6 +183,8 @@ func (jm *jobManager) close() error {
 	}
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
 	for _, run := range jm.running {
+		previousStopStatus := run.stopStatus
+		previousStopReason := run.stopReason
 		if run.stopStatus == "" {
 			run.stopStatus = jobstore.StatusCancelled
 			run.stopReason = "stopped_by_parent"
@@ -192,8 +194,8 @@ func (jm *jobManager) close() error {
 			signal:     run.signal,
 			done:       run.done,
 			output:     run.output,
-			stopStatus: run.stopStatus,
-			stopReason: run.stopReason,
+			stopStatus: previousStopStatus,
+			stopReason: previousStopReason,
 		})
 	}
 	jm.mu.Unlock()
