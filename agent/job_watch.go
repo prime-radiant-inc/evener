@@ -998,7 +998,7 @@ func (jm *jobManager) deliverWatchSend(ctx context.Context, d watchSendDelivery)
 	state := jm.watchSendState(d, target)
 	persisted, persistErr := jm.persistPendingWatchSend(state, d)
 	if persistErr != nil {
-		if d.allowAfterTerminalExpiry {
+		if d.allowAfterTerminalExpiry && !persisted {
 			jm.rememberUnpersistedTerminalPendingWatchSend(d.cfg, state)
 		}
 		return persistErr
@@ -1191,26 +1191,25 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	if len(record.pendingEvents) == 0 {
 		return false, nil
 	}
-	var evictionDiagnostics []jobNotification
-	for _, eviction := range record.evictions {
-		applied, err := jm.appendWatchSendTerminalSnapshots([]watchSendTerminalSnapshot{eviction.terminal})
-		if err != nil {
-			jm.removeWatchSendTerminalSnapshots(applied)
-			jm.rollbackWatchSendPendingRecord(record)
-			jm.enqueueWatchNotifications([]jobNotification{
-				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
-			})
-			return false, err
-		}
-		jm.removeWatchSendTerminalSnapshots(applied)
-		evictionDiagnostics = append(evictionDiagnostics, eviction.diagnostic)
-	}
 	if err := jm.appendWatchSendEvents(record.pendingEvents); err != nil {
 		jm.rollbackWatchSendPendingRecord(record)
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
 		return false, err
+	}
+	var evictionDiagnostics []jobNotification
+	for _, eviction := range record.evictions {
+		applied, err := jm.appendWatchSendTerminalSnapshots([]watchSendTerminalSnapshot{eviction.terminal})
+		if err != nil {
+			jm.removeWatchSendTerminalSnapshots(applied)
+			jm.enqueueWatchNotifications([]jobNotification{
+				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+			})
+			return true, err
+		}
+		jm.removeWatchSendTerminalSnapshots(applied)
+		evictionDiagnostics = append(evictionDiagnostics, eviction.diagnostic)
 	}
 	for _, diagnostic := range evictionDiagnostics {
 		jm.enqueueWatchNotifications([]jobNotification{diagnostic})

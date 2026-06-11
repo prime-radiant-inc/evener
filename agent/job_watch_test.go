@@ -3281,16 +3281,24 @@ func TestWatchSendAppendFailureDuringEvictionKeepsMemoryAndDurableConsistent(t *
 	}
 	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_over_cap", JobType: "delegate", Status: "completed"})
 
-	if got := len(cfg.pending); got != defaultWatchSendPendingCap {
-		t.Fatalf("in-memory pending after failed eviction append = %d, want %d", got, defaultWatchSendPendingCap)
+	if got := len(cfg.pending); got != defaultWatchSendPendingCap+1 {
+		t.Fatalf("in-memory pending after failed eviction append = %d, want %d", got, defaultWatchSendPendingCap+1)
 	}
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != defaultWatchSendPendingCap {
-		t.Fatalf("folded pending after failed eviction append = %d, want %d", len(pending), defaultWatchSendPendingCap)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != defaultWatchSendPendingCap+1 {
+		t.Fatalf("folded pending after failed eviction append = %d, want %d", len(pending), defaultWatchSendPendingCap+1)
 	} else {
+		foundOverCap := false
+		foundOldest := false
 		for key := range pending {
 			if key.ResolvedWatchedIdentity == "job_trigger_over_cap" {
-				t.Fatalf("pending over cap was durable after failed eviction append: %+v", pending)
+				foundOverCap = true
 			}
+			if key.ResolvedWatchedIdentity == "job_trigger_A" {
+				foundOldest = true
+			}
+		}
+		if !foundOverCap || !foundOldest {
+			t.Fatalf("folded pending after failed eviction = %+v, want new and not-yet-evicted oldest", pending)
 		}
 	}
 	for _, n := range notified {
@@ -3306,6 +3314,72 @@ func TestWatchSendAppendFailureDuringEvictionKeepsMemoryAndDurableConsistent(t *
 	}
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != defaultWatchSendPendingCap {
 		t.Fatalf("folded pending after retry eviction = %d, want %d", len(pending), defaultWatchSendPendingCap)
+	}
+}
+
+func TestWatchSendPendingAppendFailureBeforeEvictionKeepsExistingPending(t *testing.T) {
+	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "*",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	for i := 0; i < defaultWatchSendPendingCap; i++ {
+		jobID := "job_trigger_" + string(rune('A'+i))
+		jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
+	}
+	jm.mu.Lock()
+	var cfg *watchConfig
+	for _, watch := range jm.watches {
+		cfg = watch
+	}
+	jm.mu.Unlock()
+	if cfg == nil || len(cfg.pending) != defaultWatchSendPendingCap {
+		t.Fatalf("pending before failed append = %+v, want cap", cfg)
+	}
+
+	realAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventWatchSendPending &&
+			e.WatchSend != nil &&
+			e.WatchSend.Key.ResolvedWatchedIdentity == "job_trigger_over_cap" {
+			return errors.New("append pending failed")
+		}
+		return realAppend(e)
+	}
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_over_cap", JobType: "delegate", Status: "completed"})
+
+	if got := len(cfg.pending); got != defaultWatchSendPendingCap {
+		t.Fatalf("in-memory pending after failed pending append = %d, want %d", got, defaultWatchSendPendingCap)
+	}
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != defaultWatchSendPendingCap {
+		t.Fatalf("folded pending after failed pending append = %d, want %d", len(pending), defaultWatchSendPendingCap)
+	}
+	foundOldest := false
+	for key := range pending {
+		if key.ResolvedWatchedIdentity == "job_trigger_over_cap" {
+			t.Fatalf("failed pending append became durable: %+v", pending)
+		}
+		if key.ResolvedWatchedIdentity == "job_trigger_A" {
+			foundOldest = true
+		}
+	}
+	if !foundOldest {
+		t.Fatalf("oldest pending was evicted after failed pending append: %+v", pending)
+	}
+	for _, n := range notified {
+		if strings.Contains(n.Reason, "watch send evicted") {
+			t.Fatalf("eviction diagnostic emitted after failed pending append: %+v", n)
+		}
 	}
 }
 
