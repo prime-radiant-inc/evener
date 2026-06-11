@@ -327,11 +327,17 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if err := jm.reconcileLostJobs(); err != nil {
 			return nil, fmt.Errorf("job reconcile: %w", err)
 		}
+		if err := jm.recoverForwardedTerminalEvents(); err != nil {
+			return nil, fmt.Errorf("nested job recovery: %w", err)
+		}
 		if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
 			return nil, fmt.Errorf("watch send retry: %w", err)
 		}
 		if err := jm.armPendingTerminalNotifications(); err != nil {
 			return nil, fmt.Errorf("job notifications: %w", err)
+		}
+		if err := jm.recoverForwardedPendingNotifications(); err != nil {
+			return nil, fmt.Errorf("nested job notifications: %w", err)
 		}
 	}
 
@@ -718,11 +724,17 @@ func (s *Session) runDeferredRestoreSideEffects() error {
 	if err := s.jobManager.reconcileLostJobs(); err != nil {
 		return fmt.Errorf("job reconcile: %w", err)
 	}
+	if err := s.jobManager.recoverForwardedTerminalEvents(); err != nil {
+		return fmt.Errorf("nested job recovery: %w", err)
+	}
 	if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
 		return fmt.Errorf("watch send retry: %w", err)
 	}
 	if err := s.jobManager.armPendingTerminalNotifications(); err != nil {
 		return fmt.Errorf("job notifications: %w", err)
+	}
+	if err := s.jobManager.recoverForwardedPendingNotifications(); err != nil {
+		return fmt.Errorf("nested job notifications: %w", err)
 	}
 	s.runSessionStartHooks(s.cfg.SessionStartKind)
 	return nil

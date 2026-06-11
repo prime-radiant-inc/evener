@@ -22,6 +22,9 @@ const (
 	shellFinalizeMaxRetryDelay = 50 * time.Millisecond
 )
 
+var errDelayedShellStartForwardFailed = errors.New("delayed shell start forward failed")
+var errDelayedShellStartForwardTerminalFailed = errors.New("delayed shell start forward terminal append failed")
+
 type shellArgs struct {
 	Command        string
 	Description    string
@@ -111,7 +114,11 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	if args.Background {
 		if err := jm.commitDelayedShell(run); err != nil {
 			handle.Signal()
-			jm.discardDelayedShell(run)
+			if errors.Is(err, errDelayedShellStartForwardTerminalFailed) {
+				go jm.finalizeShellUntilDurable(run.rec.JobID, jobstore.StatusFailed, "forward_failed", nil)
+			} else if !errors.Is(err, errDelayedShellStartForwardFailed) {
+				jm.discardDelayedShell(run)
+			}
 			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 		}
 		go jm.finalizeShellWhenDone(run, waitCh, &runtimeTimedOut)
@@ -157,7 +164,11 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 		}
 		if err := jm.commitDelayedShell(run); err != nil {
 			handle.Signal()
-			jm.discardDelayedShell(run)
+			if errors.Is(err, errDelayedShellStartForwardTerminalFailed) {
+				go jm.finalizeShellUntilDurable(run.rec.JobID, jobstore.StatusFailed, "forward_failed", nil)
+			} else if !errors.Is(err, errDelayedShellStartForwardFailed) {
+				jm.discardDelayedShell(run)
+			}
 			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 		}
 		output, _, truncated, _ := tailOutput(run.output, shellInlineOutputBytes)
@@ -290,7 +301,11 @@ func (c *startOnlyContext) detachStart() {
 func (jm *jobManager) finishForegroundRuntimeTimeout(run *runningJob, wait shellWaitResult) shellResult {
 	status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, true, wait.err)
 	if err := jm.commitDelayedShell(run); err != nil {
-		jm.discardDelayedShell(run)
+		if errors.Is(err, errDelayedShellStartForwardTerminalFailed) {
+			go jm.finalizeShellUntilDurable(run.rec.JobID, jobstore.StatusFailed, "forward_failed", nil)
+		} else if !errors.Is(err, errDelayedShellStartForwardFailed) {
+			jm.discardDelayedShell(run)
+		}
 		return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 	}
 	output, _, truncated, _ := tailOutput(run.output, shellInlineOutputBytes)
@@ -426,7 +441,21 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		jm.mu.Unlock()
 		return err
 	}
-	jm.forwardLocked(started)
+	if err := jm.forwardLocked(started); err != nil {
+		_ = run.output.Close()
+		if terminalErr := jm.appendStartForwardFailure(rec.JobID, run.output); terminalErr != nil {
+			run.forwardDisabled = true
+			jm.mu.Unlock()
+			return errors.Join(errDelayedShellStartForwardTerminalFailed, err, terminalErr)
+		}
+		err = errors.Join(errDelayedShellStartForwardFailed, err)
+		if jm.running[run.rec.JobID] == run {
+			delete(jm.running, run.rec.JobID)
+		}
+		jm.mu.Unlock()
+		close(run.done)
+		return err
+	}
 
 	if jm.running[run.rec.JobID] == run {
 		run.durableStarted = true

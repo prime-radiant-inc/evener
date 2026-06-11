@@ -46,7 +46,7 @@ type jobManager struct {
 	closing       bool
 	appendEvent   func(jobstore.Event) error
 	emit          func(events.EventKind, events.EventData)
-	forward       func(jobstore.Event)
+	forward       func(jobstore.Event) error
 	parentJobID   string
 	enqueue       func(jobNotification)
 	send          func(context.Context, sendMessageArgs) sendMessageResult
@@ -81,6 +81,7 @@ type runningJob struct {
 	delegateOutputWritten   int
 	afterDurableFinish      func()
 	fromWatch               atomic.Bool
+	forwardDisabled         bool
 }
 
 type finalizeAttempt struct {
@@ -89,12 +90,19 @@ type finalizeAttempt struct {
 }
 
 type terminalJob struct {
-	status      jobstore.Status
-	reason      string
-	exitCode    *int
-	endedAt     time.Time
-	outputBytes int64
-	generation  string
+	status                       jobstore.Status
+	reason                       string
+	exitCode                     *int
+	endedAt                      time.Time
+	outputBytes                  int64
+	generation                   string
+	finished                     jobstore.Event
+	finishedForwarded            bool
+	finishedEmitted              bool
+	afterDurableFinishCalled     bool
+	notificationPending          jobstore.Event
+	notificationPendingAppended  bool
+	notificationPendingForwarded bool
 }
 
 type jobRuntimeHandle struct {
@@ -353,7 +361,18 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		_ = output.Close()
 		return nil, err
 	}
-	jm.forwardLocked(started)
+	if err := jm.forwardLocked(started); err != nil {
+		_ = output.Close()
+		if terminalErr := jm.appendStartForwardFailure(rec.JobID, output); terminalErr != nil {
+			run.forwardDisabled = true
+			jm.running[jobID] = run
+			jm.mu.Unlock()
+			go jm.finalizeShellUntilDurable(jobID, jobstore.StatusFailed, "forward_failed", nil)
+			return nil, errors.Join(err, terminalErr)
+		}
+		jm.mu.Unlock()
+		return nil, errors.Join(errDelayedShellStartForwardFailed, err)
+	}
 	jm.running[jobID] = run
 	jm.mu.Unlock()
 	jm.emitJobStarted(started, run)
@@ -544,8 +563,16 @@ func (jm *jobManager) reconcileLostJobs() error {
 	}
 	jm.mu.Unlock()
 
-	for _, finished := range jobstore.Reconcile(recs, live, jm.now()) {
-		rec := recs[finished.JobID]
+	localRecs := make(map[string]*jobstore.JobRecord, len(recs))
+	for jobID, rec := range recs {
+		if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
+			continue
+		}
+		localRecs[jobID] = rec
+	}
+
+	for _, finished := range jobstore.Reconcile(localRecs, live, jm.now()) {
+		rec := localRecs[finished.JobID]
 		if total, _, err := jobstore.OutputFileStats(jm.outputPathForJob(rec, finished.JobID)); err == nil {
 			finished.OutputBytes = total
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -647,7 +674,12 @@ func (jm *jobManager) finalizeWithRun(jobID string, prepare func(*runningJob) (j
 			err = jm.finishJob(run, status, reason, exitCode)
 		}
 	} else {
-		err = jm.armFinalizedJob(run, terminal)
+		err = jm.forwardFinishedJob(run, terminal)
+		if err == nil {
+			jm.emitFinishedJob(run, terminal)
+			jm.runAfterDurableFinish(run, terminal, run.afterDurableFinish)
+			err = jm.armFinalizedJob(run, terminal)
+		}
 	}
 
 	attempt.err = err
@@ -696,6 +728,7 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 		StructuredResultReason: structuredReason,
 		TerminalGen:            terminal.generation,
 	}
+	terminal.finished = finished
 	if err := jm.appendEvent(finished); err != nil {
 		return err
 	}
@@ -715,13 +748,82 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 	}
 	jm.mu.Unlock()
 
-	jm.forwardLocked(finished)
-	jm.emitJobFinished(finished, run)
-
-	if afterDurableFinish != nil {
-		afterDurableFinish()
+	if err := jm.forwardFinishedJob(run, terminal); err != nil {
+		return err
 	}
+	jm.emitFinishedJob(run, terminal)
+	jm.runAfterDurableFinish(run, terminal, afterDurableFinish)
 	return jm.armFinalizedJob(run, terminal)
+}
+
+func (jm *jobManager) forwardFinishedJob(run *runningJob, terminal *terminalJob) error {
+	if terminal == nil || terminal.finishedForwarded {
+		return nil
+	}
+	if jm.forwardDisabled(run) {
+		return nil
+	}
+	if err := jm.forwardSnapshot(terminal.finished); err != nil {
+		return err
+	}
+	jm.mu.Lock()
+	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
+		terminal.finishedForwarded = true
+	}
+	jm.mu.Unlock()
+	return nil
+}
+
+func (jm *jobManager) emitFinishedJob(run *runningJob, terminal *terminalJob) {
+	if terminal == nil || terminal.finishedEmitted {
+		return
+	}
+	jm.emitJobFinished(terminal.finished, run)
+	jm.mu.Lock()
+	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
+		terminal.finishedEmitted = true
+	}
+	jm.mu.Unlock()
+}
+
+func (jm *jobManager) runAfterDurableFinish(run *runningJob, terminal *terminalJob, callback func()) {
+	if terminal == nil || terminal.afterDurableFinishCalled {
+		return
+	}
+	if callback == nil {
+		jm.mu.Lock()
+		if jm.running[run.rec.JobID] == run && run.terminal == terminal {
+			terminal.afterDurableFinishCalled = true
+		}
+		jm.mu.Unlock()
+		return
+	}
+	callback()
+	jm.mu.Lock()
+	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
+		terminal.afterDurableFinishCalled = true
+	}
+	jm.mu.Unlock()
+}
+
+func (jm *jobManager) appendStartForwardFailure(jobID string, output *jobstore.OutputStore) error {
+	var outputBytes int64
+	if output != nil {
+		if _, total, _, err := output.Tail(0); err == nil {
+			outputBytes = total
+		}
+	}
+	endedAt := jm.now()
+	return jm.appendEvent(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          endedAt,
+		JobID:       jobID,
+		Status:      jobstore.StatusFailed,
+		Reason:      "forward_failed",
+		EndedAt:     &endedAt,
+		OutputBytes: outputBytes,
+		TerminalGen: jobstore.NewTerminalGeneration(),
+	})
 }
 
 func boundedStructuredResult(value any, resultSchema any, captureFailed bool) (any, *bool, string) {
@@ -785,28 +887,47 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		jm.mu.Unlock()
 		return nil
 	}
-	watchNotifications, watchDeliveries := jm.expireJobWatchesLocked(run.rec.JobID)
+	pendingAppended := terminal.notificationPendingAppended
+	var watchNotifications []jobNotification
+	var watchDeliveries []watchSendDelivery
+	if !pendingAppended {
+		watchNotifications, watchDeliveries = jm.expireJobWatchesLocked(run.rec.JobID)
+	}
 	jm.mu.Unlock()
 
-	watchDeliveries = jm.snapshotWatchSendFrames(watchDeliveries)
-	jm.enqueueWatchNotifications(watchNotifications)
-	if err := jm.deliverWatchSends(context.Background(), watchDeliveries); err != nil {
-		return err
-	}
-	if err := jm.retryPendingWatchSendsForWatchTarget(context.Background(), run.rec.JobID); err != nil {
-		return err
-	}
-	if err := jm.retryPendingWatchSendsForRunTarget(context.Background(), run.rec); err != nil {
-		return err
+	if !pendingAppended {
+		watchDeliveries = jm.snapshotWatchSendFrames(watchDeliveries)
+		jm.enqueueWatchNotifications(watchNotifications)
+		if err := jm.deliverWatchSends(context.Background(), watchDeliveries); err != nil {
+			return err
+		}
+		if err := jm.retryPendingWatchSendsForWatchTarget(context.Background(), run.rec.JobID); err != nil {
+			return err
+		}
+		if err := jm.retryPendingWatchSendsForRunTarget(context.Background(), run.rec); err != nil {
+			return err
+		}
 	}
 
-	pending := jobstore.Event{
-		Kind:        jobstore.EventJobNotificationPending,
-		TS:          terminal.endedAt,
-		JobID:       run.rec.JobID,
-		TerminalGen: terminal.generation,
+	if !pendingAppended {
+		pending := jobstore.Event{
+			Kind:        jobstore.EventJobNotificationPending,
+			TS:          terminal.endedAt,
+			JobID:       run.rec.JobID,
+			TerminalGen: terminal.generation,
+		}
+		if err := jm.appendEvent(pending); err != nil {
+			return err
+		}
+		jm.mu.Lock()
+		if jm.running[run.rec.JobID] == run && run.terminal == terminal {
+			terminal.notificationPending = pending
+			terminal.notificationPendingAppended = true
+		}
+		jm.mu.Unlock()
 	}
-	if err := jm.appendEvent(pending); err != nil {
+
+	if err := jm.forwardPendingJobNotification(run, terminal); err != nil {
 		return err
 	}
 
@@ -833,8 +954,31 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 			ExitCode:      terminal.exitCode,
 		})
 	}
-	jm.forwardLocked(pending)
 	return nil
+}
+
+func (jm *jobManager) forwardPendingJobNotification(run *runningJob, terminal *terminalJob) error {
+	if terminal == nil || terminal.notificationPendingForwarded || !terminal.notificationPendingAppended {
+		return nil
+	}
+	if jm.forwardDisabled(run) {
+		return nil
+	}
+	if err := jm.forwardSnapshot(terminal.notificationPending); err != nil {
+		return err
+	}
+	jm.mu.Lock()
+	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
+		terminal.notificationPendingForwarded = true
+	}
+	jm.mu.Unlock()
+	return nil
+}
+
+func (jm *jobManager) forwardDisabled(run *runningJob) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return run != nil && run.forwardDisabled
 }
 
 func (jm *jobManager) armPendingTerminalNotifications() error {

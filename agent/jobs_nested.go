@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
@@ -113,28 +114,125 @@ func (s *Session) stopChildren(delegateJobID string) ([]*jobstore.JobRecord, err
 	return stopped, stopErr
 }
 
-func (jm *jobManager) forwardLocked(e jobstore.Event) {
+func (jm *jobManager) forwardLocked(e jobstore.Event) error {
 	if jm.forward == nil || jm.parentJobID == "" {
-		return
+		return nil
 	}
-	jm.forward(e)
+	return jm.forward(e)
 }
 
-func (jm *jobManager) forwardEvent(e jobstore.Event) {
+func (jm *jobManager) forwardSnapshot(e jobstore.Event) error {
+	jm.mu.Lock()
+	forward := jm.forward
+	parentJobID := jm.parentJobID
+	jm.mu.Unlock()
+	if forward == nil || parentJobID == "" {
+		return nil
+	}
+	return forward(e)
+}
+
+func (jm *jobManager) recoverForwardedTerminalEvents() error {
+	jm.mu.Lock()
+	forward := jm.forward
+	parentJobID := jm.parentJobID
+	jm.mu.Unlock()
+	if forward == nil || parentJobID == "" {
+		return nil
+	}
+
+	recs, err := jm.store.Load()
+	if err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if !jm.shouldRecoverForwardedTerminalRecord(rec, parentJobID) {
+			continue
+		}
+		finishedAt := jm.recoveredEventTime(rec)
+		if err := forward(jobstore.Event{
+			Kind:                   jobstore.EventJobFinished,
+			TS:                     finishedAt,
+			JobID:                  rec.JobID,
+			Status:                 rec.Status,
+			Reason:                 rec.Reason,
+			ExitCode:               rec.ExitCode,
+			EndedAt:                rec.EndedAt,
+			OutputBytes:            rec.OutputBytes,
+			StructuredResult:       rec.StructuredResult,
+			StructuredResultValid:  rec.StructuredResultValid,
+			StructuredResultReason: rec.StructuredResultReason,
+			TerminalGen:            rec.TerminalGen,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (jm *jobManager) recoverForwardedPendingNotifications() error {
+	jm.mu.Lock()
+	forward := jm.forward
+	parentJobID := jm.parentJobID
+	jm.mu.Unlock()
+	if forward == nil || parentJobID == "" {
+		return nil
+	}
+
+	recs, err := jm.store.Load()
+	if err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if !jm.shouldRecoverForwardedTerminalRecord(rec, parentJobID) || rec.NotifyState != jobstore.NotifyPending {
+			continue
+		}
+		if err := forward(jobstore.Event{
+			Kind:        jobstore.EventJobNotificationPending,
+			TS:          jm.recoveredEventTime(rec),
+			JobID:       rec.JobID,
+			TerminalGen: rec.TerminalGen,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (jm *jobManager) shouldRecoverForwardedTerminalRecord(rec *jobstore.JobRecord, parentJobID string) bool {
+	if rec == nil ||
+		rec.ParentJobID != parentJobID ||
+		rec.OwnerSessionID != jm.sessionID ||
+		!rec.Status.IsTerminal() ||
+		rec.TerminalGen == "" {
+		return false
+	}
+	return rec.Status != jobstore.StatusFailed || rec.Reason != "forward_failed"
+}
+
+func (jm *jobManager) recoveredEventTime(rec *jobstore.JobRecord) time.Time {
+	if rec.EndedAt != nil {
+		return *rec.EndedAt
+	}
+	return jm.now()
+}
+
+func (jm *jobManager) forwardEvent(e jobstore.Event) error {
 	e.VisibleToSession = jm.sessionID
 	if err := jm.store.Append(e); err != nil {
-		return
+		return err
 	}
 	if e.Kind != jobstore.EventJobNotificationPending || jm.enqueue == nil {
-		return
+		return nil
 	}
 	recs, err := jm.store.Load()
 	if err != nil {
-		return
+		return err
 	}
 	rec := recs[e.JobID]
 	if rec == nil || !jobstore.ShouldDeliver(rec) {
-		return
+		return nil
 	}
 	jm.enqueue(jobNotificationFromRecord(rec))
+	return nil
 }

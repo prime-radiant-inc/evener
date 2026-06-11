@@ -58,6 +58,54 @@ func TestReconcileOnRestoreFinalizesLostJob(t *testing.T) {
 	}
 }
 
+func TestReconcileOnRestoreSkipsForwardedChildOwnedJob(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(dir+"/sessions/PARENT/jobs", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st, err := jobstore.Open(dir + "/sessions/PARENT/jobs.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Unix(1, 0).UTC()
+	if err := st.Append(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		JobID:            "job_child_owned",
+		Type:             jobstore.JobShell,
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: "PARENT",
+		ParentJobID:      "job_delegate",
+		StartedAt:        &start,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var queued []jobNotification
+	jm, err := newJobManager(dir, "PARENT", func(n jobNotification) { queued = append(queued, n) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	jm.now = func() time.Time { return time.Unix(100, 0).UTC() }
+
+	if err := jm.reconcileLostJobs(); err != nil {
+		t.Fatalf("reconcile lost jobs: %v", err)
+	}
+
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recs["job_child_owned"].Status != jobstore.StatusRunning {
+		t.Fatalf("job_child_owned = %+v, want still running for child owner recovery", recs["job_child_owned"])
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued notifications = %+v, want none for forwarded child-owned job", queued)
+	}
+}
+
 func TestReconcileOnRestoreUsesPrunedOutputLifetimeBytes(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(dir+"/sessions/S1/jobs", 0o755); err != nil {

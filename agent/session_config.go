@@ -199,7 +199,7 @@ type spawnConfig struct {
 
 	// forwardJobEvent lets child job managers send nested job events to the
 	// parent manager. The forwarding behavior is installed by later phases.
-	forwardJobEvent func(jobstore.Event)
+	forwardJobEvent func(jobstore.Event) error
 
 	// parentSteer routes runtime alias messages from a live sub-agent to its caller.
 	parentSteer func(string)

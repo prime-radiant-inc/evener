@@ -166,6 +166,30 @@ func (e *delayedExitStreamingExecutor) StreamCommand(_ context.Context, _ string
 	}, nil
 }
 
+type signalCompletesStreamingExecutor struct {
+	done    chan struct{}
+	once    sync.Once
+	signals atomic.Int32
+}
+
+func newSignalCompletesStreamingExecutor() *signalCompletesStreamingExecutor {
+	return &signalCompletesStreamingExecutor{done: make(chan struct{})}
+}
+
+func (e *signalCompletesStreamingExecutor) StreamCommand(_ context.Context, _ string, _ string, _ map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
+	_, _ = out.Write([]byte("running"))
+	return &execenv.StreamHandle{
+		Wait: func() (int, error) {
+			<-e.done
+			return 143, nil
+		},
+		Signal: func() {
+			e.signals.Add(1)
+			e.once.Do(func() { close(e.done) })
+		},
+	}, nil
+}
+
 func TestRunShellForegroundWaitErrorFailsJob(t *testing.T) {
 	jm := newTestJM(t)
 	res := runShell(context.Background(), jm, waitErrorStreamingExecutor{}, shellArgs{Command: "x", BlockTimeoutMS: 5000})

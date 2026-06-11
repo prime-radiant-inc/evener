@@ -379,9 +379,14 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 		return "", errors.Join(childStopErr, err)
 	}
 	if shellBoolArg(args, "block") {
-		waitForJobDone(ctx, targetJM, jobID, time.Duration(timeoutMS)*time.Millisecond)
+		done := waitForJobDone(ctx, targetJM, jobID, time.Duration(timeoutMS)*time.Millisecond)
 		if _, latest, err := s.nestedOrLocalJobManager(jobID); err == nil {
 			rec = latest
+		}
+		if !done && rec != nil && !rec.Status.IsTerminal() {
+			pending := cloneJobRecord(rec)
+			pending.Reason = "stop_pending"
+			rec = pending
 		}
 	}
 	if childStopErr != nil {
@@ -993,17 +998,20 @@ func findJobRecord(jm *jobManager, jobID string) (*jobstore.JobRecord, error) {
 	return nil, fmt.Errorf("job %q not found", jobID)
 }
 
-func waitForJobDone(ctx context.Context, jm *jobManager, jobID string, timeout time.Duration) {
+func waitForJobDone(ctx context.Context, jm *jobManager, jobID string, timeout time.Duration) bool {
 	done, ok := jobDone(jm, jobID)
 	if !ok {
-		return
+		return true
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case <-done:
+		return true
 	case <-timer.C:
+		return false
 	case <-ctx.Done():
+		return false
 	}
 }
 

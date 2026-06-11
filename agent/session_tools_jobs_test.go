@@ -801,6 +801,42 @@ func TestJobStopDefaultReturnsRequestedCancellation(t *testing.T) {
 	waitForShellDone(t, s.jobManager, shellOut.JobID)
 }
 
+func TestJobStopBlockTimeoutReturnsStopPending(t *testing.T) {
+	s := newTestSession(t)
+	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := s.jobManager.finalize(rec.JobID, jobstore.StatusCancelled, "stopped_by_parent", nil); err != nil {
+			t.Fatalf("cleanup finalize: %v", err)
+		}
+		waitForShellDone(t, s.jobManager, rec.JobID)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	out, err := jobStopTool(ctx, s, map[string]any{
+		"job_id":           rec.JobID,
+		"block":            true,
+		"block_timeout_ms": 60000,
+	}, 20000)
+	if err != nil {
+		t.Fatalf("jobStopTool returned error: %v", err)
+	}
+	var stopOut struct {
+		JobID  string  `json:"job_id"`
+		Status string  `json:"status"`
+		Reason *string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(out), &stopOut); err != nil {
+		t.Fatalf("unmarshal job_stop output: %v (output: %s)", err, out)
+	}
+	if stopOut.JobID != rec.JobID || stopOut.Status != string(jobstore.StatusRunning) || stopOut.Reason == nil || *stopOut.Reason != "stop_pending" {
+		t.Fatalf("job_stop = %+v, want running/stop_pending", stopOut)
+	}
+}
+
 func TestDelegateToolForegroundReturnsStructuredResult(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
