@@ -10,10 +10,25 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
+
+type bufferedShellEnv struct {
+	agenttest.FakeEnv
+	timeoutMS int
+}
+
+func (e *bufferedShellEnv) ExecCommand(_ context.Context, _ string, timeoutMS int, _ string, _ map[string]string) (execenv.ExecResult, error) {
+	e.timeoutMS = timeoutMS
+	return execenv.ExecResult{
+		ExitCode:   -1,
+		DurationMS: int64(timeoutMS),
+		TimedOut:   true,
+	}, nil
+}
 
 func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	s := newTestSession(t)
@@ -123,6 +138,24 @@ func TestShellToolClampsSmallMaxRuntime(t *testing.T) {
 		out.Output != "survived" ||
 		out.Truncated {
 		t.Fatalf("shell output = %+v, want completed command before clamped runtime", out)
+	}
+}
+
+func TestBufferedShellHonorsMaxRuntime(t *testing.T) {
+	env := &bufferedShellEnv{}
+	out, err := runBufferedShell(context.Background(), env, nil, shellArgs{
+		Command:        "sleep 30",
+		BlockTimeoutMS: 5000,
+		MaxRuntimeMS:   1000,
+	})
+	if err != nil {
+		t.Fatalf("runBufferedShell: %v", err)
+	}
+	if env.timeoutMS != 1000 {
+		t.Fatalf("ExecCommand timeout = %d, want max_runtime_ms cap 1000", env.timeoutMS)
+	}
+	if !strings.Contains(out, "max_runtime_ms") {
+		t.Fatalf("timeout output = %q, want max_runtime_ms guidance", out)
 	}
 }
 

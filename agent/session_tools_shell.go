@@ -295,6 +295,11 @@ func applyShellTimeoutPolicy(deps *toolDeps, args shellArgs) shellArgs {
 func runBufferedShell(ctx context.Context, env execenv.ExecutionEnvironment, deps *toolDeps, args shellArgs) (string, error) {
 	args = applyShellTimeoutPolicy(deps, args)
 	timeout := args.BlockTimeoutMS
+	timeoutParam := "block_timeout_ms"
+	if args.MaxRuntimeMS > 0 && (timeout == 0 || args.MaxRuntimeMS < timeout) {
+		timeout = args.MaxRuntimeMS
+		timeoutParam = "max_runtime_ms"
+	}
 	res, err := env.ExecCommand(ctx, args.Command, timeout, "", nil)
 
 	// Return a line-oriented tool output so line truncation works as intended for shell output.
@@ -314,7 +319,7 @@ func runBufferedShell(ctx context.Context, env execenv.ExecutionEnvironment, dep
 	if errors.Is(err, context.Canceled) && !res.TimedOut {
 		b.WriteString("[ERROR: Command was canceled before completion. Partial output is shown above.]\n")
 	} else if res.TimedOut {
-		b.WriteString(fmt.Sprintf("[ERROR: Command timed out after %dms. Partial output is shown above.\nYou can retry with a longer timeout by setting the block_timeout_ms parameter.]\n", timeout))
+		b.WriteString(fmt.Sprintf("[ERROR: Command timed out after %dms. Partial output is shown above.\nYou can retry with a longer timeout by setting the %s parameter.]\n", timeout, timeoutParam))
 	}
 	b.WriteString(fmt.Sprintf("exit_code=%d duration_ms=%d timed_out=%t\n", res.ExitCode, res.DurationMS, res.TimedOut))
 	return b.String(), err
