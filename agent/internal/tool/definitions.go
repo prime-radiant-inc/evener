@@ -176,10 +176,10 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		kinds = "none available this session"
 	}
 	desc := "Add an extra trigger on a running job or a visible session. Set only the trigger fields you need; " +
-		"empty `events`, zero `progress_interval_ms`, and empty `trigger` are unnecessary. Omit `send` to get a notification " +
+		"empty `events`, zero `progress_interval_ms`, and unset `every` are unnecessary. Omit `send` to get a notification " +
 		"yourself when the trigger fires; include `send` to deliver a bounded frame to another target, " +
 		"such as an observer delegate. Triggers: `output_match`, a regex over output produced while " +
-		"the watch is active; `progress_interval_ms`, periodic; or `events`/`trigger`, selected " +
+		"the watch is active; `progress_interval_ms`, periodic; or `events`/`every`, selected " +
 		"session/job event frames (kinds available this session: " + kinds + ", or `*`). This is not how you " +
 		"learn a job finished — terminal notifications are automatic, and a job that finishes before the watch " +
 		"attaches returns `target_terminal` rather than installing a replay watch. Send deliveries coalesce by watch key " +
@@ -200,14 +200,9 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 					"items":       map[string]any{"type": "string"},
 					"description": "Event kinds to watch; [\"*\"] = all visible. Available: " + kinds + ".",
 				},
-				"trigger": map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"description":          "Fire only on the Nth occurrence of a named event.",
-					"properties": map[string]any{
-						"event": map[string]any{"type": "string"},
-						"every": map[string]any{"type": "integer"},
-					},
+				"every": map[string]any{
+					"type":        "integer",
+					"description": "Fire on each Nth occurrence of the single watched event kind. Requires `events` to contain exactly one kind.",
 				},
 				"send": map[string]any{
 					"type":                 "object",

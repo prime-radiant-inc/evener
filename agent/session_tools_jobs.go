@@ -795,11 +795,8 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 		return watchArgs{}, err
 	}
 	a.Events = events
-	if trigger, err := watchTriggerArg(args); err != nil {
-		return watchArgs{}, err
-	} else if trigger != nil {
-		a.TriggerEvent = trigger.event
-		a.TriggerEvery = trigger.every
+	if n, ok := shellIntArg(args, "every"); ok {
+		a.Every = n
 	}
 	send, err := watchSendArg(args)
 	if err != nil {
@@ -827,27 +824,6 @@ func stringArrayArg(args map[string]any, key string) ([]string, error) {
 		out = append(out, s)
 	}
 	return out, nil
-}
-
-type watchTriggerToolArgs struct {
-	event string
-	every int
-}
-
-func watchTriggerArg(args map[string]any) (*watchTriggerToolArgs, error) {
-	raw, ok := args["trigger"]
-	if !ok {
-		return nil, nil
-	}
-	values, ok := raw.(map[string]any)
-	if !ok {
-		return nil, errors.New("trigger must be an object")
-	}
-	trigger := &watchTriggerToolArgs{event: stringArg(values, "event")}
-	if n, ok := shellIntArg(values, "every"); ok {
-		trigger.every = n
-	}
-	return trigger, nil
 }
 
 func watchSendArg(args map[string]any) (*watchSendArgs, error) {

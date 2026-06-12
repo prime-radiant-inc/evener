@@ -118,7 +118,7 @@ func TestDefJobWatchParamsAndKinds(t *testing.T) {
 		t.Fatalf("name = %q, want job_watch", def.Name)
 	}
 	props := def.Parameters["properties"].(map[string]any)
-	for _, p := range []string{"target", "output_match", "progress_interval_ms", "events", "trigger", "send", "clear"} {
+	for _, p := range []string{"target", "output_match", "progress_interval_ms", "events", "every", "send", "clear"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefJobWatch missing param %q", p)
 		}

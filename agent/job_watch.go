@@ -60,7 +60,6 @@ type watchConfig struct {
 	events             []string
 	eventKinds         map[events.EventKind]bool
 	wildcardEvents     bool
-	triggerEvent       string
 	triggerKind        events.EventKind
 	triggerEvery       int
 	eventCount         int
@@ -80,8 +79,7 @@ type watchArgs struct {
 	OutputMatch        string
 	ProgressIntervalMS int
 	Events             []string
-	TriggerEvent       string
-	TriggerEvery       int
+	Every              int
 	Send               *watchSendArgs
 	Clear              bool
 }
@@ -379,7 +377,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 }
 
 func watchArgsHasCondition(a watchArgs) bool {
-	return a.OutputMatch != "" || a.ProgressIntervalMS > 0 || len(a.Events) > 0 || a.TriggerEvent != ""
+	return a.OutputMatch != "" || a.ProgressIntervalMS > 0 || len(a.Events) > 0
 }
 
 func validateWatchEventArgs(a watchArgs) error {
@@ -391,10 +389,8 @@ func validateWatchEventArgs(a watchArgs) error {
 			return fmt.Errorf("invalid_request: unknown event kind %q", name)
 		}
 	}
-	if a.TriggerEvent != "" {
-		if _, ok := modelEventKinds[a.TriggerEvent]; !ok {
-			return fmt.Errorf("invalid_request: unknown trigger event %q", a.TriggerEvent)
-		}
+	if a.Every > 0 && len(a.Events) != 1 {
+		return errors.New("invalid_request: every requires exactly one watched event kind")
 	}
 	return nil
 }
@@ -508,29 +504,20 @@ func (jm *jobManager) validateWatchedSendTarget(a watchArgs) error {
 	return watchTargetNotFoundError(watchTarget)
 }
 
+// watchCanResolveConcreteWatchedTarget reports whether a wildcard-target watch
+// with send.to=watched can ever resolve a concrete job. A concrete job identity
+// is carried only by job-carrying event kinds: job.notification and * (wildcard).
+// Without at least one such kind in events, watched can never resolve.
 func watchCanResolveConcreteWatchedTarget(a watchArgs) bool {
 	if a.Target != "*" || a.ProgressIntervalMS > 0 || a.OutputMatch != "" {
 		return false
 	}
-	if a.TriggerEvent != "" && a.TriggerEvent != "job.notification" {
-		return false
-	}
-	if len(a.Events) == 0 {
-		return a.TriggerEvent == "job.notification"
-	}
-	if a.TriggerEvent == "job.notification" {
-		for _, eventName := range a.Events {
-			if eventName == "*" || eventName == "job.notification" {
-				return true
-			}
+	for _, name := range a.Events {
+		if name == "*" || name == "job.notification" {
+			return true
 		}
 	}
-	for _, eventName := range a.Events {
-		if eventName != "job.notification" {
-			return false
-		}
-	}
-	return true
+	return false
 }
 
 func isWatchableConcreteJobLocked(run *runningJob) bool {
@@ -556,10 +543,6 @@ func isWatchSessionTarget(target string) bool {
 
 func newWatchConfig(a watchArgs) (*watchConfig, error) {
 	eventKinds, wildcardEvents := resolveEventKinds(a.Events)
-	triggerKind := modelEventKinds[a.TriggerEvent]
-	if len(a.Events) == 0 && a.TriggerEvent != "" && triggerKind != "" {
-		eventKinds[triggerKind] = true
-	}
 	cfg := &watchConfig{
 		target:             a.Target,
 		outputMatch:        a.OutputMatch,
@@ -567,11 +550,13 @@ func newWatchConfig(a watchArgs) (*watchConfig, error) {
 		events:             canonicalWatchEvents(a.Events),
 		eventKinds:         eventKinds,
 		wildcardEvents:     wildcardEvents,
-		triggerEvent:       a.TriggerEvent,
-		triggerKind:        triggerKind,
-		triggerEvery:       a.TriggerEvery,
 		send:               cloneWatchSendArgs(a.Send),
 		generation:         jobstore.NewWatchGeneration(),
+	}
+	// every is valid only with exactly one event kind (enforced by validation).
+	if a.Every > 0 && len(a.Events) == 1 {
+		cfg.triggerKind = modelEventKinds[a.Events[0]]
+		cfg.triggerEvery = a.Every
 	}
 	if a.OutputMatch != "" {
 		re, err := regexp.Compile(a.OutputMatch)
@@ -838,7 +823,7 @@ func watchConfigsEqual(a, b *watchConfig) bool {
 	if a.target != b.target ||
 		a.outputMatch != b.outputMatch ||
 		a.progressIntervalMS != b.progressIntervalMS ||
-		a.triggerEvent != b.triggerEvent ||
+		a.triggerKind != b.triggerKind ||
 		a.triggerEvery != b.triggerEvery {
 		return false
 	}
@@ -901,13 +886,9 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 		} else if !cfg.eventKinds[kind] {
 			continue
 		}
-		if cfg.triggerEvent != "" && cfg.triggerKind == kind {
+		if cfg.triggerEvery > 0 && cfg.triggerKind == kind {
 			cfg.eventCount++
-			triggerEvery := cfg.triggerEvery
-			if triggerEvery <= 0 {
-				triggerEvery = 1
-			}
-			if cfg.eventCount%triggerEvery != 0 {
+			if cfg.eventCount%cfg.triggerEvery != 0 {
 				continue
 			}
 		}

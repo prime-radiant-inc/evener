@@ -1875,7 +1875,7 @@ func TestJobToolsDefinitions(t *testing.T) {
 		}
 	}
 	watchProps := tooldefs.DefJobWatch(WatchEventKindNames).Parameters["properties"].(map[string]any)
-	for _, param := range []string{"target", "output_match", "progress_interval_ms", "events", "trigger", "send", "clear"} {
+	for _, param := range []string{"target", "output_match", "progress_interval_ms", "events", "every", "send", "clear"} {
 		if _, ok := watchProps[param]; !ok {
 			t.Fatalf("job_watch missing param %q", param)
 		}

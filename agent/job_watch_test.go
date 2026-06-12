@@ -160,18 +160,8 @@ func TestConfigureWatchRejectsUnknownEventKinds(t *testing.T) {
 	}
 }
 
-func TestConfigureWatchRejectsUnknownTriggerEvent(t *testing.T) {
-	jm := newTestJM(t)
-
-	_, err := jm.configureWatch(watchArgs{Target: "caller", TriggerEvent: "assistant.mesage"})
-
-	if err == nil || !strings.Contains(err.Error(), "unknown trigger event") {
-		t.Fatalf("error = %v, want unknown trigger event", err)
-	}
-	if jm.watchCount() != 0 {
-		t.Fatalf("watch count = %d, want 0", jm.watchCount())
-	}
-}
+// TestConfigureWatchRejectsUnknownTriggerEvent was removed: with trigger gone,
+// an unknown kind in Events is already covered by TestConfigureWatchRejectsUnknownEventKinds.
 
 func TestJobWatchMainAliasTargetFailsTargetNotFound(t *testing.T) {
 	jm := newTestJM(t)
@@ -404,10 +394,9 @@ func TestEventWatchTriggerEveryNth(t *testing.T) {
 	jm.enqueue = func(jobNotification) { fires++ }
 
 	_, err := jm.configureWatch(watchArgs{
-		Target:       "caller",
-		Events:       []string{"assistant.message"},
-		TriggerEvent: "assistant.message",
-		TriggerEvery: 3,
+		Target: "caller",
+		Events: []string{"assistant.message"},
+		Every:  3,
 	})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
@@ -416,31 +405,33 @@ func TestEventWatchTriggerEveryNth(t *testing.T) {
 		jm.onSessionEvent(events.EventAssistantTextEnd, nil)
 	}
 	if fires != 2 {
-		t.Errorf("trigger.every=3 over 7 events should fire twice, got %d", fires)
+		t.Errorf("every=3 over 7 events should fire twice, got %d", fires)
 	}
 }
 
-func TestEventWatchTriggerEveryOnlyGatesTriggerKind(t *testing.T) {
+// TestEventWatchTriggerEveryOnlyGatesTriggerKind was removed: multi-event + every
+// is now invalid by design (every requires exactly one watched event kind).
+// The rejection is covered by TestConfigureWatchRejectsEveryWithMultipleEvents.
+
+func TestConfigureWatchRejectsEveryWithMultipleEvents(t *testing.T) {
 	jm := newTestJM(t)
-	var fires int
-	jm.enqueue = func(jobNotification) { fires++ }
 
 	_, err := jm.configureWatch(watchArgs{
-		Target:       "*",
-		Events:       []string{"assistant.message", "job.notification"},
-		TriggerEvent: "assistant.message",
-		TriggerEvery: 2,
+		Target: "caller",
+		Events: []string{"assistant.message", "job.notification"},
+		Every:  2,
 	})
-	if err != nil {
-		t.Fatalf("configure: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "every requires exactly one watched event kind") {
+		t.Fatalf("error = %v, want every requires exactly one watched event kind", err)
 	}
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_worker", JobType: "delegate", Status: "completed"})
-	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_worker_2", JobType: "delegate", Status: "completed"})
-	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0", jm.watchCount())
+	}
 
-	if fires != 3 {
-		t.Errorf("mixed watch fires = %d, want both job notifications plus every second assistant.message", fires)
+	// every with zero events should also fail (no event to throttle).
+	_, err = jm.configureWatch(watchArgs{Target: "caller", Every: 1})
+	if err == nil || !strings.Contains(err.Error(), "every requires exactly one watched event kind") {
+		t.Fatalf("bare every with no events: error = %v, want every requires exactly one watched event kind", err)
 	}
 }
 
@@ -3769,10 +3760,9 @@ func TestWatchSendToWatchedAllowsWildcardJobNotificationTrigger(t *testing.T) {
 	}
 
 	_, err := jm.configureWatch(watchArgs{
-		Target:       "*",
-		Events:       []string{"*"},
-		TriggerEvent: "job.notification",
-		Send:         &watchSendArgs{To: "watched", Message: "observe"},
+		Target: "*",
+		Events: []string{"*"},
+		Send:   &watchSendArgs{To: "watched", Message: "observe"},
 	})
 	if err != nil {
 		t.Fatalf("configureWatch returned error: %v", err)
@@ -3806,10 +3796,9 @@ func TestWatchSendToWatchedAllowsMixedEventsWithJobNotificationTrigger(t *testin
 	}
 
 	_, err := jm.configureWatch(watchArgs{
-		Target:       "*",
-		Events:       []string{"assistant.message", "job.notification"},
-		TriggerEvent: "job.notification",
-		Send:         &watchSendArgs{To: "watched", Message: "observe"},
+		Target: "*",
+		Events: []string{"assistant.message", "job.notification"},
+		Send:   &watchSendArgs{To: "watched", Message: "observe"},
 	})
 	if err != nil {
 		t.Fatalf("configureWatch returned error: %v", err)
