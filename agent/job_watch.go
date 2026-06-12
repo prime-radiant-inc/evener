@@ -306,6 +306,15 @@ func validateWatchEventArgs(a watchArgs) error {
 	return nil
 }
 
+func isSupportedWatchEventKind(kind events.EventKind) bool {
+	for _, supported := range modelEventKinds {
+		if supported == kind {
+			return true
+		}
+	}
+	return false
+}
+
 func (jm *jobManager) validateWatchTarget(target string) error {
 	if isWatchSessionTarget(target) {
 		return nil
@@ -792,7 +801,11 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 		if !isActiveWatchTargetLocked(jm, cfg.target) {
 			continue
 		}
-		if !cfg.wildcardEvents && !cfg.eventKinds[kind] {
+		if cfg.wildcardEvents {
+			if !isSupportedWatchEventKind(kind) {
+				continue
+			}
+		} else if !cfg.eventKinds[kind] {
 			continue
 		}
 		if cfg.triggerEvent != "" && cfg.triggerKind == kind {

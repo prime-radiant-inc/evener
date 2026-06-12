@@ -312,6 +312,25 @@ func TestEventWatchFiresAndNotifiesCaller(t *testing.T) {
 	}
 }
 
+func TestWildcardEventWatchOnlyFiresSupportedEvents(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	if _, err := jm.configureWatch(watchArgs{Target: "caller", Events: []string{"*"}}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.onSessionEvent(events.EventSteeringInjected, events.SteeringInjectedData{Text: "internal"})
+	if len(notified) != 0 {
+		t.Fatalf("internal event fired wildcard watch: %+v", notified)
+	}
+
+	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	if len(notified) != 1 {
+		t.Fatalf("supported event fires = %d, want 1", len(notified))
+	}
+}
+
 func TestWildcardJobEventWatchNotifiesConcreteJob(t *testing.T) {
 	jm := newTestJM(t)
 	var notified []jobNotification
