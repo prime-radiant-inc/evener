@@ -4103,6 +4103,69 @@ func TestWatchSendMessageIncludesFrameMetadata(t *testing.T) {
 	}
 }
 
+func TestConfigureWatchRejectsIncludeExcerptOnSessionTargets(t *testing.T) {
+	jm := newTestJM(t)
+	delegate := createRunningDelegateWatchTarget(t, jm)
+	for _, target := range []string{"caller", "*"} {
+		t.Run(target, func(t *testing.T) {
+			_, err := jm.configureWatch(watchArgs{
+				Target: target,
+				Events: []string{"job.notification"},
+				Send:   &watchSendArgs{To: delegate.JobID, IncludeExcerpt: true},
+			})
+			if err == nil {
+				t.Fatal("session target include_excerpt watch must error")
+			}
+			if !strings.Contains(err.Error(), "include_excerpt requires a concrete job target") {
+				t.Fatalf("error = %v, want include_excerpt concrete-target validation", err)
+			}
+			if jm.watchCount() != 0 {
+				t.Fatalf("watch count = %d, want 0", jm.watchCount())
+			}
+		})
+	}
+}
+
+func TestWatchSessionTargetFrameOmitsExcerpt(t *testing.T) {
+	jm := newTestJM(t)
+
+	frame := jm.buildWatchFrame(&watchConfig{
+		send: &watchSendArgs{Message: "session frame", IncludeExcerpt: true},
+	}, "caller", "output_match: ready", "dlv")
+
+	if strings.Contains(frame, "excerpt:") {
+		t.Fatalf("session-target frame must not carry an excerpt; got %q", frame)
+	}
+	if strings.Contains(frame, "output_read_error") {
+		t.Fatalf("session-target frame must not leak output_read_error; got %q", frame)
+	}
+}
+
+func TestWatchSessionTargetFrameCarriesTranscriptRef(t *testing.T) {
+	jm := newTestJM(t)
+	want := "transcript_ref: " + encodeRef("", jm.sessionID)
+
+	frame := jm.buildWatchFrame(&watchConfig{
+		send: &watchSendArgs{Message: "session frame"},
+	}, "caller", "output_match: ready", "dlv")
+
+	if !strings.Contains(frame, want) {
+		t.Fatalf("session-target frame must carry %q; got %q", want, frame)
+	}
+}
+
+func TestWatchJobTargetFrameOmitsTranscriptRef(t *testing.T) {
+	jm := newTestJM(t)
+
+	frame := jm.buildWatchFrame(&watchConfig{
+		send: &watchSendArgs{Message: "job frame"},
+	}, "job_target", "output_match: ready", "dlv")
+
+	if strings.Contains(frame, "transcript_ref") {
+		t.Fatalf("job-target frame must not carry transcript_ref; got %q", frame)
+	}
+}
+
 func busyWatchSendResult() sendMessageResult {
 	return sendMessageResult{
 		WatchSendDeliveryClass:    watchSendBusy,

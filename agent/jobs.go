@@ -38,6 +38,7 @@ type jobManager struct {
 	watchNotifyMu sync.Mutex
 	dir           string
 	sessionID     string
+	transcriptRef string
 	store         *jobstore.Store
 	running       map[string]*runningJob
 	watches       map[watchKey]*watchConfig
@@ -175,14 +176,15 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 		return nil, err
 	}
 	jm := &jobManager{
-		dir:         dir,
-		sessionID:   sessionID,
-		store:       store,
-		running:     make(map[string]*runningJob),
-		watches:     make(map[watchKey]*watchConfig),
-		appendEvent: store.Append,
-		enqueue:     enqueue,
-		now:         time.Now,
+		dir:           dir,
+		sessionID:     sessionID,
+		transcriptRef: encodeRef("", sessionID),
+		store:         store,
+		running:       make(map[string]*runningJob),
+		watches:       make(map[watchKey]*watchConfig),
+		appendEvent:   store.Append,
+		enqueue:       enqueue,
+		now:           time.Now,
 	}
 	if err := jm.restoreWatchSendPending(); err != nil {
 		_ = store.Close()

@@ -268,6 +268,9 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if !a.Clear && a.OutputMatch != "" && isWatchSessionTarget(a.Target) {
 		return watchResult{}, errors.New("invalid_request: output_match requires a concrete job target")
 	}
+	if !a.Clear && a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
+		return watchResult{}, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry transcript_ref")
+	}
 
 	if a.Clear {
 		return jm.clearWatch(key)
@@ -1999,7 +2002,13 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 	b.WriteString("\ntrigger: ")
 	b.WriteString(limitWatchText(trigger, watchTriggerMaxChars))
 
-	if cfg.send.IncludeExcerpt {
+	if isWatchSessionTarget(jobID) {
+		// A session identity (caller or a session id resolved per-fire from a
+		// wildcard watch) has no readable job output; it carries the owning
+		// session's transcript ref instead of an excerpt.
+		b.WriteString("\ntranscript_ref: ")
+		b.WriteString(limitWatchText(jm.transcriptRef, watchTriggerMaxChars))
+	} else if cfg.send.IncludeExcerpt {
 		b.WriteString("\n")
 		excerpt, _, truncated, err := jm.readOutput(jobID, watchExcerptTailBytes)
 		b.WriteString("excerpt:\n")
