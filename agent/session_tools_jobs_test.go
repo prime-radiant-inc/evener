@@ -548,7 +548,6 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 		"send": map[string]any{
 			"to":              "caller",
 			"message":         "output_match watch fired",
-			"include_frame":   true,
 			"include_excerpt": true,
 		},
 	})
@@ -797,7 +796,7 @@ func TestJobWatchSendToRequired(t *testing.T) {
 		send string
 	}{
 		{name: "message without target", send: `{"message":"observe"}`},
-		{name: "frame without target", send: `{"to":"   ","include_frame":true}`},
+		{name: "excerpt without target", send: `{"to":"   ","include_excerpt":true}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestSession(t)
@@ -824,7 +823,7 @@ func TestJobWatchEmptySendPlaceholderIsOmitted(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"target":"caller","events":["assistant.message"],"send":{"to":"","message":"","include_frame":false,"include_excerpt":false}}`),
+		Arguments: json.RawMessage(`{"target":"caller","events":["assistant.message"],"send":{"to":"","message":"","include_excerpt":false}}`),
 	})
 	if res.IsError {
 		t.Fatalf("job_watch returned error for empty send placeholder: %s", res.Output)

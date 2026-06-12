@@ -482,7 +482,6 @@ type jobWatchToolResult struct {
 type jobWatchToolSendArgs struct {
 	To             string `json:"to"`
 	Message        string `json:"message,omitempty"`
-	IncludeFrame   bool   `json:"include_frame,omitempty"`
 	IncludeExcerpt bool   `json:"include_excerpt,omitempty"`
 }
 
@@ -548,7 +547,6 @@ func marshalWatchResult(res watchResult, maxChars int) (string, error) {
 		out.Send = &jobWatchToolSendArgs{
 			To:             res.Send.To,
 			Message:        res.Send.Message,
-			IncludeFrame:   res.Send.IncludeFrame,
 			IncludeExcerpt: res.Send.IncludeExcerpt,
 		}
 	}
@@ -845,7 +843,6 @@ func watchSendArg(args map[string]any) (*watchSendArgs, error) {
 	return &watchSendArgs{
 		To:             to,
 		Message:        stringArg(values, "message"),
-		IncludeFrame:   shellBoolArg(values, "include_frame"),
 		IncludeExcerpt: shellBoolArg(values, "include_excerpt"),
 	}, nil
 }
@@ -853,7 +850,6 @@ func watchSendArg(args map[string]any) (*watchSendArgs, error) {
 func isEmptyWatchSend(values map[string]any) bool {
 	return strings.TrimSpace(stringArg(values, "to")) == "" &&
 		stringArg(values, "message") == "" &&
-		!shellBoolArg(values, "include_frame") &&
 		!shellBoolArg(values, "include_excerpt")
 }
 

@@ -367,7 +367,7 @@ func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure watch: %v", err)
 	}

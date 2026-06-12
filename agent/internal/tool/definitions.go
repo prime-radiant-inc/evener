@@ -211,7 +211,6 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 					"properties": map[string]any{
 						"to":              map[string]any{"type": "string", "description": "job_id, `caller`, or contextual `watched` for the concrete watched target. `watched` resolves only when the trigger has a concrete job identity; session-only events are skipped for `watched`."},
 						"message":         map[string]any{"type": "string"},
-						"include_frame":   map[string]any{"type": "boolean"},
 						"include_excerpt": map[string]any{"type": "boolean"},
 					},
 				},

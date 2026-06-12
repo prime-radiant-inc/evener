@@ -41,7 +41,7 @@ func TestWatchSendBuildsObserverFrame(t *testing.T) {
 		ID:   "watch",
 		Name: "job_watch",
 		Arguments: json.RawMessage(fmt.Sprintf(
-			`{"target":%q,"output_match":"(?i)ready","send":{"to":"job_obs","include_frame":true,"message":"observe"}}`,
+			`{"target":%q,"output_match":"(?i)ready","send":{"to":"job_obs","message":"observe"}}`,
 			shellOut.JobID,
 		)),
 	})

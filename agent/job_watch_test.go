@@ -504,7 +504,7 @@ func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 	_, err := jm.configureWatch(watchArgs{
 		Target: rec.JobID,
 		Events: []string{"assistant.tool"},
-		Send:   &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
 	})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
@@ -617,7 +617,7 @@ func TestWatchSendDeliversFrameToTarget(t *testing.T) {
 	_, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "(?i)ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "saw ready", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "saw ready"},
 	})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
@@ -660,14 +660,14 @@ func TestWatchSendBatchContinuesAfterNonTerminalPersistenceFailure(t *testing.T)
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs_a", Message: "observe a", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs_a", Message: "observe a"},
 	}); err != nil {
 		t.Fatalf("configure first watch: %v", err)
 	}
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs_b", Message: "observe b", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs_b", Message: "observe b"},
 	}); err != nil {
 		t.Fatalf("configure second watch: %v", err)
 	}
@@ -715,7 +715,7 @@ func TestWatchSendBusyKeepsPendingAndEmitsNoDiagnostic(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -754,7 +754,7 @@ func TestWatchSendRetryAfterIdleDeliversLatestCoalescedFrame(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      source.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: target.JobID, Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: target.JobID, Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -827,7 +827,7 @@ func TestWatchSendToResumedRunningDelegateSteersActiveRun(t *testing.T) {
 	if _, err := sess.jobManager.configureWatch(watchArgs{
 		Target:      source.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: first.JobID, Message: "observe original target", IncludeFrame: true},
+		Send:        &watchSendArgs{To: first.JobID, Message: "observe original target"},
 	}); err != nil {
 		t.Fatalf("configure watch: %v", err)
 	}
@@ -936,7 +936,7 @@ func TestWatchSendCrashAfterSuccessBeforeDeliveredRetriesSameDeliveryID(t *testi
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -1626,7 +1626,7 @@ func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testi
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -1731,7 +1731,7 @@ func TestWatchSendTerminalPendingPersistenceFailureRetainsFrameForDrain(t *testi
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -1807,14 +1807,14 @@ func TestWatchSendTerminalFlushBatchContinuesAfterPersistenceFailure(t *testing.
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs_a", Message: "observe a", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs_a", Message: "observe a"},
 	}); err != nil {
 		t.Fatalf("configure first watch: %v", err)
 	}
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs_b", Message: "observe b", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs_b", Message: "observe b"},
 	}); err != nil {
 		t.Fatalf("configure second watch: %v", err)
 	}
@@ -1956,7 +1956,7 @@ func TestWatchSendPendingSnapshotCoalescesAndDoesNotRereadOutput(t *testing.T) {
 	_, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "(?i)ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "saw ready", IncludeFrame: true, IncludeExcerpt: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "saw ready", IncludeExcerpt: true},
 	})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
@@ -2000,7 +2000,7 @@ func TestWatchSendPendingUsesTriggerTimeFrameSnapshot(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true, IncludeExcerpt: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeExcerpt: true},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -2041,7 +2041,7 @@ func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "(?i)ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "first generation", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "first generation"},
 	}); err != nil {
 		t.Fatalf("configure first watch: %v", err)
 	}
@@ -2072,7 +2072,7 @@ func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *
 	if _, err := reopened.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "(?i)ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "second generation", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "second generation"},
 	}); err != nil {
 		t.Fatalf("configure second watch: %v", err)
 	}
@@ -2112,7 +2112,7 @@ func TestWatchSendRestoreLoadsPendingStateForFutureRetry(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true, IncludeExcerpt: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeExcerpt: true},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -2165,7 +2165,7 @@ func TestWatchSendRestoreClearDropsPendingState(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -2410,7 +2410,7 @@ func TestWatchSendTerminalFlushPersistsAlreadyFiredPending(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -2444,7 +2444,7 @@ func TestWatchSendTerminalFlushCloseDropsPending(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -2475,7 +2475,7 @@ func TestWatchSendTerminalFlushConfigureClearDropsPending(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -2553,7 +2553,7 @@ func TestWatchSendTerminalExpiryWithInflightSendRemainsClearable(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -2621,7 +2621,7 @@ func TestWatchSendTerminalFlushWatchedTargetedClearDropsPending(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "watched", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "watched", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -2668,7 +2668,7 @@ func TestWatchSendTerminalFlushClearBeforeFailedSendDoesNotPersistPending(t *tes
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -2697,7 +2697,7 @@ func TestWatchSendTerminalExpiryCloseDropsExistingPending(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -2836,7 +2836,7 @@ func TestWatchSendOverlapOlderDeliveredDoesNotRemoveNewerPending(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -2882,7 +2882,7 @@ func TestWatchSendOverlapOlderFailedDoesNotOverwriteNewerPending(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -2924,7 +2924,7 @@ func TestWatchSendStaleFailedDeliveryAfterNewerDeliveredDoesNotPersistPending(t 
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -2975,7 +2975,7 @@ func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *te
 					_, err := jm.configureWatch(watchArgs{
 						Target:      rec.JobID,
 						OutputMatch: "blocked",
-						Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+						Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 					})
 					return err
 				}
@@ -2999,7 +2999,7 @@ func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *te
 				if _, err := jm.configureWatch(watchArgs{
 					Target: "*",
 					Events: []string{"job.notification"},
-					Send:   &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+					Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
 				}); err != nil {
 					t.Fatalf("configure: %v", err)
 				}
@@ -3115,7 +3115,7 @@ func TestWatchSendPartialDroppedAppendReconcilesSuccessfulPrefix(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -3240,7 +3240,7 @@ func TestWatchSendAppendFailureDuringCloseReturnsErrorAndClosesStore(t *testing.
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -3356,7 +3356,7 @@ func TestWatchSendSettledTombstonesAreBounded(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -3384,7 +3384,7 @@ func TestWatchSendAppendFailureDuringEvictionKeepsMemoryAndDurableConsistent(t *
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -3455,7 +3455,7 @@ func TestWatchSendPendingAppendFailureBeforeEvictionKeepsExistingPending(t *test
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -3548,7 +3548,7 @@ func setupConcretePendingWatchSend(t *testing.T, jm *jobManager) (*jobstore.JobR
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -3586,7 +3586,7 @@ func TestWatchSendCapEvictsOldestPendingAndNotifies(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -3902,7 +3902,6 @@ func TestWatchSendFrameIsBounded(t *testing.T) {
 	frame := jm.buildWatchFrame(&watchConfig{
 		send: &watchSendArgs{
 			Message:        strings.Repeat("m", watchMessageMaxChars+100),
-			IncludeFrame:   true,
 			IncludeExcerpt: true,
 		},
 	}, rec.JobID, strings.Repeat("trigger", watchTriggerMaxChars), "delivery_test")
@@ -3915,7 +3914,7 @@ func TestWatchSendFrameIsBounded(t *testing.T) {
 	}
 }
 
-func TestWatchSendExcerptWithoutFrameOmitsFrameMetadata(t *testing.T) {
+func TestWatchSendExcerptIncludesFrameMetadata(t *testing.T) {
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("ready excerpt\n")); err != nil {
@@ -3930,17 +3929,17 @@ func TestWatchSendExcerptWithoutFrameOmitsFrameMetadata(t *testing.T) {
 	}, rec.JobID, "output_match: ready excerpt", "delivery_test")
 
 	if !strings.Contains(frame, "saw ready") || !strings.Contains(frame, "ready excerpt") {
-		t.Fatalf("excerpt-only delivery must include message and excerpt; got %q", frame)
+		t.Fatalf("excerpt delivery must include message and excerpt; got %q", frame)
 	}
 	if !strings.Contains(frame, "delivery_id: delivery_test") {
-		t.Fatalf("excerpt-only delivery must include delivery id; got %q", frame)
+		t.Fatalf("excerpt delivery must include delivery id; got %q", frame)
 	}
-	if strings.Contains(frame, "Watch frame") || strings.Contains(frame, "trigger:") {
-		t.Fatalf("excerpt-only delivery must not include frame metadata; got %q", frame)
+	if !strings.Contains(frame, "Watch frame") || !strings.Contains(frame, "trigger:") {
+		t.Fatalf("excerpt delivery must include frame metadata; got %q", frame)
 	}
 }
 
-func TestWatchSendMessageOnlyIncludesDeliveryID(t *testing.T) {
+func TestWatchSendMessageIncludesFrameMetadata(t *testing.T) {
 	jm := newTestJM(t)
 
 	frame := jm.buildWatchFrame(&watchConfig{
@@ -3948,13 +3947,13 @@ func TestWatchSendMessageOnlyIncludesDeliveryID(t *testing.T) {
 	}, "job_target", "output_match: ready", "delivery_message_only")
 
 	if !strings.Contains(frame, "plain message") {
-		t.Fatalf("message-only delivery must include message; got %q", frame)
+		t.Fatalf("message delivery must include message; got %q", frame)
 	}
 	if !strings.Contains(frame, "delivery_id: delivery_message_only") {
-		t.Fatalf("message-only delivery must include delivery id; got %q", frame)
+		t.Fatalf("message delivery must include delivery id; got %q", frame)
 	}
-	if strings.Contains(frame, "Watch frame") || strings.Contains(frame, "trigger:") {
-		t.Fatalf("message-only delivery must not include full frame metadata; got %q", frame)
+	if !strings.Contains(frame, "Watch frame") || !strings.Contains(frame, "trigger:") || !strings.Contains(frame, "job_id:") {
+		t.Fatalf("message delivery must include frame metadata; got %q", frame)
 	}
 }
 
@@ -4317,7 +4316,7 @@ func TestDrainDeliversDelegateTargetedSends(t *testing.T) {
 	if _, err := sess.jobManager.configureWatch(watchArgs{
 		Target:      source.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: first.JobID, Message: "observe original target", IncludeFrame: true},
+		Send:        &watchSendArgs{To: first.JobID, Message: "observe original target"},
 	}); err != nil {
 		t.Fatalf("configure watch: %v", err)
 	}
@@ -4396,7 +4395,7 @@ func TestDrainResumesTerminalResumableTarget(t *testing.T) {
 	if _, err := sess.jobManager.configureWatch(watchArgs{
 		Target:      source.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: first.JobID, Message: "resume the terminal delegate", IncludeFrame: true},
+		Send:        &watchSendArgs{To: first.JobID, Message: "resume the terminal delegate"},
 	}); err != nil {
 		t.Fatalf("configure watch: %v", err)
 	}

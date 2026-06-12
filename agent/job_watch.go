@@ -88,7 +88,6 @@ type watchArgs struct {
 type watchSendArgs struct {
 	To             string
 	Message        string
-	IncludeFrame   bool
 	IncludeExcerpt bool
 }
 
@@ -857,7 +856,6 @@ func watchSendArgsEqual(a, b *watchSendArgs) bool {
 	}
 	return a.To == b.To &&
 		a.Message == b.Message &&
-		a.IncludeFrame == b.IncludeFrame &&
 		a.IncludeExcerpt == b.IncludeExcerpt
 }
 
@@ -1960,35 +1958,24 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 		return ""
 	}
 
-	message := limitWatchText(strings.TrimSpace(cfg.send.Message), watchMessageMaxChars)
-	if !cfg.send.IncludeFrame && !cfg.send.IncludeExcerpt {
-		return limitWatchText(watchFrameMessageWithDeliveryID(message, deliveryID), watchFrameMaxChars)
-	}
-
 	var b strings.Builder
+	message := limitWatchText(strings.TrimSpace(cfg.send.Message), watchMessageMaxChars)
 	if message != "" {
 		b.WriteString(message)
 		b.WriteString("\n\n")
 	}
-	if cfg.send.IncludeFrame {
-		b.WriteString("Watch frame\n")
-		b.WriteString("job_id: ")
-		b.WriteString(limitWatchText(jobID, watchTriggerMaxChars))
-		if deliveryID != "" {
-			b.WriteString("\ndelivery_id: ")
-			b.WriteString(limitWatchText(deliveryID, watchTriggerMaxChars))
-		}
-		b.WriteString("\ntrigger: ")
-		b.WriteString(limitWatchText(trigger, watchTriggerMaxChars))
-	} else if deliveryID != "" {
-		b.WriteString("delivery_id: ")
+	b.WriteString("Watch frame\n")
+	b.WriteString("job_id: ")
+	b.WriteString(limitWatchText(jobID, watchTriggerMaxChars))
+	if deliveryID != "" {
+		b.WriteString("\ndelivery_id: ")
 		b.WriteString(limitWatchText(deliveryID, watchTriggerMaxChars))
 	}
+	b.WriteString("\ntrigger: ")
+	b.WriteString(limitWatchText(trigger, watchTriggerMaxChars))
 
 	if cfg.send.IncludeExcerpt {
-		if cfg.send.IncludeFrame || deliveryID != "" {
-			b.WriteString("\n")
-		}
+		b.WriteString("\n")
 		excerpt, _, truncated, err := jm.readOutput(jobID, watchExcerptTailBytes)
 		b.WriteString("excerpt:\n")
 		if err != nil {
