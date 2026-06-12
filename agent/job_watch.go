@@ -1202,9 +1202,6 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte, endOffset int64)
 		})
 		return
 	}
-	if jm.lastFedOffset == nil {
-		jm.lastFedOffset = make(map[string]int64)
-	}
 	jm.lastFedOffset[jobID] = endOffset
 	jm.stampLastActivityLocked(jobID)
 	for _, cfg := range jm.watches {
