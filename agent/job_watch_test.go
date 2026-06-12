@@ -16,6 +16,19 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// drainAndAccept advances watch delivery the way the live loop does: one drain
+// pass (delegate targets deliver + caller pendings re-token) followed by one
+// notification accept (caller tokens render by key and settle). Use it in
+// Session-based tests to drive a full delivery cycle; pure-jm tests assert on
+// pending state instead (the new observable contract at the jobManager level).
+func drainAndAccept(t *testing.T, s *Session) {
+	t.Helper()
+	if err := s.drainPendingWatchSends(context.Background()); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	s.acceptNotificationInput(context.Background()) // ok to no-op on empty queue
+}
+
 func TestConfigureWatchRequiresCondition(t *testing.T) {
 	jm := newTestJM(t)
 	_, err := jm.configureWatch(watchArgs{Target: "caller"})

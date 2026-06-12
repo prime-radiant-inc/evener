@@ -212,16 +212,14 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return sendMessageFailed(target, errors.New("block_timeout_ms must be non-negative"))
 	}
 	if isRuntimeMessageAlias(target) {
-		delivered := true
+		// Watch sends to the caller route through the notification rail
+		// (drainPendingWatchSends enqueues a wake token), never here. A FromWatch
+		// caller send reaching sendDelegateMessage is an internal routing bug.
 		if args.FromWatch {
-			if steer := s.cfg.spawn.parentWatchSteerDelivered; steer != nil {
-				delivered = steer(ctx, message)
-			} else if isWatchCallerDeliveryBoundary(ctx) {
-				delivered = s.deliverWatchCallerMessageAtBoundary(message, true)
-			} else {
-				delivered = s.deliverWatchCallerMessage(message)
-			}
-		} else if steer := s.cfg.spawn.parentSteerDelivered; steer != nil {
+			return sendMessageFailed(target, errors.New("internal: watch sends to caller route via the notification rail"))
+		}
+		delivered := true
+		if steer := s.cfg.spawn.parentSteerDelivered; steer != nil {
 			delivered = steer(message)
 		} else if steer := s.cfg.spawn.parentSteer; steer != nil {
 			steer(message)
@@ -230,13 +228,11 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		}
 		if !delivered {
 			return sendMessageResult{
-				Target:                    target,
-				Action:                    "sent",
-				Delivered:                 false,
-				MessageType:               "runtime",
-				Err:                       errors.New("caller unavailable"),
-				WatchSendDeliveryClassSet: args.FromWatch,
-				WatchSendDeliveryClass:    watchSendBusy,
+				Target:      target,
+				Action:      "sent",
+				Delivered:   false,
+				MessageType: "runtime",
+				Err:         errors.New("caller unavailable"),
 			}
 		}
 		return sendMessageResult{
@@ -565,19 +561,18 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 		LLMRetryPolicy: s.cfg.LLMRetryPolicy,
 		LLMSleep:       s.cfg.LLMSleep,
 		spawn: spawnConfig{
-			parentSessionID:           desc.ParentSessionID,
-			parentToolCallID:          desc.OriginToolCallID,
-			parentJobID:               desc.ParentJobID,
-			forwardJobEvent:           s.jobManager.forwardEvent,
-			parentSteer:               s.Steer,
-			parentSteerDelivered:      s.trySteer,
-			parentWatchSteerDelivered: s.deliverWatchCallerMessageFromContext,
-			subagentTask:              desc.Task,
-			depth:                     s.depth + 1,
-			rolePromptOverride:        desc.FrozenRolePrompt,
-			activatedSkillBodies:      activatedSkillBodies,
-			allowedToolNames:          restoredDelegateAllowedTools(desc),
-			communicateOutputSchema:   cloneMap(resultSchema),
+			parentSessionID:         desc.ParentSessionID,
+			parentToolCallID:        desc.OriginToolCallID,
+			parentJobID:             desc.ParentJobID,
+			forwardJobEvent:         s.jobManager.forwardEvent,
+			parentSteer:             s.Steer,
+			parentSteerDelivered:    s.trySteer,
+			subagentTask:            desc.Task,
+			depth:                   s.depth + 1,
+			rolePromptOverride:      desc.FrozenRolePrompt,
+			activatedSkillBodies:    activatedSkillBodies,
+			allowedToolNames:        restoredDelegateAllowedTools(desc),
+			communicateOutputSchema: cloneMap(resultSchema),
 		},
 		resumeHistory:           resumeHistory,
 		deferRestoreSideEffects: true,

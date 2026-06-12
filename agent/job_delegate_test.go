@@ -3293,6 +3293,22 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	now := time.Unix(3400, 0).UTC()
 	appendSessionJobEvents(t, s.stateDir, childID, restoredWatchSendPendingEvents(childID, "job_child_observed", "caller", now)...)
 	preflight := requireDelegateRestorePreflight(t, s, rec)
+	// Caller sends restore as wake tokens, not synchronous steering frames; count
+	// how many caller tokens the winning reconstruction enqueues. Restore side
+	// effects run exactly once, so exactly one token is surfaced. The hook runs on
+	// the winning child only; install the counter on its jobManager there.
+	var callerTokens int32
+	s.delegateRestoreBeforeSideEffects = func(child *Session) {
+		origEnqueue := child.jobManager.enqueue
+		child.jobManager.enqueue = func(n jobNotification) {
+			if n.WatchSend != nil && n.WatchSend.Key.ResolvedSendTo == runtimeMessageAliasCaller {
+				atomic.AddInt32(&callerTokens, 1)
+			}
+			if origEnqueue != nil {
+				origEnqueue(n)
+			}
+		}
+	}
 	start := make(chan struct{})
 	type restoreResult struct {
 		sub *subagent
@@ -3320,14 +3336,17 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	if first.sub == nil || second.sub == nil || first.sub != second.sub {
 		t.Fatalf("reconstruction results = %p and %p, want same retained child", first.sub, second.sub)
 	}
-	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 1 {
-		t.Fatalf("parent watch-frame steering deliveries = %d, want 1; queue = %+v", got, s.SteeringQueueSnapshot())
+	if got := atomic.LoadInt32(&callerTokens); got != 1 {
+		t.Fatalf("caller watch-send tokens enqueued = %d, want exactly one (side effects run once)", got)
 	}
 	if got := countFileLines(t, hookMarker); got != 1 {
 		t.Fatalf("SessionStart hook executions = %d, want 1", got)
 	}
-	if pending := loadSessionWatchSendRecord(t, s.stateDir, childID).Pending; len(pending) != 0 {
-		t.Fatalf("child pending after winning reconstruction = %+v, want delivered once", pending)
+	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 0 {
+		t.Fatalf("parent watch-frame steering deliveries = %d, want 0 (caller sends never steer); queue = %+v", got, s.SteeringQueueSnapshot())
+	}
+	if pending := loadSessionWatchSendRecord(t, s.stateDir, childID).Pending; len(pending) != 1 {
+		t.Fatalf("child pending after winning reconstruction = %+v, want still pending (token surfaced, not settled)", pending)
 	}
 }
 
@@ -3541,7 +3560,20 @@ func TestDelegateReconstructionParentCloseBeforeDeferredSideEffectsDoesNotRunThe
 	}
 }
 
-func TestDelegateReconstructionSideEffectFailureAfterWatchDeliveryKeepsRuntime(t *testing.T) {
+// TestDelegateReconstructionSideEffectFailureAfterWatchSendKeepsRuntime
+// re-anchors TestDelegateReconstructionSideEffectFailureAfterWatchDeliveryKeepsRuntime.
+// The old test asserted the restored caller watch send was DELIVERED synchronously
+// (a watch_send_delivered event + a steering frame) before a later notification-arm
+// failure, and that the failure kept the reconstructed runtime. Restore no longer
+// delivers caller sends synchronously: retryRestoredPendingWatchSends enqueues a
+// caller wake token and the durable watch_send_pending survives until a later accept
+// settles it (spec §4.3). The preserved invariant: the watch-send restore side effect
+// runs and durably survives (now: token enqueued + pending intact) BEFORE the injected
+// notification-arm failure, and that failure keeps the runtime retained. Assertions
+// mapped to the replacement mechanism: delivered→token-enqueued, delivered-event→
+// pending-survives; the runtime-retained / no-orphan-notification / no-model-call
+// assertions are preserved verbatim.
+func TestDelegateReconstructionSideEffectFailureAfterWatchSendKeepsRuntime(t *testing.T) {
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -3554,16 +3586,23 @@ func TestDelegateReconstructionSideEffectFailureAfterWatchDeliveryKeepsRuntime(t
 	appendSessionJobEvents(t, s.stateDir, childID, restoredWatchSendPendingEvents(childID, "job_child_observed", "caller", now)...)
 	appendChildCompletedJobNeedingNotification(t, s.stateDir, childID, "job_child_completed_needs_notify", now.Add(time.Second))
 	preflight := requireDelegateRestorePreflight(t, s, rec)
-	sawWatchDelivered := false
+	sawCallerToken := false
 	s.delegateRestoreBeforeSideEffects = func(child *Session) {
+		origEnqueue := child.jobManager.enqueue
+		child.jobManager.enqueue = func(n jobNotification) {
+			if n.WatchSend != nil && n.WatchSend.Key.ResolvedSendTo == runtimeMessageAliasCaller {
+				sawCallerToken = true
+			}
+			if origEnqueue != nil {
+				origEnqueue(n)
+			}
+		}
 		origAppend := child.jobManager.appendEvent
 		child.jobManager.appendEvent = func(event jobstore.Event) error {
-			if event.Kind == jobstore.EventWatchSendDelivered {
-				sawWatchDelivered = true
-				return origAppend(event)
-			}
-			if sawWatchDelivered && event.Kind == jobstore.EventJobNotificationPending {
-				return errors.New("injected notification arm failure after watch delivery")
+			// The caller watch-send side effect runs (token enqueued) before the
+			// notification arm; fail the arm to exercise the keep-runtime path.
+			if sawCallerToken && event.Kind == jobstore.EventJobNotificationPending {
+				return errors.New("injected notification arm failure after watch send")
 			}
 			return origAppend(event)
 		}
@@ -3572,7 +3611,7 @@ func TestDelegateReconstructionSideEffectFailureAfterWatchDeliveryKeepsRuntime(t
 	sub, err := s.restoreTerminalDelegateChild(rec, childID, preflight)
 
 	if err != nil {
-		t.Fatalf("restoreTerminalDelegateChild error = %v, want retained runtime after committed watch delivery", err)
+		t.Fatalf("restoreTerminalDelegateChild error = %v, want retained runtime after committed watch send", err)
 	}
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("reconstructed child = %+v, want retained runtime", sub)
@@ -3580,15 +3619,12 @@ func TestDelegateReconstructionSideEffectFailureAfterWatchDeliveryKeepsRuntime(t
 	if got := s.subagents.get(childID); got != sub {
 		t.Fatalf("tracked child = %+v, want reconstructed child %p", got, sub)
 	}
-	if !sawWatchDelivered {
-		t.Fatal("test did not deliver restored watch send before injected failure")
-	}
-	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 1 {
-		t.Fatalf("parent watch-frame steering deliveries = %d, want 1; queue = %+v", got, s.SteeringQueueSnapshot())
+	if !sawCallerToken {
+		t.Fatal("restore did not enqueue the caller watch-send token before the injected failure")
 	}
 	events := loadSessionJobStoreEvents(t, s.stateDir, childID)
-	if !hasWatchSendEvent(events, jobstore.EventWatchSendDelivered, "delivery_restore_pending") {
-		t.Fatalf("child jobstore missing delivered watch event after committed side effect: %+v", events)
+	if !hasWatchSendEvent(events, jobstore.EventWatchSendPending, "delivery_restore_pending") {
+		t.Fatalf("child jobstore missing durable pending watch send after notification-arm failure: %+v", events)
 	}
 	if hasJobEvent(events, jobstore.EventJobNotificationPending, "job_child_completed_needs_notify") {
 		t.Fatalf("injected notification failure still appended notification pending: %+v", events)
@@ -3598,6 +3634,17 @@ func TestDelegateReconstructionSideEffectFailureAfterWatchDeliveryKeepsRuntime(t
 	}
 }
 
+// TestDelegateReconstructionWatchSendToCallerDuringParentCloseStaysPending
+// proves that a restored child caller pending is NOT delivered when the parent
+// is closing. The old test interposed parentWatchSteerDelivered to pause the
+// synchronous caller delivery mid-restore and confirm it stayed pending. Caller
+// sends are now notification tokens (spec §4.3): restore enqueues a token but
+// only the parent's acceptNotificationInput renders and settles it. Marking the
+// parent closing before the child's deferred side effects run means no accept
+// ever runs, so the durable pending survives unsettled — the same outcome the old
+// test asserted, via the new mechanism. Every original assertion is preserved
+// (no watch_send_delivered, pending unchanged, nothing on parent steering, parent
+// jobstore unchanged, no model call).
 func TestDelegateReconstructionWatchSendToCallerDuringParentCloseStaysPending(t *testing.T) {
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
@@ -3611,35 +3658,19 @@ func TestDelegateReconstructionWatchSendToCallerDuringParentCloseStaysPending(t 
 	appendSessionJobEvents(t, s.stateDir, childID, restoredWatchSendPendingEvents(childID, "job_child_observed", "caller", now)...)
 	beforeParentEvents := len(loadJobStoreEvents(t, s.jobManager))
 	preflight := requireDelegateRestorePreflight(t, s, rec)
-	deliveryAttempt := make(chan struct{})
-	releaseDelivery := make(chan struct{})
-	var deliveryOnce sync.Once
-	s.delegateRestoreBeforeSideEffects = func(child *Session) {
-		child.cfg.spawn.parentWatchSteerDelivered = func(_ context.Context, message string) bool {
-			deliveryOnce.Do(func() { close(deliveryAttempt) })
-			<-releaseDelivery
-			return s.deliverWatchCallerMessage(message)
-		}
+	s.delegateRestoreBeforeSideEffects = func(_ *Session) {
+		// The parent closes mid-restore, before the child's deferred watch-send
+		// side effects run: no accept boundary can ever render/settle the token.
+		s.mu.Lock()
+		s.closing = true
+		s.state = SessionClosed
+		s.mu.Unlock()
 	}
 
-	restoreDone := make(chan error, 1)
-	go func() {
-		_, err := s.restoreTerminalDelegateChild(rec, childID, preflight)
-		restoreDone <- err
-	}()
-	select {
-	case <-deliveryAttempt:
-	case <-time.After(2 * time.Second):
-		t.Fatal("restored watch send did not attempt caller delivery")
-	}
-	s.mu.Lock()
-	s.closing = true
-	s.state = SessionClosed
-	s.mu.Unlock()
-	close(releaseDelivery)
-	if err := <-restoreDone; err != nil {
+	if _, err := s.restoreTerminalDelegateChild(rec, childID, preflight); err != nil {
 		t.Fatalf("restoreTerminalDelegateChild error = %v, want nil", err)
 	}
+
 	events := loadSessionJobStoreEvents(t, s.stateDir, childID)
 	if hasWatchSendEvent(events, jobstore.EventWatchSendDelivered, "delivery_restore_pending") {
 		t.Fatalf("watch send was marked delivered while parent was closing: %+v", events)
@@ -3658,14 +3689,33 @@ func TestDelegateReconstructionWatchSendToCallerDuringParentCloseStaysPending(t 
 	}
 }
 
-func TestWatchCallerDeliveryWaitsForToolResultsBoundary(t *testing.T) {
+// TestWatchCallerDeliverySuppressedDuringProcessingDeliversAtAcceptBoundary
+// re-anchors the old TestWatchCallerDeliveryWaitsForToolResultsBoundary onto the
+// notification rail. The old test asserted caller delivery was SUPPRESSED during
+// active processing / before tool results and SUCCEEDED at idle. Caller sends are
+// now notification tokens: observation/drains enqueue a token but NEVER append to
+// the steering queue, and the token renders only at the loop-owned accept
+// boundary. The boundary-safety that the old "waits for tool results" check
+// provided is now structural — acceptNotificationInput runs repairOrphanedToolResults
+// itself, so it is safe regardless of tool-results state; the preserved analog is
+// "nothing lands on steering mid-processing; the frame renders at the accept turn".
+// Both original assertions survive: suppressed-during-processing AND delivered-when-idle.
+func TestWatchCallerDeliverySuppressedDuringProcessingDeliversAtAcceptBoundary(t *testing.T) {
 	s := newPersistentTestSession(t)
+	now := time.Unix(4300, 0).UTC()
+	if err := s.jobManager.appendWatchSendEvents(restoredWatchSendPendingEvents(s.ID(), "job_child_observed", "caller", now)); err != nil {
+		t.Fatalf("append pending watch send: %v", err)
+	}
+	if err := s.jobManager.restoreWatchSendPending(); err != nil {
+		t.Fatalf("restore watch sends: %v", err)
+	}
+
+	// Active processing with an orphaned tool call (the old "before tool results"
+	// shape): a drain enqueues a token but must not append to the steering queue
+	// or settle the pending mid-processing.
 	s.mu.Lock()
 	s.state = SessionProcessing
 	s.mu.Unlock()
-	if s.deliverWatchCallerMessage("delivery_id: delivery_waits") {
-		t.Fatal("watch caller delivery succeeded during active processing outside a safe boundary")
-	}
 	s.appendTurn(schema.TurnAssistant, llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentPart{{
@@ -3677,81 +3727,102 @@ func TestWatchCallerDeliveryWaitsForToolResultsBoundary(t *testing.T) {
 			},
 		}},
 	})
+	if err := s.drainPendingWatchSends(context.Background()); err != nil {
+		t.Fatalf("drain while processing: %v", err)
+	}
+	if queue := s.SteeringQueueSnapshot(); len(queue) != 0 {
+		t.Fatalf("steering queue while processing = %+v, want empty (caller sends never steer)", queue)
+	}
+	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 0 {
+		t.Fatalf("watch caller deliveries = %d, want 0 while processing", got)
+	}
+	if pending := loadWatchSendRecord(t, s.jobManager).Pending; len(pending) != 1 {
+		t.Fatalf("pending while processing = %+v, want still pending (no mid-processing delivery)", pending)
+	}
 
-	if s.deliverWatchCallerMessage("delivery_id: delivery_waits") {
-		t.Fatal("watch caller delivery succeeded before tool results were appended")
-	}
-	if got := countSteeringEntriesContaining(s, "delivery_waits"); got != 0 {
-		t.Fatalf("watch caller deliveries = %d, want 0 before tool results", got)
-	}
-
-	s.appendTurn(schema.TurnToolResults, llm.Message{
-		Role: llm.RoleTool,
-		Content: []llm.ContentPart{{
-			Kind: llm.ContentToolResult,
-			ToolResult: &llm.ToolResultData{
-				ToolCallID: "call_1",
-				Name:       "shell",
-				Content:    "ready",
-			},
-		}},
-	})
-	if s.deliverWatchCallerMessage("delivery_id: delivery_waits") {
-		t.Fatal("watch caller delivery succeeded during active processing without a boundary")
-	}
+	// At idle, the loop-owned drain+accept renders the frame into the notification
+	// turn and settles the pending.
 	s.mu.Lock()
 	s.state = SessionIdle
 	s.mu.Unlock()
-	if !s.deliverWatchCallerMessage("delivery_id: delivery_waits") {
-		t.Fatal("watch caller delivery without boundary failed after session returned idle")
+	drainAndAccept(t, s)
+	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 1 {
+		t.Fatalf("watch caller deliveries = %d, want 1 after idle accept", got)
 	}
-	if got := countSteeringEntriesContaining(s, "delivery_waits"); got != 1 {
-		t.Fatalf("watch caller deliveries = %d, want 1 after idle delivery", got)
-	}
-
-	s2 := newPersistentTestSession(t)
-	s2.mu.Lock()
-	s2.state = SessionProcessing
-	s2.mu.Unlock()
-	s2.appendTurn(schema.TurnToolResults, llm.Message{
-		Role: llm.RoleTool,
-		Content: []llm.ContentPart{{
-			Kind: llm.ContentToolResult,
-			ToolResult: &llm.ToolResultData{
-				ToolCallID: "call_2",
-				Name:       "shell",
-				Content:    "ready",
-			},
-		}},
-	})
-	if !s2.deliverWatchCallerMessageAtBoundary("delivery_id: delivery_boundary", true) {
-		t.Fatal("watch caller delivery failed after tool results were appended")
-	}
-	if got := countSteeringEntriesContaining(s2, "delivery_boundary"); got != 1 {
-		t.Fatalf("watch caller deliveries = %d, want 1 after tool results", got)
+	if pending := loadWatchSendRecord(t, s.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("pending after idle accept = %+v, want settled", pending)
 	}
 }
 
-func TestWatchCallerDeliveryFallsBackForNonPersistentSession(t *testing.T) {
+// TestWatchCallerDeliverySurfacesAsTokenForNonPersistentSession re-anchors the
+// old TestWatchCallerDeliveryFallsBackForNonPersistentSession. The old test
+// asserted a non-persistent (no-transcript) session delivered the caller frame
+// to the steering queue. Caller sends are now notification tokens: a
+// non-persistent session still has a jobManager + enqueue, so the drain surfaces
+// the caller frame as a wake token on the notification queue (it never renders a
+// turn here — appendTurnDurably needs a transcript — but the token carries the
+// durable pending's identity, which is how the frame reaches the owner). The
+// preserved intent: a non-persistent session still surfaces the caller frame.
+func TestWatchCallerDeliverySurfacesAsTokenForNonPersistentSession(t *testing.T) {
 	s := newTestSession(t)
-	if !s.deliverWatchCallerMessage("delivery_id: delivery_nonpersistent") {
-		t.Fatal("watch caller delivery failed for non-persistent session")
+	if s.transcript != nil {
+		t.Fatal("newTestSession unexpectedly persistent; test needs a no-transcript session")
 	}
-	queue := s.SteeringQueueSnapshot()
-	if len(queue) != 1 || !strings.Contains(queue[0].Text, "delivery_nonpersistent") {
-		t.Fatalf("steering queue = %+v, want non-persistent watch delivery", queue)
+	now := time.Unix(4400, 0).UTC()
+	if err := s.jobManager.appendWatchSendEvents(restoredWatchSendPendingEvents(s.ID(), "job_child_observed", "caller", now)); err != nil {
+		t.Fatalf("append pending watch send: %v", err)
+	}
+	if err := s.jobManager.restoreWatchSendPending(); err != nil {
+		t.Fatalf("restore watch sends: %v", err)
+	}
+
+	if err := s.drainPendingWatchSends(context.Background()); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if queue := s.SteeringQueueSnapshot(); len(queue) != 0 {
+		t.Fatalf("steering queue = %+v, want empty (caller sends never steer)", queue)
+	}
+
+	tokens := s.drainJobNotifications()
+	if len(tokens) != 1 || tokens[0].WatchSend == nil {
+		t.Fatalf("notification queue = %+v, want one caller wake token", tokens)
+	}
+	_, _, state, ok := s.resolveWatchSendToken(tokens[0].WatchSend)
+	if !ok {
+		t.Fatalf("enqueued token did not resolve to a current pending: %+v", tokens[0].WatchSend)
+	}
+	if !strings.Contains(state.Frame, "delivery_restore_pending") {
+		t.Fatalf("token frame = %q, want the non-persistent caller watch frame", state.Frame)
 	}
 }
 
-func TestWatchCallerDeliveryDoesNotUseJobNotificationWake(t *testing.T) {
+// TestWatchCallerDeliveryRidesJobNotificationWake re-anchors the old
+// TestWatchCallerDeliveryDoesNotUseJobNotificationWake, whose premise is now
+// inverted by design: the old test asserted caller delivery did NOT use the
+// notify wake (it was a synchronous steering-turn append). The mailbox design
+// (spec §4.3) makes caller sends ride the notification rail, so enqueueing a
+// caller wake token DOES trigger notify. This asserts the new truth: a drained
+// caller send enqueues a token and fires the wake callback.
+func TestWatchCallerDeliveryRidesJobNotificationWake(t *testing.T) {
 	s := newPersistentTestSession(t)
 	var notifyCalled bool
 	s.SetNotifyFunc(func() { notifyCalled = true })
-	if !s.deliverWatchCallerMessage("delivery_id: delivery_no_notify_wake") {
-		t.Fatal("watch caller delivery failed")
+	now := time.Unix(4500, 0).UTC()
+	if err := s.jobManager.appendWatchSendEvents(restoredWatchSendPendingEvents(s.ID(), "job_child_observed", "caller", now)); err != nil {
+		t.Fatalf("append pending watch send: %v", err)
 	}
-	if notifyCalled {
-		t.Fatal("watch caller delivery used job notification wake callback")
+	if err := s.jobManager.restoreWatchSendPending(); err != nil {
+		t.Fatalf("restore watch sends: %v", err)
+	}
+
+	if err := s.drainPendingWatchSends(context.Background()); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if !notifyCalled {
+		t.Fatal("caller watch send must ride the job notification wake")
+	}
+	if got := s.peekNotifications(); got != 1 {
+		t.Fatalf("pending notifications = %d, want one caller wake token", got)
 	}
 }
 

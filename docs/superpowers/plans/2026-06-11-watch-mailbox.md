@@ -585,7 +585,7 @@ No drain-loop-tail change is needed: a wake submits an `EntryNotification`; an a
 - Modify: `agent/jobs.go` / `agent/session_init.go` (`jm.send` field + wiring)
 - Test: existing suites
 
-- [ ] **Step 1: Delete in this order, compiling after each:**
+- [x] **Step 1: Delete in this order, compiling after each:**
 
 1. In `sendDelegateMessage`'s runtime-alias branch, remove the `args.FromWatch` arm entirely (caller-targeted watch sends can no longer reach here — the drain routes them to the rail). Keep `parentSteerDelivered`/`parentSteer`/`trySteer` for non-watch runtime sends. Add a defensive guard at the top of the alias branch:
    ```go
@@ -598,8 +598,10 @@ No drain-loop-tail change is needed: a wake submits an `EntryNotification`; an a
 4. Delete the `send` field from `jobManager` and its wiring (`rg -n "jm.send\b|send:" agent/jobs.go agent/session_init.go`).
 5. `go build ./...` at repo root; fix every compile error by deletion or repointing to the drain — if a caller you find is NOT in the expected set {old retry fns (gone), old deliver fns (gone), tests}, STOP and reassess before deleting it.
 
-- [ ] **Step 2: Run full agent suite `-race`; triage shape per Task 1.4**
-- [ ] **Step 3: Commit** — `feat(job-control)!: delete synchronous watch-send delivery (jm.send)`
+  DIVERGENCE (jm.send split): Commit A deletes the synchronous CALLER path (the `args.FromWatch` arm, `parentWatchSteerDelivered`, the five `session_queue.go` caller functions + `waitingForToolResultsLocked` which was orphaned, the boundary context key). The `jm.send` field deletion is deferred to Commit B (Task 1.7) — 63 test setters assign `jm.send` and deleting the field here breaks test compilation. Commit A compiles (prod + test binary) with ~25 caller/jm.send tests still red; the 6 caller-mechanism tests that referenced the deleted symbols are converted in A so the package compiles. Added `drainAndAccept` helper early (B.1 placement) because A's converted tests reference it. Updated the deadlock-test comments that named the deleted boundary function.
+
+- [x] **Step 2: Run full agent suite `-race`; triage shape per Task 1.4** — package compiles; remaining 25 failures are all jm.send-capture / Pattern-2 caller tests (Commit B), shape "delivery deferred", no panics.
+- [x] **Step 3: Commit** — `feat(job-control)!: delete synchronous watch-send delivery (jm.send)`
 
 ### Task 1.7: Re-anchor the existing watch suite
 

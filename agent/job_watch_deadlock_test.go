@@ -34,10 +34,11 @@ func newCallerSendWatchSession(t *testing.T, watchEvent string) *Session {
 		func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(shellExecCall("s1")) },
 		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
 	}})
-	// StateDir makes s.transcript non-nil so a caller watch-send routes through
-	// deliverWatchCallerMessageAtBoundary's responseSideEffectsMu.Lock() (the
-	// deadlock path), mirroring the persisted-session incident. Without it the
-	// boundary delivery short-circuits to trySteer and never re-locks.
+	// StateDir mirrors the persisted-session incident shape: in the pre-mailbox
+	// design a caller watch-send on a transcript-backed session re-locked
+	// responseSideEffectsMu under the emit and wedged the loop. Observation is now
+	// persist-only (it enqueues a wake token, never delivers), so this drives the
+	// same firing path and proves the wedge is gone.
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -96,8 +97,8 @@ func assertToolRoundPersisted(t *testing.T, sess *Session) {
 
 // driveWithWatchdog runs ProcessInput in a goroutine and fails with a full
 // stack dump if the turn does not complete within 30s. A watch-send deadlock
-// wedges the loop goroutine in deliverWatchCallerMessageAtBoundary re-locking
-// responseSideEffectsMu, which the stack dump makes visible.
+// (the pre-mailbox bug, where observation re-locked responseSideEffectsMu under
+// the emit) would wedge the loop goroutine, which the stack dump makes visible.
 func driveWithWatchdog(t *testing.T, sess *Session) {
 	t.Helper()
 	ctx := context.Background()

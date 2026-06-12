@@ -8,13 +8,10 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/diagnostic"
-	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
 type queuedInputDrainContextKey struct{}
-
-type watchCallerDeliveryBoundaryContextKey struct{}
 
 type queuedInputDrainConfig struct {
 	rootCtx context.Context
@@ -89,75 +86,6 @@ func (s *Session) trySteerWithImages(msg string, images []ImageAttachment) bool 
 	}
 	s.steeringQueue = append(s.steeringQueue, entry)
 	return true
-}
-
-func (s *Session) deliverWatchCallerMessage(msg string) bool {
-	return s.deliverWatchCallerMessageAtBoundary(msg, false)
-}
-
-func (s *Session) deliverWatchCallerMessageFromContext(ctx context.Context, msg string) bool {
-	if isWatchCallerDeliveryBoundary(ctx) {
-		return s.deliverWatchCallerMessageAtBoundary(msg, true)
-	}
-	return s.deliverWatchCallerMessage(msg)
-}
-
-func (s *Session) deliverWatchCallerMessageAtBoundary(msg string, allowProcessing bool) bool {
-	if strings.TrimSpace(msg) == "" {
-		return false
-	}
-	if s.transcript == nil {
-		if strings.TrimSpace(s.stateDir) == "" {
-			return s.trySteer(msg)
-		}
-		return false
-	}
-	s.responseSideEffectsMu.Lock()
-	defer s.responseSideEffectsMu.Unlock()
-	s.mu.Lock()
-	if s.closingOrClosedLocked() {
-		s.mu.Unlock()
-		return false
-	}
-	if s.state == SessionProcessing && !allowProcessing {
-		s.mu.Unlock()
-		return false
-	}
-	if s.waitingForToolResultsLocked() {
-		s.mu.Unlock()
-		return false
-	}
-	s.mu.Unlock()
-	if err := s.appendTurnDurably(schema.TurnSteering, llm.User(msg)); err != nil {
-		return false
-	}
-	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: msg})
-	return true
-}
-
-func withWatchCallerDeliveryBoundary(ctx context.Context) context.Context {
-	return context.WithValue(ctx, watchCallerDeliveryBoundaryContextKey{}, true)
-}
-
-func isWatchCallerDeliveryBoundary(ctx context.Context) bool {
-	v, _ := ctx.Value(watchCallerDeliveryBoundaryContextKey{}).(bool)
-	return v
-}
-
-func (s *Session) waitingForToolResultsLocked() bool {
-	if len(s.history) == 0 {
-		return false
-	}
-	last := s.history[len(s.history)-1]
-	if last.Kind != schema.TurnAssistant {
-		return false
-	}
-	for _, part := range last.Message.Content {
-		if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
-			return true
-		}
-	}
-	return false
 }
 
 // wrapHookContext frames hook-provided model context as a system reminder so the
