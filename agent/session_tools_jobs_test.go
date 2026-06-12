@@ -2442,15 +2442,6 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func containsAnyString(values []any, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
-}
-
 func TestDelegateRejectsBackgroundWithBlockTimeout(t *testing.T) {
 	s := newDelegateTestSession(t, llm.NewClient())
 
