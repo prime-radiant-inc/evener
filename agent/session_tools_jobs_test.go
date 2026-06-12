@@ -1938,6 +1938,8 @@ func TestJobReadOutputDropsOversizedStructuredResultWhenBounding(t *testing.T) {
 }
 
 func TestJobReadOutputProjectionTooLargeDoesNotMutateDurableStructuredResult(t *testing.T) {
+	// Payload must exceed the registry default cap (jobToolResultDefaultMaxChar) so the
+	// projected job_read_output result overflows and yields projection_too_large.
 	payload := strings.Repeat("x", jobToolResultDefaultMaxChar+10000)
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
