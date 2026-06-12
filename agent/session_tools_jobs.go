@@ -363,8 +363,9 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (string, error) 
 		jobs = append(jobs, projectJobRecord(s, rec))
 	}
 	return marshalBoundedJobListResult(jobListResult{
-		Jobs:  jobs,
-		Count: len(jobs),
+		Jobs:    jobs,
+		Count:   len(jobs),
+		Watches: jm.liveWatchSummaries(),
 	}, maxChars)
 }
 
@@ -437,8 +438,21 @@ type jobOutputMatch struct {
 }
 
 type jobListResult struct {
-	Jobs  []jobListEntry `json:"jobs"`
-	Count int            `json:"count"`
+	Jobs    []jobListEntry   `json:"jobs"`
+	Count   int              `json:"count"`
+	Watches []watchListEntry `json:"watches"`
+}
+
+// watchListEntry is one active watch in job_list's result (spec §4 F2),
+// projected from the session's live watch configs. condition is a compact
+// one-line summary of the watch's trigger; send_to is empty for a notify-caller
+// watch; created_at is the watch's install time as an RFC3339Nano timestamp.
+type watchListEntry struct {
+	Target     string `json:"target"`
+	Condition  string `json:"condition"`
+	SendTo     string `json:"send_to"`
+	Deliveries int    `json:"deliveries"`
+	CreatedAt  string `json:"created_at"`
 }
 
 type jobListEntry struct {

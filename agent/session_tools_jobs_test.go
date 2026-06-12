@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
@@ -192,6 +193,229 @@ func TestJobListToolIncludeNestedSurfacesForwardedRecords(t *testing.T) {
 	}
 	if nestedJob.ParentJobID == nil || *nestedJob.ParentJobID != "job_PARENTDELEGATE" {
 		t.Fatalf("nested job parent_job_id = %v, want job_PARENTDELEGATE", nestedJob.ParentJobID)
+	}
+}
+
+func runJobListTool(t *testing.T, s *Session) jobListToolOutput {
+	t.Helper()
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "list",
+		Name:      "job_list",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if res.IsError {
+		t.Fatalf("job_list returned error: %s", res.Output)
+	}
+	var out jobListToolOutput
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal job_list output: %v (output: %s)", err, res.Output)
+	}
+	return out
+}
+
+func TestJobListWatchesEmptyWhenNoneConfigured(t *testing.T) {
+	s := newTestSession(t)
+	out := runJobListTool(t, s)
+	if out.Watches == nil {
+		t.Fatalf("job_list watches must serialize as an empty array, got null: %+v", out)
+	}
+	if len(out.Watches) != 0 {
+		t.Fatalf("job_list watches = %+v, want empty", out.Watches)
+	}
+}
+
+func TestJobListEnumeratesActiveWatches(t *testing.T) {
+	s := newTestSession(t)
+	jm := s.jobManager
+
+	rec, err := jm.createShell(createShellOpts{Command: "sleep 30", Description: "watched shell"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+		t.Fatalf("configure output_match watch: %v", err)
+	}
+	seedWatchSendDelegateTarget(t, jm, "job_obs")
+	if _, err := jm.configureWatch(watchArgs{
+		Target: rec.JobID,
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "job_obs", Message: "fyi"},
+	}); err != nil {
+		t.Fatalf("configure event watch with send: %v", err)
+	}
+
+	out := runJobListTool(t, s)
+	if len(out.Watches) != 2 {
+		t.Fatalf("job_list watches = %+v, want 2 entries", out.Watches)
+	}
+
+	notify := findJobListToolWatch(out.Watches, rec.JobID, "")
+	if notify == nil {
+		t.Fatalf("job_list watches = %+v, want notify-caller output_match watch", out.Watches)
+	}
+	if notify.Condition != "output_match: ready" {
+		t.Fatalf("notify watch condition = %q, want %q", notify.Condition, "output_match: ready")
+	}
+	if notify.SendTo != "" {
+		t.Fatalf("notify watch send_to = %q, want empty", notify.SendTo)
+	}
+	if notify.CreatedAt == "" {
+		t.Fatalf("notify watch created_at must be populated, got empty")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, notify.CreatedAt); err != nil {
+		t.Fatalf("notify watch created_at = %q, not RFC3339Nano: %v", notify.CreatedAt, err)
+	}
+
+	sidecar := findJobListToolWatch(out.Watches, rec.JobID, "job_obs")
+	if sidecar == nil {
+		t.Fatalf("job_list watches = %+v, want sidecar event watch", out.Watches)
+	}
+	if sidecar.SendTo != "job_obs" {
+		t.Fatalf("sidecar watch send_to = %q, want job_obs", sidecar.SendTo)
+	}
+	if sidecar.Condition != "events: [job.notification]" {
+		t.Fatalf("sidecar watch condition = %q, want %q", sidecar.Condition, "events: [job.notification]")
+	}
+}
+
+func TestJobListWatchConditionSummaryFormats(t *testing.T) {
+	s := newTestSession(t)
+	jm := s.jobManager
+	jm.enqueue = func(jobNotification) {}
+
+	// progress watch on a running shell.
+	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, ProgressIntervalMS: 2000}); err != nil {
+		t.Fatalf("configure progress watch: %v", err)
+	}
+
+	// every-Nth event watch with a send (legal: not a self-delivery back to caller).
+	seedWatchSendDelegateTarget(t, jm, "job_obs")
+	if _, err := jm.configureWatch(watchArgs{
+		Target: rec.JobID,
+		Events: []string{"assistant.message"},
+		Every:  5,
+		Send:   &watchSendArgs{To: "job_obs"},
+	}); err != nil {
+		t.Fatalf("configure every-N event watch: %v", err)
+	}
+
+	out := runJobListTool(t, s)
+
+	progress := findJobListToolWatch(out.Watches, rec.JobID, "")
+	if progress == nil {
+		t.Fatalf("watches = %+v, want progress watch", out.Watches)
+	}
+	if progress.Condition != "progress_interval_ms: 2000" {
+		t.Fatalf("progress condition = %q, want %q", progress.Condition, "progress_interval_ms: 2000")
+	}
+
+	every := findJobListToolWatch(out.Watches, rec.JobID, "job_obs")
+	if every == nil {
+		t.Fatalf("watches = %+v, want every-N watch", out.Watches)
+	}
+	if every.Condition != "events: [assistant.message] every 5" {
+		t.Fatalf("every-N condition = %q, want %q", every.Condition, "events: [assistant.message] every 5")
+	}
+}
+
+func TestJobListWatchReflectsDeliveries(t *testing.T) {
+	s := newTestSession(t)
+	jm := s.jobManager
+	jm.enqueue = func(jobNotification) {}
+
+	// A no-send caller event watch counts one delivery per fired event.
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
+	for i := 0; i < 3; i++ {
+		jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	}
+
+	out := runJobListTool(t, s)
+	w := findJobListToolWatch(out.Watches, "caller", "")
+	if w == nil {
+		t.Fatalf("watches = %+v, want caller watch", out.Watches)
+	}
+	if w.Deliveries != 3 {
+		t.Fatalf("caller watch deliveries = %d, want 3", w.Deliveries)
+	}
+}
+
+func TestJobListExcludesTerminalFlushWatches(t *testing.T) {
+	s := newTestSession(t)
+	jm := s.jobManager
+
+	// A config that lives ONLY in terminalFlush (with a pending send) must not be
+	// enumerated: F2 reads jm.watches exclusively.
+	flushCfg := &watchConfig{target: "job_GONE", send: &watchSendArgs{To: "job_obs"}}
+	jm.mu.Lock()
+	if jm.terminalFlush == nil {
+		jm.terminalFlush = make(map[*watchConfig]bool)
+	}
+	jm.terminalFlush[flushCfg] = true
+	jm.mu.Unlock()
+
+	out := runJobListTool(t, s)
+	if findJobListToolWatch(out.Watches, "job_GONE", "job_obs") != nil {
+		t.Fatalf("terminal-flush watch leaked into job_list watches: %+v", out.Watches)
+	}
+	if len(out.Watches) != 0 {
+		t.Fatalf("watches = %+v, want only live watches (none)", out.Watches)
+	}
+}
+
+func TestMarshalBoundedJobListResultKeepsWatchesWhenJobsTrimmed(t *testing.T) {
+	// A tiny budget forces the bound to drop every job; the watches array must
+	// still ride along in the result (spec §4 F2 watches are not job-bounded).
+	in := jobListResult{
+		Jobs: []jobListEntry{
+			{JobID: "job_AAAAAAAAAAAAAAAAAAAAAAAA", Type: "shell", Status: "running"},
+			{JobID: "job_BBBBBBBBBBBBBBBBBBBBBBBB", Type: "shell", Status: "running"},
+		},
+		Count:   2,
+		Watches: []watchListEntry{{Target: "caller", Condition: "progress_interval_ms: 1000", CreatedAt: "t"}},
+	}
+	full, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal full: %v", err)
+	}
+	watchesOnly := jobListResult{Watches: in.Watches}
+	floor, err := json.Marshal(watchesOnly)
+	if err != nil {
+		t.Fatalf("marshal floor: %v", err)
+	}
+	// A budget below the full size but at/above the empty-jobs floor forces the
+	// fallback that nils Jobs while keeping the rest of the result.
+	budget := len(floor)
+	if budget >= len(full) {
+		t.Fatalf("test budget %d must be below full size %d", budget, len(full))
+	}
+
+	out, err := marshalBoundedJobListResult(in, budget)
+	if err != nil {
+		t.Fatalf("marshalBoundedJobListResult: %v", err)
+	}
+	var got jobListResult
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("unmarshal bounded output: %v (output: %s)", err, out)
+	}
+	if len(got.Jobs) != 0 {
+		t.Fatalf("bounded jobs = %+v, want trimmed to empty", got.Jobs)
+	}
+	if len(got.Watches) != 1 || got.Watches[0].Target != "caller" {
+		t.Fatalf("bounded watches = %+v, want the watch preserved", got.Watches)
+	}
+}
+
+func TestDefJobListDescriptionMentionsActiveWatches(t *testing.T) {
+	desc := tooldefs.DefJobList().Description
+	if !strings.Contains(desc, "The result also includes your active watches.") {
+		t.Fatalf("DefJobList description = %q, want it to mention active watches", desc)
 	}
 }
 
@@ -2413,7 +2637,8 @@ func waitForJobGrepMatchResult(t *testing.T, s *Session, jobID, want string, tai
 }
 
 type jobListToolOutput struct {
-	Jobs []jobListToolEntry `json:"jobs"`
+	Jobs    []jobListToolEntry `json:"jobs"`
+	Watches []jobListToolWatch `json:"watches"`
 }
 
 type jobListToolEntry struct {
@@ -2421,6 +2646,23 @@ type jobListToolEntry struct {
 	ParentJobID        *string `json:"parent_job_id"`
 	Resumable          *bool   `json:"resumable"`
 	NotResumableReason *string `json:"not_resumable_reason"`
+}
+
+type jobListToolWatch struct {
+	Target     string `json:"target"`
+	Condition  string `json:"condition"`
+	SendTo     string `json:"send_to"`
+	Deliveries int    `json:"deliveries"`
+	CreatedAt  string `json:"created_at"`
+}
+
+func findJobListToolWatch(watches []jobListToolWatch, target, sendTo string) *jobListToolWatch {
+	for i := range watches {
+		if watches[i].Target == target && watches[i].SendTo == sendTo {
+			return &watches[i]
+		}
+	}
+	return nil
 }
 
 func jobListToolOutputContains(records []jobListToolEntry, jobID string) bool {

@@ -718,9 +718,20 @@ Return shape:
     }
   ],
   "count": 1,
+  "watches": [
+    {
+      "target": "job_...",
+      "condition": "output_match: ready",
+      "send_to": "",
+      "deliveries": 0,
+      "created_at": "..."
+    }
+  ],
   "next_cursor": null
 }
 ```
+
+- `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries `target`, a one-line `condition` summary of the watch's trigger (`output_match`, `progress_interval_ms`, or `events` with an optional `every N`), `send_to` (empty for a notify-caller watch, otherwise the configured delivery target), `deliveries` (model-facing deliveries so far against the per-watch budget), and `created_at`. Drain-only residue from already-terminal watched jobs is not listed. `watches` always rides with the result; it is not subject to the job list's size bounding.
 
 `description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate jobs have no separate `description` argument in v1; implementations may derive a display label from the delegate `task` or leave `description` empty while retaining `task` in durable storage.
 

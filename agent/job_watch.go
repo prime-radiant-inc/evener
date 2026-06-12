@@ -91,6 +91,12 @@ type watchConfig struct {
 	// Counted jm-side under jm.mu; survives the observation/drain split with the
 	// cfg pointer; a replacement cfg from newWatchConfig starts fresh at 0.
 	deliveries int
+	// createdAt is the install time of this live watch config, stamped from
+	// jm.now() in newWatchConfig and surfaced by job_list (spec §4 F2). A
+	// replacement config is a new watch, so it gets a fresh timestamp. Configs
+	// reconstructed into terminalFlush on restore are never built via
+	// newWatchConfig and so are intentionally left zero (they are not live).
+	createdAt time.Time
 }
 
 type watchArgs struct {
@@ -303,7 +309,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		return jm.clearWatch(key)
 	}
 
-	cfg, err := newWatchConfig(a)
+	cfg, err := newWatchConfig(a, jm.now())
 	if err != nil {
 		return watchResult{}, err
 	}
@@ -579,7 +585,7 @@ func isWatchSessionTarget(target string) bool {
 	}
 }
 
-func newWatchConfig(a watchArgs) (*watchConfig, error) {
+func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 	eventKinds, wildcardEvents := resolveEventKinds(a.Events)
 	cfg := &watchConfig{
 		target:             a.Target,
@@ -590,6 +596,7 @@ func newWatchConfig(a watchArgs) (*watchConfig, error) {
 		wildcardEvents:     wildcardEvents,
 		send:               cloneWatchSendArgs(a.Send),
 		generation:         jobstore.NewWatchGeneration(),
+		createdAt:          createdAt,
 	}
 	// every is valid only with exactly one event kind (enforced by validation).
 	if a.Every > 0 && len(a.Events) == 1 {
@@ -1003,6 +1010,59 @@ func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult 
 		Send:               cloneWatchSendArgs(cfg.send),
 		ReplacedExisting:   replacedExisting,
 	}
+}
+
+// liveWatchSummaries snapshots the session's active watch configs (jm.watches
+// only; terminalFlush is drain-only residue and excluded) into model-facing
+// rows for job_list (spec §4 F2). One row per live config, ordered by target
+// then send.to for stable output.
+func (jm *jobManager) liveWatchSummaries() []watchListEntry {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	entries := make([]watchListEntry, 0, len(jm.watches))
+	for key, cfg := range jm.watches {
+		entries = append(entries, watchListEntry{
+			Target:     cfg.target,
+			Condition:  watchConditionSummary(cfg),
+			SendTo:     key.SendTo,
+			Deliveries: cfg.deliveries,
+			CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
+		})
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Target != entries[j].Target {
+			return entries[i].Target < entries[j].Target
+		}
+		return entries[i].SendTo < entries[j].SendTo
+	})
+	return entries
+}
+
+// watchConditionSummary renders a watch config's trigger condition as a single
+// compact line for job_list (spec §4 F2). Trigger sources are orthogonal, so a
+// config with more than one set condition joins them with "; ". The pattern is
+// bounded because output_match is caller-supplied.
+func watchConditionSummary(cfg *watchConfig) string {
+	var parts []string
+	if cfg.outputMatch != "" {
+		parts = append(parts, "output_match: "+limitWatchText(cfg.outputMatch, watchTriggerMaxChars))
+	}
+	if cfg.progressIntervalMS > 0 {
+		parts = append(parts, fmt.Sprintf("progress_interval_ms: %d", cfg.progressIntervalMS))
+	}
+	if cfg.wildcardEvents {
+		parts = append(parts, "events: [*]")
+	} else if len(cfg.events) > 0 {
+		summary := "events: [" + strings.Join(cfg.events, ", ") + "]"
+		if cfg.triggerEvery > 0 {
+			summary += fmt.Sprintf(" every %d", cfg.triggerEvery)
+		}
+		parts = append(parts, summary)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventData) {

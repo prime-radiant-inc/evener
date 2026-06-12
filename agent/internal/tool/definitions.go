@@ -244,7 +244,7 @@ func DefJobList() llm.ToolDefinition {
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List this session's durable jobs, newest first; filter by `status` or `type`. Always current — if you have waited a long time with no notification, list jobs to re-orient instead of re-running work. Terminal statuses: completed, failed, cancelled, stopped. A short job can finish before a running-only filter sees it; when recency matters, list unfiltered or read the job by id.",
+		Description: "List this session's durable jobs, newest first; filter by `status` or `type`. Always current — if you have waited a long time with no notification, list jobs to re-orient instead of re-running work. The result also includes your active watches. Terminal statuses: completed, failed, cancelled, stopped. A short job can finish before a running-only filter sees it; when recency matters, list unfiltered or read the job by id.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

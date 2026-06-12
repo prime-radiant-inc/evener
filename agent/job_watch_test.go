@@ -79,7 +79,7 @@ func installWatchBelowValidation(t *testing.T, jm *jobManager, a watchArgs) {
 	if a.Send != nil {
 		a.Send.To = strings.TrimSpace(a.Send.To)
 	}
-	cfg, err := newWatchConfig(a)
+	cfg, err := newWatchConfig(a, jm.now())
 	if err != nil {
 		t.Fatalf("newWatchConfig(%+v): %v", a, err)
 	}
