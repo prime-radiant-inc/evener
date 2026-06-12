@@ -1,91 +1,85 @@
-# Recursive Subagents Design
+# Recursive Subagents Design (recursion-minimal)
 
-Date: 2026-06-12
-Status: approved design (Jesse, interactive brainstorm 2026-06-12 morning); awaiting /par + final review. Implementation gated on the job-control e2e matrix going green.
-Inputs: the Track K verified-facts dossier (15 framed decisions, file:line-cited; archived in the session task log), `docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-design.md` (the §3 invariant this design assumes everywhere), `docs/job-control.md` (the contract).
+Date: 2026-06-12 (v2 — descoped per Jesse + 28 /par findings folded; v1 with visibility chains is in git history `b85f9850`)
+Status: awaiting Jesse's review. Implementation gated on the job-control e2e matrix going green.
+Inputs: the Track K dossier; `docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-design.md` (the §3 invariant, assumed everywhere); `docs/job-control.md`; two adversarial reviews (A: 16 findings, B: 12 — the deaf-coordinator hole, the five-seam guard inventory, the resume-path cap bypass, and the defaults arithmetic all came from them).
 
 ## 0. Decisions (made, not open)
 
-Four principles, chosen explicitly:
+1. **General recursion, gated by a per-spawn allowance.** The grant is the law.
+2. **Opaque subtrees with on-demand visibility** (descoped from event chains, Jesse 2026-06-12): each level *manages* only its direct children; ancestors get **read-time tree resolution** via `job_list` (decision 5), transcript reads by ref, and stop-the-coordinator. Event-forwarding chains are the recorded evolution, triggered by evidence that roots need *direct* grandchild management rather than management through coordinators.
+3. **Attention stays local — and coordinators must actually hear their children** (the /par-critical fix): notifications about a job reach exactly its owner's model; an idle owner is woken, not bypassed.
+4. **Width bounded by a tree-wide running counter** (atomic, check-and-reserve; idle costs nothing; loud errors).
+5. **`job_list` can render the live descendant tree on demand** (Jesse's nuance): inefficient is fine; it is a supervision query, priced when asked.
 
-1. **General recursion, gated by a per-spawn allowance.** Any delegate may delegate, if and only if its parent granted it the capability. The grant is the law.
-2. **Visibility chains, attention stays local.** Every job in a subtree is visible (listable/readable/stoppable) to every ancestor; notifications and watch attention never travel more than one hop.
-3. **Width is bounded by a tree-wide running cap** counted over *processing* descendants — idle, turn-ended delegates cost nothing. Cap violations fail loudly with remedies.
-4. **Built by composing the existing parent-child link**, not by a registry rewrite. Every per-link mechanism (forwarding, terminal_generation dedupe, crash recovery, output-path reads) composes hop-by-hop.
-
-The mailbox invariant (spec §3: observation persists and wakes; only a session's own loop mutates it; no session synchronously mutates another) is non-negotiable at every depth. It is what makes recursion affordable; nothing in this design weakens it.
+The mailbox invariant — observation persists and wakes; only a session's own loop mutates it; no session synchronously mutates another — is non-negotiable at every depth.
 
 ## 1. The allowance
 
-`delegate` gains one parameter:
+`delegate` gains `delegation_allowance` (integer, default **0**). 0 = today's leaf subagent exactly. N>0 = the child receives `delegate` + `job_watch`, may grant ≤ N−1 onward, and is told its allowance in its prompt. A spawn requesting allowance ≥ the granter's own is rejected: `invalid_request: delegation_allowance must be less than your own allowance (<A>)`.
 
-- `delegation_allowance` (integer, default **0**): how many further levels of delegation the child may grant. `0` = the child is a leaf subagent — exactly today's behavior. `N > 0` = the child receives the `delegate` and `job_watch` tools and may spawn children with allowance ≤ N−1.
+- Root allowance = config (`MaxSubagentDepth`, default 1). **Defaults arithmetic stated plainly (/par A#9, B#8): under defaults the root may only grant 0 — enabling recursion requires BOTH raising the config and granting per spawn.** That is the intended double opt-in; §10 repeats it.
+- Persistence: allowance rides `spawnConfig`, the transcript header (beside `Depth`), and the `DelegateRestoreDescriptor` — resumed delegates keep their capability exactly.
+- **The guard inventory is FIVE seams, not three** (/par A#6, B#6 — implementer-trap gold). All collapse to allowance checks:
+  1. the hard `depth > 0` error (`agent/subagents.go:296-298`),
+  2. the `MaxSubagentDepth` check beside it (`:299-301`),
+  3. registry stripping at child init (`agent/session_init.go:531-535`),
+  4. **the default subagent tool-policy deny-list** (`baseSubagentToolPolicy`, `agent/subagents.go:163-174` — applied independently at `session_init.go:528-530`; without this an allowance>0 child still loses the tools),
+  5. **restored-delegate tool validation** (`validateRestoredDelegateRequiredTools`, `agent/job_delegate.go:706-719` — unconditionally deletes root-only names from frozen requirements; without this a coordinator-type delegate **fails to resume**).
+  Plus: `sendDelegateMessage`'s root-only guard becomes "own direct delegates" (§3), and the grant_tools rejection text ("top-level only", `agent/subagents.go:418-420`) becomes allowance-truthful. `depth` survives for prompting/ATIF bookkeeping only.
 
-Rules:
+## 2. Visibility: live-walk `job_list`
 
-- A session may call `delegate` only if its own allowance > 0 (the root always may). A spawn requesting `delegation_allowance ≥ parent's allowance` is rejected at validation: `invalid_request: delegation_allowance must be less than your own allowance (<A>)`.
-- The root's allowance comes from config: `MaxSubagentDepth` is renamed in meaning to "the root's allowance" (`SessionConfig`, default 1 — so the root can delegate leaves by default, and recursion is per-spawn opt-in via the parameter).
-- The allowance is persisted: it rides `spawnConfig`, the transcript header (next to `Depth`), and the `DelegateRestoreDescriptor`, so resumed delegates keep their capability exactly.
-- **The dossier's three independent depth guards collapse into allowance checks**: the hard `depth > 0` error in `prepareSubagentRun`, the `MaxSubagentDepth` check beside it, and the registry stripping in `session_init.go` all key on `allowance == 0` instead. `sendDelegateMessage`'s root-only guard becomes "own direct delegates only" (§3 below). `depth` remains as bookkeeping for prompting and ATIF export gating, but it is no longer load-bearing for capability.
-- The child is TOLD its allowance: the prompt renders "You may delegate work onward up to N more levels" (or the leaf-mode limits block when 0), and the parent knows what it granted because it wrote the call. Capability is explicit at spawn time on both sides — never a mid-run discovery. (Motivating incident: a coordinator agent in the development harness discovered mid-run that it could not dispatch. Serf does better, structurally.)
+No event chaining. `job_list` gains `include_descendants` (boolean, default false): at read time, walk the live tree — own records, then for each live direct child in `s.subagents`, recurse into its jobManager's store (jobstore is Session-free with its own locking; leaf-lock reads only), annotating each row with `owner_session_id` and `depth`. O(tree) reads on demand.
 
-## 2. Visibility chains (composing the link)
+- Honest limit, documented in the tool description: the walk sees the **live** subtree. A dead coordinator contributes its own terminal record; resume it to dig deeper (its store remains on disk for the hub, which assembles tree views by walking session stores directly — serf-hub work, no agent-core dependency).
+- The default `job_list` and `include_nested` behaviors are unchanged. Delegate-job records gain a `ParentJobID` stamp at creation (today only shell jobs stamp it — /par A#1; needed so descendant rows annotate consistently and the existing nested filter treats delegate jobs uniformly). No forwarding change.
+- `job_read_output` on a descendant row: works for records the walk surfaced via the owner's store (read-only, same leaf-lock path). `job_stop` on a non-direct descendant: rejected with guidance — `not_controllable: job %q is owned by descendant session %q; stop its coordinator or job_send_message it` (management through coordinators is the model; stop-the-subtree = stop its root, which cascades today).
 
-Today `forwardEvent` is single-hop and overwrites `VisibleToSession` per hop, so a grandchild's jobs are invisible to the root. The change:
+## 3. Attention local + the wake driver
 
-- Forwarded job events **preserve origin identity**: `OwnerSessionID` is never overwritten. Each record additionally carries `ViaChildSessionID` — the direct child it arrived through at THIS level (per-level field, set by each hop's append).
-- Each jobManager's `forwardEvent`, after appending to its own store and doing its one-hop notification work, **calls its own `forward`** — the chain ends at the root (whose `forward` is nil). What chains: `job_started`, `job_finished` (visibility). What does NOT chain: `job_notification_pending` (attention — §3).
-- Reads compose today: forwarded records carry `OutputPath` into the owner's directory; an ancestor reads a grandchild's retained output directly, including after the owning session is gone.
-- `job_stop` on a non-direct descendant routes **hop-by-hop down the Via chain**: each level resolves its direct child and asks it to stop the next link, using the existing single-hop stop machinery; queued per link, never cross-session lock acquisition. A dead link mid-chain yields `not_controllable` with the link named.
-- `job_list(include_nested=true)` at any level shows the full subtree beneath it (records are in its own store via the chain). The default filter still hides nested records.
-- Dedupe composes: terminal events carry the once-minted `terminal_generation` verbatim through every hop; the dedupe key `{VisibleSessionID, JobID, TerminalGen}` is already per-level.
-- Cost: O(depth) appends per job event, bounded by allowance. Accepted.
+**The /par-critical fix (A#2, B#1): today an idle delegate is deaf** — its notification queue has no driver (`notifyFunc` is server-wired for the root only), while the one-hop `job_notification_pending` forward interrupts the *parent's* model about jobs the parent doesn't own (A#4/B#4: two levels get interrupted today; the wrong one has the loop). Both fixed by one re-routing:
 
-## 3. Attention stays local
+- A forwarded `job_notification_pending` for a job the receiver does NOT own stops rendering to the receiver's model. It becomes a **wake request**: at the receiver's next loop boundary (or idle wake), it **resumes the owning child for a notification turn** — the same queued, owner-loop-executed shape as every other delivery in the mailbox design. The child's model handles its own children's completions; the parent's model hears only about jobs it owns.
+- **Wake propagation:** if the receiver is itself an undriven idle delegate, its jobManager forwards the wake request one more hop — the request climbs to the first driven session (ultimately the served root), which walks it back down by resuming one level. O(depth) hops, queue-appends and kicks only, invariant-clean.
+- **Per-level drain ownership** (/par A#5, B#5): `drainPendingWatchSends` stops *executing* a child's delegate-targeted pendings with the parent's `sendDelegateMessage` (which the per-level scope rule would reject). The parent's drain handles only its own rail; child-held pendings are revived via the wake driver and delivered on the owner's loop. The existing child-iteration survives solely for caller-token re-routing (the restore corner), which already routes by `ChildSessionID`.
+- Watches: own jobs only (unchanged from v1; the contract's `ParentCanWatch` is amended to "watch what you own; delegate watching"). `job_send_message`: own direct delegates; `caller` = immediate parent. `send.to="caller"` for a mid-level watch owner resolves to that owner's own rail — pinned explicitly (B#5).
+- Grants: per-link, unchanged (observers are direct delegates of the watch owner by construction).
 
-- **Notifications:** `job_notification_pending` forwards exactly one hop, as today. A coordinator handles its own children's completions; the root hears about its direct delegates only. (The root still SEES grandchild records — it is just not interrupted about them.)
-- **Watches:** a session may watch only jobs it owns. The contract's `ParentCanWatch` promise for nested jobs is **amended** to match: "watch what you own; to watch deeper, delegate the watching to the coordinator that owns it." This resolves the standing contract-vs-code contradiction (`target_not_watchable`) in the code's favor, with the principle stated.
-- **`job_send_message`:** reaches own direct delegates at every level (the root-only restriction lifts to per-level). `caller` means the immediate parent, at every depth.
-- **Grants:** unchanged shape, per-link — an observer asks its parent. (A watch owner mints grants into its own store; observers are its direct delegates by construction, since watches are own-jobs-only.)
-- **Watch-send tokens:** `ChildSessionID` routing remains parent↔child; no tree-shaped token routing is needed because watches don't cross levels. (Dossier decision #5 dissolves rather than being solved.)
+## 4. Governance: the running counter
 
-## 4. Governance: the tree-wide running cap
+A `*treeCounter` (atomic count + cap **16**) is created by the root and handed down through `spawnConfig` — every level shares the pointer.
 
-- **Cap: 16 concurrently running descendant delegate jobs per tree** (hard-coded constant, no config knob). Counted at the root over chained records: a delegate's job record is `running` exactly while its session is processing its task and goes terminal when the turn ends — so idle, turn-ended (resumable) delegates do not count, by construction. Shell jobs do not count against this cap (they have their own bounds).
-- Enforcement at spawn: the cap is the ROOT's subtree count, so a mid-tree spawner must read it. Alongside `forward`, each jobManager gains a `parentRunningCount func() int` seam wired at spawn (nil at root): each non-root level's closure simply delegates upward; the root answers "running delegate records in my store" once (its chained records already contain the whole tree, so no summing along the walk — that would double-count). One leaf-lock store read at the root, reached in O(depth). The check runs in `prepareSubagentRun` before any child construction.
-- **The error is a teaching surface:** `tree_at_capacity: 16 delegate jobs running across this session tree. Wait for completions (you are notified automatically), job_stop work you no longer need, or narrow your fan-out and retry.` Stable error code `tree_at_capacity` joins the contract's synchronous-error vocabulary.
-- Deferred (explicitly, with rationale): per-spawn width/token leases — the allowance could become a `{depth, children, tokens}` vector, but that is new surface for agents to reason about before any real tree has run. Revisit after usage data.
+- **Check-and-reserve, not read-then-act** (/par A#13, B#7): spawn and resume paths atomically increment-or-reject; a delegate's terminal finalize decrements. Idle (turn-ended) delegates hold no reservation, exactly the chosen semantics.
+- **Resume paths are gated too** (/par A#7): `attachDelegateJobFromWatch` and every resume that creates a running delegate record reserves the same counter — not just `prepareSubagentRun`.
+- The error teaches: `tree_at_capacity: 16 delegate jobs running across this session tree. Wait for completions (you are notified automatically), job_stop work you no longer need, or narrow your fan-out and retry.` Stable code `tree_at_capacity` joins the contract's synchronous-error vocabulary.
+- Restart: the root rebuilds the counter at restore from its own running records; resumed descendants re-reserve as they re-attach. A detached orphan subtree is uncounted until resumed — accepted v1 looseness, documented.
+- Honesty (/par A#14, A#10): shell jobs are NOT covered by this cap and currently have **no** concurrency bound anywhere — a standing contract gap (`docs/job-control.md:1170-1179`) this design does not close. And the counter binds *existing* single-level fan-out the moment it merges (a 17th concurrent root delegate fails loudly today-shaped) — see §10.
 
-## 5. Tool and prompt surface per allowance
+## 5. Prompt and tool surface per allowance
 
-- Registry: allowance > 0 children keep `delegate` + `job_watch`; allowance 0 gets today's stripping. All other job tools are already depth-universal.
-- Prompt: **one subagent template with conditional sections** (no third template). `subagent.md.tmpl` gains `{{ if .CanDelegate }}` inclusion of the delegation + background-jobs sections; the leaf-mode "Delegated task limits" block renders only at allowance 0. `delegation.md`'s "Only you can call `delegate` and `job_watch`" is reworded to allowance-truthful text; the section gains the one-line allowance statement.
-- Agent types: `agentUsesRootOnlySubagentTools` filtering keys on the spawner's grantable allowance, not depth — an agent type that delegates is offerable wherever allowance permits; the available-agents `DefaultTools` summary reflects what the child will actually have, per grant.
-- `DefDelegate`'s description documents `delegation_allowance` in the established voice ("0 = the delegate cannot delegate further; N grants it N more levels; you may grant at most one less than your own allowance").
+One subagent template with conditional sections: `{{ if .CanDelegate }}` includes the delegation + background-jobs sections (texts parameterized; "Only you can call `delegate`" dies); the leaf-mode limits block renders at allowance 0; the child's allowance is stated in its prompt. Agent-type filtering, the available-agents `DefaultTools` summary, and `DefDelegate`'s enum/description key on grantable allowance — a parent sees at spawn time what its child will be able to do. `DefDelegate` documents `delegation_allowance` in the established voice. Haiku comprehension gate before landing, as always.
 
-## 6. Close and interrupt
+## 6. Close and residue
 
-- Children close **in parallel** under one **tree-wide deadline (15s)** instead of today's sequential per-child 5s stacks: each child's close recursively parallel-closes its own subtree within the shared deadline; expirations finalize as today's abandonment path, honestly.
-- The never-set `sub.closed`/`closeTimedOut` flags and other dossier residue (`isRootOnlyJobPresenceTool`, the caller-less `spawnAgent`/`sendInput`/`cancelAgent` Session methods) are swept in this campaign.
-- Command-tree close (the deadlock note's stage-4 end state) is the recorded evolution, not v1: today's cascade holds no cross-session locks (verified), so the residual risk is latency, which the parallel close + deadline bounds.
+Close is **unchanged**: today's sequential recursive cascade is correct (no cross-session lock acquisition, dossier-verified) and its latency is acceptable until e2e proves otherwise — parallel close was cut with the chains (/par A#16's deadline-vs-store hazard dies with it). The residue sweep stays: never-set `sub.closed`/`closeTimedOut`, caller-less `isRootOnlyJobPresenceTool`, legacy `spawnAgent`/`sendInput`/`cancelAgent`.
 
-## 7. Crash and restore at depth
+## 7. Crash and restore
 
-- Per-link reconciliation is unchanged: each session reconciles jobs it owns; a resumed delegate finalizes its own orphans.
-- New rule for chained records: when a session restores and a chained (non-owned) record's `ViaChildSessionID` link is terminal and non-resumable, the restoring session finalizes that record **`supervision_lost`** with its own freshly-minted generation — exactly-once per level via the existing dedupe key. No zombie grandchildren; honest status.
+**Per-link reconciliation, unchanged and now sufficient**: with no chained records there is nothing new to lie. Each session reconciles jobs it owns (`stopped/runtime_lost` exactly-once per the existing contract clause); a mid's subtree records reconcile when the mid is resumed — same lazy rule as today, stated as the designed behavior rather than a gap. The v1 `supervision_lost` machinery is deleted with the chains (/par A#3/A#4/A#11/A#12 die here).
 
-## 8. Contract and documentation amendments
+## 8. Contract amendments (`docs/job-control.md`)
 
-`docs/job-control.md`: availability matrix gains the allowance dimension (root-only → allowance-gated); `delegation_allowance` on the `delegate` schema; `ParentCanWatch` → own-jobs-only with the delegate-the-watching principle; nested-visibility section rewritten for chains (origin-preserving identity, Via routing, one-hop attention); the caps section gains `tree_at_capacity` and the 16 constant; `caller` semantics stated per-depth; `job_send_message` scope per-level. Prompt sections per §5. The architecture doc's "Ownership and mailboxes" section gains a paragraph: the invariant at depth (chains are leaf-lock appends; no new cross-session mutation surface).
+Availability matrix: root-only → allowance-gated (the five-seam collapse). `delegate` schema: `delegation_allowance` + the double-opt-in note. `ParentCanWatch` → own-jobs + delegate-the-watching. Notification routing: owner's model only; the wake-request behavior for forwarded pendings (amends the current "wake the owning session"-adjacent text and the one-hop description). `job_list`: `include_descendants` live-walk + its live-only limit. `job_stop` descendant guidance error. Caps section: `tree_at_capacity`, the counter semantics, the shell-bound gap acknowledged. `caller` and `job_send_message` scope per level. Status matrix untouched (no new statuses — §7).
 
 ## 9. Testing
 
-agenttest trees at depth 3: allowance enforcement at every level (grant > own−1 rejected; leaf cannot delegate; tool surface matches grant); chain visibility (root lists a grandchild, reads its output after the mid dies, stops it down the Via chain); attention locality (root NOT notified of grandchild terminal; mid IS); cap behavior (idle delegates don't count; 17th spawn fails with `tree_at_capacity`; completion frees a slot); parallel close under deadline with a slow grandchild; the crash matrix (kill mid-tree, restore root, `supervision_lost` exactly-once); allowance persistence across delegate resume. E2e: new scenario cards for the coordinator pattern — a root delegating a coordinator that manages two workers, the shape of the 2026-06-11 overnight run, executed inside serf.
+Depth-3 agenttest trees: allowance enforcement per level incl. the ≥-own rejection; **the deaf-coordinator regression** (coordinator backgrounds workers, ends turn; workers finish; the coordinator is woken, ITS model gets the notification turn, the root's model does NOT — the headline test, red against today); wake propagation with an idle middle; live-walk `job_list` (annotations, live-only limit, default unchanged); counter (reserve on spawn AND resume, idle frees, 17th fails with `tree_at_capacity`, restart rebuild); coordinator-type delegate **resume** (guard seam 5 — red today); per-level send/stop scoping errors; allowance persistence across resume. E2e: coordinator-pattern cards (root → coordinator → two workers — the 2026-06-11 overnight shape inside serf), run with the raised config.
 
-## 10. Rollout
+## 10. Rollout (honest)
 
-Default `delegation_allowance` 0 and the existing config default mean **merging this changes nothing observable** until a spawn explicitly grants. Recursion ships dark; the coordinator-pattern e2e cards become the proof; capability turns on per-delegation, which is the unit Jesse chose.
+Two things change at merge even with no grants (/par A#10): the running counter binds existing single-level fan-out (16 concurrent root delegates — generous against today's observed usage, but a behavior change, stated), and notification re-routing applies wherever a forwarded pending lands (today that path only fires for nested shell jobs' owners — behavior improves: the owner's model is woken instead of the parent's being interrupted). Recursion itself stays dark behind the double opt-in: raise `MaxSubagentDepth`, then grant per spawn.
 
 ## Deferred, deliberately
 
-Width/token leases (§4); command-tree close (§6); transcript-ref scoping in trees (machine-local readability stands, per the mailbox spec's v1 posture); notification fan-up beyond one hop (would defeat delegation's purpose; revisit only with evidence); hub tree-view rendering (serf-hub work, reads the same chained stores).
+Event-forwarding visibility chains (evolution; trigger: evidence of roots needing direct grandchild management); parallel close; width/token leases; transcript-ref scoping in trees; notification fan-up beyond the wake request; hub tree rendering (store-walking, serf-hub side).
