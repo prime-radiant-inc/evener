@@ -33,7 +33,8 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
    > Follow these steps exactly, in order. Steps 1 and 2 are expected to
    > return tool errors — report each error verbatim and continue.
    > 1. Call `job_watch` with exactly: target "caller", events
-   >    ["assistant.message"], send {to: "caller", include_frame: true}.
+   >    ["assistant.message"], send {to: "caller"} — and NO other
+   >    parameters (no every, no include_excerpt).
    >    Report the full response or error verbatim.
    > 2. Call `job_watch` with exactly: target "caller", events
    >    ["assistant.message"], and NO send. Report verbatim.
@@ -42,9 +43,10 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
    >    ever resumed with a message containing 'Watch frame', call
    >    communicate with exactly FRAME_SEEN and finish." Capture the
    >    returned job_id.
-   > 4. Call `job_watch` with: target "caller", events
-   >    ["assistant.message", "assistant.tool"], send {to: that job_id,
-   >    include_frame: true}. Report the full JSON.
+   > 4. Call `job_watch` with exactly: target "caller", events
+   >    ["assistant.message", "assistant.tool"], send {to: that job_id}
+   >    — and NO other parameters (in particular do NOT pass `every`;
+   >    it requires a single event kind). Report the full JSON.
    > 5. Run three separate foreground shell commands, one at a time:
    >    `echo wedge_probe_1`, then `echo wedge_probe_2`, then
    >    `echo wedge_probe_3`.

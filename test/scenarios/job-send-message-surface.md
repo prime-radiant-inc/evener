@@ -28,10 +28,11 @@ Resume-after-STOP is subagent-cancel-runaway.md; the observer
 
    > Do these steps in order.
    > 1. Call delegate (background default) with this exact task:
-   >    "Write a six-line poem about rivers, ONE line at a time,
-   >    running the shell command `sleep 8` between lines. Then
-   >    communicate the full poem and finish." Capture the job_id
-   >    (call it JA) and its transcript_ref.
+   >    "FIRST run the shell command `sleep 15`. Then write a six-line
+   >    poem about rivers, ONE line at a time, running the shell
+   >    command `sleep 8` between lines. Then communicate the full
+   >    poem and finish." Capture the job_id (call it JA) and its
+   >    transcript_ref.
    > 2. Immediately call job_send_message with target JA and this
    >    message: "Mid-task instruction: your final communicate must
    >    also contain the exact token STEER_MARK_88." Report the full
@@ -74,14 +75,21 @@ Resume-after-STOP is subagent-cancel-runaway.md; the observer
 
 ## Expected
 
-- Arm (a): the step-2 result has `action` `"sent"`, `job_id` == JA
-  (NO new job), `status` `"running"`; the eventual JA read's `content`
-  contains `STEER_MARK_88` — the mid-run guidance reached the live
-  turn and shaped the final report. The child transcript contains a
-  STEERING entry carrying the instruction BEFORE the child's final
-  communicate. Falsification: `action` `"resumed"`/a second job_id
-  (the live path resumed instead of steering), or the token absent
-  from both the result and the child transcript (message dropped).
+- Arm (a): the send-to-a-running-delegate race has TWO legal outcomes;
+  the invariant is DELIVERY, not which path carried it.
+  - Live steer (the outcome this card biases toward via the initial
+    sleep): `action` `"sent"`, `job_id` == JA (NO new job), `status`
+    `"running"`; the eventual JA read's `content` contains
+    `STEER_MARK_88`, and the child transcript carries the instruction
+    as a STEERING entry BEFORE the child's final communicate.
+  - Legal race outcome (delegate finished first — the contract's
+    default `on_finished="resume"`): `action` `"resumed"` with a NEW
+    `job_id`, `resumed_from_job_id` == JA, same `transcript_ref`; the
+    resumed job's read contains `STEER_MARK_88`. Record which outcome
+    occurred in the result block.
+  - Falsification (either path): the token absent from both the result
+    content and the child transcript (message dropped), or a tool
+    error.
 - Arm (b): the resume result has `action` `"resumed"`, a NEW `job_id`
   != JB, `resumed_from_job_id` == JB, `running_in_background` `true`
   (default), and `transcript_ref` EQUAL to JB's — same conversation,
