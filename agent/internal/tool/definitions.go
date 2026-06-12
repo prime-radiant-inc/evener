@@ -84,7 +84,7 @@ func DefShell() llm.ToolDefinition {
 				"command":          map[string]any{"type": "string"},
 				"description":      map[string]any{"type": "string"},
 				"background":       map[string]any{"type": "boolean"},
-				"block_timeout_ms": map[string]any{"type": "integer"},
+				"block_timeout_ms": map[string]any{"type": "integer", "description": "Foreground wait bound in ms. Omit when background=true — the combination is rejected."},
 				"max_runtime_ms":   map[string]any{"type": "integer"},
 			},
 			"required": []string{"command"},
@@ -182,8 +182,10 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"each Nth occurrence — 1 is the default; above 1 requires `events` to contain exactly one kind). Delivery: omit `send` to be notified " +
 		"yourself; set `send.to` to an observer delegate's `job_id` (or `watched`) to push bounded trigger frames there — " +
 		"this also grants that observer read access to the watched job. Frames coalesce latest-wins while the target is " +
-		"busy. `include_excerpt` attaches an output excerpt (concrete job targets only). `clear=true` removes the watch " +
-		"for (target, send.to)."
+		"busy. `include_excerpt` attaches an output excerpt (concrete job targets only). ONE active watch per " +
+		"(target, send.to): a different configuration for the same key replaces the existing watch " +
+		"(`replaced_existing:true`) — use a distinct `send.to` for an additional watch on the same target. " +
+		"`clear=true` removes the watch for (target, send.to)."
 	return llm.ToolDefinition{
 		Name:        "job_watch",
 		Description: desc,
