@@ -277,6 +277,9 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if err != nil {
 		return watchResult{}, err
 	}
+	if err := validateWatchDeliveryLoop(cfg); err != nil {
+		return watchResult{}, err
+	}
 
 	jm.mu.Lock()
 	if !isWatchSessionTarget(key.Target) && !isWatchableConcreteJobLocked(jm.running[key.Target]) {
@@ -588,6 +591,28 @@ func resolveEventKinds(names []string) (map[events.EventKind]bool, bool) {
 		resolved[kind] = true
 	}
 	return resolved, wildcard
+}
+
+// validateWatchDeliveryLoop rejects configs that deliver self-generated event
+// kinds back into the session that generates them — a structural feedback loop
+// regardless of watch target (spec §6.1). assistant.message/assistant.tool/
+// communicate (including via the "*" wildcard) are produced by the owning
+// session's own turn, and onSessionEvent matches event kinds across every watch
+// independent of cfg.target, so delivering such a kind back to the caller (send
+// omitted, or send.to=caller) makes each delivery cause the next event.
+func validateWatchDeliveryLoop(cfg *watchConfig) error {
+	selfDelivery := cfg.send == nil || cfg.send.To == runtimeMessageAliasCaller
+	if !selfDelivery {
+		return nil
+	}
+	selfGenerated := cfg.wildcardEvents ||
+		cfg.eventKinds[events.EventAssistantTextEnd] ||
+		cfg.eventKinds[events.EventToolCallEnd] ||
+		cfg.eventKinds[events.EventCommunicate]
+	if !selfGenerated {
+		return nil
+	}
+	return errors.New("invalid_request: watching assistant.message/assistant.tool/communicate with delivery back to the caller is a feedback loop (each delivery causes the next event); watch these kinds only with send.to set to an observer job")
 }
 
 func canonicalWatchEvents(events []string) []string {

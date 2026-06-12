@@ -820,10 +820,13 @@ func TestJobWatchSendToRequired(t *testing.T) {
 
 func TestJobWatchEmptySendPlaceholderIsOmitted(t *testing.T) {
 	s := newTestSession(t)
+	// job.notification (not a self-generated kind) keeps this a legal caller
+	// watch; the feedback-loop guard rejects only self-generated kinds delivered
+	// back to the caller, which an empty send placeholder would otherwise be.
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"target":"caller","events":["assistant.message"],"send":{"to":"","message":"","include_excerpt":false}}`),
+		Arguments: json.RawMessage(`{"target":"caller","events":["job.notification"],"send":{"to":"","message":"","include_excerpt":false}}`),
 	})
 	if res.IsError {
 		t.Fatalf("job_watch returned error for empty send placeholder: %s", res.Output)

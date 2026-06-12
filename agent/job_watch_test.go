@@ -65,6 +65,36 @@ func deliverWatchSendVia(t *testing.T, jm *jobManager, d watchSendDelivery, send
 	return jm.deliverPendingWatchSend(context.Background(), cfg, state, false, send)
 }
 
+// installWatchBelowValidation installs a watch directly into jm.watches the way
+// configureWatch does AFTER newWatchConfig succeeds, but WITHOUT the validation
+// layer (target/send checks and the feedback-loop guard). It exists so tests can
+// exercise the live firing+delivery path (onSessionEvent -> recordWatchSendsAnd
+// Kick) for caller-self watch shapes that the create-path guard now rejects.
+// newWatchConfig itself runs no loop guard, so this install is legal below
+// validation. The install sequence mirrors configureWatch: build cfg, lock,
+// initProgressStop, assign, unlock, startProgressTimer (the timer no-ops for
+// events-only configs where progressIntervalMS == 0).
+func installWatchBelowValidation(t *testing.T, jm *jobManager, a watchArgs) {
+	t.Helper()
+	if a.Send != nil {
+		a.Send.To = strings.TrimSpace(a.Send.To)
+	}
+	cfg, err := newWatchConfig(a)
+	if err != nil {
+		t.Fatalf("newWatchConfig(%+v): %v", a, err)
+	}
+	sendTo := ""
+	if a.Send != nil {
+		sendTo = a.Send.To
+	}
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: a.Target, SendTo: sendTo}
+	jm.mu.Lock()
+	stop := cfg.initProgressStop()
+	jm.watches[key] = cfg
+	jm.mu.Unlock()
+	jm.startProgressTimer(key, cfg, stop)
+}
+
 func TestConfigureWatchRequiresCondition(t *testing.T) {
 	jm := newTestJM(t)
 	_, err := jm.configureWatch(watchArgs{Target: "caller"})
@@ -335,9 +365,7 @@ func TestEventWatchFiresAndNotifiesCaller(t *testing.T) {
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
 
-	if _, err := jm.configureWatch(watchArgs{Target: "caller", Events: []string{"assistant.message"}}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
 	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
 
 	if len(notified) != 1 {
@@ -353,9 +381,7 @@ func TestWildcardEventWatchOnlyFiresSupportedEvents(t *testing.T) {
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
 
-	if _, err := jm.configureWatch(watchArgs{Target: "caller", Events: []string{"*"}}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"*"}})
 	jm.onSessionEvent(events.EventSteeringInjected, events.SteeringInjectedData{Text: "internal"})
 	if len(notified) != 0 {
 		t.Fatalf("internal event fired wildcard watch: %+v", notified)
@@ -390,14 +416,11 @@ func TestEventWatchTriggerEveryNth(t *testing.T) {
 	var fires int
 	jm.enqueue = func(jobNotification) { fires++ }
 
-	_, err := jm.configureWatch(watchArgs{
+	installWatchBelowValidation(t, jm, watchArgs{
 		Target: "caller",
 		Events: []string{"assistant.message"},
 		Every:  3,
 	})
-	if err != nil {
-		t.Fatalf("configure: %v", err)
-	}
 	for i := 0; i < 7; i++ {
 		jm.onSessionEvent(events.EventAssistantTextEnd, nil)
 	}
@@ -448,10 +471,133 @@ func TestEventWatchIgnoresUnwatchedKind(t *testing.T) {
 	jm := newTestJM(t)
 	var fires int
 	jm.enqueue = func(jobNotification) { fires++ }
-	_, _ = jm.configureWatch(watchArgs{Target: "caller", Events: []string{"assistant.message"}})
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
 	jm.onSessionEvent(events.EventToolCallEnd, nil)
 	if fires != 0 {
 		t.Errorf("an unwatched event kind must not fire; fires = %d", fires)
+	}
+}
+
+// TestValidateWatchDeliveryLoop covers the feedback-loop guard: configureWatch
+// must reject any watch whose resolved event kinds include a self-generated kind
+// (assistant.message/assistant.tool/communicate, including via "*") AND whose
+// delivery returns to the generating session (send omitted or send.to=caller).
+// The guard is target-independent: onSessionEvent matches kinds across all
+// watches regardless of cfg.target, so a job-target watch with send.to=caller
+// loops just as a caller-target one does.
+func TestValidateWatchDeliveryLoop(t *testing.T) {
+	tests := []struct {
+		name    string
+		build   func(t *testing.T, jm *jobManager) watchArgs
+		wantErr bool
+	}{
+		{
+			name: "notify_self_assistant_message",
+			build: func(*testing.T, *jobManager) watchArgs {
+				return watchArgs{Target: "caller", Events: []string{"assistant.message"}}
+			},
+			wantErr: true,
+		},
+		{
+			name: "send_to_self_incident_shape",
+			build: func(*testing.T, *jobManager) watchArgs {
+				return watchArgs{Target: "caller", Events: []string{"assistant.message"}, Send: &watchSendArgs{To: "caller"}}
+			},
+			wantErr: true,
+		},
+		{
+			name: "every_derived_single_kind_to_self",
+			build: func(*testing.T, *jobManager) watchArgs {
+				return watchArgs{Target: "caller", Events: []string{"assistant.message"}, Every: 2, Send: &watchSendArgs{To: "caller"}}
+			},
+			wantErr: true,
+		},
+		{
+			name: "job_target_self_kind_to_caller",
+			build: func(t *testing.T, jm *jobManager) watchArgs {
+				rec, err := jm.createShell(createShellOpts{Command: "x"})
+				if err != nil {
+					t.Fatalf("createShell: %v", err)
+				}
+				return watchArgs{Target: rec.JobID, Events: []string{"assistant.message"}, Send: &watchSendArgs{To: "caller"}}
+			},
+			wantErr: true,
+		},
+		{
+			name: "wildcard_send_to_self",
+			build: func(*testing.T, *jobManager) watchArgs {
+				return watchArgs{Target: "caller", Events: []string{"*"}, Send: &watchSendArgs{To: "caller"}}
+			},
+			wantErr: true,
+		},
+		{
+			name: "wildcard_notify_self",
+			build: func(*testing.T, *jobManager) watchArgs {
+				return watchArgs{Target: "caller", Events: []string{"*"}}
+			},
+			wantErr: true,
+		},
+		{
+			name: "communicate_notify_self",
+			build: func(*testing.T, *jobManager) watchArgs {
+				return watchArgs{Target: "caller", Events: []string{"communicate"}}
+			},
+			wantErr: true,
+		},
+		{
+			name: "sidecar_delivery_to_delegate",
+			build: func(t *testing.T, jm *jobManager) watchArgs {
+				seedCommonWatchSendTargets(t, jm)
+				return watchArgs{Target: "caller", Events: []string{"assistant.message"}, Send: &watchSendArgs{To: "job_obs"}}
+			},
+			wantErr: false,
+		},
+		{
+			name: "job_notification_self_watch",
+			build: func(*testing.T, *jobManager) watchArgs {
+				return watchArgs{Target: "caller", Events: []string{"job.notification"}}
+			},
+			wantErr: false,
+		},
+		{
+			name: "output_match_only_to_caller",
+			build: func(t *testing.T, jm *jobManager) watchArgs {
+				rec, err := jm.createShell(createShellOpts{Command: "x"})
+				if err != nil {
+					t.Fatalf("createShell: %v", err)
+				}
+				return watchArgs{Target: rec.JobID, OutputMatch: "ready", Send: &watchSendArgs{To: "caller"}}
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jm := newTestJM(t)
+			t.Cleanup(func() { _ = jm.close() })
+			jm.enqueue = func(jobNotification) {}
+			args := tt.build(t, jm)
+			_, err := jm.configureWatch(args)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("configureWatch(%+v) = nil error, want feedback-loop rejection", args)
+				}
+				if !strings.Contains(err.Error(), "feedback loop") {
+					t.Fatalf("error = %v, want message containing \"feedback loop\"", err)
+				}
+				if !strings.Contains(err.Error(), "invalid_request") {
+					t.Fatalf("error = %v, want message containing \"invalid_request\"", err)
+				}
+				if jm.watchCount() != 0 {
+					t.Fatalf("rejected watch must not be installed; watchCount = %d", jm.watchCount())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("configureWatch(%+v) = %v, want no error", args, err)
+			}
+		})
 	}
 }
 
@@ -568,7 +714,7 @@ func TestSessionWatchSurvivesAJobTerminal(t *testing.T) {
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	_, _ = jm.configureWatch(watchArgs{Target: "caller", Events: []string{"assistant.message"}})
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
 	code := 0
 	jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code)
 	if jm.watchCount() != 1 {
@@ -4064,13 +4210,15 @@ func TestWatchEventKindNamesResolve(t *testing.T) {
 
 func installCallerSendWatchWithPending(t *testing.T, jm *jobManager) *watchConfig {
 	t.Helper()
-	if _, err := jm.configureWatch(watchArgs{
+	// This is the feedback-loop shape (caller target, assistant.message,
+	// send.to=caller) that configureWatch now rejects (TestValidateWatchDeliveryLoop
+	// asserts the rejection). Install below validation to exercise the caller-send
+	// pending/busy-delivery mechanics this helper's callers depend on.
+	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"assistant.message"},
 		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
-	}); err != nil {
-		t.Fatalf("installCallerSendWatchWithPending: configure: %v", err)
-	}
+	})
 	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
 	key := watchKey{
 		VisibleSessionID: jm.sessionID,
@@ -4219,13 +4367,14 @@ func TestObservationRecordsIntentOnly(t *testing.T) {
 		jm.kick()
 	}
 
-	if _, err := jm.configureWatch(watchArgs{
+	// The caller->caller watch is the feedback-loop shape configureWatch now
+	// rejects; install it below validation so this test can still assert that
+	// observation records intent for a caller send and a delegate send together.
+	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"assistant.message"},
 		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "to-caller"},
-	}); err != nil {
-		t.Fatalf("configure caller-send watch: %v", err)
-	}
+	})
 	if _, err := jm.configureWatch(watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"assistant.message"},

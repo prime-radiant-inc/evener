@@ -45,22 +45,19 @@ func newCallerSendWatchSession(t *testing.T, watchEvent string) *Session {
 	}
 	t.Cleanup(func() { sess.Close() })
 
-	watchArgsJSON, err := json.Marshal(map[string]any{
-		"target": "caller",
-		"events": []string{watchEvent},
-		"send":   map[string]any{"to": "caller", "message": "ping"},
+	// Install the caller-send watch BELOW the validation layer. configureWatch
+	// (and the job_watch tool) now reject this exact shape as a feedback loop
+	// (target=caller, send.to=caller on a self-generated kind). The loop-prevention
+	// guard is asserted separately by TestValidateWatchDeliveryLoop; here we need a
+	// live caller-send watch on jm.watches so driveWithWatchdog exercises the real
+	// firing+delivery path (onSessionEvent -> recordWatchSendsAndKick -> token ->
+	// drain). newWatchConfig runs no loop guard, so this direct install is legal
+	// and mirrors exactly what configureWatch builds and installs.
+	installWatchBelowValidation(t, sess.jobManager, watchArgs{
+		Target: "caller",
+		Events: []string{watchEvent},
+		Send:   &watchSendArgs{To: "caller", Message: "ping"},
 	})
-	if err != nil {
-		t.Fatalf("marshal watch args: %v", err)
-	}
-	watchRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "watch",
-		Name:      "job_watch",
-		Arguments: json.RawMessage(watchArgsJSON),
-	})
-	if watchRes.IsError {
-		t.Fatalf("job_watch: %s", watchRes.Output)
-	}
 	return sess
 }
 
