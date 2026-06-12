@@ -230,7 +230,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 func DefJobReadOutput() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_read_output",
-		Description: "Read a job's captured output and current status by job_id. Returns a bounded tail of shell stdout/stderr or a delegate final report; reads never consume or acknowledge output. Pass grep to search retained output with a regex. block=true performs one bounded wait until new output is available or the job becomes terminal; it does not mean wait only for completion.",
+		Description: "Read a job's captured output and current status by job_id. Returns a bounded tail of shell stdout/stderr or a delegate final report; reads never consume or acknowledge output. Pass grep to search retained output with a regex. block=true performs one bounded wait until new output is available or the job becomes terminal; it does not mean wait only for completion. With grep set, block=true instead waits until the retained output contains a match, the job becomes terminal, or block_timeout_ms elapses.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
