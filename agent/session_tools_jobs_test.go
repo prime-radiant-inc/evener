@@ -1087,7 +1087,7 @@ func TestJobReadOutputReturnsBackgroundDelegateStructuredResult(t *testing.T) {
 	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "read",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_chars":20000}`, delegateOut.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, delegateOut.JobID)),
 	})
 	if readRes.IsError {
 		t.Fatalf("job_read_output returned error: %s", readRes.Output)
@@ -1145,7 +1145,7 @@ func TestJobReadOutputReturnsBackgroundDelegateSchemaResultMissingReason(t *test
 	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "read",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_chars":20000}`, delegateOut.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, delegateOut.JobID)),
 	})
 	if readRes.IsError {
 		t.Fatalf("job_read_output returned error: %s", readRes.Output)
@@ -1777,10 +1777,13 @@ func TestJobToolsDefinitions(t *testing.T) {
 	required(t, tooldefs.DefJobSendMessage(), "job_send_message", []string{"target", "message"})
 
 	readProps := tooldefs.DefJobReadOutput().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"tail_bytes", "grep", "block", "block_timeout_ms", "limit_bytes", "max_chars"} {
+	for _, param := range []string{"tail_bytes", "grep", "block", "block_timeout_ms", "limit_bytes"} {
 		if _, ok := readProps[param]; !ok {
 			t.Fatalf("job_read_output missing param %q", param)
 		}
+	}
+	if _, ok := readProps["max_chars"]; ok {
+		t.Fatalf("job_read_output schema unexpectedly contains removed max_chars param")
 	}
 	listProps := tooldefs.DefJobList().Parameters["properties"].(map[string]any)
 	for _, param := range []string{"status", "type", "include_nested", "limit"} {
@@ -1896,40 +1899,6 @@ func TestJobReadOutputGrepSearchesRetainedOutputBeyondTail(t *testing.T) {
 	}
 }
 
-func TestJobReadOutputSmallMaxCharsReturnsValidJSON(t *testing.T) {
-	s := newTestSession(t)
-
-	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "shell",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes filler-line | head -c 10000; sleep 30","background":true}`),
-	})
-	if shellRes.IsError {
-		t.Fatalf("shell returned error: %s", shellRes.Output)
-	}
-	var shellOut struct {
-		JobID string `json:"job_id"`
-	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
-		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
-	}
-	t.Cleanup(func() {
-		_, _ = s.jobManager.stop(shellOut.JobID)
-		waitForShellDone(t, s.jobManager, shellOut.JobID)
-	})
-
-	res := waitForJobOutputBytes(t, s, shellOut.JobID, 1000, 100)
-	if !json.Valid([]byte(res)) {
-		t.Fatalf("job_read_output returned invalid JSON: %s", res)
-	}
-	if strings.HasPrefix(res, "[WARNING: Tool output was truncated.") {
-		t.Fatalf("job_read_output was registry-truncated: %s", res)
-	}
-	if len([]rune(res)) > jobToolResultMinJSONChars {
-		t.Fatalf("job_read_output length = %d, want <= effective bound %d", len([]rune(res)), jobToolResultMinJSONChars)
-	}
-}
-
 func TestJobReadOutputDropsOversizedStructuredResultWhenBounding(t *testing.T) {
 	valid := true
 	reason := "schema_result_too_large"
@@ -1969,7 +1938,7 @@ func TestJobReadOutputDropsOversizedStructuredResultWhenBounding(t *testing.T) {
 }
 
 func TestJobReadOutputProjectionTooLargeDoesNotMutateDurableStructuredResult(t *testing.T) {
-	payload := strings.Repeat("x", jobToolResultMinJSONChars)
+	payload := strings.Repeat("x", jobToolResultDefaultMaxChar+10000)
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -2009,7 +1978,7 @@ func TestJobReadOutputProjectionTooLargeDoesNotMutateDurableStructuredResult(t *
 	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "read",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_chars":%d}`, delegateOut.JobID, jobToolResultMinJSONChars)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, delegateOut.JobID)),
 	})
 	if readRes.IsError {
 		t.Fatalf("job_read_output returned error: %s", readRes.Output)
@@ -2288,7 +2257,7 @@ func waitForJobOutput(t *testing.T, s *Session, jobID, want string) jobReadOutpu
 		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 			ID:        "read",
 			Name:      "job_read_output",
-			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":65536,"grep":"ready","max_chars":20000}`, jobID)),
+			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":65536,"grep":"ready"}`, jobID)),
 		})
 		if res.IsError {
 			t.Fatalf("job_read_output returned error: %s", res.Output)
@@ -2315,7 +2284,7 @@ func waitForJobGrepMatchResult(t *testing.T, s *Session, jobID, want string, tai
 		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 			ID:        "read",
 			Name:      "job_read_output",
-			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":%d,"grep":%q,"limit_bytes":4096,"max_chars":20000}`, jobID, tailBytes, want)),
+			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":%d,"grep":%q,"limit_bytes":4096}`, jobID, tailBytes, want)),
 		})
 		if res.IsError {
 			t.Fatalf("job_read_output returned error: %s", res.Output)
@@ -2332,33 +2301,6 @@ func waitForJobGrepMatchResult(t *testing.T, s *Session, jobID, want string, tai
 	}
 	t.Fatalf("job_read_output never found grep match %q; last output: %s", want, last)
 	return jobReadOutputTestResult{}
-}
-
-func waitForJobOutputBytes(t *testing.T, s *Session, jobID string, wantBytes int64, maxChars int) string {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	var last string
-	for time.Now().Before(deadline) {
-		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-			ID:        "read",
-			Name:      "job_read_output",
-			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":65536,"max_chars":%d}`, jobID, maxChars)),
-		})
-		if res.IsError {
-			t.Fatalf("job_read_output returned error: %s", res.Output)
-		}
-		last = res.Output
-		var out jobReadOutputTestResult
-		if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
-			t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
-		}
-		if out.TotalBytes >= wantBytes {
-			return res.Output
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("job_read_output never reached %d bytes; last output: %s", wantBytes, last)
-	return ""
 }
 
 type jobListToolOutput struct {

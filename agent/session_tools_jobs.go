@@ -182,10 +182,7 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	if err != nil {
 		return "", err
 	}
-	maxChars, err := jobReadMaxCharsArg(args, registryMaxChars)
-	if err != nil {
-		return "", err
-	}
+	maxChars := registryMaxChars
 	grep := stringArg(args, "grep")
 	var grepRE *regexp.Regexp
 	if grep != "" {
@@ -736,25 +733,6 @@ func boundedJobBytesArg(args map[string]any, key string, defaultValue int) (int,
 		value = maxJobOutputBytes
 	}
 	return value, nil
-}
-
-func jobReadMaxCharsArg(args map[string]any, registryMaxChars int) (int, error) {
-	maxChars := registryMaxChars
-	if maxChars <= 0 {
-		maxChars = jobToolResultDefaultMaxChar
-	}
-	if n, ok := shellIntArg(args, "max_chars"); ok {
-		if n <= 0 {
-			return 0, errors.New("max_chars must be greater than 0")
-		}
-		if n < maxChars {
-			maxChars = n
-		}
-	}
-	if maxChars < jobToolResultMinJSONChars {
-		maxChars = jobToolResultMinJSONChars
-	}
-	return maxChars, nil
 }
 
 func jobListFilterFromArgs(args map[string]any) (listFilter, error) {

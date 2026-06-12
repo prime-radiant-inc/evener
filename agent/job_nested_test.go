@@ -559,7 +559,7 @@ func TestParentReadsNestedOutputViaOwnerRuntime(t *testing.T) {
 	res := parent.reg.ExecuteCall(context.Background(), parent.env, llm.ToolCallData{
 		ID:        "read",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":65536,"grep":"owner","max_chars":20000}`, nested.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":65536,"grep":"owner"}`, nested.JobID)),
 	})
 	if res.IsError {
 		t.Fatalf("job_read_output returned error: %s", res.Output)
@@ -864,7 +864,6 @@ func TestNestedReadOutputBlockRefreshesOwnerRecord(t *testing.T) {
 			"block":            true,
 			"block_timeout_ms": 1000,
 			"tail_bytes":       65536,
-			"max_chars":        20000,
 		}, 20000)
 		readDone <- readResult{out: out, err: err}
 	}()
