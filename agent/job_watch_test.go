@@ -160,9 +160,6 @@ func TestConfigureWatchRejectsUnknownEventKinds(t *testing.T) {
 	}
 }
 
-// TestConfigureWatchRejectsUnknownTriggerEvent was removed: with trigger gone,
-// an unknown kind in Events is already covered by TestConfigureWatchRejectsUnknownEventKinds.
-
 func TestJobWatchMainAliasTargetFailsTargetNotFound(t *testing.T) {
 	jm := newTestJM(t)
 
@@ -409,10 +406,6 @@ func TestEventWatchTriggerEveryNth(t *testing.T) {
 	}
 }
 
-// TestEventWatchTriggerEveryOnlyGatesTriggerKind was removed: multi-event + every
-// is now invalid by design (every requires exactly one watched event kind).
-// The rejection is covered by TestConfigureWatchRejectsEveryWithMultipleEvents.
-
 func TestConfigureWatchRejectsEveryWithMultipleEvents(t *testing.T) {
 	jm := newTestJM(t)
 
@@ -432,6 +425,22 @@ func TestConfigureWatchRejectsEveryWithMultipleEvents(t *testing.T) {
 	_, err = jm.configureWatch(watchArgs{Target: "caller", Every: 1})
 	if err == nil || !strings.Contains(err.Error(), "every requires exactly one watched event kind") {
 		t.Fatalf("bare every with no events: error = %v, want every requires exactly one watched event kind", err)
+	}
+}
+
+func TestConfigureWatchRejectsEveryWithWildcardEvent(t *testing.T) {
+	jm := newTestJM(t)
+
+	_, err := jm.configureWatch(watchArgs{
+		Target: "caller",
+		Events: []string{"*"},
+		Every:  3,
+	})
+	if err == nil || !strings.Contains(err.Error(), "concrete event kind") {
+		t.Fatalf("error = %v, want rejection naming concrete event kind requirement", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0", jm.watchCount())
 	}
 }
 

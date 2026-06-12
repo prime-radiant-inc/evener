@@ -392,6 +392,9 @@ func validateWatchEventArgs(a watchArgs) error {
 	if a.Every > 0 && len(a.Events) != 1 {
 		return errors.New("invalid_request: every requires exactly one watched event kind")
 	}
+	if a.Every > 0 && len(a.Events) == 1 && a.Events[0] == "*" {
+		return errors.New(`invalid_request: every requires a single concrete event kind, not "*"`)
+	}
 	return nil
 }
 
