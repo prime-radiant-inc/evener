@@ -72,6 +72,26 @@ func FoldWatchSends(events []Event) WatchSendRecord {
 	return rec
 }
 
+// FoldGrants reconstructs the observer read-grant table from durable events:
+// observer session id → watched job ids the observer may job_read_output.
+// Grants are append-only capabilities, so the fold is order-insensitive and
+// duplicate (observer, job) grants fold to one entry.
+func FoldGrants(events []Event) map[string]map[string]bool {
+	grants := make(map[string]map[string]bool)
+	for _, e := range events {
+		if e.Kind != EventWatchReadGrant || e.ObserverSessionID == "" || e.JobID == "" {
+			continue
+		}
+		jobs := grants[e.ObserverSessionID]
+		if jobs == nil {
+			jobs = make(map[string]bool)
+			grants[e.ObserverSessionID] = jobs
+		}
+		jobs[e.JobID] = true
+	}
+	return grants
+}
+
 func applyEvent(r *JobRecord, e Event) {
 	switch e.Kind {
 	case EventJobStarted:

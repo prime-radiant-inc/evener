@@ -116,6 +116,7 @@ func TestEventKindsAreStable(t *testing.T) {
 		EventWatchSendDelivered:       "watch_send_delivered",
 		EventWatchSendDropped:         "watch_send_dropped",
 		EventWatchSendEvicted:         "watch_send_evicted",
+		EventWatchReadGrant:           "watch_read_grant",
 	}
 	for k, s := range want {
 		if string(k) != s {
