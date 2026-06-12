@@ -218,6 +218,80 @@ func TestDelegateRestoreDescriptorSurvivesStoreReopenAndFold(t *testing.T) {
 	}
 }
 
+func TestFoldGrantsBuildsObserverTable(t *testing.T) {
+	events := []Event{
+		ev(EventWatchReadGrant, 1, "job_A", func(e *Event) { e.ObserverSessionID = "obs_1" }),
+		// Duplicate (observer, job) pairs fold to a single grant.
+		ev(EventWatchReadGrant, 2, "job_A", func(e *Event) { e.ObserverSessionID = "obs_1" }),
+		ev(EventWatchReadGrant, 3, "job_B", func(e *Event) { e.ObserverSessionID = "obs_1" }),
+		ev(EventWatchReadGrant, 4, "job_A", func(e *Event) { e.ObserverSessionID = "obs_2" }),
+		// Malformed grants (missing observer or job) are skipped.
+		ev(EventWatchReadGrant, 5, "job_C", nil),
+		ev(EventWatchReadGrant, 6, "", func(e *Event) { e.ObserverSessionID = "obs_3" }),
+	}
+	grants := FoldGrants(events)
+	if len(grants) != 2 {
+		t.Fatalf("observers = %d, want 2: %+v", len(grants), grants)
+	}
+	if len(grants["obs_1"]) != 2 || !grants["obs_1"]["job_A"] || !grants["obs_1"]["job_B"] {
+		t.Errorf("obs_1 grants = %+v, want job_A and job_B", grants["obs_1"])
+	}
+	if len(grants["obs_2"]) != 1 || !grants["obs_2"]["job_A"] {
+		t.Errorf("obs_2 grants = %+v, want job_A", grants["obs_2"])
+	}
+}
+
+func TestFoldIgnoresWatchReadGrantForJobRecords(t *testing.T) {
+	events := []Event{
+		ev(EventWatchReadGrant, 1, "job_A", func(e *Event) { e.ObserverSessionID = "obs_1" }),
+	}
+	recs := Fold(events)
+	if len(recs) != 0 {
+		t.Fatalf("watch-read-grant event created job records: %+v", recs)
+	}
+}
+
+func TestWatchReadGrantSurvivesStoreReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	// Append the same (observer, job) pair twice: the fold must stay idempotent.
+	for range 2 {
+		if err := store.Append(Event{
+			Kind:              EventWatchReadGrant,
+			JobID:             "job_A",
+			ObserverSessionID: "obs_1",
+		}); err != nil {
+			t.Fatalf("append grant: %v", err)
+		}
+	}
+	grants, err := store.Grants()
+	if err != nil {
+		t.Fatalf("grants: %v", err)
+	}
+	if len(grants) != 1 || len(grants["obs_1"]) != 1 || !grants["obs_1"]["job_A"] {
+		t.Fatalf("grants = %+v, want exactly obs_1 -> job_A", grants)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	grants, err = reopened.Grants()
+	if err != nil {
+		t.Fatalf("grants after reopen: %v", err)
+	}
+	if len(grants) != 1 || len(grants["obs_1"]) != 1 || !grants["obs_1"]["job_A"] {
+		t.Fatalf("reopened grants = %+v, want exactly obs_1 -> job_A", grants)
+	}
+}
+
 func TestFoldStructuredResultReasonOnlyForInvalidStructuredResult(t *testing.T) {
 	valid := true
 	events := []Event{

@@ -102,6 +102,21 @@ func (s *Store) LoadWatchSends() (WatchSendRecord, error) {
 	return FoldWatchSends(events), nil
 }
 
+// Grants reads every event and folds the observer read-grant table
+// (observer session id → watched job ids).
+func (s *Store) Grants() (map[string]map[string]bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return nil, err
+	}
+	events, err := s.readAllLocked()
+	if err != nil {
+		return nil, err
+	}
+	return FoldGrants(events), nil
+}
+
 // readAll is the locked-public test/helper variant of readAllLocked.
 func (s *Store) readAll() ([]Event, error) {
 	s.mu.Lock()

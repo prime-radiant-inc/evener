@@ -16,6 +16,7 @@ const (
 	EventWatchSendDelivered       EventKind = "watch_send_delivered"
 	EventWatchSendDropped         EventKind = "watch_send_dropped"
 	EventWatchSendEvicted         EventKind = "watch_send_evicted"
+	EventWatchReadGrant           EventKind = "watch_read_grant"
 )
 
 // Event is one line in the append-only jobs.jsonl log. It carries a flat union
@@ -65,4 +66,7 @@ type Event struct {
 
 	// watch_send_* payload
 	WatchSend *WatchSendState `json:"watch_send,omitempty"`
+
+	// watch_read_grant payload; the watched job id rides JobID.
+	ObserverSessionID string `json:"observer_session_id,omitempty"`
 }
