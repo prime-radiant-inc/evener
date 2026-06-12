@@ -239,3 +239,92 @@ func TestOutputMatcherFlushSkipsOverlongPartial(t *testing.T) {
 		t.Fatalf("matcher did not recover after overlong flush: %#v", got)
 	}
 }
+
+func TestOutputMatcherFeedAtAtOrBelowScanOffsetMatchesNothing(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`ready`))
+	m.SetScanOffset(20)
+	if got := m.FeedAt([]byte("ready\n"), 10); len(got) != 0 {
+		t.Fatalf("chunk ending below the scan offset must not match: %#v", got)
+	}
+	if got := m.FeedAt([]byte("ready\n"), 20); len(got) != 0 {
+		t.Fatalf("chunk ending at the scan offset must not match: %#v", got)
+	}
+}
+
+func TestOutputMatcherFeedAtStraddlingChunkMatchesOnlySuffix(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`tok\d`))
+	m.SetScanOffset(8)
+	// Chunk spans [3, 13): "tok1\n" lies below the scan offset, "tok2\n" beyond.
+	got := m.FeedAt([]byte("tok1\ntok2\n"), 13)
+	if len(got) != 1 || got[0] != "tok2" {
+		t.Fatalf("straddling chunk matches = %#v, want [\"tok2\"]", got)
+	}
+}
+
+func TestOutputMatcherSeedCarryMatchesTokenStraddlingScanBoundary(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`server READY`))
+	// The attach-time scan covered [0, 12) whose retained tail after the last
+	// newline was the partial line "ser"; the rest of the line arrives via FeedAt.
+	m.SetScanOffset(12)
+	m.SeedCarry([]byte("ser"))
+	if got := m.FeedAt([]byte("ver READY\n"), 22); len(got) != 1 || got[0] != "server READY" {
+		t.Fatalf("token straddling the scan boundary matches = %#v, want [\"server READY\"]", got)
+	}
+	if got := m.FeedAt([]byte("done\n"), 27); len(got) != 0 {
+		t.Fatalf("straddling token must match exactly once: %#v", got)
+	}
+}
+
+func TestOutputMatcherFeedCounterSkipsScanCoveredBytes(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`READY`))
+	if got := m.Feed([]byte("starting\n")); len(got) != 0 {
+		t.Fatalf("pre-scan feed must not match: %#v", got)
+	}
+	// An attach-time scan covered [0, 15): "starting\nREADY\n". The trailing
+	// "READY\n" was appended before the scan but reaches Feed only after it.
+	m.SetScanOffset(15)
+	if got := m.Feed([]byte("READY\n")); len(got) != 0 {
+		t.Fatalf("scan-covered bytes must not match again: %#v", got)
+	}
+	if got := m.Feed([]byte("more READY\n")); len(got) != 1 || got[0] != "more READY" {
+		t.Fatalf("bytes beyond the scan offset must match: %#v", got)
+	}
+}
+
+func TestOutputMatcherFeedAtNeverMatchesLineBelowScanOffset(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`ready`))
+	m.SetScanOffset(6)
+	for i := 0; i < 2; i++ {
+		if got := m.FeedAt([]byte("ready\n"), 6); len(got) != 0 {
+			t.Fatalf("feed %d: scan-covered line must never match: %#v", i, got)
+		}
+	}
+	if got := m.FeedAt([]byte("ready again\n"), 18); len(got) != 1 || got[0] != "ready again" {
+		t.Fatalf("line beyond the scan offset must still match: %#v", got)
+	}
+}
+
+func TestOutputMatcherSeedCarryReplacesBufferedPartial(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`^fresh tail$`))
+	if got := m.Feed([]byte("stale partial")); len(got) != 0 {
+		t.Fatalf("partial line must not match: %#v", got)
+	}
+	m.SeedCarry([]byte("fresh tail"))
+	if got := m.Feed([]byte("\n")); len(got) != 1 || got[0] != "fresh tail" {
+		t.Fatalf("seeded carry must replace the buffered partial: %#v", got)
+	}
+}
+
+func TestOutputMatcherSeedCarryBoundsOverlongTail(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`ready`))
+	m.SeedCarry([]byte(strings.Repeat("x", maxOutputMatcherLineBytes+1)))
+	if len(m.carry) > maxOutputMatcherLineBytes {
+		t.Fatalf("carry length = %d, want <= %d", len(m.carry), maxOutputMatcherLineBytes)
+	}
+	if got := m.Feed([]byte("ready\n")); len(got) != 0 {
+		t.Fatalf("line completing an overlong seeded tail must not match: %#v", got)
+	}
+	if got := m.Feed([]byte("server ready\n")); len(got) != 1 || got[0] != "server ready" {
+		t.Fatalf("matcher did not recover after overlong seeded tail: %#v", got)
+	}
+}
