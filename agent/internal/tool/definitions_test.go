@@ -135,8 +135,8 @@ func TestDefJobWatchParamsAndKinds(t *testing.T) {
 
 func TestDefJobWatchDescriptionIncludesSendRetryContract(t *testing.T) {
 	def := DefJobWatch([]string{"assistant.message"})
-	if !strings.Contains(def.Description, "coalesce") || !strings.Contains(def.Description, "retry busy") {
-		t.Fatalf("job_watch description must mention coalescing and retry:\n%s", def.Description)
+	if !strings.Contains(def.Description, "coalesce") || !strings.Contains(def.Description, "busy") {
+		t.Fatalf("job_watch description must mention coalescing and busy-target behavior:\n%s", def.Description)
 	}
 	props := def.Parameters["properties"].(map[string]any)
 	sendProps := props["send"].(map[string]any)["properties"].(map[string]any)

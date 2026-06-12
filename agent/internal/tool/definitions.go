@@ -76,7 +76,7 @@ func DefEditFile() llm.ToolDefinition {
 func DefShell() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "shell",
-		Description: "Run a shell command and return its stdout, stderr, and exit code inline. Use it for build, test, git, and inspection commands whose result you need now; prefer `rg` or `rg --files` for searching. Pass `background=true` to start the command as a durable job instead -- a dev server, or a long command you should not wait on -- and get back a `job_id`. `block_timeout_ms` bounds only the foreground wait: a command still running at the timeout is promoted to a background job, not killed. `max_runtime_ms` is the separate limit on how long the process itself may run before Serf stops it.",
+		Description: "Run a shell command. Foreground by default: returns stdout, stderr, and exit code inline, waiting up to `block_timeout_ms`; a command still running at the timeout is promoted to a durable background job — you get its `job_id`, the process is not killed. Set `background=true` to skip the wait and get a `job_id` immediately (a dev server, anything long); `block_timeout_ms` is a foreground-only knob, and combining it with `background=true` is rejected. `max_runtime_ms` separately caps total process runtime. Serf notifies you automatically when a background job finishes. Prefer `rg`/`rg --files` for searching.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -108,13 +108,12 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 	}
 	return llm.ToolDefinition{
 		Name: "delegate",
-		Description: "Start a NEW delegate conversation to do independent agentic work, and get back a `job_id`. " +
-			"It runs in the background by default; omit `background` unless you mean to wait inline. " +
-			"`delegate` never resumes or steers an existing delegate — to follow up on one you already " +
-			"started, use `job_send_message`. Optional: `agent_type` to pick a role (choose from the enum; " +
-			"the roles are described in your agents section); `model` and `reasoning_effort` overrides; a " +
-			"`result_schema` to request a validated structured result; or `background=false` to wait up to " +
-			"`block_timeout_ms` (a timeout leaves the job running). Judge the task from the output, not from " +
+		Description: "Start a NEW delegate conversation to do independent agentic work; returns a `job_id` " +
+			"(background by default — you are notified when it finishes). `delegate` never resumes an existing " +
+			"delegate: follow up on one with `job_send_message`. Optional: `agent_type` picks a role from the " +
+			"enum (described in your agents section); `model` and `reasoning_effort` override the defaults; " +
+			"`result_schema` requests a validated structured result; `background=false` waits inline up to " +
+			"`block_timeout_ms` (a timeout leaves the job running). Judge the work from its output, not from " +
 			"`status=\"completed\"`.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
@@ -143,11 +142,10 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 func DefJobSendMessage() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "job_send_message",
-		Description: "Send a follow-up message to a delegate by `job_id`. If that delegate is still running, your " +
-			"message steers the live run; if it has finished, Serf resumes the same conversation as a new " +
-			"job and returns the new `job_id`. Set `on_finished=\"fail\"` only when you require a currently live target — if the " +
-			"delegate finishes before this call is handled, the call fails (`target_terminal`) instead of resuming. " +
-			"The same tool delivers observer commentary to `caller`.",
+		Description: "Send a follow-up message to a delegate by `job_id` — or, from an observer, commentary to `caller`. " +
+			"A running delegate is steered mid-run; a finished one is resumed in the same conversation as a new job " +
+			"(new `job_id` returned, `background` default true). Set `on_finished=\"fail\"` only when you require a " +
+			"currently live target: the call then fails with `target_terminal` instead of resuming.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -175,16 +173,17 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 	if kinds == "" {
 		kinds = "none available this session"
 	}
-	desc := "Add an extra trigger on a running job or a visible session. Set only the trigger fields you need; " +
-		"empty `events`, zero `progress_interval_ms`, and unset `every` are unnecessary. Omit `send` to get a notification " +
-		"yourself when the trigger fires; include `send` to deliver a bounded frame to another target, " +
-		"such as an observer delegate. Triggers: `output_match`, a regex over output produced while " +
-		"the watch is active; `progress_interval_ms`, periodic; or `events`/`every`, selected " +
-		"session/job event frames (kinds available this session: " + kinds + ", or `*`). This is not how you " +
-		"learn a job finished — terminal notifications are automatic, and a job that finishes before the watch " +
-		"attaches returns `target_terminal` rather than installing a replay watch. Send deliveries coalesce by watch key " +
-		"and retry busy delegates; they arrive at session boundaries; `caller`-alias sends surface as a job-notification turn. " +
-		"Pass `clear=true` to remove a watch."
+	desc := "Add a standing trigger on a running job or a visible session (`target`: a `job_id`, `caller` for this " +
+		"session, or `*` for all visible). For a one-time \"did it print X yet\", use `job_read_output` with `block` + `grep` " +
+		"instead — watches are for recurring conditions, and completion needs no watch at all (terminal notifications are " +
+		"automatic). Triggers, set only what you need: `output_match` (RE2 over the job's output; if the retained output " +
+		"already contains a match the watch fires immediately, then again on new matches — a finished job gets a one-shot " +
+		"catch-up scan), `progress_interval_ms` (periodic), `events` (kinds this session: " + kinds + "; `every` fires on " +
+		"each Nth occurrence and requires `events` to contain exactly one kind). Delivery: omit `send` to be notified " +
+		"yourself; set `send.to` to an observer delegate's `job_id` (or `watched`) to push bounded trigger frames there — " +
+		"this also grants that observer read access to the watched job. Frames coalesce latest-wins while the target is " +
+		"busy. `include_excerpt` attaches an output excerpt (concrete job targets only). `clear=true` removes the watch " +
+		"for (target, send.to)."
 	return llm.ToolDefinition{
 		Name:        "job_watch",
 		Description: desc,
@@ -193,7 +192,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"target":               map[string]any{"type": "string", "description": "job_id, or a visible session: caller, or * for all visible."},
-				"output_match":         map[string]any{"type": "string", "description": "RE2 regex over output appended while the watch is active. Case-sensitive unless (?i). Invalid regex errors at creation."},
+				"output_match":         map[string]any{"type": "string", "description": "RE2 regex over the job's output. Case-sensitive unless (?i). Invalid regex errors at creation."},
 				"progress_interval_ms": map[string]any{"type": "integer", "description": "Periodic trigger interval in ms (min 1000, max 3600000; handler clamps later). Omit for none."},
 				"events": map[string]any{
 					"type":        "array",
@@ -224,7 +223,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 func DefJobReadOutput() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_read_output",
-		Description: "Read a job's captured output and current status by job_id. Returns a bounded tail of shell stdout/stderr or a delegate final report; reads never consume or acknowledge output. Pass grep to search retained output with a regex. block=true performs one bounded wait until new output is available or the job becomes terminal; it does not mean wait only for completion. With grep set, block=true instead waits until the retained output contains a match, the job becomes terminal, or block_timeout_ms elapses.",
+		Description: "Read a job's output and status by `job_id` — reads never consume or acknowledge anything. Returns a bounded output tail (`tail_bytes`) for shell jobs or the report (and `structured_result`, when present) for delegates. `grep` searches the job's **entire retained output** and returns matching lines. `block=true` waits up to `block_timeout_ms`: with `grep`, until a match exists, the job ends, or the timeout elapses — the one-call way to wait for \"ready\"; without `grep`, until new output or terminal state.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -245,7 +244,7 @@ func DefJobList() llm.ToolDefinition {
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List durable jobs for recovery and inspection. Filter by status or type; results are newest-first. Use this to find a job_id or inspect inventory, not to wait for completion. Short jobs may complete before a running-only list observes them; list without status or read by job_id when recency matters. Terminal statuses are completed, failed, cancelled, and stopped.",
+		Description: "List this session's durable jobs, newest first; filter by `status` or `type`. Always current — if you have waited a long time with no notification, list jobs to re-orient instead of re-running work. Terminal statuses: completed, failed, cancelled, stopped. A short job can finish before a running-only filter sees it; when recency matters, list unfiltered or read the job by id.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -269,7 +268,7 @@ func DefJobList() llm.ToolDefinition {
 func DefJobStop() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_stop",
-		Description: "Request cancellation of a running job by job_id. Use it only to stop work; it does not delete output or history. block=true performs one bounded wait for the stop to finalize. Explicitly stopped shell/delegate work normally becomes status=cancelled with reason=stopped_by_parent; status=stopped is reserved for foreground shell work cancelled before it becomes durable.",
+		Description: "Request cancellation of a running job by `job_id`; stopping never deletes output or history. `block=true` waits briefly for the stop to finalize; `include_children=true` also stops the job's nested children. Stopped work normally lands as `status=cancelled`, `reason=stopped_by_parent`.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
