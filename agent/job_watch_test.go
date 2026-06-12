@@ -4716,4 +4716,186 @@ func TestDrainEnqueuesTokensForChildCallerPendings(t *testing.T) {
 	}
 }
 
+func TestWatchDeliveryCounterIncrementsPerNotification(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
+	cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: "caller"}]
+	if cfg == nil {
+		t.Fatal("no-send caller watch not installed")
+	}
+
+	for i := 1; i <= 3; i++ {
+		jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+		jm.mu.Lock()
+		got := cfg.deliveries
+		jm.mu.Unlock()
+		if got != i {
+			t.Fatalf("after %d fires, deliveries = %d, want %d", i, got, i)
+		}
+	}
+}
+
+func TestWatchDeliveryCounterCountsSidecarSend(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	seedCommonWatchSendTargets(t, jm)
+	var sent []sendMessageArgs
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "saw ready"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "job_obs"}]
+	if cfg == nil {
+		t.Fatal("sidecar send watch not installed")
+	}
+
+	// Observation only records pending intent; no delivery, no count yet.
+	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	jm.mu.Lock()
+	beforeDrain := cfg.deliveries
+	jm.mu.Unlock()
+	if beforeDrain != 0 {
+		t.Fatalf("observation must not count a delivery; deliveries = %d", beforeDrain)
+	}
+
+	// The loop-owned drain delivers and settles; the settle is the model-facing
+	// delivery completion that counts.
+	drainWatchSendsVia(t, jm, send)
+	if len(sent) != 1 {
+		t.Fatalf("drain must deliver once, got %d", len(sent))
+	}
+	jm.mu.Lock()
+	afterDrain := cfg.deliveries
+	jm.mu.Unlock()
+	if afterDrain != 1 {
+		t.Fatalf("a settled sidecar send must count one delivery, deliveries = %d", afterDrain)
+	}
+}
+
+func TestWatchDeliveryCounterCountsCallerSettle(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	cfg, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, "frame-v2")
+	s := &Session{id: jm.sessionID, jobManager: jm, subagents: newSubagentManager(nil)}
+
+	resolvedJM, resolvedCfg, state, ok := s.resolveWatchSendToken(&watchSendToken{
+		Key:        key,
+		UpdateSeq:  2,
+		DeliveryID: deliveryID,
+	})
+	if !ok {
+		t.Fatal("current caller token must resolve ok")
+	}
+
+	if err := resolvedJM.settleWatchSendDelivered(resolvedCfg, state); err != nil {
+		t.Fatalf("settleWatchSendDelivered: %v", err)
+	}
+	jm.mu.Lock()
+	got := cfg.deliveries
+	jm.mu.Unlock()
+	if got != 1 {
+		t.Fatalf("a settled caller frame must count one delivery, deliveries = %d", got)
+	}
+}
+
+func TestWatchDeliveryBudgetAutoClearsWithOneFinalNotification(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: "caller"}
+	cfg := jm.watches[key]
+	if cfg == nil {
+		t.Fatal("no-send caller watch not installed")
+	}
+
+	for i := 0; i < watchDeliveryBudget; i++ {
+		jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	}
+
+	if jm.watches[key] != nil {
+		t.Fatalf("watch must be auto-cleared at the delivery budget; still present")
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watchCount = %d, want 0 after auto-clear", jm.watchCount())
+	}
+
+	wantMsg := "watch cleared: caller delivered 50 times; re-arm with a tighter condition (higher every, narrower output_match, or longer progress_interval_ms)"
+	var cleared []jobNotification
+	for _, n := range notified {
+		if strings.Contains(n.Reason, "watch cleared:") {
+			cleared = append(cleared, n)
+		}
+	}
+	if len(cleared) != 1 {
+		t.Fatalf("want exactly one cleared notification, got %d: %+v", len(cleared), cleared)
+	}
+	if cleared[0].Reason != wantMsg {
+		t.Fatalf("cleared reason = %q, want %q", cleared[0].Reason, wantMsg)
+	}
+	block := formatJobNotificationBlock(cleared[0])
+	if !strings.Contains(block, wantMsg) {
+		t.Fatalf("rendered block must contain the full cleared message; got:\n%s", block)
+	}
+
+	// 50 regular notifications + exactly one cleared notification.
+	if len(notified) != watchDeliveryBudget+1 {
+		t.Fatalf("total notifications = %d, want %d", len(notified), watchDeliveryBudget+1)
+	}
+
+	// No further deliveries after clear: firing again produces nothing.
+	before := len(notified)
+	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	if len(notified) != before {
+		t.Fatalf("a cleared watch must not fire again; notifications grew from %d to %d", before, len(notified))
+	}
+}
+
+func TestWatchDeliveryBudgetDoesNotDoubleClear(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: "caller"}
+	cfg := jm.watches[key]
+	if cfg == nil {
+		t.Fatal("no-send caller watch not installed")
+	}
+
+	for i := 0; i < watchDeliveryBudget; i++ {
+		jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	}
+
+	// Simulate an already-in-flight settle that crossed the budget again on a
+	// cfg that is already detached: the auto-clear must be a no-op (no second
+	// cleared notification).
+	jm.mu.Lock()
+	cfg.deliveries++ // 51: past the cap, never re-crosses
+	jm.mu.Unlock()
+	jm.autoClearWatchOverBudget(cfg)
+
+	var cleared int
+	for _, n := range notified {
+		if strings.Contains(n.Reason, "watch cleared:") {
+			cleared++
+		}
+	}
+	if cleared != 1 {
+		t.Fatalf("auto-clear on an already-detached cfg must not re-notify; cleared count = %d", cleared)
+	}
+}
+
 var _ = jobstore.JobShell

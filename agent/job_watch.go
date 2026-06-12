@@ -44,7 +44,19 @@ const (
 	watchReadErrorMaxChars     = 256
 	watchTruncatedIndicator    = "\n[truncated]"
 	defaultWatchSendPendingCap = 32
+	// watchDeliveryBudget caps model-facing deliveries per watch config before the
+	// circuit breaker auto-clears it (spec §4 F1). Hard-coded, no config knob.
+	watchDeliveryBudget = 50
 )
+
+// watchBudgetClearedMessage is the single final notification text emitted when a
+// watch trips the delivery budget (spec §4 F1). The count is the budget itself.
+func watchBudgetClearedMessage(target string) string {
+	return fmt.Sprintf(
+		"watch cleared: %s delivered %d times; re-arm with a tighter condition (higher every, narrower output_match, or longer progress_interval_ms)",
+		target, watchDeliveryBudget,
+	)
+}
 
 type watchKey struct {
 	VisibleSessionID string
@@ -73,6 +85,12 @@ type watchConfig struct {
 	rejectingDelivery bool
 	nextUpdateSeq     uint64
 	progressStop      chan struct{}
+	// deliveries counts model-facing deliveries for this watch config (rendered
+	// caller frames + delivered sidecar sends + no-send watch notifications). At
+	// watchDeliveryBudget the watch auto-clears (circuit breaker, spec §4 F1).
+	// Counted jm-side under jm.mu; survives the observation/drain split with the
+	// cfg pointer; a replacement cfg from newWatchConfig starts fresh at 0.
+	deliveries int
 }
 
 type watchArgs struct {
@@ -211,7 +229,10 @@ func (jm *jobManager) watchConfigForKeyLocked(key jobstore.WatchSendKey) *watchC
 
 // settleWatchSendDelivered durably records delivery for a watch-send state and
 // removes its pending entry. The caller is responsible for the currency guard
-// (isCurrentPendingWatchSend) and for any error-notification behavior.
+// (isCurrentPendingWatchSend) and for any error-notification behavior. This is
+// the model-facing completion for both watch-send rails (delegate sidecar sends
+// and caller frames), so it is where the send half of the delivery budget is
+// counted; observation/coalescing does not count (spec §4 F1).
 func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.WatchSendState) error {
 	delivered := state
 	if err := jm.appendWatchSendEvents([]jobstore.Event{{
@@ -222,6 +243,12 @@ func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.
 		return err
 	}
 	jm.removePendingWatchSend(cfg, delivered.Key, delivered.UpdateSeq)
+	jm.mu.Lock()
+	crossedBudget := jm.recordWatchDeliveryLocked(cfg)
+	jm.mu.Unlock()
+	if crossedBudget {
+		jm.autoClearWatchOverBudget(cfg)
+	}
 	return nil
 }
 
@@ -784,6 +811,85 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 	}, nil
 }
 
+// recordWatchDeliveryLocked increments the model-facing delivery count for cfg
+// and reports whether this increment is the one that crossed the delivery
+// budget. The crossing is latched to exactly one true per cfg lifetime: the
+// counter only ever rises, so it equals watchDeliveryBudget on a single
+// increment. The caller must hold jm.mu. A true result means the caller should
+// schedule autoClearWatchOverBudget(cfg) AFTER releasing jm.mu (the auto-clear
+// does durable I/O and re-takes jm.mu; it must never run from inside an
+// observation's critical section, spec §3).
+func (jm *jobManager) recordWatchDeliveryLocked(cfg *watchConfig) (crossedBudget bool) {
+	if cfg == nil {
+		return false
+	}
+	cfg.deliveries++
+	return cfg.deliveries == watchDeliveryBudget
+}
+
+// watchKeyForConfigLocked finds the live map key holding cfg. ok=false means cfg
+// is no longer in jm.watches (already cleared, replaced, or detached). The caller
+// must hold jm.mu.
+func watchKeyForConfigLocked(jm *jobManager, cfg *watchConfig) (watchKey, bool) {
+	for key, c := range jm.watches {
+		if c == cfg {
+			return key, true
+		}
+	}
+	return watchKey{}, false
+}
+
+// autoClearWatchOverBudget tears down exactly the one watch config that tripped
+// the delivery budget and emits ONE final cleared notification (spec §4 F1). It
+// is the circuit breaker's teardown: jm-state mutation + durable drop of pending
+// sends + one enqueue + one kick — NO delivery from observation (spec §3). It
+// mirrors clearWatch's terminal-snapshot machinery but operates on a single
+// (key, cfg) pair, so a no-send watch sharing a target with other watches does
+// not over-clear its neighbors.
+//
+// The reverse lookup under jm.mu doubles as the no-double-fire latch: once the
+// cfg is detached, a later in-flight settle that increments past the budget
+// finds no live key and returns without re-notifying.
+// autoClearOverBudgetWatches runs autoClearWatchOverBudget for each cfg that
+// crossed the budget during a single observation pass. Call it AFTER releasing
+// the observation's jm.mu critical section, alongside enqueueWatchNotifications.
+func (jm *jobManager) autoClearOverBudgetWatches(cfgs []*watchConfig) {
+	for _, cfg := range cfgs {
+		jm.autoClearWatchOverBudget(cfg)
+	}
+}
+
+func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
+	jm.mu.Lock()
+	key, ok := watchKeyForConfigLocked(jm, cfg)
+	if !ok {
+		jm.mu.Unlock()
+		return
+	}
+	targets := []watchConfigTerminalSnapshot{{
+		key:      key,
+		cfg:      cfg,
+		terminal: watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
+	}}
+	markWatchConfigSnapshotsRejectingLocked(targets)
+	jm.mu.Unlock()
+
+	dropped := terminalSnapshots(targets)
+	applied, err := jm.appendWatchSendTerminalSnapshots(dropped)
+	if err != nil {
+		jm.removeWatchSendTerminalSnapshots(applied)
+		jm.rollbackWatchConfigSnapshotsRejecting(targets)
+		return
+	}
+	jm.detachWatchConfigSnapshots(targets)
+	jm.removeWatchSendTerminalSnapshots(applied)
+
+	jm.enqueueWatchNotifications([]jobNotification{
+		watchNotification("", watchBudgetClearedMessage(cfg.target)),
+	})
+	jm.kick()
+}
+
 func (jm *jobManager) hasWatchClearState(key watchKey) bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
@@ -905,6 +1011,7 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 	}
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
+	var overBudget []*watchConfig
 
 	jm.mu.Lock()
 	for _, cfg := range jm.watches {
@@ -936,6 +1043,9 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 				notifyJobID = ""
 			}
 			notifications = append(notifications, watchNotification(notifyJobID, fmt.Sprintf("event: %s", kind)))
+			if jm.recordWatchDeliveryLocked(cfg) {
+				overBudget = append(overBudget, cfg)
+			}
 		}
 	}
 	jm.mu.Unlock()
@@ -944,6 +1054,7 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 	// not re-enter session event emission (spec §3).
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
+	jm.autoClearOverBudgetWatches(overBudget)
 }
 
 func isWatchOriginEventData(data events.EventData) bool {
@@ -987,6 +1098,7 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
 	}
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
+	var overBudget []*watchConfig
 
 	jm.mu.Lock()
 	for _, cfg := range jm.watches {
@@ -999,6 +1111,9 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
 				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match))
 			} else {
 				notifications = append(notifications, watchNotification(jobID, "output_match: "+match))
+				if jm.recordWatchDeliveryLocked(cfg) {
+					overBudget = append(overBudget, cfg)
+				}
 			}
 		}
 	}
@@ -1006,6 +1121,7 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
 
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
+	jm.autoClearOverBudgetWatches(overBudget)
 }
 
 func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, []watchSendDelivery) {
@@ -1067,6 +1183,7 @@ func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-
 func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
+	var overBudget bool
 
 	jm.mu.Lock()
 	if jm.closing {
@@ -1089,11 +1206,15 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 			notifyJobID = ""
 		}
 		notifications = append(notifications, watchNotification(notifyJobID, "progress_tick"))
+		overBudget = jm.recordWatchDeliveryLocked(cfg)
 	}
 	jm.mu.Unlock()
 
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
+	if overBudget {
+		jm.autoClearWatchOverBudget(cfg)
+	}
 	return true
 }
 
