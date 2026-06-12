@@ -3847,9 +3847,13 @@ func TestOrphanToolRepairRetriesPendingCallerWatchSends(t *testing.T) {
 		t.Fatalf("restore watch sends: %v", err)
 	}
 
+	// Orphan repair drains pending watch sends, enqueuing the caller frame as a
+	// notification token; the accept boundary renders it into the notification turn
+	// (a TurnSteering reminder in history) and settles the pending.
 	if repairs := s.repairOrphanedToolResults("test"); repairs != 1 {
 		t.Fatalf("repairOrphanedToolResults repairs = %d, want 1", repairs)
 	}
+	s.acceptNotificationInput(context.Background())
 	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 1 {
 		t.Fatalf("watch caller deliveries = %d, want 1 after orphan repair", got)
 	}
@@ -3871,7 +3875,11 @@ func TestProcessingExitRetriesPendingCallerWatchSends(t *testing.T) {
 		t.Fatalf("restore watch sends: %v", err)
 	}
 
+	// The processing-exit boundary drains pending watch sends (enqueuing the caller
+	// frame as a notification token); the accept boundary renders it into the
+	// notification turn and settles the pending.
 	s.finishProcessingAtBoundary(context.Background(), SessionIdle)
+	s.acceptNotificationInput(context.Background())
 
 	if got := s.State(); got != SessionIdle {
 		t.Fatalf("state = %q, want idle", got)
@@ -4062,12 +4070,7 @@ func TestWatchOriginatedSendToRunningDelegateSteersAndMarksLifecycleFromWatch(t 
 		t.Fatalf("decode transcript ref: %v", err)
 	}
 
-	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, sess.jobManager)
-	sess.jobManager.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
-		sent = append(sent, a)
-		return sendMessageResult{}
-	}
 	if _, err := sess.jobManager.configureWatch(watchArgs{
 		Target: "caller",
 		Events: []string{"job.notification"},
@@ -4121,8 +4124,8 @@ gotEnd:
 	if !end.FromWatch {
 		t.Fatalf("watch-originated send did not mark existing job finished FromWatch; event = %+v", end)
 	}
-	if len(sent) != 0 {
-		t.Fatalf("watch-originated running delegate completion watch sends = %d, want 0: %#v", len(sent), sent)
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("watch-originated running delegate completion recorded watch sends = %d, want 0: %+v", len(pending), pending)
 	}
 }
 
@@ -4751,6 +4754,21 @@ func waitForSteeringEntryContaining(t *testing.T, s *Session, text string) strin
 	}
 	t.Fatalf("no steering entry containing %q; queue = %+v", text, s.SteeringQueueSnapshot())
 	return ""
+}
+
+// waitForJobNotification blocks until at least one job notification (e.g. a
+// caller watch-send wake token enqueued by asynchronous observation) is pending,
+// so a test can then accept it the way the live loop would on wake.
+func waitForJobNotification(t *testing.T, s *Session) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.peekNotifications() > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("no job notification became pending within deadline")
 }
 
 func steeringEntriesContaining(s *Session, text string) []string {

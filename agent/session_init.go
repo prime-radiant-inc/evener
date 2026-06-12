@@ -125,7 +125,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}()
 	jm.forward = cfg.spawn.forwardJobEvent
 	jm.parentJobID = cfg.spawn.parentJobID
-	jm.send = s.sendDelegateMessage
 	jm.wake = s.notify
 	jm.emit = s.emit
 	s.jobManager = jm
@@ -334,7 +333,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	jm.forward = cfg.spawn.forwardJobEvent
 	jm.parentJobID = cfg.spawn.parentJobID
 	jm.enqueue = s.enqueueJobNotificationAndNotify
-	jm.send = s.sendDelegateMessage
 	jm.wake = s.notify
 	jm.emit = s.emit
 	s.jobManager = jm

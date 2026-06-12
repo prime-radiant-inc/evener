@@ -564,6 +564,14 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 		t.Fatalf("job_watch returned error for returned job_id %s: %s", shellOut.JobID, watchRes.Output)
 	}
 
+	// The shell prints the token asynchronously; observation enqueues a caller
+	// wake token on the notification queue (no synchronous delivery, spec §3). The
+	// live loop would wake and accept; here we wait for the wake and accept it,
+	// which renders the frame into the notification turn (a TurnSteering in
+	// history) and settles the pending.
+	waitForJobNotification(t, s)
+	drainAndAccept(t, s)
+
 	first := waitForSteeringEntryContaining(t, s, token)
 	if !strings.Contains(first, token) || !strings.Contains(first, "output_match watch fired") {
 		t.Fatalf("watch delivery = %q, want configured message and token", first)

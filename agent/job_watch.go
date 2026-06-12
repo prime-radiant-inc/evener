@@ -1109,14 +1109,6 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 	return d
 }
 
-func (jm *jobManager) deliverWatchSend(ctx context.Context, d watchSendDelivery) error {
-	state, cfg, ok, err := jm.recordWatchSend(d)
-	if err != nil || !ok {
-		return err
-	}
-	return jm.deliverPendingWatchSend(ctx, cfg, state, false, jm.send)
-}
-
 // recordWatchSend persists a fired send as pending and returns its state.
 // ok=false means the send was superseded or unresolvable (already handled).
 // Pure observation: no delivery, no Session calls (spec §3).
@@ -1191,10 +1183,10 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 	}
 }
 
-// sendMessageFunc delivers a watch-send frame to its resolved target. The drain
-// passes s.sendDelegateMessage (loop-owned delivery); the test-only
-// deliverWatchSend path passes jm.send. Either may be nil, in which case the
-// pending send is dropped as undeliverable.
+// sendMessageFunc delivers a watch-send frame to its resolved target. The
+// loop-owned drain passes s.sendDelegateMessage; this is the only delivery path
+// for watch sends (observation never delivers, spec §3). A nil sender drops the
+// pending send as undeliverable.
 type sendMessageFunc func(context.Context, sendMessageArgs) sendMessageResult
 
 func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchConfig, state jobstore.WatchSendState, ensurePending bool, send sendMessageFunc) error {
@@ -1837,17 +1829,6 @@ func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager,
 	return errors.Join(errs...)
 }
 
-func (jm *jobManager) retryPendingWatchSendsForTarget(ctx context.Context, target string) error {
-	return jm.retryPendingWatchSendsForTargets(ctx, map[string]bool{target: true})
-}
-
-func (jm *jobManager) retryPendingWatchSendsForTargets(ctx context.Context, targets map[string]bool) error {
-	deliveries := jm.pendingWatchSendDeliveries(func(state *jobstore.WatchSendState) bool {
-		return targets[state.Key.ResolvedSendTo]
-	})
-	return jm.retryPendingWatchSendDeliveries(ctx, deliveries)
-}
-
 func (s *Session) retryRestoredPendingWatchSends(ctx context.Context) error {
 	if s == nil || s.jobManager == nil {
 		return nil
@@ -1914,16 +1895,6 @@ func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliv
 	// Delivering to a terminal delegate resumes it; restore may only project
 	// resumability, so keep the frame pending for an explicit later send/retry.
 	return watchSendBusy, ""
-}
-
-func (jm *jobManager) retryPendingWatchSendDeliveries(ctx context.Context, deliveries []pendingWatchSendDelivery) error {
-	var errs []error
-	for _, delivery := range deliveries {
-		if err := jm.deliverPendingWatchSend(ctx, delivery.cfg, delivery.state, true, jm.send); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
 }
 
 func (jm *jobManager) pendingWatchSendDeliveries(include func(*jobstore.WatchSendState) bool) []pendingWatchSendDelivery {

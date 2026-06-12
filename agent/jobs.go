@@ -2,7 +2,6 @@ package agent
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,7 +48,6 @@ type jobManager struct {
 	forward       func(jobstore.Event) error
 	parentJobID   string
 	enqueue       func(jobNotification)
-	send          func(context.Context, sendMessageArgs) sendMessageResult
 	// wake kicks the owning session's drain loop (wired to Session.notify).
 	// nil for test/restore-only managers. Observation paths call kick() after
 	// persisting watch-send intent; they never deliver (spec §3).

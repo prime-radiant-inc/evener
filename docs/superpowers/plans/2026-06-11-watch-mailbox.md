@@ -608,30 +608,16 @@ No drain-loop-tail change is needed: a wake submits an `EntryNotification`; an a
 **Files:**
 - Modify: `agent/job_watch_test.go`, `agent/job_watch_observer_test.go`, `agent/job_delegate_test.go`, `agent/job_notify_test.go`, others surfaced by the suite
 
-- [ ] **Step 1: Add the helper**
+- [x] **Step 1: Add the helper** — `drainAndAccept` added in Commit A (it is referenced by Commit A's converted caller tests, which must compile). Also added three jm-level test helpers in B: `drainWatchSendsVia` (drives the drain's `deliverPendingWatchSend` primitive for delegate pendings with a captured sender, returns joined errors like the live drain), `deliverWatchSendVia` (replaces the deleted `jobManager.deliverWatchSend`, sender as a param), and `waitForJobNotification`.
 
-```go
-// drainAndAccept advances watch delivery the way the live loop does: one
-// drain pass (delegate targets) + one notification accept (caller tokens).
-func drainAndAccept(t *testing.T, s *Session) {
-	t.Helper()
-	if err := s.drainPendingWatchSends(context.Background()); err != nil {
-		t.Fatalf("drain: %v", err)
-	}
-	s.acceptNotificationInput(context.Background()) // ok to no-op on empty queue
-}
-```
+(Pure-jm tests assert PENDING state; delivery-args tests drive the surviving `deliverPendingWatchSend` primitive with a capture func — the structural deletion is the `jm.send` FIELD, not the ability to drive delivery explicitly.)
 
-(If a test has no `*Session` — pure-jm tests — assert on PENDING state instead: that is the new observable contract at jm level.)
+- [x] **Step 2: Mechanical re-anchor, file by file.** Done with the no-weakening transform. Two documented semantic shifts where the OLD assertion tested deleted synchronous behavior (re-anchored to the replacement, NOT weakened):
+  - `TestWatchSendRestoreRetriesPendingBeforeTerminalNotifications`: the strict `delivered<notification` event ordering is inverted by design (caller sends moved from between-rounds steering to between-inputs notifications, so the terminal `job_notification_pending` is armed at restore and the watch send settles at the accept turn). Re-anchored to "both the watch_send_delivered and the terminal job_notification_pending are appended; the frame renders".
+  - `TestWatchSendTerminalPendingPersistenceFailureRetriesFinalization` → `...RetainsFrameForDrain`: a watch-send pending-persist failure during finalize no longer blocks arming (spec §4.1 decouples them); `rememberUnpersistedTerminalPendingWatchSend` retains the final frame in runtime terminalFlush and the next drain re-persists+delivers it. The preserved guarantee (final frame not lost, retried) holds via the drain. Verified with a probe that the frame is retained and delivered.
 
-- [ ] **Step 2: Mechanical re-anchor, file by file.** The transform rule, applied to every failure from Tasks 1.4-1.6:
-
-- "fired → delivered immediately" becomes "fired → **pending** (assert it), then `drainAndAccept` → **delivered** (same final assertion as before)".
-- Assertions may move; they may NOT be deleted or loosened. A test that asserted frame content still asserts the same frame content after the drain. If a test cannot be expressed in the new model, STOP and escalate — do not delete it.
-- Tests of the deleted functions (`deliverWatchCallerMessageAtBoundary` etc.) convert to tests of their replacement (token render/settle, drain) preserving each behavioral assertion (busy-bounce → token-renders-nothing-while-stale, etc.). List every such conversion in the commit message.
-
-- [ ] **Step 3: Full gates** — repo root: `make test && make lint`. All four modules green.
-- [ ] **Step 4: Commit** — `test(job-control): re-anchor watch suite on drain/accept delivery`
+- [x] **Step 3: Full gates** — `make test` EXIT=0, `make lint` EXIT=0 (all four modules), `go test ./ -race` EXIT=0 (agent, fresh). Residue gate empty.
+- [x] **Step 4: Commit** — `test(job-control): re-anchor watch suite on drain/accept delivery`
 
 ### Task 1.8: Phase-1 architecture docs
 

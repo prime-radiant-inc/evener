@@ -29,6 +29,42 @@ func drainAndAccept(t *testing.T, s *Session) {
 	s.acceptNotificationInput(context.Background()) // ok to no-op on empty queue
 }
 
+// drainWatchSendsVia delivers every pending non-caller watch send through the
+// drain's delivery primitive (deliverPendingWatchSend), capturing the delivery
+// args via the supplied sender — the way the live drain calls s.sendDelegateMessage.
+// Caller-targeted sends route to notification tokens, not this primitive, so they
+// are skipped (mirroring drainJobManagerWatchSends). Per-delivery errors are
+// returned joined (the live drain logs them at the boundary and continues), so
+// crash-recovery tests can assert the resulting state. Pure-jm tests use this to
+// observe a delegate-targeted delivery after recording pending intent.
+func drainWatchSendsVia(t *testing.T, jm *jobManager, send sendMessageFunc) error {
+	t.Helper()
+	var errs []error
+	for _, d := range jm.pendingWatchSendDeliveries(nil) {
+		if d.state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
+			continue
+		}
+		if err := jm.deliverPendingWatchSend(context.Background(), d.cfg, d.state, true, send); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// deliverWatchSendVia records a fired delivery as pending and delivers it through
+// the drain's primitive with the supplied sender. It mirrors the (now-deleted)
+// jobManager.deliverWatchSend, but takes the sender as a parameter — the structural
+// point of the mailbox design is that delivery is never reachable from a jobManager
+// field, only from explicit loop-owned (or, in tests, explicit) delivery.
+func deliverWatchSendVia(t *testing.T, jm *jobManager, d watchSendDelivery, send sendMessageFunc) error {
+	t.Helper()
+	state, cfg, ok, err := jm.recordWatchSend(d)
+	if err != nil || !ok {
+		return err
+	}
+	return jm.deliverPendingWatchSend(context.Background(), cfg, state, false, send)
+}
+
 func TestConfigureWatchRequiresCondition(t *testing.T) {
 	jm := newTestJM(t)
 	_, err := jm.configureWatch(watchArgs{Target: "caller"})
@@ -421,12 +457,7 @@ func TestEventWatchIgnoresUnwatchedKind(t *testing.T) {
 
 func TestEventWatchIgnoresWatchOriginatedSubagentEvents(t *testing.T) {
 	jm := newTestJM(t)
-	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
-		sent = append(sent, a)
-		return sendMessageResult{}
-	}
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "caller",
 		Events: []string{"job.notification"},
@@ -436,24 +467,19 @@ func TestEventWatchIgnoresWatchOriginatedSubagentEvents(t *testing.T) {
 	}
 
 	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_obs", JobType: "delegate", Status: "completed", FromWatch: true})
-	if len(sent) != 0 {
-		t.Fatalf("watch-originated job event retriggered watch send: %#v", sent)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("watch-originated job event retriggered watch send: %+v", pending)
 	}
 
 	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_worker", JobType: "delegate", Status: "completed"})
-	if len(sent) != 1 {
-		t.Fatalf("ordinary job event must trigger one watch send, got %d", len(sent))
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("ordinary job event must record one pending watch send, got %d", len(pending))
 	}
 }
 
 func TestWatchOriginSuppressesDelegateLifecycleWatchSends(t *testing.T) {
 	jm := newTestJM(t)
-	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
-		sent = append(sent, a)
-		return sendMessageResult{}
-	}
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
@@ -465,19 +491,14 @@ func TestWatchOriginSuppressesDelegateLifecycleWatchSends(t *testing.T) {
 	jm.onSessionEvent(events.EventJobStarted, events.JobStartedData{JobID: "job_obs", JobType: "delegate", Status: "running", FromWatch: true})
 	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_obs", JobType: "delegate", Status: "completed", FromWatch: true})
 
-	if len(sent) != 0 {
-		t.Fatalf("watch-originated delegate lifecycle events triggered watch sends: %#v", sent)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("watch-originated delegate lifecycle events recorded watch sends: %+v", pending)
 	}
 }
 
 func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 	jm := newTestJM(t)
-	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
-		sent = append(sent, a)
-		return sendMessageResult{}
-	}
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	_, err := jm.configureWatch(watchArgs{
@@ -490,16 +511,23 @@ func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 	}
 	jm.onSessionEvent(events.EventToolCallEnd, nil)
 
-	if len(sent) != 1 {
-		t.Fatalf("concrete job event watch must send once, got %d", len(sent))
+	// Observation records the send as pending (frame snapshot included); delivery
+	// is the loop-owned drain's job.
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != 1 {
+		t.Fatalf("concrete job event watch must record one pending send, got %d", len(pending))
 	}
-	if sent[0].Target != "job_obs" {
-		t.Fatalf("delivery target = %q, want job_obs", sent[0].Target)
+	var state *jobstore.WatchSendState
+	for _, p := range pending {
+		state = p
 	}
-	if !strings.Contains(sent[0].Message, "observe") ||
-		!strings.Contains(sent[0].Message, rec.JobID) ||
-		!strings.Contains(sent[0].Message, "event: TOOL_CALL_END") {
-		t.Fatalf("delivery frame = %q, want configured message, job id, and trigger", sent[0].Message)
+	if state.Key.ResolvedSendTo != "job_obs" {
+		t.Fatalf("pending target = %q, want job_obs", state.Key.ResolvedSendTo)
+	}
+	if !strings.Contains(state.Frame, "observe") ||
+		!strings.Contains(state.Frame, rec.JobID) ||
+		!strings.Contains(state.Frame, "event: TOOL_CALL_END") {
+		t.Fatalf("pending frame = %q, want configured message, job id, and trigger", state.Frame)
 	}
 }
 
@@ -580,7 +608,7 @@ func TestWatchSendDeliversFrameToTarget(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
 	}
@@ -594,7 +622,12 @@ func TestWatchSendDeliversFrameToTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}
+	// Observation records the send as pending; the loop-owned drain delivers it.
 	jm.feedJobOutput(rec.JobID, []byte("server READY\n"))
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("observation must record one pending send, got %d", len(pending))
+	}
+	drainWatchSendsVia(t, jm, send)
 
 	if len(sent) != 1 {
 		t.Fatalf("a send watch must deliver once, got %d", len(sent))
@@ -619,7 +652,7 @@ func TestWatchSendBatchContinuesAfterNonTerminalPersistenceFailure(t *testing.T)
 	seedCommonWatchSendTargets(t, jm)
 	seedWatchSendDelegateTarget(t, jm, "job_obs_a")
 	seedWatchSendDelegateTarget(t, jm, "job_obs_b")
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
 	}
@@ -651,11 +684,14 @@ func TestWatchSendBatchContinuesAfterNonTerminalPersistenceFailure(t *testing.T)
 		return realAppend(e)
 	}
 
+	// Observation records pending for both targets; one persist fails, the other
+	// survives. The drain delivers only the survivor.
 	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
-
 	if failedTarget == "" {
 		t.Fatal("test did not intercept pending append")
 	}
+	drainWatchSendsVia(t, jm, send)
+
 	if len(sent) != 1 || sent[0].Target == failedTarget {
 		t.Fatalf("sent after partial batch failure = %+v, failed target %q; want only later independent target", sent, failedTarget)
 	}
@@ -668,7 +704,7 @@ func TestWatchSendBusyKeepsPendingAndEmitsNoDiagnostic(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return busyWatchSendResult()
 	}
@@ -684,6 +720,10 @@ func TestWatchSendBusyKeepsPendingAndEmitsNoDiagnostic(t *testing.T) {
 		t.Fatalf("configure: %v", err)
 	}
 	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("observation must record one pending send, got %d", len(pending))
+	}
+	drainWatchSendsVia(t, jm, send)
 
 	if len(sent) != 1 {
 		t.Fatalf("send attempts = %d, want 1", len(sent))
@@ -702,7 +742,7 @@ func TestWatchSendRetryAfterIdleDeliversLatestCoalescedFrame(t *testing.T) {
 	busy := true
 	var delivered []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		if busy {
 			return busyWatchSendResult()
 		}
@@ -718,8 +758,10 @@ func TestWatchSendRetryAfterIdleDeliversLatestCoalescedFrame(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
+	// Two fires while the target is busy coalesce to a single latest-frame pending.
 	jm.feedJobOutput(source.JobID, []byte("first ready\n"))
 	jm.feedJobOutput(source.JobID, []byte("second ready\n"))
+	drainWatchSendsVia(t, jm, send) // busy: delivery bounces, pending kept
 	pending := loadWatchSendRecord(t, jm).Pending
 	if len(pending) != 1 {
 		t.Fatalf("pending before retry = %d, want 1: %+v", len(pending), pending)
@@ -733,11 +775,9 @@ func TestWatchSendRetryAfterIdleDeliversLatestCoalescedFrame(t *testing.T) {
 		}
 	}
 
+	// Once the target is idle, the next drain delivers the latest coalesced frame.
 	busy = false
-	code := 0
-	if err := jm.finalize(target.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
-		t.Fatalf("finalize target: %v", err)
-	}
+	drainWatchSendsVia(t, jm, send)
 
 	if len(delivered) != 1 {
 		t.Fatalf("retry delivered sends = %d, want 1", len(delivered))
@@ -791,9 +831,11 @@ func TestWatchSendToResumedRunningDelegateSteersActiveRun(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure watch: %v", err)
 	}
+	// Observation records the send as pending; the loop-owned drain steers it to
+	// the resumed (running) delegate.
 	sess.jobManager.feedJobOutput(source.JobID, []byte("server ready\n"))
-	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 0 {
-		t.Fatalf("pending after watch send to resumed delegate = %+v, want none", pending)
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 1 {
+		t.Fatalf("pending after observation = %+v, want one recorded send", pending)
 	}
 	_, childID, err := decodeRef(first.TranscriptRef)
 	if err != nil {
@@ -802,6 +844,16 @@ func TestWatchSendToResumedRunningDelegateSteersActiveRun(t *testing.T) {
 	sub := sess.subagents.get(childID)
 	if sub == nil {
 		t.Fatalf("subagent %s not found", childID)
+	}
+	if queue := sub.sess.SteeringQueueSnapshot(); len(queue) != 0 {
+		t.Fatalf("steering queue before drain = %+v, want empty (observation must not deliver)", queue)
+	}
+
+	if err := sess.drainPendingWatchSends(context.Background()); err != nil {
+		t.Fatalf("drainPendingWatchSends: %v", err)
+	}
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("pending after drain = %+v, want delivered", pending)
 	}
 	queue := sub.sess.SteeringQueueSnapshot()
 	if len(queue) != 1 {
@@ -834,7 +886,7 @@ func TestWatchSendDeliveredAppendedOnlyAfterSendSucceeds(t *testing.T) {
 		return realAppend(e)
 	}
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		eventsBeforeSendReturn = append(eventsBeforeSendReturn, eventKinds...)
 		return sendMessageResult{}
 	}
@@ -847,7 +899,9 @@ func TestWatchSendDeliveredAppendedOnlyAfterSendSucceeds(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
+	// Observation records pending; the drain delivers and then marks delivered.
 	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	drainWatchSendsVia(t, jm, send)
 
 	if containsEventKind(eventsBeforeSendReturn, jobstore.EventWatchSendDelivered) {
 		t.Fatalf("delivered event was appended before send returned: %v", eventsBeforeSendReturn)
@@ -866,7 +920,7 @@ func TestWatchSendCrashAfterSuccessBeforeDeliveredRetriesSameDeliveryID(t *testi
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
 	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
 	}
@@ -886,7 +940,10 @@ func TestWatchSendCrashAfterSuccessBeforeDeliveredRetriesSameDeliveryID(t *testi
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
+	// The send succeeds in the drain, but the delivered-marker append crashes, so
+	// the pending survives for a post-restart retry.
 	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	drainWatchSendsVia(t, jm, send)
 	if len(sent) != 1 {
 		t.Fatalf("initial sends = %d, want 1", len(sent))
 	}
@@ -911,13 +968,13 @@ func TestWatchSendCrashAfterSuccessBeforeDeliveredRetriesSameDeliveryID(t *testi
 	}
 	defer reopened.store.Close()
 	var retried []sendMessageArgs
-	reopened.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	retriedSend := func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		retried = append(retried, a)
 		return sendMessageResult{}
 	}
-	if err := reopened.retryPendingWatchSendsForTarget(context.Background(), "job_obs"); err != nil {
-		t.Fatalf("retry pending: %v", err)
-	}
+	// After restart, restoreWatchSendPending re-loaded the pending; the drain
+	// retries delivery with the SAME delivery_id.
+	drainWatchSendsVia(t, reopened, retriedSend)
 
 	if len(retried) != 1 {
 		t.Fatalf("retry sends = %d, want 1", len(retried))
@@ -1014,9 +1071,13 @@ func TestWatchSendRestoreRetriesPendingBeforeTerminalNotifications(t *testing.T)
 	}
 	defer restored.Close()
 
+	// Restore re-tokens the caller pending onto the notification rail; nothing is
+	// delivered until the loop-owned drain+accept renders it (spec §4.3).
 	if queue := restored.SteeringQueueSnapshot(); len(queue) != 0 {
-		t.Fatalf("steering queue = %+v, want restored watch send durably appended", queue)
+		t.Fatalf("steering queue = %+v, want caller send on the notification rail, not steering", queue)
 	}
+	drainAndAccept(t, restored)
+
 	restoredFrame := waitForSteeringEntryContaining(t, restored, "delivery_id: delivery_restore_pending")
 	if !strings.Contains(restoredFrame, "restored observe") {
 		t.Fatalf("restored watch send text = %q, want stored frame with delivery id", restoredFrame)
@@ -1025,19 +1086,29 @@ func TestWatchSendRestoreRetriesPendingBeforeTerminalNotifications(t *testing.T)
 		t.Fatalf("pending after restore retry = %+v, want none", pending)
 	}
 
+	// The caller frame and the pre-existing terminal job both surface at the same
+	// accept boundary. The durable watch_send_delivered (settled at accept) and the
+	// terminal job_notification_pending (armed at restore) are both appended. The
+	// old strict delivered<notification ordering no longer holds: caller sends moved
+	// from between-rounds steering to between-inputs notifications, so the terminal
+	// notification's pending is armed first and the watch send settles at the turn.
 	events := loadJobStoreEvents(t, restored.jobManager)
-	deliveredSeq := int64(0)
-	notificationSeq := int64(0)
+	var sawDelivered, sawNotification bool
 	for _, event := range events {
 		switch event.Kind {
 		case jobstore.EventWatchSendDelivered:
-			deliveredSeq = event.Seq
+			if event.WatchSend != nil && event.WatchSend.DeliveryID == "delivery_restore_pending" {
+				sawDelivered = true
+			}
 		case jobstore.EventJobNotificationPending:
-			notificationSeq = event.Seq
+			sawNotification = true
 		}
 	}
-	if deliveredSeq == 0 || notificationSeq == 0 || deliveredSeq > notificationSeq {
-		t.Fatalf("event order delivered=%d notification_pending=%d, want delivered before notification pending", deliveredSeq, notificationSeq)
+	if !sawDelivered {
+		t.Fatalf("restored caller watch send was not settled (no watch_send_delivered): %+v", events)
+	}
+	if !sawNotification {
+		t.Fatalf("terminal job notification was not armed (no job_notification_pending): %+v", events)
 	}
 }
 
@@ -1509,10 +1580,6 @@ func TestWatchSendRestoreDropsHardFailureTargetsOnce(t *testing.T) {
 				t.Fatalf("reopen job manager: %v", err)
 			}
 			defer reopened.store.Close()
-			reopened.send = func(context.Context, sendMessageArgs) sendMessageResult {
-				t.Fatal("hard-failure restored target should not call send")
-				return sendMessageResult{}
-			}
 			s := &Session{
 				id:         sessionID,
 				jobManager: reopened,
@@ -1549,7 +1616,7 @@ func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testi
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		return hardWatchSendResult(errors.New("target_not_messageable"))
 	}
 
@@ -1561,7 +1628,10 @@ func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testi
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
+	// Observation records pending; the drain attempts delivery, hits a hard
+	// failure, and drops the pending with a single diagnostic.
 	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	_ = drainWatchSendsVia(t, jm, send)
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("pending after hard failure = %+v, want none", pending)
 	}
@@ -1575,14 +1645,13 @@ func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testi
 		t.Fatalf("close first store: %v", err)
 	}
 
+	// The drop is durable: a restart re-loads no pending, so a drain re-diagnoses
+	// nothing — the diagnostic stays at exactly one across restores.
 	reopened, err := newJobManager(stateDir, "S1", func(n jobNotification) { notified = append(notified, n) })
 	if err != nil {
 		t.Fatalf("first reopen: %v", err)
 	}
-	reopened.send = jm.send
-	if err := reopened.retryPendingWatchSendsForTarget(context.Background(), "job_obs"); err != nil {
-		t.Fatalf("first retry: %v", err)
-	}
+	_ = drainWatchSendsVia(t, reopened, send)
 	if err := reopened.store.Close(); err != nil {
 		t.Fatalf("close reopened store: %v", err)
 	}
@@ -1591,10 +1660,7 @@ func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testi
 		t.Fatalf("second reopen: %v", err)
 	}
 	defer second.store.Close()
-	second.send = jm.send
-	if err := second.retryPendingWatchSendsForTarget(context.Background(), "job_obs"); err != nil {
-		t.Fatalf("second retry: %v", err)
-	}
+	_ = drainWatchSendsVia(t, second, send)
 
 	if len(notified) != 1 {
 		t.Fatalf("diagnostics across restores = %d, want exactly 1: %+v", len(notified), notified)
@@ -1605,9 +1671,12 @@ func TestWatchSendTerminalOrderingSendsFinalFrameBeforeTerminalNotification(t *t
 	jm := newTestJM(t)
 	var order []string
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		order = append(order, "send")
-		return sendMessageResult{}
+	realAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventWatchSendPending {
+			order = append(order, "record")
+		}
+		return realAppend(e)
 	}
 	jm.enqueue = func(n jobNotification) {
 		if n.Status != jobNotificationEventWatch {
@@ -1626,20 +1695,33 @@ func TestWatchSendTerminalOrderingSendsFinalFrameBeforeTerminalNotification(t *t
 	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
 		t.Fatalf("append output: %v", err)
 	}
+	// finalize persists the final watch frame as pending before arming the terminal
+	// notification (observation order preserved; delivery is the drain's job).
 	code := 0
 	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
-	if strings.Join(order, ",") != "send,terminal" {
-		t.Fatalf("order = %v, want send before terminal", order)
+	if strings.Join(order, ",") != "record,terminal" {
+		t.Fatalf("order = %v, want final frame recorded before terminal", order)
 	}
 }
 
-func TestWatchSendTerminalPendingPersistenceFailureRetriesFinalization(t *testing.T) {
+// TestWatchSendTerminalPendingPersistenceFailureRetainsFrameForDrain re-anchors
+// the old ...RetriesFinalization. The old test asserted that a watch_send_pending
+// persistence failure during finalize made finalize FAIL and leave the terminal
+// notification un-armed, so a re-finalize retried the whole thing. The mailbox
+// design decouples terminal arming from watch-send persistence (spec §4.1/§4.3):
+// armFinalizedJob is persist-only and does not let a watch-send persist failure
+// block arming; instead rememberUnpersistedTerminalPendingWatchSend retains the
+// final frame in runtime terminalFlush, and the next drain re-persists + delivers
+// it. The preserved guarantee — the final frame is not lost, it is retried — holds
+// via the drain rather than via finalize-retry. (Crash in the persist-failure
+// window is the documented at-least-once tradeoff; the OLD test never exercised it.)
+func TestWatchSendTerminalPendingPersistenceFailureRetainsFrameForDrain(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
 	}
@@ -1664,36 +1746,48 @@ func TestWatchSendTerminalPendingPersistenceFailureRetriesFinalization(t *testin
 		return realAppend(e)
 	}
 
+	// Finalize succeeds and arms despite the watch-send persist failure; the final
+	// frame is retained in runtime terminalFlush, not lost.
 	code := 0
-	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); !errors.Is(err, appendErr) {
-		t.Fatalf("finalize err = %v, want pending append failure", err)
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize err = %v, want success (persist failure does not block arming)", err)
 	}
 	if len(sent) != 0 {
-		t.Fatalf("final watch send delivered despite failed pending persistence: %#v", sent)
+		t.Fatalf("final watch send delivered during finalize: %#v", sent)
 	}
 	jobs := jm.list(listFilter{})
 	job := findListedJob(jobs, rec.JobID)
 	if job == nil || job.Status != jobstore.StatusCompleted {
-		t.Fatalf("job state after failed finalization = %+v, want terminal retained", jobs)
+		t.Fatalf("job state after finalization = %+v, want terminal retained", jobs)
 	}
-	if job.NotifyState != "" && job.NotifyState != jobstore.NotifyNotArmed {
-		t.Fatalf("notify state after failed finalization = %q, want not armed", job.NotifyState)
+	if job.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("notify state after finalization = %q, want armed (decoupled from watch persist)", job.NotifyState)
+	}
+	jm.mu.Lock()
+	var retainedFrame string
+	for cfg := range jm.terminalFlush {
+		for _, state := range cfg.pending {
+			if state.Key.ResolvedSendTo == "job_obs" {
+				retainedFrame = state.Frame
+			}
+		}
+	}
+	jm.mu.Unlock()
+	if !strings.Contains(retainedFrame, "output_match: server ready") {
+		t.Fatalf("final frame retained in terminalFlush = %q, want original final trigger", retainedFrame)
 	}
 
+	// The next drain re-persists and delivers the retained final frame.
 	blocked = false
-	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
-		t.Fatalf("retry finalize: %v", err)
-	}
+	_ = drainWatchSendsVia(t, jm, send)
 	if len(sent) != 1 {
-		t.Fatalf("final watch send after retry = %d, want 1", len(sent))
+		t.Fatalf("final watch send after drain = %d, want 1", len(sent))
 	}
 	if !strings.Contains(sent[0].Message, "output_match: server ready") {
 		t.Fatalf("retried final watch frame = %q, want original final trigger", sent[0].Message)
 	}
-	jobs = jm.list(listFilter{})
-	job = findListedJob(jobs, rec.JobID)
-	if job == nil || job.NotifyState != jobstore.NotifyPending {
-		t.Fatalf("job state after retry finalization = %+v, want notification pending", jobs)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after drain = %+v, want settled", pending)
 	}
 }
 
@@ -1703,7 +1797,7 @@ func TestWatchSendTerminalFlushBatchContinuesAfterPersistenceFailure(t *testing.
 	seedCommonWatchSendTargets(t, jm)
 	seedWatchSendDelegateTarget(t, jm, "job_obs_a")
 	seedWatchSendDelegateTarget(t, jm, "job_obs_b")
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
 	}
@@ -1740,15 +1834,18 @@ func TestWatchSendTerminalFlushBatchContinuesAfterPersistenceFailure(t *testing.
 		return realAppend(e)
 	}
 
+	// finalize persists the terminal batch as pending (delivery is the drain's
+	// job). One pending persist fails; the failed target is retained in runtime
+	// terminalFlush, the survivor persists, and arming is not blocked (spec §4.1).
 	code := 0
-	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); !errors.Is(err, appendErr) {
-		t.Fatalf("finalize err = %v, want pending append failure", err)
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize err = %v, want success despite a partial-batch persist failure", err)
 	}
 	if failedTarget == "" {
 		t.Fatal("test did not intercept pending append")
 	}
-	if len(sent) != 1 || sent[0].Target == failedTarget {
-		t.Fatalf("sent after failed terminal batch = %+v, failed target %q; want later independent target", sent, failedTarget)
+	if len(sent) != 0 {
+		t.Fatalf("watch sends delivered during finalize: %#v", sent)
 	}
 	jm.mu.Lock()
 	var retainedFirst bool
@@ -1761,23 +1858,28 @@ func TestWatchSendTerminalFlushBatchContinuesAfterPersistenceFailure(t *testing.
 	}
 	jm.mu.Unlock()
 	if !retainedFirst {
-		t.Fatal("failed terminal delivery was not retained for finalization retry")
+		t.Fatal("failed terminal delivery was not retained for drain retry")
 	}
 	jobs := jm.list(listFilter{})
 	job := findListedJob(jobs, rec.JobID)
-	if job == nil || job.NotifyState != "" && job.NotifyState != jobstore.NotifyNotArmed {
-		t.Fatalf("job state after partial terminal failure = %+v, want terminal notification not armed", jobs)
+	if job == nil || job.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("job state after partial terminal failure = %+v, want terminal notification armed", jobs)
 	}
 
+	// The drain delivers both the survivor and the retained failed target.
 	blockFirst = false
-	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
-		t.Fatalf("retry finalize: %v", err)
-	}
+	_ = drainWatchSendsVia(t, jm, send)
 	if len(sent) != 2 {
-		t.Fatalf("sent after retry = %+v, want failed delivery retried once", sent)
+		t.Fatalf("sent after drain = %+v, want both targets delivered once", sent)
 	}
-	if sent[1].Target != failedTarget {
-		t.Fatalf("retry sent target = %q, want failed target %q", sent[1].Target, failedTarget)
+	var sentFailed bool
+	for _, a := range sent {
+		if a.Target == failedTarget {
+			sentFailed = true
+		}
+	}
+	if !sentFailed {
+		t.Fatalf("drain did not deliver the failed target %q; sent = %+v", failedTarget, sent)
 	}
 }
 
@@ -1785,7 +1887,7 @@ func TestWatchSendToWatchedDeliversFrameToConcreteTarget(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
 	}
@@ -1800,6 +1902,10 @@ func TestWatchSendToWatchedDeliversFrameToConcreteTarget(t *testing.T) {
 		t.Fatalf("configure: %v", err)
 	}
 	jm.feedJobOutput(rec.JobID, []byte("server READY\n"))
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("observation must record one pending send, got %d", len(pending))
+	}
+	drainWatchSendsVia(t, jm, send)
 
 	if len(sent) != 1 {
 		t.Fatalf("a send watch must deliver once, got %d", len(sent))
@@ -1813,7 +1919,7 @@ func TestWatchSendToWatchedWildcardJobNotificationDeliversConcreteTarget(t *test
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
 	}
@@ -1827,6 +1933,10 @@ func TestWatchSendToWatchedWildcardJobNotificationDeliversConcreteTarget(t *test
 		t.Fatalf("configure: %v", err)
 	}
 	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_delegate", JobType: "delegate", Status: "completed"})
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("observation must record one pending send, got %d", len(pending))
+	}
+	drainWatchSendsVia(t, jm, send)
 
 	if len(sent) != 1 {
 		t.Fatalf("wildcard job notification must deliver once, got %d", len(sent))
@@ -1839,9 +1949,6 @@ func TestWatchSendToWatchedWildcardJobNotificationDeliversConcreteTarget(t *test
 func TestWatchSendPendingSnapshotCoalescesAndDoesNotRereadOutput(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	_, err := jm.configureWatch(watchArgs{
@@ -1884,7 +1991,7 @@ func TestWatchSendPendingSnapshotCoalescesAndDoesNotRereadOutput(t *testing.T) {
 func TestWatchSendPendingUsesTriggerTimeFrameSnapshot(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -1903,7 +2010,7 @@ func TestWatchSendPendingUsesTriggerTimeFrameSnapshot(t *testing.T) {
 		t.Fatalf("append later output: %v", err)
 	}
 
-	jm.deliverWatchSend(context.Background(), delivery)
+	_ = deliverWatchSendVia(t, jm, delivery, send)
 
 	pending := loadWatchSendRecord(t, jm).Pending
 	if len(pending) != 1 {
@@ -1927,9 +2034,6 @@ func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
@@ -1957,7 +2061,6 @@ func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *
 		t.Fatalf("reopen job manager: %v", err)
 	}
 	reopened.now = func() time.Time { return time.Unix(1001, 0).UTC() }
-	reopened.send = jm.send
 	output, err := jobstore.OpenOutput(reopened.outputPathForJob(rec, rec.JobID), maxJobOutputRetentionBytes)
 	if err != nil {
 		t.Fatalf("reopen output: %v", err)
@@ -2000,7 +2103,7 @@ func TestWatchSendRestoreLoadsPendingStateForFutureRetry(t *testing.T) {
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -2015,7 +2118,7 @@ func TestWatchSendRestoreLoadsPendingStateForFutureRetry(t *testing.T) {
 		t.Fatalf("append output: %v", err)
 	}
 	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: server ready")
-	jm.deliverWatchSend(context.Background(), delivery)
+	_ = deliverWatchSendVia(t, jm, delivery, send)
 	folded := loadWatchSendRecord(t, jm).Pending
 	if len(folded) != 1 {
 		t.Fatalf("folded pending before restore = %d, want 1", len(folded))
@@ -2056,9 +2159,6 @@ func TestWatchSendRestoreClearDropsPendingState(t *testing.T) {
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -2101,9 +2201,6 @@ func TestWatchSendRestoreClearDropsWatchedTargetedPendingState(t *testing.T) {
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec := createRunningDelegateWatchTarget(t, jm)
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -2146,9 +2243,6 @@ func TestWatchSendRestoreReconfigureDropsWatchedPendingState(t *testing.T) {
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec := createRunningDelegateWatchTarget(t, jm)
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -2175,7 +2269,6 @@ func TestWatchSendRestoreReconfigureDropsWatchedPendingState(t *testing.T) {
 		t.Fatalf("reopen job manager: %v", err)
 	}
 	reopened.now = func() time.Time { return time.Unix(1001, 0).UTC() }
-	reopened.send = jm.send
 	output, err := jobstore.OpenOutput(reopened.outputPathForJob(rec, rec.JobID), maxJobOutputRetentionBytes)
 	if err != nil {
 		t.Fatalf("reopen output: %v", err)
@@ -2207,9 +2300,6 @@ func TestWatchSendRestoreReconfigureDropsWatchedPendingState(t *testing.T) {
 func TestWatchSendClearDropsPending(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -2234,9 +2324,6 @@ func TestWatchSendClearDropsPending(t *testing.T) {
 func TestWatchSendWatchedTargetPruneDropsPending(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -2263,9 +2350,6 @@ func TestWatchSendWatchedTargetPruneDropsPending(t *testing.T) {
 func TestWatchSendPruneAppendFailureKeepsPendingReachable(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -2320,9 +2404,6 @@ func TestWatchSendPruneAppendFailureKeepsPendingReachable(t *testing.T) {
 func TestWatchSendTerminalFlushPersistsAlreadyFiredPending(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -2357,9 +2438,6 @@ func TestWatchSendTerminalFlushPersistsAlreadyFiredPending(t *testing.T) {
 func TestWatchSendTerminalFlushCloseDropsPending(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -2391,9 +2469,6 @@ func TestWatchSendTerminalFlushCloseDropsPending(t *testing.T) {
 func TestWatchSendTerminalFlushConfigureClearDropsPending(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -2472,9 +2547,6 @@ func TestWatchSendTerminalExpiryWithoutPendingDoesNotRetainDetachedConfig(t *tes
 func TestWatchSendTerminalExpiryWithInflightSendRemainsClearable(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -2543,9 +2615,6 @@ func TestWatchSendClearNormalizesSendTarget(t *testing.T) {
 func TestWatchSendTerminalFlushWatchedTargetedClearDropsPending(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec := createRunningDelegateWatchTarget(t, jm)
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -2585,7 +2654,7 @@ func TestWatchSendTerminalFlushClearBeforeFailedSendDoesNotPersistPending(t *tes
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	cleared := false
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		if !cleared {
 			cleared = true
 			if _, err := jm.clearWatch(watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "job_obs"}); err != nil {
@@ -2604,10 +2673,13 @@ func TestWatchSendTerminalFlushClearBeforeFailedSendDoesNotPersistPending(t *tes
 	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
 		t.Fatalf("append output: %v", err)
 	}
+	// finalize records the terminal-flush pending; the drain's send clears the
+	// watch mid-delivery, so the now-stale pending settles to nothing.
 	code := 0
 	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
+	_ = drainWatchSendsVia(t, jm, send)
 	if !cleared {
 		t.Fatal("send callback did not clear watch")
 	}
@@ -2619,9 +2691,6 @@ func TestWatchSendTerminalFlushClearBeforeFailedSendDoesNotPersistPending(t *tes
 func TestWatchSendTerminalExpiryCloseDropsExistingPending(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -2658,7 +2727,7 @@ func TestWatchSendStaleDeliveryClearedDuringSendDoesNotPersistPending(t *testing
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
 			t.Fatalf("clear during send: %v", err)
 		}
@@ -2673,7 +2742,7 @@ func TestWatchSendStaleDeliveryClearedDuringSendDoesNotPersistPending(t *testing
 	}
 	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: ready")
 
-	jm.deliverWatchSend(context.Background(), delivery)
+	_ = deliverWatchSendVia(t, jm, delivery, send)
 
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("stale delivery cleared during send persisted pending = %+v", pending)
@@ -2684,7 +2753,7 @@ func TestWatchSendStaleDeliveryReplacedDuringSendDoesNotPersistPending(t *testin
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		if _, err := jm.configureWatch(watchArgs{
 			Target:      rec.JobID,
 			OutputMatch: "blocked",
@@ -2703,7 +2772,7 @@ func TestWatchSendStaleDeliveryReplacedDuringSendDoesNotPersistPending(t *testin
 	}
 	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: ready")
 
-	jm.deliverWatchSend(context.Background(), delivery)
+	_ = deliverWatchSendVia(t, jm, delivery, send)
 
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("stale delivery replaced during send persisted pending = %+v", pending)
@@ -2714,7 +2783,7 @@ func TestWatchSendPendingDeliveredRemovesBeforeNextFailure(t *testing.T) {
 	jm := newTestJM(t)
 	failSend := true
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		if failSend {
 			return sendMessageResult{Err: errors.New("busy")}
 		}
@@ -2730,16 +2799,19 @@ func TestWatchSendPendingDeliveredRemovesBeforeNextFailure(t *testing.T) {
 	}
 
 	jm.feedJobOutput(rec.JobID, []byte("ready one\n"))
+	_ = drainWatchSendsVia(t, jm, send) // busy
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("pending after first failure = %d, want 1", len(pending))
 	}
 	failSend = false
 	jm.feedJobOutput(rec.JobID, []byte("ready two\n"))
+	_ = drainWatchSendsVia(t, jm, send) // delivered
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("pending after delivered = %+v, want none", pending)
 	}
 	failSend = true
 	jm.feedJobOutput(rec.JobID, []byte("ready three\n"))
+	_ = drainWatchSendsVia(t, jm, send) // busy again
 	pending := loadWatchSendRecord(t, jm).Pending
 	if len(pending) != 1 {
 		t.Fatalf("pending after second failure = %d, want 1", len(pending))
@@ -2755,7 +2827,7 @@ func TestWatchSendOverlapOlderDeliveredDoesNotRemoveNewerPending(t *testing.T) {
 	jm := newTestJM(t)
 	sendErr := errors.New("busy")
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: sendErr}
 	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -2769,7 +2841,7 @@ func TestWatchSendOverlapOlderDeliveredDoesNotRemoveNewerPending(t *testing.T) {
 	first := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: first ready")
 	second := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: second ready")
 
-	jm.deliverWatchSend(context.Background(), second)
+	_ = deliverWatchSendVia(t, jm, second, send)
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("pending after second failure = %d, want 1", len(pending))
 	}
@@ -2779,10 +2851,10 @@ func TestWatchSendOverlapOlderDeliveredDoesNotRemoveNewerPending(t *testing.T) {
 
 	sendErr = nil
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{}
 	}
-	jm.deliverWatchSend(context.Background(), first)
+	_ = deliverWatchSendVia(t, jm, first, send)
 
 	pending := loadWatchSendRecord(t, jm).Pending
 	if len(pending) != 1 {
@@ -2801,7 +2873,7 @@ func TestWatchSendOverlapOlderDeliveredDoesNotRemoveNewerPending(t *testing.T) {
 func TestWatchSendOverlapOlderFailedDoesNotOverwriteNewerPending(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -2815,8 +2887,8 @@ func TestWatchSendOverlapOlderFailedDoesNotOverwriteNewerPending(t *testing.T) {
 	first := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: first ready")
 	second := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: second ready")
 
-	jm.deliverWatchSend(context.Background(), second)
-	jm.deliverWatchSend(context.Background(), first)
+	_ = deliverWatchSendVia(t, jm, second, send)
+	_ = deliverWatchSendVia(t, jm, first, send)
 
 	pending := loadWatchSendRecord(t, jm).Pending
 	if len(pending) != 1 {
@@ -2843,7 +2915,7 @@ func TestWatchSendOverlapOlderFailedDoesNotOverwriteNewerPending(t *testing.T) {
 func TestWatchSendStaleFailedDeliveryAfterNewerDeliveredDoesNotPersistPending(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{}
 	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -2857,16 +2929,16 @@ func TestWatchSendStaleFailedDeliveryAfterNewerDeliveredDoesNotPersistPending(t 
 	first := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: first ready")
 	second := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: second ready")
 
-	jm.deliverWatchSend(context.Background(), second)
+	_ = deliverWatchSendVia(t, jm, second, send)
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("pending after newer delivered = %d, want 0", len(pending))
 	}
 
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	send = func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
 	}
-	jm.deliverWatchSend(context.Background(), first)
+	_ = deliverWatchSendVia(t, jm, first, send)
 
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("folded pending after stale failed delivery = %+v, want none", pending)
@@ -2939,7 +3011,7 @@ func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *te
 		t.Run(tc.name, func(t *testing.T) {
 			jm := newTestJM(t)
 			seedCommonWatchSendTargets(t, jm)
-			jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+			send := func(context.Context, sendMessageArgs) sendMessageResult {
 				return sendMessageResult{Err: errors.New("busy")}
 			}
 			delivery, teardown := tc.setup(t, jm)
@@ -2963,7 +3035,7 @@ func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *te
 			go func() { errCh <- teardown() }()
 			waitForTestSignal(t, dropStarted, "dropped append")
 
-			jm.deliverWatchSend(context.Background(), delivery)
+			_ = deliverWatchSendVia(t, jm, delivery, send)
 			close(releaseDrop)
 			if err := waitForTestError(t, errCh, "teardown"); err != nil {
 				t.Fatalf("teardown: %v", err)
@@ -2982,9 +3054,6 @@ func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *te
 func TestWatchSendAppendFailureDuringClearKeepsPendingInMemory(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -3041,9 +3110,6 @@ func TestWatchSendAppendFailureDuringClearKeepsPendingInMemory(t *testing.T) {
 func TestWatchSendPartialDroppedAppendReconcilesSuccessfulPrefix(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
@@ -3104,9 +3170,6 @@ func TestWatchSendPartialDroppedAppendReconcilesSuccessfulPrefix(t *testing.T) {
 func TestWatchSendAppendFailureDuringReplaceLeavesOldWatchReachable(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -3172,9 +3235,6 @@ func TestWatchSendAppendFailureDuringReplaceLeavesOldWatchReachable(t *testing.T
 func TestWatchSendAppendFailureDuringCloseReturnsErrorAndClosesStore(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
@@ -3252,9 +3312,6 @@ func TestWatchSendAppendFailureDuringCloseReturnsErrorAndClosesStore(t *testing.
 func TestWatchSendAppendFailureDuringDeliveredKeepsPendingInMemory(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
@@ -3275,12 +3332,13 @@ func TestWatchSendAppendFailureDuringDeliveredKeepsPendingInMemory(t *testing.T)
 		}
 		return realAppend(e)
 	}
-	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	// The send succeeds but the delivered-marker append fails, so the pending must
+	// stay in memory and in the durable fold for a later retry.
+	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{}
 	}
 
-	jm.deliverWatchSend(context.Background(), delivery)
+	_ = deliverWatchSendVia(t, jm, delivery, send)
 
 	if got := len(delivery.cfg.pending); got != 1 {
 		t.Fatalf("in-memory pending after failed delivered append = %d, want 1", got)
@@ -3293,9 +3351,6 @@ func TestWatchSendAppendFailureDuringDeliveredKeepsPendingInMemory(t *testing.T)
 func TestWatchSendSettledTombstonesAreBounded(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{}
-	}
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
@@ -3322,9 +3377,6 @@ func TestWatchSendSettledTombstonesAreBounded(t *testing.T) {
 func TestWatchSendAppendFailureDuringEvictionKeepsMemoryAndDurableConsistent(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
 	if _, err := jm.configureWatch(watchArgs{
@@ -3396,9 +3448,6 @@ func TestWatchSendAppendFailureDuringEvictionKeepsMemoryAndDurableConsistent(t *
 func TestWatchSendPendingAppendFailureBeforeEvictionKeepsExistingPending(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
 	if _, err := jm.configureWatch(watchArgs{
@@ -3529,9 +3578,6 @@ func waitForTestError(t *testing.T, ch <-chan error, label string) error {
 func TestWatchSendCapEvictsOldestPendingAndNotifies(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: errors.New("busy")}
-	}
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
 
@@ -3690,12 +3736,7 @@ func TestWatchSendToWatchedRejectsSessionEventsWithoutConcreteTarget(t *testing.
 	for _, eventName := range []string{"assistant.message", "assistant.tool", "communicate"} {
 		t.Run(eventName, func(t *testing.T) {
 			jm := newTestJM(t)
-			var sent []sendMessageArgs
 			seedCommonWatchSendTargets(t, jm)
-			jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
-				sent = append(sent, a)
-				return sendMessageResult{}
-			}
 
 			_, err := jm.configureWatch(watchArgs{
 				Target: "*",
@@ -3709,8 +3750,8 @@ func TestWatchSendToWatchedRejectsSessionEventsWithoutConcreteTarget(t *testing.
 			if jm.watchCount() != 0 {
 				t.Fatalf("watch count = %d, want 0", jm.watchCount())
 			}
-			if len(sent) != 0 {
-				t.Fatalf("rejected watched send delivered sends: %#v", sent)
+			if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+				t.Fatalf("rejected watched send recorded pending: %+v", pending)
 			}
 		})
 	}
@@ -3720,7 +3761,7 @@ func TestWatchSendToWatchedAllowsWildcardJobNotificationTrigger(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{Delivered: true, Action: "sent"}
 	}
@@ -3736,10 +3777,14 @@ func TestWatchSendToWatchedAllowsWildcardJobNotificationTrigger(t *testing.T) {
 	}
 
 	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
-	if len(sent) != 0 {
-		t.Fatalf("assistant.message sent = %#v, want no unresolved watched delivery", sent)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("assistant.message recorded pending = %#v, want no unresolved watched delivery", pending)
 	}
 	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger", JobType: "delegate", Status: "completed"})
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("job.notification must record one pending send, got %d", len(pending))
+	}
+	drainWatchSendsVia(t, jm, send)
 
 	if len(sent) != 1 {
 		t.Fatalf("sent = %#v, want one delivery", sent)
@@ -3753,7 +3798,7 @@ func TestWatchSendToWatchedAllowsMixedEventsWithJobNotificationTrigger(t *testin
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{Delivered: true, Action: "sent"}
 	}
@@ -3769,6 +3814,10 @@ func TestWatchSendToWatchedAllowsMixedEventsWithJobNotificationTrigger(t *testin
 	}
 
 	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger", JobType: "delegate", Status: "completed"})
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("job.notification must record one pending send, got %d", len(pending))
+	}
+	drainWatchSendsVia(t, jm, send)
 
 	if len(sent) != 1 {
 		t.Fatalf("sent = %#v, want one delivery", sent)
@@ -3811,7 +3860,7 @@ func TestWatchSendFailureNotifiesCaller(t *testing.T) {
 	jm := newTestJM(t)
 	sendErr := errors.New("target_not_messageable: job_obs")
 	seedCommonWatchSendTargets(t, jm)
-	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		return hardWatchSendResult(sendErr)
 	}
 	var notified []jobNotification
@@ -3826,7 +3875,10 @@ func TestWatchSendFailureNotifiesCaller(t *testing.T) {
 	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}
+	// Observation records pending; the drain's hard delivery failure drops it and
+	// notifies the caller once.
 	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	_ = drainWatchSendsVia(t, jm, send)
 
 	if len(notified) != 1 {
 		t.Fatalf("failed watch send must notify caller once, got %d", len(notified))
@@ -4013,9 +4065,6 @@ func TestWatchEventKindNamesResolve(t *testing.T) {
 
 func installCallerSendWatchWithPending(t *testing.T, jm *jobManager) *watchConfig {
 	t.Helper()
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
-		return busyWatchSendResult()
-	}
 	if _, err := jm.configureWatch(watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"assistant.message"},
@@ -4159,11 +4208,6 @@ func TestObservationRecordsIntentOnly(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm) // running delegate "job_obs"
 
-	var sent []sendMessageArgs
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
-		sent = append(sent, a)
-		return sendMessageResult{}
-	}
 	woke := 0
 	jm.wake = func() { woke++ }
 	// Mirror production's enqueueJobNotificationAndNotify: enqueuing a
@@ -4221,14 +4265,13 @@ func TestObservationRecordsIntentOnly(t *testing.T) {
 		t.Fatal("observation must wake the owner")
 	}
 
-	// No delivery happened: no watch_send_delivered event, jm.send untouched.
+	// No delivery happened: no watch_send_delivered event. (The jobManager no
+	// longer has a send field at all — non-delivery is structural; the durable
+	// log is the observable proof.)
 	for _, event := range loadJobStoreEvents(t, jm) {
 		if event.Kind == jobstore.EventWatchSendDelivered {
 			t.Fatalf("observation must not deliver: found watch_send_delivered event %+v", event)
 		}
-	}
-	if len(sent) != 0 {
-		t.Fatalf("observation must not call jm.send, got %#v", sent)
 	}
 }
 

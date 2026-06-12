@@ -65,29 +65,25 @@ func TestWatchSendBuildsObserverFrame(t *testing.T) {
 	}
 }
 
+// captureWatchSends returns a closure that drives the drain's delivery primitive
+// for every recorded delegate-targeted pending send and returns the captured
+// delivery args. Observation only records pending intent (spec §3); calling the
+// returned closure stands in for the loop-owned drain, capturing what it delivers.
 func captureWatchSends(t *testing.T, jm *jobManager) func() []sendMessageArgs {
 	t.Helper()
 	var mu sync.Mutex
 	var sent []sendMessageArgs
-
-	seedCommonWatchSendTargets(t, jm)
-	jm.mu.Lock()
-	original := jm.send
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		mu.Lock()
 		defer mu.Unlock()
 		sent = append(sent, a)
 		return sendMessageResult{}
 	}
-	jm.mu.Unlock()
 
-	t.Cleanup(func() {
-		jm.mu.Lock()
-		jm.send = original
-		jm.mu.Unlock()
-	})
+	seedCommonWatchSendTargets(t, jm)
 
 	return func() []sendMessageArgs {
+		_ = drainWatchSendsVia(t, jm, send)
 		mu.Lock()
 		defer mu.Unlock()
 		return append([]sendMessageArgs(nil), sent...)
