@@ -38,6 +38,13 @@ const (
 	// combine block_timeout_ms with a background (non-foreground) wait. The
 	// exact string is asserted by tests; keep it stable.
 	blockTimeoutForegroundOnlyErr = "invalid_request: block_timeout_ms applies only to foreground waits (background=false)"
+	// grantedReadBlockUnsupportedErr is the rejection for block=true on a
+	// watch-granted cross-session read (spec §5.1). Granted reads are
+	// snapshot-only by decision: the blocking wait helpers are coupled to a
+	// resolvable jobManager (done channels, output polling) that the granted
+	// view deliberately does not expose, and half-supporting block by silently
+	// degrading it to a snapshot would lie to the model about having waited.
+	grantedReadBlockUnsupportedErr = "invalid_request: block is not supported for granted cross-session reads"
 )
 
 var rootOnlyJobControlTools = []string{"delegate", "job_watch"}
@@ -192,8 +199,21 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		return "", errors.New("job_id is required")
 	}
 	jm, _, err := s.nestedOrLocalJobManager(jobID)
+	var granted *grantedJobRead
 	if err != nil {
-		return "", err
+		// Local + nested resolution failed: consult the parent-injected watch
+		// read-grant seam (spec §5.1) before failing. A grant hit serves the
+		// read from the parent's store; a miss preserves the original
+		// target_not_found error.
+		lookup := s.cfg.spawn.parentGrantedJobRead
+		if lookup == nil {
+			return "", err
+		}
+		g, ok := lookup(s.id, jobID)
+		if !ok {
+			return "", err
+		}
+		granted = g
 	}
 	tailBytes, err := boundedJobBytesArg(args, "tail_bytes", defaultJobOutputBytes)
 	if err != nil {
@@ -214,6 +234,9 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	}
 
 	if shellBoolArg(args, "block") {
+		if granted != nil {
+			return "", errors.New(grantedReadBlockUnsupportedErr)
+		}
 		timeoutMS, err := jobBlockTimeoutMS(args)
 		if err != nil {
 			return "", err
@@ -226,7 +249,12 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		}
 	}
 
-	snap, err := s.readJobOutputSnapshot(jm, jobID, tailBytes, grepRE)
+	var snap jobReadOutputSnapshot
+	if granted != nil {
+		snap, err = granted.snapshot(tailBytes, grepRE)
+	} else {
+		snap, err = s.readJobOutputSnapshot(jm, jobID, tailBytes, grepRE)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -330,6 +358,32 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, tailBytes 
 			Matches:    matches,
 		}, nil
 	}
+}
+
+// snapshot serves a watch-granted cross-session read from the parent store's
+// read-only view: the same content/grep shape as readJobOutputSnapshot, but
+// the record is the lookup-time clone, Manager stays nil (the observer has no
+// handle on the parent's jobManager), and there is no closed-store fallback
+// chain — a failed parent-side read is a real error.
+func (g *grantedJobRead) snapshot(tailBytes int, grepRE *regexp.Regexp) (jobReadOutputSnapshot, error) {
+	content, totalBytes, truncated, err := g.readOutput(tailBytes)
+	if err != nil {
+		return jobReadOutputSnapshot{}, err
+	}
+	var matches []jobstore.Match
+	if grepRE != nil {
+		matches, err = g.grepOutput(grepRE)
+		if err != nil {
+			return jobReadOutputSnapshot{}, err
+		}
+	}
+	return jobReadOutputSnapshot{
+		Record:     g.record,
+		Content:    content,
+		TotalBytes: totalBytes,
+		Truncated:  truncated,
+		Matches:    matches,
+	}, nil
 }
 
 func (s *Session) jobReadClosedStoreFallback(current *jobManager, err error) (*jobManager, bool, error) {

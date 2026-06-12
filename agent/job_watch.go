@@ -1826,6 +1826,51 @@ func (jm *jobManager) watchReadGrantObserver(observerJobID string) (childSession
 	return "", false, nil
 }
 
+// grantedJobRead is the read-only view the parent returns for a watch-granted
+// cross-session read (spec §5.1): a snapshot of the watched job's record
+// (clone, never a live pointer) plus closures over the parent jobManager's
+// retained-output readers. Everything reachable through it is jobstore-level
+// access guarded by the parent jobManager's own locking — the observer child
+// never touches parent Session state.
+type grantedJobRead struct {
+	record     *jobstore.JobRecord
+	readOutput func(tailBytes int) (content string, total int64, truncated bool, err error)
+	grepOutput func(re *regexp.Regexp) ([]jobstore.Match, error)
+}
+
+// lookupGrantedJobRead consults the durable watch read-grant table for
+// (observerSessionID, jobID) and, on a hit, returns the read-only view of the
+// granted job. A miss, an unreadable or closed store (parent session gone),
+// and a granted job whose record is no longer retained all return ok=false:
+// the caller preserves its original target_not_found instead of inventing a
+// new failure mode for a read the observer was never promised. The method is
+// injected into observer children as cfg.spawn.parentGrantedJobRead and is
+// called from child goroutines, so it must stay jobstore-level (jobManager +
+// store locking only, no Session state).
+func (s *Session) lookupGrantedJobRead(observerSessionID, jobID string) (*grantedJobRead, bool) {
+	if s == nil || s.jobManager == nil || s.jobManager.store == nil {
+		return nil, false
+	}
+	jm := s.jobManager
+	grants, err := jm.store.LoadGrants()
+	if err != nil || !grants[observerSessionID][jobID] {
+		return nil, false
+	}
+	rec, err := findJobRecord(jm, jobID)
+	if err != nil {
+		return nil, false
+	}
+	return &grantedJobRead{
+		record: cloneJobRecord(rec),
+		readOutput: func(tailBytes int) (string, int64, bool, error) {
+			return jm.readOutput(jobID, tailBytes)
+		},
+		grepOutput: func(re *regexp.Regexp) ([]jobstore.Match, error) {
+			return jm.grepOutput(jobID, re)
+		},
+	}, true
+}
+
 // mintWatchCreateReadGrant durably grants the observer delegate's child
 // session job_read_output on the watched job for a sidecar watch — a concrete
 // job target delivered to a concrete delegate job (spec §5.1). The grant keys

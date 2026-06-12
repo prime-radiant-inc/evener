@@ -535,6 +535,7 @@ Rules:
 - `job_watch(clear=true)` does not stop the watched job. If `send.to` is supplied, it clears the watch for the `(visible_session_id, target, send.to)` key. If `send.to` is omitted, it clears all watches for `(visible_session_id, target)` that the caller is allowed to clear, including both notify-caller and sidecar watches.
 - `job_watch` fails synchronously with `target_not_watchable` for targets the caller is not allowed to watch.
 - Watches expire automatically when their concrete watched job reaches terminal state. Session-level watches remain active until their configured scope ends, the session/job manager closes, or retention policy removes them.
+- A watch whose `send.to` is a concrete delegate job (the observer/sidecar pattern) grants that observer `job_read_output` on the watched job; `*`-target watches grant per fire as concrete watched jobs resolve. Grants are durable read capabilities keyed on the observer's session identity, not its `job_id` — they survive observer resume under a new `job_id` — and are not revoked by `clear=true` or watch expiry, because the observer's main read typically happens after the watched job finishes; output retention still bounds what a grant can read. Grants extend `job_read_output` only: no `job_list` visibility, no `job_stop`, and no additional `job_send_message` authorization.
 - Watches are not required to survive Serf process restart unless an implementation explicitly marks them durable.
 - Already-fired watch-send frames are durable until delivered, replaced by a newer frame for the same durable key, evicted by watch cleanup, or dropped with a caller-visible diagnostic on hard/non-resumable failure. The durable key includes the visible session, configured watch target, resolved watched identity, resolved send target, and watch generation.
 - `job_watch(clear=true)` is the model-facing unwatch operation; there is no separate unwatch tool.
@@ -612,6 +613,7 @@ Canonical behavior:
 - `block=true` performs at most one bounded wait, then returns current state/output. Without `grep`, the wait ends on terminal state or more output. With `grep`, the wait ends when the retained output contains a match, on terminal state, or on timeout. Timeout never stops the job.
 - `block=true` is not a polling primitive and must not be repeated in a loop. Terminal notifications remain the normal completion mechanism.
 - `job_read_output` must work for terminal durable jobs after the live runtime is gone, as long as the job record/output file is retained.
+- An observer delegate granted by a `job_watch` send (see `job_watch`) may `job_read_output` its watched job even though that job lives in the watching session's store; granted cross-session reads are snapshot-only — `block=true` fails `invalid_request`.
 
 Canonical return shape:
 
@@ -961,7 +963,7 @@ Rules:
 
 Terminal job notifications are automatic for notification-armed jobs. A model should not need to subscribe to learn that a background job finished.
 
-A job is notification-armed if its creating tool call returned before terminal state, including shell foreground calls that timed out and were promoted to durable background jobs. A job that completed synchronously before the creating tool returned is not required to inject a duplicate terminal notification; the terminal result is already in the tool result. `job_send_message` against a running job or session alias does not arm an additional terminal notification. `job_send_message` against a terminal/resumable delegate job creates a new notification-armed delegate job. V1 sidecars are ordinary delegate jobs for public semantics and notification behavior; Serf keeps only internal watch-origin bookkeeping for frame routing and feedback-loop suppression.
+A job is notification-armed if its creating tool call returned before terminal state, including shell foreground calls that timed out and were promoted to durable background jobs. A job that completed synchronously before the creating tool returned is not required to inject a duplicate terminal notification; the terminal result is already in the tool result. `job_send_message` against a running job or session alias does not arm an additional terminal notification. `job_send_message` against a terminal/resumable delegate job creates a new notification-armed delegate job. V1 sidecars are ordinary delegate jobs for public semantics and notification behavior; Serf keeps only internal watch-origin bookkeeping for frame routing and feedback-loop suppression, plus the durable observer read grants minted by `job_watch` (keyed on the sidecar's session identity, not a marker on any job record).
 
 Notification example:
 
@@ -1090,7 +1092,7 @@ flowchart TD
 
 Observer sidecars are a v1 Serf composition pattern. Claude Monitor covers only the basic stream-notification profile; Serf also supports sidecars that receive bounded event/output frames and comment back through normal message delivery. Serf does not need a separate observer-comment command or a Sprout-style raw handle model. The shipped composition uses existing job primitives:
 
-1. Start a sidecar with `delegate(...)`; this creates an ordinary delegate job with no public marker.
+1. Start a sidecar with `delegate(...)`; this creates an ordinary delegate job with no public marker. (The read grant a later `job_watch` send mints is durable session-keyed bookkeeping, not a job-record marker.)
 2. Configure `job_watch(...)` over a job, session alias, or `*`.
 3. Set `send.to` to the sidecar job and `include_frame=true` so the watch condition sends bounded event/output frames to the sidecar.
 4. The sidecar responds with `job_send_message(target="caller", message=...)` when it has useful commentary or advice.

@@ -567,6 +567,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 			forwardJobEvent:         s.jobManager.forwardEvent,
 			parentSteer:             s.Steer,
 			parentSteerDelivered:    s.trySteer,
+			parentGrantedJobRead:    s.lookupGrantedJobRead,
 			subagentTask:            desc.Task,
 			depth:                   s.depth + 1,
 			rolePromptOverride:      desc.FrozenRolePrompt,

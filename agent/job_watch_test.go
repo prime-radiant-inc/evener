@@ -5899,4 +5899,310 @@ func TestWatchPerFireGrantAppendFailureProceedsWithSend(t *testing.T) {
 	}
 }
 
+// --- granted cross-session reads (spec §5.1, consumption) ---
+
+// grantReadWatchedOutput is the watched job's full retained output in the
+// granted-read fixture; "ready" fires the sidecar watch.
+const grantReadWatchedOutput = "alpha\nbravo ready\ncharlie\n"
+
+// grantReadFixture is the minimal parent/observer pair for granted
+// cross-session read tests: the parent jobManager owns a watched shell job
+// plus the seeded observer delegate (job_obs -> child session
+// "child_job_obs"), and the observer child session carries the
+// parent-injected grant-lookup seam exactly the way spawnAgent and delegate
+// restore wire it.
+type grantReadFixture struct {
+	parentStateDir string
+	parent         *Session
+	parentJM       *jobManager
+	observer       *Session
+	watched        string
+}
+
+func newGrantReadFixture(t *testing.T) *grantReadFixture {
+	t.Helper()
+	parentStateDir := t.TempDir()
+	parentJM, err := newJobManager(parentStateDir, "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	observerJM, err := newJobManager(t.TempDir(), "child_job_obs", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new observer jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = observerJM.store.Close()
+	})
+
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+	observer := &Session{id: "child_job_obs", jobManager: observerJM}
+	observer.cfg.spawn.parentGrantedJobRead = parent.lookupGrantedJobRead
+
+	seedCommonWatchSendTargets(t, parentJM)
+	watched, err := parentJM.createShell(createShellOpts{Command: "server"})
+	if err != nil {
+		t.Fatalf("create watched job: %v", err)
+	}
+	// Canonical sidecar flow: the watch is created while the job runs (grant
+	// minted at create), output fires it, the job finishes, and the observer
+	// reads after the fact.
+	if _, err := parentJM.configureWatch(watchArgs{
+		Target:      watched.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure sidecar watch: %v", err)
+	}
+	if _, err := parentJM.appendJobOutput(watched.JobID, parentJM.running[watched.JobID].output, []byte(grantReadWatchedOutput)); err != nil {
+		t.Fatalf("append watched output: %v", err)
+	}
+	code := 0
+	if err := parentJM.finalize(watched.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize watched job: %v", err)
+	}
+	return &grantReadFixture{
+		parentStateDir: parentStateDir,
+		parent:         parent,
+		parentJM:       parentJM,
+		observer:       observer,
+		watched:        watched.JobID,
+	}
+}
+
+func observerReadOutput(t *testing.T, observer *Session, args map[string]any) (jobReadOutputTestResult, error) {
+	t.Helper()
+	out, err := jobReadOutputTool(context.Background(), observer, args, 20000)
+	if err != nil {
+		return jobReadOutputTestResult{}, err
+	}
+	var res jobReadOutputTestResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, out)
+	}
+	return res, nil
+}
+
+// TestGrantedReadServesWatchedJobCrossStore is the spec §5.1 consumption
+// direction: the observer delegate's job_read_output cannot resolve the
+// watched job locally (it lives in the parent's store), so the read resolves
+// through the parent-injected grant lookup — content, status, and grep all
+// round-trip.
+func TestGrantedReadServesWatchedJobCrossStore(t *testing.T) {
+	fx := newGrantReadFixture(t)
+
+	out, err := observerReadOutput(t, fx.observer, map[string]any{"job_id": fx.watched, "tail_bytes": 65536})
+	if err != nil {
+		t.Fatalf("granted read: %v", err)
+	}
+	if out.JobID != fx.watched || out.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("granted read = %+v, want completed record for %s", out, fx.watched)
+	}
+	if out.Reason == nil || *out.Reason != "exit_zero" {
+		t.Fatalf("reason = %v, want exit_zero", out.Reason)
+	}
+	if out.Content != grantReadWatchedOutput {
+		t.Fatalf("content = %q, want %q", out.Content, grantReadWatchedOutput)
+	}
+	if out.TotalBytes != int64(len(grantReadWatchedOutput)) {
+		t.Fatalf("total_bytes = %d, want %d", out.TotalBytes, len(grantReadWatchedOutput))
+	}
+	if out.ExitCode == nil || *out.ExitCode != 0 {
+		t.Fatalf("exit_code = %v, want 0", out.ExitCode)
+	}
+
+	grepped, err := observerReadOutput(t, fx.observer, map[string]any{"job_id": fx.watched, "grep": "ready"})
+	if err != nil {
+		t.Fatalf("granted grep read: %v", err)
+	}
+	if grepped.Grep != "ready" {
+		t.Fatalf("grep echo = %q, want ready", grepped.Grep)
+	}
+	if len(grepped.Matches) != 1 || !strings.Contains(grepped.Matches[0].Line, "bravo ready") {
+		t.Fatalf("grep matches = %+v, want one 'bravo ready' match", grepped.Matches)
+	}
+	if grepped.Matches[0].ByteOffset == nil {
+		t.Fatalf("grep match byte_offset missing: %+v", grepped.Matches[0])
+	}
+}
+
+// TestNonGrantedReadPreservesTargetNotFound pins the miss path on both axes:
+// a granted observer reading an UNGRANTED parent job, and an ungranted child
+// session reading the granted watched job. Both keep the original
+// target_not_found error instead of leaking the parent store.
+func TestNonGrantedReadPreservesTargetNotFound(t *testing.T) {
+	fx := newGrantReadFixture(t)
+	ungranted, err := fx.parentJM.createShell(createShellOpts{Command: "other"})
+	if err != nil {
+		t.Fatalf("create ungranted job: %v", err)
+	}
+
+	if _, err := observerReadOutput(t, fx.observer, map[string]any{"job_id": ungranted.JobID}); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("ungranted job read error = %v, want original not-found", err)
+	}
+
+	strangerJM, err := newJobManager(t.TempDir(), "child_job_other", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new stranger jobManager: %v", err)
+	}
+	t.Cleanup(func() { _ = strangerJM.store.Close() })
+	stranger := &Session{id: "child_job_other", jobManager: strangerJM}
+	stranger.cfg.spawn.parentGrantedJobRead = fx.parent.lookupGrantedJobRead
+
+	if _, err := observerReadOutput(t, stranger, map[string]any{"job_id": fx.watched}); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("stranger read error = %v, want original not-found", err)
+	}
+}
+
+// TestGrantSurvivesObserverResumeUnderNewJobID is the canonical fire ->
+// resume -> read flow the session-id grant keying exists for: frame delivery
+// to an idle observer resumes it under a NEW delegate job id, and the read
+// must still resolve. The real resume path (resumeOrFindRunningDelegate ->
+// attachDelegateJobFromWatch -> relinkDelegateChildToJob) needs a live
+// subagent runtime, so this reproduces its store-visible effects: the old
+// observer job goes terminal, a fresh job id starts for the SAME child
+// session (same transcript ref), and the child is relinked to the new job.
+func TestGrantSurvivesObserverResumeUnderNewJobID(t *testing.T) {
+	fx := newGrantReadFixture(t)
+	ended := fx.parentJM.now().Add(time.Second)
+	if err := fx.parentJM.appendEvent(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          ended,
+		JobID:       "job_obs",
+		Status:      jobstore.StatusCompleted,
+		Reason:      "exit_zero",
+		EndedAt:     &ended,
+		TerminalGen: "term_job_obs",
+	}); err != nil {
+		t.Fatalf("finish observer job: %v", err)
+	}
+	if err := fx.parentJM.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               ended,
+		JobID:            "job_obs_resumed",
+		Type:             jobstore.JobDelegate,
+		OwnerSessionID:   "PARENT",
+		VisibleToSession: "PARENT",
+		TranscriptRef:    encodeRef("", "child_job_obs"),
+		StartedAt:        &ended,
+	}); err != nil {
+		t.Fatalf("start resumed observer job: %v", err)
+	}
+	relinkDelegateChildToJob(fx.observer, "job_obs_resumed")
+
+	out, err := observerReadOutput(t, fx.observer, map[string]any{"job_id": fx.watched})
+	if err != nil {
+		t.Fatalf("granted read after resume: %v", err)
+	}
+	if out.JobID != fx.watched || out.Status != string(jobstore.StatusCompleted) || !strings.Contains(out.Content, "bravo ready") {
+		t.Fatalf("read after resume = %+v, want watched job content", out)
+	}
+}
+
+// TestGrantSurvivesWatchClearAndStoreReopen pins the durable half of spec
+// §5.1: the grant is an append-only capability — clearing the watch does not
+// revoke it, and a parent store reopen refolds it from jobs.jsonl. The
+// re-wired seam mirrors restart, where delegate restore re-injects the lookup
+// from the rebuilt parent session.
+func TestGrantSurvivesWatchClearAndStoreReopen(t *testing.T) {
+	parentStateDir := t.TempDir()
+	parentJM, err := newJobManager(parentStateDir, "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	observerJM, err := newJobManager(t.TempDir(), "child_job_obs", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new observer jobManager: %v", err)
+	}
+	t.Cleanup(func() { _ = observerJM.store.Close() })
+
+	seedCommonWatchSendTargets(t, parentJM)
+	watched, err := parentJM.createShell(createShellOpts{Command: "server"})
+	if err != nil {
+		t.Fatalf("create watched job: %v", err)
+	}
+	if _, err := parentJM.configureWatch(watchArgs{
+		Target:      watched.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure sidecar watch: %v", err)
+	}
+	if _, err := parentJM.configureWatch(watchArgs{
+		Target: watched.JobID,
+		Send:   &watchSendArgs{To: "job_obs"},
+		Clear:  true,
+	}); err != nil {
+		t.Fatalf("clear sidecar watch: %v", err)
+	}
+	if _, err := parentJM.appendJobOutput(watched.JobID, parentJM.running[watched.JobID].output, []byte(grantReadWatchedOutput)); err != nil {
+		t.Fatalf("append watched output: %v", err)
+	}
+	code := 0
+	if err := parentJM.finalize(watched.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize watched job: %v", err)
+	}
+	if err := parentJM.store.Close(); err != nil {
+		t.Fatalf("close parent store: %v", err)
+	}
+
+	reopenedJM, err := newJobManager(parentStateDir, "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("reopen parent jobManager: %v", err)
+	}
+	t.Cleanup(func() { _ = reopenedJM.store.Close() })
+	grants, err := reopenedJM.store.LoadGrants()
+	if err != nil {
+		t.Fatalf("load grants after reopen: %v", err)
+	}
+	if !grants["child_job_obs"][watched.JobID] {
+		t.Fatalf("grants after clear+reopen = %+v, want child_job_obs -> %s", grants, watched.JobID)
+	}
+
+	reopenedParent := &Session{id: "PARENT", jobManager: reopenedJM, subagents: newSubagentManager(nil)}
+	observer := &Session{id: "child_job_obs", jobManager: observerJM}
+	observer.cfg.spawn.parentGrantedJobRead = reopenedParent.lookupGrantedJobRead
+
+	out, err := observerReadOutput(t, observer, map[string]any{"job_id": watched.JobID})
+	if err != nil {
+		t.Fatalf("granted read after clear+reopen: %v", err)
+	}
+	if out.Status != string(jobstore.StatusCompleted) || out.Content != grantReadWatchedOutput {
+		t.Fatalf("read after clear+reopen = %+v, want full watched output", out)
+	}
+}
+
+// TestGrantedReadAfterParentClosedPreservesTargetNotFound: a closed parent
+// store makes the grant lookup unanswerable; the observer's read degrades to
+// its original target_not_found instead of surfacing a parent-side failure or
+// panicking.
+func TestGrantedReadAfterParentClosedPreservesTargetNotFound(t *testing.T) {
+	fx := newGrantReadFixture(t)
+	if err := fx.parentJM.close(); err != nil {
+		t.Fatalf("close parent job manager: %v", err)
+	}
+
+	_, err := observerReadOutput(t, fx.observer, map[string]any{"job_id": fx.watched})
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("read after parent close error = %v, want original not-found", err)
+	}
+}
+
+// TestGrantedReadRejectsBlock pins the decision that granted cross-session
+// reads are snapshot-only: block=true fails loudly instead of silently
+// degrading to a snapshot.
+func TestGrantedReadRejectsBlock(t *testing.T) {
+	fx := newGrantReadFixture(t)
+
+	for name, args := range map[string]map[string]any{
+		"block":      {"job_id": fx.watched, "block": true},
+		"block+grep": {"job_id": fx.watched, "block": true, "grep": "ready"},
+	} {
+		_, err := observerReadOutput(t, fx.observer, args)
+		if err == nil || err.Error() != grantedReadBlockUnsupportedErr {
+			t.Fatalf("%s error = %v, want %q", name, err, grantedReadBlockUnsupportedErr)
+		}
+	}
+}
+
 var _ = jobstore.JobShell
