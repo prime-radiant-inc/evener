@@ -1143,7 +1143,9 @@ func (g *jobGrepScan) scanSegment(seg []byte, re *regexp.Regexp, maxLineBytes in
 // current end, returning the lifetime offset of the first returned byte.
 // readOutput sizes the request and reads under separate lock acquisitions, so
 // concurrent appends can move the tail past the requested window; widen and
-// retry a bounded number of times before settling for the retained tail.
+// retry a bounded number of times; legitimate short windows (retention floor)
+// return ok, while a window still racing after the retry budget reports not-ok
+// so the caller retries.
 //
 // Three conditions legitimately allow returning a window with start > from
 // (bytes below start are genuinely unavailable, not just a race):

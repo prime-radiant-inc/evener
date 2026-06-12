@@ -1395,8 +1395,9 @@ func TestJobGrepScanNeverMatchesOverlongLines(t *testing.T) {
 // first attempt requests only 50 bytes and gets back the tail [50,100) so
 // start=50 > from=0; the loop widens want to 100, the next attempt reads all
 // 100 bytes with start=0 <= from=0, and exits via the start<=from branch.
-// This test must pass both before and after the G3 fix because it exits via
-// start<=from, not via tries>=3.
+// This exercises the pre-existing widen behavior (it exits via start<=from,
+// not the retry-exhausted path), so it is independent of the not-ok-on-race
+// change.
 func TestReadJobOutputFromWidensPastStaleTotal(t *testing.T) {
 	s := newTestSession(t)
 	rec := newManualRunningJob(t, s)
@@ -1439,18 +1440,8 @@ func TestJobReadOutputBlockGrepReturnsImmediatelyOnTerminalJobWithMatch(t *testi
 	if out.Status != string(jobstore.StatusCompleted) {
 		t.Fatalf("status = %q, want completed", out.Status)
 	}
-	if len(out.Matches) < 1 {
-		t.Fatalf("matches = %+v, want at least one match for 'ready'", out.Matches)
-	}
-	found := false
-	for _, m := range out.Matches {
-		if strings.Contains(m.Line, "ready") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("matches = %+v, want a match with line containing 'ready'", out.Matches)
+	if len(out.Matches) != 1 || !strings.Contains(out.Matches[0].Line, "ready") {
+		t.Fatalf("matches = %+v, want exactly one match for 'ready'", out.Matches)
 	}
 }
 
