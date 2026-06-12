@@ -28,7 +28,7 @@
 - Modify: `agent/job_watch.go` (new helper near `pendingWatchSendDeliveries` ~:1817)
 - Test: `agent/job_watch_test.go`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```go
 func TestJobManagerWakeAndHasPendingWatchSends(t *testing.T) {
@@ -59,11 +59,11 @@ func TestJobManagerWakeAndHasPendingWatchSends(t *testing.T) {
 
 The fixture `installCallerSendWatchWithPending` should reuse the same construction an existing pending-state test in `job_watch_test.go` uses (e.g. the tests around `persistPendingWatchSend`/`removePendingWatchSend`) — do not invent a new path; copy the minimal arrange block into a named helper.
 
-- [ ] **Step 2: Run it, verify it fails to compile** (`jm.wake`, `jm.kick`, `jm.hasPendingWatchSends` undefined)
+- [x] **Step 2: Run it, verify it fails to compile** (`jm.wake`, `jm.kick`, `jm.hasPendingWatchSends` undefined)
 
 Run: `cd agent && go test ./ -run TestJobManagerWakeAndHasPendingWatchSends -v`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `agent/jobs.go`, add to the `jobManager` struct (next to `enqueue`):
 
@@ -113,8 +113,8 @@ In `agent/session_init.go:116`, change the construction to wire wake after `newJ
 
 Leave the `session_init.go:323` restore-only constructor as-is (nil wake).
 
-- [ ] **Step 4: Run the test, verify pass; run `go test ./ -race -run TestJobManagerWake -v`**
-- [ ] **Step 5: Commit** — `feat(job-control): add jobManager wake + hasPendingWatchSends`
+- [x] **Step 4: Run the test, verify pass; run `go test ./ -race -run TestJobManagerWake -v`**
+- [x] **Step 5: Commit** — `feat(job-control): add jobManager wake + hasPendingWatchSends`
 
 ### Task 1.2: Watch-send wake tokens on the notification queue
 

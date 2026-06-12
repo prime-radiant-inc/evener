@@ -50,7 +50,11 @@ type jobManager struct {
 	parentJobID   string
 	enqueue       func(jobNotification)
 	send          func(context.Context, sendMessageArgs) sendMessageResult
-	now           func() time.Time
+	// wake kicks the owning session's drain loop (wired to Session.notify).
+	// nil for test/restore-only managers. Observation paths call kick() after
+	// persisting watch-send intent; they never deliver (spec §3).
+	wake func()
+	now  func() time.Time
 }
 
 func (jm *jobManager) setParentJobID(jobID string) {

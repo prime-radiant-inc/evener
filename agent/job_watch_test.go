@@ -3998,4 +3998,54 @@ func TestWatchEventKindNamesResolve(t *testing.T) {
 	}
 }
 
+func installCallerSendWatchWithPending(t *testing.T, jm *jobManager) *watchConfig {
+	t.Helper()
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		return busyWatchSendResult()
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target:  runtimeMessageAliasCaller,
+		Events:  []string{"assistant.message"},
+		Send:    &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
+	}); err != nil {
+		t.Fatalf("installCallerSendWatchWithPending: configure: %v", err)
+	}
+	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	key := watchKey{
+		VisibleSessionID: jm.sessionID,
+		Target:           runtimeMessageAliasCaller,
+		SendTo:           runtimeMessageAliasCaller,
+	}
+	cfg := jm.watches[key]
+	if cfg == nil {
+		t.Fatal("installCallerSendWatchWithPending: watch config not found")
+	}
+	if len(cfg.pendingOrder) == 0 {
+		t.Fatal("installCallerSendWatchWithPending: no pending send after busy delivery")
+	}
+	return cfg
+}
+
+func TestJobManagerWakeAndHasPendingWatchSends(t *testing.T) {
+	jm := newTestJM(t)
+	woke := 0
+	jm.wake = func() { woke++ }
+
+	if jm.hasPendingWatchSends() {
+		t.Fatal("fresh manager must have no pending watch sends")
+	}
+	jm.kick()
+	if woke != 1 {
+		t.Fatalf("kick must call wake once, got %d", woke)
+	}
+	jm.wake = nil
+	jm.kick() // must not panic with nil wake (test/restore managers pass nil)
+
+	cfg := installCallerSendWatchWithPending(t, jm)
+	_ = cfg
+	if !jm.hasPendingWatchSends() {
+		t.Fatal("pending entry must be visible to hasPendingWatchSends")
+	}
+}
+
 var _ = jobstore.JobShell

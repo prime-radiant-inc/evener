@@ -1850,6 +1850,31 @@ func (jm *jobManager) pendingWatchSendDeliveries(include func(*jobstore.WatchSen
 	return deliveries
 }
 
+func (jm *jobManager) kick() {
+	if jm.wake != nil {
+		jm.wake()
+	}
+}
+
+// hasPendingWatchSends reports whether any live or terminal-flush watch config
+// holds undelivered pending sends. Drain-loop tails use it to decide whether a
+// wake needs a drain pass.
+func (jm *jobManager) hasPendingWatchSends() bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, cfg := range jm.watches {
+		if len(cfg.pendingOrder) > 0 {
+			return true
+		}
+	}
+	for cfg := range jm.terminalFlush {
+		if len(cfg.pendingOrder) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func resolveWatchSendTarget(target, watchedJobID string) (string, error) {
 	if target != runtimeMessageAliasWatched {
 		return target, nil
