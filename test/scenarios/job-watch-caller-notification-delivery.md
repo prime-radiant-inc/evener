@@ -123,21 +123,27 @@ Run 2:
 
 - All three TICK lines print while the turn is still busy (ticks land
   ~+10/+16/+22s after the job starts; the paced essay holds the turn
-  well past that). No TICK_FRAME content appears mid-turn: caller
-  frames are not delivered between tool rounds.
-- After the busy turn's final assistant message, the notification turn
-  renders EXACTLY ONE `TICK_FRAME` watch-send frame — and its
-  `trigger:` references `TICK_MARK_3`, the latest fire. Stale tokens
-  render nothing.
-  <!-- pin: spec §4.3 — N fires against a busy caller produce N wake
-       tokens but exactly one rendered frame, the current one. -->
-- `jobs.jsonl` shows the pending being superseded and exactly one
-  `watch_send_delivered` for the tick watch; no `watch_send_dropped`.
-- Falsification: three TICK_FRAME frames rendered (token-per-fire
+  well past that). TICK_FRAME never appears mid-stream (inside a
+  streaming model response) — but it MAY surface between tool rounds:
+  the contract's owner-session boundaries are "between tool rounds, at
+  input end, or on idle wake" (`docs/job-control.md` "Delivery
+  modes"), so a between-rounds delivery during the paced essay is
+  contract-true, not a leak.
+- Each rendered `TICK_FRAME`'s `trigger:` references the LATEST tick
+  that had fired by its delivery time — latest-frame-wins per watch
+  key; a superseded stale token renders nothing. Observed shipped
+  behavior with this pacing: one frame, trigger `TICK_MARK_3`.
+  <!-- pin: spec §4.3 — fires between deliveries coalesce to one
+       durable latest-frame-wins pending per watch key; each delivery
+       renders exactly the current frame, never one frame per fire. -->
+- `jobs.jsonl` shows superseded pendings and a matching
+  `watch_send_delivered` per rendered frame; no `watch_send_dropped`.
+- Falsification: more rendered frames than deliveries (token-per-fire
   leaked into rendering — coalescing broken); zero rendered (the
   matched condition turned into silence — violates the contract's
-  coalescing rule); or the single frame references TICK_MARK_1 or
-  TICK_MARK_2 (a stale frame won over the latest).
+  coalescing rule); a frame whose `trigger:` references a tick OLDER
+  than the latest fire at its delivery time (a stale frame won); or
+  any frame content injected mid-stream.
 
 ## Cleanup
 

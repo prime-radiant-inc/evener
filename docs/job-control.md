@@ -564,9 +564,12 @@ Return shape:
     "to": "job_observer",
     "include_excerpt": true
   },
-  "replaced_existing": false
+  "replaced_existing": false,
+  "fired": false
 }
 ```
+
+`replaced_existing` and `fired` are always present, explicitly `false` when they did not happen — `fired` is `true` only for an attach scan or terminal catch-up that matched (§7.1).
 
 ```mermaid
 stateDiagram-v2

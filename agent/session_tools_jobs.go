@@ -582,10 +582,13 @@ type jobWatchToolResult struct {
 	Events             []string              `json:"events,omitempty"`
 	ProgressIntervalMS int                   `json:"progress_interval_ms,omitempty"`
 	Send               *jobWatchToolSendArgs `json:"send,omitempty"`
-	ReplacedExisting   bool                  `json:"replaced_existing,omitempty"`
-	Fired              bool                  `json:"fired,omitempty"`
-	TerminalCatchup    bool                  `json:"terminal_catchup,omitempty"`
-	Status             string                `json:"status,omitempty"`
+	// replaced_existing and fired serialize explicitly even when false: the
+	// contract's install example shows replaced_existing:false, and §7.1
+	// promises "fired=false on none" for terminal catch-up.
+	ReplacedExisting bool   `json:"replaced_existing"`
+	Fired            bool   `json:"fired"`
+	TerminalCatchup  bool   `json:"terminal_catchup,omitempty"`
+	Status           string `json:"status,omitempty"`
 }
 
 type jobWatchToolSendArgs struct {

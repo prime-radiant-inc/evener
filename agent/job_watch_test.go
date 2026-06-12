@@ -5626,8 +5626,9 @@ func TestMarshalWatchResultTerminalCatchupProjection(t *testing.T) {
 	if !strings.Contains(notFired, `"terminal_catchup":true`) || !strings.Contains(notFired, `"status":"failed"`) {
 		t.Fatalf("not-fired projection = %s, want terminal_catchup+status", notFired)
 	}
-	if strings.Contains(notFired, `"fired"`) {
-		t.Fatalf("not-fired projection must omit fired (omitempty): %s", notFired)
+	// Contract §7.1 promises "fired=false on none" — explicit, not omitted.
+	if !strings.Contains(notFired, `"fired":false`) {
+		t.Fatalf("not-fired projection must report explicit fired:false: %s", notFired)
 	}
 }
 

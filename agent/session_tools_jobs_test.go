@@ -735,6 +735,11 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 	if !strings.Contains(res.Output, `"watching":true`) {
 		t.Fatalf("job_watch output = %s, want watching true", res.Output)
 	}
+	// The contract's install example shows replaced_existing explicitly false,
+	// not omitted (docs/job-control.md § job_watch result).
+	if !strings.Contains(res.Output, `"replaced_existing":false`) {
+		t.Fatalf("job_watch output = %s, want explicit replaced_existing:false", res.Output)
+	}
 	if s.jobManager.watchCount() != 1 {
 		t.Fatalf("watch count = %d, want 1", s.jobManager.watchCount())
 	}
@@ -809,7 +814,8 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 // catch-up end to end through the job_watch tool: an output_match-only watch on an
 // already-terminal job whose retained output matches returns terminal_catchup with
 // fired=true (no live watch installed), and the new fields surface in the tool
-// JSON. A non-matching catch-up reports terminal_catchup with fired absent.
+// JSON. A non-matching catch-up reports terminal_catchup with an explicit
+// fired=false — contract §7.1 promises "fired=false on none", not omission.
 func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 	s := newTestSession(t)
 
@@ -863,8 +869,8 @@ func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 	if !strings.Contains(noMatchRes.Output, `"terminal_catchup":true`) {
 		t.Fatalf("non-matching catch-up tool result = %s, want terminal_catchup", noMatchRes.Output)
 	}
-	if strings.Contains(noMatchRes.Output, `"fired"`) {
-		t.Fatalf("non-matching catch-up must omit fired: %s", noMatchRes.Output)
+	if !strings.Contains(noMatchRes.Output, `"fired":false`) {
+		t.Fatalf("non-matching catch-up must report explicit fired:false (contract §7.1): %s", noMatchRes.Output)
 	}
 }
 
@@ -1129,8 +1135,9 @@ func TestMarshalWatchResultSurfacesFired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal not-fired result: %v", err)
 	}
-	if strings.Contains(notFiredOut, "fired") {
-		t.Fatalf("not-fired result JSON = %s, want \"fired\" omitted", notFiredOut)
+	// Contract §7.1: fired serializes explicitly even when false.
+	if !strings.Contains(notFiredOut, `"fired":false`) {
+		t.Fatalf("not-fired result JSON = %s, want explicit \"fired\":false", notFiredOut)
 	}
 	var notFired jobWatchToolResult
 	if err := json.Unmarshal([]byte(notFiredOut), &notFired); err != nil {
