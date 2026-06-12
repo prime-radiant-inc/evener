@@ -644,7 +644,7 @@ No drain-loop-tail change is needed: a wake submits an `EntryNotification`; an a
 - Modify: `agent/internal/tool/definitions.go` (`DefJobWatch` description note)
 - Test: `agent/job_watch_test.go`
 
-- [ ] **Step 1: Failing tests** — table-driven over the four loop shapes (all must be REJECTED):
+- [x] **Step 1: Failing tests** — table-driven over the four loop shapes (all must be REJECTED):
 
 ```go
 	cases := []watchArgs{
@@ -659,8 +659,8 @@ No drain-loop-tail change is needed: a wake submits an `EntryNotification`; an a
 	//  {Target: jobID, OutputMatch: "ready"}                                                        — not an event watch
 ```
 
-- [ ] **Step 2: Run; fail.**
-- [ ] **Step 3: Implement** in `configureWatch` after `newWatchConfig(a)` (which resolves events ∪ trigger ∪ wildcard into `cfg.eventKinds`/`cfg.wildcardEvents`):
+- [x] **Step 2: Run; fail.**
+- [x] **Step 3: Implement** in `configureWatch` after `newWatchConfig(a)` (which resolves events ∪ trigger ∪ wildcard into `cfg.eventKinds`/`cfg.wildcardEvents`):
 
 ```go
 	if err := validateWatchDeliveryLoop(cfg); err != nil {
@@ -688,7 +688,7 @@ func validateWatchDeliveryLoop(cfg *watchConfig) error {
 }
 ```
 
-- [ ] **Step 4: Run tests; full suite (existing tests that installed such configs — the incident smoke shape — will need their fixtures changed to sidecar delivery; apply the Task 1.7 no-weakening rule). Commit** — `feat(job-control): reject feedback-loop watch configs at create`
+- [x] **Step 4: Run tests; full suite (existing tests that installed such configs — the incident smoke shape — will need their fixtures changed to sidecar delivery; apply the Task 1.7 no-weakening rule). Commit** — `feat(job-control): reject feedback-loop watch configs at create`
 
 ### Task 2.2: Reject `include_excerpt` on session targets
 
@@ -697,9 +697,9 @@ func validateWatchDeliveryLoop(cfg *watchConfig) error {
 - Modify: `agent/job_watch.go:1893-1908` (`buildWatchFrame` — excerpt block gains a session-target guard returning no excerpt, defensive)
 - Test: `agent/job_watch_test.go`
 
-- [ ] **Step 1: Failing test** — `{Target: "caller", Events: [...], Send: {To: obsID, IncludeExcerpt: true}}` → `invalid_request: include_excerpt requires a concrete job target; session-target frames carry transcript_ref`. And a delivery-side test: a `*`-target frame built for a session identity contains NO `output_read_error`.
-- [ ] **Step 2: Run; fail.**
-- [ ] **Step 3: Implement** — in `configureWatch` after the `:177` block:
+- [x] **Step 1: Failing test** — `{Target: "caller", Events: [...], Send: {To: obsID, IncludeExcerpt: true}}` → `invalid_request: include_excerpt requires a concrete job target; session-target frames carry transcript_ref`. And a delivery-side test: a `*`-target frame built for a session identity contains NO `output_read_error`.
+- [x] **Step 2: Run; fail.**
+- [x] **Step 3: Implement** — in `configureWatch` after the `:177` block:
 
 ```go
 	if !a.Clear && a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
@@ -709,7 +709,7 @@ func validateWatchDeliveryLoop(cfg *watchConfig) error {
 
 In `buildWatchFrame`, guard the excerpt block: `if cfg.send.IncludeExcerpt && !isWatchSessionTarget(jobID) { ... }` — a `*` watch resolves per-fire, so creation-time validation cannot cover every identity; the delivery guard makes the broken `readOutput("caller")` call unreachable.
 
-- [ ] **Step 4: Run; commit** — `feat(job-control): excerpt validation for session-target watches`
+- [x] **Step 4: Run; commit** — `feat(job-control): excerpt validation for session-target watches`
 
 ### Task 2.3: Session-target frames carry transcript_ref (spec §5.2)
 
@@ -718,9 +718,9 @@ In `buildWatchFrame`, guard the excerpt block: `if cfg.send.IncludeExcerpt && !i
 - Modify: `agent/jobs.go` (jobManager gains `transcriptRef string` set at construction — the OWNING session's ref; `agent/session_init.go:116` wiring)
 - Test: `agent/job_watch_test.go`
 
-- [ ] **Step 1: Failing test** — a session-target frame contains `transcript_ref: <ref>`; a job-target frame does not.
-- [ ] **Step 2: Implement** — store `jm.transcriptRef` (wired from `s.TranscriptPath()`-derived ref at init — use the SAME ref shape `decodeRef` consumes; find the encoder near it, `rg -n "encodeRef|decodeRef" agent/`); in `buildWatchFrame`'s frame block, when `isWatchSessionTarget(jobID)`, append `"\ntranscript_ref: " + jm.transcriptRef` instead of any excerpt.
-- [ ] **Step 3: Run; commit** — `feat(job-control): session-target watch frames carry transcript_ref`
+- [x] **Step 1: Failing test** — a session-target frame contains `transcript_ref: <ref>`; a job-target frame does not.
+- [x] **Step 2: Implement** — store `jm.transcriptRef` (wired from `s.TranscriptPath()`-derived ref at init — use the SAME ref shape `decodeRef` consumes; find the encoder near it, `rg -n "encodeRef|decodeRef" agent/`); in `buildWatchFrame`'s frame block, when `isWatchSessionTarget(jobID)`, append `"\ntranscript_ref: " + jm.transcriptRef` instead of any excerpt.
+- [x] **Step 3: Run; commit** — `feat(job-control): session-target watch frames carry transcript_ref`
 
 ---
 
@@ -734,8 +734,8 @@ In `buildWatchFrame`, guard the excerpt block: `if cfg.send.IncludeExcerpt && !i
 - Modify: `agent/internal/jobstore/watch.go` (`OutputMatcher` gains `scanOffset int64`; `Feed(chunk []byte, endOffset int64)` discards/slices below `scanOffset`)
 - Test: `agent/internal/jobstore/watch_test.go`, `agent/job_watch_test.go`
 
-- [ ] **Step 1: Failing jobstore tests** — `Feed` with `endOffset ≤ scanOffset` matches nothing; a chunk straddling `scanOffset` matches only on the post-offset slice; carry seeding: `SeedCarry([]byte)` then a completing chunk matches a straddling token.
-- [ ] **Step 2: Implement** in `OutputMatcher`:
+- [x] **Step 1: Failing jobstore tests** — `Feed` with `endOffset ≤ scanOffset` matches nothing; a chunk straddling `scanOffset` matches only on the post-offset slice; carry seeding: `SeedCarry([]byte)` then a completing chunk matches a straddling token.
+- [x] **Step 2: Implement** in `OutputMatcher`:
 
 ```go
 // SetScanOffset marks bytes below off as covered by an attach-time scan;
@@ -757,8 +757,8 @@ func (m *OutputMatcher) Feed(chunk []byte, endOffset int64) []string {
 
 (Adjust to the file's actual field names after reading it — the carry buffer exists; verify its name. Keep the existing zero-offset behavior for matchers created without a scan: `scanOffset == 0` is a no-op.)
 
-- [ ] **Step 3: Thread `endOffset`** through `appendJobOutput` → `feedJobOutput` → `Feed`. Single-goroutine pump per job ⇒ offsets monotone (assert with a debug check: if `endOffset` regresses, drop the chunk and emit a warning notification — never panic on the pump).
-- [ ] **Step 4: Full suite; commit** — `feat(jobstore): offset-aware output matching`
+- [x] **Step 3: Thread `endOffset`** through `appendJobOutput` → `feedJobOutput` → `Feed`. Single-goroutine pump per job ⇒ offsets monotone (assert with a debug check: if `endOffset` regresses, drop the chunk and emit a warning notification — never panic on the pump).
+- [x] **Step 4: Full suite; commit** — `feat(jobstore): offset-aware output matching`
 
 ### Task 3.2: Attach-time scan (running targets)
 
@@ -766,9 +766,9 @@ func (m *OutputMatcher) Feed(chunk []byte, endOffset int64) []string {
 - Modify: `agent/job_watch.go` (`configureWatch` — after the watch is installed at `:280-285`)
 - Test: `agent/job_watch_test.go`
 
-- [ ] **Step 1: Failing tests** — (a) job already printed `ready` → attach `output_match:"ready"` watch → exactly ONE pending fire exists without any further output; (b) the fire counts once for `trigger.every`; (c) a job that has printed nothing → attach → no fire; later `Feed` fires normally; (d) token straddling attach (write `rea`, attach, write `dy\n`) → exactly one fire (carry seeding), run under `-race`.
-- [ ] **Step 2: Implement** — in `configureWatch`, for a concrete running target with `cfg.outputMatcher != nil`, inside the SAME `jm.mu` critical section that installs the cfg (`jm.watches[key] = cfg`): read retained length N + tail under the store's lock (add a jm helper `retainedOutputForScan(jobID) (data []byte, n int64, err error)` that reads the full retained output, NOT the preview window — reuse `jm.readOutput` with the retention max), `cfg.outputMatcher.SetScanOffset(n)`, `cfg.outputMatcher.SeedCarry(tailAfterLastNewline(data))`. After releasing `jm.mu`, line-scan `data[:n]` with the same regex; on any match, build ONE `watchSendDelivery` (frame carries the LAST matching line as trigger) and route it through `recordWatchSendsAndKick` / `enqueueWatchNotifications` exactly like a `Feed` fire.
-- [ ] **Step 3: Run; full suite; commit** — `feat(job-control): level-triggered output_match at attach`
+- [x] **Step 1: Failing tests** — (a) job already printed `ready` → attach `output_match:"ready"` watch → exactly ONE pending fire exists without any further output; (b) the fire counts once for `trigger.every`; (c) a job that has printed nothing → attach → no fire; later `Feed` fires normally; (d) token straddling attach (write `rea`, attach, write `dy\n`) → exactly one fire (carry seeding), run under `-race`.
+- [x] **Step 2: Implement** — in `configureWatch`, for a concrete running target with `cfg.outputMatcher != nil`, inside the SAME `jm.mu` critical section that installs the cfg (`jm.watches[key] = cfg`): read retained length N + tail under the store's lock (add a jm helper `retainedOutputForScan(jobID) (data []byte, n int64, err error)` that reads the full retained output, NOT the preview window — reuse `jm.readOutput` with the retention max), `cfg.outputMatcher.SetScanOffset(n)`, `cfg.outputMatcher.SeedCarry(tailAfterLastNewline(data))`. After releasing `jm.mu`, line-scan `data[:n]` with the same regex; on any match, build ONE `watchSendDelivery` (frame carries the LAST matching line as trigger) and route it through `recordWatchSendsAndKick` / `enqueueWatchNotifications` exactly like a `Feed` fire.
+- [x] **Step 3: Run; full suite; commit** — `feat(job-control): level-triggered output_match at attach`
 
 ### Task 3.3: Terminal catch-up
 
@@ -778,10 +778,10 @@ func (m *OutputMatcher) Feed(chunk []byte, endOffset int64) []string {
 - Modify: `docs/job-control.md:534`, `:506`, `:542/:546` (contract rows from spec §8)
 - Test: `agent/job_watch_test.go`
 
-- [ ] **Step 1: Failing tests** — terminal job + `output_match` that matches retained output → result `{watching:false, fired:true, terminal_catchup:true}`, one notification (or send routed via a detached terminalFlush config that drains/settles); terminal + no match → `{watching:false, fired:false, terminal_catchup:true, status:"completed"}`, nothing enqueued; terminal + `events` → still `target_terminal`.
-- [ ] **Step 2: Implement** — in `configureWatch`, when `validateWatchTarget` returns the terminal error AND the args are output_match-only (`a.OutputMatch != "" && len(a.Events)==0 && a.TriggerEvent=="" && a.ProgressIntervalMS==0`), run the catch-up: scan retained output; on match with `a.Send == nil` → `enqueueWatchNotifications` one watch notification; on match with send → mint a one-shot detached `watchConfig` (own `generation`), register it via `rememberDetachedPendingLocked` in `terminalFlush`, `recordWatchSendsAndKick` one delivery. Extend `watchResult` with `Fired, TerminalCatchup bool` + `Status string` and project them in the tool's JSON (`jobWatchTool` in `session_tools_jobs.go` — find its result struct and add the three fields with `omitempty`).
-- [ ] **Step 3: Amend the three contract rows + the tool description in the same commit.**
-- [ ] **Step 4: Run; commit** — `feat(job-control): terminal catch-up for output_match watches`
+- [x] **Step 1: Failing tests** — terminal job + `output_match` that matches retained output → result `{watching:false, fired:true, terminal_catchup:true}`, one notification (or send routed via a detached terminalFlush config that drains/settles); terminal + no match → `{watching:false, fired:false, terminal_catchup:true, status:"completed"}`, nothing enqueued; terminal + `events` → still `target_terminal`.
+- [x] **Step 2: Implement** — in `configureWatch`, when `validateWatchTarget` returns the terminal error AND the args are output_match-only (`a.OutputMatch != "" && len(a.Events)==0 && a.TriggerEvent=="" && a.ProgressIntervalMS==0`), run the catch-up: scan retained output; on match with `a.Send == nil` → `enqueueWatchNotifications` one watch notification; on match with send → mint a one-shot detached `watchConfig` (own `generation`), register it via `rememberDetachedPendingLocked` in `terminalFlush`, `recordWatchSendsAndKick` one delivery. Extend `watchResult` with `Fired, TerminalCatchup bool` + `Status string` and project them in the tool's JSON (`jobWatchTool` in `session_tools_jobs.go` — find its result struct and add the three fields with `omitempty`).
+- [x] **Step 3: Amend the three contract rows + the tool description in the same commit.**
+- [x] **Step 4: Run; commit** — `feat(job-control): terminal catch-up for output_match watches`
 
 ### Task 3.4: Blocking grep
 
@@ -791,10 +791,10 @@ func (m *OutputMatcher) Feed(chunk []byte, endOffset int64) []string {
 - Modify: `docs/job-control.md` (the `job_read_output` block semantics line — locate via `rg -n "block" docs/job-control.md`)
 - Test: `agent/session_tools_jobs_test.go` (or the file's existing test home — `rg -n "jobReadOutputTool" agent/*_test.go`)
 
-- [ ] **Step 1: Failing tests** — (a) match already in retained output → returns immediately with matches, no wait; (b) match appears mid-stream → returns at next poll tick with matches; (c) no match by timeout → normal snapshot, status running, empty matches; (d) terminal without match → final snapshot.
-- [ ] **Step 2: Implement** — new `waitForJobGrepMatch(ctx, jm, jobID string, re *regexp.Regexp, limitBytes int, timeout time.Duration) bool` modeled on `waitForJobDoneOrOutput`'s timer/ticker/done-channel shape, with: entry check before the first wait; on each size change, grep ONLY `[lastScanned-lineCarry, newLen)` via a new incremental jm helper `grepOutputFrom(jobID, re, fromOffset)` that re-reads from the last newline before `fromOffset` (cheap seek on the retained file; reuse the existing `grepOutput` line machinery with an offset parameter). Wire in `jobReadOutputTool`: `if shellBoolArg(args, "block") { if grepRE != nil { waitForJobGrepMatch(...) } else { waitForJobDoneOrOutput(...) } }`. Final snapshot path unchanged (it re-greps for the result's `matches` — correctness does not depend on the wait's incremental state).
-- [ ] **Step 3: Update the tool description** ("block=true with grep waits until a match exists, the job ends, or the timeout elapses") + the contract line, same commit.
-- [ ] **Step 4: Run; full suite; commit** — `feat(job-control): job_read_output blocks until grep match`
+- [x] **Step 1: Failing tests** — (a) match already in retained output → returns immediately with matches, no wait; (b) match appears mid-stream → returns at next poll tick with matches; (c) no match by timeout → normal snapshot, status running, empty matches; (d) terminal without match → final snapshot.
+- [x] **Step 2: Implement** — new `waitForJobGrepMatch(ctx, jm, jobID string, re *regexp.Regexp, limitBytes int, timeout time.Duration) bool` modeled on `waitForJobDoneOrOutput`'s timer/ticker/done-channel shape, with: entry check before the first wait; on each size change, grep ONLY `[lastScanned-lineCarry, newLen)` via a new incremental jm helper `grepOutputFrom(jobID, re, fromOffset)` that re-reads from the last newline before `fromOffset` (cheap seek on the retained file; reuse the existing `grepOutput` line machinery with an offset parameter). Wire in `jobReadOutputTool`: `if shellBoolArg(args, "block") { if grepRE != nil { waitForJobGrepMatch(...) } else { waitForJobDoneOrOutput(...) } }`. Final snapshot path unchanged (it re-greps for the result's `matches` — correctness does not depend on the wait's incremental state).
+- [x] **Step 3: Update the tool description** ("block=true with grep waits until a match exists, the job ends, or the timeout elapses") + the contract line, same commit.
+- [x] **Step 4: Run; full suite; commit** — `feat(job-control): job_read_output blocks until grep match`
 
 ---
 
@@ -806,9 +806,9 @@ func (m *OutputMatcher) Feed(chunk []byte, endOffset int64) []string {
 - Modify: `agent/internal/jobstore/event.go` (new kind + payload fields), `fold.go` (grant table on the fold state), `record.go` if the fold state lives there (`rg -n "type.*foldState|func Fold" agent/internal/jobstore/`)
 - Test: `agent/internal/jobstore/fold_test.go`
 
-- [ ] **Step 1: Failing test** — append `{kind: watch_read_grant, observer_session_id, watched job_id}` → store exposes `Grants()` containing the pair; reload from disk preserves it; duplicate appends are idempotent.
-- [ ] **Step 2: Implement** — `EventWatchReadGrant EventKind = "watch_read_grant"`; payload fields `ObserverSessionID string \`json:"observer_session_id,omitempty"\`` on `Event`; fold into a `map[string]map[string]bool` (observer → watched job ids) exposed via a `Grants` accessor following the store's existing accessor conventions.
-- [ ] **Step 3: Run; commit** — `feat(jobstore): watch_read_grant event kind`
+- [x] **Step 1: Failing test** — append `{kind: watch_read_grant, observer_session_id, watched job_id}` → store exposes `Grants()` containing the pair; reload from disk preserves it; duplicate appends are idempotent.
+- [x] **Step 2: Implement** — `EventWatchReadGrant EventKind = "watch_read_grant"`; payload fields `ObserverSessionID string \`json:"observer_session_id,omitempty"\`` on `Event`; fold into a `map[string]map[string]bool` (observer → watched job ids) exposed via a `Grants` accessor following the store's existing accessor conventions.
+- [x] **Step 3: Run; commit** — `feat(jobstore): watch_read_grant event kind`
 
 ### Task 4.2: Mint at watch creation
 
@@ -816,9 +816,9 @@ func (m *OutputMatcher) Feed(chunk []byte, endOffset int64) []string {
 - Modify: `agent/job_watch.go` (`configureWatch` — after send-target validation; per-fire minting in `recordWatchSendsAndKick` for `watched`-resolved identities)
 - Test: `agent/job_watch_test.go`
 
-- [ ] **Step 1: Failing tests** — creating a watch with `send.to=<delegate job>` on job target J appends a grant `{observer_session_id: childID(send.to), watched: J}`; a `target="*"` watch grants nothing at create, then grants the concrete watched job on first recorded send for it; session-target watches grant nothing (nothing to read — frames carry transcript_ref).
-- [ ] **Step 2: Implement** — resolve `send.to` job → record → `decodeRef(rec.TranscriptRef)` → childID (the same resolution `sendDelegateMessage` uses at `agent/job_delegate.go:272`); append the grant event (idempotence via the fold — appending an existing pair is a no-op read-side). Per-fire: in `recordWatchSend`, when `resolveWatchSendTarget` resolved a `watched` alias to a concrete job and the send target is a delegate, append the grant for that concrete job before persisting the pending.
-- [ ] **Step 3: Run; commit** — `feat(job-control): mint observer read grants at watch creation`
+- [x] **Step 1: Failing tests** — creating a watch with `send.to=<delegate job>` on job target J appends a grant `{observer_session_id: childID(send.to), watched: J}`; a `target="*"` watch grants nothing at create, then grants the concrete watched job on first recorded send for it; session-target watches grant nothing (nothing to read — frames carry transcript_ref).
+- [x] **Step 2: Implement** — resolve `send.to` job → record → `decodeRef(rec.TranscriptRef)` → childID (the same resolution `sendDelegateMessage` uses at `agent/job_delegate.go:272`); append the grant event (idempotence via the fold — appending an existing pair is a no-op read-side). Per-fire: in `recordWatchSend`, when `resolveWatchSendTarget` resolved a `watched` alias to a concrete job and the send target is a delegate, append the grant for that concrete job before persisting the pending.
+- [x] **Step 3: Run; commit** — `feat(job-control): mint observer read grants at watch creation`
 
 ### Task 4.3: Cross-store read-through
 
@@ -827,10 +827,10 @@ func (m *OutputMatcher) Feed(chunk []byte, endOffset int64) []string {
 - Modify: `agent/session_tools_jobs.go` (`jobReadOutputTool` / `readJobOutputSnapshot` — on local+nested miss, try the grant hop)
 - Test: `agent/job_delegate_test.go`
 
-- [ ] **Step 1: Failing tests** — observer child reads parent-owned watched job by id (content + status round-trip); a different child without a grant gets `target_not_found`; the grant hop works after the observer was resumed under a new job_id (mint→fire→resume→read, the canonical flow); parent session closed → graceful `target_not_found` (no panic).
-- [ ] **Step 2: Implement** — parent side: a `Session` method `lookupGrantedJobRead(observerSessionID, jobID)` checking `s.jobManager.store` grants then returning a snapshot + a read closure over `jm.readOutput`; child side: in `readJobOutputSnapshot`'s miss path (`jobReadClosedStoreFallback` returns not-ok), consult `s.cfg.spawn.parentGrantedJobRead` before failing. All reads are jobstore-level (Session-free locking) — never touch parent Session state from the child.
-- [ ] **Step 3: Contract:** add the grant rows from spec §8 to `docs/job-control.md` (`job_watch` section + a sentence in the `job_read_output` section), same commit.
-- [ ] **Step 4: Run; full suite; commit** — `feat(job-control): observer read grants — cross-store job_read_output`
+- [x] **Step 1: Failing tests** — observer child reads parent-owned watched job by id (content + status round-trip); a different child without a grant gets `target_not_found`; the grant hop works after the observer was resumed under a new job_id (mint→fire→resume→read, the canonical flow); parent session closed → graceful `target_not_found` (no panic).
+- [x] **Step 2: Implement** — parent side: a `Session` method `lookupGrantedJobRead(observerSessionID, jobID)` checking `s.jobManager.store` grants then returning a snapshot + a read closure over `jm.readOutput`; child side: in `readJobOutputSnapshot`'s miss path (`jobReadClosedStoreFallback` returns not-ok), consult `s.cfg.spawn.parentGrantedJobRead` before failing. All reads are jobstore-level (Session-free locking) — never touch parent Session state from the child.
+- [x] **Step 3: Contract:** add the grant rows from spec §8 to `docs/job-control.md` (`job_watch` section + a sentence in the `job_read_output` section), same commit.
+- [x] **Step 4: Run; full suite; commit** — `feat(job-control): observer read grants — cross-store job_read_output`
 
 ---
 

@@ -2,6 +2,17 @@
 
 Status: Approved design (brainstorming-style). Drives one implementation plan.
 
+> **Delta note (2026-06-12).** Two later specs supersede parts of this document; it is
+> kept as written for history. For **watch delivery** (persist-only observation, the
+> loop-owned drain, caller sends as notification turns), **observer read grants**, and
+> **`output_match` semantics** (level-triggered at attach, terminal catch-up, blocking
+> grep), see `docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-design.md`.
+> For the **parameter surface** (top-level `every` replacing `trigger{}`, `include_frame`
+> / `limit_bytes` / `max_chars` / `cursor` removed, foreground-only `block_timeout_ms`
+> rejection, the `Background jobs` prompt section, and the rewritten tool descriptions),
+> see `docs/superpowers/specs/2026-06-11-job-control-surface-ergonomics.md`. The evergreen
+> contract (`docs/job-control.md`) reflects the final shipped behavior.
+
 ## Context
 
 `docs/job-control.md` is the evergreen reference contract for Serf's target job-control

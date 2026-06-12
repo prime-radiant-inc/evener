@@ -215,12 +215,12 @@ appenders and exactly one drainer:
 - **Watch outbox** — the durable pending watch sends (jobstore `watch_send_pending`
   records). Appended by the `jobManager`'s observation paths (`onSessionEvent`,
   `feedJobOutput`, `fireProgressTick`, `armFinalizedJob`) taking only leaf locks;
-  drained by `drainPendingWatchSends` (`agent/job_watch.go:1791`), the **sole** executor
+  drained by `drainPendingWatchSends` (`agent/job_watch.go:2560`), the **sole** executor
   of watch-send delivery.
 
 **Who drains where.** `drainPendingWatchSends` runs only from loop-owned boundaries:
-between tool rounds (`injectPostToolSteering`, `agent/session_tool_round.go:327`), at the
-processing-finish boundary (`finishProcessingAtBoundary`, `agent/session_state.go:122`),
+between tool rounds (`injectPostToolSteering`, `agent/session_tool_round.go:271`), at the
+processing-finish boundary (`finishProcessingAtBoundary`, `agent/session_state.go:113`),
 in the notification-accept path (`acceptNotificationInput`), and after restore /
 history-repair (`agent/history_repair.go:126`). Caller-targeted sends ride the
 notification queue as wake tokens keyed by watch ID; the accept path deduplicates them
