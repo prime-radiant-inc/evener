@@ -1389,6 +1389,71 @@ func TestJobGrepScanNeverMatchesOverlongLines(t *testing.T) {
 	}
 }
 
+// TestReadJobOutputFromWidensPastStaleTotal verifies that readJobOutputFrom
+// widens past a stale caller-supplied total and returns the full retained
+// content anchored at the true start. When total=50 but 100 bytes exist, the
+// first attempt requests only 50 bytes and gets back the tail [50,100) so
+// start=50 > from=0; the loop widens want to 100, the next attempt reads all
+// 100 bytes with start=0 <= from=0, and exits via the start<=from branch.
+// This test must pass both before and after the G3 fix because it exits via
+// start<=from, not via tries>=3.
+func TestReadJobOutputFromWidensPastStaleTotal(t *testing.T) {
+	s := newTestSession(t)
+	rec := newManualRunningJob(t, s)
+	appendManualJobOutput(s.jobManager, rec.JobID, strings.Repeat("a", 100))
+
+	// Pass a stale total of 50 while 100 bytes actually exist.
+	content, start, ok := readJobOutputFrom(s.jobManager, rec.JobID, 0, 50)
+	if !ok {
+		t.Fatal("readJobOutputFrom returned not-ok; want ok after widening to full content")
+	}
+	if start != 0 {
+		t.Fatalf("start = %d, want 0 (all retained bytes returned)", start)
+	}
+	if len(content) != 100 {
+		t.Fatalf("len(content) = %d, want 100 (full 100 bytes returned after widen)", len(content))
+	}
+}
+
+// TestJobReadOutputBlockGrepReturnsImmediatelyOnTerminalJobWithMatch verifies
+// that block+grep on an already-terminal job returns at once (not after the
+// full timeout) and delivers matches from the terminal snapshot.
+func TestJobReadOutputBlockGrepReturnsImmediatelyOnTerminalJobWithMatch(t *testing.T) {
+	s := newTestSession(t)
+	rec := newManualRunningJob(t, s)
+	appendManualJobOutput(s.jobManager, rec.JobID, "boot\nall ready now\n")
+
+	// Finalize to terminal BEFORE the blocking read.
+	if err := s.jobManager.finalize(rec.JobID, jobstore.StatusCompleted, "", nil); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	waitForShellDone(t, s.jobManager, rec.JobID)
+	// The t.Cleanup registered by newManualRunningJob will call finalize again
+	// with StatusCancelled; since the job is already terminal (run==nil), that
+	// second finalize is a no-op (returns nil) — safe.
+
+	out, elapsed := blockingGrepRead(t, s, rec.JobID, "ready", 1000)
+	if elapsed >= 900*time.Millisecond {
+		t.Fatalf("job_read_output blocked for %s, want immediate return on terminal job", elapsed)
+	}
+	if out.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+	if len(out.Matches) < 1 {
+		t.Fatalf("matches = %+v, want at least one match for 'ready'", out.Matches)
+	}
+	found := false
+	for _, m := range out.Matches {
+		if strings.Contains(m.Line, "ready") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("matches = %+v, want a match with line containing 'ready'", out.Matches)
+	}
+}
+
 func TestJobSendMessageForegroundResumeReturnsTerminalResult(t *testing.T) {
 	c := llm.NewClient()
 	adapter := &fakeAdapter{

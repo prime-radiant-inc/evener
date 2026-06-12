@@ -1144,6 +1144,20 @@ func (g *jobGrepScan) scanSegment(seg []byte, re *regexp.Regexp, maxLineBytes in
 // readOutput sizes the request and reads under separate lock acquisitions, so
 // concurrent appends can move the tail past the requested window; widen and
 // retry a bounded number of times before settling for the retained tail.
+//
+// Three conditions legitimately allow returning a window with start > from
+// (bytes below start are genuinely unavailable, not just a race):
+//   - start <= from: we received all wanted bytes — no gap.
+//   - req < want: request was clamped at maxJobOutputRetentionBytes, so bytes
+//     below start are beyond the retention cap and truly gone.
+//   - len(c) < req: the file is shorter than requested; start is the true
+//     retention floor and everything available was returned.
+//
+// When tries are exhausted but none of those conditions hold, the output was
+// still growing during our retry window and [from, start) bytes are still
+// retained — returning the short window would make the caller treat those
+// bytes as pruned and skip them permanently. Return not-ok instead so the
+// caller leaves its scan state unchanged and retries on the next tick.
 func readJobOutputFrom(jm *jobManager, jobID string, from, total int64) (content string, start int64, ok bool) {
 	want := total - from
 	for tries := 0; ; tries++ {
@@ -1156,8 +1170,16 @@ func readJobOutputFrom(jm *jobManager, jobID string, from, total int64) (content
 			return "", 0, false
 		}
 		start = totalNow - int64(len(c))
-		if start <= from || req < want || int64(len(c)) < req || tries >= 3 {
+		if start <= from || req < want || int64(len(c)) < req {
 			return c, start, true
+		}
+		if tries >= 3 {
+			// The output kept growing past our window for the full retry budget
+			// and [from, start) is still retained (not pruned). Returning this
+			// short window would make the caller treat those still-retained bytes
+			// as gone and skip them forever; report not-ok so the caller retries
+			// on the next tick.
+			return "", 0, false
 		}
 		want = totalNow - from
 	}
