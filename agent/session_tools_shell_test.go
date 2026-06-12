@@ -437,6 +437,28 @@ func TestShellRejectsBackgroundWithBlockTimeout(t *testing.T) {
 	}
 }
 
+// OpenAI's Responses path sends tools with strict=true, which forces the model
+// to supply EVERY parameter on every call — a background shell call always
+// carries block_timeout_ms:0 on that wire. Zero already means "default/unset"
+// in every read path, so the combo rejection must treat it as unset or
+// background jobs become uncreatable via strict-mode providers (found live by
+// the e2e matrix, card job-shell-lifecycle).
+func TestShellBackgroundWithZeroBlockTimeoutIsAccepted(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"echo hi","background":true,"block_timeout_ms":0,"max_runtime_ms":0,"description":""}`),
+	})
+	if res.IsError {
+		t.Fatalf("background shell with strict-forced zero params should succeed, got error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "job_") {
+		t.Fatalf("background shell should return a job_id, got: %s", res.Output)
+	}
+}
+
 func newShellToolTestSession(t *testing.T, cfg SessionConfig) *Session {
 	t.Helper()
 	c := llm.NewClient()

@@ -2850,6 +2850,52 @@ func TestJobSendMessageRejectsBackgroundWithBlockTimeout(t *testing.T) {
 	}
 }
 
+// Strict-mode providers force every parameter onto every call, so a zero
+// block_timeout_ms must read as unset for the foreground-only rejection —
+// otherwise delegate/send calls are unmakeable on that wire (e2e card
+// job-shell-lifecycle found the shell arm live; these pin the other two).
+func TestDelegateAndSendMessageAcceptZeroBlockTimeoutWithBackground(t *testing.T) {
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("done")
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateTestSession(t, c)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "d0",
+		Name:      "delegate",
+		Arguments: json.RawMessage(`{"task":"zero is unset","background":true,"block_timeout_ms":0}`),
+	})
+	if res.IsError && strings.Contains(res.Output, "block_timeout_ms applies only to foreground waits") {
+		t.Fatalf("delegate with strict-forced zero block_timeout_ms hit the foreground-only rejection: %s", res.Output)
+	}
+	if res.IsError {
+		t.Fatalf("delegate with zero block_timeout_ms failed unexpectedly: %s", res.Output)
+	}
+	var spawned struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &spawned); err != nil || spawned.JobID == "" {
+		t.Fatalf("delegate result missing job_id: %s", res.Output)
+	}
+	waitForShellDone(t, s.jobManager, spawned.JobID)
+
+	res2 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "send0",
+		Name:      "job_send_message",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"m","background":true,"block_timeout_ms":0,"on_finished":"resume"}`, spawned.JobID)),
+	})
+	if res2.IsError && strings.Contains(res2.Output, "block_timeout_ms applies only to foreground waits") {
+		t.Fatalf("job_send_message with strict-forced zero block_timeout_ms hit the foreground-only rejection: %s", res2.Output)
+	}
+}
+
 func requiredParams(t *testing.T, name string, raw any) []string {
 	t.Helper()
 	switch values := raw.(type) {

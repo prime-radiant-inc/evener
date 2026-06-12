@@ -115,8 +115,12 @@ func parseShellToolArgs(args map[string]any) (shellArgs, error) {
 		Background:  shellBoolArg(args, "background"),
 	}
 	var ok bool
+	// Zero reads as unset: strict-mode providers (OpenAI Responses) force every
+	// parameter onto every call, so a background call always carries
+	// block_timeout_ms:0 on that wire, and zero already means "default" in the
+	// foreground read path. Only an explicit positive timeout is a combo error.
 	blockTimeoutSet := false
-	if parsed.BlockTimeoutMS, ok = shellIntArg(args, "block_timeout_ms"); ok {
+	if parsed.BlockTimeoutMS, ok = shellIntArg(args, "block_timeout_ms"); ok && parsed.BlockTimeoutMS > 0 {
 		blockTimeoutSet = true
 	}
 	if parsed.MaxRuntimeMS, ok = shellIntArg(args, "max_runtime_ms"); !ok {

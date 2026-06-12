@@ -126,7 +126,9 @@ func jobSendMessageTool(ctx context.Context, s *Session, args map[string]any, ma
 	}
 	blockTimeoutSet := false
 	if n, ok := shellIntArg(args, "block_timeout_ms"); ok {
-		blockTimeoutSet = true
+		// Zero reads as unset (strict-mode providers force the key onto every
+		// call); only an explicit positive timeout is a combo error.
+		blockTimeoutSet = n > 0
 		a.BlockTimeoutMS = n
 	}
 	// block_timeout_ms only applies to foreground waits (background=false).
@@ -173,7 +175,9 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 	}
 	blockTimeoutSet := false
 	if n, ok := shellIntArg(args, "block_timeout_ms"); ok {
-		blockTimeoutSet = true
+		// Zero reads as unset (strict-mode providers force the key onto every
+		// call); only an explicit positive timeout is a combo error.
+		blockTimeoutSet = n > 0
 		a.BlockTimeoutMS = n
 	}
 	// block_timeout_ms only applies to foreground waits (background=false).
