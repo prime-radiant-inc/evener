@@ -850,15 +850,6 @@ func watchKeyForConfigLocked(jm *jobManager, cfg *watchConfig) (watchKey, bool) 
 // The reverse lookup under jm.mu doubles as the no-double-fire latch: once the
 // cfg is detached, a later in-flight settle that increments past the budget
 // finds no live key and returns without re-notifying.
-// autoClearOverBudgetWatches runs autoClearWatchOverBudget for each cfg that
-// crossed the budget during a single observation pass. Call it AFTER releasing
-// the observation's jm.mu critical section, alongside enqueueWatchNotifications.
-func (jm *jobManager) autoClearOverBudgetWatches(cfgs []*watchConfig) {
-	for _, cfg := range cfgs {
-		jm.autoClearWatchOverBudget(cfg)
-	}
-}
-
 func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
 	jm.mu.Lock()
 	key, ok := watchKeyForConfigLocked(jm, cfg)
@@ -888,6 +879,15 @@ func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
 		watchNotification("", watchBudgetClearedMessage(cfg.target)),
 	})
 	jm.kick()
+}
+
+// autoClearOverBudgetWatches runs autoClearWatchOverBudget for each cfg that
+// crossed the budget during a single observation pass. Call it AFTER releasing
+// the observation's jm.mu critical section, alongside enqueueWatchNotifications.
+func (jm *jobManager) autoClearOverBudgetWatches(cfgs []*watchConfig) {
+	for _, cfg := range cfgs {
+		jm.autoClearWatchOverBudget(cfg)
+	}
 }
 
 func (jm *jobManager) hasWatchClearState(key watchKey) bool {
