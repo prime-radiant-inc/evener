@@ -333,7 +333,7 @@ On the `appendTurnDurably` failure path nothing settles — the durable pending 
 **Files:**
 - Test: `agent/job_watch_deadlock_test.go` (new)
 
-- [ ] **Step 1: Write the test against the REAL session loop**
+- [x] **Step 1: Write the test against the REAL session loop**
 
 Model it on the live-session tests in `agent/job_watch_observer_test.go` / `session_sync_race_test.go` (fake env + scripted provider). Shape:
 
@@ -360,11 +360,11 @@ func TestCallerSendWatchDoesNotDeadlockOnAssistantEvents(t *testing.T) {
 
 Add a sibling test for `events=["assistant.tool"]` (wedges on the FIRST tool call today). Use the file's existing session-builder helpers; do not hand-roll a provider.
 
-- [ ] **Step 2: Run it, verify it FAILS today** (timeout + stack dump showing `deliverWatchCallerMessageAtBoundary` blocked on `responseSideEffectsMu`)
+- [x] **Step 2: Run it, verify it FAILS today** (timeout + stack dump showing `deliverWatchCallerMessageAtBoundary` blocked on `responseSideEffectsMu`)
 
 Run: `cd agent && go test ./ -run TestCallerSendWatchDoesNotDeadlock -v -timeout 120s`
 
-- [ ] **Step 3: Commit the failing test on a `t.Skip` guard? NO** — leave it red locally, do NOT commit yet; Task 1.4 makes it green and they commit together (a committed red test breaks the green-gate rule).
+- [x] **Step 3: Commit the failing test on a `t.Skip` guard? NO** — leave it red locally, do NOT commit yet; Task 1.4 makes it green and they commit together (a committed red test breaks the green-gate rule).
 
 ### Task 1.4: Observation becomes persist-only
 
@@ -373,7 +373,7 @@ Run: `cd agent && go test ./ -run TestCallerSendWatchDoesNotDeadlock -v -timeout
 - Modify: `agent/jobs.go` (`armFinalizedJob` — the `deliverWatchSends`/`retryPendingWatchSendsFor*` block at ~:926-936)
 - Test: `agent/job_watch_test.go` (invariant test), Task 1.3's test goes green
 
-- [ ] **Step 1: Write the invariant test**
+- [x] **Step 1: Write the invariant test**
 
 ```go
 func TestObservationRecordsIntentOnly(t *testing.T) {
@@ -390,9 +390,9 @@ func TestObservationRecordsIntentOnly(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run; it fails** (delivery still happens synchronously)
+- [x] **Step 2: Run; it fails** (delivery still happens synchronously)
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Split `deliverWatchSend` into record + deliver. The record half (replaces the body through the `persistPendingWatchSend` call):
 
@@ -461,9 +461,11 @@ Then, at each site, replace the delivery block:
 
 `deliverWatchSends` keeps existing internals for now (the drain still uses `deliverPendingWatchSend`); only its *callers* outside the drain disappear. Verify with: `rg -n "deliverWatchSends\(" agent/ --type go | grep -v _test` → only drain internals remain.
 
-- [ ] **Step 4: Run the invariant test, Task 1.3's deadlock tests (now green), then the full agent suite with `-race`. Many existing tests will now fail — that is Task 1.7's job; confirm the failures are all "expected delivery, got pending" shaped before proceeding. If any failure is a panic or a different shape, STOP and investigate.**
+- [x] **Step 4: Run the invariant test, Task 1.3's deadlock tests (now green), then the full agent suite with `-race`. Many existing tests will now fail — that is Task 1.7's job; confirm the failures are all "expected delivery, got pending" shaped before proceeding. If any failure is a panic or a different shape, STOP and investigate.**
 
-- [ ] **Step 5: Commit** — `feat(job-control): persist-only watch observation + deadlock regression tests` (include Task 1.3's tests)
+  DIVERGENCE (implemented): `recordWatchSendsAndKick` guards the kick — `if len(deliveries)==0 { return }` up front, and the trailing kick is `if recorded && !kicked`. The sketch's unconditional `if !kicked { jm.kick() }` fired a spurious wake on EVERY non-matching `emit` (observation runs on every event, most match no watch), which broke `TestWatchCallerDeliveryDoesNotUseJobNotificationWake` (a non-churn shape that correctly flagged it). Guarded version preserves the old "empty deliveries = no-op" while still waking when a delegate pending was recorded. `-race`: 22 expected delivery-deferred failures (all `*Watch*` tests), 0 panics/races/deadlocks. Leaves 3 `unused` lint findings (`deliverWatchSends`, `retryPendingWatchSendsForRunTarget`, `retryPendingWatchSendsForWatchTarget`) — orphaned by the armFinalizedJob caller removal, re-wired in Task 1.5; no pre-commit hook gates them.
+
+- [x] **Step 5: Commit** — `feat(job-control): persist-only watch observation + deadlock regression tests` (include Task 1.3's tests)
 
 ### Task 1.5: The drain
 

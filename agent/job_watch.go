@@ -927,11 +927,10 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 	}
 	jm.mu.Unlock()
 
-	// Called from Session.emit; only enqueue here so watch delivery does not
-	// re-enter session event emission.
-	deliveries = jm.snapshotWatchSendFrames(deliveries)
+	// Called from Session.emit; only persist + wake here so watch delivery does
+	// not re-enter session event emission (spec §3).
 	jm.enqueueWatchNotifications(notifications)
-	_ = jm.deliverWatchSends(context.Background(), deliveries)
+	jm.recordWatchSendsAndKick(deliveries)
 }
 
 func isWatchOriginEventData(data events.EventData) bool {
@@ -992,9 +991,8 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
 	}
 	jm.mu.Unlock()
 
-	deliveries = jm.snapshotWatchSendFrames(deliveries)
 	jm.enqueueWatchNotifications(notifications)
-	_ = jm.deliverWatchSends(context.Background(), deliveries)
+	jm.recordWatchSendsAndKick(deliveries)
 }
 
 func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, []watchSendDelivery) {
@@ -1081,9 +1079,8 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	}
 	jm.mu.Unlock()
 
-	deliveries = jm.snapshotWatchSendFrames(deliveries)
 	jm.enqueueWatchNotifications(notifications)
-	_ = jm.deliverWatchSends(context.Background(), deliveries)
+	jm.recordWatchSendsAndKick(deliveries)
 	return true
 }
 
@@ -1123,28 +1120,63 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 }
 
 func (jm *jobManager) deliverWatchSend(ctx context.Context, d watchSendDelivery) error {
-	if d.cfg == nil || d.send == nil {
-		return nil
+	state, cfg, ok, err := jm.recordWatchSend(d)
+	if err != nil || !ok {
+		return err
 	}
-	if !jm.isCurrentWatchSendDelivery(d) {
-		return nil
+	return jm.deliverPendingWatchSend(ctx, cfg, state, false)
+}
+
+// recordWatchSend persists a fired send as pending and returns its state.
+// ok=false means the send was superseded or unresolvable (already handled).
+// Pure observation: no delivery, no Session calls (spec §3).
+func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, err error) {
+	if d.cfg == nil || d.send == nil || !jm.isCurrentWatchSendDelivery(d) {
+		return jobstore.WatchSendState{}, nil, false, nil
 	}
-	target, err := resolveWatchSendTarget(d.send.To, d.watchedIdentity)
-	state := jm.watchSendState(d, target)
-	persisted, persistErr := jm.persistPendingWatchSend(state, d)
-	if persistErr != nil {
+	target, terr := resolveWatchSendTarget(d.send.To, d.watchedIdentity)
+	state = jm.watchSendState(d, target)
+	persisted, perr := jm.persistPendingWatchSend(state, d)
+	if perr != nil {
 		if d.allowAfterTerminalExpiry && !persisted {
 			jm.rememberUnpersistedTerminalPendingWatchSend(d.cfg, state)
 		}
-		return persistErr
+		return jobstore.WatchSendState{}, nil, false, perr
 	}
 	if !persisted {
-		return nil
+		return jobstore.WatchSendState{}, nil, false, nil
 	}
-	if err != nil {
-		return jm.dropWatchSend(state, d.cfg, err.Error())
+	if terr != nil {
+		return jobstore.WatchSendState{}, nil, false, jm.dropWatchSend(state, d.cfg, terr.Error())
 	}
-	return jm.deliverPendingWatchSend(ctx, d.cfg, state, false)
+	return state, d.cfg, true, nil
+}
+
+// recordWatchSendsAndKick is the observation-side half of watch delivery:
+// persist every fired send, enqueue caller wake tokens, kick the owner. It
+// never delivers (spec §3); the owner's loop drains and delivers on wake. With
+// nothing recorded there is nothing to drain, so the owner is left undisturbed.
+func (jm *jobManager) recordWatchSendsAndKick(deliveries []watchSendDelivery) {
+	if len(deliveries) == 0 {
+		return
+	}
+	deliveries = jm.snapshotWatchSendFrames(deliveries)
+	recorded := false
+	kicked := false
+	for _, d := range deliveries {
+		state, _, ok, err := jm.recordWatchSend(d)
+		if err != nil || !ok {
+			continue // recordWatchSend already produced diagnostics/drops
+		}
+		recorded = true
+		if state.Key.ResolvedSendTo == runtimeMessageAliasCaller && jm.enqueue != nil {
+			jm.enqueue(watchSendTokenNotification("", state))
+			kicked = true // enqueueJobNotificationAndNotify wakes internally
+		}
+	}
+	if recorded && !kicked {
+		jm.kick()
+	}
 }
 
 func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string) jobstore.WatchSendState {

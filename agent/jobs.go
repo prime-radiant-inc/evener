@@ -933,17 +933,8 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	jm.mu.Unlock()
 
 	if !pendingAppended {
-		watchDeliveries = jm.snapshotWatchSendFrames(watchDeliveries)
 		jm.enqueueWatchNotifications(watchNotifications)
-		if err := jm.deliverWatchSends(context.Background(), watchDeliveries); err != nil {
-			return err
-		}
-		if err := jm.retryPendingWatchSendsForWatchTarget(context.Background(), run.rec.JobID); err != nil {
-			return err
-		}
-		if err := jm.retryPendingWatchSendsForRunTarget(context.Background(), run.rec); err != nil {
-			return err
-		}
+		jm.recordWatchSendsAndKick(watchDeliveries)
 	}
 
 	if !pendingAppended {

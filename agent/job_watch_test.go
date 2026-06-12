@@ -4004,9 +4004,9 @@ func installCallerSendWatchWithPending(t *testing.T, jm *jobManager) *watchConfi
 		return busyWatchSendResult()
 	}
 	if _, err := jm.configureWatch(watchArgs{
-		Target:  runtimeMessageAliasCaller,
-		Events:  []string{"assistant.message"},
-		Send:    &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"assistant.message"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
 	}); err != nil {
 		t.Fatalf("installCallerSendWatchWithPending: configure: %v", err)
 	}
@@ -4132,6 +4132,90 @@ func TestJobManagerWakeAndHasPendingWatchSends(t *testing.T) {
 	_ = cfg
 	if !jm.hasPendingWatchSends() {
 		t.Fatal("pending entry must be visible to hasPendingWatchSends")
+	}
+}
+
+// TestObservationRecordsIntentOnly is the spec §3 invariant: observation paths
+// persist fired sends as pending, enqueue a wake token for caller-targeted
+// sends, and kick the owner — but never deliver. A caller send and a delegate
+// send both fire on assistant.message; afterward both must be pending, the
+// caller send must have produced exactly one wake token, the owner must have
+// been woken, and no delivery (no watch_send_delivered event, no jm.send call)
+// must have occurred.
+func TestObservationRecordsIntentOnly(t *testing.T) {
+	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm) // running delegate "job_obs"
+
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+	woke := 0
+	jm.wake = func() { woke++ }
+	// Mirror production's enqueueJobNotificationAndNotify: enqueuing a
+	// notification also wakes the owner. recordWatchSendsAndKick relies on the
+	// caller token's enqueue waking (and falls back to kick() when nothing was
+	// enqueued), so the capture must reproduce that wake to test the invariant.
+	var enqueued []jobNotification
+	jm.enqueue = func(n jobNotification) {
+		enqueued = append(enqueued, n)
+		jm.kick()
+	}
+
+	if _, err := jm.configureWatch(watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"assistant.message"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "to-caller"},
+	}); err != nil {
+		t.Fatalf("configure caller-send watch: %v", err)
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"assistant.message"},
+		Send:   &watchSendArgs{To: "job_obs", Message: "to-delegate"},
+	}); err != nil {
+		t.Fatalf("configure delegate-send watch: %v", err)
+	}
+
+	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+
+	// Both sends are pending in jm state.
+	if !jm.hasPendingWatchSends() {
+		t.Fatal("observation must leave both sends pending")
+	}
+	pending := runtimeWatchSendPending(t, jm)
+	if len(pending) != 2 {
+		t.Fatalf("want 2 pending sends (caller + delegate), got %d: %+v", len(pending), pending)
+	}
+
+	// The caller send produced exactly one wake token.
+	var tokens []jobNotification
+	for _, n := range enqueued {
+		if n.WatchSend != nil {
+			tokens = append(tokens, n)
+		}
+	}
+	if len(tokens) != 1 {
+		t.Fatalf("caller send must enqueue exactly one wake token, got %d: %+v", len(tokens), enqueued)
+	}
+	if tokens[0].WatchSend.Key.ResolvedSendTo != runtimeMessageAliasCaller {
+		t.Fatalf("wake token send-to = %q, want caller", tokens[0].WatchSend.Key.ResolvedSendTo)
+	}
+
+	// The owner was woken.
+	if woke == 0 {
+		t.Fatal("observation must wake the owner")
+	}
+
+	// No delivery happened: no watch_send_delivered event, jm.send untouched.
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventWatchSendDelivered {
+			t.Fatalf("observation must not deliver: found watch_send_delivered event %+v", event)
+		}
+	}
+	if len(sent) != 0 {
+		t.Fatalf("observation must not call jm.send, got %#v", sent)
 	}
 }
 
