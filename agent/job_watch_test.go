@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -734,16 +735,44 @@ func TestOutputMatchHonorsScanOffsetThroughFeedPath(t *testing.T) {
 	}
 }
 
-// TestOutputMatchEndToEndOffsetThreadsFromStore drives the production
-// appendJobOutput -> feedJobOutput -> FeedAt path and confirms the matcher sees
-// the store's post-append lifetime offset (not a matcher-local 0-based counter):
-// with the scan offset set past the appended bytes, no match fires.
+// TestOutputMatchEndToEndOffsetThreadsFromStore reproduces the T2 attach flow that
+// the store-derived end offset exists to make correct: a running job's output store
+// already holds bytes the matcher was never fed (the watch did not exist while they
+// were produced), attach sets the scan offset to that lifetime length, and live
+// output is then appended via the real appendJobOutput -> feedJobOutput path.
+//
+// The byte counts are chosen so the two feed strategies diverge: the matcher-local
+// 0-based counter the old Feed wrapper maintained would compute an end offset at or
+// below the scan offset for the first live chunk and SILENTLY DISCARD it, never
+// firing on live output; the store's lifetime Len() is already past the scan offset,
+// so the production FeedAt path fires. Reverting feedJobOutput's FeedAt(chunk,
+// endOffset) call to Feed(chunk) makes this test fail at the "first live chunk must
+// fire" assertion.
 func TestOutputMatchEndToEndOffsetThreadsFromStore(t *testing.T) {
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	output := jm.running[rec.JobID].output
+
+	// Pre-watch output: 100 lifetime bytes the matcher never sees. appendJobOutput
+	// feeds only installed watches, and none exists yet, so the store advances while
+	// any future matcher's internal counter stays at 0 -- the exact pre-attach state.
+	preExisting := bytes.Repeat([]byte("x"), 100)
+	if _, err := jm.appendJobOutput(rec.JobID, output, preExisting); err != nil {
+		t.Fatalf("pre-watch append: %v", err)
+	}
+	if got := output.Len(); got != 100 {
+		t.Fatalf("store lifetime length after pre-watch append = %d, want 100", got)
+	}
+	if len(notified) != 0 {
+		t.Fatalf("pre-watch output must not fire (no watch installed); got %d", len(notified))
+	}
+
+	// Attach: install the watch (its matcher's feedOffset starts at 0, having seen
+	// none of the 100 pre-existing bytes) and set the scan offset to the current
+	// lifetime length, marking those 100 bytes as already covered.
 	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "(?i)ready"}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -751,25 +780,33 @@ func TestOutputMatchEndToEndOffsetThreadsFromStore(t *testing.T) {
 	if cfg == nil || cfg.outputMatcher == nil {
 		t.Fatal("output_match watch not installed")
 	}
-
-	chunk := []byte("server READY\n")
-	// Scan offset sits just past this chunk's lifetime end, so the real feed path
-	// must thread an end offset <= scanOffset and the match must be suppressed.
-	cfg.outputMatcher.SetScanOffset(int64(len(chunk)))
-	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, chunk); err != nil {
-		t.Fatalf("append: %v", err)
+	const scanOffset = 100
+	if output.Len() != scanOffset {
+		t.Fatalf("scan offset must equal current lifetime length; Len()=%d, scanOffset=%d", output.Len(), scanOffset)
 	}
-	if len(notified) != 0 {
-		t.Fatalf("appended bytes at/below scan offset must not fire via the real path; got %d", len(notified))
-	}
+	cfg.outputMatcher.SetScanOffset(scanOffset)
 
-	// Appending more output pushes the lifetime end past the scan offset; now the
-	// match fires, proving the offset advanced with the store, not a stale counter.
-	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("still READY\n")); err != nil {
-		t.Fatalf("append: %v", err)
+	// First live chunk (13 bytes). Its store lifetime end is 113 > scanOffset, so
+	// FeedAt fires. The stale 0-based counter would put its end at 13 <= scanOffset
+	// and discard it -- this assertion is what catches a Feed regression.
+	live := []byte("server READY\n")
+	if len(live) > scanOffset {
+		t.Fatalf("test setup: live chunk (%d bytes) must be <= scanOffset (%d) so a stale 0-based counter would wrongly discard it", len(live), scanOffset)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, output, live); err != nil {
+		t.Fatalf("live append: %v", err)
 	}
 	if len(notified) != 1 {
-		t.Fatalf("post-scan appended bytes must fire once via the real path; got %d", len(notified))
+		t.Fatalf("first live chunk past the scan offset must fire once via the real path; got %d", len(notified))
+	}
+
+	// A second live chunk fires again, confirming the offset keeps advancing with
+	// the store across successive appends.
+	if _, err := jm.appendJobOutput(rec.JobID, output, []byte("still READY\n")); err != nil {
+		t.Fatalf("second live append: %v", err)
+	}
+	if len(notified) != 2 {
+		t.Fatalf("second live chunk must fire again; got %d total", len(notified))
 	}
 }
 
