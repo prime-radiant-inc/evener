@@ -5743,6 +5743,39 @@ func TestWatchWatchedAliasSendFireMintsGrantForWatchedJob(t *testing.T) {
 	}
 }
 
+// TestTerminalCatchupSendMintsObserverReadGrant pins the claim in
+// mintWatchSendReadGrant's doc comment: a terminal catch-up send never had a
+// create mint (runTerminalCatchup returns from configureWatch's terminal
+// intercept before mintWatchCreateReadGrant runs, and its detached config is
+// fresh), so the per-fire mint is the ONLY source of the observer's read
+// grant. The single catch-up fire mints exactly one grant keyed on the
+// observer delegate's child session id.
+func TestTerminalCatchupSendMintsObserverReadGrant(t *testing.T) {
+	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
+	jobID := terminalShellWithOutput(t, jm, "server ready\n")
+
+	res, err := jm.configureWatch(watchArgs{
+		Target:      jobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	})
+	if err != nil {
+		t.Fatalf("configureWatch terminal catch-up send: %v", err)
+	}
+	if !res.Fired || !res.TerminalCatchup {
+		t.Fatalf("result = %+v, want fired+terminal_catchup", res)
+	}
+
+	grants := loadGrantTable(t, jm)
+	if !grants["child_job_obs"][jobID] {
+		t.Fatalf("grants after catch-up = %+v, want child_job_obs -> %s", grants, jobID)
+	}
+	if got := countWatchReadGrantEvents(t, jm); got != 1 {
+		t.Fatalf("grant events after catch-up = %d, want 1 (single fire mints once)", got)
+	}
+}
+
 func TestWatchCreateGrantAppendFailureFailsCreationLoudly(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
