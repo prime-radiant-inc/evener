@@ -267,7 +267,7 @@ func TestWatchReadGrantSurvivesStoreReopen(t *testing.T) {
 			t.Fatalf("append grant: %v", err)
 		}
 	}
-	grants, err := store.Grants()
+	grants, err := store.LoadGrants()
 	if err != nil {
 		t.Fatalf("grants: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestWatchReadGrantSurvivesStoreReopen(t *testing.T) {
 		t.Fatalf("reopen store: %v", err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	grants, err = reopened.Grants()
+	grants, err = reopened.LoadGrants()
 	if err != nil {
 		t.Fatalf("grants after reopen: %v", err)
 	}
