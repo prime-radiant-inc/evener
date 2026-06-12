@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -1187,6 +1188,200 @@ func TestJobReadOutputBlockReturnsOnNewOutput(t *testing.T) {
 	}
 }
 
+func newManualRunningJob(t *testing.T, s *Session) *jobstore.JobRecord {
+	t.Helper()
+	rec, err := s.jobManager.createShell(createShellOpts{Command: "manual running job"})
+	if err != nil {
+		t.Fatalf("create shell job: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = s.jobManager.finalize(rec.JobID, jobstore.StatusCancelled, "test_cleanup", nil)
+		waitForShellDone(t, s.jobManager, rec.JobID)
+	})
+	return rec
+}
+
+func appendManualJobOutput(jm *jobManager, jobID string, output string) {
+	jm.mu.Lock()
+	run := jm.running[jobID]
+	jm.mu.Unlock()
+	if run != nil {
+		_, _ = run.output.Append([]byte(output))
+	}
+}
+
+func blockingGrepRead(t *testing.T, s *Session, jobID, grep string, timeoutMS int) (jobReadOutputTestResult, time.Duration) {
+	t.Helper()
+	started := time.Now()
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"grep":%q,"block":true,"block_timeout_ms":%d}`, jobID, grep, timeoutMS)),
+	})
+	elapsed := time.Since(started)
+	if res.IsError {
+		t.Fatalf("job_read_output returned error: %s", res.Output)
+	}
+	var out jobReadOutputTestResult
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
+	}
+	return out, elapsed
+}
+
+func TestJobReadOutputBlockGrepReturnsImmediatelyOnExistingMatch(t *testing.T) {
+	s := newTestSession(t)
+	rec := newManualRunningJob(t, s)
+	appendManualJobOutput(s.jobManager, rec.JobID, "boot log\nready to serve\n")
+
+	out, elapsed := blockingGrepRead(t, s, rec.JobID, "ready", 1000)
+	if elapsed >= 900*time.Millisecond {
+		t.Fatalf("job_read_output blocked for %s, want immediate return on existing match", elapsed)
+	}
+	if out.Status != string(jobstore.StatusRunning) {
+		t.Fatalf("status = %q, want running", out.Status)
+	}
+	if len(out.Matches) != 1 || !strings.Contains(out.Matches[0].Line, "ready to serve") {
+		t.Fatalf("matches = %+v, want existing match for ready to serve", out.Matches)
+	}
+}
+
+func TestJobReadOutputBlockGrepWaitsForMatchNotJustNewOutput(t *testing.T) {
+	s := newTestSession(t)
+	rec := newManualRunningJob(t, s)
+	appendManualJobOutput(s.jobManager, rec.JobID, "starting up\n")
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		appendManualJobOutput(s.jobManager, rec.JobID, "still warming\n")
+		time.Sleep(250 * time.Millisecond)
+		appendManualJobOutput(s.jobManager, rec.JobID, "now ready\n")
+	}()
+
+	out, elapsed := blockingGrepRead(t, s, rec.JobID, "ready", 5000)
+	if elapsed >= 2*time.Second {
+		t.Fatalf("job_read_output blocked for %s, want return shortly after the match lands", elapsed)
+	}
+	if out.Status != string(jobstore.StatusRunning) {
+		t.Fatalf("status = %q, want running", out.Status)
+	}
+	if len(out.Matches) != 1 || !strings.Contains(out.Matches[0].Line, "now ready") {
+		t.Fatalf("matches = %+v, want the mid-stream match (non-matching output must not end the wait)", out.Matches)
+	}
+}
+
+func TestJobReadOutputBlockGrepTimesOutWithoutMatch(t *testing.T) {
+	s := newTestSession(t)
+	rec := newManualRunningJob(t, s)
+	appendManualJobOutput(s.jobManager, rec.JobID, "no signal here\n")
+
+	out, elapsed := blockingGrepRead(t, s, rec.JobID, "ready", 1000)
+	if elapsed < 800*time.Millisecond {
+		t.Fatalf("job_read_output returned after %s, want block until timeout without match", elapsed)
+	}
+	if elapsed >= 3*time.Second {
+		t.Fatalf("job_read_output blocked for %s, want return at timeout", elapsed)
+	}
+	if out.Status != string(jobstore.StatusRunning) {
+		t.Fatalf("status = %q, want running", out.Status)
+	}
+	if out.Grep != "ready" || len(out.Matches) != 0 {
+		t.Fatalf("grep = %q matches = %+v, want empty matches on timeout", out.Grep, out.Matches)
+	}
+}
+
+func TestJobReadOutputBlockGrepReturnsWhenJobGoesTerminal(t *testing.T) {
+	s := newTestSession(t)
+	rec := newManualRunningJob(t, s)
+	appendManualJobOutput(s.jobManager, rec.JobID, "working\n")
+
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		_ = s.jobManager.finalize(rec.JobID, jobstore.StatusCompleted, "", nil)
+	}()
+
+	out, elapsed := blockingGrepRead(t, s, rec.JobID, "ready", 5000)
+	if elapsed >= 2*time.Second {
+		t.Fatalf("job_read_output blocked for %s, want return when the job goes terminal", elapsed)
+	}
+	if out.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want completed final snapshot", out.Status)
+	}
+	if out.Grep != "ready" || len(out.Matches) != 0 {
+		t.Fatalf("grep = %q matches = %+v, want empty matches for terminal job without match", out.Grep, out.Matches)
+	}
+}
+
+func TestJobGrepScanCarriesPartialLineAcrossSteps(t *testing.T) {
+	s := newTestSession(t)
+	rec := newManualRunningJob(t, s)
+	re := regexp.MustCompile("ready")
+	var scan jobGrepScan
+
+	appendManualJobOutput(s.jobManager, rec.JobID, "boot\nrea")
+	if scan.step(s.jobManager, rec.JobID, re, maxJobGrepLineBytes) {
+		t.Fatal("scan matched before the split token completed")
+	}
+	appendManualJobOutput(s.jobManager, rec.JobID, "dy\n")
+	if !scan.step(s.jobManager, rec.JobID, re, maxJobGrepLineBytes) {
+		t.Fatal("scan missed a token split across appends (partial-line carry)")
+	}
+}
+
+func TestJobGrepScanMatchesUnterminatedTrailingLine(t *testing.T) {
+	s := newTestSession(t)
+	rec := newManualRunningJob(t, s)
+	re := regexp.MustCompile("ready")
+	var scan jobGrepScan
+
+	appendManualJobOutput(s.jobManager, rec.JobID, "almost ready")
+	if !scan.step(s.jobManager, rec.JobID, re, maxJobGrepLineBytes) {
+		t.Fatal("scan missed a match on the unterminated trailing line (snapshot grep matches it at end of output)")
+	}
+}
+
+func TestJobGrepScanSkipsUnchangedOutput(t *testing.T) {
+	s := newTestSession(t)
+	rec := newManualRunningJob(t, s)
+	re := regexp.MustCompile("ready")
+	var scan jobGrepScan
+
+	appendManualJobOutput(s.jobManager, rec.JobID, "nothing to see\n")
+	if scan.step(s.jobManager, rec.JobID, re, maxJobGrepLineBytes) {
+		t.Fatal("scan matched output without the token")
+	}
+	if scan.step(s.jobManager, rec.JobID, re, maxJobGrepLineBytes) {
+		t.Fatal("re-step without new output must not match")
+	}
+	appendManualJobOutput(s.jobManager, rec.JobID, "ready\n")
+	if !scan.step(s.jobManager, rec.JobID, re, maxJobGrepLineBytes) {
+		t.Fatal("scan missed a match appended after a no-op step")
+	}
+}
+
+func TestJobGrepScanNeverMatchesOverlongLines(t *testing.T) {
+	s := newTestSession(t)
+	rec := newManualRunningJob(t, s)
+	re := regexp.MustCompile("ready")
+	var scan jobGrepScan
+
+	// A line whose content exceeds maxJobGrepLineBytes never matches the
+	// snapshot grep, so the incremental scan must not match it either — at
+	// any of: complete-in-one-segment, streamed-past-the-cap, or its end.
+	appendManualJobOutput(s.jobManager, rec.JobID, strings.Repeat("x", maxJobGrepLineBytes)+" ready\n")
+	if scan.step(s.jobManager, rec.JobID, re, maxJobGrepLineBytes) {
+		t.Fatal("scan matched an overlong complete line")
+	}
+	appendManualJobOutput(s.jobManager, rec.JobID, strings.Repeat("y", maxJobGrepLineBytes+2))
+	if scan.step(s.jobManager, rec.JobID, re, maxJobGrepLineBytes) {
+		t.Fatal("scan matched a dead (overlong) unterminated line")
+	}
+	appendManualJobOutput(s.jobManager, rec.JobID, " ready\nready again\n")
+	if !scan.step(s.jobManager, rec.JobID, re, maxJobGrepLineBytes) {
+		t.Fatal("scan missed the matching line after the dead line ended")
+	}
+}
+
 func TestJobSendMessageForegroundResumeReturnsTerminalResult(t *testing.T) {
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -1687,7 +1882,7 @@ func TestJobReadOutputGrepSearchesRetainedOutputBeyondTail(t *testing.T) {
 		waitForShellDone(t, s.jobManager, shellOut.JobID)
 	})
 
-	readOut := waitForJobGrepMatch(t, s, shellOut.JobID, "needle-start", 1024)
+	readOut := waitForJobGrepMatchResult(t, s, shellOut.JobID, "needle-start", 1024)
 	if strings.Contains(readOut.Content, "needle-start") {
 		t.Fatalf("tail content unexpectedly contains retained-only match: %q", readOut.Content)
 	}
@@ -1874,7 +2069,7 @@ func TestJobReadOutputGrepSearchesTerminalOutputFileBeyondTail(t *testing.T) {
 	}
 	waitForShellDone(t, s.jobManager, shellOut.JobID)
 
-	readOut := waitForJobGrepMatch(t, s, shellOut.JobID, "needle-start", 1024)
+	readOut := waitForJobGrepMatchResult(t, s, shellOut.JobID, "needle-start", 1024)
 	if readOut.Status != string(jobstore.StatusCompleted) {
 		t.Fatalf("status = %q, want completed", readOut.Status)
 	}
@@ -2132,7 +2327,7 @@ func waitForJobOutput(t *testing.T, s *Session, jobID, want string) jobReadOutpu
 	return jobReadOutputTestResult{}
 }
 
-func waitForJobGrepMatch(t *testing.T, s *Session, jobID, want string, tailBytes int) jobReadOutputTestResult {
+func waitForJobGrepMatchResult(t *testing.T, s *Session, jobID, want string, tailBytes int) jobReadOutputTestResult {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	var last string

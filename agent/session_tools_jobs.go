@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -203,7 +204,12 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		if err != nil {
 			return "", err
 		}
-		waitForJobDoneOrOutput(ctx, jm, jobID, time.Duration(timeoutMS)*time.Millisecond)
+		timeout := time.Duration(timeoutMS) * time.Millisecond
+		if grepRE != nil {
+			waitForJobGrepMatch(ctx, jm, jobID, grepRE, limitBytes, timeout)
+		} else {
+			waitForJobDoneOrOutput(ctx, jm, jobID, timeout)
+		}
 	}
 
 	snap, err := s.readJobOutputSnapshot(jm, jobID, tailBytes, grepRE, limitBytes)
@@ -1036,6 +1042,157 @@ func waitForJobDoneOrOutput(ctx context.Context, jm *jobManager, jobID string, t
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// waitForJobGrepMatch blocks until the job's retained output contains a line
+// matching re, the job goes terminal, or timeout elapses. The retained output
+// is checked before the first wait so an existing match returns immediately;
+// afterwards each output-size change is re-evaluated incrementally from the
+// last scanned line boundary instead of re-grepping the full retained buffer.
+// The final snapshot re-greps for the result's matches, so correctness never
+// depends on this wait's incremental state.
+func waitForJobGrepMatch(ctx context.Context, jm *jobManager, jobID string, re *regexp.Regexp, limitBytes int, timeout time.Duration) {
+	// The snapshot grep clamps its per-line cap to the grep byte budget;
+	// mirror that so the wait's match predicate agrees with the result's.
+	maxLineBytes := maxJobGrepLineBytes
+	if limitBytes < maxLineBytes {
+		maxLineBytes = limitBytes
+	}
+	var scan jobGrepScan
+	if scan.step(jm, jobID, re, maxLineBytes) {
+		return
+	}
+	done, ok := jobDone(jm, jobID)
+	if !ok {
+		return
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			if scan.step(jm, jobID, re, maxLineBytes) {
+				return
+			}
+		case <-timer.C:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// jobGrepScan tracks incremental grep progress over a job's lifetime output.
+// scanned always sits at a line boundary (or inside a dead line), so a token
+// split across appends is re-evaluated once its line grows; lastTotal gates
+// re-scans to output-size changes.
+type jobGrepScan struct {
+	scanned    int64 // lifetime offset where the next scan starts
+	lastTotal  int64 // lifetime total at the end of the previous scan
+	inDeadLine bool  // scanned sits inside a line already too long to ever match
+}
+
+// step reports whether the job's retained output gained a grep match since the
+// previous step. It reads only bytes at or beyond the last scanned line
+// boundary; transient read errors leave the scan state unchanged for the next
+// poll.
+func (g *jobGrepScan) step(jm *jobManager, jobID string, re *regexp.Regexp, maxLineBytes int) bool {
+	total, err := jobOutputBytes(jm, jobID)
+	if err != nil || total <= g.lastTotal {
+		return false
+	}
+	content, start, ok := readJobOutputFrom(jm, jobID, g.scanned, total)
+	if !ok {
+		return false
+	}
+	seg := []byte(content)
+	if start < g.scanned {
+		seg = seg[g.scanned-start:]
+		start = g.scanned
+	}
+	// start can exceed scanned when retention pruned bytes below it; scan the
+	// retained remainder from where it begins.
+	g.scanned = start
+	g.lastTotal = start + int64(len(seg))
+	return g.scanSegment(seg, re, maxLineBytes)
+}
+
+// scanSegment consumes seg, which begins at lifetime offset g.scanned, with
+// the snapshot grep's line semantics: a complete line matches without its
+// trailing newline (and a carriage return before it), lines whose content
+// exceeds maxLineBytes never match, and the trailing unterminated line is
+// matched as-is, like the snapshot grep does at end of output. g.scanned is
+// left at the start of a trailing incomplete line so the next step re-reads it
+// once it grows (partial-line carry); a fragment already too long to ever
+// match is instead skipped as it streams.
+func (g *jobGrepScan) scanSegment(seg []byte, re *regexp.Regexp, maxLineBytes int) bool {
+	for len(seg) > 0 {
+		nl := bytes.IndexByte(seg, '\n')
+		if g.inDeadLine {
+			if nl < 0 {
+				g.scanned += int64(len(seg))
+				return false
+			}
+			g.inDeadLine = false
+			g.scanned += int64(nl + 1)
+			seg = seg[nl+1:]
+			continue
+		}
+		if nl < 0 {
+			break
+		}
+		line := seg[:nl]
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		matched := len(line) <= maxLineBytes && re.Match(line)
+		g.scanned += int64(nl + 1)
+		seg = seg[nl+1:]
+		if matched {
+			return true
+		}
+	}
+	if len(seg) == 0 {
+		return false
+	}
+	if len(seg) > maxLineBytes+1 {
+		// Even completed by a bare "\r\n" this line's content exceeds
+		// maxLineBytes, so it can never match; skip its remainder as it
+		// streams instead of re-carrying it every poll.
+		g.inDeadLine = true
+		g.scanned += int64(len(seg))
+		return false
+	}
+	return len(seg) <= maxLineBytes && re.Match(seg)
+}
+
+// readJobOutputFrom reads the job's retained output from lifetime offset from
+// (or from the start of retention if those bytes were pruned) through the
+// current end, returning the lifetime offset of the first returned byte.
+// readOutput sizes the request and reads under separate lock acquisitions, so
+// concurrent appends can move the tail past the requested window; widen and
+// retry a bounded number of times before settling for the retained tail.
+func readJobOutputFrom(jm *jobManager, jobID string, from, total int64) (content string, start int64, ok bool) {
+	want := total - from
+	for tries := 0; ; tries++ {
+		req := want
+		if req > maxJobOutputRetentionBytes {
+			req = maxJobOutputRetentionBytes
+		}
+		c, totalNow, _, err := jm.readOutput(jobID, int(req))
+		if err != nil {
+			return "", 0, false
+		}
+		start = totalNow - int64(len(c))
+		if start <= from || req < want || int64(len(c)) < req || tries >= 3 {
+			return c, start, true
+		}
+		want = totalNow - from
 	}
 }
 
