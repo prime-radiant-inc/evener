@@ -93,6 +93,41 @@ func TestJobListReportsLiveOutputBytesForRunningJob(t *testing.T) {
 	}
 }
 
+// The terminal owner notification must be enqueued BEFORE the job's done
+// channel closes: anything that wakes on done (blocked reads, tests waiting for
+// completion) must find the notification already queued, or a notification turn
+// driven right after the wake drains an empty queue.
+func TestFinalizeEnqueuesNotificationBeforeDoneCloses(t *testing.T) {
+	jm := newTestJM(t)
+	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	done, ok := jobDone(jm, rec.JobID)
+	if !ok {
+		t.Fatalf("jobDone(%q) not found", rec.JobID)
+	}
+
+	var enqueued, doneClosedAtEnqueue atomic.Bool
+	jm.enqueue = func(jobNotification) {
+		enqueued.Store(true)
+		select {
+		case <-done:
+			doneClosedAtEnqueue.Store(true)
+		default:
+		}
+	}
+
+	finishRunningTestJob(t, jm, rec.JobID)
+
+	if !enqueued.Load() {
+		t.Fatal("finalize did not enqueue a terminal notification")
+	}
+	if doneClosedAtEnqueue.Load() {
+		t.Fatal("done channel closed before the terminal notification was enqueued; done-wakers can observe a finished job with an empty notification queue")
+	}
+}
+
 func TestAbandonRunningJobsClosesCapturedDoneChannels(t *testing.T) {
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})

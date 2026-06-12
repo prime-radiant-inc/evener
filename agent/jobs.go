@@ -1047,8 +1047,11 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 
 	run.stopWatchdog()
 	_ = run.output.Close()
-	run.closeDone()
 
+	// Enqueue the terminal owner notification BEFORE closing done: anything that
+	// wakes on done (blocked reads, boundary checks) must find the notification
+	// already queued, or a notification turn driven right after the wake drains
+	// an empty queue and the delivery slips a boundary.
 	if jm.enqueue != nil {
 		jm.enqueue(jobNotification{
 			JobID:         run.rec.JobID,
@@ -1060,6 +1063,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 			ExitCode:      terminal.exitCode,
 		})
 	}
+	run.closeDone()
 	return nil
 }
 
