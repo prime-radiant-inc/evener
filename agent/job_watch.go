@@ -134,6 +134,99 @@ type restoredWatchConfigKey struct {
 	generation       string
 }
 
+// watchSendToken identifies a pending caller-targeted watch send. Tokens are
+// at-least-once and harmless when stale: render-by-key skips any token whose
+// pending state was replaced, cleared, dropped, or already settled.
+type watchSendToken struct {
+	ChildSessionID string // "" = the session's own jobManager
+	Key            jobstore.WatchSendKey
+	UpdateSeq      uint64
+	DeliveryID     string
+}
+
+func watchSendTokenNotification(childSessionID string, state jobstore.WatchSendState) jobNotification {
+	return jobNotification{
+		JobID:  state.Key.ResolvedWatchedIdentity,
+		Status: jobNotificationEventWatch,
+		Reason: state.TriggerReason,
+		WatchSend: &watchSendToken{
+			ChildSessionID: childSessionID,
+			Key:            state.Key,
+			UpdateSeq:      state.UpdateSeq,
+			DeliveryID:     state.DeliveryID,
+		},
+	}
+}
+
+// jobManagerForToken resolves which jobManager owns a token's pending state.
+func (s *Session) jobManagerForToken(tok *watchSendToken) *jobManager {
+	if tok == nil {
+		return nil
+	}
+	if tok.ChildSessionID == "" {
+		return s.jobManager
+	}
+	if s.subagents == nil {
+		return nil
+	}
+	if sub := s.subagents.get(tok.ChildSessionID); sub != nil && sub.sess != nil {
+		return sub.sess.jobManager
+	}
+	return nil
+}
+
+// resolveWatchSendToken returns the CURRENT frame for a token, or ok=false if
+// the token is stale (latest-frame-wins; also covers delivery-after-drop).
+func (s *Session) resolveWatchSendToken(tok *watchSendToken) (jm *jobManager, cfg *watchConfig, state jobstore.WatchSendState, ok bool) {
+	jm = s.jobManagerForToken(tok)
+	if jm == nil {
+		return nil, nil, jobstore.WatchSendState{}, false
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	cfg = jm.watchConfigForKeyLocked(tok.Key)
+	if cfg == nil {
+		return nil, nil, jobstore.WatchSendState{}, false
+	}
+	cur := cfg.pending[tok.Key]
+	if cur == nil || cur.UpdateSeq != tok.UpdateSeq {
+		return nil, nil, jobstore.WatchSendState{}, false
+	}
+	return jm, cfg, *cur, true
+}
+
+// watchConfigForKeyLocked returns the live or terminal-flush watch config that
+// currently holds a pending entry for key, or nil. Caller holds jm.mu.
+func (jm *jobManager) watchConfigForKeyLocked(key jobstore.WatchSendKey) *watchConfig {
+	for _, cfg := range jm.watches {
+		if cfg.pending[key] != nil {
+			return cfg
+		}
+	}
+	for cfg := range jm.terminalFlush {
+		if cfg.pending[key] != nil {
+			return cfg
+		}
+	}
+	return nil
+}
+
+// settleWatchSendDelivered durably records delivery for a watch-send state and
+// removes its pending entry. The caller is responsible for the currency guard
+// (isCurrentPendingWatchSend) and for any error-notification behavior.
+func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.WatchSendState) error {
+	delivered := state
+	if err := jm.appendWatchSendEvents([]jobstore.Event{{
+		Kind:      jobstore.EventWatchSendDelivered,
+		TS:        jm.now(),
+		WatchSend: &delivered,
+	}}); err != nil {
+		return err
+	}
+	jm.removePendingWatchSend(cfg, delivered.Key, delivered.UpdateSeq)
+	return nil
+}
+
 func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if a.Target == "" {
 		return watchResult{}, errors.New("invalid_request: target is required")
@@ -1103,18 +1196,12 @@ func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchCon
 		if !jm.isCurrentPendingWatchSend(cfg, state) {
 			return nil
 		}
-		delivered := state
-		if err := jm.appendWatchSendEvents([]jobstore.Event{{
-			Kind:      jobstore.EventWatchSendDelivered,
-			TS:        jm.now(),
-			WatchSend: &delivered,
-		}}); err != nil {
+		if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
 			jm.enqueueWatchNotifications([]jobNotification{
 				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send delivered state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 			})
 			return err
 		}
-		jm.removePendingWatchSend(cfg, delivered.Key, delivered.UpdateSeq)
 		return nil
 	case watchSendBusy:
 		return nil

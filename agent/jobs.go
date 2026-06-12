@@ -133,6 +133,13 @@ type jobNotification struct {
 	JobID, JobType, Status, Reason, TranscriptRef string
 	OutputBytes                                   int64
 	ExitCode                                      *int
+	// WatchSend marks this entry as a watch-send wake token: render-by-key
+	// against the owning jobManager's CURRENT pending state at accept time
+	// (spec §4.3). The frame text is deliberately NOT carried here.
+	WatchSend *watchSendToken
+	// watchSendFrame is the rendered frame, populated only between filter and
+	// format inside one accept pass (never persisted, never enqueued).
+	watchSendFrame string
 }
 
 type createShellOpts struct {

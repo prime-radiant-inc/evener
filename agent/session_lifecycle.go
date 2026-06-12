@@ -845,6 +845,17 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	if len(deliveredFailures) == 0 {
 		s.resetJobNotificationRetry()
 	}
+	// Settle caller-targeted watch sends only after the durable reminder turn
+	// persisted (above): the durable pending survives an appendTurnDurably
+	// failure for re-token (at-least-once contract, spec §4.3).
+	for _, d := range jobNotifs {
+		if d.watchJM == nil {
+			continue
+		}
+		if err := d.watchJM.settleWatchSendDelivered(d.watchCfg, d.watchState); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: "watch send settle failed: " + err.Error()})
+		}
+	}
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	for _, msg := range s.drainSteering() {
@@ -867,7 +878,21 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 	}
 	survivors := make([]deliverableJobNotification, 0, len(raw))
 	durableRaw := make([]jobNotification, 0, len(raw))
+	seenTok := make(map[jobstore.WatchSendKey]bool)
 	for _, n := range raw {
+		if n.WatchSend != nil {
+			jm, cfg, state, ok := s.resolveWatchSendToken(n.WatchSend)
+			if !ok {
+				continue // stale token: replaced, cleared, dropped, or settled
+			}
+			if seenTok[n.WatchSend.Key] {
+				continue
+			}
+			seenTok[n.WatchSend.Key] = true
+			n.watchSendFrame = state.Frame
+			survivors = append(survivors, deliverableJobNotification{notification: n, watchJM: jm, watchCfg: cfg, watchState: state})
+			continue
+		}
 		if n.Status == jobNotificationEventWatch {
 			survivors = append(survivors, deliverableJobNotification{notification: n})
 			continue

@@ -4026,6 +4026,93 @@ func installCallerSendWatchWithPending(t *testing.T, jm *jobManager) *watchConfi
 	return cfg
 }
 
+// installCallerSendWatchWithCurrentFrame installs a caller-send watch, drives it
+// to updateSeq 2 (one busy fire creates pending @1, a second coalesces to @2),
+// then stamps a deterministic Frame on the single pending entry so render-by-key
+// assertions can match exact frame text. Returns the cfg, the pending key, and
+// the pending entry's DeliveryID.
+func installCallerSendWatchWithCurrentFrame(t *testing.T, jm *jobManager, frame string) (*watchConfig, jobstore.WatchSendKey, string) {
+	t.Helper()
+	cfg := installCallerSendWatchWithPending(t, jm)
+	jm.onSessionEvent(events.EventAssistantTextEnd, nil) // bump updateSeq 1 -> 2
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if len(cfg.pendingOrder) != 1 {
+		t.Fatalf("want exactly one pending entry, got %d", len(cfg.pendingOrder))
+	}
+	key := cfg.pendingOrder[0]
+	state := cfg.pending[key]
+	if state == nil {
+		t.Fatal("pending entry missing for key")
+	}
+	if state.UpdateSeq != 2 {
+		t.Fatalf("pending updateSeq = %d, want 2 after two fires", state.UpdateSeq)
+	}
+	state.Frame = frame
+	return cfg, key, state.DeliveryID
+}
+
+func TestWatchSendTokenRenderByKey(t *testing.T) {
+	jm := newTestJM(t)
+	_, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, "frame-v2")
+	s := &Session{id: jm.sessionID, jobManager: jm, subagents: newSubagentManager(nil)}
+
+	current := &watchSendToken{Key: key, UpdateSeq: 2, DeliveryID: deliveryID}
+	staleSeq := &watchSendToken{Key: key, UpdateSeq: 1, DeliveryID: deliveryID}
+	clearedKey := key
+	clearedKey.ResolvedWatchedIdentity = "no_such_target"
+	staleCleared := &watchSendToken{Key: clearedKey, UpdateSeq: 2, DeliveryID: deliveryID}
+
+	_, _, state, ok := s.resolveWatchSendToken(current)
+	if !ok {
+		t.Fatal("current token must resolve ok")
+	}
+	if state.Frame != "frame-v2" {
+		t.Fatalf("current token frame = %q, want %q", state.Frame, "frame-v2")
+	}
+
+	if _, _, _, ok := s.resolveWatchSendToken(staleSeq); ok {
+		t.Fatal("stale updateSeq token must resolve ok=false")
+	}
+	if _, _, _, ok := s.resolveWatchSendToken(staleCleared); ok {
+		t.Fatal("token for a cleared key must resolve ok=false")
+	}
+}
+
+func TestWatchSendTokenSettleAfterPersist(t *testing.T) {
+	jm := newTestJM(t)
+	_, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, "frame-v2")
+	s := &Session{id: jm.sessionID, jobManager: jm, subagents: newSubagentManager(nil)}
+
+	resolvedJM, cfg, state, ok := s.resolveWatchSendToken(&watchSendToken{Key: key, UpdateSeq: 2, DeliveryID: deliveryID})
+	if !ok {
+		t.Fatal("current token must resolve ok")
+	}
+	if resolvedJM != jm {
+		t.Fatal("token must resolve to the owning jobManager")
+	}
+
+	if err := resolvedJM.settleWatchSendDelivered(cfg, state); err != nil {
+		t.Fatalf("settleWatchSendDelivered: %v", err)
+	}
+
+	var delivered bool
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventWatchSendDelivered && event.WatchSend != nil && event.WatchSend.Key == key {
+			delivered = true
+		}
+	}
+	if !delivered {
+		t.Fatal("durable log must gain watch_send_delivered for the settled key")
+	}
+	if pending := runtimeWatchSendPending(t, jm); len(pending) != 0 {
+		t.Fatalf("pending must be empty after settle, got %+v", pending)
+	}
+	if jm.hasPendingWatchSends() {
+		t.Fatal("hasPendingWatchSends must be false after settle")
+	}
+}
+
 func TestJobManagerWakeAndHasPendingWatchSends(t *testing.T) {
 	jm := newTestJM(t)
 	woke := 0

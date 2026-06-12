@@ -125,7 +125,7 @@ Leave the `session_init.go:323` restore-only constructor as-is (nil wake).
 - Modify: `agent/job_watch.go` (token constructor + resolve/settle helpers)
 - Test: `agent/job_notify_test.go`, `agent/job_watch_test.go`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 // In job_watch_test.go
@@ -163,9 +163,9 @@ func TestFormatWatchSendNotificationBlock(t *testing.T) {
 
 Flesh these out with the real fixture calls while writing them — the assertions above are the contract; the arrange blocks reuse Task 1.1's fixture.
 
-- [ ] **Step 2: Run, verify compile failures** (`watchSendToken` etc. undefined)
+- [x] **Step 2: Run, verify compile failures** (`watchSendToken` etc. undefined)
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `agent/jobs.go` — extend the struct (one new pointer field; everything else unchanged):
 
@@ -325,8 +325,8 @@ Extend `deliverableJobNotification` (`agent/job_notify.go:11`) with the three `w
 
 On the `appendTurnDurably` failure path nothing settles — the durable pending survives and restore/re-drain re-tokens it. That is the at-least-once contract.
 
-- [ ] **Step 4: Run the three tests + the whole `job_notify`/`job_watch` files; then `go test ./ -race` in agent/**
-- [ ] **Step 5: Commit** — `feat(job-control): watch-send wake tokens with render-by-key`
+- [x] **Step 4: Run the three tests + the whole `job_notify`/`job_watch` files; then `go test ./ -race` in agent/**
+- [x] **Step 5: Commit** — `feat(job-control): watch-send wake tokens with render-by-key`
 
 ### Task 1.3: Deadlock regression test (must fail against today's code)
 

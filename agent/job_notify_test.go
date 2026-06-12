@@ -442,3 +442,18 @@ func TestJobNotificationRetryResetDoesNotCancelPendingRetry(t *testing.T) {
 		t.Fatalf("retry delay = %s, want pending retry to advance to 20ms", delay)
 	}
 }
+
+func TestFormatWatchSendNotificationBlock(t *testing.T) {
+	n := watchSendTokenNotification("", jobstore.WatchSendState{
+		Key:           jobstore.WatchSendKey{ResolvedWatchedIdentity: "job_w", ResolvedSendTo: "caller"},
+		DeliveryID:    "dlv_1",
+		TriggerReason: "event: ASSISTANT_TEXT_END",
+	})
+	n.watchSendFrame = "frame text" // populated at render time
+	got := formatJobNotificationBlock(n)
+	for _, want := range []string{"watch_send", "job_w", "dlv_1", "frame text"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+}

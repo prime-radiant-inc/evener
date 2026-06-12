@@ -11,6 +11,9 @@ import (
 type deliverableJobNotification struct {
 	notification jobNotification
 	terminalGen  string
+	watchJM      *jobManager
+	watchCfg     *watchConfig
+	watchState   jobstore.WatchSendState
 }
 
 const jobNotificationEventWatch = "watch"
@@ -28,6 +31,17 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 }
 
 func formatJobNotificationBlock(n jobNotification) string {
+	if n.WatchSend != nil {
+		attrs := []string{
+			fmt.Sprintf("job_id=%q", n.JobID),
+			`event="watch_send"`,
+			fmt.Sprintf("delivery_id=%q", n.WatchSend.DeliveryID),
+			fmt.Sprintf("trigger=%q", n.Reason),
+		}
+		return fmt.Sprintf("<job-notification %s>\n%s\n</job-notification>",
+			strings.Join(attrs, " "), n.watchSendFrame)
+	}
+
 	event := n.Status
 	if event == "" {
 		event = "running"
