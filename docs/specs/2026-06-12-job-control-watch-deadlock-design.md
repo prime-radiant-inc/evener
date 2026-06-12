@@ -598,3 +598,37 @@ no synchronous cross-session or cross-owner side effects from event observation
 ```
 
 This is the best balance of reliability, simplicity, reviewability, and future extensibility.
+
+## Resolution (implemented)
+
+Option 4 (durable watch outbox + boundary drain) was implemented — **as the mailbox the
+codebase already had**, not a new mechanism. Caller-targeted watch sends now ride the
+existing notification queue (`enqueueJobNotificationAndNotify` → `pendingJobNotifs` →
+`notify()` → `acceptNotificationInput`) as render-by-key wake tokens; delegate-targeted
+sends drain at owner-loop boundaries. The `jm.send` delivery closure (the jobManager →
+Session upcall that performed delivery) was **deleted**, which makes the deadlock
+structurally inexpressible: an observation path has no path back into session mutation, so
+it can only persist intent and wake. The durable home for the rule is now
+`docs/architecture.md` § "Ownership and mailboxes".
+
+What adversarial review corrected in this note's analysis:
+
+- **The deadlock surface was broader than the incident.** `EventToolCallEnd` is also emitted
+  under `responseSideEffectsMu`, so a caller-send watch on `assistant.tool` wedges on the next
+  tool call too — not just the `assistant.message` path observed here.
+- **The deadlock masked adjacent defects** in the same corner: self-delivery feedback loops (a
+  no-send watch on the session's own `assistant.message` loops forever), `output_read_error` on
+  session-target excerpts (`readOutput("caller")`), `output_match` attach races, and keyhole
+  observers that cannot read what they watch. The mailbox design closes these alongside the
+  deadlock (create-time guards, transcript-pointer frames, read grants).
+- **The durable states this note proposed already existed.** `watch_send_pending/delivered/
+  dropped` were already jobstore kinds; the fix reuses them rather than inventing an outbox.
+- **The idle-wake hole.** A drain-at-boundary design with no wake leaves a send stuck while the
+  session is idle; the `wake` upcall (→ `notify` → `EntryNotification`) closes it, and a
+  delegate-only wake delivers with zero model turns.
+- **Option 5-as-written was previously sunk** (the 2026-06-01 actor-core spec); this resolution
+  takes Option 4 with Option 5's discipline, not the actor rewrite.
+
+Pointers: the implementation design is
+`docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-design.md`; the task-by-task plan
+is `docs/superpowers/plans/2026-06-11-watch-mailbox.md`.

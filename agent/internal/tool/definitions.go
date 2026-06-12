@@ -183,7 +183,8 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"session/job event frames (kinds available this session: " + kinds + ", or `*`). This is not how you " +
 		"learn a job finished — terminal notifications are automatic, and a job that finishes before the watch " +
 		"attaches returns `target_terminal` rather than installing a replay watch. Send deliveries coalesce by watch key " +
-		"and retry busy delegates. Pass `clear=true` to remove a watch."
+		"and retry busy delegates; they arrive at session boundaries — caller sends as job notifications. " +
+		"Pass `clear=true` to remove a watch."
 	return llm.ToolDefinition{
 		Name:        "job_watch",
 		Description: desc,

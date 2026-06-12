@@ -627,11 +627,11 @@ No drain-loop-tail change is needed: a wake submits an `EntryNotification`; an a
 - Modify: `docs/specs/2026-06-12-job-control-watch-deadlock-design.md` (resolution addendum)
 - Modify: `agent/internal/tool/definitions.go` (`DefJobWatch` description: send delivery wording)
 
-- [ ] **Step 1: Write `docs/architecture.md` § "Ownership and mailboxes"** — the invariant (spec §3) in evergreen form: the three queues (steering, job notifications, watch outbox), who appends (anyone, leaf locks only), who drains (the owning session's loop, at named boundaries), the wake path (`notify` → server input channel → `EntryNotification`), the forbidden re-entry (`responseSideEffectsMu` is held across emits; observers must never acquire it), and the lock-order line it protects (`agent/session.go:72-75`). Cite the deadlock note as the motivating incident. ~40 lines, written for a maintainer adding the NEXT event observer.
-- [ ] **Step 2: Amend the contract rows** from spec §8 that Phase 1 implements (513-514 delivery mechanism, 38/369 caller wording). Quote-level edits, no restructuring.
-- [ ] **Step 3: Add the resolution addendum** to the deadlock note: chosen direction, what review corrected (the §1 list from the spec), pointer to the spec + this plan.
-- [ ] **Step 4: Update `DefJobWatch`** description: "Send deliveries coalesce by watch key and retry busy delegates" stays; add "deliveries arrive at session boundaries — caller sends as job notifications".
-- [ ] **Step 5: `make lint && make test`; commit** — `docs(job-control): ownership/mailbox architecture + phase-1 contract amendments`
+- [x] **Step 1: Write `docs/architecture.md` § "Ownership and mailboxes"** — the invariant (spec §3) in evergreen form: the three queues (steering, job notifications, watch outbox), who appends (anyone, leaf locks only), who drains (the owning session's loop, at named boundaries), the wake path (`notify` → server input channel → `EntryNotification`), the forbidden re-entry (`responseSideEffectsMu` is held across emits; observers must never acquire it), and the lock-order line it protects (`agent/session.go:72-75`). Cite the deadlock note as the motivating incident. ~40 lines, written for a maintainer adding the NEXT event observer.
+- [x] **Step 2: Amend the contract rows** from spec §8 that Phase 1 implements (513-514 delivery mechanism, 38/369 caller wording). Quote-level edits, no restructuring.
+- [x] **Step 3: Add the resolution addendum** to the deadlock note: chosen direction, what review corrected (the §1 list from the spec), pointer to the spec + this plan.
+- [x] **Step 4: Update `DefJobWatch`** description: "Send deliveries coalesce by watch key and retry busy delegates" stays; add "deliveries arrive at session boundaries — caller sends as job notifications".
+- [x] **Step 5: `make lint && make test`; commit** — `docs(job-control): ownership/mailbox architecture + phase-1 contract amendments`
 
 ---
 

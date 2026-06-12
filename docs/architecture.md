@@ -186,6 +186,71 @@ The phase names map onto the files in `package agent` that the turn loop was spl
 `session_tool_round.go` + `session_tools_*.go` (tool execution), and the
 `ManageContext` compaction step backed by `agent/internal/contextmgr`.
 
+### Ownership and mailboxes
+
+A `Session` runs no persistent goroutine; it is driven by `ProcessInput` and woken by
+its server. Background machinery — the `jobManager`, job-output pumps, event emitters —
+observes a session's activity and needs to feed work back to it. The rule that keeps
+this safe is one invariant:
+
+> **Event observation records durable intent and wakes the owner. Only a session's own
+> loop mutates that session.**
+
+An observer (anything reacting to an emitted event or a job-output append) may match
+watches, persist durable state, append to a queue, and kick a wake — nothing more. It
+may **not** append turns, steer a session, resume a delegate, or otherwise deliver a
+message. Delivery is the owning loop's job, done at a named boundary.
+
+**The three queues.** A session has three durable/in-memory mailboxes. Each has many
+appenders and exactly one drainer:
+
+- **Steering queue** (`steeringQueue`, guarded by `mu`) — runtime guidance for the next
+  round. Appended by anyone holding only `mu` (tools, `Steer`, the warning-notification
+  hook); drained by the loop at round boundaries (`drainSteering`).
+- **Job notifications** (`pendingJobNotifs`, guarded by `pendingJobNotifsMu`) — durable
+  job-completion records and watch-send wake tokens. Appended by the `jobManager`'s
+  `enqueue` upcall from observation paths (`enqueueJobNotificationAndNotify`); drained
+  by the loop in the notification-accept path (`acceptNotificationInput`,
+  `agent/session_lifecycle.go:821`).
+- **Watch outbox** — the durable pending watch sends (jobstore `watch_send_pending`
+  records). Appended by the `jobManager`'s observation paths (`onSessionEvent`,
+  `feedJobOutput`, `fireProgressTick`, `armFinalizedJob`) taking only leaf locks;
+  drained by `drainPendingWatchSends` (`agent/job_watch.go:1791`), the **sole** executor
+  of watch-send delivery.
+
+**Who drains where.** `drainPendingWatchSends` runs only from loop-owned boundaries:
+between tool rounds (`injectPostToolSteering`, `agent/session_tool_round.go:327`), at the
+processing-finish boundary (`finishProcessingAtBoundary`, `agent/session_state.go:122`),
+in the notification-accept path (`acceptNotificationInput`), and after restore /
+history-repair (`agent/history_repair.go:126`). Caller-targeted sends ride the
+notification queue as render-by-key wake tokens — rendered against current pending state
+and settled in the accept turn; delegate-targeted sends are steered (running) or resumed
+(terminal-resumable) directly by the drain, the same path a model-initiated
+`job_send_message` takes.
+
+**The wake path.** `jm.wake` (wired to `Session.notify` at construction,
+`agent/session_init.go:128`) → `Session.notify` (`agent/session.go:288`) → the server's
+input channel → an `EntryNotification` (`agent/session_lifecycle.go:519`) that runs the
+accept path. An empty accept is a no-op that still calls
+`finishProcessingAtBoundary` → `drainPendingWatchSends` (`agent/session_lifecycle.go:869`),
+so a wake carrying only delegate-targeted sends delivers with zero model turns.
+
+**The forbidden re-entry.** `responseSideEffectsMu` is held across event emits
+(`emitAssistantResponse`, the tool-call-end emit). Observation paths and the `jobManager`'s
+retained upcalls (`emit`, `enqueue`, `wake`, `forward`) may take **only** leaf locks
+(`s.mu`, `eventsMu`, `pendingJobNotifsMu`) — never `responseSideEffectsMu`. The documented
+lock order is `responseSideEffectsMu > mu` (`agent/session.go:72-75`), so a leaf-lock upcall
+from an emit context is order-consistent; re-taking `responseSideEffectsMu` on the emitting
+goroutine would self-deadlock (Go mutexes are not re-entrant). The enforcement is
+structural, not by discipline: `jobManager` has **no** `send` closure back into `Session`,
+so an observation path *cannot* deliver — only queue and kick.
+
+This rule exists because an event observer that delivered synchronously once wedged a live
+session (`docs/specs/2026-06-12-job-control-watch-deadlock-design.md`): a caller-targeted
+watch fired while the session emitted an assistant event under `responseSideEffectsMu`, and
+the delivery path re-acquired the same mutex on the same goroutine. If you add a new event
+observer, it records intent and wakes — it does not mutate the session.
+
 ## Current status
 
 - ✅ `auth`, `llm`, `agent` all carved into their own modules; the `go.work` workspace is
