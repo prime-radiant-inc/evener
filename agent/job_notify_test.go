@@ -19,7 +19,7 @@ func TestFormatJobNotification(t *testing.T) {
 	block := formatJobNotificationBlock(jobNotification{
 		JobID: "job_X", JobType: "shell", Status: "completed", Reason: "exit_zero",
 		OutputBytes: 42, ExitCode: &code,
-	}, "")
+	}, notificationExcerpt{})
 	for _, want := range []string{`job_id="job_X"`, `event="completed"`, `job_type="shell"`, `status="completed"`, `reason="exit_zero"`, "job_read_output"} {
 		if !strings.Contains(block, want) {
 			t.Errorf("notification missing %q:\n%s", want, block)
@@ -33,7 +33,7 @@ func TestFormatJobNotification(t *testing.T) {
 		JobType: "watch",
 		Status:  "watch",
 		Reason:  "event: ASSISTANT_TEXT_END",
-	}, "")
+	}, notificationExcerpt{})
 	if !strings.Contains(watchBlock, "Watch event triggered") {
 		t.Fatalf("watch notification block = %q, want watch wording", watchBlock)
 	}
@@ -43,7 +43,7 @@ func TestFormatJobNotification(t *testing.T) {
 
 	emptyReason := formatJobNotificationBlock(jobNotification{
 		JobID: "job_Y", JobType: "shell", Status: "completed",
-	}, "")
+	}, notificationExcerpt{})
 	if !strings.Contains(emptyReason, `reason=""`) {
 		t.Errorf("empty reason must still be rendered:\n%s", emptyReason)
 	}
@@ -197,7 +197,7 @@ func TestWatchNotificationHistoryDoesNotSuppressDurableTerminalNotification(t *t
 	appendPendingJobNotificationRecord(t, jm, sess.ID())
 	sess.history = append(sess.history, schema.NewTurn(
 		schema.TurnSteering,
-		llm.User(formatJobNotificationBlock(watchNotification("job_X", "output_match: ready"), "")),
+		llm.User(formatJobNotificationBlock(watchNotification("job_X", "output_match: ready"), notificationExcerpt{})),
 	))
 	sess.enqueueJobNotification(jobNotification{JobID: "job_X"})
 
@@ -613,6 +613,49 @@ func TestTerminalNotificationShortOutputHasNoTruncationMarker(t *testing.T) {
 	}
 }
 
+// A complete excerpt (the job's entire output fit the budget) makes a
+// job_read_output call redundant — the body must say the output is complete
+// instead of instructing a read (live finding 2026-06-12: the template nudged
+// a wasted tool call while carrying the full result).
+func TestTerminalNotificationCompleteExcerptOmitsReadInstruction(t *testing.T) {
+	sess, adapter := newNotificationExcerptSession(t)
+	writeFinishedJobWithOutput(t, sess.jobManager, "job_C", jobstore.JobShell, "all done\n")
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	text := deliveredNotificationText(t, adapter)
+	if strings.Contains(text, "Use job_read_output") {
+		t.Fatalf("complete excerpt must not instruct a redundant read:\n%s", text)
+	}
+	if !strings.Contains(text, "Complete output below.") {
+		t.Fatalf("complete excerpt must say the output is complete:\n%s", text)
+	}
+	if !strings.Contains(text, "all done") {
+		t.Fatalf("complete excerpt must carry the output:\n%s", text)
+	}
+}
+
+// A truncated excerpt still has more to read, so the instruction stays.
+func TestTerminalNotificationTruncatedExcerptKeepsReadInstruction(t *testing.T) {
+	sess, adapter := newNotificationExcerptSession(t)
+	writeFinishedJobWithOutput(t, sess.jobManager, "job_T", jobstore.JobShell,
+		strings.Repeat("x", 600)+"_TAIL_MARKER")
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	text := deliveredNotificationText(t, adapter)
+	if !strings.Contains(text, "Use job_read_output to inspect output.") {
+		t.Fatalf("truncated excerpt must keep the read instruction:\n%s", text)
+	}
+	if !strings.Contains(text, "[excerpt truncated]") {
+		t.Fatalf("truncated excerpt must carry the truncation marker:\n%s", text)
+	}
+}
+
 func TestTerminalNotificationEmptyOutputHasNoExcerptSection(t *testing.T) {
 	sess, adapter := newNotificationExcerptSession(t)
 	writeFinishedJobWithOutput(t, sess.jobManager, "job_E", jobstore.JobShell, "")
@@ -637,7 +680,7 @@ func TestTerminalNotificationExcerptReReadsAtRenderFromDurableRecord(t *testing.
 	writeFinishedJobWithOutput(t, sess.jobManager, "job_R", jobstore.JobShell, "RENDER_TIME_EXCERPT\n")
 
 	// Confirm the enqueued struct holds no excerpt bytes (render re-reads).
-	if !strings.Contains(formatJobNotificationBlock(jobNotification{JobID: "job_R", JobType: "shell", Status: "completed"}, ""), `job_id="job_R"`) {
+	if !strings.Contains(formatJobNotificationBlock(jobNotification{JobID: "job_R", JobType: "shell", Status: "completed"}, notificationExcerpt{}), `job_id="job_R"`) {
 		t.Fatal("baseline block render failed")
 	}
 
@@ -661,13 +704,13 @@ func TestTerminalNotificationWatchBranchesUnaffectedByExcerpt(t *testing.T) {
 		})
 		n.watchSendFrame = "frame text"
 		return n
-	}(), "should-not-appear")
+	}(), notificationExcerpt{text: "should-not-appear", complete: true})
 	if strings.Contains(sendBlock, "excerpt:") || strings.Contains(sendBlock, "should-not-appear") {
 		t.Fatalf("watch-send token block must not carry an excerpt:\n%s", sendBlock)
 	}
 
 	// No-job watch event block: no excerpt.
-	eventBlock := formatJobNotificationBlock(watchNotification("", "output_match: ready"), "should-not-appear")
+	eventBlock := formatJobNotificationBlock(watchNotification("", "output_match: ready"), notificationExcerpt{text: "should-not-appear", complete: true})
 	if strings.Contains(eventBlock, "excerpt:") || strings.Contains(eventBlock, "should-not-appear") {
 		t.Fatalf("no-job watch event block must not carry an excerpt:\n%s", eventBlock)
 	}
@@ -680,7 +723,7 @@ func TestFormatWatchSendNotificationBlock(t *testing.T) {
 		TriggerReason: "event: ASSISTANT_TEXT_END",
 	})
 	n.watchSendFrame = "frame text" // populated at render time
-	got := formatJobNotificationBlock(n, "")
+	got := formatJobNotificationBlock(n, notificationExcerpt{})
 	for _, want := range []string{"watch_send", "job_w", "dlv_1", "frame text"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)

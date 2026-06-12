@@ -976,8 +976,11 @@ Notification example:
 Job job_... completed. Use job_read_output to inspect output.
 excerpt:
 <bounded ~400-char result excerpt: shell tail / delegate report head>
+[excerpt truncated]
 </job-notification>
 ```
+
+When the excerpt contains the job's complete output (nothing was truncated away), the body says `Complete output below.` instead of the `job_read_output` instruction — a read of what the notification already carries in full must not be nudged. The instruction wording appears only when there is no excerpt or the excerpt is truncated.
 
 Rules:
 

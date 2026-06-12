@@ -146,8 +146,9 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 		t.Fatal("notification turn made no model request; the notification never reached the model (v4 regression)")
 	}
 	// (b) The recorded request's message history carries the notification block
-	// for the completed delegate job.
-	if !requestsContain(reqs, "<job-notification", fmt.Sprintf(`job_id=%q`, jobID), `job_type="delegate"`, "job_read_output") {
+	// for the completed delegate job. (The block's prose varies with excerpt
+	// completeness; the pin is block identity, not template wording.)
+	if !requestsContain(reqs, "<job-notification", fmt.Sprintf(`job_id=%q`, jobID), `job_type="delegate"`) {
 		t.Fatalf("model request history did not contain the <job-notification ...> block for %s", jobID)
 	}
 	// (c) A notification turn is NOT a user turn: s.turns must not increment.
@@ -702,7 +703,7 @@ func TestNotificationNoOpDroppedDeferredGoalContinuationDoesNotSuppressSessionEn
 	}
 	sess.jobManager = jm
 	appendPendingJobNotificationRecord(t, jm, sess.ID())
-	sess.appendTurn(schema.TurnSteering, llm.User(formatJobNotificationBlock(jobNotification{JobID: "job_X"}, "")))
+	sess.appendTurn(schema.TurnSteering, llm.User(formatJobNotificationBlock(jobNotification{JobID: "job_X"}, notificationExcerpt{})))
 
 	origAppend := jm.appendEvent
 	jm.appendEvent = func(e jobstore.Event) error {

@@ -5311,7 +5311,7 @@ func TestWatchDeliveryBudgetAutoClearsWithOneFinalNotification(t *testing.T) {
 	if cleared[0].Reason != wantMsg {
 		t.Fatalf("cleared reason = %q, want %q", cleared[0].Reason, wantMsg)
 	}
-	block := formatJobNotificationBlock(cleared[0], "")
+	block := formatJobNotificationBlock(cleared[0], notificationExcerpt{})
 	if !strings.Contains(block, wantMsg) {
 		t.Fatalf("rendered block must contain the full cleared message; got:\n%s", block)
 	}

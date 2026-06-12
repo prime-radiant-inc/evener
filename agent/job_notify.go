@@ -38,24 +38,33 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 	}
 }
 
+// notificationExcerpt is a rendered terminal-result excerpt plus whether it
+// contains the job's complete output. Completeness drives the body wording:
+// a complete excerpt needs no job_read_output instruction.
+type notificationExcerpt struct {
+	text     string
+	complete bool
+}
+
 // terminalNotificationExcerpt resolves the bounded result excerpt for a finished
 // job notification: the shell tail or the delegate report's head, re-read from
-// the job's output at render time. It returns "" for watch frames, no-job watch
-// events, and any job whose output is empty or cannot be read (a failed read
-// degrades to no excerpt rather than failing the notification render).
-func (s *Session) terminalNotificationExcerpt(n jobNotification) string {
+// the job's output at render time. It returns the zero value for watch frames,
+// no-job watch events, and any job whose output is empty or cannot be read (a
+// failed read degrades to no excerpt rather than failing the notification
+// render).
+func (s *Session) terminalNotificationExcerpt(n jobNotification) notificationExcerpt {
 	// Watch frames and watch events (with or without a job id) are not terminal
 	// job_finished notifications and carry no result excerpt.
 	if n.WatchSend != nil || n.JobID == "" || n.Status == jobNotificationEventWatch {
-		return ""
+		return notificationExcerpt{}
 	}
 	jm, rec, err := s.nestedOrLocalJobManager(n.JobID)
 	if err != nil || jm == nil {
-		return ""
+		return notificationExcerpt{}
 	}
 	// Only an actually-terminal job has a result to excerpt.
 	if rec == nil || !rec.Status.IsTerminal() {
-		return ""
+		return notificationExcerpt{}
 	}
 	jobType := string(rec.Type)
 
@@ -69,20 +78,20 @@ func (s *Session) terminalNotificationExcerpt(n jobNotification) string {
 		excerpt, _, truncated, err = jm.readOutput(n.JobID, terminalExcerptBytes)
 	}
 	if err != nil || excerpt == "" {
-		return ""
+		return notificationExcerpt{}
 	}
 	rendered := limitWatchText(excerpt, terminalExcerptMaxChars)
 	if truncated {
 		rendered += "\n[excerpt truncated]"
 	}
-	return rendered
+	return notificationExcerpt{text: rendered, complete: !truncated}
 }
 
 // formatJobNotificationBlock renders one notification block. excerpt is the
 // bounded result excerpt for a finished job (shell tail / delegate head),
 // appended only to the terminal job_finished branch; it is ignored for watch
 // frames and no-job watch events.
-func formatJobNotificationBlock(n jobNotification, excerpt string) string {
+func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) string {
 	if n.WatchSend != nil {
 		attrs := []string{
 			fmt.Sprintf("job_id=%q", n.JobID),
@@ -124,9 +133,15 @@ func formatJobNotificationBlock(n jobNotification, excerpt string) string {
 		)
 	}
 
-	body := fmt.Sprintf("Job %s %s. Use job_read_output to inspect output.", n.JobID, event)
-	if excerpt != "" {
-		body += "\nexcerpt:\n" + excerpt
+	// A complete excerpt makes a job_read_output call redundant; only point at
+	// the read tool when there is more output than the excerpt shows.
+	instruction := "Use job_read_output to inspect output."
+	if excerpt.text != "" && excerpt.complete {
+		instruction = "Complete output below."
+	}
+	body := fmt.Sprintf("Job %s %s. %s", n.JobID, event, instruction)
+	if excerpt.text != "" {
+		body += "\nexcerpt:\n" + excerpt.text
 	}
 	return fmt.Sprintf(
 		"<job-notification %s>\n%s\n</job-notification>",
