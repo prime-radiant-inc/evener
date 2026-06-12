@@ -1268,6 +1268,10 @@ func (jm *jobManager) prepareAttachScanLocked(cfg *watchConfig, run *runningJob)
 	if !isWatchableConcreteJobLocked(run) || run.output == nil {
 		return nil, false, nil
 	}
+	// truncated is discarded: a pruned prefix can't be level-checked (its bytes
+	// are gone), but SetScanOffset(total) uses the full lifetime count, so the
+	// live FeedAt path still treats those already-produced bytes as covered (no
+	// double-fire).
 	buf, total, _, err := run.output.Tail(maxJobOutputRetentionBytes)
 	if err != nil {
 		return nil, false, err
