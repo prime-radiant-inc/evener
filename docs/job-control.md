@@ -962,12 +962,15 @@ Notification example:
 ```xml
 <job-notification job_id="job_..." event="completed" job_type="shell|delegate" status="completed" output_bytes="12345">
 Job job_... completed. Use job_read_output to inspect output.
+excerpt:
+<bounded ~400-char result excerpt: shell tail / delegate report head>
 </job-notification>
 ```
 
 Rules:
 
 - Terminal job notifications carry a concrete `job_id`, `event` (the lifecycle/progress notification kind), `job_type` (`shell` or `delegate`), status, reason, output byte count, exit code when known, and optional transcript ref for delegate jobs. Watch notifications use `event="watch"` and `job_type="watch"`; output/progress/job-event watches carry the concrete watched `job_id` when one exists, while session-level event watches may omit a concrete `job_id`. Notification `event` must not be named `type`, because durable job records already use `type` for the job class. The v1 event vocabulary is terminal statuses `completed`, `failed`, `cancelled`, and `stopped`, plus `watch` for watch output/event/progress notifications.
+- Terminal `job_finished` notifications carry a bounded result excerpt in a labeled `excerpt:` section, re-read from the durable job record at render time (consistent on the durable-replay path). The excerpt is directional: a `shell` job shows the last ~400 characters of retained output (the tail); a `delegate` job shows the first ~400 characters of its report (the head). Over-budget excerpts end with a `[excerpt truncated]` marker. A job with no output omits the `excerpt:` section entirely, and a failed output read degrades to no excerpt rather than failing the notification. Watch notifications and watch-send frames carry no `excerpt:` section.
 - Notifications include a bounded excerpt/tail preview, not full output.
 - Notifications wake the visible session if idle. A child/delegate session with no live run queue must not be resumed solely to deliver a notification; its owner-side notification state remains durable and is delivered at the next safe run boundary for that session.
 - If the parent is mid-turn, notifications queue for a safe turn boundary.

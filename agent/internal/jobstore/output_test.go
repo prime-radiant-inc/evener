@@ -60,6 +60,116 @@ func TestOutputAppendAndTail(t *testing.T) {
 	}
 }
 
+func TestOutputHeadReturnsFirstBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 1024)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "line1\n")
+	appendOutput(t, o, "line2\n")
+
+	data, total, truncated, err := o.Head(1024)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if string(data) != "line1\nline2\n" {
+		t.Errorf("head = %q", data)
+	}
+	if total != 12 || truncated {
+		t.Errorf("total=%d truncated=%v, want 12/false", total, truncated)
+	}
+}
+
+func TestOutputHeadTruncatesToFirstBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 1<<20)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "aaaaaXXXXX") // 10 bytes
+	data, total, truncated, err := o.Head(4)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if string(data) != "aaaa" {
+		t.Errorf("head(4) = %q, want first 4 bytes", data)
+	}
+	if total != 10 || !truncated {
+		t.Errorf("total=%d truncated=%v, want 10/true", total, truncated)
+	}
+}
+
+func TestOutputHeadReadsPrunedTailStartNotLifetimeStart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 6)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "abcdef")
+	appendOutput(t, o, "ghij")
+
+	// Retention pruned the lifetime prefix; Head reads the start of the
+	// retained tail (the earliest still-available bytes), and reports the
+	// pruning as truncation.
+	data, total, truncated, err := o.Head(1024)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if string(data) != "efghij" {
+		t.Fatalf("head = %q, want retained-tail start", data)
+	}
+	if total != 10 || !truncated {
+		t.Fatalf("total=%d truncated=%v, want lifetime 10 and truncated", total, truncated)
+	}
+}
+
+func TestOutputHeadRejectsNegativeLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 1<<20)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "abc")
+
+	_, _, _, err = o.Head(-1)
+	if !errors.Is(err, ErrInvalidLimit) {
+		t.Fatalf("head(-1) err = %v, want ErrInvalidLimit", err)
+	}
+}
+
+func TestOutputHeadZeroLimitReturnsOnlyMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 1<<20)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	data, total, truncated, err := o.Head(0)
+	if err != nil {
+		t.Fatalf("head empty: %v", err)
+	}
+	if len(data) != 0 {
+		t.Errorf("head(0) empty = %q, want empty data", data)
+	}
+	if total != 0 || truncated {
+		t.Errorf("empty total=%d truncated=%v, want 0/false", total, truncated)
+	}
+
+	appendOutput(t, o, "abc")
+
+	data, total, truncated, err = o.Head(0)
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if len(data) != 0 {
+		t.Errorf("head(0) = %q, want empty data", data)
+	}
+	if total != 3 || !truncated {
+		t.Errorf("total=%d truncated=%v, want 3/true", total, truncated)
+	}
+}
+
 func TestOutputTailTruncatesToLastBytes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job_A.log")
 	o, err := OpenOutput(path, 1<<20)

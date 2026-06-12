@@ -833,7 +833,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 
 	s.repairOrphanedToolResults("before accepting notification")
 
-	reminder := formatJobNotificationReminder(jobNotifs)
+	reminder := s.formatJobNotificationReminder(jobNotifs)
 	if err := s.appendTurnDurably(schema.TurnSteering, llm.User(reminder)); err != nil {
 		s.requeueJobNotifications(jobNotifications(jobNotifs))
 		s.finishNotificationNoop()
@@ -1007,11 +1007,13 @@ func jobNotifications(notifs []deliverableJobNotification) []jobNotification {
 }
 
 // formatJobNotificationReminder renders notification blocks for a notification
-// turn, joined by newlines.
-func formatJobNotificationReminder(jobNotifs []deliverableJobNotification) string {
+// turn, joined by newlines. Terminal job_finished blocks carry a bounded result
+// excerpt (shell tail / delegate head) re-read from the job record at render
+// time, so the durable-replay path stays consistent with the live path.
+func (s *Session) formatJobNotificationReminder(jobNotifs []deliverableJobNotification) string {
 	blocks := make([]string, 0, len(jobNotifs))
 	for _, n := range jobNotifs {
-		blocks = append(blocks, formatJobNotificationBlock(n.notification))
+		blocks = append(blocks, formatJobNotificationBlock(n.notification, s.terminalNotificationExcerpt(n.notification)))
 	}
 	return strings.Join(blocks, "\n")
 }

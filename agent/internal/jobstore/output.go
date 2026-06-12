@@ -140,6 +140,49 @@ func (o *OutputStore) Tail(maxBytes int) (buf []byte, total int64, truncated boo
 	return buf, total, truncated, nil
 }
 
+// Head returns the first maxBytes bytes of the retained log, the total byte
+// count, and whether the returned slice is a truncated prefix of a larger log.
+// When retention has pruned the lifetime prefix, the returned bytes start at the
+// earliest still-retained byte (the start of the retained tail).
+func (o *OutputStore) Head(maxBytes int) (buf []byte, total int64, truncated bool, err error) {
+	if maxBytes < 0 {
+		return nil, 0, false, fmt.Errorf("%w: maxBytes=%d", ErrInvalidLimit, maxBytes)
+	}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	info, err := os.Stat(o.path)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("jobstore: stat output: %w", err)
+	}
+	retained := info.Size()
+	total = o.total
+	n := retained
+	if n > int64(maxBytes) {
+		n = int64(maxBytes)
+		truncated = true
+	}
+	if o.retainedStart > 0 {
+		truncated = true
+	}
+	f, err := os.Open(o.path)
+	if err != nil {
+		return nil, total, truncated, fmt.Errorf("jobstore: open output: %w", err)
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("jobstore: close output: %w", closeErr)
+		}
+	}()
+	buf = make([]byte, n)
+	if len(buf) > 0 {
+		if _, err := io.ReadFull(f, buf); err != nil {
+			return nil, total, truncated, fmt.Errorf("jobstore: read output: %w", err)
+		}
+	}
+	return buf, total, truncated, nil
+}
+
 // Grep scans the log line by line and returns up to limitBytes worth of lines
 // matching re, each with its byte offset.
 func (o *OutputStore) Grep(re *regexp.Regexp, limitBytes int) ([]Match, error) {

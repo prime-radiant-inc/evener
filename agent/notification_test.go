@@ -702,7 +702,7 @@ func TestNotificationNoOpDroppedDeferredGoalContinuationDoesNotSuppressSessionEn
 	}
 	sess.jobManager = jm
 	appendPendingJobNotificationRecord(t, jm, sess.ID())
-	sess.appendTurn(schema.TurnSteering, llm.User(formatJobNotificationBlock(jobNotification{JobID: "job_X"})))
+	sess.appendTurn(schema.TurnSteering, llm.User(formatJobNotificationBlock(jobNotification{JobID: "job_X"}, "")))
 
 	origAppend := jm.appendEvent
 	jm.appendEvent = func(e jobstore.Event) error {

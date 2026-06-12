@@ -552,6 +552,30 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 	return tailOutputFile(path, tailBytes, validatedTotal)
 }
 
+func (jm *jobManager) readOutputHead(jobID string, headBytes int) (content string, total int64, truncated bool, err error) {
+	jm.mu.Lock()
+	run := jm.running[jobID]
+	jm.mu.Unlock()
+	if run != nil {
+		return headOutput(run.output, headBytes)
+	}
+
+	recs, err := jm.store.Load()
+	if err != nil {
+		return "", 0, false, err
+	}
+	rec := recs[jobID]
+	if rec == nil {
+		return "", 0, false, fmt.Errorf("job %q not found", jobID)
+	}
+	path := jm.outputPathForJob(rec, jobID)
+	validatedTotal, _, err := validatedOutputStatsForRecord(path, rec)
+	if err != nil {
+		return "", 0, false, err
+	}
+	return headOutputFile(path, headBytes, validatedTotal)
+}
+
 func (jm *jobManager) appendJobOutput(jobID string, output *jobstore.OutputStore, b []byte) (int, error) {
 	if output == nil {
 		return 0, nil
@@ -1067,6 +1091,14 @@ func tailOutput(output *jobstore.OutputStore, tailBytes int) (string, int64, boo
 	return string(b), total, truncated, nil
 }
 
+func headOutput(output *jobstore.OutputStore, headBytes int) (string, int64, bool, error) {
+	b, total, truncated, err := output.Head(headBytes)
+	if err != nil {
+		return "", total, truncated, err
+	}
+	return string(b), total, truncated, nil
+}
+
 func validatedOutputStatsForRecord(path string, rec *jobstore.JobRecord) (total int64, retainedStart int64, err error) {
 	total, retainedStart, err = jobstore.OutputFileStats(path)
 	if err != nil {
@@ -1111,6 +1143,44 @@ func tailOutputFile(path string, tailBytes int, total int64) (output string, tot
 		return "", totalBytes, truncated, err
 	}
 	buf := make([]byte, retained-start)
+	if len(buf) > 0 {
+		if _, err := io.ReadFull(f, buf); err != nil {
+			return "", totalBytes, truncated, fmt.Errorf("jobstore: read output: %w", err)
+		}
+	}
+	return string(buf), totalBytes, truncated, nil
+}
+
+func headOutputFile(path string, headBytes int, total int64) (output string, totalBytes int64, truncated bool, err error) {
+	if headBytes < 0 {
+		return "", 0, false, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, headBytes)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return "", 0, false, fmt.Errorf("jobstore: open output: %w", err)
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("jobstore: close output: %w", closeErr)
+		}
+	}()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", 0, false, fmt.Errorf("jobstore: stat output: %w", err)
+	}
+	retained := info.Size()
+	totalBytes = total
+	n := retained
+	if n > int64(headBytes) {
+		n = int64(headBytes)
+		truncated = true
+	}
+	if totalBytes > retained {
+		truncated = true
+	}
+	buf := make([]byte, n)
 	if len(buf) > 0 {
 		if _, err := io.ReadFull(f, buf); err != nil {
 			return "", totalBytes, truncated, fmt.Errorf("jobstore: read output: %w", err)
