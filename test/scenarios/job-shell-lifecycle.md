@@ -62,7 +62,12 @@ job-notification-semantics.md, not re-asserted here.
    (`find ~/.local/state/serf/projects -name "$SID.transcript.jsonl"`)
    and the durable log
    (`find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`),
-   plus `pgrep -f "sleep 31415"` after turn 2.
+   plus a runaway-liveness check after turn 2 that cannot match the
+   checking shell itself: `ps -eo args | grep -c '^sleep 31415$'`
+   (expect 0). Do NOT use `pgrep -f` — the pattern matches the
+   checker's own command line and reports a phantom orphan
+   (false-positive observed live 2026-06-12; group-kill semantics are
+   pinned by `TestStreamCommandSignalKillsWholeProcessGroup`).
 
 ## Expected
 
@@ -103,8 +108,8 @@ job-notification-semantics.md, not re-asserted here.
 - Arm (e): the step-2 result returns immediately (`running`); the
   step-4 read of that job shows `status` `"stopped"`, `reason`
   `"run_timeout"`, content containing `RUNAWAY_START_71`. The runaway
-  is actually dead: `pgrep -f "sleep 31415"` finds nothing after the
-  turn. `jobs.jsonl` has one `job_finished` for it with
+  is actually dead: the exact-args liveness check (step 4 pre-state
+  recipe) counts zero `sleep 31415` processes after the turn. `jobs.jsonl` has one `job_finished` for it with
   `status:"stopped"`, `reason:"run_timeout"`. Falsification: the job
   is still `running` past ~20s, the process survives, or the kill is
   reported as `failed`/`cancelled` instead of `stopped`/`run_timeout`
@@ -128,9 +133,9 @@ job-notification-semantics.md, not re-asserted here.
   the 20s gap absorbs it.
 - Arm (e) uses `exec sleep` so the runaway is a single recognizable
   process; without `exec` the `sh` wrapper dies but the sleep can be
-  orphaned by a process-group miss — if `pgrep` still finds it, that
-  is a real signal-delivery finding (contract line 745: signal the
-  process group where supported), not a card bug.
+  orphaned by a process-group miss — if the exact-args liveness check
+  still finds it, that is a real signal-delivery finding (contract
+  line 745: signal the process group where supported), not a card bug.
 - Terminal notifications for arms (c)/(d)/(e) arrive as notification
   turns once armed (promotion arms the notification too, line 180);
   this card does not assert their format — see
