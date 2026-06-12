@@ -55,6 +55,32 @@ func TestConfigureWatchTargetNotFound(t *testing.T) {
 	}
 }
 
+func TestConfigureWatchRejectsForwardedNestedTarget(t *testing.T) {
+	jm := newTestJM(t)
+	startedAt := jm.now()
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            "job_nested",
+		Type:             jobstore.JobShell,
+		Status:           jobstore.StatusRunning,
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: jm.sessionID,
+		ParentJobID:      "job_delegate",
+		StartedAt:        &startedAt,
+	}); err != nil {
+		t.Fatalf("append nested start: %v", err)
+	}
+
+	_, err := jm.configureWatch(watchArgs{Target: "job_nested", OutputMatch: "ready"})
+	if err == nil || !strings.Contains(err.Error(), "target_not_watchable") {
+		t.Fatalf("error = %v, want target_not_watchable", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0", jm.watchCount())
+	}
+}
+
 func TestConfigureWatchSendToMissingJobFailsTargetNotFound(t *testing.T) {
 	jm := newTestJM(t)
 

@@ -341,6 +341,9 @@ func (jm *jobManager) validateWatchTarget(target string) error {
 	if rec.Status.IsTerminal() {
 		return watchTargetTerminalError(target, string(rec.Status))
 	}
+	if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
+		return fmt.Errorf("target_not_watchable: job %q is owned by nested session %q; watches must be attached from the owning session", target, rec.OwnerSessionID)
+	}
 
 	// TODO(spec §5.9): enforce cross-session watch authorization when Phase 5
 	// extends nested-job visibility beyond root-caller-visible targets.
