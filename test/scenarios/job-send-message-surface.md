@@ -132,9 +132,10 @@ Resume-after-STOP is subagent-cancel-runaway.md; the observer
   that session; on_finished=fail checks the TARGET's terminal state,
   so the error is stable regardless of which job in the session is
   newest.
-- `block_timeout_ms` 2000 is above the 1000 minimum (line 190-191
-  clamp rules apply to this surface too, line 611); values below 1000
-  clamp up and would still beat the 20s sleep.
+- `block_timeout_ms` 2000 is above the 1000 minimum (the normative
+  bounds at lines 187-192 govern the resumed-delegate foreground wait
+  via line 382); values below 1000 clamp up and would still beat the
+  20s sleep.
 - The arm-(d) timing assertion (~2s vs ~20s) brackets via the
   api_call timestamps around the tool round when wall-clocking is
   coarse.

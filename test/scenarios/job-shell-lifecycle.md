@@ -4,8 +4,7 @@
 (`docs/job-control.md` "Existing shell/bash tool", lines 139-249).
 (a) Foreground inline result with stdout+stderr+exit code, ephemeral —
 no durable record (line 179); (b) nonzero exit reported honestly as a
-normal tool result, not hidden (lines 112, 183 area: `failed` /
-`exit_nonzero`); (c) promotion at `block_timeout_ms` — job_id returned,
+normal tool result, not hidden (line 112: `failed` / `exit_nonzero`); (c) promotion at `block_timeout_ms` — job_id returned,
 process keeps running, later output readable (lines 180, 229-242);
 (d) `background=true` from the start (lines 181, 217-227);
 (e) `max_runtime_ms` kills a runaway and finalizes `stopped` /
