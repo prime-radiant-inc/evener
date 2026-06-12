@@ -5743,6 +5743,43 @@ func TestWatchWatchedAliasSendFireMintsGrantForWatchedJob(t *testing.T) {
 	}
 }
 
+// TestWatchWatchedAliasSendFireToShellJobSkipsGrantQuietly pins the per-fire
+// mint's quiet-skip branch: create-time validation accepts send.to=watched on
+// a wildcard job.notification watch, so a SHELL job can fire with itself as
+// the watched identity. The resolved send target is then a non-delegate with
+// no child session to grant to — the mint skips without a grant AND without a
+// diagnostic (the delivery rail reports the undeliverable send on its own).
+func TestWatchWatchedAliasSendFireToShellJobSkipsGrantQuietly(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+	shell, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "*",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasWatched, Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: shell.JobID, JobType: "shell", Status: "completed"})
+
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("pending after fire = %d, want 1 (skip must not block the send)", len(pending))
+	}
+	if got := countWatchReadGrantEvents(t, jm); got != 0 {
+		t.Fatalf("grant events after fire = %d, want 0 (shell job is not a grantable observer)", got)
+	}
+	for _, n := range notified {
+		if strings.Contains(n.Reason, "watch read grant failed") {
+			t.Fatalf("quiet skip produced a grant diagnostic: %+v", notified)
+		}
+	}
+}
+
 // TestTerminalCatchupSendMintsObserverReadGrant pins the claim in
 // mintWatchSendReadGrant's doc comment: a terminal catch-up send never had a
 // create mint (runTerminalCatchup returns from configureWatch's terminal

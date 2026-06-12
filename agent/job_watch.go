@@ -402,7 +402,10 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	// mints its observer read grant BEFORE install so a grant failure fails the
 	// creation and never installs the watch (spec §5.1). The replace and
 	// idempotent re-configure paths below re-append the same grant; FoldGrants
-	// collapses duplicates.
+	// collapses duplicates. The converse residue — an abort below (target
+	// vanished, snapshot-append failure) orphaning a just-minted grant — is
+	// deliberate: grants are append-only read capabilities, never revoked
+	// (spec §5.1), so an orphan grant is harmless.
 	if err := jm.mintWatchCreateReadGrant(cfg); err != nil {
 		return watchResult{}, err
 	}
