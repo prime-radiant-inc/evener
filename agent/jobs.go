@@ -566,6 +566,8 @@ func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp) ([]jobstore.Ma
 	run := jm.running[jobID]
 	jm.mu.Unlock()
 	if run != nil {
+		// Scan the full retained output: maxJobOutputRetentionBytes caps retention, so it
+		// doubles as the scan budget; the result stays bounded by maxJobGrepMatches and maxJobGrepLineBytes.
 		return run.output.GrepLimitLineBytes(re, maxJobOutputRetentionBytes, maxJobGrepMatches, maxJobGrepLineBytes)
 	}
 
@@ -582,6 +584,7 @@ func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp) ([]jobstore.Ma
 	if err != nil {
 		return nil, err
 	}
+	// Full retained scan (same budget rationale as above).
 	return grepOutputFile(path, re, maxJobOutputRetentionBytes, retainedStart)
 }
 
