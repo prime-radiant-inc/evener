@@ -1820,6 +1820,9 @@ func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager,
 			// Caller sends deliver via the notification rail. Tokens are enqueued
 			// at observation time; this re-token covers restored / crash-recovered
 			// pendings. Duplicates are harmless (render-by-key + batch dedupe).
+			// A child's caller is the parent: the token rides the PARENT's rail
+			// (it owns the accept loop), and ChildSessionID routes render-by-key
+			// back to the child's jobManager at accept time.
 			if jm.enqueue != nil && childSessionID == "" {
 				jm.enqueue(watchSendTokenNotification("", delivery.state))
 			} else if s.jobManager != nil && s.jobManager.enqueue != nil {
