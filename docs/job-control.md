@@ -47,7 +47,7 @@ This reference contract is not itself the runtime system prompt, but the followi
 Tool descriptions should avoid these phrases because they train bad behavior:
 
 - Do not describe `job_watch` as subscribing to job completion. Say: “When output/event/progress conditions happen, either notify the caller (`send` omitted) or send the configured bounded frame/message to a target (`send` present).”
-- Do not describe `job_read_output(block=true)` as the normal way to wait. Say: “Optionally perform one bounded wait for terminal state or new output; do not poll.”
+- Do not describe `job_read_output(block=true)` as the normal way to wait. Say: “Optionally perform one bounded wait for terminal state, new output, or (with `grep`) a match; do not poll.”
 - Do not describe `job_stop` as cleanup. Say: “Request cancellation/stop; retained history/output remains.”
 - Do not say `delegate` resumes an old agent. Say: “Start a fresh delegate conversation/job.”
 - Do not say `job_send_message` only steers live jobs. Say: “Send a follow-up message; delegate targets receive it live if running or resume if terminal/resumable unless `on_finished=fail` is set.”
@@ -586,7 +586,7 @@ stateDiagram-v2
 
 `job_read_output` reads bounded retained output and status for a job. It is the only model-facing job-output inspection tool for both shell and delegate jobs. Delegate transcripts remain separate and are read with transcript tools.
 
-Default use is `block=false`. Call `job_read_output` after a terminal/match/progress notification, or when a one-time current snapshot is useful. Do not call it in a loop to wait for completion. Use `block=true` only when the user explicitly requested a bounded wait or when one bounded wait is necessary to collect immediate output.
+Default use is `block=false`. Call `job_read_output` after a terminal/match/progress notification, or when a one-time current snapshot is useful. Do not call it in a loop to wait for completion. Use `block=true` only when the user explicitly requested a bounded wait or when one bounded wait is necessary to collect immediate output. `block=true` with `grep` is the sanctioned one-call wait for a specific output token (“wait until the server prints ready”); it is not polling.
 
 Canonical target shape:
 
@@ -609,7 +609,7 @@ Canonical behavior:
 - Default `tail_bytes` is `65536`; maximum `tail_bytes` is `1048576`. Omitted uses the default. Values above the maximum are clamped downward. Values `<=0` fail `invalid_request`.
 - Default `limit_bytes` for advanced reads/grep results is `65536`; maximum `limit_bytes` is `1048576`. Omitted uses the default. Values above the maximum are clamped downward. Values `<=0` fail `invalid_request`.
 - `block_timeout_ms` uses the same default/min/max/clamp rules as shell/delegate foreground creation.
-- `block=true` performs at most one bounded wait for terminal state or more output, then returns current state/output. Timeout never stops the job.
+- `block=true` performs at most one bounded wait, then returns current state/output. Without `grep`, the wait ends on terminal state or more output. With `grep`, the wait ends when the retained output contains a match, on terminal state, or on timeout. Timeout never stops the job.
 - `block=true` is not a polling primitive and must not be repeated in a loop. Terminal notifications remain the normal completion mechanism.
 - `job_read_output` must work for terminal durable jobs after the live runtime is gone, as long as the job record/output file is retained.
 
@@ -642,7 +642,8 @@ Absolute byte-offset paging, retained-start accounting, next offsets, and detail
 `block=true` with a nonterminal job waits until one of these occurs:
 
 - terminal state;
-- retained output advances enough to return new content;
+- without `grep`: retained output advances enough to return new content;
+- with `grep`: the retained output contains a match (a match already present at call time returns immediately);
 - timeout.
 
 It then returns current status and bytes. Timeout does not stop the job.
