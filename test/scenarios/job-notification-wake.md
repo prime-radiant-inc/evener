@@ -16,8 +16,8 @@ so the parent can read the result.
    > end your turn.
 
 3. Wait for the delegate to finish and for Serf to inject a notification turn.
-4. Confirm the parent reacts to the notification by calling `job_read_output`
-   and reporting `CHILD_DONE_42`.
+4. Confirm the parent reacts to the notification by surfacing `CHILD_DONE_42`
+   to the user.
 
 ## Expected
 
@@ -25,7 +25,12 @@ so the parent can read the result.
   idle without polling.
 - A later steering/system entry contains a `<job-notification ...>` for the
   delegate `job_id` with terminal status.
-- The follow-up parent turn calls `job_read_output` for that `job_id` and
-  surfaces `CHILD_DONE_42`.
+- The follow-up parent turn surfaces `CHILD_DONE_42` to the user. Terminal
+  notifications carry a result excerpt (`75c11569`), so for an output this
+  small the excerpt contains the full text and reading it from the excerpt is
+  the designed, optimal path — a `job_read_output` call for the same `job_id`
+  is equally acceptable but MUST NOT be required. What is asserted: the
+  surfaced text matches the child's exact output, and its provenance is the
+  notification (excerpt or read), not invention.
 - The hub renders the delegate as a job reference/lifecycle card rather than a
   blank or unknown legacy control tile.

@@ -114,12 +114,25 @@ the structured fields are how the parent judges outcome.
   emphasized rather than recording a validation bug. The transcript of
   the child (its `transcript_ref`) shows what the child actually sent.
 - The schema replaces the child's communicate `output` parameter
-  schema wholesale; serf-side validation (not provider enforcement) is
-  the gate under test. Provider-side strict enforcement would mask arm
-  (b) by refusing the invalid call client-side — if the child
-  transcript shows repeated rejected communicate attempts and the
-  final reason is `schema_result_missing`, record that as the
-  provider-enforcement variant.
+  schema wholesale, and serf validates at TWO layers: the tool
+  registry's call-time args-schema check
+  (`agent/internal/tool/registry.go` "tool args schema validation
+  failed", which rejects the invalid call with an `is_error` tool
+  result before anything is captured) and the capture-time
+  structured-result check (the valid/reason triplet arm (b) asserts).
+  Arm (b)'s capture-time signature is therefore masked BY DESIGN
+  whenever the call-time gate is in the path — an invalid payload
+  never reaches capture. Observed live (2026-06-12, `gpt-5.5`): the
+  child emitted `count:"banana"`, the registry rejected it with
+  `expected integer, but got string`, and the child retried with a
+  VALID payload (`count:0`) → `valid:true`. That run shape is
+  inconclusive for arm (b) — record it as the call-time-gate variant,
+  not a validation bug. Provider-side strict enforcement is a second
+  potential masking layer ABOVE the registry (the model never emits
+  the call at all; final reason `schema_result_missing`) — record
+  that as the provider-enforcement variant. The capture-time triplet
+  remains normative for any payload that reaches capture invalid; that
+  path is unit-covered (`agent/job_delegate_test.go`).
 - Arm (c) must wait for the arm-(a) job to be terminal (it is — the
   foreground call returned completed) and for its session to be idle;
   resuming while a prior resume is still running fails
