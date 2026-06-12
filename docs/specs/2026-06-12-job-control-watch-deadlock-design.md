@@ -608,7 +608,7 @@ existing notification queue (`enqueueJobNotificationAndNotify` → `pendingJobNo
 sends drain at owner-loop boundaries. The `jm.send` delivery closure (the jobManager →
 Session upcall that performed delivery) was **deleted**, which makes the deadlock
 structurally inexpressible: an observation path has no path back into session mutation, so
-it can only persist intent and wake. The durable home for the rule is now
+it can only persist intent and wake. The canonical rule is documented in
 `docs/architecture.md` § "Ownership and mailboxes".
 
 What adversarial review corrected in this note's analysis:

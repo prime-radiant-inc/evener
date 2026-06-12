@@ -223,8 +223,8 @@ between tool rounds (`injectPostToolSteering`, `agent/session_tool_round.go:327`
 processing-finish boundary (`finishProcessingAtBoundary`, `agent/session_state.go:122`),
 in the notification-accept path (`acceptNotificationInput`), and after restore /
 history-repair (`agent/history_repair.go:126`). Caller-targeted sends ride the
-notification queue as render-by-key wake tokens — rendered against current pending state
-and settled in the accept turn; delegate-targeted sends are steered (running) or resumed
+notification queue as wake tokens keyed by watch ID; the accept path deduplicates them
+against current pending state and settles delivery in that turn; delegate-targeted sends are steered (running) or resumed
 (terminal-resumable) directly by the drain, the same path a model-initiated
 `job_send_message` takes.
 
