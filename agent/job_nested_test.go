@@ -853,6 +853,23 @@ func TestNestedReadOutputBlockRefreshesOwnerRecord(t *testing.T) {
 		status: SubagentRunning,
 	})
 
+	// The output and structured result land BEFORE the blocking read starts:
+	// a blocking read legitimately wakes on output growth as well as terminal
+	// state, so appending mid-block would race the running-vs-completed
+	// projection. With output pre-retained, the only wake is the finalize.
+	childJM.mu.Lock()
+	run := childJM.running[nested.JobID]
+	if run != nil {
+		run.structured = map[string]any{"summary": "finished during block"}
+	}
+	childJM.mu.Unlock()
+	if run == nil || run.output == nil {
+		t.Fatalf("nested job %q has no live output store", nested.JobID)
+	}
+	if _, err := childJM.appendJobOutput(nested.JobID, run.output, []byte("finished during block\n")); err != nil {
+		t.Fatalf("append nested output: %v", err)
+	}
+
 	type readResult struct {
 		out string
 		err error
@@ -869,18 +886,6 @@ func TestNestedReadOutputBlockRefreshesOwnerRecord(t *testing.T) {
 	}()
 
 	time.Sleep(50 * time.Millisecond)
-	childJM.mu.Lock()
-	run := childJM.running[nested.JobID]
-	if run != nil {
-		run.structured = map[string]any{"summary": "finished during block"}
-	}
-	childJM.mu.Unlock()
-	if run == nil || run.output == nil {
-		t.Fatalf("nested job %q has no live output store", nested.JobID)
-	}
-	if _, err := childJM.appendJobOutput(nested.JobID, run.output, []byte("finished during block\n")); err != nil {
-		t.Fatalf("append nested output: %v", err)
-	}
 	code := 0
 	if err := childJM.finalize(nested.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
 		t.Fatalf("finalize nested job: %v", err)
