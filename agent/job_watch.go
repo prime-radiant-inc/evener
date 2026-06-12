@@ -127,6 +127,24 @@ type watchConfig struct {
 	// reconstructed into terminalFlush on restore are never built via
 	// newWatchConfig and so are intentionally left zero (they are not live).
 	createdAt time.Time
+	// grantsMinted records (send target, watched job) pairs whose observer
+	// read grant was appended during this config's lifetime (spec §5.1);
+	// per-fire minting skips them to control append noise (FoldGrants is
+	// idempotent, so a duplicate would be harmless). Guarded by jm.mu after
+	// install; marked only on successful append so a failed mint retries on
+	// the next fire. A replacement config starts fresh and simply re-mints.
+	grantsMinted map[watchGrantKey]bool
+}
+
+// watchGrantKey identifies a minted (observer send target, watched job) read-
+// grant pair within one watch config's lifetime. It keys on job ids rather
+// than the observer's session id so the per-fire dedup check needs no store
+// read: within a config's lifetime a send-target job id never remaps to a
+// different child session (resuming an idle observer mints a NEW job id for
+// the same session).
+type watchGrantKey struct {
+	sendTo       string
+	watchedJobID string
 }
 
 type watchArgs struct {
@@ -378,6 +396,14 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		return watchResult{}, err
 	}
 	if err := validateWatchDeliveryLoop(cfg); err != nil {
+		return watchResult{}, err
+	}
+	// A sidecar watch (concrete job target, send.to = a concrete delegate job)
+	// mints its observer read grant BEFORE install so a grant failure fails the
+	// creation and never installs the watch (spec §5.1). The replace and
+	// idempotent re-configure paths below re-append the same grant; FoldGrants
+	// collapses duplicates.
+	if err := jm.mintWatchCreateReadGrant(cfg); err != nil {
 		return watchResult{}, err
 	}
 
@@ -1682,6 +1708,12 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 		return jobstore.WatchSendState{}, nil, false, nil
 	}
 	target, terr := resolveWatchSendTarget(d.send.To, d.watchedIdentity)
+	if terr == nil {
+		// Mint the observer read grant BEFORE the pending persist so a durable
+		// pending send always implies its grant was at least attempted
+		// (restore re-delivers pendings without re-running this path).
+		jm.mintWatchSendReadGrant(d.cfg, target, d.watchedIdentity)
+	}
 	state = jm.watchSendState(d, target)
 	persisted, perr := jm.persistPendingWatchSend(state, d)
 	if perr != nil {
@@ -1746,6 +1778,130 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 		TriggerIdentity: d.watchedIdentity,
 		TriggerReason:   d.trigger,
 	}
+}
+
+// appendWatchReadGrant durably records that observerSessionID may
+// job_read_output watchedJobID. Grants are append-only capabilities: never
+// revoked on watch clear or expiry, because the observer's main read happens
+// after the watched job finishes; output lifetime is bounded by retention
+// (spec §5.1).
+func (jm *jobManager) appendWatchReadGrant(observerSessionID, watchedJobID string) error {
+	return jm.appendEvent(jobstore.Event{
+		Kind:              jobstore.EventWatchReadGrant,
+		TS:                jm.now(),
+		JobID:             watchedJobID,
+		ObserverSessionID: observerSessionID,
+	})
+}
+
+// watchReadGrantObserver resolves a concrete watch-send target job to the
+// child session id its read grant keys on, mirroring sendDelegateMessage's
+// resolution: job record → transcript_ref → session id. ok=false with nil err
+// means the target is not a grantable observer — no such job, or not a
+// delegate — which has no child session to grant to and which the delivery
+// rail already reports when the send itself fails; err is a real resolution
+// failure (store unreadable, or a delegate whose transcript ref cannot name a
+// session).
+func (jm *jobManager) watchReadGrantObserver(observerJobID string) (childSessionID string, ok bool, err error) {
+	recs, err := jm.listWithError(listFilter{IncludeNested: true})
+	if err != nil {
+		return "", false, err
+	}
+	for _, rec := range recs {
+		if rec.JobID != observerJobID {
+			continue
+		}
+		if rec.Type != jobstore.JobDelegate {
+			return "", false, nil
+		}
+		_, childID, err := decodeRef(rec.TranscriptRef)
+		if err != nil {
+			return "", false, fmt.Errorf("resolve observer session for job %q: %w", observerJobID, err)
+		}
+		return childID, true, nil
+	}
+	return "", false, nil
+}
+
+// mintWatchCreateReadGrant durably grants the observer delegate's child
+// session job_read_output on the watched job for a sidecar watch — a concrete
+// job target delivered to a concrete delegate job (spec §5.1). The grant keys
+// on the observer's child SESSION id, not its job id: frame delivery to an
+// idle observer resumes it under a NEW job id, so a job-keyed grant would deny
+// the canonical fire → resume → read flow; the session id is stable across
+// resumes. Any failure fails the watch creation loudly — installing the
+// sidecar watch without its grant would hand the observer frames about a job
+// it cannot read, the keyhole this grant exists to open. The caller and
+// watched aliases mint nothing here: caller delivery grants nothing, and
+// watched resolves its observer per-fire (mintWatchSendReadGrant).
+func (jm *jobManager) mintWatchCreateReadGrant(cfg *watchConfig) error {
+	if cfg.send == nil || isWatchSessionTarget(cfg.target) {
+		return nil
+	}
+	switch cfg.send.To {
+	case runtimeMessageAliasCaller, runtimeMessageAliasWatched:
+		return nil
+	}
+	observerSessionID, ok, err := jm.watchReadGrantObserver(cfg.send.To)
+	if err == nil && !ok {
+		// validateWatchSendTarget proved send.to is a delegate job and the
+		// store is append-only, so an unresolvable observer here is a fault.
+		err = fmt.Errorf("job %q is not a grantable delegate", cfg.send.To)
+	}
+	if err == nil {
+		err = jm.appendWatchReadGrant(observerSessionID, cfg.target)
+	}
+	if err != nil {
+		return fmt.Errorf("watch read grant for send.to %q: %w", cfg.send.To, err)
+	}
+	// Seed the per-fire dedup: cfg is not yet installed, so no lock is needed.
+	cfg.grantsMinted = map[watchGrantKey]bool{
+		{sendTo: cfg.send.To, watchedJobID: cfg.target}: true,
+	}
+	return nil
+}
+
+// mintWatchSendReadGrant appends the observer read grant for a fired
+// delegate-targeted send whose watched identity resolved to a concrete job
+// (spec §5.1). This is the per-fire half of grant minting: wildcard-target
+// watches and send.to=watched only learn the concrete (observer, watched job)
+// pair at fire time, and a terminal catch-up send never had a create mint.
+// Pairs already minted in this config's lifetime are skipped (append-noise
+// control; duplicates fold harmlessly), and a failed mint is NOT remembered,
+// so the next fire retries. Failure policy: enqueue one diagnostic
+// notification and let the send proceed — delivery outranks the grant (the
+// observer still learns about the job; at worst it cannot read output until a
+// later fire re-mints).
+func (jm *jobManager) mintWatchSendReadGrant(cfg *watchConfig, resolvedSendTo, watchedIdentity string) {
+	if cfg == nil || resolvedSendTo == runtimeMessageAliasCaller || isWatchSessionTarget(watchedIdentity) {
+		return
+	}
+	key := watchGrantKey{sendTo: resolvedSendTo, watchedJobID: watchedIdentity}
+	jm.mu.Lock()
+	minted := cfg.grantsMinted[key]
+	jm.mu.Unlock()
+	if minted {
+		return
+	}
+	observerSessionID, ok, err := jm.watchReadGrantObserver(resolvedSendTo)
+	if err == nil && !ok {
+		return
+	}
+	if err == nil {
+		err = jm.appendWatchReadGrant(observerSessionID, watchedIdentity)
+	}
+	if err != nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(watchedIdentity, "watch read grant failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+		})
+		return
+	}
+	jm.mu.Lock()
+	if cfg.grantsMinted == nil {
+		cfg.grantsMinted = make(map[watchGrantKey]bool)
+	}
+	cfg.grantsMinted[key] = true
+	jm.mu.Unlock()
 }
 
 // sendMessageFunc delivers a watch-send frame to its resolved target. The

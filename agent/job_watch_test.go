@@ -4392,7 +4392,11 @@ func seedWatchSendDelegateTarget(t *testing.T, jm *jobManager, jobID string) {
 		Status:           jobstore.StatusRunning,
 		OwnerSessionID:   jm.sessionID,
 		VisibleToSession: jm.sessionID,
-		StartedAt:        &now,
+		// Production delegates carry their transcript ref in the job_started
+		// event (attachDelegateJobWithRestore); grant minting resolves the
+		// observer's child session id from it.
+		TranscriptRef: encodeRef("", "child_"+jobID),
+		StartedAt:     &now,
 	}); err != nil {
 		t.Fatalf("seed watch-send delegate target %q: %v", jobID, err)
 	}
@@ -5558,6 +5562,270 @@ func TestMarshalWatchResultTerminalCatchupProjection(t *testing.T) {
 	}
 	if strings.Contains(notFired, `"fired"`) {
 		t.Fatalf("not-fired projection must omit fired (omitempty): %s", notFired)
+	}
+}
+
+// --- observer read grants (spec §5.1) ---
+
+func loadGrantTable(t *testing.T, jm *jobManager) map[string]map[string]bool {
+	t.Helper()
+	grants, err := jm.store.LoadGrants()
+	if err != nil {
+		t.Fatalf("load grants: %v", err)
+	}
+	return grants
+}
+
+func countWatchReadGrantEvents(t *testing.T, jm *jobManager) int {
+	t.Helper()
+	var n int
+	for _, e := range loadJobStoreEvents(t, jm) {
+		if e.Kind == jobstore.EventWatchReadGrant {
+			n++
+		}
+	}
+	return n
+}
+
+func TestWatchCreateMintsObserverReadGrant(t *testing.T) {
+	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	grants := loadGrantTable(t, jm)
+	if !grants["child_job_obs"][rec.JobID] {
+		t.Fatalf("grants after create = %+v, want child_job_obs -> %s", grants, rec.JobID)
+	}
+	if got := countWatchReadGrantEvents(t, jm); got != 1 {
+		t.Fatalf("grant events after create = %d, want 1", got)
+	}
+
+	// The create-minted pair seeds the per-fire dedup: a live fire for the
+	// same (observer, watched) pair must not append a second grant.
+	feedJob(jm, rec.JobID, []byte("server ready\n"))
+	if got := countWatchReadGrantEvents(t, jm); got != 1 {
+		t.Fatalf("grant events after fire = %d, want 1 (create mint seeds dedup)", got)
+	}
+}
+
+func TestWatchCreateMintsNoGrantForSessionTargetNotifyOnlyOrCaller(t *testing.T) {
+	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
+	shellA, err := jm.createShell(createShellOpts{Command: "a"})
+	if err != nil {
+		t.Fatalf("create shellA: %v", err)
+	}
+	shellB, err := jm.createShell(createShellOpts{Command: "b"})
+	if err != nil {
+		t.Fatalf("create shellB: %v", err)
+	}
+	delegate := createRunningDelegateWatchTarget(t, jm)
+
+	// Session-target watch with a delegate send target: the concrete watched
+	// job is unknown until a fire, so creation mints nothing.
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "*",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure session-target watch: %v", err)
+	}
+	// Notify-only watch: no observer, no grant.
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      shellA.JobID,
+		OutputMatch: "ready",
+	}); err != nil {
+		t.Fatalf("configure notify-only watch: %v", err)
+	}
+	// Caller delivery: the caller reads through its own tools, never a grant.
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      shellB.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure caller watch: %v", err)
+	}
+	// send.to=watched is an alias, not a concrete delegate job: the observer
+	// is resolved per-fire, so creation mints nothing.
+	if _, err := jm.configureWatch(watchArgs{
+		Target: delegate.JobID,
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasWatched, Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure watched-alias watch: %v", err)
+	}
+
+	if grants := loadGrantTable(t, jm); len(grants) != 0 {
+		t.Fatalf("grants after creates = %+v, want none", grants)
+	}
+}
+
+func TestWatchWildcardSendFireMintsGrantForResolvedWatchedJob(t *testing.T) {
+	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "*",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if got := countWatchReadGrantEvents(t, jm); got != 0 {
+		t.Fatalf("grant events before fire = %d, want 0", got)
+	}
+
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
+
+	grants := loadGrantTable(t, jm)
+	if !grants["child_job_obs"]["job_trigger_one"] {
+		t.Fatalf("grants after fire = %+v, want child_job_obs -> job_trigger_one", grants)
+	}
+}
+
+func TestWatchWildcardSendRepeatFireMintsGrantOnce(t *testing.T) {
+	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "*",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "failed"})
+
+	if got := countWatchReadGrantEvents(t, jm); got != 1 {
+		t.Fatalf("grant events after repeat fire = %d, want 1 (per-config dedup)", got)
+	}
+	grants := loadGrantTable(t, jm)
+	if !grants["child_job_obs"]["job_trigger_one"] {
+		t.Fatalf("grants after repeat fire = %+v, want child_job_obs -> job_trigger_one", grants)
+	}
+
+	// A different watched job is a new (observer, job) pair: it mints its own.
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_two", JobType: "delegate", Status: "completed"})
+	if got := countWatchReadGrantEvents(t, jm); got != 2 {
+		t.Fatalf("grant events after second pair = %d, want 2", got)
+	}
+}
+
+func TestWatchWatchedAliasSendFireMintsGrantForWatchedJob(t *testing.T) {
+	jm := newTestJM(t)
+	target := createRunningDelegateWatchTarget(t, jm)
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      target.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: runtimeMessageAliasWatched, Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if got := countWatchReadGrantEvents(t, jm); got != 0 {
+		t.Fatalf("grant events before fire = %d, want 0 (watched resolves per-fire)", got)
+	}
+
+	feedJob(jm, target.JobID, []byte("server ready\n"))
+
+	grants := loadGrantTable(t, jm)
+	if !grants["child-"+target.JobID][target.JobID] {
+		t.Fatalf("grants after fire = %+v, want child-%s -> %s", grants, target.JobID, target.JobID)
+	}
+}
+
+func TestWatchCreateGrantAppendFailureFailsCreationLoudly(t *testing.T) {
+	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	realAppend := jm.appendEvent
+	grantErr := errors.New("grant append failed")
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventWatchReadGrant {
+			return grantErr
+		}
+		return realAppend(e)
+	}
+
+	_, err = jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	})
+	if err == nil {
+		t.Fatal("configureWatch succeeded, want grant append failure to fail creation")
+	}
+	if !strings.Contains(err.Error(), grantErr.Error()) {
+		t.Fatalf("creation error = %v, want wrapped %v", err, grantErr)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch installed despite grant failure: count = %d", jm.watchCount())
+	}
+	if grants := loadGrantTable(t, jm); len(grants) != 0 {
+		t.Fatalf("grants after failed create = %+v, want none", grants)
+	}
+}
+
+func TestWatchPerFireGrantAppendFailureProceedsWithSend(t *testing.T) {
+	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "*",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	realAppend := jm.appendEvent
+	grantErr := errors.New("grant append failed")
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventWatchReadGrant {
+			return grantErr
+		}
+		return realAppend(e)
+	}
+
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
+
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("pending after grant failure = %d, want 1 (delivery > grant)", len(pending))
+	}
+	var grantDiagnostics int
+	for _, n := range notified {
+		if strings.Contains(n.Reason, "watch read grant failed") {
+			grantDiagnostics++
+			if !strings.Contains(n.Reason, grantErr.Error()) {
+				t.Fatalf("diagnostic reason = %q, want underlying append error", n.Reason)
+			}
+		}
+	}
+	if grantDiagnostics != 1 {
+		t.Fatalf("grant diagnostics = %d, want 1: %+v", grantDiagnostics, notified)
+	}
+	if grants := loadGrantTable(t, jm); len(grants) != 0 {
+		t.Fatalf("grants after failed fire mint = %+v, want none", grants)
+	}
+
+	// A failed mint must not poison the dedup set: once the store recovers,
+	// the next fire for the same pair mints the grant.
+	jm.appendEvent = realAppend
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "failed"})
+	if !loadGrantTable(t, jm)["child_job_obs"]["job_trigger_one"] {
+		t.Fatal("grant not re-minted after append recovered")
 	}
 }
 
