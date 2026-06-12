@@ -191,6 +191,9 @@ func TestExecuteCommandHook_OfficialEnv(t *testing.T) {
 // TestExecuteCommandHook_OfficialEnv_NoEffort verifies that CLAUDE_EFFORT is
 // not set (empty) when input.Effort is empty.
 func TestExecuteCommandHook_OfficialEnv_NoEffort(t *testing.T) {
+	// Simulate serf itself running under an agent that exports CLAUDE_EFFORT:
+	// the parent's value must not leak into hooks when the session has none.
+	t.Setenv("CLAUDE_EFFORT", "high")
 	hook := plugin.RegisteredHook{
 		Type:      "command",
 		Timeout:   5,

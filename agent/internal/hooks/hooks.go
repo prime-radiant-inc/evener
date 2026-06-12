@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -97,9 +98,15 @@ func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input I
 		"CLAUDE_PROJECT_DIR="+input.CWD,
 	)
 	// CLAUDE_EFFORT: set only when the session has a configured effort level.
+	// The inherited value is stripped either way — when serf itself runs under
+	// an agent that exports CLAUDE_EFFORT, the parent's level must not leak
+	// into hooks as this session's.
 	// CLAUDE_CODE_REMOTE is intentionally not set here: serf has no remote/serve
 	// signal reachable at the hook exec site; fabricating a value is forbidden by
 	// the diagnostics spec (07 §"Common environment variables for command hooks").
+	env = slices.DeleteFunc(env, func(kv string) bool {
+		return strings.HasPrefix(kv, "CLAUDE_EFFORT=")
+	})
 	if input.Effort != "" {
 		env = append(env, "CLAUDE_EFFORT="+input.Effort)
 	}
