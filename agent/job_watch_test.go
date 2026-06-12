@@ -3934,7 +3934,7 @@ func TestWatchSendExcerptIncludesFrameMetadata(t *testing.T) {
 	if !strings.Contains(frame, "delivery_id: delivery_test") {
 		t.Fatalf("excerpt delivery must include delivery id; got %q", frame)
 	}
-	if !strings.Contains(frame, "Watch frame") || !strings.Contains(frame, "trigger:") {
+	if !strings.Contains(frame, "Watch frame") || !strings.Contains(frame, "trigger:") || !strings.Contains(frame, "job_id:") {
 		t.Fatalf("excerpt delivery must include frame metadata; got %q", frame)
 	}
 }

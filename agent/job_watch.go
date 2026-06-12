@@ -1992,16 +1992,6 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 	return limitWatchText(b.String(), watchFrameMaxChars)
 }
 
-func watchFrameMessageWithDeliveryID(message, deliveryID string) string {
-	if deliveryID == "" {
-		return message
-	}
-	if message == "" {
-		return "delivery_id: " + limitWatchText(deliveryID, watchTriggerMaxChars)
-	}
-	return message + "\n\n" + "delivery_id: " + limitWatchText(deliveryID, watchTriggerMaxChars)
-}
-
 func limitWatchText(s string, maxChars int) string {
 	if maxChars <= 0 || len([]rune(s)) <= maxChars {
 		return s
