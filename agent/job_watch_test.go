@@ -984,7 +984,9 @@ func TestWatchSendCrashAfterSuccessBeforeDeliveredRetriesSameDeliveryID(t *testi
 	}
 }
 
-func TestWatchSendRestoreRetriesPendingBeforeTerminalNotifications(t *testing.T) {
+// TestWatchSendRestoreRetokensPendingAndArmsTerminalNotification re-anchors the
+// former ...RetriesPendingBeforeTerminalNotifications onto the drain/notification-rail model.
+func TestWatchSendRestoreRetokensPendingAndArmsTerminalNotification(t *testing.T) {
 	stateDir := t.TempDir()
 	sessionID := "01KTESTWATCHRESTORE0000000000"
 	jobID := "job_restore_idle"
