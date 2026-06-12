@@ -421,6 +421,22 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 	}
 }
 
+func TestShellRejectsBackgroundWithBlockTimeout(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"echo hi","background":true,"block_timeout_ms":5000}`),
+	})
+	if !res.IsError {
+		t.Fatalf("shell with background=true and block_timeout_ms should return error, got success: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "block_timeout_ms applies only to foreground waits") {
+		t.Fatalf("shell error = %q, want error about block_timeout_ms foreground only", res.Output)
+	}
+}
+
 func newShellToolTestSession(t *testing.T, cfg SessionConfig) *Session {
 	t.Helper()
 	c := llm.NewClient()

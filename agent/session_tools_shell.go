@@ -115,11 +115,16 @@ func parseShellToolArgs(args map[string]any) (shellArgs, error) {
 		Background:  shellBoolArg(args, "background"),
 	}
 	var ok bool
-	if parsed.BlockTimeoutMS, ok = shellIntArg(args, "block_timeout_ms"); !ok {
-		parsed.BlockTimeoutMS = 0
+	blockTimeoutSet := false
+	if parsed.BlockTimeoutMS, ok = shellIntArg(args, "block_timeout_ms"); ok {
+		blockTimeoutSet = true
 	}
 	if parsed.MaxRuntimeMS, ok = shellIntArg(args, "max_runtime_ms"); !ok {
 		parsed.MaxRuntimeMS = 0
+	}
+	// block_timeout_ms only applies to foreground waits. Reject background+timeout combos.
+	if parsed.Background && blockTimeoutSet {
+		return shellArgs{}, errors.New(blockTimeoutForegroundOnlyErr)
 	}
 	if parsed.BlockTimeoutMS < 0 {
 		return shellArgs{}, errors.New("block_timeout_ms must be non-negative")

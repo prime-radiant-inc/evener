@@ -2151,7 +2151,7 @@ func TestNestedShellEndToEndThroughTools(t *testing.T) {
 	delegateCall := parent.reg.ExecuteCall(context.Background(), parent.env, llm.ToolCallData{
 		ID:        "delegate",
 		Name:      "delegate",
-		Arguments: json.RawMessage(`{"task":"host nested shell","background":true,"block_timeout_ms":120000}`),
+		Arguments: json.RawMessage(`{"task":"host nested shell","background":true}`),
 	})
 	if delegateCall.IsError {
 		t.Fatalf("delegate tool returned error: %s", delegateCall.Output)

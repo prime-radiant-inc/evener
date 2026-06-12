@@ -2451,6 +2451,87 @@ func containsAnyString(values []any, want string) bool {
 	return false
 }
 
+func TestDelegateRejectsBackgroundWithBlockTimeout(t *testing.T) {
+	s := newDelegateTestSession(t, llm.NewClient())
+
+	// Case 1: background=true with block_timeout_ms → rejected.
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "delegate",
+		Name:      "delegate",
+		Arguments: json.RawMessage(`{"task":"x","background":true,"block_timeout_ms":5000}`),
+	})
+	if !res.IsError {
+		t.Fatalf("delegate with background=true and block_timeout_ms should return error, got success: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "block_timeout_ms applies only to foreground waits") {
+		t.Fatalf("delegate error (background=true) = %q, want error about block_timeout_ms foreground only", res.Output)
+	}
+
+	// Case 2: background absent (defaults true) with block_timeout_ms → rejected.
+	res2 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "delegate",
+		Name:      "delegate",
+		Arguments: json.RawMessage(`{"task":"x","block_timeout_ms":5000}`),
+	})
+	if !res2.IsError {
+		t.Fatalf("delegate with background absent and block_timeout_ms should return error, got success: %s", res2.Output)
+	}
+	if !strings.Contains(res2.Output, "block_timeout_ms applies only to foreground waits") {
+		t.Fatalf("delegate error (background absent) = %q, want error about block_timeout_ms foreground only", res2.Output)
+	}
+}
+
+func TestJobSendMessageRejectsBackgroundWithBlockTimeout(t *testing.T) {
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("done")
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateTestSession(t, c)
+
+	// Start a delegate so we have a valid job target.
+	first := s.createDelegate(context.Background(), delegateArgs{
+		Task:       "finish first",
+		Background: false,
+		// No block_timeout_ms — legal foreground.
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	waitForShellDone(t, s.jobManager, first.JobID)
+
+	// Case 1: background=true with block_timeout_ms → rejected.
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "send",
+		Name:      "job_send_message",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"m","background":true,"block_timeout_ms":5000}`, first.JobID)),
+	})
+	if !res.IsError {
+		t.Fatalf("job_send_message with background=true and block_timeout_ms should return error, got success: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "block_timeout_ms applies only to foreground waits") {
+		t.Fatalf("job_send_message error (background=true) = %q, want error about block_timeout_ms foreground only", res.Output)
+	}
+
+	// Case 2: background absent (defaults true) with block_timeout_ms → rejected.
+	res2 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "send",
+		Name:      "job_send_message",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"m","block_timeout_ms":5000}`, first.JobID)),
+	})
+	if !res2.IsError {
+		t.Fatalf("job_send_message with background absent and block_timeout_ms should return error, got success: %s", res2.Output)
+	}
+	if !strings.Contains(res2.Output, "block_timeout_ms applies only to foreground waits") {
+		t.Fatalf("job_send_message error (background absent) = %q, want error about block_timeout_ms foreground only", res2.Output)
+	}
+}
+
 func requiredParams(t *testing.T, name string, raw any) []string {
 	t.Helper()
 	switch values := raw.(type) {

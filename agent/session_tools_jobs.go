@@ -34,6 +34,10 @@ const (
 	maxJobGrepPatternBytes      = 4096
 	maxJobWatchResultTextChars  = 128
 	maxJobWatchResultEvents     = 8
+	// blockTimeoutForegroundOnlyErr is the rejection message for calls that
+	// combine block_timeout_ms with a background (non-foreground) wait. The
+	// exact string is asserted by tests; keep it stable.
+	blockTimeoutForegroundOnlyErr = "invalid_request: block_timeout_ms applies only to foreground waits (background=false)"
 )
 
 var rootOnlyJobControlTools = []string{"delegate", "job_watch"}
@@ -113,8 +117,16 @@ func jobSendMessageTool(ctx context.Context, s *Session, args map[string]any, ma
 		a.Background = background
 		a.BackgroundSet = true
 	}
+	blockTimeoutSet := false
 	if n, ok := shellIntArg(args, "block_timeout_ms"); ok {
+		blockTimeoutSet = true
 		a.BlockTimeoutMS = n
+	}
+	// block_timeout_ms only applies to foreground waits (background=false).
+	// Reject when the timeout is set but background is not explicitly false.
+	backgroundExplicitlyFalse := a.BackgroundSet && !a.Background
+	if blockTimeoutSet && !backgroundExplicitlyFalse {
+		return "", errors.New(blockTimeoutForegroundOnlyErr)
 	}
 
 	res := s.sendDelegateMessage(ctx, a)
@@ -148,11 +160,20 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 		ReasoningEffort: stringArg(args, "reasoning_effort"),
 		Background:      true,
 	}
-	if background, ok := args["background"].(bool); ok {
-		a.Background = background
+	bgVal, bgIsBool := args["background"].(bool)
+	if bgIsBool {
+		a.Background = bgVal
 	}
+	blockTimeoutSet := false
 	if n, ok := shellIntArg(args, "block_timeout_ms"); ok {
+		blockTimeoutSet = true
 		a.BlockTimeoutMS = n
+	}
+	// block_timeout_ms only applies to foreground waits (background=false).
+	// Reject when the timeout is set but background is not explicitly false.
+	backgroundExplicitlyFalse := bgIsBool && !bgVal
+	if blockTimeoutSet && !backgroundExplicitlyFalse {
+		return "", errors.New(blockTimeoutForegroundOnlyErr)
 	}
 	if resultSchema, ok := args["result_schema"].(map[string]any); ok {
 		a.ResultSchema = resultSchema
