@@ -172,7 +172,7 @@ func TestJobManagerTerminalOutputValidatesRetainedSidecar(t *testing.T) {
 	if content, total, truncated, err := jm.readOutput(jobID, 1024); err == nil {
 		t.Fatalf("readOutput content=%q total=%d truncated=%v, want sidecar validation error", content, total, truncated)
 	}
-	if matches, err := jm.grepOutput(jobID, regexp.MustCompile(`more`), 1024); err == nil {
+	if matches, err := jm.grepOutput(jobID, regexp.MustCompile(`more`)); err == nil {
 		t.Fatalf("grepOutput matches=%+v, want sidecar validation error", matches)
 	}
 }
@@ -213,7 +213,7 @@ func TestJobManagerRunningRecordOutputUsesSidecarTotal(t *testing.T) {
 	if content != "still running\n" || total != int64(len("still running\n")) || truncated {
 		t.Fatalf("readOutput = %q, %d, %v", content, total, truncated)
 	}
-	matches, err := jm.grepOutput(jobID, regexp.MustCompile(`running`), 1024)
+	matches, err := jm.grepOutput(jobID, regexp.MustCompile(`running`))
 	if err != nil {
 		t.Fatalf("grepOutput returned error: %v", err)
 	}

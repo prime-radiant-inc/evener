@@ -240,7 +240,6 @@ func DefJobReadOutput() llm.ToolDefinition {
 				"grep":             map[string]any{"type": "string"},
 				"block":            map[string]any{"type": "boolean", "default": false},
 				"block_timeout_ms": map[string]any{"type": "integer"},
-				"limit_bytes":      map[string]any{"type": "integer", "default": 65536, "maximum": 1048576},
 			},
 			"required": []string{"job_id"},
 		},

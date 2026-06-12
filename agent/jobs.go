@@ -561,12 +561,12 @@ func (jm *jobManager) appendJobOutput(jobID string, output *jobstore.OutputStore
 	return n, err
 }
 
-func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp, limitBytes int) ([]jobstore.Match, error) {
+func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp) ([]jobstore.Match, error) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
 	jm.mu.Unlock()
 	if run != nil {
-		return run.output.GrepLimitLineBytes(re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes)
+		return run.output.GrepLimitLineBytes(re, maxJobOutputRetentionBytes, maxJobGrepMatches, maxJobGrepLineBytes)
 	}
 
 	recs, err := jm.store.Load()
@@ -582,7 +582,7 @@ func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp, limitBytes int
 	if err != nil {
 		return nil, err
 	}
-	return grepOutputFile(path, re, limitBytes, retainedStart)
+	return grepOutputFile(path, re, maxJobOutputRetentionBytes, retainedStart)
 }
 
 func (jm *jobManager) reconcileLostJobs() error {

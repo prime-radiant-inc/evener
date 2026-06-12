@@ -178,10 +178,6 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	if err != nil {
 		return "", err
 	}
-	limitBytes, err := boundedJobBytesArg(args, "limit_bytes", defaultJobOutputBytes)
-	if err != nil {
-		return "", err
-	}
 	maxChars := registryMaxChars
 	grep := stringArg(args, "grep")
 	var grepRE *regexp.Regexp
@@ -203,13 +199,13 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		}
 		timeout := time.Duration(timeoutMS) * time.Millisecond
 		if grepRE != nil {
-			waitForJobGrepMatch(ctx, jm, jobID, grepRE, limitBytes, timeout)
+			waitForJobGrepMatch(ctx, jm, jobID, grepRE, timeout)
 		} else {
 			waitForJobDoneOrOutput(ctx, jm, jobID, timeout)
 		}
 	}
 
-	snap, err := s.readJobOutputSnapshot(jm, jobID, tailBytes, grepRE, limitBytes)
+	snap, err := s.readJobOutputSnapshot(jm, jobID, tailBytes, grepRE)
 	if err != nil {
 		return "", err
 	}
@@ -249,7 +245,7 @@ type jobReadOutputSnapshot struct {
 	Matches    []jobstore.Match
 }
 
-func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, tailBytes int, grepRE *regexp.Regexp, limitBytes int) (jobReadOutputSnapshot, error) {
+func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, tailBytes int, grepRE *regexp.Regexp) (jobReadOutputSnapshot, error) {
 	for {
 		_, err := findJobRecord(jm, jobID)
 		if err != nil {
@@ -283,7 +279,7 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, tailBytes 
 
 		var matches []jobstore.Match
 		if grepRE != nil {
-			matches, err = jm.grepOutput(jobID, grepRE, limitBytes)
+			matches, err = jm.grepOutput(jobID, grepRE)
 			if err != nil {
 				next, ok, fallbackErr := s.jobReadClosedStoreFallback(jm, err)
 				if ok {
@@ -1028,13 +1024,8 @@ func waitForJobDoneOrOutput(ctx context.Context, jm *jobManager, jobID string, t
 // last scanned line boundary instead of re-grepping the full retained buffer.
 // The final snapshot re-greps for the result's matches, so correctness never
 // depends on this wait's incremental state.
-func waitForJobGrepMatch(ctx context.Context, jm *jobManager, jobID string, re *regexp.Regexp, limitBytes int, timeout time.Duration) {
-	// The snapshot grep clamps its per-line cap to the grep byte budget;
-	// mirror that so the wait's match predicate agrees with the result's.
+func waitForJobGrepMatch(ctx context.Context, jm *jobManager, jobID string, re *regexp.Regexp, timeout time.Duration) {
 	maxLineBytes := maxJobGrepLineBytes
-	if limitBytes < maxLineBytes {
-		maxLineBytes = limitBytes
-	}
 	var scan jobGrepScan
 	if scan.step(jm, jobID, re, maxLineBytes) {
 		return

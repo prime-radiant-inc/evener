@@ -1777,13 +1777,16 @@ func TestJobToolsDefinitions(t *testing.T) {
 	required(t, tooldefs.DefJobSendMessage(), "job_send_message", []string{"target", "message"})
 
 	readProps := tooldefs.DefJobReadOutput().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"tail_bytes", "grep", "block", "block_timeout_ms", "limit_bytes"} {
+	for _, param := range []string{"tail_bytes", "grep", "block", "block_timeout_ms"} {
 		if _, ok := readProps[param]; !ok {
 			t.Fatalf("job_read_output missing param %q", param)
 		}
 	}
 	if _, ok := readProps["max_chars"]; ok {
 		t.Fatalf("job_read_output schema unexpectedly contains removed max_chars param")
+	}
+	if _, ok := readProps["limit_bytes"]; ok {
+		t.Fatalf("job_read_output schema unexpectedly contains removed limit_bytes param")
 	}
 	listProps := tooldefs.DefJobList().Parameters["properties"].(map[string]any)
 	for _, param := range []string{"status", "type", "include_nested", "limit"} {
@@ -2057,6 +2060,52 @@ func TestJobReadOutputGrepSearchesTerminalOutputFileBeyondTail(t *testing.T) {
 	}
 }
 
+// TestJobReadOutputGrepScansFullRetainedOutputBeyondOldBudget verifies that
+// grep finds a match deep in retained output whose byte position exceeds the
+// former 65536-byte scan budget.  The test constructs 30 matching lines of
+// ~3000 bytes each (~90 KB total matched bytes, well above the old 64 KB cap)
+// followed by a uniquely-identifiable "FINAL-NEEDLE" line.  Under the old
+// budget the scan halted after ~22 lines (~66 KB) and FINAL-NEEDLE was never
+// reached; under full-scan all 31 lines are scanned (31 < 100-match cap) and
+// FINAL-NEEDLE is present.
+func TestJobReadOutputGrepScansFullRetainedOutputBeyondOldBudget(t *testing.T) {
+	s := newTestSession(t)
+	rec := newManualRunningJob(t, s)
+
+	// Build 30 matching lines of ~3000 bytes each.
+	// Content per line: "row " + 2996-byte padding + newline = 3001 bytes.
+	// 30 lines × ~3000 matched bytes ≈ 90 KB > 65536 (old budget).
+	// Each line is well under maxJobGrepLineBytes (4096), so the per-line cap
+	// does not apply and all 30 lines are valid matches.
+	padding := strings.Repeat("x", 2996)
+	var buf strings.Builder
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(&buf, "row %s\n", padding)
+	}
+	// Final line that must appear in results under full-scan.
+	buf.WriteString("row FINAL-NEEDLE\n")
+	appendManualJobOutput(s.jobManager, rec.JobID, buf.String())
+
+	re := regexp.MustCompile(`row`)
+	matches, err := s.jobManager.grepOutput(rec.JobID, re)
+	if err != nil {
+		t.Fatalf("grepOutput returned error: %v", err)
+	}
+	// Under the old 65536-byte budget the scan stops after ~22 matches and
+	// FINAL-NEEDLE (line 31) is never reached.  Under full-scan, all 31 lines
+	// are scanned (31 < maxJobGrepMatches=100) and FINAL-NEEDLE appears.
+	found := false
+	for _, m := range matches {
+		if strings.Contains(m.Line, "FINAL-NEEDLE") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("grep did not find FINAL-NEEDLE in retained output (got %d matches); silent-miss budget regression", len(matches))
+	}
+}
+
 func TestJobStopSchemaRejectsUnsupportedSignal(t *testing.T) {
 	s := newTestSession(t)
 
@@ -2286,7 +2335,7 @@ func waitForJobGrepMatchResult(t *testing.T, s *Session, jobID, want string, tai
 		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 			ID:        "read",
 			Name:      "job_read_output",
-			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":%d,"grep":%q,"limit_bytes":4096}`, jobID, tailBytes, want)),
+			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":%d,"grep":%q}`, jobID, tailBytes, want)),
 		})
 		if res.IsError {
 			t.Fatalf("job_read_output returned error: %s", res.Output)
