@@ -349,9 +349,8 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (string, error) 
 		jobs = append(jobs, projectJobRecord(s, rec))
 	}
 	return marshalBoundedJobListResult(jobListResult{
-		Jobs:       jobs,
-		Count:      len(jobs),
-		NextCursor: nil,
+		Jobs:  jobs,
+		Count: len(jobs),
 	}, maxChars)
 }
 
@@ -424,9 +423,8 @@ type jobOutputMatch struct {
 }
 
 type jobListResult struct {
-	Jobs       []jobListEntry `json:"jobs"`
-	Count      int            `json:"count"`
-	NextCursor *string        `json:"next_cursor"`
+	Jobs  []jobListEntry `json:"jobs"`
+	Count int            `json:"count"`
 }
 
 type jobListEntry struct {

@@ -73,14 +73,13 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 			TerminalGeneration  *string `json:"terminal_generation"`
 			TerminalNotifyState string  `json:"terminal_notification_state"`
 		} `json:"jobs"`
-		Count      int     `json:"count"`
-		NextCursor *string `json:"next_cursor"`
+		Count int `json:"count"`
 	}
 	if err := json.Unmarshal([]byte(listRes.Output), &listOut); err != nil {
 		t.Fatalf("unmarshal job_list output: %v (output: %s)", err, listRes.Output)
 	}
-	if listOut.Count != len(listOut.Jobs) || listOut.NextCursor != nil {
-		t.Fatalf("job_list output = %+v, want count=len(jobs) and null next_cursor", listOut)
+	if listOut.Count != len(listOut.Jobs) {
+		t.Fatalf("job_list output = %+v, want count=len(jobs)", listOut)
 	}
 	if len(listOut.Jobs) != 1 {
 		t.Fatalf("job_list jobs = %+v, want one running shell job", listOut.Jobs)
@@ -1784,18 +1783,13 @@ func TestJobToolsDefinitions(t *testing.T) {
 		}
 	}
 	listProps := tooldefs.DefJobList().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"status", "type", "include_nested", "limit", "cursor"} {
+	for _, param := range []string{"status", "type", "include_nested", "limit"} {
 		if _, ok := listProps[param]; !ok {
 			t.Fatalf("job_list missing param %q", param)
 		}
 	}
-	cursor, ok := listProps["cursor"].(map[string]any)
-	if !ok {
-		t.Fatalf("job_list cursor schema = %T, want map[string]any", listProps["cursor"])
-	}
-	cursorTypes, ok := cursor["type"].([]any)
-	if !ok || !containsAnyString(cursorTypes, "string") || !containsAnyString(cursorTypes, "null") {
-		t.Fatalf("job_list cursor type = %#v, want string/null", cursor["type"])
+	if _, ok := listProps["cursor"]; ok {
+		t.Fatalf("job_list schema unexpectedly contains removed cursor param")
 	}
 	stopProps := tooldefs.DefJobStop().Parameters["properties"].(map[string]any)
 	for _, param := range []string{"job_id", "block", "block_timeout_ms", "include_children"} {
@@ -2089,28 +2083,6 @@ func TestJobReadOutputGrepSearchesTerminalOutputFileBeyondTail(t *testing.T) {
 	}
 	if readOut.Matches[0].ByteOffset == nil || *readOut.Matches[0].ByteOffset != 0 {
 		t.Fatalf("match byte offset = %+v, want 0", readOut.Matches[0].ByteOffset)
-	}
-}
-
-func TestJobListAcceptsNullCursor(t *testing.T) {
-	s := newTestSession(t)
-
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "list",
-		Name:      "job_list",
-		Arguments: json.RawMessage(`{"cursor":null}`),
-	})
-	if res.IsError {
-		t.Fatalf("job_list returned error for null cursor: %s", res.Output)
-	}
-	var out struct {
-		NextCursor *string `json:"next_cursor"`
-	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
-		t.Fatalf("unmarshal job_list output: %v (output: %s)", err, res.Output)
-	}
-	if out.NextCursor != nil {
-		t.Fatalf("next_cursor = %q, want null", *out.NextCursor)
 	}
 }
 
