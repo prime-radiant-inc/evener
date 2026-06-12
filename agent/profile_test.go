@@ -232,6 +232,43 @@ func TestSystemPrompt_CoordinatorHasImpossibleDelegationException(t *testing.T) 
 	}
 }
 
+func TestBuildSystemPrompt_IncludesBackgroundJobsSection(t *testing.T) {
+	prompt := renderPromptForTest(t, newAnthropicProfile("claude-test"), promptData{})
+
+	if !strings.Contains(prompt, "## Background jobs") {
+		t.Fatalf("system prompt missing background-jobs section heading:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Serf notifies you automatically when a") {
+		t.Fatalf("system prompt missing background-jobs section body (notification sentence):\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Pick the waiting primitive by how many answers you need:") {
+		t.Fatalf("system prompt missing background-jobs section body (waiting primitive sentence):\n%s", prompt)
+	}
+}
+
+func TestSubagentPrompt_DoesNotIncludeBackgroundJobsSection(t *testing.T) {
+	resolver := &sectionResolver{
+		provider: "openai",
+		agent:    "implementer",
+		agentFS:  embeddedAgents,
+		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+	}
+	data := promptData{
+		Provider:           "openai",
+		Agent:              "implementer",
+		RolePromptOverride: mustWorkflowAgent(t, "implementer").SystemPrompt,
+		Model:              "gpt-5.4",
+		ResultToolName:     "communicate",
+	}
+	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "subagent", data)
+	if err != nil {
+		t.Fatalf("RenderEmbedded subagent: %v", err)
+	}
+	if strings.Contains(result, "## Background jobs") {
+		t.Fatalf("subagent prompt must not contain background-jobs section (root-only):\n%s", result)
+	}
+}
+
 func TestSystemPrompt_DefaultAgentDoesNotUseCoordinatorRole(t *testing.T) {
 	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), promptData{})
 
