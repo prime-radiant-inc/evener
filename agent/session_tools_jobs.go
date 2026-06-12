@@ -233,14 +233,15 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	rec := snap.Record
 
 	result := jobReadOutputResult{
-		JobID:      rec.JobID,
-		Type:       string(rec.Type),
-		Status:     string(rec.Status),
-		Reason:     stringPtrOrNil(rec.Reason),
-		Content:    snap.Content,
-		TotalBytes: snap.TotalBytes,
-		Truncated:  snap.Truncated,
-		ExitCode:   rec.ExitCode,
+		JobID:        rec.JobID,
+		Type:         string(rec.Type),
+		Status:       string(rec.Status),
+		Reason:       stringPtrOrNil(rec.Reason),
+		Content:      snap.Content,
+		TotalBytes:   snap.TotalBytes,
+		Truncated:    snap.Truncated,
+		ExitCode:     rec.ExitCode,
+		LastActivity: lastActivityProjection(rec),
 	}
 	if rec.StructuredResult != nil {
 		result.StructuredResult = rec.StructuredResult
@@ -430,6 +431,10 @@ type jobReadOutputResult struct {
 	StructuredResult       any               `json:"structured_result,omitempty"`
 	StructuredResultValid  *bool             `json:"structured_result_valid,omitempty"`
 	StructuredResultReason string            `json:"structured_result_reason,omitempty"`
+	// LastActivity mirrors job_list's supervision signal: the most recent
+	// parent-observable activity timestamp, with the same EndedAt/StartedAt
+	// fallback for terminal records.
+	LastActivity *string `json:"last_activity"`
 }
 
 type jobOutputMatch struct {
@@ -469,8 +474,16 @@ type jobListEntry struct {
 	NotResumableReason *string `json:"not_resumable_reason"`
 	StartedAt          string  `json:"started_at"`
 	EndedAt            *string `json:"ended_at"`
-	ExitCode           *int    `json:"exit_code"`
-	OutputBytes        int64   `json:"output_bytes"`
+	// LastActivity is the most recent parent-observable activity timestamp
+	// (output append or start) for a running job; for a terminal record with no
+	// live stamp it falls back to ended_at, then started_at. A quiet running
+	// delegate stays at its started_at, which is exactly what the quiet-job
+	// watchdog surfaces. current_action is intentionally omitted: a running
+	// delegate's mid-run "current action" is not cheaply readable from
+	// parent-side state without cross-session probing.
+	LastActivity *string `json:"last_activity"`
+	ExitCode     *int    `json:"exit_code"`
+	OutputBytes  int64   `json:"output_bytes"`
 }
 
 type jobStopResult struct {
@@ -1261,6 +1274,7 @@ func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {
 		NotResumableReason: notResumableReason,
 		StartedAt:          rec.StartedAt.Format(time.RFC3339Nano),
 		EndedAt:            timePtrOrNil(rec.EndedAt),
+		LastActivity:       lastActivityProjection(rec),
 		ExitCode:           rec.ExitCode,
 		OutputBytes:        rec.OutputBytes,
 	}
@@ -1412,4 +1426,20 @@ func timePtrOrNil(value *time.Time) *string {
 	}
 	formatted := value.Format(time.RFC3339Nano)
 	return &formatted
+}
+
+// lastActivityProjection renders a record's last_activity timestamp. A running
+// job carries a live LastActivity stamp. A terminal record reloaded from the
+// store has no stamp (LastActivity is in-memory only, never folded), so it
+// falls back to the most recent activity it can attest: EndedAt, then
+// StartedAt.
+func lastActivityProjection(rec *jobstore.JobRecord) *string {
+	if rec.LastActivity != nil {
+		return timePtrOrNil(rec.LastActivity)
+	}
+	if rec.EndedAt != nil {
+		return timePtrOrNil(rec.EndedAt)
+	}
+	started := rec.StartedAt
+	return timePtrOrNil(&started)
 }

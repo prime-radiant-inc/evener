@@ -49,6 +49,35 @@ const (
 	watchDeliveryBudget = 50
 )
 
+// delegateQuietWindow is how long a running delegate may emit no
+// parent-observable activity before the quiet-job watchdog fires one owner
+// notification. delegateQuietCheckInterval is how often the watchdog goroutine
+// re-evaluates quiet duration. Both are package vars ONLY so tests can scale
+// watchdog timing down; they are not config knobs. The production window is the
+// 10 minutes the model-facing message names.
+var (
+	delegateQuietWindow        = 10 * time.Minute
+	delegateQuietCheckInterval = 30 * time.Second
+)
+
+// quietWatchdogMessage is the owner-notification reason a quiet running delegate
+// triggers. It names the actual window so the text stays truthful when tests
+// scale the window down (the production window renders as "10m").
+func quietWatchdogMessage(window time.Duration, lastActivity time.Time) string {
+	return fmt.Sprintf("quiet for %s; last activity: %s", formatQuietWindow(window), lastActivity.Format(time.RFC3339Nano))
+}
+
+// formatQuietWindow renders a quiet window for the notification text. A
+// whole-minute window renders as "Nm" (so the production 10-minute window reads
+// "10m", not "10m0s"); any other window uses the default duration string so a
+// test-scaled sub-second window stays truthful (e.g. "50ms").
+func formatQuietWindow(window time.Duration) string {
+	if window >= time.Minute && window%time.Minute == 0 {
+		return fmt.Sprintf("%dm", window/time.Minute)
+	}
+	return window.String()
+}
+
 // watchBudgetClearedMessage is the single final notification text emitted when a
 // watch trips the delivery budget (spec §4 F1). The count is the budget itself.
 func watchBudgetClearedMessage(target string) string {
@@ -1161,6 +1190,7 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
 	var overBudget []*watchConfig
 
 	jm.mu.Lock()
+	jm.stampLastActivityLocked(jobID)
 	for _, cfg := range jm.watches {
 		if cfg.target != jobID || cfg.outputMatcher == nil {
 			continue
@@ -1285,6 +1315,73 @@ func watchNotification(jobID, reason string) jobNotification {
 		Status:  jobNotificationEventWatch,
 		Reason:  reason,
 	}
+}
+
+// startQuietWatchdog arms the quiet-job watchdog for a running delegate. The
+// goroutine ticks at delegateQuietCheckInterval and fires one owner
+// notification (enqueue + kick only, spec §3) when the delegate has emitted no
+// parent-observable activity for delegateQuietWindow, once per quiet stretch.
+// stop is closed at finalize. Modeled on startProgressTimer.
+func (jm *jobManager) startQuietWatchdog(jobID string, stop <-chan struct{}) {
+	if stop == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(delegateQuietCheckInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if !jm.fireQuietWatchdogTick(jobID) {
+					return
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
+// fireQuietWatchdogTick evaluates one watchdog tick. It returns false (ending
+// the goroutine) when the manager is closing or the delegate is no longer a
+// running job. Otherwise it enqueues at most one quiet notification per quiet
+// stretch and kicks the drain loop. It performs no delivery and never touches
+// Session.emit or responseSideEffectsMu (spec §3), mirroring fireProgressTick.
+func (jm *jobManager) fireQuietWatchdogTick(jobID string) bool {
+	var notifications []jobNotification
+
+	jm.mu.Lock()
+	if jm.closing {
+		jm.mu.Unlock()
+		return false
+	}
+	run := jm.running[jobID]
+	if run == nil || run.rec == nil || run.rec.Type != jobstore.JobDelegate {
+		jm.mu.Unlock()
+		return false
+	}
+	last := run.rec.StartedAt
+	if run.rec.LastActivity != nil {
+		last = *run.rec.LastActivity
+	}
+	quiet := jm.now().Sub(last)
+	if quiet >= delegateQuietWindow {
+		if !run.quietNotified {
+			run.quietNotified = true
+			notifications = append(notifications, watchNotification(jobID, quietWatchdogMessage(delegateQuietWindow, last)))
+		}
+	} else {
+		// Activity resumed within the window: clear the latch so the next quiet
+		// stretch fires again.
+		run.quietNotified = false
+	}
+	jm.mu.Unlock()
+
+	if len(notifications) > 0 {
+		jm.enqueueWatchNotifications(notifications)
+		jm.kick()
+	}
+	return true
 }
 
 func (jm *jobManager) snapshotWatchSendFrames(deliveries []watchSendDelivery) []watchSendDelivery {

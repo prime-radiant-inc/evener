@@ -1130,6 +1130,7 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 			TranscriptRef:    transcriptRef,
 			DelegateRestore:  restore,
 			StartedAt:        startedAt,
+			LastActivity:     &startedAt,
 			OutputPath:       outputPath,
 		},
 		output:         output,
@@ -1165,9 +1166,12 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 		_ = os.Remove(outputPath)
 		return nil, err
 	}
+	run.watchdogStop = make(chan struct{})
+	watchdogStop := run.watchdogStop
 	jm.running[run.rec.JobID] = run
 	jm.mu.Unlock()
 	jm.emitJobStarted(started, run)
+	jm.startQuietWatchdog(run.rec.JobID, watchdogStop)
 	return run, nil
 }
 

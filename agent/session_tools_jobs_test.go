@@ -2546,6 +2546,7 @@ type jobReadOutputTestResult struct {
 	ExitCode              *int           `json:"exit_code"`
 	StructuredResult      map[string]any `json:"structured_result"`
 	StructuredResultValid bool           `json:"structured_result_valid"`
+	LastActivity          *string        `json:"last_activity"`
 }
 
 func assertStructuredResultInvalidReason(t *testing.T, out, reason string) {
@@ -2643,9 +2644,13 @@ type jobListToolOutput struct {
 
 type jobListToolEntry struct {
 	JobID              string  `json:"job_id"`
+	Type               string  `json:"type"`
 	ParentJobID        *string `json:"parent_job_id"`
 	Resumable          *bool   `json:"resumable"`
 	NotResumableReason *string `json:"not_resumable_reason"`
+	StartedAt          string  `json:"started_at"`
+	EndedAt            *string `json:"ended_at"`
+	LastActivity       *string `json:"last_activity"`
 }
 
 type jobListToolWatch struct {

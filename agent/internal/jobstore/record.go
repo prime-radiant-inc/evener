@@ -106,33 +106,39 @@ type WatchSendRecord struct {
 
 // JobRecord is the durable storage shape reconstructed from the job event log.
 type JobRecord struct {
-	JobID                  string                     `json:"job_id"`
-	Type                   JobType                    `json:"type"`
-	Status                 Status                     `json:"status"`
-	Reason                 string                     `json:"reason,omitempty"`
-	Description            string                     `json:"description,omitempty"`
-	Command                string                     `json:"command,omitempty"`
-	Task                   string                     `json:"task,omitempty"`
-	ParentSessionID        string                     `json:"parent_session_id,omitempty"`
-	OwnerSessionID         string                     `json:"owner_session_id"`
-	VisibleToSession       string                     `json:"visible_to_session_id"`
-	ParentJobID            string                     `json:"parent_job_id,omitempty"`
-	OriginTurnID           string                     `json:"origin_turn_id,omitempty"`
-	OriginToolCallID       string                     `json:"origin_tool_call_id,omitempty"`
-	DelegateRestore        *DelegateRestoreDescriptor `json:"delegate_restore,omitempty"`
-	TranscriptRef          string                     `json:"transcript_ref,omitempty"`
-	Resumable              *bool                      `json:"resumable,omitempty"`
-	NotResumableWhy        string                     `json:"not_resumable_reason,omitempty"`
-	StartedAt              time.Time                  `json:"started_at"`
-	EndedAt                *time.Time                 `json:"ended_at,omitempty"`
-	ExitCode               *int                       `json:"exit_code,omitempty"`
-	OutputPath             string                     `json:"output_path,omitempty"`
-	OutputBytes            int64                      `json:"output_bytes"`
-	StructuredResult       any                        `json:"structured_result,omitempty"`
-	StructuredResultValid  *bool                      `json:"structured_result_valid,omitempty"`
-	StructuredResultReason string                     `json:"structured_result_reason,omitempty"`
-	TerminalGen            string                     `json:"terminal_generation,omitempty"`
-	NotifyState            NotifyState                `json:"terminal_notification_state"`
+	JobID            string                     `json:"job_id"`
+	Type             JobType                    `json:"type"`
+	Status           Status                     `json:"status"`
+	Reason           string                     `json:"reason,omitempty"`
+	Description      string                     `json:"description,omitempty"`
+	Command          string                     `json:"command,omitempty"`
+	Task             string                     `json:"task,omitempty"`
+	ParentSessionID  string                     `json:"parent_session_id,omitempty"`
+	OwnerSessionID   string                     `json:"owner_session_id"`
+	VisibleToSession string                     `json:"visible_to_session_id"`
+	ParentJobID      string                     `json:"parent_job_id,omitempty"`
+	OriginTurnID     string                     `json:"origin_turn_id,omitempty"`
+	OriginToolCallID string                     `json:"origin_tool_call_id,omitempty"`
+	DelegateRestore  *DelegateRestoreDescriptor `json:"delegate_restore,omitempty"`
+	TranscriptRef    string                     `json:"transcript_ref,omitempty"`
+	Resumable        *bool                      `json:"resumable,omitempty"`
+	NotResumableWhy  string                     `json:"not_resumable_reason,omitempty"`
+	StartedAt        time.Time                  `json:"started_at"`
+	// LastActivity is the in-memory timestamp of the job's most recent
+	// parent-observable activity (output append or start). It is a supervision
+	// signal for RUNNING jobs and is intentionally NOT folded from a durable
+	// event: a record reloaded from the store has it nil, and the projection
+	// falls back to EndedAt (then StartedAt). See projectJobRecord.
+	LastActivity           *time.Time  `json:"-"`
+	EndedAt                *time.Time  `json:"ended_at,omitempty"`
+	ExitCode               *int        `json:"exit_code,omitempty"`
+	OutputPath             string      `json:"output_path,omitempty"`
+	OutputBytes            int64       `json:"output_bytes"`
+	StructuredResult       any         `json:"structured_result,omitempty"`
+	StructuredResultValid  *bool       `json:"structured_result_valid,omitempty"`
+	StructuredResultReason string      `json:"structured_result_reason,omitempty"`
+	TerminalGen            string      `json:"terminal_generation,omitempty"`
+	NotifyState            NotifyState `json:"terminal_notification_state"`
 }
 
 func NewJobID() string {

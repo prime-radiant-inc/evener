@@ -631,9 +631,12 @@ Canonical return shape:
   ],
   "total_bytes": 10000,
   "truncated": false,
-  "exit_code": null
+  "exit_code": null,
+  "last_activity": "..."
 }
 ```
+
+`last_activity` is the most recent parent-observable activity timestamp for the job (an output append, or the job's start when nothing newer is observable). For a terminal record with no live activity stamp it falls back to `ended_at`, then `started_at`. It is a supervision hint for spotting a stalled or quiet job; it is not a substitute for terminal notifications.
 
 #### Advanced output paging
 
@@ -713,6 +716,7 @@ Return shape:
       "not_resumable_reason": null,
       "started_at": "...",
       "ended_at": null,
+      "last_activity": "...",
       "exit_code": null,
       "output_bytes": 1234
     }
@@ -734,6 +738,8 @@ Return shape:
 - `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries `target`, a one-line `condition` summary of the watch's trigger (`output_match`, `progress_interval_ms`, or `events` with an optional `every N`), `send_to` (empty for a notify-caller watch, otherwise the configured delivery target), `deliveries` (model-facing deliveries so far against the per-watch budget), and `created_at`. Drain-only residue from already-terminal watched jobs is not listed. `watches` always rides with the result; it is not subject to the job list's size bounding.
 
 `description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate jobs have no separate `description` argument in v1; implementations may derive a display label from the delegate `task` or leave `description` empty while retaining `task` in durable storage.
+
+`last_activity` is the most recent parent-observable activity timestamp for the job, matching the `job_read_output` field of the same name (an output append, or the job's start when nothing newer is observable; for a terminal record with no live stamp it falls back to `ended_at`, then `started_at`). A running delegate that is working silently stays at its `started_at` until it appends output, which is the signal the quiet-job watchdog (see Notifications) acts on. A per-action "current action" field is intentionally not provided: a running delegate's mid-run action is not cheaply readable from parent-side state.
 
 `job_list` returns a collection. Control/read tools operate on one `job_id`.
 
@@ -976,6 +982,7 @@ Rules:
 - If the parent is mid-turn, notifications queue for a safe turn boundary.
 - Duplicate terminal notifications for the same job are suppressed.
 - Watch wake-ups and configured watch sends are opt-in through `job_watch`.
+- Serf supervises running delegate jobs with a built-in quiet-job watchdog. A running delegate that produces no parent-observable activity (no output append; `last_activity` unchanged) for 10 minutes triggers one owner notification reading `quiet for 10m; last activity: <timestamp>`, delivered like a watch notification (`event="watch"`, the delegate's `job_id`). It fires at most once per quiet stretch and re-arms only after the delegate shows fresh activity. This is always-on supervision, not an opt-in `job_watch`; a quiet delegate that is genuinely working (for example reading a large file) is reported the same as a stalled one, because the two are not distinguishable from parent-observable state. The watchdog only notifies the owner; it never steers, resumes, or stops the delegate.
 - Notification delivery state is internal; there is no `job_ack`.
 
 Terminal notification dedupe is durable. The dedupe key is `(visible_session_id, job_id, terminal_generation)`, where `terminal_generation` is the stable identity of the first canonical terminal durable event for that job. Serf may implement exactly-once visible delivery or at-least-once delivery with durable duplicate suppression, but it must not repeatedly notify about the same terminal event on every restore.

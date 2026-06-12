@@ -87,6 +87,13 @@ type runningJob struct {
 	afterDurableFinish      func()
 	fromWatch               atomic.Bool
 	forwardDisabled         bool
+	// watchdogStop, when non-nil, stops the quiet-job watchdog goroutine for a
+	// running delegate. Closed once at finalize. quietNotified latches the
+	// quiet notification to once-per-quiet-stretch; it is read/written under
+	// jm.mu by the watchdog tick and cleared when activity resumes.
+	watchdogStop    chan struct{}
+	watchdogStopped sync.Once
+	quietNotified   bool
 }
 
 type finalizeAttempt struct {
@@ -101,6 +108,30 @@ func (run *runningJob) closeDone() {
 	run.doneOnce.Do(func() {
 		close(run.done)
 	})
+}
+
+// stopWatchdog stops the quiet-job watchdog goroutine (delegate jobs only).
+// Idempotent and safe on a runningJob that never armed a watchdog.
+func (run *runningJob) stopWatchdog() {
+	if run == nil || run.watchdogStop == nil {
+		return
+	}
+	run.watchdogStopped.Do(func() {
+		close(run.watchdogStop)
+	})
+}
+
+// stampLastActivityLocked records now() as the running job's most recent
+// parent-observable activity. Callers must hold jm.mu. A stamp replaces the
+// LastActivity pointer wholesale, so a record clone that shares the pointer is
+// never mutated in place. No-op when the job is not running.
+func (jm *jobManager) stampLastActivityLocked(jobID string) {
+	run := jm.running[jobID]
+	if run == nil || run.rec == nil {
+		return
+	}
+	now := jm.now()
+	run.rec.LastActivity = &now
 }
 
 type terminalJob struct {
@@ -218,6 +249,7 @@ func (jm *jobManager) closeRuntimeState() error {
 	}
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
 	for _, run := range jm.running {
+		run.stopWatchdog()
 		running = append(running, jobRuntimeHandle{
 			jobID:  run.rec.JobID,
 			signal: run.signal,
@@ -282,6 +314,7 @@ func (jm *jobManager) abandonRunningJobs() {
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
 	var targets []watchConfigTerminalSnapshot
 	for _, run := range jm.running {
+		run.stopWatchdog()
 		running = append(running, jobRuntimeHandle{
 			jobID:     run.rec.JobID,
 			done:      run.done,
@@ -319,6 +352,7 @@ func (jm *jobManager) abandonRunningJob(jobID string) {
 	run := jm.running[jobID]
 	var targets []watchConfigTerminalSnapshot
 	if run != nil {
+		run.stopWatchdog()
 		delete(jm.running, jobID)
 		targets = jm.pruneWatchedTargetWatchesLocked(jobID, "watched target pruned", jm.now())
 	}
@@ -359,6 +393,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		VisibleToSession: jm.sessionID,
 		ParentJobID:      parentJobID,
 		StartedAt:        startedAt,
+		LastActivity:     &startedAt,
 		OutputPath:       outputPath,
 	}
 	output, err := jobstore.OpenOutput(outputPath, maxJobOutputRetentionBytes)
@@ -995,6 +1030,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	}
 	jm.mu.Unlock()
 
+	run.stopWatchdog()
 	_ = run.output.Close()
 	run.closeDone()
 
