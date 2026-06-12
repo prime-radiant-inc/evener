@@ -12,6 +12,16 @@ import (
 
 var ErrNotificationOverflow = errors.New("appwire notification buffer overflow")
 
+// notificationBufferCap sizes the Notifications() channel. Overflow is a
+// deliberate loud failure (the connection is torn down rather than silently
+// dropping or buffering without bound), so the capacity must hold any single
+// legitimate burst even while the consumer waits for a scheduling slice: a
+// codex initial-turn replay is ~160 messages, and request paths that never
+// consume notifications (short-lived withClient calls) ride entirely on this
+// buffer. 128 was smaller than a real burst and flaked under full-suite load
+// (2026-06-12).
+const notificationBufferCap = 4096
+
 type Client struct {
 	transport     Transport
 	nextID        atomic.Int64
@@ -33,7 +43,7 @@ func NewClient(transport Transport) *Client {
 	c := &Client{
 		transport:     transport,
 		pending:       map[string]pendingRequest{},
-		notifications: make(chan Notification, 128),
+		notifications: make(chan Notification, notificationBufferCap),
 	}
 	c.nextID.Store(1)
 	return c

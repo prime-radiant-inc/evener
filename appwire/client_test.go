@@ -159,6 +159,68 @@ func TestClientGoalSetRoundTrip(t *testing.T) {
 	}
 }
 
+// A legitimate notification burst that lands while no consumer has drained yet
+// (a codex initial-turn replay is ~160 messages; consumers can be a scheduling
+// slice behind) must ride the buffer, not kill the connection. The overflow
+// guard exists for pathological stalls, so the buffer needs real headroom
+// above any single legitimate burst. Flake root cause, full-suite load,
+// 2026-06-12: 160-message burst vs a 128-cap buffer.
+func TestClientBuffersBurstLargerThanLegacyCapWithoutOverflow(t *testing.T) {
+	const burst = 512
+	transport := &memoryTransport{
+		writes: make(chan Message, 1),
+		reads:  make(chan Message, burst+8),
+	}
+	client := NewClient(transport)
+
+	startCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+	client.Start(startCtx)
+
+	requestCtx, cancelRequest := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelRequest()
+	done := make(chan struct {
+		resp ThreadListResponse
+		err  error
+	}, 1)
+	go func() {
+		resp, err := client.ThreadList(requestCtx, ThreadListParams{Limit: 1})
+		done <- struct {
+			resp ThreadListResponse
+			err  error
+		}{resp: resp, err: err}
+	}()
+
+	var written Message
+	select {
+	case written = <-transport.writes:
+	case <-time.After(time.Second):
+		t.Fatal("request was not written")
+	}
+	// The whole burst arrives before anyone consumes Notifications().
+	for i := 0; i < burst; i++ {
+		transport.reads <- NotificationMessage(NotifyAgentMessageDelta, map[string]int{"seq": i})
+	}
+	transport.reads <- ResponseMessage(written.Request.ID, ThreadListResponse{Data: []Thread{{ID: "th_burst", Source: "serf"}}})
+
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("ThreadList must survive a %d-notification burst: %v", burst, result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("response was not routed during the burst")
+	}
+	// Every burst notification is still deliverable to a late consumer.
+	for i := 0; i < burst; i++ {
+		select {
+		case <-client.Notifications():
+		case <-time.After(time.Second):
+			t.Fatalf("notification %d/%d never delivered to the late consumer", i+1, burst)
+		}
+	}
+}
+
 func TestClientFailsPendingWhenNotificationsOverflow(t *testing.T) {
 	transport := &memoryTransport{
 		writes: make(chan Message, 1),
