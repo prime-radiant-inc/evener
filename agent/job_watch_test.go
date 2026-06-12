@@ -841,6 +841,195 @@ func TestOutputMatchDropsOnEndOffsetRegression(t *testing.T) {
 	}
 }
 
+// TestAttachScanFiresOnceForAlreadyPrintedToken proves the level-trigger: a
+// watch attached to a running job whose retained output ALREADY contains the
+// pattern on several lines fires exactly once at attach (not once per matching
+// line), the fire carries the LAST matching line, and the create result reports
+// fired=true (spec §7.1 "Running target" + "Attach-scan fire cardinality").
+func TestAttachScanFiresOnceForAlreadyPrintedToken(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	// Three matching lines retained BEFORE the watch is configured. No watch exists,
+	// so appendJobOutput advances the store but fires nothing.
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("ready\nready\nready\n")); err != nil {
+		t.Fatalf("pre-watch append: %v", err)
+	}
+	if len(notified) != 0 {
+		t.Fatalf("pre-watch output must not fire (no watch installed); got %d", len(notified))
+	}
+
+	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if !res.Fired {
+		t.Fatal("create result must report fired=true when retained output already matches")
+	}
+	if len(notified) != 1 {
+		t.Fatalf("attach scan must fire exactly once regardless of matching-line count; got %d", len(notified))
+	}
+	if notified[0].Reason != "output_match: ready" {
+		t.Fatalf("attach fire reason = %q, want \"output_match: ready\" (the last matching line)", notified[0].Reason)
+	}
+}
+
+// TestAttachScanSendArmFiresOnce is the send-arm counterpart: a sidecar watch
+// (send.to=delegate) attached to a running job with already-printed output
+// records exactly one pending send whose trigger carries the last matching line,
+// and the create result reports fired=true.
+func TestAttachScanSendArmFiresOnce(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	seedCommonWatchSendTargets(t, jm)
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("ready one\nready two\nready three\n")); err != nil {
+		t.Fatalf("pre-watch append: %v", err)
+	}
+
+	res, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if !res.Fired {
+		t.Fatal("create result must report fired=true for a sidecar attach-scan match")
+	}
+
+	jm.mu.Lock()
+	cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "job_obs"}]
+	var pendingCount int
+	var lastReason string
+	if cfg != nil {
+		pendingCount = len(cfg.pending)
+		for _, state := range cfg.pending {
+			lastReason = state.TriggerReason
+		}
+	}
+	jm.mu.Unlock()
+	if pendingCount != 1 {
+		t.Fatalf("attach scan must record exactly one pending send; got %d", pendingCount)
+	}
+	if lastReason != "output_match: ready three" {
+		t.Fatalf("pending send trigger = %q, want \"output_match: ready three\" (the last matching line)", lastReason)
+	}
+}
+
+// TestAttachScanTokenStraddlingBoundaryFiresOnce drives the no-double-fire-across
+// -the-seam case under -race: a partial token is retained at attach (no newline),
+// the watch attaches (seeding the carry + scan offset), then the rest of the
+// token arrives via the real appendJobOutput->feedJobOutput path. The token must
+// fire EXACTLY once — the attach scan sees no complete matching line, and the
+// live FeedAt completes the seeded carry into one match.
+func TestAttachScanTokenStraddlingBoundaryFiresOnce(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	output := jm.running[rec.JobID].output
+	// Partial token with no newline retained before attach.
+	if _, err := jm.appendJobOutput(rec.JobID, output, []byte("rea")); err != nil {
+		t.Fatalf("partial append: %v", err)
+	}
+
+	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	// The retained tail "rea" is not a complete matching line, so the attach scan
+	// fires nothing; the carry seed carries "rea" forward.
+	if res.Fired {
+		t.Fatal("create result must report fired=false: no complete matching line at attach")
+	}
+	if len(notified) != 0 {
+		t.Fatalf("attach scan must not fire on an unterminated partial token; got %d", len(notified))
+	}
+
+	// The rest of the token arrives through the real append path; the seeded carry
+	// completes "ready" and fires exactly once.
+	if _, err := jm.appendJobOutput(rec.JobID, output, []byte("dy\n")); err != nil {
+		t.Fatalf("completion append: %v", err)
+	}
+	if len(notified) != 1 {
+		t.Fatalf("straddling token must fire exactly once via the carry+FeedAt seam; got %d", len(notified))
+	}
+	if notified[0].Reason != "output_match: ready" {
+		t.Fatalf("seam fire reason = %q, want \"output_match: ready\"", notified[0].Reason)
+	}
+}
+
+// TestAttachScanNoMatchThenLiveFires proves the empty case and that the live path
+// still works after a no-fire attach: a running job with NO output gets an
+// output_match watch (fired=false, no notification), then matching output appended
+// through the real path fires once.
+func TestAttachScanNoMatchThenLiveFires(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	output := jm.running[rec.JobID].output
+
+	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "(?i)ready"})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if res.Fired {
+		t.Fatal("create result must report fired=false when nothing is retained")
+	}
+	if len(notified) != 0 {
+		t.Fatalf("attach scan on empty output must not fire; got %d", len(notified))
+	}
+
+	if _, err := jm.appendJobOutput(rec.JobID, output, []byte("server READY\n")); err != nil {
+		t.Fatalf("live append: %v", err)
+	}
+	if len(notified) != 1 {
+		t.Fatalf("live matching output must fire once after a no-match attach; got %d", len(notified))
+	}
+}
+
+// TestAttachScanIdempotentReinstallDoesNotRefire pins that re-installing the
+// identical watch (the idempotent no-op path) does NOT re-scan or re-fire: only a
+// FRESH concrete-running output_match install scans.
+func TestAttachScanIdempotentReinstallDoesNotRefire(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("ready\n")); err != nil {
+		t.Fatalf("pre-watch append: %v", err)
+	}
+
+	first, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err != nil {
+		t.Fatalf("configure first: %v", err)
+	}
+	if !first.Fired || len(notified) != 1 {
+		t.Fatalf("first install must fire once; fired=%v notifications=%d", first.Fired, len(notified))
+	}
+
+	// Identical re-install is a no-op: it must not scan again.
+	second, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err != nil {
+		t.Fatalf("configure second: %v", err)
+	}
+	if second.Fired {
+		t.Fatal("idempotent re-install must report fired=false (no fresh matcher installed)")
+	}
+	if len(notified) != 1 {
+		t.Fatalf("idempotent re-install must not re-fire; total notifications = %d, want 1", len(notified))
+	}
+}
+
 func TestConcreteWatchExpiresOnTerminal(t *testing.T) {
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}

@@ -525,6 +525,7 @@ type jobWatchToolResult struct {
 	ProgressIntervalMS int                   `json:"progress_interval_ms,omitempty"`
 	Send               *jobWatchToolSendArgs `json:"send,omitempty"`
 	ReplacedExisting   bool                  `json:"replaced_existing,omitempty"`
+	Fired              bool                  `json:"fired,omitempty"`
 }
 
 type jobWatchToolSendArgs struct {
@@ -590,6 +591,7 @@ func marshalWatchResult(res watchResult, maxChars int) (string, error) {
 		Events:             res.Events,
 		ProgressIntervalMS: res.ProgressIntervalMS,
 		ReplacedExisting:   res.ReplacedExisting,
+		Fired:              res.Fired,
 	}
 	if res.Send != nil {
 		out.Send = &jobWatchToolSendArgs{

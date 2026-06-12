@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -160,6 +161,11 @@ type watchResult struct {
 	ProgressIntervalMS int
 	Send               *watchSendArgs
 	ReplacedExisting   bool
+	// Fired reports that an output_match attach scan found a level match in the
+	// running target's already-retained output and fired once at attach (spec
+	// §7.1). Only a fresh concrete-running output_match install can set this;
+	// idempotent/replace-no-op/session-target installs leave it false.
+	Fired bool
 }
 
 type watchSendDelivery struct {
@@ -408,10 +414,12 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		stop := cfg.initProgressStop()
 		jm.watches[key] = cfg
 		result := watchResultFromConfig(cfg, true)
+		scanData, scan, prepErr := jm.prepareAttachScanLocked(cfg, jm.running[key.Target])
 		jm.mu.Unlock()
 		jm.removeWatchSendTerminalSnapshots(applied)
 		jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
 		jm.startProgressTimer(key, cfg, stop)
+		result.Fired = jm.completeAttachScan(cfg, key.Target, scanData, scan, prepErr)
 		return result, nil
 	}
 
@@ -439,8 +447,10 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	stop := cfg.initProgressStop()
 	jm.watches[key] = cfg
 	result := watchResultFromConfig(cfg, false)
+	scanData, scan, prepErr := jm.prepareAttachScanLocked(cfg, jm.running[key.Target])
 	jm.mu.Unlock()
 	jm.startProgressTimer(key, cfg, stop)
+	result.Fired = jm.completeAttachScan(cfg, key.Target, scanData, scan, prepErr)
 	return result, nil
 }
 
@@ -1225,6 +1235,98 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte, endOffset int64)
 	jm.enqueueWatchNotifications(notifications)
 	jm.recordWatchSendsAndKick(deliveries)
 	jm.autoClearOverBudgetWatches(overBudget)
+}
+
+// tailAfterLastNewline returns the slice of data after its last '\n', or all of
+// data if it contains no newline. This is the unterminated final-line tail that
+// seeds an attach-scan matcher's carry so a token half-written at attach
+// completes through the live FeedAt path (spec §7.1 step 1).
+func tailAfterLastNewline(data []byte) []byte {
+	if idx := bytes.LastIndexByte(data, '\n'); idx >= 0 {
+		return data[idx+1:]
+	}
+	return data
+}
+
+// prepareAttachScanLocked primes a freshly installed output_match matcher for a
+// level-trigger attach scan and returns the retained output to scan after the
+// lock is released. The caller holds jm.mu and has just installed cfg for a
+// concrete running target. It returns scan=false (and no data) when cfg has no
+// matcher or the target is no longer a readable running job — the only cases are
+// a non-output_match watch or a target that finalized in a lock gap, neither of
+// which has retained output to level-check.
+//
+// Under jm.mu it reads the job's retained output and lifetime length N, records
+// scanOffset=N on the matcher (so the live FeedAt path will not re-fire bytes the
+// scan covers), and seeds the carry with the tail after the last newline (so a
+// token straddling the attach boundary completes through FeedAt). The actual scan
+// runs after the lock is released, in fireAttachScan.
+func (jm *jobManager) prepareAttachScanLocked(cfg *watchConfig, run *runningJob) (data []byte, scan bool, err error) {
+	if cfg == nil || cfg.outputMatcher == nil {
+		return nil, false, nil
+	}
+	if !isWatchableConcreteJobLocked(run) || run.output == nil {
+		return nil, false, nil
+	}
+	buf, total, _, err := run.output.Tail(maxJobOutputRetentionBytes)
+	if err != nil {
+		return nil, false, err
+	}
+	cfg.outputMatcher.SetScanOffset(total)
+	cfg.outputMatcher.SeedCarry(tailAfterLastNewline(buf))
+	return buf, true, nil
+}
+
+// completeAttachScan finishes an output_match attach scan after configureWatch
+// releases jm.mu and reports whether it fired. A retained-read failure from
+// prepareAttachScanLocked surfaces as one warning notification (the watch is
+// installed and live regardless — only the level-trigger is lost), mirroring how
+// the live feedJobOutput path surfaces an output problem rather than failing the
+// install. scan=false (non-output_match watch, or a target that finalized in a
+// lock gap) is a quiet no-fire.
+func (jm *jobManager) completeAttachScan(cfg *watchConfig, jobID string, data []byte, scan bool, prepErr error) bool {
+	if prepErr != nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(jobID, "output_match attach scan skipped: "+limitWatchText(prepErr.Error(), watchReadErrorMaxChars)),
+		})
+		return false
+	}
+	if !scan {
+		return false
+	}
+	return jm.fireAttachScan(cfg, jobID, data)
+}
+
+// fireAttachScan applies the watch's regexp to the complete lines in the retained
+// output captured at attach and, if any line matches, fires the watch exactly
+// once (a level check — "the output already contains the pattern" — not a replay
+// of N lines, spec §7.1 "Attach-scan fire cardinality"). The single fire carries
+// the LAST matching line and routes through the same rail as a live feedJobOutput
+// match: recordWatchSendsAndKick for a send watch, or enqueueWatchNotifications +
+// over-budget handling for a no-send watch. It runs after jm.mu is released.
+// Returns whether the scan fired.
+func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte) bool {
+	last, matched := cfg.outputMatcher.ScanRetained(data)
+	if !matched {
+		return false
+	}
+	reason := "output_match: " + last
+	if cfg.send != nil {
+		jm.mu.Lock()
+		delivery := jm.watchSendSnapshot(cfg, jobID, reason)
+		jm.mu.Unlock()
+		jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
+		return true
+	}
+	var overBudget []*watchConfig
+	jm.mu.Lock()
+	if jm.recordWatchDeliveryLocked(cfg) {
+		overBudget = append(overBudget, cfg)
+	}
+	jm.mu.Unlock()
+	jm.enqueueWatchNotifications([]jobNotification{watchNotification(jobID, reason)})
+	jm.autoClearOverBudgetWatches(overBudget)
+	return true
 }
 
 func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, []watchSendDelivery) {

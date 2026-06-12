@@ -85,6 +85,39 @@ func (m *OutputMatcher) FeedAt(chunk []byte, endOffset int64) []string {
 	return matches
 }
 
+// ScanRetained applies the matcher's regexp to the COMPLETE lines in data
+// (everything up to and including the final newline; any unterminated tail is
+// ignored, as it belongs to the carry) and returns the LAST matching line. It is
+// a level check used at attach: it does not touch the carry, scanOffset, or
+// feedOffset, so it composes with a subsequent FeedAt. Lines longer than
+// maxOutputMatcherLineBytes are skipped exactly as the stream path skips them, so
+// attach and stream agree on what counts as a valid line.
+func (m *OutputMatcher) ScanRetained(data []byte) (last string, matched bool) {
+	var (
+		line     []byte
+		overlong bool
+	)
+	for len(data) > 0 {
+		idx := bytes.IndexByte(data, '\n')
+		if idx < 0 {
+			// Unterminated tail: belongs to the carry, not this scan.
+			break
+		}
+		line, overlong = appendLineFragment(line, overlong, data[:idx])
+		if !overlong {
+			completed := completedLine(line)
+			if m.re.Match(completed) {
+				last = string(completed)
+				matched = true
+			}
+		}
+		line = line[:0]
+		overlong = false
+		data = data[idx+1:]
+	}
+	return last, matched
+}
+
 // Flush returns a match for any buffered final partial line and clears it.
 func (m *OutputMatcher) Flush() []string {
 	if len(m.carry) == 0 || m.overlong {
@@ -105,20 +138,27 @@ func (m *OutputMatcher) Flush() []string {
 }
 
 func (m *OutputMatcher) appendPartialLine(part []byte) {
-	if len(part) == 0 || m.overlong {
-		return
+	m.carry, m.overlong = appendLineFragment(m.carry, m.overlong, part)
+}
+
+// appendLineFragment appends a within-line fragment to carry, enforcing the
+// overlong-line policy: once a line exceeds maxOutputMatcherLineBytes the carry
+// is dropped and overlong latches until the line ends. It is the single home for
+// the matcher's line-length policy, shared by the streaming carry
+// (appendPartialLine) and the attach-time level scan (ScanRetained).
+func appendLineFragment(carry []byte, overlong bool, part []byte) ([]byte, bool) {
+	if len(part) == 0 || overlong {
+		return carry, overlong
 	}
 
 	limit := maxOutputMatcherLineBytes
 	if part[len(part)-1] == '\r' {
 		limit++
 	}
-	if len(m.carry)+len(part) > limit {
-		m.carry = nil
-		m.overlong = true
-		return
+	if len(carry)+len(part) > limit {
+		return nil, true
 	}
-	m.carry = append(m.carry, part...)
+	return append(carry, part...), false
 }
 
 func completedLine(line []byte) []byte {

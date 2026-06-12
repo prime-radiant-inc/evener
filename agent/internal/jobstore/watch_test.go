@@ -328,3 +328,98 @@ func TestOutputMatcherSeedCarryBoundsOverlongTail(t *testing.T) {
 		t.Fatalf("matcher did not recover after overlong seeded tail: %#v", got)
 	}
 }
+
+func TestScanRetainedReturnsLastMatchingLine(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`(?i)ready`))
+	last, matched := m.ScanRetained([]byte("ready one\nnoise\nready two\nready three\n"))
+	if !matched || last != "ready three" {
+		t.Fatalf("ScanRetained = (%q, %v), want last matching line \"ready three\"", last, matched)
+	}
+}
+
+func TestScanRetainedIgnoresUnterminatedFinalLine(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`ready`))
+	// The only "ready" sits on the unterminated final line; it belongs to the
+	// carry and must not be reported by the level scan.
+	last, matched := m.ScanRetained([]byte("starting\nserver ready"))
+	if matched {
+		t.Fatalf("unterminated final line must be ignored, got match %q", last)
+	}
+}
+
+func TestScanRetainedSkipsOverlongLine(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`ready`))
+	// A complete line longer than the cap is skipped exactly like the stream path,
+	// so a match buried in an overlong line is not reported.
+	data := []byte(strings.Repeat("x", maxOutputMatcherLineBytes+1) + "ready\n")
+	last, matched := m.ScanRetained(data)
+	if matched {
+		t.Fatalf("overlong complete line must be skipped, got match %q", last)
+	}
+	// A normal matching line after the overlong one is still found.
+	data = append(data, []byte("server ready\n")...)
+	last, matched = m.ScanRetained(data)
+	if !matched || last != "server ready" {
+		t.Fatalf("ScanRetained after overlong line = (%q, %v), want \"server ready\"", last, matched)
+	}
+}
+
+func TestScanRetainedNoMatchReturnsFalse(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`ready`))
+	if last, matched := m.ScanRetained([]byte("starting\nworking\n")); matched {
+		t.Fatalf("no matching complete line must return false, got %q", last)
+	}
+}
+
+func TestScanRetainedEmptyDataReturnsFalse(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(``))
+	if last, matched := m.ScanRetained(nil); matched {
+		t.Fatalf("empty data must return false, got %q", last)
+	}
+	if last, matched := m.ScanRetained([]byte{}); matched {
+		t.Fatalf("empty data must return false, got %q", last)
+	}
+}
+
+func TestScanRetainedDoesNotTouchCarryOrScanOffset(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`READY`))
+	// Prime the attach state the way configureWatch does: scan offset at 12 and a
+	// seeded carry of the partial tail "ser".
+	m.SetScanOffset(12)
+	m.SeedCarry([]byte("ser"))
+	// A level scan over retained data must not consume the seed or move the scan
+	// offset: it is a pure read.
+	if _, matched := m.ScanRetained([]byte("server READY\nserver READY\n")); !matched {
+		t.Fatal("ScanRetained must still report a level match over retained data")
+	}
+	// The seed and scan offset survive: a discarded chunk at the boundary leaves
+	// the seed intact, and the line completing through FeedAt fires exactly once.
+	if got := m.FeedAt([]byte("under\n"), 12); len(got) != 0 {
+		t.Fatalf("chunk ending at the scan offset must be discarded: %#v", got)
+	}
+	if got := m.FeedAt([]byte("ver READY\n"), 22); len(got) != 1 || got[0] != "server READY" {
+		t.Fatalf("seeded carry must survive ScanRetained + discard and match once: %#v", got)
+	}
+}
+
+// TestSeededCarryPreservedAcrossDiscard pins that a FeedAt chunk wholly at or
+// below the scan offset is discarded WITHOUT corrupting a seeded carry: the
+// straddling token then completes through a later FeedAt and matches exactly
+// once. This is the no-double-fire-across-the-seam invariant the attach protocol
+// relies on (spec §7.1).
+func TestSeededCarryPreservedAcrossDiscard(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`READY`))
+	m.SetScanOffset(12)
+	m.SeedCarry([]byte("ser"))
+	// A chunk ending exactly at the scan offset is discarded and must leave the
+	// seeded "ser" carry untouched.
+	if got := m.FeedAt([]byte("scan covered\n"), 12); got != nil {
+		t.Fatalf("discarded chunk returned matches: %#v", got)
+	}
+	// "ver READY\n" is 10 bytes ending at 22, starting at 12 == scanOffset, so it
+	// is not sliced; combined with the seeded carry "ser" the completed line is
+	// "server READY", which matches exactly once.
+	if got := m.FeedAt([]byte("ver READY\n"), 22); len(got) != 1 || got[0] != "server READY" {
+		t.Fatalf("seeded carry must survive discard and match once: %#v", got)
+	}
+}

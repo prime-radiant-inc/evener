@@ -1064,6 +1064,52 @@ func TestJobWatchEmptySendPlaceholderIsOmitted(t *testing.T) {
 	}
 }
 
+// TestMarshalWatchResultSurfacesFired pins the tool-JSON projection of an
+// attach-time fire: a watchResult with Fired=true renders "fired":true, and
+// Fired=false omits the field (omitempty), so the agent learns its condition was
+// already true without waiting a turn (spec §7.1).
+func TestMarshalWatchResultSurfacesFired(t *testing.T) {
+	firedOut, err := marshalWatchResult(watchResult{
+		Target:      "job_1",
+		Watching:    true,
+		OutputMatch: "ready",
+		Fired:       true,
+	}, 4096)
+	if err != nil {
+		t.Fatalf("marshal fired result: %v", err)
+	}
+	var fired jobWatchToolResult
+	if err := json.Unmarshal([]byte(firedOut), &fired); err != nil {
+		t.Fatalf("unmarshal fired result: %v (%s)", err, firedOut)
+	}
+	if !fired.Fired {
+		t.Fatalf("fired result must project fired=true, got %s", firedOut)
+	}
+	if !strings.Contains(firedOut, `"fired":true`) {
+		t.Fatalf("fired result JSON = %s, want it to contain \"fired\":true", firedOut)
+	}
+
+	notFiredOut, err := marshalWatchResult(watchResult{
+		Target:      "job_1",
+		Watching:    true,
+		OutputMatch: "ready",
+		Fired:       false,
+	}, 4096)
+	if err != nil {
+		t.Fatalf("marshal not-fired result: %v", err)
+	}
+	if strings.Contains(notFiredOut, "fired") {
+		t.Fatalf("not-fired result JSON = %s, want \"fired\" omitted", notFiredOut)
+	}
+	var notFired jobWatchToolResult
+	if err := json.Unmarshal([]byte(notFiredOut), &notFired); err != nil {
+		t.Fatalf("unmarshal not-fired result: %v (%s)", err, notFiredOut)
+	}
+	if notFired.Fired {
+		t.Fatal("not-fired result must project fired=false")
+	}
+}
+
 func TestJobWatchAdvertisedDefinitionUsesCanonicalEventKinds(t *testing.T) {
 	want := tooldefs.DefJobWatch(WatchEventKindNames)
 	var got *llm.ToolDefinition
