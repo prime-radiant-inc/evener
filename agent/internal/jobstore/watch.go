@@ -25,6 +25,10 @@ func NewOutputMatcher(re *regexp.Regexp) *OutputMatcher {
 	return &OutputMatcher{re: re}
 }
 
+// Regexp returns the compiled pattern this matcher applies, so callers that
+// already hold a matcher can reuse its regexp instead of recompiling.
+func (m *OutputMatcher) Regexp() *regexp.Regexp { return m.re }
+
 // SetScanOffset marks bytes at stream offsets below off as covered by an
 // attach-time scan. FeedAt discards them, so output seen by both the scan
 // and the stream cannot fire twice.

@@ -1451,10 +1451,16 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 // expireJobWatchesLocked parks a terminal output_match send — so drains, restore,
 // and pendingWatchSendDeliveries can see and settle it.
 func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobstore.Status) (watchResult, error) {
-	re, err := regexp.Compile(a.OutputMatch)
+	// Build the one-shot detached config up front: it validates and compiles
+	// output_match into its matcher (wrapping a bad pattern as
+	// "invalid_request: output_match:"), and the send branch reuses it to carry
+	// the send through the durable rail with a fresh generation and cloned send.
+	// The scan reuses the same compiled regexp so output_match compiles once.
+	cfg, err := newWatchConfig(a, jm.now())
 	if err != nil {
-		return watchResult{}, fmt.Errorf("invalid_request: output_match: %w", err)
+		return watchResult{}, err
 	}
+	re := cfg.outputMatcher.Regexp()
 
 	result := watchResult{Target: key.Target, Watching: false, TerminalCatchup: true, Status: string(status)}
 
@@ -1473,13 +1479,6 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 		return result, nil
 	}
 
-	// Mint a one-shot detached config to carry the send through the durable rail
-	// (newWatchConfig gives it a fresh generation and the cloned send). Its
-	// outputMatcher is unused here — the match already happened via grepOutput.
-	cfg, err := newWatchConfig(a, jm.now())
-	if err != nil {
-		return watchResult{}, err
-	}
 	jm.mu.Lock()
 	delivery := jm.watchSendSnapshot(cfg, key.Target, reason)
 	delivery.allowAfterTerminalExpiry = true
