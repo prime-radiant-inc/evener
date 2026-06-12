@@ -474,7 +474,7 @@ Then, at each site, replace the delivery block:
 - Modify: `agent/session_state.go:122`, `agent/session_tool_round.go:327`, `agent/history_repair.go:126` (call sites)
 - Test: `agent/job_watch_test.go`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestDrainDeliversDelegateTargetedSends(t *testing.T) {
@@ -495,9 +495,13 @@ func TestDrainEnqueuesTokensForChildCallerPendings(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run; fail** (drain undefined)
+- [x] **Step 2: Run; fail** (drain undefined)
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
+
+  DIVERGENCE (implemented): kept `deliverPendingWatchSend` and PARAMETERIZED its sender (added `send sendMessageFunc` arg; field read `jm.send` → `send`), per this plan's Step-3 design — NOT the separate `deliverPendingWatchSendFromDrain` copy the coordinator task sketched. The drain passes `s.sendDelegateMessage`; the test-only `deliverWatchSend` and `retryPendingWatchSendDeliveries` pass `jm.send`. Body is otherwise byte-identical (classify → settle/busy-noop/drop preserved). Reuse over duplication.
+
+  DIVERGENCE (deletion scope): deleted ONLY the 4 truly-orphaned functions — `retryPendingCallerWatchSendsAtBoundary`, `deliverWatchSends`, `retryPendingWatchSendsForRunTarget`, `retryPendingWatchSendsForWatchTarget` (rg-verified zero callers, production AND test). KEPT `retryPendingWatchSendsForTarget` (3 live test callers at job_watch_test.go:905/1570/1582), `retryPendingWatchSendsForTargets`, `retryPendingWatchSendDeliveries`, `deliverPendingWatchSend`, and `deliverWatchSend` (12 test callers) — these are transitively reachable from the 22 churned tests; deleting them breaks TEST COMPILATION, which would prevent Step 4 from running the suite at all. The plan/coordinator delete-lists assumed `grep -v _test` = safe-to-delete, but test callers still gate the build. 1.7 re-anchors those tests and can then delete the chain. `withWatchCallerDeliveryBoundary` is now `unused` (sole prod caller deleted) — left for 1.6 as instructed; 1 expected lint finding, net −3 (the prior 3 orphans are gone).
 
 ```go
 // drainPendingWatchSends is the ONLY executor of watch-send delivery. Call it
@@ -568,8 +572,10 @@ Delete `retryPendingCallerWatchSendsAtBoundary`, `retryPendingWatchSendsForTarge
 
 No drain-loop-tail change is needed: a wake submits an `EntryNotification`; an all-token batch renders and settles in the notification turn; an EMPTY accept hits `finishNotificationNoop` → `finishProcessingAtBoundary` → `drainPendingWatchSends` — so delegate-only wakes deliver with zero model turns through the existing flow. Document this in the drain's comment.
 
-- [ ] **Step 4: Run the new tests + full agent suite `-race`; same triage rule as Task 1.4 Step 4**
-- [ ] **Step 5: Commit** — `feat(job-control): loop-owned watch-send drain`
+- [x] **Step 4: Run the new tests + full agent suite `-race`; same triage rule as Task 1.4 Step 4**
+
+  3 new drain tests PASS. `-race`: 26 failures, ALL Watch-suite "delivery deferred" shape, 0 panics/races/deadlocks (144.9s). Baseline at HEAD `bfd197eb` = 22 watch failures (the task-predicted set). My change adds exactly 4: `TestOrphanToolRepairRetriesPendingCallerWatchSends`, `TestProcessingExitRetriesPendingCallerWatchSends`, `TestWatchSendRestoreRetriesPendingBeforeTerminalNotifications`, `TestDelegateReconstructionWatchSendToCallerDuringParentCloseStaysPending` — all four assert the OLD synchronous caller `jm.send` delivery at the boundary/restore (`caller deliveries = 0, want 1` / `restored watch send did not attempt caller delivery`). Correct shift: caller sends now ride the token rail per §4.2; 1.7 re-anchors. No previously-passing non-watch test regressed.
+- [x] **Step 5: Commit** — `feat(job-control): loop-owned watch-send drain`
 
 ### Task 1.6: Delete the synchronous caller path and `jm.send`
 

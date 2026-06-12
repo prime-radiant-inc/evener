@@ -123,7 +123,7 @@ func (s *Session) repairOrphanedToolResults(reason string) int {
 }
 
 func (s *Session) retryPendingCallerWatchSendsAfterRepair(ctx context.Context) {
-	if err := s.retryPendingCallerWatchSendsAtBoundary(ctx); err != nil {
+	if err := s.drainPendingWatchSends(ctx); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: "watch send retry after history repair failed: " + err.Error()})
 	}
 }

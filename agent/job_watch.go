@@ -1093,16 +1093,6 @@ func watchNotification(jobID, reason string) jobNotification {
 	}
 }
 
-func (jm *jobManager) deliverWatchSends(ctx context.Context, deliveries []watchSendDelivery) error {
-	var errs []error
-	for _, d := range deliveries {
-		if err := jm.deliverWatchSend(ctx, d); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
-}
-
 func (jm *jobManager) snapshotWatchSendFrames(deliveries []watchSendDelivery) []watchSendDelivery {
 	for i := range deliveries {
 		deliveries[i] = jm.snapshotWatchSendFrame(deliveries[i])
@@ -1124,7 +1114,7 @@ func (jm *jobManager) deliverWatchSend(ctx context.Context, d watchSendDelivery)
 	if err != nil || !ok {
 		return err
 	}
-	return jm.deliverPendingWatchSend(ctx, cfg, state, false)
+	return jm.deliverPendingWatchSend(ctx, cfg, state, false, jm.send)
 }
 
 // recordWatchSend persists a fired send as pending and returns its state.
@@ -1201,7 +1191,13 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 	}
 }
 
-func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchConfig, state jobstore.WatchSendState, ensurePending bool) error {
+// sendMessageFunc delivers a watch-send frame to its resolved target. The drain
+// passes s.sendDelegateMessage (loop-owned delivery); the test-only
+// deliverWatchSend path passes jm.send. Either may be nil, in which case the
+// pending send is dropped as undeliverable.
+type sendMessageFunc func(context.Context, sendMessageArgs) sendMessageResult
+
+func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchConfig, state jobstore.WatchSendState, ensurePending bool, send sendMessageFunc) error {
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
 		return nil
 	}
@@ -1213,10 +1209,10 @@ func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchCon
 			return err
 		}
 	}
-	if jm.send == nil {
+	if send == nil {
 		return jm.dropWatchSend(state, cfg, "delivery unavailable")
 	}
-	res := jm.send(ctx, sendMessageArgs{
+	res := send(ctx, sendMessageArgs{
 		Target:        state.Key.ResolvedSendTo,
 		Message:       state.Frame,
 		Background:    true,
@@ -1794,42 +1790,57 @@ type pendingWatchSendDelivery struct {
 	state jobstore.WatchSendState
 }
 
-func (jm *jobManager) retryPendingWatchSendsForTarget(ctx context.Context, target string) error {
-	return jm.retryPendingWatchSendsForTargets(ctx, map[string]bool{target: true})
-}
-
-func (jm *jobManager) retryPendingWatchSendsForRunTarget(ctx context.Context, rec *jobstore.JobRecord) error {
-	if rec == nil {
-		return nil
+// drainPendingWatchSends is the ONLY executor of watch-send delivery. Call it
+// solely from loop-owned code: never from event observation, never under
+// responseSideEffectsMu (spec §3/§4.2). A wake submits an EntryNotification; an
+// all-token batch renders and settles in the notification turn; an EMPTY accept
+// hits finishNotificationNoop → finishProcessingAtBoundary → here, so
+// delegate-only wakes deliver with zero model turns.
+func (s *Session) drainPendingWatchSends(ctx context.Context) error {
+	var errs []error
+	if s.jobManager != nil {
+		errs = append(errs, s.drainJobManagerWatchSends(ctx, s.jobManager, ""))
 	}
-	targets := map[string]bool{rec.JobID: true}
-	if rec.Type == jobstore.JobDelegate && strings.TrimSpace(rec.TranscriptRef) != "" {
-		jobs, err := jm.listWithError(listFilter{Type: jobstore.JobDelegate})
-		if err != nil {
-			return err
-		}
-		for _, candidate := range jobs {
-			if candidate.JobID == rec.JobID ||
-				candidate.TranscriptRef != rec.TranscriptRef ||
-				!candidate.Status.IsTerminal() {
+	if s.subagents != nil {
+		for _, child := range s.subagents.sessions() {
+			if child == nil || child.jobManager == nil {
 				continue
 			}
-			targets[candidate.JobID] = true
+			errs = append(errs, s.drainJobManagerWatchSends(ctx, child.jobManager, child.id))
 		}
 	}
-	return jm.retryPendingWatchSendsForTargets(ctx, targets)
+	return errors.Join(errs...)
+}
+
+func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager, childSessionID string) error {
+	var errs []error
+	for _, delivery := range jm.pendingWatchSendDeliveries(nil) {
+		target := delivery.state.Key.ResolvedSendTo
+		if target == runtimeMessageAliasCaller {
+			// Caller sends deliver via the notification rail. Tokens are enqueued
+			// at observation time; this re-token covers restored / crash-recovered
+			// pendings. Duplicates are harmless (render-by-key + batch dedupe).
+			if jm.enqueue != nil && childSessionID == "" {
+				jm.enqueue(watchSendTokenNotification("", delivery.state))
+			} else if s.jobManager != nil && s.jobManager.enqueue != nil {
+				s.jobManager.enqueue(watchSendTokenNotification(childSessionID, delivery.state))
+			}
+			continue
+		}
+		if err := jm.deliverPendingWatchSend(ctx, delivery.cfg, delivery.state, true, s.sendDelegateMessage); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (jm *jobManager) retryPendingWatchSendsForTarget(ctx context.Context, target string) error {
+	return jm.retryPendingWatchSendsForTargets(ctx, map[string]bool{target: true})
 }
 
 func (jm *jobManager) retryPendingWatchSendsForTargets(ctx context.Context, targets map[string]bool) error {
 	deliveries := jm.pendingWatchSendDeliveries(func(state *jobstore.WatchSendState) bool {
 		return targets[state.Key.ResolvedSendTo]
-	})
-	return jm.retryPendingWatchSendDeliveries(ctx, deliveries)
-}
-
-func (jm *jobManager) retryPendingWatchSendsForWatchTarget(ctx context.Context, target string) error {
-	deliveries := jm.pendingWatchSendDeliveries(func(state *jobstore.WatchSendState) bool {
-		return state.Key.WatchTarget == target
 	})
 	return jm.retryPendingWatchSendDeliveries(ctx, deliveries)
 }
@@ -1842,9 +1853,9 @@ func (s *Session) retryRestoredPendingWatchSends(ctx context.Context) error {
 	for _, delivery := range deliveries {
 		class, reason := s.classifyRestoredWatchSendTarget(delivery.state.Key.ResolvedSendTo)
 		switch class {
-		case watchSendDelivered:
-			if err := s.jobManager.deliverPendingWatchSend(ctx, delivery.cfg, delivery.state, true); err != nil {
-				return err
+		case watchSendDelivered: // runtime alias (caller): token + kick
+			if s.jobManager != nil && s.jobManager.enqueue != nil {
+				s.jobManager.enqueue(watchSendTokenNotification("", delivery.state))
 			}
 		case watchSendBusy:
 			continue
@@ -1855,27 +1866,6 @@ func (s *Session) retryRestoredPendingWatchSends(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-func (s *Session) retryPendingCallerWatchSendsAtBoundary(ctx context.Context) error {
-	ctx = withWatchCallerDeliveryBoundary(ctx)
-	var errs []error
-	if s.jobManager != nil {
-		if err := s.jobManager.retryPendingWatchSendsForTarget(ctx, runtimeMessageAliasCaller); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if s.subagents != nil {
-		for _, child := range s.subagents.sessions() {
-			if child == nil || child.jobManager == nil {
-				continue
-			}
-			if err := child.jobManager.retryPendingWatchSendsForTarget(ctx, runtimeMessageAliasCaller); err != nil {
-				errs = append(errs, err)
-			}
-		}
-	}
-	return errors.Join(errs...)
 }
 
 func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliveryClass, string) {
@@ -1926,7 +1916,7 @@ func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliv
 func (jm *jobManager) retryPendingWatchSendDeliveries(ctx context.Context, deliveries []pendingWatchSendDelivery) error {
 	var errs []error
 	for _, delivery := range deliveries {
-		if err := jm.deliverPendingWatchSend(ctx, delivery.cfg, delivery.state, true); err != nil {
+		if err := jm.deliverPendingWatchSend(ctx, delivery.cfg, delivery.state, true, jm.send); err != nil {
 			errs = append(errs, err)
 		}
 	}

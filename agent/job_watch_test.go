@@ -4219,4 +4219,234 @@ func TestObservationRecordsIntentOnly(t *testing.T) {
 	}
 }
 
+// TestDrainDeliversDelegateTargetedSends proves the loop-owned drain is the
+// executor of delegate-targeted watch sends. A running delegate is resumed,
+// feedJobOutput records (but does not deliver) a pending send to it, and
+// s.drainPendingWatchSends appends the frame to the child's steering queue and
+// settles the pending with a watch_send_delivered event.
+func TestDrainDeliversDelegateTargetedSends(t *testing.T) {
+	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	if first.Status != jobstore.StatusCompleted {
+		t.Fatalf("first delegate = %+v, want completed", first)
+	}
+	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  first.JobID,
+		Message: "resume and block",
+	})
+	if second.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
+	}
+	if second.Action != "resumed" || second.JobID == "" || second.JobID == first.JobID {
+		t.Fatalf("second result = %+v, want resumed running delegate", second)
+	}
+	select {
+	case <-adapter.secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resumed delegate did not start")
+	}
+
+	source, _ := sess.jobManager.createShell(createShellOpts{Command: "x"})
+	if _, err := sess.jobManager.configureWatch(watchArgs{
+		Target:      source.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: first.JobID, Message: "observe original target", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure watch: %v", err)
+	}
+
+	// Observation records the send as pending without delivering it (spec §3).
+	sess.jobManager.feedJobOutput(source.JobID, []byte("server ready\n"))
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 1 {
+		t.Fatalf("pending after observation = %+v, want one recorded send", pending)
+	}
+
+	_, childID, err := decodeRef(first.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	sub := sess.subagents.get(childID)
+	if sub == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	if queue := sub.sess.SteeringQueueSnapshot(); len(queue) != 0 {
+		t.Fatalf("steering queue before drain = %+v, want empty (observation must not deliver)", queue)
+	}
+
+	// The loop-owned drain is the only executor of delegate-targeted delivery.
+	if err := sess.drainPendingWatchSends(context.Background()); err != nil {
+		t.Fatalf("drainPendingWatchSends: %v", err)
+	}
+
+	queue := sub.sess.SteeringQueueSnapshot()
+	if len(queue) != 1 {
+		t.Fatalf("resumed delegate steering queue after drain = %+v, want one watch send", queue)
+	}
+	if !strings.Contains(queue[0].Text, "observe original target") || !strings.Contains(queue[0].Text, "output_match: server ready") {
+		t.Fatalf("steering message = %q, want watch message and frame", queue[0].Text)
+	}
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("pending after drain = %+v, want settled", pending)
+	}
+	sawDelivered := false
+	for _, event := range loadJobStoreEvents(t, sess.jobManager) {
+		if event.Kind == jobstore.EventWatchSendDelivered {
+			sawDelivered = true
+		}
+	}
+	if !sawDelivered {
+		t.Fatal("drain must append watch_send_delivered after delivery")
+	}
+
+	_, _ = sess.jobManager.stop(second.JobID)
+	waitForShellDone(t, sess.jobManager, second.JobID)
+}
+
+// TestDrainResumesTerminalResumableTarget proves spec §4.2's explicit behavior
+// change: every drain delivers to a resumable terminal delegate, resuming it.
+// A foreground delegate completes (terminal + resumable + retained), a pending
+// send targets it, and the drain resumes the child — observed via the adapter's
+// second run hook firing.
+func TestDrainResumesTerminalResumableTarget(t *testing.T) {
+	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	if first.Status != jobstore.StatusCompleted {
+		t.Fatalf("first delegate = %+v, want terminal completed", first)
+	}
+
+	source, _ := sess.jobManager.createShell(createShellOpts{Command: "x"})
+	if _, err := sess.jobManager.configureWatch(watchArgs{
+		Target:      source.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: first.JobID, Message: "resume the terminal delegate", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure watch: %v", err)
+	}
+
+	// Observation records the send as pending; the target is terminal, so the
+	// resume only happens when the loop-owned drain delivers.
+	sess.jobManager.feedJobOutput(source.JobID, []byte("server ready\n"))
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 1 {
+		t.Fatalf("pending after observation = %+v, want one recorded send", pending)
+	}
+	select {
+	case <-adapter.secondStarted:
+		t.Fatal("observation must not resume the terminal delegate")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := sess.drainPendingWatchSends(context.Background()); err != nil {
+		t.Fatalf("drainPendingWatchSends: %v", err)
+	}
+
+	// The drain resumed the terminal delegate (spec §4.2 explicit behavior change).
+	select {
+	case <-adapter.secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drain did not resume the terminal resumable delegate")
+	}
+
+	var resumedJob string
+	for _, rec := range sess.jobManager.list(listFilter{Type: jobstore.JobDelegate}) {
+		if rec.JobID != first.JobID && rec.TranscriptRef == first.TranscriptRef {
+			resumedJob = rec.JobID
+		}
+	}
+	if resumedJob == "" {
+		t.Fatal("drain must append a resumed delegate job for the terminal target")
+	}
+
+	_, _ = sess.jobManager.stop(resumedJob)
+	waitForShellDone(t, sess.jobManager, resumedJob)
+}
+
+// TestDrainEnqueuesTokensForChildCallerPendings proves the root drain iterates
+// child jobManagers: a child holds a caller-targeted pending (restored shape),
+// and the parent's drain re-tokens it onto the PARENT's notification rail with
+// ChildSessionID set — nothing rides the parent steering queue.
+func TestDrainEnqueuesTokensForChildCallerPendings(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	var enqueued []jobNotification
+	parentJM.enqueue = func(n jobNotification) { enqueued = append(enqueued, n) }
+
+	now := time.Unix(4000, 0).UTC()
+	for _, event := range restoredWatchSendPendingEvents("CHILD", "job_child_watched", runtimeMessageAliasCaller, now) {
+		if err := childJM.appendEvent(event); err != nil {
+			t.Fatalf("append child pending: %v", err)
+		}
+	}
+	if err := childJM.restoreWatchSendPending(); err != nil {
+		t.Fatalf("restore child pending: %v", err)
+	}
+
+	parent := &Session{
+		id:         "PARENT",
+		jobManager: parentJM,
+		subagents:  newSubagentManager(nil),
+	}
+	child := &Session{id: "CHILD", jobManager: childJM}
+	parent.subagents.track(&subagent{
+		id:     "CHILD",
+		sess:   child,
+		status: SubagentRunning,
+	})
+
+	if err := parent.drainPendingWatchSends(context.Background()); err != nil {
+		t.Fatalf("drainPendingWatchSends: %v", err)
+	}
+
+	var tokens []jobNotification
+	for _, n := range enqueued {
+		if n.WatchSend != nil {
+			tokens = append(tokens, n)
+		}
+	}
+	if len(tokens) != 1 {
+		t.Fatalf("parent rail tokens = %d, want exactly one child caller token: %+v", len(tokens), enqueued)
+	}
+	if tokens[0].WatchSend.ChildSessionID != "CHILD" {
+		t.Fatalf("token ChildSessionID = %q, want CHILD", tokens[0].WatchSend.ChildSessionID)
+	}
+	if tokens[0].WatchSend.Key.ResolvedSendTo != runtimeMessageAliasCaller {
+		t.Fatalf("token send-to = %q, want caller", tokens[0].WatchSend.Key.ResolvedSendTo)
+	}
+	if queue := parent.SteeringQueueSnapshot(); len(queue) != 0 {
+		t.Fatalf("parent steering queue = %+v, want empty (caller sends ride the notification rail)", queue)
+	}
+}
+
 var _ = jobstore.JobShell

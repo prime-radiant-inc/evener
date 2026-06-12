@@ -324,7 +324,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		}
 	}
 
-	if err := s.retryPendingCallerWatchSendsAtBoundary(ctx); err != nil {
+	if err := s.drainPendingWatchSends(ctx); err != nil {
 		return err
 	}
 
