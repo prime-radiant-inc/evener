@@ -740,6 +740,8 @@ Return shape:
 
 `last_activity` is the most recent parent-observable activity timestamp for the job, matching the `job_read_output` field of the same name (an output append, or the job's start when nothing newer is observable; for a terminal record with no live stamp it falls back to `ended_at`, then `started_at`). A running delegate that is working silently stays at its `started_at` until it appends output, which is the signal the quiet-job watchdog (see Notifications) acts on. A per-action "current action" field is intentionally not provided: a running delegate's mid-run action is not cheaply readable from parent-side state.
 
+`output_bytes` is the job's lifetime output byte count: the live so-far count for a running job, the final count once terminal.
+
 `job_list` returns a collection. Control/read tools operate on one `job_id`.
 
 ### `job_stop`

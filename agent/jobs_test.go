@@ -64,6 +64,35 @@ func TestJobManagerCreateAndList(t *testing.T) {
 	}
 }
 
+// A running job's listed output_bytes must reflect the live retained output,
+// not stay 0 until the job finishes — the contract's job_list example shows a
+// running job with a non-zero count.
+func TestJobListReportsLiveOutputBytesForRunningJob(t *testing.T) {
+	jm := newTestJM(t)
+	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+
+	payload := []byte("live output so far\n")
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, payload); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+
+	jobs := jm.list(listFilter{})
+	listed := findListedJob(jobs, rec.JobID)
+	if listed == nil {
+		t.Fatalf("job %q not listed: %+v", rec.JobID, jobs)
+	}
+	if listed.Status != jobstore.StatusRunning {
+		t.Fatalf("status = %q, want running", listed.Status)
+	}
+	if listed.OutputBytes != int64(len(payload)) {
+		t.Fatalf("output_bytes = %d, want %d (live retained bytes)", listed.OutputBytes, len(payload))
+	}
+}
+
 func TestAbandonRunningJobsClosesCapturedDoneChannels(t *testing.T) {
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})

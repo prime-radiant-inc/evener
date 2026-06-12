@@ -477,7 +477,13 @@ func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, e
 		if !run.durableStarted {
 			continue
 		}
-		recs[jobID] = cloneJobRecord(run.rec)
+		rec := cloneJobRecord(run.rec)
+		// OutputBytes on the live record is only stamped at terminal; a running
+		// job's listing reports the live lifetime output count instead of 0.
+		if rec.Status == jobstore.StatusRunning && run.output != nil {
+			rec.OutputBytes = run.output.Len()
+		}
+		recs[jobID] = rec
 	}
 	jm.mu.Unlock()
 
