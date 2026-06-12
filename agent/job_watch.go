@@ -164,8 +164,18 @@ type watchResult struct {
 	// Fired reports that an output_match attach scan found a level match in the
 	// running target's already-retained output and fired once at attach (spec
 	// §7.1). Only a fresh concrete-running output_match install can set this;
-	// idempotent/replace-no-op/session-target installs leave it false.
+	// idempotent/replace-no-op/session-target installs leave it false. A terminal
+	// catch-up that matched also sets it.
 	Fired bool
+	// TerminalCatchup reports that the request was an output_match-only watch on an
+	// already-terminal job, served as a one-shot catch-up scan of retained output
+	// rather than a live watch (spec §7.1 "Terminal target"). Watching is always
+	// false when this is set; Fired distinguishes a matched catch-up from an
+	// unmatched one. Status carries the target's terminal status.
+	TerminalCatchup bool
+	// Status carries the watched job's terminal status for a terminal catch-up
+	// (spec §7.1). Empty for live installs.
+	Status string
 }
 
 type watchSendDelivery struct {
@@ -320,6 +330,25 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		return jm.clearWatch(key)
 	}
 	if err := jm.validateWatchTarget(a.Target); err != nil {
+		// An output_match-only watch on an already-terminal job is served as a
+		// one-shot catch-up scan of retained output rather than rejected (spec
+		// §7.1 "Terminal target"). Any other terminal request, and target_not_found,
+		// keep their original error. terminalWatchTargetStatus resolves the terminal
+		// status directly rather than parsing the error string.
+		if watchArgsIsOutputMatchOnly(a) {
+			status, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target)
+			if statusErr != nil {
+				return watchResult{}, statusErr
+			}
+			if terminal {
+				if a.Send != nil {
+					if sendErr := jm.validateWatchSendTarget(a.Send.To, a); sendErr != nil {
+						return watchResult{}, sendErr
+					}
+				}
+				return jm.runTerminalCatchup(a, key, status)
+			}
+		}
 		return watchResult{}, err
 	}
 	if err := validateWatchEventArgs(a); err != nil {
@@ -458,6 +487,19 @@ func watchArgsHasCondition(a watchArgs) bool {
 	return a.OutputMatch != "" || a.ProgressIntervalMS > 0 || len(a.Events) > 0
 }
 
+// watchArgsIsOutputMatchOnly reports whether a watch request carries an
+// output_match condition and NO other trigger source — the only shape eligible
+// for terminal catch-up (spec §7.1 "Terminal target"). events/progress/every on a
+// terminal target can never fire, so they still fail target_terminal. Clear
+// requests are never catch-up.
+func watchArgsIsOutputMatchOnly(a watchArgs) bool {
+	return !a.Clear &&
+		a.OutputMatch != "" &&
+		len(a.Events) == 0 &&
+		a.Every == 0 &&
+		a.ProgressIntervalMS == 0
+}
+
 func validateWatchEventArgs(a watchArgs) error {
 	for _, name := range a.Events {
 		if name == "*" {
@@ -529,6 +571,63 @@ func (jm *jobManager) validateWatchTarget(target string) error {
 	// TODO(spec §5.9): enforce cross-session watch authorization when Phase 5
 	// extends nested-job visibility beyond root-caller-visible targets.
 	return nil
+}
+
+// terminalWatchTargetStatus reports the terminal status of a concrete job
+// target, or terminal=false if the target is running, not found, or not
+// readable. It mirrors validateWatchTarget's terminal detection but returns the
+// raw status for catch-up rather than a formatted error.
+//
+// A job that is mid-finalize (run.finalize != nil, run.terminal still nil) is
+// deliberately NOT catch-up-eligible: its output is still settling and its store
+// status is still running, so it falls through to terminal=false and the caller
+// returns the transient target_terminal "finalizing" error — the model can retry
+// once finalize completes. Only a job whose runtime terminal frame is set
+// (run.terminal != nil) or whose store record is terminal (rec.Status.IsTerminal,
+// the common post-finalize case after the job is removed from jm.running) is
+// catch-up-eligible, because only then is the retained output final.
+//
+// A nested-session-owned target is NOT catch-up-eligible regardless of its
+// terminal state: validateWatchTarget rejects it with target_not_watchable
+// ("watches must be attached from the owning session"), but checks terminality
+// before ownership, so a terminal nested-owned job surfaces as target_terminal
+// here. Mirroring that ownership rejection keeps catch-up from scanning or firing
+// on a job the caller is forbidden to watch.
+func (jm *jobManager) terminalWatchTargetStatus(target string) (status jobstore.Status, terminal bool, err error) {
+	if isWatchSessionTarget(target) {
+		return "", false, nil
+	}
+	jm.mu.Lock()
+	run := jm.running[target]
+	if run != nil && run.terminal != nil {
+		s := run.terminal.status
+		jm.mu.Unlock()
+		return s, true, nil
+	}
+	if run != nil {
+		// Running or finalizing: not catch-up-eligible (see doc comment).
+		jm.mu.Unlock()
+		return "", false, nil
+	}
+	jm.mu.Unlock()
+
+	recs, err := jm.store.Load()
+	if err != nil {
+		return "", false, err
+	}
+	rec := recs[target]
+	if rec == nil {
+		return "", false, nil
+	}
+	if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
+		// Owned by a nested session: not watchable from here, so not catch-up-
+		// eligible. Fall through to the original validateWatchTarget error.
+		return "", false, nil
+	}
+	if rec.Status.IsTerminal() {
+		return rec.Status, true, nil
+	}
+	return "", false, nil
 }
 
 func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error {
@@ -1331,6 +1430,63 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	jm.enqueueWatchNotifications([]jobNotification{watchNotification(jobID, reason)})
 	jm.autoClearOverBudgetWatches(overBudget)
 	return true
+}
+
+// runTerminalCatchup serves an output_match-only watch on an already-terminal job
+// as a one-shot catch-up: it scans the terminal job's retained output and, if a
+// line matches, fires once (spec §7.1 "Terminal target"). No live watch is
+// installed either way; the result reports terminal_catchup with the terminal
+// status, and Fired distinguishes a matched scan from an unmatched one.
+//
+// The scan uses jm.grepOutput, which reads retained output for both running-but-
+// terminal and store-only jobs and — unlike T2's attach scan (ScanRetained) —
+// matches the final UNTERMINATED line at EOF. That divergence is intentional: the
+// job is dead, so nothing will ever complete the tail; a match on the last line
+// of a job whose output has no trailing newline must still count. The frame
+// carries the LAST matching line.
+//
+// A matched catch-up with a send has no home in the live pending machinery (no
+// watch is installed), so it mints a one-shot DETACHED config registered in
+// terminalFlush via rememberDetachedPendingLocked — exactly how
+// expireJobWatchesLocked parks a terminal output_match send — so drains, restore,
+// and pendingWatchSendDeliveries can see and settle it.
+func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobstore.Status) (watchResult, error) {
+	re, err := regexp.Compile(a.OutputMatch)
+	if err != nil {
+		return watchResult{}, fmt.Errorf("invalid_request: output_match: %w", err)
+	}
+
+	result := watchResult{Target: key.Target, Watching: false, TerminalCatchup: true, Status: string(status)}
+
+	matches, err := jm.grepOutput(key.Target, re)
+	if err != nil {
+		return watchResult{}, err
+	}
+	if len(matches) == 0 {
+		return result, nil
+	}
+	result.Fired = true
+	reason := "output_match: " + matches[len(matches)-1].Line
+
+	if a.Send == nil {
+		jm.enqueueWatchNotifications([]jobNotification{watchNotification(key.Target, reason)})
+		return result, nil
+	}
+
+	// Mint a one-shot detached config to carry the send through the durable rail
+	// (newWatchConfig gives it a fresh generation and the cloned send). Its
+	// outputMatcher is unused here — the match already happened via grepOutput.
+	cfg, err := newWatchConfig(a, jm.now())
+	if err != nil {
+		return watchResult{}, err
+	}
+	jm.mu.Lock()
+	delivery := jm.watchSendSnapshot(cfg, key.Target, reason)
+	delivery.allowAfterTerminalExpiry = true
+	jm.rememberDetachedPendingLocked(cfg)
+	jm.mu.Unlock()
+	jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
+	return result, nil
 }
 
 func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, []watchSendDelivery) {

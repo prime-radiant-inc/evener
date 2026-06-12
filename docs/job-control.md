@@ -503,7 +503,7 @@ Send configured frame/message shape:
 
 Trigger sources:
 
-- `output_match` fires when output appended while the watch is active matches the regex.
+- `output_match` is level-triggered: it fires once at attach if the job's already-retained output contains a match, then again as appended output matches the regex.
 - `progress_interval_ms` fires periodically with bounded progress/excerpt metadata even if no match occurred.
 - `events` selects session/job event kinds to include in the watch frame. `events: ["*"]` means all visible event kinds allowed by caller permissions and filtering. Event kind names are implementation-defined but must be discoverable by the model; common examples include `assistant.message`, `tool.result`, and `job.notification`.
 - `trigger` can gate event delivery, for example every third `assistant.message`. When `trigger.event` is supplied with multiple `events`, the trigger gates only that named event kind; other selected event kinds fire according to the normal watch rules. If an implementation wants whole-watch gating, it must expose that as a different trigger mode rather than overloading this shape.
@@ -531,7 +531,7 @@ Rules:
 
 - Every notification-armed background job emits one terminal notification when Serf observes or reconstructs terminal state, subject to durable duplicate suppression. `job_watch` is unrelated to that terminal notification.
 - `job_watch` only adds extra notifications or configured sends while the watched target is active/visible.
-- `job_watch` fails synchronously with `target_not_found` for unknown, already-terminal, or no-longer-retained concrete job targets.
+- For an already-terminal concrete job that still has retained output, an `output_match`-only `job_watch` (no `events`, `trigger`, or `progress_interval_ms`) performs a one-shot catch-up scan of that retained output instead of installing a live watch: it returns `terminal_catchup=true` with `watching=false`, `fired=true` and a frame/notification on a match or `fired=false` on none, and the terminal `status`. Any other condition on a terminal target still fails synchronously with `target_terminal` (nothing can ever fire). Unknown or no-longer-retained concrete job targets still fail synchronously with `target_not_found`.
 - `job_watch(clear=true)` does not stop the watched job. If `send.to` is supplied, it clears the watch for the `(visible_session_id, target, send.to)` key. If `send.to` is omitted, it clears all watches for `(visible_session_id, target)` that the caller is allowed to clear, including both notify-caller and sidecar watches.
 - `job_watch` fails synchronously with `target_not_watchable` for targets the caller is not allowed to watch.
 - Watches expire automatically when their concrete watched job reaches terminal state. Session-level watches remain active until their configured scope ends, the session/job manager closes, or retention policy removes them.
@@ -539,11 +539,11 @@ Rules:
 - Already-fired watch-send frames are durable until delivered, replaced by a newer frame for the same durable key, evicted by watch cleanup, or dropped with a caller-visible diagnostic on hard/non-resumable failure. The durable key includes the visible session, configured watch target, resolved watched identity, resolved send target, and watch generation.
 - `job_watch(clear=true)` is the model-facing unwatch operation; there is no separate unwatch tool.
 - There is at most one active watch configuration per `(visible_session_id, target, send.to)` unless an implementation documents additive watches. For notify-caller watches, `send.to` is the implicit caller notification endpoint. A duplicate call with the same configuration is idempotent. A different call replaces the previous configuration for that key, and the return value must make replacement explicit with `replaced_existing=true`.
-- `output_match` is a Go/RE2 regular expression over output appended while the watch is active.
+- `output_match` is a Go/RE2 regular expression over the watched job's retained output at attach and then output appended while the watch is active.
 - Regex matching is case-sensitive by default; use inline flags such as `(?i)` or `(?i:plugh)` for case-insensitive matching.
 - Go/RE2 syntax is leftmost-first and excludes backreferences/lookaround. `.` does not match newline unless `(?s)` is used; use `(?m)` for multiline `^`/`$` behavior.
 - Invalid regexes fail synchronously at watch creation time.
-- For bytes successfully appended while a watch is active, Serf must not silently miss a regex match because of preview-window eviction. Implementations may use line-buffered append-stream matching, chunk-overlap matching, or another mechanism, but the contract is no silent miss for retained/appended watched output.
+- For the retained output present at attach and for bytes successfully appended while a watch is active, Serf must not silently miss a regex match because of preview-window eviction. The no-silent-miss guarantee extends to the attach scan: a token already retained at attach, or one straddling the attach boundary, must still match. Implementations may use line-buffered append-stream matching, chunk-overlap matching, or another mechanism, but the contract is no silent miss for retained/appended watched output.
 - Event frames and output excerpts are bounded and filtered before notification or send delivery. Implementations may apply redaction/scrubbing for cross-session or observer delivery, but this contract does not promise perfect secret detection; callers must not treat frames as guaranteed secret-free.
 - Default `progress_interval_ms` is absent/no periodic progress wake-up. If supplied, minimum is `1000`, maximum is `3600000`, and omitted/`0` means no periodic progress notification. Negative values fail `invalid_request`.
 - Match/event/progress notifications are batched/throttled. Multiple triggers may be coalesced. For watch sends, coalescing is latest-frame-wins by durable key and must not turn a matched condition into silence: Serf either delivers the current pending frame, replaces it with a newer pending frame for the same key, or emits a caller-visible diagnostic for hard failure.

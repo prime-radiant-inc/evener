@@ -805,7 +805,12 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	}
 }
 
-func TestJobWatchTerminalReturnedJobReportsTerminal(t *testing.T) {
+// TestJobWatchTerminalOutputMatchCatchupThroughTool drives spec §7.1's terminal
+// catch-up end to end through the job_watch tool: an output_match-only watch on an
+// already-terminal job whose retained output matches returns terminal_catchup with
+// fired=true (no live watch installed), and the new fields surface in the tool
+// JSON. A non-matching catch-up reports terminal_catchup with fired absent.
+func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -829,11 +834,37 @@ func TestJobWatchTerminalReturnedJobReportsTerminal(t *testing.T) {
 		Name:      "job_watch",
 		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"output_match":"already-done"}`, shellOut.JobID)),
 	})
-	if !watchRes.IsError {
-		t.Fatalf("job_watch succeeded for terminal job, want target_terminal: %s", watchRes.Output)
+	if watchRes.IsError {
+		t.Fatalf("terminal output_match catch-up must not error: %s", watchRes.Output)
 	}
-	if !strings.Contains(watchRes.Output, "target_terminal") || strings.Contains(watchRes.Output, "target_not_found") {
-		t.Fatalf("job_watch terminal error = %q, want target_terminal without target_not_found", watchRes.Output)
+	var matched struct {
+		Watching        bool   `json:"watching"`
+		Fired           bool   `json:"fired"`
+		TerminalCatchup bool   `json:"terminal_catchup"`
+		Status          string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(watchRes.Output), &matched); err != nil {
+		t.Fatalf("unmarshal watch output: %v (%s)", err, watchRes.Output)
+	}
+	if matched.Watching || !matched.Fired || !matched.TerminalCatchup || matched.Status != "completed" {
+		t.Fatalf("matched catch-up tool result = %+v, want fired+terminal_catchup+completed", matched)
+	}
+
+	// A non-matching output_match-only watch on the same terminal job catches up
+	// without firing.
+	noMatchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch2",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"output_match":"never-printed"}`, shellOut.JobID)),
+	})
+	if noMatchRes.IsError {
+		t.Fatalf("non-matching terminal catch-up must not error: %s", noMatchRes.Output)
+	}
+	if !strings.Contains(noMatchRes.Output, `"terminal_catchup":true`) {
+		t.Fatalf("non-matching catch-up tool result = %s, want terminal_catchup", noMatchRes.Output)
+	}
+	if strings.Contains(noMatchRes.Output, `"fired"`) {
+		t.Fatalf("non-matching catch-up must omit fired: %s", noMatchRes.Output)
 	}
 }
 

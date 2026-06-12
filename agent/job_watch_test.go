@@ -161,6 +161,60 @@ func TestConfigureWatchRejectsForwardedNestedTarget(t *testing.T) {
 	}
 }
 
+// TestTerminalCatchupRejectsForwardedNestedTarget guards the cross-session watch
+// boundary for terminal catch-up: validateWatchTarget rejects a nested-owned job
+// with target_not_watchable (the owning session must attach the watch), but it
+// checks terminality BEFORE ownership, so a terminal nested-owned job surfaces as
+// target_terminal. terminalWatchTargetStatus must mirror the ownership rejection
+// so catch-up does NOT scan or fire on a job the caller is forbidden to watch.
+func TestTerminalCatchupRejectsForwardedNestedTarget(t *testing.T) {
+	jm := newTestJM(t)
+	startedAt := jm.now()
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            "job_nested",
+		Type:             jobstore.JobShell,
+		Status:           jobstore.StatusRunning,
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: jm.sessionID,
+		ParentJobID:      "job_delegate",
+		StartedAt:        &startedAt,
+	}); err != nil {
+		t.Fatalf("append nested start: %v", err)
+	}
+	endedAt := jm.now()
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:    jobstore.EventJobFinished,
+		TS:      endedAt,
+		JobID:   "job_nested",
+		Status:  jobstore.StatusCompleted,
+		Reason:  "exit_zero",
+		EndedAt: &endedAt,
+	}); err != nil {
+		t.Fatalf("append nested finish: %v", err)
+	}
+
+	// The ownership rejection must hold even though the record is terminal: a
+	// nested-owned target is not catch-up-eligible.
+	if _, terminal, err := jm.terminalWatchTargetStatus("job_nested"); err != nil || terminal {
+		t.Fatalf("terminalWatchTargetStatus(nested-owned terminal) = terminal:%v err:%v, want terminal:false", terminal, err)
+	}
+
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+	res, err := jm.configureWatch(watchArgs{Target: "job_nested", OutputMatch: "ready"})
+	if err == nil {
+		t.Fatalf("nested-owned terminal output_match must error, got result %+v", res)
+	}
+	if res.TerminalCatchup || res.Fired {
+		t.Fatalf("nested-owned terminal target must not catch-up: %+v", res)
+	}
+	if len(notified) != 0 {
+		t.Fatalf("nested-owned terminal target must enqueue nothing; got %+v", notified)
+	}
+}
+
 func TestConfigureWatchSendToMissingJobFailsTargetNotFound(t *testing.T) {
 	jm := newTestJM(t)
 
@@ -2973,8 +3027,15 @@ func TestWatchSendTerminalFlushConfigureClearDropsPending(t *testing.T) {
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("pending before configure clear = %d, want 1", len(pending))
 	}
-	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err == nil || !strings.Contains(err.Error(), "target_terminal") {
-		t.Fatalf("terminal concrete watch registration error = %v, want target_terminal", err)
+	// An output_match-only watch on this terminal job (retained output "server
+	// ready" matches) is now served as a one-shot catch-up, not target_terminal
+	// (spec §7.1). It installs no live watch and leaves the terminal-flushed
+	// pending untouched (no-send catch-up only enqueues a notification).
+	if res, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil || !res.Fired || !res.TerminalCatchup {
+		t.Fatalf("terminal output_match catch-up result = %+v err = %v, want fired+terminal_catchup", res, err)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("pending after catch-up = %d, want 1 (catch-up must not disturb the flushed pending)", len(pending))
 	}
 
 	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
@@ -5230,6 +5291,273 @@ func TestWatchDeliveryBudgetDoesNotDoubleClear(t *testing.T) {
 	}
 	if cleared != 1 {
 		t.Fatalf("auto-clear on an already-detached cfg must not re-notify; cleared count = %d", cleared)
+	}
+}
+
+// terminalShellWithOutput creates a shell job, writes output to it, finalizes it
+// completed, and returns the (now store-only) job_id. After finalize the job has
+// been removed from jm.running, so a watch attached afterward must resolve its
+// terminal status from the store and scan retained output via grepOutput.
+func terminalShellWithOutput(t *testing.T, jm *jobManager, output string) string {
+	t.Helper()
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	if output != "" {
+		if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte(output)); err != nil {
+			t.Fatalf("append output: %v", err)
+		}
+	}
+	code := 0
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	jm.mu.Lock()
+	_, stillRunning := jm.running[rec.JobID]
+	jm.mu.Unlock()
+	if stillRunning {
+		t.Fatalf("job %q still in jm.running after finalize; terminal catch-up tests assume store-only", rec.JobID)
+	}
+	return rec.JobID
+}
+
+// TestTerminalCatchupNoSendFiresNotification covers spec §7.1 "Terminal target":
+// an output_match-only watch on a terminal job whose retained output already
+// contains a match performs a one-shot catch-up — fires exactly one notification,
+// installs no live watch, and reports terminal_catchup with the terminal status.
+func TestTerminalCatchupNoSendFiresNotification(t *testing.T) {
+	jm := newTestJM(t)
+	jobID := terminalShellWithOutput(t, jm, "line one\nserver ready\nline three\n")
+	// Capture only post-finalize notifications: the job-completion notification
+	// finalize enqueues is pre-existing and unrelated to catch-up.
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	res, err := jm.configureWatch(watchArgs{Target: jobID, OutputMatch: "ready"})
+	if err != nil {
+		t.Fatalf("configureWatch terminal catch-up: %v", err)
+	}
+	if res.Watching {
+		t.Fatalf("terminal catch-up must not install a live watch: %+v", res)
+	}
+	if !res.Fired || !res.TerminalCatchup {
+		t.Fatalf("result = %+v, want fired+terminal_catchup", res)
+	}
+	if res.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want %q", res.Status, jobstore.StatusCompleted)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count after catch-up = %d, want 0", jm.watchCount())
+	}
+	if len(notified) != 1 {
+		t.Fatalf("catch-up notifications = %d, want exactly 1: %+v", len(notified), notified)
+	}
+	// The frame carries the LAST matching line.
+	if !strings.Contains(notified[0].Reason, "output_match: server ready") {
+		t.Fatalf("notification reason = %q, want last matching line", notified[0].Reason)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("a no-send catch-up must enqueue no watch-send pending; got %+v", pending)
+	}
+}
+
+// TestTerminalCatchupNoMatchReportsTerminalCatchup covers spec §7.1: a terminal
+// output_match-only watch whose retained output does NOT match reports
+// terminal_catchup with fired=false and enqueues nothing.
+func TestTerminalCatchupNoMatchReportsTerminalCatchup(t *testing.T) {
+	jm := newTestJM(t)
+	jobID := terminalShellWithOutput(t, jm, "nothing interesting here\n")
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	res, err := jm.configureWatch(watchArgs{Target: jobID, OutputMatch: "ready"})
+	if err != nil {
+		t.Fatalf("configureWatch terminal catch-up: %v", err)
+	}
+	if res.Watching || res.Fired {
+		t.Fatalf("result = %+v, want watching=false fired=false", res)
+	}
+	if !res.TerminalCatchup {
+		t.Fatalf("result = %+v, want terminal_catchup=true", res)
+	}
+	if res.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want %q", res.Status, jobstore.StatusCompleted)
+	}
+	if len(notified) != 0 {
+		t.Fatalf("a no-match catch-up must enqueue nothing; got %+v", notified)
+	}
+}
+
+// TestTerminalCatchupFinalUnterminatedLineFires covers spec §7.1's documented
+// T3-vs-T2 divergence: for a TERMINAL catch-up the final unterminated line counts
+// (the job is dead; nothing will complete the tail), so grepOutput's EOF match
+// fires. This is the opposite of T2's attach scan (ScanRetained ignores the tail).
+func TestTerminalCatchupFinalUnterminatedLineFires(t *testing.T) {
+	jm := newTestJM(t)
+	// Note: NO trailing newline on the matching final line.
+	jobID := terminalShellWithOutput(t, jm, "warming up\nserver ready")
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	res, err := jm.configureWatch(watchArgs{Target: jobID, OutputMatch: "ready"})
+	if err != nil {
+		t.Fatalf("configureWatch terminal catch-up: %v", err)
+	}
+	if !res.Fired || !res.TerminalCatchup {
+		t.Fatalf("result = %+v, want fired+terminal_catchup for unterminated final matching line", res)
+	}
+	if len(notified) != 1 || !strings.Contains(notified[0].Reason, "output_match: server ready") {
+		t.Fatalf("notifications = %+v, want one final-line match", notified)
+	}
+}
+
+// TestTerminalCatchupSendRegistersDetachedPendingAndDelivers covers spec §7.1:
+// an output_match-only watch with a send on a terminal job mints a one-shot
+// DETACHED watchConfig registered in terminalFlush so a drain can settle it. The
+// catch-up records pending intent (visible to pendingWatchSendDeliveries); a drain
+// then delivers it through the delegate rail and settles it.
+func TestTerminalCatchupSendRegistersDetachedPendingAndDelivers(t *testing.T) {
+	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
+	var sent []sendMessageArgs
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+	jobID := terminalShellWithOutput(t, jm, "server ready\n")
+
+	res, err := jm.configureWatch(watchArgs{
+		Target:      jobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	})
+	if err != nil {
+		t.Fatalf("configureWatch terminal catch-up send: %v", err)
+	}
+	if !res.Fired || !res.TerminalCatchup || res.Watching {
+		t.Fatalf("result = %+v, want fired+terminal_catchup, watching=false", res)
+	}
+
+	// The catch-up send is a detached pending visible to the drain seam.
+	jm.mu.Lock()
+	detached := len(jm.terminalFlush)
+	jm.mu.Unlock()
+	if detached == 0 {
+		t.Fatal("catch-up send must register a detached config in terminalFlush")
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("catch-up send pending = %d, want 1", len(pending))
+	}
+	if got := len(jm.pendingWatchSendDeliveries(nil)); got != 1 {
+		t.Fatalf("pendingWatchSendDeliveries = %d, want 1 (detached terminalFlush home)", got)
+	}
+
+	// A drain delivers and settles it end to end.
+	drainWatchSendsVia(t, jm, send)
+	if len(sent) != 1 {
+		t.Fatalf("drain delivered %d sends, want 1", len(sent))
+	}
+	if sent[0].Target != "job_obs" || !sent[0].FromWatch {
+		t.Fatalf("delivery args = %+v, want job_obs watch send", sent[0])
+	}
+	if !strings.Contains(sent[0].Message, "observe") || !strings.Contains(sent[0].Message, "output_match: server ready") {
+		t.Fatalf("delivery message = %q, want configured message + match trigger", sent[0].Message)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after drain = %+v, want settled", pending)
+	}
+}
+
+// TestTerminalCatchupRejectsEventsCondition covers spec §7.1: catch-up applies
+// ONLY to pure output_match-only requests. A terminal target carrying events
+// (even alongside output_match) still fails target_terminal — nothing can ever
+// fire — and installs no watch and no catch-up.
+func TestTerminalCatchupRejectsEventsCondition(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+	jobID := terminalShellWithOutput(t, jm, "server ready\n")
+
+	for _, tc := range []struct {
+		name string
+		args watchArgs
+	}{
+		{"events only", watchArgs{Target: jobID, Events: []string{"assistant.message"}}},
+		{"output_match plus events", watchArgs{Target: jobID, OutputMatch: "ready", Events: []string{"assistant.message"}}},
+		{"output_match plus progress", watchArgs{Target: jobID, OutputMatch: "ready", ProgressIntervalMS: 1000}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := len(notified)
+			res, err := jm.configureWatch(tc.args)
+			if err == nil || !strings.Contains(err.Error(), "target_terminal") {
+				t.Fatalf("result %+v err %v, want target_terminal", res, err)
+			}
+			if res.TerminalCatchup || res.Fired {
+				t.Fatalf("non-output_match-only terminal request must not catch-up: %+v", res)
+			}
+			if len(notified) != before {
+				t.Fatalf("non-output_match-only terminal request must enqueue nothing; new = %d", len(notified)-before)
+			}
+		})
+	}
+}
+
+// TestTerminalCatchupNotFoundStillErrors covers spec §7.1: catch-up does not
+// swallow target_not_found. An unknown target still fails target_not_found.
+func TestTerminalCatchupNotFoundStillErrors(t *testing.T) {
+	jm := newTestJM(t)
+	res, err := jm.configureWatch(watchArgs{Target: "job_missing", OutputMatch: "ready"})
+	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
+		t.Fatalf("result %+v err %v, want target_not_found", res, err)
+	}
+	if res.TerminalCatchup {
+		t.Fatalf("not-found must not report terminal_catchup: %+v", res)
+	}
+}
+
+// TestMarshalWatchResultTerminalCatchupProjection covers spec §7.1: the new
+// terminal_catchup/status/fired fields surface through the tool JSON projection
+// for both the fired and not-fired arms.
+func TestMarshalWatchResultTerminalCatchupProjection(t *testing.T) {
+	fired, err := marshalWatchResult(watchResult{
+		Target:          "job_A",
+		Watching:        false,
+		Fired:           true,
+		TerminalCatchup: true,
+		Status:          "completed",
+	}, 4096)
+	if err != nil {
+		t.Fatalf("marshal fired: %v", err)
+	}
+	var firedOut struct {
+		Watching        bool   `json:"watching"`
+		Fired           bool   `json:"fired"`
+		TerminalCatchup bool   `json:"terminal_catchup"`
+		Status          string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(fired), &firedOut); err != nil {
+		t.Fatalf("unmarshal fired: %v (%s)", err, fired)
+	}
+	if firedOut.Watching || !firedOut.Fired || !firedOut.TerminalCatchup || firedOut.Status != "completed" {
+		t.Fatalf("fired projection = %+v, want fired+terminal_catchup+completed", firedOut)
+	}
+
+	notFired, err := marshalWatchResult(watchResult{
+		Target:          "job_A",
+		Watching:        false,
+		Fired:           false,
+		TerminalCatchup: true,
+		Status:          "failed",
+	}, 4096)
+	if err != nil {
+		t.Fatalf("marshal not-fired: %v", err)
+	}
+	if !strings.Contains(notFired, `"terminal_catchup":true`) || !strings.Contains(notFired, `"status":"failed"`) {
+		t.Fatalf("not-fired projection = %s, want terminal_catchup+status", notFired)
+	}
+	if strings.Contains(notFired, `"fired"`) {
+		t.Fatalf("not-fired projection must omit fired (omitempty): %s", notFired)
 	}
 }
 
