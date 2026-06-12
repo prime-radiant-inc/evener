@@ -504,7 +504,7 @@ Trigger sources:
 - `output_match` is level-triggered: it fires once at attach if the job's already-retained output contains a match, then again as appended output matches the regex. It requires a concrete job target; `output_match` on a session target (`caller`, `*`) fails `invalid_request`.
 - `progress_interval_ms` fires periodically with bounded progress/excerpt metadata even if no match occurred.
 - `events` selects session/job event kinds to include in the watch frame. `events: ["*"]` means all visible event kinds allowed by caller permissions and filtering. Event kind names are implementation-defined but must be discoverable by the model; the shipped vocabulary is `assistant.message`, `assistant.tool`, `communicate`, and `job.notification`.
-- `every` gates event delivery: `every: N` fires on each Nth occurrence of the watched event kind — for example `events: ["assistant.message"], every: 3` for every third assistant message. `every` is valid only when `events` names exactly one concrete kind; supplying it with zero, multiple, or wildcard (`"*"`) kinds fails `invalid_request`.
+- `every` gates event delivery: `every: N` fires on each Nth occurrence of the watched event kind — for example `events: ["assistant.message"], every: 3` for every third assistant message. `every: 1` is the semantic default (fire on each occurrence) and reads as unset, whatever `events` contains. `every > 1` is valid only when `events` names exactly one concrete kind; supplying it with zero, multiple, or wildcard (`"*"`) kinds fails `invalid_request`.
 
 Delivery modes:
 

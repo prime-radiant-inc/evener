@@ -499,10 +499,76 @@ func TestConfigureWatchRejectsEveryWithMultipleEvents(t *testing.T) {
 		t.Fatalf("watch count = %d, want 0", jm.watchCount())
 	}
 
-	// every with zero events should also fail (no event to throttle).
-	_, err = jm.configureWatch(watchArgs{Target: "caller", Every: 1})
+	// every>1 with zero events should also fail (no event to throttle).
+	_, err = jm.configureWatch(watchArgs{Target: "caller", Every: 2})
 	if err == nil || !strings.Contains(err.Error(), "every requires exactly one watched event kind") {
 		t.Fatalf("bare every with no events: error = %v, want every requires exactly one watched event kind", err)
+	}
+
+	// every:1 reads as unset, so bare every:1 is a watch with no condition.
+	_, err = jm.configureWatch(watchArgs{Target: "caller", Every: 1})
+	if err == nil || !strings.Contains(err.Error(), "nothing to watch") {
+		t.Fatalf("bare every:1: error = %v, want nothing to watch", err)
+	}
+}
+
+// every:1 is the semantic default (fire on each occurrence), so it must read as
+// unset rather than trip the single-kind requirement — models legitimately send
+// every:1 alongside multiple event kinds.
+func TestConfigureWatchEveryOneReadsAsUnset(t *testing.T) {
+	jm := newTestJM(t)
+	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+	seedWatchSendDelegateTarget(t, jm, "job_obs")
+
+	res, err := jm.configureWatch(watchArgs{
+		Target: rec.JobID,
+		Events: []string{"assistant.message", "job.notification"},
+		Every:  1,
+		Send:   &watchSendArgs{To: "job_obs"},
+	})
+	if err != nil {
+		t.Fatalf("every:1 with multiple event kinds must be accepted as the default gate: %v", err)
+	}
+	if !res.Watching {
+		t.Fatalf("result = %+v, want watching", res)
+	}
+
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "job_obs"}
+	jm.mu.Lock()
+	cfg := jm.watches[key]
+	jm.mu.Unlock()
+	if cfg == nil {
+		t.Fatal("watch must be installed")
+	}
+	if cfg.triggerEvery != 0 {
+		t.Fatalf("triggerEvery = %d, want 0 (every:1 reads as unset)", cfg.triggerEvery)
+	}
+}
+
+func TestConfigureWatchEveryOneAllowsWildcardEvents(t *testing.T) {
+	jm := newTestJM(t)
+	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+	seedWatchSendDelegateTarget(t, jm, "job_obs")
+
+	_, err = jm.configureWatch(watchArgs{
+		Target: rec.JobID,
+		Events: []string{"*"},
+		Every:  1,
+		Send:   &watchSendArgs{To: "job_obs"},
+	})
+	if err != nil {
+		t.Fatalf("every:1 with wildcard events must be accepted as the default gate: %v", err)
+	}
+	if jm.watchCount() != 1 {
+		t.Fatalf("watch count = %d, want 1", jm.watchCount())
 	}
 }
 

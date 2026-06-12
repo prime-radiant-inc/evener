@@ -179,7 +179,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"automatic). Triggers, set only what you need: `output_match` (RE2 over the job's output; if the retained output " +
 		"already contains a match the watch fires immediately, then again on new matches — a finished job gets a one-shot " +
 		"catch-up scan), `progress_interval_ms` (periodic), `events` (kinds this session: " + kinds + "; `every` fires on " +
-		"each Nth occurrence and requires `events` to contain exactly one kind). Delivery: omit `send` to be notified " +
+		"each Nth occurrence — 1 is the default; above 1 requires `events` to contain exactly one kind). Delivery: omit `send` to be notified " +
 		"yourself; set `send.to` to an observer delegate's `job_id` (or `watched`) to push bounded trigger frames there — " +
 		"this also grants that observer read access to the watched job. Frames coalesce latest-wins while the target is " +
 		"busy. `include_excerpt` attaches an output excerpt (concrete job targets only). `clear=true` removes the watch " +
@@ -201,7 +201,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 				},
 				"every": map[string]any{
 					"type":        "integer",
-					"description": "Fire on each Nth occurrence of the single watched event kind. Requires `events` to contain exactly one kind.",
+					"description": "Fire on each Nth occurrence of the single watched event kind. 1 is the default (fire on every occurrence); values above 1 require `events` to contain exactly one kind.",
 				},
 				"send": map[string]any{
 					"type":                 "object",

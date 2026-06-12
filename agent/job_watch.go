@@ -334,6 +334,12 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if a.ProgressIntervalMS > maxWatchProgressIntervalMS {
 		a.ProgressIntervalMS = maxWatchProgressIntervalMS
 	}
+	// every:1 is the semantic default (fire on each occurrence), so it reads as
+	// unset everywhere downstream; the single-concrete-kind requirement applies
+	// only to every>1, which actually throttles.
+	if a.Every == 1 {
+		a.Every = 0
+	}
 	sendTo := ""
 	if a.Send != nil {
 		a.Send.To = strings.TrimSpace(a.Send.To)
