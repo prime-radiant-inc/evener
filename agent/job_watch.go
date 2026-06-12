@@ -60,18 +60,19 @@ type watchConfig struct {
 	events             []string
 	eventKinds         map[events.EventKind]bool
 	wildcardEvents     bool
-	triggerKind        events.EventKind
-	triggerEvery       int
-	eventCount         int
-	send               *watchSendArgs
-	generation         string
-	pending            map[jobstore.WatchSendKey]*jobstore.WatchSendState
-	pendingOrder       []jobstore.WatchSendKey
-	settledUpdateSeq   map[jobstore.WatchSendKey]uint64
-	settledOrder       []jobstore.WatchSendKey
-	rejectingDelivery  bool
-	nextUpdateSeq      uint64
-	progressStop       chan struct{}
+	// every-Nth throttle: set from `every` + the single events[0] when every > 0.
+	triggerKind       events.EventKind
+	triggerEvery      int
+	eventCount        int
+	send              *watchSendArgs
+	generation        string
+	pending           map[jobstore.WatchSendKey]*jobstore.WatchSendState
+	pendingOrder      []jobstore.WatchSendKey
+	settledUpdateSeq  map[jobstore.WatchSendKey]uint64
+	settledOrder      []jobstore.WatchSendKey
+	rejectingDelivery bool
+	nextUpdateSeq     uint64
+	progressStop      chan struct{}
 }
 
 type watchArgs struct {
@@ -389,11 +390,13 @@ func validateWatchEventArgs(a watchArgs) error {
 			return fmt.Errorf("invalid_request: unknown event kind %q", name)
 		}
 	}
-	if a.Every > 0 && len(a.Events) != 1 {
-		return errors.New("invalid_request: every requires exactly one watched event kind")
-	}
-	if a.Every > 0 && len(a.Events) == 1 && a.Events[0] == "*" {
-		return errors.New(`invalid_request: every requires a single concrete event kind, not "*"`)
+	if a.Every > 0 {
+		if len(a.Events) != 1 {
+			return errors.New("invalid_request: every requires exactly one watched event kind")
+		}
+		if a.Events[0] == "*" {
+			return errors.New(`invalid_request: every requires a single concrete event kind, not "*"`)
+		}
 	}
 	return nil
 }
