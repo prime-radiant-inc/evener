@@ -49,7 +49,7 @@ func TestWatchSendBuildsObserverFrame(t *testing.T) {
 		t.Fatalf("job_watch returned error: %s", watchRes.Output)
 	}
 
-	s.jobManager.feedJobOutput(shellOut.JobID, []byte("server READY\n"))
+	feedJob(s.jobManager, shellOut.JobID, []byte("server READY\n"))
 	sends := captured()
 	if len(sends) != 1 {
 		t.Fatalf("expected one watch send, got %#v", sends)

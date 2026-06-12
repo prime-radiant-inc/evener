@@ -43,6 +43,12 @@ type jobManager struct {
 	running       map[string]*runningJob
 	watches       map[watchKey]*watchConfig
 	terminalFlush map[*watchConfig]bool
+	// lastFedOffset records the highest stream end offset fed to the output
+	// matcher per job. The per-job output pump is single-goroutine, so this is
+	// monotone; a regression signals a caller bug and the offending chunk is
+	// dropped rather than corrupting the matcher's scan-offset accounting.
+	// Guarded by jm.mu.
+	lastFedOffset map[string]int64
 	closing       bool
 	appendEvent   func(jobstore.Event) error
 	emit          func(events.EventKind, events.EventData)
@@ -213,6 +219,7 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 		store:         store,
 		running:       make(map[string]*runningJob),
 		watches:       make(map[watchKey]*watchConfig),
+		lastFedOffset: make(map[string]int64),
 		appendEvent:   store.Append,
 		enqueue:       enqueue,
 		now:           time.Now,
@@ -617,7 +624,9 @@ func (jm *jobManager) appendJobOutput(jobID string, output *jobstore.OutputStore
 	}
 	n, err := output.Append(b)
 	if err == nil && n > 0 {
-		jm.feedJobOutput(jobID, b[:n])
+		// Len is the post-append lifetime byte count, the offset space the output
+		// matcher scans in; pass it as the chunk's end offset.
+		jm.feedJobOutput(jobID, b[:n], output.Len())
 	}
 	return n, err
 }

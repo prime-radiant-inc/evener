@@ -96,6 +96,16 @@ func (o *OutputStore) Append(b []byte) (int, error) {
 	return n, nil
 }
 
+// Len returns the lifetime length of the output stream: the total number of
+// bytes ever appended, even when retention has pruned the on-disk prefix. This
+// is the offset space the OutputMatcher counts in, so callers feeding the
+// matcher pass this post-append value as the chunk's end offset.
+func (o *OutputStore) Len() int64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.total
+}
+
 // Tail returns the last maxBytes bytes of the log, the total byte count, and
 // whether the returned slice is a truncated tail of a larger log.
 func (o *OutputStore) Tail(maxBytes int) (buf []byte, total int64, truncated bool, err error) {

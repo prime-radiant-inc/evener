@@ -1181,7 +1181,12 @@ func isActiveWatchTargetLocked(jm *jobManager, target string) bool {
 	return isWatchableConcreteJobLocked(jm.running[target])
 }
 
-func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
+// feedJobOutput level-triggers output_match watches on a freshly produced
+// chunk whose final byte sits just before stream offset endOffset, the job's
+// lifetime output byte count after the append. endOffset is monotone per job
+// (the output pump is single-goroutine); a regression is dropped with a single
+// warning so a caller bug cannot poison the matcher's scan-offset accounting.
+func (jm *jobManager) feedJobOutput(jobID string, chunk []byte, endOffset int64) {
 	if len(chunk) == 0 {
 		return
 	}
@@ -1190,12 +1195,23 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
 	var overBudget []*watchConfig
 
 	jm.mu.Lock()
+	if last, ok := jm.lastFedOffset[jobID]; ok && endOffset < last {
+		jm.mu.Unlock()
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(jobID, fmt.Sprintf("output dropped: feed offset regressed from %d to %d", last, endOffset)),
+		})
+		return
+	}
+	if jm.lastFedOffset == nil {
+		jm.lastFedOffset = make(map[string]int64)
+	}
+	jm.lastFedOffset[jobID] = endOffset
 	jm.stampLastActivityLocked(jobID)
 	for _, cfg := range jm.watches {
 		if cfg.target != jobID || cfg.outputMatcher == nil {
 			continue
 		}
-		matches := cfg.outputMatcher.Feed(chunk)
+		matches := cfg.outputMatcher.FeedAt(chunk, endOffset)
 		for _, match := range matches {
 			if cfg.send != nil {
 				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match))

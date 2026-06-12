@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,6 +23,30 @@ func newTestJM(t *testing.T) *jobManager {
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
 	return jm
+}
+
+type feedKey struct {
+	jm    *jobManager
+	jobID string
+}
+
+var (
+	feedOffsetsMu sync.Mutex
+	feedOffsets   = map[feedKey]int64{}
+)
+
+// feedJob drives feedJobOutput with the running lifetime offset for a job,
+// mirroring the production contract where each chunk's end offset is the job's
+// cumulative output byte count. Tests that feed the matcher directly (without an
+// OutputStore append) use this so the matcher's monotone-offset invariant holds
+// across sequential feeds to the same job.
+func feedJob(jm *jobManager, jobID string, chunk []byte) {
+	feedOffsetsMu.Lock()
+	key := feedKey{jm: jm, jobID: jobID}
+	feedOffsets[key] += int64(len(chunk))
+	end := feedOffsets[key]
+	feedOffsetsMu.Unlock()
+	jm.feedJobOutput(jobID, chunk, end)
 }
 
 func TestJobManagerCreateAndList(t *testing.T) {

@@ -210,6 +210,34 @@ func TestOutputEnforcesCapAndReportsLifetimeBytes(t *testing.T) {
 	}
 }
 
+func TestOutputLenReportsLifetimeBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 1<<20)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "abc")
+	appendOutput(t, o, "defg")
+	if got := o.Len(); got != 7 {
+		t.Fatalf("Len after 7 bytes appended = %d, want 7", got)
+	}
+}
+
+func TestOutputLenReportsLifetimeBytesAfterPrune(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 6)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "abcdef")
+	appendOutput(t, o, "ghij")
+	// Retention pruned the lifetime prefix to a 6-byte retained tail, but Len
+	// reports the lifetime stream length the matcher sees, not the retained size.
+	if got := o.Len(); got != 10 {
+		t.Fatalf("Len after prune = %d, want lifetime 10 not retained 6", got)
+	}
+}
+
 func TestOutputCapGrepScansRetainedTailOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job_A.log")
 	o, err := OpenOutput(path, int64(len("keep ready\n")))

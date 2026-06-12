@@ -695,6 +695,115 @@ func TestOutputMatchWatchFiresOnAppendedBytes(t *testing.T) {
 	}
 }
 
+// TestOutputMatchHonorsScanOffsetThroughFeedPath proves the end offset threaded
+// from the store reaches FeedAt in the matcher's lifetime-byte space: a chunk
+// landing entirely below an attach-time scan offset must not fire, while a later
+// chunk above it must. A stale matcher-local counter (the old Feed wrapper)
+// would start at 0, sit below the scan offset, and silently drop both.
+func TestOutputMatchHonorsScanOffsetThroughFeedPath(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "(?i)ready"}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: ""}]
+	if cfg == nil || cfg.outputMatcher == nil {
+		t.Fatal("output_match watch not installed")
+	}
+
+	// Mark the first 100 lifetime bytes as covered by an attach-time scan.
+	const scanOffset = 100
+	cfg.outputMatcher.SetScanOffset(scanOffset)
+
+	// A chunk whose end offset is at or below the scan offset is already covered:
+	// it must not fire.
+	below := []byte("server ready\n")
+	jm.feedJobOutput(rec.JobID, below, scanOffset)
+	if len(notified) != 0 {
+		t.Fatalf("a chunk ending at the scan offset must not fire; got %d", len(notified))
+	}
+
+	// A later chunk whose end offset is past the scan offset must fire.
+	above := []byte("server ready\n")
+	jm.feedJobOutput(rec.JobID, above, scanOffset+int64(len(above)))
+	if len(notified) != 1 {
+		t.Fatalf("a post-scan chunk must fire once; got %d", len(notified))
+	}
+}
+
+// TestOutputMatchEndToEndOffsetThreadsFromStore drives the production
+// appendJobOutput -> feedJobOutput -> FeedAt path and confirms the matcher sees
+// the store's post-append lifetime offset (not a matcher-local 0-based counter):
+// with the scan offset set past the appended bytes, no match fires.
+func TestOutputMatchEndToEndOffsetThreadsFromStore(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "(?i)ready"}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: ""}]
+	if cfg == nil || cfg.outputMatcher == nil {
+		t.Fatal("output_match watch not installed")
+	}
+
+	chunk := []byte("server READY\n")
+	// Scan offset sits just past this chunk's lifetime end, so the real feed path
+	// must thread an end offset <= scanOffset and the match must be suppressed.
+	cfg.outputMatcher.SetScanOffset(int64(len(chunk)))
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, chunk); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if len(notified) != 0 {
+		t.Fatalf("appended bytes at/below scan offset must not fire via the real path; got %d", len(notified))
+	}
+
+	// Appending more output pushes the lifetime end past the scan offset; now the
+	// match fires, proving the offset advanced with the store, not a stale counter.
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("still READY\n")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if len(notified) != 1 {
+		t.Fatalf("post-scan appended bytes must fire once via the real path; got %d", len(notified))
+	}
+}
+
+// TestOutputMatchDropsOnEndOffsetRegression confirms the monotonicity guard: a
+// chunk whose end offset regresses versus the last seen offset for the job is
+// dropped (no match) and raises exactly one warning notification.
+func TestOutputMatchDropsOnEndOffsetRegression(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "(?i)ready"}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	// First feed at offset 200 fires and arms the last-seen offset.
+	jm.feedJobOutput(rec.JobID, []byte("server ready\n"), 200)
+	if len(notified) != 1 {
+		t.Fatalf("first feed must fire once; got %d", len(notified))
+	}
+	notified = notified[:0]
+
+	// A regressed end offset (100 < 200) must drop the chunk before the matcher
+	// and raise exactly one warning notification.
+	jm.feedJobOutput(rec.JobID, []byte("server ready\n"), 100)
+	if len(notified) != 1 {
+		t.Fatalf("a regressed feed must enqueue exactly one warning; got %d: %+v", len(notified), notified)
+	}
+	if !strings.Contains(notified[0].Reason, "offset") {
+		t.Fatalf("regression warning reason = %q, want it to mention the offset regression", notified[0].Reason)
+	}
+}
+
 func TestConcreteWatchExpiresOnTerminal(t *testing.T) {
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
@@ -769,7 +878,7 @@ func TestWatchSendDeliversFrameToTarget(t *testing.T) {
 		t.Fatalf("configure: %v", err)
 	}
 	// Observation records the send as pending; the loop-owned drain delivers it.
-	jm.feedJobOutput(rec.JobID, []byte("server READY\n"))
+	feedJob(jm, rec.JobID, []byte("server READY\n"))
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("observation must record one pending send, got %d", len(pending))
 	}
@@ -832,7 +941,7 @@ func TestWatchSendBatchContinuesAfterNonTerminalPersistenceFailure(t *testing.T)
 
 	// Observation records pending for both targets; one persist fails, the other
 	// survives. The drain delivers only the survivor.
-	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	feedJob(jm, rec.JobID, []byte("server ready\n"))
 	if failedTarget == "" {
 		t.Fatal("test did not intercept pending append")
 	}
@@ -865,7 +974,7 @@ func TestWatchSendBusyKeepsPendingAndEmitsNoDiagnostic(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	feedJob(jm, rec.JobID, []byte("server ready\n"))
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("observation must record one pending send, got %d", len(pending))
 	}
@@ -905,8 +1014,8 @@ func TestWatchSendRetryAfterIdleDeliversLatestCoalescedFrame(t *testing.T) {
 		t.Fatalf("configure: %v", err)
 	}
 	// Two fires while the target is busy coalesce to a single latest-frame pending.
-	jm.feedJobOutput(source.JobID, []byte("first ready\n"))
-	jm.feedJobOutput(source.JobID, []byte("second ready\n"))
+	feedJob(jm, source.JobID, []byte("first ready\n"))
+	feedJob(jm, source.JobID, []byte("second ready\n"))
 	drainWatchSendsVia(t, jm, send) // busy: delivery bounces, pending kept
 	pending := loadWatchSendRecord(t, jm).Pending
 	if len(pending) != 1 {
@@ -979,7 +1088,7 @@ func TestWatchSendToResumedRunningDelegateSteersActiveRun(t *testing.T) {
 	}
 	// Observation records the send as pending; the loop-owned drain steers it to
 	// the resumed (running) delegate.
-	sess.jobManager.feedJobOutput(source.JobID, []byte("server ready\n"))
+	feedJob(sess.jobManager, source.JobID, []byte("server ready\n"))
 	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 1 {
 		t.Fatalf("pending after observation = %+v, want one recorded send", pending)
 	}
@@ -1046,7 +1155,7 @@ func TestWatchSendDeliveredAppendedOnlyAfterSendSucceeds(t *testing.T) {
 		t.Fatalf("configure: %v", err)
 	}
 	// Observation records pending; the drain delivers and then marks delivered.
-	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	feedJob(jm, rec.JobID, []byte("server ready\n"))
 	drainWatchSendsVia(t, jm, send)
 
 	if containsEventKind(eventsBeforeSendReturn, jobstore.EventWatchSendDelivered) {
@@ -1088,7 +1197,7 @@ func TestWatchSendCrashAfterSuccessBeforeDeliveredRetriesSameDeliveryID(t *testi
 	}
 	// The send succeeds in the drain, but the delivered-marker append crashes, so
 	// the pending survives for a post-restart retry.
-	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	feedJob(jm, rec.JobID, []byte("server ready\n"))
 	drainWatchSendsVia(t, jm, send)
 	if len(sent) != 1 {
 		t.Fatalf("initial sends = %d, want 1", len(sent))
@@ -1778,7 +1887,7 @@ func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testi
 	}
 	// Observation records pending; the drain attempts delivery, hits a hard
 	// failure, and drops the pending with a single diagnostic.
-	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	feedJob(jm, rec.JobID, []byte("server ready\n"))
 	_ = drainWatchSendsVia(t, jm, send)
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("pending after hard failure = %+v, want none", pending)
@@ -2049,7 +2158,7 @@ func TestWatchSendToWatchedDeliversFrameToConcreteTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.feedJobOutput(rec.JobID, []byte("server READY\n"))
+	feedJob(jm, rec.JobID, []byte("server READY\n"))
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("observation must record one pending send, got %d", len(pending))
 	}
@@ -2191,7 +2300,7 @@ func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *
 	}); err != nil {
 		t.Fatalf("configure first watch: %v", err)
 	}
-	jm.feedJobOutput(rec.JobID, []byte("first READY\n"))
+	feedJob(jm, rec.JobID, []byte("first READY\n"))
 	firstPending := loadWatchSendRecord(t, jm).Pending
 	if len(firstPending) != 1 {
 		t.Fatalf("first pending count = %d, want 1", len(firstPending))
@@ -2222,7 +2331,7 @@ func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *
 	}); err != nil {
 		t.Fatalf("configure second watch: %v", err)
 	}
-	reopened.feedJobOutput(rec.JobID, []byte("second READY\n"))
+	feedJob(reopened, rec.JobID, []byte("second READY\n"))
 
 	pending := loadWatchSendRecord(t, reopened).Pending
 	if len(pending) != 1 {
@@ -2315,7 +2424,7 @@ func TestWatchSendRestoreClearDropsPendingState(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	feedJob(jm, rec.JobID, []byte("server ready\n"))
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("pending before restore = %d, want 1", len(pending))
 	}
@@ -2357,7 +2466,7 @@ func TestWatchSendRestoreClearDropsWatchedTargetedPendingState(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	feedJob(jm, rec.JobID, []byte("server ready\n"))
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("pending before restore = %d, want 1", len(pending))
 	}
@@ -2399,7 +2508,7 @@ func TestWatchSendRestoreReconfigureDropsWatchedPendingState(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure first watch: %v", err)
 	}
-	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	feedJob(jm, rec.JobID, []byte("server ready\n"))
 	firstPending := loadWatchSendRecord(t, jm).Pending
 	if len(firstPending) != 1 {
 		t.Fatalf("pending before restore = %d, want 1", len(firstPending))
@@ -2456,7 +2565,7 @@ func TestWatchSendClearDropsPending(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.feedJobOutput(rec.JobID, []byte("ready\n"))
+	feedJob(jm, rec.JobID, []byte("ready\n"))
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("pending before clear = %d, want 1", len(pending))
 	}
@@ -2480,7 +2589,7 @@ func TestWatchSendWatchedTargetPruneDropsPending(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.feedJobOutput(rec.JobID, []byte("ready\n"))
+	feedJob(jm, rec.JobID, []byte("ready\n"))
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("pending before prune = %d, want 1", len(pending))
 	}
@@ -2506,7 +2615,7 @@ func TestWatchSendPruneAppendFailureKeepsPendingReachable(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.feedJobOutput(rec.JobID, []byte("ready\n"))
+	feedJob(jm, rec.JobID, []byte("ready\n"))
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "job_obs"}
 	jm.mu.Lock()
 	cfg := jm.watches[key]
@@ -2847,7 +2956,7 @@ func TestWatchSendTerminalExpiryCloseDropsExistingPending(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	feedJob(jm, rec.JobID, []byte("server ready\n"))
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("pending before terminal expiry = %d, want 1", len(pending))
 	}
@@ -2946,19 +3055,19 @@ func TestWatchSendPendingDeliveredRemovesBeforeNextFailure(t *testing.T) {
 		t.Fatalf("configure: %v", err)
 	}
 
-	jm.feedJobOutput(rec.JobID, []byte("ready one\n"))
+	feedJob(jm, rec.JobID, []byte("ready one\n"))
 	_ = drainWatchSendsVia(t, jm, send) // busy
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("pending after first failure = %d, want 1", len(pending))
 	}
 	failSend = false
-	jm.feedJobOutput(rec.JobID, []byte("ready two\n"))
+	feedJob(jm, rec.JobID, []byte("ready two\n"))
 	_ = drainWatchSendsVia(t, jm, send) // delivered
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("pending after delivered = %+v, want none", pending)
 	}
 	failSend = true
-	jm.feedJobOutput(rec.JobID, []byte("ready three\n"))
+	feedJob(jm, rec.JobID, []byte("ready three\n"))
 	_ = drainWatchSendsVia(t, jm, send) // busy again
 	pending := loadWatchSendRecord(t, jm).Pending
 	if len(pending) != 1 {
@@ -3210,7 +3319,7 @@ func TestWatchSendAppendFailureDuringClearKeepsPendingInMemory(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.feedJobOutput(rec.JobID, []byte("ready\n"))
+	feedJob(jm, rec.JobID, []byte("ready\n"))
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "job_obs"}
 	jm.mu.Lock()
 	cfg := jm.watches[key]
@@ -3326,7 +3435,7 @@ func TestWatchSendAppendFailureDuringReplaceLeavesOldWatchReachable(t *testing.T
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.feedJobOutput(rec.JobID, []byte("ready\n"))
+	feedJob(jm, rec.JobID, []byte("ready\n"))
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "job_obs"}
 	jm.mu.Lock()
 	oldCfg := jm.watches[key]
@@ -3468,7 +3577,7 @@ func TestWatchSendAppendFailureDuringDeliveredKeepsPendingInMemory(t *testing.T)
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.feedJobOutput(rec.JobID, []byte("ready one\n"))
+	feedJob(jm, rec.JobID, []byte("ready one\n"))
 	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: ready two")
 	if got := len(delivery.cfg.pending); got != 1 {
 		t.Fatalf("pending before delivered = %d, want 1", got)
@@ -3698,7 +3807,7 @@ func setupConcretePendingWatchSend(t *testing.T, jm *jobManager) (*jobstore.JobR
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.feedJobOutput(rec.JobID, []byte("ready one\n"))
+	feedJob(jm, rec.JobID, []byte("ready one\n"))
 	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: ready two")
 	return rec, delivery
 }
@@ -4023,7 +4132,7 @@ func TestWatchSendFailureNotifiesCaller(t *testing.T) {
 	}
 	// Observation records pending; the drain's hard delivery failure drops it and
 	// notifies the caller once.
-	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	feedJob(jm, rec.JobID, []byte("server ready\n"))
 	_ = drainWatchSendsVia(t, jm, send)
 
 	if len(notified) != 1 {
@@ -4534,7 +4643,7 @@ func TestDrainDeliversDelegateTargetedSends(t *testing.T) {
 	}
 
 	// Observation records the send as pending without delivering it (spec §3).
-	sess.jobManager.feedJobOutput(source.JobID, []byte("server ready\n"))
+	feedJob(sess.jobManager, source.JobID, []byte("server ready\n"))
 	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 1 {
 		t.Fatalf("pending after observation = %+v, want one recorded send", pending)
 	}
@@ -4614,7 +4723,7 @@ func TestDrainResumesTerminalResumableTarget(t *testing.T) {
 
 	// Observation records the send as pending; the target is terminal, so the
 	// resume only happens when the loop-owned drain delivers.
-	sess.jobManager.feedJobOutput(source.JobID, []byte("server ready\n"))
+	feedJob(sess.jobManager, source.JobID, []byte("server ready\n"))
 	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 1 {
 		t.Fatalf("pending after observation = %+v, want one recorded send", pending)
 	}
@@ -4761,7 +4870,7 @@ func TestWatchDeliveryCounterCountsSidecarSend(t *testing.T) {
 	}
 
 	// Observation only records pending intent; no delivery, no count yet.
-	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	feedJob(jm, rec.JobID, []byte("server ready\n"))
 	jm.mu.Lock()
 	beforeDrain := cfg.deliveries
 	jm.mu.Unlock()
