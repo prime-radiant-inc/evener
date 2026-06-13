@@ -18,8 +18,7 @@ var ErrNotificationOverflow = errors.New("appwire notification buffer overflow")
 // legitimate burst even while the consumer waits for a scheduling slice: a
 // codex initial-turn replay is ~160 messages, and request paths that never
 // consume notifications (short-lived withClient calls) ride entirely on this
-// buffer. 128 was smaller than a real burst and flaked under full-suite load
-// (2026-06-12).
+// buffer.
 const notificationBufferCap = 4096
 
 type Client struct {

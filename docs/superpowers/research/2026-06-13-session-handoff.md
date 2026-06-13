@@ -41,10 +41,13 @@ with full gates per merge (`PATH="$HOME/go/bin:$PATH" make test && make lint
 normative contract sections). If the main tree is mid-merge/conflicted from a
 killed orchestrator: `git status`, `git merge --abort`, re-merge cleanly.
 Track D (Haiku comprehension gate, six descriptions, one reword cycle allowed)
-runs after A merges. Done = grep-verify ZERO hits for
-`background`/`block`/`block_timeout_ms` in `agent/internal/tool/definitions.go`,
-`docs/job-control.md`, `test/scenarios/` (docs/superpowers/** are immutable
-history — never edit those).
+runs after A merges. Done = grep-verify ZERO hits for the old API forms —
+`block_timeout_ms`, `"background"` / `background true|false|=true|=false`,
+`"block"` / `block true|=true` — in `agent/internal/tool/definitions.go`,
+`docs/job-control.md`, `test/scenarios/`. Bare-word `background`/`block` in
+unrelated prose (UI "blocks", CSP, background pollers) is NOT a failure; the
+gate is the API vocabulary, per the max_wait spec's sweep list.
+(docs/superpowers/** are immutable history — never edit those.)
 
 ## The queue after max_wait merges (in order)
 

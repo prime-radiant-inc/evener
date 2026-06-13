@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -107,6 +109,21 @@ func TestStreamCommandSignalKillsWholeProcessGroup(t *testing.T) {
 	}
 	if childPID <= 0 {
 		t.Fatalf("never parsed forked child pid; output: %q", buf.String())
+	}
+
+	// READY prints before the exec, so signaling now could kill the shell
+	// pre-exec and never exercise the exec'd-replacement case. Wait until the
+	// handle's pid has actually become the sleep before signaling.
+	execDeadline := time.Now().Add(5 * time.Second)
+	for {
+		cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", h.Pid))
+		if err == nil && strings.HasPrefix(string(cmdline), "sleep") {
+			break
+		}
+		if time.Now().After(execDeadline) {
+			t.Fatalf("pid %d never became the exec'd sleep; cmdline=%q err=%v", h.Pid, cmdline, err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 
 	h.Signal()

@@ -71,7 +71,7 @@ The dossier (`docs/superpowers/research/2026-06-12-recursion-dossier.md`) was ca
 - Task 2: the tree-wide running counter (`treeCounter`, atomic, cap 16) — created by root, handed down
 
 **Phase 1 — The headline red test (drive-down regression, red against today)**
-- Task 3: deaf-coordinator drive-down regression test (RED, lands failing-as-pending or `t.Skip` with tracking — see task)
+- Task 3: deaf-coordinator drive-down regression test (unskipped RED run captured, lands `t.Skip`-tracked; Task 14 unskips first — mandatory mechanism, see task)
 
 **Phase 2 — Flip the six capability seams to allowance-keyed**
 - Task 4: seams 1+2 — depth/maxDepth gates become allowance checks (`prepareSubagentRun`)
@@ -217,13 +217,17 @@ All six seams + the two "plus" items are covered.
 
 **Why red TODAY:** today a mid-level (depth ≥ 1) delegate that backgrounds children and ends its turn is **never driven** — idle children drain nothing (dossier §4: "idle children drain nothing"; `child jm wake = no-op unless SetNotifyFunc, which only serve.go wires for the root"). The coordinator's queued worker-completions sit undelivered; the worker terminals either vanish or (via today's single-hop forward) surface on the **root's** rail as type-less phantoms. Either way the assertions fail.
 
-**Landing discipline:** this test must COMPILE and RUN red — not be deleted to keep the suite green. Two options, pick per the harness reality at implementation time and surface the choice (Questions Q4):
-- (a) land it `t.Skip("RED until Task 14 — drive-down; tracks spec §9 headline")` with the assertions written out below the skip, so the body compiles and Task 14 removes the skip; OR
-- (b) land it as a genuinely-failing test guarded by a build tag / `-run` exclusion from the phase gate, removed by Task 14.
+**Landing discipline (MANDATORY — resolved decision #4; no option remains):**
+the implementer RUNS the test unskipped, captures the red output verbatim in
+the task report, then lands it with
+`t.Skip("RED until Task 14 — drive-down; tracks spec §9 headline")` above the
+compiled assertions. Task 14's FIRST act: remove the skip, re-show red,
+implement, green. Build tags / `-run` exclusions are NOT acceptable — they
+hide the test from output; a visible skip is tracked. The mailbox-design
+precedent ("regression target must stay covered forever; re-anchor, never
+delete", `2026-06-11-...-mailbox-design.md:216`) governs.
 
-The mailbox-design precedent for "regression target must stay covered forever; re-anchor, never delete" (`2026-06-11-...-mailbox-design.md:216`) governs: prefer (a) so CI stays green between phases but the test is one line from live.
-
-**Gate:** `cd agent && go test ./... -run TestDriveDownDeafCoordinator` (skipped/excluded — must compile)
+**Gate:** `cd agent && go test ./... -run TestDriveDownDeafCoordinator` (must compile; reported as SKIP, with the captured unskipped-red evidence in the task report)
 **Commit:** `test(recursion): deaf-coordinator drive-down regression (red until Phase 4)`
 
 ---
