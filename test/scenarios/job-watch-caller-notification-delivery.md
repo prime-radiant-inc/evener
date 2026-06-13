@@ -7,8 +7,9 @@ notification, and send.to="caller" → rendered watch-send frame) that
 fires while the session is IDLE wakes it without user input, and the
 model receives the notification/frame as a job-notification turn
 (spec §4.4 wake path). N fires against a BUSY session produce N wake
-tokens but exactly ONE rendered current frame — render-by-key,
-latest-frame-wins (spec §4.3; contract coalescing-not-silence rule,
+tokens but coalesce to the latest-frame-wins current frame, rendered
+once per delivery boundary (never one frame per fire) — render-by-key
+(spec §4.3; contract coalescing-not-silence rule,
 `docs/job-control.md` line 549). Executed by plan Phase 5.2.
 
 ## Pre-state
