@@ -506,7 +506,7 @@ Trigger sources:
 Delivery modes:
 
 - If `send` is omitted, the watch produces a normal notification to the caller when the condition is met.
-- If `send` is present, Serf sends `send.message` plus the requested bounded frame/excerpt to `send.to` using `job_send_message` target-resolution and authorization semantics. Watch sends use the normal `on_finished="resume"` behavior and default to background delivery for any newly resumed delegate job. If the target sidecar/delegate is busy, Serf keeps one durable latest-frame-wins pending send per watch key and retries when the target is idle or resumable. Caller-alias (`send.to="caller"`) deliveries surface as a job-notification turn at the next owner-session boundary; delegate-target deliveries steer or resume the target as `job_send_message` does. All watch-send delivery happens at owner-session boundaries (between tool rounds, at input end, or on idle wake), not mid-stream.
+- If `send` is present, Serf sends `send.message` plus the requested bounded frame/excerpt to `send.to` using `job_send_message` target-resolution and authorization semantics. Watch sends use the normal `on_finished="resume"` behavior and deliver without waiting (unset `max_wait_ms`) for any newly resumed delegate job. If the target sidecar/delegate is busy, Serf keeps one durable latest-frame-wins pending send per watch key and retries when the target is idle or resumable. Caller-alias (`send.to="caller"`) deliveries surface as a job-notification turn at the next owner-session boundary; delegate-target deliveries steer or resume the target as `job_send_message` does. All watch-send delivery happens at owner-session boundaries (between tool rounds, at input end, or on idle wake), not mid-stream.
 - Sent frames always carry bounded trigger metadata (the watched `job_id` when one exists, the trigger, and a `delivery_id`); there is no opt-out, and no `include_frame` option exists.
 - `include_excerpt=true` attaches a bounded output excerpt and is valid only for concrete job targets; supplying it for a session-target watch (`caller`, `*`) fails `invalid_request`. Session-target frames carry the watched session's `transcript_ref` instead of an excerpt; the observer reads context through transcript tools.
 - The sent message is the current configured message at the time the watch fires.
@@ -876,7 +876,7 @@ The target model removes the current subagent-specific control plane. Replacemen
 
 ## Durable job records
 
-A durable job record exists for explicit background jobs, promoted shell jobs, delegate jobs, resumed delegate jobs, and other durable asynchronous work. Foreground shell commands that complete inline are ephemeral and need not create durable job records. A durable job record contains:
+A durable job record exists for promoted shell jobs (including within-bound completions whose output cannot ride inline per the complete-or-handle invariant), delegate jobs, resumed delegate jobs, and other durable asynchronous work. Foreground shell commands that complete inline with output that fits in the tool result are ephemeral and need not create durable job records. A durable job record contains:
 
 ```json
 {
@@ -995,7 +995,7 @@ Notification delivery must also avoid lost notifications, not only duplicates. A
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Armed: background return / shell foreground promotion
+    [*] --> Armed: job returned before terminal (delegate immediate-return / shell promotion)
     [*] --> NotArmed: synchronous terminal return
     Armed --> Pending: terminal event observed + durable pending
     Pending --> Delivered: inject notification + durably mark delivered
@@ -1154,10 +1154,10 @@ Canonical model-facing delegate conversation field is `transcript_ref`. `delegat
 
 Tool descriptions and prompts should warn against:
 
-- starting a background job and immediately blocking on it;
+- starting a background job and immediately waiting on it with `max_wait_ms`;
 - polling `job_list` for completion;
 - using `job_watch` as a terminal completion subscription;
-- using `job_read_output(max_wait_ms=...)` without a bounded timeout;
+- using `job_read_output` with a large `max_wait_ms` as a blocking read without a clear reason;
 - using `job_read_output(max_wait_ms=...)` repeatedly as a wait loop;
 - expecting jobs to auto-resume after process restart;
 - using job output as a replacement for delegate transcripts;
@@ -1196,7 +1196,7 @@ The contract-level requirements are:
 
 - generic jobs for shell and delegate work;
 - globally unique opaque `job_id` as primary handle;
-- foreground shell default with background promotion; immediate `job_id` return for delegate with optional `max_wait_ms` inline wait;
+- foreground shell default (unset `max_wait_ms` waits the session timeout) with promotion to a durable background job on timeout; delegate default returns the job immediately (unset `max_wait_ms`);
 - automatic terminal notification with durable no-loss/dedupe semantics;
 - `job_watch` for condition-triggered caller notifications and configured sends, including v1 observer sidecar event/frame delivery;
 - bounded output inspection and retained-output grep through `job_read_output`;
