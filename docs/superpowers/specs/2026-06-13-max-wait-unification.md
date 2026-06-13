@@ -1,9 +1,11 @@
 # `max_wait_ms` — one wait knob, no booleans (design)
 
-**Status:** v2 — /par round folded (reviewer A: 10 findings incl. 1 blocker;
-reviewer B: 10 findings; all survivors below) · **Date:** 2026-06-13 ·
-**Branch:** `job-control-spec` · **Sequenced before** PRI-2204 so recursion lands
-on the final tool surface.
+**Status:** v3 — /par round folded (reviewer A: 10 findings incl. 1 blocker;
+reviewer B: 10 findings); v3 replaces v2's accepted-durability-loss with the
+complete-or-handle invariant (Jesse, 2026-06-13: a fast command that spews a
+megabyte must stay reachable) · **Date:** 2026-06-13 · **Branch:**
+`job-control-spec` · **Sequenced before** PRI-2204 so recursion lands on the
+final tool surface.
 
 ## §0 Decisions (Jesse's, 2026-06-13)
 
@@ -19,6 +21,10 @@ on the final tool surface.
    `additionalProperties:false` rejects them at the registry.
 5. Each tool's `max_wait_ms` property carries a one-line description stating its
    unset decode.
+6. **Complete-or-handle (shell):** a within-bound shell call returns either the
+   command's COMPLETE output inline, or a durable `job_id` whose retained
+   output holds all of it. Durability is output-driven, not request-driven —
+   no knob, no prediction, no lost megabyte.
 
 ## §1 Motivation
 
@@ -59,19 +65,29 @@ Property descriptions (final wording at implementation; Haiku-gated):
 
 ## §3 Semantics fallout (each deliberate)
 
-- **Shell loses immediate-background; fast commands lose forced durability.**
-  "Fire and return" is `max_wait_ms: 1000`. A command that finishes inside the
-  bound returns inline and stays **ephemeral** — there is no longer any way to
-  force a durable record + terminal notification for a sub-bound command.
-  Accepted: the caller holds the complete result inline (status, exit code,
-  output), so the record and notification would duplicate what it already has;
-  foreground ephemerality has been the designed behavior since the contract's
-  line 179. Cards that used fast `background=true` commands as durable fixtures
-  switch to fixtures that outlive the bound (e.g. `sleep 2`) — assertion
-  strength unchanged. The intentional-background result takes the promotion
-  shape (`timed_out: true`, `reason: "foreground_timeout"`,
-  `running_in_background: true`) — honest, and it merges the old explicit-
-  background and promotion result shapes into one.
+- **Shell loses immediate-background; durability becomes output-driven
+  (complete-or-handle, §0.6).** "Fire and return" is `max_wait_ms: 1000`; the
+  intentional-background result takes the promotion shape (`timed_out: true`,
+  `reason: "foreground_timeout"`, `running_in_background: true`) — honest, and
+  it merges the old explicit-background and promotion result shapes into one.
+  For a command that finishes INSIDE the bound, the keep/discard decision is
+  made where the bounded result is marshaled, because completeness is a
+  two-layer fact (the inline embed budget AND the tool-result char bound):
+  - Complete output rides the inline result → **ephemeral**, exactly today's
+    quiet-foreground behavior (the dominant case; no durability noise).
+  - Output cannot ride in full → the already-delayed durable job is **kept**
+    (finalized `completed`/`failed` as appropriate) instead of discarded: the
+    result carries the bounded tail, `truncated: true`, AND the `job_id`; the
+    full output (8MB retention) is readable via `job_read_output`. This is
+    strictly better than today, where the tail of an unanticipated chatty fast
+    command was unrecoverable unless `background=true` had been guessed in
+    advance.
+  - Kept within-bound jobs completed before the tool returned, so they are NOT
+    notification-armed (contract: synchronous completion needs no duplicate
+    terminal notification).
+  Cards exercising RUNNING-state or notification arms still switch their fast
+  fixtures to bound-outliving ones (e.g. `sleep 2`); durable-record arms may
+  alternatively use a chatty fast fixture and assert the kept-job invariant.
 - **Buffered (non-streaming) exec environments: documented exception.** There
   is no job manager there, so promotion is impossible — today `background=true`
   is rejected on those envs (`session_tools_shell.go:32-35`, a check that dies
@@ -147,12 +163,20 @@ fit these rules → STOP and surface it; do not improvise semantics.
 3. Shell: `max_wait_ms: 1000` on a long command returns the promotion shape
    ≈1s; unset uses the session-default path (`applyShellTimeoutPolicy`);
    buffered env kills at the bound with `max_wait_ms` named in the text.
-4. Send: positive bound on a live-steer target returns on delivery
+4. Complete-or-handle: (a) fast quiet command → ephemeral, no `job_id`, no
+   durable record (today's behavior pinned); (b) fast command whose output
+   exceeds the inline embed budget → completed result + `job_id` +
+   `truncated: true`, and `job_read_output` returns the FULL retained bytes;
+   (c) the second-layer case — output small enough to embed (< 64KB) but too
+   large for the tool-result char bound — upholds the same invariant
+   (`job_id` present); (d) kept within-bound jobs emit no terminal
+   notification.
+5. Send: positive bound on a live-steer target returns on delivery
    (`action:"sent"`, no error); resume path waits.
-5. Granted read: positive bound rejected; unset snapshot works.
-6. Haiku comprehension gate on the six reworded descriptions (five tools +
+6. Granted read: positive bound rejected; unset snapshot works.
+7. Haiku comprehension gate on the six reworded descriptions (five tools +
    job_watch).
-7. e2e: full 14-card matrix re-run live after the sweep (the old matrix is
+8. e2e: full 14-card matrix re-run live after the sweep (the old matrix is
    invalidated wholesale — 19 card files carried dead params).
 
 ## §7 Out of scope
