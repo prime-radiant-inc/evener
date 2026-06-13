@@ -768,8 +768,8 @@ func TestSpawnAgent_GrantTools_RejectsRootOnlyTool(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected root-only grant rejection")
 	}
-	if !strings.Contains(err.Error(), "top-level only") {
-		t.Fatalf("grant error = %q, want top-level-only message", err)
+	if !strings.Contains(err.Error(), "delegation_allowance") {
+		t.Fatalf("grant error = %q, want allowance-truthful message referencing delegation_allowance", err)
 	}
 }
 

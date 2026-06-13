@@ -817,3 +817,45 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 		}
 	})
 }
+
+// TestGrantRejectionAllowanceTruthful verifies Part B of seam 5: the
+// grant_tools rejection message for a root-only tool states the allowance rule
+// ("delegation_allowance") rather than the old "top-level only" string, so the
+// error is truthful about the actual constraint.
+func TestGrantRejectionAllowanceTruthful(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("done") },
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	_, err = sess.spawnAgent(context.Background(), "help with follow-up work", "", "", 0, "", "", nil, []string{"delegate"})
+	if err == nil {
+		t.Fatal("expected root-only grant rejection")
+	}
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "top-level only") {
+		t.Fatalf("grant error still says %q, want allowance-truthful message instead", errMsg)
+	}
+	if !strings.Contains(errMsg, "delegation_allowance") {
+		t.Fatalf("grant error = %q, want message referencing 'delegation_allowance'", errMsg)
+	}
+	// The rejection fires only when the spawning session's allowance is already
+	// > 0 (the depth-allowance gate pre-empts allowance 0), so the message must
+	// not state a satisfied precondition ("yours is N") as the failure reason.
+	if strings.Contains(errMsg, "yours is") {
+		t.Fatalf("grant error = %q states a satisfied allowance precondition as the reason; "+
+			"grant_tools cannot grant delegation tools regardless of allowance", errMsg)
+	}
+}

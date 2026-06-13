@@ -4999,3 +4999,76 @@ func findJobByDescription(t *testing.T, jm *jobManager, description string) *job
 	t.Fatalf("jobs = %+v, want job with description %q", jobs, description)
 	return nil
 }
+
+// TestCoordinatorTypeDelegateResumes verifies seam 5 (spec §1): when a restored
+// delegate descriptor carries DelegationAllowance > 0 and its FrozenToolNames
+// include "delegate", validateRestoredDelegateRequiredTools must not strip
+// "delegate" from the validation set (today's bug: it always strips root-only
+// tools regardless of allowance, so the frozen requirement fails and the delegate
+// cannot resume).
+func TestCoordinatorTypeDelegateResumes(t *testing.T) {
+	// Part A-positive: allowance > 0, FrozenToolNames includes "delegate" → must pass.
+	t.Run("allowance>0 coordinator resumes with delegate in frozen tools", func(t *testing.T) {
+		c := llm.NewClient()
+		c.Register(&fakeAdapter{name: "openai"})
+		s := newDelegateRestorePreflightSession(t, c)
+
+		// The parent session (s) is a root session — its registry has "delegate".
+		// Confirm the registry has it (seam 3 Task 6 confirms this for root sessions).
+		if s.reg.Get("delegate") == nil {
+			t.Fatal("precondition: parent session registry must have 'delegate' registered")
+		}
+
+		desc := &jobstore.DelegateRestoreDescriptor{
+			Version:             1,
+			DelegationAllowance: 1, // coordinator — can delegate further
+			FrozenToolNames:     []string{"delegate", "task_list"},
+		}
+
+		err := s.validateRestoredDelegateRequiredTools(desc)
+		if err != nil {
+			t.Fatalf("validateRestoredDelegateRequiredTools allowance>0: got error %v, want nil", err)
+		}
+	})
+
+	// Part A-negative: allowance == 0, FrozenToolNames includes "delegate" → must
+	// fail (preserves today's leaf semantics: a leaf cannot have delegate in its
+	// frozen tool requirements, because the parent's validation set has it stripped).
+	t.Run("allowance==0 leaf with delegate in frozen tools fails validation", func(t *testing.T) {
+		c := llm.NewClient()
+		c.Register(&fakeAdapter{name: "openai"})
+		s := newDelegateRestorePreflightSession(t, c)
+
+		desc := &jobstore.DelegateRestoreDescriptor{
+			Version:             1,
+			DelegationAllowance: 0, // leaf — no delegation
+			FrozenToolNames:     []string{"delegate", "task_list"},
+		}
+
+		err := s.validateRestoredDelegateRequiredTools(desc)
+		if err == nil {
+			t.Fatal("validateRestoredDelegateRequiredTools allowance==0 with delegate in frozen tools: want error, got nil")
+		}
+		if !strings.Contains(err.Error(), "delegate") {
+			t.Fatalf("error = %q, want message naming 'delegate'", err.Error())
+		}
+	})
+
+	// Part A-zero-frozen: allowance > 0 but no frozen tool requirements → must pass.
+	t.Run("allowance>0 no frozen tool requirements passes", func(t *testing.T) {
+		c := llm.NewClient()
+		c.Register(&fakeAdapter{name: "openai"})
+		s := newDelegateRestorePreflightSession(t, c)
+
+		desc := &jobstore.DelegateRestoreDescriptor{
+			Version:             1,
+			DelegationAllowance: 1,
+			FrozenToolNames:     nil, // wildcard or empty — no required-tools check
+		}
+
+		err := s.validateRestoredDelegateRequiredTools(desc)
+		if err != nil {
+			t.Fatalf("validateRestoredDelegateRequiredTools no frozen tools: got error %v, want nil", err)
+		}
+	})
+}

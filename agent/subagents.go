@@ -417,7 +417,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		currentTools := s.reg.RegisteredNames()
 		for _, toolName := range canonicalGrantTools {
 			if isRootOnlySubagentTool(toolName) {
-				return nil, fmt.Errorf("cannot grant tool %q: root-only tools are top-level only", toolName)
+				return nil, fmt.Errorf("cannot grant tool %q via grant_tools: delegation tools are enabled by the delegate tool's delegation_allowance parameter, not grant_tools", toolName)
 			}
 			baseHasTool := allTools ||
 				hasString(allowedTools, toolName) ||

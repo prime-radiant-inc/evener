@@ -714,8 +714,10 @@ func (s *Session) validateRestoredDelegateRequiredTools(desc *jobstore.DelegateR
 		return errors.New("restored delegate tool registry unavailable")
 	}
 	registered := s.reg.RegisteredNames()
-	for _, name := range rootOnlySubagentTools() {
-		delete(registered, name)
+	if desc.DelegationAllowance <= 0 {
+		for _, name := range rootOnlySubagentTools() {
+			delete(registered, name)
+		}
 	}
 	return validateRestoredDelegateRequiredToolNames(registered, required)
 }
