@@ -88,6 +88,24 @@ func (s *Store) Load() (map[string]*JobRecord, error) {
 	return Fold(events), nil
 }
 
+// LoadOrdered reads every event and folds them to the current records, returning
+// them in durable APPEND ORDER — sorted by the seq of each job's FIRST event.
+// Append order is the total order the append-only log defines; callers that must
+// resolve "the latest record" (the one appended last) read it here rather than
+// from a wall-clock field, which can skew across restore.
+func (s *Store) LoadOrdered() ([]*JobRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return nil, err
+	}
+	events, err := s.readAllLocked()
+	if err != nil {
+		return nil, err
+	}
+	return FoldOrdered(events), nil
+}
+
 // LoadWatchSends reads every event and folds durable pending watch-send state.
 func (s *Store) LoadWatchSends() (WatchSendRecord, error) {
 	s.mu.Lock()

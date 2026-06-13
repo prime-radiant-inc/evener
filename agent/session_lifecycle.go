@@ -819,6 +819,12 @@ func (s *Session) acceptContinuationInput(ctx context.Context, input string) {
 // the drain loop's idle tail suppresses the phantom SESSION_END{input_complete} —
 // an empty notification turn is a true no-op that makes no model request.
 func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
+	// Drive signal (b) (spec §3): a child driven on its pending caller-targeted
+	// watch sends may have no token queued yet (the drive was launched on the
+	// hasPendingWatchSends signal, not a token enqueue). Enqueue the OWN session's
+	// pending caller tokens onto its rail before draining so the frame renders in
+	// this same drive turn. Caller-only — sidecar delivery stays at the boundary.
+	s.enqueueOwnCallerWatchSendTokens()
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
 	s.requeueJobNotifications(retryJobNotifs)
 	injectedFailures := s.markJobNotificationsDelivered(injectedJobNotifs)

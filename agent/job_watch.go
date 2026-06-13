@@ -2588,30 +2588,217 @@ func (s *Session) drainPendingWatchSends(ctx context.Context) error {
 
 // driveChildrenWithUndeliveredAttention re-purposes the parent's loop-boundary
 // child traversal as a DRIVE-SIGNAL reader (spec §3): for each LIVE, IDLE direct
-// child with queued job notifications (child.peekNotifications() > 0), the parent
-// launches ONE EntryNotification turn on the child's own drain loop. This is
-// signal-reading only: it mutates nothing on the child and renders no
+// child with undelivered attention, the parent launches ONE EntryNotification
+// turn on the child's own drain loop. This is signal-reading only: it renders no
 // notification on the parent's rail (worker terminals reach the child's own
 // model, never the parent's — spec §3). The drive turn is async
 // (driveSubagentNotificationTurn fires a goroutine), so the parent's boundary
 // never blocks on a child's loop.
 //
-// Scope (T14): only the queued-notifications signal is read here. Spec §3 also
-// names jm.hasPendingWatchSends() as drive signal (b), but a child's pending
-// caller-targeted watch send is still re-tokened onto the parent's rail by
-// drainJobManagerWatchSends above (the v2 child-iteration re-route). Driving on
-// that signal now would double-handle it (re-token AND drive). Deleting the
-// re-route and moving caller sends onto the child's own drive turn is T15
-// (spec §3 "mid-owner caller sends"); signal (b) joins the drive there.
+// Drive signals (spec §3): (a) queued job notifications (peekNotifications) and
+// (b) pending caller-targeted watch sends (hasPendingWatchSends). Signal (b) is
+// read here now that the v2 child-iteration re-route is deleted — a mid-owner
+// caller frame renders in the mid's own drive turn instead of being re-tokened
+// onto the parent's rail. A deliberately stopped child is stop-gated (no
+// resurrection); a successful handoff settles the parent's forwarded drive
+// signal; a child that cannot be driven escalates as "child unreachable:".
 func (s *Session) driveChildrenWithUndeliveredAttention() {
+	live := make(map[string]bool)
 	for _, sub := range s.liveDirectSubagents() {
 		child := sub.sess
 		if child == nil {
 			continue
 		}
-		if child.peekNotifications() > 0 {
-			s.driveSubagentNotificationTurn(sub)
+		live[child.id] = true
+		// Stop-gating (spec §3): a deliberately stopped child is never resurrected
+		// by a drive for attention that predates the stop. New work clears the gate.
+		if s.childStopGated(child.id) {
+			continue
 		}
+		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
+			if s.driveSubagentNotificationTurn(sub) {
+				// Settle the parent's forwarded drive signal on a successful
+				// handoff so the same stale pending does not re-drive forever; the
+				// child's own ledger stays the source of truth.
+				s.settleDrivenChildForwardedPendings(child.id)
+			}
+		}
+	}
+	s.renderUnreachableChildPendings(live)
+}
+
+// driveChildIfNotStopGated is the wake-edge drive: it skips a stop-gated child so
+// a deliberately stopped child is not resurrected by its own pre-stop notify
+// (spec §3 stop-gating). On a successful handoff it settles the parent's
+// forwarded drive signal for that child.
+func (s *Session) driveChildIfNotStopGated(sub *subagent) {
+	if sub == nil || sub.sess == nil {
+		return
+	}
+	if s.childStopGated(sub.sess.id) {
+		return
+	}
+	if s.driveSubagentNotificationTurn(sub) {
+		s.settleDrivenChildForwardedPendings(sub.sess.id)
+	}
+}
+
+// renderUnreachableChildPendings is the failure fallback (spec §3): a forwarded
+// pending in the parent's store whose owner child cannot be driven — the child is
+// not a live direct subagent AND is non-resumable (closed, descriptor-less,
+// validation failure) — is rendered by the parent itself, prefixed "child
+// unreachable:". Attention escalates one honest level instead of vanishing. live
+// is the set of session ids that ARE live direct subagents this pass (those are
+// driven, not rendered here). A child that is terminal-but-resumable is left
+// pending for its own future drive/resume turn — not falsely escalated.
+func (s *Session) renderUnreachableChildPendings(live map[string]bool) {
+	if s == nil || s.jobManager == nil {
+		return
+	}
+	jm := s.jobManager
+	recs, err := jm.store.Load()
+	if err != nil {
+		return
+	}
+	for _, rec := range recs {
+		if rec == nil ||
+			rec.OwnerSessionID == "" ||
+			rec.OwnerSessionID == jm.sessionID ||
+			rec.VisibleToSession != jm.sessionID ||
+			rec.TerminalGen == "" ||
+			rec.NotifyState != jobstore.NotifyPending {
+			continue
+		}
+		if live[rec.OwnerSessionID] {
+			continue // driven, not rendered
+		}
+		if s.childResumable(rec.OwnerSessionID) {
+			continue // resumable but idle: left for its own future drive/resume turn
+		}
+		n := jobNotificationFromRecord(rec)
+		n.Reason = strings.TrimSpace("child unreachable: " + rec.Reason)
+		s.enqueueJobNotification(n)
+		// Settle the forwarded copy now that the parent has taken delivery: append
+		// the delivered mark so the same unreachable pending is rendered once.
+		if err := jm.appendEvent(jobstore.Event{
+			Kind:        jobstore.EventJobNotificationDelivered,
+			TS:          jm.now(),
+			JobID:       rec.JobID,
+			TerminalGen: rec.TerminalGen,
+		}); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("fallback settle mark failed: %v", err)})
+		}
+	}
+}
+
+// childResumable reports whether the parent holds an OWN delegate record for
+// childSessionID that is currently resumable. A child with no parent delegate
+// record (descriptor-less) or whose record projects non-resumable is NOT
+// resumable — the fallback renders its pendings as "child unreachable:".
+func (s *Session) childResumable(childSessionID string) bool {
+	if s == nil || s.jobManager == nil || childSessionID == "" {
+		return false
+	}
+	ordered, err := s.jobManager.store.LoadOrdered()
+	if err != nil {
+		return false
+	}
+	var latest *jobstore.JobRecord
+	for _, rec := range ordered {
+		if rec == nil || rec.Type != jobstore.JobDelegate {
+			continue
+		}
+		if _, child, err := decodeRef(rec.TranscriptRef); err != nil || child != childSessionID {
+			continue
+		}
+		latest = rec
+	}
+	if latest == nil {
+		return false
+	}
+	return s.assessDelegateResumability(latest, delegateResumabilityProjection).Resumable
+}
+
+// childStopGated reports whether the LATEST delegate record (durable APPEND
+// ORDER, not wall-clock — resolved decision #3) the parent holds for
+// childSessionID terminated by deliberate stop (Cancelled/stopped_by_parent).
+// A stop-gated child is not driven for attention that predates the stop; new
+// work appends a newer record for the same child session and clears the gate
+// (spec §3 stop-gating, no resurrection).
+func (s *Session) childStopGated(childSessionID string) bool {
+	if s == nil || s.jobManager == nil || childSessionID == "" {
+		return false
+	}
+	ordered, err := s.jobManager.store.LoadOrdered()
+	if err != nil {
+		return false
+	}
+	var latest *jobstore.JobRecord
+	for _, rec := range ordered {
+		if rec == nil || rec.Type != jobstore.JobDelegate {
+			continue
+		}
+		if _, child, err := decodeRef(rec.TranscriptRef); err != nil || child != childSessionID {
+			continue
+		}
+		latest = rec
+	}
+	if latest == nil {
+		return false
+	}
+	return latest.Status == jobstore.StatusCancelled && latest.Reason == "stopped_by_parent"
+}
+
+// settleDrivenChildForwardedPendings marks the parent's forwarded pending COPIES
+// for childSessionID delivered at a successful drive handoff (spec §3 settle).
+// This is safe because the parent's forwarded copy is only a DRIVE SIGNAL, not
+// the delivery ledger: the child's own durable queue (armed at the original
+// enqueue, re-armed at the child's restore) is the ledger, and the no-loss clause
+// keeps its meaning on the owner's copy. Settling the signal stops the same stale
+// pending from re-driving forever; it never touches the child's own store.
+func (s *Session) settleDrivenChildForwardedPendings(childSessionID string) {
+	if s == nil || s.jobManager == nil || childSessionID == "" {
+		return
+	}
+	jm := s.jobManager
+	recs, err := jm.store.Load()
+	if err != nil {
+		return
+	}
+	for _, rec := range recs {
+		if rec == nil ||
+			rec.OwnerSessionID != childSessionID ||
+			rec.VisibleToSession != jm.sessionID ||
+			rec.TerminalGen == "" ||
+			rec.NotifyState != jobstore.NotifyPending {
+			continue
+		}
+		if err := jm.appendEvent(jobstore.Event{
+			Kind:        jobstore.EventJobNotificationDelivered,
+			TS:          jm.now(),
+			JobID:       rec.JobID,
+			TerminalGen: rec.TerminalGen,
+		}); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("drive settle mark failed: %v", err)})
+		}
+	}
+}
+
+// enqueueOwnCallerWatchSendTokens enqueues this session's pending caller-targeted
+// watch-send tokens onto its OWN rail. A drive turn launched on the
+// hasPendingWatchSends signal (drive signal b) may have no token queued yet; this
+// puts the caller frames on the rail so they render in the same drive turn. It is
+// caller-only — it does not deliver sidecar (send.to=job) frames, which the loop
+// boundary handles — so it never duplicates a sidecar delivery.
+func (s *Session) enqueueOwnCallerWatchSendTokens() {
+	if s == nil || s.jobManager == nil || s.jobManager.enqueue == nil {
+		return
+	}
+	for _, delivery := range s.jobManager.pendingWatchSendDeliveries(nil) {
+		if delivery.state.Key.ResolvedSendTo != runtimeMessageAliasCaller {
+			continue
+		}
+		s.jobManager.enqueue(watchSendTokenNotification("", delivery.state))
 	}
 }
 
@@ -2620,16 +2807,19 @@ func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager,
 	for _, delivery := range jm.pendingWatchSendDeliveries(nil) {
 		target := delivery.state.Key.ResolvedSendTo
 		if target == runtimeMessageAliasCaller {
-			// Caller sends deliver via the notification rail. Tokens are enqueued
-			// at observation time; this re-token covers restored / crash-recovered
-			// pendings. Duplicates are harmless (render-by-key + batch dedupe).
-			// A child's caller is the parent: the token rides the PARENT's rail
-			// (it owns the accept loop), and ChildSessionID routes render-by-key
-			// back to the child's jobManager at accept time.
+			// Caller sends render on the OWNING session's own rail. Tokens are
+			// enqueued at observation time; this re-token covers restored /
+			// crash-recovered pendings. Duplicates are harmless (render-by-key +
+			// batch dedupe). A mid-level owner's caller frame renders in the mid's
+			// OWN drive turn (spec §3 mid-owner caller sends): the parent drives
+			// the mid on the pending-watch-send signal, and the mid renders here
+			// against its own rail (childSessionID == "" from the mid's view). The
+			// v2 child-iteration re-route — re-tokening a child's caller pending
+			// onto the PARENT's rail with ChildSessionID set — is deleted; the
+			// drive signal replaces it, so only the owning session enqueues its
+			// own caller token.
 			if jm.enqueue != nil && childSessionID == "" {
 				jm.enqueue(watchSendTokenNotification("", delivery.state))
-			} else if s.jobManager != nil && s.jobManager.enqueue != nil {
-				s.jobManager.enqueue(watchSendTokenNotification(childSessionID, delivery.state))
 			}
 			continue
 		}

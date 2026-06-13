@@ -5115,72 +5115,11 @@ func TestDrainResumesTerminalResumableTarget(t *testing.T) {
 	waitForShellDone(t, sess.jobManager, resumedJob)
 }
 
-// TestDrainEnqueuesTokensForChildCallerPendings proves the root drain iterates
-// child jobManagers: a child holds a caller-targeted pending (restored shape),
-// and the parent's drain re-tokens it onto the PARENT's notification rail with
-// ChildSessionID set — nothing rides the parent steering queue.
-func TestDrainEnqueuesTokensForChildCallerPendings(t *testing.T) {
-	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
-	if err != nil {
-		t.Fatalf("new parent jobManager: %v", err)
-	}
-	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
-	if err != nil {
-		t.Fatalf("new child jobManager: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = parentJM.store.Close()
-		_ = childJM.store.Close()
-	})
-
-	var enqueued []jobNotification
-	parentJM.enqueue = func(n jobNotification) { enqueued = append(enqueued, n) }
-
-	now := time.Unix(4000, 0).UTC()
-	for _, event := range restoredWatchSendPendingEvents("CHILD", "job_child_watched", runtimeMessageAliasCaller, now) {
-		if err := childJM.appendEvent(event); err != nil {
-			t.Fatalf("append child pending: %v", err)
-		}
-	}
-	if err := childJM.restoreWatchSendPending(); err != nil {
-		t.Fatalf("restore child pending: %v", err)
-	}
-
-	parent := &Session{
-		id:         "PARENT",
-		jobManager: parentJM,
-		subagents:  newSubagentManager(nil),
-	}
-	child := &Session{id: "CHILD", jobManager: childJM}
-	parent.subagents.track(&subagent{
-		id:     "CHILD",
-		sess:   child,
-		status: SubagentRunning,
-	})
-
-	if err := parent.drainPendingWatchSends(context.Background()); err != nil {
-		t.Fatalf("drainPendingWatchSends: %v", err)
-	}
-
-	var tokens []jobNotification
-	for _, n := range enqueued {
-		if n.WatchSend != nil {
-			tokens = append(tokens, n)
-		}
-	}
-	if len(tokens) != 1 {
-		t.Fatalf("parent rail tokens = %d, want exactly one child caller token: %+v", len(tokens), enqueued)
-	}
-	if tokens[0].WatchSend.ChildSessionID != "CHILD" {
-		t.Fatalf("token ChildSessionID = %q, want CHILD", tokens[0].WatchSend.ChildSessionID)
-	}
-	if tokens[0].WatchSend.Key.ResolvedSendTo != runtimeMessageAliasCaller {
-		t.Fatalf("token send-to = %q, want caller", tokens[0].WatchSend.Key.ResolvedSendTo)
-	}
-	if queue := parent.SteeringQueueSnapshot(); len(queue) != 0 {
-		t.Fatalf("parent steering queue = %+v, want empty (caller sends ride the notification rail)", queue)
-	}
-}
+// The v2 re-route this section once tested — the parent's drain re-tokening a
+// child's caller-targeted pending onto the parent's rail — is deleted in T15.
+// Its replacement, TestDrainDoesNotReRouteChildCallerPendings, lives in
+// job_delegate_drivedown_test.go and pins the new behavior: a mid-owner caller
+// send renders in the mid's own drive turn, never on the parent's rail.
 
 func TestWatchDeliveryCounterIncrementsPerNotification(t *testing.T) {
 	jm := newTestJM(t)

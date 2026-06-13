@@ -24,6 +24,35 @@ func Fold(events []Event) map[string]*JobRecord {
 	return recs
 }
 
+// FoldOrdered folds events to records (like Fold) and returns them ordered by
+// each job's FIRST event seq — the durable append order. Two records appended in
+// sequence sort by which was created first; this is the total order the
+// append-only log defines, independent of any wall-clock field.
+func FoldOrdered(events []Event) []*JobRecord {
+	sorted := append([]Event(nil), events...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+
+	recs := make(map[string]*JobRecord)
+	order := make([]string, 0, len(sorted))
+	for _, e := range sorted {
+		if !isJobRecordEventKind(e.Kind) {
+			continue
+		}
+		r := recs[e.JobID]
+		if r == nil {
+			r = &JobRecord{JobID: e.JobID, NotifyState: NotifyNotArmed}
+			recs[e.JobID] = r
+			order = append(order, e.JobID)
+		}
+		applyEvent(r, e)
+	}
+	ordered := make([]*JobRecord, 0, len(order))
+	for _, id := range order {
+		ordered = append(ordered, recs[id])
+	}
+	return ordered
+}
+
 func isJobRecordEventKind(kind EventKind) bool {
 	switch kind {
 	case EventJobStarted,

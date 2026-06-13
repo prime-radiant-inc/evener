@@ -529,8 +529,10 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	// jm.wake (= subSess.notify) fires whenever the child arms a job notification
 	// (enqueueJobNotificationAndNotify), so the parent learns of undelivered
 	// attention on an idle child and drives it. The drive is launched only when
-	// the child is live and idle (driveSubagentNotificationTurn's guard).
-	subSess.SetNotifyFunc(func() { s.driveSubagentNotificationTurn(sub) })
+	// the child is live and idle (driveSubagentNotificationTurn's guard) and not
+	// stop-gated (a deliberately stopped child is never resurrected by a wake for
+	// pre-stop attention — spec §3 stop-gating).
+	subSess.SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })
 
 	// Subagent execution must outlive the parent tool-call context.
 	// The parent may stop waiting, finish its input, or time out while the
@@ -650,14 +652,18 @@ func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, er
 // in flight per child at a time (the EntryNotification drain loop self-services
 // every queued notification within that single turn, so one launch suffices). No
 // session or jobManager lock is held while ProcessInputKind runs.
-func (s *Session) driveSubagentNotificationTurn(sub *subagent) {
+// driveSubagentNotificationTurn returns true when it launches a drive turn
+// (a successful handoff) and false when the live/idle guard skips the child
+// (closed, mid-run, or already being driven). The caller uses the handoff result
+// to settle the parent's forwarded drive signal (spec §3 settle).
+func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	if sub == nil {
-		return
+		return false
 	}
 	sub.mu.Lock()
 	if sub.sess == nil || sub.closed || sub.running || sub.driving {
 		sub.mu.Unlock()
-		return
+		return false
 	}
 	driveCtx, driveCancel := context.WithCancel(context.Background())
 	s.mu.Lock()
@@ -665,7 +671,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) {
 		s.mu.Unlock()
 		sub.mu.Unlock()
 		driveCancel()
-		return
+		return false
 	}
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
@@ -683,6 +689,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) {
 		}()
 		_, _ = childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)
 	}()
+	return true
 }
 
 func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, startedAt time.Time) {

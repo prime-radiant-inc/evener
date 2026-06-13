@@ -1172,6 +1172,15 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 
 	jobs := make([]*jobstore.JobRecord, 0, len(recs))
 	for _, rec := range recs {
+		// Restore re-arm filters to OWNED records (spec §3 settle). A forwarded
+		// copy of a direct child's own job (OwnerSessionID is the child, not this
+		// session) is a DRIVE SIGNAL, not the parent's render: re-arming it onto
+		// the parent's rail would wake-storm the parent about jobs it does not own
+		// at every restart. The child's own ledger re-arms in the child's own
+		// restore and renders in the child's own turn; the parent drives it.
+		if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
+			continue
+		}
 		if rec.Status.IsTerminal() && rec.TerminalGen != "" &&
 			(rec.NotifyState == jobstore.NotifyNotArmed || rec.NotifyState == jobstore.NotifyPending) {
 			jobs = append(jobs, rec)
