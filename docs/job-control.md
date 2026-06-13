@@ -1059,7 +1059,7 @@ Graceful shutdown is the deliberate counterpart of restart reconciliation. When 
 
 ## Nested jobs
 
-Subagents must be able to start shell jobs. Nested delegate jobs are a future extension on the same parent-job machinery. Until nested delegate jobs are supported, observer sidecars should not themselves delegate.
+Subagents must be able to start shell jobs. Nested delegate jobs run on the same parent-job machinery and are allowance-gated: a subagent may itself delegate only when it was granted a non-zero `delegation_allowance` (see the delegation-allowance amendment). An observer sidecar started without an allowance (allowance 0, the default) is a leaf and cannot delegate.
 
 Nested jobs use `parent_job_id` rather than a separate control plane.
 
@@ -1089,7 +1089,7 @@ Target nested shell support:
 - subagents can start shell jobs;
 - those jobs are recorded with `parent_job_id`;
 - the parent can list/output/watch/message/stop them through the parent-visible ID where the job type is messageable;
-- nested delegate jobs can be added later with the same parent-job semantics.
+- nested delegate jobs run on the same parent-job semantics, allowance-gated per the delegation-allowance amendment.
 
 Example flow:
 
@@ -1191,7 +1191,7 @@ Tool descriptions and prompts should warn against:
 
 V1 does not define multi-job barriers, any-of/all-of watches, or named job groups. Agents coordinate multiple background jobs through individual terminal notifications and `job_list` recovery. Fan-in/barrier coordination is the likely first future coordination extension if heavy parallel workflows need less manual state tracking, but it remains out of v1 until that surface is deliberately designed.
 
-Nested delegate jobs remain deferred. Shell jobs are not messageable in v1; long-running REPL stdin is outside this contract.
+Nested delegate jobs are allowance-gated rather than deferred: a subagent delegates only with a granted non-zero `delegation_allowance`, and recursion stays dark by default behind the double opt-in (see the delegation-allowance amendment). Shell jobs are not messageable in v1; long-running REPL stdin is outside this contract.
 
 ## Capacity and discovery requirements
 
@@ -1211,11 +1211,27 @@ Exact limits are implementation/configuration details, but unbounded delegate fa
 
 On restart the root rebuilds the counter from its post-reconciliation state (zero); descendants re-reserve as they re-attach or resume. A subtree that is detached from its live parent is uncounted until it is resumed — an accepted v1 looseness, not a leak: such a subtree holds no live runtime to count, and resuming it re-reserves.
 
-This cap binds existing single-level fan-out today: 16 concurrent root delegates now fail loudly even with no recursion grants. Concurrent **shell** jobs are not bounded by this counter — the shell-job concurrency bound named above remains an acknowledged standing gap, not closed here.
+This cap binds existing single-level fan-out today: 16 concurrent root delegates now fail loudly with `tree_at_capacity` even with no recursion grants. This is a **live** behavior change at merge, not gated behind any opt-in (see Rollout below). Concurrent **shell** jobs are not bounded by this counter — the shell-job concurrency bound named above remains an acknowledged standing gap, not closed here.
 
 `delegate.agent_type` values must be discoverable by the model. This can be done through the tool description/system prompt, a future discovery tool, or a session context section. If no discovery tool exists, the `delegate` tool description must enumerate the valid agent types available in the current session.
 
 `job_watch.events` event-kind values must be discoverable by the same mechanisms. If no discovery tool exists, the `job_watch` tool description or session context must enumerate the event kinds available in the current session, or document that agents should use `events:["*"]` plus filtering when targeted event names are unavailable.
+
+## Rollout (live vs. dark)
+
+The recursion campaign that landed the delegation-allowance, drive-down, counter, `include_descendants`, and stop-cascade amendments is **dark by default for recursion** but carries **two live behavior changes** that bind existing single-level (root + direct delegates) use at merge with no opt-in. This section discloses both honestly.
+
+**Live — the tree-wide running-delegate cap binds existing fan-out.** The tree-wide counter (cap 16) is wired on the spawn, resume, and drive paths today. Even with no recursion grants, a root that launches a 17th concurrent running delegate now fails loudly with `tree_at_capacity` instead of fanning out unbounded. This is a live change to existing single-level fan-out, not gated behind any config or grant. Idle (turn-ended) delegates hold no slot, so the bound is on *concurrently running* delegate turns, not lifetime fan-out. Shell jobs are not counted.
+
+**Live — nested-job terminal notifications are owner-scoped.** Previously a subagent's nested job pushed a terminal notification onto the parent's model. Under drive-down the notification renders only on the OWNER's rail — the subagent that created the nested job — and the parent is **driven** so the subagent renders its own notification, rather than the parent being interrupted about a job it did not create (Jesse's ruling: an agent is never interrupted about a *subagent's* children). Visibility is preserved, not removed: the parent is still told when its OWN direct delegate finishes (its own job ending), and an ancestor retains on-demand visibility into the whole subtree through `job_list(include_descendants=true)`. This is a live change to the existing nested-shell-job case; it is not dark.
+
+**Live — delegate-start forwarding changes nested-store contents.** Delegate-job creation now forwards a typed `job_started` one hop, so a parent's store carries an owner/type-identified record for a child's delegate job from the start (seeding the later terminal merge rather than producing a type-less phantom). These forwarded records are invisible to a default `job_list` (they surface only under `include_nested`/`include_descendants`), but the nested-store contents differ from before merge. Stated for completeness.
+
+**Dark — recursion (depth > 1) stays behind the double opt-in.** A subagent can itself delegate only when granted a non-zero `delegation_allowance`, and the root's allowance equals `MaxSubagentDepth` (default 1, so the root may grant only 0). Enabling recursion requires **both** raising `MaxSubagentDepth` in config **and** passing a per-spawn `delegation_allowance` — neither alone unlocks it. Recursion stays dark until an operator deliberately does both.
+
+### Why drive-down, not a flat session scheduler
+
+Drive-down delivers the inbox-wakes-an-idle-session behavior using the machinery serf already has: `serve.go` drives the root, and the existing parent-owns-child lifecycle lets a parent drive each direct child at its own loop boundaries — the tree is eventually-driven, level by level (see `docs/architecture.md`, "Drive-down"). The obvious-looking alternative — a flat session scheduler that wakes every session directly from its own inbox, independent of the tree — was war-gamed adversarially in `docs/superpowers/research/2026-06-13-flat-scheduler-wargame.md` and deliberately deferred. The hard part is **teardown quiescence**: making a session's loop goroutine scheduler-owned rather than parent-owned breaks the `sendersWG.Wait()` join and the `closing`-latch "no late goroutine escapes the drain" guarantee that the mailbox and recursion campaigns spent significant effort getting right, converting the simplest, most correct part of the system (Close) into a distributed quiescence protocol. The flat scheduler is therefore a campaign-sized runtime re-architecture — a smaller diff against a far more dangerous invariant — and is deferred under a **named trigger**: measured end-to-end notification latency on deep idle trees, a persistent / cross-process child requirement, or a parent-cadence correctness bug (a child that must take a turn while its parent is blocked in a long LLM call). Until one of those is concretely observed, drive-down is the shipped delivery model. The durable principle drive-down realizes — an agent is never interrupted about a *subagent's* children — is the same principle the owner-scoped notification change above enforces.
 
 ## Implementation notes that are not part of the contract
 

@@ -251,6 +251,52 @@ watch fired while the session emitted an assistant event under `responseSideEffe
 the delivery path re-acquired the same mutex on the same goroutine. If you add a new event
 observer, it records intent and wakes — it does not mutate the session.
 
+### Drive-down: how a subagent's mailbox gets drained
+
+The wake path above drains the **root** — its server submits the `EntryNotification`. A
+subagent session has no server of its own, so the same question recurs one level down: who
+wakes a child that has undelivered attention sitting in its own mailboxes? The answer is
+**drive-down**: a parent drives its direct children at its own loop boundaries, the same way
+its server drives it.
+
+> **A parent drives its children; the root is driven by `serve.go`; the tree is therefore
+> eventually-driven, level by level. The mailbox invariant holds at every depth.**
+
+A parent drains its own watch outbox in `drainPendingWatchSends`, and at the tail of that
+same boundary it calls `driveChildrenWithUndeliveredAttention` (`agent/job_watch.go:2585`).
+That scan reads each direct child's mailboxes as **signal only** — a queued owner
+notification (`peekNotifications`) or pending watch sends (`hasPendingWatchSends`) — and, for
+any child with undelivered attention, calls `driveSubagentNotificationTurn`
+(`agent/subagents.go:683`). The drive launches **one** notification turn on the *child's own*
+loop (`ProcessInputKind(..., EntryNotification)`), so the child's own `acceptNotificationInput`
+drains the child's own mailboxes. The parent never appends to, steers, or mutates the child;
+it only **runs** the child, and the child's loop delivers. A child's terminal notification
+firing also kicks its parent directly — `SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })`
+(`agent/subagents.go:558`) — so a child wake propagates up to the parent's boundary the same
+way the root's `jm.wake` propagates to its server. The drive mints no job record and arms
+nothing new; it is the child processing its own durable queue, gated only by the tree-wide
+running-delegate counter for the turn's duration.
+
+So the invariant — *observation records durable intent and wakes the owner; only a session's
+own loop mutates that session* — holds unchanged at every depth. At depth 0 the server is the
+driver; at depth N the parent is. A deep idle tree is woken level by level: the root drives the
+coordinator, the coordinator (now running) drives its worker at *its* next boundary, and so on.
+
+**The notification rule, stated plainly: every job notifies only its OWNER.** A subagent's
+jobs notify the subagent, never its ancestors. A forwarded copy of a child-owned terminal that
+lands in an ancestor's store is a **drive signal**, not a render target: the ancestor is *not*
+interrupted about a job a descendant created — it drives the descendant so the descendant
+renders its own notification (`forwardEvent` returns before `enqueue` when
+`rec.OwnerSessionID != jm.sessionID`, `agent/jobs_nested.go:642-644`; the restore path filters
+the same way at `agent/jobs.go:1207-1209`, so there is no restart wake-storm). A parent still
+**renders** its OWN jobs' terminals, including its direct delegates finishing — that is the
+parent's own job ending, not noise about a descendant. Ancestors retain on-demand visibility
+into the whole subtree through `job_list(include_descendants=true)`, which walks the live tree
+at read time rather than pushing notifications upward. This realizes the durable principle that
+an agent is never interrupted about a *subagent's* children: attention escalates only one honest
+level (the `child unreachable:` fallback when a child cannot be driven,
+`renderUnreachableChildPendings`, `agent/job_watch.go:2654`).
+
 ## Current status
 
 - ✅ `auth`, `llm`, `agent` all carved into their own modules; the `go.work` workspace is
