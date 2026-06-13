@@ -2450,6 +2450,173 @@ func TestDelegateChildDirectSpawnDoesNotInheritForwardSeam(t *testing.T) {
 	waitForShellDone(t, parent.jobManager, res.JobID)
 }
 
+// TestJobReadOutputDepth2Resolves drives a depth-3 live tree
+// (root -> coordinator -> worker) where the WORKER owns a running shell job,
+// forwarded one hop into the coordinator's store and one more hop into the
+// root's store. job_read_output(worker_job) issued by the root must resolve
+// through the recursive owner path (root -> coordinator -> worker) and serve the
+// worker's live bytes from the worker's store. A max_wait_ms>0 read at depth 2
+// is rejected like a granted cross-session read. The owner-session projection
+// (the T11 advisory) is load-bearing: assessing a worker-owned runtime_lost
+// delegate record against the root mis-reads resumability; it must be assessed
+// against the worker.
+func TestJobReadOutputDepth2Resolves(t *testing.T) {
+	rootJM := newWalkJobManager(t, "ROOT")
+	coordJM := newWalkJobManager(t, "COORD")
+	workerJM := newWalkJobManager(t, "WORK")
+	t.Cleanup(func() {
+		_ = rootJM.store.Close()
+		_ = coordJM.store.Close()
+		_ = workerJM.store.Close()
+	})
+
+	// One-hop forwarding: each child forwards into its direct parent's store.
+	coordJM.forward = rootJM.forwardEvent
+	coordJM.parentJobID = "job_root_delegate_coord"
+	workerJM.forward = coordJM.forwardEvent
+	workerJM.parentJobID = "job_coord_delegate_worker"
+
+	workerRec, err := workerJM.createShell(createShellOpts{Command: "sleep 1", Description: "worker job"})
+	if err != nil {
+		t.Fatalf("create worker shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, workerJM, workerRec.JobID) })
+
+	workerJM.mu.Lock()
+	run := workerJM.running[workerRec.JobID]
+	workerJM.mu.Unlock()
+	if run == nil || run.output == nil {
+		t.Fatalf("worker job %q has no live output store", workerRec.JobID)
+	}
+	if _, err := workerJM.appendJobOutput(workerRec.JobID, run.output, []byte("worker grandchild line\n")); err != nil {
+		t.Fatalf("append worker output: %v", err)
+	}
+
+	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+
+	// Snapshot read at depth 2: the root resolves root -> coordinator -> worker
+	// and serves the worker's live bytes.
+	out, err := jobReadOutputTool(context.Background(), root, map[string]any{
+		"job_id":     workerRec.JobID,
+		"tail_bytes": 65536,
+		"grep":       "grandchild",
+	}, 20000)
+	if err != nil {
+		t.Fatalf("job_read_output(worker job) returned error: %v", err)
+	}
+	var read jobReadOutputTestResult
+	if err := json.Unmarshal([]byte(out), &read); err != nil {
+		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, out)
+	}
+	if read.JobID != workerRec.JobID || read.Status != string(jobstore.StatusRunning) {
+		t.Fatalf("job_read_output = %+v, want running worker job %q", read, workerRec.JobID)
+	}
+	if !strings.Contains(read.Content, "worker grandchild line") {
+		t.Fatalf("job_read_output content = %q, want worker grandchild bytes", read.Content)
+	}
+	if len(read.Matches) != 1 || !strings.Contains(read.Matches[0].Line, "worker grandchild line") {
+		t.Fatalf("job_read_output matches = %+v, want grandchild grep match", read.Matches)
+	}
+
+	// The resolved owner is the worker, not the root or coordinator: projection
+	// and the snapshot read both key on it.
+	owner, ownerSess, rec, found := root.resolveDescendantJobOwner(workerRec.JobID)
+	if !found || owner != workerJM || ownerSess != worker {
+		t.Fatalf("resolveDescendantJobOwner(worker job) = (jm==worker:%v, sess==worker:%v, found:%v), want worker owner", owner == workerJM, ownerSess == worker, found)
+	}
+	if rec == nil || rec.OwnerSessionID != "WORK" {
+		t.Fatalf("resolved record = %+v, want owner WORK", rec)
+	}
+
+	// max_wait_ms>0 at depth 2 is rejected like a granted cross-session read.
+	_, err = jobReadOutputTool(context.Background(), root, map[string]any{
+		"job_id":      workerRec.JobID,
+		"max_wait_ms": 1000,
+		"tail_bytes":  65536,
+	}, 20000)
+	if err == nil || err.Error() != grantedReadBlockUnsupportedErr {
+		t.Fatalf("depth-2 max_wait_ms>0 error = %v, want %q", err, grantedReadBlockUnsupportedErr)
+	}
+
+	// Owner-session projection (T11 advisory): a worker-owned runtime_lost
+	// delegate record (descriptor.ParentSessionID == "WORK") must be assessed
+	// against the worker. Projecting it against the root mis-reads the
+	// parent-linkage gate, so the two projections must disagree on the reason.
+	delegRec := workerOwnedRuntimeLostDelegate(t, workerJM, "WORK")
+	viaOwner := projectJobRecord(worker, delegRec)
+	viaRoot := projectJobRecord(root, delegRec)
+	if viaOwner.NotResumableReason == nil || viaRoot.NotResumableReason == nil {
+		t.Fatalf("expected non-resumable reasons (owner=%v root=%v)", viaOwner.NotResumableReason, viaRoot.NotResumableReason)
+	}
+	// Projecting against the root mis-reads the parent-linkage gate (root is not
+	// the delegate's parent). Projecting against the true owner clears that gate
+	// and reports a different, downstream reason.
+	if *viaRoot.NotResumableReason != notResumableParentLinkageUnavailable {
+		t.Fatalf("root projection reason = %q, want %q (wrong session rejected at the gate)", *viaRoot.NotResumableReason, notResumableParentLinkageUnavailable)
+	}
+	if *viaOwner.NotResumableReason == notResumableParentLinkageUnavailable {
+		t.Fatalf("owner projection reason = %q, want owner to clear the parent-linkage gate; owner session is not load-bearing", *viaOwner.NotResumableReason)
+	}
+}
+
+// workerOwnedRuntimeLostDelegate seeds a runtime_lost delegate record owned by
+// the given session, with a descriptor whose ParentSessionID == ownerID. The
+// parent-linkage gate in assessDelegateResumability keys on ParentSessionID ==
+// the assessing session's ID, so the record only clears that gate when assessed
+// against its true owner.
+func workerOwnedRuntimeLostDelegate(t *testing.T, jm *jobManager, ownerID string) *jobstore.JobRecord {
+	t.Helper()
+	jobID := jobstore.NewJobID()
+	now := time.Now().UTC()
+	ref := encodeRef("", "WORKERCHILD")
+	desc := &jobstore.DelegateRestoreDescriptor{
+		Version:          1,
+		ChildSessionID:   "WORKERCHILD",
+		TranscriptRef:    ref,
+		ParentSessionID:  ownerID,
+		ParentJobID:      jobID,
+		OwnerSessionID:   ownerID,
+		VisibleSessionID: ownerID,
+		Task:             "worker delegate",
+		WorkingDir:       t.TempDir(),
+		LocalEnvPolicy:   "default",
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               now,
+		JobID:            jobID,
+		Type:             jobstore.JobDelegate,
+		Task:             desc.Task,
+		OwnerSessionID:   ownerID,
+		VisibleToSession: ownerID,
+		StartedAt:        &now,
+		TranscriptRef:    ref,
+		DelegateRestore:  desc,
+	}); err != nil {
+		t.Fatalf("append worker delegate start: %v", err)
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          now,
+		JobID:       jobID,
+		Status:      jobstore.StatusStopped,
+		Reason:      "runtime_lost",
+		EndedAt:     &now,
+		TerminalGen: jobstore.NewWatchGeneration(),
+	}); err != nil {
+		t.Fatalf("append worker delegate stopped: %v", err)
+	}
+	rec, err := findJobRecord(jm, jobID)
+	if err != nil {
+		t.Fatalf("load worker delegate record: %v", err)
+	}
+	return rec
+}
+
 func assertJobForwardHookType(_ func(jobstore.Event) error) {}
 
 func finishRunningTestJob(t *testing.T, jm *jobManager, jobID string) {

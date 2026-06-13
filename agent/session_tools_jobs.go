@@ -34,12 +34,14 @@ const (
 	maxJobWatchResultTextChars  = 128
 	maxJobWatchResultEvents     = 8
 	// grantedReadBlockUnsupportedErr is the rejection for max_wait_ms>0 on a
-	// watch-granted cross-session read (spec §5.1). Granted reads are
-	// snapshot-only by decision: the blocking wait helpers are coupled to a
-	// resolvable jobManager (done channels, output polling) that the granted
-	// view deliberately does not expose, and half-supporting block by silently
-	// degrading it to a snapshot would lie to the model about having waited.
-	grantedReadBlockUnsupportedErr = "invalid_request: max_wait_ms is not supported for granted cross-session reads"
+	// cross-session read: a watch-granted read (spec §5.1) or a depth >= 2
+	// descendant read resolved through the recursive owner path (spec §2). Both
+	// are snapshot-only by decision: the blocking wait helpers are coupled to a
+	// resolvable jobManager (done channels, output polling) that these
+	// cross-session views do not own at the caller, and half-supporting the wait
+	// by silently degrading it to a snapshot would lie to the model about having
+	// waited.
+	grantedReadBlockUnsupportedErr = "invalid_request: max_wait_ms is not supported for cross-session reads"
 )
 
 var rootOnlyJobControlTools = []string{"delegate", "job_watch"}
@@ -205,7 +207,30 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	if jobID == "" {
 		return "", errors.New("job_id is required")
 	}
-	jm, _, err := s.nestedOrLocalJobManager(jobID)
+	jm, resolvedRec, err := s.nestedOrLocalJobManager(jobID)
+	// readSession is the session whose store the snapshot is served from: the
+	// caller for own/depth-1 reads, the resolved OWNER for a depth >= 2
+	// descendant (the T11 advisory — projection, resumability, and the
+	// closed-store fallback all key on the owner). deepDescendant marks a
+	// resolved depth >= 2 read, which is snapshot-only like a granted read.
+	readSession := s
+	deepDescendant := false
+	// The one-hop resolver reaches only the caller and its direct children. A
+	// job that is missing locally, or surfaced only as a forwarded copy of a
+	// non-self owner, may be owned by a descendant at depth >= 2 (spec §2):
+	// resolve it through the recursive owner path. A live direct-child read
+	// (jm != local) and a job the caller itself owns are left untouched. A miss
+	// (e.g. the owning branch is closed, or the job truly does not exist) leaves
+	// the original resolution — including its error — unchanged.
+	oneHopLocalMiss := jm == s.jobManager && (err != nil || (resolvedRec != nil && resolvedRec.OwnerSessionID != s.id))
+	if oneHopLocalMiss {
+		if owner, ownerSess, _, ok := s.resolveDescendantJobOwner(jobID); ok {
+			jm = owner
+			readSession = ownerSess
+			deepDescendant = true
+			err = nil
+		}
+	}
 	var granted *grantedJobRead
 	if err != nil {
 		// Local + nested resolution failed: consult the parent-injected watch
@@ -264,7 +289,7 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		maxWaitMS = n
 	}
 	if maxWaitMS > 0 {
-		if granted != nil {
+		if granted != nil || deepDescendant {
 			return "", errors.New(grantedReadBlockUnsupportedErr)
 		}
 		clamped := maxWaitMS
@@ -286,7 +311,7 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	if granted != nil {
 		snap, err = granted.snapshot(readBytes, fromHead, grepRE)
 	} else {
-		snap, err = s.readJobOutputSnapshot(jm, jobID, readBytes, fromHead, grepRE)
+		snap, err = readSession.readJobOutputSnapshot(jm, jobID, readBytes, fromHead, grepRE)
 	}
 	if err != nil {
 		return "", err

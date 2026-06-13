@@ -3194,10 +3194,13 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 	})
 }
 
-// TestGrantedReadBlockUnsupportedErrReword pins the new error message wording
-// for max_wait_ms>0 on a granted cross-session read (spec §3).
+// TestGrantedReadBlockUnsupportedErrReword pins the error message wording for
+// max_wait_ms>0 on a cross-session read — both a watch-granted read (spec §3)
+// and a depth >= 2 descendant read resolved through the recursive owner path
+// (spec §2). The message generalizes to "cross-session reads" so it is truthful
+// for both.
 func TestGrantedReadBlockUnsupportedErrReword(t *testing.T) {
-	const want = "invalid_request: max_wait_ms is not supported for granted cross-session reads"
+	const want = "invalid_request: max_wait_ms is not supported for cross-session reads"
 	if grantedReadBlockUnsupportedErr != want {
 		t.Fatalf("grantedReadBlockUnsupportedErr = %q, want %q", grantedReadBlockUnsupportedErr, want)
 	}
