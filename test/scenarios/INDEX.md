@@ -201,6 +201,19 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   delegate and ends its turn; when the child reaches a terminal state later,
   Serf wakes the parent with `<job-notification ...>` and the woken model
   reads the result with `job_read_output`.
+- `recursion-coordinator-fanout.md` — recursion behind the double
+  opt-in (`maxSubagentDepth=2` + per-spawn `delegation_allowance`): a
+  granted coordinator (allowance 1) fans out workers (allowance 0,
+  hard leaves); asserts the grant ceiling, the live
+  `include_descendants` walk (`owner_session_id`/`depth`), the
+  drive-down of worker completions into the coordinator's own turns,
+  the OWNER-SCOPED rule (the root hears only the coordinator, never a
+  worker), and the cascade stop.
+- `recursion-deaf-coordinator-drivedown.md` — the design-spec §9
+  headline: an IDLE coordinator is driven so its model gets a
+  notification turn for its workers' completions, while the root's
+  rail shows only the coordinator's terminal (owner-scoped, asserted
+  on the coordinator's own transcript).
 
 ## Regression sweep (older surfaces)
 
