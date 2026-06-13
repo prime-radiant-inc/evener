@@ -1204,6 +1204,15 @@ Implementations must enforce a documented concurrency policy for jobs. The polic
 
 Exact limits are implementation/configuration details, but unbounded delegate fan-out or unbounded shell process creation is not part of the target contract.
 
+**Tree-wide running-delegate cap.** The number of delegate turns running concurrently across the whole session tree is bounded at 16 by a tree-wide counter shared by every session in the tree. A slot is reserved on each path that launches a running delegate turn — a spawn, a resume, and a drive-down notification turn — and released when that turn ends: on terminal finalize and on the abandon path. An idle (turn-ended) delegate holds no slot, so a coordinator that has ended its turn frees its slot and a later drive re-reserves one for that drive turn. When the tree is already at the cap:
+
+- a spawn or resume from a tool call fails synchronously with `tree_at_capacity: 16 delegate jobs running across this session tree. Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry.`;
+- a drive-down notification turn simply does not launch this pass; the child's durable notification ledger stays queued and the next loop boundary retries (the ledger is durable, so nothing is lost and no retry daemon is needed).
+
+On restart the root rebuilds the counter from its post-reconciliation state (zero); descendants re-reserve as they re-attach or resume. A subtree that is detached from its live parent is uncounted until it is resumed — an accepted v1 looseness, not a leak: such a subtree holds no live runtime to count, and resuming it re-reserves.
+
+This cap binds existing single-level fan-out today: 16 concurrent root delegates now fail loudly even with no recursion grants. Concurrent **shell** jobs are not bounded by this counter — the shell-job concurrency bound named above remains an acknowledged standing gap, not closed here.
+
 `delegate.agent_type` values must be discoverable by the model. This can be done through the tool description/system prompt, a future discovery tool, or a session context section. If no discovery tool exists, the `delegate` tool description must enumerate the valid agent types available in the current session.
 
 `job_watch.events` event-kind values must be discoverable by the same mechanisms. If no discovery tool exists, the `job_watch` tool description or session context must enumerate the event kinds available in the current session, or document that agents should use `events:["*"]` plus filtering when targeted event names are unavailable.

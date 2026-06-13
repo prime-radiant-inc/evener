@@ -100,6 +100,29 @@ type runningJob struct {
 	watchdogStop    chan struct{}
 	watchdogStopped sync.Once
 	quietNotified   bool
+	// treeSlot holds the tree-counter reservation for a running delegate turn
+	// (spec §4). Set when the spawn/resume path reserves a slot for this run;
+	// released exactly once when the run leaves jm.running (terminal finalize or
+	// the abandon path). treeReservation.release is idempotent so
+	// finalize-then-abandon (or a finalize retry) never double-releases.
+	treeSlot *treeReservation
+}
+
+// treeReservation is a single tree-counter slot held by a running delegate turn.
+// release is once-only so a slot is never returned twice even when multiple
+// teardown paths (finalize, abandon, abandon-all) race on the same run.
+type treeReservation struct {
+	counter  *treeCounter
+	released atomic.Bool
+}
+
+func (r *treeReservation) release() {
+	if r == nil {
+		return
+	}
+	if r.released.CompareAndSwap(false, true) {
+		r.counter.release()
+	}
 }
 
 type finalizeAttempt struct {
@@ -334,6 +357,7 @@ func (jm *jobManager) abandonRunningJobs() {
 			output:    run.output,
 		})
 		delete(jm.running, run.rec.JobID)
+		run.treeSlot.release()
 		targets = append(targets, jm.pruneWatchedTargetWatchesLocked(run.rec.JobID, "watched target pruned", jm.now())...)
 	}
 	jm.mu.Unlock()
@@ -366,6 +390,7 @@ func (jm *jobManager) abandonRunningJob(jobID string) {
 	if run != nil {
 		run.stopWatchdog()
 		delete(jm.running, jobID)
+		run.treeSlot.release()
 		targets = jm.pruneWatchedTargetWatchesLocked(jobID, "watched target pruned", jm.now())
 	}
 	jm.mu.Unlock()
@@ -1112,6 +1137,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] == run {
 		delete(jm.running, run.rec.JobID)
+		run.treeSlot.release()
 	} else {
 		jm.mu.Unlock()
 		return nil

@@ -106,6 +106,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		// Root sessions mint the tree-wide counter; children inherit the pointer.
 		tc = newTreeCounter()
 	}
+	// Mirror the live counter onto cfg.spawn so s.cfg.spawn.treeCounter always
+	// reflects it. prepareSubagentRun threads the pointer to children via
+	// subCfg := s.cfg, so the mirror is what carries the root's minted counter
+	// down the tree.
+	cfg.spawn.treeCounter = tc
 	s := &Session{
 		id:                  ulid.Make().String(),
 		cfg:                 cfg,

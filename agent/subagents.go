@@ -101,6 +101,12 @@ type preparedSubagentRun struct {
 	localEnvPolicy     string
 	resultSchema       map[string]any
 	explicitToolGrants []string
+	// treeSlot is the tree-counter reservation claimed by prepareSubagentRun for
+	// this spawn's running delegate turn (spec §4). Ownership transfers to the
+	// delegate runningJob at attach; if the prepared run is discarded before
+	// attach (an error path, or the legacy in-process spawn that mints no
+	// delegate job), the reservation is released so the slot is not leaked.
+	treeSlot *treeReservation
 }
 
 func hasString(items []string, want string) bool {
@@ -283,6 +289,11 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if err != nil {
 		return "", err
 	}
+	// The legacy in-process spawn mints no delegate job, so no runningJob takes
+	// ownership of the slot prepareSubagentRun reserved and no finalize/abandon
+	// path can release it. The tree counter bounds delegate turns (spec §4); this
+	// in-process turn is not one, so return the slot rather than leak it.
+	releasePreparedTreeSlot(prepared)
 	if err := s.trackAndLaunchPreparedSubagent(prepared); err != nil {
 		prepared.sub.sess.Close()
 		return "", err
@@ -509,6 +520,18 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		ev.sess.Close()
 	}
 
+	// Reserve a tree-counter slot for this spawn's running delegate turn (spec §4).
+	// At capacity the spawn does not launch: close the freshly built child (the
+	// same created-but-not-tracked cleanup as the retained-cap path) and surface
+	// the tree_at_capacity error to the tool call. Ownership of the reservation
+	// transfers to the delegate runningJob at attach; an unattached prepared run
+	// releases it (releasePreparedTreeSlot).
+	treeSlot, ok := s.reserveTreeSlot()
+	if !ok {
+		subSess.Close()
+		return nil, errTreeAtCapacity
+	}
+
 	now := time.Now()
 	sub := &subagent{
 		id:           subSess.id,
@@ -565,6 +588,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		localEnvPolicy:     localEnvPolicyName(subEnv),
 		resultSchema:       cloneMap(subCfg.spawn.communicateOutputSchema),
 		explicitToolGrants: append([]string(nil), canonicalGrantTools...),
+		treeSlot:           treeSlot,
 	}
 	if agent != nil && len(agent.Tasks) > 0 {
 		if current, ok := subSess.getOrCreateTaskStore().CurrentInProgress(); ok {
@@ -665,11 +689,22 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		sub.mu.Unlock()
 		return false
 	}
+	// Reserve a tree-counter slot for the drive turn (spec §4): a drive launches a
+	// running delegate turn (the child's EntryNotification render) and holds the
+	// slot for its duration. At capacity the drive does not launch — return false,
+	// the not-launched signal the caller already honors (no settle), so the child's
+	// durable ledger stays queued and the next loop boundary retries (spec §3).
+	treeSlot, ok := s.reserveTreeSlot()
+	if !ok {
+		sub.mu.Unlock()
+		return false
+	}
 	driveCtx, driveCancel := context.WithCancel(context.Background())
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		sub.mu.Unlock()
+		treeSlot.release()
 		driveCancel()
 		return false
 	}
@@ -682,6 +717,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	go func() {
 		defer s.sendersWG.Done()
 		defer driveCancel()
+		defer treeSlot.release()
 		defer func() {
 			sub.mu.Lock()
 			sub.driving = false

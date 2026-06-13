@@ -1128,11 +1128,30 @@ func (s *Session) attachDelegateJobWithPrepared(jm *jobManager, childID, task st
 }
 
 func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any, fromWatch bool, prepared *preparedSubagentRun, previousRestore *jobstore.DelegateRestoreDescriptor) (*runningJob, error) {
+	// Claim the tree-counter slot for this running delegate turn (spec §4). A
+	// fresh spawn already reserved in prepareSubagentRun — transfer that slot. A
+	// resume (prepared == nil) reserves a new slot here and surfaces
+	// tree_at_capacity to the resuming tool call. The slot is owned by the
+	// runningJob once it enters jm.running; until then every error path below
+	// releases it so a failed attach never leaks a slot.
+	var treeSlot *treeReservation
+	if prepared != nil {
+		treeSlot = prepared.treeSlot
+		prepared.treeSlot = nil
+	} else {
+		slot, ok := s.reserveTreeSlot()
+		if !ok {
+			return nil, errTreeAtCapacity
+		}
+		treeSlot = slot
+	}
+
 	startedAt := jm.now()
 	transcriptRef := encodeRef("", childID)
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
 	output, err := jobstore.OpenOutput(outputPath, maxJobOutputRetentionBytes)
 	if err != nil {
+		treeSlot.release()
 		return nil, err
 	}
 	restore := s.delegateRestoreDescriptor(jobID, childID, task, transcriptRef, resultSchema, prepared)
@@ -1159,6 +1178,7 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 		signal:         func() { cancelDelegateSub(sub) },
 		done:           make(chan struct{}),
 		durableStarted: true,
+		treeSlot:       treeSlot,
 	}
 	run.fromWatch.Store(fromWatch)
 
@@ -1167,6 +1187,7 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 		jm.mu.Unlock()
 		_ = output.Close()
 		_ = os.Remove(outputPath)
+		treeSlot.release()
 		return nil, errJobManagerClosing
 	}
 	started := jobstore.Event{
@@ -1187,10 +1208,12 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 		jm.mu.Unlock()
 		_ = output.Close()
 		_ = os.Remove(outputPath)
+		treeSlot.release()
 		return nil, err
 	}
 	if err := jm.forwardLocked(started); err != nil {
 		_ = output.Close()
+		treeSlot.release()
 		if terminalErr := jm.appendStartForwardFailure(run.rec.JobID, output); terminalErr != nil {
 			// Double-fault: the start forward failed AND the durable
 			// forward_failed terminal could not be appended. Unlike the shell
