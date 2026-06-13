@@ -570,6 +570,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 			parentGrantedJobRead:    s.lookupGrantedJobRead,
 			subagentTask:            desc.Task,
 			depth:                   s.depth + 1,
+			delegationAllowance:     desc.DelegationAllowance,
 			rolePromptOverride:      desc.FrozenRolePrompt,
 			activatedSkillBodies:    activatedSkillBodies,
 			allowedToolNames:        restoredDelegateAllowedTools(desc),
@@ -1193,6 +1194,7 @@ func (s *Session) delegateRestoreDescriptor(jobID, childID, task, transcriptRef 
 			profile := sub.sess.currentProfile()
 			desc.ResolvedProfileID = profile.ID()
 			desc.ResolvedModel = profile.Model()
+			desc.DelegationAllowance = sub.sess.delegationAllowance
 		}
 		return desc
 	}
@@ -1219,6 +1221,7 @@ func (s *Session) delegateRestoreDescriptor(jobID, childID, task, transcriptRef 
 		profile := prepared.sub.sess.currentProfile()
 		desc.ResolvedProfileID = profile.ID()
 		desc.ResolvedModel = profile.Model()
+		desc.DelegationAllowance = prepared.sub.sess.delegationAllowance
 	}
 	return desc
 }
@@ -1229,31 +1232,32 @@ func (s *Session) resumedDelegateRestoreDescriptor(jobID, childID, transcriptRef
 		version = 1
 	}
 	desc := &jobstore.DelegateRestoreDescriptor{
-		Version:            version,
-		ChildSessionID:     childID,
-		TranscriptRef:      transcriptRef,
-		ParentSessionID:    s.id,
-		ParentJobID:        jobID,
-		OwnerSessionID:     s.id,
-		VisibleSessionID:   s.id,
-		OriginTurnID:       previous.OriginTurnID,
-		OriginToolCallID:   previous.OriginToolCallID,
-		Task:               previous.Task,
-		AgentType:          previous.AgentType,
-		RequestedModel:     previous.RequestedModel,
-		ResolvedProfileID:  previous.ResolvedProfileID,
-		ResolvedModel:      previous.ResolvedModel,
-		ReasoningEffort:    previous.ReasoningEffort,
-		AgentName:          previous.AgentName,
-		FrozenRolePrompt:   previous.FrozenRolePrompt,
-		FrozenTaskPrompt:   previous.FrozenTaskPrompt,
-		FrozenToolNames:    append([]string(nil), previous.FrozenToolNames...),
-		FrozenSkillNames:   append([]string(nil), previous.FrozenSkillNames...),
-		FrozenSkillBodies:  append([]string(nil), previous.FrozenSkillBodies...),
-		WorkingDir:         previous.WorkingDir,
-		LocalEnvPolicy:     previous.LocalEnvPolicy,
-		ResultSchema:       cloneDelegateResultSchema(previous.ResultSchema),
-		ExplicitToolGrants: append([]string(nil), previous.ExplicitToolGrants...),
+		Version:             version,
+		ChildSessionID:      childID,
+		TranscriptRef:       transcriptRef,
+		ParentSessionID:     s.id,
+		ParentJobID:         jobID,
+		OwnerSessionID:      s.id,
+		VisibleSessionID:    s.id,
+		OriginTurnID:        previous.OriginTurnID,
+		OriginToolCallID:    previous.OriginToolCallID,
+		Task:                previous.Task,
+		AgentType:           previous.AgentType,
+		RequestedModel:      previous.RequestedModel,
+		ResolvedProfileID:   previous.ResolvedProfileID,
+		ResolvedModel:       previous.ResolvedModel,
+		ReasoningEffort:     previous.ReasoningEffort,
+		AgentName:           previous.AgentName,
+		FrozenRolePrompt:    previous.FrozenRolePrompt,
+		FrozenTaskPrompt:    previous.FrozenTaskPrompt,
+		FrozenToolNames:     append([]string(nil), previous.FrozenToolNames...),
+		FrozenSkillNames:    append([]string(nil), previous.FrozenSkillNames...),
+		FrozenSkillBodies:   append([]string(nil), previous.FrozenSkillBodies...),
+		WorkingDir:          previous.WorkingDir,
+		LocalEnvPolicy:      previous.LocalEnvPolicy,
+		ResultSchema:        cloneDelegateResultSchema(previous.ResultSchema),
+		ExplicitToolGrants:  append([]string(nil), previous.ExplicitToolGrants...),
+		DelegationAllowance: previous.DelegationAllowance,
 	}
 	if resultSchema != nil {
 		desc.ResultSchema = cloneDelegateResultSchema(resultSchema)

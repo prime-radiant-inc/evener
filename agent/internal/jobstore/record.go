@@ -47,31 +47,32 @@ const (
 
 // DelegateRestoreDescriptor carries the durable state needed to restore a delegate job.
 type DelegateRestoreDescriptor struct {
-	Version            int      `json:"version"`
-	ChildSessionID     string   `json:"child_session_id"`
-	TranscriptRef      string   `json:"transcript_ref"`
-	ParentSessionID    string   `json:"parent_session_id,omitempty"`
-	ParentJobID        string   `json:"parent_job_id,omitempty"`
-	OwnerSessionID     string   `json:"owner_session_id,omitempty"`
-	VisibleSessionID   string   `json:"visible_session_id,omitempty"`
-	OriginTurnID       string   `json:"origin_turn_id,omitempty"`
-	OriginToolCallID   string   `json:"origin_tool_call_id,omitempty"`
-	Task               string   `json:"task,omitempty"`
-	AgentType          string   `json:"agent_type,omitempty"`
-	RequestedModel     string   `json:"requested_model,omitempty"`
-	ResolvedProfileID  string   `json:"resolved_profile_id,omitempty"`
-	ResolvedModel      string   `json:"resolved_model,omitempty"`
-	ReasoningEffort    string   `json:"reasoning_effort,omitempty"`
-	AgentName          string   `json:"agent_name,omitempty"`
-	FrozenRolePrompt   string   `json:"frozen_role_prompt,omitempty"`
-	FrozenTaskPrompt   string   `json:"frozen_task_prompt,omitempty"`
-	FrozenToolNames    []string `json:"frozen_tool_names,omitempty"`
-	FrozenSkillNames   []string `json:"frozen_skill_names,omitempty"`
-	FrozenSkillBodies  []string `json:"frozen_skill_bodies,omitempty"`
-	WorkingDir         string   `json:"working_dir,omitempty"`
-	LocalEnvPolicy     string   `json:"local_env_policy,omitempty"`
-	ResultSchema       any      `json:"result_schema,omitempty"`
-	ExplicitToolGrants []string `json:"explicit_tool_grants,omitempty"`
+	Version             int      `json:"version"`
+	ChildSessionID      string   `json:"child_session_id"`
+	TranscriptRef       string   `json:"transcript_ref"`
+	ParentSessionID     string   `json:"parent_session_id,omitempty"`
+	ParentJobID         string   `json:"parent_job_id,omitempty"`
+	OwnerSessionID      string   `json:"owner_session_id,omitempty"`
+	VisibleSessionID    string   `json:"visible_session_id,omitempty"`
+	OriginTurnID        string   `json:"origin_turn_id,omitempty"`
+	OriginToolCallID    string   `json:"origin_tool_call_id,omitempty"`
+	Task                string   `json:"task,omitempty"`
+	AgentType           string   `json:"agent_type,omitempty"`
+	RequestedModel      string   `json:"requested_model,omitempty"`
+	ResolvedProfileID   string   `json:"resolved_profile_id,omitempty"`
+	ResolvedModel       string   `json:"resolved_model,omitempty"`
+	ReasoningEffort     string   `json:"reasoning_effort,omitempty"`
+	AgentName           string   `json:"agent_name,omitempty"`
+	FrozenRolePrompt    string   `json:"frozen_role_prompt,omitempty"`
+	FrozenTaskPrompt    string   `json:"frozen_task_prompt,omitempty"`
+	FrozenToolNames     []string `json:"frozen_tool_names,omitempty"`
+	FrozenSkillNames    []string `json:"frozen_skill_names,omitempty"`
+	FrozenSkillBodies   []string `json:"frozen_skill_bodies,omitempty"`
+	WorkingDir          string   `json:"working_dir,omitempty"`
+	LocalEnvPolicy      string   `json:"local_env_policy,omitempty"`
+	ResultSchema        any      `json:"result_schema,omitempty"`
+	ExplicitToolGrants  []string `json:"explicit_tool_grants,omitempty"`
+	DelegationAllowance int      `json:"delegation_allowance,omitempty"`
 }
 
 // WatchSendKey identifies the coalescing slot for a durable watch-send frame.

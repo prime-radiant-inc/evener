@@ -106,6 +106,7 @@ type Session struct {
 
 	// subagents
 	depth                            int
+	delegationAllowance              int // mu-guarded; allowance to grant further sub-agent delegation levels
 	subagents                        *subagentManager
 	delegateRestoreAfterClaim        func()
 	delegateRestoreBeforeTrack       func()

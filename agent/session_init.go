@@ -95,22 +95,29 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 
 	sessCtx, sessCancel := context.WithCancel(context.Background())
+	delegationAllowance := cfg.spawn.delegationAllowance
+	if cfg.spawn.parentSessionID == "" {
+		// Root sessions derive their allowance from MaxSubagentDepth (already
+		// defaulted to 1 by applyDefaults), not from the spawn carrier.
+		delegationAllowance = cfg.MaxSubagentDepth
+	}
 	s := &Session{
-		id:             ulid.Make().String(),
-		cfg:            cfg,
-		client:         client,
-		profile:        profile,
-		resolveProfile: cfg.ResolveProfile,
-		depth:          cfg.spawn.depth,
-		env:            env,
-		stateDir:       cfg.StateDir,
-		installID:      installid.LoadOrCreateInstallationID(cfg.StateDir),
-		state:          SessionIdle,
-		events:         make(chan events.SessionEvent, 256),
-		history:        []schema.Turn{},
-		readFiles:      map[string]bool{},
-		sessionCtx:     sessCtx,
-		cancelFunc:     sessCancel,
+		id:                  ulid.Make().String(),
+		cfg:                 cfg,
+		client:              client,
+		profile:             profile,
+		resolveProfile:      cfg.ResolveProfile,
+		depth:               cfg.spawn.depth,
+		delegationAllowance: delegationAllowance,
+		env:                 env,
+		stateDir:            cfg.StateDir,
+		installID:           installid.LoadOrCreateInstallationID(cfg.StateDir),
+		state:               SessionIdle,
+		events:              make(chan events.SessionEvent, 256),
+		history:             []schema.Turn{},
+		readFiles:           map[string]bool{},
+		sessionCtx:          sessCtx,
+		cancelFunc:          sessCancel,
 	}
 	s.subagents = newSubagentManager(s.emit)
 	jm, err := newJobManager(s.stateDir, s.id, s.enqueueJobNotificationAndNotify)
@@ -167,18 +174,19 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			agentTasks = s.taskStore.View()
 		}
 		hdr := transcript.Header{
-			SessionID:        s.id,
-			ParentSessionID:  cfg.spawn.parentSessionID,
-			ParentToolCallID: cfg.spawn.parentToolCallID,
-			Task:             cfg.spawn.subagentTask,
-			CreatedAt:        time.Now().UTC(),
-			ProfileID:        profile.ID(),
-			Model:            profile.Model(),
-			WorkingDir:       s.envInfo.WorkingDir,
-			Depth:            cfg.spawn.depth,
-			BuildVersion:     BuildVersion,
-			SystemPrompt:     s.cachedSystemPrompt,
-			AgentTasks:       agentTasks,
+			SessionID:           s.id,
+			ParentSessionID:     cfg.spawn.parentSessionID,
+			ParentToolCallID:    cfg.spawn.parentToolCallID,
+			Task:                cfg.spawn.subagentTask,
+			CreatedAt:           time.Now().UTC(),
+			ProfileID:           profile.ID(),
+			Model:               profile.Model(),
+			WorkingDir:          s.envInfo.WorkingDir,
+			Depth:               cfg.spawn.depth,
+			DelegationAllowance: s.delegationAllowance,
+			BuildVersion:        BuildVersion,
+			SystemPrompt:        s.cachedSystemPrompt,
+			AgentTasks:          agentTasks,
 		}
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
 		tw, twErr := transcript.NewWriter(tpath, hdr)
@@ -291,19 +299,20 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 
 	sessCtx, sessCancel := context.WithCancel(context.Background())
 	s := &Session{
-		id:             meta.ID,
-		cfg:            cfg,
-		client:         client,
-		profile:        profile,
-		resolveProfile: cfg.ResolveProfile,
-		depth:          cfg.spawn.depth,
-		env:            env,
-		stateDir:       cfg.StateDir,
-		installID:      installid.LoadOrCreateInstallationID(cfg.StateDir),
-		state:          SessionIdle,
-		events:         make(chan events.SessionEvent, 256),
-		history:        resumeHistory,
-		modelResponses: meta.TurnCount,
+		id:                  meta.ID,
+		cfg:                 cfg,
+		client:              client,
+		profile:             profile,
+		resolveProfile:      cfg.ResolveProfile,
+		depth:               cfg.spawn.depth,
+		delegationAllowance: cfg.spawn.delegationAllowance,
+		env:                 env,
+		stateDir:            cfg.StateDir,
+		installID:           installid.LoadOrCreateInstallationID(cfg.StateDir),
+		state:               SessionIdle,
+		events:              make(chan events.SessionEvent, 256),
+		history:             resumeHistory,
+		modelResponses:      meta.TurnCount,
 		fork: forkInfo{
 			parentID:   meta.ParentSessionID,
 			divergence: meta.DivergenceTurn,
@@ -379,18 +388,19 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 				agentTasks = s.taskStore.View()
 			}
 			hdr := transcript.Header{
-				SessionID:        s.id,
-				ParentSessionID:  cfg.spawn.parentSessionID,
-				ParentToolCallID: cfg.spawn.parentToolCallID,
-				Task:             cfg.spawn.subagentTask,
-				CreatedAt:        meta.CreatedAt,
-				ProfileID:        profile.ID(),
-				Model:            profile.Model(),
-				WorkingDir:       s.envInfo.WorkingDir,
-				Depth:            cfg.spawn.depth,
-				BuildVersion:     BuildVersion,
-				SystemPrompt:     s.cachedSystemPrompt,
-				AgentTasks:       agentTasks,
+				SessionID:           s.id,
+				ParentSessionID:     cfg.spawn.parentSessionID,
+				ParentToolCallID:    cfg.spawn.parentToolCallID,
+				Task:                cfg.spawn.subagentTask,
+				CreatedAt:           meta.CreatedAt,
+				ProfileID:           profile.ID(),
+				Model:               profile.Model(),
+				WorkingDir:          s.envInfo.WorkingDir,
+				Depth:               cfg.spawn.depth,
+				DelegationAllowance: s.delegationAllowance,
+				BuildVersion:        BuildVersion,
+				SystemPrompt:        s.cachedSystemPrompt,
+				AgentTasks:          agentTasks,
 			}
 			tw, twErr = transcript.NewWriter(tpath, hdr)
 			if twErr != nil {
