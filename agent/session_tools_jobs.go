@@ -213,7 +213,17 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		}
 		granted = g
 	}
-	tailBytes, err := boundedJobBytesArg(args, "tail_bytes", defaultJobOutputBytes)
+	_, hasHead := shellIntArg(args, "head_bytes")
+	_, hasTail := shellIntArg(args, "tail_bytes")
+	if hasHead && hasTail {
+		return "", errors.New("invalid_request: head_bytes and tail_bytes are mutually exclusive")
+	}
+	fromHead := hasHead
+	readKey := "tail_bytes"
+	if fromHead {
+		readKey = "head_bytes"
+	}
+	readBytes, err := boundedJobBytesArg(args, readKey, defaultJobOutputBytes)
 	if err != nil {
 		return "", err
 	}
@@ -261,9 +271,9 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 
 	var snap jobReadOutputSnapshot
 	if granted != nil {
-		snap, err = granted.snapshot(tailBytes, grepRE)
+		snap, err = granted.snapshot(readBytes, fromHead, grepRE)
 	} else {
-		snap, err = s.readJobOutputSnapshot(jm, jobID, tailBytes, grepRE)
+		snap, err = s.readJobOutputSnapshot(jm, jobID, readBytes, fromHead, grepRE)
 	}
 	if err != nil {
 		return "", err
@@ -305,7 +315,7 @@ type jobReadOutputSnapshot struct {
 	Matches    []jobstore.Match
 }
 
-func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, tailBytes int, grepRE *regexp.Regexp) (jobReadOutputSnapshot, error) {
+func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, readBytes int, fromHead bool, grepRE *regexp.Regexp) (jobReadOutputSnapshot, error) {
 	for {
 		_, err := findJobRecord(jm, jobID)
 		if err != nil {
@@ -317,7 +327,7 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, tailBytes 
 			return jobReadOutputSnapshot{}, fallbackErr
 		}
 
-		content, totalBytes, truncated, err := jm.readOutput(jobID, tailBytes)
+		content, totalBytes, truncated, err := jm.readJobWindow(jobID, readBytes, fromHead)
 		if err != nil {
 			next, ok, fallbackErr := s.jobReadClosedStoreFallback(jm, err)
 			if ok {
@@ -375,8 +385,8 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, tailBytes 
 // the record is the lookup-time clone, Manager stays nil (the observer has no
 // handle on the parent's jobManager), and there is no closed-store fallback
 // chain — a failed parent-side read is a real error.
-func (g *grantedJobRead) snapshot(tailBytes int, grepRE *regexp.Regexp) (jobReadOutputSnapshot, error) {
-	content, totalBytes, truncated, err := g.readOutput(tailBytes)
+func (g *grantedJobRead) snapshot(readBytes int, fromHead bool, grepRE *regexp.Regexp) (jobReadOutputSnapshot, error) {
+	content, totalBytes, truncated, err := g.readWindow(readBytes, fromHead)
 	if err != nil {
 		return jobReadOutputSnapshot{}, err
 	}

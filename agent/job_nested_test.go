@@ -807,7 +807,7 @@ func TestNestedReadOutputFallsBackWhenOwnerStoreClosesAfterSelection(t *testing.
 		t.Fatalf("close child store: %v", err)
 	}
 
-	snap, err := parent.readJobOutputSnapshot(owner, nested.JobID, 65536, nil)
+	snap, err := parent.readJobOutputSnapshot(owner, nested.JobID, 65536, false, nil)
 	if err != nil {
 		t.Fatalf("readJobOutputSnapshot returned error: %v", err)
 	}

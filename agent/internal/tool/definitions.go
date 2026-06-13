@@ -221,13 +221,14 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 func DefJobReadOutput() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_read_output",
-		Description: "Read a job's output and status by `job_id` — reads never consume or acknowledge anything. Returns a bounded output tail (`tail_bytes`) for shell jobs or the report (and `structured_result`, when present) for delegates. `grep` searches the job's **entire retained output** and returns matching lines. `max_wait_ms > 0` waits: with `grep`, until a match exists, the job ends, or the timeout elapses — the one-call way to wait for \"ready\"; without `grep`, until new output or terminal state.",
+		Description: "Read a job's output and status by `job_id` — reads never consume or acknowledge anything. Returns a bounded output tail (`tail_bytes`, the default) for shell jobs or the report (and `structured_result`, when present) for delegates; pass `head_bytes` instead to read from the START of the output (the early lines a tail read drops). `grep` searches the job's **entire retained output** and returns matching lines. `max_wait_ms > 0` waits: with `grep`, until a match exists, the job ends, or the timeout elapses — the one-call way to wait for \"ready\"; without `grep`, until new output or terminal state.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"job_id":      map[string]any{"type": "string"},
 				"tail_bytes":  map[string]any{"type": "integer", "default": 65536, "maximum": 1048576},
+				"head_bytes":  map[string]any{"type": "integer", "maximum": 1048576, "description": "Read this many bytes from the START of the output instead of the tail. Mutually exclusive with tail_bytes."},
 				"grep":        map[string]any{"type": "string"},
 				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): snapshot now. >0: wait up to this many ms for a grep match (with grep), or for new output / terminal state."},
 			},

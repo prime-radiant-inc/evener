@@ -624,6 +624,17 @@ func (jm *jobManager) readOutputHead(jobID string, headBytes int) (content strin
 	return headOutputFile(path, headBytes, validatedTotal)
 }
 
+// readJobWindow reads either the head or the tail of a job's retained output
+// depending on fromHead. When fromHead is true it delegates to readOutputHead,
+// otherwise to readOutput (tail). This is the single dispatch point that lets
+// callers pass a direction flag without knowing the underlying method names.
+func (jm *jobManager) readJobWindow(jobID string, bytes int, fromHead bool) (content string, total int64, truncated bool, err error) {
+	if fromHead {
+		return jm.readOutputHead(jobID, bytes)
+	}
+	return jm.readOutput(jobID, bytes)
+}
+
 func (jm *jobManager) appendJobOutput(jobID string, output *jobstore.OutputStore, b []byte) (int, error) {
 	if output == nil {
 		return 0, nil

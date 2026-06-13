@@ -602,6 +602,7 @@ Canonical target shape:
 Canonical behavior:
 
 - Omit `tail_bytes` to use the default retained tail size.
+- Pass `head_bytes` instead of `tail_bytes` to read from the start of retained output — the early lines that a tail read drops once the output grows past the tail window. `head_bytes` and `tail_bytes` are mutually exclusive; supplying both fails `invalid_request`. `head_bytes` has no default: omitting it uses `tail_bytes`. Maximum `head_bytes` is `1048576`; values above the maximum are clamped downward.
 - `grep`, when supplied, searches retained output server-side using Go/RE2 syntax and returns bounded matching lines/chunks plus output metadata. Match entries should include a byte position such as `byte_offset` when available. In the core model-facing contract this is informational/triage metadata; agents can act on it only when an implementation also exposes advanced paging or a UI uses the coordinate to fetch surrounding context.
 - `grep` is for inspecting retained output, including terminal jobs. `job_watch.output_match` is for triggering a notification or configured send while a watched running job emits matching output.
 - Reads are non-consuming and non-acknowledging.

@@ -3008,6 +3008,109 @@ func TestGrantedReadBlockUnsupportedErrReword(t *testing.T) {
 	}
 }
 
+// TestJobReadOutputHeadBytesReadsFromStart verifies that head_bytes reads from
+// the beginning of retained output — the symmetric counterpart to tail_bytes.
+// A job whose head output was pushed out of the default tail window is only
+// reachable by grep or by head_bytes; this test closes that gap.
+func TestJobReadOutputHeadBytesReadsFromStart(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"printf 'HEAD_MARKER_9\n'; yes filler-line | head -c 70000; printf '\nTAIL_MARKER_7\n'; sleep 30","max_wait_ms":1000}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	// Wait until the job has produced enough output to push HEAD_MARKER_9 out of the tail.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		_, total, _, err := s.jobManager.readOutput(shellOut.JobID, 1)
+		if err == nil && total > 70000 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// (a) Default tail read must NOT contain HEAD_MARKER_9 (it was pushed out).
+	tailRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read-tail",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, shellOut.JobID)),
+	})
+	if tailRes.IsError {
+		t.Fatalf("job_read_output (tail) returned error: %s", tailRes.Output)
+	}
+	var tailOut jobReadOutputTestResult
+	if err := json.Unmarshal([]byte(tailRes.Output), &tailOut); err != nil {
+		t.Fatalf("unmarshal tail output: %v (output: %s)", err, tailRes.Output)
+	}
+	if strings.Contains(tailOut.Content, "HEAD_MARKER_9") {
+		t.Fatalf("default tail unexpectedly contains HEAD_MARKER_9 (output has not grown past tail window yet)")
+	}
+
+	// (b) head_bytes:1024 read must contain HEAD_MARKER_9, not TAIL_MARKER_7, and be truncated.
+	headRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read-head",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"head_bytes":1024}`, shellOut.JobID)),
+	})
+	if headRes.IsError {
+		t.Fatalf("job_read_output (head_bytes) returned error: %s", headRes.Output)
+	}
+	var headOut jobReadOutputTestResult
+	if err := json.Unmarshal([]byte(headRes.Output), &headOut); err != nil {
+		t.Fatalf("unmarshal head output: %v (output: %s)", err, headRes.Output)
+	}
+	if !strings.Contains(headOut.Content, "HEAD_MARKER_9") {
+		t.Fatalf("head_bytes read does not contain HEAD_MARKER_9; content: %q", headOut.Content)
+	}
+	if strings.Contains(headOut.Content, "TAIL_MARKER_7") {
+		t.Fatalf("head_bytes read unexpectedly contains TAIL_MARKER_7; content: %q", headOut.Content)
+	}
+	if !headOut.Truncated {
+		t.Fatalf("head_bytes read must report truncated=true (1024 < total output), got false")
+	}
+}
+
+// TestJobReadOutputHeadAndTailMutuallyExclusive verifies that supplying both
+// head_bytes and tail_bytes in the same call fails with invalid_request.
+func TestJobReadOutputHeadAndTailMutuallyExclusive(t *testing.T) {
+	s := newTestSession(t)
+	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, s.jobManager, rec.JobID) })
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"head_bytes":1024,"tail_bytes":1024}`, rec.JobID)),
+	})
+	if !res.IsError {
+		t.Fatalf("job_read_output with head_bytes+tail_bytes succeeded, want error; output: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "invalid_request") {
+		t.Fatalf("error = %q, want invalid_request", res.Output)
+	}
+	if !strings.Contains(res.Output, "head_bytes") {
+		t.Fatalf("error = %q, want mention of head_bytes", res.Output)
+	}
+}
+
 func requiredParams(t *testing.T, name string, raw any) []string {
 	t.Helper()
 	switch values := raw.(type) {
