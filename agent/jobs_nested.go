@@ -267,9 +267,41 @@ func (s *Session) stopNestedOrLocal(jobID string) (*jobstore.JobRecord, error) {
 		if forwarded.Status.IsTerminal() {
 			return cloneJobRecord(forwarded), nil
 		}
+		if guidance := s.notControllableDescendantError(jobID); guidance != nil {
+			return nil, guidance
+		}
 		return nil, fmt.Errorf("not_controllable: nested job %q owner runtime is not live", jobID)
 	}
+	// A non-direct descendant (a grandchild-or-deeper job the caller neither owns
+	// nor reaches through a direct child) is not directly controllable: the caller
+	// must stop its direct delegate to cascade-stop the subtree (spec §2). This is
+	// surfaced as guidance rather than silently routed.
+	if guidance := s.notControllableDescendantError(jobID); guidance != nil {
+		return nil, guidance
+	}
 	return local.stop(jobID)
+}
+
+// notControllableDescendantError returns the spec §2 non-direct-descendant
+// guidance error if jobID is owned by a session in the caller's live subtree
+// other than a direct child it owns the job through. It names the owning
+// descendant session and the direct delegate the caller CAN stop to cascade-stop
+// the subtree. Returns nil when jobID is not such a descendant.
+func (s *Session) notControllableDescendantError(jobID string) error {
+	child := s.directChildOwningDescendant(jobID)
+	if child == nil {
+		return nil
+	}
+	_, _, ownerRec, _ := s.resolveDescendantJobOwner(jobID)
+	ownerID := child.id
+	if ownerRec != nil && ownerRec.OwnerSessionID != "" {
+		ownerID = ownerRec.OwnerSessionID
+	}
+	handle := s.directDelegateJobForChild(child.id)
+	if handle == "" {
+		return fmt.Errorf("not_controllable: job %q is owned by descendant session %q, not your direct delegate; stop your direct delegate for session %q to cascade-stop its subtree", jobID, ownerID, child.id)
+	}
+	return fmt.Errorf("not_controllable: job %q is owned by descendant session %q, not your direct delegate; stop your direct delegate job %q (which owns session %q) to cascade-stop its subtree", jobID, ownerID, handle, child.id)
 }
 
 func (s *Session) stopChildren(delegateJobID string) ([]*jobstore.JobRecord, error) {
@@ -298,6 +330,131 @@ func (s *Session) stopChildren(delegateJobID string) ([]*jobstore.JobRecord, err
 		}
 	}
 	return stopped, stopErr
+}
+
+// delegateChildSessionToCascade resolves jobID to the live child session whose
+// subtree the job_stop cascade must stop (spec §2). It returns a session only
+// when jobID is the caller's OWN direct delegate job (a delegate record the
+// caller owns, whose transcript_ref names a live direct child). Shell jobs,
+// non-owned forwarded copies, and dead children resolve to nil — there is no
+// live subtree to cascade into.
+func (s *Session) delegateChildSessionToCascade(jobID string) *Session {
+	local, err := sessionJobManager(s)
+	if err != nil || local.store == nil {
+		return nil
+	}
+	recs, err := local.store.Load()
+	if err != nil {
+		return nil
+	}
+	rec := recs[jobID]
+	if rec == nil || rec.Type != jobstore.JobDelegate || rec.OwnerSessionID != s.id {
+		return nil
+	}
+	_, childID, err := decodeRef(rec.TranscriptRef)
+	if err != nil || childID == "" {
+		return nil
+	}
+	return liveSubagentSession(s.subagents, childID)
+}
+
+// stopDelegateSubtree implements the job_stop cascade (spec §2): stopping a
+// coordinator's delegate job also stops the coordinator's own running jobs (its
+// workers' delegate + shell jobs) and recurses into the live subtree, so the
+// §0.2 "stop the subtree = stop its direct child" guidance is true. It is the
+// fine-grained analogue of Session Close's recursive teardown: Close tears down
+// whole sessions, while this stops the running jobs inside the subtree without
+// closing the sessions (Session Close is unchanged).
+//
+// childSession is the delegate job's child session (resolved from the delegate
+// record's transcript_ref); stopping the delegate job itself is the caller's job
+// (stopNestedOrLocal). The traversal reuses the live-walk leaf-lock discipline:
+// each store's running jobs are snapshotted under that store's own lock
+// (runningJobIDs) and stopped one at a time; live direct children are enumerated
+// through liveSubagentSessions; NO job-manager or session lock is held across the
+// recursion. A no-longer-live (closed) child contributes nothing — its runtime is
+// already gone.
+func (s *Session) stopDelegateSubtree(childSession *Session) ([]*jobstore.JobRecord, error) {
+	if childSession == nil {
+		return nil, nil
+	}
+	var stopped []*jobstore.JobRecord
+	var stopErr error
+	// Recurse into the live subtree first so a worker delegate's own children are
+	// stopped before the worker delegate's runtime is signalled.
+	for _, grandchild := range childSession.liveSubagentSessions() {
+		recs, err := s.stopDelegateSubtree(grandchild)
+		stopped = append(stopped, recs...)
+		stopErr = errors.Join(stopErr, err)
+	}
+	jm := childSession.jobManager
+	if jm == nil || jm.store == nil {
+		return stopped, stopErr
+	}
+	for _, jobID := range jm.runningJobIDs() {
+		rec, err := jm.stop(jobID)
+		if err != nil {
+			stopErr = errors.Join(stopErr, err)
+			continue
+		}
+		if rec != nil {
+			stopped = append(stopped, rec)
+		}
+	}
+	return stopped, stopErr
+}
+
+// directChildOwningDescendant returns the caller's direct-child session whose
+// LIVE subtree owns jobID (spec §2's non-direct-descendant case). It is used to
+// build the not_controllable guidance: a caller cannot directly control a job it
+// does not own, but it CAN stop the direct delegate at the top of that job's
+// subtree. Returns nil if jobID is not a known descendant of any live direct
+// child. Leaf-lock: the per-hop resolution is the same single-hop step the live
+// walk uses; no lock is held across the recursion.
+func (s *Session) directChildOwningDescendant(jobID string) *Session {
+	if s == nil {
+		return nil
+	}
+	for _, child := range s.liveSubagentSessions() {
+		// The direct child itself owns the job (a one-hop descendant).
+		if child.jobManager != nil && child.jobManager.store != nil {
+			if recs, err := child.jobManager.store.Load(); err == nil {
+				if rec := recs[jobID]; rec != nil && rec.OwnerSessionID == child.id {
+					return child
+				}
+			}
+		}
+		// A session deeper in this child's live subtree owns the job (two+ hops).
+		if _, _, _, ok := child.resolveDescendantJobOwner(jobID); ok {
+			return child
+		}
+	}
+	return nil
+}
+
+// directDelegateJobForChild finds the caller's own delegate job whose child
+// session is childID (its transcript_ref encodes childID). This is the
+// controllable handle the not_controllable guidance names: stopping it
+// cascade-stops the named descendant's subtree.
+func (s *Session) directDelegateJobForChild(childID string) string {
+	local, err := sessionJobManager(s)
+	if err != nil {
+		return ""
+	}
+	recs, err := local.store.Load()
+	if err != nil {
+		return ""
+	}
+	want := encodeRef("", childID)
+	for jobID, rec := range recs {
+		if rec.Type != jobstore.JobDelegate || rec.OwnerSessionID != s.id {
+			continue
+		}
+		if rec.TranscriptRef == want {
+			return jobID
+		}
+	}
+	return ""
 }
 
 func (jm *jobManager) forwardLocked(e jobstore.Event) error {

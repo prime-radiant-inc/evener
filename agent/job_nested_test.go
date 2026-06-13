@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2615,6 +2616,236 @@ func workerOwnedRuntimeLostDelegate(t *testing.T, jm *jobManager, ownerID string
 		t.Fatalf("load worker delegate record: %v", err)
 	}
 	return rec
+}
+
+// seedRunningDelegate installs a running delegate-typed job in jm carrying a
+// transcript_ref so the stop cascade can resolve the job to its child session.
+// The signal records how many times it fired (the stop path calls it). The job
+// is durable-started and forwarded one hop like a real delegate start.
+func seedRunningDelegate(t *testing.T, jm *jobManager, transcriptRef string, signals *atomic.Int32) string {
+	t.Helper()
+	startedAt := jm.now()
+	jobID := jobstore.NewJobID()
+	run := &runningJob{
+		rec: &jobstore.JobRecord{
+			JobID:            jobID,
+			Type:             jobstore.JobDelegate,
+			Status:           jobstore.StatusRunning,
+			Task:             "delegate worker",
+			OwnerSessionID:   jm.sessionID,
+			VisibleToSession: jm.sessionID,
+			ParentJobID:      jm.currentParentJobID(),
+			TranscriptRef:    transcriptRef,
+			StartedAt:        startedAt,
+			LastActivity:     &startedAt,
+		},
+		signal:         func() { signals.Add(1) },
+		done:           make(chan struct{}),
+		durableStarted: true,
+	}
+	started := jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            jobID,
+		Type:             run.rec.Type,
+		Task:             run.rec.Task,
+		OwnerSessionID:   run.rec.OwnerSessionID,
+		VisibleToSession: run.rec.VisibleToSession,
+		ParentJobID:      run.rec.ParentJobID,
+		TranscriptRef:    transcriptRef,
+		StartedAt:        &startedAt,
+	}
+	jm.mu.Lock()
+	if err := jm.appendEvent(started); err != nil {
+		jm.mu.Unlock()
+		t.Fatalf("append delegate start: %v", err)
+	}
+	if err := jm.forwardLocked(started); err != nil {
+		jm.mu.Unlock()
+		t.Fatalf("forward delegate start: %v", err)
+	}
+	jm.running[jobID] = run
+	jm.mu.Unlock()
+	return jobID
+}
+
+// TestJobStopCascadesToWorkers drives a depth-3 live tree
+// (root -> coordinator -> worker). The root owns the coordinator's delegate job;
+// the coordinator owns a worker delegate job plus a shell job; the worker owns a
+// shell job. job_stop on the coordinator's delegate must CASCADE: it stops the
+// coordinator's own running jobs (the worker delegate + the coordinator shell)
+// and recurses into the live subtree to stop the worker's shell job too — every
+// job in the coordinator's subtree reaches terminal stopped_by_parent. Today the
+// stop cancels only the coordinator's turn and the workers survive orphaned.
+func TestJobStopCascadesToWorkers(t *testing.T) {
+	rootJM := newWalkJobManager(t, "ROOT")
+	coordJM := newWalkJobManager(t, "COORD")
+	workerJM := newWalkJobManager(t, "WORK")
+	t.Cleanup(func() {
+		_ = rootJM.store.Close()
+		_ = coordJM.store.Close()
+		_ = workerJM.store.Close()
+	})
+
+	// One-hop forwarding: each child forwards into its direct parent's store.
+	coordJM.forward = rootJM.forwardEvent
+	workerJM.forward = coordJM.forwardEvent
+
+	// Coordinator-owned worker delegate (its child session is WORK) and the
+	// worker-delegate job becomes the parent job for WORK's forwarded jobs.
+	var workerDelegateSignals atomic.Int32
+	workerDelegateJobID := seedRunningDelegate(t, coordJM, encodeRef("", "WORK"), &workerDelegateSignals)
+	workerJM.parentJobID = workerDelegateJobID
+
+	// Worker-owned shell job that finalizes terminal when signalled.
+	workerShellSE := newSignalCompletesStreamingExecutor()
+	workerShell := runShell(context.Background(), workerJM, workerShellSE, shellArgs{Command: "sleep 30", Background: true})
+	if workerShell.JobID == "" {
+		t.Fatalf("worker runShell = %+v, want background job", workerShell)
+	}
+
+	// Coordinator-owned shell job, sibling of the worker delegate.
+	coordShellSE := newSignalCompletesStreamingExecutor()
+	coordShell := runShell(context.Background(), coordJM, coordShellSE, shellArgs{Command: "sleep 30", Background: true})
+	if coordShell.JobID == "" {
+		t.Fatalf("coordinator runShell = %+v, want background job", coordShell)
+	}
+
+	// Root-owned coordinator delegate (its child session is COORD); the
+	// coordinator's jobs forward up through it.
+	var coordDelegateSignals atomic.Int32
+	coordDelegateJobID := seedRunningDelegate(t, rootJM, encodeRef("", "COORD"), &coordDelegateSignals)
+	coordJM.parentJobID = coordDelegateJobID
+
+	t.Cleanup(func() {
+		workerShellSE.once.Do(func() { close(workerShellSE.done) })
+		coordShellSE.once.Do(func() { close(coordShellSE.done) })
+		waitForShellDone(t, workerJM, workerShell.JobID)
+		waitForShellDone(t, coordJM, coordShell.JobID)
+	})
+
+	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+
+	out, err := jobStopTool(context.Background(), root, map[string]any{
+		"job_id": coordDelegateJobID,
+	}, 20000)
+	if err != nil {
+		t.Fatalf("job_stop coordinator delegate: %v", err)
+	}
+	var stop jobStopResult
+	if err := json.Unmarshal([]byte(out), &stop); err != nil {
+		t.Fatalf("unmarshal job_stop: %v (output: %s)", err, out)
+	}
+	if stop.JobID != coordDelegateJobID {
+		t.Fatalf("job_stop job_id = %q, want coordinator delegate %q", stop.JobID, coordDelegateJobID)
+	}
+
+	// The cascade signalled the coordinator's own running jobs: the worker
+	// delegate and both shell jobs.
+	if coordDelegateSignals.Load() != 1 {
+		t.Fatalf("coordinator delegate signals = %d, want 1 (primary stop)", coordDelegateSignals.Load())
+	}
+	if workerDelegateSignals.Load() != 1 {
+		t.Fatalf("worker delegate signals = %d, want 1 (cascade reached coordinator's worker delegate)", workerDelegateSignals.Load())
+	}
+	if coordShellSE.signals.Load() != 1 {
+		t.Fatalf("coordinator shell signals = %d, want 1 (cascade reached coordinator's own shell)", coordShellSE.signals.Load())
+	}
+	if workerShellSE.signals.Load() != 1 {
+		t.Fatalf("worker shell signals = %d, want 1 (cascade recursed into the worker subtree)", workerShellSE.signals.Load())
+	}
+
+	// The signalled shell jobs finalize terminal stopped_by_parent.
+	workerShellSE.once.Do(func() { close(workerShellSE.done) })
+	coordShellSE.once.Do(func() { close(coordShellSE.done) })
+	waitForShellDone(t, workerJM, workerShell.JobID)
+	waitForShellDone(t, coordJM, coordShell.JobID)
+
+	workerShellRec, err := findJobRecord(workerJM, workerShell.JobID)
+	if err != nil {
+		t.Fatalf("load worker shell record: %v", err)
+	}
+	if workerShellRec.Status != jobstore.StatusCancelled || workerShellRec.Reason != "stopped_by_parent" {
+		t.Fatalf("worker shell record = %+v, want cancelled/stopped_by_parent", workerShellRec)
+	}
+	coordShellRec, err := findJobRecord(coordJM, coordShell.JobID)
+	if err != nil {
+		t.Fatalf("load coordinator shell record: %v", err)
+	}
+	if coordShellRec.Status != jobstore.StatusCancelled || coordShellRec.Reason != "stopped_by_parent" {
+		t.Fatalf("coordinator shell record = %+v, want cancelled/stopped_by_parent", coordShellRec)
+	}
+}
+
+// TestJobStopNonDirectDescendant: the root issues job_stop on a grandchild
+// worker job (a non-direct descendant, two hops down, surfaced only as a
+// forwarded copy in the root's store). The root cannot directly control a
+// descendant it does not own; the call must fail not_controllable, naming the
+// owning descendant session and the direct coordinator delegate the root CAN
+// stop to cascade-stop the subtree.
+func TestJobStopNonDirectDescendant(t *testing.T) {
+	rootJM := newWalkJobManager(t, "ROOT")
+	coordJM := newWalkJobManager(t, "COORD")
+	workerJM := newWalkJobManager(t, "WORK")
+	t.Cleanup(func() {
+		_ = rootJM.store.Close()
+		_ = coordJM.store.Close()
+		_ = workerJM.store.Close()
+	})
+
+	coordJM.forward = rootJM.forwardEvent
+	workerJM.forward = coordJM.forwardEvent
+
+	var workerDelegateSignals atomic.Int32
+	workerDelegateJobID := seedRunningDelegate(t, coordJM, encodeRef("", "WORK"), &workerDelegateSignals)
+	workerJM.parentJobID = workerDelegateJobID
+
+	workerShellSE := newSignalCompletesStreamingExecutor()
+	workerShell := runShell(context.Background(), workerJM, workerShellSE, shellArgs{Command: "sleep 30", Background: true})
+	if workerShell.JobID == "" {
+		t.Fatalf("worker runShell = %+v, want background job", workerShell)
+	}
+
+	var coordDelegateSignals atomic.Int32
+	coordDelegateJobID := seedRunningDelegate(t, rootJM, encodeRef("", "COORD"), &coordDelegateSignals)
+	coordJM.parentJobID = coordDelegateJobID
+
+	t.Cleanup(func() {
+		workerShellSE.once.Do(func() { close(workerShellSE.done) })
+		waitForShellDone(t, workerJM, workerShell.JobID)
+	})
+
+	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+
+	_, err := jobStopTool(context.Background(), root, map[string]any{
+		"job_id": workerShell.JobID,
+	}, 20000)
+	if err == nil {
+		t.Fatal("job_stop on a non-direct descendant succeeded, want not_controllable error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "not_controllable:") {
+		t.Fatalf("job_stop error = %q, want canonical not_controllable token", msg)
+	}
+	if !strings.Contains(msg, "COORD") {
+		t.Fatalf("job_stop error = %q, want it to name the owning coordinator COORD", msg)
+	}
+	if !strings.Contains(msg, coordDelegateJobID) {
+		t.Fatalf("job_stop error = %q, want it to name the controllable coordinator delegate %q", msg, coordDelegateJobID)
+	}
+	// The grandchild was NOT stopped: a non-direct descendant control attempt is
+	// rejected, not silently routed.
+	if workerShellSE.signals.Load() != 0 {
+		t.Fatalf("worker shell signals = %d, want 0 (non-direct descendant must not be stopped)", workerShellSE.signals.Load())
+	}
 }
 
 func assertJobForwardHookType(_ func(jobstore.Event) error) {}

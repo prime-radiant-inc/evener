@@ -741,8 +741,14 @@ func isWatchableConcreteJobLocked(run *runningJob) bool {
 	return run != nil && run.terminal == nil && run.finalize == nil
 }
 
+// errWatchTargetNotFound is the sentinel underlying a watch target_not_found. The
+// watch tool checks for it (errors.Is) so it can enrich a miss with the
+// delegate-the-watching guidance when the missed target is actually a known
+// descendant the caller cannot directly watch (spec §3/§8).
+var errWatchTargetNotFound = errors.New("target_not_found")
+
 func watchTargetNotFoundError(target string) error {
-	return fmt.Errorf("target_not_found: job %q not found", target)
+	return fmt.Errorf("%w: job %q not found", errWatchTargetNotFound, target)
 }
 
 func watchTargetTerminalError(target, status string) error {

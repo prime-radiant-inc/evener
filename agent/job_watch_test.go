@@ -6273,3 +6273,63 @@ func TestGrantedReadRejectsBlock(t *testing.T) {
 }
 
 var _ = jobstore.JobShell
+
+// TestJobWatchDeepDescendantGivesDelegateGuidance: the root issues job_watch on
+// a grandchild worker's shell job (a known live descendant the root cannot
+// directly watch — watches are own-jobs-only, spec §3/§8). Today this surfaces a
+// bare target_not_found. The model needs the delegate-the-watching guidance:
+// name the owning session and tell the model to have that session attach the
+// watch (only watches resolve own jobs). The error is precise — it fires only
+// for a target that IS a known descendant, not for a genuinely unknown job_id.
+func TestJobWatchDeepDescendantGivesDelegateGuidance(t *testing.T) {
+	rootJM := newWalkJobManager(t, "ROOT")
+	coordJM := newWalkJobManager(t, "COORD")
+	workerJM := newWalkJobManager(t, "WORK")
+	t.Cleanup(func() {
+		_ = rootJM.store.Close()
+		_ = coordJM.store.Close()
+		_ = workerJM.store.Close()
+	})
+
+	coordJM.forward = rootJM.forwardEvent
+	coordJM.parentJobID = "job_root_delegate_coord"
+	workerJM.forward = coordJM.forwardEvent
+	workerJM.parentJobID = "job_coord_delegate_worker"
+
+	workerRec, err := workerJM.createShell(createShellOpts{Command: "sleep 30", Description: "worker job"})
+	if err != nil {
+		t.Fatalf("create worker shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, workerJM, workerRec.JobID) })
+
+	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+
+	_, err = jobWatchTool(root, map[string]any{
+		"target": workerRec.JobID,
+		"events": []any{"job.notification"},
+	}, 20000)
+	if err == nil {
+		t.Fatal("job_watch on a deep descendant succeeded, want delegate-the-watching guidance")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "WORK") {
+		t.Fatalf("job_watch error = %q, want it to name the owning session WORK", msg)
+	}
+	if !strings.Contains(msg, "delegate") {
+		t.Fatalf("job_watch error = %q, want delegate-the-watching guidance", msg)
+	}
+
+	// A genuinely unknown job_id keeps the bare target_not_found (the guidance is
+	// precise — it does not over-broaden to every miss).
+	_, err = jobWatchTool(root, map[string]any{
+		"target": "job_does_not_exist_anywhere",
+		"events": []any{"job.notification"},
+	}, 20000)
+	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
+		t.Fatalf("unknown job_id error = %v, want bare target_not_found", err)
+	}
+}

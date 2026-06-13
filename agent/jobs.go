@@ -742,6 +742,22 @@ func (jm *jobManager) outputPathForJob(rec *jobstore.JobRecord, jobID string) st
 	return filepath.Join(jm.dir, "jobs", jobID+".log")
 }
 
+// runningJobIDs returns a snapshot of the durably-started running job IDs. The
+// snapshot is taken under jm.mu and the lock is released before the caller acts
+// on it, so the stop cascade never holds a job-manager lock while it stops jobs
+// or recurses into descendant stores (the leaf-lock discipline of the live walk).
+func (jm *jobManager) runningJobIDs() []string {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	ids := make([]string, 0, len(jm.running))
+	for jobID, run := range jm.running {
+		if run.durableStarted {
+			ids = append(ids, jobID)
+		}
+	}
+	return ids
+}
+
 func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 	jm.mu.Lock()
 	run := jm.running[jobID]

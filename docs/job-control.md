@@ -35,7 +35,7 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Delegate work starts in the background by default (no `job_id` wait); use `max_wait_ms` when you want to wait inline for up to N ms. Shell and delegate defaults differ deliberately: shell commands are usually short decision-producing calls, while delegates are independent agentic work.
 - Use `delegate` to start a new delegate conversation/job. It does not continue an existing conversation.
 - Use `job_send_message` for follow-up on a messageable target: if a delegate target is running, it injects guidance; if a delegate target is terminal and resumable, it starts a new delegate job in that same delegate conversation by default. Use `on_finished="fail"` only for live-only nudges that must not resume terminal work.
-- Use `job_send_message` for observer/sidecar commentary too. Runtime alias `caller` is available for runtime-originated delivery: `job_send_message` calls from child delegates receive it as steering; watch `send.to="caller"` delivers a notification turn; `watched` is only a `job_watch.send.to` target resolved by watch delivery; `main` is not a v1 alias. Ordinary delegate follow-up should target a concrete `job_id`.
+- Use `job_send_message` for observer/sidecar commentary too. Runtime alias `caller` is available for runtime-originated delivery and resolves to the **immediate parent at every level** (a depth-2 worker's `caller` is its coordinator, not the root): `job_send_message` calls from child delegates receive it as steering; watch `send.to="caller"` delivers a notification turn; `watched` is only a `job_watch.send.to` target resolved by watch delivery; `main` is not a v1 alias. Concrete `job_id` follow-up targets a session's own direct delegate at every level. Ordinary delegate follow-up should target a concrete `job_id`.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_read_output`.
 - Serf automatically injects one terminal notification for notification-armed background jobs when they complete, fail, are cancelled, or are stopped/lost.
 - Use `job_watch` when a condition should notify the caller or send a configured message/frame to another target. `send` is the delivery discriminator: omit it for caller notification, include it for target delivery. Trigger sources are orthogonal: `output_match`, `progress_interval_ms`, and, for event/frame watches, `events` (optionally gated by `every`). Do not use `job_watch` to learn when a job completes.
@@ -538,7 +538,7 @@ Rules:
 - `job_watch` only adds extra notifications or configured sends while the watched target is active/visible.
 - For an already-terminal concrete job that still has retained output, an `output_match`-only `job_watch` (no `events` or `progress_interval_ms`) performs a one-shot catch-up scan of that retained output instead of installing a live watch: it returns `terminal_catchup=true` with `watching=false`, `fired=true` and a frame/notification on a match or `fired=false` on none, and the terminal `status`. Any other condition on a terminal target still fails synchronously with `target_terminal` (nothing can ever fire). Unknown or no-longer-retained concrete job targets still fail synchronously with `target_not_found`.
 - `job_watch(clear=true)` does not stop the watched job. If `send.to` is supplied, it clears the watch for the `(visible_session_id, target, send.to)` key. If `send.to` is omitted, it clears all watches for `(visible_session_id, target)` that the caller is allowed to clear, including both notify-caller and sidecar watches.
-- `job_watch` fails synchronously with `target_not_watchable` for targets the caller is not allowed to watch.
+- `job_watch` fails synchronously with `target_not_watchable` for targets the caller is not allowed to watch. A watch resolves the caller's own jobs only: a target owned by a child or deeper descendant session is not directly watchable. When the target is a known descendant in the live subtree, the failure carries the **delegate-the-watching** guidance — it names the owning descendant session and directs the caller to delegate the watch to that session, which attaches the watch on its own job (the only session that can watch it).
 - Self-delivery feedback loops are rejected at creation with `invalid_request`, regardless of target: a watch whose resolved event kinds include a self-generated kind (`assistant.message`, `assistant.tool`, `communicate`, including via `["*"]`) and whose delivery returns to the watching session (`send` omitted, or `send.to="caller"`) would make each delivery cause the next event. Watch self-generated kinds only with `send.to` set to an observer job. `job.notification` self-watches remain allowed.
 - Watches expire automatically when their concrete watched job reaches terminal state. Session-level watches remain active until their configured scope ends, the session/job manager closes, or retention policy removes them.
 - A watch whose `send.to` is a concrete delegate job (the observer/sidecar pattern) grants that observer `job_read_output` on the watched job; `*`-target watches grant per fire as concrete watched jobs resolve. Grants are durable read capabilities keyed on the observer's session identity, not its `job_id` — they survive observer resume under a new `job_id` — and are not revoked by `clear=true` or watch expiry, because the observer's main read typically happens after the watched job finishes; output retention still bounds what a grant can read. Grants extend `job_read_output` only: no `job_list` visibility, no `job_stop`, and no additional `job_send_message` authorization.
@@ -783,10 +783,10 @@ Semantics:
 - If stop is confirmed, terminal status is `cancelled` with reason `stopped_by_parent`.
 - If no live handle remains and cancellation cannot be confirmed, terminal status is `stopped` with reason `stop_unconfirmed` or `runtime_lost`.
 - If still running after timeout, status remains `running` with reason `stop_pending`, and a later terminal notification remains guaranteed.
-- By default, `job_stop` is not recursive: it targets exactly the supplied `job_id`. Pass `include_children=true` only when the user intends to cancel visible active nested jobs too.
-- Non-recursive means Serf does not send explicit stop requests to visible child jobs. However, if stopping a delegate tears down the owner runtime for nested jobs, affected nested jobs must be finalized as `stopped/runtime_lost`, `stopped/supervision_lost`, or a more specific status/reason defined by the status matrix.
+- For a shell job, `job_stop` targets exactly the supplied `job_id` and is not recursive by default; pass `include_children=true` only when the user intends to cancel visible active nested jobs too.
+- For a delegate job, `job_stop` **cascades into the subtree**: it stops the delegate and the running jobs the delegate's subtree owns (its workers' delegate and shell jobs), recursively. Stopping a coordinator therefore stops its whole live subtree's work rather than leaving the coordinator's workers running orphaned. Each cascade-stopped job finalizes as `cancelled/stopped_by_parent`.
 
-Non-recursive example:
+Delegate stop (cascades into the subtree):
 
 ```json
 {
@@ -794,18 +794,18 @@ Non-recursive example:
 }
 ```
 
-This sends an explicit stop only to the delegate job. It does **not** promise nested child survival: visible nested shell jobs may continue only if their owner runtime survives the delegate cancellation path. If that runtime is torn down, affected children finalize as supervision/runtime loss.
+Stopping a delegate job cascades: it stops the delegate and the running jobs in its live subtree (its workers' delegate and shell jobs), recursively, so the workers do not survive orphaned. The cascade stops the running jobs inside the subtree without closing the sessions; Session Close, which tears down whole sessions, is unchanged.
 
-Recursive example:
+Shell stop with `include_children`:
 
 ```json
 {
-  "job_id": "job_parent_delegate",
+  "job_id": "job_parent_shell",
   "include_children": true
 }
 ```
 
-This stops the delegate job and visible active nested jobs.
+For a shell job this also stops its visible active nested jobs.
 
 Return shape:
 
@@ -838,7 +838,7 @@ The v1 model-facing tool matrix is:
 | Caller context | Available job tools | Notes |
 | --- | --- | --- |
 | Root session | shell, `delegate`, `job_watch`, `job_send_message`, `job_read_output`, `job_list`, `job_stop` | Root may create delegates and watches, message concrete delegate jobs, and use aliases when authorized. |
-| Delegate/subagent session | shell, `job_send_message`, `job_read_output`, `job_list`, `job_stop` | Delegates may start shell jobs. `delegate` and `job_watch` are root-only in v1. Delegate `job_send_message` may use runtime aliases; concrete delegate `job_id` targets are root-only until nested delegate jobs are deliberately designed. |
+| Delegate/subagent session | shell, `job_send_message`, `job_read_output`, `job_list`, `job_stop` | Delegates may start shell jobs. `delegate` and `job_watch` are allowance-gated (a leaf delegate with allowance 0 receives neither; see the delegation-allowance amendment). Delegate `job_send_message` may use runtime aliases; concrete delegate `job_id` targets are scoped to the session's **own direct delegates** at every level — a coordinator may message its own worker delegate by `job_id`, but not an arbitrary descendant's delegate (which fails `not_controllable`). `caller` resolves to the immediate parent at every level. |
 
 Tool availability is part of the model-facing contract. If an implementation narrows these permissions for policy reasons, it must make that visible in tool availability or tool descriptions rather than failing late with surprising generic errors.
 
@@ -1078,7 +1078,9 @@ Rules:
 - Parent `job_stop` on a nested job routes to the owning session/runtime if live.
 - If routing is unavailable after restart, Serf reports terminal `stopped/runtime_lost` according to restart reconciliation.
 - If routing fails while the owner runtime is believed live, an active control attempt may fail or finalize according to the status matrix by failing synchronously with `not_controllable`.
-- By default, `job_stop` is not recursive. `job_stop(parent_delegate_job_id, include_children=true)` recursively stops visible active nested jobs.
+- For a shell job, `job_stop` is not recursive by default; `job_stop(shell_job_id, include_children=true)` recursively stops visible active nested jobs.
+- `job_stop` on a delegate job **cascades into its subtree** (no flag needed): stopping a coordinator's delegate also stops the coordinator's own running jobs (its workers' delegate and shell jobs) and recurses into the live subtree, so stopping a subtree means stopping its direct child. The cascade stops the running jobs inside the subtree without closing the sessions; each cascade-stopped job finalizes as `cancelled/stopped_by_parent`, the same terminal as the directly stopped delegate. It reuses the live-walk leaf-lock discipline — each store's running jobs are read under that store's own lock, only live direct children are recursed into, and no lock is held across the recursion. Session Close still tears down whole sessions recursively and is unchanged.
+- `job_stop` on a non-direct descendant — a grandchild-or-deeper job the caller neither owns nor reaches through a direct child it owns the job through — fails synchronously with `not_controllable`. The error names the owning descendant session and the caller's direct delegate that controls that subtree, guiding the caller to stop that direct delegate (which cascade-stops the subtree) rather than silently routing a control attempt the caller is not entitled to make.
 
 Target nested shell support:
 
@@ -1095,6 +1097,7 @@ Example flow:
 3. Parent sees job_B in job_list(include_nested=true) with parent_job_id="job_A".
 4. Parent reads shell output with job_read_output(job_B).
 5. Parent stops just job_B with job_stop(job_B), or stops the visible tree with job_stop(job_A, include_children=true).
+6. job_stop(job_A) on the delegate cascades: it stops the delegate plus the running jobs in its subtree (job_B and anything job_A's child delegated onward), recursively.
 ```
 
 ```mermaid
@@ -1103,8 +1106,8 @@ flowchart TD
     ChildShellJob -->|job_started forwarded| ForwardedRecord
     ForwardedRecord -->|job_list include_nested=true| ParentVisible
     ParentVisible -->|job_read_output parent-visible job_id| ParentCanRead
-    ParentVisible -->|job_watch parent-visible job_id| ParentCanWatch
-    ParentVisible -->|job_stop parent-visible job_id| ParentCanStop
+    ParentVisible -->|job_watch own job_id only| ParentCanWatch
+    ParentVisible -->|job_stop own delegate cascades subtree| ParentCanStop
 ```
 
 ## Observer and sidecar composition

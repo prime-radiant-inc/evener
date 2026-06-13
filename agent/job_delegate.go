@@ -262,13 +262,6 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return sendMessageFailed(target, fmt.Errorf("target_not_found: job %q not found", target))
 	}
 
-	s.mu.Lock()
-	depth := s.depth
-	s.mu.Unlock()
-	if depth > 0 {
-		return sendMessageFailed(target, errors.New("not_controllable: concrete delegate job targets are root-only"))
-	}
-
 	jm, err := sessionJobManager(s)
 	if err != nil {
 		return sendMessageFailed(target, err)
@@ -276,6 +269,13 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	rec, err := findJobRecord(jm, target)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_found: %w", err))
+	}
+	// Own direct delegates at every level (spec §3): a coordinator at any depth
+	// may message its own direct worker delegate by job_id, but the scope is the
+	// session's own delegates — a forwarded copy of a deeper descendant's delegate
+	// (owned by another session) is not directly controllable.
+	if rec.OwnerSessionID != "" && rec.OwnerSessionID != s.id {
+		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is owned by descendant session %q; you may only message your own direct delegates", target, rec.OwnerSessionID))
 	}
 	if rec.Type != jobstore.JobDelegate {
 		return sendMessageFailed(target, fmt.Errorf("target_not_messageable: job %q has type %q", target, rec.Type))

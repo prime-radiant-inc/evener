@@ -1482,6 +1482,68 @@ func TestSendDelegateMessageTerminalDelegateResumeCreatesNewJob(t *testing.T) {
 	}
 }
 
+// TestSendDelegateMessageOwnDirectDelegatesAtDepth: a depth-1 coordinator may
+// message its OWN direct worker delegate by job_id (spec §3:
+// "own direct delegates at every level"). Today the depth>0 guard rejects every
+// concrete delegate target as "root-only"; the coordinator's own worker delegate
+// must instead resume.
+func TestSendDelegateMessageOwnDirectDelegatesAtDepth(t *testing.T) {
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("worker first complete")
+			},
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("worker resumed complete")
+			},
+		},
+	}
+	c.Register(adapter)
+	coordinator := newDelegateTestSession(t, c)
+
+	// The coordinator spawns its own direct worker delegate (allowance lets a
+	// non-root session delegate; depth 0 here so createDelegate's own gates pass).
+	worker := coordinator.createDelegate(context.Background(), delegateArgs{
+		Task:           "worker first run",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if worker.Err != nil {
+		t.Fatalf("createDelegate worker returned error: %v", worker.Err)
+	}
+	if worker.Status != jobstore.StatusCompleted {
+		t.Fatalf("worker first run = %+v, want completed", worker)
+	}
+
+	// Make the coordinator a depth-1 session: it is no longer the root. The worker
+	// delegate is still its OWN direct delegate.
+	coordinator.mu.Lock()
+	coordinator.depth = 1
+	coordinator.mu.Unlock()
+
+	res := coordinator.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  worker.JobID,
+		Message: "worker, run again",
+	})
+	if res.Err != nil {
+		t.Fatalf("depth-1 coordinator messaging its own direct worker delegate: %v", res.Err)
+	}
+	if res.Action != "resumed" || res.ResumedFromJobID != worker.JobID || res.JobID == "" || res.JobID == worker.JobID {
+		t.Fatalf("result = %+v, want resumed new running delegate job from worker %s", res, worker.JobID)
+	}
+
+	waitForShellDone(t, coordinator.jobManager, res.JobID)
+	output, _, _, err := coordinator.jobManager.readOutput(res.JobID, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read resumed worker output: %v", err)
+	}
+	if !strings.Contains(output, "worker resumed complete") {
+		t.Fatalf("resumed worker output = %q, want second run output", output)
+	}
+}
+
 func TestSendDelegateMessageResumedJobCopiesCompleteDelegateDescriptor(t *testing.T) {
 	c := llm.NewClient()
 	adapter := &fakeAdapter{

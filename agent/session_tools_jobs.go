@@ -153,6 +153,15 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (string, error)
 	}
 	res, err := jm.configureWatch(a)
 	if err != nil {
+		// Watches resolve own jobs only (spec §3/§8): a target_not_found for a
+		// target that is actually a known descendant in the live subtree is
+		// enriched with the delegate-the-watching guidance — the model should have
+		// the owning session attach the watch, since only it can watch its own job.
+		if errors.Is(err, errWatchTargetNotFound) {
+			if _, owner, _, ok := s.resolveDescendantJobOwner(a.Target); ok && owner != nil {
+				return "", fmt.Errorf("target_not_watchable: job %q is owned by descendant session %q, which you cannot watch directly (watches resolve own jobs only); delegate the watching to session %q so it attaches the watch on its own job", a.Target, owner.id, owner.id)
+			}
+		}
 		return "", err
 	}
 	return marshalWatchResult(res, maxChars)
@@ -514,9 +523,20 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 	if shellBoolArg(args, "include_children") {
 		_, childStopErr = s.stopChildren(jobID)
 	}
+	// Stopping a delegate job cascades into its subtree (spec §2): resolve the
+	// delegate's live child session BEFORE the stop signals (and cancels) the
+	// coordinator's turn, then stop the coordinator's own running jobs (its
+	// workers' delegate + shell jobs) recursively, so they do not survive
+	// orphaned.
+	cascadeChild := s.delegateChildSessionToCascade(jobID)
 	rec, err := s.stopNestedOrLocal(jobID)
 	if err != nil {
 		return "", errors.Join(childStopErr, err)
+	}
+	if cascadeChild != nil {
+		if _, cascadeErr := s.stopDelegateSubtree(cascadeChild); cascadeErr != nil {
+			childStopErr = errors.Join(childStopErr, cascadeErr)
+		}
 	}
 	if maxWaitMS > 0 {
 		clamped := maxWaitMS
