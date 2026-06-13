@@ -304,7 +304,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		if !ok {
 			return nil, fmt.Errorf("unknown plugin agent type: %s", agentType)
 		}
-		if agentUsesRootOnlySubagentTools(a) {
+		if agentUsesRootOnlySubagentTools(a) && allowance <= 0 {
 			return nil, fmt.Errorf("agent_type %q is top-level only: it requires root-only tools", agentType)
 		}
 		agent = &a

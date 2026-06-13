@@ -487,6 +487,8 @@ func (s *Session) allToolDefinitions(_ int) []llm.ToolDefinition {
 }
 
 func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
+	allowance := s.delegationAllowance // read under caller's lock or during single-threaded init
+
 	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(&agent)
 	var canonical []string
 	switch {
@@ -496,14 +498,21 @@ func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
 		canonical = append([]string(nil), allowedTools...)
 		canonical = appendUniqueStrings(canonical, s.resultToolName())
 	}
-	canonical = removeRootOnlySubagentTools(canonical)
+	// Only strip root-only tools from the summary when there is no grantable
+	// allowance. When allowance > 0 a typed agent that lists delegate/job_watch
+	// keeps them in its printed summary so the DefaultTools line is truthful.
+	if allowance <= 0 {
+		canonical = removeRootOnlySubagentTools(canonical)
+	}
 	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))
 }
 
 func (s *Session) availableAgentEntries() []agentEntry {
+	allowance := s.delegationAllowance // read under caller's lock or during single-threaded init
+
 	names := make([]string, 0, len(s.pluginAgents))
 	for name, agent := range s.pluginAgents {
-		if agentUsesRootOnlySubagentTools(agent) {
+		if agentUsesRootOnlySubagentTools(agent) && allowance <= 0 {
 			continue
 		}
 		names = append(names, name)
@@ -524,9 +533,11 @@ func (s *Session) availableAgentEntries() []agentEntry {
 }
 
 func (s *Session) delegateAgentTypeNames() []string {
+	allowance := s.delegationAllowance // read under caller's lock or during single-threaded init
+
 	names := make([]string, 0, len(s.pluginAgents))
 	for name, agent := range s.pluginAgents {
-		if agentUsesRootOnlySubagentTools(agent) {
+		if agentUsesRootOnlySubagentTools(agent) && allowance <= 0 {
 			continue
 		}
 		names = append(names, name)

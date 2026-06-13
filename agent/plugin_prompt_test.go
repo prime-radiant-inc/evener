@@ -12,6 +12,13 @@ import (
 
 func renderAvailableAgentsSectionForTest(t *testing.T, agents map[string]plugin.Agent) string {
 	t.Helper()
+	return renderAvailableAgentsSectionWithAllowance(t, agents, -1)
+}
+
+// renderAvailableAgentsSectionWithAllowance renders the available-agents section with
+// the given delegationAllowance overridden (pass -1 to use the session default).
+func renderAvailableAgentsSectionWithAllowance(t *testing.T, agents map[string]plugin.Agent, allowance int) string {
+	t.Helper()
 
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
@@ -21,6 +28,12 @@ func renderAvailableAgentsSectionForTest(t *testing.T, agents map[string]plugin.
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
+
+	if allowance >= 0 {
+		sess.mu.Lock()
+		sess.delegationAllowance = allowance
+		sess.mu.Unlock()
+	}
 
 	sess.pluginAgents = make(map[string]plugin.Agent, len(agents))
 	for name, agent := range agents {
@@ -111,11 +124,22 @@ func TestAvailableAgentsSection_OmitsTopLevelOnlyAgents(t *testing.T) {
 		"coordinator": {Name: "coordinator", Description: "Delegates to agents", Tools: []string{"read_file", "delegate"}},
 		"reviewer":    {Name: "reviewer", Description: "Reviews work", Tools: []string{"read_file"}},
 	}
-	result := renderAvailableAgentsSectionForTest(t, agents)
+
+	// At allowance=0 (leaf/dark) delegate-listing types must be filtered out.
+	result := renderAvailableAgentsSectionWithAllowance(t, agents, 0)
 	if strings.Contains(result, "coordinator") {
-		t.Fatalf("top-level-only agent should not be included in subagent prompt, got: %s", result)
+		t.Fatalf("delegate-listing agent should not be included at allowance=0, got: %s", result)
 	}
 	if !strings.Contains(result, "reviewer") {
-		t.Fatalf("spawnable agent should remain in prompt, got: %s", result)
+		t.Fatalf("spawnable agent should remain in prompt at allowance=0, got: %s", result)
+	}
+
+	// At allowance=1 (grantable) delegate-listing types ARE included in the prompt.
+	result = renderAvailableAgentsSectionWithAllowance(t, agents, 1)
+	if !strings.Contains(result, "coordinator") {
+		t.Fatalf("delegate-listing agent should be included at allowance=1, got: %s", result)
+	}
+	if !strings.Contains(result, "reviewer") {
+		t.Fatalf("spawnable agent should remain in prompt at allowance=1, got: %s", result)
 	}
 }
