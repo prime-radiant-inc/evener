@@ -9,7 +9,7 @@ delegate target gets the message injected mid-run — same `job_id`,
 prior conversation's context demonstrably retained (line 374);
 (c) `on_finished="fail"` against a finished target fails synchronously
 with `target_terminal` and creates nothing (line 375); (d) a
-`background=false` resume whose `block_timeout_ms` expires returns the
+a `max_wait_ms`-bounded resume that times out returns the
 foreground-timeout shape with the job left running (line 382).
 Resume-after-STOP is subagent-cancel-runaway.md; the observer
 `caller`-alias send is job-watch-sidecar-observer.md.
@@ -63,9 +63,9 @@ Resume-after-STOP is subagent-cancel-runaway.md; the observer
    >    verbatim.
    > 2. Call job_list with no filters and report the count and
    >    job_ids.
-   > 3. Call job_send_message with target JB, background false,
-   >    block_timeout_ms 2000, and this message: "Run the shell
-   >    command `sleep 20`, then communicate exactly SLOW_RESUME_DONE."
+   > 3. Call job_send_message with target JB, max_wait_ms 2000, and
+   >    this message: "Run the shell command `sleep 20`, then
+   >    communicate exactly SLOW_RESUME_DONE."
    >    Report the full result JSON verbatim.
    > 4. Call job_list with status ["running"] and report whether the
    >    new job from step 3 is running. End your turn.
@@ -140,7 +140,7 @@ Resume-after-STOP is subagent-cancel-runaway.md; the observer
   that session; on_finished=fail checks the TARGET's terminal state,
   so the error is stable regardless of which job in the session is
   newest.
-- `block_timeout_ms` 2000 is above the 1000 minimum (the normative
+- `max_wait_ms` 2000 is above the 1000 minimum clamp (the normative
   bounds at lines 187-192 govern the resumed-delegate foreground wait
   via line 382); values below 1000 clamp up and would still beat the
   20s sleep.
