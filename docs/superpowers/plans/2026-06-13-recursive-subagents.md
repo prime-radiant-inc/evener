@@ -68,7 +68,7 @@ The dossier (`docs/superpowers/research/2026-06-12-recursion-dossier.md`) was ca
 
 **Phase 0 — Foundation: the allowance carrier and the counter (no behavior flip yet)**
 - [x] Task 1: `delegation_allowance` on `spawnConfig`, transcript header, and `DelegateRestoreDescriptor`
-- Task 2: the tree-wide running counter (`treeCounter`, atomic, cap 16) — created by root, handed down
+- [x] Task 2: the tree-wide running counter (`treeCounter`, atomic, cap 16) — created by root, handed down
 
 **Phase 1 — The headline red test (drive-down regression, red against today)**
 - Task 3: deaf-coordinator drive-down regression test (unskipped RED run captured, lands `t.Skip`-tracked; Task 14 unskips first — mandatory mechanism, see task)
