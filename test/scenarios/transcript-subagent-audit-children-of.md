@@ -9,7 +9,7 @@ conversation instead of treating job output as the full transcript.
 1. Start a real Serf run with a fresh scenario state dir.
 2. Ask the parent:
 
-   > Use `delegate` with `background=false` for this task: "Create a file
+   > Use `delegate` with max_wait_ms 120000 for this task: "Create a file
    > inventory.txt in the current directory listing exactly these three words,
    > one per line: apples, oranges, pears. Then run wc -l inventory.txt to
    > confirm it has 3 lines, and report the line count."
