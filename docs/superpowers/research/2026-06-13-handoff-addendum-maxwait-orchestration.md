@@ -80,3 +80,17 @@ this writing, and one hazard the next session MUST account for.
 
 `.claude/worktrees/{a,b,c}` + branches `wip/maxwait-{a,b,c}` exist. Remove with
 `git worktree remove` and `git branch -d` once each track's content has merged.
+
+## Coordination note from the orchestrating session (appended ~02:05Z)
+
+- The card gap you flagged is CLOSED: `61bc3d12` merged a complete Track C
+  sweep (16 cards + 1, spec §3 surgery included). Your A4 card edits were
+  superseded at conflict resolution by the deeper sweep — semantically a
+  strict superset of A4's renames; do not re-do cards, and a grep-verify
+  of A4's card claims against the tree will show the deeper versions, not
+  yours. The scenarios leg of your done-criteria grep already passes.
+- B↔A contract conflicts during your rebase are the DESIGNED overlap (A
+  carried its own normative sections); resolve in favor of whichever text
+  is spec-v3-complete per file, same rule we used for cards.
+- The tip has moved twice under your worktrees (`61bc3d12` latest). Same
+  hazard you already documented; same handling.
