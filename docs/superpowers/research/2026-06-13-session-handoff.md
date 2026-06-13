@@ -1,5 +1,21 @@
 # Session handoff — max_wait campaign in flight, recursion queued behind it
 
+> ## ⮕ CURRENT STATE — 2026-06-13 ~05:30Z (post-consolidation; supersedes the body below where they conflict)
+>
+> **One branch, one checkout now.** Per Jesse: job control led into recursion; it is ONE project on `job-control-spec` in the MAIN checkout. No more per-task worktrees — implementers commit to `job-control-spec` directly (serialized; orchestrator hands-off while one runs). HEAD = `dde9bb09`.
+>
+> **DONE + merged + verified green on the consolidated tree** (`make test` 77 ok, `make lint` 0, `-race` clean, production dark — `delegation_allowance` in no tool schema):
+> - max_wait_ms unification (all 4 tracks), head_bytes on `job_read_output`, the two roborev contradiction fixes.
+> - Recursion **T1–8** (dark early tranche) merged at `dde9bb09` — `delegation_allowance` carrier, dormant `tree_counter`, the deaf-coordinator drive-down headline test (`agent/job_delegate_drivedown_test.go`, `t.Skip`-tracked RED until T14), seam flips 1–6. All gated by allowance=0 default ⇒ behavior-neutral at the tool surface.
+>
+> **IN FLIGHT:** the live 14-card e2e matrix is running on fresh `dde9bb09` binaries (hub up at 127.0.0.1:9180, smoke-verified SMOKE2_OK; ledger `/tmp/e2e-matrix-final.md`; sonnet runner, sequential). This is the gate before recursion T9–18.
+>
+> **NEXT (the goal):** matrix green → commit ledger+addendum → **recursion T9–18** on this branch (plan `docs/superpowers/plans/2026-06-13-recursive-subagents.md`, execution brief `2026-06-13-recursion-EXECUTION.md`; spec v3 SIGNED OFF; six open questions RESOLVED in the plan head, Jesse-vetoable). T14 = deaf-coordinator drive-down (unskip the headline, make it green) is the hard core. Then live coordinator e2e cards, then roborev sweep (#8).
+>
+> **DEFERRED, behavior-neutral, NOT a gate:** the dead-field sweep (`shellArgs.Background`, task #11). It is write-never in production. A 2026-06-13 attempt found `TestRunShellBackgroundCloseDuringStartDoesNotCommitJob` is coupled to the dead immediate-Background path — converting it makes `jm.close()` block (fake's Wait never returns; abandonment runs before `setShellSignal`). **OPEN QUESTION for Jesse:** is that a real shutdown-edge bug or a fake artifact? Removing the field needs that test redesigned or deleted (deletion needs Jesse approval). Do NOT rush it; it doesn't block the matrix or recursion.
+>
+> **Autonomy contract (Jesse, 2026-06-13):** drive to recursion-done solo; STOP and surface only for: a real product regression needing a non-trivial fix; a recursion design wall (esp. T14); anything wanting a test deleted / assertion weakened; a spec ambiguity the plan doesn't cover. Linear is IGNORED (Jesse's call).
+
 Written 2026-06-13 ~00:50Z by the outgoing session (model transition; Opus
 takes over). This is the cross-model substitute for the outgoing session's
 working memory. Read fully; verify state against `git log` and the artifacts
