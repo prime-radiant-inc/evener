@@ -1,7 +1,20 @@
 # Recursion validation-tail fixes
 
 **Date:** 2026-06-13 · **Branch:** `job-control-spec` (HEAD `4c087ccd`) ·
-**Status:** fixes pending. Never push; Jesse merges.
+**Status:** decisions made (below); ready to execute the fix pass. Never push;
+Jesse merges.
+
+## Decisions (Jesse, 2026-06-13)
+
+- **A7** → **steer into the drive turn.** Treat `sub.driving` like `sub.running`:
+  inject the input into the in-flight drive turn (the existing
+  send-to-running-subagent path); the subagent's model sees its queued
+  notifications + the steered input in one turn. No concurrent turn.
+- **F1** → **text-only, no code change.** Granting a `delegation_allowance` to a
+  role that lacks the `delegate` tool is ACCEPTABLE — it's a harmless no-op for a
+  non-delegating role; do NOT reject at grant time. Fix is documentation only:
+  clarify that a role needs the delegate tool to actually use its allowance. F1
+  is therefore NOT a correctness blocker.
 
 ## Context
 
@@ -18,7 +31,8 @@ These caught **cross-cutting** bugs the per-task reviews structurally could not
 (each reviewer was scoped to one task): restore-path threading, a fallback
 ordering bug, a drive-turn concurrency guard, and an allowance↔role-tools
 decouple. **A1 is a release blocker — the branch is not mergeable until A1, A2,
-A4, A7, and F1 are fixed.**
+A4, and A7 are fixed** (F1 is a text-only clarification per the decision above,
+not a correctness blocker).
 
 Each fix is TDD red-first, gets a scoped spec-review + orchestrator grep-verify +
 gate, and the whole-campaign sweep re-runs after the pass.
@@ -84,16 +98,16 @@ gate, and the whole-campaign sweep re-runs after the pass.
 - **Root cause:** `startOrSteerSubagentRun` (`agent/subagents.go:631`) guards
   `if sub.running` but not `sub.driving`. `driveSubagentNotificationTurn` checks
   `driving`; the two entry points are not mutually exclusive on it.
-- **Fix:** make `startOrSteerSubagentRun` driving-aware — treat `sub.driving`
-  like busy (steer/defer the input rather than launching a concurrent turn).
-  **Design nuance:** decide whether a resume-during-drive is delivered to the
-  in-flight drive turn or the next turn; if the right semantics are unclear,
-  surface before guessing.
+- **Fix (decided — steer into the drive turn):** make `startOrSteerSubagentRun`
+  driving-aware — treat `sub.driving` like `sub.running` and STEER the input into
+  the in-flight drive turn (the existing send-to-running-subagent path). The
+  subagent's model sees its queued notifications + the steered input in one turn;
+  no concurrent turn starts.
 - **Test (red, `-race`):** launch a drive turn, concurrently call
   `startOrSteerSubagentRun`; assert no second `ProcessInputKind` starts
   concurrently (no data race).
 
-### F1 [USABILITY, structural] — allowance>0 on a non-delegating role silently accepted
+### F1 [USABILITY, text-only] — allowance>0 on a non-delegating role silently accepted
 - **Symptom:** `delegate(agent_type:"subagent", delegation_allowance:1)` is
   accepted (1 < own), but the built-in `subagent` role has no `delegate` tool, so
   the child can't delegate — it only surfaces as a dead worker round-trip. The
@@ -103,16 +117,15 @@ gate, and the whole-campaign sweep re-runs after the pass.
 - **Root cause:** `baseSubagentToolPolicy` (`agent/subagents.go:170-184`) only
   consults `canDelegate` for the untyped/default child; a typed role returns its
   tool list verbatim, ignoring allowance. Allowance and tool-set are decoupled.
-- **Fix (structural, preferred):** at grant time (`createDelegate`), if
-  `delegation_allowance > 0` AND the chosen typed role's tool set lacks
-  `delegate`, reject with a clear `invalid_request` ("agent_type %q cannot
-  delegate (its tools omit delegate); omit agent_type or choose a
-  delegation-capable role"). Matches the existing strictly-less-than rejection.
-- **Fix (text, also):** `definitions.go:127` `delegation_allowance` description —
-  add the role caveat; `agent/agents/subagent.md:3` — front-load "cannot delegate
-  regardless of allowance."
-- **Test:** `delegate(agent_type:"subagent", delegation_allowance:1)` → rejected
-  with the clear message; `agent_type:"default"` → accepted.
+- **Decision (Jesse):** allowance-without-the-`delegate`-tool is ACCEPTABLE — a
+  harmless no-op for a non-delegating role. Do NOT reject at grant time.
+- **Fix (text-only):** `agent/internal/tool/definitions.go:127`
+  `delegation_allowance` description — add a caveat that the allowance only takes
+  effect if the delegate's role actually has the `delegate` tool (the built-in
+  `subagent` role is a non-delegating leaf); `agent/agents/subagent.md:3` —
+  front-load "cannot delegate regardless of any allowance; for a multi-level tree,
+  delegate with the default role." No behavioral change; a quick comprehension
+  read of the reworded text suffices (no new code test).
 
 ---
 
@@ -172,7 +185,8 @@ after `sub.mu` unlock (`liveSubagentSessions`/`liveDirectSubagents`);
 
 1. **A1 + A2** (restore-path cluster — same area) — BLOCKER, do first.
 2. **A4 + A7** (drive-down edge cluster — same machinery).
-3. **F1** (allowance↔role: structural reject + text).
+3. **F1** (text-only: clarify the `delegation_allowance` description + `subagent`
+   role text; no code change).
 4. **A3 / A5 / A6 / A8 / A9 / A10 / A11** — verify-and-fix sweep (TDD each).
 5. **A12** — tighten the two cards.
 6. Re-run the affected e2e cards live + the full gate (`make test && make lint &&
