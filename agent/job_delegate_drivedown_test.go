@@ -905,3 +905,150 @@ func TestFallbackRenderNonResumableChild(t *testing.T) {
 			"one honest level)", rendered.Reason)
 	}
 }
+
+// TestFallbackRenderNonResumableChildSurvivesDeliveryFilter proves the
+// unreachable-child fallback's notification actually reaches the model (spec §3
+// failure fallback). TestFallbackRenderNonResumableChild inspects
+// pendingJobNotifs directly right after the drive, where the enqueue has
+// happened — it never runs the delivery filter. The notification turn DOES run
+// the filter (filterDeliverableJobNotifications), which gates each durable
+// notification on jobstore.ShouldDeliver(rec) (NotifyState == NotifyPending). If
+// the fallback settles the record to NotifyDelivered before any render, the
+// filter drops the notification and the model never sees it.
+//
+// RED at HEAD: renderUnreachableChildPendings marks the record delivered inline
+// right after enqueuing, so ShouldDeliver returns false and the deliverable set
+// is empty. After removing the premature mark the record stays NotifyPending,
+// survives the filter, and is rendered (then settled post-render by the normal
+// markJobNotificationsDelivered path).
+func TestFallbackRenderNonResumableChildSurvivesDeliveryFilter(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	t.Cleanup(func() { _ = parentJM.store.Close() })
+
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+
+	// The parent holds a forwarded pending for GONE's own job, but GONE has no live
+	// subagent session (closed / descriptor-less) — it cannot be driven.
+	appendForwardedChildTerminalPending(t, parentJM, "job_gone_work", "GONE")
+
+	parent.driveChildrenWithUndeliveredAttention()
+
+	// Corroboration: the record must remain NotifyPending after the drive (today it
+	// is flipped to NotifyDelivered by the premature inline mark).
+	if got := childPendingNotifyState(t, parentJM, "job_gone_work"); got != jobstore.NotifyPending {
+		t.Fatalf("after fallback drive, record NotifyState=%q, want pending (the fallback must not settle "+
+			"before any render)", got)
+	}
+
+	// DECISIVE: run the REAL delivery filter the notification turn runs. The
+	// unreachable-child notification must survive into the deliverable set.
+	deliverable, _, _ := parent.filterDeliverableJobNotifications(parent.drainJobNotifications())
+	found := false
+	for _, d := range deliverable {
+		if d.notification.JobID == "job_gone_work" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the unreachable-child notification was filtered out before the model saw it; the fallback "+
+			"settled the record to NotifyDelivered before any render, so ShouldDeliver gated it out (deliverable=%+v)",
+			deliverable)
+	}
+}
+
+// TestSelfDeliverySettlesParentForwardedPending proves that a child settling its
+// OWN delegate notification also settles the parent's FORWARDED COPY (spec §3).
+// When a child completes/delivers a job within its own running turn,
+// markJobNotificationsDelivered settles only the child's local store. The child
+// forwards the Pending up (forwardPendingJobNotification) but nothing forwards
+// the Delivered up, so the parent's forwarded copy stays NotifyPending forever.
+// If the child later becomes non-live and non-resumable,
+// renderUnreachableChildPendings falsely escalates "child unreachable:" for a
+// job the child already delivered.
+//
+// RED at HEAD: the parent's forwarded copy stays NotifyPending after the child
+// self-delivers, and the parent then falsely escalates it. After the fix
+// markJobNotificationsDelivered also forwards the Delivered up, settling the
+// parent's copy so no false escalation fires.
+func TestSelfDeliverySettlesParentForwardedPending(t *testing.T) {
+	parentDir := t.TempDir()
+	childDir := t.TempDir()
+
+	var parentEnqueued []jobNotification
+	parentJM, err := newJobManager(parentDir, "PARENT", func(n jobNotification) {
+		parentEnqueued = append(parentEnqueued, n)
+	})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(childDir, "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	// Wire the child to forward up to the parent (the production shape: a child
+	// with a real parent forwards its settle; root sessions and non-forwarded
+	// terminals no-op in forwardSnapshot).
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+
+	// The parent holds a forwarded copy of CHILD's own delegate terminal (pending),
+	// and CHILD's OWN ledger holds the same job (also pending).
+	appendForwardedChildTerminalPending(t, parentJM, "job_worker", "CHILD")
+	appendForwardedChildTerminalPending(t, childJM, "job_worker", "CHILD")
+
+	if got := childPendingNotifyState(t, parentJM, "job_worker"); got != jobstore.NotifyPending {
+		t.Fatalf("parent forwarded copy starts NotifyState=%q, want pending", got)
+	}
+	if got := childPendingNotifyState(t, childJM, "job_worker"); got != jobstore.NotifyPending {
+		t.Fatalf("child own ledger starts NotifyState=%q, want pending", got)
+	}
+
+	// ACT: the child self-delivers WITHOUT a parent drive — its own running turn
+	// settles its own notification. The helper stamps the terminal_generation as
+	// "gen-" + jobID, so the deliverable must carry that gen to match the record.
+	child := &Session{id: "CHILD", jobManager: childJM}
+	failed := child.markJobNotificationsDelivered([]deliverableJobNotification{{
+		notification: jobNotification{JobID: "job_worker"},
+		terminalGen:  "gen-job_worker",
+	}})
+	if len(failed) != 0 {
+		t.Fatalf("markJobNotificationsDelivered reported failures: %+v", failed)
+	}
+
+	// The child's own ledger settles (this passes today).
+	if got := childPendingNotifyState(t, childJM, "job_worker"); got != jobstore.NotifyDelivered {
+		t.Fatalf("child own ledger NotifyState=%q, want delivered after self-delivery", got)
+	}
+	// The parent's forwarded copy must ALSO settle (FAILS today — stays pending
+	// because the Delivered is never forwarded up).
+	if got := childPendingNotifyState(t, parentJM, "job_worker"); got != jobstore.NotifyDelivered {
+		t.Fatalf("parent forwarded copy NotifyState=%q, want delivered — the child's self-delivery must "+
+			"forward the Delivered up so the parent's copy settles (else a false \"child unreachable:\" "+
+			"escalation fires later)", got)
+	}
+
+	// User-visible consequence: with the child non-live/non-resumable, the parent's
+	// drive must NOT falsely escalate "child unreachable:" for the already-delivered
+	// job. CHILD is not tracked as a live subagent, so the fallback would escalate
+	// any still-pending forwarded copy.
+	parent.driveChildrenWithUndeliveredAttention()
+	parent.pendingJobNotifsMu.Lock()
+	pending := append([]jobNotification(nil), parent.pendingJobNotifs...)
+	parent.pendingJobNotifsMu.Unlock()
+	for _, n := range pending {
+		if n.JobID == "job_worker" && strings.HasPrefix(n.Reason, "child unreachable:") {
+			t.Fatalf("the parent falsely escalated \"child unreachable:\" for job %q that the child already "+
+				"self-delivered; the forwarded copy must have settled", n.JobID)
+		}
+	}
+}

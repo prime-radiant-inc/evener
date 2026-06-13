@@ -2678,16 +2678,6 @@ func (s *Session) renderUnreachableChildPendings(live map[string]bool) {
 		n := jobNotificationFromRecord(rec)
 		n.Reason = strings.TrimSpace("child unreachable: " + rec.Reason)
 		s.enqueueJobNotification(n)
-		// Settle the forwarded copy now that the parent has taken delivery: append
-		// the delivered mark so the same unreachable pending is rendered once.
-		if err := jm.appendEvent(jobstore.Event{
-			Kind:        jobstore.EventJobNotificationDelivered,
-			TS:          jm.now(),
-			JobID:       rec.JobID,
-			TerminalGen: rec.TerminalGen,
-		}); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("fallback settle mark failed: %v", err)})
-		}
 	}
 }
 

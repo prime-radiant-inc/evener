@@ -996,6 +996,22 @@ func (s *Session) markJobNotificationsDelivered(notifs []deliverableJobNotificat
 		}); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job notification delivery mark failed: %v", err)})
 			failed = append(failed, n.notification)
+			continue
+		}
+		// Forward the settle up so the parent's forwarded COPY of a child-owned job
+		// settles too (spec §3): the child forwards only the Pending up, so without
+		// this the parent's copy stays NotifyPending after the child self-delivers
+		// and is later falsely escalated as "child unreachable:". Best-effort and
+		// no-op for root sessions and non-forwarded terminals (forwardSnapshot
+		// guards on forward/parentJobID); the parent intake (forwardEvent) settles
+		// the copy without enqueueing, so no spurious render.
+		if ferr := s.jobManager.forwardSnapshot(jobstore.Event{
+			Kind:        jobstore.EventJobNotificationDelivered,
+			TS:          s.jobManager.now(),
+			JobID:       n.notification.JobID,
+			TerminalGen: n.terminalGen,
+		}); ferr != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job notification delivery forward failed: %v", ferr)})
 		}
 	}
 	return failed
