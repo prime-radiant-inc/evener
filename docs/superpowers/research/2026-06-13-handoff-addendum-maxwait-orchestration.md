@@ -94,3 +94,51 @@ this writing, and one hazard the next session MUST account for.
   is spec-v3-complete per file, same rule we used for cards.
 - The tip has moved twice under your worktrees (`61bc3d12` latest). Same
   hazard you already documented; same handling.
+
+## CLOSED — orchestration complete (tip `d6218e4b`)
+
+All four tracks are merged into local `job-control-spec` and the tree is
+verified GREEN. What landed and how it was verified (every claim checked
+against the tree, not trusted from agent reports):
+
+- **A** merged at `e8423884` onto the live tip (0-conflict merge-tree, then
+  `--no-ff`). Full gates re-run on the MERGED tree (not A's stale-base green):
+  `make test` exit 0, `make lint` exit 0, `go test ./agent/... -race` exit 0
+  (the complete-or-handle `settle` seam is race-clean against the live
+  group-kill fix).
+- **C** came in via the parallel session's `61bc3d12` (16 cards + the
+  shell-lifecycle §3 surgery). Verified on-disk: `job-shell-lifecycle.md` title
+  now says "complete-or-handle", the rejected-combo arm is GONE, and arm (f) is
+  a real complete-or-handle arm (chatty→kept job_id+truncated, quiet→ephemeral,
+  kept job emits NO terminal notification, full bytes via job_read_output). The
+  gap I flagged is genuinely closed.
+- **B** dropped as superseded. A's overstep already carried the full param
+  sweep; B's commit was redundant and REGRESSIVE in the normative bullets (it
+  obediently left A's lane stale-old in its own worktree). I diffed A's merged
+  doc vs B's final doc, salvaged only B's genuine non-normative improvements
+  (complete-or-handle in the durable-record list, the state-diagram label, two
+  anti-pattern phrasings, watch-send no-wait) as `d6218e4b`, and deleted
+  `wip/maxwait-b` (-D, content folded).
+- **D — Haiku comprehension gate: PASS 8/8** from the six final descriptions
+  alone (five tools + job_watch, extracted from merged `definitions.go`). All
+  the load-bearing distinctions answered correctly: shell-0=session-default vs
+  read-0=snapshot; truncated:true+job_id ⇒ kept job, read the rest via
+  job_read_output; resume-inline = positive max_wait_ms; live-steer ignores the
+  bound (returns on delivery); grep+positive-max_wait_ms = the one-call "wait
+  for ready". No reword cycle needed.
+- **Done-criteria grep CLEAN** in all three target areas (param forms only;
+  `running_in_background` response field correctly retained): zero hits in
+  `agent/internal/tool/definitions.go`, `docs/job-control.md`,
+  `test/scenarios/`.
+- Worktrees `.claude/worktrees/{a,b,c}` removed; `wip/maxwait-{a,b,c}` deleted.
+  (A separate `wip/recursion-early` worktree exists — not mine, left alone.)
+
+NOT done, correctly deferred to the existing queue (NOT part of this
+orchestration's done-means): the **dead-field sweep**. Checked it: the
+delegate/send decoders map `max_wait_ms` onto live `Background`/`BlockTimeoutMS`
+plumbing exactly per spec §3 (still read downstream — not dead). The one real
+candidate is `shellArgs.Background` at `agent/job_shell.go:119`, which the tool
+layer no longer sets true; removing it touches the complete-or-handle-reshaped
+background branch, so it belongs in the deliberate sweep, not a rushed merge
+fixup. Also still queued (unchanged): the two roborev findings, `head_bytes`,
+the live 14-card matrix, and recursion (PRI-2204). NOT pushed; Jesse merges.
