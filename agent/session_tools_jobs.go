@@ -442,13 +442,18 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	recs, err := jm.listWithError(filter)
-	if err != nil {
-		return "", err
-	}
-	jobs := make([]jobListEntry, 0, len(recs))
-	for _, rec := range recs {
-		jobs = append(jobs, projectJobRecord(s, rec))
+	var jobs []jobListEntry
+	if filter.IncludeDescendants {
+		jobs = s.walkDescendantJobs(filter)
+	} else {
+		recs, listErr := jm.listWithError(filter)
+		if listErr != nil {
+			return "", listErr
+		}
+		jobs = make([]jobListEntry, 0, len(recs))
+		for _, rec := range recs {
+			jobs = append(jobs, projectJobRecord(s, rec))
+		}
 	}
 	return marshalBoundedJobListResult(jobListResult{
 		Jobs:    jobs,
@@ -583,6 +588,13 @@ type jobListEntry struct {
 	LastActivity *string `json:"last_activity"`
 	ExitCode     *int    `json:"exit_code"`
 	OutputBytes  int64   `json:"output_bytes"`
+	// Depth is the live-subtree distance from the calling session, populated only
+	// by job_list(include_descendants=true): 0 for the caller's own store, 1 for
+	// a direct child's store, and so on. It is the depth of the store the row was
+	// surfaced from, so a dead descendant's terminal forwarded copy that survives
+	// in an ancestor store carries that ancestor's depth. Omitted (0) for the
+	// default and include_nested listings, which do not walk the tree.
+	Depth int `json:"depth"`
 }
 
 type jobStopResult struct {
@@ -909,10 +921,11 @@ func jobListFilterFromArgs(args map[string]any) (listFilter, error) {
 		return listFilter{}, err
 	}
 	return listFilter{
-		Statuses:      statuses,
-		Types:         types,
-		Limit:         limit,
-		IncludeNested: shellBoolArg(args, "include_nested"),
+		Statuses:           statuses,
+		Types:              types,
+		Limit:              limit,
+		IncludeNested:      shellBoolArg(args, "include_nested"),
+		IncludeDescendants: shellBoolArg(args, "include_descendants"),
 	}, nil
 }
 

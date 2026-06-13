@@ -196,6 +196,201 @@ func TestJobListToolIncludeNestedSurfacesForwardedRecords(t *testing.T) {
 	}
 }
 
+// jobListDescendantEntry parses the descendant-walk row fields: the existing
+// owner_session_id plus the new depth annotation.
+type jobListDescendantEntry struct {
+	JobID          string `json:"job_id"`
+	Status         string `json:"status"`
+	OwnerSessionID string `json:"owner_session_id"`
+	Depth          int    `json:"depth"`
+}
+
+type jobListDescendantOutput struct {
+	Jobs  []jobListDescendantEntry `json:"jobs"`
+	Count int                      `json:"count"`
+}
+
+func findDescendantRow(rows []jobListDescendantEntry, jobID string) *jobListDescendantEntry {
+	for i := range rows {
+		if rows[i].JobID == jobID {
+			return &rows[i]
+		}
+	}
+	return nil
+}
+
+// newWalkJobManager builds an isolated jobManager for a single tree level.
+func newWalkJobManager(t *testing.T, sessionID string) *jobManager {
+	t.Helper()
+	jm, err := newJobManager(t.TempDir(), sessionID, func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new jobManager %q: %v", sessionID, err)
+	}
+	return jm
+}
+
+// TestJobListIncludeDescendantsWalksLiveTree drives a depth-3 live tree
+// (root -> coordinator -> worker) plus a dead coordinator branch, then asserts
+// job_list(include_descendants=true) returns one row per job at its real owner
+// depth, suppresses forwarded copies whose owner appears live, surfaces only the
+// terminal forwarded copy for a dead coordinator (no recursion into the gone
+// session), and leaves default + include_nested semantics unchanged.
+func TestJobListIncludeDescendantsWalksLiveTree(t *testing.T) {
+	rootJM := newWalkJobManager(t, "ROOT")
+	coordJM := newWalkJobManager(t, "COORD")
+	workerJM := newWalkJobManager(t, "WORK")
+	deadJM := newWalkJobManager(t, "DEAD")
+	deadChildJM := newWalkJobManager(t, "DEADCHILD")
+	t.Cleanup(func() {
+		_ = rootJM.store.Close()
+		_ = coordJM.store.Close()
+		_ = workerJM.store.Close()
+		_ = deadJM.store.Close()
+		_ = deadChildJM.store.Close()
+	})
+
+	// One-hop forwarding: each child forwards into its direct parent's store.
+	coordJM.forward = rootJM.forwardEvent
+	coordJM.parentJobID = "job_root_delegate_coord"
+	workerJM.forward = coordJM.forwardEvent
+	workerJM.parentJobID = "job_coord_delegate_worker"
+	deadJM.forward = rootJM.forwardEvent
+	deadJM.parentJobID = "job_root_delegate_dead"
+	deadChildJM.forward = deadJM.forwardEvent
+	deadChildJM.parentJobID = "job_dead_delegate_child"
+
+	// Owner records, each forwarded one hop into its parent's store.
+	rootRec, err := rootJM.createShell(createShellOpts{Command: "sleep 1", Description: "root job"})
+	if err != nil {
+		t.Fatalf("create root shell: %v", err)
+	}
+	coordRec, err := coordJM.createShell(createShellOpts{Command: "sleep 1", Description: "coordinator job"})
+	if err != nil {
+		t.Fatalf("create coordinator shell: %v", err)
+	}
+	workerRec, err := workerJM.createShell(createShellOpts{Command: "sleep 1", Description: "worker job"})
+	if err != nil {
+		t.Fatalf("create worker shell: %v", err)
+	}
+	deadRec, err := deadJM.createShell(createShellOpts{Command: "sleep 1", Description: "dead coordinator job"})
+	if err != nil {
+		t.Fatalf("create dead coordinator shell: %v", err)
+	}
+	// A job owned by the dead coordinator's own child, forwarded only one hop
+	// into the dead coordinator's store. To surface it the walk would have to
+	// recurse INTO the dead (closed) coordinator; its absence proves live-only
+	// recursion ("resume it to dig deeper").
+	deadGrandRec, err := deadChildJM.createShell(createShellOpts{Command: "sleep 1", Description: "dead grandchild job"})
+	if err != nil {
+		t.Fatalf("create dead grandchild shell: %v", err)
+	}
+	t.Cleanup(func() {
+		finishRunningTestJob(t, rootJM, rootRec.JobID)
+		finishRunningTestJob(t, coordJM, coordRec.JobID)
+		finishRunningTestJob(t, workerJM, workerRec.JobID)
+		finishRunningTestJob(t, deadChildJM, deadGrandRec.JobID)
+	})
+
+	// The dead coordinator finalized its forwarded job before dying; the terminal
+	// forwarded copy survives in the root's store.
+	deadExit := 0
+	if err := deadJM.finalize(deadRec.JobID, jobstore.StatusCompleted, "exit_zero", &deadExit); err != nil {
+		t.Fatalf("finalize dead coordinator job: %v", err)
+	}
+
+	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
+	dead := &Session{id: "DEAD", jobManager: deadJM, subagents: newSubagentManager(nil)}
+
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+	root.subagents.track(&subagent{id: "DEAD", sess: dead, status: SubagentCompleted, closed: true})
+
+	run := func(args string) jobListDescendantOutput {
+		t.Helper()
+		out, err := jobListTool(root, decodeJobListArgs(t, args), 1<<20)
+		if err != nil {
+			t.Fatalf("jobListTool(%s): %v", args, err)
+		}
+		var parsed jobListDescendantOutput
+		if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+			t.Fatalf("unmarshal job_list output: %v (output: %s)", err, out)
+		}
+		return parsed
+	}
+
+	descendants := run(`{"include_descendants":true}`)
+
+	// Each owner job appears exactly once, at its real owner depth.
+	rootRow := findDescendantRow(descendants.Jobs, rootRec.JobID)
+	if rootRow == nil || rootRow.OwnerSessionID != "ROOT" || rootRow.Depth != 0 {
+		t.Fatalf("root row = %+v, want owner=ROOT depth=0", rootRow)
+	}
+	coordRow := findDescendantRow(descendants.Jobs, coordRec.JobID)
+	if coordRow == nil || coordRow.OwnerSessionID != "COORD" || coordRow.Depth != 1 {
+		t.Fatalf("coordinator row = %+v, want owner=COORD depth=1", coordRow)
+	}
+	workerRow := findDescendantRow(descendants.Jobs, workerRec.JobID)
+	if workerRow == nil || workerRow.OwnerSessionID != "WORK" || workerRow.Depth != 2 {
+		t.Fatalf("worker row = %+v, want owner=WORK depth=2", workerRow)
+	}
+
+	// Dedupe: exactly one row per job_id (forwarded copies of live-owner jobs
+	// are suppressed in favor of the owner record found by recursion).
+	for _, jobID := range []string{rootRec.JobID, coordRec.JobID, workerRec.JobID} {
+		count := 0
+		for _, row := range descendants.Jobs {
+			if row.JobID == jobID {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("job_id %q appears %d times, want exactly 1: %+v", jobID, count, descendants.Jobs)
+		}
+	}
+
+	// Dead coordinator: only the terminal forwarded copy surfaces (from the root
+	// store, depth 0). No recursion into the gone session.
+	deadRow := findDescendantRow(descendants.Jobs, deadRec.JobID)
+	if deadRow == nil || deadRow.OwnerSessionID != "DEAD" || deadRow.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("dead coordinator row = %+v, want owner=DEAD completed terminal copy", deadRow)
+	}
+	if findDescendantRow(descendants.Jobs, deadGrandRec.JobID) != nil {
+		t.Fatalf("dead grandchild job %q leaked into walk: %+v", deadGrandRec.JobID, descendants.Jobs)
+	}
+
+	// Default job_list: own jobs only, forwarded copies hidden, no descendants.
+	defaultOut := run(`{}`)
+	if findDescendantRow(defaultOut.Jobs, rootRec.JobID) == nil {
+		t.Fatalf("default job_list = %+v, want root job", defaultOut.Jobs)
+	}
+	for _, hidden := range []string{coordRec.JobID, workerRec.JobID} {
+		if findDescendantRow(defaultOut.Jobs, hidden) != nil {
+			t.Fatalf("default job_list leaked nested job %q: %+v", hidden, defaultOut.Jobs)
+		}
+	}
+
+	// include_nested: one hop only — root's own forwarded copies (coordinator,
+	// dead coordinator) are visible; the worker (two hops) is not.
+	nestedOut := run(`{"include_nested":true}`)
+	if findDescendantRow(nestedOut.Jobs, coordRec.JobID) == nil {
+		t.Fatalf("include_nested job_list = %+v, want forwarded coordinator job", nestedOut.Jobs)
+	}
+	if findDescendantRow(nestedOut.Jobs, workerRec.JobID) != nil {
+		t.Fatalf("include_nested job_list leaked two-hop worker job %q: %+v", workerRec.JobID, nestedOut.Jobs)
+	}
+}
+
+func decodeJobListArgs(t *testing.T, args string) map[string]any {
+	t.Helper()
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(args), &decoded); err != nil {
+		t.Fatalf("decode job_list args %s: %v", args, err)
+	}
+	return decoded
+}
+
 func runJobListTool(t *testing.T, s *Session) jobListToolOutput {
 	t.Helper()
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{

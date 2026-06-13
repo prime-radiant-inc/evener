@@ -190,6 +190,11 @@ type listFilter struct {
 	Types         []jobstore.JobType
 	Limit         int
 	IncludeNested bool
+	// IncludeDescendants drives the recursive live-subtree walk in jobListTool
+	// (spec §2). It is not consulted by listWithError, which lists a single
+	// store; the walk reads each descendant store independently under its own
+	// lock and merges with the owner-authoritative dedupe rule.
+	IncludeDescendants bool
 }
 
 // jobsDir returns the per-session job directory: <stateDir>/sessions/<id>.

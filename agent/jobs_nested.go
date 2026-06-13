@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -41,6 +42,127 @@ func (s *Session) ownerJobManagerFor(jobID string) (*jobManager, *jobstore.JobRe
 		return nil, rec
 	}
 	return owner, rec
+}
+
+// walkDescendantJobs implements job_list(include_descendants=true) (spec §2): it
+// walks the LIVE descendant tree at read time, surfacing the caller's own jobs
+// (depth 0) plus every live descendant's jobs, each annotated with its
+// owner_session_id and the depth of the store it was surfaced from.
+//
+// Leaf-lock discipline: each store is read independently under its own lock (via
+// listWithError, which loads + locks that one jobManager); no jobManager lock is
+// held across the recursion. Children are enumerated through s.subagents and
+// only LIVE (non-closed) children are recursed into — a dead descendant's
+// terminal record survives only as the forwarded copy in an ancestor store.
+//
+// Dedupe rule: the owner session's record (OwnerSessionID == that store's
+// session) is authoritative; a forwarded copy of the same job_id found in an
+// ancestor store is suppressed in favor of the owner record discovered by
+// recursing into the live child. Each job_id therefore appears once, at its
+// real owner's depth — except a dead descendant's job, whose only surviving row
+// is the forwarded copy at the ancestor store's depth.
+func (s *Session) walkDescendantJobs(filter listFilter) []jobListEntry {
+	merged := map[string]descendantWalkRow{}
+	s.collectDescendantJobs(s, 0, filter, merged)
+
+	rows := make([]descendantWalkRow, 0, len(merged))
+	for _, row := range merged {
+		rows = append(rows, row)
+	}
+	// Match listWithError's ordering: started_at descending, tie-broken by
+	// job_id, applied once over the fully merged set.
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].rec.StartedAt.Equal(rows[j].rec.StartedAt) {
+			return rows[i].rec.JobID < rows[j].rec.JobID
+		}
+		return rows[i].rec.StartedAt.After(rows[j].rec.StartedAt)
+	})
+	if filter.Limit > 0 && len(rows) > filter.Limit {
+		rows = rows[:filter.Limit]
+	}
+
+	jobs := make([]jobListEntry, 0, len(rows))
+	for _, row := range rows {
+		entry := projectJobRecord(s, row.rec)
+		entry.Depth = row.depth
+		jobs = append(jobs, entry)
+	}
+	return jobs
+}
+
+type descendantWalkRow struct {
+	rec     *jobstore.JobRecord
+	depth   int
+	isOwner bool
+}
+
+// collectDescendantJobs reads node's store (leaf-lock), merges its rows into
+// merged with the owner-authoritative dedupe rule, then recurses into node's
+// LIVE direct children at depth+1.
+func (s *Session) collectDescendantJobs(node *Session, depth int, filter listFilter, merged map[string]descendantWalkRow) {
+	jm, err := sessionJobManager(node)
+	if err != nil {
+		return
+	}
+	// IncludeNested surfaces forwarded copies in this store so a dead
+	// descendant's terminal copy survives; Limit is cleared so the global sort
+	// and limit apply once over the merged set, not per store.
+	storeFilter := filter
+	storeFilter.IncludeNested = true
+	storeFilter.IncludeDescendants = false
+	storeFilter.Limit = 0
+	recs, err := jm.listWithError(storeFilter)
+	if err != nil {
+		return
+	}
+	for _, rec := range recs {
+		isOwner := rec.OwnerSessionID == jm.sessionID
+		existing, seen := merged[rec.JobID]
+		// Owner record wins over a forwarded copy. Between two records of the
+		// same authority the shallower (already-recorded) one is kept.
+		if seen && (existing.isOwner || !isOwner) {
+			continue
+		}
+		merged[rec.JobID] = descendantWalkRow{rec: rec, depth: depth, isOwner: isOwner}
+	}
+
+	if node.subagents == nil {
+		return
+	}
+	for _, child := range node.liveSubagentSessions() {
+		s.collectDescendantJobs(child, depth+1, filter, merged)
+	}
+}
+
+// liveSubagentSessions returns the live (non-closed) direct-child sessions. The
+// closed flag is read under each sub's own lock; the manager mutex is released
+// before any child store is touched, preserving the manager-outer/sub-inner
+// lock order and the leaf-lock discipline of the walk.
+func (s *Session) liveSubagentSessions() []*Session {
+	if s.subagents == nil {
+		return nil
+	}
+	s.subagents.mu.Lock()
+	subs := make([]*subagent, 0, len(s.subagents.subs))
+	for _, sub := range s.subagents.subs {
+		subs = append(subs, sub)
+	}
+	s.subagents.mu.Unlock()
+
+	live := make([]*Session, 0, len(subs))
+	for _, sub := range subs {
+		if sub == nil || sub.sess == nil {
+			continue
+		}
+		sub.mu.Lock()
+		closed := sub.closed
+		sub.mu.Unlock()
+		if closed {
+			continue
+		}
+		live = append(live, sub.sess)
+	}
+	return live
 }
 
 func (s *Session) nestedOrLocalJobManager(jobID string) (*jobManager, *jobstore.JobRecord, error) {

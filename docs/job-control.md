@@ -1065,7 +1065,8 @@ Rules:
 
 - Every job has an owner session.
 - A nested job records the job that caused it in `parent_job_id`.
-- Parent-visible job lists may include nested jobs when `include_nested=true`.
+- Parent-visible job lists may include nested jobs when `include_nested=true`. This is the one-hop view: the parent's own store, which holds its owned jobs plus the records forwarded up one level from its direct children.
+- `job_list(include_descendants=true)` walks the live descendant tree at read time instead of one hop. It returns the caller's own jobs plus every live descendant's jobs, reading each descendant's job store independently under its own lock (no lock is held across the recursion). Each row carries `owner_session_id` and a `depth` annotation: `depth` is the live-walk distance to the store the row was surfaced from — `0` for the caller's own store, `1` for a direct child, and so on. The dedupe rule below applies across the whole walk: a forwarded copy of a `job_id` whose owner is reached live during the walk is suppressed in favor of that owner's record (so each job appears once, at its real owner's depth). The walk is live-only: it recurses only into live child sessions. A dead or terminated descendant contributes just the terminal forwarded copy that survives in an ancestor store (at that ancestor's depth); the walk does not reopen the gone session's store to dig deeper — resume the descendant to inspect its subtree. Default `job_list` and `include_nested` semantics are unchanged; `include_descendants` is additive.
 - For any parent-visible nested job, the parent-visible `job_id` is the only control handle accepted by parent job tools.
 - Job IDs must be globally unique enough that parent job tools do not need string namespacing or a separate owner/visible ID choice.
 - Notifications, `job_list`, `job_read_output`, `job_watch`, `job_send_message` where applicable, and `job_stop` all use the same parent-visible ID.
