@@ -57,6 +57,11 @@ gate is the API vocabulary, per the max_wait spec's sweep list.
    internal structs "keep fields as plumbing" — delete any now write-only
    (candidates: `shellArgs.Background`, delegate/send `Background` plumbing,
    `defaultJobBlockTimeoutMS` if a track missed it). Cleanup commit.
+2b. **Two deferred roborev findings** (in track-owned files, fix post-merge):
+   the caller-notification-delivery card's HEADER still says "exactly ONE
+   rendered current frame", contradicting its amended Run 2 (latest-per-
+   delivery-boundary); and contract `:989`'s "not full output" contradicts
+   complete excerpts ("Complete output below.") — both one-line rewrites.
 3. **`head_bytes` on `job_read_output`** (punch item, do BEFORE the matrix so
    one live run covers the final surface): symmetric with `tail_bytes`; kills
    the secret that `grep` is the only window into a shell job's non-tail
