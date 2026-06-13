@@ -101,6 +101,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		// defaulted to 1 by applyDefaults), not from the spawn carrier.
 		delegationAllowance = cfg.MaxSubagentDepth
 	}
+	tc := cfg.spawn.treeCounter
+	if cfg.spawn.parentSessionID == "" {
+		// Root sessions mint the tree-wide counter; children inherit the pointer.
+		tc = newTreeCounter()
+	}
 	s := &Session{
 		id:                  ulid.Make().String(),
 		cfg:                 cfg,
@@ -109,6 +114,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		resolveProfile:      cfg.ResolveProfile,
 		depth:               cfg.spawn.depth,
 		delegationAllowance: delegationAllowance,
+		treeCounter:         tc,
 		env:                 env,
 		stateDir:            cfg.StateDir,
 		installID:           installid.LoadOrCreateInstallationID(cfg.StateDir),
