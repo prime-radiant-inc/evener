@@ -1381,8 +1381,8 @@ func toolInputSummary(name string, args json.RawMessage) string {
 		if at := get("agent_type"); at != "" {
 			parts = append(parts, "type="+at)
 		}
-		if bg := get("background"); bg != "" {
-			parts = append(parts, "background="+bg)
+		if mw := get("max_wait_ms"); mw != "" && mw != "0" {
+			parts = append(parts, "max_wait_ms="+mw)
 		}
 		return joinSummary(parts...)
 

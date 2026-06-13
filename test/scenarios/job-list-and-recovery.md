@@ -27,17 +27,17 @@ already covered by subagent-list-and-output.md.
 2. Turn 1 — build a mixed inventory, then filter (one turn, ordered):
 
    > Do these steps in order. Report every tool result verbatim.
-   > 1. Run the shell tool with background true and command:
+   > 1. Run the shell tool with max_wait_ms 1000 and command:
    >    `sh -c 'exit 7'`. Capture the job_id (call it J1).
-   > 2. Run the shell tool with background true and command: `true`.
+   > 2. Run the shell tool with max_wait_ms 1000 and command: `true`.
    >    Capture the job_id (J2). IMMEDIATELY call job_list with status
    >    ["running"] and report whether J2 appears. Then call job_list
    >    with no filters and report whether J2 appears and with what
    >    status.
-   > 3. Run the shell tool with background true and command:
+   > 3. Run the shell tool with max_wait_ms 1000 and command:
    >    `sh -c 'echo LIST_RUN_TOKEN; sleep 300'`. Capture the job_id
    >    (J3).
-   > 4. Call delegate (background default) with this exact task:
+   > 4. Call delegate (default, no max_wait_ms) with this exact task:
    >    "Communicate exactly DLG_LIST_DONE and finish." Capture the
    >    job_id (J4).
    > 5. Call job_list with type ["shell"] and report the job_ids.
@@ -45,13 +45,13 @@ already covered by subagent-list-and-output.md.
    > 7. Call job_list with status ["failed", "completed"] and report
    >    the job_ids and statuses.
    > 8. Call job_list with no filters and report the job_ids IN ORDER.
-   > 9. Call job_stop with J3 and block true. Then call job_list with
-   >    status ["cancelled"] and report the job_ids.
+   > 9. Call job_stop with J3 and max_wait_ms 5000. Then call job_list
+   >    with status ["cancelled"] and report the job_ids.
    > 10. End your turn.
 3. Turn 2 — re-orientation before any notification (new user prompt):
 
    > Do these steps in order, with no other tool calls.
-   > 1. Run the shell tool with background true and command:
+   > 1. Run the shell tool with max_wait_ms 1000 and command:
    >    `sh -c 'sleep 6; echo REORIENT_DONE'`. Capture the job_id (J5).
    > 2. Run the foreground shell command `sleep 15`.
    > 3. Call job_list with no filters and report J5's status verbatim.

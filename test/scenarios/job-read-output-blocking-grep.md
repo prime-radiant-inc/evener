@@ -1,9 +1,9 @@
-# job-read-output-blocking-grep: block=true + grep waits for the match, not for just any output
+# job-read-output-blocking-grep: max_wait_ms + grep waits for the match, not for just any output
 
-**What this covers**: watch-mailbox spec §7.2. `job_read_output(block=true,
+**What this covers**: watch-mailbox spec §7.2. `job_read_output(max_wait_ms=...,
 grep=...)` changes from "wait for any new output, then grep" to "wait
 until the retained output contains a grep match, the job goes
-terminal, or block_timeout_ms elapses" — with a mandatory entry check
+terminal, or max_wait_ms elapses" — with a mandatory entry check
 (the match may already exist before the first wait) and a
 normal-snapshot timeout. This is the one-call "wait for the server to
 print ready" primitive that should keep most monitoring away from
@@ -24,12 +24,12 @@ rules. Executed by plan Phase 5.2.
    semantics:
 
    > Do these steps in order, with no other tool calls in between.
-   > 1. Run the shell tool with background true and command:
+   > 1. Run the shell tool with max_wait_ms 1000 and command:
    >    `sh -c 'sleep 3; echo boot_noise_alpha; sleep 7; echo boot_noise_beta; sleep 10; echo GREP_READY_TOKEN_9; sleep 300'`.
    >    Capture the job_id.
-   > 2. Immediately call job_read_output with: that job_id, block true,
-   >    grep "GREP_READY_TOKEN_9", block_timeout_ms 60000. Report the
-   >    full JSON verbatim.
+   > 2. Immediately call job_read_output with: that job_id, grep
+   >    "GREP_READY_TOKEN_9", max_wait_ms 60000. Report the full JSON
+   >    verbatim.
    > 3. End your turn.
 3. Clock the step-2 tool round: wall clock externally, or afterwards
    via the gap between the consecutive api_call timestamps that
@@ -37,13 +37,13 @@ rules. Executed by plan Phase 5.2.
    job starts.
 4. Turn 2 — entry check (new user prompt):
 
-   > Call job_read_output once with: the same job_id, block true, grep
-   > "GREP_READY_TOKEN_9", block_timeout_ms 30000. Report the full
-   > JSON verbatim.
+   > Call job_read_output once with: the same job_id, grep
+   > "GREP_READY_TOKEN_9", max_wait_ms 30000. Report the full JSON
+   > verbatim.
 5. Turn 3 — timeout arm (new user prompt):
 
-   > Call job_read_output once with: the same job_id, block true, grep
-   > "NO_SUCH_TOKEN_XYZ", block_timeout_ms 5000. Report the full JSON
+   > Call job_read_output once with: the same job_id, grep
+   > "NO_SUCH_TOKEN_XYZ", max_wait_ms 5000. Report the full JSON
    > verbatim. Then call job_list filtered to running jobs and report
    > whether the job is still running. Do not repeat the blocking
    > call.
@@ -91,13 +91,13 @@ rules. Executed by plan Phase 5.2.
   the margins (10s vs 30s, ~5s vs a 60s bound) absorb that. When
   external clocking is too coarse, the api_call timestamps in the
   transcript JSONL bracket each tool round exactly.
-- One blocking call per arm, by design — `block=true` must not become
-  a polling loop (contract anti-pattern). The card issues exactly
-  three.
+- One max_wait_ms call per arm, by design — `max_wait_ms` must not
+  become a polling loop (contract anti-pattern). The card issues
+  exactly three.
 - If the model inserts extra tool calls before the turn-1 blocking
   read and the token lands first, arm 1 degrades into a second
   entry-check (instant return with match) — still §7.2-conformant but
   no longer the mid-stream proof; rerun with the prompt tightened.
-- Without `grep`, `block=true` semantics are unchanged (any new output
+- Without `grep`, `max_wait_ms` semantics are unchanged (any new output
   or terminal state ends the wait) — out of scope here; the existing
   job cards cover plain reads.

@@ -7,7 +7,7 @@ background job finishes — completion never needs polling, blocking, or a watch
 Pick the waiting primitive by how many answers you need:
 
 - The result of a quick command now → plain `shell` (foreground).
-- One signal ("the server printed ready") → `job_read_output` with `block=true`
+- One signal ("the server printed ready") → `job_read_output` with `max_wait_ms`
   and `grep`. One bounded wait, nothing to clean up afterward.
 - A recurring condition (every new match, periodic progress, event frames to an
   observer) → `job_watch`.

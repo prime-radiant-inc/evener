@@ -47,7 +47,7 @@ tasks:
   - title: Verify
     prompt: >
       Start a verifier with delegate to check the implementer's work. Use
-      agent_type="verifier", reasoning_effort=low, background=false. The
+      agent_type="verifier", reasoning_effort=low, max_wait_ms=120000. The
       verifier's task parameter must include:
       (1) the COMPLETE task spec verbatim, (2) the acceptance
       criteria, (3) what the implementer reported doing, and
