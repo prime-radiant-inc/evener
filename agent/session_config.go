@@ -222,6 +222,18 @@ type spawnConfig struct {
 	// depth is the sub-agent nesting depth (0 for root sessions).
 	depth int
 
+	// delegationAllowance is the number of additional sub-agent delegation
+	// levels this session is permitted to grant. Rides the transcript header
+	// (beside Depth) for persistence across restore; never populated by
+	// json unmarshal (json:"-" on the parent struct).
+	delegationAllowance int
+
+	// treeCounter is the tree-wide running delegate-turn counter. Created once
+	// by the root session (when parentSessionID == "") and inherited by all
+	// child sessions via spawnConfig. Dormant until Task 16 wires reserve/release
+	// into the spawn/resume/drive paths.
+	treeCounter *treeCounter
+
 	// sharedTaskStore, when non-nil, is used instead of creating a per-session
 	// task store. Set by spawnAgent when ShareTasksWithChildren is true.
 	sharedTaskStore *task.TaskStore

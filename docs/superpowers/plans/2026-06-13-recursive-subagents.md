@@ -67,18 +67,18 @@ The dossier (`docs/superpowers/research/2026-06-12-recursion-dossier.md`) was ca
 ## Phase / Task list (titles)
 
 **Phase 0 — Foundation: the allowance carrier and the counter (no behavior flip yet)**
-- Task 1: `delegation_allowance` on `spawnConfig`, transcript header, and `DelegateRestoreDescriptor`
-- Task 2: the tree-wide running counter (`treeCounter`, atomic, cap 16) — created by root, handed down
+- [x] Task 1: `delegation_allowance` on `spawnConfig`, transcript header, and `DelegateRestoreDescriptor`
+- [x] Task 2: the tree-wide running counter (`treeCounter`, atomic, cap 16) — created by root, handed down
 
 **Phase 1 — The headline red test (drive-down regression, red against today)**
-- Task 3: deaf-coordinator drive-down regression test (unskipped RED run captured, lands `t.Skip`-tracked; Task 14 unskips first — mandatory mechanism, see task)
+- [x] Task 3: deaf-coordinator drive-down regression test (unskipped RED run captured, lands `t.Skip`-tracked; Task 14 unskips first — mandatory mechanism, see task)
 
 **Phase 2 — Flip the six capability seams to allowance-keyed**
-- Task 4: seams 1+2 — depth/maxDepth gates become allowance checks (`prepareSubagentRun`)
-- Task 5: seam 6 — agent-type spawn rejection + prompt-side filters key on grantable allowance
-- Task 6: seam 3 — registry stripping at child init becomes allowance-aware
-- Task 7: seam 4 — `baseSubagentToolPolicy` deny-list becomes allowance-aware; default child gets `delegate`+`job_watch` at allowance>0
-- Task 8: seam 5 — `validateRestoredDelegateRequiredTools` allowance-aware (coordinator-type resume); grant-rejection text allowance-truthful
+- [x] Task 4: seams 1+2 — depth/maxDepth gates become allowance checks (`prepareSubagentRun`)
+- [x] Task 5: seam 6 — agent-type spawn rejection + prompt-side filters key on grantable allowance
+- [x] Task 6: seam 3 — registry stripping at child init becomes allowance-aware
+- [x] Task 7: seam 4 — `baseSubagentToolPolicy` deny-list becomes allowance-aware; default child gets `delegate`+`job_watch` at allowance>0
+- [x] Task 8: seam 5 — `validateRestoredDelegateRequiredTools` allowance-aware (coordinator-type resume); grant-rejection text allowance-truthful
 - Task 9: `delegate` schema gains `delegation_allowance`; grant rejection `< own allowance`; prompt template `{{ if .CanDelegate }}` sections + allowance stated
 
 **Phase 3 — Visibility and control across the subtree**

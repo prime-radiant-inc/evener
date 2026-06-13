@@ -160,7 +160,7 @@ func agentUsesRootOnlySubagentTools(agent plugin.Agent) bool {
 	return false
 }
 
-func baseSubagentToolPolicy(agent *plugin.Agent) (allTools bool, allowed []string, denied []string) {
+func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools bool, allowed []string, denied []string) {
 	switch {
 	case agent != nil && agent.AllTools:
 		return true, nil, nil
@@ -169,6 +169,9 @@ func baseSubagentToolPolicy(agent *plugin.Agent) (allTools bool, allowed []strin
 		allowed = appendUniqueStrings(allowed, "task_list")
 		return false, allowed, nil
 	default:
+		if canDelegate {
+			return false, nil, nil // untyped child with allowance: no deny-list → gets delegate+job_watch on default surface
+		}
 		return false, nil, rootOnlySubagentTools()
 	}
 }
@@ -291,13 +294,10 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []taskpkg.TaskTemplate, grantTools []string) (*preparedSubagentRun, error) {
 	s.mu.Lock()
 	depth := s.depth
-	maxDepth := s.cfg.MaxSubagentDepth
+	allowance := s.delegationAllowance
 	s.mu.Unlock()
-	if depth > 0 {
-		return nil, errors.New("subagent management is top-level only")
-	}
-	if depth >= maxDepth {
-		return nil, errors.New("subagent depth limit reached")
+	if allowance <= 0 {
+		return nil, errors.New("delegation not permitted: your delegation_allowance is 0")
 	}
 
 	// Look up plugin agent configuration when agent_type is specified.
@@ -307,7 +307,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		if !ok {
 			return nil, fmt.Errorf("unknown plugin agent type: %s", agentType)
 		}
-		if agentUsesRootOnlySubagentTools(a) {
+		if agentUsesRootOnlySubagentTools(a) && allowance <= 0 {
 			return nil, fmt.Errorf("agent_type %q is top-level only: it requires root-only tools", agentType)
 		}
 		agent = &a
@@ -412,12 +412,12 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		}
 	}
 
-	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(agent)
+	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(agent, allowance > 0)
 	if len(canonicalGrantTools) > 0 {
 		currentTools := s.reg.RegisteredNames()
 		for _, toolName := range canonicalGrantTools {
 			if isRootOnlySubagentTool(toolName) {
-				return nil, fmt.Errorf("cannot grant tool %q: root-only tools are top-level only", toolName)
+				return nil, fmt.Errorf("cannot grant tool %q via grant_tools: delegation tools are enabled by the delegate tool's delegation_allowance parameter, not grant_tools", toolName)
 			}
 			baseHasTool := allTools ||
 				hasString(allowedTools, toolName) ||

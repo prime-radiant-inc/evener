@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/llm"
 )
 
@@ -611,6 +612,7 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 	subCfg := SessionConfig{MaxSubagentDepth: 2}
 	subCfg.spawn.depth = 1
+	subCfg.spawn.parentSessionID = "parent" // real child: allowance comes from the spawn carrier (0), not MaxSubagentDepth
 	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
 	if err != nil {
 		t.Fatal(err)
@@ -654,4 +656,206 @@ func hasCachedCallableToolDefinition(s *Session, name string) bool {
 		}
 	}
 	return false
+}
+
+// TestPrepareSubagentRunAllowsRecursionWithAllowance verifies that a depth-1
+// session with delegationAllowance == 1 passes the spawn gate (spec §1 seam 1).
+// Today this fails with "subagent management is top-level only" because the gate
+// checks depth > 0 instead of checking allowance.
+func TestPrepareSubagentRunAllowsRecursionWithAllowance(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	// Construct a depth-1 child session with delegationAllowance = 1 via spawnConfig,
+	// mirroring a real recursion-capable child handed down from a root.
+	cfg := SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+	}
+	cfg.spawn.depth = 1
+	cfg.spawn.parentSessionID = "parent-session"
+	cfg.spawn.delegationAllowance = 1
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	_, gotErr := sess.prepareSubagentRun(context.Background(), "task", "", dir, 5, "", "", nil, nil)
+
+	// The allowance gate must be cleared. Any later error is fine (no model, env,
+	// etc.) but it MUST NOT be the old depth-gate strings.
+	if gotErr != nil {
+		msg := gotErr.Error()
+		if msg == "subagent management is top-level only" || msg == "subagent depth limit reached" {
+			t.Fatalf("depth gate fired on a session with delegationAllowance=1: %v", gotErr)
+		}
+	}
+}
+
+// TestPrepareSubagentRunRejectsZeroAllowance verifies that a session with
+// delegationAllowance == 0 is rejected with the exact allowance-gate error
+// (spec §1 seam 2). Before the implementation the gate returns the old depth
+// string, not the allowance string, so this test is red today.
+func TestPrepareSubagentRunRejectsZeroAllowance(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	// Root session: depth=0, delegationAllowance will be 0 because we override it
+	// directly after construction (the zero value — no delegation permitted).
+	cfg := SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+	}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Force allowance to 0 — leaf behavior.
+	sess.mu.Lock()
+	sess.delegationAllowance = 0
+	sess.mu.Unlock()
+
+	_, gotErr := sess.prepareSubagentRun(context.Background(), "task", "", dir, 5, "", "", nil, nil)
+
+	const wantErr = "delegation not permitted: your delegation_allowance is 0"
+	if gotErr == nil {
+		t.Fatalf("expected error %q, got nil", wantErr)
+	}
+	if gotErr.Error() != wantErr {
+		t.Fatalf("got error %q, want %q", gotErr.Error(), wantErr)
+	}
+}
+
+// TestBaseSubagentPolicyAllowsDelegateWithAllowance verifies seam 4 (spec §1):
+// baseSubagentToolPolicy is allowance-aware in its default (untyped) case.
+//
+// Positive case (canDelegate=true): the default child gets NO deny-list, so
+// delegate and job_watch are NOT denied.
+// Negative case (canDelegate=false): today's behavior preserved — default child
+// denies delegate and job_watch.
+// Typed cases: allowance NEVER injects tools into a typed agent's surface.
+func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
+	t.Run("default child with canDelegate=true: delegate and job_watch not denied", func(t *testing.T) {
+		allTools, allowed, denied := baseSubagentToolPolicy(nil, true)
+		if allTools {
+			t.Fatal("default child must not be allTools")
+		}
+		if len(allowed) != 0 {
+			t.Fatalf("default child must not have an allow-list, got %v", allowed)
+		}
+		for _, tool := range []string{"delegate", "job_watch"} {
+			for _, d := range denied {
+				if d == tool {
+					t.Errorf("default child with canDelegate=true: %q must not be in denied list (got %v)", tool, denied)
+				}
+			}
+		}
+	})
+
+	t.Run("default child with canDelegate=false: delegate and job_watch are denied", func(t *testing.T) {
+		_, _, denied := baseSubagentToolPolicy(nil, false)
+		for _, tool := range []string{"delegate", "job_watch"} {
+			found := false
+			for _, d := range denied {
+				if d == tool {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("default child with canDelegate=false: %q must be in denied list (got %v)", tool, denied)
+			}
+		}
+	})
+
+	t.Run("AllTools agent: canDelegate does not change allTools result", func(t *testing.T) {
+		allTools, allowed, denied := baseSubagentToolPolicy(&plugin.Agent{AllTools: true}, false)
+		if !allTools {
+			t.Fatal("AllTools agent must return allTools=true")
+		}
+		if len(allowed) != 0 || len(denied) != 0 {
+			t.Fatalf("AllTools agent must return empty allowed/denied, got allowed=%v denied=%v", allowed, denied)
+		}
+		// canDelegate=true must also leave AllTools case alone
+		allTools2, _, _ := baseSubagentToolPolicy(&plugin.Agent{AllTools: true}, true)
+		if !allTools2 {
+			t.Fatal("AllTools agent with canDelegate=true must still return allTools=true")
+		}
+	})
+
+	t.Run("explicit-Tools agent: canDelegate=true does NOT inject delegate into allow-list", func(t *testing.T) {
+		ag := &plugin.Agent{Tools: []string{"read_file"}}
+		_, allowed, denied := baseSubagentToolPolicy(ag, true)
+		if len(denied) != 0 {
+			t.Fatalf("explicit-Tools agent must have no deny-list, got %v", denied)
+		}
+		for _, tool := range []string{"delegate", "job_watch"} {
+			for _, a := range allowed {
+				if a == tool {
+					t.Errorf("canDelegate=true must NOT inject %q into a typed agent's allow-list (got %v)", tool, allowed)
+				}
+			}
+		}
+		// Must contain read_file and task_list
+		for _, want := range []string{"read_file", "task_list"} {
+			found := false
+			for _, a := range allowed {
+				if a == want {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("explicit-Tools agent must contain %q in allow-list (got %v)", want, allowed)
+			}
+		}
+	})
+}
+
+// TestGrantRejectionAllowanceTruthful verifies Part B of seam 5: the
+// grant_tools rejection message for a root-only tool states the allowance rule
+// ("delegation_allowance") rather than the old "top-level only" string, so the
+// error is truthful about the actual constraint.
+func TestGrantRejectionAllowanceTruthful(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("done") },
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	_, err = sess.spawnAgent(context.Background(), "help with follow-up work", "", "", 0, "", "", nil, []string{"delegate"})
+	if err == nil {
+		t.Fatal("expected root-only grant rejection")
+	}
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "top-level only") {
+		t.Fatalf("grant error still says %q, want allowance-truthful message instead", errMsg)
+	}
+	if !strings.Contains(errMsg, "delegation_allowance") {
+		t.Fatalf("grant error = %q, want message referencing 'delegation_allowance'", errMsg)
+	}
+	// The rejection fires only when the spawning session's allowance is already
+	// > 0 (the depth-allowance gate pre-empts allowance 0), so the message must
+	// not state a satisfied precondition ("yours is N") as the failure reason.
+	if strings.Contains(errMsg, "yours is") {
+		t.Fatalf("grant error = %q states a satisfied allowance precondition as the reason; "+
+			"grant_tools cannot grant delegation tools regardless of allowance", errMsg)
+	}
 }
