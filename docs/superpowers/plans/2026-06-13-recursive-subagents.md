@@ -538,7 +538,47 @@ The mailbox-design precedent for "regression target must stay covered forever; r
 
 ---
 
-# Questions for Jesse (spec genuinely leaves open / surface contradictions)
+# Questions — resolved by the orchestrating session (2026-06-13, Jesse-vetoable)
+
+Decisions recorded before execution; each is an implementation choice within
+the spec's semantics, with rationale. Veto any of these and the affected tasks
+re-plan.
+
+1. **max_wait sequencing → Phase 0 BLOCKS.** Execution starts only after the
+   max_wait merge passes the orchestrating session's independent gates. That
+   was the campaign's critical path all along; planning was the overlap.
+2. **Counter reservation → AFTER the deliverable-attention check.** Reserve
+   immediately before launching an actual render/resume of the child, never
+   for the signal-read traversal or a no-op pass. At capacity the child's
+   ledger simply stays queued and the next boundary retries — the ledger is
+   durable, boundaries recur, so no starvation and no capacity burned on
+   stale tokens. (Spec §4's counter counts "concurrently running delegate
+   jobs"; a no-op pass runs nothing.)
+3. **"Latest record" ordering key → durable append order.** The jobstore is
+   append-only and the mailbox §3 invariant already reasons in append order;
+   wall-clock keys invite skew bugs and terminal-generation identifies
+   terminal events, not total order. Resume races resolve to the record
+   appended last.
+4. **Headline red mechanism → skip-then-unskip with evidence.** Task 3's
+   implementer must RUN the test unskipped, capture the red output in its
+   task report, then land it with `t.Skip("RED until drive-down — plan T14")`.
+   Task 14's first act: unskip, re-show red, implement, green. Skips are
+   visible in test output and tracked by the plan checkbox — explicit,
+   never silent. Build tags hide too well.
+5. **Per-level retention → document-only for v1.** The disclosure rides
+   Task 17 next to the counter-bind disclosure. Per-level reduction is
+   deferred-by-design with the trigger: observed retention pressure in the
+   coordinator e2e cards or live use.
+6. **ParentCanWatch → mostly contract-text catch-up + one small code
+   deliverable.** No `ParentCanWatch` code symbol exists; one-hop watch
+   resolution already enforces the narrow behavior. Task 13's watch portion
+   shrinks to: the contract flowchart/text amendment PLUS a guidance error
+   for non-visible deep watch targets ("delegate the watching") replacing the
+   bare `target_not_found`.
+
+## Original questions (verbatim, for the record)
+
+### Questions as raised by the planner (spec genuinely leaves open / surface contradictions)
 
 1. **Sequencing hard-dependency on max_wait.** This plan assumes the `max_wait_ms` unification (`2026-06-13-max-wait-unification.md`) lands on `job-control-spec` **before** Task 1 begins (it's "sequenced before PRI-2204"). As of this plan it has NOT landed (no `max_wait_ms` in code). **Should the orchestrator block Phase 0 until max_wait is green, or is there a planned overlap window?** Every prompt/schema/card edit here is written in post-max_wait vocabulary; if max_wait slips, Tasks 9, 12, 18 collide with the old surface.
 
