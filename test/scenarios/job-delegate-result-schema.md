@@ -28,7 +28,7 @@ the structured fields are how the parent judges outcome.
    Capture `SID`.
 2. Turn 1 — arm (a), compliant foreground delegate:
 
-   > Call delegate with background false, block_timeout_ms 120000,
+   > Call delegate with max_wait_ms 120000,
    > result_schema
    > `{"type":"object","properties":{"verdict":{"type":"string"},"count":{"type":"integer"}},"required":["verdict","count"]}`,
    > and this task: "Report a structured result with verdict ok and
