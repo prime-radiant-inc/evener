@@ -1192,7 +1192,15 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 	if err := jm.forwardLocked(started); err != nil {
 		_ = output.Close()
 		if terminalErr := jm.appendStartForwardFailure(run.rec.JobID, output); terminalErr != nil {
-			run.forwardDisabled = true
+			// Double-fault: the start forward failed AND the durable
+			// forward_failed terminal could not be appended. Unlike the shell
+			// path, there is no delegate analog to finalizeShellUntilDurable to
+			// thread here (the run is never added to jm.running, so no
+			// finalizer can adopt it). The job_started event is left without a
+			// terminal; the owner's next restart reconciles it to
+			// stopped/runtime_lost via the standard restart-reconciliation
+			// path. Building a finalizer for this rare double-fault
+			// (local-store append failing twice) is unwarranted.
 			jm.mu.Unlock()
 			return nil, errors.Join(errDelegateStartForwardTerminalFailed, err, terminalErr)
 		}

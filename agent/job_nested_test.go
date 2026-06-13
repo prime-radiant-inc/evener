@@ -212,6 +212,51 @@ func TestDelegateStartForwardsToParent(t *testing.T) {
 	}
 }
 
+func TestDelegateStartForwardFailureWritesDurableTerminal(t *testing.T) {
+	coordinator := newTestSession(t)
+	t.Cleanup(func() { _ = coordinator.jobManager.store.Close() })
+	coordinator.jobManager.parentJobID = "job_ROOTDELEGATE"
+	coordinator.jobManager.forward = func(jobstore.Event) error {
+		return errors.New("parent append failed")
+	}
+
+	worker := newTestSession(t)
+	sub := &subagent{
+		id:     worker.ID(),
+		sess:   worker,
+		status: SubagentRunning,
+		done:   make(chan struct{}),
+	}
+	coordinator.subagents.track(sub)
+
+	run, err := coordinator.attachDelegateJob(coordinator.jobManager, worker.ID(), "do work", sub)
+	if err == nil {
+		t.Fatalf("attachDelegateJob run=%+v, want forward failure", run)
+	}
+	if !errors.Is(err, errDelegateStartForwardFailed) {
+		t.Fatalf("attachDelegateJob error = %v, want errDelegateStartForwardFailed", err)
+	}
+
+	records, loadErr := coordinator.jobManager.store.Load()
+	if loadErr != nil {
+		t.Fatalf("load coordinator store: %v", loadErr)
+	}
+	if len(records) != 1 {
+		t.Fatalf("coordinator store records = %+v, want one failed delegate record", records)
+	}
+	for _, record := range records {
+		if record.Status != jobstore.StatusFailed || record.Reason != "forward_failed" {
+			t.Fatalf("delegate record after forward failure = %+v, want failed/forward_failed", record)
+		}
+		coordinator.jobManager.mu.Lock()
+		survived := coordinator.jobManager.running[record.JobID]
+		coordinator.jobManager.mu.Unlock()
+		if survived != nil {
+			t.Fatalf("delegate running entry survived start forward failure: %+v", survived.rec)
+		}
+	}
+}
+
 func TestParentRuntimeCloseKeepsStoreOpenForNestedTerminalForward(t *testing.T) {
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
