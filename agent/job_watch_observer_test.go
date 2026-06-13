@@ -17,7 +17,7 @@ func TestWatchSendBuildsObserverFrame(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)

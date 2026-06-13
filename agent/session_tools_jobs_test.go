@@ -25,7 +25,7 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'ready-line\n'; sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"printf 'ready-line\n'; sleep 30","max_wait_ms":1000}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -118,7 +118,7 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 	stopRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "stop",
 		Name:      "job_stop",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"block":true,"block_timeout_ms":1000}`, shellOut.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_wait_ms":1000}`, shellOut.JobID)),
 	})
 	if stopRes.IsError {
 		t.Fatalf("job_stop returned error: %s", stopRes.Output)
@@ -705,7 +705,7 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -752,7 +752,7 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 1; echo 'WATCH_OUTPUT_TOKEN_ONCE'; sleep 1","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 1; echo 'WATCH_OUTPUT_TOKEN_ONCE'; sleep 1","max_wait_ms":1000}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -819,26 +819,22 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 	s := newTestSession(t)
 
-	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "shell",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'already-done\n'","background":true}`),
-	})
-	if shellRes.IsError {
-		t.Fatalf("shell returned error: %s", shellRes.Output)
+	// Use a manual job so we have a durable record with known output. Fast
+	// commands that produce small output return ephemeral (no job_id) after the
+	// complete-or-handle invariant lands; creating the record directly avoids
+	// that path and keeps the test focused on §7.1 terminal catch-up.
+	rec := newManualRunningJob(t, s)
+	appendManualJobOutput(s.jobManager, rec.JobID, "already-done\n")
+	if err := s.jobManager.finalize(rec.JobID, jobstore.StatusCompleted, "", nil); err != nil {
+		t.Fatalf("finalize manual job: %v", err)
 	}
-	var shellOut struct {
-		JobID string `json:"job_id"`
-	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
-		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
-	}
-	waitForShellDone(t, s.jobManager, shellOut.JobID)
+	waitForShellDone(t, s.jobManager, rec.JobID)
+	watchedJobID := rec.JobID
 
 	watchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"output_match":"already-done"}`, shellOut.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"output_match":"already-done"}`, watchedJobID)),
 	})
 	if watchRes.IsError {
 		t.Fatalf("terminal output_match catch-up must not error: %s", watchRes.Output)
@@ -861,7 +857,7 @@ func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 	noMatchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch2",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"output_match":"never-printed"}`, shellOut.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"output_match":"never-printed"}`, watchedJobID)),
 	})
 	if noMatchRes.IsError {
 		t.Fatalf("non-matching terminal catch-up must not error: %s", noMatchRes.Output)
@@ -990,7 +986,7 @@ func TestJobWatchLargeEchoFieldsReturnBoundedSuccess(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -1171,7 +1167,7 @@ func TestJobStopDefaultReturnsRequestedCancellation(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -1225,9 +1221,8 @@ func TestJobStopBlockTimeoutReturnsStopPending(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	out, err := jobStopTool(ctx, s, map[string]any{
-		"job_id":           rec.JobID,
-		"block":            true,
-		"block_timeout_ms": 60000,
+		"job_id":      rec.JobID,
+		"max_wait_ms": 60000,
 	}, 20000)
 	if err != nil {
 		t.Fatalf("jobStopTool returned error: %v", err)
@@ -1264,8 +1259,7 @@ func TestDelegateToolForegroundReturnsStructuredResult(t *testing.T) {
 		Name: "delegate",
 		Arguments: json.RawMessage(`{
 			"task":"fix the issue",
-			"background":false,
-			"block_timeout_ms":5000,
+			"max_wait_ms":5000,
 			"result_schema":{
 				"type":"object",
 				"properties":{"summary":{"type":"string"}},
@@ -1315,8 +1309,7 @@ func TestDelegateToolForegroundSchemaResultMissingProjectsReason(t *testing.T) {
 		Name: "delegate",
 		Arguments: json.RawMessage(`{
 			"task":"return a structured result",
-			"background":false,
-			"block_timeout_ms":5000,
+			"max_wait_ms":5000,
 			"result_schema":{
 				"type":"object",
 				"properties":{"summary":{"type":"string"}},
@@ -1345,7 +1338,7 @@ func TestDelegateToolForegroundNoSchemaNoStructuredOmitsStructuredFields(t *test
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "delegate",
 		Name:      "delegate",
-		Arguments: json.RawMessage(`{"task":"return prose only","background":false,"block_timeout_ms":5000}`),
+		Arguments: json.RawMessage(`{"task":"return prose only","max_wait_ms":5000}`),
 	})
 	if res.IsError {
 		t.Fatalf("delegate returned error: %s", res.Output)
@@ -1488,7 +1481,7 @@ func TestJobReadOutputBlockReturnsOnNewOutput(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "read",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"block":true,"block_timeout_ms":1000}`, rec.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_wait_ms":1000}`, rec.JobID)),
 	})
 	if res.IsError {
 		t.Fatalf("job_read_output returned error: %s", res.Output)
@@ -1533,7 +1526,7 @@ func blockingGrepRead(t *testing.T, s *Session, jobID, grep string, timeoutMS in
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "read",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"grep":%q,"block":true,"block_timeout_ms":%d}`, jobID, grep, timeoutMS)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"grep":%q,"max_wait_ms":%d}`, jobID, grep, timeoutMS)),
 	})
 	elapsed := time.Since(started)
 	if res.IsError {
@@ -1785,7 +1778,7 @@ func TestJobSendMessageForegroundResumeReturnsTerminalResult(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send",
 		Name:      "job_send_message",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"run again","background":false,"block_timeout_ms":5000}`, first.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"run again","max_wait_ms":5000}`, first.JobID)),
 	})
 	if res.IsError {
 		t.Fatalf("job_send_message returned error: %s", res.Output)
@@ -1873,7 +1866,7 @@ func TestJobSendMessageRestoreRuntimeLostStructuredInvalidResult(t *testing.T) {
 	res := restored.reg.ExecuteCall(context.Background(), restored.env, llm.ToolCallData{
 		ID:        "send",
 		Name:      "job_send_message",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"resume without structured output","background":false,"block_timeout_ms":5000}`, first.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"resume without structured output","max_wait_ms":5000}`, first.JobID)),
 	})
 	if res.IsError {
 		t.Fatalf("job_send_message returned error: %s", res.Output)
@@ -2027,13 +2020,13 @@ func TestJobSendMessageNegativeBlockTimeoutDoesNotResume(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send",
 		Name:      "job_send_message",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"run again","background":false,"block_timeout_ms":-1}`, first.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"run again","max_wait_ms":-1}`, first.JobID)),
 	})
 	if !res.IsError {
 		t.Fatalf("job_send_message succeeded, want error: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "block_timeout_ms must be non-negative") {
-		t.Fatalf("job_send_message error = %q, want non-negative block_timeout_ms error", res.Output)
+	if !strings.Contains(res.Output, "max_wait_ms must be non-negative") {
+		t.Fatalf("job_send_message error = %q, want non-negative max_wait_ms error", res.Output)
 	}
 	after := s.jobManager.list(listFilter{Type: jobstore.JobDelegate})
 	if len(after) != len(before) {
@@ -2047,7 +2040,7 @@ func TestJobSendMessageToShellJobNotMessageable(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -2143,7 +2136,7 @@ func TestJobToolsDefinitions(t *testing.T) {
 	required(t, tooldefs.DefJobSendMessage(), "job_send_message", []string{"target", "message"})
 
 	readProps := tooldefs.DefJobReadOutput().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"tail_bytes", "grep", "block", "block_timeout_ms"} {
+	for _, param := range []string{"tail_bytes", "grep", "max_wait_ms"} {
 		if _, ok := readProps[param]; !ok {
 			t.Fatalf("job_read_output missing param %q", param)
 		}
@@ -2164,7 +2157,7 @@ func TestJobToolsDefinitions(t *testing.T) {
 		t.Fatalf("job_list schema unexpectedly contains removed cursor param")
 	}
 	stopProps := tooldefs.DefJobStop().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"job_id", "block", "block_timeout_ms", "include_children"} {
+	for _, param := range []string{"job_id", "max_wait_ms", "include_children"} {
 		if _, ok := stopProps[param]; !ok {
 			t.Fatalf("job_stop missing param %q", param)
 		}
@@ -2173,13 +2166,13 @@ func TestJobToolsDefinitions(t *testing.T) {
 		t.Fatalf("job_stop exposes unsupported signal parameter")
 	}
 	delegateProps := tooldefs.DefDelegate([]string{"reviewer"}).Parameters["properties"].(map[string]any)
-	for _, param := range []string{"task", "background", "agent_type", "model", "reasoning_effort", "block_timeout_ms", "result_schema"} {
+	for _, param := range []string{"task", "agent_type", "model", "reasoning_effort", "max_wait_ms", "result_schema"} {
 		if _, ok := delegateProps[param]; !ok {
 			t.Fatalf("delegate missing param %q", param)
 		}
 	}
 	sendProps := tooldefs.DefJobSendMessage().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"target", "message", "on_finished", "background", "block_timeout_ms"} {
+	for _, param := range []string{"target", "message", "on_finished", "max_wait_ms"} {
 		if _, ok := sendProps[param]; !ok {
 			t.Fatalf("job_send_message missing param %q", param)
 		}
@@ -2198,7 +2191,7 @@ func TestJobReadOutputRejectsInvalidArgs(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'ready-line\n'; sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"printf 'ready-line\n'; sleep 30","max_wait_ms":1000}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -2240,7 +2233,7 @@ func TestJobReadOutputGrepSearchesRetainedOutputBeyondTail(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'needle-start\n'; yes filler-line | head -c 70000; sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"printf 'needle-start\n'; yes filler-line | head -c 70000; sleep 30","max_wait_ms":1000}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -2395,23 +2388,22 @@ func TestJobToolOutputLimitsHaveJSONMinimum(t *testing.T) {
 func TestJobReadOutputGrepSearchesTerminalOutputFileBeyondTail(t *testing.T) {
 	s := newTestSession(t)
 
-	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "shell",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'needle-start\n'; yes filler-line | head -c 70000","background":true}`),
-	})
-	if shellRes.IsError {
-		t.Fatalf("shell returned error: %s", shellRes.Output)
+	// Build a durable completed job whose output exceeds the tail budget:
+	// "needle-start" at byte 0 followed by ~70 KB of filler. This exercises
+	// the retained-output grep path without relying on complete-or-handle (A3)
+	// to keep the record — A3 keeps records whose output exceeds the inline
+	// embed budget; constructing the record directly keeps the test focused on
+	// §6.2 grep-beyond-tail behaviour.
+	rec := newManualRunningJob(t, s)
+	appendManualJobOutput(s.jobManager, rec.JobID, "needle-start\n")
+	appendManualJobOutput(s.jobManager, rec.JobID, strings.Repeat("filler-line\n", 6000)) // ~72 KB
+	if err := s.jobManager.finalize(rec.JobID, jobstore.StatusCompleted, "", nil); err != nil {
+		t.Fatalf("finalize manual job: %v", err)
 	}
-	var shellOut struct {
-		JobID string `json:"job_id"`
-	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
-		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
-	}
-	waitForShellDone(t, s.jobManager, shellOut.JobID)
+	waitForShellDone(t, s.jobManager, rec.JobID)
+	jobID := rec.JobID
 
-	readOut := waitForJobGrepMatchResult(t, s, shellOut.JobID, "needle-start", 1024)
+	readOut := waitForJobGrepMatchResult(t, s, jobID, "needle-start", 1024)
 	if readOut.Status != string(jobstore.StatusCompleted) {
 		t.Fatalf("status = %q, want completed", readOut.Status)
 	}
@@ -2478,7 +2470,7 @@ func TestJobStopSchemaRejectsUnsupportedSignal(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -2514,7 +2506,7 @@ func TestJobStopAcceptsIncludeChildrenThroughRegistry(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -2543,29 +2535,15 @@ func TestJobStopAcceptsIncludeChildrenThroughRegistry(t *testing.T) {
 func TestJobReadOutputRejectsLargeGrepBeforeRegistryTruncation(t *testing.T) {
 	s := newTestSession(t)
 
-	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "shell",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'ready-line\n'","background":true}`),
-	})
-	if shellRes.IsError {
-		t.Fatalf("shell returned error: %s", shellRes.Output)
-	}
-	var shellOut struct {
-		JobID string `json:"job_id"`
-	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
-		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
-	}
-	t.Cleanup(func() {
-		_, _ = s.jobManager.stop(shellOut.JobID)
-		waitForShellDone(t, s.jobManager, shellOut.JobID)
-	})
+	// Use a manual job; fast small-output shell commands return ephemeral (no
+	// job_id) under complete-or-handle, so the shell tool cannot reliably
+	// produce a durable id here. The test is about grep validation, not shell.
+	rec := newManualRunningJob(t, s)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "read",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"grep":%q}`, shellOut.JobID, strings.Repeat("a", maxJobGrepPatternBytes+1))),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"grep":%q}`, rec.JobID, strings.Repeat("a", maxJobGrepPatternBytes+1))),
 	})
 	if !res.IsError {
 		t.Fatalf("job_read_output succeeded, want error: %s", res.Output)
@@ -2578,24 +2556,10 @@ func TestJobReadOutputRejectsLargeGrepBeforeRegistryTruncation(t *testing.T) {
 func TestJobReadOutputRejectsJSONExpandedGrepBeforeRegistryTruncation(t *testing.T) {
 	s := newTestSession(t)
 
-	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "shell",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'ready-line\n'","background":true}`),
-	})
-	if shellRes.IsError {
-		t.Fatalf("shell returned error: %s", shellRes.Output)
-	}
-	var shellOut struct {
-		JobID string `json:"job_id"`
-	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
-		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
-	}
-	t.Cleanup(func() {
-		_, _ = s.jobManager.stop(shellOut.JobID)
-		waitForShellDone(t, s.jobManager, shellOut.JobID)
-	})
+	// Use a manual job; fast small-output shell commands return ephemeral (no
+	// job_id) under complete-or-handle, so the shell tool cannot reliably
+	// produce a durable id here. The test is about grep validation, not shell.
+	rec := newManualRunningJob(t, s)
 
 	patternJSON, err := json.Marshal(strings.Repeat("\x00", maxJobGrepPatternJSONChars(jobToolResultDefaultMaxChar)/4))
 	if err != nil {
@@ -2604,7 +2568,7 @@ func TestJobReadOutputRejectsJSONExpandedGrepBeforeRegistryTruncation(t *testing
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "read",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"grep":%s}`, shellOut.JobID, patternJSON)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"grep":%s}`, rec.JobID, patternJSON)),
 	})
 	if !res.IsError {
 		t.Fatalf("job_read_output succeeded, want error: %s", res.Output)
@@ -2776,37 +2740,29 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func TestDelegateRejectsBackgroundWithBlockTimeout(t *testing.T) {
+// TestDelegateMaxWaitMSDecodeTable pins spec §2 delegate decode: negative
+// max_wait_ms is rejected; the old background+block_timeout_ms combo rejection
+// is gone (spec §3 — combo is inexpressible).
+func TestDelegateMaxWaitMSDecodeTable(t *testing.T) {
 	s := newDelegateTestSession(t, llm.NewClient())
 
-	// Case 1: background=true with block_timeout_ms → rejected.
+	// Negative max_wait_ms → invalid_request.
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "delegate",
 		Name:      "delegate",
-		Arguments: json.RawMessage(`{"task":"x","background":true,"block_timeout_ms":5000}`),
+		Arguments: json.RawMessage(`{"task":"x","max_wait_ms":-5}`),
 	})
 	if !res.IsError {
-		t.Fatalf("delegate with background=true and block_timeout_ms should return error, got success: %s", res.Output)
+		t.Fatalf("delegate with max_wait_ms=-5 should return error, got success: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "block_timeout_ms applies only to foreground waits") {
-		t.Fatalf("delegate error (background=true) = %q, want error about block_timeout_ms foreground only", res.Output)
-	}
-
-	// Case 2: background absent (defaults true) with block_timeout_ms → rejected.
-	res2 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "delegate",
-		Name:      "delegate",
-		Arguments: json.RawMessage(`{"task":"x","block_timeout_ms":5000}`),
-	})
-	if !res2.IsError {
-		t.Fatalf("delegate with background absent and block_timeout_ms should return error, got success: %s", res2.Output)
-	}
-	if !strings.Contains(res2.Output, "block_timeout_ms applies only to foreground waits") {
-		t.Fatalf("delegate error (background absent) = %q, want error about block_timeout_ms foreground only", res2.Output)
+	if !strings.Contains(res.Output, "max_wait_ms must be non-negative") {
+		t.Fatalf("delegate error = %q, want max_wait_ms must be non-negative", res.Output)
 	}
 }
 
-func TestJobSendMessageRejectsBackgroundWithBlockTimeout(t *testing.T) {
+// TestJobSendMessageMaxWaitMSDecodeTable pins spec §2 job_send_message decode:
+// negative max_wait_ms is rejected. The old combo rejection is gone (spec §3).
+func TestJobSendMessageMaxWaitMSDecodeTable(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -2819,49 +2775,32 @@ func TestJobSendMessageRejectsBackgroundWithBlockTimeout(t *testing.T) {
 	c.Register(adapter)
 	s := newDelegateTestSession(t, c)
 
-	// Start a delegate so we have a valid job target.
 	first := s.createDelegate(context.Background(), delegateArgs{
 		Task:       "finish first",
 		Background: false,
-		// No block_timeout_ms — legal foreground.
 	})
 	if first.Err != nil {
 		t.Fatalf("createDelegate returned error: %v", first.Err)
 	}
 	waitForShellDone(t, s.jobManager, first.JobID)
 
-	// Case 1: background=true with block_timeout_ms → rejected.
+	// Negative max_wait_ms → invalid_request.
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send",
 		Name:      "job_send_message",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"m","background":true,"block_timeout_ms":5000}`, first.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"m","max_wait_ms":-5}`, first.JobID)),
 	})
 	if !res.IsError {
-		t.Fatalf("job_send_message with background=true and block_timeout_ms should return error, got success: %s", res.Output)
+		t.Fatalf("job_send_message with max_wait_ms=-5 should return error, got success: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "block_timeout_ms applies only to foreground waits") {
-		t.Fatalf("job_send_message error (background=true) = %q, want error about block_timeout_ms foreground only", res.Output)
-	}
-
-	// Case 2: background absent (defaults true) with block_timeout_ms → rejected.
-	res2 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "send",
-		Name:      "job_send_message",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"m","block_timeout_ms":5000}`, first.JobID)),
-	})
-	if !res2.IsError {
-		t.Fatalf("job_send_message with background absent and block_timeout_ms should return error, got success: %s", res2.Output)
-	}
-	if !strings.Contains(res2.Output, "block_timeout_ms applies only to foreground waits") {
-		t.Fatalf("job_send_message error (background absent) = %q, want error about block_timeout_ms foreground only", res2.Output)
+	if !strings.Contains(res.Output, "max_wait_ms must be non-negative") {
+		t.Fatalf("job_send_message error = %q, want max_wait_ms must be non-negative", res.Output)
 	}
 }
 
-// Strict-mode providers force every parameter onto every call, so a zero
-// block_timeout_ms must read as unset for the foreground-only rejection —
-// otherwise delegate/send calls are unmakeable on that wire (e2e card
-// job-shell-lifecycle found the shell arm live; these pin the other two).
-func TestDelegateAndSendMessageAcceptZeroBlockTimeoutWithBackground(t *testing.T) {
+// TestDelegateAndSendMessageAcceptZeroMaxWaitMS pins spec §2: max_wait_ms=0 is
+// accepted (strict-provider safe — zero reads as unset on all five tools).
+func TestDelegateAndSendMessageAcceptZeroMaxWaitMS(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -2877,29 +2816,195 @@ func TestDelegateAndSendMessageAcceptZeroBlockTimeoutWithBackground(t *testing.T
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "d0",
 		Name:      "delegate",
-		Arguments: json.RawMessage(`{"task":"zero is unset","background":true,"block_timeout_ms":0}`),
+		Arguments: json.RawMessage(`{"task":"zero is unset","max_wait_ms":0}`),
 	})
-	if res.IsError && strings.Contains(res.Output, "block_timeout_ms applies only to foreground waits") {
-		t.Fatalf("delegate with strict-forced zero block_timeout_ms hit the foreground-only rejection: %s", res.Output)
-	}
 	if res.IsError {
-		t.Fatalf("delegate with zero block_timeout_ms failed unexpectedly: %s", res.Output)
+		t.Fatalf("delegate with max_wait_ms=0 (unset) failed unexpectedly: %s", res.Output)
 	}
 	var spawned struct {
-		JobID string `json:"job_id"`
+		JobID               string `json:"job_id"`
+		RunningInBackground bool   `json:"running_in_background"`
 	}
 	if err := json.Unmarshal([]byte(res.Output), &spawned); err != nil || spawned.JobID == "" {
 		t.Fatalf("delegate result missing job_id: %s", res.Output)
+	}
+	if !spawned.RunningInBackground {
+		t.Fatalf("delegate with max_wait_ms=0 should be running_in_background, got: %s", res.Output)
 	}
 	waitForShellDone(t, s.jobManager, spawned.JobID)
 
 	res2 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send0",
 		Name:      "job_send_message",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"m","background":true,"block_timeout_ms":0,"on_finished":"resume"}`, spawned.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"m","max_wait_ms":0,"on_finished":"resume"}`, spawned.JobID)),
 	})
-	if res2.IsError && strings.Contains(res2.Output, "block_timeout_ms applies only to foreground waits") {
-		t.Fatalf("job_send_message with strict-forced zero block_timeout_ms hit the foreground-only rejection: %s", res2.Output)
+	if res2.IsError {
+		t.Fatalf("job_send_message with max_wait_ms=0 (unset) failed unexpectedly: %s", res2.Output)
+	}
+}
+
+// TestMaxWaitMSDecoders covers spec §2's decode table for delegate,
+// job_send_message, job_read_output, and job_stop: negative max_wait_ms must
+// return invalid_request; 0/absent must succeed with unset behavior.
+func TestMaxWaitMSDecoders(t *testing.T) {
+	const wantNegErr = "invalid_request: max_wait_ms must be non-negative"
+
+	t.Run("delegate_negative", func(t *testing.T) {
+		s := newDelegateTestSession(t, llm.NewClient())
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "d",
+			Name:      "delegate",
+			Arguments: json.RawMessage(`{"task":"x","max_wait_ms":-1}`),
+		})
+		if !res.IsError {
+			t.Fatalf("delegate with max_wait_ms=-1: want error, got success: %s", res.Output)
+		}
+		if !strings.Contains(res.Output, wantNegErr) {
+			t.Fatalf("delegate error = %q, want %q", res.Output, wantNegErr)
+		}
+	})
+
+	t.Run("delegate_zero_is_unset", func(t *testing.T) {
+		adapter := &fakeAdapter{
+			name: "openai",
+			steps: []func(req llm.Request) llm.Response{
+				func(req llm.Request) llm.Response {
+					return communicateWithDefaultOutput("done")
+				},
+			},
+		}
+		c := llm.NewClient()
+		c.Register(adapter)
+		s := newDelegateTestSession(t, c)
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "d",
+			Name:      "delegate",
+			Arguments: json.RawMessage(`{"task":"x","max_wait_ms":0}`),
+		})
+		if res.IsError {
+			t.Fatalf("delegate with max_wait_ms=0: want no-wait success, got error: %s", res.Output)
+		}
+		// With unset (0), should return immediately with running_in_background:true.
+		var out struct {
+			RunningInBackground bool   `json:"running_in_background"`
+			JobID               string `json:"job_id"`
+		}
+		if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if !out.RunningInBackground || out.JobID == "" {
+			t.Fatalf("delegate with max_wait_ms=0 = %+v, want running_in_background with job_id", out)
+		}
+		waitForShellDone(t, s.jobManager, out.JobID)
+	})
+
+	t.Run("job_send_message_negative", func(t *testing.T) {
+		adapter := &fakeAdapter{
+			name: "openai",
+			steps: []func(req llm.Request) llm.Response{
+				func(req llm.Request) llm.Response {
+					return communicateWithDefaultOutput("done")
+				},
+			},
+		}
+		c := llm.NewClient()
+		c.Register(adapter)
+		s := newDelegateTestSession(t, c)
+		first := s.createDelegate(context.Background(), delegateArgs{Task: "finish", Background: false})
+		if first.Err != nil {
+			t.Fatalf("createDelegate: %v", first.Err)
+		}
+		waitForShellDone(t, s.jobManager, first.JobID)
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "send",
+			Name:      "job_send_message",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"m","max_wait_ms":-1}`, first.JobID)),
+		})
+		if !res.IsError {
+			t.Fatalf("job_send_message with max_wait_ms=-1: want error, got success: %s", res.Output)
+		}
+		if !strings.Contains(res.Output, wantNegErr) {
+			t.Fatalf("job_send_message error = %q, want %q", res.Output, wantNegErr)
+		}
+	})
+
+	t.Run("job_read_output_negative", func(t *testing.T) {
+		s := newTestSession(t)
+		// Use internal API to create a running job (avoids shell decoder chicken-and-egg).
+		rec := newManualRunningJob(t, s)
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "read",
+			Name:      "job_read_output",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_wait_ms":-1}`, rec.JobID)),
+		})
+		if !res.IsError {
+			t.Fatalf("job_read_output with max_wait_ms=-1: want error, got success: %s", res.Output)
+		}
+		if !strings.Contains(res.Output, wantNegErr) {
+			t.Fatalf("job_read_output error = %q, want %q", res.Output, wantNegErr)
+		}
+	})
+
+	t.Run("job_read_output_zero_is_snapshot", func(t *testing.T) {
+		s := newTestSession(t)
+		// Use internal API to create a running job.
+		rec := newManualRunningJob(t, s)
+		// max_wait_ms=0: snapshot now (should not block).
+		started := time.Now()
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "read",
+			Name:      "job_read_output",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_wait_ms":0}`, rec.JobID)),
+		})
+		if res.IsError {
+			t.Fatalf("job_read_output with max_wait_ms=0: %s", res.Output)
+		}
+		if elapsed := time.Since(started); elapsed > 2*time.Second {
+			t.Fatalf("job_read_output with max_wait_ms=0 blocked for %s, want immediate snapshot", elapsed)
+		}
+	})
+
+	t.Run("job_stop_negative", func(t *testing.T) {
+		s := newTestSession(t)
+		rec := newManualRunningJob(t, s)
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "stop",
+			Name:      "job_stop",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_wait_ms":-1}`, rec.JobID)),
+		})
+		if !res.IsError {
+			t.Fatalf("job_stop with max_wait_ms=-1: want error, got success: %s", res.Output)
+		}
+		if !strings.Contains(res.Output, wantNegErr) {
+			t.Fatalf("job_stop error = %q, want %q", res.Output, wantNegErr)
+		}
+	})
+
+	t.Run("job_stop_zero_is_return_now", func(t *testing.T) {
+		s := newTestSession(t)
+		rec := newManualRunningJob(t, s)
+		// max_wait_ms=0: request stop and return without waiting.
+		started := time.Now()
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "stop",
+			Name:      "job_stop",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_wait_ms":0}`, rec.JobID)),
+		})
+		if res.IsError {
+			t.Fatalf("job_stop with max_wait_ms=0: %s", res.Output)
+		}
+		if elapsed := time.Since(started); elapsed > 2*time.Second {
+			t.Fatalf("job_stop with max_wait_ms=0 blocked for %s, want return immediately", elapsed)
+		}
+	})
+}
+
+// TestGrantedReadBlockUnsupportedErrReword pins the new error message wording
+// for max_wait_ms>0 on a granted cross-session read (spec §3).
+func TestGrantedReadBlockUnsupportedErrReword(t *testing.T) {
+	const want = "invalid_request: max_wait_ms is not supported for granted cross-session reads"
+	if grantedReadBlockUnsupportedErr != want {
+		t.Fatalf("grantedReadBlockUnsupportedErr = %q, want %q", grantedReadBlockUnsupportedErr, want)
 	}
 }
 

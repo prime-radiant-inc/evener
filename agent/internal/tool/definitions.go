@@ -81,9 +81,9 @@ func DefShell() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"command":       map[string]any{"type": "string"},
-				"description":   map[string]any{"type": "string"},
-				"max_wait_ms":   map[string]any{"type": "integer", "description": "Bound on how long this call waits, in ms (0 = the session default, 120s standard). A command still running at the bound is promoted to a durable background job. Use a small bound (e.g. 1000) to launch-and-return."},
+				"command":        map[string]any{"type": "string"},
+				"description":    map[string]any{"type": "string"},
+				"max_wait_ms":    map[string]any{"type": "integer", "description": "Bound on how long this call waits, in ms (0 = the session default, 120s standard). A command still running at the bound is promoted to a durable background job. Use a small bound (e.g. 1000) to launch-and-return."},
 				"max_runtime_ms": map[string]any{"type": "integer"},
 			},
 			"required": []string{"command"},

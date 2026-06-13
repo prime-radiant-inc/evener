@@ -513,9 +513,8 @@ func TestDelegateStopMapsToCancelled(t *testing.T) {
 	}
 
 	out, err := jobStopTool(context.Background(), sess, map[string]any{
-		"job_id":           res.JobID,
-		"block":            true,
-		"block_timeout_ms": 1000,
+		"job_id":      res.JobID,
+		"max_wait_ms": 1000,
 	}, jobToolResultDefaultMaxChar)
 	if err != nil {
 		t.Fatalf("jobStopTool: %v", err)
@@ -2737,7 +2736,7 @@ func TestRuntimeLostDelegateResumeRelinksNestedJobsToNewJob(t *testing.T) {
 					ID:   "nested_shell",
 					Name: "shell",
 					Arguments: json.RawMessage(fmt.Sprintf(
-						`{"command":"printf 'runtime-lost-nested-ready\n'; sleep 30","description":%q,"background":true}`,
+						`{"command":"printf 'runtime-lost-nested-ready\n'; sleep 30","description":%q,"max_wait_ms":1000}`,
 						nestedDescription,
 					)),
 					Type: "function",

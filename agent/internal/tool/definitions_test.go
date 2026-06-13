@@ -24,7 +24,6 @@ func TestSchemaMaxWaitUnification(t *testing.T) {
 	}
 
 	for _, tc := range tools {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			params := tc.def()
 

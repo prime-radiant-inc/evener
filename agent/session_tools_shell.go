@@ -29,9 +29,6 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				shellArgs = applyShellTimeoutPolicy(deps, shellArgs)
 				return marshalShellToolResult(runShell(ctx, s.jobManager, se, shellArgs), shellToolResultMaxChars(reg))
 			}
-			if shellArgs.Background {
-				return "background shell jobs require streaming execution support", errors.New("background shell jobs require streaming execution support")
-			}
 			return runBufferedShell(ctx, env, deps, shellArgs)
 		},
 	}); err != nil {
@@ -112,26 +109,19 @@ func parseShellToolArgs(args map[string]any) (shellArgs, error) {
 	parsed := shellArgs{
 		Command:     fmt.Sprint(args["command"]),
 		Description: stringArg(args, "description"),
-		Background:  shellBoolArg(args, "background"),
 	}
 	var ok bool
-	// Zero reads as unset: strict-mode providers (OpenAI Responses) force every
-	// parameter onto every call, so a background call always carries
-	// block_timeout_ms:0 on that wire, and zero already means "default" in the
-	// foreground read path. Only an explicit positive timeout is a combo error.
-	blockTimeoutSet := false
-	if parsed.BlockTimeoutMS, ok = shellIntArg(args, "block_timeout_ms"); ok && parsed.BlockTimeoutMS > 0 {
-		blockTimeoutSet = true
+	// max_wait_ms: 0/absent = session default (unset); positive = explicit bound;
+	// negative = invalid_request. Zero reads as unset so strict-mode providers
+	// (OpenAI Responses) that force every parameter on every call still work.
+	if parsed.BlockTimeoutMS, ok = shellIntArg(args, "max_wait_ms"); !ok {
+		parsed.BlockTimeoutMS = 0
+	}
+	if parsed.BlockTimeoutMS < 0 {
+		return shellArgs{}, errors.New("invalid_request: max_wait_ms must be non-negative")
 	}
 	if parsed.MaxRuntimeMS, ok = shellIntArg(args, "max_runtime_ms"); !ok {
 		parsed.MaxRuntimeMS = 0
-	}
-	// block_timeout_ms only applies to foreground waits. Reject background+timeout combos.
-	if parsed.Background && blockTimeoutSet {
-		return shellArgs{}, errors.New(blockTimeoutForegroundOnlyErr)
-	}
-	if parsed.BlockTimeoutMS < 0 {
-		return shellArgs{}, errors.New("block_timeout_ms must be non-negative")
 	}
 	if parsed.MaxRuntimeMS < 0 {
 		return shellArgs{}, errors.New("max_runtime_ms must be non-negative")
@@ -304,7 +294,7 @@ func applyShellTimeoutPolicy(deps *toolDeps, args shellArgs) shellArgs {
 func runBufferedShell(ctx context.Context, env execenv.ExecutionEnvironment, deps *toolDeps, args shellArgs) (string, error) {
 	args = applyShellTimeoutPolicy(deps, args)
 	timeout := args.BlockTimeoutMS
-	timeoutParam := "block_timeout_ms"
+	timeoutParam := "max_wait_ms"
 	if args.MaxRuntimeMS > 0 && (timeout == 0 || args.MaxRuntimeMS < timeout) {
 		timeout = args.MaxRuntimeMS
 		timeoutParam = "max_runtime_ms"

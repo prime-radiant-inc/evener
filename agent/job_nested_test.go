@@ -877,10 +877,9 @@ func TestNestedReadOutputBlockRefreshesOwnerRecord(t *testing.T) {
 	readDone := make(chan readResult, 1)
 	go func() {
 		out, err := jobReadOutputTool(context.Background(), parent, map[string]any{
-			"job_id":           nested.JobID,
-			"block":            true,
-			"block_timeout_ms": 1000,
-			"tail_bytes":       65536,
+			"job_id":      nested.JobID,
+			"max_wait_ms": 1000,
+			"tail_bytes":  65536,
 		}, 20000)
 		readDone <- readResult{out: out, err: err}
 	}()
@@ -2156,7 +2155,7 @@ func TestNestedShellEndToEndThroughTools(t *testing.T) {
 	delegateCall := parent.reg.ExecuteCall(context.Background(), parent.env, llm.ToolCallData{
 		ID:        "delegate",
 		Name:      "delegate",
-		Arguments: json.RawMessage(`{"task":"host nested shell","background":true}`),
+		Arguments: json.RawMessage(`{"task":"host nested shell","max_wait_ms":0}`),
 	})
 	if delegateCall.IsError {
 		t.Fatalf("delegate tool returned error: %s", delegateCall.Output)
@@ -2187,7 +2186,7 @@ func TestNestedShellEndToEndThroughTools(t *testing.T) {
 	shellCall := child.reg.ExecuteCall(context.Background(), child.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'nested-e2e-ready\n'; sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"printf 'nested-e2e-ready\n'; sleep 30","max_wait_ms":1000}`),
 	})
 	if shellCall.IsError {
 		t.Fatalf("child shell tool returned error: %s", shellCall.Output)

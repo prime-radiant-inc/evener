@@ -23,7 +23,6 @@ const (
 	maxJobOutputRetentionBytes  = 8 * 1024 * 1024
 	defaultJobListLimit         = 50
 	maxJobListLimit             = 100
-	defaultJobBlockTimeoutMS    = 5000
 	minJobBlockTimeoutMS        = 1000
 	maxJobBlockTimeoutMS        = 60000
 	jobToolResultDefaultMaxChar = 20_000
@@ -34,17 +33,13 @@ const (
 	maxJobGrepPatternBytes      = 4096
 	maxJobWatchResultTextChars  = 128
 	maxJobWatchResultEvents     = 8
-	// blockTimeoutForegroundOnlyErr is the rejection message for calls that
-	// combine block_timeout_ms with a background (non-foreground) wait. The
-	// exact string is asserted by tests; keep it stable.
-	blockTimeoutForegroundOnlyErr = "invalid_request: block_timeout_ms applies only to foreground waits (background=false)"
-	// grantedReadBlockUnsupportedErr is the rejection for block=true on a
+	// grantedReadBlockUnsupportedErr is the rejection for max_wait_ms>0 on a
 	// watch-granted cross-session read (spec §5.1). Granted reads are
 	// snapshot-only by decision: the blocking wait helpers are coupled to a
 	// resolvable jobManager (done channels, output polling) that the granted
 	// view deliberately does not expose, and half-supporting block by silently
 	// degrading it to a snapshot would lie to the model about having waited.
-	grantedReadBlockUnsupportedErr = "invalid_request: block is not supported for granted cross-session reads"
+	grantedReadBlockUnsupportedErr = "invalid_request: max_wait_ms is not supported for granted cross-session reads"
 )
 
 var rootOnlyJobControlTools = []string{"delegate", "job_watch"}
@@ -118,24 +113,24 @@ func jobSendMessageTool(ctx context.Context, s *Session, args map[string]any, ma
 		Target:     stringArg(args, "target"),
 		Message:    stringArg(args, "message"),
 		OnFinished: stringArg(args, "on_finished"),
-		Background: true,
+		Background: true, // default: no wait, return immediately
 	}
-	if background, ok := args["background"].(bool); ok {
-		a.Background = background
+	// max_wait_ms: 0/absent = no wait; positive = wait inline up to N;
+	// negative = invalid_request. Zero reads as unset (strict-provider safe).
+	if n, ok := shellIntArg(args, "max_wait_ms"); ok && n != 0 {
+		if n < 0 {
+			return "", errors.New("invalid_request: max_wait_ms must be non-negative")
+		}
+		clamped := n
+		if clamped < minJobBlockTimeoutMS {
+			clamped = minJobBlockTimeoutMS
+		}
+		if clamped > maxJobBlockTimeoutMS {
+			clamped = maxJobBlockTimeoutMS
+		}
+		a.Background = false
 		a.BackgroundSet = true
-	}
-	blockTimeoutSet := false
-	if n, ok := shellIntArg(args, "block_timeout_ms"); ok {
-		// Zero reads as unset (strict-mode providers force the key onto every
-		// call); only an explicit positive timeout is a combo error.
-		blockTimeoutSet = n > 0
-		a.BlockTimeoutMS = n
-	}
-	// block_timeout_ms only applies to foreground waits (background=false).
-	// Reject when the timeout is set but background is not explicitly false.
-	backgroundExplicitlyFalse := a.BackgroundSet && !a.Background
-	if blockTimeoutSet && !backgroundExplicitlyFalse {
-		return "", errors.New(blockTimeoutForegroundOnlyErr)
+		a.BlockTimeoutMS = clamped
 	}
 
 	res := s.sendDelegateMessage(ctx, a)
@@ -167,24 +162,23 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 		AgentType:       stringArg(args, "agent_type"),
 		Model:           stringArg(args, "model"),
 		ReasoningEffort: stringArg(args, "reasoning_effort"),
-		Background:      true,
+		Background:      true, // default: no wait, return job_id immediately
 	}
-	bgVal, bgIsBool := args["background"].(bool)
-	if bgIsBool {
-		a.Background = bgVal
-	}
-	blockTimeoutSet := false
-	if n, ok := shellIntArg(args, "block_timeout_ms"); ok {
-		// Zero reads as unset (strict-mode providers force the key onto every
-		// call); only an explicit positive timeout is a combo error.
-		blockTimeoutSet = n > 0
-		a.BlockTimeoutMS = n
-	}
-	// block_timeout_ms only applies to foreground waits (background=false).
-	// Reject when the timeout is set but background is not explicitly false.
-	backgroundExplicitlyFalse := bgIsBool && !bgVal
-	if blockTimeoutSet && !backgroundExplicitlyFalse {
-		return "", errors.New(blockTimeoutForegroundOnlyErr)
+	// max_wait_ms: 0/absent = no wait (background); positive = wait inline up to N;
+	// negative = invalid_request. Zero reads as unset (strict-provider safe).
+	if n, ok := shellIntArg(args, "max_wait_ms"); ok && n != 0 {
+		if n < 0 {
+			return "", errors.New("invalid_request: max_wait_ms must be non-negative")
+		}
+		clamped := n
+		if clamped < minJobBlockTimeoutMS {
+			clamped = minJobBlockTimeoutMS
+		}
+		if clamped > maxJobBlockTimeoutMS {
+			clamped = maxJobBlockTimeoutMS
+		}
+		a.Background = false
+		a.BlockTimeoutMS = clamped
 	}
 	if resultSchema, ok := args["result_schema"].(map[string]any); ok {
 		a.ResultSchema = resultSchema
@@ -237,15 +231,27 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		grepRE = re
 	}
 
-	if shellBoolArg(args, "block") {
+	// max_wait_ms: 0/absent = snapshot now; positive = bounded wait;
+	// negative = invalid_request. Zero reads as unset (strict-provider safe).
+	maxWaitMS := 0
+	if n, ok := shellIntArg(args, "max_wait_ms"); ok && n != 0 {
+		if n < 0 {
+			return "", errors.New("invalid_request: max_wait_ms must be non-negative")
+		}
+		maxWaitMS = n
+	}
+	if maxWaitMS > 0 {
 		if granted != nil {
 			return "", errors.New(grantedReadBlockUnsupportedErr)
 		}
-		timeoutMS, err := jobBlockTimeoutMS(args)
-		if err != nil {
-			return "", err
+		clamped := maxWaitMS
+		if clamped < minJobBlockTimeoutMS {
+			clamped = minJobBlockTimeoutMS
 		}
-		timeout := time.Duration(timeoutMS) * time.Millisecond
+		if clamped > maxJobBlockTimeoutMS {
+			clamped = maxJobBlockTimeoutMS
+		}
+		timeout := time.Duration(clamped) * time.Millisecond
 		if grepRE != nil {
 			waitForJobGrepMatch(ctx, jm, jobID, grepRE, timeout)
 		} else {
@@ -437,9 +443,14 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 	if jobID == "" {
 		return "", errors.New("job_id is required")
 	}
-	timeoutMS, err := jobBlockTimeoutMS(args)
-	if err != nil {
-		return "", err
+	// max_wait_ms: 0/absent = request stop and return; positive = wait up to N;
+	// negative = invalid_request. Zero reads as unset (strict-provider safe).
+	maxWaitMS := 0
+	if n, ok := shellIntArg(args, "max_wait_ms"); ok && n != 0 {
+		if n < 0 {
+			return "", errors.New("invalid_request: max_wait_ms must be non-negative")
+		}
+		maxWaitMS = n
 	}
 
 	targetJM := jm
@@ -454,8 +465,15 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 	if err != nil {
 		return "", errors.Join(childStopErr, err)
 	}
-	if shellBoolArg(args, "block") {
-		done := waitForJobDone(ctx, targetJM, jobID, time.Duration(timeoutMS)*time.Millisecond)
+	if maxWaitMS > 0 {
+		clamped := maxWaitMS
+		if clamped < minJobBlockTimeoutMS {
+			clamped = minJobBlockTimeoutMS
+		}
+		if clamped > maxJobBlockTimeoutMS {
+			clamped = maxJobBlockTimeoutMS
+		}
+		done := waitForJobDone(ctx, targetJM, jobID, time.Duration(clamped)*time.Millisecond)
 		if _, latest, err := s.nestedOrLocalJobManager(jobID); err == nil {
 			rec = latest
 		}
@@ -1025,26 +1043,6 @@ func jobTypeArrayArg(args map[string]any, key string) ([]jobstore.JobType, error
 		}
 	}
 	return types, nil
-}
-
-func jobBlockTimeoutMS(args map[string]any) (int, error) {
-	timeoutMS := defaultJobBlockTimeoutMS
-	if n, ok := shellIntArg(args, "block_timeout_ms"); ok {
-		timeoutMS = n
-	}
-	if timeoutMS < 0 {
-		return 0, errors.New("block_timeout_ms must be non-negative")
-	}
-	if timeoutMS == 0 {
-		return defaultJobBlockTimeoutMS, nil
-	}
-	if timeoutMS < minJobBlockTimeoutMS {
-		return minJobBlockTimeoutMS, nil
-	}
-	if timeoutMS > maxJobBlockTimeoutMS {
-		return maxJobBlockTimeoutMS, nil
-	}
-	return timeoutMS, nil
 }
 
 func findJobRecord(jm *jobManager, jobID string) (*jobstore.JobRecord, error) {
