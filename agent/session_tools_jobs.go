@@ -213,19 +213,23 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		}
 		granted = g
 	}
-	_, hasHead := shellIntArg(args, "head_bytes")
-	_, hasTail := shellIntArg(args, "tail_bytes")
+	headBytes, hasHead, err := strictZeroJobBytesArg(args, "head_bytes")
+	if err != nil {
+		return "", err
+	}
+	tailBytes, hasTail, err := strictZeroJobBytesArg(args, "tail_bytes")
+	if err != nil {
+		return "", err
+	}
 	if hasHead && hasTail {
 		return "", errors.New("invalid_request: head_bytes and tail_bytes are mutually exclusive")
 	}
 	fromHead := hasHead
-	readKey := "tail_bytes"
-	if fromHead {
-		readKey = "head_bytes"
-	}
-	readBytes, err := boundedJobBytesArg(args, readKey, defaultJobOutputBytes)
-	if err != nil {
-		return "", err
+	readBytes := defaultJobOutputBytes
+	if hasHead {
+		readBytes = headBytes
+	} else if hasTail {
+		readBytes = tailBytes
 	}
 	maxChars := registryMaxChars
 	grep := stringArg(args, "grep")
@@ -858,18 +862,21 @@ func sessionJobManager(s *Session) (*jobManager, error) {
 	return s.jobManager, nil
 }
 
-func boundedJobBytesArg(args map[string]any, key string, defaultValue int) (int, error) {
-	value := defaultValue
-	if n, ok := shellIntArg(args, key); ok {
-		value = n
+// strictZeroJobBytesArg reads a head_bytes/tail_bytes arg under the strict-zero
+// rule: absent or 0 → (0, false, nil); positive → (capped, true, nil);
+// negative → (0, false, invalid_request error). Mirrors max_wait_ms behavior.
+func strictZeroJobBytesArg(args map[string]any, key string) (int, bool, error) {
+	n, ok := shellIntArg(args, key)
+	if !ok || n == 0 {
+		return 0, false, nil
 	}
-	if value <= 0 {
-		return 0, fmt.Errorf("%s must be greater than 0", key)
+	if n < 0 {
+		return 0, false, fmt.Errorf("invalid_request: %s must be non-negative", key)
 	}
-	if value > maxJobOutputBytes {
-		value = maxJobOutputBytes
+	if n > maxJobOutputBytes {
+		n = maxJobOutputBytes
 	}
-	return value, nil
+	return n, true, nil
 }
 
 func jobListFilterFromArgs(args map[string]any) (listFilter, error) {

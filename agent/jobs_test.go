@@ -319,9 +319,12 @@ func TestJobOutputReadLimitRemainsModelFacingCap(t *testing.T) {
 		t.Fatalf("maxJobOutputRetentionBytes = %d, want 8 MiB", maxJobOutputRetentionBytes)
 	}
 
-	got, err := boundedJobBytesArg(map[string]any{"tail_bytes": maxJobOutputRetentionBytes}, "tail_bytes", defaultJobOutputBytes)
+	got, present, err := strictZeroJobBytesArg(map[string]any{"tail_bytes": maxJobOutputRetentionBytes}, "tail_bytes")
 	if err != nil {
-		t.Fatalf("boundedJobBytesArg: %v", err)
+		t.Fatalf("strictZeroJobBytesArg: %v", err)
+	}
+	if !present {
+		t.Fatalf("strictZeroJobBytesArg: present = false, want true")
 	}
 	if got != maxJobOutputBytes {
 		t.Fatalf("bounded tail_bytes = %d, want model-facing cap %d", got, maxJobOutputBytes)

@@ -2211,7 +2211,7 @@ func TestJobReadOutputRejectsInvalidArgs(t *testing.T) {
 		name string
 		args string
 	}{
-		{"tail_bytes", fmt.Sprintf(`{"job_id":%q,"tail_bytes":0}`, shellOut.JobID)},
+		{"tail_bytes", fmt.Sprintf(`{"job_id":%q,"tail_bytes":-1}`, shellOut.JobID)},
 		{"grep", fmt.Sprintf(`{"job_id":%q,"grep":"["}`, shellOut.JobID)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3108,6 +3108,88 @@ func TestJobReadOutputHeadAndTailMutuallyExclusive(t *testing.T) {
 	}
 	if !strings.Contains(res.Output, "head_bytes") {
 		t.Fatalf("error = %q, want mention of head_bytes", res.Output)
+	}
+}
+
+// TestJobReadOutputZeroHeadTailTreatedAsUnset verifies that head_bytes:0 and/or
+// tail_bytes:0 are treated as unset (strict-zero rule), matching max_wait_ms
+// behavior. Regression: gpt-5.5 sent both as 0 on every call, causing
+// invalid_request loops.
+func TestJobReadOutputZeroHeadTailTreatedAsUnset(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"printf 'ZERO_RULE_MARKER\n'; sleep 30","max_wait_ms":1000}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	cases := []struct {
+		name string
+		args string
+	}{
+		{"both_zero", fmt.Sprintf(`{"job_id":%q,"head_bytes":0,"tail_bytes":0}`, shellOut.JobID)},
+		{"tail_zero", fmt.Sprintf(`{"job_id":%q,"tail_bytes":0}`, shellOut.JobID)},
+		{"head_zero", fmt.Sprintf(`{"job_id":%q,"head_bytes":0}`, shellOut.JobID)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+				ID:        "read-" + tc.name,
+				Name:      "job_read_output",
+				Arguments: json.RawMessage(tc.args),
+			})
+			if res.IsError {
+				t.Fatalf("job_read_output(%s) returned error: %s", tc.name, res.Output)
+			}
+			var out jobReadOutputTestResult
+			if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+				t.Fatalf("unmarshal output: %v (output: %s)", err, res.Output)
+			}
+			if !strings.Contains(out.Content, "ZERO_RULE_MARKER") {
+				t.Fatalf("job_read_output(%s) content missing ZERO_RULE_MARKER; content: %q", tc.name, out.Content)
+			}
+		})
+	}
+}
+
+// TestJobReadOutputNegativeHeadBytesRejected verifies that head_bytes:-1
+// returns invalid_request with a non-negative message.
+func TestJobReadOutputNegativeHeadBytesRejected(t *testing.T) {
+	s := newTestSession(t)
+	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, s.jobManager, rec.JobID) })
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"head_bytes":-1}`, rec.JobID)),
+	})
+	if !res.IsError {
+		t.Fatalf("job_read_output with head_bytes:-1 succeeded, want error; output: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "invalid_request") {
+		t.Fatalf("error = %q, want invalid_request", res.Output)
+	}
+	if !strings.Contains(res.Output, "non-negative") {
+		t.Fatalf("error = %q, want mention of non-negative", res.Output)
 	}
 }
 
