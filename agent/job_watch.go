@@ -2582,7 +2582,37 @@ func (s *Session) drainPendingWatchSends(ctx context.Context) error {
 			errs = append(errs, s.drainJobManagerWatchSends(ctx, child.jobManager, child.id))
 		}
 	}
+	s.driveChildrenWithUndeliveredAttention()
 	return errors.Join(errs...)
+}
+
+// driveChildrenWithUndeliveredAttention re-purposes the parent's loop-boundary
+// child traversal as a DRIVE-SIGNAL reader (spec §3): for each LIVE, IDLE direct
+// child with queued job notifications (child.peekNotifications() > 0), the parent
+// launches ONE EntryNotification turn on the child's own drain loop. This is
+// signal-reading only: it mutates nothing on the child and renders no
+// notification on the parent's rail (worker terminals reach the child's own
+// model, never the parent's — spec §3). The drive turn is async
+// (driveSubagentNotificationTurn fires a goroutine), so the parent's boundary
+// never blocks on a child's loop.
+//
+// Scope (T14): only the queued-notifications signal is read here. Spec §3 also
+// names jm.hasPendingWatchSends() as drive signal (b), but a child's pending
+// caller-targeted watch send is still re-tokened onto the parent's rail by
+// drainJobManagerWatchSends above (the v2 child-iteration re-route). Driving on
+// that signal now would double-handle it (re-token AND drive). Deleting the
+// re-route and moving caller sends onto the child's own drive turn is T15
+// (spec §3 "mid-owner caller sends"); signal (b) joins the drive there.
+func (s *Session) driveChildrenWithUndeliveredAttention() {
+	for _, sub := range s.liveDirectSubagents() {
+		child := sub.sess
+		if child == nil {
+			continue
+		}
+		if child.peekNotifications() > 0 {
+			s.driveSubagentNotificationTurn(sub)
+		}
+	}
 }
 
 func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager, childSessionID string) error {

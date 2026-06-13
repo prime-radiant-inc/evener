@@ -76,6 +76,7 @@ type subagent struct {
 	endedAt         *time.Time         // set at run finalize; cleared to nil at idle-resume
 	closed          bool               // session torn down; record retained as terminal history
 	closeTimedOut   bool               // session-close wait exceeded its bound; close not confirmed
+	driving         bool               // a drive-down notification turn (§3) is in flight on this idle child
 }
 
 type preparedSubagentRun struct {
@@ -522,6 +523,15 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		startedAt:    now,
 	}
 
+	// Drive-down wake (spec §3): a child's notify must reach its parent, which
+	// drives the child's own drain loop for a notification turn. This is the
+	// parent-side analog of serve.go's SetNotifyFunc on the root — the child's
+	// jm.wake (= subSess.notify) fires whenever the child arms a job notification
+	// (enqueueJobNotificationAndNotify), so the parent learns of undelivered
+	// attention on an idle child and drives it. The drive is launched only when
+	// the child is live and idle (driveSubagentNotificationTurn's guard).
+	subSess.SetNotifyFunc(func() { s.driveSubagentNotificationTurn(sub) })
+
 	// Subagent execution must outlive the parent tool-call context.
 	// The parent may stop waiting, finish its input, or time out while the
 	// child keeps running. Child cancellation is handled by subSess.Close(),
@@ -622,6 +632,57 @@ func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, er
 
 	s.launchSubagentRun(runCtx, sub, runCancel, input, false)
 	return true, nil
+}
+
+// driveSubagentNotificationTurn launches ONE EntryNotification turn on a live,
+// idle direct child whose own loop has undelivered attention (spec §3 drive-down:
+// a parent never renders a non-owned job's notification; it runs the child whose
+// own loop delivers). It is the parent-side analog of serve.go's notify→
+// EntryNotification wake, but driven internally by the parent at its loop
+// boundaries. NO delegate job record is minted and the child's terminal subagent
+// record is left intact — this is the child processing its OWN notification queue
+// (acceptNotificationInput drains it), not new tasked work or a delegate resume.
+//
+// Concurrency discipline (T11-T13): the live/idle guard reads sub.closed and
+// sub.running under sub.mu; a child that is closing, mid-run, or already being
+// driven is skipped so no run goroutine is launched on a torn-down or active
+// child. The driving flag makes the launch idempotent — exactly one drive turn is
+// in flight per child at a time (the EntryNotification drain loop self-services
+// every queued notification within that single turn, so one launch suffices). No
+// session or jobManager lock is held while ProcessInputKind runs.
+func (s *Session) driveSubagentNotificationTurn(sub *subagent) {
+	if sub == nil {
+		return
+	}
+	sub.mu.Lock()
+	if sub.sess == nil || sub.closed || sub.running || sub.driving {
+		sub.mu.Unlock()
+		return
+	}
+	driveCtx, driveCancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		sub.mu.Unlock()
+		driveCancel()
+		return
+	}
+	s.sendersWG.Add(1)
+	s.mu.Unlock()
+	sub.driving = true
+	childSess := sub.sess
+	sub.mu.Unlock()
+
+	go func() {
+		defer s.sendersWG.Done()
+		defer driveCancel()
+		defer func() {
+			sub.mu.Lock()
+			sub.driving = false
+			sub.mu.Unlock()
+		}()
+		_, _ = childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)
+	}()
 }
 
 func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, startedAt time.Time) {

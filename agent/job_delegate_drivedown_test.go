@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,8 +66,6 @@ import (
 //
 // RED until Task 14 — drive-down; tracks spec §9 headline.
 func TestDriveDownDeafCoordinator(t *testing.T) {
-	t.Skip("RED until Task 14 — drive-down; tracks spec §9 headline")
-
 	// Single client/adapter shared by root and coordinator. The coordinator session
 	// inherits root's LLM client via prepareSubagentRun → NewSession(s.client, ...).
 	//
@@ -137,14 +136,26 @@ func TestDriveDownDeafCoordinator(t *testing.T) {
 	// notifications on the coordinator's pendingJobNotifs awaiting a notification turn.
 	//
 	// The coordinator is now IDLE with two undelivered worker notifications.
-	// Drive-down machinery (Task 14) would detect this and submit an
+	// Drive-down machinery (Task 14) detects this and submits an
 	// EntryNotification turn to the coordinator's drain loop.
 	enqueueCompletedDelegateNotification(t, coordSess, "worker-alpha")
 	enqueueCompletedDelegateNotification(t, coordSess, "worker-beta")
 
-	// Allow time for drive machinery to run (if it existed). Today nothing fires;
-	// this window is harmless. After Task 14, the coordinator's notification turn
-	// would complete within this window.
+	// Model the worker-finish WAKE EDGE that production produces. When a real
+	// worker delegate finishes, the coordinator's jobManager.enqueue (=
+	// enqueueJobNotificationAndNotify, session_init.go) fires coordSess.notify().
+	// Drive-down (Task 14) wires the coordinator's notify to its parent (root),
+	// which then drives the coordinator's own drain loop — the agent-internal
+	// analog of serve.go's SetNotifyFunc on the root. The enqueueCompletedDelegate-
+	// Notification helper arms the durable record + queue but uses the non-notify
+	// enqueue, so this call supplies the wake edge the helper omits. (Without a
+	// notify, an idle root never reaches a loop boundary and cannot read the drive
+	// signal — there is no autonomous poll; spec §3 defers continuous driving.)
+	coordSess.notify()
+
+	// Allow time for the async drive turn to run: notify → parent drives the
+	// coordinator → coordinator's EntryNotification turn drains both worker
+	// notifications and makes its model request within this window.
 	time.Sleep(100 * time.Millisecond)
 
 	// === ASSERTION 1 — parent drives the coordinator (RED today) ===
@@ -206,5 +217,163 @@ func TestDriveDownDeafCoordinator(t *testing.T) {
 				"terminals must be driven down to the coordinator, never leaked to "+
 				"the root's rail (spec §3 drive-down)", n.JobID)
 		}
+	}
+}
+
+// alwaysAckAdapter records every request and answers every model call with a
+// clean communicate (so each session ends its turn without a nudge). It is used
+// by the depth-3 drive test, where the number and ordering of model calls across
+// three concurrently-driven sessions is not statically scriptable.
+type alwaysAckAdapter struct {
+	name string
+
+	mu       sync.Mutex
+	requests []llm.Request
+}
+
+func (a *alwaysAckAdapter) Name() string { return a.name }
+
+func (a *alwaysAckAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	a.mu.Lock()
+	a.requests = append(a.requests, req)
+	a.mu.Unlock()
+	resp := finalResponse("ack")
+	resp.Provider = a.name
+	if resp.Model == "" {
+		resp.Model = req.Model
+	}
+	return resp, nil
+}
+
+func (a *alwaysAckAdapter) Stream(_ context.Context, _ llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+func (a *alwaysAckAdapter) Requests() []llm.Request {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]llm.Request{}, a.requests...)
+}
+
+// TestDriveAtDepth3WithIdleMiddle proves drive-down is recursive (spec §3 / §9):
+// root drives the mid; the mid, once driven, drives its OWN idle child at its own
+// loop boundary. The tree is eventually-driven level by level.
+//
+// Tree: root → mid (depth 1) → grandchild (depth 2). Both the mid and the
+// grandchild end their initial turns and go idle. A completed-delegate
+// notification is injected onto EACH idle session's own queue (option (a), as in
+// the headline test): mid-job onto the mid, gc-job onto the grandchild —
+// simulating that each had a delegate finish while it was idle.
+//
+// The drive cascade:
+//   - root drives the mid (the mid's notify is wired to root, the §3 parent-drive
+//     analog of serve.go's root wiring): root launches the mid's EntryNotification
+//     turn, which drains the mid's own queue (mid-job) and makes a model request.
+//   - that drive turn runs the mid's drain loop, hitting the same loop boundaries
+//     that drain watch sends today (session_tool_round.go:327 / session_state.go:122,
+//     spec §3). At those boundaries the mid reads ITS children's drive signals and
+//     drives the grandchild's EntryNotification turn, which drains gc-job.
+//
+// Assertion: BOTH mid-job and gc-job notification blocks reach the model — proving
+// the mid was driven by the root AND the grandchild was driven by the mid at the
+// mid's own boundary. The grandchild reaching the model requires the recursion;
+// a single-level drive would deliver only the mid's notification.
+func TestDriveAtDepth3WithIdleMiddle(t *testing.T) {
+	c := llm.NewClient()
+	adapter := &alwaysAckAdapter{name: "openai"}
+	c.Register(adapter)
+
+	root, err := NewSession(
+		c,
+		NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		SessionConfig{
+			StateDir:         t.TempDir(),
+			MaxSubagentDepth: 3,
+			NoProjectPrompts: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewSession (root): %v", err)
+	}
+	t.Cleanup(func() { root.Close() })
+
+	// Background the mid delegate (depth 1). It communicates ("ack") and idles.
+	midRes := root.createDelegate(context.Background(), delegateArgs{
+		Task:       "mid coordinator",
+		Background: true,
+	})
+	if midRes.Err != nil {
+		t.Fatalf("createDelegate (mid): %v", midRes.Err)
+	}
+	_, midID, err := decodeRef(midRes.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decodeRef(mid): %v", err)
+	}
+	midSub := root.subagents.get(midID)
+	if midSub == nil || midSub.sess == nil {
+		t.Fatalf("mid subagent not found: %q", midID)
+	}
+	midSess := midSub.sess
+	waitForShellDone(t, root.jobManager, midRes.JobID)
+
+	// Open the mid's allowance so it can background a grandchild delegate (the
+	// depth gate is allowance-keyed; this is the fixture used by the depth-2 nested
+	// tests). The grandchild gets allowance 0 (a leaf).
+	midSess.mu.Lock()
+	midSess.delegationAllowance = 1
+	midSess.mu.Unlock()
+
+	gcRes := midSess.createDelegate(context.Background(), delegateArgs{
+		Task:       "grandchild worker",
+		Background: true,
+	})
+	if gcRes.Err != nil {
+		t.Fatalf("createDelegate (grandchild): %v", gcRes.Err)
+	}
+	_, gcID, err := decodeRef(gcRes.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decodeRef(grandchild): %v", err)
+	}
+	gcSub := midSess.subagents.get(gcID)
+	if gcSub == nil || gcSub.sess == nil {
+		t.Fatalf("grandchild subagent not found: %q", gcID)
+	}
+	gcSess := gcSub.sess
+	waitForShellDone(t, midSess.jobManager, gcRes.JobID)
+
+	// Both the mid and the grandchild are now IDLE. Inject one completed-delegate
+	// notification on each (its own queue), as if a worker finished under each.
+	enqueueCompletedDelegateNotification(t, midSess, "mid-job")
+	enqueueCompletedDelegateNotification(t, gcSess, "gc-job")
+
+	// Fire the mid's wake edge (the worker-finish notify production produces). The
+	// grandchild is NOT woken directly — the mid must drive it at the mid's own
+	// boundary during the mid's drive turn.
+	midSess.notify()
+
+	// Allow the recursive drive cascade to run: root → mid → grandchild.
+	time.Sleep(300 * time.Millisecond)
+
+	reqs := adapter.Requests()
+	foundMidJob := false
+	foundGCJob := false
+	for _, req := range reqs {
+		for _, msg := range req.Messages {
+			text := msg.Text()
+			if strings.Contains(text, "mid-job") {
+				foundMidJob = true
+			}
+			if strings.Contains(text, "gc-job") {
+				foundGCJob = true
+			}
+		}
+	}
+	if !foundMidJob {
+		t.Fatalf("the mid's notification (mid-job) never reached the model; the root did not drive the mid")
+	}
+	if !foundGCJob {
+		t.Fatalf("the grandchild's notification (gc-job) never reached the model; the mid, once driven, " +
+			"did not drive its own idle child at its own loop boundary (drive-down is not recursive)")
 	}
 }

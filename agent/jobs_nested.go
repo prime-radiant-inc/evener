@@ -165,6 +165,38 @@ func (s *Session) liveSubagentSessions() []*Session {
 	return live
 }
 
+// liveDirectSubagents returns the live (non-closed) direct-child subagents,
+// matching liveSubagentSessions's leaf-lock discipline: the manager mutex is
+// released before each sub.mu is taken, and the closed flag is read under the
+// sub's own lock. The drive-signal reader (spec §3) needs the *subagent (not just
+// its Session) to apply the live/idle guard and launch the drive turn.
+func (s *Session) liveDirectSubagents() []*subagent {
+	if s.subagents == nil {
+		return nil
+	}
+	s.subagents.mu.Lock()
+	subs := make([]*subagent, 0, len(s.subagents.subs))
+	for _, sub := range s.subagents.subs {
+		subs = append(subs, sub)
+	}
+	s.subagents.mu.Unlock()
+
+	live := make([]*subagent, 0, len(subs))
+	for _, sub := range subs {
+		if sub == nil || sub.sess == nil {
+			continue
+		}
+		sub.mu.Lock()
+		closed := sub.closed
+		sub.mu.Unlock()
+		if closed {
+			continue
+		}
+		live = append(live, sub)
+	}
+	return live
+}
+
 // liveSubagentSession returns the live (non-closed) direct-child session for id,
 // or nil. The closed flag is read under the sub's own lock, matching
 // liveSubagentSessions's leaf-lock discipline.
