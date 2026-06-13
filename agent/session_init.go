@@ -544,7 +544,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	for _, name := range s.cfg.spawn.deniedToolNames {
 		s.reg.Remove(name)
 	}
-	if s.depth > 0 {
+	if s.delegationAllowance <= 0 {
 		for _, name := range rootOnlySubagentTools() {
 			s.reg.Remove(name)
 		}

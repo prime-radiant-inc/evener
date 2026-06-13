@@ -611,6 +611,7 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 	subCfg := SessionConfig{MaxSubagentDepth: 2}
 	subCfg.spawn.depth = 1
+	subCfg.spawn.parentSessionID = "parent" // real child: allowance comes from the spawn carrier (0), not MaxSubagentDepth
 	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
 	if err != nil {
 		t.Fatal(err)
