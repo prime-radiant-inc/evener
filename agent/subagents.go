@@ -160,7 +160,7 @@ func agentUsesRootOnlySubagentTools(agent plugin.Agent) bool {
 	return false
 }
 
-func baseSubagentToolPolicy(agent *plugin.Agent) (allTools bool, allowed []string, denied []string) {
+func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools bool, allowed []string, denied []string) {
 	switch {
 	case agent != nil && agent.AllTools:
 		return true, nil, nil
@@ -169,6 +169,9 @@ func baseSubagentToolPolicy(agent *plugin.Agent) (allTools bool, allowed []strin
 		allowed = appendUniqueStrings(allowed, "task_list")
 		return false, allowed, nil
 	default:
+		if canDelegate {
+			return false, nil, nil // untyped child with allowance: no deny-list → gets delegate+job_watch on default surface
+		}
 		return false, nil, rootOnlySubagentTools()
 	}
 }
@@ -409,7 +412,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		}
 	}
 
-	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(agent)
+	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(agent, allowance > 0)
 	if len(canonicalGrantTools) > 0 {
 		currentTools := s.reg.RegisteredNames()
 		for _, toolName := range canonicalGrantTools {

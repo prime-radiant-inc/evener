@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/llm"
 )
 
@@ -729,4 +730,90 @@ func TestPrepareSubagentRunRejectsZeroAllowance(t *testing.T) {
 	if gotErr.Error() != wantErr {
 		t.Fatalf("got error %q, want %q", gotErr.Error(), wantErr)
 	}
+}
+
+// TestBaseSubagentPolicyAllowsDelegateWithAllowance verifies seam 4 (spec §1):
+// baseSubagentToolPolicy is allowance-aware in its default (untyped) case.
+//
+// Positive case (canDelegate=true): the default child gets NO deny-list, so
+// delegate and job_watch are NOT denied.
+// Negative case (canDelegate=false): today's behavior preserved — default child
+// denies delegate and job_watch.
+// Typed cases: allowance NEVER injects tools into a typed agent's surface.
+func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
+	t.Run("default child with canDelegate=true: delegate and job_watch not denied", func(t *testing.T) {
+		allTools, allowed, denied := baseSubagentToolPolicy(nil, true)
+		if allTools {
+			t.Fatal("default child must not be allTools")
+		}
+		if len(allowed) != 0 {
+			t.Fatalf("default child must not have an allow-list, got %v", allowed)
+		}
+		for _, tool := range []string{"delegate", "job_watch"} {
+			for _, d := range denied {
+				if d == tool {
+					t.Errorf("default child with canDelegate=true: %q must not be in denied list (got %v)", tool, denied)
+				}
+			}
+		}
+	})
+
+	t.Run("default child with canDelegate=false: delegate and job_watch are denied", func(t *testing.T) {
+		_, _, denied := baseSubagentToolPolicy(nil, false)
+		for _, tool := range []string{"delegate", "job_watch"} {
+			found := false
+			for _, d := range denied {
+				if d == tool {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("default child with canDelegate=false: %q must be in denied list (got %v)", tool, denied)
+			}
+		}
+	})
+
+	t.Run("AllTools agent: canDelegate does not change allTools result", func(t *testing.T) {
+		allTools, allowed, denied := baseSubagentToolPolicy(&plugin.Agent{AllTools: true}, false)
+		if !allTools {
+			t.Fatal("AllTools agent must return allTools=true")
+		}
+		if len(allowed) != 0 || len(denied) != 0 {
+			t.Fatalf("AllTools agent must return empty allowed/denied, got allowed=%v denied=%v", allowed, denied)
+		}
+		// canDelegate=true must also leave AllTools case alone
+		allTools2, _, _ := baseSubagentToolPolicy(&plugin.Agent{AllTools: true}, true)
+		if !allTools2 {
+			t.Fatal("AllTools agent with canDelegate=true must still return allTools=true")
+		}
+	})
+
+	t.Run("explicit-Tools agent: canDelegate=true does NOT inject delegate into allow-list", func(t *testing.T) {
+		ag := &plugin.Agent{Tools: []string{"read_file"}}
+		_, allowed, denied := baseSubagentToolPolicy(ag, true)
+		if len(denied) != 0 {
+			t.Fatalf("explicit-Tools agent must have no deny-list, got %v", denied)
+		}
+		for _, tool := range []string{"delegate", "job_watch"} {
+			for _, a := range allowed {
+				if a == tool {
+					t.Errorf("canDelegate=true must NOT inject %q into a typed agent's allow-list (got %v)", tool, allowed)
+				}
+			}
+		}
+		// Must contain read_file and task_list
+		for _, want := range []string{"read_file", "task_list"} {
+			found := false
+			for _, a := range allowed {
+				if a == want {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("explicit-Tools agent must contain %q in allow-list (got %v)", want, allowed)
+			}
+		}
+	})
 }

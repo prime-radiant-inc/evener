@@ -489,7 +489,7 @@ func (s *Session) allToolDefinitions(_ int) []llm.ToolDefinition {
 func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
 	allowance := s.delegationAllowance // read under caller's lock or during single-threaded init
 
-	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(&agent)
+	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(&agent, allowance > 0)
 	var canonical []string
 	switch {
 	case allTools || len(allowedTools) == 0:
