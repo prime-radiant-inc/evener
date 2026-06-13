@@ -5,15 +5,88 @@ import (
 	"testing"
 )
 
+// TestSchemaMaxWaitUnification asserts the post-unification invariants for all
+// five wait-capable tools (spec §0.1-§0.4, §2):
+//   - "background" and "block" are absent (additionalProperties:false rejects them)
+//   - "block_timeout_ms" is absent from all five tools
+//   - "max_wait_ms" is present in each tool's properties with type "integer"
+//   - No minimum/maximum/default on max_wait_ms in any tool
+func TestSchemaMaxWaitUnification(t *testing.T) {
+	tools := []struct {
+		name string
+		def  func() map[string]any // returns the Parameters map
+	}{
+		{"shell", func() map[string]any { return DefShell().Parameters }},
+		{"delegate", func() map[string]any { return DefDelegate(nil).Parameters }},
+		{"job_send_message", func() map[string]any { return DefJobSendMessage().Parameters }},
+		{"job_read_output", func() map[string]any { return DefJobReadOutput().Parameters }},
+		{"job_stop", func() map[string]any { return DefJobStop().Parameters }},
+	}
+
+	for _, tc := range tools {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			params := tc.def()
+
+			// additionalProperties:false is required.
+			if ap, ok := params["additionalProperties"]; !ok || ap != false {
+				t.Errorf("%s: additionalProperties = %v, want false", tc.name, ap)
+			}
+
+			props := params["properties"].(map[string]any)
+
+			// "background" and "block" must be gone.
+			for _, banned := range []string{"background", "block"} {
+				if _, ok := props[banned]; ok {
+					t.Errorf("%s: property %q must not exist", tc.name, banned)
+				}
+			}
+
+			// "block_timeout_ms" must be gone.
+			if _, ok := props["block_timeout_ms"]; ok {
+				t.Errorf("%s: property %q must not exist", tc.name, "block_timeout_ms")
+			}
+
+			// "max_wait_ms" must be present with type integer.
+			mw, ok := props["max_wait_ms"]
+			if !ok {
+				t.Errorf("%s: missing required property max_wait_ms", tc.name)
+				return
+			}
+			mwSchema, ok := mw.(map[string]any)
+			if !ok {
+				t.Errorf("%s: max_wait_ms is not an object", tc.name)
+				return
+			}
+			if typ, _ := mwSchema["type"].(string); typ != "integer" {
+				t.Errorf("%s: max_wait_ms type = %q, want integer", tc.name, typ)
+			}
+
+			// No minimum, maximum, or default keywords on max_wait_ms.
+			for _, banned := range []string{"minimum", "maximum", "default"} {
+				if _, ok := mwSchema[banned]; ok {
+					t.Errorf("%s: max_wait_ms must not have keyword %q", tc.name, banned)
+				}
+			}
+		})
+	}
+}
+
 func TestDefShellHasJobParams(t *testing.T) {
 	props := DefShell().Parameters["properties"].(map[string]any)
-	for _, p := range []string{"command", "description", "background", "block_timeout_ms", "max_runtime_ms"} {
+	for _, p := range []string{"command", "description", "max_wait_ms", "max_runtime_ms"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefShell missing param %q", p)
 		}
 	}
 	if _, ok := props["timeout_ms"]; ok {
 		t.Errorf("DefShell must not have the old timeout_ms param")
+	}
+	if _, ok := props["background"]; ok {
+		t.Errorf("DefShell must not have the removed background param")
+	}
+	if _, ok := props["block_timeout_ms"]; ok {
+		t.Errorf("DefShell must not have the removed block_timeout_ms param")
 	}
 }
 
@@ -27,10 +100,16 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 		t.Fatalf("Strict = %v, want false", def.Strict)
 	}
 	props := def.Parameters["properties"].(map[string]any)
-	for _, p := range []string{"task", "background", "agent_type", "model", "reasoning_effort", "block_timeout_ms", "result_schema"} {
+	for _, p := range []string{"task", "agent_type", "model", "reasoning_effort", "max_wait_ms", "result_schema"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefDelegate missing param %q", p)
 		}
+	}
+	if _, ok := props["background"]; ok {
+		t.Errorf("DefDelegate must not have the removed background param")
+	}
+	if _, ok := props["block_timeout_ms"]; ok {
+		t.Errorf("DefDelegate must not have the removed block_timeout_ms param")
 	}
 	req := def.Parameters["required"].([]string)
 	if len(req) != 1 || req[0] != "task" {
@@ -78,10 +157,16 @@ func TestDefJobSendMessageParams(t *testing.T) {
 		t.Fatalf("name = %q, want job_send_message", def.Name)
 	}
 	props := def.Parameters["properties"].(map[string]any)
-	for _, p := range []string{"target", "message", "on_finished", "background", "block_timeout_ms"} {
+	for _, p := range []string{"target", "message", "on_finished", "max_wait_ms"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefJobSendMessage missing param %q", p)
 		}
+	}
+	if _, ok := props["background"]; ok {
+		t.Errorf("DefJobSendMessage must not have the removed background param")
+	}
+	if _, ok := props["block_timeout_ms"]; ok {
+		t.Errorf("DefJobSendMessage must not have the removed block_timeout_ms param")
 	}
 	req := def.Parameters["required"].([]string)
 	if len(req) != 2 || req[0] != "target" || req[1] != "message" {
