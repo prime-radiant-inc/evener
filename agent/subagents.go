@@ -630,10 +630,13 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 
 func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, error) {
 	sub.mu.Lock()
-	if sub.running {
+	if sub.running || sub.driving {
 		subSess := sub.sess
 		sub.mu.Unlock()
-		// Inject as steering message into the running session.
+		// Inject as steering message into the in-flight session. A mid-drive child
+		// (sub.driving) is in flight just like a running one: the drive turn absorbs
+		// the steered input at its tool-round boundary (spec §3, A7 steer-into-drive)
+		// rather than launching a second concurrent run.
 		subSess.Steer(input)
 		return false, nil
 	}
@@ -722,6 +725,22 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 			sub.mu.Lock()
 			sub.driving = false
 			sub.mu.Unlock()
+			// Re-drive if attention arrived during this turn (spec §3): a notify that
+			// fired while driving==true was dropped at the live/idle guard, so a
+			// notification landing after the child's final peek would otherwise
+			// strand (the parent is idle and there is no autonomous poll). The
+			// re-check runs AFTER sub.driving is cleared so the inner guard passes.
+			// It is idempotent and self-terminating: it re-drives only when real
+			// attention remains, each re-drive is a fresh goroutine, and it stops
+			// when peek==0 && !hasPendingWatchSends.
+			if s.childStopGated(childSess.id) {
+				return
+			}
+			if childSess.peekNotifications() > 0 || (childSess.jobManager != nil && childSess.jobManager.hasPendingWatchSends()) {
+				if s.driveSubagentNotificationTurn(sub) {
+					s.settleDrivenChildForwardedPendings(childSess.id)
+				}
+			}
 		}()
 		_, _ = childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)
 	}()

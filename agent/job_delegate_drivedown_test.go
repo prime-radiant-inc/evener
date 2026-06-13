@@ -1052,3 +1052,421 @@ func TestSelfDeliverySettlesParentForwardedPending(t *testing.T) {
 		}
 	}
 }
+
+// driveBlockingSecondTurnAdapter scripts a coordinator that ends its initial turn
+// cleanly, then BLOCKS its drive turn (EntryNotification) on a release channel.
+// Any THIRD model call — a second concurrent ProcessInputKind launched on the same
+// child while the drive turn is still in flight — records secondTurnStarted. The
+// A7 data race is exactly that second concurrent turn; the steer fix must route the
+// mid-drive send into the in-flight drive turn instead of launching a fresh one.
+type driveBlockingSecondTurnAdapter struct {
+	name            string
+	release         <-chan struct{}
+	secondTurnStart chan struct{}
+
+	mu       sync.Mutex
+	requests []llm.Request
+	calls    int
+}
+
+func (a *driveBlockingSecondTurnAdapter) Name() string { return a.name }
+
+func (a *driveBlockingSecondTurnAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	a.mu.Lock()
+	a.requests = append(a.requests, req)
+	a.calls++
+	call := a.calls
+	a.mu.Unlock()
+
+	switch call {
+	case 1:
+		// Coordinator's initial turn ends cleanly → idle.
+		resp := finalResponse("coordinator idle")
+		resp.Provider = a.name
+		if resp.Model == "" {
+			resp.Model = req.Model
+		}
+		return resp, nil
+	case 2:
+		// The drive turn (EntryNotification). Block so the drive goroutine holds
+		// sub.driving==true while the test sends a mid-drive message.
+		select {
+		case <-a.release:
+		case <-ctx.Done():
+			return llm.Response{Provider: a.name, Model: req.Model}, ctx.Err()
+		}
+		resp := finalResponse("drive ack")
+		resp.Provider = a.name
+		if resp.Model == "" {
+			resp.Model = req.Model
+		}
+		return resp, nil
+	default:
+		// A THIRD call means a SECOND concurrent ProcessInputKind started on the
+		// same child while the drive turn was in flight — the A7 race.
+		select {
+		case <-a.secondTurnStart:
+		default:
+			close(a.secondTurnStart)
+		}
+		<-ctx.Done()
+		return llm.Response{Provider: a.name, Model: req.Model}, ctx.Err()
+	}
+}
+
+func (a *driveBlockingSecondTurnAdapter) Stream(_ context.Context, _ llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+func (a *driveBlockingSecondTurnAdapter) Requests() []llm.Request {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]llm.Request{}, a.requests...)
+}
+
+// TestSendMessageMidDriveSteersNoSecondTurn proves the A7 fix: a job_send_message
+// arriving while a coordinator's drive turn is in flight (sub.driving==true,
+// sub.running==false) STEERS into that single in-flight turn instead of launching
+// a SECOND concurrent ProcessInputKind on the same child session (a data race on
+// session history / sessionEndEmitted / goalInTurn — ProcessInputKind has no
+// per-session mutual exclusion; serialization lives entirely in the running/driving
+// flags).
+//
+// RED at HEAD: sendDelegateMessage reads only sub.running, so a driving-but-not-
+// running coordinator falls into resumeOrFindRunningDelegate, which launches a
+// fresh delegate turn → Action=="resumed", a second ProcessInputKind runs
+// concurrently with the drive turn (-race reports a DATA RACE), and the adapter's
+// third call records secondTurnStarted.
+//
+// GREEN after the fix: the send is steered into the drive turn → Action=="sent",
+// no second turn, no race. Run under -race.
+func TestSendMessageMidDriveSteersNoSecondTurn(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	adapter := &driveBlockingSecondTurnAdapter{
+		name:            "openai",
+		release:         release,
+		secondTurnStart: make(chan struct{}),
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+
+	coord := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "coordinate",
+		Background: true,
+	})
+	if coord.Err != nil {
+		t.Fatalf("createDelegate (coordinator): %v", coord.Err)
+	}
+	waitForShellDone(t, sess.jobManager, coord.JobID)
+
+	_, coordID, err := decodeRef(coord.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decodeRef: %v", err)
+	}
+	coordSub := sess.subagents.get(coordID)
+	if coordSub == nil || coordSub.sess == nil {
+		t.Fatalf("coordinator subagent %q not found", coordID)
+	}
+
+	// Queue a worker completion so the drive turn has work, then launch the drive
+	// turn. It blocks on release (adapter call 2) with sub.driving==true.
+	enqueueCompletedDelegateNotification(t, coordSub.sess, "worker-1")
+	if !sess.driveSubagentNotificationTurn(coordSub) {
+		t.Fatal("driveSubagentNotificationTurn returned false; expected a launched drive turn")
+	}
+
+	// Confirm the mid-drive state: driving==true, running==false.
+	coordSub.mu.Lock()
+	driving := coordSub.driving
+	running := coordSub.running
+	coordSub.mu.Unlock()
+	if !driving || running {
+		t.Fatalf("expected mid-drive state driving==true running==false, got driving=%v running=%v", driving, running)
+	}
+
+	// WHILE the drive turn is blocked in flight, send a message to the coordinator.
+	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:        coord.JobID,
+		Message:       "steer me",
+		Background:    true,
+		BackgroundSet: true,
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage during drive turn: %v", res.Err)
+	}
+
+	// The send must steer into the single in-flight drive turn (Action=="sent"),
+	// NOT launch a fresh resumed ProcessInput (Action=="resumed") that runs a
+	// SECOND concurrent ProcessInputKind on the same child session.
+	if res.Action != "sent" {
+		t.Fatalf("mid-drive send Action=%q, want \"sent\" (steered into the in-flight drive turn); "+
+			"a \"resumed\" Action means a SECOND concurrent ProcessInputKind launched on the driving child", res.Action)
+	}
+
+	// A second concurrent turn must NEVER start on the child. At HEAD the resumed
+	// turn fires its own model call (adapter call 3); give it a window so -race can
+	// observe the concurrent turn and the adapter records secondTurnStarted.
+	select {
+	case <-adapter.secondTurnStart:
+		t.Fatal("a second concurrent turn started on the driving child; the mid-drive send must steer, not launch a fresh turn")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Release the drive turn and let it finish cleanly.
+	releaseOnce.Do(func() { close(release) })
+}
+
+// TestWatchResumeMidDriveSteersNotDropped proves the A7 fix's FromWatch leg: a
+// watch-send resume (FromWatch==true) arriving while a coordinator's drive turn is
+// in flight (sub.driving==true, sub.running==false) must STEER into that single
+// in-flight turn — delivered via trySteer — and MUST NOT be permanently dropped.
+//
+// A backgrounded coordinator that finished its run carries a TERMINAL job record
+// (not StatusRunning), and a drive turn mints NO running runtime job. So a
+// FromWatch send takes sendDelegateMessage's terminal path, hits the A7 driving
+// intercept, and reaches sendRunningDelegateMessage with run==nil. The
+// `fromWatch && run == nil` guard there would hard-fail (sendMessageFailed →
+// watchSendHardFailure), and the live drain path (drainJobManagerWatchSends →
+// deliverPendingWatchSend) classifies a hard failure as a PERMANENT dropWatchSend.
+//
+// This is the live drain path's reachability — drainJobManagerWatchSends applies
+// NO classifyRestoredWatchSendTarget busy pre-filter (that pre-filter exists only
+// on retryRestoredPendingWatchSends), so nothing upstream protects this send.
+//
+// RED at the A7 working-tree state: the FromWatch send returns watchSendHardFailure
+// (a permanent drop), contradicting the A7 "steer into the drive turn" decision and
+// silently losing the watch delivery.
+//
+// GREEN after the fix: a driving child's FromWatch send steers via trySteer
+// (Delivered / Action=="sent", classifyWatchSendDelivery != watchSendHardFailure)
+// — or, if trySteer ever declined, returns watchSendBusy so the frame stays pending
+// for A6 re-delivery — never a hard failure.
+func TestWatchResumeMidDriveSteersNotDropped(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	adapter := &driveBlockingSecondTurnAdapter{
+		name:            "openai",
+		release:         release,
+		secondTurnStart: make(chan struct{}),
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+
+	coord := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "coordinate",
+		Background: true,
+	})
+	if coord.Err != nil {
+		t.Fatalf("createDelegate (coordinator): %v", coord.Err)
+	}
+	waitForShellDone(t, sess.jobManager, coord.JobID)
+
+	_, coordID, err := decodeRef(coord.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decodeRef: %v", err)
+	}
+	coordSub := sess.subagents.get(coordID)
+	if coordSub == nil || coordSub.sess == nil {
+		t.Fatalf("coordinator subagent %q not found", coordID)
+	}
+
+	// Queue a worker completion so the drive turn has work, then launch the drive
+	// turn. It blocks on release (adapter call 2) with sub.driving==true.
+	enqueueCompletedDelegateNotification(t, coordSub.sess, "worker-1")
+	if !sess.driveSubagentNotificationTurn(coordSub) {
+		t.Fatal("driveSubagentNotificationTurn returned false; expected a launched drive turn")
+	}
+
+	// Confirm the mid-drive state: driving==true, running==false, terminal record,
+	// no running runtime job — the exact preconditions for the drop.
+	coordSub.mu.Lock()
+	driving := coordSub.driving
+	running := coordSub.running
+	coordSub.mu.Unlock()
+	if !driving || running {
+		t.Fatalf("expected mid-drive state driving==true running==false, got driving=%v running=%v", driving, running)
+	}
+	rec, err := findJobRecord(sess.jobManager, coord.JobID)
+	if err != nil {
+		t.Fatalf("findJobRecord: %v", err)
+	}
+	if !rec.Status.IsTerminal() {
+		t.Fatalf("coordinator record status=%q, want a terminal record (the drive-down precondition)", rec.Status)
+	}
+
+	// WHILE the drive turn is blocked in flight, deliver a WATCH-RESUME send to the
+	// coordinator (FromWatch==true — the live-drain shape).
+	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:        coord.JobID,
+		Message:       "watch steer me",
+		Background:    true,
+		BackgroundSet: true,
+		FromWatch:     true,
+	})
+
+	// The watch send MUST NOT be a hard failure: a hard failure on the live drain
+	// path means deliverPendingWatchSend permanently dropWatchSends the frame —
+	// a silent watch-delivery loss that contradicts the A7 steer-into-drive decision.
+	if classifyWatchSendDelivery(res) == watchSendHardFailure {
+		t.Fatalf("mid-drive FromWatch send classified as watchSendHardFailure (Err=%v); a driving child's "+
+			"watch-resume must STEER into the drive turn, never be permanently dropped (spec §3, A7)", res.Err)
+	}
+
+	// Steering into a live (drive) turn always succeeds, so the frame settles as
+	// delivered (Action=="sent", classifyWatchSendDelivery==watchSendDelivered);
+	// deliverPendingWatchSend then settleWatchSendDelivered-s the pending frame.
+	if res.Action != "sent" {
+		t.Fatalf("mid-drive FromWatch send Action=%q, want \"sent\" (steered into the in-flight drive turn)", res.Action)
+	}
+	if classifyWatchSendDelivery(res) != watchSendDelivered {
+		t.Fatalf("mid-drive FromWatch send classified as %d, want watchSendDelivered (%d) — the steered frame "+
+			"must settle delivered, not stay pending or drop", classifyWatchSendDelivery(res), watchSendDelivered)
+	}
+
+	// Release the drive turn and let it finish cleanly.
+	releaseOnce.Do(func() { close(release) })
+}
+
+// driveReDriveAdapter records every request, ends the coordinator's initial turn
+// cleanly, BLOCKS its first drive turn on a release channel so a late notification
+// can be enqueued mid-drive (dropped at the driving==true guard), then answers all
+// later turns cleanly. The A6 re-check must re-drive after the first turn ends so
+// the late notification still reaches the model.
+type driveReDriveAdapter struct {
+	name        string
+	firstDrive  chan struct{} // closed when the first drive turn's model call starts
+	release     <-chan struct{}
+	firstDriveO sync.Once
+
+	mu       sync.Mutex
+	requests []llm.Request
+	calls    int
+}
+
+func (a *driveReDriveAdapter) Name() string { return a.name }
+
+func (a *driveReDriveAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	a.mu.Lock()
+	a.requests = append(a.requests, req)
+	a.calls++
+	call := a.calls
+	a.mu.Unlock()
+
+	if call == 2 {
+		// The first drive turn (EntryNotification): signal it started, then block so
+		// the test can enqueue a late notification while sub.driving==true.
+		a.firstDriveO.Do(func() { close(a.firstDrive) })
+		select {
+		case <-a.release:
+		case <-ctx.Done():
+			return llm.Response{Provider: a.name, Model: req.Model}, ctx.Err()
+		}
+	}
+
+	resp := finalResponse("ack")
+	resp.Provider = a.name
+	if resp.Model == "" {
+		resp.Model = req.Model
+	}
+	return resp, nil
+}
+
+func (a *driveReDriveAdapter) Stream(_ context.Context, _ llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+func (a *driveReDriveAdapter) Requests() []llm.Request {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]llm.Request{}, a.requests...)
+}
+
+// TestDriveWakeDuringInflightDriveReDrives proves the A6 fix: a notification that
+// arms on a child DURING its drive turn — after the turn's notification drain but
+// before the drive goroutine returns — is dropped at the driving==true guard, so
+// the drive goroutine's deferred cleanup must re-evaluate the child's queue after
+// clearing sub.driving and re-drive if attention remains (spec §3). Without the
+// re-check the late notification strands permanently: the parent is idle, there is
+// no autonomous poll, and nothing re-drives.
+//
+// Deterministic construction: the first drive turn drains notif-1 ("first-job") and
+// then BLOCKS in its model call (sub.driving==true). While blocked, the test arms
+// notif-2 ("late-job") and fires the child's notify() — its wake hits the guard and
+// is dropped. The first turn is then released; its deferred cleanup clears
+// sub.driving and (with the fix) re-checks the queue, finds notif-2 still pending,
+// and re-drives so "late-job" reaches the model.
+//
+// RED at HEAD: the deferred cleanup only clears sub.driving with no re-check, so the
+// re-drive never happens and "late-job" never appears in the adapter's requests.
+func TestDriveWakeDuringInflightDriveReDrives(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	adapter := &driveReDriveAdapter{
+		name:       "openai",
+		firstDrive: make(chan struct{}),
+		release:    release,
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+
+	coord := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "coordinate",
+		Background: true,
+	})
+	if coord.Err != nil {
+		t.Fatalf("createDelegate (coordinator): %v", coord.Err)
+	}
+	waitForShellDone(t, sess.jobManager, coord.JobID)
+
+	_, coordID, err := decodeRef(coord.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decodeRef: %v", err)
+	}
+	coordSub := sess.subagents.get(coordID)
+	if coordSub == nil || coordSub.sess == nil {
+		t.Fatalf("coordinator subagent %q not found", coordID)
+	}
+	childSess := coordSub.sess
+
+	// Arm notif-1 and drive the coordinator's notification turn THROUGH the real
+	// driveSubagentNotificationTurn so its deferred cleanup runs.
+	enqueueCompletedDelegateNotification(t, childSess, "first-job")
+	if !sess.driveSubagentNotificationTurn(coordSub) {
+		t.Fatal("driveSubagentNotificationTurn returned false; expected a launched drive turn")
+	}
+
+	// Wait until the first drive turn is in flight and blocked in its model call.
+	select {
+	case <-adapter.firstDrive:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first drive turn never started its model call")
+	}
+
+	// WHILE driving==true, arm a late notification and fire the wake. The wake hits
+	// the driving==true guard in driveSubagentNotificationTurn and is dropped; the
+	// late notification stays queued for the deferred re-check.
+	enqueueCompletedDelegateNotification(t, childSess, "late-job")
+	childSess.notify()
+
+	// Release the first drive turn. Its deferred cleanup clears sub.driving and (with
+	// the fix) re-checks the queue and re-drives so "late-job" reaches the model.
+	releaseOnce.Do(func() { close(release) })
+
+	// Poll the adapter's requests until the late notification reaches the model.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if requestsContain(adapter.Requests(), "late-job") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("the late notification (late-job) never reached the model; the drive goroutine's deferred " +
+		"cleanup cleared sub.driving without re-checking the queue, so the dropped mid-drive wake stranded")
+}

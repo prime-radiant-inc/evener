@@ -290,9 +290,13 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is not retained", childID))
 		}
 		sub.mu.Lock()
-		running := sub.running
+		running := sub.running || sub.driving
 		sub.mu.Unlock()
 		if running {
+			// A driving child is in flight: steer into the drive turn (spec §3, A7).
+			// sendRunningDelegateMessage takes the StatusRunning rec directly (no
+			// findRunningDelegate lookup), so the drive turn's missing job record
+			// does not strand the steer.
 			return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch)
 		}
 		if strings.TrimSpace(args.OnFinished) == "fail" {
@@ -341,7 +345,18 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 
 	sub.mu.Lock()
 	running := sub.running
+	driving := sub.driving
 	sub.mu.Unlock()
+	if driving && !running {
+		// A drive turn is in flight (sub.driving==true) but mints no running job
+		// record (the EntryNotification turn is not a watch-tracked job), so the
+		// findRunningDelegateByTranscriptRef lookup below would find nothing. Steer
+		// the message into the in-flight drive turn using the terminal rec we
+		// already hold; sendRunningDelegateMessage's driving-aware guard delivers it
+		// via trySteer (spec §3: a mid-drive send is absorbed by the single
+		// in-flight turn, never a second concurrent ProcessInputKind).
+		return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch)
+	}
 	if running {
 		active, err := findRunningDelegateByTranscriptRef(jm, rec.TranscriptRef)
 		if err != nil {
@@ -864,12 +879,22 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 	}
 
 	sub.mu.Lock()
-	running := sub.running
+	// A mid-drive child (sub.driving) is in flight just like a running one: steer
+	// the message into the single in-flight (drive) turn rather than reject it
+	// (spec §3, A7 steer-into-drive decision).
+	driving := sub.driving
+	running := sub.running || driving
 	if !running {
 		sub.mu.Unlock()
 		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but session %q is not live", target, childID))
 	}
-	if fromWatch && run == nil {
+	if fromWatch && run == nil && !driving {
+		// A FromWatch send to a sub.running child whose runtime job record vanished
+		// is a genuine "running but runtime not live" inconsistency — reject it. A
+		// DRIVING child is the legitimate run==nil case: the drive turn mints no
+		// jm.running entry, so we steer into it via trySteer below instead of
+		// hard-failing (spec §3, A7) — a hard failure here would make the live drain
+		// path permanently dropWatchSend the frame (watchSendHardFailure).
 		sub.mu.Unlock()
 		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but runtime job is not live", target))
 	}
@@ -892,7 +917,11 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but session is not accepting messages", target))
 	}
 	if fromWatch {
-		run.fromWatch.Store(true)
+		// A driving child has no jm.running entry (run==nil): the drive turn already
+		// owns the steered frame, so there is no runtime job to tag fromWatch on.
+		if run != nil {
+			run.fromWatch.Store(true)
+		}
 		sub.runFromWatch = true
 	}
 	sub.mu.Unlock()
