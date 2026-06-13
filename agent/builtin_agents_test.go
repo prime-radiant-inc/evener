@@ -808,10 +808,10 @@ func TestSpawnAgent_DirectNestedCallRejected(t *testing.T) {
 
 	_, err = sub.sess.spawnAgent(context.Background(), "nested", "", "", 10, "", "", nil, nil)
 	if err == nil {
-		t.Fatal("expected top-level-only rejection")
+		t.Fatal("expected delegation rejection for child with allowance 0")
 	}
-	if !strings.Contains(err.Error(), "top-level only") {
-		t.Fatalf("error = %q, want top-level-only message", err)
+	if !strings.Contains(err.Error(), "delegation not permitted: your delegation_allowance is 0") {
+		t.Fatalf("error = %q, want delegation_allowance=0 rejection message", err)
 	}
 }
 

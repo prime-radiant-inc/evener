@@ -346,37 +346,83 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	}
 }
 
-func TestSpawnAgent_PluginAgentType_RejectsTopLevelOnlyAgent(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
+func TestSpawnAgent_PluginAgentType_AllowanceGated(t *testing.T) {
+	coordinatorAgent := plugin.Agent{
+		Name:         "coordinator",
+		Description:  "Delegates to agents",
+		Model:        "inherit",
+		Tools:        []string{"read_file", "delegate"},
+		SystemPrompt: "You coordinate by delegating.",
+		PluginName:   "my-plugin",
+	}
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 2,
+	// Case 1: allowance 0 (leaf session) — spawn must be rejected.
+	t.Run("rejected at allowance 0", func(t *testing.T) {
+		dir := t.TempDir()
+		c := llm.NewClient()
+		c.Register(&fakeAdapter{name: "openai"})
+
+		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			MaxSubagentDepth: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sess.Close()
+
+		// Force allowance to 0 to simulate a leaf that cannot delegate.
+		sess.mu.Lock()
+		sess.delegationAllowance = 0
+		sess.mu.Unlock()
+
+		sess.pluginAgents = map[string]plugin.Agent{"my-plugin:coordinator": coordinatorAgent}
+
+		_, err = sess.spawnAgent(context.Background(), "try to coordinate", "", "", 10, "my-plugin:coordinator", "", nil, nil)
+		if err == nil {
+			t.Fatal("expected delegation rejection at allowance 0")
+		}
+		if !strings.Contains(err.Error(), "delegation not permitted: your delegation_allowance is 0") {
+			t.Fatalf("error = %q, want delegation_allowance=0 rejection message", err)
+		}
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
 
-	sess.pluginAgents = map[string]plugin.Agent{
-		"my-plugin:coordinator": {
-			Name:         "coordinator",
-			Description:  "Delegates to agents",
-			Model:        "inherit",
-			Tools:        []string{"read_file", "delegate"},
-			SystemPrompt: "You coordinate by delegating.",
-			PluginName:   "my-plugin",
-		},
-	}
+	// Case 2: allowance > 0 (root session, MaxSubagentDepth 2) — spawn must succeed.
+	t.Run("spawnable at allowance > 0", func(t *testing.T) {
+		dir := t.TempDir()
+		c := llm.NewClient()
+		c.Register(&fakeAdapter{
+			name: "openai",
+			steps: []func(req llm.Request) llm.Response{
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant("done")}
+				},
+			},
+		})
 
-	_, err = sess.spawnAgent(context.Background(), "try to coordinate", "", "", 10, "my-plugin:coordinator", "", nil, nil)
-	if err == nil {
-		t.Fatal("expected top-level-only rejection")
-	}
-	if !strings.Contains(err.Error(), "top-level only") {
-		t.Fatalf("error = %q, want top-level-only message", err)
-	}
+		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			MaxSubagentDepth: 2,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sess.Close()
+
+		sess.pluginAgents = map[string]plugin.Agent{"my-plugin:coordinator": coordinatorAgent}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		result, err := sess.spawnAgent(ctx, "try to coordinate", "", "", 10, "my-plugin:coordinator", "", nil, nil)
+		if err != nil {
+			t.Fatalf("expected spawn to succeed at allowance > 0, got error: %v", err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(result.(string)), &parsed); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		agentID := parsed["agent_id"].(string)
+		waitForRuntimeSubagent(t, sess, agentID)
+	})
 }
 
 func TestSpawnAgent_PluginAgentType_GrantTools_AddsProviderVisibleTool(t *testing.T) {
