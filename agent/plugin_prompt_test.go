@@ -51,6 +51,65 @@ func renderAvailableAgentsSectionWithAllowance(t *testing.T, agents map[string]p
 	return resolver.Section("available-agents", sess.buildPromptData())
 }
 
+// renderSubagentPromptWithAllowance builds a depth-1 child session with the
+// given delegation_allowance and returns its rendered system prompt (the
+// subagent template, selected because depth > 0).
+func renderSubagentPromptWithAllowance(t *testing.T, allowance int) string {
+	t.Helper()
+
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+
+	cfg := SessionConfig{
+		StateDir:         t.TempDir(),
+		NoProjectPrompts: true,
+	}
+	cfg.spawn.depth = 1
+	cfg.spawn.parentSessionID = "parent-session"
+	cfg.spawn.delegationAllowance = allowance
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if sess.depth == 0 {
+		t.Fatalf("expected depth > 0 subagent session, got depth 0")
+	}
+	return sess.renderSystemPrompt()
+}
+
+// TestSubagentPromptStatesAllowance pins spec §5: the subagent template has
+// conditional sections keyed on CanDelegate. A child with allowance > 0 sees the
+// delegation + background-jobs sections and is told its allowance; a leaf
+// (allowance 0) child sees the leaf limits block and no delegation text.
+func TestSubagentPromptStatesAllowance(t *testing.T) {
+	// Allowance > 0: delegation surface present, allowance stated, no "only you".
+	granting := renderSubagentPromptWithAllowance(t, 2)
+	if !strings.Contains(granting, "## Delegation") {
+		t.Errorf("allowance>0 subagent prompt should contain the Delegation section, got:\n%s", granting)
+	}
+	if !strings.Contains(granting, "## Background jobs") {
+		t.Errorf("allowance>0 subagent prompt should contain the Background jobs section, got:\n%s", granting)
+	}
+	if !strings.Contains(granting, "2") {
+		t.Errorf("allowance>0 subagent prompt should state its allowance (2), got:\n%s", granting)
+	}
+	if strings.Contains(granting, "Only you can call") {
+		t.Errorf("allowance>0 subagent prompt must not say \"Only you can call\", got:\n%s", granting)
+	}
+
+	// Allowance 0 (leaf): leaf limits block present, no delegation text.
+	leaf := renderSubagentPromptWithAllowance(t, 0)
+	if !strings.Contains(leaf, "## Delegated task limits") {
+		t.Errorf("allowance=0 subagent prompt should contain the leaf limits block, got:\n%s", leaf)
+	}
+	if strings.Contains(leaf, "## Delegation") {
+		t.Errorf("allowance=0 subagent prompt must not contain the Delegation section, got:\n%s", leaf)
+	}
+}
+
 func TestAvailableAgentsSection_NoAgents(t *testing.T) {
 	result := renderAvailableAgentsSectionForTest(t, nil)
 	if result != "" {

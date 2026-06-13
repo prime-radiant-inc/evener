@@ -7,6 +7,15 @@
 
 {{ section "workflow" }}
 
+{{ if .CanDelegate }}
+Your `delegation_allowance` is {{ .DelegationAllowance }}: you may delegate, and
+each delegate you start may itself delegate with an allowance strictly smaller
+than yours (pass `delegation_allowance` to `delegate`; allowance 0 is a leaf).
+
+{{ section "delegation" }}
+
+{{ section "background-jobs" }}
+{{ else }}
 ## Delegated task limits
 
 If a delegated task explicitly requires tools or capabilities unavailable in this
@@ -15,6 +24,7 @@ session, do not thrash or pretend to perform the missing capability.
 Report the mismatch promptly through `{{ .ResultToolName }}`. State what capability
 is missing and, when it is obvious from the task, what kind of agent or tool would
 be better suited.
+{{ end }}
 
 {{ section "communicate" }}
 {{ end }}

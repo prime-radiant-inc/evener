@@ -132,6 +132,53 @@ func TestCreateDelegateEmptyResultSchemaIsNoSchema(t *testing.T) {
 	}
 }
 
+// TestDelegateRejectsAllowanceGEOwn pins spec §1: the grant rule. A session may
+// grant a child a delegation_allowance strictly less than its own. A session
+// with allowance 2 may grant 1 (succeeds) but not 2 (rejected with the exact
+// invalid_request message naming its own allowance).
+func TestDelegateRejectsAllowanceGEOwn(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return finalResponse("granted child result")
+			},
+		},
+	})
+	sess := newDelegateTestSession(t, c)
+	sess.mu.Lock()
+	sess.delegationAllowance = 2
+	sess.mu.Unlock()
+
+	// Granting >= own allowance is rejected with the exact message.
+	rejected := sess.createDelegate(context.Background(), delegateArgs{
+		Task:                "over-grant",
+		DelegationAllowance: 2,
+	})
+	if rejected.Err == nil {
+		t.Fatalf("delegate(delegation_allowance=2) with own allowance 2 should be rejected, got result %+v", rejected)
+	}
+	const wantMsg = "invalid_request: delegation_allowance must be less than your own allowance (2)"
+	if rejected.Err.Error() != wantMsg {
+		t.Fatalf("rejection message = %q, want %q", rejected.Err.Error(), wantMsg)
+	}
+
+	// Granting strictly less than own allowance succeeds.
+	ok := sess.createDelegate(context.Background(), delegateArgs{
+		Task:                "grant one",
+		DelegationAllowance: 1,
+		Background:          false,
+		BlockTimeoutMS:      5000,
+	})
+	if ok.Err != nil {
+		t.Fatalf("delegate(delegation_allowance=1) with own allowance 2 should succeed, got error: %v", ok.Err)
+	}
+	if ok.JobID == "" {
+		t.Fatalf("granted delegate has empty job_id: %+v", ok)
+	}
+}
+
 func TestCreateDelegateBackgroundReturnsRunningJob(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once

@@ -34,6 +34,12 @@ const ctxParentJobID ctxKey = "parentJobID"
 // without changing the subagent tool signature.
 const ctxCommunicateOutputSchema ctxKey = "communicateOutputSchema"
 
+// ctxDelegationAllowance carries the granted delegation_allowance into child
+// session spawn plumbing. createDelegate validates the grant (strictly less than
+// the parent's own allowance) and sets this; prepareSubagentRun copies it onto
+// the child's spawnConfig.
+const ctxDelegationAllowance ctxKey = "delegationAllowance"
+
 const (
 	defaultAgentName = "default"
 )

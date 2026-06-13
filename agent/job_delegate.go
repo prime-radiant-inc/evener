@@ -59,13 +59,14 @@ const (
 var delegateRestoreResumeHistory = ResumeHistory
 
 type delegateArgs struct {
-	Task            string
-	AgentType       string
-	Model           string
-	ReasoningEffort string
-	Background      bool
-	BlockTimeoutMS  int
-	ResultSchema    map[string]any
+	Task                string
+	AgentType           string
+	Model               string
+	ReasoningEffort     string
+	Background          bool
+	BlockTimeoutMS      int
+	DelegationAllowance int
+	ResultSchema        map[string]any
 }
 
 type delegateResult struct {
@@ -132,10 +133,22 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		return delegateStartFailed(err)
 	}
 
+	// Grant rule (spec §1): a session may grant a child a delegation_allowance
+	// strictly less than its own; allowance 0 = a leaf delegate. Under defaults
+	// (MaxSubagentDepth=1) the root's allowance is 1, so it may only grant 0 —
+	// recursion requires raising the config AND granting per spawn.
+	s.mu.Lock()
+	ownAllowance := s.delegationAllowance
+	s.mu.Unlock()
+	if args.DelegationAllowance >= ownAllowance {
+		return delegateStartFailed(fmt.Errorf("invalid_request: delegation_allowance must be less than your own allowance (%d)", ownAllowance))
+	}
+
 	blockTimeout := time.Duration(clampShellBlockTimeoutMS(args.BlockTimeoutMS)) * time.Millisecond
 	if len(args.ResultSchema) > 0 {
 		ctx = context.WithValue(ctx, ctxCommunicateOutputSchema, args.ResultSchema)
 	}
+	ctx = context.WithValue(ctx, ctxDelegationAllowance, args.DelegationAllowance)
 
 	jobID := jobstore.NewJobID()
 	ctx = context.WithValue(ctx, ctxParentJobID, jobID)

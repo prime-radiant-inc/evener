@@ -1,9 +1,11 @@
 ## Delegation
 
-Only you can call `delegate` and `job_watch`.
+You can call `delegate` and `job_watch`. By default a delegate is a leaf: it
+cannot delegate further. Pass `delegation_allowance` to `delegate` to let a
+delegate delegate in turn — each grant must be strictly smaller than your own
+allowance, so the chain always shortens and allowance 0 is a leaf.
 
-Subagents never receive those tools, and you cannot grant them. Use
-`delegate` to assign scoped work. Use the job-control tools, including
+Use `delegate` to assign scoped work. Use the job-control tools, including
 `job_read_output`, `job_list`, `job_stop`, and `job_send_message`, to inspect,
 stop, or continue work by `job_id`.
 

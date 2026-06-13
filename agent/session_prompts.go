@@ -103,6 +103,11 @@ func (s *Session) buildPromptData() promptData {
 	}
 	data.CustomTools = toolEntriesFromDefinitions(customToolDefs)
 
+	// Delegation capability: a grantable allowance (> 0) unlocks the delegation
+	// and background-jobs prompt surface in the subagent template.
+	data.DelegationAllowance = s.delegationAllowance
+	data.CanDelegate = s.delegationAllowance > 0
+
 	// Available subagent types
 	data.AvailableAgents = s.availableAgentEntries()
 

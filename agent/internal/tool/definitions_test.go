@@ -131,6 +131,34 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 	}
 }
 
+// TestDefDelegateHasDelegationAllowance pins spec §1/§8: delegate exposes a
+// delegation_allowance integer property (the grant knob) with the strict-zero
+// schema shape the whole job-control surface follows — type integer, no
+// minimum/maximum/default keywords (absent/0 = no grant).
+func TestDefDelegateHasDelegationAllowance(t *testing.T) {
+	props := DefDelegate(nil).Parameters["properties"].(map[string]any)
+	da, ok := props["delegation_allowance"]
+	if !ok {
+		t.Fatalf("DefDelegate missing param delegation_allowance")
+	}
+	daSchema, ok := da.(map[string]any)
+	if !ok {
+		t.Fatalf("delegation_allowance is not an object: %T", da)
+	}
+	if typ, _ := daSchema["type"].(string); typ != "integer" {
+		t.Errorf("delegation_allowance type = %q, want integer", daSchema["type"])
+	}
+	for _, banned := range []string{"minimum", "maximum", "default"} {
+		if _, ok := daSchema[banned]; ok {
+			t.Errorf("delegation_allowance must not have keyword %q (strict-zero rule)", banned)
+		}
+	}
+	desc, _ := daSchema["description"].(string)
+	if strings.TrimSpace(desc) == "" {
+		t.Errorf("delegation_allowance must document the grant rule in its description")
+	}
+}
+
 func TestDefDelegateNoEnumWhenNoTypes(t *testing.T) {
 	def := DefDelegate(nil)
 	props := def.Parameters["properties"].(map[string]any)

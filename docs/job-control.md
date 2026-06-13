@@ -87,11 +87,21 @@ The lifecycle/output/notification contract is generic enough for future job type
 6. **No model-facing ack.** Retention is automatic and policy-based.
 7. **No model-facing kill.** `job_stop` is the single model-facing stop primitive; forceful cleanup is an implementation detail when needed.
 8. **No automatic process resume after restart.** Durable job history survives; running processes do not have to. Serf must notify when a previously running job is discovered stopped/lost after restart.
-9. **Nested shell jobs are supported.** Subagents may start shell jobs. Nested delegate jobs are a future extension on the same parent-job machinery. Until nested delegate jobs are supported, observer sidecars should not themselves delegate.
+9. **Nested shell jobs are supported; nested delegation is allowance-gated.** Subagents may start shell jobs. A subagent may itself delegate only when it was granted a non-zero `delegation_allowance`; a leaf delegate (allowance 0, the default) cannot delegate, so an observer sidecar started without an allowance still must not delegate. See the delegation-allowance amendment below.
 10. **Delegate creation and follow-up are separate.** `delegate` starts a new delegate conversation; `job_send_message` follows up on an existing delegate job/session.
 11. **Watches can send messages.** `job_watch` defines conditions over output/events/progress; when a condition is met it may notify the caller or send a configured message/frame to a messageable target.
 12. **Observers are composed, not special.** An observer is a delegate job plus a watch that sends frames to it; the observer comments back with `job_send_message`.
 13. **Transcript tools stay separate.** Job output is not a transcript. Delegate child transcripts remain readable through transcript tools.
+
+### Delegation allowance (recursive delegation)
+
+`delegate` accepts an optional `delegation_allowance` integer (default 0). The value follows the strict-zero rule used across the job-control surface — absent or 0 means a leaf delegate that cannot itself delegate, exactly today's behavior; there is no `minimum`/`maximum`/`default` keyword on the schema property.
+
+**The grant rule.** A session may grant a child a `delegation_allowance` strictly less than its own allowance, so the chain always shortens and allowance 0 is a leaf. A grant `>=` the granter's own allowance is rejected with `invalid_request: delegation_allowance must be less than your own allowance (<A>)`, where `<A>` is the granter's allowance. A session's own allowance rides its `spawnConfig`, its transcript header (beside `Depth`), and its delegate restore descriptor, so it survives restore.
+
+**Availability matrix (allowance-gated).** Whether a child receives the delegation surface is governed by its granted allowance, not by a fixed depth gate. At allowance 0 the child is a leaf: it does not receive `delegate`/`job_watch`, agent-type listings that require those tools are filtered out of its prompt, and its system prompt shows the leaf limits block. At allowance > 0 the child receives `delegate` + `job_watch` (added to the default surface for an untyped child; a typed agent gets them only if its tool list names them), may grant onward allowances strictly smaller than its own, is told its allowance in its prompt, and sees the delegation + background-jobs prompt sections. A typed agent's tool list governs *what* the child gets; allowance governs *whether* the delegation tools are grantable at all — allowance never injects tools into a type that does not list them.
+
+**Double opt-in (dark by default).** A root session's allowance equals `MaxSubagentDepth` (default 1). Under defaults the root's allowance is 1, so the root may grant only 0 — every delegate is a leaf and recursion never happens. Enabling recursion requires **both** raising `MaxSubagentDepth` in config **and** passing a non-zero `delegation_allowance` per spawn. Neither alone unlocks it; recursion stays dark until an operator deliberately does both.
 
 ## Job identity and visibility
 

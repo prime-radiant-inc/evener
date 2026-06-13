@@ -3193,6 +3193,47 @@ func TestJobReadOutputNegativeHeadBytesRejected(t *testing.T) {
 	}
 }
 
+// TestDelegateToolParsesDelegationAllowance proves the grant knob is reachable
+// from the model: delegation_allowance flows through the registered delegate
+// tool's JSON boundary into the grant rule. A grant >= the caller's own
+// allowance is rejected through the tool; a negative value is rejected as
+// non-negative.
+func TestDelegateToolParsesDelegationAllowance(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	s := newDelegateTestSession(t, c)
+	s.mu.Lock()
+	s.delegationAllowance = 1 // default root with MaxSubagentDepth=1
+	s.mu.Unlock()
+
+	// Grant equal to own allowance (1) is rejected with the grant-rule message,
+	// proving the parsed value reached createDelegate.
+	overGrant := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "d1",
+		Name:      "delegate",
+		Arguments: json.RawMessage(`{"task":"recurse","delegation_allowance":1}`),
+	})
+	if !overGrant.IsError {
+		t.Fatalf("delegate with delegation_allowance=1 and own allowance 1 succeeded, want error; output: %s", overGrant.Output)
+	}
+	if !strings.Contains(overGrant.Output, "must be less than your own allowance (1)") {
+		t.Fatalf("error = %q, want grant-rule rejection naming allowance 1", overGrant.Output)
+	}
+
+	// Negative grant is rejected at the boundary.
+	negGrant := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "d2",
+		Name:      "delegate",
+		Arguments: json.RawMessage(`{"task":"recurse","delegation_allowance":-1}`),
+	})
+	if !negGrant.IsError {
+		t.Fatalf("delegate with delegation_allowance=-1 succeeded, want error; output: %s", negGrant.Output)
+	}
+	if !strings.Contains(negGrant.Output, "invalid_request") || !strings.Contains(negGrant.Output, "non-negative") {
+		t.Fatalf("error = %q, want invalid_request non-negative", negGrant.Output)
+	}
+}
+
 func requiredParams(t *testing.T, name string, raw any) []string {
 	t.Helper()
 	switch values := raw.(type) {

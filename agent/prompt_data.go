@@ -50,6 +50,13 @@ type promptData struct {
 	CallableToolNames           []string
 	UnavailableProfileToolNames []string
 
+	// Delegation capability (spec §1, §5): CanDelegate is true when this session
+	// has a grantable allowance (> 0); DelegationAllowance is that allowance.
+	// Drives the subagent template's conditional delegation/background-jobs
+	// sections and the stated allowance.
+	CanDelegate         bool
+	DelegationAllowance int
+
 	// Available agents (for delegate)
 	AvailableAgents []agentEntry
 

@@ -112,17 +112,19 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 			"delegate: follow up on one with `job_send_message`. Optional: `agent_type` picks a role from the " +
 			"enum (described in your agents section); `model` and `reasoning_effort` override the defaults; " +
 			"`result_schema` requests a validated structured result; `max_wait_ms` waits inline up to that many ms " +
-			"(a timeout leaves the job running). Judge the work from its output, not from `status=\"completed\"`.",
+			"(a timeout leaves the job running). `delegation_allowance` lets the delegate itself delegate, up to one " +
+			"level shallower than your own allowance. Judge the work from its output, not from `status=\"completed\"`.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"task":             map[string]any{"type": "string"},
-				"agent_type":       agentTypeSchema,
-				"model":            map[string]any{"type": "string", "description": "Model override (default: parent model)."},
-				"reasoning_effort": map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
-				"max_wait_ms":      map[string]any{"type": "integer", "description": "0 (default): return the job_id immediately; you are notified on completion. >0: wait inline up to this many ms; a timeout leaves the job running."},
+				"task":                 map[string]any{"type": "string"},
+				"agent_type":           agentTypeSchema,
+				"model":                map[string]any{"type": "string", "description": "Model override (default: parent model)."},
+				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
+				"max_wait_ms":          map[string]any{"type": "integer", "description": "0 (default): return the job_id immediately; you are notified on completion. >0: wait inline up to this many ms; a timeout leaves the job running."},
+				"delegation_allowance": map[string]any{"type": "integer", "description": "0 (default): a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance."},
 				"result_schema": map[string]any{
 					"type":                 "object",
 					"description":          "JSON-Schema-like object for structured delegate results. Serf validates it for initial and resumed turns, surfaces structured_result when valid, and reports structured_result_reason when invalid.",

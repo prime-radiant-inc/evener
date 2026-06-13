@@ -3,6 +3,8 @@
 Shell commands and delegates can run as durable background jobs identified by a
 `job_id`. Jobs outlive your turn, and Serf notifies you automatically when a
 background job finishes — completion never needs polling, blocking, or a watch.
+Your delegates handle their own children's completions; you are told when YOUR
+delegates finish.
 
 Pick the waiting primitive by how many answers you need:
 

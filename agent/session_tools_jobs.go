@@ -180,6 +180,15 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 		a.Background = false
 		a.BlockTimeoutMS = clamped
 	}
+	// delegation_allowance: 0/absent = leaf delegate (cannot delegate); positive
+	// = grant; negative = invalid_request. Zero reads as unset (strict-zero rule).
+	// createDelegate enforces the grant rule (strictly less than own allowance).
+	if n, ok := shellIntArg(args, "delegation_allowance"); ok && n != 0 {
+		if n < 0 {
+			return "", errors.New("invalid_request: delegation_allowance must be non-negative")
+		}
+		a.DelegationAllowance = n
+	}
 	if resultSchema, ok := args["result_schema"].(map[string]any); ok {
 		a.ResultSchema = resultSchema
 	}

@@ -364,6 +364,13 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 			subCfg.spawn.forwardJobEvent = s.jobManager.forwardEvent
 		}
 	}
+	// The granted delegation_allowance (validated by createDelegate against this
+	// session's own allowance) shapes the child's grant capability. The delegate
+	// path always sets it (0 = leaf); other spawn paths leave it at the inherited
+	// default.
+	if grantedAllowance, ok := ctx.Value(ctxDelegationAllowance).(int); ok {
+		subCfg.spawn.delegationAllowance = grantedAllowance
+	}
 	if schema, ok := ctx.Value(ctxCommunicateOutputSchema).(map[string]any); ok && len(schema) > 0 {
 		subCfg.spawn.communicateOutputSchema = schema
 	}
