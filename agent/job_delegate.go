@@ -587,6 +587,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 			subagentTask:            desc.Task,
 			depth:                   s.depth + 1,
 			delegationAllowance:     desc.DelegationAllowance,
+			treeCounter:             s.treeCounter,
 			rolePromptOverride:      desc.FrozenRolePrompt,
 			activatedSkillBodies:    activatedSkillBodies,
 			allowedToolNames:        restoredDelegateAllowedTools(desc),

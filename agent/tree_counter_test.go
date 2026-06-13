@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -445,4 +446,34 @@ func TestCounterIdleFreesAndRestartRebuild(t *testing.T) {
 	releaseOnce.Do(func() { close(release) })
 	waitForShellDone(t, sess.jobManager, second.JobID)
 	waitForTreeCount(t, sess.treeCounter, 0)
+}
+
+// TestRestoredRootMintsTreeCounter proves that restoring a ROOT session through
+// the real restore path mints the tree-wide counter (spec §4), so the 16-delegate
+// tree cap is operative after a process restart. Without a minted counter,
+// reserveTreeSlot treats nil as unbounded and the cap is bypassed.
+//
+// Red today: the RestoreSessionFromMetaWithConfig struct literal omits the
+// treeCounter field and nothing mints it, so a restored root has treeCounter==nil.
+// (TestCounterIdleFreesAndRestartRebuild only MODELS restart via a manual
+// assignment; it never exercises the real restore path, which is this gap.)
+func TestRestoredRootMintsTreeCounter(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	meta := schema.SessionMeta{
+		ID:        "01TESTRESTORECOUNTER",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{StateDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+
+	if restored.treeCounter == nil {
+		t.Fatal("restored root treeCounter is nil; expected a minted counter (tree cap inoperative after restart)")
+	}
 }

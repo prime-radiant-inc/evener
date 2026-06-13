@@ -308,6 +308,22 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 
 	sessCtx, sessCancel := context.WithCancel(context.Background())
+	delegationAllowance := cfg.spawn.delegationAllowance
+	if cfg.spawn.parentSessionID == "" {
+		// Root sessions derive their allowance from MaxSubagentDepth (already
+		// defaulted to 1 by applyDefaults), not from the spawn carrier.
+		delegationAllowance = cfg.MaxSubagentDepth
+	}
+	tc := cfg.spawn.treeCounter
+	if cfg.spawn.parentSessionID == "" {
+		// Root sessions mint the tree-wide counter; children inherit the pointer.
+		tc = newTreeCounter()
+	}
+	// Mirror the live counter onto cfg.spawn so s.cfg.spawn.treeCounter always
+	// reflects it. prepareSubagentRun threads the pointer to children via
+	// subCfg := s.cfg, so the mirror is what carries the root's minted counter
+	// down the tree.
+	cfg.spawn.treeCounter = tc
 	s := &Session{
 		id:                  meta.ID,
 		cfg:                 cfg,
@@ -315,7 +331,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		profile:             profile,
 		resolveProfile:      cfg.ResolveProfile,
 		depth:               cfg.spawn.depth,
-		delegationAllowance: cfg.spawn.delegationAllowance,
+		delegationAllowance: delegationAllowance,
+		treeCounter:         tc,
 		env:                 env,
 		stateDir:            cfg.StateDir,
 		installID:           installid.LoadOrCreateInstallationID(cfg.StateDir),
