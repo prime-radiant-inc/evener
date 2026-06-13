@@ -31,17 +31,16 @@ type Header struct {
 	SessionID     string `json:"session_id"`     // ID of the session this transcript records
 	// ParentSessionID and ParentToolCallID are set only for spawned subagent
 	// transcripts: the parent session and the tool call that spawned this run.
-	ParentSessionID     string    `json:"parent_session_id,omitempty"`
-	ParentToolCallID    string    `json:"parent_tool_call_id,omitempty"`
-	Task                string    `json:"task,omitempty"`                 // task description for a spawned subagent
-	CreatedAt           time.Time `json:"created_at"`                     // when the session was created
-	ProfileID           string    `json:"profile_id"`                     // provider profile ID at creation
-	Model               string    `json:"model"`                          // model name at creation
-	WorkingDir          string    `json:"working_dir,omitempty"`          // the agent's working directory
-	Depth               int       `json:"depth,omitempty"`                // subagent nesting depth (0 for root)
-	DelegationAllowance int       `json:"delegation_allowance,omitempty"` // allowance to grant further subagents
-	BuildVersion        string    `json:"build_version,omitempty"`        // serf build version that wrote the file
-	SystemPrompt        string    `json:"system_prompt,omitempty"`        // initial system prompt
+	ParentSessionID  string    `json:"parent_session_id,omitempty"`
+	ParentToolCallID string    `json:"parent_tool_call_id,omitempty"`
+	Task             string    `json:"task,omitempty"`          // task description for a spawned subagent
+	CreatedAt        time.Time `json:"created_at"`              // when the session was created
+	ProfileID        string    `json:"profile_id"`              // provider profile ID at creation
+	Model            string    `json:"model"`                   // model name at creation
+	WorkingDir       string    `json:"working_dir,omitempty"`   // the agent's working directory
+	Depth            int       `json:"depth,omitempty"`         // subagent nesting depth (0 for root)
+	BuildVersion     string    `json:"build_version,omitempty"` // serf build version that wrote the file
+	SystemPrompt     string    `json:"system_prompt,omitempty"` // initial system prompt
 	// AgentTasks is the full task list the agent started with (from the
 	// agent's YAML frontmatter for root sessions, or from the parent's
 	// task_list parameter for spawned subagents). Captured at session

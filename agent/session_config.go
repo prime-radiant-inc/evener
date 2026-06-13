@@ -223,9 +223,10 @@ type spawnConfig struct {
 	depth int
 
 	// delegationAllowance is the number of additional sub-agent delegation
-	// levels this session is permitted to grant. Rides the transcript header
-	// (beside Depth) for persistence across restore; never populated by
-	// json unmarshal (json:"-" on the parent struct).
+	// levels this session is permitted to grant. The delegate restore
+	// descriptor (DelegateRestoreDescriptor.DelegationAllowance) carries it
+	// across a delegate resume; never populated by json unmarshal (json:"-"
+	// on the parent struct, like its siblings).
 	delegationAllowance int
 
 	// treeCounter is the tree-wide running delegate-turn counter. Created once

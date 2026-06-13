@@ -1,84 +1,62 @@
 package agent
 
 import (
-	"path/filepath"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
-// TestDelegationAllowancePersistsAcrossResume verifies that the
-// delegation_allowance value set on a child's spawnConfig is written to the
-// transcript header and survives a restore round-trip.
+// TestDelegationAllowancePersistsAcrossResume verifies that a delegate's
+// delegation_allowance survives the production restore-from-descriptor path:
+// a terminal delegate whose runtime was lost is reconstructed from its durable
+// DelegateRestoreDescriptor.
 //
-// The persistence path: spawnConfig.delegationAllowance → Header.DelegationAllowance
-// (written at NewSession) → RestoreSessionConfig.spawn.delegationAllowance (injected
-// from the header in the restore path) → s.delegationAllowance.
+// The persistence path under test:
+// DelegateRestoreDescriptor.DelegationAllowance (durable on disk in jobs.jsonl)
+// → spawnConfig.delegationAllowance (job_delegate.go restoreTerminalDelegateChild)
+// → s.delegationAllowance (session_init.go).
 //
-// Red today: neither the field nor the header slot exist.
+// This drives the real reconstruction code, not a manual copy: it seeds a
+// stopped delegate record carrying allowance > 0, persists it to disk, reloads
+// it, then reconstructs the child via restoreTerminalDelegateChild and asserts
+// the resumed session received the granted allowance. The test fails if the
+// descriptor stops carrying allowance into the reconstructed session.
 func TestDelegationAllowancePersistsAcrossResume(t *testing.T) {
-	stateDir := t.TempDir()
-	workDir := t.TempDir()
+	const grantedAllowance = 1
+
 	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	s := newDelegateRestorePreflightSession(t, c)
 
-	// Build a child session with delegation_allowance = 2 via spawnConfig.
-	cfg := SessionConfig{
-		StateDir:         stateDir,
-		NoProjectPrompts: true,
+	// Seed a terminal (runtime-lost) delegate whose durable restore descriptor
+	// carries a non-zero allowance, then persist that descriptor to disk.
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	rec.DelegateRestore.DelegationAllowance = grantedAllowance
+	replaceStoredDelegateRecord(t, s, rec)
+	markStoredDelegateResumable(t, s, rec)
+
+	// Reload from disk and confirm the durable descriptor carries the allowance.
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	if got := rec.DelegateRestore.DelegationAllowance; got != grantedAllowance {
+		t.Fatalf("durable descriptor DelegationAllowance = %d, want %d", got, grantedAllowance)
 	}
-	cfg.spawn.depth = 1
-	cfg.spawn.parentSessionID = "parent-session"
-	cfg.spawn.delegationAllowance = 2
+	childID := rec.DelegateRestore.ChildSessionID
 
-	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), cfg)
+	// Reconstruct the child through the production restore path. This reads
+	// desc.DelegationAllowance into the child's spawnConfig and onto the
+	// reconstructed session.
+	preflight := requireDelegateRestorePreflight(t, s, rec)
+	sub, err := s.restoreTerminalDelegateChild(rec, childID, preflight)
 	if err != nil {
-		t.Fatalf("NewSession: %v", err)
+		t.Fatalf("restoreTerminalDelegateChild: %v", err)
 	}
-	childID := child.ID()
-
-	// Flush and close the transcript so it's persisted to disk.
-	if child.transcript != nil {
-		if err := child.transcript.Close(); err != nil {
-			t.Fatalf("close child transcript: %v", err)
-		}
-		child.transcript = nil
-	}
-	child.Close()
-
-	// Read the transcript header back and verify the allowance was written.
-	tpath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-	header, _, _, readErr := readTranscript(tpath)
-	if readErr != nil {
-		t.Fatalf("readTranscript: %v", readErr)
-	}
-	if got, want := header.DelegationAllowance, 2; got != want {
-		t.Fatalf("transcript header DelegationAllowance = %d, want %d", got, want)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("reconstructed child = %+v, want retained runtime", sub)
 	}
 
-	// Restore from the persisted session, injecting the allowance (simulating
-	// what job_delegate.go does after reading the transcript header).
-	meta, err := schema.LoadSessionMeta(stateDir, childID)
-	if err != nil {
-		t.Fatalf("LoadSessionMeta: %v", err)
-	}
-	restoreCfg := RestoreSessionConfig{
-		StateDir: stateDir,
-		spawn: spawnConfig{
-			depth:               1,
-			parentSessionID:     "parent-session",
-			delegationAllowance: header.DelegationAllowance,
-		},
-	}
-	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), meta, restoreCfg)
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
-	}
-	defer restored.Close()
-
-	if got, want := restored.delegationAllowance, 2; got != want {
-		t.Fatalf("restored session delegationAllowance = %d, want %d", got, want)
+	if got, want := sub.sess.delegationAllowance, grantedAllowance; got != want {
+		t.Fatalf("reconstructed session delegationAllowance = %d, want %d", got, want)
 	}
 }
 

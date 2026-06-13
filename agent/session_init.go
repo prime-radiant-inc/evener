@@ -180,19 +180,18 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			agentTasks = s.taskStore.View()
 		}
 		hdr := transcript.Header{
-			SessionID:           s.id,
-			ParentSessionID:     cfg.spawn.parentSessionID,
-			ParentToolCallID:    cfg.spawn.parentToolCallID,
-			Task:                cfg.spawn.subagentTask,
-			CreatedAt:           time.Now().UTC(),
-			ProfileID:           profile.ID(),
-			Model:               profile.Model(),
-			WorkingDir:          s.envInfo.WorkingDir,
-			Depth:               cfg.spawn.depth,
-			DelegationAllowance: s.delegationAllowance,
-			BuildVersion:        BuildVersion,
-			SystemPrompt:        s.cachedSystemPrompt,
-			AgentTasks:          agentTasks,
+			SessionID:        s.id,
+			ParentSessionID:  cfg.spawn.parentSessionID,
+			ParentToolCallID: cfg.spawn.parentToolCallID,
+			Task:             cfg.spawn.subagentTask,
+			CreatedAt:        time.Now().UTC(),
+			ProfileID:        profile.ID(),
+			Model:            profile.Model(),
+			WorkingDir:       s.envInfo.WorkingDir,
+			Depth:            cfg.spawn.depth,
+			BuildVersion:     BuildVersion,
+			SystemPrompt:     s.cachedSystemPrompt,
+			AgentTasks:       agentTasks,
 		}
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
 		tw, twErr := transcript.NewWriter(tpath, hdr)
@@ -394,19 +393,18 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 				agentTasks = s.taskStore.View()
 			}
 			hdr := transcript.Header{
-				SessionID:           s.id,
-				ParentSessionID:     cfg.spawn.parentSessionID,
-				ParentToolCallID:    cfg.spawn.parentToolCallID,
-				Task:                cfg.spawn.subagentTask,
-				CreatedAt:           meta.CreatedAt,
-				ProfileID:           profile.ID(),
-				Model:               profile.Model(),
-				WorkingDir:          s.envInfo.WorkingDir,
-				Depth:               cfg.spawn.depth,
-				DelegationAllowance: s.delegationAllowance,
-				BuildVersion:        BuildVersion,
-				SystemPrompt:        s.cachedSystemPrompt,
-				AgentTasks:          agentTasks,
+				SessionID:        s.id,
+				ParentSessionID:  cfg.spawn.parentSessionID,
+				ParentToolCallID: cfg.spawn.parentToolCallID,
+				Task:             cfg.spawn.subagentTask,
+				CreatedAt:        meta.CreatedAt,
+				ProfileID:        profile.ID(),
+				Model:            profile.Model(),
+				WorkingDir:       s.envInfo.WorkingDir,
+				Depth:            cfg.spawn.depth,
+				BuildVersion:     BuildVersion,
+				SystemPrompt:     s.cachedSystemPrompt,
+				AgentTasks:       agentTasks,
 			}
 			tw, twErr = transcript.NewWriter(tpath, hdr)
 			if twErr != nil {
