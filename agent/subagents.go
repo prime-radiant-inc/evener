@@ -291,13 +291,10 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []taskpkg.TaskTemplate, grantTools []string) (*preparedSubagentRun, error) {
 	s.mu.Lock()
 	depth := s.depth
-	maxDepth := s.cfg.MaxSubagentDepth
+	allowance := s.delegationAllowance
 	s.mu.Unlock()
-	if depth > 0 {
-		return nil, errors.New("subagent management is top-level only")
-	}
-	if depth >= maxDepth {
-		return nil, errors.New("subagent depth limit reached")
+	if allowance <= 0 {
+		return nil, errors.New("delegation not permitted: your delegation_allowance is 0")
 	}
 
 	// Look up plugin agent configuration when agent_type is specified.

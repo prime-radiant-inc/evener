@@ -2306,13 +2306,15 @@ func TestDelegateChildDirectSpawnDoesNotInheritForwardSeam(t *testing.T) {
 			res.JobID)
 	}
 
-	// Current production behavior rejects subagent management below the root.
-	// This fixture opens only that guard so the test can exercise config-copy
-	// inheritance through a delegate child.
+	// Current production behavior rejects subagent management below the root
+	// (the allowance gate: delegationAllowance == 0). This fixture opens that
+	// guard (allowance 1) so the test can exercise config-copy / forward-seam
+	// inheritance through a directly-spawned grandchild.
 	sub.sess.mu.Lock()
 	sub.sess.depth = 0
 	sub.sess.cfg.spawn.depth = 0
 	sub.sess.cfg.MaxSubagentDepth = 1
+	sub.sess.delegationAllowance = 1
 	sub.sess.mu.Unlock()
 
 	spawned, err := sub.sess.spawnAgent(context.Background(), "run direct grandchild work", "", "", 0, "", "", nil, nil)

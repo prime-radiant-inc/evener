@@ -655,3 +655,77 @@ func hasCachedCallableToolDefinition(s *Session, name string) bool {
 	}
 	return false
 }
+
+// TestPrepareSubagentRunAllowsRecursionWithAllowance verifies that a depth-1
+// session with delegationAllowance == 1 passes the spawn gate (spec §1 seam 1).
+// Today this fails with "subagent management is top-level only" because the gate
+// checks depth > 0 instead of checking allowance.
+func TestPrepareSubagentRunAllowsRecursionWithAllowance(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	// Construct a depth-1 child session with delegationAllowance = 1 via spawnConfig,
+	// mirroring a real recursion-capable child handed down from a root.
+	cfg := SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+	}
+	cfg.spawn.depth = 1
+	cfg.spawn.parentSessionID = "parent-session"
+	cfg.spawn.delegationAllowance = 1
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	_, gotErr := sess.prepareSubagentRun(context.Background(), "task", "", dir, 5, "", "", nil, nil)
+
+	// The allowance gate must be cleared. Any later error is fine (no model, env,
+	// etc.) but it MUST NOT be the old depth-gate strings.
+	if gotErr != nil {
+		msg := gotErr.Error()
+		if msg == "subagent management is top-level only" || msg == "subagent depth limit reached" {
+			t.Fatalf("depth gate fired on a session with delegationAllowance=1: %v", gotErr)
+		}
+	}
+}
+
+// TestPrepareSubagentRunRejectsZeroAllowance verifies that a session with
+// delegationAllowance == 0 is rejected with the exact allowance-gate error
+// (spec §1 seam 2). Before the implementation the gate returns the old depth
+// string, not the allowance string, so this test is red today.
+func TestPrepareSubagentRunRejectsZeroAllowance(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	// Root session: depth=0, delegationAllowance will be 0 because we override it
+	// directly after construction (the zero value — no delegation permitted).
+	cfg := SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+	}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// Force allowance to 0 — leaf behavior.
+	sess.mu.Lock()
+	sess.delegationAllowance = 0
+	sess.mu.Unlock()
+
+	_, gotErr := sess.prepareSubagentRun(context.Background(), "task", "", dir, 5, "", "", nil, nil)
+
+	const wantErr = "delegation not permitted: your delegation_allowance is 0"
+	if gotErr == nil {
+		t.Fatalf("expected error %q, got nil", wantErr)
+	}
+	if gotErr.Error() != wantErr {
+		t.Fatalf("got error %q, want %q", gotErr.Error(), wantErr)
+	}
+}
