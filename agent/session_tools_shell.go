@@ -184,6 +184,13 @@ func shellToolResultMaxChars(reg *tool.Registry) int {
 }
 
 func marshalShellToolResult(res shellResult, maxChars int) (tool.TextResult, error) {
+	// complete-or-handle (spec §0.6): within-bound results carry a settle
+	// closure. Apply both layers — inline embed budget (shellInlineOutputBytes)
+	// and tool-result char bound (maxChars) — to decide keep vs discard.
+	if res.settle != nil {
+		return marshalCompleteOrHandleResult(res, maxChars)
+	}
+
 	out := shellToolResult{
 		JobID:               res.JobID,
 		Type:                res.Type,
@@ -211,6 +218,77 @@ func marshalShellToolResult(res shellResult, maxChars int) (tool.TextResult, err
 		}
 	}
 	return tool.TextResult{Output: model, FullOutput: full}, nil
+}
+
+// marshalCompleteOrHandleResult implements spec §0.6 for within-bound shell
+// completions. It checks both layers:
+//
+//  1. Inline embed budget (shellInlineOutputBytes): output > 64KB cannot ride
+//     in the inline result.
+//  2. Tool-result char bound (maxChars): marshaled JSON > bound also exceeds.
+//
+// If either layer triggers → settle(true) keeps the delayed job (durable),
+// returns a truncated tail + job_id. Otherwise → settle(false) discards the
+// delayed job (ephemeral), returns complete output inline with no job_id.
+func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResult, error) {
+	falseVal := false
+	out := shellToolResult{
+		Type:      res.Type,
+		Status:    res.Status,
+		Reason:    shellStringPtrOrNil(res.Reason),
+		TimedOut:  res.TimedOut,
+		ExitCode:  res.ExitCode,
+		Output:    &res.Output,
+		Truncated: &falseVal,
+	}
+
+	// Layer 1: inline embed budget.
+	embedExceeded := len(res.Output) > shellInlineOutputBytes
+
+	// Layer 2: tool-result char bound. Marshal with full output and check.
+	charBoundExceeded := false
+	if !embedExceeded && maxChars > 0 {
+		b, err := json.Marshal(out)
+		if err != nil {
+			_ = res.settle(false)
+			return tool.TextResult{}, err
+		}
+		charBoundExceeded = jsonCharLen(b) > maxChars
+	}
+
+	if !embedExceeded && !charBoundExceeded {
+		// Ephemeral: complete output fits inline. Discard the delayed job.
+		_ = res.settle(false)
+		b, err := json.Marshal(out)
+		if err != nil {
+			return tool.TextResult{}, err
+		}
+		s := string(b)
+		return tool.TextResult{Output: s, FullOutput: s}, nil
+	}
+
+	// Keep: output cannot ride inline in full. Commit + finalize the delayed job.
+	jobID := res.settle(true)
+
+	// Build the kept result with a bounded tail and job_id.
+	out.JobID = jobID
+	if maxChars > 0 {
+		model, err := marshalBoundedShellToolResult(out, maxChars)
+		if err != nil {
+			return tool.TextResult{}, err
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return tool.TextResult{}, err
+		}
+		return tool.TextResult{Output: model, FullOutput: string(b)}, nil
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return tool.TextResult{}, err
+	}
+	s := string(b)
+	return tool.TextResult{Output: s, FullOutput: s}, nil
 }
 
 func marshalBoundedShellToolResult(out shellToolResult, maxChars int) (string, error) {

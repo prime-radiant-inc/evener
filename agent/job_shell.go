@@ -43,6 +43,11 @@ type shellResult struct {
 	ExitCode            *int
 	Output              string
 	Truncated           bool
+	// settle is non-nil when the command finished within its max_wait_ms bound.
+	// Calling settle(true) commits the delayed job (making it durable) and
+	// finalizes it, returning its job_id. Calling settle(false) discards the
+	// delayed job (ephemeral result). See complete-or-handle invariant (spec §0.6).
+	settle func(keep bool) string
 }
 
 type shellWaitResult struct {
@@ -143,7 +148,25 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 		}
 		status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, runtimeTimedOut.Load(), wait.err)
 		output, _, truncated, _ := fullOutput(run.output)
-		jm.discardDelayedShell(run)
+		// complete-or-handle (spec §0.6): defer keep/discard so marshalShellToolResult
+		// can apply both layers (embed budget + tool-result char bound) before deciding.
+		settle := func(keep bool) string {
+			if !keep {
+				jm.discardDelayedShell(run)
+				return ""
+			}
+			if err := jm.commitDelayedShell(run); err != nil {
+				jm.discardDelayedShell(run)
+				return ""
+			}
+			// finalizeKeptSync writes the terminal event without arming owner
+			// notification (spec §6.4d: synchronous completion needs no duplicate
+			// terminal notification). Falls back to the durable goroutine on error.
+			if err := jm.finalizeKeptSync(run, status, reason, exitCode); err != nil {
+				go jm.finalizeShellUntilDurable(run.rec.JobID, status, reason, exitCode)
+			}
+			return run.rec.JobID
+		}
 		return shellResult{
 			Type:                string(run.rec.Type),
 			Status:              string(status),
@@ -153,6 +176,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			ExitCode:            exitCode,
 			Output:              output,
 			Truncated:           truncated,
+			settle:              settle,
 		}
 	case <-runtimeTimeoutCh:
 		wait := <-waitCh

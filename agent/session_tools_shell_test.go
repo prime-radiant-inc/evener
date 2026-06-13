@@ -96,12 +96,18 @@ func TestShellToolTinyMaxCharsStillReturnsJSON(t *testing.T) {
 	}
 
 	var out struct {
+		JobID     string `json:"job_id"`
 		Status    string `json:"status"`
 		Output    string `json:"output"`
 		Truncated bool   `json:"truncated"`
 	}
 	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
+	}
+	// 60KB output exceeds the tool-result char bound (MaxChars:1) — complete-or-handle
+	// keeps the job durable so the full output remains accessible (spec §6.4c).
+	if out.JobID == "" {
+		t.Fatalf("shell output missing job_id: want kept durable record for tool-result overflow (spec §6.4c)")
 	}
 	if out.Status != string(jobstore.StatusCompleted) || out.Output == "" || !out.Truncated || len(out.Output) >= 60_000 {
 		t.Fatalf("shell output = %+v, want completed truncated JSON", out)
@@ -506,6 +512,161 @@ func TestParseShellToolArgsMaxWaitMS(t *testing.T) {
 	}
 	if args.BlockTimeoutMS != 3000 {
 		t.Fatalf("BlockTimeoutMS = %d, want 3000", args.BlockTimeoutMS)
+	}
+}
+
+// TestCompleteOrHandleEphemeral pins spec §6.4(a): a fast quiet command
+// finishes within its max_wait_ms bound and returns complete output inline
+// with no job_id and no durable record.
+func TestCompleteOrHandleEphemeral(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"printf 'hello\n'","max_wait_ms":5000}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID != "" {
+		t.Fatalf("fast quiet command returned job_id=%q, want ephemeral (no job_id)", out.JobID)
+	}
+	if out.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "hello") {
+		t.Fatalf("output = %q, want inline hello", out.Output)
+	}
+}
+
+// TestCompleteOrHandleKeptLargeOutput pins spec §6.4(b): a fast command
+// whose output exceeds the inline embed budget (shellInlineOutputBytes = 64KB)
+// returns a kept result with job_id + truncated:true, and job_read_output
+// returns the full retained bytes.
+func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
+	s := newTestSession(t)
+
+	// yes produces >64KB output quickly; max_wait_ms:5000 gives it ample room.
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 70000","max_wait_ms":5000}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID     string `json:"job_id"`
+		Status    string `json:"status"`
+		Truncated bool   `json:"truncated"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Fatalf("large-output command returned no job_id; want kept durable record")
+	}
+	if out.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+	if !out.Truncated {
+		t.Fatalf("truncated = false, want true for large output")
+	}
+
+	// job_read_output must report TotalBytes >= 70000 — proving all bytes were
+	// retained in the OutputStore (not just what fits in the tool-result).
+	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "r1",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_bytes":1048576}`),
+	})
+	if readRes.IsError {
+		t.Fatalf("job_read_output returned error: %s", readRes.Output)
+	}
+	var readOut struct {
+		TotalBytes int64 `json:"total_bytes"`
+	}
+	if err := json.Unmarshal([]byte(readRes.Output), &readOut); err != nil {
+		t.Fatalf("unmarshal read output: %v", err)
+	}
+	if readOut.TotalBytes < 70000 {
+		t.Fatalf("retained TotalBytes = %d, want >= 70000", readOut.TotalBytes)
+	}
+}
+
+// TestCompleteOrHandleKeptToolResultOverflow pins spec §6.4(c): a command
+// whose output fits in 64KB (inline embed budget) but exceeds the
+// tool-result char bound still gets a durable job_id.
+func TestCompleteOrHandleKeptToolResultOverflow(t *testing.T) {
+	// Use MaxChars:1 so even a tiny output overflows the tool-result bound.
+	s := newShellToolTestSession(t, SessionConfig{
+		ToolOutputLimits: map[string]schema.ToolOutputLimit{
+			"shell": {MaxChars: 1, Strategy: schema.TruncHeadTail},
+		},
+	})
+
+	// 60KB < shellInlineOutputBytes (64KB), so layer 1 budget is fine, but
+	// MaxChars:1 ensures the tool-result char bound is exceeded (layer 2).
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"head -c 60000 </dev/zero | tr '\\0' 'x'","max_wait_ms":5000}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID     string `json:"job_id"`
+		Status    string `json:"status"`
+		Truncated bool   `json:"truncated"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Fatalf("tool-result overflow command returned no job_id; want kept durable record (spec §6.4c)")
+	}
+	if out.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+}
+
+// TestCompleteOrHandleKeptNoNotification pins spec §6.4(d): a within-bound
+// job that finishes and is kept (large output) has NotifyState "not_armed" —
+// synchronous completion needs no duplicate terminal notification.
+func TestCompleteOrHandleKeptNoNotification(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 70000","max_wait_ms":5000}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Skip("command did not produce a kept job_id; notification test requires kept record")
+	}
+
+	rec := loadShellRecord(t, s.jobManager, out.JobID)
+	if rec.NotifyState != jobstore.NotifyNotArmed {
+		t.Fatalf("kept within-bound job NotifyState = %q, want %q (spec §6.4d — synchronous completion must not arm notification)", rec.NotifyState, jobstore.NotifyNotArmed)
 	}
 }
 

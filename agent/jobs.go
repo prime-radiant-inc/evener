@@ -761,6 +761,36 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 	})
 }
 
+// finalizeKeptSync finalizes a within-bound shell job that is being kept
+// (complete-or-handle, spec §0.6). It fires watches but does NOT append
+// EventJobNotificationPending or enqueue an owner notification — the model
+// already received the complete result inline (spec §6.4d).
+func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, reason string, exitCode *int) error {
+	terminal, err := jm.writeFinishJob(run, status, reason, exitCode)
+	if err != nil {
+		return err
+	}
+
+	jm.mu.Lock()
+	if jm.running[run.rec.JobID] != run || run.terminal != terminal {
+		jm.mu.Unlock()
+		return nil
+	}
+	watchNotifications, watchDeliveries := jm.expireJobWatchesLocked(run.rec.JobID)
+	delete(jm.running, run.rec.JobID)
+	jm.mu.Unlock()
+
+	jm.enqueueWatchNotifications(watchNotifications)
+	jm.recordWatchSendsAndKick(watchDeliveries)
+	// No EventJobNotificationPending, no jm.enqueue call: kept within-bound
+	// jobs completed before the tool returned (spec §6.4d).
+
+	run.stopWatchdog()
+	_ = run.output.Close()
+	run.closeDone()
+	return nil
+}
+
 func (jm *jobManager) finalizeWithRun(jobID string, prepare func(*runningJob) (jobstore.Status, string, *int, error)) error {
 	jm.mu.Lock()
 	run := jm.running[jobID]
@@ -809,6 +839,17 @@ func (jm *jobManager) finalizeWithRun(jobID string, prepare func(*runningJob) (j
 }
 
 func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason string, exitCode *int) error {
+	terminal, err := jm.writeFinishJob(run, status, reason, exitCode)
+	if err != nil {
+		return err
+	}
+	return jm.armFinalizedJob(run, terminal)
+}
+
+// writeFinishJob writes EventJobFinished and updates the in-memory record but
+// does not arm owner notification. It is split out so finalizeKeptSync can
+// finalize without notification-arming (spec §6.4d).
+func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, reason string, exitCode *int) (*terminalJob, error) {
 	var outputBytes int64
 	if _, total, _, err := run.output.Tail(0); err == nil {
 		outputBytes = total
@@ -844,7 +885,7 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 	}
 	terminal.finished = finished
 	if err := jm.appendEvent(finished); err != nil {
-		return err
+		return nil, err
 	}
 
 	jm.mu.Lock()
@@ -863,11 +904,11 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 	jm.mu.Unlock()
 
 	if err := jm.forwardFinishedJob(run, terminal); err != nil {
-		return err
+		return nil, err
 	}
 	jm.emitFinishedJob(run, terminal)
 	jm.runAfterDurableFinish(run, terminal, afterDurableFinish)
-	return jm.armFinalizedJob(run, terminal)
+	return terminal, nil
 }
 
 func (jm *jobManager) forwardFinishedJob(run *runningJob, terminal *terminalJob) error {
