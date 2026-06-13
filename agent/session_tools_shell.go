@@ -29,9 +29,6 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				shellArgs = applyShellTimeoutPolicy(deps, shellArgs)
 				return marshalShellToolResult(runShell(ctx, s.jobManager, se, shellArgs), shellToolResultMaxChars(reg))
 			}
-			if shellArgs.Background {
-				return "background shell jobs require streaming execution support", errors.New("background shell jobs require streaming execution support")
-			}
 			return runBufferedShell(ctx, env, deps, shellArgs)
 		},
 	}); err != nil {
@@ -112,26 +109,19 @@ func parseShellToolArgs(args map[string]any) (shellArgs, error) {
 	parsed := shellArgs{
 		Command:     fmt.Sprint(args["command"]),
 		Description: stringArg(args, "description"),
-		Background:  shellBoolArg(args, "background"),
 	}
 	var ok bool
-	// Zero reads as unset: strict-mode providers (OpenAI Responses) force every
-	// parameter onto every call, so a background call always carries
-	// block_timeout_ms:0 on that wire, and zero already means "default" in the
-	// foreground read path. Only an explicit positive timeout is a combo error.
-	blockTimeoutSet := false
-	if parsed.BlockTimeoutMS, ok = shellIntArg(args, "block_timeout_ms"); ok && parsed.BlockTimeoutMS > 0 {
-		blockTimeoutSet = true
+	// max_wait_ms: 0/absent = session default (unset); positive = explicit bound;
+	// negative = invalid_request. Zero reads as unset so strict-mode providers
+	// (OpenAI Responses) that force every parameter on every call still work.
+	if parsed.BlockTimeoutMS, ok = shellIntArg(args, "max_wait_ms"); !ok {
+		parsed.BlockTimeoutMS = 0
+	}
+	if parsed.BlockTimeoutMS < 0 {
+		return shellArgs{}, errors.New("invalid_request: max_wait_ms must be non-negative")
 	}
 	if parsed.MaxRuntimeMS, ok = shellIntArg(args, "max_runtime_ms"); !ok {
 		parsed.MaxRuntimeMS = 0
-	}
-	// block_timeout_ms only applies to foreground waits. Reject background+timeout combos.
-	if parsed.Background && blockTimeoutSet {
-		return shellArgs{}, errors.New(blockTimeoutForegroundOnlyErr)
-	}
-	if parsed.BlockTimeoutMS < 0 {
-		return shellArgs{}, errors.New("block_timeout_ms must be non-negative")
 	}
 	if parsed.MaxRuntimeMS < 0 {
 		return shellArgs{}, errors.New("max_runtime_ms must be non-negative")
@@ -194,6 +184,13 @@ func shellToolResultMaxChars(reg *tool.Registry) int {
 }
 
 func marshalShellToolResult(res shellResult, maxChars int) (tool.TextResult, error) {
+	// complete-or-handle (spec §0.6): within-bound results carry a settle
+	// closure. Apply both layers — inline embed budget (shellInlineOutputBytes)
+	// and tool-result char bound (maxChars) — to decide keep vs discard.
+	if res.settle != nil {
+		return marshalCompleteOrHandleResult(res, maxChars)
+	}
+
 	out := shellToolResult{
 		JobID:               res.JobID,
 		Type:                res.Type,
@@ -221,6 +218,77 @@ func marshalShellToolResult(res shellResult, maxChars int) (tool.TextResult, err
 		}
 	}
 	return tool.TextResult{Output: model, FullOutput: full}, nil
+}
+
+// marshalCompleteOrHandleResult implements spec §0.6 for within-bound shell
+// completions. It checks both layers:
+//
+//  1. Inline embed budget (shellInlineOutputBytes): output > 64KB cannot ride
+//     in the inline result.
+//  2. Tool-result char bound (maxChars): marshaled JSON > bound also exceeds.
+//
+// If either layer triggers → settle(true) keeps the delayed job (durable),
+// returns a truncated tail + job_id. Otherwise → settle(false) discards the
+// delayed job (ephemeral), returns complete output inline with no job_id.
+func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResult, error) {
+	falseVal := false
+	out := shellToolResult{
+		Type:      res.Type,
+		Status:    res.Status,
+		Reason:    shellStringPtrOrNil(res.Reason),
+		TimedOut:  res.TimedOut,
+		ExitCode:  res.ExitCode,
+		Output:    &res.Output,
+		Truncated: &falseVal,
+	}
+
+	// Layer 1: inline embed budget.
+	embedExceeded := len(res.Output) > shellInlineOutputBytes
+
+	// Layer 2: tool-result char bound. Marshal with full output and check.
+	charBoundExceeded := false
+	if !embedExceeded && maxChars > 0 {
+		b, err := json.Marshal(out)
+		if err != nil {
+			_ = res.settle(false)
+			return tool.TextResult{}, err
+		}
+		charBoundExceeded = jsonCharLen(b) > maxChars
+	}
+
+	if !embedExceeded && !charBoundExceeded {
+		// Ephemeral: complete output fits inline. Discard the delayed job.
+		_ = res.settle(false)
+		b, err := json.Marshal(out)
+		if err != nil {
+			return tool.TextResult{}, err
+		}
+		s := string(b)
+		return tool.TextResult{Output: s, FullOutput: s}, nil
+	}
+
+	// Keep: output cannot ride inline in full. Commit + finalize the delayed job.
+	jobID := res.settle(true)
+
+	// Build the kept result with a bounded tail and job_id.
+	out.JobID = jobID
+	if maxChars > 0 {
+		model, err := marshalBoundedShellToolResult(out, maxChars)
+		if err != nil {
+			return tool.TextResult{}, err
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			return tool.TextResult{}, err
+		}
+		return tool.TextResult{Output: model, FullOutput: string(b)}, nil
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return tool.TextResult{}, err
+	}
+	s := string(b)
+	return tool.TextResult{Output: s, FullOutput: s}, nil
 }
 
 func marshalBoundedShellToolResult(out shellToolResult, maxChars int) (string, error) {
@@ -304,7 +372,7 @@ func applyShellTimeoutPolicy(deps *toolDeps, args shellArgs) shellArgs {
 func runBufferedShell(ctx context.Context, env execenv.ExecutionEnvironment, deps *toolDeps, args shellArgs) (string, error) {
 	args = applyShellTimeoutPolicy(deps, args)
 	timeout := args.BlockTimeoutMS
-	timeoutParam := "block_timeout_ms"
+	timeoutParam := "max_wait_ms"
 	if args.MaxRuntimeMS > 0 && (timeout == 0 || args.MaxRuntimeMS < timeout) {
 		timeout = args.MaxRuntimeMS
 		timeoutParam = "max_runtime_ms"

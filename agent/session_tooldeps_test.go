@@ -70,7 +70,7 @@ func TestToolDeps_ShellTimeoutClamp(t *testing.T) {
 	res := reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"echo hi","block_timeout_ms":120000}`),
+		Arguments: json.RawMessage(`{"command":"echo hi","max_wait_ms":120000}`),
 	})
 	if res.IsError {
 		t.Fatalf("unexpected error: %q", res.Output)

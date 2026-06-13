@@ -3,15 +3,14 @@
 **What this covers**: the four `job_send_message` outcomes against
 delegate targets (`docs/job-control.md` lines 347-446). (a) A RUNNING
 delegate target gets the message injected mid-run — same `job_id`,
-`action:"sent"`, and the guidance visibly incorporated (line 373);
+`action:"sent"`, and the guidance visibly incorporated;
 (b) a FINISHED delegate resumes in the SAME conversation as a new job
 — new `job_id`, `resumed_from_job_id`, same `transcript_ref`, with the
-prior conversation's context demonstrably retained (line 374);
+prior conversation's context demonstrably retained;
 (c) `on_finished="fail"` against a finished target fails synchronously
-with `target_terminal` and creates nothing (line 375); (d) a
-`background=false` resume whose `block_timeout_ms` expires returns the
-foreground-timeout shape with the job left running (line 382).
-Resume-after-STOP is subagent-cancel-runaway.md; the observer
+with `target_terminal` and creates nothing; (d) a `max_wait_ms` resume
+that times out returns the foreground-timeout shape with the job left
+running. Resume-after-STOP is subagent-cancel-runaway.md; the observer
 `caller`-alias send is job-watch-sidecar-observer.md.
 
 ## Pre-state
@@ -63,9 +62,9 @@ Resume-after-STOP is subagent-cancel-runaway.md; the observer
    >    verbatim.
    > 2. Call job_list with no filters and report the count and
    >    job_ids.
-   > 3. Call job_send_message with target JB, background false,
-   >    block_timeout_ms 2000, and this message: "Run the shell
-   >    command `sleep 20`, then communicate exactly SLOW_RESUME_DONE."
+   > 3. Call job_send_message with target JB, max_wait_ms 2000, and
+   >    this message: "Run the shell command `sleep 20`, then
+   >    communicate exactly SLOW_RESUME_DONE."
    >    Report the full result JSON verbatim.
    > 4. Call job_list with status ["running"] and report whether the
    >    new job from step 3 is running. End your turn.
@@ -111,11 +110,10 @@ Resume-after-STOP is subagent-cancel-runaway.md; the observer
   a new `job_id`, `status` `"running"`, `reason`
   `"foreground_timeout"`, `timed_out` `true`,
   `running_in_background` `true`, and bounded `output`-so-far — the
-  foreground-timeout result shape (line 382 + the delegate timeout
-  shape, lines 329-343). The step-4 listing confirms the job still
-  `running` (timeout never stops work). Its later completion delivers
-  the normal terminal notification carrying `SLOW_RESUME_DONE` output.
-  Falsification: the call blocks ~20s for completion (timeout
+  foreground-timeout result shape. The step-4 listing confirms the job
+  still `running` (timeout never stops work). Its later completion
+  delivers the normal terminal notification carrying `SLOW_RESUME_DONE`
+  output. Falsification: the call blocks ~20s for completion (timeout
   ignored), or the job is terminal/cancelled right after the timeout.
 
 ## Cleanup
@@ -140,10 +138,8 @@ Resume-after-STOP is subagent-cancel-runaway.md; the observer
   that session; on_finished=fail checks the TARGET's terminal state,
   so the error is stable regardless of which job in the session is
   newest.
-- `block_timeout_ms` 2000 is above the 1000 minimum (the normative
-  bounds at lines 187-192 govern the resumed-delegate foreground wait
-  via line 382); values below 1000 clamp up and would still beat the
-  20s sleep.
+- `max_wait_ms` 2000 is above the 1000 minimum; values below 1000 clamp
+  up and would still beat the 20s sleep.
 - The arm-(d) timing assertion (~2s vs ~20s) brackets via the
   api_call timestamps around the tool round when wall-clocking is
   coarse.

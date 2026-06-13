@@ -6256,14 +6256,14 @@ func TestGrantedReadAfterParentClosedPreservesTargetNotFound(t *testing.T) {
 }
 
 // TestGrantedReadRejectsBlock pins the decision that granted cross-session
-// reads are snapshot-only: block=true fails loudly instead of silently
+// reads are snapshot-only: max_wait_ms>0 fails loudly instead of silently
 // degrading to a snapshot.
 func TestGrantedReadRejectsBlock(t *testing.T) {
 	fx := newGrantReadFixture(t)
 
 	for name, args := range map[string]map[string]any{
-		"block":      {"job_id": fx.watched, "block": true},
-		"block+grep": {"job_id": fx.watched, "block": true, "grep": "ready"},
+		"wait":      {"job_id": fx.watched, "max_wait_ms": 1000},
+		"wait+grep": {"job_id": fx.watched, "max_wait_ms": 1000, "grep": "ready"},
 	} {
 		_, err := observerReadOutput(t, fx.observer, args)
 		if err == nil || err.Error() != grantedReadBlockUnsupportedErr {

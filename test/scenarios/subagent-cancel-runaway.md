@@ -8,19 +8,19 @@ plus the resumable follow-up path through `job_send_message`.
 1. Start a real Serf run with a fresh scenario state dir.
 2. Ask the parent:
 
-   > Call `delegate` with `background=true` and this task: "Using the shell
-   > tool, run the command: sleep 30. Only after it finishes, call communicate
-   > with the message DONE_SLEEPING." Capture the returned `job_id`.
+   > Call `delegate` (default, no `max_wait_ms`) with this task: "Using the
+   > shell tool, run the command: sleep 30. Only after it finishes, call
+   > communicate with the message DONE_SLEEPING." Capture the returned `job_id`.
    > Immediately call `job_stop` on that `job_id`; do not call `job_list` first.
    > Report the full JSON, especially status and reason.
    > Then call `job_send_message` targeting the same `job_id` with
-   > `background=false` and this message: "Forget the sleep. Using the shell
+   > `max_wait_ms 30000` and this message: "Forget the sleep. Using the shell
    > tool, run: echo RESUMED_OK. Then communicate the message RESUMED_OK."
    > Report the resumed job's `job_id`, status, action, and output.
 
 ## Expected
 
-- The first delegate job starts in the background and returns a `job_id` before
+- The first delegate job returns a `job_id` immediately (no max_wait_ms) before
   the sleep finishes.
 - A confirmed `job_stop` returns terminal status `cancelled` with reason
   `stopped_by_parent`. `stopped`/`stop_unconfirmed` is acceptable only when

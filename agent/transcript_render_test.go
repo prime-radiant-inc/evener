@@ -1093,7 +1093,8 @@ func TestToolInputSummary(t *testing.T) {
 		{"glob shows pattern", "glob", `{"pattern":"**/*.go"}`, "**/*.go", ""},
 		{"web_fetch shows host not full url", "web_fetch", `{"url":"https://example.com/a/b?c=d","question":"what"}`, "example.com", ""},
 		{"web_search shows query", "web_search", `{"query":"golang testing"}`, "golang testing", ""},
-		{"delegate shows task/type/background", "delegate", `{"task":"do thing","agent_type":"explorer","background":true}`, "explorer", ""},
+		{"delegate shows task/type/max_wait_ms", "delegate", `{"task":"do thing","agent_type":"explorer","max_wait_ms":5000}`, "max_wait_ms=5000", "background"},
+		{"delegate omits max_wait_ms when zero", "delegate", `{"task":"do thing","agent_type":"explorer","max_wait_ms":0}`, "explorer", "max_wait_ms"},
 		{"job_send_message shows id/message", "job_send_message", `{"target":"job_01J","message":"continue"}`, "job_01J", ""},
 		{"use_skill shows skill", "use_skill", `{"skill_name":"brainstorming"}`, "brainstorming", ""},
 	}

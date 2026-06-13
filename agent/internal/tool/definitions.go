@@ -76,16 +76,15 @@ func DefEditFile() llm.ToolDefinition {
 func DefShell() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "shell",
-		Description: "Run a shell command. Foreground by default: returns stdout, stderr, and exit code inline, waiting up to `block_timeout_ms`; a command still running at the timeout is promoted to a durable background job — you get its `job_id`, the process is not killed. Set `background=true` to skip the wait and get a `job_id` immediately (a dev server, anything long); `block_timeout_ms` is a foreground-only knob, and combining it with `background=true` is rejected. `max_runtime_ms` separately caps total process runtime. Serf notifies you automatically when a background job finishes. Prefer `rg`/`rg --files` for searching.",
+		Description: "Run a shell command. Waits up to `max_wait_ms` (or the session default, ~120s) and returns stdout, stderr, and exit code inline; a command still running at the bound is promoted to a durable background job — you get its `job_id`, the process is not killed. `max_runtime_ms` separately caps total process runtime. Serf notifies you automatically when a background job finishes. Prefer `rg`/`rg --files` for searching.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"command":          map[string]any{"type": "string"},
-				"description":      map[string]any{"type": "string"},
-				"background":       map[string]any{"type": "boolean"},
-				"block_timeout_ms": map[string]any{"type": "integer", "description": "Foreground wait bound in ms. Omit when background=true — the combination is rejected."},
-				"max_runtime_ms":   map[string]any{"type": "integer"},
+				"command":        map[string]any{"type": "string"},
+				"description":    map[string]any{"type": "string"},
+				"max_wait_ms":    map[string]any{"type": "integer", "description": "Bound on how long this call waits, in ms (0 = the session default, 120s standard). A command still running at the bound is promoted to a durable background job. Use a small bound (e.g. 1000) to launch-and-return."},
+				"max_runtime_ms": map[string]any{"type": "integer"},
 			},
 			"required": []string{"command"},
 		},
@@ -109,23 +108,21 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate",
 		Description: "Start a NEW delegate conversation to do independent agentic work; returns a `job_id` " +
-			"(background by default — you are notified when it finishes). `delegate` never resumes an existing " +
+			"immediately by default (you are notified when it finishes). `delegate` never resumes an existing " +
 			"delegate: follow up on one with `job_send_message`. Optional: `agent_type` picks a role from the " +
 			"enum (described in your agents section); `model` and `reasoning_effort` override the defaults; " +
-			"`result_schema` requests a validated structured result; `background=false` waits inline up to " +
-			"`block_timeout_ms` (a timeout leaves the job running). Judge the work from its output, not from " +
-			"`status=\"completed\"`.",
+			"`result_schema` requests a validated structured result; `max_wait_ms` waits inline up to that many ms " +
+			"(a timeout leaves the job running). Judge the work from its output, not from `status=\"completed\"`.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"task":             map[string]any{"type": "string"},
-				"background":       map[string]any{"type": "boolean", "description": "Default true. Set false to wait inline up to block_timeout_ms."},
 				"agent_type":       agentTypeSchema,
 				"model":            map[string]any{"type": "string", "description": "Model override (default: parent model)."},
 				"reasoning_effort": map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
-				"block_timeout_ms": map[string]any{"type": "integer", "description": "Foreground wait bound when background=false. A timeout leaves the job running."},
+				"max_wait_ms":      map[string]any{"type": "integer", "description": "0 (default): return the job_id immediately; you are notified on completion. >0: wait inline up to this many ms; a timeout leaves the job running."},
 				"result_schema": map[string]any{
 					"type":                 "object",
 					"description":          "JSON-Schema-like object for structured delegate results. Serf validates it for initial and resumed turns, surfaces structured_result when valid, and reports structured_result_reason when invalid.",
@@ -144,7 +141,7 @@ func DefJobSendMessage() llm.ToolDefinition {
 		Name: "job_send_message",
 		Description: "Send a follow-up message to a delegate by `job_id` — or, from an observer, commentary to `caller`. " +
 			"A running delegate is steered mid-run; a finished one is resumed in the same conversation as a new job " +
-			"(new `job_id` returned, `background` default true). Set `on_finished=\"fail\"` only when you require a " +
+			"(new `job_id` returned, returns immediately by default). Set `on_finished=\"fail\"` only when you require a " +
 			"currently live target: the call then fails with `target_terminal` instead of resuming.",
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -157,8 +154,7 @@ func DefJobSendMessage() llm.ToolDefinition {
 					"enum":        []string{"resume", "fail"},
 					"description": "Default resume: a finished delegate is resumed as a new job. fail: require a live target (target_terminal if finished).",
 				},
-				"background":       map[string]any{"type": "boolean", "description": "Default true for newly resumed jobs."},
-				"block_timeout_ms": map[string]any{"type": "integer", "description": "Foreground wait bound when background=false."},
+				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/resume without waiting. >0: for a resumed job, wait inline up to this many ms for its result; steers and alias sends return on delivery regardless."},
 			},
 			"required": []string{"target", "message"},
 		},
@@ -174,7 +170,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		kinds = "none available this session"
 	}
 	desc := "Add a standing trigger on a running job or a visible session (`target`: a `job_id`, `caller` for this " +
-		"session, or `*` for all visible). For a one-time \"did it print X yet\", use `job_read_output` with `block` + `grep` " +
+		"session, or `*` for all visible). For a one-time \"did it print X yet\", use `job_read_output` with a positive max_wait_ms and grep " +
 		"instead — watches are for recurring conditions, and completion needs no watch at all (terminal notifications are " +
 		"automatic). Triggers, set only what you need: `output_match` (RE2 over the job's output; if the retained output " +
 		"already contains a match the watch fires immediately, then again on new matches — a finished job gets a one-shot " +
@@ -225,16 +221,15 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 func DefJobReadOutput() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_read_output",
-		Description: "Read a job's output and status by `job_id` — reads never consume or acknowledge anything. Returns a bounded output tail (`tail_bytes`) for shell jobs or the report (and `structured_result`, when present) for delegates. `grep` searches the job's **entire retained output** and returns matching lines. `block=true` waits up to `block_timeout_ms`: with `grep`, until a match exists, the job ends, or the timeout elapses — the one-call way to wait for \"ready\"; without `grep`, until new output or terminal state.",
+		Description: "Read a job's output and status by `job_id` — reads never consume or acknowledge anything. Returns a bounded output tail (`tail_bytes`) for shell jobs or the report (and `structured_result`, when present) for delegates. `grep` searches the job's **entire retained output** and returns matching lines. `max_wait_ms > 0` waits: with `grep`, until a match exists, the job ends, or the timeout elapses — the one-call way to wait for \"ready\"; without `grep`, until new output or terminal state.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"job_id":           map[string]any{"type": "string"},
-				"tail_bytes":       map[string]any{"type": "integer", "default": 65536, "maximum": 1048576},
-				"grep":             map[string]any{"type": "string"},
-				"block":            map[string]any{"type": "boolean", "default": false},
-				"block_timeout_ms": map[string]any{"type": "integer"},
+				"job_id":      map[string]any{"type": "string"},
+				"tail_bytes":  map[string]any{"type": "integer", "default": 65536, "maximum": 1048576},
+				"grep":        map[string]any{"type": "string"},
+				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): snapshot now. >0: wait up to this many ms for a grep match (with grep), or for new output / terminal state."},
 			},
 			"required": []string{"job_id"},
 		},
@@ -270,14 +265,13 @@ func DefJobList() llm.ToolDefinition {
 func DefJobStop() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_stop",
-		Description: "Request cancellation of a running job by `job_id`; stopping never deletes output or history. `block=true` waits briefly for the stop to finalize; `include_children=true` also stops the job's nested children. Stopped work normally lands as `status=cancelled`, `reason=stopped_by_parent`.",
+		Description: "Request cancellation of a running job by `job_id`; stopping never deletes output or history. `max_wait_ms > 0` waits for the stop to finalize; `include_children=true` also stops the job's nested children. Stopped work normally lands as `status=cancelled`, `reason=stopped_by_parent`.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"job_id":           map[string]any{"type": "string"},
-				"block":            map[string]any{"type": "boolean", "default": false},
-				"block_timeout_ms": map[string]any{"type": "integer", "default": 5000, "minimum": 1000, "maximum": 60000},
+				"max_wait_ms":      map[string]any{"type": "integer", "description": "0 (default): request the stop and return. >0: wait up to this many ms for the job to reach terminal state."},
 				"include_children": map[string]any{"type": "boolean", "default": false},
 			},
 			"required": []string{"job_id"},

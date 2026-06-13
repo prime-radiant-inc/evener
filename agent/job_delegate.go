@@ -209,7 +209,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return sendMessageFailed(target, errors.New("message is required"))
 	}
 	if args.BlockTimeoutMS < 0 {
-		return sendMessageFailed(target, errors.New("block_timeout_ms must be non-negative"))
+		return sendMessageFailed(target, errors.New("invalid_request: max_wait_ms must be non-negative"))
 	}
 	if isRuntimeMessageAlias(target) {
 		// Watch sends to the caller route through the notification rail

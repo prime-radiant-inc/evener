@@ -39,7 +39,7 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	res := s.reg.ExecuteCall(ctx, s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -80,7 +80,7 @@ func TestShellToolTinyMaxCharsStillReturnsJSON(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"head -c 60000 </dev/zero | tr '\\0' 'x'","block_timeout_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"head -c 60000 </dev/zero | tr '\\0' 'x'","max_wait_ms":5000}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -96,12 +96,18 @@ func TestShellToolTinyMaxCharsStillReturnsJSON(t *testing.T) {
 	}
 
 	var out struct {
+		JobID     string `json:"job_id"`
 		Status    string `json:"status"`
 		Output    string `json:"output"`
 		Truncated bool   `json:"truncated"`
 	}
 	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
+	}
+	// 60KB output exceeds the tool-result char bound (MaxChars:1) — complete-or-handle
+	// keeps the job durable so the full output remains accessible (spec §6.4c).
+	if out.JobID == "" {
+		t.Fatalf("shell output missing job_id: want kept durable record for tool-result overflow (spec §6.4c)")
 	}
 	if out.Status != string(jobstore.StatusCompleted) || out.Output == "" || !out.Truncated || len(out.Output) >= 60_000 {
 		t.Fatalf("shell output = %+v, want completed truncated JSON", out)
@@ -114,7 +120,7 @@ func TestShellToolClampsSmallMaxRuntime(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 0.2; printf survived","block_timeout_ms":5000,"max_runtime_ms":1}`),
+		Arguments: json.RawMessage(`{"command":"sleep 0.2; printf survived","max_wait_ms":5000,"max_runtime_ms":1}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -175,7 +181,7 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 		},
 		{
 			name: "max",
-			args: json.RawMessage(`{"command":"printf start; sleep 2; printf end","block_timeout_ms":5000}`),
+			args: json.RawMessage(`{"command":"printf start; sleep 2; printf end","max_wait_ms":5000}`),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -216,7 +222,7 @@ func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T)
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -280,7 +286,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 	res := child.reg.ExecuteCall(context.Background(), child.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
 	})
 	if res.IsError {
 		t.Fatalf("child shell returned error: %s", res.Output)
@@ -340,7 +346,7 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 							ToolCall: &llm.ToolCallData{
 								ID:        "late-shell",
 								Name:      "shell",
-								Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+								Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
 								Type:      "function",
 							},
 						}},
@@ -421,41 +427,246 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 	}
 }
 
-func TestShellRejectsBackgroundWithBlockTimeout(t *testing.T) {
+// TestShellNegativeMaxWaitMSIsRejected pins spec §2: negative max_wait_ms is
+// invalid_request on shell. The old background+block_timeout_ms combo rejection
+// is gone (spec §3).
+func TestShellNegativeMaxWaitMSIsRejected(t *testing.T) {
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"echo hi","background":true,"block_timeout_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"echo hi","max_wait_ms":-1}`),
 	})
 	if !res.IsError {
-		t.Fatalf("shell with background=true and block_timeout_ms should return error, got success: %s", res.Output)
+		t.Fatalf("shell with max_wait_ms=-1 should return error, got success: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "block_timeout_ms applies only to foreground waits") {
-		t.Fatalf("shell error = %q, want error about block_timeout_ms foreground only", res.Output)
+	if !strings.Contains(res.Output, "max_wait_ms must be non-negative") {
+		t.Fatalf("shell error = %q, want error about max_wait_ms must be non-negative", res.Output)
 	}
 }
 
-// OpenAI's Responses path sends tools with strict=true, which forces the model
-// to supply EVERY parameter on every call — a background shell call always
-// carries block_timeout_ms:0 on that wire. Zero already means "default/unset"
-// in every read path, so the combo rejection must treat it as unset or
-// background jobs become uncreatable via strict-mode providers (found live by
-// the e2e matrix, card job-shell-lifecycle).
-func TestShellBackgroundWithZeroBlockTimeoutIsAccepted(t *testing.T) {
+// TestShellZeroMaxWaitMSIsAccepted pins that max_wait_ms=0 is accepted
+// (strict-provider safe: strict providers force every param including zero).
+func TestShellZeroMaxWaitMSIsAccepted(t *testing.T) {
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"echo hi","background":true,"block_timeout_ms":0,"max_runtime_ms":0,"description":""}`),
+		Arguments: json.RawMessage(`{"command":"echo hi","max_wait_ms":0,"max_runtime_ms":0,"description":""}`),
+	})
+	// max_wait_ms=0 = session default; echo hi is fast, so it returns inline.
+	if res.IsError {
+		t.Fatalf("shell with strict-forced zero params should succeed, got error: %s", res.Output)
+	}
+}
+
+// TestParseShellToolArgsMaxWaitMS covers max_wait_ms decode at the tool boundary
+// (spec §2): negative → invalid_request error; 0/absent → no error (unset);
+// positive → no error (used as BlockTimeoutMS). Replaces the old
+// block_timeout_ms and background combo-rejection paths.
+func TestParseShellToolArgsMaxWaitMS(t *testing.T) {
+	// Negative must error.
+	_, err := parseShellToolArgs(map[string]any{
+		"command":     "echo hi",
+		"max_wait_ms": -1,
+	})
+	if err == nil {
+		t.Fatal("parseShellToolArgs with max_wait_ms=-1: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "max_wait_ms must be non-negative") {
+		t.Fatalf("parseShellToolArgs with max_wait_ms=-1 error = %q, want max_wait_ms must be non-negative", err.Error())
+	}
+
+	// Zero must succeed (unset).
+	args, err := parseShellToolArgs(map[string]any{
+		"command":     "echo hi",
+		"max_wait_ms": 0,
+	})
+	if err != nil {
+		t.Fatalf("parseShellToolArgs with max_wait_ms=0: want success, got %v", err)
+	}
+	if args.BlockTimeoutMS != 0 {
+		t.Fatalf("BlockTimeoutMS = %d, want 0 for unset", args.BlockTimeoutMS)
+	}
+
+	// Absent must succeed (unset).
+	args, err = parseShellToolArgs(map[string]any{
+		"command": "echo hi",
+	})
+	if err != nil {
+		t.Fatalf("parseShellToolArgs with absent max_wait_ms: want success, got %v", err)
+	}
+	if args.BlockTimeoutMS != 0 {
+		t.Fatalf("BlockTimeoutMS = %d, want 0 for absent max_wait_ms", args.BlockTimeoutMS)
+	}
+
+	// Positive must succeed and set BlockTimeoutMS.
+	args, err = parseShellToolArgs(map[string]any{
+		"command":     "echo hi",
+		"max_wait_ms": 3000,
+	})
+	if err != nil {
+		t.Fatalf("parseShellToolArgs with max_wait_ms=3000: want success, got %v", err)
+	}
+	if args.BlockTimeoutMS != 3000 {
+		t.Fatalf("BlockTimeoutMS = %d, want 3000", args.BlockTimeoutMS)
+	}
+}
+
+// TestCompleteOrHandleEphemeral pins spec §6.4(a): a fast quiet command
+// finishes within its max_wait_ms bound and returns complete output inline
+// with no job_id and no durable record.
+func TestCompleteOrHandleEphemeral(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"printf 'hello\n'","max_wait_ms":5000}`),
 	})
 	if res.IsError {
-		t.Fatalf("background shell with strict-forced zero params should succeed, got error: %s", res.Output)
+		t.Fatalf("shell returned error: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "job_") {
-		t.Fatalf("background shell should return a job_id, got: %s", res.Output)
+	var out struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID != "" {
+		t.Fatalf("fast quiet command returned job_id=%q, want ephemeral (no job_id)", out.JobID)
+	}
+	if out.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+	if !strings.Contains(out.Output, "hello") {
+		t.Fatalf("output = %q, want inline hello", out.Output)
+	}
+}
+
+// TestCompleteOrHandleKeptLargeOutput pins spec §6.4(b): a fast command
+// whose output exceeds the inline embed budget (shellInlineOutputBytes = 64KB)
+// returns a kept result with job_id + truncated:true, and job_read_output
+// returns the full retained bytes.
+func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
+	s := newTestSession(t)
+
+	// yes produces >64KB output quickly; max_wait_ms:5000 gives it ample room.
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 70000","max_wait_ms":5000}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID     string `json:"job_id"`
+		Status    string `json:"status"`
+		Truncated bool   `json:"truncated"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Fatalf("large-output command returned no job_id; want kept durable record")
+	}
+	if out.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+	if !out.Truncated {
+		t.Fatalf("truncated = false, want true for large output")
+	}
+
+	// job_read_output must report TotalBytes >= 70000 — proving all bytes were
+	// retained in the OutputStore (not just what fits in the tool-result).
+	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "r1",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_bytes":1048576}`),
+	})
+	if readRes.IsError {
+		t.Fatalf("job_read_output returned error: %s", readRes.Output)
+	}
+	var readOut struct {
+		TotalBytes int64 `json:"total_bytes"`
+	}
+	if err := json.Unmarshal([]byte(readRes.Output), &readOut); err != nil {
+		t.Fatalf("unmarshal read output: %v", err)
+	}
+	if readOut.TotalBytes < 70000 {
+		t.Fatalf("retained TotalBytes = %d, want >= 70000", readOut.TotalBytes)
+	}
+}
+
+// TestCompleteOrHandleKeptToolResultOverflow pins spec §6.4(c): a command
+// whose output fits in 64KB (inline embed budget) but exceeds the
+// tool-result char bound still gets a durable job_id.
+func TestCompleteOrHandleKeptToolResultOverflow(t *testing.T) {
+	// Use MaxChars:1 so even a tiny output overflows the tool-result bound.
+	s := newShellToolTestSession(t, SessionConfig{
+		ToolOutputLimits: map[string]schema.ToolOutputLimit{
+			"shell": {MaxChars: 1, Strategy: schema.TruncHeadTail},
+		},
+	})
+
+	// 60KB < shellInlineOutputBytes (64KB), so layer 1 budget is fine, but
+	// MaxChars:1 ensures the tool-result char bound is exceeded (layer 2).
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"head -c 60000 </dev/zero | tr '\\0' 'x'","max_wait_ms":5000}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID     string `json:"job_id"`
+		Status    string `json:"status"`
+		Truncated bool   `json:"truncated"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Fatalf("tool-result overflow command returned no job_id; want kept durable record (spec §6.4c)")
+	}
+	if out.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+}
+
+// TestCompleteOrHandleKeptNoNotification pins spec §6.4(d): a within-bound
+// job that finishes and is kept (large output) has NotifyState "not_armed" —
+// synchronous completion needs no duplicate terminal notification.
+func TestCompleteOrHandleKeptNoNotification(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 70000","max_wait_ms":5000}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Skip("command did not produce a kept job_id; notification test requires kept record")
+	}
+
+	rec := loadShellRecord(t, s.jobManager, out.JobID)
+	if rec.NotifyState != jobstore.NotifyNotArmed {
+		t.Fatalf("kept within-bound job NotifyState = %q, want %q (spec §6.4d — synchronous completion must not arm notification)", rec.NotifyState, jobstore.NotifyNotArmed)
 	}
 }
 

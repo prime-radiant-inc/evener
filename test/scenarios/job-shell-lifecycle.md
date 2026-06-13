@@ -1,17 +1,16 @@
-# job-shell-lifecycle: foreground inline, promotion at timeout, explicit background, max_runtime kill, rejected combo
+# job-shell-lifecycle: foreground inline, promotion at timeout, launch-and-return, max_runtime kill, rejected combo
 
 **What this covers**: the shell tool's whole job-capable lifecycle
 (`docs/job-control.md` "Existing shell/bash tool", lines 139-249).
 (a) Foreground inline result with stdout+stderr+exit code, ephemeral —
-no durable record (line 179); (b) nonzero exit reported honestly as a
-normal tool result, not hidden (line 112: `failed` / `exit_nonzero`); (c) promotion at `block_timeout_ms` — job_id returned,
-process keeps running, later output readable (lines 180, 229-242);
-(d) `background=true` from the start (lines 181, 217-227);
+no durable record; (b) nonzero exit reported honestly as a
+normal tool result, not hidden (`failed` / `exit_nonzero`); (c) promotion at `max_wait_ms` bound — job_id returned,
+process keeps running, later output readable;
+(d) `max_wait_ms: 1000` launch-and-return from the start;
 (e) `max_runtime_ms` kills a runaway and finalizes `stopped` /
-`run_timeout` (line 183), with `timed_out` never meaning the runtime
-kill (line 185); (f) the contradictory `background=true` +
-`block_timeout_ms` combo errors `invalid_request` (ergonomics addendum
-§2 P6). Terminal-notification cardinality/format for these jobs is
+`run_timeout`, with `timed_out` never meaning the runtime kill;
+(f) the negative `max_wait_ms` combo errors `invalid_request`.
+Terminal-notification cardinality/format for these jobs is
 job-notification-semantics.md, not re-asserted here.
 
 ## Pre-state
@@ -35,21 +34,20 @@ job-notification-semantics.md, not re-asserted here.
    > 2. Run the shell tool with command:
    >    `sh -c 'echo FAIL_OUT_7; echo FAIL_ERR_7 >&2; exit 7'`.
    >    Report the full result JSON verbatim.
-   > 3. Run the shell tool with background true and command:
+   > 3. Run the shell tool with max_wait_ms 1000 and command:
    >    `sh -c 'echo BG_START_MARK; exec sleep 27182'`. Report the
    >    full result JSON verbatim.
-   > 4. Run the shell tool with background true, block_timeout_ms
-   >    30000, and command: `echo COMBO_PROBE`. Report the result or
-   >    error verbatim.
+   > 4. Run the shell tool with max_wait_ms -1 and command:
+   >    `echo COMBO_PROBE`. Report the result or error verbatim.
    > 5. Call job_list with no filters and report the jobs array.
    > 6. End your turn.
 3. Turn 2 — timing arms (c) and (e) (new user prompt):
 
    > Do these steps in order.
-   > 1. Run the shell tool with block_timeout_ms 5000 and command:
+   > 1. Run the shell tool with max_wait_ms 5000 and command:
    >    `sh -c 'echo EARLY_MARK; sleep 25; echo LATE_MARK'`. Report
    >    the full result JSON verbatim.
-   > 2. Run the shell tool with background true, max_runtime_ms 5000,
+   > 2. Run the shell tool with max_wait_ms 1000, max_runtime_ms 5000,
    >    and command: `sh -c 'echo RUNAWAY_START_71; exec sleep 31415'`.
    >    Report the full result JSON verbatim.
    > 3. Run the foreground shell command `sleep 30` to let both jobs
@@ -85,17 +83,12 @@ job-notification-semantics.md, not re-asserted here.
   for steps 1 or 2 (inline foreground completions create no durable
   record, contract line 179), and `jobs.jsonl` has no `job_started`
   for them. It DOES contain the step-3 background job as `running`.
-- Arm (d): step 3 returns promptly (well under the sleep) with a
+- Arm (d): step 3 returns at ~1s (the max_wait_ms bound) with a
   `job_id`, `status` `"running"`, `running_in_background` `true`, and
-  no terminal fields. The tool never waited for completion (line 181).
+  no terminal fields. The tool did not wait for completion.
 - Arm (f): step 4 fails synchronously with an `invalid_request` error
-  naming the foreground-only nature of `block_timeout_ms`; no job
-  record is created for it (no `job_started` in `jobs.jsonl`, nothing
-  in the step-5 listing).
-  <!-- pin: ergonomics §2 P6 — the rejection lands in Phase 1.9. On a
-       pre-1.9 build the combo is silently accepted and the timeout
-       does nothing (contract line 181); record the shipped error
-       wording for future runs. -->
+  naming `max_wait_ms` (negative value); no job record is created for
+  it (no `job_started` in `jobs.jsonl`, nothing in the step-5 listing).
 - Arm (c): the turn-2 step-1 result returns at ~5s (not ~25s) with a
   `job_id`, `status` `"running"`, `reason` `"foreground_timeout"`,
   `timed_out` `true`, `running_in_background` `true`, and `output`

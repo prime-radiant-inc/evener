@@ -70,6 +70,11 @@ func assertNoShellJobArtifacts(t *testing.T, jm *jobManager) {
 func TestRunShellForegroundEphemeral(t *testing.T) {
 	jm, se := newShellTestRig(t)
 	res := runShell(context.Background(), jm, se, shellArgs{Command: "printf done", BlockTimeoutMS: 5000})
+	// Within-bound results carry a settle closure; discard to exercise the
+	// ephemeral path and clean up any pre-commit artifacts.
+	if res.settle != nil {
+		_ = res.settle(false)
+	}
 	if res.JobID != "" {
 		t.Errorf("ephemeral job must have no job_id, got %q", res.JobID)
 	}

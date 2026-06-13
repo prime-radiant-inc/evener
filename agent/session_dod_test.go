@@ -1882,7 +1882,7 @@ func TestSession_ShellTool_UsesDefaultTimeoutAndAllowsOverride(t *testing.T) {
 		t.Fatalf("default shell timeout: got %d want %d", got, 120_000)
 	}
 
-	// Override per-call block_timeout_ms.
+	// Override per-call max_wait_ms.
 	env2 := &captureEnv{wd: "/tmp"}
 	f2 := &fakeAdapter{
 		name: "openai",
@@ -1892,7 +1892,7 @@ func TestSession_ShellTool_UsesDefaultTimeoutAndAllowsOverride(t *testing.T) {
 					Message: llm.Message{
 						Role: llm.RoleAssistant,
 						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi","block_timeout_ms":1234}`)}},
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi","max_wait_ms":1234}`)}},
 						},
 					},
 				}
@@ -1931,7 +1931,7 @@ func TestSession_ShellTool_CapsTimeoutToMaxCommandTimeoutMS(t *testing.T) {
 					Message: llm.Message{
 						Role: llm.RoleAssistant,
 						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi","block_timeout_ms":999999}`)}},
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi","max_wait_ms":999999}`)}},
 						},
 					},
 				}
@@ -2021,7 +2021,7 @@ func TestSession_ShellTool_TimeoutAppendsMessageToToolResult(t *testing.T) {
 		"timed_out=true",
 		"Command timed out after 120000ms",
 		"You can retry with a longer timeout",
-		"block_timeout_ms",
+		"max_wait_ms",
 	} {
 		if !strings.Contains(toolResult, want) {
 			t.Fatalf("tool result missing %q:\n%s", want, toolResult)

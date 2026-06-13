@@ -34,11 +34,11 @@ Run 1 — session A in `$tmpA`: per-job cardinality and format.
 1. Spawn session A; capture `SID_A`. Prompt:
 
    > Do these steps in order.
-   > 1. Run the shell tool with background true and command:
+   > 1. Run the shell tool with max_wait_ms 1000 and command:
    >    `sh -c 'sleep 10; echo NOTIF_SHELL_TOKEN'`. Report the job_id
    >    (J1).
-   > 2. Call delegate (background default) with this exact task: "Run
-   >    the shell command `sleep 10`, then communicate exactly
+   > 2. Call delegate (default, no max_wait_ms) with this exact task:
+   >    "Run the shell command `sleep 10`, then communicate exactly
    >    NOTIF_DLG_TOKEN and finish." Report the job_id (J2).
    > 3. Say ARMED and end your turn. Do not poll or read; you will be
    >    notified.
@@ -55,9 +55,9 @@ Run 2 — session B in `$tmpB`: mid-turn batching.
 
    > Read AGENTS.md in your working directory first; its pacing rules
    > are mandatory for this turn. Then:
-   > 1. Run the shell tool with background true and command:
+   > 1. Run the shell tool with max_wait_ms 1000 and command:
    >    `sh -c 'sleep 5; echo BATCH_OK_TOKEN'`. Report the job_id (J3).
-   > 2. Run the shell tool with background true and command:
+   > 2. Run the shell tool with max_wait_ms 1000 and command:
    >    `sh -c 'sleep 8; echo BATCH_FAIL_TOKEN; exit 3'`. Report the
    >    job_id (J4).
    > 3. Write a five-paragraph essay about rivers, following the
