@@ -548,9 +548,23 @@ Decisions recorded before execution; each is an implementation choice within
 the spec's semantics, with rationale. Veto any of these and the affected tasks
 re-plan.
 
-1. **max_wait sequencing → Phase 0 BLOCKS.** Execution starts only after the
-   max_wait merge passes the orchestrating session's independent gates. That
-   was the campaign's critical path all along; planning was the overlap.
+1. **max_wait sequencing → split rule** (amended 2026-06-13 after Jesse asked
+   for the maximum safe early start; supersedes the original "Phase 0 BLOCKS"):
+   - **Tasks 1-8 MAY run pre-max_wait** in the isolated branch
+     `wip/recursion-early`, because they are dark by design and touch no
+     tool-boundary surface. Conditions, all binding: (a) ZERO edits to
+     `agent/internal/tool/definitions.go`, `docs/job-control.md`,
+     `test/scenarios/`, or prompt text — a task that seems to need one is
+     mis-scoped: stop and surface; (b) the branch REBASES onto the
+     post-max_wait, fully-gated `job-control-spec` HEAD before merging
+     (T1's `job_delegate.go` allowance-carrier diff stays minimal and
+     region-confined for this reason); (c) tests in this tranche may
+     construct internal structs whose fields (`delegateArgs.Background`
+     and kin) the post-merge dead-field sweep may delete — the sweep
+     commit updates those tests; this is expected friction, not breakage.
+   - **Tasks 9-18 BLOCK** on max_wait merged + independently verified +
+     live matrix green. The planner's CRITICAL stop-rule stays in force
+     for any edit that would touch the tool surface.
 2. **Counter reservation → AFTER the deliverable-attention check.** Reserve
    immediately before launching an actual render/resume of the child, never
    for the signal-read traversal or a no-op pass. At capacity the child's
