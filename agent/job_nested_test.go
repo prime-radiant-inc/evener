@@ -1638,11 +1638,12 @@ func TestNestedTerminalForwardsGenerationVerbatim(t *testing.T) {
 	if parentRec.NotifyState != jobstore.NotifyPending {
 		t.Fatalf("parent NotifyState = %q, want %q", parentRec.NotifyState, jobstore.NotifyPending)
 	}
-	if len(parentNotifications) != 1 {
-		t.Fatalf("parent notifications = %+v, want exactly one", parentNotifications)
-	}
-	if parentNotifications[0].JobID != rec.JobID || parentNotifications[0].Status != string(jobstore.StatusCompleted) {
-		t.Fatalf("parent notification = %+v, want terminal notification for %s", parentNotifications[0], rec.JobID)
+	// Owner-scoped notifications (spec §3/§10): the terminal generation forwards
+	// to the parent's store verbatim for visibility, but the child-owned job must
+	// NOT land on the parent's notification rail — the subagent renders it, the
+	// parent is driven, not interrupted.
+	if len(parentNotifications) != 0 {
+		t.Fatalf("parent notifications = %+v, want none (child-owned job is owner-scoped)", parentNotifications)
 	}
 }
 
@@ -1889,11 +1890,12 @@ func TestDeferredRestoreSideEffectsRecoverNestedTerminalForward(t *testing.T) {
 	if parentRec.NotifyState != jobstore.NotifyPending {
 		t.Fatalf("parent NotifyState = %q, want %q", parentRec.NotifyState, jobstore.NotifyPending)
 	}
-	if len(parentNotifications) != 1 {
-		t.Fatalf("parent notifications = %+v, want exactly one restored nested notification", parentNotifications)
-	}
-	if parentNotifications[0].JobID != jobID || parentNotifications[0].Status != string(jobstore.StatusCompleted) {
-		t.Fatalf("parent notification = %+v, want completed notification for %s", parentNotifications[0], jobID)
+	// Owner-scoped notifications (spec §3/§10): the restored terminal forwards to
+	// the parent's store for visibility, but the child-owned job must NOT land on
+	// the parent's notification rail. The subagent re-arms and renders it on its
+	// own rail; the parent is driven, not interrupted.
+	if len(parentNotifications) != 0 {
+		t.Fatalf("parent notifications = %+v, want none (child-owned job is owner-scoped)", parentNotifications)
 	}
 }
 
@@ -2034,8 +2036,12 @@ func TestDeferredRestoreSideEffectsForwardsReconciledNestedRuntimeLost(t *testin
 	if parentRec.NotifyState != jobstore.NotifyPending {
 		t.Fatalf("parent NotifyState = %q, want %q", parentRec.NotifyState, jobstore.NotifyPending)
 	}
-	if len(parentNotifications) != 1 {
-		t.Fatalf("parent notifications = %+v, want exactly one runtime_lost notification", parentNotifications)
+	// Owner-scoped notifications (spec §3/§10): the reconciled runtime_lost
+	// terminal forwards to the parent's store for visibility, but the child-owned
+	// job must NOT land on the parent's notification rail. The subagent renders it
+	// on its own rail; the parent is driven, not interrupted.
+	if len(parentNotifications) != 0 {
+		t.Fatalf("parent notifications = %+v, want none (child-owned job is owner-scoped)", parentNotifications)
 	}
 }
 
@@ -2155,6 +2161,142 @@ func TestNestedNotificationForwardFailureRetriesPendingNotification(t *testing.T
 	parentRec := parentRecords[rec.JobID]
 	if parentRec == nil || parentRec.NotifyState != jobstore.NotifyPending {
 		t.Fatalf("parent record after retry = %+v, want forwarded pending notification", parentRec)
+	}
+}
+
+// TestForwardedChildJobDoesNotNotifyParentRail proves the owner-scoped
+// notification rule (spec §3/§10): a subagent's nested job notifies the
+// SUBAGENT, never the subagent's parent. When the child forwards its terminal
+// notification-pending event, forwardEvent appends the record to the parent's
+// store (visibility — the parent can still job_list down the tree) but must NOT
+// push a child-owned job onto the parent's notification rail.
+func TestForwardedChildJobDoesNotNotifyParentRail(t *testing.T) {
+	var parentRailMu sync.Mutex
+	var parentRail []jobNotification
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(n jobNotification) {
+		parentRailMu.Lock()
+		parentRail = append(parentRail, n)
+		parentRailMu.Unlock()
+	})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	var childRailMu sync.Mutex
+	var childRail []jobNotification
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(n jobNotification) {
+		childRailMu.Lock()
+		childRail = append(childRail, n)
+		childRailMu.Unlock()
+	})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+
+	rec, err := childJM.createShell(createShellOpts{Command: "true", Description: "nested"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	code := 0
+	if err := childJM.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize nested child job: %v", err)
+	}
+
+	// The owner (the subagent) IS notified about its own nested job.
+	childRailMu.Lock()
+	childOwned := false
+	for _, n := range childRail {
+		if n.JobID == rec.JobID {
+			childOwned = true
+		}
+	}
+	childRailMu.Unlock()
+	if !childOwned {
+		t.Fatalf("child rail = %+v, want the subagent notified about its own job %q", childRail, rec.JobID)
+	}
+
+	// The parent's rail must contain NO entry for the child-owned job: the leak
+	// is closed. The parent is not interrupted about a job it did not create.
+	parentRailMu.Lock()
+	for _, n := range parentRail {
+		if n.JobID == rec.JobID {
+			parentRailMu.Unlock()
+			t.Fatalf("parent rail leaked child-owned job %q: %+v", rec.JobID, parentRail)
+		}
+	}
+	parentRailMu.Unlock()
+
+	// Visibility is preserved: the forwarded record is still in the parent's
+	// store, so the parent can job_list(include_descendants=true) down the tree.
+	parentRecords, err := parentJM.store.Load()
+	if err != nil {
+		t.Fatalf("load parent store: %v", err)
+	}
+	parentRec := parentRecords[rec.JobID]
+	if parentRec == nil {
+		t.Fatalf("parent store keys = %v, want forwarded record %q for visibility", keysOf(parentRecords), rec.JobID)
+	}
+	if parentRec.OwnerSessionID != "CHILD" {
+		t.Fatalf("parent record OwnerSessionID = %q, want CHILD", parentRec.OwnerSessionID)
+	}
+	if parentRec.VisibleToSession != "PARENT" {
+		t.Fatalf("parent record VisibleToSession = %q, want PARENT", parentRec.VisibleToSession)
+	}
+	if parentRec.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("parent record NotifyState = %q, want pending (forwarded for visibility)", parentRec.NotifyState)
+	}
+}
+
+// TestParentNotifiedWhenOwnDelegateFinishes is the keep-green counterpart to the
+// owner-scoping rule: the parent IS still notified when its OWN delegate (the
+// subagent itself) finishes. That notification flows through the parent's own
+// jm.enqueue in armFinalizedJob (the delegate job is owned by the parent), not
+// through forwardEvent, so the owner gate must not suppress it.
+func TestParentNotifiedWhenOwnDelegateFinishes(t *testing.T) {
+	var parentRailMu sync.Mutex
+	var parentRail []jobNotification
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(n jobNotification) {
+		parentRailMu.Lock()
+		parentRail = append(parentRail, n)
+		parentRailMu.Unlock()
+	})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+	})
+
+	// A delegate job the PARENT created is owned by the parent (OwnerSessionID ==
+	// "PARENT"); it is the parent's own job, not a forwarded child job.
+	rec, err := parentJM.createShell(createShellOpts{Command: "true", Description: "own delegate"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	if rec.OwnerSessionID != "PARENT" {
+		t.Fatalf("own job OwnerSessionID = %q, want PARENT", rec.OwnerSessionID)
+	}
+	code := 0
+	if err := parentJM.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize own delegate job: %v", err)
+	}
+
+	parentRailMu.Lock()
+	notified := false
+	for _, n := range parentRail {
+		if n.JobID == rec.JobID {
+			notified = true
+		}
+	}
+	parentRailMu.Unlock()
+	if !notified {
+		t.Fatalf("parent rail = %+v, want parent notified about its own finished job %q", parentRail, rec.JobID)
 	}
 }
 

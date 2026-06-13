@@ -99,8 +99,12 @@ watched job) is job-watch-sidecar-observer.md, not this card.
   `parent_job_id` = the delegate job and `owner_session_id` = the
   child session — the durable substrate behind parent visibility
   (line 1033).
-- The nested job's own terminal (cancelled) notification arrives to
-  the parent like any armed background job's (line 1034); count it in
+- The nested job's own terminal (cancelled) notification is
+  OWNER-SCOPED (spec §3/§10): it renders on the OWNER's (the child
+  delegate's) rail, NOT on the parent's. The parent is told its
+  DELEGATE finished (its own job), but is NOT interrupted by the
+  child-owned nested job's terminal; it retains on-demand visibility
+  via `job_list(include_nested=true)`. Count the owner-scoping in
   job-notification-semantics.md terms, not here.
 
 ## Cleanup

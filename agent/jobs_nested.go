@@ -630,6 +630,18 @@ func (jm *jobManager) forwardEvent(e jobstore.Event) error {
 	if rec == nil || !jobstore.ShouldDeliver(rec) {
 		return nil
 	}
+	// Owner-scoped notifications (spec §3/§10 drive-down): a forwarded event only
+	// ever arrives from a CHILD, so the record is owned by a descendant, never by
+	// this session. Appending it above preserves visibility (the parent can still
+	// job_list down the tree) and the drive signal, but pushing it onto this
+	// session's rail would interrupt the parent about a job it did not create. The
+	// owner (the subagent) renders it on its own rail and is driven; this session
+	// is notified only about its own jobs (incl. its direct delegates, which
+	// finalize through the parent's own jm.enqueue, not forwardEvent). This is the
+	// live counterpart of the restore-path filter in armPendingTerminalNotifications.
+	if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
+		return nil
+	}
 	jm.enqueue(jobNotificationFromRecord(rec))
 	return nil
 }

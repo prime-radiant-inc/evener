@@ -125,6 +125,11 @@ Turn 2:
   delegate finished early (model skipped the sleep), `job_stop`
   returns the actual terminal status (line 752) and the arm
   degrades — rerun with the prompt tightened.
-- Two terminal notifications (delegate + nested job) arrive after the
-  stops; cardinality/format assertions for those live in
-  job-notification-semantics.md.
+- Terminal notifications are OWNER-SCOPED (spec §3/§10): the PARENT
+  is notified about its OWN delegate finishing (one block, on the
+  parent's rail), but the nested shell job's terminal is owner-scoped
+  to the CHILD and does NOT land on the parent's rail — the parent
+  retains visibility via `job_list(include_nested=true)` /
+  `jobs.jsonl`, not a notification. Do not assert a parent-rail block
+  for the nested job. Cardinality/format assertions for the parent's
+  own-job notifications live in job-notification-semantics.md.
