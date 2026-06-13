@@ -28,18 +28,17 @@ already covered by subagent-list-and-output.md.
 
    > Do these steps in order. Report every tool result verbatim.
    > 1. Run the shell tool with max_wait_ms 1000 and command:
-   >    `sh -c 'exit 7'`. Capture the job_id (call it J1).
-   > 2. Run the shell tool with max_wait_ms 1000 and command: `true`.
-   >    Capture the job_id (J2). IMMEDIATELY call job_list with status
-   >    ["running"] and report whether J2 appears. Then call job_list
-   >    with no filters and report whether J2 appears and with what
-   >    status.
+   >    `sh -c 'sleep 2; exit 7'`. Capture the job_id (call it J1).
+   > 2. Run the shell tool with max_wait_ms 1000 and command:
+   >    `sh -c 'sleep 2; true'`. Capture the job_id (J2). Call
+   >    job_list with status ["running"] and report whether J2 appears.
+   >    Then call job_list with no filters and report whether J2 appears
+   >    and with what status.
    > 3. Run the shell tool with max_wait_ms 1000 and command:
    >    `sh -c 'echo LIST_RUN_TOKEN; sleep 300'`. Capture the job_id
    >    (J3).
-   > 4. Call delegate (default, no max_wait_ms) with this exact task:
-   >    "Communicate exactly DLG_LIST_DONE and finish." Capture the
-   >    job_id (J4).
+   > 4. Call delegate with this exact task: "Communicate exactly
+   >    DLG_LIST_DONE and finish." Capture the job_id (J4).
    > 5. Call job_list with type ["shell"] and report the job_ids.
    > 6. Call job_list with status ["running"] and report the job_ids.
    > 7. Call job_list with status ["failed", "completed"] and report
@@ -65,9 +64,15 @@ already covered by subagent-list-and-output.md.
 Turn 1:
 
 - Filters are exact set selections:
-  - step 5 (`type=["shell"]`): J1, J2, J3 — and NOT J4.
+  - step 5 (`type=["shell"]`): J1, J2, J3 — and NOT J4. Both J1 and
+    J2 used bound-outliving fixtures (`sleep 2` vs `max_wait_ms 1000`)
+    so they are promoted to durable running records at step-1/2 call
+    time; by step 5 (~2s later) they are terminal (spec §3
+    complete-or-handle: promoted jobs finalize normally).
   - step 6 (`status=["running"]`): J3 (plus J4 only if the delegate
-    is still mid-run at that moment); never J1 or J2.
+    is still mid-run at that moment); J1 and J2 may be terminal by
+    this point — the 2s sleep vs ~1s between steps makes this timing-
+    soft; accept either running or terminal for J1/J2 here.
   - step 7 (`status=["failed","completed"]`): J1 with `status`
     `"failed"` (reason `exit_nonzero`, `exit_code` 7) and J2 with
     `"completed"` — multi-value filters OR together.
@@ -76,12 +81,16 @@ Turn 1:
 - Ordering: the step-8 unfiltered listing returns the jobs
   newest-first by `started_at` — J4, J3, J2, J1 (creation order was
   J1→J4). Falsification: ascending or insertion order.
-- Short-job race (c): in step 2, the unfiltered list ALWAYS contains
-  J2 (status `"completed"`, or `"running"` only in the unlikely case
-  the listing won the race with `true`). The running-filtered list may
-  legitimately miss it — that miss is the documented race, not a bug.
-  Falsification: J2 absent from the UNFILTERED list, or present with a
-  phantom status outside the canonical five.
+- Durable-record presence (replaces the old short-job race arm c):
+  in step 2, both the running-filtered and unfiltered lists contain J2
+  (`status` `"running"` — the `sleep 2` command outlives the 1s bound,
+  so J2 is reliably promoted before the listing). The original short-job
+  race (a fast job that completes before any running-filtered list) is
+  inexpressible with a bound-outliving fixture; the assertion that
+  matters is that J2 appears in BOTH lists as a durable running record
+  (spec §3: promoted jobs are kept, complete-or-handle invariant).
+  Falsification: J2 absent from either list, or present with a phantom
+  status outside the canonical five.
 - Every entry carries the documented row fields: `job_id`, `type`,
   `status`, `reason`, `started_at`, `output_bytes`; J4's row also has
   `transcript_ref` and `resumable` (line 678).
@@ -121,10 +130,12 @@ Turn 2:
 
 ## Sharp edges
 
-- Step 2's race observation depends on tool-call latency: a slow
-  model turn makes the running-filter miss near-certain (the job is
-  `true`). Both outcomes of the FILTERED list are acceptable; only the
-  unfiltered visibility is normative.
+- Step 2's J2 fixture (`sleep 2; true` with `max_wait_ms 1000`) is
+  bound-outliving: J2 is reliably promoted and running at list time.
+  The running-filter SHOULD show J2; a miss means promotion didn't
+  create a durable record (a regression). The original short-job race
+  (spec §3 arc) is subsumed — the normative assertion is now durable
+  presence in BOTH filtered and unfiltered listings.
 - The turn-1 step-6 assertion about J4 is deliberately soft — the
   delegate's lifetime depends on model latency. Branch the assertion
   on J4's status as reported in the same listing.

@@ -24,17 +24,18 @@ sidecar composition". Executed by plan Phase 5.2.
 2. Prompt the parent:
 
    > Do these steps in order.
-   > 1. Call `delegate` (default, no `max_wait_ms`) with this exact task: "You
-   >    are an observer sidecar. In this first turn, call communicate
-   >    with exactly OBSERVER_READY and finish. If you are later resumed
-   >    with a message containing 'Watch frame': read the job_id and
-   >    delivery_id lines from that frame; call job_read_output with
-   >    that job_id and find the output line containing SIDECAR_TOKEN;
-   >    call job_send_message with target caller and message exactly
-   >    'OBSERVER_COMMENT delivery=<the delivery_id> line=<the matching
-   >    output line>'; then call communicate with exactly OBSERVER_DONE
-   >    and finish. Do not start any delegate of your own." Capture the
-   >    observer's job_id and transcript_ref.
+   > 1. Call `delegate` (max_wait_ms unset — returns job_id immediately)
+   >    with this exact task: "You are an observer sidecar. In this
+   >    first turn, call communicate with exactly OBSERVER_READY and
+   >    finish. If you are later resumed with a message containing
+   >    'Watch frame': read the job_id and delivery_id lines from that
+   >    frame; call job_read_output with that job_id and find the output
+   >    line containing SIDECAR_TOKEN; call job_send_message with target
+   >    caller and message exactly 'OBSERVER_COMMENT
+   >    delivery=<the delivery_id> line=<the matching output line>';
+   >    then call communicate with exactly OBSERVER_DONE and finish. Do
+   >    not start any delegate of your own." Capture the observer's
+   >    job_id and transcript_ref.
    > 2. Run the shell tool with max_wait_ms 1000 and this command:
    >    `sh -c 'sleep 20; echo SIDECAR_TOKEN_OK; sleep 240'`. Capture
    >    the shell job_id.

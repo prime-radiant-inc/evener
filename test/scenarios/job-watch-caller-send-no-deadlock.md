@@ -38,11 +38,11 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
    >    Report the full response or error verbatim.
    > 2. Call `job_watch` with exactly: target "caller", events
    >    ["assistant.message"], and NO send. Report verbatim.
-   > 3. Call `delegate` (default, no `max_wait_ms`) with this task: "Call
-   >    communicate with exactly OBSERVER_READY and finish. If you are
-   >    ever resumed with a message containing 'Watch frame', call
-   >    communicate with exactly FRAME_SEEN and finish." Capture the
-   >    returned job_id.
+   > 3. Call `delegate` (max_wait_ms unset — returns job_id immediately)
+   >    with this task: "Call communicate with exactly OBSERVER_READY
+   >    and finish. If you are ever resumed with a message containing
+   >    'Watch frame', call communicate with exactly FRAME_SEEN and
+   >    finish." Capture the returned job_id.
    > 4. Call `job_watch` with exactly: target "caller", events
    >    ["assistant.message", "assistant.tool"], send {to: that job_id}
    >    — and NO other parameters (in particular do NOT pass `every`;

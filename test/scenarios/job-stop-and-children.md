@@ -1,13 +1,16 @@
 # job-stop-and-children: stop confirms and retains output; include_children fells the visible tree
 
-**What this covers**: `job_stop` semantics from `docs/job-control.md`.
-(a) A confirmed stop of a running shell job lands `cancelled` /
-`stopped_by_parent` with retained output still readable afterward
-(stopping deletes nothing); (b) `max_wait_ms` makes the stop call
-itself wait for finalization, so the result carries the terminal status
-instead of `running`/`stop_pending`; (c) `job_stop(delegate,
-include_children=true)` also stops the delegate's visible nested shell
-job, with both terminal afterward and the child visible via
+**What this covers**: `job_stop` semantics from `docs/job-control.md`
+lines 730-802 and the nested-stop rules at lines 1029-1054. (a) A
+confirmed stop of a running shell job lands `cancelled` /
+`stopped_by_parent` (line 753) with retained output still readable
+afterward (line 750: stopping deletes nothing); (b) `max_wait_ms` on
+job_stop makes the stop call itself wait for finalization, so the
+result carries the terminal status instead of `running`/`stop_pending`
+(lines 744, 755);
+(c) `job_stop(delegate, include_children=true)` also stops the
+delegate's visible nested shell job (lines 756, 778, 1038), with both
+terminal afterward and the child visible via
 `job_list(include_nested=true)`. The plain stop-a-delegate +
 resume-after-stop path is already covered by
 subagent-cancel-runaway.md; post-terminal readability of nested output
@@ -39,8 +42,8 @@ is asserted in depth by job-nested-visibility.md.
 3. Turn 2 — arm (c), delegate with a nested job (new user prompt):
 
    > Do these steps in order.
-   > 1. Call delegate (default, no max_wait_ms) with this exact task:
-   >    "Run the shell tool with max_wait_ms 1000 and this command:
+   > 1. Call delegate with this exact task: "Run the shell tool with
+   >    max_wait_ms 1000 and this command:
    >    `sh -c 'echo CHILD_NEST_TOKEN; sleep 300'` with description
    >    nested-probe. Report its job_id. Then run the foreground shell
    >    command `sleep 240` and finally communicate DONE." Capture the
@@ -66,7 +69,7 @@ Turn 1:
   `max_wait_ms 5000` waited for finalization. Falsification (wait
   regression): the result says `running` with reason `stop_pending`
   although the job is a plain interruptible sleep that confirms
-  cancellation in well under the 5s budget.
+  cancellation in well under the 5s bound.
 - Output survives the stop: the step-4 read returns `status`
   `"cancelled"`, `reason` `"stopped_by_parent"`, and `content`
   containing `STOP_RETAIN_TOKEN`. Falsification: `job ... not found`,
@@ -112,9 +115,9 @@ Turn 2:
   has not yet started its background job, making the child-stop arm
   vacuous. The step-3 listing is the explicit gate — re-prompt if the
   nested job is absent.
-- `job_stop` is non-recursive by DEFAULT: without `include_children`,
-  the nested shell job may keep running after a delegate stop as long
-  as the owner runtime survives.
+- `job_stop` is non-recursive by DEFAULT (line 756): without
+  `include_children`, the nested shell job may keep running after a
+  delegate stop as long as the owner runtime survives (line 767).
   This card deliberately exercises only the recursive arm; do not
   reinterpret a surviving child in a default-stop variant as a bug.
 - The delegate's own 240s foreground sleep keeps the child session

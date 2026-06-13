@@ -37,9 +37,9 @@ Run 1 — session A in `$tmpA`: per-job cardinality and format.
    > 1. Run the shell tool with max_wait_ms 1000 and command:
    >    `sh -c 'sleep 10; echo NOTIF_SHELL_TOKEN'`. Report the job_id
    >    (J1).
-   > 2. Call delegate (default, no max_wait_ms) with this exact task:
-   >    "Run the shell command `sleep 10`, then communicate exactly
-   >    NOTIF_DLG_TOKEN and finish." Report the job_id (J2).
+   > 2. Call delegate with this exact task: "Run the shell command
+   >    `sleep 10`, then communicate exactly NOTIF_DLG_TOKEN and
+   >    finish." Report the job_id (J2).
    > 3. Say ARMED and end your turn. Do not poll or read; you will be
    >    notified.
 2. Poll `/api/sessions/local:$SID_A` to `idle`; both jobs finish ~10s

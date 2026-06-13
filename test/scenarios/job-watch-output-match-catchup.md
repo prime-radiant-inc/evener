@@ -45,9 +45,10 @@ Phase 5.2.
 
    > Do these steps in order. Steps 3 and 4 may return tool errors —
    > report everything verbatim.
-   > 1. Run the shell tool with max_wait_ms 5000 and command:
+   > 1. Run the shell tool with max_wait_ms 1000 and command:
    >    `sh -c 'echo CATCHUP_TOKEN_OK'`. Capture the job_id, then call
-   >    job_read_output for it and confirm status is completed.
+   >    job_read_output for it with max_wait_ms 5000, and confirm
+   >    status is completed.
    > 2. Call job_watch with target that job_id and output_match
    >    "CATCHUP_TOKEN_OK". Report the full JSON verbatim.
    > 3. Call job_watch with target that job_id and output_match

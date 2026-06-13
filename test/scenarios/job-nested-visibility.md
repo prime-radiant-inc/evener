@@ -29,9 +29,9 @@ watched job) is job-watch-sidecar-observer.md, not this card.
    Capture `SID`.
 2. Turn 1 — a delegate starts a background shell job and finishes:
 
-   > Call delegate (default, no max_wait_ms) with this exact task: "Run the
-   > shell tool with max_wait_ms 1000, description nested-probe, and
-   > this command: `sh -c 'echo NEST_TOKEN_1; sleep 300; echo NEST_TOKEN_2'`.
+   > Call delegate with this exact task: "Run the shell tool with
+   > max_wait_ms 1000, description nested-probe, and this command:
+   > `sh -c 'echo NEST_TOKEN_1; sleep 300; echo NEST_TOKEN_2'`.
    > Then communicate exactly 'NESTED_JOB <its job_id>' and finish."
    > Report the delegate's job_id, then end your turn and wait for its
    > completion notification.

@@ -28,7 +28,8 @@ the structured fields are how the parent judges outcome.
    Capture `SID`.
 2. Turn 1 — arm (a), compliant foreground delegate:
 
-   > Call delegate with max_wait_ms 120000, result_schema
+   > Call delegate with max_wait_ms 120000,
+   > result_schema
    > `{"type":"object","properties":{"verdict":{"type":"string"},"count":{"type":"integer"}},"required":["verdict","count"]}`,
    > and this task: "Report a structured result with verdict ok and
    > count 7, with a one-line summary message." Report the full result
@@ -36,7 +37,7 @@ the structured fields are how the parent judges outcome.
    > and report that full JSON verbatim too.
 3. Turn 2 — arm (b), deliberate violation (new user prompt):
 
-   > Call delegate (default, no max_wait_ms) with the SAME result_schema
+   > Call delegate (background default) with the SAME result_schema
    > and this exact task: "This is a schema-violation test. In your
    > final structured output, set verdict to the string bad and set
    > count to the STRING value banana — a string, deliberately NOT a

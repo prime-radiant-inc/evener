@@ -9,7 +9,7 @@ time to prove output inspection is non-consuming.
 1. Start a real Serf run with a fresh scenario state dir.
 2. Ask the parent:
 
-   > Call `delegate` with `max_wait_ms=120000` and this task: "Using the shell
+   > Call `delegate` with max_wait_ms 30000 and this task: "Using the shell
    > tool, run: echo hello-from-child. Then call communicate with this exact
    > message: RESULT=hello-from-child." Capture the returned `job_id`.
    > Then call `job_list` and report the full JSON. Confirm the job appears
