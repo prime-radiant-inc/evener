@@ -74,7 +74,7 @@ The dossier (`docs/superpowers/research/2026-06-12-recursion-dossier.md`) was ca
 - [x] Task 3: deaf-coordinator drive-down regression test (unskipped RED run captured, lands `t.Skip`-tracked; Task 14 unskips first — mandatory mechanism, see task)
 
 **Phase 2 — Flip the six capability seams to allowance-keyed**
-- Task 4: seams 1+2 — depth/maxDepth gates become allowance checks (`prepareSubagentRun`)
+- [x] Task 4: seams 1+2 — depth/maxDepth gates become allowance checks (`prepareSubagentRun`)
 - Task 5: seam 6 — agent-type spawn rejection + prompt-side filters key on grantable allowance
 - Task 6: seam 3 — registry stripping at child init becomes allowance-aware
 - Task 7: seam 4 — `baseSubagentToolPolicy` deny-list becomes allowance-aware; default child gets `delegate`+`job_watch` at allowance>0
