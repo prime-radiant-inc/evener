@@ -76,7 +76,7 @@ The dossier (`docs/superpowers/research/2026-06-12-recursion-dossier.md`) was ca
 **Phase 2 — Flip the six capability seams to allowance-keyed**
 - [x] Task 4: seams 1+2 — depth/maxDepth gates become allowance checks (`prepareSubagentRun`)
 - [x] Task 5: seam 6 — agent-type spawn rejection + prompt-side filters key on grantable allowance
-- Task 6: seam 3 — registry stripping at child init becomes allowance-aware
+- [x] Task 6: seam 3 — registry stripping at child init becomes allowance-aware
 - Task 7: seam 4 — `baseSubagentToolPolicy` deny-list becomes allowance-aware; default child gets `delegate`+`job_watch` at allowance>0
 - Task 8: seam 5 — `validateRestoredDelegateRequiredTools` allowance-aware (coordinator-type resume); grant-rejection text allowance-truthful
 - Task 9: `delegate` schema gains `delegation_allowance`; grant rejection `< own allowance`; prompt template `{{ if .CanDelegate }}` sections + allowance stated
