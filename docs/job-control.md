@@ -1070,6 +1070,8 @@ Rules:
 - Job IDs must be globally unique enough that parent job tools do not need string namespacing or a separate owner/visible ID choice.
 - Notifications, `job_list`, `job_read_output`, `job_watch`, `job_send_message` where applicable, and `job_stop` all use the same parent-visible ID.
 - Shell jobs created by subagents are visible to the parent through forwarded durable job events.
+- Delegate jobs created by subagents join the same one-hop forwarding: delegate-job creation forwards its `job_started` one hop to the parent's store, carrying `parent_job_id` plus owner/type identity (`owner_session_id`, `type=delegate`). This seeds a typed parent-visible record at start, so the later forwarded terminal event merges onto it rather than producing a type-less phantom record.
+- Dedupe rule: the owner session's durable record is authoritative for a forwarded job. A forwarded copy of the same `job_id` in an ancestor store is suppressed in favor of the owner record; the forwarded start carries enough identity (owner session + type) to make that suppression unambiguous.
 - A parent-visible nested background job follows the same notification rules as a top-level background job: terminal notifications are automatic for notification-armed forwarded jobs, and `job_watch` is only for extra output/event/progress notifications or configured sends.
 - Parent `job_stop` on a nested job routes to the owning session/runtime if live.
 - If routing is unavailable after restart, Serf reports terminal `stopped/runtime_lost` according to restart reconciliation.

@@ -18,6 +18,9 @@ import (
 	"primeradiant.com/serf/agent/schema"
 )
 
+var errDelegateStartForwardFailed = errors.New("delegate start forward failed")
+var errDelegateStartForwardTerminalFailed = errors.New("delegate start forward terminal append failed")
+
 const (
 	delegateFinalizeWaitTimeout = 5 * time.Second
 	delegateFinalizeRetryDelay  = 20 * time.Millisecond
@@ -1136,6 +1139,7 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 	if previousRestore != nil {
 		restore = s.resumedDelegateRestoreDescriptor(jobID, childID, transcriptRef, resultSchema, previousRestore)
 	}
+	parentJobID := jm.currentParentJobID()
 	run := &runningJob{
 		rec: &jobstore.JobRecord{
 			JobID:            jobID,
@@ -1144,6 +1148,7 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 			Task:             task,
 			OwnerSessionID:   s.id,
 			VisibleToSession: s.id,
+			ParentJobID:      parentJobID,
 			TranscriptRef:    transcriptRef,
 			DelegateRestore:  restore,
 			StartedAt:        startedAt,
@@ -1172,6 +1177,7 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 		Task:             run.rec.Task,
 		OwnerSessionID:   run.rec.OwnerSessionID,
 		VisibleToSession: run.rec.VisibleToSession,
+		ParentJobID:      run.rec.ParentJobID,
 		StartedAt:        &startedAt,
 		OutputPath:       run.rec.OutputPath,
 		TranscriptRef:    run.rec.TranscriptRef,
@@ -1182,6 +1188,16 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 		_ = output.Close()
 		_ = os.Remove(outputPath)
 		return nil, err
+	}
+	if err := jm.forwardLocked(started); err != nil {
+		_ = output.Close()
+		if terminalErr := jm.appendStartForwardFailure(run.rec.JobID, output); terminalErr != nil {
+			run.forwardDisabled = true
+			jm.mu.Unlock()
+			return nil, errors.Join(errDelegateStartForwardTerminalFailed, err, terminalErr)
+		}
+		jm.mu.Unlock()
+		return nil, errors.Join(errDelegateStartForwardFailed, err)
 	}
 	run.watchdogStop = make(chan struct{})
 	watchdogStop := run.watchdogStop

@@ -151,6 +151,67 @@ func TestNestedShellForwardsJobStarted(t *testing.T) {
 	}
 }
 
+func TestDelegateStartForwardsToParent(t *testing.T) {
+	root, err := newJobManager(t.TempDir(), "ROOT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new root jobManager: %v", err)
+	}
+	t.Cleanup(func() { _ = root.store.Close() })
+
+	coordinator := newTestSession(t)
+	coordinator.jobManager.forward = root.forwardEvent
+	coordinator.jobManager.parentJobID = "job_ROOTDELEGATE"
+
+	worker := newTestSession(t)
+	sub := &subagent{
+		id:     worker.ID(),
+		sess:   worker,
+		status: SubagentRunning,
+		done:   make(chan struct{}),
+	}
+	coordinator.subagents.track(sub)
+
+	run, err := coordinator.attachDelegateJob(coordinator.jobManager, worker.ID(), "do work", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	t.Cleanup(func() {
+		coordinator.jobManager.mu.Lock()
+		r := coordinator.jobManager.running[run.rec.JobID]
+		coordinator.jobManager.mu.Unlock()
+		if r != nil && r.output != nil {
+			_ = r.output.Close()
+		}
+	})
+
+	if run.rec.ParentJobID != "job_ROOTDELEGATE" {
+		t.Fatalf("delegate record ParentJobID = %q, want job_ROOTDELEGATE", run.rec.ParentJobID)
+	}
+	rootRecords, err := root.store.Load()
+	if err != nil {
+		t.Fatalf("load root store: %v", err)
+	}
+	rootRec, ok := rootRecords[run.rec.JobID]
+	if !ok {
+		t.Fatalf("root store keys = %v, want forwarded delegate job %q", keysOf(rootRecords), run.rec.JobID)
+	}
+	if rootRec.Type != jobstore.JobDelegate {
+		t.Fatalf("root record Type = %q, want %q", rootRec.Type, jobstore.JobDelegate)
+	}
+	if rootRec.OwnerSessionID != coordinator.ID() {
+		t.Fatalf("root record OwnerSessionID = %q, want %q", rootRec.OwnerSessionID, coordinator.ID())
+	}
+	if rootRec.ParentJobID != "job_ROOTDELEGATE" {
+		t.Fatalf("root record ParentJobID = %q, want job_ROOTDELEGATE", rootRec.ParentJobID)
+	}
+	if rootRec.VisibleToSession != "ROOT" {
+		t.Fatalf("root record VisibleToSession = %q, want ROOT", rootRec.VisibleToSession)
+	}
+	if rootRec.Status != jobstore.StatusRunning {
+		t.Fatalf("root record Status = %q, want %q", rootRec.Status, jobstore.StatusRunning)
+	}
+}
+
 func TestParentRuntimeCloseKeepsStoreOpenForNestedTerminalForward(t *testing.T) {
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
