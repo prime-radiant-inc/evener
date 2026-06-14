@@ -466,3 +466,68 @@ func TestApplyOverrides_MergesWebSearch(t *testing.T) {
 		t.Fatal("*SupportsWebSearch = true, want false (override flipped it)")
 	}
 }
+
+// Dated Anthropic snapshots (claude-opus-4-5-20251101, ...-v1) carry no override
+// of their own — Serf overrides are keyed on the bare family ID. They must
+// inherit the family's effort metadata so the effort clamp resolves real levels
+// for a dated fallback instead of leaking the primary model's levels.
+func TestApplyOverrides_DatedVariantInheritsFamily(t *testing.T) {
+	cat, err := parseLiteLLMCatalog([]byte(`{
+        "claude-opus-4-5":             {"litellm_provider": "anthropic"},
+        "claude-opus-4-5-20251101":    {"litellm_provider": "anthropic"},
+        "claude-opus-4-5-20251101-v1": {"litellm_provider": "anthropic"}
+    }`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	applyOverrides(cat, []byte(`{"claude-opus-4-5": {"reasoning_effort_levels": ["low","medium","high"], "supports_effort_parameter": true}}`))
+
+	for _, id := range []string{"claude-opus-4-5", "claude-opus-4-5-20251101", "claude-opus-4-5-20251101-v1"} {
+		mi := cat.GetModelInfo(id)
+		if mi == nil {
+			t.Fatalf("%s: missing from catalog", id)
+		}
+		if got := mi.ReasoningEffortLevels; len(got) != 3 {
+			t.Errorf("%s: ReasoningEffortLevels = %v, want [low medium high] (dated variant should inherit family override)", id, got)
+		}
+		if !mi.SupportsEffortParameter {
+			t.Errorf("%s: SupportsEffortParameter = false, want true (inherited from family)", id)
+		}
+	}
+}
+
+// A dated entry with its OWN override keeps it — exact match wins over the family
+// fallback.
+func TestApplyOverrides_ExactDatedOverrideWinsOverFamily(t *testing.T) {
+	cat, err := parseLiteLLMCatalog([]byte(`{
+        "claude-opus-4-5":          {"litellm_provider": "anthropic"},
+        "claude-opus-4-5-20251101": {"litellm_provider": "anthropic"}
+    }`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	applyOverrides(cat, []byte(`{
+        "claude-opus-4-5":          {"reasoning_effort_levels": ["low","medium","high"]},
+        "claude-opus-4-5-20251101": {"reasoning_effort_levels": ["low"]}
+    }`))
+
+	if got := cat.GetModelInfo("claude-opus-4-5-20251101").ReasoningEffortLevels; len(got) != 1 || got[0] != "low" {
+		t.Errorf("dated exact override should win: got %v, want [low]", got)
+	}
+}
+
+func TestFamilyModelID(t *testing.T) {
+	cases := map[string]string{
+		"claude-opus-4-5-20251101":    "claude-opus-4-5",
+		"claude-opus-4-5-20251101-v1": "claude-opus-4-5",
+		"claude-3-5-sonnet-20240620":  "claude-3-5-sonnet",
+		"claude-opus-4-5":             "claude-opus-4-5", // no date → unchanged
+		"gpt-4o":                      "gpt-4o",          // no date → unchanged
+		"model-v1":                    "model-v1",        // bare -vN (no date) → unchanged
+	}
+	for in, want := range cases {
+		if got := familyModelID(in); got != want {
+			t.Errorf("familyModelID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
