@@ -123,6 +123,49 @@ before the nudge fires. The automatic checkpoint and summary layers remain the
 guarantee. The latch resets on any compaction (force or automatic) so the nudge can
 fire again after the next compaction cycle.
 
+### Forced-note elicitation (on by default)
+
+The warn nudge only steers the agent — it can decline, or jump past the seam before
+acting. The forced-note mechanism is the harness's own guarantee that the
+hardest-to-recover details survive a compaction even when the agent never calls
+`compact`. It is **on by default**; opt out per-session with `DisableNoteElicitation`.
+
+When a compaction is imminent — pressure at or above `CheckpointThreshold` —
+`maybeElicitNoteBeforeCompaction` (in `agent/session_self_compact.go`) runs *before*
+`ManageContext` folds the history. It asks the model, via `Manager.ElicitNote`, to
+enumerate everything that must survive verbatim, with the prompt explicitly targeting
+the classes a lossy summary erodes: opaque tokens, IDs, hashes, version tags, exact
+numbers and thresholds, file/column/endpoint names. The reply is pinned as the note
+(`setPinnedNote`), so the same compaction's `runPreCompactHook` re-stamps it verbatim
+into the preserved steering turn.
+
+The elicitation is a separate side call on the summarization model
+(`summarizationModels(prof)[0]`), rendering up to 80K chars of history as plain text.
+It runs each time pressure is over the checkpoint before a request, so the note is
+**refreshed** ahead of every imminent compaction — which is what keeps exact strings
+from decaying across *successive* summaries (the erosion case the manual note alone
+doesn't cover, since the agent rarely re-issues it each cycle).
+
+It is best-effort and never blocks compaction:
+
+- `DisableNoteElicitation` set, or no context manager → skip silently.
+- Pressure below `CheckpointThreshold` → nothing to capture yet, skip.
+- No LLM client available (`HasClient()` false) and no injected `elicitNoteFn` → skip.
+- Elicitation call errors → emit an `EventWarning` and let the normal compaction proceed.
+- Empty reply → leave the existing pinned note untouched.
+
+Wiring: `prepareModelRequest` (in `agent/session_model_call.go`) calls
+`maybeElicitNoteBeforeCompaction` inside the `s.strategy != nil` block, immediately
+before the compaction hooks run, so the freshly pinned note is in place when the
+re-stamp happens. A test seam, `Session.elicitNoteFn`, overrides the elicitor for
+deterministic unit tests; production leaves it nil and falls back to
+`Manager.ElicitNote`.
+
+This was validated live end-to-end against a real OAuth `gpt-5.5` session pushed over
+the checkpoint: with no `compact` call by the agent, the harness elicited and pinned a
+note that captured all seeded facts — including an opaque deploy token — verbatim
+(`agent/forced_note_live_test.go`, `//go:build eval`).
+
 ## Compaction Layers
 
 Two layers, applied progressively as pressure rises:
@@ -264,4 +307,7 @@ estimation uses the stale window size.
 | `CheckpointThreshold` | 0.80 | Pressure threshold for deterministic checkpoint |
 | `SummarizeThreshold` | 0.95 | Pressure threshold for LLM summarization |
 | `PreserveRecentTurns` | 6 | Turns kept intact during compaction |
-| `CompactionThresholdScale` | 1.0 | Multiplier for all thresholds (for testing) |
+| `CompactionThresholdScale` | 1.0 | Multiplier for all thresholds (test-only; clamped to a 0.20 floor) |
+
+The note-elicitation guarantee is on by default; `SessionConfig.DisableNoteElicitation`
+(`"disable_note_elicitation"`) opts a session out of it.
