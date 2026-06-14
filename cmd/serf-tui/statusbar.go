@@ -10,7 +10,33 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
-const compactThreshold = 0.90 // must match agent/context_manager.go SummarizeThreshold
+// compactThreshold and warnThreshold must match agent/context_manager.go
+// SummarizeThreshold and WarnThreshold respectively.
+const (
+	compactThreshold = 0.95
+	warnThreshold    = 0.75
+)
+
+// ctxBand classifies a context-usage ratio into a color band.
+type ctxBand int
+
+const (
+	bandNormal  ctxBand = iota
+	bandWarn
+	bandCompact
+)
+
+// ctxBandFor returns the color band for a given context-usage ratio.
+func ctxBandFor(ratio float64) ctxBand {
+	switch {
+	case ratio >= compactThreshold:
+		return bandCompact
+	case ratio >= warnThreshold:
+		return bandWarn
+	default:
+		return bandNormal
+	}
+}
 
 // statusBarInfo holds the data for the hub session persistent statusbar.
 type statusBarInfo struct {
@@ -59,10 +85,10 @@ func renderStatusBar(info statusBarInfo) string {
 	if info.CtxLimit > 0 {
 		ratio := float64(info.CtxUsed) / float64(info.CtxLimit)
 		ctxClr := th.TextDim
-		switch {
-		case ratio >= 0.90: // matches existing agent/context_manager compactThreshold
+		switch ctxBandFor(ratio) {
+		case bandCompact:
 			ctxClr = th.StateAwaiting
-		case ratio >= 0.75:
+		case bandWarn:
 			ctxClr = th.StateWarning
 		}
 		ctxText := fmt.Sprintf("ctx %s/%s", formatTokenCount(info.CtxUsed), formatTokenCount(info.CtxLimit))

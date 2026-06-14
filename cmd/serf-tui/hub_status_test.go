@@ -132,7 +132,7 @@ func TestFormatContextFragment(t *testing.T) {
 		{
 			name:   "full-rich-form",
 			detail: hubSessionDetail{ContextUsed: 46000, ContextWindow: 200000, ContextPressure: 0.23},
-			want:   "46k/200k (23%, 134k to compact)",
+			want:   "46k/200k (23%, 144k to compact)",
 		},
 		{
 			name:   "past-compact-threshold-clamps-remaining",
