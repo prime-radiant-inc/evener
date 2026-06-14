@@ -1,6 +1,6 @@
 ---
 name: subagent
-description: "Focused subagent for generic scoped delegated tasks. Works within its tool set and does not spawn further agents."
+description: "Focused subagent for a single scoped task. A non-delegating leaf: it has no `delegate` tool and cannot spawn further agents regardless of any delegation_allowance granted to it. For a multi-level tree, delegate with the default role instead of this one."
 model: inherit
 color: blue
 tools: [glob, grep, read_file, write_file, apply_patch, shell, task_list, web_fetch]
