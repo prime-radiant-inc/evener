@@ -76,3 +76,31 @@ verbatim — tokens, hashes, numbers, names") and **pins the reply as the note**
 2. If it does → implement **B** in the session loop + the `CompactReserveTokens` trigger (TDD).
 3. Implement **A** (mandate + defer + fallback) (TDD).
 4. Live comparison over a multi-compaction session; keep the winner.
+
+## Build outcome (2026-06-14)
+
+**Compared, then built the winner.** Both mechanisms' cores were validated:
+- **B (elicit):** `TestElicitNoteCapture` — the compaction-time side call captures the
+  eroding facts, the opaque token verbatim every run.
+- **A (mandate):** the dense live value test showed 100% compliance and substantive
+  agent-authored notes.
+
+**Verdict: B.** Deterministic, harness-controlled, no compliance dependency, no mid-task
+interruption, and its prompt explicitly targets the erosion-prone fact kinds. A's
+agent-awareness didn't outweigh its interruption + compliance + deferred-round costs.
+
+**Shipped B** (commit `ef875afb`): `Manager.ElicitNote` + `maybeElicitNoteBeforeCompaction`
+wired into `prepareModelRequest` before `ManageContext`, gated by
+`cfg.ElicitNoteOnCompaction` (off by default). **Trigger note:** B uses the existing
+`CheckpointThreshold` ("a compaction is imminent") rather than the 2×-max-response reserve —
+that reserve was specifically about leaving room for *A's mandate reply*; B is a side call
+that needs no model turn, so "fire right before the fold" is the natural gate. The 2×-reserve
+would matter if A is ever built.
+
+**Did not build A's full integration** (mandate + defer + fallback): the comparison chose B,
+so A's session-loop wiring would be unused. A stays documented as the alternative.
+
+**Follow-ups:** persist `ElicitNoteOnCompaction` through `ConfigSnapshot` (subagent
+inheritance + resume — currently runtime-config only); and a live long-session A/B over many
+compactions to confirm B's erosion-resistance end-to-end (the controlled evidence is strong;
+a live confirmation would close it).
