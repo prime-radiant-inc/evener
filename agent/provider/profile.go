@@ -539,6 +539,19 @@ func (p *Profile) CrossProviderRef(ref string) bool {
 // provider's defaults (toolNameMap, etc.) take effect.
 //
 // p is returned unchanged when either profile is nil.
+// withCheapModelFrom carries the cheap-model routing (set via WithCheapModel)
+// from original onto p. A constructor rebuild resets these to empty, so a
+// rebuild-based WithModel must restore them or side calls (naming, summarization,
+// web-fetch) lose their configured cheap model.
+func (p *Profile) withCheapModelFrom(original *Profile) *Profile {
+	if p == nil || original == nil {
+		return p
+	}
+	p.cheapModel = original.cheapModel
+	p.cheapProvider = original.cheapProvider
+	return p
+}
+
 func (p *Profile) WithCommunicateOverridesFrom(original *Profile) *Profile {
 	if p == nil || original == nil {
 		return p
@@ -627,7 +640,7 @@ func (p *Profile) WithModel(model string) *Profile {
 			}
 		}
 		rebuilt := restampInstanceIdentity(newAnthropicProfile(model), p.behaviorTag, p.id)
-		return rebuilt.WithCommunicateOverridesFrom(p)
+		return rebuilt.WithCommunicateOverridesFrom(p).withCheapModelFrom(p)
 	}
 
 	// Parse "provider/model" strings. decidePrefixAction classifies each
@@ -674,7 +687,7 @@ func (p *Profile) WithModel(model string) *Profile {
 		// renamed instance (id != behaviorTag, via WithProviderID) keeps its
 		// id and correctly-derived tag across model changes.
 		rebuilt = restampInstanceIdentity(rebuilt, p.behaviorTag, p.id)
-		return rebuilt.WithCommunicateOverridesFrom(p)
+		return rebuilt.WithCommunicateOverridesFrom(p).withCheapModelFrom(p)
 	}
 	clone := *p
 	clone.model = model
@@ -989,10 +1002,17 @@ func newOpenRouterAnthropicProfile(model string) *Profile {
 	}
 	// The "[1m]" suffix selects the 1M-context beta, just as on the direct
 	// Anthropic profile. The GetModelInfo-based resolver above can't see it (the
-	// suffix isn't a catalog key), so set it explicitly for a qualified/dated
-	// "[1m]" ref like "anthropic/claude-opus-4-5-20251101[1m]".
-	if strings.HasSuffix(model, anthropicSuffix1M) {
+	// suffix isn't a catalog key), so set the window AND the beta header
+	// explicitly for a qualified/dated "[1m]" ref like
+	// "anthropic/claude-opus-4-5-20251101[1m]" — otherwise Serf budgets 1M but
+	// never requests it.
+	has1M := strings.HasSuffix(model, anthropicSuffix1M)
+	if has1M {
 		contextWindow = 1_000_000
+	}
+	anthropicOpts := map[string]any{"max_tokens": 16384}
+	if has1M {
+		anthropicOpts["beta_headers"] = anthropicBeta1M
 	}
 	bp := buildBaseProfile(profileSpec{
 		id:              "openrouter-anthropic",
@@ -1008,12 +1028,8 @@ func newOpenRouterAnthropicProfile(model string) *Profile {
 		knowledgeCutoff: "2025-06-01",
 		defaultEfforts:  defaultEfforts,
 		resolvedEfforts: efforts,
-		providerOpts: map[string]any{
-			"anthropic": map[string]any{
-				"max_tokens": 16384,
-			},
-		},
-		capabilities: anthropicStyleCapabilities,
+		providerOpts:    map[string]any{"anthropic": anthropicOpts},
+		capabilities:    anthropicStyleCapabilities,
 	})
 	return &bp
 }

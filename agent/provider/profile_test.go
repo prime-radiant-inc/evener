@@ -95,6 +95,33 @@ func TestAnthropicProfile_WithModelReResolvesEffortLevels(t *testing.T) {
 	}
 }
 
+// A rebuild-based WithModel must carry the cheap-model routing (set via
+// WithCheapModel) across the model switch; the constructor resets it, so a model
+// change would otherwise drop configured side-call routing.
+func TestAnthropicProfile_WithModelPreservesCheapModel(t *testing.T) {
+	p := WithCheapModel(newAnthropicProfile("claude-opus-4-6"), "kimi/kimi-for-coding")
+	if p.CheapModelRefString() != "kimi/kimi-for-coding" {
+		t.Fatalf("setup: cheap model = %q", p.CheapModelRefString())
+	}
+	q := p.WithModel("claude-opus-4-5-20251101")
+	if got := q.CheapModelRefString(); got != "kimi/kimi-for-coding" {
+		t.Errorf("cheap model lost after WithModel: got %q, want kimi/kimi-for-coding", got)
+	}
+}
+
+// An openrouter-anthropic "[1m]" ref must request the 1M-context beta header, not
+// just claim the 1M window — otherwise Serf budgets 1M while the API serves 200K.
+func TestOpenRouterAnthropicProfile_OneMillionBetaHeader(t *testing.T) {
+	p := newOpenRouterAnthropicProfile("anthropic/claude-opus-4-5-20251101[1m]")
+	opts, _ := p.ProviderOptions()["anthropic"].(map[string]any)
+	if opts == nil {
+		t.Fatalf("no anthropic provider options: %#v", p.ProviderOptions())
+	}
+	if opts["beta_headers"] != anthropicBeta1M {
+		t.Errorf("beta_headers = %v, want %q for a [1m] ref", opts["beta_headers"], anthropicBeta1M)
+	}
+}
+
 func TestJobControlCapabilityIncludesDelegateAndSendMessage(t *testing.T) {
 	defs := toolDefinitionsForCapabilities([]toolCapability{capabilityJobControl}, nil)
 	have := map[string]bool{}
