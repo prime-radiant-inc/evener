@@ -378,13 +378,13 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				// Clamp to the FALLBACK model's levels. WithModel keeps the primary
 				// profile's effort levels for some providers (openai/anthropic), so
 				// consult the catalog for the fallback model rather than trusting
-				// fbProfile's possibly-stale set.
+				// fbProfile's possibly-stale set. LookupModelInfo canonicalizes the
+				// "[1m]" suffix, a provider namespace ("anthropic/…" from
+				// openrouter-anthropic), and dated snapshots, so a qualified or
+				// dated fallback still resolves real levels.
 				fbLevels := fbProfile.ReasoningEffortLevels()
 				if cat := llm.EmbeddedModelCatalog(); cat != nil {
-					// Canonicalize before lookup: the Anthropic "[1m]" 1M-context
-					// suffix is not part of the catalog key.
-					canonModel := strings.TrimSuffix(fbProfile.Model(), "[1m]")
-					if mi := cat.GetModelInfo(canonModel); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
+					if mi := cat.LookupModelInfo(fbProfile.Model()); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
 						fbLevels = mi.ReasoningEffortLevels
 					}
 				}

@@ -113,7 +113,10 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	var adaptiveThinking, supportsEffort bool
 	var effortLevels []string
 	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		if mi := cat.GetModelInfo(apiModel); mi != nil {
+		// LookupModelInfo canonicalizes a provider namespace (openrouter-anthropic
+		// sends "anthropic/…") and dated snapshots so effort capabilities resolve
+		// for qualified/dated models too.
+		if mi := cat.LookupModelInfo(apiModel); mi != nil {
 			adaptiveThinking = mi.SupportsAdaptiveThinking
 			supportsEffort = mi.SupportsEffortParameter
 			effortLevels = mi.ReasoningEffortLevels

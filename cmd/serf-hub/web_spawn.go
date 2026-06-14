@@ -344,18 +344,9 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 }
 
 func catalogModelInfo(cat *llm.ModelCatalog, modelID string) *llm.ModelInfo {
-	if cat == nil {
-		return nil
-	}
-	if mi := cat.GetModelInfo(modelID); mi != nil {
-		return mi
-	}
-	// Provider-qualified models (e.g. "anthropic/claude-opus-4-6" served by an
-	// openrouter-anthropic instance) carry a namespace the catalog override
-	// omits; retry on the last path segment so per-model metadata (context
-	// window, effort levels) is still found.
-	if i := strings.LastIndex(modelID, "/"); i >= 0 && i+1 < len(modelID) {
-		return cat.GetModelInfo(modelID[i+1:])
-	}
-	return nil
+	// LookupModelInfo canonicalizes the "[1m]" suffix, a provider namespace
+	// (e.g. "anthropic/claude-opus-4-6" served by an openrouter-anthropic
+	// instance), and dated snapshots so per-model metadata (context window,
+	// effort levels) is found for qualified/dated/1M model refs.
+	return cat.LookupModelInfo(modelID)
 }

@@ -209,6 +209,39 @@ func TestEmbeddedModelCatalog(t *testing.T) {
 	}
 }
 
+// LookupModelInfo must canonicalize a model ref the same way regardless of who
+// asks: strip the Anthropic "[1m]" 1M-context suffix, then the provider
+// namespace ("anthropic/…" from an openrouter-anthropic instance), and resolve
+// dated snapshots via the family override. Every ref below names the opus-4-5
+// family, whose serf override lists [low, medium, high].
+func TestLookupModelInfo_CanonicalizesRefs(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("embedded catalog nil")
+	}
+	refs := []string{
+		"claude-opus-4-5",                        // bare
+		"claude-opus-4-5[1m]",                    // 1M-context suffix
+		"claude-opus-4-5-20251101",               // dated snapshot
+		"claude-opus-4-5-20251101[1m]",           // dated + 1M
+		"anthropic/claude-opus-4-5",              // provider-qualified
+		"anthropic/claude-opus-4-5-20251101[1m]", // provider-qualified + dated + 1M
+	}
+	for _, ref := range refs {
+		mi := cat.LookupModelInfo(ref)
+		if mi == nil {
+			t.Errorf("LookupModelInfo(%q) = nil, want the opus-4-5 family entry", ref)
+			continue
+		}
+		if got := mi.ReasoningEffortLevels; len(got) != 3 {
+			t.Errorf("LookupModelInfo(%q).ReasoningEffortLevels = %v, want 3 (opus-4-5 family)", ref, got)
+		}
+	}
+	if cat.LookupModelInfo("totally-unknown-model-xyz") != nil {
+		t.Error("unknown model should resolve to nil")
+	}
+}
+
 func TestParseLiteLLMCatalog_CacheTierPricing(t *testing.T) {
 	body := `{
   "claude-opus-4-5": {
