@@ -273,6 +273,21 @@ await scenario("full-list strips [high] reasoning-effort suffix", [
   return { ok: true };
 });
 
+// 10b. The expanded effort vocab ([minimal] and [max]) is stripped too.
+await scenario("full-list strips [minimal]/[max] reasoning-effort suffixes", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["STEERING_INJECTED", { text: "<SYSTEM-REMINDER>\nTask list:\n  [open] #11: Quick fix [minimal]\n  [open] #12: Hard problem [max]\n</SYSTEM-REMINDER>" }],
+  ["TOOL_CALL_START", { call_id: "u2", tool_name: "task_list", arguments_json: JSON.stringify({
+    action: "update", updates: [{ id: 11, status: "done" }, { id: 12, status: "done" }],
+  }) }],
+  ["TOOL_CALL_END", { call_id: "u2", output: "ok", tool_name: "task_list" }],
+], ({ sysLines }) => {
+  const joined = sysLines.join("\n");
+  if (joined.includes("[minimal]") || joined.includes("[max]")) return { ok: false, detail: "new-vocab effort suffix should be stripped: " + joined };
+  if (!joined.includes("Quick fix") || !joined.includes("Hard problem")) return { ok: false, detail: "descriptions should remain: " + joined };
+  return { ok: true };
+});
+
 // 11. task-nudge steering is suppressed
 await scenario("task-nudge steering suppressed", [
   ["SESSION_START", { session_id: "01TEST" }],
