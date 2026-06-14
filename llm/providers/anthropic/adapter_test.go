@@ -163,6 +163,31 @@ func TestAdapter_BuildRequestBody_KeepsForcedToolChoiceWithoutThinking(t *testin
 	}
 }
 
+// Anthropic requires max_tokens > thinking.budget_tokens. A provider-options
+// max_tokens floor (e.g. the Anthropic profile's 16384) must not clobber the
+// budget-adjusted value down below the budget, or the request 400s.
+func TestAdapter_BuildRequestBody_MaxTokensExceedsThinkingBudget(t *testing.T) {
+	effort := "high"
+	body, err := (&Adapter{}).buildRequestBody(llm.Request{
+		Model:           "some-thinking-model", // legacy budget path
+		Messages:        []llm.Message{llm.User("hi")},
+		ReasoningEffort: &effort,
+		ProviderOptions: map[string]any{"anthropic": map[string]any{"max_tokens": 1000}},
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	th, _ := body["thinking"].(map[string]any)
+	budget, _ := th["budget_tokens"].(int)
+	if budget <= 0 {
+		t.Fatalf("expected a thinking budget, got thinking=%#v", body["thinking"])
+	}
+	mt, _ := body["max_tokens"].(int)
+	if mt <= budget {
+		t.Fatalf("max_tokens=%d must exceed thinking budget=%d (provider-opt floor must not clobber it below budget)", mt, budget)
+	}
+}
+
 func TestAdapter_BuildRequestBody_ServiceTier(t *testing.T) {
 	body, err := (&Adapter{}).buildRequestBody(llm.Request{
 		Model:       "claude-test",
