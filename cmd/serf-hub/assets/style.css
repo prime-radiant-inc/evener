@@ -2716,11 +2716,3 @@ body.has-connection-banner #workspace { height: calc(100vh - 32px); }
   }
 }
 
-.chip-overflow-more {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  background: transparent;
-  border: 1px dashed var(--rule);
-}
-.chip-overflow-more:hover { color: var(--text); border-color: var(--accent); }
