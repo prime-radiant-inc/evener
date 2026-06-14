@@ -77,7 +77,7 @@ tool, rather than waiting for the automatic pressure-triggered layers.
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `note_to_self` | yes | Durable note preserved verbatim across compactions. Empty string clears a previously set note. |
+| `note_to_self` | yes | Note handed back to the agent verbatim right after the compaction, then cleared. Empty string clears a pending note. |
 | `compaction_instructions` | no | Steers what the summary keeps vs. drops. |
 
 When only `note_to_self` is empty and no `compaction_instructions` are given, no
@@ -85,22 +85,36 @@ compaction is scheduled — just the note is cleared. Otherwise a force-compacti
 queued at the tool-round tail and the tool returns a prediction (not past-tense
 confirmation, since the compaction hasn't happened yet).
 
-### Pinned note
+### The note: a one-shot handoff across the compaction boundary
 
-The note is stored on the `Session` (`pinnedNote` field), persisted in
-`SessionMeta.PinnedNote` (`"pinned_note"` JSON key), and restored on session resume.
-At every compaction `runPreCompactHook` strips any existing pinned-note steering turn
-and re-stamps the note verbatim as a new `TurnSteering` turn. The format is:
+The note is a message from the agent's *pre-compaction* self to its *post-compaction*
+self — not a sticky pin re-stamped forever. It is stored on the `Session` (`pinnedNote`
+field), persisted in `SessionMeta.PinnedNote` (`"pinned_note"` JSON key) so an
+un-consumed note survives resume, and restored on resume.
+
+At the next compaction `runPreCompactHook` injects the note **once** into the fresh
+post-compaction context as a visible `TurnSteering` turn:
 
 ```
-[NOTE TO SELF]
+Here's your note to yourself from before compaction:
 <note text>
-[END NOTE TO SELF]
 ```
 
-The pinned note is inserted after plugin `PreCompact` output and **before** the goal
+and then **clears** the slot (`clearPinnedNote`). It is not re-stamped at future
+compactions: after injection it is ordinary context that folds naturally on the next
+cycle, like everything else. The slot reopening is what lets the next cycle capture a
+*fresh* note (see *Forced-note elicitation* below).
+
+The handoff turn is inserted after plugin `PreCompact` output and **before** the goal
 objective, so the goal objective remains the trailing (strongest-recency) steering turn
-and the `safeCutoff` protection keeps it past the compaction boundary.
+that `safeCutoff` protects past the compaction boundary.
+
+This handoff model (rather than a forever-pin) is deliberate: it means the harness and
+the agent never fight over a sticky field, the agent's note is never silently
+overwritten, and the agent *sees* its own prior note as a message it can act on or
+re-issue. The trade-off: a fact is protected through the *next* summary, and persists
+across many compactions only if it keeps being re-noted or re-elicited each cycle —
+facts that drop out of the recent window are allowed to fade.
 
 ### Agent-force path
 
@@ -128,42 +142,63 @@ fire again after the next compaction cycle.
 The warn nudge only steers the agent — it can decline, or jump past the seam before
 acting. The forced-note mechanism is the harness's own guarantee that the
 hardest-to-recover details survive a compaction even when the agent never calls
-`compact`. It is **on by default**; opt out per-session with `DisableNoteElicitation`.
+`compact`. It is **always on** (there is no opt-out flag — it is cheap and gated tightly).
 
-When a compaction is imminent — pressure at or above `CheckpointThreshold` —
-`maybeElicitNoteBeforeCompaction` (in `agent/session_self_compact.go`) runs *before*
-`ManageContext` folds the history. It asks the model, via `Manager.ElicitNote`, to
-enumerate everything that must survive verbatim, with the prompt explicitly targeting
-the classes a lossy summary erodes: opaque tokens, IDs, hashes, version tags, exact
-numbers and thresholds, file/column/endpoint names. The reply is pinned as the note
-(`setPinnedNote`), so the same compaction's `runPreCompactHook` re-stamps it verbatim
-into the preserved steering turn.
+When a compaction is imminent — pressure at or above `CheckpointThreshold` — and **no
+note is already set**, `maybeElicitNoteBeforeCompaction` (in
+`agent/session_self_compact.go`) runs *before* `ManageContext` folds the history. It
+asks the model, via `Manager.ElicitNote`, to enumerate everything that must survive
+verbatim, with the prompt explicitly targeting the classes a lossy summary erodes:
+opaque tokens, IDs, hashes, version tags, exact numbers and thresholds,
+file/column/endpoint names. The reply is set as the note (`setPinnedNote`), so the same
+compaction's `runPreCompactHook` hands it off (and then clears it).
 
-The elicitation is a separate side call on the summarization model
-(`summarizationModels(prof)[0]`), rendering up to 80K chars of history as plain text.
-It runs each time pressure is over the checkpoint before a request, so the note is
-**refreshed** ahead of every imminent compaction — which is what keeps exact strings
-from decaying across *successive* summaries (the erosion case the manual note alone
-doesn't cover, since the agent rarely re-issues it each cycle).
+**Scope — only what is about to be lost.** The elicitor renders just the prefix the
+compaction will fold (`history[:len-PreserveRecentTurns]`); the most-recent preserved
+turns survive verbatim and need no rescuing. The rendering (`renderHistoryForElicit`)
+includes tool-call arguments and **full tool-result content** — in a coding agent the
+exact values worth keeping (tokens, IDs, paths, command output) live in tool output,
+so a `Message.Text()`-only flatten would be blind to them. When the foldable prefix
+exceeds the 80K-char budget it is **tail-truncated** (the turns nearest the boundary,
+i.e. the freshest about-to-be-lost facts, are kept). The call uses the summarization
+model with the same fallback loop as the summarizer.
+
+**Skip-when-set is the latch.** Because elicitation skips whenever a note is already
+present, the agent's own `compact`-tool note is never overwritten, and a turn stuck
+above the checkpoint does not re-fire the side LLM call every round. The slot reopens
+only when the compaction consumes the note, so the *next* cycle elicits a fresh note —
+this is what keeps exact strings from decaying across *successive* summaries (the
+erosion case the manual note alone doesn't cover, since the agent rarely re-issues it).
 
 It is best-effort and never blocks compaction:
 
-- `DisableNoteElicitation` set, or no context manager → skip silently.
-- Pressure below `CheckpointThreshold` → nothing to capture yet, skip.
+- No context manager → skip silently.
+- A note is already set (agent- or elicitor-authored) → skip; the existing note wins.
+- Pressure below `CheckpointThreshold`, or history ≤ `PreserveRecentTurns` (nothing
+  foldable yet) → nothing to capture, skip.
 - No LLM client available (`HasClient()` false) and no injected `elicitNoteFn` → skip.
 - Elicitation call errors → emit an `EventWarning` and let the normal compaction proceed.
-- Empty reply → leave the existing pinned note untouched.
+- Empty reply → leave the slot empty.
 
 Wiring: `prepareModelRequest` (in `agent/session_model_call.go`) calls
 `maybeElicitNoteBeforeCompaction` inside the `s.strategy != nil` block, immediately
-before the compaction hooks run, so the freshly pinned note is in place when the
-re-stamp happens. A test seam, `Session.elicitNoteFn`, overrides the elicitor for
-deterministic unit tests; production leaves it nil and falls back to
-`Manager.ElicitNote`.
+before the compaction hooks run, so the freshly set note is in place when the handoff
+happens. A test seam, `Session.elicitNoteFn`, overrides the elicitor for deterministic
+unit tests; production leaves it nil and falls back to `Manager.ElicitNote`.
 
-This was validated live end-to-end against a real OAuth `gpt-5.5` session pushed over
-the checkpoint: with no `compact` call by the agent, the harness elicited and pinned a
-note that captured all seeded facts — including an opaque deploy token — verbatim
+**Limit — secrets.** A value framed as a credential (e.g. `DEPLOY_TOKEN=…` in a `.env`
+dump) is **redacted by the model** during elicitation: it sees the tool output but
+refuses to echo the secret verbatim. The mechanism rescues non-secret opaque
+identifiers (build/artifact ids, commit hashes, version tags, request ids, exact
+numbers), which is where erosion actually bites; secrets should not be relied on to
+survive compaction this way.
+
+Validation: a deterministic unit test (`renderHistoryForElicit` captures tool content
+and keeps the recent tail), an eval that the **real model** captures an opaque id which
+lives only in a tool result (`contextmgr.TestElicitNoteCapturesToolResult`), and a live
+full-loop test against a real OAuth `gpt-5.5` session — two turns, a real compaction
+folding ~130K→40 tokens, with no `compact` call by the agent — that the harness elicits
+a note the compaction hands back carrying the folded id verbatim
 (`agent/forced_note_live_test.go`, `//go:build eval`).
 
 ## Compaction Layers
@@ -309,5 +344,5 @@ estimation uses the stale window size.
 | `PreserveRecentTurns` | 6 | Turns kept intact during compaction |
 | `CompactionThresholdScale` | 1.0 | Multiplier for all thresholds (test-only; clamped to a 0.20 floor) |
 
-The note-elicitation guarantee is on by default; `SessionConfig.DisableNoteElicitation`
-(`"disable_note_elicitation"`) opts a session out of it.
+The note-elicitation guarantee is always on; it is gated tightly enough (skip unless a
+compaction is imminent *and* no note is already set) that no opt-out flag is warranted.
