@@ -914,7 +914,7 @@ func TestNestedReadOutputFallsBackWhenOwnerStoreClosesAfterSelection(t *testing.
 		t.Fatalf("close child store: %v", err)
 	}
 
-	snap, err := parent.readJobOutputSnapshot(owner, nested.JobID, 65536, false, nil)
+	snap, err := parent.readJobOutputSnapshot(owner, parent, nested.JobID, 65536, false, nil)
 	if err != nil {
 		t.Fatalf("readJobOutputSnapshot returned error: %v", err)
 	}
@@ -926,6 +926,92 @@ func TestNestedReadOutputFallsBackWhenOwnerStoreClosesAfterSelection(t *testing.
 	}
 	if !strings.Contains(snap.Content, "durable nested output") {
 		t.Fatalf("snapshot content = %q, want parent durable output", snap.Content)
+	}
+}
+
+// TestNestedReadOutputDepth2FallsBackToOwnerParentForwardedCopy proves the A8
+// closed-store fallback for a depth >= 2 owner recovers from the owner's DIRECT
+// PARENT store (where the single-hop forwarded terminal copy + durable output
+// land), not from the receiver (the owner itself) and not from the root.
+//
+// Topology: root -> coord -> worker, one-hop forwarding. The worker (depth 2)
+// finalizes a job, so the forwarded terminal copy reaches COORD (the worker's
+// direct parent), NOT the root. Closing the worker (owner) store then drives the
+// closed-store fallback with the worker as receiver/current and COORD as the
+// fallback target — exactly what the fixed jobReadOutputTool passes. The
+// fallback must resolve `local` from COORD and recover the forwarded copy.
+func TestNestedReadOutputDepth2FallsBackToOwnerParentForwardedCopy(t *testing.T) {
+	rootJM := newWalkJobManager(t, "ROOT")
+	coordJM := newWalkJobManager(t, "COORD")
+	workerJM := newWalkJobManager(t, "WORK")
+	t.Cleanup(func() {
+		_ = rootJM.store.Close()
+		_ = coordJM.store.Close()
+		_ = workerJM.store.Close()
+	})
+
+	// One-hop forwarding: each child forwards into its direct parent's store.
+	coordJM.forward = rootJM.forwardEvent
+	coordJM.parentJobID = "job_root_delegate_coord"
+	workerJM.forward = coordJM.forwardEvent
+	workerJM.parentJobID = "job_coord_delegate_worker"
+
+	workerRec, err := workerJM.createShell(createShellOpts{Command: "sleep 1", Description: "worker job"})
+	if err != nil {
+		t.Fatalf("create worker shell: %v", err)
+	}
+	workerJM.mu.Lock()
+	run := workerJM.running[workerRec.JobID]
+	workerJM.mu.Unlock()
+	if run == nil || run.output == nil {
+		t.Fatalf("worker job %q has no live output store", workerRec.JobID)
+	}
+	if _, err := workerJM.appendJobOutput(workerRec.JobID, run.output, []byte("worker grandchild line\n")); err != nil {
+		t.Fatalf("append worker output: %v", err)
+	}
+	code := 0
+	if err := workerJM.finalize(workerRec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize worker job: %v", err)
+	}
+
+	// The forwarded terminal copy reaches COORD (the worker's direct parent), not
+	// the root: forwarding is single-hop.
+	if _, err := findJobRecord(coordJM, workerRec.JobID); err != nil {
+		t.Fatalf("coord store missing forwarded worker copy: %v", err)
+	}
+	if _, err := findJobRecord(rootJM, workerRec.JobID); err == nil {
+		t.Fatalf("root store unexpectedly holds forwarded worker copy; forwarding must be single-hop")
+	}
+
+	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
+
+	// Close the OWNER (worker) store: the read can only be served from the
+	// forwarded copy in COORD.
+	if err := workerJM.store.Close(); err != nil {
+		t.Fatalf("close worker store: %v", err)
+	}
+
+	// Drive the fallback at the level the fix lives: receiver/current is the owner
+	// (worker), jm is the owner's closed store, and the fallback target is the
+	// owner's DIRECT PARENT (coord) — exactly what the fixed jobReadOutputTool
+	// passes. At HEAD the fallback resolves `local` from the receiver (worker),
+	// local == current, so it returns (nil,false,ErrStoreClosed) and recovery
+	// fails. After the fix it resolves `local` from coord, local != current, and
+	// the forwarded copy is recovered.
+	snap, err := worker.readJobOutputSnapshot(workerJM, coordinator, workerRec.JobID, 65536, false, nil)
+	if err != nil {
+		t.Fatalf("readJobOutputSnapshot returned error: %v", err)
+	}
+	if snap.Manager != coordJM {
+		t.Fatalf("readJobOutputSnapshot manager = %p, want owner-parent fallback %p (coord)", snap.Manager, coordJM)
+	}
+	if snap.Record == nil || snap.Record.JobID != workerRec.JobID || snap.Record.Status != jobstore.StatusCompleted {
+		t.Fatalf("snapshot record = %+v, want completed coord forwarded record", snap.Record)
+	}
+	if !strings.Contains(snap.Content, "worker grandchild line") {
+		t.Fatalf("snapshot content = %q, want worker durable output recovered from coord", snap.Content)
 	}
 }
 
@@ -2667,9 +2753,14 @@ func TestJobReadOutputDepth2Resolves(t *testing.T) {
 
 	// The resolved owner is the worker, not the root or coordinator: projection
 	// and the snapshot read both key on it.
-	owner, ownerSess, rec, found := root.resolveDescendantJobOwner(workerRec.JobID)
+	owner, ownerSess, ownerParent, rec, found := root.resolveDescendantJobOwner(workerRec.JobID)
 	if !found || owner != workerJM || ownerSess != worker {
 		t.Fatalf("resolveDescendantJobOwner(worker job) = (jm==worker:%v, sess==worker:%v, found:%v), want worker owner", owner == workerJM, ownerSess == worker, found)
+	}
+	// The owner's direct parent is the coordinator (single-hop forwarding lands
+	// the forwarded copy there); the closed-store read fallback keys on it.
+	if ownerParent != coordinator {
+		t.Fatalf("resolveDescendantJobOwner owner parent = %p, want coordinator %p", ownerParent, coordinator)
 	}
 	if rec == nil || rec.OwnerSessionID != "WORK" {
 		t.Fatalf("resolved record = %+v, want owner WORK", rec)

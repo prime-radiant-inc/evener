@@ -272,40 +272,44 @@ func (s *Session) nestedOrLocalJobManager(jobID string) (*jobManager, *jobstore.
 // ownerJobManagerFor step at each hop until the owner store holds the job_id. It
 // returns the owner's jobManager, the owner Session (the load-bearing T11
 // advisory: projection and resumability must key on the owner, not the root
-// caller), the owner's record, and whether the owner was found.
+// caller), the owner's DIRECT PARENT session (where the single-hop forwarded
+// terminal copy lands — the closed-store read fallback resolves against it; for
+// a direct child of the caller the parent IS the caller), the owner's record,
+// and whether the owner was found.
 //
 // Leaf-lock discipline matches the walk: each store is read under its own lock
 // (ownerJobManagerFor loads the node's store; liveSubagentSessions takes each
 // sub.mu only to read the closed flag), and NO jobManager or session lock is
 // held across the recursion.
-func (s *Session) resolveDescendantJobOwner(jobID string) (*jobManager, *Session, *jobstore.JobRecord, bool) {
+func (s *Session) resolveDescendantJobOwner(jobID string) (*jobManager, *Session, *Session, *jobstore.JobRecord, bool) {
 	if s == nil {
-		return nil, nil, nil, false
+		return nil, nil, nil, nil, false
 	}
 	for _, child := range s.liveSubagentSessions() {
 		// One single-hop step at this node: a job owned by a DIRECT child of
-		// child is reachable through child.ownerJobManagerFor.
+		// child is reachable through child.ownerJobManagerFor. The owner's direct
+		// parent is therefore child.
 		if owner, rec := child.ownerJobManagerFor(jobID); owner != nil {
 			ownerSess := liveSubagentSession(child.subagents, rec.OwnerSessionID)
 			if found, err := findJobRecord(owner, jobID); err == nil && ownerSess != nil {
-				return owner, ownerSess, found, true
+				return owner, ownerSess, child, found, true
 			}
 		}
 		// The child itself may own the job (a depth >= 2 owner with no further
-		// descendants below it).
+		// descendants below it). Its direct parent is s.
 		if child.jobManager != nil && child.jobManager.store != nil {
 			if recs, err := child.jobManager.store.Load(); err == nil {
 				if rec := recs[jobID]; rec != nil && rec.OwnerSessionID == child.id {
-					return child.jobManager, child, rec, true
+					return child.jobManager, child, s, rec, true
 				}
 			}
 		}
 		// Recurse deeper into the live subtree.
-		if owner, ownerSess, rec, ok := child.resolveDescendantJobOwner(jobID); ok {
-			return owner, ownerSess, rec, ok
+		if owner, ownerSess, ownerParent, rec, ok := child.resolveDescendantJobOwner(jobID); ok {
+			return owner, ownerSess, ownerParent, rec, ok
 		}
 	}
-	return nil, nil, nil, false
+	return nil, nil, nil, nil, false
 }
 
 func (s *Session) stopNestedOrLocal(jobID string) (*jobstore.JobRecord, error) {
@@ -348,7 +352,7 @@ func (s *Session) notControllableDescendantError(jobID string) error {
 	if child == nil {
 		return nil
 	}
-	_, _, ownerRec, _ := s.resolveDescendantJobOwner(jobID)
+	_, _, _, ownerRec, _ := s.resolveDescendantJobOwner(jobID)
 	ownerID := child.id
 	if ownerRec != nil && ownerRec.OwnerSessionID != "" {
 		ownerID = ownerRec.OwnerSessionID
@@ -481,7 +485,7 @@ func (s *Session) directChildOwningDescendant(jobID string) *Session {
 			}
 		}
 		// A session deeper in this child's live subtree owns the job (two+ hops).
-		if _, _, _, ok := child.resolveDescendantJobOwner(jobID); ok {
+		if _, _, _, _, ok := child.resolveDescendantJobOwner(jobID); ok {
 			return child
 		}
 	}

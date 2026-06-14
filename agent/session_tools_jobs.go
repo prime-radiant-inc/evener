@@ -158,7 +158,7 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (string, error)
 		// enriched with the delegate-the-watching guidance — the model should have
 		// the owning session attach the watch, since only it can watch its own job.
 		if errors.Is(err, errWatchTargetNotFound) {
-			if _, owner, _, ok := s.resolveDescendantJobOwner(a.Target); ok && owner != nil {
+			if _, owner, _, _, ok := s.resolveDescendantJobOwner(a.Target); ok && owner != nil {
 				return "", fmt.Errorf("target_not_watchable: job %q is owned by descendant session %q, which you cannot watch directly (watches resolve own jobs only); delegate the watching to session %q so it attaches the watch on its own job", a.Target, owner.id, owner.id)
 			}
 		}
@@ -223,6 +223,13 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	// closed-store fallback all key on the owner). deepDescendant marks a
 	// resolved depth >= 2 read, which is snapshot-only like a granted read.
 	readSession := s
+	// fallbackTarget is the session the closed-store read fallback resolves its
+	// replacement store from: the caller for own/depth-1 reads (its store holds
+	// the depth-1 forwarded copy), and the OWNER'S DIRECT PARENT for a depth >= 2
+	// descendant (forwarding is single-hop, so the forwarded terminal copy lands
+	// in the owner's parent store, not the root). For a direct child of the
+	// caller the owner's parent IS the caller, so depth-1 stays identical.
+	fallbackTarget := s
 	deepDescendant := false
 	// The one-hop resolver reaches only the caller and its direct children. A
 	// job that is missing locally, or surfaced only as a forwarded copy of a
@@ -233,9 +240,10 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	// the original resolution — including its error — unchanged.
 	oneHopLocalMiss := jm == s.jobManager && (err != nil || (resolvedRec != nil && resolvedRec.OwnerSessionID != s.id))
 	if oneHopLocalMiss {
-		if owner, ownerSess, _, ok := s.resolveDescendantJobOwner(jobID); ok {
+		if owner, ownerSess, ownerParent, _, ok := s.resolveDescendantJobOwner(jobID); ok {
 			jm = owner
 			readSession = ownerSess
+			fallbackTarget = ownerParent
 			deepDescendant = true
 			err = nil
 		}
@@ -320,7 +328,7 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	if granted != nil {
 		snap, err = granted.snapshot(readBytes, fromHead, grepRE)
 	} else {
-		snap, err = readSession.readJobOutputSnapshot(jm, jobID, readBytes, fromHead, grepRE)
+		snap, err = readSession.readJobOutputSnapshot(jm, fallbackTarget, jobID, readBytes, fromHead, grepRE)
 	}
 	if err != nil {
 		return "", err
@@ -362,11 +370,18 @@ type jobReadOutputSnapshot struct {
 	Matches    []jobstore.Match
 }
 
-func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, readBytes int, fromHead bool, grepRE *regexp.Regexp) (jobReadOutputSnapshot, error) {
+// readJobOutputSnapshot reads jobID's snapshot from jm, retrying through the
+// closed-store fallback when jm's store has closed. fallbackTarget is the
+// session whose store the fallback redirects to: the caller for own/depth-1
+// reads, the OWNER'S DIRECT PARENT for a resolved depth >= 2 descendant (where
+// the single-hop forwarded copy lands). The receiver s remains the read/owner
+// session (the T11 projection key); only the fallback's replacement-store
+// resolution keys on fallbackTarget.
+func (s *Session) readJobOutputSnapshot(jm *jobManager, fallbackTarget *Session, jobID string, readBytes int, fromHead bool, grepRE *regexp.Regexp) (jobReadOutputSnapshot, error) {
 	for {
 		_, err := findJobRecord(jm, jobID)
 		if err != nil {
-			next, ok, fallbackErr := s.jobReadClosedStoreFallback(jm, err)
+			next, ok, fallbackErr := fallbackTarget.jobReadClosedStoreFallback(jm, err)
 			if ok {
 				jm = next
 				continue
@@ -376,7 +391,7 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, readBytes 
 
 		content, totalBytes, truncated, err := jm.readJobWindow(jobID, readBytes, fromHead)
 		if err != nil {
-			next, ok, fallbackErr := s.jobReadClosedStoreFallback(jm, err)
+			next, ok, fallbackErr := fallbackTarget.jobReadClosedStoreFallback(jm, err)
 			if ok {
 				jm = next
 				continue
@@ -386,7 +401,7 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, readBytes 
 
 		rec, err := findJobRecord(jm, jobID)
 		if err != nil {
-			next, ok, fallbackErr := s.jobReadClosedStoreFallback(jm, err)
+			next, ok, fallbackErr := fallbackTarget.jobReadClosedStoreFallback(jm, err)
 			if ok {
 				jm = next
 				continue
@@ -398,7 +413,7 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, readBytes 
 		if grepRE != nil {
 			matches, err = jm.grepOutput(jobID, grepRE)
 			if err != nil {
-				next, ok, fallbackErr := s.jobReadClosedStoreFallback(jm, err)
+				next, ok, fallbackErr := fallbackTarget.jobReadClosedStoreFallback(jm, err)
 				if ok {
 					jm = next
 					continue
@@ -407,7 +422,7 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, readBytes 
 			}
 			rec, err = findJobRecord(jm, jobID)
 			if err != nil {
-				next, ok, fallbackErr := s.jobReadClosedStoreFallback(jm, err)
+				next, ok, fallbackErr := fallbackTarget.jobReadClosedStoreFallback(jm, err)
 				if ok {
 					jm = next
 					continue
@@ -453,6 +468,14 @@ func (g *grantedJobRead) snapshot(readBytes int, fromHead bool, grepRE *regexp.R
 	}, nil
 }
 
+// jobReadClosedStoreFallback redirects a closed-store read to the receiver's own
+// store, which holds the single-hop forwarded copy of the closed owner's job.
+// The receiver is the fallback target: the caller for own/depth-1 reads (whose
+// store holds the depth-1 forwarded copy), the OWNER'S DIRECT PARENT for a
+// depth >= 2 descendant. The current == local guard keeps the redirect a no-op
+// when the closed store IS the receiver's store (nothing further to fall back
+// to); for depth >= 2 the owner's-parent store differs from the closed owner
+// store, so the forwarded copy is recovered.
 func (s *Session) jobReadClosedStoreFallback(current *jobManager, err error) (*jobManager, bool, error) {
 	if !errors.Is(err, jobstore.ErrStoreClosed) {
 		return nil, false, err
