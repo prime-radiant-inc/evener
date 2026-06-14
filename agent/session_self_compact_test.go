@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -152,5 +154,56 @@ func TestApplyPendingForceCompact_NoRequest_NoOp(t *testing.T) {
 	s.applyPendingForceCompact(context.Background()) // no pending request
 	if len(currentHistory(t, s)) != before {
 		t.Fatal("with no pending request, applyPendingForceCompact must be a no-op")
+	}
+}
+
+// TestPinnedNote_MetaRoundTrip verifies that setPinnedNote is captured by Meta()
+// and survives a JSON marshal/unmarshal round-trip (the wire format used by
+// SaveSessionMeta/LoadSessionMeta).
+func TestPinnedNote_MetaRoundTrip(t *testing.T) {
+	s := newTestSession(t)
+	s.setPinnedNote("REMEMBER: resume me")
+	meta := s.Meta()
+	if meta.PinnedNote != "REMEMBER: resume me" {
+		t.Fatalf("meta.PinnedNote = %q", meta.PinnedNote)
+	}
+	b, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back schema.SessionMeta
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.PinnedNote != "REMEMBER: resume me" {
+		t.Fatalf("json round-trip lost the note: %q", back.PinnedNote)
+	}
+}
+
+// TestPinnedNote_SurvivesResume verifies that PinnedNote is restored when a
+// session is reconstructed via RestoreSessionFromMeta. It uses the same
+// RestoreSessionFromMeta helper that the real resume path uses, with a
+// SessionMeta carrying PinnedNote set directly (mirroring how
+// LoadSessionMeta would return it after SaveSessionMeta wrote it).
+func TestPinnedNote_SurvivesResume(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	stateDir := t.TempDir()
+
+	meta := schema.SessionMeta{
+		ID:         "resume-pinned-note",
+		ProfileID:  "openai",
+		Model:      "gpt-5.2",
+		PinnedNote: "REMEMBER: resume me",
+	}
+
+	restored, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, stateDir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if got := restored.PinnedNote(); got != "REMEMBER: resume me" {
+		t.Fatalf("PinnedNote after resume = %q, want %q", got, "REMEMBER: resume me")
 	}
 }
