@@ -4,7 +4,7 @@ A non-interactive coding agent. Give it a prompt, it does the work.
 
 Serf uses the LLM's native tool-calling to read files, write files, run commands, and search code in a loop until the work is complete. It supports OpenAI, Anthropic, and Google models.
 
-For how the code is organized — modules, layout, and the build workspace — see [docs/architecture.md](docs/architecture.md).
+For how the code is organized — modules, layout, and the build workspace — see [docs/architecture.md](docs/architecture.md). For the runtime contracts subagents, plugins, hooks, and helpers operate under (capability policy, lifecycle hooks, helper isolation, lineage), see [docs/subagent-runtime-contracts.md](docs/subagent-runtime-contracts.md); for background jobs and the job-control tools, see [docs/job-control.md](docs/job-control.md).
 
 ## Build
 

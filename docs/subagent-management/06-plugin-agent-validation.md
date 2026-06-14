@@ -2,6 +2,8 @@
 
 Status: Proposed evergreen spec. Current serf plugin loading supports Claude/Codex-style plugin manifests and markdown agent definitions, but validation is intentionally thin in several places. This spec hardens plugin and plugin-agent validation without changing the successful load path for valid existing plugins.
 
+> **Evergreen pointer:** the validation behavior from this spec that has actually shipped is documented as current reality in [`../subagent-runtime-contracts.md`](../subagent-runtime-contracts.md) ("Plugin and agent loading"). This file is the point-in-time design record; much of what follows is proposed, not built.
+
 ## Purpose
 
 Make plugin and plugin-agent loading fail predictably, with diagnostics that tell plugin authors exactly which manifest or agent field is invalid. Validation should catch author mistakes at load/session startup instead of allowing silent overwrites, ambiguous names, unsupported shapes, or capability requests that are only discovered during child execution.

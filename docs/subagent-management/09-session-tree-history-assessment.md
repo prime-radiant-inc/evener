@@ -2,6 +2,8 @@
 
 Status: Optional assessment / decision document. This is not a committed feature spec. We are explicitly unsure that Serf needs a tree-native history API now; the preferred outcome may be to keep the current fork lineage metadata and defer any new API until a Hub/TUI/CLI/SDK consumer needs it.
 
+> **Evergreen pointer:** the shipped lineage baseline this assessment inventories (fork vs subagent metadata, `ParentSessionID`/`DivergenceTurn`/parent-stored `ForkLabel`, `find_session_transcripts(children_of)` with its `kind` discriminator) is documented as current reality in [`../subagent-runtime-contracts.md`](../subagent-runtime-contracts.md) ("History and lineage"). The session-tree API remains deferred per this doc's Option A.
+
 ## Purpose
 
 Assess whether Serf should expose a first-class tree/history view over forked sessions, and, only if the answer is yes, define the smallest read-only API and implementation plan that can support that view without adding premature storage, indexing, or transcript rewrites.

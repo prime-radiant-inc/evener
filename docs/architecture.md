@@ -211,35 +211,35 @@ appenders and exactly one drainer:
   job-completion records and watch-send wake tokens. Appended by the `jobManager`'s
   `enqueue` upcall from observation paths (`enqueueJobNotificationAndNotify`); drained
   by the loop in the notification-accept path (`acceptNotificationInput`,
-  `agent/session_lifecycle.go:821`).
+  `agent/session_lifecycle.go`).
 - **Watch outbox** — the durable pending watch sends (jobstore `watch_send_pending`
   records). Appended by the `jobManager`'s observation paths (`onSessionEvent`,
   `feedJobOutput`, `fireProgressTick`, `armFinalizedJob`) taking only leaf locks;
-  drained by `drainPendingWatchSends` (`agent/job_watch.go:2560`), the **sole** executor
+  drained by `drainPendingWatchSends` (`agent/job_watch.go`), the **sole** executor
   of watch-send delivery.
 
 **Who drains where.** `drainPendingWatchSends` runs only from loop-owned boundaries:
-between tool rounds (`injectPostToolSteering`, `agent/session_tool_round.go:271`), at the
-processing-finish boundary (`finishProcessingAtBoundary`, `agent/session_state.go:113`),
+between tool rounds (`injectPostToolSteering`, `agent/session_tool_round.go`), at the
+processing-finish boundary (`finishProcessingAtBoundary`, `agent/session_state.go`),
 in the notification-accept path (`acceptNotificationInput`), and after restore /
-history-repair (`agent/history_repair.go:126`). Caller-targeted sends ride the
+history-repair (`agent/history_repair.go`). Caller-targeted sends ride the
 notification queue as wake tokens keyed by watch ID; the accept path deduplicates them
 against current pending state and settles delivery in that turn; delegate-targeted sends are steered (running) or resumed
 (terminal-resumable) directly by the drain, the same path a model-initiated
 `job_send_message` takes.
 
 **The wake path.** `jm.wake` (wired to `Session.notify` at construction,
-`agent/session_init.go:128`) → `Session.notify` (`agent/session.go:288`) → the server's
-input channel → an `EntryNotification` (`agent/session_lifecycle.go:519`) that runs the
+`agent/session_init.go`) → `Session.notify` (`agent/session.go`) → the server's
+input channel → an `EntryNotification` (`agent/session_lifecycle.go`) that runs the
 accept path. An empty accept is a no-op that still calls
-`finishProcessingAtBoundary` → `drainPendingWatchSends` (`agent/session_lifecycle.go:869`),
+`finishProcessingAtBoundary` → `drainPendingWatchSends` (`agent/session_lifecycle.go`),
 so a wake carrying only delegate-targeted sends delivers with zero model turns.
 
 **The forbidden re-entry.** `responseSideEffectsMu` is held across event emits
 (`emitAssistantResponse`, the tool-call-end emit). Observation paths and the `jobManager`'s
 retained upcalls (`emit`, `enqueue`, `wake`, `forward`) may take **only** leaf locks
 (`s.mu`, `eventsMu`, `pendingJobNotifsMu`) — never `responseSideEffectsMu`. The documented
-lock order is `responseSideEffectsMu > mu` (`agent/session.go:72-75`), so a leaf-lock upcall
+lock order is `responseSideEffectsMu > mu` (`agent/session.go`), so a leaf-lock upcall
 from an emit context is order-consistent; re-taking `responseSideEffectsMu` on the emitting
 goroutine would self-deadlock (Go mutexes are not re-entrant). The enforcement is
 structural, not by discipline: `jobManager` has **no** `send` closure back into `Session`,
@@ -263,16 +263,16 @@ its server drives it.
 > eventually-driven, level by level. The mailbox invariant holds at every depth.**
 
 A parent drains its own watch outbox in `drainPendingWatchSends`, and at the tail of that
-same boundary it calls `driveChildrenWithUndeliveredAttention` (`agent/job_watch.go:2585`).
+same boundary it calls `driveChildrenWithUndeliveredAttention` (`agent/job_watch.go`).
 That scan reads each direct child's mailboxes as **signal only** — a queued owner
 notification (`peekNotifications`) or pending watch sends (`hasPendingWatchSends`) — and, for
 any child with undelivered attention, calls `driveSubagentNotificationTurn`
-(`agent/subagents.go:683`). The drive launches **one** notification turn on the *child's own*
+(`agent/subagents.go`). The drive launches **one** notification turn on the *child's own*
 loop (`ProcessInputKind(..., EntryNotification)`), so the child's own `acceptNotificationInput`
 drains the child's own mailboxes. The parent never appends to, steers, or mutates the child;
 it only **runs** the child, and the child's loop delivers. A child's terminal notification
 firing also kicks its parent directly — `SetNotifyFunc(func() { s.driveChildIfNotStopGated(sub) })`
-(`agent/subagents.go:558`) — so a child wake propagates up to the parent's boundary the same
+(`agent/subagents.go`) — so a child wake propagates up to the parent's boundary the same
 way the root's `jm.wake` propagates to its server. The drive mints no job record and arms
 nothing new; it is the child processing its own durable queue, gated only by the tree-wide
 running-delegate counter for the turn's duration.
@@ -287,15 +287,15 @@ jobs notify the subagent, never its ancestors. A forwarded copy of a child-owned
 lands in an ancestor's store is a **drive signal**, not a render target: the ancestor is *not*
 interrupted about a job a descendant created — it drives the descendant so the descendant
 renders its own notification (`forwardEvent` returns before `enqueue` when
-`rec.OwnerSessionID != jm.sessionID`, `agent/jobs_nested.go:642-644`; the restore path filters
-the same way at `agent/jobs.go:1207-1209`, so there is no restart wake-storm). A parent still
+`rec.OwnerSessionID != jm.sessionID`, `agent/jobs_nested.go`; the restore path filters
+the same way at `agent/jobs.go`, so there is no restart wake-storm). A parent still
 **renders** its OWN jobs' terminals, including its direct delegates finishing — that is the
 parent's own job ending, not noise about a descendant. Ancestors retain on-demand visibility
 into the whole subtree through `job_list(include_descendants=true)`, which walks the live tree
 at read time rather than pushing notifications upward. This realizes the durable principle that
 an agent is never interrupted about a *subagent's* children: attention escalates only one honest
 level (the `child unreachable:` fallback when a child cannot be driven,
-`renderUnreachableChildPendings`, `agent/job_watch.go:2654`).
+`renderUnreachableChildPendings`, `agent/job_watch.go`).
 
 **Forwarding is single-hop.** A job's events forward exactly one level: a child's `jm.forward`
 is its direct parent's `forwardEvent`, which appends the event to the parent's store and
