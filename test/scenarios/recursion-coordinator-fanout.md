@@ -166,12 +166,17 @@ below.
   the worker job_ids. Concretely: for every worker job_id the
   coordinator reported in `COORDINATOR_SPAWNED`, that id does NOT appear
   in any notification frame on the root's rail. Falsification (this is
-  the regression this card exists to catch): a worker's job_id or a
-  worker's completion text appears in a notification frame on the
-  root's rail — the root was interrupted about a job a DESCENDANT
+  the regression this card exists to catch): a worker's job_id appears
+  as the SUBJECT of a `<job-notification>` frame on the root's rail (the
+  frame's `job_id=` attribute), or a worker's completion text appears
+  INSIDE such a frame — the root was interrupted about a job a DESCENDANT
   created, which the owner-scoped rule (line 1079, Jesse's ruling
   "an agent is never interrupted about a *subagent's* children")
-  forbids. (The root may still SEE the workers on demand via
+  forbids. Match on the frame SUBJECT, not a bare substring search: a
+  worker job_id and its `WORKER_x` payload legitimately appear in the
+  COORDINATOR's transcript and in the root's forwarded durable records
+  (`jobs.jsonl`) — that is visibility/drive substrate, not a root-rail
+  notification. (The root may still SEE the workers on demand via
   `include_descendants` — visibility ≠ a notification; do not count a
   `job_list` row as a notification.)
 - **Cascade stop (step 5).** Before the stop (step 5.3), the
@@ -188,7 +193,17 @@ below.
   `runtime_lost` for a worker ONLY if stopping the coordinator tore
   down its owner runtime before the worker stop confirmed (line 1084's
   "without closing the sessions" makes this unlikely here; record what
-  you see); a worker left silently `running` is the failure.
+  you see); a worker left silently `running` is the failure. This
+  cascade assertion requires COORD2 to be **running** when stopped — the
+  workers' 300s sleeps keep COORD2's session alive and its delegate job
+  non-terminal through step 5.4. A `job_stop` on a coordinator that has
+  ALREADY completed naturally (its own job terminal) is a no-op BY
+  DESIGN and does NOT cascade (the terminal-delegate cascade guard,
+  `delegateChildSessionToCascade` in `agent/jobs_nested.go`): workers
+  left running after stopping an already-**completed** COORD2 is
+  expected, not a cascade hole. If COORD2 shows a terminal status BEFORE
+  step 5.4, re-run with longer worker sleeps so the stop lands on a
+  running coordinator.
 - **Durable substrate.** The root's `jobs.jsonl` contains forwarded
   `job_started` (typed `delegate`, line 1077) and `job_finished` events
   for COORD/COORD2 and — as forwarded one-hop copies — for the workers,

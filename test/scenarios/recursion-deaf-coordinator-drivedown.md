@@ -105,14 +105,19 @@ IS the test, asserted on the coordinator's own transcript.
   COORDINATOR's terminal (COORD finishing — the root's OWN direct
   delegate ending, line 1079 / line 1226) and contain NONE of the
   worker job_ids reported in `COORD_WORKERS`. For each worker job_id:
-  it does NOT appear in any notification frame on the root's rail, and
-  neither do the `W1_DONE`/`W2_DONE` worker payloads. Falsification
+  it does NOT appear as the SUBJECT of any notification frame on the
+  root's rail (the frame's `job_id=` attribute), and neither do the
+  `W1_DONE`/`W2_DONE` worker payloads INSIDE such a frame. Falsification
   (the pre-drive-down behavior, and the regression this card guards): a
-  worker job_id or a worker's completion text appears in a notification
-  frame on the ROOT's rail — the root was interrupted about a job its
-  DESCENDANT created, which the owner-scoped rule forbids ("an agent is
-  never interrupted about a *subagent's* children", line 1079 /
-  line 1234).
+  worker job_id appears as the SUBJECT of a `<job-notification>` frame on
+  the ROOT's rail, or a worker's completion text appears INSIDE one —
+  the root was interrupted about a job its DESCENDANT created, which the
+  owner-scoped rule forbids ("an agent is never interrupted about a
+  *subagent's* children", line 1079 / line 1234). Match on the frame
+  SUBJECT, not a bare substring: the worker ids and their
+  `W1_DONE`/`W2_DONE` payloads legitimately appear in the COORDINATOR's
+  transcript and in the root's forwarded durable records — that
+  substrate is not a root-rail notification.
 - **Visibility preserved, not removed.** Even though the root was not
   notified about the workers, a `job_list(include_descendants=true)`
   from the root would surface them on demand (line 1079: the ancestor
