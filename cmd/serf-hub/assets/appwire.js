@@ -267,6 +267,16 @@
     return request(METHOD.modelList, params || {}).then((resp) => resp.data || []);
   }
 
+  // listModelsWithDiagnostics returns both the launchable models and the
+  // launch-check diagnostics, so callers (the spawn picker) can show why a
+  // configured provider is missing instead of silently dropping it.
+  function listModelsWithDiagnostics(params) {
+    return request(METHOD.modelList, params || {}).then((resp) => ({
+      models: resp.data || [],
+      diagnostics: resp.diagnostics || [],
+    }));
+  }
+
   function completeDirs(prefix) {
     return request(METHOD.dirsComplete, { prefix: prefix || "" }).then((resp) => ({
       results: (resp.data || []).map((path) => ({ path, is_git: false })),
@@ -817,6 +827,7 @@
     listThreads,
     search,
     listModels,
+    listModelsWithDiagnostics,
     completeDirs,
     validatePath,
     startThread,

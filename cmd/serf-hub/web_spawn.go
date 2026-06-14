@@ -149,13 +149,18 @@ func writeSpawnError(w http.ResponseWriter, err error) {
 func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 	harness := strings.TrimSpace(r.URL.Query().Get("harness"))
 	workingDir := strings.TrimSpace(r.URL.Query().Get("cwd"))
+	// With ?diagnostics=1 the response carries both models and the launch-check
+	// diagnostics so the picker can show why a configured provider is missing
+	// instead of silently dropping it. The default response stays a bare array
+	// for the settings and command-palette consumers.
+	includeDiagnostics := r.URL.Query().Get("diagnostics") == "1"
 	if harness != "" && harness != "serf" && harness != "local" {
 		resp, err := hubModelList(r.Context(), s.cfg, s.sources, appwire.ModelListParams{Harness: harness, CWD: workingDir})
 		if err != nil {
 			writeAPIWireError(w, http.StatusBadGateway, err)
 			return
 		}
-		writeAPIJSON(w, http.StatusOK, modelDescriptorsToAPIModels(resp.Data))
+		writeModelsResponse(w, modelDescriptorsToAPIModels(resp.Data), resp.Diagnostics, includeDiagnostics)
 		return
 	}
 
@@ -168,8 +173,29 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 	if len(models) == 0 && !hasSerfLaunchModelLister(s.cfg) {
 		models = s.fetchLiveModels(r.Context())
 	}
+	writeModelsResponse(w, models, launchResp.Diagnostics, includeDiagnostics)
+}
+
+// writeModelsResponse writes the model list as a bare JSON array by default, or
+// as {"models": [...], "diagnostics": [...]} when the caller opted into
+// diagnostics. Diagnostics serialize as an empty array (never null) so clients
+// can iterate unconditionally.
+func writeModelsResponse(w http.ResponseWriter, models []map[string]any, diagnostics []appwire.ModelListDiagnostic, includeDiagnostics bool) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(models) //nolint:errcheck
+	if !includeDiagnostics {
+		json.NewEncoder(w).Encode(models) //nolint:errcheck
+		return
+	}
+	if models == nil {
+		models = []map[string]any{}
+	}
+	if diagnostics == nil {
+		diagnostics = []appwire.ModelListDiagnostic{}
+	}
+	json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+		"models":      models,
+		"diagnostics": diagnostics,
+	})
 }
 
 func launchModelListErrorDiagnostic(err error) appwire.ModelListDiagnostic {

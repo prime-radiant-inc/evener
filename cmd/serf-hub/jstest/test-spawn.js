@@ -108,6 +108,22 @@ formDom.window.SerfAppwire = {
       },
     };
   },
+  listModelsWithDiagnostics(params) {
+    listModelsCalls++;
+    listModelsParams = params || {};
+    return {
+      then(resolve) {
+        resolve({
+          models: [
+            { provider: "openai", model: "gpt-5.2" },
+            { provider: "codex", model: "gpt-5.3-codex" },
+          ],
+          diagnostics: [],
+        });
+        return { catch() {} };
+      },
+    };
+  },
   completeDirs(prefix) {
     dirCompletionPrefixes.push(prefix);
     return Promise.resolve({
@@ -280,6 +296,56 @@ formDom.window.document.querySelectorAll(".chip-picker-option")[0].click();
 assert(formDom.window.document.querySelector('input[name="harness"]').value === "serf", "harness should switch back to serf");
 assert(modelValue() === "", "switching back to serf should clear raw codex model value");
 assert(modelDisplay() === "(pick a model)", "switching back to serf should show serf model placeholder");
+
+// The picker surfaces launch-check diagnostics so a configured provider that
+// failed to list (bad key, network, down) is shown with a reason instead of
+// silently vanishing from the model list.
+const diagModelDom = new JSDOM(`<!DOCTYPE html><html><body>
+  <form data-spawn-form>
+    <button class="btn btn-chip" type="button" data-chip="harness"><span class="chip-value" data-chip-value-harness>serf</span></button>
+    <button class="btn btn-chip" type="button" data-chip="model"><span class="chip-value" data-chip-value-model>(pick a model)</span></button>
+    <textarea name="prompt"></textarea>
+    <input type="hidden" name="harness" value="serf">
+    <input type="hidden" data-harness-option value="serf" data-label="serf">
+    <input type="hidden" name="model" value="">
+    <input type="hidden" name="working_dir" value="/tmp/diag-project">
+    <input type="hidden" name="branch" value="">
+    <input type="hidden" name="access_mode" value="full">
+    <input type="hidden" name="agent" value="default">
+    <input type="hidden" name="reasoning_effort" value="">
+    <button class="btn btn-primary spawn-btn" type="submit">spawn</button>
+  </form>
+</body></html>`, {
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+  url: "http://127.0.0.1:9180/new",
+});
+diagModelDom.window.SerfAppwire = {
+  listModels() {
+    return { then(resolve) { resolve([{ provider: "openai", model: "gpt-5.5" }]); return { catch() {} }; } };
+  },
+  listModelsWithDiagnostics() {
+    return {
+      then(resolve) {
+        resolve({
+          models: [{ provider: "openai", model: "gpt-5.5" }],
+          diagnostics: [{ provider: "kimi", message: "list models: HTTP 401", hint: "check credentials" }],
+        });
+        return { catch() {} };
+      },
+    };
+  },
+};
+diagModelDom.window.eval(dirPickerSrc);
+diagModelDom.window.eval(spawnSrc);
+diagModelDom.window.document.dispatchEvent(new diagModelDom.window.Event("DOMContentLoaded", { bubbles: true }));
+diagModelDom.window.document.querySelector('button[data-chip="model"]').click();
+const diagRows = Array.from(diagModelDom.window.document.querySelectorAll(".chip-picker-diagnostic")).map(el => el.textContent);
+assert(diagRows.length === 1, "picker should render one diagnostic row, got " + diagRows.length);
+assert(diagRows[0].includes("kimi") && diagRows[0].includes("list models: HTTP 401"),
+  "diagnostic row should name the unavailable provider and its reason, got " + JSON.stringify(diagRows[0]));
+assert(diagModelDom.window.document.querySelector(".chip-picker-model-name"),
+  "picker should still render available models alongside diagnostics");
 
 let promptCalled = false;
 formDom.window.prompt = () => {
