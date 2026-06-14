@@ -440,3 +440,39 @@ subagent restriction, and non-persistent recoverability items.
 > (the deferred-return contradiction) and otherwise refined resume persistence, threshold
 > propagation, and wording. Remaining risk is implementation-level and is left to the plan +
 > TDD, which verify it more reliably than further prose review.
+
+## Appendix B: Obedience eval
+
+**File:** `agent/internal/contextmgr/summarize_obedience_eval_test.go` (build tag `eval`)
+
+**Purpose.** The `compaction_instructions` instruction path (§3) ships only if the configured
+cheap summarization model actually honors drop/keep directives. This eval measures that. Failure
+means ship note-pin-only; the `compaction_instructions` arg is simply ignored.
+
+**How to run:**
+
+```sh
+go test -tags eval ./agent/internal/contextmgr/ -run TestSummarizeObedience -v
+```
+
+Set at least one provider API key before running (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+`GEMINI_API_KEY`, or `GOOGLE_API_KEY`). Without any key the test skips cleanly.
+
+**Pass criteria (hard requirements):**
+
+- **ZERO must-keep drops** — if any case drops a fact the instruction said to keep, the test
+  calls `t.Fatalf` immediately and the instruction path must NOT ship.
+- **≥ 90% honored** — at least 90% of the 22 cases must correctly drop the droppable block
+  AND preserve the must-keep token.
+
+**Corpus design.** 22 cases. Each case has: a history string containing a large droppable
+block (build logs, vendored code, repetitive tool output, etc.) with a distinctive
+`DROPTARGET_*` token; a must-keep fact (API signature, failing-test name, migration plan
+step, etc.) with a distinctive token; an instruction that explicitly names what to drop and
+keep. Cases cover: build output, npm/pip installs, CI logs, git log, Docker/Terraform/k8s
+events, SQL EXPLAIN, profiler output, HTTP access logs, network traces, JSON fixtures,
+linter warnings, benchmark noise, protoc output, coverage reports, vendor dumps, and stack
+traces.
+
+**Gate decision.** Run this eval before enabling `compaction_instructions` in production.
+Record the result (pass/fail, model used, obedience rate) in the implementation PR.
