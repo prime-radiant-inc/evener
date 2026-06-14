@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providers/internal/kimicoding"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
@@ -120,5 +121,23 @@ func TestNewForInstance_EnvPathPreservesName(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "kimi", APIKey: "testkey"})
 	if a.Name() != "kimi" {
 		t.Fatalf("Name() = %q, want kimi", a.Name())
+	}
+}
+
+func TestNewForInstance_AnnouncesCodingAgentUserAgent(t *testing.T) {
+	var gotUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","model":"kimi-for-coding","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := NewForInstance(InstanceParams{Name: "kimi", BaseURL: srv.URL, APIKey: "k"})
+	if _, err := a.Complete(context.Background(), llm.Request{Model: "kimi-for-coding", Messages: []llm.Message{llm.User("hi")}}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if gotUA != kimicoding.UserAgent {
+		t.Fatalf("User-Agent = %q, want %q", gotUA, kimicoding.UserAgent)
 	}
 }

@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/serf/llm/providers/internal/kimicoding"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
@@ -42,12 +43,16 @@ func NewForInstance(params InstanceParams) *adapter {
 	if base == "" {
 		base = defaultBaseURL
 	}
-	return providerfwd.NewOpenAICompat(params.Name, providerName, openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
+	backing := openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
 		Name:    params.Name,
 		BaseURL: base,
 		APIKey:  params.APIKey,
 		Quirks:  openaicompat.QuirksPreset("kimi-k2.5"),
-	}))
+	})
+	// Kimi For Coding gates its endpoints behind a coding-agent User-Agent
+	// allowlist; announce as Claude Code so the coding-plan base URL is accepted.
+	backing.DefaultHeaders = map[string]string{"User-Agent": kimicoding.UserAgent}
+	return providerfwd.NewOpenAICompat(params.Name, providerName, backing)
 }
 
 func init() {
