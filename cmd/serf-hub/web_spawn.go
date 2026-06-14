@@ -312,6 +312,11 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 			if m.SupportsReasoning {
 				entry["supports_reasoning"] = true
 			}
+			// Prefer effort levels the provider advertised live; fall back to the
+			// catalog below.
+			if len(m.ReasoningEffortLevels) > 0 {
+				entry["reasoning_effort_levels"] = m.ReasoningEffortLevels
+			}
 			// Keep catalog enrichment for static pricing/capability hints, but
 			// do not replace live token limits with catalog values.
 			if mi != nil {
@@ -323,7 +328,7 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 				if _, ok := entry["supports_reasoning"]; !ok {
 					entry["supports_reasoning"] = mi.SupportsReasoning
 				}
-				if len(mi.ReasoningEffortLevels) > 0 {
+				if _, ok := entry["reasoning_effort_levels"]; !ok && len(mi.ReasoningEffortLevels) > 0 {
 					entry["reasoning_effort_levels"] = mi.ReasoningEffortLevels
 				}
 			}
