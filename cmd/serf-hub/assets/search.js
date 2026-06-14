@@ -332,6 +332,7 @@
             { id: "medium", label: "medium" },
             { id: "high", label: "high" },
             { id: "xhigh", label: "xhigh" },
+            { id: "max", label: "max" },
             { id: "none", label: "none" },
           ]),
           run: (ctx, item) => {
