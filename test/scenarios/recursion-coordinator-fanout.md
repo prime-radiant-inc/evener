@@ -182,28 +182,26 @@ below.
 - **Cascade stop (step 5).** Before the stop (step 5.3), the
   `include_descendants` listing shows COORD2 (`depth` 0,
   `owner_session_id` = `$SID`) and its TWO workers `running` at
-  `depth` 1. The step-5.4 `job_stop(COORD2, max_wait_ms 8000)` returns
-  COORD2 terminal: `status` `"cancelled"`, `reason`
-  `"stopped_by_parent"` (line 1084). The step-5.5 re-list shows BOTH
-  workers ALSO terminal — `cancelled` with reason `stopped_by_parent`
-  (the cascade reached into the subtree without a flag, line 1084),
-  NOT still `running`. Falsification (the cascade hole): either worker
-  is still `running` after the coordinator's stop confirmed — a
-  cascade-stop that orphans the workers. Accept `stopped`/
-  `runtime_lost` for a worker ONLY if stopping the coordinator tore
-  down its owner runtime before the worker stop confirmed (line 1084's
-  "without closing the sessions" makes this unlikely here; record what
-  you see); a worker left silently `running` is the failure. This
-  cascade assertion requires COORD2 to be **running** when stopped — the
-  workers' 300s sleeps keep COORD2's session alive and its delegate job
-  non-terminal through step 5.4. A `job_stop` on a coordinator that has
-  ALREADY completed naturally (its own job terminal) is a no-op BY
-  DESIGN and does NOT cascade (the terminal-delegate cascade guard,
-  `delegateChildSessionToCascade` in `agent/jobs_nested.go`): workers
-  left running after stopping an already-**completed** COORD2 is
-  expected, not a cascade hole. If COORD2 shows a terminal status BEFORE
-  step 5.4, re-run with longer worker sleeps so the stop lands on a
-  running coordinator.
+  `depth` 1. The step-5.4 `job_stop(COORD2, max_wait_ms 8000)` HALTS the
+  live subtree: the step-5.5 re-list shows BOTH workers terminal —
+  `cancelled` with reason `stopped_by_parent` (the cascade reached into
+  the subtree without a flag, line 1084), NOT still `running`. This is
+  the DECISIVE assertion — a `job_stop` on the coordinator MUST stop its
+  running workers. COORD2's OWN record may read `completed` rather than
+  `cancelled`: a fire-and-return coordinator finishes its own turn and
+  goes terminal while its workers keep running, and the cascade targets
+  the live subtree, NOT the coordinator's already-terminal own record —
+  so do NOT require COORD2's own status to be `cancelled`. The cascade
+  fires regardless of the coordinator's own terminal status (the
+  stop-cascade has no terminal gate; `delegateChildSessionToCascade` in
+  `agent/jobs_nested.go`): a fire-and-return coordinator whose own job is
+  already `completed` STILL has its live workers stopped. Falsification
+  (the cascade hole this guards): either worker is still `running` after
+  the stop confirmed — `job_stop` on the coordinator failed to halt its
+  work. Accept `stopped`/`runtime_lost` for a worker ONLY if stopping the
+  coordinator tore down its owner runtime before the worker stop
+  confirmed (record what you see); a worker left silently `running` is
+  the failure.
 - **Durable substrate.** The root's `jobs.jsonl` contains forwarded
   `job_started` (typed `delegate`, line 1077) and `job_finished` events
   for COORD/COORD2 and — as forwarded one-hop copies — for the workers,

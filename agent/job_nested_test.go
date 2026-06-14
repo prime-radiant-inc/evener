@@ -3014,13 +3014,15 @@ func TestJobStopCascadesToWorkers(t *testing.T) {
 	}
 }
 
-// TestJobStopTerminalDelegateDoesNotCascade: a job_stop on an ALREADY-TERMINAL
-// coordinator delegate must NOT cascade into the coordinator's live subtree. The
-// terminal record is returned unchanged and the coordinator's running shell
-// receives ZERO stop signals — there is no live job to stop on behalf of a job
-// that already finished. (The include_children path already skips terminal
-// records; the primary-delegate cascade must too.)
-func TestJobStopTerminalDelegateDoesNotCascade(t *testing.T) {
+// TestJobStopTerminalDelegateCascadesToLiveWorkers: a job_stop on an
+// ALREADY-TERMINAL coordinator delegate MUST still cascade into the
+// coordinator's live subtree. A fire-and-return coordinator's OWN delegate job
+// goes terminal (completed) while its workers keep running — the normal
+// drive-down pattern — so job_stop must halt the live subtree regardless of the
+// coordinator's own terminal status. The terminal record is returned unchanged
+// (only the coordinator's own record; its live subtree is what gets stopped) and
+// the coordinator's running shell is signalled exactly once by the cascade.
+func TestJobStopTerminalDelegateCascadesToLiveWorkers(t *testing.T) {
 	rootJM := newWalkJobManager(t, "ROOT")
 	coordJM := newWalkJobManager(t, "COORD")
 	t.Cleanup(func() {
@@ -3067,10 +3069,10 @@ func TestJobStopTerminalDelegateDoesNotCascade(t *testing.T) {
 		t.Fatalf("job_stop = %+v, want terminal completed record returned unchanged", stop)
 	}
 
-	// The terminal delegate must NOT cascade into the coordinator's live subtree:
-	// the coordinator's running shell receives ZERO stop signals.
-	if coordShellSE.signals.Load() != 0 {
-		t.Fatalf("coordinator shell signals = %d, want 0 (terminal delegate must not cascade)", coordShellSE.signals.Load())
+	// The terminal coordinator delegate MUST cascade into its live subtree: the
+	// coordinator's running shell is signalled exactly once by the cascade.
+	if coordShellSE.signals.Load() != 1 {
+		t.Fatalf("coordinator shell signals = %d, want 1: job_stop on a completed fire-and-return coordinator must still cascade-stop its live workers", coordShellSE.signals.Load())
 	}
 }
 

@@ -408,7 +408,13 @@ func (s *Session) delegateChildSessionToCascade(jobID string) *Session {
 		return nil
 	}
 	rec := recs[jobID]
-	if rec == nil || rec.Type != jobstore.JobDelegate || rec.OwnerSessionID != s.id || rec.Status.IsTerminal() {
+	// No terminal-status gate: a fire-and-return coordinator's OWN delegate job is
+	// terminal (completed) while its live subtree keeps running, and job_stop must
+	// still cascade-stop that live subtree. The downstream stopDelegateSubtree only
+	// signals jm.runningJobIDs(), so already-terminal subtree jobs are skipped
+	// harmlessly; and liveSubagentSession (below) still returns nil for a genuinely
+	// closed/gone coordinator session, so a truly-gone subtree is a safe no-op.
+	if rec == nil || rec.Type != jobstore.JobDelegate || rec.OwnerSessionID != s.id {
 		return nil
 	}
 	_, childID, err := decodeRef(rec.TranscriptRef)
