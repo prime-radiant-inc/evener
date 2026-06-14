@@ -1683,11 +1683,13 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, [
 					trackTerminalFlush = true
 				} else {
 					notifications = append(notifications, watchNotification(jobID, "output_match: "+match))
+					// A no-send caller notification is delivered for sure, but only
+					// after the cfg is removed below, so the drain's later increment
+					// would never reach recent_watches. Count it now. Send deliveries
+					// are NOT pre-counted: they may still be dropped, and they settle
+					// (and count) on their own path.
+					cfg.deliveries++
 				}
-				// Each terminal-flush match is a model-facing delivery. Count it now,
-				// before history is snapshotted: the cfg is removed below, so the
-				// drain's later increment would never reach recent_watches.
-				cfg.deliveries++
 			}
 			if trackTerminalFlush {
 				jm.rememberDetachedPendingLocked(cfg)
