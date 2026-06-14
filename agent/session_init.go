@@ -290,6 +290,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
+	// Restore the cheap/fast model routing from the persisted meta. On resume the
+	// caller's profile carries no cheap model (the launch arg is intentionally
+	// not re-passed), so this is the only place it is re-applied.
+	if meta.CheapModel != "" {
+		profile = provider.WithCheapModel(profile, meta.CheapModel)
+	}
 	profile = resolveLiveModelProfileWithTimeout(client, profile)
 
 	// Recover history from transcript JSONL. No snapshot fallback.

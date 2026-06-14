@@ -216,9 +216,10 @@ Generate a checkpoint preserving:
 Write ONLY the checkpoint content. Be specific and concise (under 500 words). Focus on information the agent CANNOT re-derive from the codebase.`, b.String())
 
 	cp := s.cm.currentProfile()
+	cheapProvider, cheapModel := cp.CheapModelRef()
 	req := llm.Request{
-		Model:    cp.CheapModel(),
-		Provider: cp.ID(),
+		Model:    cheapModel,
+		Provider: cheapProvider,
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 

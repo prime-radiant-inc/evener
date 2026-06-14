@@ -42,6 +42,10 @@ type Profile struct {
 	effortLevels    []string
 	webSearch       bool
 	cheapModel      string
+	// cheapProvider routes auxiliary "side calls" (naming, summarization,
+	// web_fetch Q&A) to a different provider instance than the main model. Empty
+	// means same provider as the main model. Set via WithCheapModel("provider/model").
+	cheapProvider string
 }
 
 type toolCapability string
@@ -361,6 +365,47 @@ func (p *Profile) ConfiguredCheapModel() string {
 		return ""
 	}
 	return strings.TrimSpace(p.cheapModel)
+}
+
+// CheapProvider returns the provider instance name that auxiliary side calls
+// should route to: the explicitly configured cross-provider cheap provider, or
+// the main profile's own id when none is set (same-provider, the default).
+func (p *Profile) CheapProvider() string {
+	if p == nil {
+		return ""
+	}
+	if cp := strings.TrimSpace(p.cheapProvider); cp != "" {
+		return cp
+	}
+	return p.ID()
+}
+
+// CheapModelRef returns the (provider, model) pair for auxiliary side calls,
+// resolving the provider via CheapProvider and the model via CheapModel. Sites
+// that issue a cheap completion route on this pair so the cheap model can live
+// on a different provider than the main model.
+func (p *Profile) CheapModelRef() (provider, model string) {
+	return p.CheapProvider(), p.CheapModel()
+}
+
+// CheapModelRefString returns the configured cheap model as a WithCheapModel ref
+// ("provider/model" when cross-provider, else the bare model), or "" when no
+// cheap model is configured. It is the persistable form: feeding the result back
+// to WithCheapModel reproduces the routing, so it survives serf resume. Unlike
+// CheapModelRef it does NOT fall back to a provider default — an empty result
+// means "not configured", matching ConfiguredCheapModel.
+func (p *Profile) CheapModelRefString() string {
+	if p == nil {
+		return ""
+	}
+	model := strings.TrimSpace(p.cheapModel)
+	if model == "" {
+		return ""
+	}
+	if cp := strings.TrimSpace(p.cheapProvider); cp != "" {
+		return cp + "/" + model
+	}
+	return model
 }
 
 // WithLiveModelInfo returns a copy of the profile updated with model metadata
@@ -753,6 +798,26 @@ func newMiniMaxProfile(model string) *Profile {
 		model:           model,
 		parallel:        true,
 		contextWindow:   204_800,
+		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
+		reasoning:       true,
+		streaming:       true,
+		defaultTimeout:  120_000,
+		knowledgeCutoff: "2025-06-01",
+		defaultEfforts:  []string{"low", "medium", "high", "max"},
+		capabilities:    anthropicStyleCapabilities,
+	})
+	return &bp
+}
+
+// newKimiAnthropicProfile returns a *Profile for the Kimi coding plan using the
+// given model, talking to Kimi's Anthropic-compatible endpoint.
+func newKimiAnthropicProfile(model string) *Profile {
+	bp := buildBaseProfile(profileSpec{
+		id:              "kimi-anthropic",
+		behaviorTag:     providercfg.BehaviorTag("kimi-anthropic", ""),
+		model:           model,
+		parallel:        true,
+		contextWindow:   262_144,
 		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
 		reasoning:       true,
 		streaming:       true,

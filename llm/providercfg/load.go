@@ -19,6 +19,7 @@ var knownTypes = map[Type]bool{
 	"openrouter":           true,
 	"openrouter-anthropic": true,
 	"kimi":                 true,
+	"kimi-anthropic":       true,
 	"glm":                  true,
 	"minimax":              true,
 	"ollama":               true,

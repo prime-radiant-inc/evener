@@ -72,16 +72,26 @@ func WithProviderID(p *Profile, name string) *Profile {
 	return &clone
 }
 
-// WithCheapModel returns a cloned profile whose CheapModel method returns the
-// supplied model. Passing an empty model returns p unchanged.
-func WithCheapModel(p *Profile, model string) *Profile {
-	model = strings.TrimSpace(model)
-	if p == nil || model == "" {
+// WithCheapModel returns a cloned profile whose auxiliary side calls use the
+// supplied cheap model. The ref is "provider/model" to route side calls to a
+// different provider instance than the main model, or a bare "model" to keep the
+// main provider. The split is on the first slash (so the model half may itself
+// contain slashes, e.g. "openrouter/anthropic/claude"). Passing an empty ref
+// returns p unchanged.
+func WithCheapModel(p *Profile, ref string) *Profile {
+	ref = strings.TrimSpace(ref)
+	if p == nil || ref == "" {
 		return p
 	}
 
 	clone := *p
-	clone.cheapModel = model
+	if cheapProvider, model, ok := strings.Cut(ref, "/"); ok && cheapProvider != "" && model != "" {
+		clone.cheapProvider = cheapProvider
+		clone.cheapModel = model
+	} else {
+		clone.cheapProvider = ""
+		clone.cheapModel = ref
+	}
 	return &clone
 }
 

@@ -400,6 +400,45 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 // TestMetaTurnCount_CountsModelResponses verifies that meta.json turn_count
 // reflects the number of model responses (LLM round-trips), not the number
 // of user input submissions.
+func TestRestoreSession_RestoresCheapModelRouting(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&snapshotFakeAdapter{name: "openai"})
+
+	// A session configured with a cross-provider cheap model persists it...
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/claude-haiku-4-5-20251001")
+	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	meta := sess.Meta()
+	sess.Close()
+	if meta.CheapModel != "anthropic/claude-haiku-4-5-20251001" {
+		t.Fatalf("meta.CheapModel = %q, want anthropic/claude-haiku-4-5-20251001", meta.CheapModel)
+	}
+
+	// ...and a resume from that meta (with a cheap-less base profile, as the hub
+	// does not re-pass the launch arg) restores the cheap routing.
+	sess2, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	go func() {
+		for range sess2.Events() {
+		}
+	}()
+	defer sess2.Close()
+
+	prov, model := sess2.profile.CheapModelRef()
+	if prov != "anthropic" || model != "claude-haiku-4-5-20251001" {
+		t.Fatalf("restored CheapModelRef = (%q, %q), want (anthropic, claude-haiku-4-5-20251001)", prov, model)
+	}
+}
+
 func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
 	c := llm.NewClient()
 	callNum := 0

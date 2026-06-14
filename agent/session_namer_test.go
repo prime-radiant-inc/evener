@@ -58,6 +58,46 @@ func TestNameSession_UsesCheapModelAndStructuredOutput(t *testing.T) {
 	}
 }
 
+func TestNameSession_RoutesToCheapProvider(t *testing.T) {
+	// A cross-provider cheap model ("anthropic/...") must route the namer's call
+	// to the cheap provider, not the active provider.
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/claude-haiku-4-5-20251001")
+	mainAdapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				t.Errorf("namer routed to active provider %q, want cheap provider anthropic", req.Provider)
+				return llm.Response{Message: llm.Assistant(`{"name":"Wrong"}`)}
+			},
+		},
+	}
+	cheapAdapter := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				if req.Provider != "anthropic" {
+					t.Fatalf("provider = %q, want anthropic", req.Provider)
+				}
+				if req.Model != "claude-haiku-4-5-20251001" {
+					t.Fatalf("model = %q, want claude-haiku-4-5-20251001", req.Model)
+				}
+				return llm.Response{Message: llm.Assistant(`{"name":"Cheap Routed"}`)}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(mainAdapter)
+	client.Register(cheapAdapter)
+
+	got, err := nameSession(context.Background(), client, profile, sessionNameSourcePrompt, "name this session")
+	if err != nil {
+		t.Fatalf("nameSession: %v", err)
+	}
+	if got.Name != "Cheap Routed" {
+		t.Fatalf("Name = %q, want Cheap Routed", got.Name)
+	}
+}
+
 func TestNameSession_FallsBackToActiveModel(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",

@@ -62,7 +62,7 @@ func nameSession(ctx context.Context, client *llm.Client, profile *provider.Prof
 	res, err := llm.GenerateObject(callCtx, llm.GenerateObjectOptions{
 		GenerateOptions: llm.GenerateOptions{
 			Client:      client,
-			Provider:    profile.ID(),
+			Provider:    profile.CheapProvider(),
 			Model:       model,
 			System:      ptrString(sessionNamerSystemPrompt),
 			Prompt:      ptrString(sessionNamerUserPrompt(source, text)),

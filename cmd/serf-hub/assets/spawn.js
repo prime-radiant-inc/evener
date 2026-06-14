@@ -1252,10 +1252,11 @@
     if (existing) { existing.remove(); return; }
     const harness = currentHarness();
 
-    const modelsPromise = listModelsForHarness(harness);
-    modelsPromise.then(models => {
-      if (!Array.isArray(models)) models = [];
-      if (models.length === 0 && !harnessUsesSerfModels(harness)) {
+    const modelsPromise = listModelsWithDiagnosticsForHarness(harness);
+    modelsPromise.then(result => {
+      const models = Array.isArray(result && result.models) ? result.models : [];
+      const diagnostics = Array.isArray(result && result.diagnostics) ? result.diagnostics : [];
+      if (models.length === 0 && diagnostics.length === 0 && !harnessUsesSerfModels(harness)) {
         openHarnessDefaultModelPicker(chip);
         return;
       }
@@ -1287,6 +1288,23 @@
       body.appendChild(providerCol);
       body.appendChild(modelCol);
       picker.appendChild(body);
+
+      // Configured providers whose model listing failed (bad key, network,
+      // provider down) are reported here so they don't silently vanish.
+      if (diagnostics.length > 0) {
+        const diagBox = document.createElement("div");
+        diagBox.className = "chip-picker-diagnostics";
+        diagnostics.forEach(d => {
+          const row = document.createElement("div");
+          row.className = "chip-picker-diagnostic";
+          const prov = (d && d.provider) ? String(d.provider) : "provider";
+          const msg = (d && d.message) ? String(d.message) : "unknown error";
+          row.textContent = "⚠ " + prov + " unavailable: " + msg;
+          if (d && d.hint) row.title = String(d.hint);
+          diagBox.appendChild(row);
+        });
+        picker.appendChild(diagBox);
+      }
 
       let activeProvider = providers[0] || "";
 
@@ -1441,6 +1459,29 @@
     Object.keys(params).forEach(k => query.set(k, params[k]));
     const suffix = query.toString() ? "?" + query.toString() : "";
     return fetch("/api/models" + suffix).then(r => r.json());
+  }
+
+  // listModelsWithDiagnosticsForHarness resolves to {models, diagnostics} so the
+  // picker can report configured providers whose listing failed instead of
+  // dropping them silently. Falls back gracefully if the server or appwire path
+  // only returns a bare model array.
+  function listModelsWithDiagnosticsForHarness(harness) {
+    const params = {};
+    if (!harnessUsesSerfModels(harness)) params.harness = harness;
+    const cwd = currentWorkingDir();
+    if (cwd) params.cwd = cwd;
+    if (window.SerfAppwire && typeof window.SerfAppwire.listModelsWithDiagnostics === "function") {
+      return window.SerfAppwire.listModelsWithDiagnostics(params);
+    }
+    const query = new URLSearchParams();
+    Object.keys(params).forEach(k => query.set(k, params[k]));
+    query.set("diagnostics", "1");
+    return fetch("/api/models?" + query.toString())
+      .then(r => r.json())
+      .then(d => ({
+        models: (d && Array.isArray(d.models)) ? d.models : (Array.isArray(d) ? d : []),
+        diagnostics: (d && Array.isArray(d.diagnostics)) ? d.diagnostics : [],
+      }));
   }
 
   function modelOptionLabel(model) {

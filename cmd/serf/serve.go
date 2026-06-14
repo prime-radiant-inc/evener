@@ -30,6 +30,7 @@ import (
 	_ "primeradiant.com/serf/llm/providers/glm"
 	_ "primeradiant.com/serf/llm/providers/google"
 	_ "primeradiant.com/serf/llm/providers/kimi"
+	_ "primeradiant.com/serf/llm/providers/kimi_anthropic"
 	_ "primeradiant.com/serf/llm/providers/minimax"
 	_ "primeradiant.com/serf/llm/providers/ollama"
 	_ "primeradiant.com/serf/llm/providers/openai"
@@ -60,7 +61,7 @@ func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
 	model := fs.String("model", "", "LLM model identifier (provider/model)")
-	fastCheapModel := fs.String("fast-cheap-model", "", "fast cheap model identifier for side calls (same provider/model as --model)")
+	fastCheapModel := fs.String("fast-cheap-model", "", "cheap model for side calls (naming, summarization); 'provider/model' may use a different provider than --model, or a bare 'model' for the active provider")
 	workDir := fs.String("dir", "", "working directory")
 	stateDir := fs.String("state-dir", "", "override runtime state directory")
 	runDirFlag := fs.String("run-dir", "", "override rendezvous run directory")
@@ -182,7 +183,7 @@ func runServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	profile, err = applyFastCheapModel(profile, *fastCheapModel)
+	profile, err = applyFastCheapModel(profile, *fastCheapModel, client)
 	if err != nil {
 		return err
 	}
@@ -488,18 +489,36 @@ func buildInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef, outp
 	return provider.WithAllowedDecisions(p, allowedDecisions), nil
 }
 
-func applyFastCheapModel(profile *provider.Profile, raw string) (*provider.Profile, error) {
+// applyFastCheapModel sets the auxiliary cheap model for side calls. The ref is
+// "provider/model" to route side calls to a different provider instance than the
+// active model, or a bare "model" to keep the active provider. A cross-provider
+// cheap provider must be registered in the client (i.e. configured AND
+// credentialed) — that is what actually lets the side call route, unlike a
+// config-only check which is credential-blind.
+func applyFastCheapModel(profile *provider.Profile, raw string, client *llm.Client) (*provider.Profile, error) {
 	if profile == nil || strings.TrimSpace(raw) == "" {
 		return profile, nil
 	}
-	ref, err := cmdutil.ParseModelRef(raw)
-	if err != nil {
-		return nil, fmt.Errorf("invalid --fast-cheap-model: %w", err)
+	raw = strings.TrimSpace(raw)
+	if cheapProvider, model, ok := strings.Cut(raw, "/"); ok && cheapProvider != "" && model != "" && cheapProvider != profile.ID() {
+		if !clientHasProvider(client, cheapProvider) {
+			return nil, fmt.Errorf("--fast-cheap-model provider %q is not configured or has no credential (active provider %q); available providers: %s",
+				cheapProvider, profile.ID(), strings.Join(client.ProviderNames(), ", "))
+		}
 	}
-	if ref.Provider != profile.ID() {
-		return nil, fmt.Errorf("--fast-cheap-model provider %q must match active provider %q", ref.Provider, profile.ID())
+	return provider.WithCheapModel(profile, raw), nil
+}
+
+func clientHasProvider(client *llm.Client, name string) bool {
+	if client == nil {
+		return false
 	}
-	return provider.WithCheapModel(profile, ref.Model), nil
+	for _, p := range client.ProviderNames() {
+		if strings.EqualFold(p, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus {

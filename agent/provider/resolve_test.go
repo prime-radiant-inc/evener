@@ -177,6 +177,27 @@ func TestResolveProfileFromConfig_MiniMax(t *testing.T) {
 	}
 }
 
+func TestResolveProfileFromConfig_KimiAnthropic(t *testing.T) {
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{Name: "kimi", Type: "kimi-anthropic"},
+		},
+	}
+	p, err := provider.ResolveProfileFromConfig(cfg, "kimi/kimi-for-coding")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.ID() != "kimi" {
+		t.Errorf("ID() = %q, want %q", p.ID(), "kimi")
+	}
+	if p.BehaviorTag() != "kimi-anthropic" {
+		t.Errorf("BehaviorTag() = %q, want %q", p.BehaviorTag(), "kimi-anthropic")
+	}
+	if p.Model() != "kimi-for-coding" {
+		t.Errorf("Model() = %q, want %q", p.Model(), "kimi-for-coding")
+	}
+}
+
 func TestResolveProfileFromConfig_OpenRouterAnthropic(t *testing.T) {
 	cfg := providercfg.Config{
 		Instances: []providercfg.InstanceConfig{

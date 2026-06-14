@@ -66,6 +66,8 @@ func ResolveProfileFromConfig(cfg providercfg.Config, ref string) (*Profile, err
 		raw = newGeminiProfile(model)
 	case "minimax":
 		raw = newMiniMaxProfile(model)
+	case "kimi-anthropic":
+		raw = newKimiAnthropicProfile(model)
 	case "openrouter-anthropic":
 		raw = newOpenRouterAnthropicProfile(model)
 	case "kimi", "glm", "openrouter", "ollama":

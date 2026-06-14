@@ -78,9 +78,10 @@ func runOneProbe(ctx context.Context, client *llm.Client, profile *provider.Prof
 
 	// Step 2: Judge the response using the cheap model with binary scoring.
 	judgePrompt := buildBinaryJudgePrompt(pq.Question, pq.Expected, agentAnswer)
+	cheapProvider, cheapModel := profile.CheapModelRef()
 	judgeReq := llm.Request{
-		Model:    profile.CheapModel(),
-		Provider: profile.ID(),
+		Model:    cheapModel,
+		Provider: cheapProvider,
 		Messages: []llm.Message{llm.User(judgePrompt)},
 	}
 

@@ -19,9 +19,10 @@ import (
 func forkSummarize(ctx context.Context, client *llm.Client, profile *provider.Profile, turns []schema.Turn, turnNumber int) (sessionlog.SessionLogEntry, error) {
 	prompt := buildSummarizePrompt(turns)
 
+	cheapProvider, cheapModel := profile.CheapModelRef()
 	req := llm.Request{
-		Model:    profile.CheapModel(),
-		Provider: profile.ID(),
+		Model:    cheapModel,
+		Provider: cheapProvider,
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 

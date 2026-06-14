@@ -38,6 +38,9 @@ func communicateCall(id, message string) llm.ToolCallData {
 // every call, mirroring the agent package's profile test shims.
 var NewOpenAIProfile = provider.NewOpenAIProfile
 
+// WithCheapModel re-exports the provider override for the same reason.
+var WithCheapModel = provider.WithCheapModel
+
 // testProfile builds a profile for the given provider type and model, with the
 // context window overridden when contextWindow > 0. The common fixture for
 // context-manager and strategy tests in this package.

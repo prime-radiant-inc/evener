@@ -20,6 +20,7 @@ import (
 	_ "primeradiant.com/serf/llm/providers/glm"
 	_ "primeradiant.com/serf/llm/providers/google"
 	_ "primeradiant.com/serf/llm/providers/kimi"
+	_ "primeradiant.com/serf/llm/providers/kimi_anthropic"
 	_ "primeradiant.com/serf/llm/providers/minimax"
 	_ "primeradiant.com/serf/llm/providers/ollama"
 	openaiprovider "primeradiant.com/serf/llm/providers/openai"

@@ -3078,6 +3078,53 @@ func TestWeb_SettingsProvidersShowsLaunchModelErrorDiagnostic(t *testing.T) {
 	}
 }
 
+func TestWeb_ApiModels_DiagnosticsParamReturnsModelsAndDiagnostics(t *testing.T) {
+	// With ?diagnostics=1 the picker endpoint returns an object carrying both
+	// the launchable models and the launch-check diagnostics, so a configured
+	// provider that failed to list (e.g. bad key) surfaces a reason instead of
+	// silently vanishing. Without the param the response stays a bare array.
+	liveModelsCache.mu.Lock()
+	liveModelsCache.expires = time.Time{}
+	liveModelsCache.models = nil
+	liveModelsCache.mu.Unlock()
+
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Spawner: &fakeRPCModelContractSpawner{
+			contract: appwire.ModelListResponse{
+				Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}},
+				Diagnostics: []appwire.ModelListDiagnostic{
+					{Provider: "kimi", Source: "provider", Title: "Provider error", Message: "list models: HTTP 401"},
+				},
+			},
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/models?diagnostics=1", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Models      []map[string]any              `json:"models"`
+		Diagnostics []appwire.ModelListDiagnostic `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v; body=%s", err, rec.Body.String())
+	}
+	if len(got.Models) != 1 || got.Models[0]["model"] != "gpt-5.5" {
+		t.Fatalf("models: %+v", got.Models)
+	}
+	if len(got.Diagnostics) != 1 {
+		t.Fatalf("diagnostics: got %d, want 1; body=%s", len(got.Diagnostics), rec.Body.String())
+	}
+	if got.Diagnostics[0].Provider != "kimi" || got.Diagnostics[0].Message != "list models: HTTP 401" {
+		t.Fatalf("diagnostic mismatch: %+v", got.Diagnostics[0])
+	}
+}
+
 func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
 	liveModelsCache.mu.Lock()
 	liveModelsCache.expires = time.Time{}

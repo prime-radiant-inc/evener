@@ -1339,6 +1339,8 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .chip-picker-model:hover { background: var(--rule); }
 .chip-picker-model-name { color: var(--text); font-family: var(--font-mono); font-size: var(--text-sm); }
 .chip-picker-model-meta { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); margin-top: var(--space-1); }
+.chip-picker-diagnostics { border-top: 1px solid var(--rule); padding: var(--space-2) var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); }
+.chip-picker-diagnostic { color: var(--text-muted); font-size: var(--text-xs); }
 
 /* ── Directory picker ────────────────────────────────────────────────────── */
 .chip-picker-dir { width: 480px; max-height: 360px; display: flex; flex-direction: column; }

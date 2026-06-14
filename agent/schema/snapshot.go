@@ -13,14 +13,19 @@ import (
 // SessionMeta holds session metadata without the full conversation history.
 // The history is always recovered from the transcript JSONL file.
 type SessionMeta struct {
-	ID        string          `json:"id"`         // session identifier
-	ProfileID string          `json:"profile_id"` // ID of the provider profile in use
-	Model     string          `json:"model"`      // model name the session is driving
-	Config    ConfigSnapshot  `json:"config"`     // the session's configuration
-	EnvInfo   EnvironmentInfo `json:"env_info"`   // captured environment description
-	CreatedAt time.Time       `json:"created_at"` // when the session was first created
-	UpdatedAt time.Time       `json:"updated_at"` // last time the meta was written
-	TurnCount int             `json:"turn_count"` // number of user-input turns processed
+	ID        string `json:"id"`         // session identifier
+	ProfileID string `json:"profile_id"` // ID of the provider profile in use
+	Model     string `json:"model"`      // model name the session is driving
+	// CheapModel is the configured cheap/fast model for side calls, as a
+	// WithCheapModel ref ("provider/model" when cross-provider, else bare model).
+	// Empty when none is configured. Persisted so the cheap routing survives
+	// resume — launch args alone do not carry it across restart.
+	CheapModel string          `json:"cheap_model,omitempty"`
+	Config     ConfigSnapshot  `json:"config"`     // the session's configuration
+	EnvInfo    EnvironmentInfo `json:"env_info"`   // captured environment description
+	CreatedAt  time.Time       `json:"created_at"` // when the session was first created
+	UpdatedAt  time.Time       `json:"updated_at"` // last time the meta was written
+	TurnCount  int             `json:"turn_count"` // number of user-input turns processed
 	// LastInputTokens is the prompt-token count from the most recent LLM call,
 	// used to display context-window pressure on resume.
 	LastInputTokens int `json:"last_input_tokens,omitempty"`

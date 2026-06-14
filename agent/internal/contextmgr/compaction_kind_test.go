@@ -74,6 +74,48 @@ func TestSummarizeWithLLM_UsesTurnSummaryKind(t *testing.T) {
 	}
 }
 
+func TestSummarizeWithLLM_RoutesToCheapProvider(t *testing.T) {
+	// A cross-provider cheap model summarizes on the cheap provider; the active
+	// model remains the fallback on its own (main) provider.
+	mainAdapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				t.Errorf("summarizer routed to active provider %q, want cheap provider anthropic", req.Provider)
+				return llm.Response{Message: llm.Assistant("wrong")}
+			},
+		},
+	}
+	cheapAdapter := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				if req.Provider != "anthropic" || req.Model != "claude-haiku-4-5-20251001" {
+					t.Fatalf("cheap call = (%q, %q), want (anthropic, claude-haiku-4-5-20251001)", req.Provider, req.Model)
+				}
+				return llm.Response{Message: llm.Assistant("Summary: routed to cheap")}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(mainAdapter)
+	client.Register(cheapAdapter)
+
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/claude-haiku-4-5-20251001")
+	cm := NewManager(profile, client)
+
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("I'll fix it")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
+	}
+
+	if _, err := cm.summarizeWithLLM(context.Background(), history, 2); err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+}
+
 func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 	// Use a tiny context window to force checkpoint (L3).
 	profile := testProfile("openai", "test", 500)
