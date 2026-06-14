@@ -354,6 +354,16 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		return jm.clearWatch(key)
 	}
 	if err := jm.validateWatchTarget(a.Target); err != nil {
+		// Clearing is idempotent regardless of target state: once a job goes
+		// terminal its concrete watch auto-removes, so a clear on that target must
+		// be a no-op success rather than target_terminal. A genuinely-missing
+		// target still returns its original target_not_found.
+		if a.Clear {
+			if _, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target); statusErr == nil && terminal {
+				return jm.clearWatch(key)
+			}
+			return watchResult{}, err
+		}
 		// An output_match-only watch on an already-terminal job is served as a
 		// one-shot catch-up scan of retained output rather than rejected (spec
 		// §7.1 "Terminal target"). Any other terminal request, and target_not_found,

@@ -3147,8 +3147,15 @@ func TestWatchSendTerminalExpiryWithoutPendingDoesNotRetainDetachedConfig(t *tes
 			if detached != 0 {
 				t.Fatalf("detached terminal flush configs = %d, want 0", detached)
 			}
-			if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err == nil || !strings.Contains(err.Error(), "target_terminal") {
-				t.Fatalf("clear expired watch without pending = %v, want target_terminal", err)
+			// No detached config is retained, yet clearing an expired watch on a
+			// terminal target is an idempotent no-op success rather than
+			// target_terminal: cleanup must not require knowing the target's state.
+			res, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true})
+			if err != nil {
+				t.Fatalf("clear expired watch without pending = %v, want idempotent no-op success", err)
+			}
+			if res.Watching {
+				t.Fatalf("clear expired watch Watching = true, want false")
 			}
 		})
 	}
@@ -6270,5 +6277,31 @@ func TestJobWatchDeepDescendantGivesDelegateGuidance(t *testing.T) {
 	}, 20000)
 	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
 		t.Fatalf("unknown job_id error = %v, want bare target_not_found", err)
+	}
+}
+
+func TestClearWatchOnTerminalTargetIsIdempotent(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	code := 0
+	jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code)
+
+	// No watch is installed (a concrete watch auto-removes on terminal) and the
+	// target is terminal: clearing must be an idempotent no-op success, not
+	// target_terminal.
+	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true})
+	if err != nil {
+		t.Fatalf("clear on terminal target: %v", err)
+	}
+	if res.Watching {
+		t.Fatalf("clear result Watching = true, want false")
+	}
+	res2, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true})
+	if err != nil {
+		t.Fatalf("second clear on terminal target: %v", err)
+	}
+	if res2.Watching {
+		t.Fatalf("second clear result Watching = true, want false")
 	}
 }
