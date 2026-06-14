@@ -572,6 +572,10 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 	// workers' delegate + shell jobs) recursively, so they do not survive
 	// orphaned.
 	cascadeChild := s.delegateChildSessionToCascade(jobID)
+	var previousStatus jobstore.Status
+	if _, pre, lookupErr := s.nestedOrLocalJobManager(jobID); lookupErr == nil && pre != nil {
+		previousStatus = pre.Status
+	}
 	rec, err := s.stopNestedOrLocal(jobID)
 	if err != nil {
 		return "", errors.Join(childStopErr, err)
@@ -603,9 +607,11 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 		return "", childStopErr
 	}
 	return marshalBoundedJSON(jobStopResult{
-		JobID:  rec.JobID,
-		Status: string(rec.Status),
-		Reason: stringPtrOrNil(rec.Reason),
+		JobID:          rec.JobID,
+		Status:         string(rec.Status),
+		Reason:         stringPtrOrNil(rec.Reason),
+		PreviousStatus: string(previousStatus),
+		Outcome:        classifyStopOutcome(previousStatus, rec),
 	}, maxChars)
 }
 
@@ -687,9 +693,27 @@ type jobListEntry struct {
 }
 
 type jobStopResult struct {
-	JobID  string  `json:"job_id"`
-	Status string  `json:"status"`
-	Reason *string `json:"reason"`
+	JobID          string  `json:"job_id"`
+	Status         string  `json:"status"`
+	Reason         *string `json:"reason"`
+	PreviousStatus string  `json:"previous_status"`
+	Outcome        string  `json:"outcome"`
+}
+
+// classifyStopOutcome distinguishes a stop that cancelled a live job from one that
+// raced with, or arrived after, the job's own completion. previous is the job's
+// status read before the stop signal; rec is the record after it.
+func classifyStopOutcome(previous jobstore.Status, rec *jobstore.JobRecord) string {
+	if previous.IsTerminal() {
+		return "already_terminal"
+	}
+	if rec == nil || !rec.Status.IsTerminal() {
+		return "stop_requested" // still finalizing (e.g. reason "stop_pending")
+	}
+	if rec.Status == jobstore.StatusCancelled {
+		return "cancelled_by_request"
+	}
+	return "completed_during_stop"
 }
 
 type jobSendMessageDelegateResult struct {

@@ -3665,3 +3665,68 @@ func TestMarshalSendMessageResultCarriesWaitIgnoredReason(t *testing.T) {
 		t.Fatalf("wait_ignored_reason must be omitted when empty, got %s", out2)
 	}
 }
+
+func TestClassifyStopOutcome(t *testing.T) {
+	run := jobstore.StatusRunning
+	cases := []struct {
+		name string
+		prev jobstore.Status
+		rec  *jobstore.JobRecord
+		want string
+	}{
+		{"already terminal", jobstore.StatusCompleted, &jobstore.JobRecord{Status: jobstore.StatusCancelled}, "already_terminal"},
+		{"still running", run, &jobstore.JobRecord{Status: jobstore.StatusRunning}, "stop_requested"},
+		{"nil record", run, nil, "stop_requested"},
+		{"cancelled by request", run, &jobstore.JobRecord{Status: jobstore.StatusCancelled}, "cancelled_by_request"},
+		{"completed during stop", run, &jobstore.JobRecord{Status: jobstore.StatusCompleted}, "completed_during_stop"},
+		{"failed during stop", run, &jobstore.JobRecord{Status: jobstore.StatusFailed}, "completed_during_stop"},
+	}
+	for _, tc := range cases {
+		if got := classifyStopOutcome(tc.prev, tc.rec); got != tc.want {
+			t.Errorf("%s: classifyStopOutcome(%q,rec) = %q, want %q", tc.name, tc.prev, got, tc.want)
+		}
+	}
+}
+
+func TestJobStopReportsOutcomeAndPreviousStatus(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	if shellOut.JobID == "" {
+		t.Fatal("background shell returned no job_id")
+	}
+
+	out, err := jobStopTool(context.Background(), s, map[string]any{"job_id": shellOut.JobID}, 1<<20)
+	if err != nil {
+		t.Fatalf("jobStopTool: %v", err)
+	}
+	var stopOut struct {
+		Status         string `json:"status"`
+		PreviousStatus string `json:"previous_status"`
+		Outcome        string `json:"outcome"`
+	}
+	if err := json.Unmarshal([]byte(out), &stopOut); err != nil {
+		t.Fatalf("unmarshal job_stop output: %v (out=%s)", err, out)
+	}
+	if stopOut.Outcome != "cancelled_by_request" {
+		t.Fatalf("outcome = %q, want cancelled_by_request (out=%s)", stopOut.Outcome, out)
+	}
+	if stopOut.PreviousStatus != string(jobstore.StatusRunning) {
+		t.Fatalf("previous_status = %q, want running", stopOut.PreviousStatus)
+	}
+
+	waitForShellDone(t, s.jobManager, shellOut.JobID)
+}
