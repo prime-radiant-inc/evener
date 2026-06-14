@@ -155,6 +155,7 @@ func credentialAuthModes(provider string) []string {
 		"openrouter":           {"apiKey"},
 		"openrouter-anthropic": {"apiKey"},
 		"kimi":                 {"apiKey"},
+		"kimi-anthropic":       {"apiKey"},
 		"glm":                  {"apiKey"},
 		"openai-compatible":    {"apiKey"},
 		"ollama":               {"none"},

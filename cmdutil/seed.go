@@ -64,6 +64,8 @@ func BaseURLEnvVar(typ string) string {
 		return "GEMINI_BASE_URL"
 	case "kimi":
 		return "KIMI_BASE_URL"
+	case "kimi-anthropic":
+		return "KIMI_CODING_BASE_URL"
 	case "glm":
 		return "GLM_BASE_URL"
 	case "openrouter":

@@ -37,6 +37,7 @@ var providerEnvVar = map[string]string{
 	"openrouter":           "OPENROUTER_API_KEY",
 	"openrouter-anthropic": "OPENROUTER_API_KEY",
 	"kimi":                 "KIMI_API_KEY",
+	"kimi-anthropic":       "KIMI_CODING_API_KEY",
 	"glm":                  "GLM_API_KEY",
 	"openai-compatible":    "OPENAI_COMPATIBLE_API_KEY",
 }

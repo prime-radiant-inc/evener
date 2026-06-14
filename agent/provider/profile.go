@@ -764,6 +764,26 @@ func newMiniMaxProfile(model string) *Profile {
 	return &bp
 }
 
+// newKimiAnthropicProfile returns a *Profile for the Kimi coding plan using the
+// given model, talking to Kimi's Anthropic-compatible endpoint.
+func newKimiAnthropicProfile(model string) *Profile {
+	bp := buildBaseProfile(profileSpec{
+		id:              "kimi-anthropic",
+		behaviorTag:     providercfg.BehaviorTag("kimi-anthropic", ""),
+		model:           model,
+		parallel:        true,
+		contextWindow:   262_144,
+		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
+		reasoning:       true,
+		streaming:       true,
+		defaultTimeout:  120_000,
+		knowledgeCutoff: "2025-06-01",
+		defaultEfforts:  []string{"low", "medium", "high", "max"},
+		capabilities:    anthropicStyleCapabilities,
+	})
+	return &bp
+}
+
 // newOpenRouterAnthropicProfile creates a profile that routes any OpenRouter-
 // served model through OpenRouter's Anthropic-Messages-compatible endpoint
 // (https://openrouter.ai/api/v1/messages).
