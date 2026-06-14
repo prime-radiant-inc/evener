@@ -168,7 +168,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.maxSubagentDepth = fs.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 1)")
 	flags.shareTaskStore = fs.Bool("share-task-store", false, "share task list between parent and child sessions")
 	flags.resultToolName = fs.String("result-tool-name", "", "override the result tool `name` (default: communicate)")
-	flags.reasoningEffort = fs.String("reasoning-effort", "", "reasoning effort `level`: low|medium|high|xhigh|none")
+	flags.reasoningEffort = fs.String("reasoning-effort", "", "reasoning effort `level`: minimal|low|medium|high|xhigh|max|none")
 	flags.exportATIF = fs.String("export-atif", "", "export ATIF v1.6 trajectory to this `path` on session close")
 	flags.contextStrategy = fs.String("context-strategy", "", "context management `strategy`: compact|session-log|ooda (default: compact)")
 	flags.outputSchema = fs.String("output-schema", "", "inline JSON Schema `document` applied to the communicate tool's output field (replaces the default schema)")
@@ -233,7 +233,7 @@ func printLongFlagDefaults(w io.Writer, fs *flag.FlagSet) {
 func printRunEnvVars(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintf(tw, "  SERF_MODEL\tDefault model as provider/model (used when --model is omitted)\n")
-	_, _ = fmt.Fprintf(tw, "  SERF_REASONING_EFFORT\tDefault reasoning effort (low|medium|high|xhigh|none)\n")
+	_, _ = fmt.Fprintf(tw, "  SERF_REASONING_EFFORT\tDefault reasoning effort (minimal|low|medium|high|xhigh|max|none)\n")
 	_, _ = fmt.Fprintf(tw, "  OPENAI_API_KEY\tOpenAI API key\n")
 	_, _ = fmt.Fprintf(tw, "  ANTHROPIC_API_KEY\tAnthropic API key\n")
 	_, _ = fmt.Fprintf(tw, "  GEMINI_API_KEY\tGoogle Gemini API key\n")

@@ -75,7 +75,7 @@ func runServe(args []string) error {
 	maxSubagentDepth := fs.Int("max-subagent-depth", -1, "max subagent nesting depth")
 	shareTaskStore := fs.Bool("share-task-store", false, "share task list between parent and child sessions")
 	resultToolName := fs.String("result-tool-name", "", "override the result tool name")
-	reasoningEffort := fs.String("reasoning-effort", "", "reasoning effort: low|medium|high|xhigh|none")
+	reasoningEffort := fs.String("reasoning-effort", "", "reasoning effort: minimal|low|medium|high|xhigh|max|none")
 	exportATIF := fs.String("export-atif", "", "export ATIF trajectory to this path")
 	contextStrategy := fs.String("context-strategy", "", "context management strategy")
 	outputSchema := fs.String("output-schema", "", "inline JSON Schema applied to the communicate tool's output field")

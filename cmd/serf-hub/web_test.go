@@ -5015,3 +5015,33 @@ func TestWeb_APISessionActionModelForwardsBody(t *testing.T) {
 		t.Fatalf("model params=%+v", got)
 	}
 }
+
+func TestWeb_APISessionActionReasoningEffortForwardsBody(t *testing.T) {
+	var got appwire.ThreadReasoningEffortSetParams
+	runDir := t.TempDir()
+	daemon := startAppwireTestDaemon(t, runDir, "01EFFORT", func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadReasoningEffortSet, func(_ context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
+			got = params
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	defer daemon.Close()
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01EFFORT", status: appwire.ThreadStatusIdle})
+	r.Refresh()
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01EFFORT/reasoning-effort", strings.NewReader(`{"reasoning_effort":"high"}`))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	// Reaching the daemon (no methodNotFound, no 'not available') proves the route
+	// is wired and not blocked by a (nonexistent) capability gate.
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if got.Ref != "local:01EFFORT" || got.ReasoningEffort != "high" {
+		t.Fatalf("reasoning-effort params=%+v", got)
+	}
+}

@@ -5257,6 +5257,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodThreadCompactStart,
 		appwire.MethodThreadShutdown,
 		appwire.MethodThreadModelSet,
+		appwire.MethodThreadReasoningEffortSet,
 		appwire.MethodSerfAuthStatus,
 		appwire.MethodSerfAuthLoginStart,
 		appwire.MethodSerfAuthLoginComplete,
