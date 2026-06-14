@@ -27,8 +27,14 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 		var result sessionModelResponse
 		streamUnavailableForProfile := false
 		err := llm.RetryStream(ctx, llm.RetryStreamOptions{
-			Policy: policy,
-			Sleep:  s.cfg.LLMSleep,
+			Policy:            policy,
+			Sleep:             s.cfg.LLMSleep,
+			RetryAfterPartial: true,
+			// Before retrying an attempt that already streamed partial output,
+			// discard it so the retry's output replaces rather than appends.
+			OnReset: func() {
+				s.emit(events.EventAssistantTextReset, events.AssistantTextResetData{})
+			},
 		}, func(ctx context.Context) (bool, error) {
 			st, err := s.client.Stream(ctx, req)
 			if streamUnavailable(err) || (err == nil && st == nil) {

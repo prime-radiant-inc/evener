@@ -819,6 +819,9 @@
         case "ASSISTANT_TEXT_END":
           this.finalizeAssistantMessage(data);
           break;
+        case "ASSISTANT_TEXT_RESET":
+          this.resetAssistantMessage();
+          break;
         case "TOOL_CALL_START":
           if (data.tool_name === "communicate") {
             // The agent talking to the user. Extract the message from the
@@ -1236,6 +1239,18 @@
     renderAssistantMessage(m, text) {
       try { m.el.innerHTML = window.marked.parse(text); }
       catch (e) { m.el.textContent = text; }
+    },
+
+    // resetAssistantMessage discards the in-progress assistant message so a
+    // retried model call's output replaces, rather than appends to, the partial
+    // that was already streamed.
+    resetAssistantMessage() {
+      const id = this.currentMessageId;
+      if (!id) return;
+      const m = this.activeMessages.get(id);
+      this.activeMessages.delete(id);
+      this.currentMessageId = null;
+      if (m && m.el && m.el.parentNode) m.el.parentNode.removeChild(m.el);
     },
 
     finalizeAssistantMessage(data) {

@@ -59,6 +59,11 @@ type AssistantTextDeltaData struct {
 	Delta string `json:"delta"`
 }
 
+// AssistantTextResetData is the payload for an EventAssistantTextReset event.
+// It carries no fields: the reset always targets the active turn's in-progress
+// assistant message, which consumers already track.
+type AssistantTextResetData struct{}
+
 // AssistantTextEndData is the payload for an EventAssistantTextEnd event.
 type AssistantTextEndData struct {
 	Text         string    `json:"text"`

@@ -28,6 +28,10 @@ const (
 	EventAssistantTextDelta EventKind = "ASSISTANT_TEXT_DELTA"
 	// EventAssistantTextEnd marks the end of an assistant text response.
 	EventAssistantTextEnd EventKind = "ASSISTANT_TEXT_END"
+	// EventAssistantTextReset discards the in-progress assistant message: a model
+	// call retried after streaming partial output emits this so the retry's
+	// output replaces, rather than appends to, the partial that was shown.
+	EventAssistantTextReset EventKind = "ASSISTANT_TEXT_RESET"
 	// EventToolCallStart marks the start of a tool call.
 	EventToolCallStart EventKind = "TOOL_CALL_START"
 	// EventToolCallOutputDelta carries an incremental chunk of tool call output.

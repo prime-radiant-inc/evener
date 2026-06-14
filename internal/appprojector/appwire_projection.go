@@ -204,6 +204,23 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			"turnId":   turnID,
 			"item":     item,
 		})}
+	case events.EventAssistantTextReset:
+		// A retry after partial output: discard the in-progress assistant item
+		// so the retry's stream replaces it rather than appending. No-op when
+		// nothing was streamed yet (no item to reset).
+		if p.assistantItem == "" {
+			return nil
+		}
+		itemID := p.assistantItem
+		turnID := p.activeTurnID
+		p.assistantItem = ""
+		p.assistantText = ""
+		return []AppNotification{p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			TurnID:   turnID,
+			ItemID:   itemID,
+		})}
 	case events.EventCommunicate:
 		data := eventData[events.CommunicateData](event.Data)
 		text := strings.TrimSpace(data.Message)

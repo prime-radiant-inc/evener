@@ -1014,6 +1014,70 @@ func TestProjector_GenuineErrorEmitsSingleDiagnostic(t *testing.T) {
 	}
 }
 
+// TestProjector_AssistantTextResetDiscardsInProgressItem verifies that an
+// EventAssistantTextReset discards the in-progress assistant item (naming it so
+// consumers can remove it) and clears projector state so the next delta opens a
+// fresh item. With no in-progress assistant, it is a no-op.
+func TestProjector_AssistantTextResetDiscardsInProgressItem(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	p.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hi"}})
+
+	startOut := p.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1", Data: events.AssistantTextStartData{}})
+	startedItem := ""
+	for _, n := range startOut {
+		if n.Method == appwire.NotifyItemStarted {
+			if params, ok := n.Params.(map[string]any); ok {
+				if item, ok := params["item"].(appwire.ThreadItem); ok {
+					startedItem = item.ID
+				}
+			}
+		}
+	}
+	if startedItem == "" {
+		t.Fatalf("assistant start did not open an item: %+v", startOut)
+	}
+	p.Project(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "partial"}})
+
+	resetOut := p.Project(events.SessionEvent{Kind: events.EventAssistantTextReset, SessionID: "th_1", Data: events.AssistantTextResetData{}})
+	var resetParams *appwire.AgentMessageResetParams
+	for i := range resetOut {
+		if resetOut[i].Method == appwire.NotifyAgentMessageReset {
+			pp, ok := resetOut[i].Params.(appwire.AgentMessageResetParams)
+			if !ok {
+				t.Fatalf("reset params=%T", resetOut[i].Params)
+			}
+			resetParams = &pp
+		}
+	}
+	if resetParams == nil {
+		t.Fatalf("reset did not emit NotifyAgentMessageReset: %+v", resetOut)
+	}
+	if resetParams.ItemID != startedItem {
+		t.Fatalf("reset itemID=%q, want the discarded item %q", resetParams.ItemID, startedItem)
+	}
+
+	// State is cleared: the next delta opens a fresh item, not the discarded one.
+	deltaOut := p.Project(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "fresh"}})
+	freshItem := ""
+	for _, n := range deltaOut {
+		if n.Method == appwire.NotifyAgentMessageDelta {
+			if params, ok := n.Params.(appwire.AgentMessageDeltaParams); ok {
+				freshItem = params.ItemID
+			}
+		}
+	}
+	if freshItem == "" || freshItem == startedItem {
+		t.Fatalf("post-reset delta itemID=%q, want a fresh item distinct from %q", freshItem, startedItem)
+	}
+
+	// No in-progress assistant → reset is a no-op.
+	p.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "fresh"}})
+	noop := p.Project(events.SessionEvent{Kind: events.EventAssistantTextReset, SessionID: "th_1", Data: events.AssistantTextResetData{}})
+	if hasAppNotification(noop, appwire.NotifyAgentMessageReset) {
+		t.Fatalf("reset with no in-progress assistant should be a no-op: %+v", noop)
+	}
+}
+
 func hasAppNotification(items []AppNotification, method string) bool {
 	for _, item := range items {
 		if item.Method == method {

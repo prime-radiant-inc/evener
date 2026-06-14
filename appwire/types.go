@@ -60,6 +60,7 @@ const (
 	NotifyItemStarted          = "item/started"
 	NotifyItemCompleted        = "item/completed"
 	NotifyAgentMessageDelta    = "item/agentMessage/delta"
+	NotifyAgentMessageReset    = "item/agentMessage/reset"
 	NotifyToolOutputDelta      = "item/toolOutput/delta"
 	NotifyWarning              = "warning"
 	NotifySerfContextPressure  = "serf/thread/contextPressure/updated"
@@ -677,6 +678,17 @@ type AgentMessageDeltaParams struct {
 	TurnID   string `json:"turnId"`
 	ItemID   string `json:"itemId"`
 	Delta    string `json:"delta"`
+}
+
+// AgentMessageResetParams is the params shape for the item/agentMessage/reset
+// notification: the named in-progress assistant item should be discarded so a
+// retried model call's output replaces, rather than appends to, the partial
+// that was already streamed.
+type AgentMessageResetParams struct {
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref,omitempty"`
+	TurnID   string `json:"turnId"`
+	ItemID   string `json:"itemId"`
 }
 
 // ToolOutputDeltaParams is the params shape for the item/toolOutput/delta

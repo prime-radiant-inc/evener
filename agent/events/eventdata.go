@@ -39,6 +39,7 @@ func (UserInputData) eventKind() EventKind           { return EventUserInput }
 func (AssistantTextStartData) eventKind() EventKind  { return EventAssistantTextStart }
 func (AssistantTextDeltaData) eventKind() EventKind  { return EventAssistantTextDelta }
 func (AssistantTextEndData) eventKind() EventKind    { return EventAssistantTextEnd }
+func (AssistantTextResetData) eventKind() EventKind  { return EventAssistantTextReset }
 func (ToolCallStartData) eventKind() EventKind       { return EventToolCallStart }
 func (ToolCallOutputDeltaData) eventKind() EventKind { return EventToolCallOutputDelta }
 func (ToolCallEndData) eventKind() EventKind         { return EventToolCallEnd }

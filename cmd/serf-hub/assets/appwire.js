@@ -769,6 +769,10 @@
       markLiveItem(params, { id: params.itemId }, { delta: true });
       return [["ASSISTANT_TEXT_DELTA", { delta: params.delta || "" }]];
     }
+    if (method === "item/agentMessage/reset") {
+      deleteLiveItem(params, { id: params.itemId });
+      return [["ASSISTANT_TEXT_RESET", { itemId: params.itemId || "" }]];
+    }
     if (method === "item/toolOutput/delta") {
       markLiveItem(params, { itemId: params.itemId, callId: params.callId }, { delta: true });
       return [["TOOL_CALL_OUTPUT_DELTA", {
