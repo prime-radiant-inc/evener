@@ -108,7 +108,7 @@ func LaunchOptionSchema() []LaunchOption {
 }
 
 func reasoningChoices() []LaunchOptionChoice {
-	return []LaunchOptionChoice{{Value: "", Label: "(default)"}, {Value: "low", Label: "low"}, {Value: "medium", Label: "medium"}, {Value: "high", Label: "high"}, {Value: "xhigh", Label: "xhigh"}, {Value: "none", Label: "none"}}
+	return []LaunchOptionChoice{{Value: "", Label: "(default)"}, {Value: "minimal", Label: "minimal"}, {Value: "low", Label: "low"}, {Value: "medium", Label: "medium"}, {Value: "high", Label: "high"}, {Value: "xhigh", Label: "xhigh"}, {Value: "max", Label: "max"}, {Value: "none", Label: "none"}}
 }
 
 func contextChoices() []LaunchOptionChoice {

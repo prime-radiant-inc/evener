@@ -4925,6 +4925,19 @@ func TestWeb_APISpawnSchema(t *testing.T) {
 	if len(harnessValues) != 3 || harnessValues[0] != "serf" || harnessValues[1] != "codex-local" || harnessValues[2] != "codex-managed" {
 		t.Fatalf("harness values=%+v", harnessValues)
 	}
+	effortValues := map[string]bool{}
+	for _, f := range got.Fields {
+		if f.Name == "reasoning_effort" {
+			for _, v := range f.Values {
+				effortValues[v] = true
+			}
+		}
+	}
+	for _, want := range []string{"minimal", "low", "medium", "high", "xhigh", "max", "none"} {
+		if !effortValues[want] {
+			t.Fatalf("reasoning_effort schema missing %q: %+v", want, effortValues)
+		}
+	}
 	if names["branch"] || names["access_mode"] {
 		t.Fatalf("schema exposes unsupported field: %+v", got.Fields)
 	}
