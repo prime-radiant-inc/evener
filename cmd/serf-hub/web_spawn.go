@@ -223,7 +223,7 @@ func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor) []map[string]
 			"model":    m.Model,
 		}
 		if cat != nil {
-			if mi := cat.GetModelInfo(m.Model); mi != nil {
+			if mi := catalogModelInfo(cat, m.Model); mi != nil {
 				entry["display_name"] = mi.DisplayName
 				entry["context_window"] = mi.ContextWindow
 				entry["supports_tools"] = mi.SupportsTools
@@ -342,5 +342,15 @@ func catalogModelInfo(cat *llm.ModelCatalog, modelID string) *llm.ModelInfo {
 	if cat == nil {
 		return nil
 	}
-	return cat.GetModelInfo(modelID)
+	if mi := cat.GetModelInfo(modelID); mi != nil {
+		return mi
+	}
+	// Provider-qualified models (e.g. "anthropic/claude-opus-4-6" served by an
+	// openrouter-anthropic instance) carry a namespace the catalog override
+	// omits; retry on the last path segment so per-model metadata (context
+	// window, effort levels) is still found.
+	if i := strings.LastIndex(modelID, "/"); i >= 0 && i+1 < len(modelID) {
+		return cat.GetModelInfo(modelID[i+1:])
+	}
+	return nil
 }

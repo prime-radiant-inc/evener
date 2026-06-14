@@ -554,6 +554,14 @@ func NormalizeReasoningEffort(s string) string {
 	}
 }
 
+// ReasoningEffortRank returns the ordinal rank of a reasoning-effort level
+// (minimal=1 … xhigh=max=5), or 0 for empty/unknown values. Use it instead of a
+// local hierarchy so effort comparisons (e.g. a "floor at high" side-channel)
+// honor the full vocabulary and cannot drift as levels are added.
+func ReasoningEffortRank(effort string) int {
+	return effortRank[strings.ToLower(strings.TrimSpace(effort))]
+}
+
 // ClampReasoningEffort clamps a requested effort to the levels a model supports.
 // A request above the model's top supported level is lowered to that level; a
 // request below the model's lowest is raised to it. Empty, "none", unknown

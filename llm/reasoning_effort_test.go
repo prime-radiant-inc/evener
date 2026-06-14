@@ -41,6 +41,23 @@ func TestClampReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestReasoningEffortRank(t *testing.T) {
+	if ReasoningEffortRank("max") != ReasoningEffortRank("xhigh") {
+		t.Errorf("max and xhigh should share a rank: max=%d xhigh=%d", ReasoningEffortRank("max"), ReasoningEffortRank("xhigh"))
+	}
+	if !(ReasoningEffortRank("minimal") < ReasoningEffortRank("low") &&
+		ReasoningEffortRank("low") < ReasoningEffortRank("high") &&
+		ReasoningEffortRank("high") < ReasoningEffortRank("max")) {
+		t.Error("ranks should be strictly increasing minimal<low<high<max")
+	}
+	if ReasoningEffortRank("") != 0 || ReasoningEffortRank("bogus") != 0 {
+		t.Error("unknown/empty effort should rank 0")
+	}
+	if ReasoningEffortRank("MAX") != ReasoningEffortRank("max") {
+		t.Error("rank should be case-insensitive")
+	}
+}
+
 func TestNormalizeReasoningEffort(t *testing.T) {
 	cases := map[string]string{
 		"none": "", "null": "", "off": "", "false": "", "0": "",
