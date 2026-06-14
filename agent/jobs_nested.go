@@ -61,9 +61,11 @@ func (s *Session) ownerJobManagerFor(jobID string) (*jobManager, *jobstore.JobRe
 // recursing into the live child. Each job_id therefore appears once, at its
 // real owner's depth — except a dead descendant's job, whose only surviving row
 // is the forwarded copy at the ancestor store's depth.
-func (s *Session) walkDescendantJobs(filter listFilter) []jobListEntry {
+func (s *Session) walkDescendantJobs(filter listFilter) ([]jobListEntry, error) {
 	merged := map[string]descendantWalkRow{}
-	s.collectDescendantJobs(s, 0, filter, merged)
+	if err := s.collectDescendantJobs(s, 0, filter, merged); err != nil {
+		return nil, err
+	}
 
 	rows := make([]descendantWalkRow, 0, len(merged))
 	for _, row := range merged {
@@ -83,26 +85,41 @@ func (s *Session) walkDescendantJobs(filter listFilter) []jobListEntry {
 
 	jobs := make([]jobListEntry, 0, len(rows))
 	for _, row := range rows {
-		entry := projectJobRecord(s, row.rec)
+		// Project against the row's owner session (the T11 advisory), defaulting
+		// to the caller for safety when no owner was recorded.
+		projectSession := row.ownerSess
+		if projectSession == nil {
+			projectSession = s
+		}
+		entry := projectJobRecord(projectSession, row.rec)
 		entry.Depth = row.depth
 		jobs = append(jobs, entry)
 	}
-	return jobs
+	return jobs, nil
 }
 
 type descendantWalkRow struct {
-	rec     *jobstore.JobRecord
-	depth   int
-	isOwner bool
+	rec       *jobstore.JobRecord
+	depth     int
+	isOwner   bool
+	ownerSess *Session
 }
 
 // collectDescendantJobs reads node's store (leaf-lock), merges its rows into
 // merged with the owner-authoritative dedupe rule, then recurses into node's
 // LIVE direct children at depth+1.
-func (s *Session) collectDescendantJobs(node *Session, depth int, filter listFilter, merged map[string]descendantWalkRow) {
+func (s *Session) collectDescendantJobs(node *Session, depth int, filter listFilter, merged map[string]descendantWalkRow) error {
 	jm, err := sessionJobManager(node)
 	if err != nil {
-		return
+		// The caller's own store (depth 0) error is surfaced — a depth-0 failure
+		// is the same failure plain job_list reports, and swallowing it would
+		// silently return an empty list with success. A descendant store error
+		// (depth >= 1) stays best-effort: a dead descendant store is expected, and
+		// its terminal copy survives as the forwarded copy in an ancestor store.
+		if depth == 0 {
+			return err
+		}
+		return nil
 	}
 	// IncludeNested surfaces forwarded copies in this store so a dead
 	// descendant's terminal copy survives; Limit is cleared so the global sort
@@ -113,7 +130,10 @@ func (s *Session) collectDescendantJobs(node *Session, depth int, filter listFil
 	storeFilter.Limit = 0
 	recs, err := jm.listWithError(storeFilter)
 	if err != nil {
-		return
+		if depth == 0 {
+			return err
+		}
+		return nil
 	}
 	for _, rec := range recs {
 		isOwner := rec.OwnerSessionID == jm.sessionID
@@ -123,15 +143,19 @@ func (s *Session) collectDescendantJobs(node *Session, depth int, filter listFil
 		if seen && (existing.isOwner || !isOwner) {
 			continue
 		}
-		merged[rec.JobID] = descendantWalkRow{rec: rec, depth: depth, isOwner: isOwner}
+		// ownerSess is the session this row was read from (node), so the LIST
+		// projection keys resumability on the owner, not the root caller (the
+		// T11 advisory; mirrors the depth >= 2 read path).
+		merged[rec.JobID] = descendantWalkRow{rec: rec, depth: depth, isOwner: isOwner, ownerSess: node}
 	}
 
 	if node.subagents == nil {
-		return
+		return nil
 	}
 	for _, child := range node.liveSubagentSessions() {
-		s.collectDescendantJobs(child, depth+1, filter, merged)
+		_ = s.collectDescendantJobs(child, depth+1, filter, merged)
 	}
+	return nil
 }
 
 // liveSubagentSessions returns the live (non-closed) direct-child sessions. The
@@ -380,7 +404,7 @@ func (s *Session) delegateChildSessionToCascade(jobID string) *Session {
 		return nil
 	}
 	rec := recs[jobID]
-	if rec == nil || rec.Type != jobstore.JobDelegate || rec.OwnerSessionID != s.id {
+	if rec == nil || rec.Type != jobstore.JobDelegate || rec.OwnerSessionID != s.id || rec.Status.IsTerminal() {
 		return nil
 	}
 	_, childID, err := decodeRef(rec.TranscriptRef)

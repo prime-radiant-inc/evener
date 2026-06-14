@@ -2923,6 +2923,66 @@ func TestJobStopCascadesToWorkers(t *testing.T) {
 	}
 }
 
+// TestJobStopTerminalDelegateDoesNotCascade: a job_stop on an ALREADY-TERMINAL
+// coordinator delegate must NOT cascade into the coordinator's live subtree. The
+// terminal record is returned unchanged and the coordinator's running shell
+// receives ZERO stop signals — there is no live job to stop on behalf of a job
+// that already finished. (The include_children path already skips terminal
+// records; the primary-delegate cascade must too.)
+func TestJobStopTerminalDelegateDoesNotCascade(t *testing.T) {
+	rootJM := newWalkJobManager(t, "ROOT")
+	coordJM := newWalkJobManager(t, "COORD")
+	t.Cleanup(func() {
+		_ = rootJM.store.Close()
+		_ = coordJM.store.Close()
+	})
+
+	// One-hop forwarding: the coordinator forwards into the root's store.
+	coordJM.forward = rootJM.forwardEvent
+
+	// A live coordinator-owned shell job that would finalize terminal if signalled.
+	coordShellSE := newSignalCompletesStreamingExecutor()
+	coordShell := runShell(context.Background(), coordJM, coordShellSE, shellArgs{Command: "sleep 30", Background: true})
+	if coordShell.JobID == "" {
+		t.Fatalf("coordinator runShell = %+v, want background job", coordShell)
+	}
+
+	// Root-owned coordinator delegate (its child session is COORD), seeded
+	// already TERMINAL (completed). The coordinator's jobs forward up through it.
+	coordDelegateJobID := jobstore.NewJobID()
+	appendDelegateRecordForChild(t, rootJM, coordDelegateJobID, "COORD", jobstore.StatusCompleted, "exit_zero")
+	coordJM.parentJobID = coordDelegateJobID
+
+	t.Cleanup(func() {
+		coordShellSE.once.Do(func() { close(coordShellSE.done) })
+		waitForShellDone(t, coordJM, coordShell.JobID)
+	})
+
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+
+	out, err := jobStopTool(context.Background(), root, map[string]any{
+		"job_id": coordDelegateJobID,
+	}, 20000)
+	if err != nil {
+		t.Fatalf("job_stop terminal coordinator delegate: %v", err)
+	}
+	var stop jobStopResult
+	if err := json.Unmarshal([]byte(out), &stop); err != nil {
+		t.Fatalf("unmarshal job_stop: %v (output: %s)", err, out)
+	}
+	if stop.JobID != coordDelegateJobID || stop.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("job_stop = %+v, want terminal completed record returned unchanged", stop)
+	}
+
+	// The terminal delegate must NOT cascade into the coordinator's live subtree:
+	// the coordinator's running shell receives ZERO stop signals.
+	if coordShellSE.signals.Load() != 0 {
+		t.Fatalf("coordinator shell signals = %d, want 0 (terminal delegate must not cascade)", coordShellSE.signals.Load())
+	}
+}
+
 // TestJobStopNonDirectDescendant: the root issues job_stop on a grandchild
 // worker job (a non-direct descendant, two hops down, surfaced only as a
 // forwarded copy in the root's store). The root cannot directly control a

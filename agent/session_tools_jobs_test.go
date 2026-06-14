@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -197,12 +198,15 @@ func TestJobListToolIncludeNestedSurfacesForwardedRecords(t *testing.T) {
 }
 
 // jobListDescendantEntry parses the descendant-walk row fields: the existing
-// owner_session_id plus the new depth annotation.
+// owner_session_id plus the new depth annotation, and the resumability
+// projection (which must key on the owner session, not the root caller).
 type jobListDescendantEntry struct {
-	JobID          string `json:"job_id"`
-	Status         string `json:"status"`
-	OwnerSessionID string `json:"owner_session_id"`
-	Depth          int    `json:"depth"`
+	JobID              string  `json:"job_id"`
+	Status             string  `json:"status"`
+	OwnerSessionID     string  `json:"owner_session_id"`
+	Depth              int     `json:"depth"`
+	Resumable          *bool   `json:"resumable"`
+	NotResumableReason *string `json:"not_resumable_reason"`
 }
 
 type jobListDescendantOutput struct {
@@ -380,6 +384,119 @@ func TestJobListIncludeDescendantsWalksLiveTree(t *testing.T) {
 	if findDescendantRow(nestedOut.Jobs, workerRec.JobID) != nil {
 		t.Fatalf("include_nested job_list leaked two-hop worker job %q: %+v", workerRec.JobID, nestedOut.Jobs)
 	}
+}
+
+// TestJobListIncludeDescendantsSurfacesOwnStoreError proves the depth-0 (own
+// store) error is surfaced, not swallowed: a closed own store makes both plain
+// job_list and job_list(include_descendants=true) return the same ErrStoreClosed.
+// Before the fix the descendant walk swallowed the depth-0 error and returned an
+// empty list with success — a silent regression from the plain path.
+func TestJobListIncludeDescendantsSurfacesOwnStoreError(t *testing.T) {
+	rootJM := newWalkJobManager(t, "ROOT")
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+
+	// Close the depth-0 (own) store before the call so both paths hit
+	// ErrStoreClosed from the same store.
+	if err := rootJM.store.Close(); err != nil {
+		t.Fatalf("close root store: %v", err)
+	}
+
+	// Parity: plain job_list surfaces the closed-store error today.
+	if _, plainErr := jobListTool(root, decodeJobListArgs(t, `{}`), 1<<20); !errors.Is(plainErr, jobstore.ErrStoreClosed) {
+		t.Fatalf("plain job_list error = %v, want ErrStoreClosed", plainErr)
+	}
+
+	_, descErr := jobListTool(root, decodeJobListArgs(t, `{"include_descendants":true}`), 1<<20)
+	if descErr == nil {
+		t.Fatalf("job_list(include_descendants=true) error = nil, want ErrStoreClosed surfaced from the own store")
+	}
+	if !errors.Is(descErr, jobstore.ErrStoreClosed) {
+		t.Fatalf("job_list(include_descendants=true) error = %v, want ErrStoreClosed", descErr)
+	}
+}
+
+// TestJobListIncludeDescendantsProjectsRuntimeLostViaOwner proves the
+// include_descendants walk projects each descendant row against its OWNER
+// session, not the root caller. A worker-owned runtime_lost delegate's
+// resumability is assessed by assessDelegateResumability, which gates on the
+// assessing session's identity (descriptor.ParentSessionID == session ID).
+// Projecting against the root mis-reads that gate (parent_linkage_unavailable);
+// the owner projection clears it and reports a different, downstream reason. The
+// list row must match the owner projection.
+func TestJobListIncludeDescendantsProjectsRuntimeLostViaOwner(t *testing.T) {
+	rootJM := newWalkJobManager(t, "ROOT")
+	coordJM := newWalkJobManager(t, "COORD")
+	workerJM := newWalkJobManager(t, "WORK")
+	t.Cleanup(func() {
+		_ = rootJM.store.Close()
+		_ = coordJM.store.Close()
+		_ = workerJM.store.Close()
+	})
+
+	// One-hop forwarding: each child forwards into its direct parent's store.
+	coordJM.forward = rootJM.forwardEvent
+	coordJM.parentJobID = "job_root_delegate_coord"
+	workerJM.forward = coordJM.forwardEvent
+	workerJM.parentJobID = "job_coord_delegate_worker"
+
+	// A worker-owned runtime_lost delegate (descriptor.ParentSessionID == "WORK"),
+	// forwarded one hop up into the coordinator's store.
+	delegRec := workerOwnedRuntimeLostDelegate(t, workerJM, "WORK")
+
+	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
+
+	// Oracle: projecting against the true owner (worker) clears the parent-linkage
+	// gate; projecting against the root does not.
+	viaOwner := projectJobRecord(worker, delegRec)
+	viaRoot := projectJobRecord(root, delegRec)
+	if viaRoot.NotResumableReason == nil || *viaRoot.NotResumableReason != notResumableParentLinkageUnavailable {
+		t.Fatalf("root projection reason = %v, want %q (mis-projection oracle)", viaRoot.NotResumableReason, notResumableParentLinkageUnavailable)
+	}
+	if viaOwner.NotResumableReason != nil && *viaOwner.NotResumableReason == notResumableParentLinkageUnavailable {
+		t.Fatalf("owner projection reason = %q, want owner to clear the parent-linkage gate", *viaOwner.NotResumableReason)
+	}
+
+	out, err := jobListTool(root, decodeJobListArgs(t, `{"include_descendants":true}`), 1<<20)
+	if err != nil {
+		t.Fatalf("jobListTool(include_descendants): %v", err)
+	}
+	var parsed jobListDescendantOutput
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("unmarshal job_list output: %v (output: %s)", err, out)
+	}
+
+	row := findDescendantRow(parsed.Jobs, delegRec.JobID)
+	if row == nil {
+		t.Fatalf("worker runtime_lost delegate %q missing from descendant walk: %+v", delegRec.JobID, parsed.Jobs)
+	}
+	// The row must match the OWNER projection, NOT the root mis-projection.
+	if row.NotResumableReason != nil && *row.NotResumableReason == notResumableParentLinkageUnavailable {
+		t.Fatalf("list row reason = %q, want owner projection (root mis-projection leaked)", *row.NotResumableReason)
+	}
+	if !stringPtrEqual(row.NotResumableReason, viaOwner.NotResumableReason) {
+		t.Fatalf("list row not_resumable_reason = %v, want owner projection %v", row.NotResumableReason, viaOwner.NotResumableReason)
+	}
+	if !boolPtrEqual(row.Resumable, viaOwner.Resumable) {
+		t.Fatalf("list row resumable = %v, want owner projection %v", row.Resumable, viaOwner.Resumable)
+	}
+}
+
+func stringPtrEqual(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func boolPtrEqual(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func decodeJobListArgs(t *testing.T, args string) map[string]any {

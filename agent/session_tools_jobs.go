@@ -478,7 +478,11 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (string, error) 
 	}
 	var jobs []jobListEntry
 	if filter.IncludeDescendants {
-		jobs = s.walkDescendantJobs(filter)
+		descJobs, listErr := s.walkDescendantJobs(filter)
+		if listErr != nil {
+			return "", listErr
+		}
+		jobs = descJobs
 	} else {
 		recs, listErr := jm.listWithError(filter)
 		if listErr != nil {
