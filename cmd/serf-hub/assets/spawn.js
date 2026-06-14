@@ -1154,6 +1154,7 @@
     const kind = chip.dataset.chip;
     if (kind === "harness") { openHarnessPicker(chip); return; }
     if (kind === "model") { openModelPicker(chip); return; }
+    if (kind === "reasoning_effort") { openEffortPicker(chip); return; }
     if (kind === "working_dir") { openDirPicker(chip); return; }
     if (kind === "branch") { openTextPicker(chip, "branch", "branch / worktree"); return; }
     const display = chip.querySelector(".chip-value");
@@ -1445,6 +1446,104 @@
       document.addEventListener("click", offClick);
       document.addEventListener("keydown", onKey);
     }, 0);
+  }
+
+  // Fallback effort levels for models whose supported set the hub doesn't know.
+  // The daemon clamps to what the model actually accepts, so an over-broad list
+  // here is safe.
+  const DEFAULT_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
+
+  // effortLevelsForModel returns the reasoning-effort levels the given model
+  // (a "provider/model" ref) supports, from the /api/models entry, falling back
+  // to a default set when the model isn't found or declares none.
+  function effortLevelsForModel(models, modelRef) {
+    modelRef = (modelRef || "").trim();
+    for (let i = 0; i < models.length; i++) {
+      const m = models[i];
+      const full = (m.provider ? m.provider + "/" : "") + m.model;
+      if (modelRef && (full === modelRef || m.model === modelRef)) {
+        const lvls = m.reasoning_effort_levels || m.reasoningEffortLevels;
+        if (Array.isArray(lvls) && lvls.length > 0) {
+          return lvls.slice();
+        }
+        return DEFAULT_EFFORT_LEVELS.slice();
+      }
+    }
+    return DEFAULT_EFFORT_LEVELS.slice();
+  }
+
+  // fetchEnrichedModelsForHarness fetches the REST /api/models response, which
+  // (unlike the appwire model list) carries per-model reasoning_effort_levels.
+  function fetchEnrichedModelsForHarness(harness) {
+    const params = {};
+    if (!harnessUsesSerfModels(harness)) params.harness = harness;
+    const cwd = currentWorkingDir();
+    if (cwd) params.cwd = cwd;
+    const query = new URLSearchParams();
+    Object.keys(params).forEach(k => query.set(k, params[k]));
+    const suffix = query.toString() ? "?" + query.toString() : "";
+    return fetch("/api/models" + suffix)
+      .then(r => r.json())
+      .then(d => Array.isArray(d) ? d : (d && Array.isArray(d.models) ? d.models : []))
+      .catch(() => []);
+  }
+
+  function openEffortPicker(chip) {
+    const existing = document.querySelector(".chip-picker");
+    if (existing) { existing.remove(); return; }
+    const harness = currentHarness();
+    // Reasoning effort is a serf launch-config setting; non-serf harnesses
+    // (e.g. codex) ignore it, so say so instead of offering levels that no-op.
+    if (!harnessUsesSerfModels(harness)) {
+      const picker = document.createElement("div");
+      picker.className = "chip-picker";
+      const note = document.createElement("div");
+      note.className = "chip-picker-option";
+      note.textContent = "(reasoning effort applies to the serf harness only)";
+      picker.appendChild(note);
+      chip.parentNode.style.position = "relative";
+      chip.parentNode.appendChild(picker);
+      picker.style.position = "absolute";
+      picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
+      picker.style.left = chip.offsetLeft + "px";
+      picker.style.zIndex = "50";
+      attachPickerDismiss(picker);
+      return;
+    }
+    // Use the REST /api/models response: only it carries per-model
+    // reasoning_effort_levels (the appwire model list returns provider/model
+    // only), which the picker needs to offer the selected model's levels.
+    fetchEnrichedModelsForHarness(harness).then(models => {
+      const modelHidden = document.querySelector('input[name="model"]');
+      const levels = effortLevelsForModel(models, modelHidden ? modelHidden.value : "");
+
+      const picker = document.createElement("div");
+      picker.className = "chip-picker";
+      // Launch context: "(default)" means "inherit the global/project default",
+      // while "none" overrides it to empty — the only way to clear an inherited
+      // high/max. Both are offered (they differ here, unlike at runtime).
+      const options = [{ value: "", label: "(default)" }];
+      levels.forEach(l => options.push({ value: l, label: l }));
+      options.push({ value: "none", label: "none" });
+      options.forEach(opt => {
+        const row = document.createElement("div");
+        row.className = "chip-picker-option";
+        row.textContent = opt.label;
+        row.addEventListener("click", () => {
+          setChipValue("reasoning_effort", opt.value);
+          picker.remove();
+        });
+        picker.appendChild(row);
+      });
+
+      chip.parentNode.style.position = "relative";
+      chip.parentNode.appendChild(picker);
+      picker.style.position = "absolute";
+      picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
+      picker.style.left = chip.offsetLeft + "px";
+      picker.style.zIndex = "50";
+      attachPickerDismiss(picker);
+    });
   }
 
   function listModelsForHarness(harness) {

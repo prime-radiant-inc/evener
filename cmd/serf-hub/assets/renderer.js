@@ -2306,8 +2306,8 @@
         if (!m) return null;
         let description = m[3].trim();
         description = description.replace(/\s*\(depends_on:[^)]*\)\s*$/, "");
-        // Only strip a trailing reasoning-effort token (low|medium|high|xhigh).
-        description = description.replace(/\s*\[(low|medium|high|xhigh)\]\s*$/, "");
+        // Only strip a trailing reasoning-effort token.
+        description = description.replace(/\s*\[(minimal|low|medium|high|xhigh|max)\]\s*$/, "");
         return { status: m[1], id: parseInt(m[2], 10), description: description.trim() };
       }).filter(Boolean);
       return {

@@ -152,11 +152,15 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 		},
 	}
 	// Vision descriptions need sufficient reasoning to be accurate.
-	// Floor at "high" regardless of the current task's effort level.
-	effortRank := map[string]int{"low": 1, "medium": 2, "high": 3, "xhigh": 4}
-	if effortRank[effort] < effortRank["high"] {
+	// Floor at "high" regardless of the current task's effort level. Use the
+	// shared rank so "max" (and any future top-tier name) isn't downgraded.
+	if llm.ReasoningEffortRank(effort) < llm.ReasoningEffortRank("high") {
 		effort = "high"
 	}
+	// This request is built manually (not via buildModelRequest), so clamp the
+	// effort to the model's supported levels here too — otherwise a top-tier
+	// alias like "max"/"xhigh" can reach a model that doesn't accept it.
+	effort = llm.ClampReasoningEffort(effort, profile.ReasoningEffortLevels())
 	req.ReasoningEffort = &effort
 	s.applyModelRequestMetadata(profile, &req)
 

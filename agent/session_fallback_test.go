@@ -135,6 +135,74 @@ func TestFallbackChain_EndpointFallbackErrorTriesNextModel(t *testing.T) {
 	}
 }
 
+// TestFallbackChain_UsesSnapshotEffortClampedToFallback: the fallback request's
+// reasoning effort comes from the snapshot taken before the primary call (clamped
+// to the fallback model's levels), NOT from a runtime effort change that races in
+// during the primary call.
+func TestFallbackChain_UsesSnapshotEffortClampedToFallback(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	var sess *agent.Session
+	var fbEffort string
+	fbInvoked := false
+	permErr := llm.ErrorFromHTTPStatus("openai", 403, "primary denied", nil, nil)
+
+	f := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
+			switch req.Model {
+			case "primary":
+				// Mutate runtime effort mid-call; the fallback must ignore this and
+				// use the pre-call snapshot ("high").
+				if sess != nil {
+					sess.SetReasoningEffort("low")
+				}
+				return llm.Response{}, permErr
+			case "fallback-b":
+				fbInvoked = true
+				if req.ReasoningEffort != nil {
+					fbEffort = *req.ReasoningEffort
+				}
+				return agenttest.FinalResponse("fallback answered"), nil
+			}
+			t.Errorf("unexpected model %q", req.Model)
+			return llm.Response{}, nil
+		},
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	profile := agent.NewOpenAIProfile("primary").WithLiveModelInfo(llm.ModelInfo{ReasoningEffortLevels: []string{"low", "medium", "high"}})
+	var err error
+	sess, err = agent.NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+		StateDir:        dir,
+		LLMRetryPolicy:  &policy,
+		ModelFallbacks:  []string{"fallback-b"},
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
+		t.Fatalf("ProcessInput: %v (fallback should succeed)", err)
+	}
+	if !fbInvoked {
+		t.Fatal("fallback model was not invoked")
+	}
+	if fbEffort != "high" {
+		t.Fatalf("fallback effort = %q, want high (pre-call snapshot, not the mid-call 'low')", fbEffort)
+	}
+}
+
 // TestFallbackChain_ExhaustionReturnsLastError: primary + all fallbacks return
 // 403; the error returned to the caller is the LAST attempt's error.
 func TestFallbackChain_ExhaustionReturnsLastError(t *testing.T) {

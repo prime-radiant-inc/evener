@@ -410,7 +410,10 @@ func (s *Session) SetReasoningEffort(effort string) {
 		s.mu.Unlock()
 		return
 	}
-	s.cfg.ReasoningEffort = strings.TrimSpace(effort)
+	// Normalize disable-aliases (none/off/...) to "" so a runtime "none" omits
+	// reasoning effort rather than forwarding the literal to the provider, matching
+	// the CLI resolver.
+	s.cfg.ReasoningEffort = llm.NormalizeReasoningEffort(effort)
 	s.mu.Unlock()
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk cfg stale. Kata wnfz. maybeAutoSave

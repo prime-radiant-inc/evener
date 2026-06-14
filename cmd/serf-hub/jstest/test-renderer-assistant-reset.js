@@ -60,5 +60,8 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
       process.exit(1);
     }
     console.log("PASS: renderer assistant-text reset (retry-after-partial)");
+    // init() starts a recurring task-badge poll (setInterval) that keeps the
+    // event loop alive; exit explicitly on success like the sibling tests.
+    process.exit(0);
   })();
 }

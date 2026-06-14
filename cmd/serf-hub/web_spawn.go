@@ -223,13 +223,16 @@ func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor) []map[string]
 			"model":    m.Model,
 		}
 		if cat != nil {
-			if mi := cat.GetModelInfo(m.Model); mi != nil {
+			if mi := catalogModelInfo(cat, m.Model); mi != nil {
 				entry["display_name"] = mi.DisplayName
 				entry["context_window"] = mi.ContextWindow
 				entry["supports_tools"] = mi.SupportsTools
 				entry["supports_reasoning"] = mi.SupportsReasoning
 				entry["input_cost_per_million"] = mi.InputCostPerMillion
 				entry["output_cost_per_million"] = mi.OutputCostPerMillion
+				if len(mi.ReasoningEffortLevels) > 0 {
+					entry["reasoning_effort_levels"] = mi.ReasoningEffortLevels
+				}
 			}
 		}
 		out = append(out, entry)
@@ -309,6 +312,11 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 			if m.SupportsReasoning {
 				entry["supports_reasoning"] = true
 			}
+			// Prefer effort levels the provider advertised live; fall back to the
+			// catalog below.
+			if len(m.ReasoningEffortLevels) > 0 {
+				entry["reasoning_effort_levels"] = m.ReasoningEffortLevels
+			}
 			// Keep catalog enrichment for static pricing/capability hints, but
 			// do not replace live token limits with catalog values.
 			if mi != nil {
@@ -319,6 +327,9 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 				}
 				if _, ok := entry["supports_reasoning"]; !ok {
 					entry["supports_reasoning"] = mi.SupportsReasoning
+				}
+				if _, ok := entry["reasoning_effort_levels"]; !ok && len(mi.ReasoningEffortLevels) > 0 {
+					entry["reasoning_effort_levels"] = mi.ReasoningEffortLevels
 				}
 			}
 			out = append(out, entry)
@@ -333,8 +344,9 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 }
 
 func catalogModelInfo(cat *llm.ModelCatalog, modelID string) *llm.ModelInfo {
-	if cat == nil {
-		return nil
-	}
-	return cat.GetModelInfo(modelID)
+	// LookupModelInfo canonicalizes the "[1m]" suffix, a provider namespace
+	// (e.g. "anthropic/claude-opus-4-6" served by an openrouter-anthropic
+	// instance), and dated snapshots so per-model metadata (context window,
+	// effort levels) is found for qualified/dated/1M model refs.
+	return cat.LookupModelInfo(modelID)
 }

@@ -182,14 +182,18 @@ func ResolveReasoningEffort(cliValue, envValue string) (ReasoningEffortResolutio
 		return ReasoningEffortResolution{}, nil
 	}
 
-	v := strings.ToLower(strings.TrimSpace(raw))
+	v := llm.NormalizeReasoningEffort(raw)
 	switch v {
-	case "none", "null", "off", "false", "0":
+	case "":
+		// A disable alias (none/null/off/false/0): explicitly clear the effort.
 		return ReasoningEffortResolution{Set: true, Value: ""}, nil
-	case "low", "medium", "high", "xhigh":
+	case "minimal", "low", "medium", "high", "xhigh", "max":
+		// "xhigh" and "max" are aliases for the top tier (OpenRouter/OpenAI say
+		// "xhigh"; Anthropic/serf say "max"). Both are accepted; the per-model
+		// clamp maps them to the level the chosen model actually advertises.
 		return ReasoningEffortResolution{Set: true, Value: v}, nil
 	default:
-		return ReasoningEffortResolution{}, fmt.Errorf("invalid reasoning effort %q (expected low|medium|high|xhigh|none)", raw)
+		return ReasoningEffortResolution{}, fmt.Errorf("invalid reasoning effort %q (expected minimal|low|medium|high|xhigh|max|none)", raw)
 	}
 }
 

@@ -209,6 +209,99 @@ func TestEmbeddedModelCatalog(t *testing.T) {
 	}
 }
 
+// LookupModelInfo must canonicalize a model ref the same way regardless of who
+// asks: strip the Anthropic "[1m]" 1M-context suffix, then the provider
+// namespace ("anthropic/…" from an openrouter-anthropic instance), and resolve
+// dated snapshots via the family override. Every ref below names the opus-4-5
+// family, whose serf override lists [low, medium, high].
+func TestLookupModelInfo_CanonicalizesRefs(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("embedded catalog nil")
+	}
+	refs := []string{
+		"claude-opus-4-5",                        // bare
+		"claude-opus-4-5[1m]",                    // 1M-context suffix
+		"claude-opus-4-5-20251101",               // dated snapshot
+		"claude-opus-4-5-20251101[1m]",           // dated + 1M
+		"anthropic/claude-opus-4-5",              // provider-qualified
+		"anthropic/claude-opus-4-5-20251101[1m]", // provider-qualified + dated + 1M
+	}
+	for _, ref := range refs {
+		mi := cat.LookupModelInfo(ref)
+		if mi == nil {
+			t.Errorf("LookupModelInfo(%q) = nil, want the opus-4-5 family entry", ref)
+			continue
+		}
+		if got := mi.ReasoningEffortLevels; len(got) != 3 {
+			t.Errorf("LookupModelInfo(%q).ReasoningEffortLevels = %v, want 3 (opus-4-5 family)", ref, got)
+		}
+	}
+	if cat.LookupModelInfo("totally-unknown-model-xyz") != nil {
+		t.Error("unknown model should resolve to nil")
+	}
+}
+
+// A "[1m]" ref selects the 1M-context beta, so LookupModelInfo must report a 1M
+// context window for it — not the base entry's window — while leaving the base
+// ref's window untouched.
+func TestLookupModelInfo_OneMillionContext(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("embedded catalog nil")
+	}
+	base := cat.LookupModelInfo("claude-opus-4-5")
+	if base == nil {
+		t.Fatal("claude-opus-4-5 missing from catalog")
+	}
+	if base.ContextWindow == 1_000_000 {
+		t.Fatalf("base claude-opus-4-5 ContextWindow = %d; expected the smaller base window, not 1M", base.ContextWindow)
+	}
+	oneM := cat.LookupModelInfo("claude-opus-4-5[1m]")
+	if oneM == nil {
+		t.Fatal("claude-opus-4-5[1m] did not resolve")
+	}
+	if oneM.ContextWindow != 1_000_000 {
+		t.Errorf("claude-opus-4-5[1m] ContextWindow = %d, want 1000000", oneM.ContextWindow)
+	}
+	// Effort levels still resolve to the family's set for the [1m] ref.
+	if len(oneM.ReasoningEffortLevels) != 3 {
+		t.Errorf("claude-opus-4-5[1m] ReasoningEffortLevels = %v, want 3", oneM.ReasoningEffortLevels)
+	}
+}
+
+// A dated Anthropic ref that is NOT yet in the embedded catalog (a snapshot
+// newer than the bundled LiteLLM data) must still resolve to its family override
+// via familyModelID, so the effort clamp gets real levels instead of falling
+// back to the default max-capable set.
+func TestLookupModelInfo_UncatalogedDatedRefResolvesFamily(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("embedded catalog nil")
+	}
+	// A far-future date is not present in the bundled catalog.
+	if cat.GetModelInfo("claude-opus-4-5-20991231") != nil {
+		t.Skip("date unexpectedly present in catalog; pick another")
+	}
+	for _, ref := range []string{
+		"claude-opus-4-5-20991231",
+		"claude-opus-4-5-20991231[1m]",
+		"anthropic/claude-opus-4-5-20991231[1m]",
+	} {
+		mi := cat.LookupModelInfo(ref)
+		if mi == nil {
+			t.Errorf("LookupModelInfo(%q) = nil, want opus-4-5 family via familyModelID", ref)
+			continue
+		}
+		if len(mi.ReasoningEffortLevels) != 3 {
+			t.Errorf("LookupModelInfo(%q) levels = %v, want 3 (family)", ref, mi.ReasoningEffortLevels)
+		}
+	}
+	if mi := cat.LookupModelInfo("claude-opus-4-5-20991231[1m]"); mi != nil && mi.ContextWindow != 1_000_000 {
+		t.Errorf("[1m] context = %d, want 1000000", mi.ContextWindow)
+	}
+}
+
 func TestParseLiteLLMCatalog_CacheTierPricing(t *testing.T) {
 	body := `{
   "claude-opus-4-5": {
@@ -464,5 +557,70 @@ func TestApplyOverrides_MergesWebSearch(t *testing.T) {
 	}
 	if *mi.SupportsWebSearch {
 		t.Fatal("*SupportsWebSearch = true, want false (override flipped it)")
+	}
+}
+
+// Dated Anthropic snapshots (claude-opus-4-5-20251101, ...-v1) carry no override
+// of their own — Serf overrides are keyed on the bare family ID. They must
+// inherit the family's effort metadata so the effort clamp resolves real levels
+// for a dated fallback instead of leaking the primary model's levels.
+func TestApplyOverrides_DatedVariantInheritsFamily(t *testing.T) {
+	cat, err := parseLiteLLMCatalog([]byte(`{
+        "claude-opus-4-5":             {"litellm_provider": "anthropic"},
+        "claude-opus-4-5-20251101":    {"litellm_provider": "anthropic"},
+        "claude-opus-4-5-20251101-v1": {"litellm_provider": "anthropic"}
+    }`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	applyOverrides(cat, []byte(`{"claude-opus-4-5": {"reasoning_effort_levels": ["low","medium","high"], "supports_effort_parameter": true}}`))
+
+	for _, id := range []string{"claude-opus-4-5", "claude-opus-4-5-20251101", "claude-opus-4-5-20251101-v1"} {
+		mi := cat.GetModelInfo(id)
+		if mi == nil {
+			t.Fatalf("%s: missing from catalog", id)
+		}
+		if got := mi.ReasoningEffortLevels; len(got) != 3 {
+			t.Errorf("%s: ReasoningEffortLevels = %v, want [low medium high] (dated variant should inherit family override)", id, got)
+		}
+		if !mi.SupportsEffortParameter {
+			t.Errorf("%s: SupportsEffortParameter = false, want true (inherited from family)", id)
+		}
+	}
+}
+
+// A dated entry with its OWN override keeps it — exact match wins over the family
+// fallback.
+func TestApplyOverrides_ExactDatedOverrideWinsOverFamily(t *testing.T) {
+	cat, err := parseLiteLLMCatalog([]byte(`{
+        "claude-opus-4-5":          {"litellm_provider": "anthropic"},
+        "claude-opus-4-5-20251101": {"litellm_provider": "anthropic"}
+    }`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	applyOverrides(cat, []byte(`{
+        "claude-opus-4-5":          {"reasoning_effort_levels": ["low","medium","high"]},
+        "claude-opus-4-5-20251101": {"reasoning_effort_levels": ["low"]}
+    }`))
+
+	if got := cat.GetModelInfo("claude-opus-4-5-20251101").ReasoningEffortLevels; len(got) != 1 || got[0] != "low" {
+		t.Errorf("dated exact override should win: got %v, want [low]", got)
+	}
+}
+
+func TestFamilyModelID(t *testing.T) {
+	cases := map[string]string{
+		"claude-opus-4-5-20251101":    "claude-opus-4-5",
+		"claude-opus-4-5-20251101-v1": "claude-opus-4-5",
+		"claude-3-5-sonnet-20240620":  "claude-3-5-sonnet",
+		"claude-opus-4-5":             "claude-opus-4-5", // no date → unchanged
+		"gpt-4o":                      "gpt-4o",          // no date → unchanged
+		"model-v1":                    "model-v1",        // bare -vN (no date) → unchanged
+	}
+	for in, want := range cases {
+		if got := familyModelID(in); got != want {
+			t.Errorf("familyModelID(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

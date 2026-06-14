@@ -95,7 +95,7 @@ func messageCharCount(m llm.Message) int {
 // context management and expands history. It records the SystemPrompt, ContextMgmt,
 // and HistoryExpand phase timings into t. It never returns an error: the input
 // phases only emit warnings.
-func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request) {
+func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, reasoningEffort string) {
 	// --- Phase: SystemPrompt ---
 	tPhaseStart := time.Now()
 
@@ -112,7 +112,7 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.
 	if effortOverride != "" {
 		s.cfg.ReasoningEffort = effortOverride
 	}
-	reasoningEffort := strings.TrimSpace(s.cfg.ReasoningEffort)
+	reasoningEffort = strings.TrimSpace(s.cfg.ReasoningEffort)
 	s.mu.Unlock()
 
 	t.SystemPrompt = time.Since(tPhaseStart)
@@ -164,7 +164,7 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.
 
 	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
-	return profile, sys, history, req
+	return profile, sys, history, req, reasoningEffort
 }
 
 // handleModelError reacts to a failed model call. It returns retry=true when the
@@ -329,7 +329,10 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 		req.ProviderOptions = opts
 	}
 	if reasoningEffort != "" {
-		v := reasoningEffort
+		// Clamp to what the active model supports so loop-detector escalation,
+		// the --reasoning-effort flag, and the UI selector never send a level the
+		// provider rejects (e.g. "xhigh" to a model that tops out at "high").
+		v := llm.ClampReasoningEffort(reasoningEffort, profile.ReasoningEffortLevels())
 		req.ReasoningEffort = &v
 	}
 	s.applyModelRequestMetadata(profile, &req)
@@ -340,7 +343,7 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 // fallback-eligible permanent error, retries each configured fallback model in
 // order. It returns the (possibly fallback-updated) request actually used so
 // downstream logging reflects the model that answered.
-func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.Profile, req llm.Request, round int) (sessionModelResponse, llm.Request, error) {
+func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.Profile, req llm.Request, requestedEffort string, round int) (sessionModelResponse, llm.Request, error) {
 	policy := llm.DefaultRetryPolicy()
 	if s.cfg.LLMRetryPolicy != nil {
 		policy = *s.cfg.LLMRetryPolicy
@@ -356,6 +359,12 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// fallback chain — they are handled by the retry loop inside
 	// callModel. Kata cxw8.
 	if err != nil && len(s.cfg.ModelFallbacks) > 0 && modelFallbackEligible(err) {
+		// requestedEffort is the snapshot taken under lock in prepareModelRequest,
+		// before it was clamped to the primary model. Using the snapshot (rather
+		// than re-reading live session config) keeps a concurrent runtime effort
+		// change from racing/leaking into this request's fallback, and lets a
+		// fallback that supports a higher level than the primary use it.
+		origEffort := requestedEffort
 		for _, fbModel := range s.cfg.ModelFallbacks {
 			// validateModelFallbacks already rejected cross-provider fallbacks,
 			// so resolveProfileForRef is guaranteed to return the WithModel path
@@ -365,6 +374,25 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq := req
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
+			if origEffort != "" {
+				// Clamp to the FALLBACK model's levels. WithModel keeps the primary
+				// profile's effort levels for some providers (openai/anthropic), so
+				// consult the catalog for the fallback model rather than trusting
+				// fbProfile's possibly-stale set. LookupModelInfo canonicalizes the
+				// "[1m]" suffix, a provider namespace ("anthropic/…" from
+				// openrouter-anthropic), and dated snapshots, so a qualified or
+				// dated fallback still resolves real levels.
+				fbLevels := fbProfile.ReasoningEffortLevels()
+				if cat := llm.EmbeddedModelCatalog(); cat != nil {
+					if mi := cat.LookupModelInfo(fbProfile.Model()); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
+						fbLevels = mi.ReasoningEffortLevels
+					}
+				}
+				clamped := llm.ClampReasoningEffort(origEffort, fbLevels)
+				fbReq.ReasoningEffort = &clamped
+			} else {
+				fbReq.ReasoningEffort = nil
+			}
 			fbReq.WebSearch = fbProfile.SupportsWebSearch()
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
 			fbReq.PromptCacheKey = ""

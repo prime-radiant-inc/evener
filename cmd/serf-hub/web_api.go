@@ -160,7 +160,7 @@ func (s *WebServer) handleAPISpawnSchema(w http.ResponseWriter, r *http.Request)
 		{Name: "working_dir", Type: "path"},
 		{Name: "model", Type: "model"},
 		{Name: "agent", Type: "string"},
-		{Name: "reasoning_effort", Type: "enum", Values: []string{"low", "medium", "high"}},
+		{Name: "reasoning_effort", Type: "enum", Values: []string{"minimal", "low", "medium", "high", "xhigh", "max", "none"}},
 	}})
 }
 
@@ -292,6 +292,36 @@ func (s *WebServer) handleAPIModel(w http.ResponseWriter, r *http.Request, id st
 		return
 	}
 	if err := source.SetThreadModel(r.Context(), appwire.ThreadModelSetParams{Ref: ref, ModelProvider: provider, Model: model}); err != nil {
+		writeAPIWireError(w, http.StatusBadGateway, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleAPIReasoningEffort changes the reasoning effort of a running session.
+func (s *WebServer) handleAPIReasoningEffort(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	if !s.isLive(id) {
+		writeAPIError(w, http.StatusNotFound, "session not live")
+		return
+	}
+	ref := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, ref, "")
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "session not live")
+		return
+	}
+	var body struct {
+		ReasoningEffort string `json:"reasoning_effort"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := source.SetThreadReasoningEffort(r.Context(), appwire.ThreadReasoningEffortSetParams{Ref: ref, ReasoningEffort: strings.TrimSpace(body.ReasoningEffort)}); err != nil {
 		writeAPIWireError(w, http.StatusBadGateway, err)
 		return
 	}

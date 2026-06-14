@@ -14,7 +14,9 @@ import (
 // while maintaining backward compatibility.
 func resolveEffortLevels(model string, providerDefault []string) []string {
 	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		if mi := cat.GetModelInfo(model); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
+		// LookupModelInfo canonicalizes the "[1m]" suffix and dated snapshots so a
+		// 1M-context or dated model still resolves its family's real levels.
+		if mi := cat.LookupModelInfo(model); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
 			return append([]string(nil), mi.ReasoningEffortLevels...)
 		}
 	}
@@ -423,6 +425,15 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 	}
 	if len(info.ReasoningEffortLevels) > 0 {
 		clone.effortLevels = append([]string(nil), info.ReasoningEffortLevels...)
+		// Keep the effort-enum tool schema (task_list) in sync with the live
+		// levels, or the model sees the constructor enum instead.
+		defs := append([]llm.ToolDefinition(nil), clone.toolDefs...)
+		for i := range defs {
+			if defs[i].Name == "task_list" {
+				defs[i] = tool.DefTaskList(clone.effortLevels)
+			}
+		}
+		clone.toolDefs = defs
 	}
 	if info.SupportsReasoning {
 		clone.reasoning = true
@@ -528,6 +539,19 @@ func (p *Profile) CrossProviderRef(ref string) bool {
 // provider's defaults (toolNameMap, etc.) take effect.
 //
 // p is returned unchanged when either profile is nil.
+// withCheapModelFrom carries the cheap-model routing (set via WithCheapModel)
+// from original onto p. A constructor rebuild resets these to empty, so a
+// rebuild-based WithModel must restore them or side calls (naming, summarization,
+// web-fetch) lose their configured cheap model.
+func (p *Profile) withCheapModelFrom(original *Profile) *Profile {
+	if p == nil || original == nil {
+		return p
+	}
+	p.cheapModel = original.cheapModel
+	p.cheapProvider = original.cheapProvider
+	return p
+}
+
 func (p *Profile) WithCommunicateOverridesFrom(original *Profile) *Profile {
 	if p == nil || original == nil {
 		return p
@@ -601,9 +625,11 @@ func (p *Profile) WithModel(model string) *Profile {
 		model = p.model
 	}
 
-	// Anthropic re-derives its context window and provider options from the
-	// model string: the [1m] suffix selects the 1M-token-context beta. It takes
-	// a dedicated path rather than the generic clone/rebuild below.
+	// Anthropic re-derives all model-dependent state from the model string (the
+	// [1m] suffix selects the 1M-context beta; effort levels and the tool schemas
+	// that embed the effort enum vary per model). It rebuilds via the constructor
+	// rather than shallow-cloning, so a model switch can't leave a stale
+	// max-capable effort set or task_list enum on a model capped at high.
 	if p.behaviorTag == "anthropic" {
 		// Strip the redundant "anthropic/" self-prefix; cross-provider refs are
 		// the Session resolver's job, so leave them unchanged here.
@@ -613,16 +639,8 @@ func (p *Profile) WithModel(model string) *Profile {
 				model = parts[1]
 			}
 		}
-		clone := *p
-		clone.model = model
-		has1M := strings.HasSuffix(model, anthropicSuffix1M)
-		if has1M {
-			clone.contextWindow = 1_000_000
-		} else {
-			clone.contextWindow = 200_000
-		}
-		clone.providerOpts = anthropicProviderOpts(has1M)
-		return &clone
+		rebuilt := restampInstanceIdentity(newAnthropicProfile(model), p.behaviorTag, p.id)
+		return rebuilt.WithCommunicateOverridesFrom(p).withCheapModelFrom(p)
 	}
 
 	// Parse "provider/model" strings. decidePrefixAction classifies each
@@ -669,7 +687,7 @@ func (p *Profile) WithModel(model string) *Profile {
 		// renamed instance (id != behaviorTag, via WithProviderID) keeps its
 		// id and correctly-derived tag across model changes.
 		rebuilt = restampInstanceIdentity(rebuilt, p.behaviorTag, p.id)
-		return rebuilt.WithCommunicateOverridesFrom(p)
+		return rebuilt.WithCommunicateOverridesFrom(p).withCheapModelFrom(p)
 	}
 	clone := *p
 	clone.model = model
@@ -709,6 +727,10 @@ func NewOpenAIProfile(model string) *Profile {
 const anthropicSuffix1M = "[1m]"
 const anthropicBeta1M = "context-1m-2025-08-07"
 
+// anthropicDefaultEfforts is the fallback effort-level set for Anthropic models
+// not found in the catalog. Catalog models resolve their own per-model levels.
+var anthropicDefaultEfforts = []string{"low", "medium", "high", "max"}
+
 // anthropicProviderOpts builds a fresh providerOpts map for the Anthropic
 // profile. When has1M is true the 1M-context beta header is included.
 func anthropicProviderOpts(has1M bool) map[string]any {
@@ -747,7 +769,7 @@ func newAnthropicProfile(model string) *Profile {
 		webSearch:       true,
 		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-04-01",
-		defaultEfforts:  []string{"low", "medium", "high", "max"},
+		defaultEfforts:  anthropicDefaultEfforts,
 		providerOpts:    anthropicProviderOpts(has1M),
 		capabilities:    anthropicStyleCapabilities,
 	})
@@ -978,6 +1000,20 @@ func newOpenRouterAnthropicProfile(model string) *Profile {
 	if efforts == nil {
 		efforts = resolveEffortLevels(model, defaultEfforts)
 	}
+	// The "[1m]" suffix selects the 1M-context beta, just as on the direct
+	// Anthropic profile. The GetModelInfo-based resolver above can't see it (the
+	// suffix isn't a catalog key), so set the window AND the beta header
+	// explicitly for a qualified/dated "[1m]" ref like
+	// "anthropic/claude-opus-4-5-20251101[1m]" — otherwise Serf budgets 1M but
+	// never requests it.
+	has1M := strings.HasSuffix(model, anthropicSuffix1M)
+	if has1M {
+		contextWindow = 1_000_000
+	}
+	anthropicOpts := map[string]any{"max_tokens": 16384}
+	if has1M {
+		anthropicOpts["beta_headers"] = anthropicBeta1M
+	}
 	bp := buildBaseProfile(profileSpec{
 		id:              "openrouter-anthropic",
 		behaviorTag:     providercfg.BehaviorTag("openrouter-anthropic", ""),
@@ -992,12 +1028,8 @@ func newOpenRouterAnthropicProfile(model string) *Profile {
 		knowledgeCutoff: "2025-06-01",
 		defaultEfforts:  defaultEfforts,
 		resolvedEfforts: efforts,
-		providerOpts: map[string]any{
-			"anthropic": map[string]any{
-				"max_tokens": 16384,
-			},
-		},
-		capabilities: anthropicStyleCapabilities,
+		providerOpts:    map[string]any{"anthropic": anthropicOpts},
+		capabilities:    anthropicStyleCapabilities,
 	})
 	return &bp
 }

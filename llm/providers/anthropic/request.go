@@ -112,8 +112,12 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	// Determine model capabilities from catalog.
 	var adaptiveThinking, supportsEffort bool
 	var effortLevels []string
+	thinkingBudget := 0
 	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		if mi := cat.GetModelInfo(apiModel); mi != nil {
+		// LookupModelInfo canonicalizes a provider namespace (openrouter-anthropic
+		// sends "anthropic/…") and dated snapshots so effort capabilities resolve
+		// for qualified/dated models too.
+		if mi := cat.LookupModelInfo(apiModel); mi != nil {
 			adaptiveThinking = mi.SupportsAdaptiveThinking
 			supportsEffort = mi.SupportsEffortParameter
 			effortLevels = mi.ReasoningEffortLevels
@@ -136,15 +140,22 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 				"type":          "enabled",
 				"budget_tokens": budget,
 			}
-			// Anthropic requires max_tokens > budget_tokens. The unified MaxTokens
-			// represents desired output tokens, so add the budget on top.
-			if maxTokens <= budget {
-				body["max_tokens"] = budget + maxTokens
-			}
+			thinkingBudget = budget
 		}
 		// Hybrid: Opus 4.5 accepts effort even with manual thinking.
 		if supportsEffort {
 			body["output_config"] = map[string]any{"effort": effort}
+		}
+	}
+	// Anthropic rejects a forced tool_choice ("any"/"tool") when extended thinking
+	// is enabled — "Thinking may not be enabled when tool_choice forces tool use".
+	// When effort turned thinking on, downgrade forcing to "auto" so the request
+	// is accepted; the model still reasons and then chooses its tools.
+	if _, thinking := body["thinking"]; thinking {
+		if tc, ok := body["tool_choice"].(map[string]any); ok {
+			if t, _ := tc["type"].(string); t == "any" || t == "tool" {
+				body["tool_choice"] = map[string]any{"type": "auto"}
+			}
 		}
 	}
 	if req.ProviderOptions != nil {
@@ -155,6 +166,19 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 				}
 				body[k] = v
 			}
+		}
+	}
+	// Anthropic requires max_tokens > thinking.budget_tokens. Reconcile AFTER
+	// provider options, which may set their own max_tokens floor that would
+	// otherwise drop below the budget. max_tokens carries the desired output, so
+	// the budget is added on top of it.
+	if thinkingBudget > 0 {
+		out, ok := body["max_tokens"].(int)
+		if !ok {
+			out = maxTokens
+		}
+		if out <= thinkingBudget {
+			body["max_tokens"] = thinkingBudget + out
 		}
 	}
 	return body, nil

@@ -612,4 +612,3 @@ func TestRunShellDetachedFinalizerRetriesUntilDurable(t *testing.T) {
 		t.Fatalf("attempts finish=%d pending=%d, want retries past %d", finishAttempts.Load(), pendingAttempts.Load(), failuresBeforeSuccess)
 	}
 }
-

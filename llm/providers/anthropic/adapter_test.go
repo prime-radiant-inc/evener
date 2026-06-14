@@ -116,6 +116,78 @@ func TestAdapter_Complete_MapsToMessagesAPI_AndSetsBetaHeaders(t *testing.T) {
 	}
 }
 
+// Anthropic rejects forced tool_choice ("any"/"tool") when extended thinking is
+// enabled ("Thinking may not be enabled when tool_choice forces tool use"). When
+// reasoning effort turns thinking on, a forced tool_choice must be downgraded to
+// "auto" so the request is accepted.
+func TestAdapter_BuildRequestBody_DowngradesForcedToolChoiceWhenThinking(t *testing.T) {
+	effort := "high"
+	body, err := (&Adapter{}).buildRequestBody(llm.Request{
+		Model:           "some-thinking-model", // not in catalog → legacy budget path
+		Messages:        []llm.Message{llm.User("hi")},
+		Tools:           []llm.ToolDefinition{{Name: "noop", Description: "x", Parameters: map[string]any{"type": "object"}}},
+		ToolChoice:      &llm.ToolChoice{Mode: "required"},
+		ReasoningEffort: &effort,
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	if _, ok := body["thinking"]; !ok {
+		t.Fatal("expected thinking to be enabled for ReasoningEffort=high")
+	}
+	tc, _ := body["tool_choice"].(map[string]any)
+	if tc == nil || tc["type"] != "auto" {
+		t.Fatalf("tool_choice = %#v, want {type: auto} (forced choice downgraded under thinking)", body["tool_choice"])
+	}
+}
+
+// Without thinking, a forced tool_choice is preserved ("any") — we only downgrade
+// when we need to.
+func TestAdapter_BuildRequestBody_KeepsForcedToolChoiceWithoutThinking(t *testing.T) {
+	body, err := (&Adapter{}).buildRequestBody(llm.Request{
+		Model:      "some-model",
+		Messages:   []llm.Message{llm.User("hi")},
+		Tools:      []llm.ToolDefinition{{Name: "noop", Description: "x", Parameters: map[string]any{"type": "object"}}},
+		ToolChoice: &llm.ToolChoice{Mode: "required"},
+		// no ReasoningEffort → no thinking
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	if _, ok := body["thinking"]; ok {
+		t.Fatal("did not expect thinking without ReasoningEffort")
+	}
+	tc, _ := body["tool_choice"].(map[string]any)
+	if tc == nil || tc["type"] != "any" {
+		t.Fatalf("tool_choice = %#v, want {type: any} (forcing preserved without thinking)", body["tool_choice"])
+	}
+}
+
+// Anthropic requires max_tokens > thinking.budget_tokens. A provider-options
+// max_tokens floor (e.g. the Anthropic profile's 16384) must not clobber the
+// budget-adjusted value down below the budget, or the request 400s.
+func TestAdapter_BuildRequestBody_MaxTokensExceedsThinkingBudget(t *testing.T) {
+	effort := "high"
+	body, err := (&Adapter{}).buildRequestBody(llm.Request{
+		Model:           "some-thinking-model", // legacy budget path
+		Messages:        []llm.Message{llm.User("hi")},
+		ReasoningEffort: &effort,
+		ProviderOptions: map[string]any{"anthropic": map[string]any{"max_tokens": 1000}},
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	th, _ := body["thinking"].(map[string]any)
+	budget, _ := th["budget_tokens"].(int)
+	if budget <= 0 {
+		t.Fatalf("expected a thinking budget, got thinking=%#v", body["thinking"])
+	}
+	mt, _ := body["max_tokens"].(int)
+	if mt <= budget {
+		t.Fatalf("max_tokens=%d must exceed thinking budget=%d (provider-opt floor must not clobber it below budget)", mt, budget)
+	}
+}
+
 func TestAdapter_BuildRequestBody_ServiceTier(t *testing.T) {
 	body, err := (&Adapter{}).buildRequestBody(llm.Request{
 		Model:       "claude-test",

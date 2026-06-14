@@ -65,6 +65,47 @@ func (c *ModelCatalog) GetModelInfo(modelID string) *ModelInfo {
 	return nil
 }
 
+// LookupModelInfo resolves catalog metadata for a model ref that may carry an
+// Anthropic "[1m]" 1M-context suffix and/or a provider namespace (e.g.
+// "anthropic/claude-opus-4-5" served by an openrouter-anthropic instance). It
+// strips the "[1m]" suffix, tries the exact key, then retries on the last path
+// segment. Dated snapshots (claude-opus-4-5-20251101) resolve through the family
+// overrides applied at catalog load. Returns nil if nothing matches.
+//
+// Prefer this over GetModelInfo when the ref originates from a profile/request
+// (model fallbacks, provider request builders, the spawn UI) rather than a
+// literal catalog key.
+func (c *ModelCatalog) LookupModelInfo(modelID string) *ModelInfo {
+	if c == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(modelID)
+	id := strings.TrimSuffix(trimmed, "[1m]")
+	oneMillion := id != trimmed // the "[1m]" suffix selects the 1M-context beta
+
+	mi := c.GetModelInfo(id)
+	if mi == nil {
+		// Provider-qualified ref ("anthropic/claude-…"): retry on the last segment.
+		if i := strings.LastIndex(id, "/"); i >= 0 && i+1 < len(id) {
+			id = id[i+1:]
+			mi = c.GetModelInfo(id)
+		}
+	}
+	if mi == nil {
+		// A dated snapshot newer than the bundled catalog has no entry of its
+		// own; fall back to its family (claude-opus-4-5-YYYYMMDD → claude-opus-4-5).
+		if fam := familyModelID(id); fam != id {
+			mi = c.GetModelInfo(fam)
+		}
+	}
+	if mi != nil && oneMillion {
+		// GetModelInfo returns a copy, so this only adjusts the result: a "[1m]"
+		// ref reports the 1M context window, not the base entry's.
+		mi.ContextWindow = 1_000_000
+	}
+	return mi
+}
+
 // ListModels returns the catalog's models, optionally filtered by provider
 // (case-insensitive, whitespace-trimmed). An empty provider returns a copy of
 // all models; a nil catalog returns nil.

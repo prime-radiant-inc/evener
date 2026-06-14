@@ -550,12 +550,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		default:
 		}
 
-		profile, sys, history, req := s.prepareModelRequest(ctx, round, &timings)
+		profile, sys, history, req, reqEffort := s.prepareModelRequest(ctx, round, &timings)
 
 		// --- Phase: LLMCall ---
 		tPhaseStart := time.Now()
 
-		modelResp, req, err := s.callModelWithFallback(ctx, profile, req, round)
+		modelResp, req, err := s.callModelWithFallback(ctx, profile, req, reqEffort, round)
 		resp := modelResp.Response
 
 		timings.LLMCall = time.Since(tPhaseStart)

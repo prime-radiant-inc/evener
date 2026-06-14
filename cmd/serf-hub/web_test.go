@@ -1425,6 +1425,10 @@ func (s *scriptedAppSource) SetThreadModel(context.Context, appwire.ThreadModelS
 	return appwire.Unavailable("scripted source does not set models")
 }
 
+func (s *scriptedAppSource) SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error {
+	return appwire.Unavailable("scripted source does not set reasoning effort")
+}
+
 func (s *scriptedAppSource) GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 	return appwire.GoalSetResponse{}, appwire.Unavailable("scripted source does not set goals")
 }
@@ -4921,6 +4925,21 @@ func TestWeb_APISpawnSchema(t *testing.T) {
 	if len(harnessValues) != 3 || harnessValues[0] != "serf" || harnessValues[1] != "codex-local" || harnessValues[2] != "codex-managed" {
 		t.Fatalf("harness values=%+v", harnessValues)
 	}
+	effortValues := map[string]bool{}
+	for _, f := range got.Fields {
+		if f.Name == "reasoning_effort" {
+			for _, v := range f.Values {
+				effortValues[v] = true
+			}
+		}
+	}
+	// "none" is offered in the launch schema: in layered launch config it clears
+	// an inherited default (distinct from "(default)" which inherits).
+	for _, want := range []string{"minimal", "low", "medium", "high", "xhigh", "max", "none"} {
+		if !effortValues[want] {
+			t.Fatalf("reasoning_effort schema missing %q: %+v", want, effortValues)
+		}
+	}
 	if names["branch"] || names["access_mode"] {
 		t.Fatalf("schema exposes unsupported field: %+v", got.Fields)
 	}
@@ -4993,5 +5012,62 @@ func TestWeb_APISessionActionModelForwardsBody(t *testing.T) {
 	}
 	if got.Ref != "local:01MODEL" || got.Model != "gpt-5.5" || got.ModelProvider != "" {
 		t.Fatalf("model params=%+v", got)
+	}
+}
+
+func TestWeb_APISessionActionReasoningEffortForwardsBody(t *testing.T) {
+	var got appwire.ThreadReasoningEffortSetParams
+	runDir := t.TempDir()
+	daemon := startAppwireTestDaemon(t, runDir, "01EFFORT", func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadReasoningEffortSet, func(_ context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
+			got = params
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	defer daemon.Close()
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01EFFORT", status: appwire.ThreadStatusIdle})
+	r.Refresh()
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01EFFORT/reasoning-effort", strings.NewReader(`{"reasoning_effort":"high"}`))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	// Reaching the daemon (no methodNotFound, no 'not available') proves the route
+	// is wired and not blocked by a (nonexistent) capability gate.
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if got.Ref != "local:01EFFORT" || got.ReasoningEffort != "high" {
+		t.Fatalf("reasoning-effort params=%+v", got)
+	}
+}
+
+// The spawn/model API must report the 1M context window for a "[1m]" ref, not
+// the base catalog entry's window (the suffix selects the 1M-context beta).
+func TestModelDescriptorsToAPIModels_OneMillionContext(t *testing.T) {
+	out := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
+		{Provider: "anthropic", Model: "claude-opus-4-5"},
+		{Provider: "anthropic", Model: "claude-opus-4-5[1m]"},
+	})
+	if len(out) != 2 {
+		t.Fatalf("got %d entries, want 2", len(out))
+	}
+	byModel := map[string]map[string]any{}
+	for _, e := range out {
+		byModel[e["model"].(string)] = e
+	}
+	base := byModel["claude-opus-4-5"]
+	oneM := byModel["claude-opus-4-5[1m]"]
+	if base["context_window"] == nil || oneM["context_window"] == nil {
+		t.Fatalf("context_window missing: base=%v oneM=%v", base["context_window"], oneM["context_window"])
+	}
+	if oneM["context_window"] != 1_000_000 {
+		t.Errorf("[1m] context_window = %v, want 1000000", oneM["context_window"])
+	}
+	if base["context_window"] == 1_000_000 {
+		t.Errorf("base context_window = %v, want the smaller base window", base["context_window"])
 	}
 }
