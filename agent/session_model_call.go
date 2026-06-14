@@ -375,7 +375,17 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
 			if origEffort != "" {
-				clamped := llm.ClampReasoningEffort(origEffort, fbProfile.ReasoningEffortLevels())
+				// Clamp to the FALLBACK model's levels. WithModel keeps the primary
+				// profile's effort levels for some providers (openai/anthropic), so
+				// consult the catalog for the fallback model rather than trusting
+				// fbProfile's possibly-stale set.
+				fbLevels := fbProfile.ReasoningEffortLevels()
+				if cat := llm.EmbeddedModelCatalog(); cat != nil {
+					if mi := cat.GetModelInfo(fbProfile.Model()); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
+						fbLevels = mi.ReasoningEffortLevels
+					}
+				}
+				clamped := llm.ClampReasoningEffort(origEffort, fbLevels)
 				fbReq.ReasoningEffort = &clamped
 			} else {
 				fbReq.ReasoningEffort = nil
