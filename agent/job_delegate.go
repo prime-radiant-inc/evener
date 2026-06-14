@@ -70,6 +70,11 @@ type delegateArgs struct {
 	BlockTimeoutMS      int
 	DelegationAllowance int
 	ResultSchema        map[string]any
+	// Watch, when set, installs a watch on the new delegate job atomically at
+	// launch — before the run can produce output or finish — so a short delegate
+	// cannot race to terminal in the gap a separate job_watch call would leave.
+	// Its Target is filled in with the new job_id; Clear is never set here.
+	Watch *watchArgs
 }
 
 type delegateResult struct {
@@ -147,6 +152,13 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	if args.DelegationAllowance >= ownAllowance {
 		return delegateStartFailed(fmt.Errorf("invalid_request: delegation_allowance must be less than your own allowance (%d); valid grants: %s", ownAllowance, validGrantRange(ownAllowance)))
 	}
+	// Validate a launch-time watch before creating any job, so a malformed watch is
+	// a pure synchronous error with no durable delegate record.
+	if args.Watch != nil {
+		if err := jm.validateDelegateWatch(*args.Watch); err != nil {
+			return delegateStartFailed(err)
+		}
+	}
 
 	blockTimeout := time.Duration(clampShellBlockTimeoutMS(args.BlockTimeoutMS)) * time.Millisecond
 	if len(args.ResultSchema) > 0 {
@@ -167,6 +179,20 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		prepared.runCancel()
 		sub.sess.Close()
 		return delegateStartFailed(err)
+	}
+	// Install the launch-time watch before the run goroutine starts, so the watch
+	// is attached atomically with the job and cannot miss a short delegate that
+	// would otherwise finish in the gap before a separate job_watch call. A watch
+	// that fails to configure fails the whole delegate creation: do not start a
+	// delegate the caller asked to watch but could not.
+	if args.Watch != nil {
+		args.Watch.Target = run.rec.JobID
+		if _, watchErr := jm.configureWatch(*args.Watch); watchErr != nil {
+			prepared.runCancel()
+			sub.sess.Close()
+			_ = jm.finalize(run.rec.JobID, jobstore.StatusFailed, "start_failed", nil)
+			return delegateStartFailed(watchErr)
+		}
 	}
 	if err := s.trackAndLaunchPreparedSubagent(prepared); err != nil {
 		prepared.runCancel()

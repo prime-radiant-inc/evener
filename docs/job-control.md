@@ -306,6 +306,9 @@ Full target shape:
       "files": {"type": "array", "items": {"type": "string"}}
     },
     "required": ["summary"]
+  },
+  "watch": {
+    "output_match": "(?i)(blocked|needs input)"
   }
 }
 ```
@@ -318,6 +321,7 @@ Defaults:
 - With a positive `max_wait_ms`, the tool performs one bounded foreground wait of up to that many ms; timeout leaves the delegate job running in the background with reason `foreground_timeout`. `max_wait_ms` has the same wait semantics and bounds as shell creation.
 - Delegates have no model-facing `max_runtime_ms` in v1. Delegate runtime limits, if any, are implementation policy rather than a tool argument.
 - `result_schema`, when supplied, is a JSON Schema-like contract for the initial delegate final result and for resumed turns in the same delegate conversation. The delegate output remains readable as prose/log text, and Serf validates and surfaces a structured result when possible. When validation or capture fails for a schema-backed delegate result, Serf omits `structured_result`, sets `structured_result_valid:false`, and includes a machine-readable `structured_result_reason`.
+- `watch`, when supplied, installs a `job_watch` on the new delegate job **atomically at launch** — before the run can produce output or reach terminal — so a short delegate cannot finish in the gap a separate `delegate`-then-`job_watch` sequence would leave. It accepts the same trigger and delivery fields as `job_watch` (`output_match`, `events`, `progress_interval_ms`, `every`, `send`); `target` is implied (the new job) and `clear` is not valid here, so both are rejected. A malformed `watch` fails delegate creation synchronously with no durable job record, so the caller never ends up with a delegate it asked to watch but could not.
 - Delegate interaction is turn-based in this target contract. A delegate that needs more input should finish with a request for that input; the parent follows up with `job_send_message`. Mid-turn interactive input/awaiting-input notifications are not a v1 guarantee. Delegate `status="completed"` means the delegate turn ended normally; it does not assert that the requested task succeeded. Agents must inspect `output`, `structured_result`, or task-specific schema fields for task success/failure.
 
 Background return shape:

@@ -321,6 +321,34 @@ func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.
 	return nil
 }
 
+// validateDelegateWatch checks a launch-time delegate watch's configuration before
+// any job record is created, so a malformed watch is a pure synchronous error with
+// no durable job — consistent with how other validation errors behave. The watched
+// target is the not-yet-created delegate job, which is always a concrete running job,
+// so target-state validation is left to the post-attach configureWatch, which cannot
+// fail for that reason. It reuses configureWatch's own validators to avoid drift.
+func (jm *jobManager) validateDelegateWatch(a watchArgs) error {
+	if a.Clear {
+		return errors.New("invalid_request: watch.clear is not valid at launch")
+	}
+	if !watchArgsHasCondition(a) {
+		return errors.New("invalid_request: nothing to watch")
+	}
+	if err := validateWatchEventArgs(a); err != nil {
+		return err
+	}
+	if a.Send != nil {
+		if err := jm.validateWatchSendTarget(a.Send.To, a); err != nil {
+			return err
+		}
+	}
+	cfg, err := newWatchConfig(a, jm.now())
+	if err != nil {
+		return err
+	}
+	return validateWatchDeliveryLoop(cfg)
+}
+
 func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if a.Target == "" {
 		return watchResult{}, errors.New("invalid_request: target is required")

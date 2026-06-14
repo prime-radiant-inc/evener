@@ -113,7 +113,9 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 			"enum (described in your agents section); `model` and `reasoning_effort` override the defaults; " +
 			"`result_schema` requests a validated structured result; `max_wait_ms` waits inline up to that many ms " +
 			"(a timeout leaves the job running). `delegation_allowance` lets the delegate itself delegate, up to one " +
-			"level shallower than your own allowance. Judge the work from its output, not from `status=\"completed\"`.",
+			"level shallower than your own allowance. `watch` installs a `job_watch` on the new job atomically at " +
+			"launch, so no separate call can miss a fast delegate. Judge the work from its output, not from " +
+			"`status=\"completed\"`.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -129,6 +131,31 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 					"type":                 "object",
 					"description":          "JSON-Schema-like object for structured delegate results. Serf validates it for initial and resumed turns, surfaces structured_result when valid, and reports structured_result_reason when invalid.",
 					"additionalProperties": true,
+				},
+				"watch": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"description":          "Install a watch on the new delegate job atomically at launch (no `target`/`clear`; the target is this new job). Same triggers as job_watch; a malformed watch fails the delegate before it starts.",
+					"properties": map[string]any{
+						"output_match":         map[string]any{"type": "string", "description": "RE2 regex over the delegate's output. Case-sensitive unless (?i)."},
+						"progress_interval_ms": map[string]any{"type": "integer", "description": "Periodic trigger interval in ms (min 1000, max 3600000)."},
+						"events": map[string]any{
+							"type":        "array",
+							"items":       map[string]any{"type": "string"},
+							"description": "Event kinds to watch; [\"*\"] = all visible.",
+						},
+						"every": map[string]any{"type": "integer", "description": "Fire on each Nth occurrence of the single watched event kind. 1 is the default."},
+						"send": map[string]any{
+							"type":                 "object",
+							"additionalProperties": false,
+							"description":          "Deliver to another target instead of notifying the caller.",
+							"properties": map[string]any{
+								"to":              map[string]any{"type": "string", "description": "job_id, `caller`, or `watched`."},
+								"message":         map[string]any{"type": "string"},
+								"include_excerpt": map[string]any{"type": "boolean"},
+							},
+						},
+					},
 				},
 			},
 			"required": []string{"task"},

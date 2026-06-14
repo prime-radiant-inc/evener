@@ -5204,3 +5204,86 @@ func TestDelegateGrantErrorEnumeratesValidRange(t *testing.T) {
 		}
 	}
 }
+
+func TestDelegateLaunchTimeWatchInstalledAtomically(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})})
+	sess := newDelegateTestSession(t, c)
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "watch me",
+		Background: true,
+		Watch:      &watchArgs{OutputMatch: "ready"},
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+	t.Cleanup(func() {
+		_, _ = jobStopTool(context.Background(), sess, map[string]any{"job_id": res.JobID}, 1<<20)
+	})
+
+	// The launch-time watch is installed on the new delegate job atomically, before
+	// the run can produce output or finish, so it is visible immediately.
+	out := runJobListTool(t, sess)
+	w := findJobListToolWatch(out.Watches, res.JobID, "")
+	if w == nil {
+		t.Fatalf("job_list watches = %+v, want a watch on %s", out.Watches, res.JobID)
+	}
+	if w.Condition != "output_match: ready" {
+		t.Fatalf("watch condition = %q, want %q", w.Condition, "output_match: ready")
+	}
+}
+
+func TestDelegateLaunchTimeWatchInvalidFailsAtomically(t *testing.T) {
+	started := make(chan struct{})
+	c := llm.NewClient()
+	c.Register(&cancelAwareDelegateAdapter{name: "openai", started: started})
+	sess := newDelegateTestSession(t, c)
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "watch me",
+		Background: true,
+		Watch:      &watchArgs{}, // no condition: configureWatch rejects "nothing to watch"
+	})
+	if res.Err == nil {
+		t.Fatalf("expected createDelegate to fail on a conditionless launch watch, got %+v", res)
+	}
+	if !strings.Contains(res.Err.Error(), "invalid_request") {
+		t.Fatalf("error = %v, want invalid_request", res.Err)
+	}
+
+	// Atomic: the run goroutine never launched and no delegate job leaked.
+	select {
+	case <-started:
+		t.Fatal("delegate run started despite the watch failure; creation must be atomic")
+	case <-time.After(200 * time.Millisecond):
+	}
+	out := runJobListTool(t, sess)
+	if len(out.Jobs) != 0 {
+		t.Fatalf("job_list jobs = %+v, want none after an atomic watch failure", out.Jobs)
+	}
+}
+
+func TestDelegateToolWatchArgRejectsTargetAndClear(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})})
+	sess := newDelegateTestSession(t, c)
+
+	cases := []struct {
+		name string
+		args string
+		want string
+	}{
+		{"target rejected", `{"task":"x","watch":{"target":"job_y","output_match":"r"}}`, "watch.target"},
+		{"clear rejected", `{"task":"x","watch":{"clear":true}}`, "watch.clear"},
+		{"non-object rejected", `{"task":"x","watch":"nope"}`, "watch must be an object"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := delegateTool(context.Background(), sess, decodeJobListArgs(t, tc.args), 1<<20)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("delegateTool(%s) err = %v, want contains %q", tc.args, err, tc.want)
+			}
+		})
+	}
+}

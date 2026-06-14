@@ -215,6 +215,26 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 	if resultSchema, ok := args["result_schema"].(map[string]any); ok {
 		a.ResultSchema = resultSchema
 	}
+	// watch: an optional launch-time watch installed atomically on the new delegate
+	// job. It reuses job_watch's trigger fields; target is implied (the new job) and
+	// clear is not valid here, so both keys are rejected.
+	if raw, ok := args["watch"]; ok && raw != nil {
+		wm, ok := raw.(map[string]any)
+		if !ok {
+			return "", errors.New("invalid_request: watch must be an object")
+		}
+		if _, has := wm["target"]; has {
+			return "", errors.New("invalid_request: watch.target is implied by the new delegate; omit it")
+		}
+		if _, has := wm["clear"]; has {
+			return "", errors.New("invalid_request: watch.clear is not valid at launch")
+		}
+		wa, err := watchArgsFromToolArgs(wm)
+		if err != nil {
+			return "", err
+		}
+		a.Watch = &wa
+	}
 
 	res := s.createDelegate(ctx, a)
 	if res.Err != nil {
