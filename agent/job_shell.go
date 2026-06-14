@@ -31,9 +31,6 @@ type shellArgs struct {
 	Background     bool
 	BlockTimeoutMS int
 	MaxRuntimeMS   int
-	// Watch, when set, installs a watch on the shell job atomically at launch
-	// (before the process starts), with the new job_id as the implied target.
-	Watch *watchArgs
 }
 
 type shellResult struct {
@@ -81,20 +78,6 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	run, err := jm.newDelayedShell(args)
 	if err != nil {
 		return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
-	}
-
-	// Install the launch-time watch on the just-created job before the process
-	// starts, so it attaches atomically and cannot miss a fast command. The watch
-	// args were validated before the job was created, so a failure here is a defensive
-	// rollback rather than an expected path. Installing before commitDelayedShell
-	// leaves a narrow, deliberately-accepted residual on commit failure — see
-	// removeWatchesForDiscardedJobLocked for the rationale.
-	if args.Watch != nil {
-		args.Watch.Target = run.rec.JobID
-		if _, watchErr := jm.configureWatch(*args.Watch); watchErr != nil {
-			jm.discardDelayedShell(run)
-			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
-		}
 	}
 
 	startCtx, detachStartCtx := newStartOnlyContext(ctx)
@@ -511,50 +494,11 @@ func (jm *jobManager) discardDelayedShell(run *runningJob) {
 	if jm.running[run.rec.JobID] == run {
 		delete(jm.running, run.rec.JobID)
 	}
-	// A discarded delayed shell (ephemeral completion or start failure) never
-	// finalizes, so it would not trigger expireJobWatchesLocked. Remove any
-	// launch-time watch on it here so it cannot outlive its ephemeral job.
-	jm.removeWatchesForDiscardedJobLocked(run.rec.JobID)
 	jm.mu.Unlock()
 
 	_ = run.output.Close()
 	_ = jobstore.RemoveOutputArtifacts(run.rec.OutputPath)
 	run.closeDone()
-}
-
-// removeWatchesForDiscardedJobLocked detaches any watches targeting an ephemeral
-// (discarded, never-durable) job. The job leaves no durable record, so its watch and
-// any queued deliveries must leave none either — pending sends are dropped, not
-// preserved, so nothing later delivers referencing a job that never existed. A watched
-// shell is forced to background and so never ephemeral-discards; this path only fires
-// for a watch installed before a background commit that then failed. Caller holds jm.mu.
-//
-// Accepted residual (deliberate, not a TODO): this drops only the in-memory watch. A
-// launch watch is installed before commitDelayedShell, so in the microsecond window
-// between StreamCommand starting output and the very next commit statement, an output
-// match could persist a watch-send or read-grant, or enqueue a no-send notification.
-// If that commit then fails, those durable artifacts survive here pointing at a job
-// with no durable start record. We intentionally do NOT tombstone them:
-//   - It needs two rare things at once (a match in that microsecond gap AND a commit
-//     failure); either alone is harmless.
-//   - An orphan read-grant is already harmless by design (spec §5.1: grants are
-//     append-only, never revoked).
-//   - The clean alternatives are worse: installing the watch after commit reintroduces
-//     the fast-command race launch-time watches exist to kill (the async finalize can
-//     expire the job before the watch attaches), and tombstoning durable pending here
-//     can't call clearWatch from inside this held lock without deadlocking.
-//   - Worst-case symptom is a stray notification/observer frame whose job_read_output
-//     returns not-found — confusing, not corrupting.
-// If this ever needs closing, do it as a separate change that restricts shell launch
-// watches to output_match-only and installs post-commit with terminal-catchup handling.
-func (jm *jobManager) removeWatchesForDiscardedJobLocked(jobID string) {
-	for key, cfg := range jm.watches {
-		if key.Target != jobID {
-			continue
-		}
-		closeWatchConfig(cfg)
-		delete(jm.watches, key)
-	}
 }
 
 func (jm *jobManager) finalizeShellWhenDone(run *runningJob, waitCh <-chan shellWaitResult, runtimeTimedOut *atomic.Bool) {

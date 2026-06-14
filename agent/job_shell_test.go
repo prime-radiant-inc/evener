@@ -2,12 +2,10 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,7 +13,6 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
-	"primeradiant.com/serf/llm"
 )
 
 func newShellTestRig(t *testing.T) (*jobManager, execenv.StreamingExecutor) {
@@ -616,80 +613,3 @@ func TestRunShellDetachedFinalizerRetriesUntilDurable(t *testing.T) {
 	}
 }
 
-func TestShellLaunchTimeWatchInstalledAtomically(t *testing.T) {
-	s := newTestSession(t)
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "shell",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000,"watch":{"output_match":"ready"}}`),
-	})
-	if res.IsError {
-		t.Fatalf("shell returned error: %s", res.Output)
-	}
-	var out struct {
-		JobID string `json:"job_id"`
-	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
-		t.Fatalf("unmarshal shell output: %v (out=%s)", err, res.Output)
-	}
-	if out.JobID == "" {
-		t.Fatal("background shell returned no job_id")
-	}
-	t.Cleanup(func() {
-		_, _ = jobStopTool(context.Background(), s, map[string]any{"job_id": out.JobID}, 1<<20)
-	})
-
-	list := runJobListTool(t, s)
-	w := findJobListToolWatch(list.Watches, out.JobID, "")
-	if w == nil {
-		t.Fatalf("job_list watches = %+v, want a watch on %s", list.Watches, out.JobID)
-	}
-	if w.Condition != "output_match: ready" {
-		t.Fatalf("watch condition = %q, want %q", w.Condition, "output_match: ready")
-	}
-}
-
-func TestShellLaunchTimeWatchInvalidFailsAtomically(t *testing.T) {
-	s := newTestSession(t)
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "shell",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"echo hi","watch":{}}`),
-	})
-	if !res.IsError {
-		t.Fatalf("expected a conditionless watch to fail the shell, got %s", res.Output)
-	}
-	if !strings.Contains(res.Output, "invalid_request") {
-		t.Fatalf("error = %s, want invalid_request", res.Output)
-	}
-	list := runJobListTool(t, s)
-	if len(list.Jobs) != 0 {
-		t.Fatalf("job_list jobs = %+v, want none after an atomic watch failure", list.Jobs)
-	}
-}
-
-func TestShellLaunchTimeWatchForcesBackground(t *testing.T) {
-	s := newTestSession(t)
-	// `echo hi` would normally run foreground and complete inline (ephemeral, no
-	// durable job). A launch-time watch forces it to a durable background job, so the
-	// watch never rides an ephemeral discard that would orphan its deliveries.
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "shell",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"echo hi","watch":{"output_match":"ready"}}`),
-	})
-	if res.IsError {
-		t.Fatalf("shell returned error: %s", res.Output)
-	}
-	var out struct {
-		JobID               string `json:"job_id"`
-		RunningInBackground bool   `json:"running_in_background"`
-	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
-		t.Fatalf("unmarshal shell output: %v (out=%s)", err, res.Output)
-	}
-	if out.JobID == "" || !out.RunningInBackground {
-		t.Fatalf("watched shell must run as a durable background job, got %s", res.Output)
-	}
-	t.Cleanup(func() { waitForShellDone(t, s.jobManager, out.JobID) })
-}

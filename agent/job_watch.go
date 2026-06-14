@@ -326,11 +326,9 @@ func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.
 
 // validateWatchConfig runs the target-independent validation a watch install must
 // pass — condition presence, send target, config build, and delivery-loop safety —
-// and returns the built config. configureWatch and the launch-time pre-flight both
-// route install validation through it so the two paths cannot drift. Event-arg shape
-// (validateWatchEventArgs) and session-target shape are validated by the caller:
-// the former is shared by name, the latter applies only to configureWatch's session
-// targets, never to a concrete launch target.
+// and returns the built config. configureWatch routes install validation through it.
+// Event-arg shape (validateWatchEventArgs) and session-target shape are validated by
+// the caller.
 func (jm *jobManager) validateWatchConfig(a watchArgs) (*watchConfig, error) {
 	if !watchArgsHasCondition(a) {
 		return nil, errors.New("invalid_request: nothing to watch")
@@ -350,37 +348,9 @@ func (jm *jobManager) validateWatchConfig(a watchArgs) (*watchConfig, error) {
 	return cfg, nil
 }
 
-// validateLaunchWatch checks a launch-time watch's configuration before any job
-// record is created, so a malformed watch is a pure synchronous error with no durable
-// job — consistent with how other validation errors behave. Used by both delegate and
-// shell launch: the watched target is the not-yet-created job, always a concrete
-// running job, so target-state validation is left to the post-create configureWatch,
-// which cannot fail for that reason. It shares configureWatch's install validators to
-// avoid drift.
-func (jm *jobManager) validateLaunchWatch(a watchArgs) error {
-	if a.Clear {
-		return errors.New("invalid_request: watch.clear is not valid at launch")
-	}
-	// "watched" resolves to the watched target, which for a single-target launch
-	// watch is the new job itself — degenerate, and unresolvable before the job
-	// exists. Reject it explicitly rather than letting it surface as target_not_found.
-	if a.Send != nil && strings.TrimSpace(a.Send.To) == runtimeMessageAliasWatched {
-		return errors.New(`invalid_request: watch.send.to "watched" is not valid at launch; use a concrete observer job_id or caller`)
-	}
-	if err := normalizeWatchArgs(&a); err != nil {
-		return err
-	}
-	if err := validateWatchEventArgs(a); err != nil {
-		return err
-	}
-	_, err := jm.validateWatchConfig(a)
-	return err
-}
-
 // normalizeWatchArgs validates and normalizes the input-shape fields a watch install
 // depends on, before any other validation: progress_interval_ms (reject negative,
-// clamp to bounds) and every (1 reads as the unset default). configureWatch and the
-// launch pre-flight both apply it so the two paths cannot diverge on these fields.
+// clamp to bounds) and every (1 reads as the unset default).
 func normalizeWatchArgs(a *watchArgs) error {
 	if a.ProgressIntervalMS < 0 {
 		return errors.New("invalid_request: progress_interval_ms must be non-negative")

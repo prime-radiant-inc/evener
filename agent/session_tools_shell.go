@@ -26,22 +26,8 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				if s == nil || s.jobManager == nil {
 					return "", errors.New("shell jobs require an initialized JobManager")
 				}
-				// Validate a launch-time watch before the job is created, so a
-				// malformed watch is a synchronous error with no durable job.
-				if shellArgs.Watch != nil {
-					if err := s.jobManager.validateLaunchWatch(*shellArgs.Watch); err != nil {
-						return "", err
-					}
-					// A watched shell is monitor-as-it-runs work: force it to a durable
-					// background job so it never takes the ephemeral-discard path that
-					// would orphan the watch's queued deliveries.
-					shellArgs.Background = true
-				}
 				shellArgs = applyShellTimeoutPolicy(deps, shellArgs)
 				return marshalShellToolResult(runShell(ctx, s.jobManager, se, shellArgs), shellToolResultMaxChars(reg))
-			}
-			if shellArgs.Watch != nil {
-				return "", errors.New("invalid_request: watch requires a background-capable shell")
 			}
 			return runBufferedShell(ctx, env, deps, shellArgs)
 		},
@@ -143,11 +129,6 @@ func parseShellToolArgs(args map[string]any) (shellArgs, error) {
 	if parsed.MaxRuntimeMS > 0 && parsed.MaxRuntimeMS < minShellMaxRuntimeMS {
 		parsed.MaxRuntimeMS = minShellMaxRuntimeMS
 	}
-	watch, err := parseLaunchWatchArg(args)
-	if err != nil {
-		return shellArgs{}, err
-	}
-	parsed.Watch = watch
 	return parsed, nil
 }
 

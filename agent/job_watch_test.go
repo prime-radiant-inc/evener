@@ -6306,36 +6306,6 @@ func TestClearWatchOnTerminalTargetIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestLaunchWatchValidationMatchesConfigureWatch(t *testing.T) {
-	// The launch-time pre-flight (validateLaunchWatch) must reject exactly the
-	// concrete-target watch specs configureWatch rejects, so the two paths cannot
-	// drift and a malformed launch watch never leaks a durable job record.
-	specs := []watchArgs{
-		{OutputMatch: "ready"},                                // valid
-		{ProgressIntervalMS: 1000},                            // valid
-		{},                                                    // nothing to watch
-		{OutputMatch: "["},                                    // invalid regex
-		{Events: []string{"assistant.message"}},               // self-feedback (no send)
-		{OutputMatch: "ok", Send: &watchSendArgs{To: "nope"}}, // bad send target
-	}
-	for _, spec := range specs {
-		jm := newTestJM(t)
-		jm.enqueue = func(jobNotification) {}
-		rec, _ := jm.createShell(createShellOpts{Command: "x"})
-
-		install := spec
-		install.Target = rec.JobID
-		_, cfgErr := jm.configureWatch(install)
-
-		preflight := spec // target implied (unset), as at launch time
-		preErr := jm.validateLaunchWatch(preflight)
-
-		if (cfgErr == nil) != (preErr == nil) {
-			t.Fatalf("spec %+v: configureWatch err=%v but validateLaunchWatch err=%v", spec, cfgErr, preErr)
-		}
-	}
-}
-
 func TestWatchHistoryRecordsReplacement(t *testing.T) {
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
@@ -6402,18 +6372,6 @@ func TestWatchHistoryRecordsClear(t *testing.T) {
 	hist := jm.recentWatchSummaries()
 	if len(hist) != 1 || hist[0].EndReason != "cleared" {
 		t.Fatalf("recent_watches = %+v, want one cleared entry", hist)
-	}
-}
-
-func TestLaunchWatchRejectsWatchedSendTarget(t *testing.T) {
-	jm := newTestJM(t)
-	jm.enqueue = func(jobNotification) {}
-	// "watched" resolves to the watched target, which for a single-target launch
-	// watch is the new job itself — degenerate. It must be rejected at launch with a
-	// clear message, not the generic target_not_found the unset target would yield.
-	err := jm.validateLaunchWatch(watchArgs{OutputMatch: "x", Send: &watchSendArgs{To: "watched"}})
-	if err == nil || !strings.Contains(err.Error(), "not valid at launch") {
-		t.Fatalf("validateLaunchWatch(send.to=watched) = %v, want a 'not valid at launch' rejection", err)
 	}
 }
 
