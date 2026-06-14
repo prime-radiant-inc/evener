@@ -16,7 +16,7 @@ import (
 // ManageContext folds the history. Best-effort: a failed elicitation just warns
 // and lets the normal compaction proceed.
 func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history []schema.Turn, sysPromptChars int) {
-	if !s.cfg.ElicitNoteOnCompaction || s.contextMgr == nil {
+	if s.cfg.DisableNoteElicitation || s.contextMgr == nil {
 		return
 	}
 	if s.contextMgr.Pressure(history, sysPromptChars) < s.contextMgr.CheckpointThreshold {
@@ -24,6 +24,9 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 	}
 	fn := s.elicitNoteFn
 	if fn == nil {
+		if !s.contextMgr.HasClient() {
+			return // no elicitor available (no client) — skip silently
+		}
 		fn = s.contextMgr.ElicitNote
 	}
 	note, err := fn(ctx, history)

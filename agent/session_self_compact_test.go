@@ -320,7 +320,7 @@ func TestPinnedNote_SurvivesResume(t *testing.T) {
 
 func TestMaybeElicitNoteBeforeCompaction_FiresWhenEnabledAndHighPressure(t *testing.T) {
 	s := newTestSession(t)
-	s.cfg.ElicitNoteOnCompaction = true
+	// on by default (no flag needed)
 	s.elicitNoteFn = func(ctx context.Context, h []schema.Turn) (string, error) { return "STUB elicited note", nil }
 	seedSessionHistory(t, s, 10)
 	forcePressureAbove(t, s, s.contextMgr.CheckpointThreshold)
@@ -336,16 +336,16 @@ func TestMaybeElicitNoteBeforeCompaction_NoopWhenDisabledOrLowPressure(t *testin
 	s.elicitNoteFn = func(ctx context.Context, h []schema.Turn) (string, error) { return "SHOULD NOT FIRE", nil }
 	seedSessionHistory(t, s, 10)
 
-	// disabled
-	s.cfg.ElicitNoteOnCompaction = false
+	// explicitly disabled (opt-out)
+	s.cfg.DisableNoteElicitation = true
 	forcePressureAbove(t, s, s.contextMgr.CheckpointThreshold)
 	s.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s), 0)
 	if s.PinnedNote() != "" {
 		t.Fatal("disabled: should not elicit/pin")
 	}
 
-	// enabled but low pressure (below CheckpointThreshold)
-	s.cfg.ElicitNoteOnCompaction = true
+	// default-on but low pressure (below CheckpointThreshold)
+	s.cfg.DisableNoteElicitation = false
 	s.contextMgr.RecordInputTokens(1, len(currentHistory(t, s))) // ~0 pressure
 	s.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s), 0)
 	if s.PinnedNote() != "" {

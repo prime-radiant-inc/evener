@@ -825,7 +825,9 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 
 	// With cw=100 and ~110 tokens of content (system prompt agents section + user input),
 	// warning should emit since usage exceeds the 80% threshold.
-	sess, err := NewSession(c, WithContextWindow(WithProviderID(NewOpenAIProfile("m"), "tiny"), 100), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	// DisableNoteElicitation: this test scripts exactly one model step and crosses the
+	// compaction threshold; the default-on note elicitation would steal that step.
+	sess, err := NewSession(c, WithContextWindow(WithProviderID(NewOpenAIProfile("m"), "tiny"), 100), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{DisableNoteElicitation: true})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

@@ -1088,6 +1088,10 @@ Focus especially on details a summary tends to drop or paraphrase: exact tokens,
 
 Output a concise bullet list of the must-keep items, nothing else.`
 
+// HasClient reports whether an LLM client is available (note elicitation and LLM
+// summarization both require one).
+func (cm *Manager) HasClient() bool { return cm.client != nil }
+
 // ElicitNote asks the model to enumerate the must-survive-verbatim details from
 // the current history, for pinning as a note before a compaction (Variant B of
 // the forced-note-at-compaction mechanism). Returns the model's bullet list.
