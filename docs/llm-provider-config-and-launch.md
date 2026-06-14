@@ -109,6 +109,7 @@ file that calls `os.Getenv` (or the map that lists it).
 | `MINIMAX_API_KEY` | minimax | `credentials/store.go:42` |
 | `OPENROUTER_API_KEY` | openrouter, openrouter-anthropic | `credentials/store.go:43-44`; `cmdutil/cmdutil.go:273` |
 | `KIMI_API_KEY` | kimi | `credentials/store.go:45`; `cmdutil/cmdutil.go:271` |
+| `KIMI_CODING_API_KEY` | kimi-anthropic (Kimi coding plan) | `credentials/store.go`; `launchconfig/env.go` |
 | `GLM_API_KEY` | glm | `credentials/store.go:46`; `cmdutil/cmdutil.go:272` |
 | `OPENAI_COMPATIBLE_API_KEY` | openai-compatible | `credentials/store.go:47`; `llm/providers/openaicompat/adapter.go:107` |
 | `OLLAMA_API_KEY` | ollama (optional) | `llm/providers/ollama/adapter.go:189` |
@@ -131,6 +132,7 @@ actually gets injected into the spawned subprocess.
 | `MINIMAX_BASE_URL` | MiniMax base override | `llm/providers/minimax/adapter.go:47` |
 | `OPENROUTER_BASE_URL` | OpenRouter base override (default `https://openrouter.ai/api/v1`) | `cmdutil/cmdutil.go:273` |
 | `KIMI_BASE_URL` | Kimi base override (default `https://api.moonshot.ai/v1`) | `cmdutil/cmdutil.go:271` |
+| `KIMI_CODING_BASE_URL` | Kimi coding-plan base override (default `https://api.kimi.com/coding`, Anthropic-compatible) | `cmdutil/seed.go`; `llm/providers/kimi_anthropic/adapter.go` |
 | `GLM_BASE_URL` | GLM base override (default `https://api.z.ai/api/paas/v4`) | `cmdutil/cmdutil.go:272` |
 | `OPENAI_COMPATIBLE_BASE_URL` | **required** — its presence gates openai-compatible registration | `llm/providers/openaicompat/adapter.go:90,103` |
 | `OLLAMA_BASE_URL` | Ollama base, used as-is (must include `/v1`) | `llm/providers/ollama/adapter.go:187` |

@@ -88,7 +88,7 @@ shared vocabulary:
 
 The set of behavior tags is exactly the old set of distinct provider behaviors:
 `openai`, `openai-compatible`, `anthropic`, `google`, `openrouter`,
-`openrouter-anthropic`, `kimi`, `glm`, `minimax`, `ollama`.
+`openrouter-anthropic`, `kimi`, `kimi-anthropic`, `glm`, `minimax`, `ollama`.
 
 ## Config-driven instances (`providers.toml`)
 
@@ -167,6 +167,7 @@ an `id` (the instance name) and a `behaviorTag`. Constructors stamp the tag via
 | `NewAnthropicProfile` | `anthropic` | `anthropic` | :686 |
 | `NewGeminiProfile` | **`google`** | `google` | id+tag at :707-708 |
 | `NewMiniMaxProfile` | `minimax` | `minimax` | :742 |
+| `newKimiAnthropicProfile` | `kimi-anthropic` | `kimi-anthropic` | (anthropic-style) |
 | `NewOpenRouterAnthropicProfile` | `openrouter-anthropic` | `openrouter-anthropic` | :904 |
 | `NewOpenAICompatProfile(id, …)` | caller-supplied (`kimi`/`glm`/`openrouter`/`ollama`) | = id | :1027 |
 
@@ -261,7 +262,7 @@ rewrite is gone — the Gemini profile's id is `google`).
 | `anthropic` | `anthropic` | `/v1/messages` | base URL overridable |
 | `google` | `google` | Gemini API | its own protocol |
 | `kimi`, `glm`, `openrouter` | thin wrappers → `openaicompat` | `/chat/completions` | own base URL + `QuirksPreset(...)` (by type) |
-| `minimax`, `openrouter-anthropic` | thin wrappers → `anthropic` | `/v1/messages` | own base URL |
+| `minimax`, `openrouter-anthropic`, `kimi-anthropic` | thin wrappers → `anthropic` | `/v1/messages` | own base URL (`kimi-anthropic` = Kimi coding plan at `https://api.kimi.com/coding`) |
 | `ollama` | `ollama` → `openaicompat` | `/v1/chat/completions` | NonDefaultEligible |
 
 Because `openai` (Responses) and `openai-compatible` (Chat Completions) are
