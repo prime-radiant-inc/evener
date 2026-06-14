@@ -54,6 +54,24 @@ Tool descriptions should avoid these phrases because they train bad behavior:
 - Do not say `job_watch` sends arbitrary unbounded transcript context. Say: “Send the configured message plus bounded frame/excerpt metadata when the watch condition is met.”
 - Do not say `job_read_output` reads a delegate transcript. Say: “Read invocation output/final report; use transcript tools for full child conversation.”
 
+## Choosing a wait primitive
+
+Several tools can wait, but they wait on different things. Pick by intent, and do not poll.
+
+| Intent | Use |
+| --- | --- |
+| Run a command and wait up to N ms for it | `shell(max_wait_ms=N)` — promoted to a background job at the bound |
+| Start a delegate and wait up to N ms for its result | `delegate(max_wait_ms=N)` — a timeout leaves it running |
+| Learn when a backgrounded job finishes | the automatic terminal notification — nothing to call |
+| Wait until a job's output contains X | `job_read_output(grep=X, max_wait_ms=N)`, or `job_watch(output_match=X)` to be notified |
+| Re-observe progress on a long job | `job_watch(progress_interval_ms=N)` (running targets only) |
+| Resume a finished delegate and wait for its answer | `job_send_message(max_wait_ms=N)` |
+| Steer a running delegate | `job_send_message` — returns on delivery; `max_wait_ms` is ignored and reported as `wait_ignored_reason` |
+
+There is no "steer a running delegate and wait for its next reply" primitive: a live steer returns on delivery. To get an answer, let the delegate finish its turn (you are notified) and read `job_read_output`, or resume it with `job_send_message(max_wait_ms=N)` once it is terminal.
+
+Terminal targets differ by watch type: only an `output_match`-only `job_watch` supports terminal catch-up (a one-shot scan of retained output on an already-terminal job). `events`, `progress_interval_ms`, and `every` watches require a running target and reject a terminal one with `target_terminal`. `job_read_output(grep=...)` reads retained output of terminal jobs directly.
+
 ## Vocabulary
 
 | Term | Meaning |
@@ -97,7 +115,7 @@ The lifecycle/output/notification contract is generic enough for future job type
 
 `delegate` accepts an optional `delegation_allowance` integer (default 0). The value follows the strict-zero rule used across the job-control surface — absent or 0 means a leaf delegate that cannot itself delegate, exactly today's behavior; there is no `minimum`/`maximum`/`default` keyword on the schema property.
 
-**The grant rule.** A session may grant a child a `delegation_allowance` strictly less than its own allowance, so the chain always shortens and allowance 0 is a leaf. A grant `>=` the granter's own allowance is rejected with `invalid_request: delegation_allowance must be less than your own allowance (<A>)`, where `<A>` is the granter's allowance. A session's own allowance rides its `spawnConfig` and its delegate restore descriptor, so it survives restore.
+**The grant rule.** A session may grant a child a `delegation_allowance` strictly less than its own allowance, so the chain always shortens and allowance 0 is a leaf. A grant `>=` the granter's own allowance is rejected with `invalid_request: delegation_allowance must be less than your own allowance (<A>); valid grants: <range>`, where `<A>` is the granter's allowance and `<range>` enumerates the grantable values (`0` at allowance 1, otherwise `0..<A-1>`). A session's own allowance rides its `spawnConfig` and its delegate restore descriptor, so it survives restore. The current allowance is also reported on every `job_list` result (see `job_list`), so an agent can read its budget without re-reading its system prompt.
 
 **Availability matrix (allowance-gated).** Whether a child receives the delegation surface is governed by its granted allowance, not by a fixed depth gate. At allowance 0 the child is a leaf: it does not receive `delegate`/`job_watch`, agent-type listings that require those tools are filtered out of its prompt, and its system prompt shows the leaf limits block. At allowance > 0 the child receives `delegate` + `job_watch` (added to the default surface for an untyped child; a typed agent gets them only if its tool list names them), may grant onward allowances strictly smaller than its own, is told its allowance in its prompt, and sees the delegation + background-jobs prompt sections. A typed agent's tool list governs *what* the child gets; allowance governs *whether* the delegation tools are grantable at all — allowance never injects tools into a type that does not list them.
 
@@ -386,7 +404,7 @@ Semantics:
 - If another job is already running in the same delegate session and the target is not that running job, the call fails synchronously with `delegate_session_busy` unless an implementation explicitly supports concurrent child turns.
 - Target state is resolved atomically at delivery time. A race between terminal/running state and the tool call is resolved by the observed state at delivery.
 - `on_finished` defaults to `resume`. Allowed values are `resume` and `fail`. The return `action` must make the outcome explicit: `sent` for live injection, `resumed` for a new delegate job in the same session, or a synchronous error such as `target_terminal`.
-- `max_wait_ms` unset (or `0`) for a resumed delegate returns the new `job_id` immediately without waiting. With a positive `max_wait_ms`, the resumed delegate performs one bounded foreground wait; if that wait expires, the new job remains running in the background with reason `foreground_timeout`. Sending to a running job or session alias returns promptly regardless of `max_wait_ms`.
+- `max_wait_ms` unset (or `0`) for a resumed delegate returns the new `job_id` immediately without waiting. With a positive `max_wait_ms`, the resumed delegate performs one bounded foreground wait; if that wait expires, the new job remains running in the background with reason `foreground_timeout`. Sending to a running job or session alias returns promptly regardless of `max_wait_ms`. When a positive `max_wait_ms` is supplied to a live steer (which cannot honor it), the return carries `wait_ignored_reason` so the caller does not mistake delivery for a reply. There is no "steer and wait for the next reply" mode; let the live steer's turn finish (you are notified) and read its output, or resume the delegate once it is terminal.
 - `on_finished` and `max_wait_ms` apply to concrete delegate-job targets. Alias sends are prompt runtime injections and do not create or wait on a job.
 
 `job_send_message` is also the runtime substrate used by `job_watch.send`: when a watch condition fires, Serf sends the configured message/frame to the configured target using the same target-resolution and authorization rules.
@@ -537,7 +555,7 @@ Rules:
 - Every notification-armed background job emits one terminal notification when Serf observes or reconstructs terminal state, subject to durable duplicate suppression. `job_watch` is unrelated to that terminal notification.
 - `job_watch` only adds extra notifications or configured sends while the watched target is active/visible.
 - For an already-terminal concrete job that still has retained output, an `output_match`-only `job_watch` (no `events` or `progress_interval_ms`) performs a one-shot catch-up scan of that retained output instead of installing a live watch: it returns `terminal_catchup=true` with `watching=false`, `fired=true` and a frame/notification on a match or `fired=false` on none, and the terminal `status`. Any other condition on a terminal target still fails synchronously with `target_terminal` (nothing can ever fire). Unknown or no-longer-retained concrete job targets still fail synchronously with `target_not_found`.
-- `job_watch(clear=true)` does not stop the watched job. If `send.to` is supplied, it clears the watch for the `(visible_session_id, target, send.to)` key. If `send.to` is omitted, it clears all watches for `(visible_session_id, target)` that the caller is allowed to clear, including both notify-caller and sidecar watches.
+- `job_watch(clear=true)` does not stop the watched job. If `send.to` is supplied, it clears the watch for the `(visible_session_id, target, send.to)` key. If `send.to` is omitted, it clears all watches for `(visible_session_id, target)` that the caller is allowed to clear, including both notify-caller and sidecar watches. Clearing is idempotent regardless of the target's state: a clear on an already-terminal target (whose concrete watch has auto-removed) returns a no-op success (`watching:false`) rather than `target_terminal`, so cleanup never requires knowing whether the target is still running; a genuinely-unknown target still fails `target_not_found`.
 - `job_watch` fails synchronously with `target_not_watchable` for targets the caller is not allowed to watch. A watch resolves the caller's own jobs only: a target owned by a child or deeper descendant session is not directly watchable. When the target is a known descendant in the live subtree, the failure carries the **delegate-the-watching** guidance — it names the owning descendant session and directs the caller to delegate the watch to that session, which attaches the watch on its own job (the only session that can watch it).
 - Self-delivery feedback loops are rejected at creation with `invalid_request`, regardless of target: a watch whose resolved event kinds include a self-generated kind (`assistant.message`, `assistant.tool`, `communicate`, including via `["*"]`) and whose delivery returns to the watching session (`send` omitted, or `send.to="caller"`) would make each delivery cause the next event. Watch self-generated kinds only with `send.to` set to an observer job. `job.notification` self-watches remain allowed.
 - Watches expire automatically when their concrete watched job reaches terminal state. Session-level watches remain active until their configured scope ends, the session/job manager closes, or retention policy removes them.
@@ -740,10 +758,12 @@ Return shape:
       "deliveries": 0,
       "created_at": "..."
     }
-  ]
+  ],
+  "delegation_allowance": 1
 }
 ```
 
+- `delegation_allowance` reports the calling session's current recursive-delegation budget: the largest value it may grant a child is one less (see Delegation allowance). `0` means this session is a leaf and has no `delegate` tool. It always rides the result so an agent can see its budget without re-reading its system prompt.
 - `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries `target`, a one-line `condition` summary of the watch's trigger (`output_match`, `progress_interval_ms`, or `events` with an optional `every N`), `send_to` (empty for a notify-caller watch, otherwise the configured delivery target), `deliveries` (model-facing deliveries so far against the per-watch budget), and `created_at`. Drain-only residue from already-terminal watched jobs is not listed. `watches` always rides with the result; it is not subject to the job list's size bounding.
 
 `description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate jobs have no separate `description` argument in v1; implementations may derive a display label from the delegate `task` or leave `description` empty while retaining `task` in durable storage.
@@ -783,6 +803,7 @@ Semantics:
 - If stop is confirmed, terminal status is `cancelled` with reason `stopped_by_parent`.
 - If no live handle remains and cancellation cannot be confirmed, terminal status is `stopped` with reason `stop_unconfirmed` or `runtime_lost`.
 - If still running after timeout, status remains `running` with reason `stop_pending`, and a later terminal notification remains guaranteed.
+- The return classifies the result in `outcome`: `cancelled_by_request` (the stop cancelled a live job), `already_terminal` (the job had already finished before the stop), `completed_during_stop` (the job finished on its own as the stop landed), or `stop_requested` (still finalizing, e.g. reason `stop_pending`). `previous_status` reports the status the job held immediately before the stop signal, so a race between completion and cancellation is unambiguous.
 - For a shell job, `job_stop` targets exactly the supplied `job_id` and is not recursive by default; pass `include_children=true` only when the user intends to cancel visible active nested jobs too.
 - For a delegate job, `job_stop` **cascades into the subtree**: it stops the delegate and the running jobs the delegate's subtree owns (its workers' delegate and shell jobs), recursively. Stopping a coordinator therefore stops its whole live subtree's work rather than leaving the coordinator's workers running orphaned. Each cascade-stopped job finalizes as `cancelled/stopped_by_parent`. The cascade fires **regardless of the coordinator's own terminal status**: a fire-and-return coordinator (one that spawns workers and ends its turn) has its own delegate job go `completed` while its workers keep running, and `job_stop` on it must still halt that live subtree — the cascade targets the subtree's running jobs (already-terminal jobs in the subtree are skipped, so a fully-finished subtree is a harmless no-op). The cascade is keyed on the stopped job being the child's **current** parent delegate: a stale, superseded delegate `job_id` (the child was resumed to a newer job in the same session) does not cascade into the resumed child's current work — stop the current job instead.
 
@@ -813,7 +834,9 @@ Return shape:
 {
   "job_id": "job_...",
   "status": "cancelled",
-  "reason": "stopped_by_parent"
+  "reason": "stopped_by_parent",
+  "previous_status": "running",
+  "outcome": "cancelled_by_request"
 }
 ```
 
