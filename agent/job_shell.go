@@ -31,6 +31,9 @@ type shellArgs struct {
 	Background     bool
 	BlockTimeoutMS int
 	MaxRuntimeMS   int
+	// Watch, when set, installs a watch on the shell job atomically at launch
+	// (before the process starts), with the new job_id as the implied target.
+	Watch *watchArgs
 }
 
 type shellResult struct {
@@ -78,6 +81,18 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	run, err := jm.newDelayedShell(args)
 	if err != nil {
 		return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
+	}
+
+	// Install the launch-time watch on the just-created job before the process
+	// starts, so it attaches atomically and cannot miss a fast command. The watch
+	// args were validated before the job was created, so a failure here is a defensive
+	// rollback rather than an expected path.
+	if args.Watch != nil {
+		args.Watch.Target = run.rec.JobID
+		if _, watchErr := jm.configureWatch(*args.Watch); watchErr != nil {
+			jm.discardDelayedShell(run)
+			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
+		}
 	}
 
 	startCtx, detachStartCtx := newStartOnlyContext(ctx)
@@ -494,11 +509,32 @@ func (jm *jobManager) discardDelayedShell(run *runningJob) {
 	if jm.running[run.rec.JobID] == run {
 		delete(jm.running, run.rec.JobID)
 	}
+	// A discarded delayed shell (ephemeral completion or start failure) never
+	// finalizes, so it would not trigger expireJobWatchesLocked. Remove any
+	// launch-time watch on it here so it cannot outlive its ephemeral job.
+	jm.removeWatchesForDiscardedJobLocked(run.rec.JobID)
 	jm.mu.Unlock()
 
 	_ = run.output.Close()
 	_ = jobstore.RemoveOutputArtifacts(run.rec.OutputPath)
 	run.closeDone()
+}
+
+// removeWatchesForDiscardedJobLocked detaches any watches targeting an ephemeral
+// (discarded, never-durable) job without delivering or recording history: the job
+// leaves no durable record, so its watch should leave none either. Pending sends are
+// preserved via the normal detached-pending path. Caller holds jm.mu.
+func (jm *jobManager) removeWatchesForDiscardedJobLocked(jobID string) {
+	for key, cfg := range jm.watches {
+		if key.Target != jobID {
+			continue
+		}
+		if len(cfg.pending) != 0 {
+			jm.rememberDetachedPendingLocked(cfg)
+		}
+		closeWatchConfig(cfg)
+		delete(jm.watches, key)
+	}
 }
 
 func (jm *jobManager) finalizeShellWhenDone(run *runningJob, waitCh <-chan shellWaitResult, runtimeTimedOut *atomic.Bool) {

@@ -6307,7 +6307,7 @@ func TestClearWatchOnTerminalTargetIsIdempotent(t *testing.T) {
 }
 
 func TestLaunchWatchValidationMatchesConfigureWatch(t *testing.T) {
-	// The launch-time pre-flight (validateDelegateWatch) must reject exactly the
+	// The launch-time pre-flight (validateLaunchWatch) must reject exactly the
 	// concrete-target watch specs configureWatch rejects, so the two paths cannot
 	// drift and a malformed launch watch never leaks a durable job record.
 	specs := []watchArgs{
@@ -6328,10 +6328,10 @@ func TestLaunchWatchValidationMatchesConfigureWatch(t *testing.T) {
 		_, cfgErr := jm.configureWatch(install)
 
 		preflight := spec // target implied (unset), as at launch time
-		preErr := jm.validateDelegateWatch(preflight)
+		preErr := jm.validateLaunchWatch(preflight)
 
 		if (cfgErr == nil) != (preErr == nil) {
-			t.Fatalf("spec %+v: configureWatch err=%v but validateDelegateWatch err=%v", spec, cfgErr, preErr)
+			t.Fatalf("spec %+v: configureWatch err=%v but validateLaunchWatch err=%v", spec, cfgErr, preErr)
 		}
 	}
 }

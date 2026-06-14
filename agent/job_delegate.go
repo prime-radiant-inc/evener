@@ -155,7 +155,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	// Validate a launch-time watch before creating any job, so a malformed watch is
 	// a pure synchronous error with no durable delegate record.
 	if args.Watch != nil {
-		if err := jm.validateDelegateWatch(*args.Watch); err != nil {
+		if err := jm.validateLaunchWatch(*args.Watch); err != nil {
 			return delegateStartFailed(err)
 		}
 	}

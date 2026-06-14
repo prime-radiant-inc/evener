@@ -73,6 +73,37 @@ func DefEditFile() llm.ToolDefinition {
 	}
 }
 
+// launchWatchParamSchema is the inline `watch` parameter shared by delegate and
+// shell: a job_watch installed atomically at launch, with target/clear omitted
+// because the target is the new job and clearing is not a launch operation.
+func launchWatchParamSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"description":          "Install a watch on the new job atomically at launch (no `target`/`clear`; the target is this new job). Same triggers as job_watch; a malformed watch fails the job before it starts.",
+		"properties": map[string]any{
+			"output_match":         map[string]any{"type": "string", "description": "RE2 regex over the job's output. Case-sensitive unless (?i)."},
+			"progress_interval_ms": map[string]any{"type": "integer", "description": "Periodic trigger interval in ms (min 1000, max 3600000)."},
+			"events": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "Event kinds to watch; [\"*\"] = all visible.",
+			},
+			"every": map[string]any{"type": "integer", "description": "Fire on each Nth occurrence of the single watched event kind. 1 is the default."},
+			"send": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"description":          "Deliver to another target instead of notifying the caller.",
+				"properties": map[string]any{
+					"to":              map[string]any{"type": "string", "description": "job_id, `caller`, or `watched`."},
+					"message":         map[string]any{"type": "string"},
+					"include_excerpt": map[string]any{"type": "boolean"},
+				},
+			},
+		},
+	}
+}
+
 func DefShell() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "shell",
@@ -85,6 +116,7 @@ func DefShell() llm.ToolDefinition {
 				"description":    map[string]any{"type": "string"},
 				"max_wait_ms":    map[string]any{"type": "integer", "description": "Bound on how long this call waits, in ms (0 = the session default, 120s standard). A command still running at the bound is promoted to a durable background job. Use a small bound (e.g. 1000) to launch-and-return."},
 				"max_runtime_ms": map[string]any{"type": "integer"},
+				"watch":          launchWatchParamSchema(),
 			},
 			"required": []string{"command"},
 		},
@@ -132,31 +164,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 					"description":          "JSON-Schema-like object for structured delegate results. Serf validates it for initial and resumed turns, surfaces structured_result when valid, and reports structured_result_reason when invalid.",
 					"additionalProperties": true,
 				},
-				"watch": map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"description":          "Install a watch on the new delegate job atomically at launch (no `target`/`clear`; the target is this new job). Same triggers as job_watch; a malformed watch fails the delegate before it starts.",
-					"properties": map[string]any{
-						"output_match":         map[string]any{"type": "string", "description": "RE2 regex over the delegate's output. Case-sensitive unless (?i)."},
-						"progress_interval_ms": map[string]any{"type": "integer", "description": "Periodic trigger interval in ms (min 1000, max 3600000)."},
-						"events": map[string]any{
-							"type":        "array",
-							"items":       map[string]any{"type": "string"},
-							"description": "Event kinds to watch; [\"*\"] = all visible.",
-						},
-						"every": map[string]any{"type": "integer", "description": "Fire on each Nth occurrence of the single watched event kind. 1 is the default."},
-						"send": map[string]any{
-							"type":                 "object",
-							"additionalProperties": false,
-							"description":          "Deliver to another target instead of notifying the caller.",
-							"properties": map[string]any{
-								"to":              map[string]any{"type": "string", "description": "job_id, `caller`, or `watched`."},
-								"message":         map[string]any{"type": "string"},
-								"include_excerpt": map[string]any{"type": "boolean"},
-							},
-						},
-					},
-				},
+				"watch": launchWatchParamSchema(),
 			},
 			"required": []string{"task"},
 		},

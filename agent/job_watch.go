@@ -350,13 +350,14 @@ func (jm *jobManager) validateWatchConfig(a watchArgs) (*watchConfig, error) {
 	return cfg, nil
 }
 
-// validateDelegateWatch checks a launch-time delegate watch's configuration before
-// any job record is created, so a malformed watch is a pure synchronous error with
-// no durable job — consistent with how other validation errors behave. The watched
-// target is the not-yet-created delegate job, which is always a concrete running job,
-// so target-state validation is left to the post-attach configureWatch, which cannot
-// fail for that reason. It shares configureWatch's install validators to avoid drift.
-func (jm *jobManager) validateDelegateWatch(a watchArgs) error {
+// validateLaunchWatch checks a launch-time watch's configuration before any job
+// record is created, so a malformed watch is a pure synchronous error with no durable
+// job — consistent with how other validation errors behave. Used by both delegate and
+// shell launch: the watched target is the not-yet-created job, always a concrete
+// running job, so target-state validation is left to the post-create configureWatch,
+// which cannot fail for that reason. It shares configureWatch's install validators to
+// avoid drift.
+func (jm *jobManager) validateLaunchWatch(a watchArgs) error {
 	if a.Clear {
 		return errors.New("invalid_request: watch.clear is not valid at launch")
 	}

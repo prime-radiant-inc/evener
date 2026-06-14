@@ -179,6 +179,31 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (string, error)
 	return marshalWatchResult(res, maxChars)
 }
 
+// parseLaunchWatchArg parses an optional inline launch-time `watch` object, shared by
+// delegate and shell. The target is implied (the new job) and clear is invalid at
+// launch, so both keys are rejected; otherwise it reuses job_watch's arg parsing.
+func parseLaunchWatchArg(args map[string]any) (*watchArgs, error) {
+	raw, ok := args["watch"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	wm, ok := raw.(map[string]any)
+	if !ok {
+		return nil, errors.New("invalid_request: watch must be an object")
+	}
+	if _, has := wm["target"]; has {
+		return nil, errors.New("invalid_request: watch.target is implied by the new job; omit it")
+	}
+	if _, has := wm["clear"]; has {
+		return nil, errors.New("invalid_request: watch.clear is not valid at launch")
+	}
+	wa, err := watchArgsFromToolArgs(wm)
+	if err != nil {
+		return nil, err
+	}
+	return &wa, nil
+}
+
 func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
 	a := delegateArgs{
 		Task:            stringArg(args, "task"),
@@ -215,26 +240,11 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 	if resultSchema, ok := args["result_schema"].(map[string]any); ok {
 		a.ResultSchema = resultSchema
 	}
-	// watch: an optional launch-time watch installed atomically on the new delegate
-	// job. It reuses job_watch's trigger fields; target is implied (the new job) and
-	// clear is not valid here, so both keys are rejected.
-	if raw, ok := args["watch"]; ok && raw != nil {
-		wm, ok := raw.(map[string]any)
-		if !ok {
-			return "", errors.New("invalid_request: watch must be an object")
-		}
-		if _, has := wm["target"]; has {
-			return "", errors.New("invalid_request: watch.target is implied by the new delegate; omit it")
-		}
-		if _, has := wm["clear"]; has {
-			return "", errors.New("invalid_request: watch.clear is not valid at launch")
-		}
-		wa, err := watchArgsFromToolArgs(wm)
-		if err != nil {
-			return "", err
-		}
-		a.Watch = &wa
+	watch, err := parseLaunchWatchArg(args)
+	if err != nil {
+		return "", err
 	}
+	a.Watch = watch
 
 	res := s.createDelegate(ctx, a)
 	if res.Err != nil {
