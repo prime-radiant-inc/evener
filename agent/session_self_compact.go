@@ -1,6 +1,11 @@
 package agent
 
-import "errors"
+import (
+	"context"
+	"errors"
+
+	"primeradiant.com/serf/agent/schema"
+)
 
 func (s *Session) setPinnedNote(note string) {
 	s.mu.Lock()
@@ -27,6 +32,33 @@ func (s *Session) requestForceCompact(instructions string) error {
 	s.forceRequested = true
 	s.pendingInstructions = instructions
 	return nil
+}
+
+// applyPendingForceCompact runs an agent-requested compaction at the tool-round
+// tail. It mirrors Session.Compact but threads the agent's instructions and runs
+// only when a request is pending. The pinned note is re-stamped inside the
+// compaction via runPreCompactHook, so no post-call append is needed.
+func (s *Session) applyPendingForceCompact(ctx context.Context) {
+	instructions, ok := s.takeForceRequest()
+	if !ok || s.contextMgr == nil {
+		return
+	}
+	s.contextMgr.Meta = s.buildCompactionMeta()
+
+	s.mu.Lock()
+	histCopy := append([]schema.Turn{}, s.history...)
+	s.mu.Unlock()
+
+	emitFn, flush := s.compactionEmitFunc(ctx, &histCopy)
+	s.contextMgr.ForceCompact(ctx, &histCopy, instructions, emitFn)
+	flush()
+
+	s.mu.Lock()
+	s.history = histCopy
+	s.nudgedSinceCompact = false // reset nudge latch on any compaction
+	s.mu.Unlock()
+
+	s.maybeAutoSave()
 }
 
 // takeForceRequest consumes a pending force request (called once at the round tail).

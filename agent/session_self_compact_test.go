@@ -105,3 +105,52 @@ func TestRunPreCompactHook_NoDuplicateNote(t *testing.T) {
 		t.Fatalf("expected exactly one note turn, got %d", n)
 	}
 }
+
+// seedSessionHistory appends n ordinary TurnUserInput turns to s.history under
+// s.mu. This gives the compaction layers enough history to exercise the
+// checkpoint path (checkpoint preserves only the recent PreserveRecentTurns).
+func seedSessionHistory(t *testing.T, s *Session, n int) {
+	t.Helper()
+	s.mu.Lock()
+	for i := 0; i < n; i++ {
+		s.history = append(s.history, schema.NewTurn(schema.TurnUserInput, llm.User("turn")))
+	}
+	s.mu.Unlock()
+}
+
+// currentHistory returns a snapshot of s.history under s.mu.
+func currentHistory(t *testing.T, s *Session) []schema.Turn {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]schema.Turn{}, s.history...)
+}
+
+func TestApplyPendingForceCompact_CompactsWithNote(t *testing.T) {
+	s := newTestSession(t)
+	seedSessionHistory(t, s, 14) // >PreserveRecentTurns ordinary turns
+	s.setPinnedNote("REMEMBER: API is Foo(ctx, id)")
+	if err := s.requestForceCompact("drop the file dumps"); err != nil {
+		t.Fatal(err)
+	}
+
+	s.applyPendingForceCompact(context.Background())
+
+	if _, ok := s.takeForceRequest(); ok {
+		t.Fatal("force request should be consumed by applyPendingForceCompact")
+	}
+	h := currentHistory(t, s)
+	if countSteering(h, pinnedNoteOpen) != 1 || indexOfSteering(h, "REMEMBER: API is Foo(ctx, id)") < 0 {
+		t.Fatal("pinned note not re-stamped exactly once after force compaction")
+	}
+}
+
+func TestApplyPendingForceCompact_NoRequest_NoOp(t *testing.T) {
+	s := newTestSession(t)
+	seedSessionHistory(t, s, 14)
+	before := len(currentHistory(t, s))
+	s.applyPendingForceCompact(context.Background()) // no pending request
+	if len(currentHistory(t, s)) != before {
+		t.Fatal("with no pending request, applyPendingForceCompact must be a no-op")
+	}
+}

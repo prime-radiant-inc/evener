@@ -694,6 +694,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			return "", progressed, steerErr
 		}
 
+		// Agent-requested self-compaction runs here: after AfterAction/steering (so a
+		// strategy's AfterAction sees pre-compaction history) and before delivery (so a
+		// compact+communicate round compacts in-activation, not at the next user turn).
+		s.applyPendingForceCompact(ctx)
+
 		// Emit round timings before checking result delivery.
 		timings.TotalRound = time.Since(roundStart)
 		timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall - timings.ToolExec - timings.Persistence - timings.AfterAction
