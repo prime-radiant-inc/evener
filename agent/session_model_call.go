@@ -381,7 +381,10 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				// fbProfile's possibly-stale set.
 				fbLevels := fbProfile.ReasoningEffortLevels()
 				if cat := llm.EmbeddedModelCatalog(); cat != nil {
-					if mi := cat.GetModelInfo(fbProfile.Model()); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
+					// Canonicalize before lookup: the Anthropic "[1m]" 1M-context
+					// suffix is not part of the catalog key.
+					canonModel := strings.TrimSuffix(fbProfile.Model(), "[1m]")
+					if mi := cat.GetModelInfo(canonModel); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
 						fbLevels = mi.ReasoningEffortLevels
 					}
 				}

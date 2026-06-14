@@ -1492,6 +1492,24 @@
     const existing = document.querySelector(".chip-picker");
     if (existing) { existing.remove(); return; }
     const harness = currentHarness();
+    // Reasoning effort is a serf launch-config setting; non-serf harnesses
+    // (e.g. codex) ignore it, so say so instead of offering levels that no-op.
+    if (!harnessUsesSerfModels(harness)) {
+      const picker = document.createElement("div");
+      picker.className = "chip-picker";
+      const note = document.createElement("div");
+      note.className = "chip-picker-option";
+      note.textContent = "(reasoning effort applies to the serf harness only)";
+      picker.appendChild(note);
+      chip.parentNode.style.position = "relative";
+      chip.parentNode.appendChild(picker);
+      picker.style.position = "absolute";
+      picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
+      picker.style.left = chip.offsetLeft + "px";
+      picker.style.zIndex = "50";
+      attachPickerDismiss(picker);
+      return;
+    }
     // Use the REST /api/models response: only it carries per-model
     // reasoning_effort_levels (the appwire model list returns provider/model
     // only), which the picker needs to offer the selected model's levels.

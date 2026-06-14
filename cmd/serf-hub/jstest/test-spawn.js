@@ -405,6 +405,37 @@ assert(effortDom.window.document.querySelector('input[name="reasoning_effort"]')
 assert(effortDom.window.document.querySelector("[data-chip-value-reasoning_effort]").textContent === "max",
   "selecting an effort level should update the chip display");
 
+// Non-serf harnesses (codex) ignore reasoning effort: the chip should say so
+// rather than offer levels that silently no-op.
+const codexEffortDom = new JSDOM(`<!DOCTYPE html><html><body>
+  <form data-spawn-form>
+    <button class="btn btn-chip" type="button" data-chip="harness"><span class="chip-value" data-chip-value-harness>codex</span></button>
+    <button class="btn btn-chip" type="button" data-chip="reasoning_effort"><span class="chip-value" data-chip-value-reasoning_effort>(default)</span></button>
+    <textarea name="prompt"></textarea>
+    <input type="hidden" name="harness" value="codex">
+    <input type="hidden" data-harness-option value="codex" data-label="codex">
+    <input type="hidden" name="model" value="">
+    <input type="hidden" name="reasoning_effort" value="">
+    <input type="hidden" name="working_dir" value="/tmp/codex">
+    <input type="hidden" name="branch" value="">
+    <input type="hidden" name="access_mode" value="full">
+    <input type="hidden" name="agent" value="default">
+    <button class="btn btn-primary spawn-btn" type="submit">spawn</button>
+  </form>
+</body></html>`, {
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+  url: "http://127.0.0.1:9180/new",
+});
+codexEffortDom.window.SerfAppwire = { listModels() { return { then(resolve) { resolve([]); return { catch() {} }; } }; } };
+codexEffortDom.window.eval(dirPickerSrc);
+codexEffortDom.window.eval(spawnSrc);
+codexEffortDom.window.document.dispatchEvent(new codexEffortDom.window.Event("DOMContentLoaded", { bubbles: true }));
+codexEffortDom.window.document.querySelector('button[data-chip="reasoning_effort"]').click();
+const codexEffortRows = Array.from(codexEffortDom.window.document.querySelectorAll(".chip-picker .chip-picker-option")).map(el => el.textContent);
+assert(codexEffortRows.length === 1 && /serf harness only/.test(codexEffortRows[0]),
+  "codex harness effort picker should show a not-supported note, got " + JSON.stringify(codexEffortRows));
+
 let promptCalled = false;
 formDom.window.prompt = () => {
   promptCalled = true;

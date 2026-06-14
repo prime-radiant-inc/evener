@@ -72,3 +72,61 @@ func TestFallbackChain_ClampsToFallbackModelLevels(t *testing.T) {
 		t.Fatalf("fallback effort = %q, want high (max clamped to the fallback model's catalog levels)", fbEffort)
 	}
 }
+
+// Same as above, but the fallback carries the Anthropic "[1m]" 1M-context suffix,
+// which must be stripped before the catalog lookup so the clamp still finds the
+// fallback model's levels.
+func TestFallbackChain_ClampsToFallbackModelLevels_1MSuffix(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	var fbEffort string
+	fbInvoked := false
+	permErr := llm.ErrorFromHTTPStatus("anthropic", 403, "primary denied", nil, nil)
+
+	f := &agenttest.ModelTrackingAdapter{
+		Provider: "anthropic",
+		Respond: func(req llm.Request) (llm.Response, error) {
+			switch req.Model {
+			case "claude-opus-4-6":
+				return llm.Response{}, permErr
+			case "claude-opus-4-5[1m]":
+				fbInvoked = true
+				if req.ReasoningEffort != nil {
+					fbEffort = *req.ReasoningEffort
+				}
+				return agenttest.FinalResponse("fallback answered"), nil
+			}
+			t.Errorf("unexpected model %q", req.Model)
+			return llm.Response{}, nil
+		},
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:        dir,
+		LLMRetryPolicy:  &policy,
+		ModelFallbacks:  []string{"claude-opus-4-5[1m]"},
+		ReasoningEffort: "max",
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if !fbInvoked {
+		t.Fatal("fallback model was not invoked")
+	}
+	if fbEffort != "high" {
+		t.Fatalf("fallback effort = %q, want high (max clamped to opus-4-5 catalog levels after stripping [1m])", fbEffort)
+	}
+}
