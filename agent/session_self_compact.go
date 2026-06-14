@@ -20,6 +20,38 @@ func (s *Session) PinnedNote() string {
 	return s.pinnedNote
 }
 
+const selfCompactNudge = "Context is filling up. If you are at or near a clean stopping " +
+	"point, call `compact` now with a note_to_self (and optional compaction_instructions) " +
+	"to compact at a clean seam before the automatic fallback fires."
+
+// maybeNudgeSelfCompact injects a one-time steering nudge when pressure crosses
+// WarnThreshold. Best-effort: a single large tool result can jump past the
+// checkpoint threshold before this fires; the checkpoint/summary fallback is the
+// guarantee. The nudge is queued via Steer, which the round loop drains into
+// history (injectPostToolSteering) before the next model call, so the agent sees
+// it in-turn. The latch resets on any compaction. Returns true if it nudged.
+func (s *Session) maybeNudgeSelfCompact(sysPromptChars int) bool {
+	if s.contextMgr == nil {
+		return false
+	}
+	s.mu.Lock()
+	if s.nudgedSinceCompact {
+		s.mu.Unlock()
+		return false
+	}
+	hist := append([]schema.Turn{}, s.history...)
+	s.mu.Unlock()
+
+	if s.contextMgr.Pressure(hist, sysPromptChars) < s.contextMgr.WarnThreshold {
+		return false
+	}
+	s.mu.Lock()
+	s.nudgedSinceCompact = true
+	s.mu.Unlock()
+	s.Steer(selfCompactNudge)
+	return true
+}
+
 // requestForceCompact records that the compact tool asked for a compaction at the
 // round tail. One per round: a second request before takeForceRequest consumes the
 // first is an error so distinct intents are never silently clobbered.

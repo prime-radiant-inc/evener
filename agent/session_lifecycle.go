@@ -590,6 +590,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 		}
 
+		// Best-effort nudge: when pressure crosses WarnThreshold, steer the agent to
+		// self-compact at its next clean seam. recordResponseUsage above just refreshed
+		// lastInputTokens, so pressure reflects the round that completed. The latch keeps
+		// this one-shot until the next compaction; the nudge is queued as steering and
+		// reaches the model before the next round's model call.
+		s.maybeNudgeSelfCompact(len(sys))
+
 		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
 			return "", progressed, abortErr
 		}

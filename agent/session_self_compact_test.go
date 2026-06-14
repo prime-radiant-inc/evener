@@ -157,6 +157,86 @@ func TestApplyPendingForceCompact_NoRequest_NoOp(t *testing.T) {
 	}
 }
 
+// forcePressureAbove drives the context manager's reported pressure to at least
+// frac by recording a large exact input-token count for the current history
+// length. The compaction layers reset lastInputTokens to 0, so this must be
+// re-applied after each compaction to re-arm pressure.
+func forcePressureAbove(t *testing.T, s *Session, frac float64) {
+	t.Helper()
+	cw := s.contextMgr.EstimateUsage(nil, 0).Window
+	if cw <= 0 {
+		t.Fatalf("context window size is %d; cannot force pressure", cw)
+	}
+	s.mu.Lock()
+	histLen := len(s.history)
+	s.mu.Unlock()
+	tokens := int(frac*float64(cw)) + 1
+	s.contextMgr.RecordInputTokens(tokens, histLen)
+	if got := s.contextMgr.Pressure(currentHistory(t, s), 0); got < frac {
+		t.Fatalf("forcePressureAbove: pressure %.3f < target %.3f", got, frac)
+	}
+}
+
+func TestNudge_FiresOnceUntilCompaction(t *testing.T) {
+	s := newTestSession(t)
+	forcePressureAbove(t, s, s.contextMgr.WarnThreshold)
+
+	if !s.maybeNudgeSelfCompact(0) {
+		t.Fatal("nudge should fire when pressure crosses WarnThreshold and latch is clear")
+	}
+	// The nudge must reach the model: it is queued as steering, which the round
+	// loop drains into history before the next model call.
+	if got := s.SteeringQueueSnapshot(); len(got) != 1 || !strings.Contains(got[0].Text, "compact") {
+		t.Fatalf("nudge did not queue a steering message: %+v", got)
+	}
+	if s.maybeNudgeSelfCompact(0) {
+		t.Fatal("nudge must not re-fire until after a compaction")
+	}
+
+	// A compaction resets the latch.
+	if err := s.requestForceCompact(""); err != nil {
+		t.Fatal(err)
+	}
+	s.applyPendingForceCompact(context.Background())
+	forcePressureAbove(t, s, s.contextMgr.WarnThreshold)
+	if !s.maybeNudgeSelfCompact(0) {
+		t.Fatal("nudge should fire again after a compaction reset the latch")
+	}
+}
+
+// TestNudge_ResetsOnSessionCompact verifies Session.Compact (the idle/explicit
+// path, distinct from applyPendingForceCompact) also clears the latch so the
+// nudge can fire again afterward.
+func TestNudge_ResetsOnSessionCompact(t *testing.T) {
+	s := newTestSession(t)
+	forcePressureAbove(t, s, s.contextMgr.WarnThreshold)
+	if !s.maybeNudgeSelfCompact(0) {
+		t.Fatal("nudge should fire on first crossing")
+	}
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	forcePressureAbove(t, s, s.contextMgr.WarnThreshold)
+	if !s.maybeNudgeSelfCompact(0) {
+		t.Fatal("nudge should fire again after Session.Compact reset the latch")
+	}
+}
+
+// TestNudge_SilentBelowThreshold verifies no nudge fires when pressure is below
+// WarnThreshold and the latch stays clear.
+func TestNudge_SilentBelowThreshold(t *testing.T) {
+	s := newTestSession(t)
+	if s.maybeNudgeSelfCompact(0) {
+		t.Fatal("nudge must not fire below WarnThreshold")
+	}
+	s.mu.Lock()
+	latched := s.nudgedSinceCompact
+	s.mu.Unlock()
+	if latched {
+		t.Fatal("latch must stay clear when pressure is below threshold")
+	}
+}
+
 // TestPinnedNote_MetaRoundTrip verifies that setPinnedNote is captured by Meta()
 // and survives a JSON marshal/unmarshal round-trip (the wire format used by
 // SaveSessionMeta/LoadSessionMeta).

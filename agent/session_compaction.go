@@ -33,6 +33,7 @@ func (s *Session) Compact(ctx context.Context) error {
 
 	s.mu.Lock()
 	s.history = histCopy
+	s.nudgedSinceCompact = false // reset nudge latch on any compaction
 	s.mu.Unlock()
 
 	s.maybeAutoSave()
