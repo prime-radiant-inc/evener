@@ -1974,7 +1974,7 @@ func TestForceCompact_RunsAllLayers(t *testing.T) {
 		}
 	}
 
-	cm.ForceCompact(context.Background(), &history, emitFn)
+	cm.ForceCompact(context.Background(), &history, "", emitFn)
 
 	// Both layers should fire: checkpoint then summarize.
 	if len(layers) != 2 {
@@ -2008,7 +2008,7 @@ func TestForceCompact_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	}
 
 	emitFn := func(kind events.EventKind, data events.EventData) {}
-	cm.ForceCompact(context.Background(), &history, emitFn)
+	cm.ForceCompact(context.Background(), &history, "", emitFn)
 
 	// L3 creates a checkpoint turn. OnCompactionTurn should have been called.
 	found := false
@@ -2053,7 +2053,7 @@ func TestForceCompact_FiresOnCompactionTurn_Summary(t *testing.T) {
 	}
 
 	emitFn := func(kind events.EventKind, data events.EventData) {}
-	cm.ForceCompact(context.Background(), &history, emitFn)
+	cm.ForceCompact(context.Background(), &history, "", emitFn)
 
 	// Both L3 (checkpoint) and L4 (summary) should fire callbacks.
 	foundCheckpoint, foundSummary := false, false
@@ -2096,11 +2096,30 @@ func TestForceCompact_BelowThreshold(t *testing.T) {
 		}
 	}
 
-	cm.ForceCompact(context.Background(), &history, emitFn)
+	cm.ForceCompact(context.Background(), &history, "", emitFn)
 
 	// Checkpoint should fire. Summarize skipped (no client).
 	if len(layers) != 1 || layers[0] != "checkpoint" {
 		t.Fatalf("expected [checkpoint], got %v", layers)
+	}
+}
+
+func TestForceCompact_ReportsSummarized(t *testing.T) {
+	// With a nil client there is no summary layer, so ForceCompact should
+	// return false regardless of history length.
+	profile := testProfile("openai", "test", 100_000)
+	cm := NewManager(profile, nil) // nil client → no summary layer
+	cm.PreserveRecentTurns = 2
+
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("question one")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer one")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+	}
+	emitFn := func(events.EventKind, events.EventData) {}
+	summarized := cm.ForceCompact(context.Background(), &history, "", emitFn)
+	if summarized {
+		t.Fatal("no client and short history → no summary; should report false")
 	}
 }
 

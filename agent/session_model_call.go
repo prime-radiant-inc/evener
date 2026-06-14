@@ -190,7 +190,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		histCopy := append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
 		emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
-		s.contextMgr.ForceCompact(ctx, &histCopy, emitFn)
+		s.contextMgr.ForceCompact(ctx, &histCopy, "", emitFn)
 		flushCompactionHooks()
 		s.mu.Lock()
 		s.history = histCopy

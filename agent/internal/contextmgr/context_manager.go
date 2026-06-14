@@ -370,12 +370,15 @@ func (cm *Manager) MaybeCompact(
 }
 
 // ForceCompact runs all compaction layers unconditionally, regardless of context pressure.
-// Used for user-initiated compaction (e.g. /compact command).
+// Used for user-initiated compaction (e.g. /compact command). instructions is forwarded
+// to the LLM summarization layer; pass "" for default behavior. Returns true if a summary
+// was actually generated (false when there is no client or the history is too short to summarize).
 func (cm *Manager) ForceCompact(
 	ctx context.Context,
 	history *[]schema.Turn,
+	instructions string,
 	emitFn func(events.EventKind, events.EventData),
-) {
+) (summarized bool) {
 	// Reset token measurement so inter-layer estimates use char/4.
 	cm.mu.Lock()
 	cm.lastInputTokens = 0
@@ -402,12 +405,14 @@ func (cm *Manager) ForceCompact(
 	if cm.client != nil {
 		turnsBefore = len(*history)
 		before = estimateTokens(*history)
-		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
+		lenBefore := len(*history)
+		result, err := cm.summarizeWithLLMSteered(ctx, *history, cm.PreserveRecentTurns, instructions)
 		if err != nil {
 			emitFn(events.EventWarning, events.WarningData{
 				Message: "LLM summarization failed: " + err.Error(),
 			})
 		} else {
+			summarized = len(result) != lenBefore
 			*history = result
 			after := estimateTokens(*history)
 			emitFn(events.EventContextCompaction, events.ContextCompactionData{
@@ -428,6 +433,7 @@ func (cm *Manager) ForceCompact(
 	cm.lastInputTokens = 0
 	cm.historyLenAtMeasure = 0
 	cm.mu.Unlock()
+	return
 }
 
 // --- Observation masking (Layer 1) ---

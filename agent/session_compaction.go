@@ -28,7 +28,7 @@ func (s *Session) Compact(ctx context.Context) error {
 	s.mu.Unlock()
 
 	emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
-	s.contextMgr.ForceCompact(ctx, &histCopy, emitFn)
+	s.contextMgr.ForceCompact(ctx, &histCopy, "", emitFn)
 	flushCompactionHooks()
 
 	s.mu.Lock()
