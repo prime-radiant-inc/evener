@@ -54,8 +54,12 @@ type Manager struct {
 	// maskObservations/clearThinking directly.
 	ObservationMaskThreshold float64
 	ThinkingClearThreshold   float64
-	CheckpointThreshold      float64
-	SummarizeThreshold       float64
+	// WarnThreshold is the pressure fraction at which the Session nudges the
+	// agent to self-compact at its next clean seam (best-effort; the checkpoint
+	// and summary layers remain the guarantee).
+	WarnThreshold       float64
+	CheckpointThreshold float64
+	SummarizeThreshold  float64
 
 	PreserveRecentTurns int
 
@@ -75,8 +79,9 @@ func NewManager(profile *provider.Profile, client *llm.Client) *Manager {
 		client:                   client,
 		ObservationMaskThreshold: 0.60,
 		ThinkingClearThreshold:   0.70,
+		WarnThreshold:            0.75,
 		CheckpointThreshold:      0.80,
-		SummarizeThreshold:       0.90,
+		SummarizeThreshold:       0.95,
 		PreserveRecentTurns:      6,
 	}
 }
@@ -212,6 +217,7 @@ func ApplyThresholdScale(cm *Manager, scale float64) {
 		}
 		cm.ObservationMaskThreshold = clamp(cm.ObservationMaskThreshold * scale)
 		cm.ThinkingClearThreshold = clamp(cm.ThinkingClearThreshold * scale)
+		cm.WarnThreshold = clamp(cm.WarnThreshold * scale)
 		cm.CheckpointThreshold = clamp(cm.CheckpointThreshold * scale)
 		cm.SummarizeThreshold = clamp(cm.SummarizeThreshold * scale)
 	}
