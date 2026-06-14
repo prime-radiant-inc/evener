@@ -130,7 +130,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	}
 	task := strings.TrimSpace(args.Task)
 	if task == "" {
-		return delegateStartFailed(errors.New("task is required"))
+		return delegateStartFailed(errors.New("invalid_request: task is required"))
 	}
 	jm, err := sessionJobManager(s)
 	if err != nil {
@@ -220,10 +220,10 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	target := strings.TrimSpace(args.Target)
 	message := strings.TrimSpace(args.Message)
 	if target == "" {
-		return sendMessageFailed(target, errors.New("target is required"))
+		return sendMessageFailed(target, errors.New("invalid_request: target is required"))
 	}
 	if message == "" {
-		return sendMessageFailed(target, errors.New("message is required"))
+		return sendMessageFailed(target, errors.New("invalid_request: message is required"))
 	}
 	if args.BlockTimeoutMS < 0 {
 		return sendMessageFailed(target, errors.New("invalid_request: max_wait_ms must be non-negative"))

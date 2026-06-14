@@ -3730,3 +3730,42 @@ func TestJobStopReportsOutcomeAndPreviousStatus(t *testing.T) {
 
 	waitForShellDone(t, s.jobManager, shellOut.JobID)
 }
+
+func TestJobToolRequiredArgErrorsCarryInvalidRequestPrefix(t *testing.T) {
+	s := newTestSession(t)
+
+	if res := s.createDelegate(context.Background(), delegateArgs{Task: ""}); res.Err == nil ||
+		!strings.HasPrefix(res.Err.Error(), "invalid_request:") {
+		t.Fatalf("empty task error = %v, want invalid_request: prefix", res.Err)
+	}
+	if res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: "", Message: "hi"}); res.Err == nil ||
+		!strings.HasPrefix(res.Err.Error(), "invalid_request:") {
+		t.Fatalf("empty target error = %v, want invalid_request: prefix", res.Err)
+	}
+	if res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: "job_x", Message: ""}); res.Err == nil ||
+		!strings.HasPrefix(res.Err.Error(), "invalid_request:") {
+		t.Fatalf("empty message error = %v, want invalid_request: prefix", res.Err)
+	}
+	if _, err := jobStopTool(context.Background(), s, map[string]any{"job_id": ""}, 1<<20); err == nil ||
+		!strings.HasPrefix(err.Error(), "invalid_request:") {
+		t.Fatalf("stop empty job_id error = %v, want invalid_request: prefix", err)
+	}
+	if _, err := jobReadOutputTool(context.Background(), s, map[string]any{"job_id": ""}, 1<<20); err == nil ||
+		!strings.HasPrefix(err.Error(), "invalid_request:") {
+		t.Fatalf("read empty job_id error = %v, want invalid_request: prefix", err)
+	}
+}
+
+func TestJobReadOutputInvalidGrepCarriesPrefix(t *testing.T) {
+	s := newTestSession(t)
+	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, s.jobManager, rec.JobID) })
+
+	_, gerr := jobReadOutputTool(context.Background(), s, map[string]any{"job_id": rec.JobID, "grep": "["}, 1<<20)
+	if gerr == nil || !strings.HasPrefix(gerr.Error(), "invalid_request:") {
+		t.Fatalf("invalid grep error = %v, want invalid_request: prefix", gerr)
+	}
+}

@@ -226,7 +226,7 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, registryMaxChars int) (string, error) {
 	jobID := strings.TrimSpace(stringArg(args, "job_id"))
 	if jobID == "" {
-		return "", errors.New("job_id is required")
+		return "", errors.New("invalid_request: job_id is required")
 	}
 	jm, resolvedRec, err := s.nestedOrLocalJobManager(jobID)
 	// readSession is the session whose store the snapshot is served from: the
@@ -303,7 +303,7 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		}
 		re, err := regexp.Compile(grep)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("invalid_request: invalid grep pattern: %w", err)
 		}
 		grepRE = re
 	}
@@ -546,7 +546,7 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 	}
 	jobID := strings.TrimSpace(stringArg(args, "job_id"))
 	if jobID == "" {
-		return "", errors.New("job_id is required")
+		return "", errors.New("invalid_request: job_id is required")
 	}
 	// max_wait_ms: 0/absent = request stop and return; positive = wait up to N;
 	// negative = invalid_request. Zero reads as unset (strict-provider safe).
