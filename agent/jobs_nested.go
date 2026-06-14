@@ -421,7 +421,21 @@ func (s *Session) delegateChildSessionToCascade(jobID string) *Session {
 	if err != nil || childID == "" {
 		return nil
 	}
-	return liveSubagentSession(s.subagents, childID)
+	childSession := liveSubagentSession(s.subagents, childID)
+	if childSession == nil || childSession.jobManager == nil {
+		return nil
+	}
+	// Only cascade when the stopped job is the child's CURRENT parent delegate.
+	// A stale, superseded delegate id (the child was resumed to a newer job J2,
+	// keeping the same childID) must NOT cascade-stop the child's current live
+	// work — job_stop targets the job you named, not whatever later work reused
+	// the session. The fire-and-return case is preserved: a live coordinator's
+	// own delegate job IS its child session's current parent, so stopping it
+	// still cascades into its workers.
+	if childSession.jobManager.currentParentJobID() != jobID {
+		return nil
+	}
+	return childSession
 }
 
 // stopDelegateSubtree implements the job_stop cascade (spec §2): stopping a
