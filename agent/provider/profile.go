@@ -624,6 +624,10 @@ func (p *Profile) WithModel(model string) *Profile {
 			clone.contextWindow = 200_000
 		}
 		clone.providerOpts = anthropicProviderOpts(has1M)
+		// Re-resolve effort levels for the new model: a shallow clone would keep
+		// the previous model's levels, leaving a max-capable set on a model capped
+		// at high after SetModel.
+		clone.effortLevels = resolveEffortLevels(model, anthropicDefaultEfforts)
 		return &clone
 	}
 
@@ -711,6 +715,10 @@ func NewOpenAIProfile(model string) *Profile {
 const anthropicSuffix1M = "[1m]"
 const anthropicBeta1M = "context-1m-2025-08-07"
 
+// anthropicDefaultEfforts is the fallback effort-level set for Anthropic models
+// not found in the catalog. Catalog models resolve their own per-model levels.
+var anthropicDefaultEfforts = []string{"low", "medium", "high", "max"}
+
 // anthropicProviderOpts builds a fresh providerOpts map for the Anthropic
 // profile. When has1M is true the 1M-context beta header is included.
 func anthropicProviderOpts(has1M bool) map[string]any {
@@ -749,7 +757,7 @@ func newAnthropicProfile(model string) *Profile {
 		webSearch:       true,
 		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-04-01",
-		defaultEfforts:  []string{"low", "medium", "high", "max"},
+		defaultEfforts:  anthropicDefaultEfforts,
 		providerOpts:    anthropicProviderOpts(has1M),
 		capabilities:    anthropicStyleCapabilities,
 	})

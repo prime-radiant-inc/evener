@@ -13,6 +13,21 @@ func TestAnthropicProfile_EffortLevelsForOneMillionSuffix(t *testing.T) {
 	}
 }
 
+// WithModel on the Anthropic path must re-resolve effort levels for the new
+// model. Switching a running session from a max-capable model (opus-4-6) to one
+// capped at high (opus-4-5) must not leave the stale max-capable level set, or
+// buildModelRequest would treat "max" as supported on the new model.
+func TestAnthropicProfile_WithModelReResolvesEffortLevels(t *testing.T) {
+	p := newAnthropicProfile("claude-opus-4-6")
+	if got := p.ReasoningEffortLevels(); len(got) != 4 {
+		t.Fatalf("opus-4-6 levels = %v, want 4 (low,medium,high,max)", got)
+	}
+	q := p.WithModel("claude-opus-4-5-20251101")
+	if got := q.ReasoningEffortLevels(); len(got) != 3 {
+		t.Fatalf("WithModel(opus-4-5) levels = %v, want 3 (re-resolved, not the stale opus-4-6 set)", got)
+	}
+}
+
 func TestJobControlCapabilityIncludesDelegateAndSendMessage(t *testing.T) {
 	defs := toolDefinitionsForCapabilities([]toolCapability{capabilityJobControl}, nil)
 	have := map[string]bool{}
