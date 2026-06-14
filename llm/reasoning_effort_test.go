@@ -45,10 +45,12 @@ func TestReasoningEffortRank(t *testing.T) {
 	if ReasoningEffortRank("max") != ReasoningEffortRank("xhigh") {
 		t.Errorf("max and xhigh should share a rank: max=%d xhigh=%d", ReasoningEffortRank("max"), ReasoningEffortRank("xhigh"))
 	}
-	if !(ReasoningEffortRank("minimal") < ReasoningEffortRank("low") &&
-		ReasoningEffortRank("low") < ReasoningEffortRank("high") &&
-		ReasoningEffortRank("high") < ReasoningEffortRank("max")) {
-		t.Error("ranks should be strictly increasing minimal<low<high<max")
+	ladder := []string{"minimal", "low", "high", "max"}
+	for i := 1; i < len(ladder); i++ {
+		if ReasoningEffortRank(ladder[i-1]) >= ReasoningEffortRank(ladder[i]) {
+			t.Errorf("ranks should be strictly increasing: %s(%d) is not < %s(%d)",
+				ladder[i-1], ReasoningEffortRank(ladder[i-1]), ladder[i], ReasoningEffortRank(ladder[i]))
+		}
 	}
 	if ReasoningEffortRank("") != 0 || ReasoningEffortRank("bogus") != 0 {
 		t.Error("unknown/empty effort should rank 0")
