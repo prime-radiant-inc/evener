@@ -204,14 +204,14 @@ type Session struct {
 	totalRounds       int  // cumulative tool rounds across all inputs
 
 	// self-compaction state (compact tool)
-	pinnedNote          string // agent-authored note, re-stamped verbatim at every compaction
+	pinnedNote          string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
 	pendingInstructions string // compaction_instructions awaiting the round-tail force
 	forceRequested      bool   // a compact tool call is pending this round
 	nudgedSinceCompact  bool   // warning-nudge latch; reset on any compaction
 
 	// elicitNoteFn overrides the note-elicitation call (tests inject a stub); nil
-	// uses contextMgr.ElicitNote. Gated by cfg.ElicitNoteOnCompaction (Variant B of
-	// the forced-note mechanism — see maybeElicitNoteBeforeCompaction).
+	// uses contextMgr.ElicitNote (Variant B of the forced-note mechanism — see
+	// maybeElicitNoteBeforeCompaction).
 	elicitNoteFn func(context.Context, []schema.Turn) (string, error)
 
 	// stuck detection

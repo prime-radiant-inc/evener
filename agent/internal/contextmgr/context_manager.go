@@ -1092,9 +1092,15 @@ Output a concise bullet list of the must-keep items, nothing else.`
 // summarization both require one).
 func (cm *Manager) HasClient() bool { return cm.client != nil }
 
+// noteElicitChars caps the history rendered into the elicitation prompt.
+const noteElicitChars = 80_000
+
 // ElicitNote asks the model to enumerate the must-survive-verbatim details from
-// the current history, for pinning as a note before a compaction (Variant B of
-// the forced-note-at-compaction mechanism). Returns the model's bullet list.
+// the given history, for pinning as a note before a compaction (Variant B of the
+// forced-note-at-compaction mechanism). The caller passes the prefix the
+// compaction is about to fold (the recent preserved turns survive verbatim and
+// need no rescuing). Returns the model's bullet list. Falls back across the
+// configured summarization models on transient errors, like the summarizer.
 func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn) (string, error) {
 	if cm.client == nil {
 		return "", errors.New("note elicitation requires an LLM client")
@@ -1104,43 +1110,94 @@ func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn) (strin
 	if len(models) == 0 {
 		return "", errors.New("no model available for note elicitation")
 	}
-	req := llm.Request{
-		Model:    models[0],
-		Provider: prof.ID(),
-		Messages: []llm.Message{llm.User(noteElicitationPrompt + "\n\n--- CONVERSATION SO FAR ---\n" + renderHistoryText(history, 80_000))},
+	prompt := noteElicitationPrompt + "\n\n--- CONVERSATION SO FAR ---\n" + renderHistoryForElicit(history, noteElicitChars)
+	var resp llm.Response
+	var lastErr error
+	for _, model := range models {
+		req := llm.Request{
+			Model:    model,
+			Provider: prof.ID(),
+			Messages: []llm.Message{llm.User(prompt)},
+		}
+		resp, lastErr = cm.client.Complete(ctx, req)
+		if lastErr == nil {
+			break
+		}
+		if model != models[len(models)-1] && !shouldFallbackSummarizationModel(ctx, lastErr) {
+			break
+		}
 	}
-	resp, err := cm.client.Complete(ctx, req)
-	if err != nil {
-		return "", err
+	if lastErr != nil {
+		return "", lastErr
 	}
 	return strings.TrimSpace(resp.Text()), nil
 }
 
-// renderHistoryText flattens turns into a plain-text transcript for prompt input,
-// capped at maxChars. Mirrors the rendering the summarizer uses.
-func renderHistoryText(history []schema.Turn, maxChars int) string {
-	var b strings.Builder
-	for _, t := range history {
-		text := t.Message.Text()
-		if text == "" {
+// renderHistoryForElicit flattens turns into a plain-text transcript for the
+// note-elicitation prompt, capped at maxChars and keeping the MOST RECENT content
+// (it walks from the tail). Unlike the summarizer's rendering it includes
+// tool-call arguments and FULL, untruncated tool-result content: the elicitor's
+// whole job is to recover exact opaque values (tokens, IDs, hashes, paths) that
+// in a coding agent live in tool output, so per-result truncation would defeat
+// it — the maxChars budget is what bounds total size.
+func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
+	var parts []string
+	total := 0
+	for i := len(history) - 1; i >= 0; i-- {
+		s := renderTurnForElicit(history[i])
+		if s == "" {
 			continue
 		}
-		switch t.Kind {
-		case schema.TurnUserInput:
-			b.WriteString("User: " + text + "\n")
-		case schema.TurnAssistant:
-			b.WriteString("Assistant: " + text + "\n")
-		case schema.TurnSteering, schema.TurnCheckpoint, schema.TurnSummary:
-			b.WriteString("Context: " + text + "\n")
-		default:
-			b.WriteString(text + "\n")
-		}
-		if b.Len() > maxChars {
-			b.WriteString("\n[... truncated ...]\n")
+		if total+len(s) > maxChars {
+			if rem := maxChars - total; rem > 0 {
+				parts = append(parts, "[... earlier history truncated ...]\n"+s[len(s)-rem:])
+			}
 			break
 		}
+		parts = append(parts, s)
+		total += len(s)
 	}
-	return b.String()
+	// parts were collected tail-first; reverse to chronological order.
+	for l, r := 0, len(parts)-1; l < r; l, r = l+1, r-1 {
+		parts[l], parts[r] = parts[r], parts[l]
+	}
+	return strings.Join(parts, "")
+}
+
+// renderTurnForElicit renders one turn as labeled plain text, including tool-call
+// arguments and tool-result content — the parts that carry the exact values the
+// elicitor must preserve. Returns "" for turns with no textual content.
+func renderTurnForElicit(t schema.Turn) string {
+	var b strings.Builder
+	for _, p := range t.Message.Content {
+		switch p.Kind {
+		case llm.ContentText:
+			if p.Text != "" {
+				b.WriteString(p.Text + "\n")
+			}
+		case llm.ContentToolCall:
+			if p.ToolCall != nil {
+				b.WriteString(fmt.Sprintf("Tool call %s(%s)\n", p.ToolCall.Name, strings.TrimSpace(string(p.ToolCall.Arguments))))
+			}
+		case llm.ContentToolResult:
+			if p.ToolResult != nil {
+				b.WriteString(fmt.Sprintf("Tool result %s: %s\n", p.ToolResult.Name, fmt.Sprint(p.ToolResult.Content)))
+			}
+		}
+	}
+	if strings.TrimSpace(b.String()) == "" {
+		return ""
+	}
+	label := ""
+	switch t.Kind {
+	case schema.TurnUserInput:
+		label = "User: "
+	case schema.TurnAssistant:
+		label = "Assistant: "
+	case schema.TurnSteering, schema.TurnCheckpoint, schema.TurnSummary:
+		label = "Context: "
+	}
+	return label + b.String()
 }
 
 // summarizeWithLLM calls the cheap model to generate a narrative summary of

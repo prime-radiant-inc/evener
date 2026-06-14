@@ -54,4 +54,8 @@ func TestCompactTool_DoubleCompact_Errors(t *testing.T) {
 	if _, err := rt.Exec(context.Background(), nil, map[string]any{"note_to_self": "b"}); err == nil {
 		t.Fatal("second compact in the same round must error")
 	}
+	// The rejected second call must not have clobbered the accepted first note.
+	if got := s.PinnedNote(); got != "a" {
+		t.Fatalf("rejected double-call mutated the note: got %q, want %q", got, "a")
+	}
 }

@@ -101,8 +101,10 @@ func newOAuthManager(t *testing.T) *Manager {
 	return NewManager(prof, client)
 }
 
-// pinnedNote wraps a note the way agent/session_compaction.renderPinnedNote does.
-// Replicated inline because renderPinnedNote lives in package agent.
+// pinnedNote wraps a note in a delimited block for the controlled with/without-note
+// comparison eval. A self-contained artifact: it measures the value of carrying a
+// verbatim note block through compaction, independent of how package agent frames
+// the note when it hands it off in production.
 func pinnedNote(note string) string {
 	return "[NOTE TO SELF]\n" + note + "\n[END NOTE TO SELF]\n"
 }

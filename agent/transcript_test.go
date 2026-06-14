@@ -1299,13 +1299,13 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 
 	sess, err := NewSession(c, profile, env, SessionConfig{
 		StateDir: stateDir,
-		// This lifecycle test scripts exact model steps and crosses the compaction
-		// threshold; the default-on note elicitation would steal a scripted step.
-		DisableNoteElicitation: true,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	// This lifecycle test scripts exact model steps and crosses the compaction
+	// threshold; mute the default-on note elicitation so it doesn't steal a step.
+	muteNoteElicitation(sess)
 
 	// Drain events in background to prevent blocking.
 	var evs []events.SessionEvent

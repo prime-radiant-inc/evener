@@ -92,15 +92,6 @@ type SessionConfig struct {
 	// The value "recall" is accepted as a compatibility alias for compact.
 	ContextStrategy string `json:"context_strategy,omitempty"`
 
-	// DisableNoteElicitation turns OFF the forced-note mechanism (Variant B), which
-	// is ON by default: just before a compaction the harness elicits a
-	// must-keep-verbatim note from the model and pins it, so erosion-prone facts
-	// (opaque tokens, exact numbers) survive successive compactions in long sessions.
-	// On by default because it is cheap insurance (one side LLM call per compaction,
-	// and compactions are infrequent) against silent loss of the highest-value,
-	// least-recoverable details.
-	DisableNoteElicitation bool `json:"disable_note_elicitation,omitempty"`
-
 	// ShareTasksWithChildren, when true, passes the parent's task store to
 	// child sessions created for delegate jobs. Both parent and children see
 	// the same task list, enabling cross-session task coordination.

@@ -11,17 +11,34 @@ import (
 
 // maybeElicitNoteBeforeCompaction implements Variant B of the forced-note
 // mechanism: when a compaction is imminent (pressure ≥ CheckpointThreshold) and
-// elicitation is enabled, ask the model for the must-keep-verbatim details and pin
-// them, so the compaction's re-stamp carries them forward. Runs before
-// ManageContext folds the history. Best-effort: a failed elicitation just warns
-// and lets the normal compaction proceed.
+// no note is already set, ask the model for the must-keep-verbatim details and pin
+// them, so the compaction hands them forward. Runs before ManageContext folds the
+// history. Best-effort: a failed elicitation just warns and lets the normal
+// compaction proceed.
+//
+// It skips when a note is already set — the agent's own compact-tool note (or a
+// note elicited earlier this cycle) wins and is never overwritten; the slot reopens
+// when the compaction consumes the note (clearPinnedNote), so the next cycle
+// re-elicits fresh facts. That skip also serves as the per-compaction latch, so a
+// stuck-high pressure turn does not re-fire the side LLM call every round.
 func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history []schema.Turn, sysPromptChars int) {
-	if s.cfg.DisableNoteElicitation || s.contextMgr == nil {
+	if s.contextMgr == nil {
 		return
+	}
+	if s.PinnedNote() != "" {
+		return // a note is already set — don't overwrite the agent's (or this cycle's) note
 	}
 	if s.contextMgr.Pressure(history, sysPromptChars) < s.contextMgr.CheckpointThreshold {
 		return // no compaction imminent — nothing to capture yet
 	}
+	// Elicit only over the prefix the compaction will fold into a lossy summary;
+	// the most-recent PreserveRecentTurns survive verbatim and need no rescuing.
+	preserve := s.contextMgr.PreserveRecentTurns
+	if len(history) <= preserve {
+		return // nothing will be folded yet — nothing to capture
+	}
+	foldable := history[:len(history)-preserve]
+
 	fn := s.elicitNoteFn
 	if fn == nil {
 		if !s.contextMgr.HasClient() {
@@ -29,7 +46,7 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 		}
 		fn = s.contextMgr.ElicitNote
 	}
-	note, err := fn(ctx, history)
+	note, err := fn(ctx, foldable)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: "note elicitation failed: " + err.Error()})
 		return
@@ -42,6 +59,15 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 func (s *Session) setPinnedNote(note string) {
 	s.mu.Lock()
 	s.pinnedNote = note
+	s.mu.Unlock()
+}
+
+// clearPinnedNote drops the pending note after a compaction has handed it forward,
+// so it is a one-shot handoff (not re-injected at future compactions) and the slot
+// reopens for the next cycle's elicitation.
+func (s *Session) clearPinnedNote() {
+	s.mu.Lock()
+	s.pinnedNote = ""
 	s.mu.Unlock()
 }
 

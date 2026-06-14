@@ -78,7 +78,7 @@ func countSteering(history []schema.Turn, substr string) int {
 // pinned note and an active goal are set, runPreCompactHook appends a note
 // steering turn that (a) is present, and (b) precedes the goal objective turn
 // so the objective stays in the trailing/strongest-recency position.
-func TestRunPreCompactHook_StampsNoteBeforeObjective(t *testing.T) {
+func TestRunPreCompactHook_HandsOffNoteBeforeObjective(t *testing.T) {
 	s := newTestSession(t)
 	s.setPinnedNote("REMEMBER: do X")
 	s.getOrCreateGoalStore().Set("Ship the feature", time.Now())
@@ -86,26 +86,30 @@ func TestRunPreCompactHook_StampsNoteBeforeObjective(t *testing.T) {
 	hist := makeSteeringSeed(4)
 	s.runPreCompactHook(context.Background(), &hist)
 
-	noteIdx := indexOfSteering(hist, pinnedNoteOpen)
+	noteIdx := indexOfSteering(hist, noteHandoffPrefix)
 	goalIdx := indexOfSteering(hist, "Ship the feature")
 	if noteIdx < 0 {
-		t.Fatal("note not stamped")
+		t.Fatal("note not handed off")
 	}
 	if goalIdx >= 0 && noteIdx > goalIdx {
 		t.Fatal("note must precede the goal objective (objective stays trailing)")
 	}
+	if s.PinnedNote() != "" {
+		t.Fatalf("note must be cleared after a one-shot handoff, still have %q", s.PinnedNote())
+	}
 }
 
-// TestRunPreCompactHook_NoDuplicateNote verifies the exactly-one-note invariant:
-// calling runPreCompactHook twice must leave exactly one note steering turn.
-func TestRunPreCompactHook_NoDuplicateNote(t *testing.T) {
+// TestRunPreCompactHook_HandoffIsOneShot verifies the note is consumed by the
+// compaction it rides on: a second hook pass (no new note set) injects nothing,
+// leaving exactly one handoff turn.
+func TestRunPreCompactHook_HandoffIsOneShot(t *testing.T) {
 	s := newTestSession(t)
 	s.setPinnedNote("REMEMBER: do X")
 	hist := makeSteeringSeed(4)
 	s.runPreCompactHook(context.Background(), &hist)
 	s.runPreCompactHook(context.Background(), &hist)
-	if n := countSteering(hist, pinnedNoteOpen); n != 1 {
-		t.Fatalf("expected exactly one note turn, got %d", n)
+	if n := countSteering(hist, noteHandoffPrefix); n != 1 {
+		t.Fatalf("expected exactly one handoff turn, got %d", n)
 	}
 }
 
@@ -143,8 +147,11 @@ func TestApplyPendingForceCompact_CompactsWithNote(t *testing.T) {
 		t.Fatal("force request should be consumed by applyPendingForceCompact")
 	}
 	h := currentHistory(t, s)
-	if countSteering(h, pinnedNoteOpen) != 1 || indexOfSteering(h, "REMEMBER: API is Foo(ctx, id)") < 0 {
-		t.Fatal("pinned note not re-stamped exactly once after force compaction")
+	if countSteering(h, noteHandoffPrefix) != 1 || indexOfSteering(h, "REMEMBER: API is Foo(ctx, id)") < 0 {
+		t.Fatal("pinned note not handed off exactly once after force compaction")
+	}
+	if s.PinnedNote() != "" {
+		t.Fatalf("note must be cleared after the compaction consumed it, still have %q", s.PinnedNote())
 	}
 }
 
@@ -331,24 +338,45 @@ func TestMaybeElicitNoteBeforeCompaction_FiresWhenEnabledAndHighPressure(t *test
 	}
 }
 
-func TestMaybeElicitNoteBeforeCompaction_NoopWhenDisabledOrLowPressure(t *testing.T) {
+func TestMaybeElicitNoteBeforeCompaction_NoopWhenLowPressure(t *testing.T) {
 	s := newTestSession(t)
 	s.elicitNoteFn = func(ctx context.Context, h []schema.Turn) (string, error) { return "SHOULD NOT FIRE", nil }
 	seedSessionHistory(t, s, 10)
 
-	// explicitly disabled (opt-out)
-	s.cfg.DisableNoteElicitation = true
-	forcePressureAbove(t, s, s.contextMgr.CheckpointThreshold)
-	s.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s), 0)
-	if s.PinnedNote() != "" {
-		t.Fatal("disabled: should not elicit/pin")
-	}
-
-	// default-on but low pressure (below CheckpointThreshold)
-	s.cfg.DisableNoteElicitation = false
+	// low pressure (below CheckpointThreshold) — no compaction imminent
 	s.contextMgr.RecordInputTokens(1, len(currentHistory(t, s))) // ~0 pressure
 	s.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s), 0)
 	if s.PinnedNote() != "" {
 		t.Fatal("low pressure: no compaction imminent, should not elicit")
 	}
+}
+
+// TestMaybeElicitNoteBeforeCompaction_SkipsWhenNoteAlreadySet proves the
+// don't-overwrite rule: with a note already set (e.g. the agent's compact-tool
+// note), high pressure must NOT trigger elicitation — the agent's note wins, and
+// the side LLM call is skipped (the per-compaction latch).
+func TestMaybeElicitNoteBeforeCompaction_SkipsWhenNoteAlreadySet(t *testing.T) {
+	s := newTestSession(t)
+	called := false
+	s.elicitNoteFn = func(ctx context.Context, h []schema.Turn) (string, error) {
+		called = true
+		return "ELICITED — SHOULD NOT REPLACE", nil
+	}
+	s.setPinnedNote("AGENT'S OWN NOTE")
+	seedSessionHistory(t, s, 10)
+	forcePressureAbove(t, s, s.contextMgr.CheckpointThreshold)
+
+	s.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s), 0)
+	if called {
+		t.Fatal("elicitor must not be called when a note is already set")
+	}
+	if got := s.PinnedNote(); got != "AGENT'S OWN NOTE" {
+		t.Fatalf("agent note must be preserved, got %q", got)
+	}
+}
+
+// muteNoteElicitation replaces the note elicitor with a no-op so tests that script
+// exact model steps are not perturbed by the default-on elicitation call.
+func muteNoteElicitation(s *Session) {
+	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
 }
