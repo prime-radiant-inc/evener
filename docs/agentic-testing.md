@@ -399,6 +399,8 @@ file a kata. Don't try to drive past the gate from the scenario.
 
 - **Hub address**: `127.0.0.1:9180`
 - **Auth token**: `~/.serf/auth-token`
+- **Follow-up turn** (after the initial spawn prompt): `POST /s/<SID>/send` with body `{"text":"..."}` (the spawn only starts turn 1; subsequent user turns go here).
+- **Recursion opt-in** (delegate subagents that can themselves delegate): per-spawn `launch_overrides.maxSubagentDepth:N` raises the root's own delegation allowance to N. Omitted/default is 1 (a root may delegate, but its delegates are leaves) — recursion is dark without this.
 - **Per-session transcript**: `~/.local/state/serf/projects/<hash>/sessions/<SID>.transcript.jsonl`
 - **Per-session meta**: same dir, `<SID>.meta.json`
 - **TUI debug stderr** (when launched with `--debug`): redirect via `tmux new-session -d -s <name> "/tmp/serf-tui-test --hub-addr 127.0.0.1:9180 --debug 2>$LOG"`

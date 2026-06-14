@@ -297,6 +297,16 @@ an agent is never interrupted about a *subagent's* children: attention escalates
 level (the `child unreachable:` fallback when a child cannot be driven,
 `renderUnreachableChildPendings`, `agent/job_watch.go:2654`).
 
+**Forwarding is single-hop.** A job's events forward exactly one level: a child's `jm.forward`
+is its direct parent's `forwardEvent`, which appends the event to the parent's store and
+returns **without** re-forwarding to its own parent (`agent/jobs_nested.go`). So a descendant's
+forwarded copy lives only in its **direct parent's** store — it is not propagated up to
+grandparents or the root. Two consequences that are easy to get wrong: an ancestor sees deeper
+descendants only by walking the live tree (`job_list(include_descendants=true)`), not from
+forwarded copies sitting at the root; and a depth-≥2 `job_read_output` whose owner store closes
+mid-read falls back to the **owner's parent** store (where the single-hop copy lives), not the
+root caller's store.
+
 ## Current status
 
 - ✅ `auth`, `llm`, `agent` all carved into their own modules; the `go.work` workspace is
