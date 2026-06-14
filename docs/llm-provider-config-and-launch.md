@@ -143,6 +143,12 @@ chat, and `cmdutil.providerEnvConfig` (`cmdutil/cmdutil.go:266`) also reads them
 to query a provider's `/models` endpoint for context-window sizing
 (`queryModelContextWindow`, `cmdutil.go:280`).
 
+> **Kimi coding plan:** Kimi For Coding gates its endpoints behind a coding-agent
+> User-Agent allowlist (403 otherwise). The `kimi` and `kimi-anthropic` adapters
+> announce Claude Code's User-Agent so the request is accepted — there is no env
+> var for it; it's the hardcoded constant in `llm/providers/internal/kimicoding`
+> (see the Kimi note in `llm-providers.md`).
+
 ### Other tuning
 
 | Env var | Effect | Read by |
