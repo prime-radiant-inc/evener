@@ -157,6 +157,10 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 	if llm.ReasoningEffortRank(effort) < llm.ReasoningEffortRank("high") {
 		effort = "high"
 	}
+	// This request is built manually (not via buildModelRequest), so clamp the
+	// effort to the model's supported levels here too — otherwise a top-tier
+	// alias like "max"/"xhigh" can reach a model that doesn't accept it.
+	effort = llm.ClampReasoningEffort(effort, profile.ReasoningEffortLevels())
 	req.ReasoningEffort = &effort
 	s.applyModelRequestMetadata(profile, &req)
 
