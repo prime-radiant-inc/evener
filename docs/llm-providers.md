@@ -265,12 +265,53 @@ rewrite is gone — the Gemini profile's id is `google`).
 | `minimax`, `openrouter-anthropic`, `kimi-anthropic` | thin wrappers → `anthropic` | `/v1/messages` | own base URL (`kimi-anthropic` = Kimi coding plan at `https://api.kimi.com/coding`) |
 | `ollama` | `ollama` → `openaicompat` | `/v1/chat/completions` | NonDefaultEligible |
 
+**Kimi coding plan — coding-agent User-Agent.** Kimi For Coding gates its
+OpenAI-route endpoint behind a coding-agent User-Agent allowlist and 403s
+anything else ("only available for Coding Agents such as Kimi CLI, Claude Code,
+…"); the Anthropic route is currently ungated. Both the `kimi` and
+`kimi-anthropic` adapters announce Claude Code's User-Agent
+(`claude-cli/<version> (external, cli)` — the format the gate accepts) via the
+adapter `DefaultHeaders`, sourced from the shared constant in
+`llm/providers/internal/kimicoding`. So either Kimi route is accepted; the
+default Go User-Agent is not.
+
 Because `openai` (Responses) and `openai-compatible` (Chat Completions) are
 **different protocols**, you can't reach a vLLM box by pointing the `openai`
 adapter at it; that's what the openaicompat adapter is for. (Finish-reason
 normalization lives *inside* each adapter, called with the adapter's own static
 literal — it keys on the wire protocol, not on `req.Provider`, so it needed no
 change.)
+
+## Reasoning effort
+
+One per-session knob ordered `minimal < low < medium < high < xhigh == max`
+(`xhigh` and `max` are aliases for the top tier — OpenRouter/OpenAI advertise
+`xhigh`, Anthropic and the serf catalog say `max`; `none` clears it). The
+vocabulary and its helpers — `ClampReasoningEffort`, `NormalizeReasoningEffort`,
+`ReasoningEffortRank`, `ReasoningBudget` — live in `llm/types.go`.
+
+**Per-model clamping.** Each model advertises the levels it supports
+(`reasoning_effort_levels` in the catalog → `Profile.ReasoningEffortLevels()`).
+`buildModelRequest` (`agent/session_model_call.go`) clamps the requested effort to
+that set before the call, so an over-range request (e.g. `xhigh` to a model
+capped at `high`) is reduced rather than rejected (this is what fixed the Kimi
+`xhigh` 400). The adapters clamp again as a backstop against the actual wire model
+(`anthropic/response.go:clampEffort`; the openai-compat enum). Catalog lookups go
+through `llm.(*ModelCatalog).LookupModelInfo`, which canonicalizes the `[1m]`
+suffix, a provider namespace, and dated/family snapshots.
+
+**Provider mapping.** openai-compatible (`kimi`, `glm`, OpenRouter) send the
+`reasoning_effort` enum directly. Anthropic adaptive-thinking models (opus-4-6,
+sonnet-4-6) send `output_config.effort`; legacy models (opus-4-5, kimi-for-coding)
+map the effort to a `thinking.budget_tokens` via `llm.ReasoningBudget`. When
+thinking is enabled the Anthropic builder downgrades a forced `tool_choice` to
+`auto` and keeps `max_tokens` above the thinking budget (Anthropic rejects both
+otherwise).
+
+**Setting it.** Launch: `--reasoning-effort`, `SERF_REASONING_EFFORT`,
+`reasoning_effort` in `launch.toml`, or the spawn-form effort chip (per-model
+levels). Runtime: the `/effort` command (web/TUI) → the
+`thread/reasoning-effort/set` appwire method → `Session.SetReasoningEffort`.
 
 ## What keys on what (the map to consult before touching identity)
 
