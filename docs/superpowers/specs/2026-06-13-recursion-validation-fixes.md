@@ -1,8 +1,9 @@
 # Recursion validation-tail fixes
 
 **Date:** 2026-06-13 · **Branch:** `job-control-spec` (HEAD `4c087ccd`) ·
-**Status:** decisions made (below); ready to execute the fix pass. Never push;
-Jesse merges.
+**Status:** EXECUTED (see "Results" below) — all findings fixed + live-verified
+on `job-control-spec`; A3 reversed per Jesse. Never pushed; Jesse merges. Two
+tracked follow-ups remain (#23 pre-existing -race flake, #21 cleanup).
 
 ## Decisions (Jesse, 2026-06-13)
 
@@ -15,6 +16,54 @@ Jesse merges.
   non-delegating role; do NOT reject at grant time. Fix is documentation only:
   clarify that a role needs the delegate tool to actually use its allowance. F1
   is therefore NOT a correctness blocker.
+
+## Results (2026-06-14 — pass executed)
+
+All 11 findings fixed + F1 + A12 landed, each TDD red-first with a scoped
+adversarial review + orchestrator grep-verify + full gate (`make test && make
+lint && make test-race`) per commit. Commits on `job-control-spec` (never
+pushed; Jesse merges):
+
+- `03cc3eba` A1+A2 — restored root derives allowance + mints tree counter.
+- `f25acefd` A4+A5 — unreachable-child fallback delivers once, never falsely.
+- `f95d218b` A6+A7 — steer mid-drive sends into the drive turn; re-drive after
+  it ends. A7's real site was the LIVE `sendDelegateMessage` path (the spec's
+  named `startOrSteerSubagentRun` is dead test-only code); the fix also narrows
+  the `fromWatch && run == nil` guard with `&& !driving` so a driving child's
+  watch-resume steers instead of being permanently dropped.
+- `df4d9a80` A3+A9+A11 — (A3 superseded below) + descendant-list own-store error
+  surfacing + descendant runtime_lost projected via owner.
+- `b3e2e550` A10 — omit job_list `depth` when zero.
+- `8558888d` A8 — depth>=2 closed-store read falls back to the owner's PARENT
+  (NOT root: forwarding is single-hop, so the forwarded copy lives one hop up,
+  not at the root — the spec's "fall back to root" was wrong, proven by probe).
+- `fd3feb1a` F1 — doc-only: `delegation_allowance` needs a delegating role.
+- `8555ade3` A12 — frame-subject (not substring) owner-scoped card assertions.
+- `3427752e` **A3 REVERSED** — see below.
+
+**A3 reversal (Jesse's call, 2026-06-14).** The committed A3 (gate the cascade
+on non-terminal) was WRONG and is reverted. A live e2e run showed a
+fire-and-return coordinator's OWN delegate job goes terminal while its workers
+run (the normal drive-down pattern), so the terminal gate made
+`job_stop(coordinator)` a no-op and its live workers were never stopped. Decision:
+`job_stop` MUST halt the live subtree regardless of the coordinator's own status.
+`delegateChildSessionToCascade` no longer has a terminal gate; `stopDelegateSubtree`
+only signals running jobs (terminal subtree jobs skipped) and `liveSubagentSession`
+still no-ops a genuinely-gone coordinator. Test inverted to
+`TestJobStopTerminalDelegateCascadesToLiveWorkers`.
+
+**Live e2e (HEAD `3427752e`, fresh binaries, model `openai/gpt-5.5`):** both
+coordinator cards PASS (deaf-coordinator drive-down + owner-scoping; fanout grant
+ceiling / leaf gate / visibility / drive-down / owner-scoping / cascade / durable
+substrate), owner-scoping verified by frame-subject. A targeted check confirmed
+`job_stop` on an already-`completed` fire-and-return coordinator cancels its
+live depth-2 `sleep` shells (verified on disk + `ps`).
+
+**Deferred (tracked, not blockers for the fixes):** #23 a PRE-EXISTING `-race`
+flake (leaked delegate goroutine across two supervision tests; reproduces on a
+clean tree, surfaces only under broad non-`-short` selections) — must be
+root-caused before the final all-gates-green handoff. #21 behavior-neutral
+cleanup batch (dead `shellArgs.Background`, stale "dormant" comments, etc.).
 
 ## Context
 
