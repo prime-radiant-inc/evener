@@ -123,9 +123,6 @@ func TestTreeCounterSharedAcrossTree(t *testing.T) {
 // TestCounterReservesOnSpawnResumeDrive proves that each of the three paths that
 // launch a running delegate turn reserves a tree-counter slot while its turn
 // runs, and that terminal finalize AND the abandon path release it.
-//
-// Red until Task 16: the counter is dormant — no production path calls
-// reserve/release, so the count never leaves zero on any of the three paths.
 func TestCounterReservesOnSpawnResumeDrive(t *testing.T) {
 	t.Run("spawn reserves and terminal finalize releases", func(t *testing.T) {
 		release := make(chan struct{})
@@ -331,8 +328,6 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 // TestCounter17thFails proves the tree-wide cap (16): with 16 concurrent running
 // delegate turns holding reservations, the 17th spawn returns the exact
 // tree_at_capacity error and does NOT launch.
-//
-// Red until Task 16: the counter is dormant — the 17th spawn succeeds.
 func TestCounter17thFails(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
@@ -388,9 +383,6 @@ func TestCounter17thFails(t *testing.T) {
 //     fresh spawn after it reuses the slot rather than stacking;
 //   - a restart rebuilds the counter from the post-reconciliation state (zero),
 //     and a descendant re-reserves as it re-attaches/resumes.
-//
-// Red until Task 16: the counter is dormant — it never moves, so neither the
-// idle-free nor the rebuilt-from-zero re-reserve is observable.
 func TestCounterIdleFreesAndRestartRebuild(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once

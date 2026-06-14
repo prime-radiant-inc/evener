@@ -21,9 +21,9 @@ var errTreeAtCapacity = errors.New("tree_at_capacity: 16 delegate jobs running a
 // every session in the tree shares the same atomic counter.
 //
 // The cap is fixed at 16 (spec §4). reserve/release are called by the paths
-// that create or terminate running delegate turns — that wiring is Task 16.
-// This file is the DORMANT SCAFFOLD; the counter exists but is not yet called
-// from any production path.
+// that create or terminate running delegate turns: the spawn paths
+// (reserveTreeSlot in subagents.go), the drive/delegate path (job_delegate.go),
+// and the finalize/abandon release paths (jobs.go).
 type treeCounter struct {
 	n   atomic.Int64
 	cap int64

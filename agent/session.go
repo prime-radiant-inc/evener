@@ -107,7 +107,7 @@ type Session struct {
 	// subagents
 	depth                            int
 	delegationAllowance              int          // mu-guarded; allowance to grant further sub-agent delegation levels
-	treeCounter                      *treeCounter // tree-wide running counter; dormant until Task 16
+	treeCounter                      *treeCounter // tree-wide running delegate-turn counter (spec §4)
 	subagents                        *subagentManager
 	delegateRestoreAfterClaim        func()
 	delegateRestoreBeforeTrack       func()
