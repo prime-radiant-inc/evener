@@ -21,7 +21,7 @@ const (
 type ctxBand int
 
 const (
-	bandNormal  ctxBand = iota
+	bandNormal ctxBand = iota
 	bandWarn
 	bandCompact
 )
