@@ -1076,6 +1076,69 @@ Follow the caller instructions above when deciding what to preserve verbatim and
 	return defaultSummaryPrefix + historyText
 }
 
+// noteElicitationPrompt asks the model, at compaction time, to enumerate the
+// details that must survive verbatim — explicitly targeting the kinds a lossy
+// summary erodes (opaque tokens, exact numbers, hashes, names). Used by the
+// forced-note-at-compaction mechanism: the reply is pinned as the note before the
+// compaction folds the history, so those details are re-stamped verbatim rather
+// than decaying through successive summaries.
+const noteElicitationPrompt = `Your conversation context is about to be COMPACTED — most of it will be replaced by a lossy summary. Before that happens, list everything that MUST survive VERBATIM for the work to continue.
+
+Focus especially on details a summary tends to drop or paraphrase: exact tokens, IDs, hashes, version tags, exact numbers and thresholds, file/column/endpoint names, and specific decisions. Preserve exact strings — do not abbreviate or round.
+
+Output a concise bullet list of the must-keep items, nothing else.`
+
+// ElicitNote asks the model to enumerate the must-survive-verbatim details from
+// the current history, for pinning as a note before a compaction (Variant B of
+// the forced-note-at-compaction mechanism). Returns the model's bullet list.
+func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn) (string, error) {
+	if cm.client == nil {
+		return "", errors.New("note elicitation requires an LLM client")
+	}
+	prof := cm.currentProfile()
+	models := summarizationModels(prof)
+	if len(models) == 0 {
+		return "", errors.New("no model available for note elicitation")
+	}
+	req := llm.Request{
+		Model:    models[0],
+		Provider: prof.ID(),
+		Messages: []llm.Message{llm.User(noteElicitationPrompt + "\n\n--- CONVERSATION SO FAR ---\n" + renderHistoryText(history, 80_000))},
+	}
+	resp, err := cm.client.Complete(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resp.Text()), nil
+}
+
+// renderHistoryText flattens turns into a plain-text transcript for prompt input,
+// capped at maxChars. Mirrors the rendering the summarizer uses.
+func renderHistoryText(history []schema.Turn, maxChars int) string {
+	var b strings.Builder
+	for _, t := range history {
+		text := t.Message.Text()
+		if text == "" {
+			continue
+		}
+		switch t.Kind {
+		case schema.TurnUserInput:
+			b.WriteString("User: " + text + "\n")
+		case schema.TurnAssistant:
+			b.WriteString("Assistant: " + text + "\n")
+		case schema.TurnSteering, schema.TurnCheckpoint, schema.TurnSummary:
+			b.WriteString("Context: " + text + "\n")
+		default:
+			b.WriteString(text + "\n")
+		}
+		if b.Len() > maxChars {
+			b.WriteString("\n[... truncated ...]\n")
+			break
+		}
+	}
+	return b.String()
+}
+
 // summarizeWithLLM calls the cheap model to generate a narrative summary of
 // old history. Replaces old history with a single user message containing the
 // summary, preserving the most recent turns.

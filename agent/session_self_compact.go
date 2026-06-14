@@ -3,9 +3,38 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
 )
+
+// maybeElicitNoteBeforeCompaction implements Variant B of the forced-note
+// mechanism: when a compaction is imminent (pressure ≥ CheckpointThreshold) and
+// elicitation is enabled, ask the model for the must-keep-verbatim details and pin
+// them, so the compaction's re-stamp carries them forward. Runs before
+// ManageContext folds the history. Best-effort: a failed elicitation just warns
+// and lets the normal compaction proceed.
+func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history []schema.Turn, sysPromptChars int) {
+	if !s.cfg.ElicitNoteOnCompaction || s.contextMgr == nil {
+		return
+	}
+	if s.contextMgr.Pressure(history, sysPromptChars) < s.contextMgr.CheckpointThreshold {
+		return // no compaction imminent — nothing to capture yet
+	}
+	fn := s.elicitNoteFn
+	if fn == nil {
+		fn = s.contextMgr.ElicitNote
+	}
+	note, err := fn(ctx, history)
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: "note elicitation failed: " + err.Error()})
+		return
+	}
+	if strings.TrimSpace(note) != "" {
+		s.setPinnedNote(note)
+	}
+}
 
 func (s *Session) setPinnedNote(note string) {
 	s.mu.Lock()

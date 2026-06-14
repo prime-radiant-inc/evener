@@ -209,6 +209,11 @@ type Session struct {
 	forceRequested      bool   // a compact tool call is pending this round
 	nudgedSinceCompact  bool   // warning-nudge latch; reset on any compaction
 
+	// elicitNoteFn overrides the note-elicitation call (tests inject a stub); nil
+	// uses contextMgr.ElicitNote. Gated by cfg.ElicitNoteOnCompaction (Variant B of
+	// the forced-note mechanism — see maybeElicitNoteBeforeCompaction).
+	elicitNoteFn func(context.Context, []schema.Turn) (string, error)
+
 	// stuck detection
 	loopDetectionCount int // how many times loop detection has fired
 	readOnlyStreak     int // consecutive rounds with only read-only tool calls

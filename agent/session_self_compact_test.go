@@ -317,3 +317,38 @@ func TestPinnedNote_SurvivesResume(t *testing.T) {
 		t.Fatalf("PinnedNote after resume = %q, want %q", got, "REMEMBER: resume me")
 	}
 }
+
+func TestMaybeElicitNoteBeforeCompaction_FiresWhenEnabledAndHighPressure(t *testing.T) {
+	s := newTestSession(t)
+	s.cfg.ElicitNoteOnCompaction = true
+	s.elicitNoteFn = func(ctx context.Context, h []schema.Turn) (string, error) { return "STUB elicited note", nil }
+	seedSessionHistory(t, s, 10)
+	forcePressureAbove(t, s, s.contextMgr.CheckpointThreshold)
+
+	s.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s), 0)
+	if got := s.PinnedNote(); got != "STUB elicited note" {
+		t.Fatalf("expected elicited note pinned, got %q", got)
+	}
+}
+
+func TestMaybeElicitNoteBeforeCompaction_NoopWhenDisabledOrLowPressure(t *testing.T) {
+	s := newTestSession(t)
+	s.elicitNoteFn = func(ctx context.Context, h []schema.Turn) (string, error) { return "SHOULD NOT FIRE", nil }
+	seedSessionHistory(t, s, 10)
+
+	// disabled
+	s.cfg.ElicitNoteOnCompaction = false
+	forcePressureAbove(t, s, s.contextMgr.CheckpointThreshold)
+	s.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s), 0)
+	if s.PinnedNote() != "" {
+		t.Fatal("disabled: should not elicit/pin")
+	}
+
+	// enabled but low pressure (below CheckpointThreshold)
+	s.cfg.ElicitNoteOnCompaction = true
+	s.contextMgr.RecordInputTokens(1, len(currentHistory(t, s))) // ~0 pressure
+	s.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s), 0)
+	if s.PinnedNote() != "" {
+		t.Fatal("low pressure: no compaction imminent, should not elicit")
+	}
+}

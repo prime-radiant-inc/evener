@@ -16,38 +16,7 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"primeradiant.com/serf/llm"
 )
-
-// elicitNotePrompt is the Variant-B elicitation: ask the model, at compaction time,
-// to enumerate the must-survive-verbatim details — explicitly targeting the kinds
-// the erosion eval found decay (opaque IDs, exact numbers, tokens, hashes, names).
-const elicitNotePrompt = `Your conversation context is about to be COMPACTED — most of it will be replaced by a lossy summary. Before that happens, list everything that MUST survive VERBATIM for the work to continue.
-
-Focus especially on details a summary tends to drop or paraphrase: exact tokens, IDs, hashes, version tags, exact numbers and thresholds, file/column/endpoint names, and specific decisions. Preserve exact strings — do not abbreviate or round.
-
-Output a concise bullet list of the must-keep items, nothing else.`
-
-// elicitNote makes the Variant-B side call over the given history text.
-func elicitNote(t *testing.T, ctx context.Context, cm *Manager, historyText string) string {
-	t.Helper()
-	prof := cm.currentProfile()
-	models := summarizationModels(prof)
-	if len(models) == 0 {
-		t.Fatal("no model for elicitation")
-	}
-	req := llm.Request{
-		Model:    models[0],
-		Provider: prof.ID(),
-		Messages: []llm.Message{llm.User(elicitNotePrompt + "\n\n--- CONVERSATION SO FAR ---\n" + historyText)},
-	}
-	resp, err := cm.client.Complete(ctx, req)
-	if err != nil {
-		t.Fatalf("elicit: %v", err)
-	}
-	return resp.Text()
-}
 
 func TestElicitNoteCapture(t *testing.T) {
 	cm := newOAuthManager(t)
@@ -65,7 +34,11 @@ func TestElicitNoteCapture(t *testing.T) {
 	}
 	initial.WriteString("\n" + newWorkBulk(0))
 
-	note := elicitNote(t, ctx, cm, initial.String())
+	// Exercise the real production method (cm.ElicitNote) over the same history.
+	note, err := cm.ElicitNote(ctx, turnsFromText(t, initial.String()))
+	if err != nil {
+		t.Fatalf("ElicitNote: %v", err)
+	}
 
 	captured := 0
 	for _, f := range facts {

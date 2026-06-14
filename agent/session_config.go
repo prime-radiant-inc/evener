@@ -92,6 +92,12 @@ type SessionConfig struct {
 	// The value "recall" is accepted as a compatibility alias for compact.
 	ContextStrategy string `json:"context_strategy,omitempty"`
 
+	// ElicitNoteOnCompaction enables the forced-note mechanism (Variant B): just
+	// before a compaction, the harness elicits a must-keep-verbatim note from the
+	// model and pins it, so erosion-prone facts survive successive compactions in
+	// long sessions. Adds one side LLM call per compaction; off by default.
+	ElicitNoteOnCompaction bool `json:"elicit_note_on_compaction,omitempty"`
+
 	// ShareTasksWithChildren, when true, passes the parent's task store to
 	// child sessions created for delegate jobs. Both parent and children see
 	// the same task list, enabling cross-session task coordination.
