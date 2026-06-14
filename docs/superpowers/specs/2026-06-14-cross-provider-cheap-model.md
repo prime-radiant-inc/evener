@@ -1,6 +1,9 @@
 # Design: cross-provider fast/cheap model
 
-Status: **revised after adversarial review (2026-06-14).** Ready to implement.
+Status: **implemented (2026-06-14)** after adversarial review. All eight review
+findings addressed; see commit "feat(provider): allow the fast/cheap model to use
+a different provider". Open question #4 (non-OpenAI structured-output degradation)
+is accepted as graceful-skip, not enforced.
 
 ## Problem
 
