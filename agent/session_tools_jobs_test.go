@@ -3605,3 +3605,63 @@ func TestJobListReportsDelegationAllowance(t *testing.T) {
 		t.Fatalf("delegation_allowance = %d, want 2", got.DelegationAllowance)
 	}
 }
+
+func TestLiveSteerWaitIgnoredReason(t *testing.T) {
+	const want = "live steer returns on delivery; max_wait_ms applies only to resumed jobs"
+	cases := []struct {
+		name    string
+		ms      int
+		status  jobstore.Status
+		action  string
+		wantStr string
+	}{
+		{"live steer with wait flagged", 5000, jobstore.StatusRunning, "sent", want},
+		{"live busy with wait flagged", 5000, jobstore.StatusRunning, "busy", want},
+		{"no wait requested not flagged", 0, jobstore.StatusRunning, "sent", ""},
+		{"resumed running not flagged", 5000, jobstore.StatusRunning, "resumed", ""},
+		{"resumed terminal not flagged", 5000, jobstore.StatusCompleted, "resumed", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := liveSteerWaitIgnoredReason(tc.ms, tc.status, tc.action)
+			if got != tc.wantStr {
+				t.Fatalf("liveSteerWaitIgnoredReason(%d,%q,%q) = %q, want %q", tc.ms, tc.status, tc.action, got, tc.wantStr)
+			}
+		})
+	}
+}
+
+func TestMarshalSendMessageResultCarriesWaitIgnoredReason(t *testing.T) {
+	const reason = "live steer returns on delivery; max_wait_ms applies only to resumed jobs"
+	res := sendMessageResult{
+		Target:              "job_x",
+		JobID:               "job_x",
+		Type:                string(jobstore.JobDelegate),
+		Status:              jobstore.StatusRunning,
+		RunningInBackground: true,
+		Action:              "sent",
+		WaitIgnoredReason:   reason,
+	}
+	out, err := marshalSendMessageResult(res, 1<<20)
+	if err != nil {
+		t.Fatalf("marshalSendMessageResult: %v", err)
+	}
+	var got struct {
+		WaitIgnoredReason string `json:"wait_ignored_reason"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("unmarshal: %v (out=%s)", err, out)
+	}
+	if got.WaitIgnoredReason != reason {
+		t.Fatalf("wait_ignored_reason = %q, want %q", got.WaitIgnoredReason, reason)
+	}
+
+	res.WaitIgnoredReason = ""
+	out2, err := marshalSendMessageResult(res, 1<<20)
+	if err != nil {
+		t.Fatalf("marshalSendMessageResult (empty): %v", err)
+	}
+	if strings.Contains(out2, "wait_ignored_reason") {
+		t.Fatalf("wait_ignored_reason must be omitted when empty, got %s", out2)
+	}
+}

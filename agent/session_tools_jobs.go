@@ -139,7 +139,19 @@ func jobSendMessageTool(ctx context.Context, s *Session, args map[string]any, ma
 	if res.Err != nil {
 		return "", res.Err
 	}
+	res.WaitIgnoredReason = liveSteerWaitIgnoredReason(a.BlockTimeoutMS, res.Status, res.Action)
 	return marshalSendMessageResult(res, maxChars)
+}
+
+// liveSteerWaitIgnoredReason returns a note when a caller passed a positive
+// max_wait_ms but the send was a live steer of a running delegate, which returns on
+// delivery and cannot honor the wait. It returns "" when the wait was honored (a
+// resumed job) or not requested, so the field stays omitted in the common case.
+func liveSteerWaitIgnoredReason(blockTimeoutMS int, status jobstore.Status, action string) string {
+	if blockTimeoutMS > 0 && status == jobstore.StatusRunning && (action == "sent" || action == "busy") {
+		return "live steer returns on delivery; max_wait_ms applies only to resumed jobs"
+	}
+	return ""
 }
 
 func jobWatchTool(s *Session, args map[string]any, maxChars int) (string, error) {
@@ -696,6 +708,7 @@ type jobSendMessageDelegateResult struct {
 	StructuredResult       any     `json:"structured_result,omitempty"`
 	StructuredResultValid  *bool   `json:"structured_result_valid,omitempty"`
 	StructuredResultReason string  `json:"structured_result_reason,omitempty"`
+	WaitIgnoredReason      string  `json:"wait_ignored_reason,omitempty"`
 }
 
 type jobSendMessageAliasResult struct {
@@ -762,6 +775,7 @@ func marshalSendMessageResult(res sendMessageResult, maxChars int) (string, erro
 		Action:              res.Action,
 		ResumedFromJobID:    res.ResumedFromJobID,
 		TranscriptRef:       res.TranscriptRef,
+		WaitIgnoredReason:   res.WaitIgnoredReason,
 	}
 	if !res.RunningInBackground || res.TimedOut {
 		out.Output = &res.Output

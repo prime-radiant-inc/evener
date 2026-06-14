@@ -120,6 +120,7 @@ type sendMessageResult struct {
 	MessageType               string
 	WatchSendDeliveryClass    watchSendDeliveryClass
 	WatchSendDeliveryClassSet bool
+	WaitIgnoredReason         string
 	Err                       error
 }
 
