@@ -2,14 +2,16 @@
 
 package agent
 
-// Live end-to-end verification of the default-on forced-note (Variant B): a REAL
-// OAuth session, pushed over the compaction checkpoint by a large real input,
-// must have the harness elicit + pin a note WITHOUT the agent calling compact.
+// Live end-to-end verification of the default-on forced-note handoff: a REAL OAuth
+// session, driven across two turns so an early fact-bearing turn is actually FOLDED
+// by a real compaction. Without any compact call by the agent, the harness must
+// elicit a note over the about-to-be-folded prefix and hand it back into the fresh
+// post-compaction context as a "note to yourself from before compaction" message.
 //
-// The real model's context window (272K) is resolved live and cannot be forced
-// small (resolveLiveModelProfileWithTimeout overrides WithContextWindow), so we
-// instead clamp the compaction thresholds to their 0.20 floor via the test-only
-// threshold scale and feed an input large enough to cross 20% of the real window.
+// This proves the wiring fires through the real ProcessInput loop AND that a real
+// fold happens. The precise claim "the elicitor captures a token that lives only in
+// a tool result" is hard-gated deterministically by
+// contextmgr.TestElicitNoteCapturesToolResult — this test is the full-loop smoke.
 //
 // Run: go test -tags eval ./agent/ -run TestForcedNoteLive -v -timeout 8m
 //
@@ -23,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/llm"
@@ -55,9 +58,8 @@ func TestForcedNoteLive(t *testing.T) {
 		t.Fatalf("ResolveProfileFromConfig: %v", err)
 	}
 
-	// Default-on: do NOT set DisableNoteElicitation. Clamp thresholds to their
-	// 0.20 floor so a large-but-affordable input crosses the checkpoint without
-	// needing to fill the full 272K window.
+	// The real window (272K) can't be forced small, so clamp thresholds to their
+	// 0.20 floor and feed a large early turn.
 	var sc SessionConfig
 	sc.testOnly.compactionThresholdScale = 0.1
 
@@ -66,36 +68,76 @@ func TestForcedNoteLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	t.Logf("live window = %d tokens; checkpoint clamped to %.2f",
-		prof.ContextWindowSize(), 0.20)
+	// Preserve only the single most-recent turn so the fact-bearing first turn ages
+	// into the about-to-be-folded prefix by turn 2 (and is therefore in scope for
+	// the elicitor, and actually folded by the compaction).
+	sess.contextMgr.PreserveRecentTurns = 1
 
-	// Distinctive facts + bulk to push char/4 pressure over 20% of 272K
-	// (~54K tokens ⇒ ~218K chars). The agent is NOT told to compact — the
-	// harness must elicit + pin the note on its own.
-	facts := "Project facts you MUST preserve verbatim: the deploy token is " +
-		"DEPLOY-LIVE-9X2Q; the cache deadlock triggers when numShards exceeds 42; " +
-		"the primary region is eu-central-1."
-	bulk := strings.Repeat("Irrelevant background filler line for context bulk; ignore this. ", 4200)
-	prompt := facts + "\n\n" + bulk + "\n\n" + facts + "\n\nAcknowledge with the single word OK."
-	t.Logf("prompt size = %d chars (~%d tokens)", len(prompt), len(prompt)/4)
+	// A non-secret opaque identifier — a credential-framed value triggers the
+	// model's secret-redaction behavior (a real, separate limit of the mechanism).
+	const token = "ARTIFACT-LIVE-9X2Q"
+	facts := "Project facts you MUST preserve verbatim: the build artifact id is " + token +
+		"; the cache deadlock triggers when numShards exceeds 42; the primary region is eu-central-1."
+	// Bulk first, facts LAST: the foldable prefix is tail-truncated into the elicit
+	// prompt, so the must-keep facts must sit at the end of the turn to survive it.
+	// Size it to clear the 0.20 floor against the live window with margin.
+	bulkReps := prof.ContextWindowSize() / 50 // ~0.3 pressure worth of ~62-char lines
+	bulk := strings.Repeat("Irrelevant background filler line for context bulk; ignore this. ", bulkReps)
+	turn1 := bulk + "\n\n" + facts + "\n\nAcknowledge with the single word OK."
+	t.Logf("turn-1 size = %d chars (~%d tokens), window = %d", len(turn1), len(turn1)/4, prof.ContextWindowSize())
+
+	// Collect compaction events as ground truth that a fold actually happened.
+	var sawCompaction bool
+	done := make(chan struct{})
+	go func() {
+		for ev := range sess.Events() {
+			if cc, ok := ev.Data.(events.ContextCompactionData); ok {
+				sawCompaction = true
+				t.Logf("compaction: layer=%s turns %d→%d tokens %d→%d",
+					cc.Layer, cc.TurnsBefore, cc.TurnsAfter, cc.EstTokensBefore, cc.EstTokensAfter)
+			}
+		}
+		close(done)
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
 	defer cancel()
-	out, perr := sess.ProcessInput(ctx, prompt, nil)
-	t.Logf("ProcessInput err=%v out=%.120q", perr, out)
-	note := sess.PinnedNote()
+
+	if _, err := sess.ProcessInput(ctx, turn1, nil); err != nil {
+		t.Fatalf("ProcessInput turn 1: %v", err)
+	}
+	// Turn 2: a trivial turn whose presence pushes the big turn-1 input out of the
+	// single preserved slot, so the pre-request compaction folds it.
+	out2, err := sess.ProcessInput(ctx, "Acknowledge with the single word OK.", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput turn 2: %v", err)
+	}
+	t.Logf("turn-2 out=%.80q", out2)
+
+	hist := currentHistory(t, sess)
+	pinned := sess.PinnedNote()
 	sess.Close()
-	for ev := range sess.Events() {
-		t.Logf("event: %T %+v", ev.Data, ev.Data)
+	<-done
+
+	if !sawCompaction {
+		t.Fatal("no ContextCompactionData event — a real fold did not happen, so the handoff path was never exercised")
 	}
-	if perr != nil {
-		t.Fatalf("ProcessInput: %v", perr)
+
+	// The note is consumed by the compaction (one-shot handoff), so after the fold
+	// it lives in history as a steering turn, not in the pinned slot.
+	var handoff string
+	for _, turn := range hist {
+		text := turn.Message.Text()
+		if strings.Contains(text, noteHandoffPrefix) {
+			handoff = text
+		}
 	}
-	t.Logf("pinned note after a real high-pressure turn (%d chars):\n%.600s", len(note), note)
-	if strings.TrimSpace(note) == "" {
-		t.Fatal("no pinned note — default-on forced-note elicitation did NOT fire end-to-end")
+	if handoff == "" {
+		t.Fatalf("no 'note to yourself from before compaction' handoff turn in post-compaction history (pinned slot = %q)", pinned)
 	}
-	if !strings.Contains(note, "DEPLOY-LIVE-9X2Q") {
-		t.Errorf("pinned note is missing the opaque token DEPLOY-LIVE-9X2Q — the elicitor fired but did not capture it")
+	t.Logf("handoff turn (%d chars):\n%.600s", len(handoff), handoff)
+
+	if !strings.Contains(handoff, token) {
+		t.Errorf("handoff note is missing the opaque token %q — the elicitor fired but did not capture the folded fact", token)
 	}
 }

@@ -16,6 +16,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/llm"
 )
 
 func TestElicitNoteCapture(t *testing.T) {
@@ -63,5 +66,55 @@ func TestElicitNoteCapture(t *testing.T) {
 	// so we report capture rate informationally rather than fail on exact phrasing.
 	if captured < len(facts) {
 		t.Logf("NOTE: %d/%d captured verbatim; the rest are likely present but paraphrased (value preserved). The opaque token — the critical case — was captured exactly.", captured, len(facts))
+	}
+}
+
+// TestElicitNoteCapturesToolResult is the regression eval for the blindness bug:
+// the opaque token lives ONLY inside a tool-result turn (as it would in a coding
+// agent — a file read, a shell command), not in user/assistant prose. The real
+// elicitor must still capture it verbatim. Before the fix, the renderer flattened
+// only ContentText and the model never saw the token at all.
+//
+// Run: go test -tags eval ./agent/internal/contextmgr/ -run TestElicitNoteCapturesToolResult -v -timeout 10m
+func TestElicitNoteCapturesToolResult(t *testing.T) {
+	cm := newOAuthManager(t)
+
+	// A non-secret opaque identifier (a build artifact id). A value framed as a
+	// credential (DEPLOY_TOKEN=...) triggers the model's secret-redaction behavior,
+	// which is a real limit of the mechanism but not what THIS test checks: here we
+	// verify the renderer is no longer blind to tool output.
+	const token = "ARTIFACT-TR-7K4Z"
+	toolOutput := "$ cat build/manifest.txt\n" +
+		"artifact_id: " + token + "\n" +
+		"primary_region: eu-central-1\n" +
+		repeat("# build audit line, ignore\n", 30)
+
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("Read the build manifest and continue the rollout.")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID:        "call-tr",
+					Name:      "run_shell",
+					Arguments: []byte(`{"command": "cat build/manifest.txt"}`),
+				}},
+			},
+		}},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("call-tr", "run_shell", toolOutput, false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("Manifest read. Proceeding with the rollout.")},
+		{Kind: schema.TurnUserInput, Message: llm.User("Continue.")},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	note, err := cm.ElicitNote(ctx, history)
+	if err != nil {
+		t.Fatalf("ElicitNote: %v", err)
+	}
+	t.Logf("elicited note (first 600 chars):\n%.600s", note)
+
+	if !strings.Contains(note, token) {
+		t.Errorf("elicitor MISSED the tool-result token %q — the renderer is blind to tool output", token)
 	}
 }
