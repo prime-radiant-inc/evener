@@ -203,6 +203,12 @@ type Session struct {
 	taskNudgeFired    bool // whether the "consider using task_list" nudge has fired
 	totalRounds       int  // cumulative tool rounds across all inputs
 
+	// self-compaction state (compact tool)
+	pinnedNote          string // agent-authored note, re-stamped verbatim at every compaction
+	pendingInstructions string // compaction_instructions awaiting the round-tail force
+	forceRequested      bool   // a compact tool call is pending this round
+	nudgedSinceCompact  bool   // warning-nudge latch; reset on any compaction
+
 	// stuck detection
 	loopDetectionCount int // how many times loop detection has fired
 	readOnlyStreak     int // consecutive rounds with only read-only tool calls
