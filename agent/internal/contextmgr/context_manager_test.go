@@ -2270,3 +2270,28 @@ func TestCheckpoint_WorkingNotes_ShedOldestFirst(t *testing.T) {
 		t.Fatalf("latest note should be preserved, got: %q", lastNote)
 	}
 }
+
+// --- buildSummaryPrompt ---
+
+func TestBuildSummaryPrompt_NoInstructions(t *testing.T) {
+	p := buildSummaryPrompt("User: hi\n", "")
+	if !strings.Contains(p, "Your summary MUST include ALL of the following sections") {
+		t.Fatal("default prompt should mandate the standard sections")
+	}
+	if strings.Contains(p, "CALLER INSTRUCTIONS") {
+		t.Fatal("no caller-instruction block expected when instructions empty")
+	}
+}
+
+func TestBuildSummaryPrompt_WithInstructions(t *testing.T) {
+	p := buildSummaryPrompt("User: hi\n", "Drop the vendored build logs; keep the migration plan verbatim.")
+	if !strings.Contains(p, "Drop the vendored build logs") {
+		t.Fatal("caller instructions must appear in the prompt")
+	}
+	if strings.Contains(p, "Your summary MUST include ALL of the following sections") {
+		t.Fatal("the mandatory-7-sections block must be replaced, not retained, when instructions are present")
+	}
+	if !strings.Contains(p, "CALLER INSTRUCTIONS (these take precedence)") {
+		t.Fatal("expected the instruction-led header")
+	}
+}
