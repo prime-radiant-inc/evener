@@ -374,22 +374,26 @@ effortDom.window.SerfAppwire = {
   listModels() {
     return { then(resolve) { resolve([{ provider: "anthropic", model: "claude-opus-4-6" }]); return { catch() {} }; } };
   },
-  listModelsWithDiagnostics() {
-    return {
-      then(resolve) {
-        resolve({
-          models: [{ provider: "anthropic", model: "claude-opus-4-6", reasoning_effort_levels: ["low", "medium", "high", "max"] }],
-          diagnostics: [],
-        });
-        return { catch() {} };
-      },
-    };
-  },
+};
+// The effort chip reads per-model levels from the enriched REST /api/models
+// response (the appwire model list carries only provider/model).
+effortDom.window.fetch = (url) => {
+  if (String(url).indexOf("/api/models") === 0) {
+    return Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve([
+        { provider: "anthropic", model: "claude-opus-4-6", reasoning_effort_levels: ["low", "medium", "high", "max"] },
+      ]),
+    });
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
 };
 effortDom.window.eval(dirPickerSrc);
 effortDom.window.eval(spawnSrc);
 effortDom.window.document.dispatchEvent(new effortDom.window.Event("DOMContentLoaded", { bubbles: true }));
 effortDom.window.document.querySelector('button[data-chip="reasoning_effort"]').click();
+// The effort picker builds asynchronously after the REST fetch resolves.
+await new Promise((r) => setTimeout(r, 0));
 const effortOptions = Array.from(effortDom.window.document.querySelectorAll(".chip-picker .chip-picker-option")).map(el => el.textContent);
 assert(effortOptions.join(",") === "(default),low,medium,high,max,none",
   "effort picker should list the model's levels + default/none, got " + JSON.stringify(effortOptions));

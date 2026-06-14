@@ -368,6 +368,12 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq := req
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
+			// Re-clamp: the primary's effort was clamped to the primary model's
+			// levels, but the fallback model may support a lower maximum.
+			if fbReq.ReasoningEffort != nil {
+				clamped := llm.ClampReasoningEffort(*fbReq.ReasoningEffort, fbProfile.ReasoningEffortLevels())
+				fbReq.ReasoningEffort = &clamped
+			}
 			fbReq.WebSearch = fbProfile.SupportsWebSearch()
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
 			fbReq.PromptCacheKey = ""

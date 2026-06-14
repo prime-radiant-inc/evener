@@ -1462,8 +1462,9 @@
       const m = models[i];
       const full = (m.provider ? m.provider + "/" : "") + m.model;
       if (modelRef && (full === modelRef || m.model === modelRef)) {
-        if (Array.isArray(m.reasoning_effort_levels) && m.reasoning_effort_levels.length > 0) {
-          return m.reasoning_effort_levels.slice();
+        const lvls = m.reasoning_effort_levels || m.reasoningEffortLevels;
+        if (Array.isArray(lvls) && lvls.length > 0) {
+          return lvls.slice();
         }
         return DEFAULT_EFFORT_LEVELS.slice();
       }
@@ -1471,12 +1472,30 @@
     return DEFAULT_EFFORT_LEVELS.slice();
   }
 
+  // fetchEnrichedModelsForHarness fetches the REST /api/models response, which
+  // (unlike the appwire model list) carries per-model reasoning_effort_levels.
+  function fetchEnrichedModelsForHarness(harness) {
+    const params = {};
+    if (!harnessUsesSerfModels(harness)) params.harness = harness;
+    const cwd = currentWorkingDir();
+    if (cwd) params.cwd = cwd;
+    const query = new URLSearchParams();
+    Object.keys(params).forEach(k => query.set(k, params[k]));
+    const suffix = query.toString() ? "?" + query.toString() : "";
+    return fetch("/api/models" + suffix)
+      .then(r => r.json())
+      .then(d => Array.isArray(d) ? d : (d && Array.isArray(d.models) ? d.models : []))
+      .catch(() => []);
+  }
+
   function openEffortPicker(chip) {
     const existing = document.querySelector(".chip-picker");
     if (existing) { existing.remove(); return; }
     const harness = currentHarness();
-    listModelsWithDiagnosticsForHarness(harness).then(result => {
-      const models = Array.isArray(result && result.models) ? result.models : [];
+    // Use the REST /api/models response: only it carries per-model
+    // reasoning_effort_levels (the appwire model list returns provider/model
+    // only), which the picker needs to offer the selected model's levels.
+    fetchEnrichedModelsForHarness(harness).then(models => {
       const modelHidden = document.querySelector('input[name="model"]');
       const levels = effortLevelsForModel(models, modelHidden ? modelHidden.value : "");
 

@@ -426,8 +426,8 @@ async function commandSweep() {
       } },
     { name: "reasoning-effort", page: "session", query: "/effort", argEntry: "high",
       expect: (c) => {
-        const hit = c.calls.fetches.find(f => f.url === "/s/01S/reasoning-effort");
-        assertCS(c, !!hit, "POST /s/01S/reasoning-effort");
+        const hit = c.calls.fetches.find(f => f.url === "/api/sessions/01S/reasoning-effort");
+        assertCS(c, !!hit, "POST /api/sessions/01S/reasoning-effort");
         const body = String(hit && hit.opts && hit.opts.body || "");
         assertCS(c, body.indexOf("high") >= 0, "body carries effort level (got " + body + ")");
       } },

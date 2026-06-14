@@ -458,9 +458,9 @@ func registerThreadHandlers(
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "reasoning-effort"); err != nil {
-			return appwire.EmptyResponse{}, err
-		}
+		// No capability gate: there is no reasoning-effort thread capability, and
+		// the daemon/source already reject the call when it is unsupported (a
+		// non-serf source, or a daemon without the effort hook).
 		return appwire.EmptyResponse{}, source.SetThreadReasoningEffort(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodGoalSet, func(ctx context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {

@@ -336,7 +336,7 @@
           ]),
           run: (ctx, item) => {
             const eff = item.id || "";
-            const p = window.SerfAppwire ? window.SerfAppwire.setReasoningEffort(ctx.sessionId, eff) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/reasoning-effort", {
+            const p = window.SerfAppwire ? window.SerfAppwire.setReasoningEffort(ctx.sessionId, eff) : fetch("/api/sessions/" + encodeURIComponent(ctx.sessionId) + "/reasoning-effort", {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ reasoning_effort: eff }),
             });

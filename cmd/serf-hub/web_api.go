@@ -321,10 +321,6 @@ func (s *WebServer) handleAPIReasoningEffort(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := s.ensureSessionActionAvailable(id, "reasoning-effort"); err != nil {
-		writeAPIWireError(w, http.StatusBadGateway, err)
-		return
-	}
 	if err := source.SetThreadReasoningEffort(r.Context(), appwire.ThreadReasoningEffortSetParams{Ref: ref, ReasoningEffort: strings.TrimSpace(body.ReasoningEffort)}); err != nil {
 		writeAPIWireError(w, http.StatusBadGateway, err)
 		return
