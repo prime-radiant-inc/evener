@@ -45,6 +45,8 @@ func TestResolveReasoningEffort(t *testing.T) {
 		{name: "cli none clears", cli: "none", env: "high", wantSet: true, wantVal: ""},
 		{name: "env none clears", cli: "", env: "none", wantSet: true, wantVal: ""},
 		{name: "xhigh", cli: "xhigh", env: "", wantSet: true, wantVal: "xhigh"},
+		{name: "minimal", cli: "minimal", env: "", wantSet: true, wantVal: "minimal"},
+		{name: "off alias clears", cli: "off", env: "", wantSet: true, wantVal: ""},
 		{name: "invalid", cli: "banana", env: "", wantErr: true},
 	}
 

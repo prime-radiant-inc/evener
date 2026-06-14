@@ -359,6 +359,10 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// fallback chain — they are handled by the retry loop inside
 	// callModel. Kata cxw8.
 	if err != nil && len(s.cfg.ModelFallbacks) > 0 && modelFallbackEligible(err) {
+		// The user's originally-requested effort, before it was clamped to the
+		// primary model. Each fallback clamps this against its own levels so a
+		// fallback that supports a higher level than the primary isn't downgraded.
+		origEffort := strings.TrimSpace(s.cfg.ReasoningEffort)
 		for _, fbModel := range s.cfg.ModelFallbacks {
 			// validateModelFallbacks already rejected cross-provider fallbacks,
 			// so resolveProfileForRef is guaranteed to return the WithModel path
@@ -368,11 +372,11 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq := req
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
-			// Re-clamp: the primary's effort was clamped to the primary model's
-			// levels, but the fallback model may support a lower maximum.
-			if fbReq.ReasoningEffort != nil {
-				clamped := llm.ClampReasoningEffort(*fbReq.ReasoningEffort, fbProfile.ReasoningEffortLevels())
+			if origEffort != "" {
+				clamped := llm.ClampReasoningEffort(origEffort, fbProfile.ReasoningEffortLevels())
 				fbReq.ReasoningEffort = &clamped
+			} else {
+				fbReq.ReasoningEffort = nil
 			}
 			fbReq.WebSearch = fbProfile.SupportsWebSearch()
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()

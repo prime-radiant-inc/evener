@@ -41,6 +41,20 @@ func TestClampReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestNormalizeReasoningEffort(t *testing.T) {
+	cases := map[string]string{
+		"none": "", "null": "", "off": "", "false": "", "0": "",
+		"NONE": "", "  none  ": "",
+		"minimal": "minimal", "HIGH": "high", "xhigh": "xhigh", "": "",
+		"turbo": "turbo",
+	}
+	for in, want := range cases {
+		if got := NormalizeReasoningEffort(in); got != want {
+			t.Errorf("NormalizeReasoningEffort(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestReasoningBudget_MinimalAndXHigh(t *testing.T) {
 	if ReasoningBudget("minimal") <= 0 {
 		t.Errorf("ReasoningBudget(minimal) = %d, want a small positive budget", ReasoningBudget("minimal"))

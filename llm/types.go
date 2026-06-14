@@ -539,6 +539,21 @@ var effortRank = map[string]int{
 	"max":     5,
 }
 
+// NormalizeReasoningEffort lowercases and trims a reasoning-effort value and maps
+// the "disable" aliases (none/null/off/false/0) to "" (no effort). It does not
+// validate the level — unknown non-empty values pass through lowercased. This is
+// the single place the disable-aliases are defined, shared by the CLI resolver
+// and the runtime setter so they cannot drift.
+func NormalizeReasoningEffort(s string) string {
+	v := strings.ToLower(strings.TrimSpace(s))
+	switch v {
+	case "none", "null", "off", "false", "0":
+		return ""
+	default:
+		return v
+	}
+}
+
 // ClampReasoningEffort clamps a requested effort to the levels a model supports.
 // A request above the model's top supported level is lowered to that level; a
 // request below the model's lowest is raised to it. Empty, "none", unknown
