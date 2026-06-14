@@ -95,6 +95,9 @@ type watchKey struct {
 }
 
 type watchConfig struct {
+	// id is a stable per-session handle for this watch, assigned at install and
+	// preserved across idempotent re-configure; a replacement gets a fresh id.
+	id                 string
 	target             string
 	outputMatch        string
 	outputMatcher      *jobstore.OutputMatcher
@@ -517,7 +520,9 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 			jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
 			return result, nil
 		}
+		jm.recordWatchEndedLocked(key, existing, "replaced")
 		closeWatchConfig(existing)
+		cfg.id = jm.nextWatchIDLocked()
 		stop := cfg.initProgressStop()
 		jm.watches[key] = cfg
 		result := watchResultFromConfig(cfg, true)
@@ -551,6 +556,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
 		jm.mu.Lock()
 	}
+	cfg.id = jm.nextWatchIDLocked()
 	stop := cfg.initProgressStop()
 	jm.watches[key] = cfg
 	result := watchResultFromConfig(cfg, false)
@@ -1004,17 +1010,19 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 	if key.SendTo != "" {
 		cfg := jm.watches[key]
 		targets = append(targets, watchConfigTerminalSnapshot{
-			key:      key,
-			cfg:      cfg,
-			terminal: watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
+			key:       key,
+			cfg:       cfg,
+			terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
+			endReason: "cleared",
 		})
 	} else {
 		for existingKey, cfg := range jm.watches {
 			if existingKey.VisibleSessionID == key.VisibleSessionID && existingKey.Target == key.Target {
 				targets = append(targets, watchConfigTerminalSnapshot{
-					key:      existingKey,
-					cfg:      cfg,
-					terminal: watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
+					key:       existingKey,
+					cfg:       cfg,
+					terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
+					endReason: "cleared",
 				})
 			}
 		}
@@ -1087,9 +1095,10 @@ func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
 		return
 	}
 	targets := []watchConfigTerminalSnapshot{{
-		key:      key,
-		cfg:      cfg,
-		terminal: watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
+		key:       key,
+		cfg:       cfg,
+		terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
+		endReason: "budget_exhausted",
 	}}
 	markWatchConfigSnapshotsRejectingLocked(targets)
 	jm.mu.Unlock()
@@ -1238,12 +1247,75 @@ func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult 
 // only; terminalFlush is drain-only residue and excluded) into model-facing
 // rows for job_list (spec §4 F2). One row per live config, ordered by target
 // then send.to for stable output.
+// watchHistoryCap bounds the recent-watch ring surfaced by job_list. Old entries
+// are trimmed; the ring is a debugging aid, not a durable audit log.
+const watchHistoryCap = 16
+
+// watchHistoryEntry is the final state of a watch that has left the active set.
+type watchHistoryEntry struct {
+	id         string
+	target     string
+	condition  string
+	sendTo     string
+	deliveries int
+	endReason  string
+	endedAt    time.Time
+}
+
+// nextWatchIDLocked mints a stable per-session watch id. Caller holds jm.mu.
+func (jm *jobManager) nextWatchIDLocked() string {
+	jm.watchSeq++
+	return fmt.Sprintf("watch_%d", jm.watchSeq)
+}
+
+// recordWatchEndedLocked appends a watch's final state to the bounded history ring
+// so a watch that fired and then left the active set stays legible in job_list. It
+// is pure in-memory bookkeeping; the caller holds jm.mu.
+func (jm *jobManager) recordWatchEndedLocked(key watchKey, cfg *watchConfig, reason string) {
+	if cfg == nil {
+		return
+	}
+	jm.watchHistory = append(jm.watchHistory, watchHistoryEntry{
+		id:         cfg.id,
+		target:     cfg.target,
+		condition:  watchConditionSummary(cfg),
+		sendTo:     key.SendTo,
+		deliveries: cfg.deliveries,
+		endReason:  reason,
+		endedAt:    jm.now(),
+	})
+	if len(jm.watchHistory) > watchHistoryCap {
+		jm.watchHistory = jm.watchHistory[len(jm.watchHistory)-watchHistoryCap:]
+	}
+}
+
+// recentWatchSummaries projects the watch history ring for job_list, latest first.
+func (jm *jobManager) recentWatchSummaries() []recentWatchEntry {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	out := make([]recentWatchEntry, 0, len(jm.watchHistory))
+	for i := len(jm.watchHistory) - 1; i >= 0; i-- {
+		h := jm.watchHistory[i]
+		out = append(out, recentWatchEntry{
+			ID:         h.id,
+			Target:     h.target,
+			Condition:  h.condition,
+			SendTo:     h.sendTo,
+			Deliveries: h.deliveries,
+			EndReason:  h.endReason,
+			EndedAt:    h.endedAt.Format(time.RFC3339Nano),
+		})
+	}
+	return out
+}
+
 func (jm *jobManager) liveWatchSummaries() []watchListEntry {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	entries := make([]watchListEntry, 0, len(jm.watches))
 	for key, cfg := range jm.watches {
 		entries = append(entries, watchListEntry{
+			ID:         cfg.id,
 			Target:     cfg.target,
 			Condition:  watchConditionSummary(cfg),
 			SendTo:     key.SendTo,
@@ -1598,6 +1670,7 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, [
 		} else if len(cfg.pending) != 0 {
 			jm.rememberDetachedPendingLocked(cfg)
 		}
+		jm.recordWatchEndedLocked(key, cfg, "auto_removed_terminal")
 		closeWatchConfig(cfg)
 		delete(jm.watches, key)
 	}
@@ -2381,6 +2454,10 @@ type watchConfigTerminalSnapshot struct {
 	key      watchKey
 	cfg      *watchConfig
 	terminal watchSendTerminalSnapshot
+	// endReason, when set, is recorded to the watch history ring as the config is
+	// detached from the active set (cleared / budget_exhausted). Left empty by
+	// snapshot callers that are not removing an active watch.
+	endReason string
 }
 
 func terminalSnapshots(targets []watchConfigTerminalSnapshot) []watchSendTerminalSnapshot {
@@ -2422,6 +2499,9 @@ func (jm *jobManager) detachWatchConfigSnapshots(targets []watchConfigTerminalSn
 	defer jm.mu.Unlock()
 	for _, target := range targets {
 		if target.cfg != nil && jm.watches[target.key] == target.cfg {
+			if target.endReason != "" {
+				jm.recordWatchEndedLocked(target.key, target.cfg, target.endReason)
+			}
 			closeWatchConfig(target.cfg)
 			delete(jm.watches, target.key)
 		}

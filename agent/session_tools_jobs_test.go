@@ -3769,3 +3769,36 @@ func TestJobReadOutputInvalidGrepCarriesPrefix(t *testing.T) {
 		t.Fatalf("invalid grep error = %v, want invalid_request: prefix", gerr)
 	}
 }
+
+func TestJobListSurfacesRecentWatches(t *testing.T) {
+	s := newTestSession(t)
+	jm := s.jobManager
+	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	out, err := jobListTool(s, decodeJobListArgs(t, `{}`), 1<<20)
+	if err != nil {
+		t.Fatalf("jobListTool: %v", err)
+	}
+	var got struct {
+		RecentWatches []struct {
+			ID        string `json:"id"`
+			Target    string `json:"target"`
+			EndReason string `json:"end_reason"`
+		} `json:"recent_watches"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("unmarshal: %v (out=%s)", err, out)
+	}
+	if len(got.RecentWatches) != 1 || got.RecentWatches[0].EndReason != "cleared" || got.RecentWatches[0].Target != rec.JobID {
+		t.Fatalf("recent_watches = %+v, want one cleared entry on %s", got.RecentWatches, rec.JobID)
+	}
+}

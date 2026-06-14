@@ -6335,3 +6335,72 @@ func TestLaunchWatchValidationMatchesConfigureWatch(t *testing.T) {
 		}
 	}
 }
+
+func TestWatchHistoryRecordsReplacement(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	rec, _ := jm.createShell(createShellOpts{Command: "sleep 30"})
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	active := jm.liveWatchSummaries()
+	if len(active) != 1 || active[0].ID == "" {
+		t.Fatalf("active watch must carry a non-empty id, got %+v", active)
+	}
+	firstID := active[0].ID
+
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+		t.Fatalf("idempotent reconfigure: %v", err)
+	}
+	if again := jm.liveWatchSummaries(); again[0].ID != firstID {
+		t.Fatalf("idempotent re-configure changed id: %s -> %s", firstID, again[0].ID)
+	}
+
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "done"}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if active = jm.liveWatchSummaries(); active[0].ID == firstID {
+		t.Fatalf("replacement must assign a new id, still %s", firstID)
+	}
+	hist := jm.recentWatchSummaries()
+	if len(hist) != 1 || hist[0].ID != firstID || hist[0].EndReason != "replaced" {
+		t.Fatalf("recent_watches = %+v, want one replaced entry with id %s", hist, firstID)
+	}
+}
+
+func TestWatchHistoryRecordsTerminalAutoRemoval(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	code := 0
+	jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code)
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch should auto-remove on terminal, count=%d", jm.watchCount())
+	}
+	hist := jm.recentWatchSummaries()
+	if len(hist) != 1 || hist[0].EndReason != "auto_removed_terminal" || hist[0].Target != rec.JobID {
+		t.Fatalf("recent_watches = %+v, want one auto_removed_terminal entry", hist)
+	}
+}
+
+func TestWatchHistoryRecordsClear(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	rec, _ := jm.createShell(createShellOpts{Command: "sleep 30"})
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	hist := jm.recentWatchSummaries()
+	if len(hist) != 1 || hist[0].EndReason != "cleared" {
+		t.Fatalf("recent_watches = %+v, want one cleared entry", hist)
+	}
+}

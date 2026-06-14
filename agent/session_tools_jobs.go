@@ -555,6 +555,7 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (string, error) 
 		Jobs:                jobs,
 		Count:               len(jobs),
 		Watches:             jm.liveWatchSummaries(),
+		RecentWatches:       jm.recentWatchSummaries(),
 		DelegationAllowance: allowance,
 	}, maxChars)
 }
@@ -661,10 +662,11 @@ type jobOutputMatch struct {
 }
 
 type jobListResult struct {
-	Jobs                []jobListEntry   `json:"jobs"`
-	Count               int              `json:"count"`
-	Watches             []watchListEntry `json:"watches"`
-	DelegationAllowance int              `json:"delegation_allowance"`
+	Jobs                []jobListEntry     `json:"jobs"`
+	Count               int                `json:"count"`
+	Watches             []watchListEntry   `json:"watches"`
+	RecentWatches       []recentWatchEntry `json:"recent_watches"`
+	DelegationAllowance int                `json:"delegation_allowance"`
 }
 
 // watchListEntry is one active watch in job_list's result (spec §4 F2),
@@ -672,11 +674,25 @@ type jobListResult struct {
 // one-line summary of the watch's trigger; send_to is empty for a notify-caller
 // watch; created_at is the watch's install time as an RFC3339Nano timestamp.
 type watchListEntry struct {
+	ID         string `json:"id"`
 	Target     string `json:"target"`
 	Condition  string `json:"condition"`
 	SendTo     string `json:"send_to"`
 	Deliveries int    `json:"deliveries"`
 	CreatedAt  string `json:"created_at"`
+}
+
+// recentWatchEntry is one watch that has left the active set, surfaced by job_list's
+// bounded recent_watches ring so a fired-then-removed watch stays legible. end_reason
+// is one of auto_removed_terminal, cleared, replaced, budget_exhausted.
+type recentWatchEntry struct {
+	ID         string `json:"id"`
+	Target     string `json:"target"`
+	Condition  string `json:"condition"`
+	SendTo     string `json:"send_to"`
+	Deliveries int    `json:"deliveries"`
+	EndReason  string `json:"end_reason"`
+	EndedAt    string `json:"ended_at"`
 }
 
 type jobListEntry struct {
