@@ -25,12 +25,15 @@ type RetryPolicy struct {
 	OnRetry func(err error, attempt int, delay time.Duration)
 }
 
-// DefaultRetryPolicy returns a RetryPolicy with 4 retries, a 1 second base
+// DefaultRetryPolicy returns a RetryPolicy with 10 retries, a 1 second base
 // delay, a 60 second maximum delay, a backoff multiplier of 2.0, and jitter
-// enabled.
+// enabled. Transient provider failures (rate limits, 5xx, and mid-stream
+// truncations) are common enough that a single turn should ride out a long
+// burst of them rather than fail; the 60s delay cap bounds the worst-case
+// wait per attempt.
 func DefaultRetryPolicy() RetryPolicy {
 	return RetryPolicy{
-		MaxRetries:        4,
+		MaxRetries:        10,
 		BaseDelay:         1 * time.Second,
 		MaxDelay:          60 * time.Second,
 		BackoffMultiplier: 2.0,

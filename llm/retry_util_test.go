@@ -232,8 +232,8 @@ func TestRetry_UnknownErrors_DefaultRetryable(t *testing.T) {
 
 func TestDefaultRetryPolicy_Values(t *testing.T) {
 	p := DefaultRetryPolicy()
-	if p.MaxRetries != 4 {
-		t.Fatalf("MaxRetries = %d, want 4", p.MaxRetries)
+	if p.MaxRetries != 10 {
+		t.Fatalf("MaxRetries = %d, want 10", p.MaxRetries)
 	}
 	if p.BaseDelay != 1*time.Second {
 		t.Fatalf("BaseDelay = %v, want 1s", p.BaseDelay)
