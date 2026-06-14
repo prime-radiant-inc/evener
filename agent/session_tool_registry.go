@@ -55,7 +55,7 @@ type toolDeps struct {
 	// web exposes the web tools with the profile and client hidden behind them.
 	web webDeps
 
-	// compact tool session surface.
+	// compact-tool surface: forward note mutations, force-compaction requests, and current pressure to the handler.
 	setPinnedNote       func(note string)
 	requestForceCompact func(instructions string) error
 	pressure            func() float64
