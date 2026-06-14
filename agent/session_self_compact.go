@@ -27,9 +27,14 @@ const selfCompactNudge = "Context is filling up. If you are at or near a clean s
 // maybeNudgeSelfCompact injects a one-time steering nudge when pressure crosses
 // WarnThreshold. Best-effort: a single large tool result can jump past the
 // checkpoint threshold before this fires; the checkpoint/summary fallback is the
-// guarantee. The nudge is queued via Steer, which the round loop drains into
-// history (injectPostToolSteering) before the next model call, so the agent sees
-// it in-turn. The latch resets on any compaction. Returns true if it nudged.
+// guarantee. The nudge is queued via Steer; the round loop drains it into history
+// at the next tool-round seam (injectPostToolSteering), so the agent acts on it at
+// its next seam — if the nudging round is the turn's last, it carries to the next
+// turn. The latch resets on any compaction. Returns true if it nudged.
+//
+// Assumes the single per-session turn goroutine: the production caller and the
+// latch resets all run on that goroutine, so the unlocked pressure read between
+// the latch check and set cannot double-fire.
 func (s *Session) maybeNudgeSelfCompact(sysPromptChars int) bool {
 	if s.contextMgr == nil {
 		return false
