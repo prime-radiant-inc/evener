@@ -1641,13 +1641,19 @@ func (jm *jobManager) startQuietWatchdog(jobID string, stop <-chan struct{}) {
 	if stop == nil {
 		return
 	}
+	// Snapshot the watchdog timing synchronously in the caller's goroutine so the
+	// spawned goroutine reads no mutable package global. Tests scale these vars
+	// from the test goroutine before the watchdog starts; capturing here gives a
+	// happens-before edge. In production the values are effectively constants.
+	window := delegateQuietWindow
+	checkInterval := delegateQuietCheckInterval
 	go func() {
-		ticker := time.NewTicker(delegateQuietCheckInterval)
+		ticker := time.NewTicker(checkInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				if !jm.fireQuietWatchdogTick(jobID) {
+				if !jm.fireQuietWatchdogTick(jobID, window) {
 					return
 				}
 			case <-stop:
@@ -1662,7 +1668,7 @@ func (jm *jobManager) startQuietWatchdog(jobID string, stop <-chan struct{}) {
 // running job. Otherwise it enqueues at most one quiet notification per quiet
 // stretch and kicks the drain loop. It performs no delivery and never touches
 // Session.emit or responseSideEffectsMu (spec §3), mirroring fireProgressTick.
-func (jm *jobManager) fireQuietWatchdogTick(jobID string) bool {
+func (jm *jobManager) fireQuietWatchdogTick(jobID string, window time.Duration) bool {
 	var notifications []jobNotification
 
 	jm.mu.Lock()
@@ -1680,10 +1686,10 @@ func (jm *jobManager) fireQuietWatchdogTick(jobID string) bool {
 		last = *run.rec.LastActivity
 	}
 	quiet := jm.now().Sub(last)
-	if quiet >= delegateQuietWindow {
+	if quiet >= window {
 		if !run.quietNotified {
 			run.quietNotified = true
-			notifications = append(notifications, watchNotification(jobID, quietWatchdogMessage(delegateQuietWindow, last)))
+			notifications = append(notifications, watchNotification(jobID, quietWatchdogMessage(window, last)))
 		}
 	} else {
 		// Activity resumed within the window: clear the latch so the next quiet
