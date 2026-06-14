@@ -641,9 +641,9 @@ type jobListEntry struct {
 	// by job_list(include_descendants=true): 0 for the caller's own store, 1 for
 	// a direct child's store, and so on. It is the depth of the store the row was
 	// surfaced from, so a dead descendant's terminal forwarded copy that survives
-	// in an ancestor store carries that ancestor's depth. Omitted (0) for the
+	// in an ancestor store carries that ancestor's depth. Omitted when 0 for the
 	// default and include_nested listings, which do not walk the tree.
-	Depth int `json:"depth"`
+	Depth int `json:"depth,omitempty"`
 }
 
 type jobStopResult struct {

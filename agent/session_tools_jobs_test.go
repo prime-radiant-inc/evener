@@ -197,6 +197,27 @@ func TestJobListToolIncludeNestedSurfacesForwardedRecords(t *testing.T) {
 	}
 }
 
+// TestJobListDefaultListingOmitsDepth proves the default listing does not
+// serialize the depth field: projectJobRecord never sets Depth for default rows
+// (only walkDescendantJobs does for include_descendants), so a zero Depth must be
+// omitted, not emitted as "depth":0.
+func TestJobListDefaultListingOmitsDepth(t *testing.T) {
+	s := newTestSession(t)
+	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 1", Description: "job"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, s.jobManager, rec.JobID) })
+
+	out, err := jobListTool(s, decodeJobListArgs(t, `{}`), 1<<20)
+	if err != nil {
+		t.Fatalf("jobListTool: %v", err)
+	}
+	if strings.Contains(out, `"depth"`) {
+		t.Fatalf("default job_list output contains depth key: %s", out)
+	}
+}
+
 // jobListDescendantEntry parses the descendant-walk row fields: the existing
 // owner_session_id plus the new depth annotation, and the resumability
 // projection (which must key on the owner session, not the root caller).
