@@ -63,3 +63,42 @@ For serf this argues for shipping the capability (it's cheap insurance + a quali
 while setting honest expectations: the note earns its keep in dense/long-context work, not
 in every compaction. The agent-choice dimension looks healthy — a real agent used the tool
 and authored a sensible note when asked.
+
+## Addendum: "force a note before compaction" value test (dense, 15 facts)
+
+Testing the idea of injecting a *mandatory* "you MUST call compact now" turn right before
+a forced compaction, so the agent authors a note instead of getting a blind summary.
+Harness: `test/live-compaction-dense-value-test.sh`. Two arms × 2 trials, **15** clearly-
+stated facts + heavy filler:
+
+- **mandated**: the agent is told it MUST call `compact` now and chooses what to note.
+- **blind**: `compact` with an empty note (summary-only).
+
+| Arm | mean recall | note authored | compliance |
+|---|---|---|---|
+| mandated self-note | **15/15** | yes (~700–1200 chars) | agent complied every time |
+| blind | **15/15** | no | — |
+
+**The mandate mechanism works** (the agent always complied and authored a substantive
+note), **but it made no difference to retention** — the blind baseline kept all 15 facts
+too. Consistent with the 7-fact live result: the live agent loop retains clearly-stated
+facts through a single compaction regardless of the note.
+
+**Implication for the "force a note before compaction" feature:** on this evidence it
+would add a round-trip (and force compaction mid-task, off a clean seam) **without
+measurable retention benefit** in realistic conditions. The note's value is confined to
+where the controlled eval found it — **facts buried in noise, compressed hard in a single
+pass** — which a clean live loop with a strong summarizer doesn't hit.
+
+**Two angles NOT tested here that could still favor the mechanism:**
+1. **Multi-compaction erosion (context collapse):** a fact must survive *many successive*
+   compactions over a long session. Repeated re-summarization erodes detail (the prior-art
+   "context collapse"); a note re-stamped *verbatim* each time resists that. Untested
+   (expensive — needs long multi-compaction sessions).
+2. **Handoff quality, not just retention:** the controlled eval showed the note+steer
+   handoff scored higher (judge +0.91) *even at equal fact retention*. This dense test
+   measured only recall, not quality.
+
+**Recommendation:** don't build the forced-note mechanism on current evidence — it doesn't
+pay off for single-compaction retention in a live loop. Revisit only if (1) multi-
+compaction erosion proves real, or (2) handoff-quality (not just recall) is the goal.
