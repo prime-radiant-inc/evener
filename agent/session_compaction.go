@@ -39,6 +39,28 @@ func (s *Session) Compact(ctx context.Context) error {
 	return nil
 }
 
+const (
+	pinnedNoteOpen  = "[NOTE TO SELF]"
+	pinnedNoteClose = "[END NOTE TO SELF]"
+)
+
+func renderPinnedNote(note string) string {
+	return pinnedNoteOpen + "\n" + note + "\n" + pinnedNoteClose
+}
+
+// stripPinnedNoteTurns removes any existing pinned-note steering turn so a fresh
+// copy can be re-stamped without accumulation.
+func stripPinnedNoteTurns(history *[]schema.Turn) {
+	filtered := (*history)[:0]
+	for _, t := range *history {
+		if t.Kind == schema.TurnSteering && strings.Contains(t.Message.Text(), pinnedNoteOpen) {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	*history = filtered
+}
+
 type steeringTurnRecord struct {
 	turn schema.Turn
 	text string
@@ -80,6 +102,10 @@ func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn)
 		for _, m := range compactResult.UserMessages {
 			s.deliverHookUserMessage(m)
 		}
+	}
+	if note := s.PinnedNote(); note != "" {
+		stripPinnedNoteTurns(history)
+		messages = append(messages, renderPinnedNote(note))
 	}
 	messages = append(messages, s.goalCompactionSteering()...)
 	return appendSteeringMessagesToHistory(history, messages)
