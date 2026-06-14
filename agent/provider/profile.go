@@ -14,7 +14,9 @@ import (
 // while maintaining backward compatibility.
 func resolveEffortLevels(model string, providerDefault []string) []string {
 	if cat := llm.EmbeddedModelCatalog(); cat != nil {
-		if mi := cat.GetModelInfo(model); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
+		// LookupModelInfo canonicalizes the "[1m]" suffix and dated snapshots so a
+		// 1M-context or dated model still resolves its family's real levels.
+		if mi := cat.LookupModelInfo(model); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
 			return append([]string(nil), mi.ReasoningEffortLevels...)
 		}
 	}
