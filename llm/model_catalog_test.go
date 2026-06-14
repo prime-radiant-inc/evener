@@ -242,6 +242,34 @@ func TestLookupModelInfo_CanonicalizesRefs(t *testing.T) {
 	}
 }
 
+// A "[1m]" ref selects the 1M-context beta, so LookupModelInfo must report a 1M
+// context window for it — not the base entry's window — while leaving the base
+// ref's window untouched.
+func TestLookupModelInfo_OneMillionContext(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("embedded catalog nil")
+	}
+	base := cat.LookupModelInfo("claude-opus-4-5")
+	if base == nil {
+		t.Fatal("claude-opus-4-5 missing from catalog")
+	}
+	if base.ContextWindow == 1_000_000 {
+		t.Fatalf("base claude-opus-4-5 ContextWindow = %d; expected the smaller base window, not 1M", base.ContextWindow)
+	}
+	oneM := cat.LookupModelInfo("claude-opus-4-5[1m]")
+	if oneM == nil {
+		t.Fatal("claude-opus-4-5[1m] did not resolve")
+	}
+	if oneM.ContextWindow != 1_000_000 {
+		t.Errorf("claude-opus-4-5[1m] ContextWindow = %d, want 1000000", oneM.ContextWindow)
+	}
+	// Effort levels still resolve to the family's set for the [1m] ref.
+	if len(oneM.ReasoningEffortLevels) != 3 {
+		t.Errorf("claude-opus-4-5[1m] ReasoningEffortLevels = %v, want 3", oneM.ReasoningEffortLevels)
+	}
+}
+
 func TestParseLiteLLMCatalog_CacheTierPricing(t *testing.T) {
 	body := `{
   "claude-opus-4-5": {

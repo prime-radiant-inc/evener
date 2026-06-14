@@ -5044,3 +5044,30 @@ func TestWeb_APISessionActionReasoningEffortForwardsBody(t *testing.T) {
 		t.Fatalf("reasoning-effort params=%+v", got)
 	}
 }
+
+// The spawn/model API must report the 1M context window for a "[1m]" ref, not
+// the base catalog entry's window (the suffix selects the 1M-context beta).
+func TestModelDescriptorsToAPIModels_OneMillionContext(t *testing.T) {
+	out := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{
+		{Provider: "anthropic", Model: "claude-opus-4-5"},
+		{Provider: "anthropic", Model: "claude-opus-4-5[1m]"},
+	})
+	if len(out) != 2 {
+		t.Fatalf("got %d entries, want 2", len(out))
+	}
+	byModel := map[string]map[string]any{}
+	for _, e := range out {
+		byModel[e["model"].(string)] = e
+	}
+	base := byModel["claude-opus-4-5"]
+	oneM := byModel["claude-opus-4-5[1m]"]
+	if base["context_window"] == nil || oneM["context_window"] == nil {
+		t.Fatalf("context_window missing: base=%v oneM=%v", base["context_window"], oneM["context_window"])
+	}
+	if oneM["context_window"] != 1_000_000 {
+		t.Errorf("[1m] context_window = %v, want 1000000", oneM["context_window"])
+	}
+	if base["context_window"] == 1_000_000 {
+		t.Errorf("base context_window = %v, want the smaller base window", base["context_window"])
+	}
+}

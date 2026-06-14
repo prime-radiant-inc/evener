@@ -79,14 +79,22 @@ func (c *ModelCatalog) LookupModelInfo(modelID string) *ModelInfo {
 	if c == nil {
 		return nil
 	}
-	id := strings.TrimSuffix(strings.TrimSpace(modelID), "[1m]")
-	if mi := c.GetModelInfo(id); mi != nil {
-		return mi
+	trimmed := strings.TrimSpace(modelID)
+	id := strings.TrimSuffix(trimmed, "[1m]")
+	oneMillion := id != trimmed // the "[1m]" suffix selects the 1M-context beta
+
+	mi := c.GetModelInfo(id)
+	if mi == nil {
+		if i := strings.LastIndex(id, "/"); i >= 0 && i+1 < len(id) {
+			mi = c.GetModelInfo(id[i+1:])
+		}
 	}
-	if i := strings.LastIndex(id, "/"); i >= 0 && i+1 < len(id) {
-		return c.GetModelInfo(id[i+1:])
+	if mi != nil && oneMillion {
+		// GetModelInfo returns a copy, so this only adjusts the result: a "[1m]"
+		// ref reports the 1M context window, not the base entry's.
+		mi.ContextWindow = 1_000_000
 	}
-	return nil
+	return mi
 }
 
 // ListModels returns the catalog's models, optionally filtered by provider
