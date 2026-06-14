@@ -1,0 +1,70 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+
+	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/llm"
+)
+
+func defCompact() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name: "compact",
+		Description: "Compact your own context at a clean stopping point — between tasks, " +
+			"after extracting results from a large context, before consuming substantial new " +
+			"input, or before a complex multi-step operation. Your note_to_self is preserved " +
+			"verbatim across compactions; pass an empty note_to_self to clear a stale note. " +
+			"compaction_instructions (optional) steer what the summary keeps vs. drops. " +
+			"In sessions without persistence, dropped detail is NOT recoverable, so be " +
+			"conservative about what you instruct to drop.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"note_to_self": map[string]any{
+					"type":        "string",
+					"description": "Durable structured note, preserved verbatim. Empty string clears the note.",
+				},
+				"compaction_instructions": map[string]any{
+					"type":        "string",
+					"description": "Optional: what the summary should preserve vs. drop.",
+				},
+			},
+			"required": []string{"note_to_self"},
+		},
+	}
+}
+
+func registerCompactTool(reg *tool.Registry, deps *toolDeps) {
+	_ = reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: defCompact()},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			note, _ := args["note_to_self"].(string)
+			instructions, _ := args["compaction_instructions"].(string)
+
+			deps.setPinnedNote(note)
+
+			// Clearing a note (empty note, no instructions) does not force a compaction.
+			if note == "" && instructions == "" {
+				return tool.StateResult{Output: "Note cleared. No compaction requested."}, nil
+			}
+			if err := deps.requestForceCompact(instructions); err != nil {
+				return nil, fmt.Errorf("compact: %w", err)
+			}
+			// Compaction runs at the round tail, AFTER this returns — the message is a
+			// prediction from current pressure, never past-tense.
+			return tool.StateResult{Output: predictionMessage(deps.pressure())}, nil
+		},
+	})
+}
+
+func predictionMessage(pressure float64) string {
+	if pressure < 0.30 {
+		return "Note pinned. Context is light, so little or nothing will be condensed at the seam; your note carries forward."
+	}
+	return "Note pinned. A compaction will run at the seam, honoring your instructions; your note is preserved verbatim."
+}

@@ -55,6 +55,11 @@ type toolDeps struct {
 	// web exposes the web tools with the profile and client hidden behind them.
 	web webDeps
 
+	// compact tool session surface.
+	setPinnedNote       func(note string)
+	requestForceCompact func(instructions string) error
+	pressure            func() float64
+
 	// setCommunicateResult records the communicate tool's result on the session
 	// (fields stay Session-owned; this is the only writer reachable from the handler).
 	setCommunicateResult func(awaitReply bool, message, reply, output string)
@@ -167,6 +172,9 @@ func newToolDeps(s *Session) *toolDeps {
 			fetch:  s.webFetch,
 			search: s.webSearch,
 		},
+		setPinnedNote:       s.setPinnedNote,
+		requestForceCompact: s.requestForceCompact,
+		pressure:            s.ContextPressure,
 		setCommunicateResult: func(awaitReply bool, message, reply, output string) {
 			s.mu.Lock()
 			s.comm = communicateResult{
@@ -229,6 +237,7 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	}
 	registerTaskTools(reg, deps)
 	registerGoalTools(reg, deps)
+	registerCompactTool(reg, deps)
 	registerWebTools(reg, deps)
 	registerCommunicateTool(reg, deps)
 	registerSkillTool(reg, deps)
