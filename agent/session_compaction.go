@@ -33,7 +33,6 @@ func (s *Session) Compact(ctx context.Context) error {
 
 	s.mu.Lock()
 	s.history = histCopy
-	s.nudgedSinceCompact = false // reset nudge latch on any compaction
 	s.mu.Unlock()
 
 	s.maybeAutoSave()
@@ -74,6 +73,9 @@ func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn
 		if kind == events.EventContextCompaction && !preCompactRan {
 			preCompactRan = true
 			pendingSteering = append(pendingSteering, s.runPreCompactHook(ctx, history)...)
+			s.mu.Lock()
+			s.nudgedSinceCompact = false // reset nudge latch on ANY compaction
+			s.mu.Unlock()
 		}
 		s.emit(kind, data)
 	}

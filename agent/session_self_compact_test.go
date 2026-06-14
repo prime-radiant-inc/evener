@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -219,6 +220,35 @@ func TestNudge_ResetsOnSessionCompact(t *testing.T) {
 	forcePressureAbove(t, s, s.contextMgr.WarnThreshold)
 	if !s.maybeNudgeSelfCompact(0) {
 		t.Fatal("nudge should fire again after Session.Compact reset the latch")
+	}
+}
+
+// TestNudge_ResetsOnAutomaticCompaction verifies that the nudge latch resets via
+// the shared compactionEmitFunc path — the same emit site used by ALL compaction
+// paths (auto ManageContext, content-filter recovery, and both force paths).
+// Driving the shared emit site directly is the correct test: it proves the reset
+// is wired to the mechanism that every path flows through, not just the force paths.
+func TestNudge_ResetsOnAutomaticCompaction(t *testing.T) {
+	s := newTestSession(t)
+
+	// Arm the latch as if a nudge already fired.
+	s.mu.Lock()
+	s.nudgedSinceCompact = true
+	s.mu.Unlock()
+
+	// Invoke compactionEmitFunc and fire EventContextCompaction through it.
+	// This is the shared emit site that all compaction paths (auto, content-filter,
+	// and force) route through; the latch reset must live here.
+	hist := makeSteeringSeed(2)
+	emitFn, flush := s.compactionEmitFunc(context.Background(), &hist)
+	emitFn(events.EventContextCompaction, events.ContextCompactionData{Layer: "test"})
+	flush()
+
+	s.mu.Lock()
+	stuck := s.nudgedSinceCompact
+	s.mu.Unlock()
+	if stuck {
+		t.Fatal("nudge latch must reset when EventContextCompaction flows through compactionEmitFunc (auto-compaction path)")
 	}
 }
 

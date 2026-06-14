@@ -92,7 +92,6 @@ func (s *Session) applyPendingForceCompact(ctx context.Context) {
 
 	s.mu.Lock()
 	s.history = histCopy
-	s.nudgedSinceCompact = false // reset nudge latch on any compaction
 	s.mu.Unlock()
 
 	s.maybeAutoSave()
