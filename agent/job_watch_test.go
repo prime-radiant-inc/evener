@@ -6305,3 +6305,33 @@ func TestClearWatchOnTerminalTargetIsIdempotent(t *testing.T) {
 		t.Fatalf("second clear result Watching = true, want false")
 	}
 }
+
+func TestLaunchWatchValidationMatchesConfigureWatch(t *testing.T) {
+	// The launch-time pre-flight (validateDelegateWatch) must reject exactly the
+	// concrete-target watch specs configureWatch rejects, so the two paths cannot
+	// drift and a malformed launch watch never leaks a durable job record.
+	specs := []watchArgs{
+		{OutputMatch: "ready"},                                // valid
+		{ProgressIntervalMS: 1000},                            // valid
+		{},                                                    // nothing to watch
+		{OutputMatch: "["},                                    // invalid regex
+		{Events: []string{"assistant.message"}},               // self-feedback (no send)
+		{OutputMatch: "ok", Send: &watchSendArgs{To: "nope"}}, // bad send target
+	}
+	for _, spec := range specs {
+		jm := newTestJM(t)
+		jm.enqueue = func(jobNotification) {}
+		rec, _ := jm.createShell(createShellOpts{Command: "x"})
+
+		install := spec
+		install.Target = rec.JobID
+		_, cfgErr := jm.configureWatch(install)
+
+		preflight := spec // target implied (unset), as at launch time
+		preErr := jm.validateDelegateWatch(preflight)
+
+		if (cfgErr == nil) != (preErr == nil) {
+			t.Fatalf("spec %+v: configureWatch err=%v but validateDelegateWatch err=%v", spec, cfgErr, preErr)
+		}
+	}
+}

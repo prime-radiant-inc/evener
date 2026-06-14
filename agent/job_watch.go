@@ -321,32 +321,47 @@ func (jm *jobManager) settleWatchSendDelivered(cfg *watchConfig, state jobstore.
 	return nil
 }
 
+// validateWatchConfig runs the target-independent validation a watch install must
+// pass — condition presence, send target, config build, and delivery-loop safety —
+// and returns the built config. configureWatch and the launch-time pre-flight both
+// route install validation through it so the two paths cannot drift. Event-arg shape
+// (validateWatchEventArgs) and session-target shape are validated by the caller:
+// the former is shared by name, the latter applies only to configureWatch's session
+// targets, never to a concrete launch target.
+func (jm *jobManager) validateWatchConfig(a watchArgs) (*watchConfig, error) {
+	if !watchArgsHasCondition(a) {
+		return nil, errors.New("invalid_request: nothing to watch")
+	}
+	if a.Send != nil {
+		if err := jm.validateWatchSendTarget(a.Send.To, a); err != nil {
+			return nil, err
+		}
+	}
+	cfg, err := newWatchConfig(a, jm.now())
+	if err != nil {
+		return nil, err
+	}
+	if err := validateWatchDeliveryLoop(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
 // validateDelegateWatch checks a launch-time delegate watch's configuration before
 // any job record is created, so a malformed watch is a pure synchronous error with
 // no durable job — consistent with how other validation errors behave. The watched
 // target is the not-yet-created delegate job, which is always a concrete running job,
 // so target-state validation is left to the post-attach configureWatch, which cannot
-// fail for that reason. It reuses configureWatch's own validators to avoid drift.
+// fail for that reason. It shares configureWatch's install validators to avoid drift.
 func (jm *jobManager) validateDelegateWatch(a watchArgs) error {
 	if a.Clear {
 		return errors.New("invalid_request: watch.clear is not valid at launch")
 	}
-	if !watchArgsHasCondition(a) {
-		return errors.New("invalid_request: nothing to watch")
-	}
 	if err := validateWatchEventArgs(a); err != nil {
 		return err
 	}
-	if a.Send != nil {
-		if err := jm.validateWatchSendTarget(a.Send.To, a); err != nil {
-			return err
-		}
-	}
-	cfg, err := newWatchConfig(a, jm.now())
-	if err != nil {
-		return err
-	}
-	return validateWatchDeliveryLoop(cfg)
+	_, err := jm.validateWatchConfig(a)
+	return err
 }
 
 func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
@@ -416,30 +431,20 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if err := validateWatchEventArgs(a); err != nil {
 		return watchResult{}, err
 	}
-	if !a.Clear && !watchArgsHasCondition(a) {
-		return watchResult{}, errors.New("invalid_request: nothing to watch")
-	}
-	if !a.Clear && a.Send != nil {
-		if err := jm.validateWatchSendTarget(a.Send.To, a); err != nil {
-			return watchResult{}, err
-		}
-	}
-	if !a.Clear && a.OutputMatch != "" && isWatchSessionTarget(a.Target) {
-		return watchResult{}, errors.New("invalid_request: output_match requires a concrete job target")
-	}
-	if !a.Clear && a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
-		return watchResult{}, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry transcript_ref")
-	}
-
 	if a.Clear {
 		return jm.clearWatch(key)
 	}
-
-	cfg, err := newWatchConfig(a, jm.now())
-	if err != nil {
-		return watchResult{}, err
+	// Session-target shape checks are specific to configureWatch's session targets
+	// (caller, *); a concrete launch target never reaches them, so they stay here
+	// rather than in the shared install validator.
+	if a.OutputMatch != "" && isWatchSessionTarget(a.Target) {
+		return watchResult{}, errors.New("invalid_request: output_match requires a concrete job target")
 	}
-	if err := validateWatchDeliveryLoop(cfg); err != nil {
+	if a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
+		return watchResult{}, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry transcript_ref")
+	}
+	cfg, err := jm.validateWatchConfig(a)
+	if err != nil {
 		return watchResult{}, err
 	}
 	// A sidecar watch (concrete job target, send.to = a concrete delegate job)
