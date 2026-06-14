@@ -329,7 +329,10 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 		req.ProviderOptions = opts
 	}
 	if reasoningEffort != "" {
-		v := reasoningEffort
+		// Clamp to what the active model supports so loop-detector escalation,
+		// the --reasoning-effort flag, and the UI selector never send a level the
+		// provider rejects (e.g. "xhigh" to a model that tops out at "high").
+		v := llm.ClampReasoningEffort(reasoningEffort, profile.ReasoningEffortLevels())
 		req.ReasoningEffort = &v
 	}
 	s.applyModelRequestMetadata(profile, &req)

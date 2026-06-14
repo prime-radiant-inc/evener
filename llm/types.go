@@ -512,17 +512,74 @@ func (req Request) Validate() error {
 // Returns 0 for unrecognized values.
 func ReasoningBudget(effort string) int {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "minimal":
+		return 512
 	case "low":
 		return 1024
 	case "medium":
 		return 8192
 	case "high":
 		return 32768
-	case "max":
+	case "xhigh", "max":
 		return 131072
 	default:
 		return 0
 	}
+}
+
+// effortRank orders reasoning-effort levels from least to most. "xhigh" and
+// "max" are the same top tier under different vendor names (OpenRouter says
+// "xhigh"; serf and Anthropic say "max"), so they share a rank.
+var effortRank = map[string]int{
+	"minimal": 1,
+	"low":     2,
+	"medium":  3,
+	"high":    4,
+	"xhigh":   5,
+	"max":     5,
+}
+
+// ClampReasoningEffort clamps a requested effort to the levels a model supports.
+// A request above the model's top supported level is lowered to that level; a
+// request below the model's lowest is raised to it. Empty, "none", unknown
+// vocabulary, or an empty supported set pass through unchanged so the provider
+// can decide. This is the single guard that keeps loop-detector escalation, the
+// --reasoning-effort flag, and the UI selector from sending a level a model
+// rejects (e.g. "xhigh" to a model that only supports minimal/low/medium/high).
+func ClampReasoningEffort(requested string, supportedLevels []string) string {
+	req := strings.ToLower(strings.TrimSpace(requested))
+	if req == "" || req == "none" || len(supportedLevels) == 0 {
+		return requested
+	}
+	reqRank, ok := effortRank[req]
+	if !ok {
+		return requested
+	}
+	best, bestRank := "", -1
+	lowest, lowestRank := "", 1<<30
+	for _, lvl := range supportedLevels {
+		l := strings.ToLower(strings.TrimSpace(lvl))
+		r, ok := effortRank[l]
+		if !ok {
+			continue
+		}
+		if l == req {
+			return l
+		}
+		if r < lowestRank {
+			lowest, lowestRank = l, r
+		}
+		if r <= reqRank && r > bestRank {
+			best, bestRank = l, r
+		}
+	}
+	if best != "" {
+		return best
+	}
+	if lowest != "" {
+		return lowest
+	}
+	return requested
 }
 
 // IntFromAny extracts an integer from a JSON-decoded value.
