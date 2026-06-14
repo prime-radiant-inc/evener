@@ -14,6 +14,45 @@ import (
 // stubSummarizeAdapter (the minimal llm provider stub) lives in
 // testhelpers_test.go, shared with the strategy tests.
 
+func TestForkSummarize_RoutesToCheapProvider(t *testing.T) {
+	// A configured cross-provider cheap model must route the summarize side call
+	// to the cheap provider, not the active provider.
+	entry := sessionlog.SessionLogEntry{Action: "shell", Summary: "ok", Outcome: "success"}
+	entryJSON, _ := json.Marshal(entry)
+
+	mainAdapter := &stubSummarizeAdapter{
+		name: "openai",
+		respFn: func(req llm.Request) (llm.Response, error) {
+			t.Errorf("summarize routed to active provider %q, want cheap provider anthropic", req.Provider)
+			return llm.Response{Message: llm.Assistant(string(entryJSON))}, nil
+		},
+	}
+	cheapAdapter := &stubSummarizeAdapter{
+		name: "anthropic",
+		respFn: func(req llm.Request) (llm.Response, error) {
+			if req.Model != "claude-haiku-4-5-20251001" {
+				t.Errorf("model = %q, want claude-haiku-4-5-20251001", req.Model)
+			}
+			return llm.Response{Message: llm.Assistant(string(entryJSON))}, nil
+		},
+	}
+	client := llm.NewClient()
+	client.Register(mainAdapter)
+	client.Register(cheapAdapter)
+
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/claude-haiku-4-5-20251001")
+	turns := []schema.Turn{
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
+	}
+
+	if _, err := forkSummarize(context.Background(), client, profile, turns, 1); err != nil {
+		t.Fatalf("forkSummarize: %v", err)
+	}
+	if cheapAdapter.lastReq.Provider != "anthropic" {
+		t.Fatalf("cheap adapter saw provider %q, want anthropic", cheapAdapter.lastReq.Provider)
+	}
+}
+
 func TestForkSummarize_Success(t *testing.T) {
 	entry := sessionlog.SessionLogEntry{
 		Action:       "shell",

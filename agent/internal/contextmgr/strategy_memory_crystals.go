@@ -144,9 +144,10 @@ Recent action:
 Key facts (one line):`, b.String())
 
 	cp := s.cm.currentProfile()
+	cheapProvider, cheapModel := cp.CheapModelRef()
 	req := llm.Request{
-		Model:    cp.CheapModel(),
-		Provider: cp.ID(),
+		Model:    cheapModel,
+		Provider: cheapProvider,
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 

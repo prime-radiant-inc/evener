@@ -958,22 +958,33 @@ func sumCounts(m map[string]int) int {
 
 // --- LLM summarization (Layer 4) ---
 
-func summarizationModels(profile *provider.Profile) []string {
+// summarizationRoute is one (provider, model) the summarizer tries in order: the
+// configured cheap model on its (possibly cross-provider) cheap provider first,
+// then the active model on the main provider as a fallback.
+type summarizationRoute struct {
+	provider string
+	model    string
+}
+
+func summarizationModels(profile *provider.Profile) []summarizationRoute {
 	if profile == nil {
 		return nil
 	}
 	active := strings.TrimSpace(profile.Model())
 	configured := strings.TrimSpace(profile.ConfiguredCheapModel())
-	if configured == "" || configured == active {
-		if active == "" {
-			return nil
+
+	var routes []summarizationRoute
+	if configured != "" {
+		routes = append(routes, summarizationRoute{provider: profile.CheapProvider(), model: configured})
+	}
+	if active != "" {
+		activeRoute := summarizationRoute{provider: profile.ID(), model: active}
+		// Skip a fallback identical to the cheap route (same provider + model).
+		if len(routes) == 0 || routes[0] != activeRoute {
+			routes = append(routes, activeRoute)
 		}
-		return []string{active}
 	}
-	if active == "" {
-		return []string{configured}
-	}
-	return []string{configured, active}
+	return routes
 }
 
 func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
@@ -1123,23 +1134,23 @@ Be thorough and structured. Err on the side of including too much rather than to
 	prompt := prefix + b.String()
 
 	sumProfile := cm.currentProfile()
-	models := summarizationModels(sumProfile)
-	if len(models) == 0 {
+	routes := summarizationModels(sumProfile)
+	if len(routes) == 0 {
 		return nil, errors.New("summarization model is empty")
 	}
 	var resp llm.Response
 	var lastErr error
-	for _, model := range models {
+	for _, route := range routes {
 		req := llm.Request{
-			Model:    model,
-			Provider: sumProfile.ID(),
+			Model:    route.model,
+			Provider: route.provider,
 			Messages: []llm.Message{llm.User(prompt)},
 		}
 		resp, lastErr = cm.client.Complete(ctx, req)
 		if lastErr == nil {
 			break
 		}
-		if model != models[len(models)-1] && !shouldFallbackSummarizationModel(ctx, lastErr) {
+		if route != routes[len(routes)-1] && !shouldFallbackSummarizationModel(ctx, lastErr) {
 			break
 		}
 	}

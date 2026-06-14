@@ -48,6 +48,7 @@ func (s *Session) Meta() schema.SessionMeta {
 		ID:              s.id,
 		ProfileID:       s.profile.ID(),
 		Model:           s.profile.Model(),
+		CheapModel:      s.profile.CheapModelRefString(),
 		Config:          s.cfg.toSnapshot(),
 		EnvInfo:         s.envInfo,
 		CreatedAt:       now,
