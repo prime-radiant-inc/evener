@@ -17,7 +17,9 @@ credentials and makes billed calls.
   exported in the environment).
 - A `serf` binary built from this branch: `go build -o /tmp/serf-eff ./cmd/serf`.
 - An isolated provider config so the live `~/.serf/providers.toml` is untouched.
-  Write `/tmp/eff-cfg/providers.toml`:
+  Write `/tmp/eff-cfg/providers.toml` with both Kimi routes (the sanctioned
+  anthropic-compatible one used for completions, and the OpenAI-style one used
+  only to observe the clamp in step 2):
 
   ```toml
   default = "anthropic"
@@ -25,10 +27,32 @@ credentials and makes billed calls.
   type = "anthropic"
   [instances.kimi]
   type = "kimi-anthropic"
+  [instances.kimi-openai]
+  type = "kimi"
+  base_url = "https://api.kimi.com/coding/v1"
   ```
 
-  and `/tmp/eff-cfg/credentials.toml` with `[providers.anthropic] api_key` (from
-  `.env`) and `[providers.kimi] api_key` (copied from `~/.serf/credentials.toml`).
+- Export the Kimi key (the raw curl in step 1 needs it) and write the isolated
+  credentials file. serf's credential store **rejects** a credentials.toml unless
+  it is mode `0600`, so create it restrictively:
+
+  ```sh
+  KIMI_KEY=$(python3 -c "import tomllib;print(tomllib.load(open('$HOME/.serf/credentials.toml','rb'))['providers']['kimi']['api_key'])")
+  ANTHROPIC_KEY=$(grep -E '^ANTHROPIC_API_KEY=' "$(git rev-parse --show-toplevel)/.env" | cut -d= -f2- | tr -d '"'"'"')
+  install -m 600 /dev/null /tmp/eff-cfg/credentials.toml
+  cat > /tmp/eff-cfg/credentials.toml <<EOF
+  schema = 0
+  [providers]
+    [providers.anthropic]
+      api_key = "$ANTHROPIC_KEY"
+    [providers.kimi]
+      api_key = "$KIMI_KEY"
+    [providers.kimi-openai]
+      api_key = "$KIMI_KEY"
+  EOF
+  chmod 600 /tmp/eff-cfg/credentials.toml
+  ```
+
   Run serf with `SERF_PROVIDERS_CONFIG=/tmp/eff-cfg/providers.toml`.
 
 A one-shot invocation looks like:
@@ -51,10 +75,10 @@ SERF_PROVIDERS_CONFIG=/tmp/eff-cfg/providers.toml /tmp/serf-eff \
           "messages":[{"role":"user","content":"OK"}]}'
    ```
 
-2. **Clamp on the OpenAI route via serf.** Run serf against the `kimi` (OpenAI)
-   instance with `--reasoning-effort xhigh`. (This route is User-Agent gated for
-   non-coding-agents, so a successful completion is not expected — what matters
-   is the *kind* of failure.)
+2. **Clamp on the OpenAI route via serf.** Run serf against the `kimi-openai`
+   instance (`--model kimi-openai/kimi-for-coding --reasoning-effort xhigh`).
+   (This route is User-Agent gated for non-coding-agents, so a successful
+   completion is not expected — what matters is the *kind* of failure.)
 
 3. **Kimi via the sanctioned anthropic-compatible route.** Run serf against the
    `kimi` (type `kimi-anthropic`) instance with `--reasoning-effort high`.
