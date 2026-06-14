@@ -668,8 +668,11 @@ func TestShellLaunchTimeWatchInvalidFailsAtomically(t *testing.T) {
 	}
 }
 
-func TestShellLaunchTimeWatchClearedOnEphemeralCompletion(t *testing.T) {
+func TestShellLaunchTimeWatchForcesBackground(t *testing.T) {
 	s := newTestSession(t)
+	// `echo hi` would normally run foreground and complete inline (ephemeral, no
+	// durable job). A launch-time watch forces it to a durable background job, so the
+	// watch never rides an ephemeral discard that would orphan its deliveries.
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
@@ -678,10 +681,15 @@ func TestShellLaunchTimeWatchClearedOnEphemeralCompletion(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
 	}
-	// `echo hi` completes inline (ephemeral, no durable job); its launch-time watch
-	// must not outlive the discarded job.
-	list := runJobListTool(t, s)
-	if len(list.Watches) != 0 {
-		t.Fatalf("active watches = %+v, want none after ephemeral shell completion", list.Watches)
+	var out struct {
+		JobID               string `json:"job_id"`
+		RunningInBackground bool   `json:"running_in_background"`
 	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal shell output: %v (out=%s)", err, res.Output)
+	}
+	if out.JobID == "" || !out.RunningInBackground {
+		t.Fatalf("watched shell must run as a durable background job, got %s", res.Output)
+	}
+	t.Cleanup(func() { waitForShellDone(t, s.jobManager, out.JobID) })
 }

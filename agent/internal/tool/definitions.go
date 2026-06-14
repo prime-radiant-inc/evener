@@ -95,7 +95,7 @@ func launchWatchParamSchema() map[string]any {
 				"additionalProperties": false,
 				"description":          "Deliver to another target instead of notifying the caller.",
 				"properties": map[string]any{
-					"to":              map[string]any{"type": "string", "description": "job_id, `caller`, or `watched`."},
+					"to":              map[string]any{"type": "string", "description": "A concrete observer job_id, or `caller`."},
 					"message":         map[string]any{"type": "string"},
 					"include_excerpt": map[string]any{"type": "boolean"},
 				},

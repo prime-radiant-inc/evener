@@ -6404,3 +6404,39 @@ func TestWatchHistoryRecordsClear(t *testing.T) {
 		t.Fatalf("recent_watches = %+v, want one cleared entry", hist)
 	}
 }
+
+func TestLaunchWatchRejectsWatchedSendTarget(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	// "watched" resolves to the watched target, which for a single-target launch
+	// watch is the new job itself — degenerate. It must be rejected at launch with a
+	// clear message, not the generic target_not_found the unset target would yield.
+	err := jm.validateLaunchWatch(watchArgs{OutputMatch: "x", Send: &watchSendArgs{To: "watched"}})
+	if err == nil || !strings.Contains(err.Error(), "not valid at launch") {
+		t.Fatalf("validateLaunchWatch(send.to=watched) = %v, want a 'not valid at launch' rejection", err)
+	}
+}
+
+func TestWatchHistoryCountsTerminalFlushDeliveries(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// An unterminated final line is buffered by the matcher and only matches at the
+	// terminal Flush — the fire that must still be counted in recent_watches.
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	code := 0
+	jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code)
+
+	hist := jm.recentWatchSummaries()
+	if len(hist) != 1 || hist[0].EndReason != "auto_removed_terminal" {
+		t.Fatalf("recent_watches = %+v, want one auto_removed_terminal entry", hist)
+	}
+	if hist[0].Deliveries < 1 {
+		t.Fatalf("recent_watches deliveries = %d, want >=1 (terminal-flush match counted)", hist[0].Deliveries)
+	}
+}

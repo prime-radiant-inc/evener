@@ -521,16 +521,15 @@ func (jm *jobManager) discardDelayedShell(run *runningJob) {
 }
 
 // removeWatchesForDiscardedJobLocked detaches any watches targeting an ephemeral
-// (discarded, never-durable) job without delivering or recording history: the job
-// leaves no durable record, so its watch should leave none either. Pending sends are
-// preserved via the normal detached-pending path. Caller holds jm.mu.
+// (discarded, never-durable) job. The job leaves no durable record, so its watch and
+// any queued deliveries must leave none either — pending sends are dropped, not
+// preserved, so nothing later delivers referencing a job that never existed. A watched
+// shell is forced to background and so never ephemeral-discards; this path only fires
+// for a watch installed before a background commit that then failed. Caller holds jm.mu.
 func (jm *jobManager) removeWatchesForDiscardedJobLocked(jobID string) {
 	for key, cfg := range jm.watches {
 		if key.Target != jobID {
 			continue
-		}
-		if len(cfg.pending) != 0 {
-			jm.rememberDetachedPendingLocked(cfg)
 		}
 		closeWatchConfig(cfg)
 		delete(jm.watches, key)

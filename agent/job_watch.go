@@ -361,6 +361,15 @@ func (jm *jobManager) validateLaunchWatch(a watchArgs) error {
 	if a.Clear {
 		return errors.New("invalid_request: watch.clear is not valid at launch")
 	}
+	// "watched" resolves to the watched target, which for a single-target launch
+	// watch is the new job itself — degenerate, and unresolvable before the job
+	// exists. Reject it explicitly rather than letting it surface as target_not_found.
+	if a.Send != nil && strings.TrimSpace(a.Send.To) == runtimeMessageAliasWatched {
+		return errors.New(`invalid_request: watch.send.to "watched" is not valid at launch; use a concrete observer job_id or caller`)
+	}
+	if err := normalizeWatchArgs(&a); err != nil {
+		return err
+	}
 	if err := validateWatchEventArgs(a); err != nil {
 		return err
 	}
@@ -368,12 +377,13 @@ func (jm *jobManager) validateLaunchWatch(a watchArgs) error {
 	return err
 }
 
-func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
-	if a.Target == "" {
-		return watchResult{}, errors.New("invalid_request: target is required")
-	}
+// normalizeWatchArgs validates and normalizes the input-shape fields a watch install
+// depends on, before any other validation: progress_interval_ms (reject negative,
+// clamp to bounds) and every (1 reads as the unset default). configureWatch and the
+// launch pre-flight both apply it so the two paths cannot diverge on these fields.
+func normalizeWatchArgs(a *watchArgs) error {
 	if a.ProgressIntervalMS < 0 {
-		return watchResult{}, errors.New("invalid_request: progress_interval_ms must be non-negative")
+		return errors.New("invalid_request: progress_interval_ms must be non-negative")
 	}
 	if a.ProgressIntervalMS > 0 && a.ProgressIntervalMS < minWatchProgressIntervalMS {
 		a.ProgressIntervalMS = minWatchProgressIntervalMS
@@ -386,6 +396,16 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	// only to every>1, which actually throttles.
 	if a.Every == 1 {
 		a.Every = 0
+	}
+	return nil
+}
+
+func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
+	if a.Target == "" {
+		return watchResult{}, errors.New("invalid_request: target is required")
+	}
+	if err := normalizeWatchArgs(&a); err != nil {
+		return watchResult{}, err
 	}
 	sendTo := ""
 	if a.Send != nil {
@@ -1664,6 +1684,10 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, [
 				} else {
 					notifications = append(notifications, watchNotification(jobID, "output_match: "+match))
 				}
+				// Each terminal-flush match is a model-facing delivery. Count it now,
+				// before history is snapshotted: the cfg is removed below, so the
+				// drain's later increment would never reach recent_watches.
+				cfg.deliveries++
 			}
 			if trackTerminalFlush {
 				jm.rememberDetachedPendingLocked(cfg)

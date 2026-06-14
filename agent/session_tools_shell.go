@@ -32,6 +32,10 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 					if err := s.jobManager.validateLaunchWatch(*shellArgs.Watch); err != nil {
 						return "", err
 					}
+					// A watched shell is monitor-as-it-runs work: force it to a durable
+					// background job so it never takes the ephemeral-discard path that
+					// would orphan the watch's queued deliveries.
+					shellArgs.Background = true
 				}
 				shellArgs = applyShellTimeoutPolicy(deps, shellArgs)
 				return marshalShellToolResult(runShell(ctx, s.jobManager, se, shellArgs), shellToolResultMaxChars(reg))
