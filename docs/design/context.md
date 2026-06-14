@@ -68,6 +68,61 @@ passes internally, reporting combined usage in the response. This inflates
 skip `RecordInputTokens` entirely. The previous measurement remains valid; the next
 non-web-search response will establish a fresh baseline.
 
+## Self-Compaction (agent-invoked)
+
+Agents can compact their own context at a clean stopping point using the `compact`
+tool, rather than waiting for the automatic pressure-triggered layers.
+
+### The `compact` tool
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `note_to_self` | yes | Durable note preserved verbatim across compactions. Empty string clears a previously set note. |
+| `compaction_instructions` | no | Steers what the summary keeps vs. drops. |
+
+When only `note_to_self` is empty and no `compaction_instructions` are given, no
+compaction is scheduled — just the note is cleared. Otherwise a force-compaction is
+queued at the tool-round tail and the tool returns a prediction (not past-tense
+confirmation, since the compaction hasn't happened yet).
+
+### Pinned note
+
+The note is stored on the `Session` (`pinnedNote` field), persisted in
+`SessionMeta.PinnedNote` (`"pinned_note"` JSON key), and restored on session resume.
+At every compaction `runPreCompactHook` strips any existing pinned-note steering turn
+and re-stamps the note verbatim as a new `TurnSteering` turn. The format is:
+
+```
+[NOTE TO SELF]
+<note text>
+[END NOTE TO SELF]
+```
+
+The pinned note is inserted after plugin `PreCompact` output and **before** the goal
+objective, so the goal objective remains the trailing (strongest-recency) steering turn
+and the `safeCutoff` protection keeps it past the compaction boundary.
+
+### Agent-force path
+
+The `compact` tool calls `requestForceCompact(instructions)`, which sets a pending
+flag on the session. After the tool round drains, `applyPendingForceCompact` consumes
+the request and calls `Manager.ForceCompact(ctx, history, instructions, emitFn)`.
+This is the same `Manager` seam used by the `/compact` user command; passing non-empty
+`instructions` routes through `summarizeWithLLMSteered`, which replaces the default
+mandatory-sections prompt with the agent's directive.
+
+`ForceCompact` returns a `bool` indicating whether a summary turn was actually
+produced (false when there is no LLM client or the history is too short to summarize).
+
+### Warn nudge
+
+When pressure crosses `WarnThreshold` (0.75), `maybeNudgeSelfCompact` injects a
+one-shot steering nudge asking the agent to call `compact` at its next clean seam.
+The nudge is best-effort: a single large tool result can jump past `CheckpointThreshold`
+before the nudge fires. The automatic checkpoint and summary layers remain the
+guarantee. The latch resets on any compaction (force or automatic) so the nudge can
+fire again after the next compaction cycle.
+
 ## Compaction Layers
 
 Two layers, applied progressively as pressure rises:
@@ -75,7 +130,7 @@ Two layers, applied progressively as pressure rises:
 | Layer | Threshold | Method | Destructiveness |
 |-------|-----------|--------|-----------------|
 | **Checkpoint** | >= 80% | Deterministic state snapshot | Replaces old history with structured summary |
-| **LLM Summarize** | >= 90% | LLM-generated narrative summary | Replaces old history with LLM prose |
+| **LLM Summarize** | >= 95% | LLM-generated narrative summary | Replaces old history with LLM prose |
 
 Both layers preserve the most recent `PreserveRecentTurns` turns (default 6) to
 maintain conversation coherence.
@@ -131,15 +186,26 @@ The checkpoint turn uses `TurnCheckpoint` kind and `llm.RoleUser` role.
 ### LLM Summarize (Layer 2)
 
 Calls the provider's cheap model to generate a narrative summary. Only fires when
-checkpoint alone doesn't free enough space (>= 90% after checkpoint). The prompt is
-capped at ~50K chars to fit within cheap model context windows.
+checkpoint alone doesn't free enough space (>= 95% after checkpoint). The prompt is
+capped at ~80K chars to fit within cheap model context windows.
 
 The summary turn uses `TurnSummary` kind and `llm.RoleUser` role.
 
 ## ForceCompact
 
-User-initiated compaction (`/compact` command) runs both layers unconditionally,
-regardless of current pressure. Uses the same checkpoint and summarize logic.
+`Manager.ForceCompact(ctx, history, instructions, emitFn) bool` runs both compaction
+layers unconditionally, regardless of current pressure. It returns `true` if an LLM
+summary turn was actually produced, `false` when there is no client or the history
+is too short.
+
+The `instructions` parameter (empty string for default behavior) is forwarded to
+`summarizeWithLLMSteered`, which replaces the default mandatory-sections prompt with
+the caller's directive. This is how agent-invoked self-compaction steers the summary.
+
+`ForceCompact` is used by two callers:
+- **`/compact` user command** (`Session.Compact`): passes `instructions = ""`.
+- **`compact` tool** (`applyPendingForceCompact`): passes the agent's
+  `compaction_instructions` string (may be empty).
 
 **Transcript callbacks**: Both `MaybeCompact` and `ForceCompact` fire
 `OnCompactionTurn` for checkpoint and summary turns. The session wires this to
@@ -194,7 +260,8 @@ estimation uses the stale window size.
 
 | Field | Default | Description |
 |-------|---------|-------------|
+| `WarnThreshold` | 0.75 | Pressure at which the agent is nudged to self-compact (best-effort, one-shot per compaction cycle) |
 | `CheckpointThreshold` | 0.80 | Pressure threshold for deterministic checkpoint |
-| `SummarizeThreshold` | 0.90 | Pressure threshold for LLM summarization |
+| `SummarizeThreshold` | 0.95 | Pressure threshold for LLM summarization |
 | `PreserveRecentTurns` | 6 | Turns kept intact during compaction |
 | `CompactionThresholdScale` | 1.0 | Multiplier for all thresholds (for testing) |
