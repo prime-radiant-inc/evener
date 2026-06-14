@@ -64,8 +64,10 @@ history are independent operations.** Pinning needs no summarizer; condensing do
 Conflating these was the v2 error: `ForceCompact`'s summary layer no-ops when
 `len(history) ≤ PreserveRecentTurns` or no safe cutoff exists, so "instructions are
 *always* consumed" was false precisely at the headline use case. The corrected contract:
-**the note is always pinned; the instructions are consumed by whatever compaction this
-call actually performs, and the tool reports whether a summary ran.**
+**the note is always pinned (synchronously, in `Exec`); the instructions are consumed by
+whatever compaction this call performs at the round tail.** Because the compaction is
+deferred to the round tail, the tool's return value is a **prediction**, not an outcome
+report — `Exec` cannot narrate an event that has not happened yet (see §1).
 
 ## Design principle: a strategy-independent capability
 
@@ -107,27 +109,32 @@ handle. Like `communicate` (which writes session state via an injected closure),
 `compact` reaches state through new `toolDeps` forwarder closures — `setPinnedNote` and
 `requestForceCompact` — that forward to Session writer methods taking `s.mu`.
 
-**Arguments** (both required, non-empty):
+**Arguments:**
 
-| Arg | Purpose |
-|-----|---------|
-| `note_to_self` | Durable text re-stamped **verbatim** into history at every compaction — the agent's structured keep. Always pinned, summarizer never authors it. |
-| `compaction_instructions` | Guidance steering the summary of everything else ("keep the migration plan; drop the vendored file dumps"). Consumed when a summary actually runs. |
+| Arg | Required | Purpose |
+|-----|----------|---------|
+| `note_to_self` | yes (may be the empty string to **clear** a stale note) | Durable text re-stamped **verbatim** into history at every compaction — the agent's structured keep. Always pinned; summarizer never authors it. |
+| `compaction_instructions` | **optional** | Guidance steering the summary of everything else ("keep the migration plan; drop the vendored file dumps"). Consumed only when a summary actually runs. Optional so the fallback design (note-pin-only, if the obedience eval fails — §3) ships coherently. |
 
-**Exec behavior:** validate both args non-empty; `setPinnedNote(note_to_self)` (replaces
-any prior note); `requestForceCompact(compaction_instructions)`; return a confirmation
-that states whether a summary ran or there was nothing to condense yet (the note is
-pinned either way). **One `compact` per tool round:** a second `compact` in the same
-round returns a clear error rather than silently clobbering the first call's note and
-instructions before they are consumed.
+**Exec behavior:** `setPinnedNote(note_to_self)` (replaces the prior note; an empty
+`note_to_self` clears it without forcing a compaction — so the agent can retire a note
+that no longer applies); if `compaction_instructions` is present, `requestForceCompact(…)`.
+Return a confirmation that is a **prediction**, not an outcome: it states the note was
+pinned, and — from a synchronous pre-check (`Manager.Pressure()` plus the same
+`PreserveRecentTurns`/`safeCutoff` test the summary layer uses) — whether a compaction
+**will** run at the seam or there is nothing to condense yet. The actual outcome, if the
+agent needs it, is surfaced as a steering line on the next round, not in this return value.
+**One `compact` per tool round:** a second `compact` in the same round returns a clear
+error rather than clobbering the first call's note/instructions before they are consumed.
 
 **When it happens.** The forced compaction runs at the **tail of the tool round** in
-which `compact` was called — same agent activation. *Note:* this is a **new** hook in the
-round loop (after tool results are persisted, before the turn can be delivered/ended), not
-an existing seam; placing it before turn-delivery is what prevents a `compact`+`communicate`
-round from deferring the compaction to the next user turn. Exact insertion point is an
-implementation-plan detail; the requirement is "after results are persisted, before the
-round can return."
+which `compact` was called — same agent activation. This is a **new** hook in the round
+loop, not an existing seam. It must run **after** `notifyStrategyAfterAction` and
+`injectPostToolSteering` (so a strategy's `AfterAction` — e.g. `recursive-distill`,
+`session-log`, which key on `len(history)` — observes the *pre-compaction* history, as on
+a normal round) and **before** `deliverIfCommunicated` returns (so a `compact`+`communicate`
+round does not defer the compaction to the next user turn). That ordering is a design
+requirement, not a free implementation choice.
 
 **Tool description (the agent's "when" guidance):** call it at a clean stopping point —
 between tasks/subtasks, after extracting results from a large context, before consuming
@@ -165,12 +172,17 @@ though `ForceCompact` emits two events) that today appends the goal objective. T
 when a compaction occurs, when the whole prefix is being replaced anyway), it never mutates
 mid-history on non-compaction turns — so it does not bust the prompt cache.
 
-**Resume.** `pinnedNote` is Session state and is **not** automatically restored on resume,
-while a stale `[NOTE TO SELF]` turn does reload with the transcript. So on resume the Session
-must **reconstruct `pinnedNote` by scanning the resumed history for the most recent
-`[NOTE TO SELF]` block** (mirroring how the goal store is restored). Without this, the next
-compaction re-stamps nothing and the note erodes away — silently destroying the agent's
-durable carry across a routine restart.
+**Resume.** `pinnedNote` is Session state and would otherwise be a fresh zero value on
+resume, while a stale `[NOTE TO SELF]` turn reloads with the transcript — so the next
+compaction would re-stamp nothing and the note would erode away, destroying the agent's
+durable carry across a routine restart. The fix is to **persist `pinnedNote` as structured
+state in `SessionMeta` (`meta.json`) and restore it directly**, exactly as the goal is
+persisted in `meta.Goal` and restored via `goalStore.Restore` (`session_init.go`). (An
+earlier draft proposed *scanning* the resumed history for the marker; that is wrong — the
+marker can appear inside a `TurnSummary` that folded an old note, so a scan can match stale
+or model-paraphrased prose. The goal precedent restores from structured metadata, not a
+history scan; mirror it literally.) Persisting the note also prevents transient duplicate
+`[NOTE TO SELF]` turns on resume, since survival no longer depends on a reloaded turn.
 
 Format: a marked block, e.g. `[NOTE TO SELF]\n…\n[END NOTE TO SELF]`, analogous to the
 existing `[DISTILLED MEMORY]` / `[CONTEXT CHECKPOINT]` markers.
@@ -196,9 +208,15 @@ prompt currently *mandates* seven sections ("Your summary MUST include ALL of th
 and closes with "include too much." A prepended "these take precedence" note will not reliably
 override that. So when `instructions` are present, `summarizeWithLLMSteered` **structurally
 swaps** the fixed prefix for an instruction-led variant (the agent's keep/drop directive
-becomes the governing instruction, not an addendum). The feature is **gated on an obedience
-eval** (Testing) — if the cheap model won't honor the directive, we do not ship the
-instruction path, only the note pin.
+becomes the governing instruction, not an addendum).
+
+**The gate is concrete.** The instruction path ships only if it passes an eval: a fixed
+corpus of ≥20 (history, instruction, expected-drop/keep) cases run against the configured
+cheap summarization model, requiring the drop/keep directive to be honored in ≥90% of cases
+(and never to drop something the instruction said to keep). If it does not pass, the
+instruction path is disabled and `compact` ships **note-pin-only** — which is coherent
+because `compaction_instructions` is optional (§1): the arg is simply ignored, not silently
+required-then-discarded.
 
 ### 4. Force path
 
@@ -231,11 +249,16 @@ The latch resets after any compaction. MemGPT's proven "memory-pressure warning"
   tool result can jump <0.75 → >0.80 in one round, firing the checkpoint before the agent sees
   the nudge. The nudge gives an *earlier opportunity*; the checkpoint/summary fallback is the
   guarantee.
-- **Audiences are distinct, sources unified.** serf already emits a *user-facing*
-  "context ~80%" warning (`maybeWarnContextUsage`, a char/4 estimate). **Decision:** keep that
-  as the user-facing signal but drive it from `Manager.Pressure()` so it and the agent-facing
-  nudge cannot diverge; the nudge is the only agent-facing signal. (No two uncoordinated
-  agent signals; one shared pressure source.)
+- **One audience for the agent; shared estimate, not a single signal.** serf already emits a
+  *user-facing* "context ~80%" warning (`maybeWarnContextUsage`, a char/4 estimate over
+  `req.Messages`, fired post-response and latched per-input). **Decision:** the agent nudge is
+  the only *agent-facing* signal; the user warning stays user-facing. Drive both off the same
+  `Manager.Pressure()` estimate so they cannot disagree about *how full the context is*. Be
+  precise about what that does and does not buy: it unifies the **estimate basis** (the user
+  number changes from char/4 to the API-token baseline — an intended, acknowledged change), but
+  the two still fire at **different thresholds** (0.80 user vs 0.75 agent) on **different latches**
+  (per-input vs per-compaction). They are coordinated, not identical; we accept the 0.75/0.80
+  split deliberately (the agent gets nudged slightly earlier than the user is warned).
 
 ### 6. Raised auto-fallback threshold
 
@@ -250,10 +273,17 @@ Only the narrative-summary gate is raised; all three configurable.
 **Knock-on changes the raise requires (do not omit):**
 - `agent/context_strategy_test.go` scaled-defaults assertion `0.45` → `0.475` (the clamped
   sibling at the same test stays `0.20`).
-- `cmd/serf-tui/statusbar.go` `const compactThreshold = 0.90` (and its `hub_status.go`
-  consumer, which renders the user's "tokens-to-compact" figure and color band) must track
-  `SummarizeThreshold`. Prefer sourcing the value from config rather than a duplicated
-  constant so it cannot drift again.
+- `cmd/serf-tui/statusbar.go` hardcodes the threshold in **two** places that both must change
+  (and ideally be sourced from config so neither can drift again): the `const compactThreshold
+  = 0.90` (line 13, consumed by `hub_status.go` for the "tokens-to-compact" figure) **and** the
+  independent literal `case ratio >= 0.90:` color band (line 63). The `0.75` band on the next
+  line now coincides with `WarnThreshold` and should be config-sourced too.
+- The experimental strategies `session-log` and `checkpoint-pred` (and `ooda`, which embeds
+  `session-log`) read `cm.SummarizeThreshold` as their own live summarize gate
+  (`strategy_session_log.go`, `strategy_checkpoint_pred.go`). Raising the default moves their
+  gate to 0.95 as well. **Decision:** that is intended — they should track the shared default;
+  call it out so it is a decision, not a silent side effect. (Their default-asserting tests set
+  the threshold explicitly, so no test breaks.)
 
 **Accepted risk.** Raising to 0.95 narrows the margin: a session whose agent never
 self-compacts runs at 0.93–0.95 before Layer 2 fires, where a single large tool result
@@ -273,11 +303,18 @@ worst-case single-turn growth against the smallest supported window during imple
   appended before the goal objective; ensure it uses the nil-transcript-safe steering path.
 - `agent/session.go` (+ new `agent/session_self_compact.go`): `pinnedNote`,
   `pendingInstructions`, `forceRequested`, nudge latch (under `s.mu`); `setPinnedNote` /
-  `requestForceCompact` writers; the round-loop force hook; pinned-note reconstruction on
-  resume; nudge emission on `Manager.Pressure()`; one-`compact`-per-round guard.
+  `requestForceCompact` writers (empty `note_to_self` clears the note); the round-loop force
+  hook (placed after `notifyStrategyAfterAction`/`injectPostToolSteering`, before
+  `deliverIfCommunicated`); nudge emission on `Manager.Pressure()`; one-`compact`-per-round guard.
+- `agent/schema/snapshot.go` + the meta persist/restore path (`session_init.go`, the
+  snapshot writer): add `PinnedNote` to `SessionMeta`/`meta.json`; persist on compaction,
+  restore on resume — mirroring `meta.Goal`/`goalStore.Restore`. (Replaces the rejected
+  history-scan approach.)
 - `agent/session_tool_registry.go`: `toolDeps` forwarders; register the non-read-only `compact`
   core tool.
-- `cmd/serf-tui/statusbar.go` (+ `hub_status.go`): track `SummarizeThreshold` (ideally via config).
+- `cmd/serf-tui/statusbar.go` (+ `hub_status.go`): replace **both** hardcoded `0.90` literals
+  (the `compactThreshold` const at line 13 and the `case ratio >= 0.90` band at line 63), and
+  the `0.75` band, with config-sourced values that track `SummarizeThreshold`/`WarnThreshold`.
 - `docs/design/context.md`: document the tool, the pinned note, the nudge, the threshold
   table, and the agent-force-via-`ForceCompact` path.
 - The user `/compact` path (`Session.Compact`) and the content-filter recovery
@@ -308,34 +345,41 @@ We do not force-preserve it — a tightly scoped subagent has little to compact.
 | Agent compacts too rarely / never | Best-effort nudge at 0.75 + automatic checkpoint (0.80) and summary (0.95) fallback |
 | Mid-history cache busting | Note re-stamped only inside `runPreCompactHook` (compaction time), never per turn |
 | Instructions ignored (cheap model) | Structural prompt swap when instructions present; gated on an obedience eval |
-| Durable note lost on restart | `pinnedNote` reconstructed from history on resume |
+| Durable note lost on restart | `pinnedNote` persisted in `SessionMeta`, restored directly on resume |
+| Stale note pollutes future summaries | Empty `note_to_self` clears it (no forced compaction); replaced on each call |
 
 ## Testing (TDD)
 
 - **Validation:** `compact` rejects empty args; a second `compact` in one round errors.
-- **Note pinned even with nothing to condense:** at low pressure / short history, `compact`
-  pins the note (re-stamped at the next compaction) and the tool reports "nothing to condense
-  yet" rather than claiming a summary ran.
+- **Return is a prediction:** at low pressure / short history, `Exec` pins the note and returns
+  "nothing to condense yet" from its synchronous pre-check; at compactable history it returns
+  "will condense at the seam." Neither claims (past tense) that a summary *ran* — the
+  compaction is still pending at Exec-return.
+- **Clear a note:** an empty `note_to_self` zeroes `pinnedNote` and does **not** force a
+  compaction; subsequent compactions stamp nothing.
 - **Instructions consumed when a summary runs:** at compactable history, the steered summary
   fires and the produced summary reflects the instructions.
-- **Instructions obeyed (real, not mocked):** history with an obviously-droppable block +
-  "drop it" instruction → the summary omits it. Prompt-contains-the-string is necessary but
-  **not** sufficient; this eval gates the instruction feature.
+- **Instructions obeyed (real, not mocked):** the obedience eval corpus (§3) — ≥20 cases, ≥90%
+  honored, never drops a "keep" — passes against the configured cheap model. Prompt-contains-
+  the-string is necessary but **not** sufficient. Gates the instruction feature.
 - **Strategy independence:** force compacts under a strategy that does not call `MaybeCompact`
   (e.g. `session-log`).
 - **Note re-stamped verbatim across compaction:** drive the note past the cutoff, compact,
   assert exactly one verbatim `[NOTE TO SELF]` turn.
 - **Ordering:** after compaction with an active goal, the objective is the trailing turn and
   the note immediately precedes it.
+- **AfterAction order:** in a force round, a strategy's `AfterAction` observes pre-compaction
+  history (the force hook runs after it).
 - **No per-turn churn:** across non-compaction rounds, note handling does not mutate history.
-- **Resume:** pin a note, compact, resume, compact again → the note survives.
+- **Resume via meta:** pin a note, compact, persist+resume from `meta.json`, compact again →
+  the note survives, with no duplicate `[NOTE TO SELF]` turns and no match against a folded copy.
 - **Deferred-force timing:** a `compact` that ends the turn compacts within the same activation.
 - **Nudge:** fires once past `WarnThreshold`, resets after compaction; user warning and agent
-  nudge derive from the same `Manager.Pressure()`.
+  nudge derive from the same `Manager.Pressure()` estimate (different thresholds/latches).
 - **Subagents:** unrestricted subagent has `compact`; an allowlist-restricted one without it
   does not.
 - **`-race`:** concurrent `Snapshot`/`Pressure` reads while `compact` writes Session state.
-- **Threshold defaults / TUI:** scaled-defaults test reflects 0.95; the TUI threshold tracks it.
+- **Threshold defaults / TUI:** scaled-defaults test reflects 0.95; both TUI literals track it.
 - **Pristine output:** no-op and error paths produce clear messages, no stray error logs.
 
 ## Resolved decisions
@@ -345,9 +389,13 @@ We do not force-preserve it — a tightly scoped subagent has little to compact.
    history is compactable; note pinned unconditionally; experimental strategies use standard
    layers (accepted tradeoff). `MaybeCompact` untouched (via the steered wrapper).
 2. **Thresholds:** `WarnThreshold` 0.75 / `CheckpointThreshold` 0.80 / `SummarizeThreshold`
-   0.95. Scaled-defaults test and TUI constant updated; margin risk documented and accepted.
-3. **Tool return value:** confirmation only — but it does state whether a summary ran vs.
-   "note pinned, nothing to condense yet."
+   0.95. Both TUI literals + scaled-defaults test updated; experimental strategies track the
+   shared default; margin risk documented and accepted.
+3. **Tool return value:** a **prediction**, not an outcome report. It confirms the note was
+   pinned and — from a synchronous pre-check — whether a compaction **will** run at the seam or
+   there is nothing to condense yet. It never claims a summary already ran (the compaction is
+   deferred to the round tail). `note_to_self` may be empty to clear a stale note;
+   `compaction_instructions` is optional.
 
 ## Appendix A: review findings addressed
 
@@ -365,7 +413,7 @@ subagent restriction, and non-persistent recoverability items.
 | "Instructions always consumed" false on short history (no-op path) | Decoupled: note always pinned; instructions consumed only when a summary runs; tool reports which (§"two separable parts", §1, §3) |
 | Note re-stamp ordering self-contradictory; "after ForceCompact" displaces objective | Single re-stamp site inside `runPreCompactHook`, before the objective, for all paths (§2, §4) |
 | Automatic path has no "did it compact" signal for a post-return re-stamp | Re-stamp lives in the emit callback (`runPreCompactHook`), the only place with that signal (§2) |
-| `pinnedNote` lost on resume → durable note destroyed | Reconstruct `pinnedNote` from history on resume (§2, Testing) |
+| `pinnedNote` lost on resume → durable note destroyed | Persist `pinnedNote` in `SessionMeta`, restore directly (§2) — round 2 proposed a history scan; round 3 corrected it to structured-state persistence |
 | TUI `compactThreshold = 0.90` desyncs when raising to 0.95 | TUI tracks `SummarizeThreshold`, ideally via config (§6, Changes by file) |
 | Signature ripple under-scoped; "MaybeCompact not modified" false | Steered inner form + `""` wrapper keeps `MaybeCompact`/strategies/tests unchanged; only `ForceCompact` callers change, enumerated (§3, Changes by file) |
 | "Tool-round tail seam" precedent (content-filter pass) doesn't exist | Described as a **new** round-loop hook with its placement requirement; false precedent removed (§1) |
@@ -373,3 +421,22 @@ subagent restriction, and non-persistent recoverability items.
 | Note re-stamp transcript persistence unspecified (panic/loss) | Routed through the nil-transcript-safe steering path in `runPreCompactHook` (§2) |
 | Cheap-model obedience vs. mandated 7 sections | Structural prompt swap when instructions present; gated on obedience eval (§3) |
 | `maybeWarnContextUsage` reconciliation asserted, not decided | Decided: keep as user-facing, drive from `Manager.Pressure()`; nudge is the sole agent signal (§5) |
+
+**Round 3 (the v3 revision's own holes):**
+
+| Finding | Resolution |
+|---------|-----------|
+| Tool return can't report an outcome that runs *after* `Exec` returns (deferred to round tail) | Return is a **prediction** from a synchronous pre-check; never claims a summary ran (§"two separable parts", §1, decision #3) |
+| Resume history-scan can match a `[NOTE TO SELF]` folded into a `TurnSummary` | Persist `pinnedNote` in `SessionMeta`, restore directly — no scan (§2) |
+| "Mirrors how the goal store is restored" was backwards (goal restores from structured `meta.Goal`, not a scan) | Corrected: literally mirror `meta.Goal`/`goalStore.Restore` (§2) |
+| No way to clear a stale note; it re-stamps forever | Empty `note_to_self` clears it without forcing a compaction (§1, Testing) |
+| TUI fix missed a second hardcoded `0.90` literal (color band, line 63) | Replace both literals + the `0.75` band, config-sourced (§6, Changes by file) |
+| Threshold raise silently moves the gate for `session-log`/`ooda`/`checkpoint-pred` too | Decided: they track the shared default; called out explicitly (§6) |
+| Force-vs-`AfterAction` ordering left unpinned but `session-log` named as a test | Pinned: force runs after `AfterAction`/steering, before delivery; AfterAction sees pre-compaction history (§1, Testing) |
+| Obedience "gate" had no pass criterion; fallback contradicted required arg | Concrete eval (≥20 cases, ≥90% honored); `compaction_instructions` made optional so note-pin-only ships coherently (§1, §3) |
+| "Cannot diverge" overstated for user warning vs. nudge | Reworded: only the pressure *estimate* is shared; thresholds (0.80/0.75) and latches differ; user number's basis change acknowledged (§5) |
+
+> After three rounds the architecture has been stable; round 3 surfaced one real new bug
+> (the deferred-return contradiction) and otherwise refined resume persistence, threshold
+> propagation, and wording. Remaining risk is implementation-level and is left to the plan +
+> TDD, which verify it more reliably than further prose review.
