@@ -9,8 +9,11 @@ Prior-art research that motivates this design lives in
 The subsystem it builds on is documented in
 [`docs/design/context.md`](../../design/context.md).
 
-> This spec was revised after an adversarial design review. The review findings and how
-> each was resolved are recorded in [Appendix A](#appendix-a-review-findings-addressed).
+> This spec was hardened across two adversarial design-review rounds. Findings and
+> resolutions are in [Appendix A](#appendix-a-review-findings-addressed). Where the spec
+> states a *requirement* but defers exact code placement to the implementation plan, that
+> is deliberate: items the compiler and TDD verify better than prose are not pinned to
+> specific line numbers here.
 
 ## Problem
 
@@ -45,162 +48,176 @@ any of that. We want to give it one.
 - **Not** a bet on agent timing calibration. The warning nudge and the raised
   auto-fallback together cover both "compacts too rarely" and "never compacts."
 
+## The two separable parts
+
+The single most important design correction: **pinning the note and condensing the
+history are independent operations.** Pinning needs no summarizer; condensing does.
+
+1. **Pin the note (always).** `note_to_self` is stored on the Session and re-stamped
+   into history at every compaction. This needs no LLM and no minimum history — it
+   always takes effect.
+2. **Condense the rest (conditional).** The agent's `compaction_instructions` steer the
+   summary of everything else — but only when there is actually enough history to
+   compact. At a low-pressure seam with a short history, there may be nothing to
+   condense; the instructions then have no work to do, and that is fine and reported.
+
+Conflating these was the v2 error: `ForceCompact`'s summary layer no-ops when
+`len(history) ≤ PreserveRecentTurns` or no safe cutoff exists, so "instructions are
+*always* consumed" was false precisely at the headline use case. The corrected contract:
+**the note is always pinned; the instructions are consumed by whatever compaction this
+call actually performs, and the tool reports whether a summary ran.**
+
 ## Design principle: a strategy-independent capability
 
 The compaction *strategy* (`compact`, `recursive-distill`, `obs-mask`, …) owns **how
-content is processed at compaction time**. The self-compaction capability is
-orthogonal to that and must work with *any* strategy.
+content is processed at compaction time**. The self-compaction capability is orthogonal
+and must work with *any* strategy.
 
-The strategy-independent seam is **`Manager.ForceCompact`** — a `Manager` method, so it
-is reachable no matter which `Strategy` is active and no matter whether that strategy
-routes through `Manager.MaybeCompact` or inlines its own layers. (Four of serf's seven
-strategies — `obs-mask`, `session-log`, `ooda`, `checkpoint-pred` — do **not** call
-`MaybeCompact`, so a force-flag consumed inside `MaybeCompact` would be a no-op for them;
-the `Manager` seam avoids that trap.) Therefore:
+The strategy-independent seam is **`Manager.ForceCompact`** — a `Manager` method,
+reachable regardless of which `Strategy` is active and regardless of whether that
+strategy routes through `Manager.MaybeCompact` or inlines its own layers. (Four of
+serf's seven strategies do **not** call `MaybeCompact`, so a force-flag consumed inside
+`MaybeCompact` would silently no-op for them; the `Manager` seam avoids that.)
 
 - The **trigger** (the tool), the **pinned note**, and the **warning nudge** live at the
-  **Session** level and are strategy-independent.
-- Agent-triggered compaction is performed by the Session calling **`Manager.ForceCompact`**
-  directly, passing the agent's `compaction_instructions` as a call parameter.
-- `Manager.ForceCompact` already runs the summarize layer **unconditionally** (it is not
-  threshold-gated, unlike `MaybeCompact`), so the agent's instructions are **always**
-  consumed — even when the agent compacts at a low-pressure seam where the automatic path
-  would have run only the deterministic checkpoint.
+  **Session** level.
+- Agent-triggered compaction is the Session calling **`Manager.ForceCompact(instructions)`**.
+- `ForceCompact` runs the summary layer whenever the history is compactable (not
+  threshold-gated, unlike `MaybeCompact`), so at meaningful pressure the agent's
+  instructions reach the summarizer even when the automatic path would have run only the
+  deterministic checkpoint.
 
-**One accepted tradeoff.** `Manager.ForceCompact` runs the *standard* checkpoint +
-summarize layers, not a non-default strategy's bespoke layers. For the default `compact`
-strategy (what real sessions use) this is identical to its automatic path. For the
-*experimental* strategies, agent-triggered compaction will use the standard layers rather
-than, say, `recursive-distill`'s micro/macro hierarchy. This is acceptable while those
-strategies are experimental; revisit by adding a `Strategy.ForceCompact` interface method
-if one graduates to default.
-
-```
- Agent calls compact ─────────────────────────────────┐  (during a tool round)
-                                                        ▼
- Session (strategy-independent):  set pinnedNote + instructions + forceRequested  [s.mu]
-                                                        │
-                         end of tool round ────────────┤  (same activation — not deferred)
-                                                        ▼
-        Manager.ForceCompact(history, instructions)  ── always checkpoint + summarize
-                                                        │   (instructions threaded into
-                                                        ▼    summarizeWithLLM)
-        re-stamp pinned note as a preserved artifact (ordered before the goal objective)
-
- Automatic path (unchanged):  prepareModelRequest → Strategy.ManageContext → MaybeCompact
-        when a compaction occurs there too, the same note re-stamp runs.
-```
+**Accepted tradeoff.** `Manager.ForceCompact` runs the *standard* checkpoint + summarize
+layers, not a non-default strategy's bespoke layers. For the default `compact` strategy
+(what real sessions use) this is identical to its automatic path. Experimental strategies
+fall back to standard layers for agent-force; revisit with a `Strategy.ForceCompact`
+interface method if one graduates to default.
 
 ## Components
 
 ### 1. The `compact` core tool
 
 Registered in `registerCoreTools` (`agent/session_tool_registry.go`) — **not** via
-`Strategy.Tools()` — so it is present in every session regardless of the active strategy.
-It is the agent-facing sibling of the existing user `/compact` (`Session.Compact` →
+`Strategy.Tools()` — so it is present in every session regardless of active strategy. It
+is the agent-facing sibling of the user `/compact` (`Session.Compact` →
 `Manager.ForceCompact`) and shares its compaction path.
 
-**Reaching Session state.** A tool `Exec` has signature
-`func(ctx, env execenv.ExecutionEnvironment, args map[string]any) (any, error)` — it gets
-**no** `*Session` or `*Manager` handle. Like `communicate` (which writes session state via
-the injected `setCommunicateResult` closure, `session_tool_registry.go`), `compact` reaches
-Session state through new `toolDeps` forwarder closures — `setPinnedNote(string)` and
-`requestForceCompact(instructions string)` — captured at registration. These forward to
-Session writer methods that take `s.mu`.
+**Reaching Session state.** A tool `Exec` (`func(ctx, env, args)`) gets no `*Session`
+handle. Like `communicate` (which writes session state via an injected closure),
+`compact` reaches state through new `toolDeps` forwarder closures — `setPinnedNote` and
+`requestForceCompact` — that forward to Session writer methods taking `s.mu`.
 
-**Arguments** (both required, both non-empty):
+**Arguments** (both required, non-empty):
 
 | Arg | Purpose |
 |-----|---------|
-| `note_to_self` | Durable text preserved **verbatim** across compactions — the agent's own structured keep (decisions made, the API signature settled on, the failing tests, the next steps). Defeats brevity bias because the summarizer never authors it. |
-| `compaction_instructions` | Guidance to the summarizer about what to **preserve** and what is **safe to drop** when condensing everything else ("keep the migration plan steps verbatim; the vendored file dumps are irrelevant, drop them"). |
+| `note_to_self` | Durable text re-stamped **verbatim** into history at every compaction — the agent's structured keep. Always pinned, summarizer never authors it. |
+| `compaction_instructions` | Guidance steering the summary of everything else ("keep the migration plan; drop the vendored file dumps"). Consumed when a summary actually runs. |
 
-**Exec behavior:** validate both args non-empty (clear error otherwise); call
-`setPinnedNote(note_to_self)` (replacing any prior note) and
-`requestForceCompact(compaction_instructions)`; return a confirmation string. The tool does
-**not** mutate history itself.
+**Exec behavior:** validate both args non-empty; `setPinnedNote(note_to_self)` (replaces
+any prior note); `requestForceCompact(compaction_instructions)`; return a confirmation
+that states whether a summary ran or there was nothing to condense yet (the note is
+pinned either way). **One `compact` per tool round:** a second `compact` in the same
+round returns a clear error rather than silently clobbering the first call's note and
+instructions before they are consumed.
 
-**When the compaction happens.** The forced compaction is applied at the **tail of the
-tool round in which `compact` was called** — same agent activation, immediately after the
-round's tool results are appended (the seam already used for post-round work like the
-content-filter pass in `session_model_call.go`). This avoids deferring to the next
-`prepareModelRequest`, which — if the agent ends its turn right after calling `compact` —
-would otherwise fire at the *next user turn*, compacting before the user's new message is
-read.
+**When it happens.** The forced compaction runs at the **tail of the tool round** in
+which `compact` was called — same agent activation. *Note:* this is a **new** hook in the
+round loop (after tool results are persisted, before the turn can be delivered/ended), not
+an existing seam; placing it before turn-delivery is what prevents a `compact`+`communicate`
+round from deferring the compaction to the next user turn. Exact insertion point is an
+implementation-plan detail; the requirement is "after results are persisted, before the
+round can return."
 
-**Tool description (the agent's "when" guidance):** instruct the agent to call it at a
-clean stopping point — between tasks/subtasks, after extracting results from a large
-context, before consuming substantial new input, before a complex multi-step operation —
-and explain what belongs in each argument. In **non-persistent** sessions (see
-Recoverability) the description must warn that dropped detail is **not** recoverable, so
-`note_to_self` is the only durable carry.
+**Tool description (the agent's "when" guidance):** call it at a clean stopping point —
+between tasks/subtasks, after extracting results from a large context, before consuming
+substantial new input, before a complex multi-step operation. In **non-persistent**
+sessions (see Recoverability) warn that dropped detail is unrecoverable, so `note_to_self`
+is the only durable carry.
 
 ### 2. Pinned note (Session state; re-stamped at every compaction)
 
-A single `pinnedNote string` slot on the Session, guarded by `s.mu`. Replaced on each
-`compact` call (the "rewrite" model — the agent carries forward what still matters).
+A single `pinnedNote string` on the Session, guarded by `s.mu`, replaced on each `compact`
+call (the "rewrite" model).
 
-**How it survives — correctly stated.** The note survives **because the Session re-stamps a
-fresh verbatim copy from `pinnedNote` at every compaction**, *not* because it incidentally
-sits in the preserved-recent window. (With `PreserveRecentTurns = 6`, after several rounds
-the note can drift *before* the compaction cutoff and be folded into the summary; relying on
-"it's a tail turn" is wrong — `summarizeWithLLM` would emit a drifted note as `System: …`.)
-Re-stamping from stored state makes any folded stale copy harmless: it is summarized away
-while the canonical copy is re-laid intact.
+**How it survives — correctly.** The note survives **because the Session re-stamps a fresh
+verbatim copy from `pinnedNote` at every compaction** — not because it sits in the
+preserved-recent window (with `PreserveRecentTurns = 6` it drifts before the cutoff after a
+few rounds and would otherwise be folded into the summary). Re-stamping from stored state
+makes any folded stale copy harmless.
 
-**Re-stamp only at compaction time — never per turn.** The re-stamp runs **only when a
-compaction actually occurs** this round (detected via the `EventContextCompaction` emit
-through the existing `compactionEmitFunc` wrapper; `ManageContext` itself returns only
-`error`). Between compactions, history is left untouched. This matters for the prompt cache:
-removing-and-re-appending the note every turn would mutate mid-history and break the prefix
-cache for all recent turns — exactly the regression that got observation-masking removed
-(`context.md`). At compaction time the whole prefix is being replaced anyway, so re-laying
-the note adds no incremental cache cost.
+**One re-stamp site for all paths.** The re-stamp is folded into **`runPreCompactHook`** —
+the existing once-per-compaction callback (already latched to fire once per compaction even
+though `ForceCompact` emits two events) that today appends the goal objective. This is the
+*only* correct site because:
+- It fires for **every** compaction path uniformly — agent-force, automatic `MaybeCompact`,
+  and the content-filter recovery compaction — without each call site needing its own logic.
+- It is the only place with a real "a compaction is happening" signal (the automatic path's
+  `ManageContext` returns only `error`; there is no post-return "did it compact" flag).
+- It already routes through the nil-transcript-safe steering-append/flush path, so the note
+  turn is persisted on persistent sessions and does not panic on ephemeral ones.
+- **Ordering:** the note is appended **before** the goal objective inside this hook, so the
+  objective remains the trailing (strongest-recency) turn its invariant requires. (v2's "re-stamp
+  after `ForceCompact` returns" was wrong — it landed the note after the objective and
+  reintroduced the displacement bug.)
 
-**Ordering vs. the goal objective.** `runPreCompactHook` appends the active goal objective
-as the **trailing** steering turn during compaction, and `session_goal.go` documents that
-the trailing (strongest-recency) position is load-bearing. The note re-stamp is folded into
-that same preserved-artifact path and laid **before** the objective, so the objective
-remains trailing-most.
+**No per-turn churn.** Because re-stamping happens only inside `runPreCompactHook` (i.e. only
+when a compaction occurs, when the whole prefix is being replaced anyway), it never mutates
+mid-history on non-compaction turns — so it does not bust the prompt cache.
+
+**Resume.** `pinnedNote` is Session state and is **not** automatically restored on resume,
+while a stale `[NOTE TO SELF]` turn does reload with the transcript. So on resume the Session
+must **reconstruct `pinnedNote` by scanning the resumed history for the most recent
+`[NOTE TO SELF]` block** (mirroring how the goal store is restored). Without this, the next
+compaction re-stamps nothing and the note erodes away — silently destroying the agent's
+durable carry across a routine restart.
 
 Format: a marked block, e.g. `[NOTE TO SELF]\n…\n[END NOTE TO SELF]`, analogous to the
-existing `[DISTILLED MEMORY]` and `[CONTEXT CHECKPOINT]` markers.
+existing `[DISTILLED MEMORY]` / `[CONTEXT CHECKPOINT]` markers.
 
 ### 3. `compaction_instructions` hand-off
 
 The Session passes the agent's instructions **as a call parameter** to
-`Manager.ForceCompact(ctx, history, instructions, emitFn)`, which forwards them to
-`summarizeWithLLM`. There is **no new mutable instruction state on the `Manager`** — the
-string lives on the Session (under `s.mu`) until consumed by the single `ForceCompact` call,
-then is cleared. This avoids the hazard of instructions lingering on a shared `Manager` and
-leaking into a later, unrelated automatic compaction.
+`Manager.ForceCompact(ctx, history, instructions, emitFn)`. There is **no new mutable
+instruction state on the `Manager`** — the string lives on the Session under `s.mu` until
+consumed by the single `ForceCompact` call, then cleared, so it can never leak into a later
+unrelated automatic compaction.
 
-**Placement and precedence in the summarizer prompt.** `summarizeWithLLM`'s fixed prefix
-currently instructs the cheap model to "be thorough… include too much"
-(`context_manager.go`). The agent's `compaction_instructions` are injected as a
-**higher-precedence** block that explicitly overrides the default verbosity directive — e.g.
-prefixed with "These caller instructions take precedence over the general guidance below:".
-The design's quality thesis depends on the cheap model *obeying* this, which is an
-assumption we must test for real (see Testing), not merely assert that the prompt contains
-the string.
+**Minimizing the signature ripple.** Rather than add a parameter to the widely-called
+`summarizeWithLLM` (≈17 callsites incl. `MaybeCompact`, two experimental strategies, 13
+tests), add a steered inner form (`summarizeWithLLMSteered(…, instructions)`) and keep
+`summarizeWithLLM` as a thin wrapper passing `""`. Then **`MaybeCompact`, the experimental
+strategies, and all existing tests are unchanged** ("MaybeCompact is not modified" stays
+true), and only `ForceCompact` (2 production + 4 test callers) gains the `instructions`
+parameter.
 
-### 4. Force path (the strategy-independent seam)
+**Obedience is a real prompt-engineering problem, not a one-liner.** The fixed summarizer
+prompt currently *mandates* seven sections ("Your summary MUST include ALL of the following…")
+and closes with "include too much." A prepended "these take precedence" note will not reliably
+override that. So when `instructions` are present, `summarizeWithLLMSteered` **structurally
+swaps** the fixed prefix for an instruction-led variant (the agent's keep/drop directive
+becomes the governing instruction, not an addendum). The feature is **gated on an obedience
+eval** (Testing) — if the cheap model won't honor the directive, we do not ship the
+instruction path, only the note pin.
+
+### 4. Force path
 
 1. Agent calls `compact` → Exec sets Session `pinnedNote`, `pendingInstructions`,
-   `forceRequested` (all under `s.mu`); returns confirmation.
-2. At the end of that tool round, the Session observes `forceRequested` and calls
-   `Manager.ForceCompact(ctx, &history, pendingInstructions, emitFn)`, then re-stamps the
-   pinned note, then clears `forceRequested`/`pendingInstructions`.
-3. `ForceCompact` runs the deterministic checkpoint **and** the LLM summary
-   unconditionally; the summary honors the instructions (§3).
-4. The next LLM request sees: `[checkpoint + instruction-honoring summary]` + recent turns +
-   `[NOTE TO SELF]` + `[goal objective]`.
+   `forceRequested` (under `s.mu`); returns confirmation. A second `compact` this round →
+   error.
+2. At the round-loop tail (the new hook, §1), the Session observes `forceRequested`, calls
+   `Manager.ForceCompact(ctx, &history, pendingInstructions, emitFn)`, then clears
+   `forceRequested`/`pendingInstructions`.
+3. `ForceCompact` runs the deterministic checkpoint and — when history is compactable — the
+   steered summary (§3). The note re-stamp and objective re-append happen **inside**
+   `ForceCompact` via `runPreCompactHook` (§2), not as a separate post-call step.
+4. Resulting trailing order: `[NOTE TO SELF]` then `[goal objective]`.
 
-`MaybeCompact` is **not** modified and carries **no** force flag. The automatic path
-(`Strategy.ManageContext` → `MaybeCompact`) is unchanged except that, when it compacts, it
-triggers the same note re-stamp (§2).
+`MaybeCompact` is **not** modified and carries no force flag. The automatic path is
+unchanged except that, because its compaction also fires `runPreCompactHook`, it gets the
+same note re-stamp for free.
 
-### 5. Warning nudge (Session-level; strategy-independent)
+### 5. Warning nudge (Session-level)
 
 When context pressure crosses `WarnThreshold` and the agent has not been nudged since the
 last compaction, the Session injects a one-time `TurnSteering`:
@@ -208,162 +225,151 @@ last compaction, the Session injects a one-time `TurnSteering`:
 > "Context is ~N% full. If you are at or near a clean stopping point, call `compact`
 > now with a `note_to_self` and `compaction_instructions`."
 
-The nudge latch resets after any compaction. This is MemGPT's proven "memory pressure
-warning" shape and directly counters the "agent never calls it" risk.
+The latch resets after any compaction. MemGPT's proven "memory-pressure warning" shape.
 
-**Two corrections from review:**
-- **Best-effort, not guaranteed-first.** Pressure is evaluated once per round in
-  `prepareModelRequest`. A single large tool result can jump pressure from <0.75 to >0.80 in
-  one round, in which case the checkpoint fires before the agent ever sees the nudge. The
-  nudge gives the agent *an earlier opportunity*, not a guarantee of first crack; the
-  checkpoint/summary fallback is the real guarantee.
-- **One pressure estimator.** serf already emits a separate "context usage ~80%" warning via
-  `maybeWarnContextUsage` (a char/4 estimate in `session_model_call.go`). The new nudge must
-  use the same `Manager.Pressure()` signal and the two must be reconciled — either retire the
-  old 0.80 warning or make the nudge subsume it — so the agent does not get two uncoordinated
-  low-context signals from two different estimators.
+- **Best-effort, not guaranteed-first.** Pressure is evaluated once per round; a single large
+  tool result can jump <0.75 → >0.80 in one round, firing the checkpoint before the agent sees
+  the nudge. The nudge gives an *earlier opportunity*; the checkpoint/summary fallback is the
+  guarantee.
+- **Audiences are distinct, sources unified.** serf already emits a *user-facing*
+  "context ~80%" warning (`maybeWarnContextUsage`, a char/4 estimate). **Decision:** keep that
+  as the user-facing signal but drive it from `Manager.Pressure()` so it and the agent-facing
+  nudge cannot diverge; the nudge is the only agent-facing signal. (No two uncoordinated
+  agent signals; one shared pressure source.)
 
 ### 6. Raised auto-fallback threshold
-
-Give the agent headroom to self-compact at a seam before the automatic narrative summary
-fires:
 
 | Layer | Default today | New default | Role |
 |-------|--------------|-------------|------|
 | `WarnThreshold` (new) | — | 0.75 | Nudge the agent to compact at its next seam |
-| `CheckpointThreshold` | 0.80 | 0.80 | Cheap deterministic structured snapshot (unchanged safety net) |
+| `CheckpointThreshold` | 0.80 | 0.80 | Cheap deterministic structured snapshot (unchanged) |
 | `SummarizeThreshold` | 0.90 | 0.95 | Automatic cheap-model summary — last-resort fallback |
 
-The deterministic checkpoint stays at 0.80; only the *narrative summary* threshold is raised,
-which is what buys the agent room. All three are configurable.
+Only the narrative-summary gate is raised; all three configurable.
 
-**Accepted risk (documented).** Raising the summary gate to 0.95 narrows the safety margin:
-a session whose agent never self-compacts now runs at 0.93–0.95 before Layer 2 fires, where a
-single large tool result (output cap ≈ 50K chars ≈ 12.5K tokens) is likelier to approach the
-hard context limit (`KindContextLength`) before the summary can run. We accept this in
-exchange for agent headroom; the checkpoint at 0.80 remains an earlier structural relief
-valve. Worst-case single-turn growth should be sanity-checked against the smallest supported
-context window during implementation.
+**Knock-on changes the raise requires (do not omit):**
+- `agent/context_strategy_test.go` scaled-defaults assertion `0.45` → `0.475` (the clamped
+  sibling at the same test stays `0.20`).
+- `cmd/serf-tui/statusbar.go` `const compactThreshold = 0.90` (and its `hub_status.go`
+  consumer, which renders the user's "tokens-to-compact" figure and color band) must track
+  `SummarizeThreshold`. Prefer sourcing the value from config rather than a duplicated
+  constant so it cannot drift again.
+
+**Accepted risk.** Raising to 0.95 narrows the margin: a session whose agent never
+self-compacts runs at 0.93–0.95 before Layer 2 fires, where a single large tool result
+(output cap ≈ 50K chars ≈ 12.5K tokens) is likelier to approach the hard context limit.
+Accepted for agent headroom; the checkpoint at 0.80 is earlier relief. Sanity-check
+worst-case single-turn growth against the smallest supported window during implementation.
 
 ## Changes by file
 
-- `agent/internal/contextmgr/context_manager.go`:
-  - `ForceCompact` gains an `instructions string` parameter, forwarded to `summarizeWithLLM`.
-  - `summarizeWithLLM` gains an `instructions string` parameter and injects it as a
-    higher-precedence block in the prompt (§3). No new mutable `Manager` state.
-  - Add `WarnThreshold` config field; change `SummarizeThreshold` default to 0.95.
-- `agent/context_strategy_test.go`: the threshold assertion at the scaled-defaults test
-  (currently expects `SummarizeThreshold == 0.45`, i.e. `0.90 * 0.5`) becomes `0.475`. Audit
-  sibling scaled-threshold assertions for the same breakage.
-- `agent/session.go` (+ a new `agent/session_self_compact.go`): `pinnedNote`,
-  `pendingInstructions`, `forceRequested`, and the nudge latch (all under `s.mu`); the
-  `setPinnedNote`/`requestForceCompact` writer methods; the end-of-tool-round force hook; the
-  note re-stamp helper (folded into the `runPreCompactHook` preserved-artifact ordering); the
-  nudge emission on `Manager.Pressure()`.
-- `agent/session_tool_registry.go`: new `toolDeps` forwarders (`setPinnedNote`,
-  `requestForceCompact`); register the `compact` core tool (two-arg schema, marked
-  **not** read-only so it serializes rather than batching in the parallel read-only path).
-- `docs/design/context.md`: document the tool, the pinned note, the nudge, the revised
-  threshold table, and the agent-force-via-`ForceCompact` path.
+- `agent/internal/contextmgr/context_manager.go`: add `summarizeWithLLMSteered(…, instructions)`,
+  keep `summarizeWithLLM` as a `""` wrapper; `ForceCompact` gains an `instructions` parameter
+  forwarded to the steered form; add `WarnThreshold`; change `SummarizeThreshold` default to 0.95.
+- `agent/internal/contextmgr/context_manager_test.go` (+ `compaction_kind_test.go`): update the
+  4 `ForceCompact` callsites for the new parameter (pass `""` where instructions are irrelevant).
+- `agent/context_strategy_test.go`: scaled-defaults assertion `0.45` → `0.475`.
+- `agent/session_compaction.go`: fold the pinned-note re-stamp into `runPreCompactHook`,
+  appended before the goal objective; ensure it uses the nil-transcript-safe steering path.
+- `agent/session.go` (+ new `agent/session_self_compact.go`): `pinnedNote`,
+  `pendingInstructions`, `forceRequested`, nudge latch (under `s.mu`); `setPinnedNote` /
+  `requestForceCompact` writers; the round-loop force hook; pinned-note reconstruction on
+  resume; nudge emission on `Manager.Pressure()`; one-`compact`-per-round guard.
+- `agent/session_tool_registry.go`: `toolDeps` forwarders; register the non-read-only `compact`
+  core tool.
+- `cmd/serf-tui/statusbar.go` (+ `hub_status.go`): track `SummarizeThreshold` (ideally via config).
+- `docs/design/context.md`: document the tool, the pinned note, the nudge, the threshold
+  table, and the agent-force-via-`ForceCompact` path.
+- The user `/compact` path (`Session.Compact`) and the content-filter recovery
+  (`session_model_call.go`) call `ForceCompact` with empty instructions — update both call sites.
 
 ## Recoverability
 
-Recoverability holds **only for persistent sessions** (`stateDir != ""`): there,
-`OnCompactionTurn` persists compaction turns and the full pre-compaction transcript remains
-on disk (`context.md` → "Transcript callbacks"), and the checkpoint already points the agent
-at `read_session_transcript`. For **non-persistent** sessions and subagents (`stateDir == ""`),
-there is **no** transcript and **no** recall surface — cleared detail is gone. The tool
-description must reflect this (§1): in ephemeral sessions, `note_to_self` is the only durable
-carry, so the agent should be correspondingly conservative about what it instructs the
-summarizer to drop.
+Recoverability holds **only for persistent sessions** (`stateDir != ""`): `OnCompactionTurn`
+persists compaction turns, the full pre-compaction transcript stays on disk, and the
+checkpoint already points the agent at `read_session_transcript`. For **non-persistent**
+sessions/subagents there is no transcript and no recall surface — cleared detail is gone, so
+the tool description tells the agent to be conservative about what it drops (the `note_to_self`
+is the only durable carry).
 
 ## Subagents
 
-`compact` is a normal core tool, subject to the usual allowlist/denylist restriction.
-Default subagents (which inherit the parent strategy and full core toolset via `NewSession`)
-get it. A subagent spawned with `allowedToolNames` gets it **only if** `compact` is in the
-allowlist (`RestrictKeepingResultTool` preserves only the result tool), and `deniedToolNames`
-can remove it. We do **not** force-preserve `compact` across restriction — a tightly scoped
-subagent has little context to compact. This is a deliberate, documented choice.
+`compact` is a normal core tool subject to allowlist/denylist restriction. Default subagents
+get it; a subagent restricted via `allowedToolNames` gets it only if allow-listed
+(`RestrictKeepingResultTool` preserves only the result tool); `deniedToolNames` can remove it.
+We do not force-preserve it — a tightly scoped subagent has little to compact.
 
 ## Failure modes guarded (traceable to the prior-art note)
 
 | Failure mode | Guard |
 |--------------|-------|
-| Brevity bias / structured-detail loss | Agent-authored `note_to_self`, re-stamped verbatim at every compaction |
-| Context collapse under repeated compaction | The note is re-laid from stored state each compaction, so it never erodes; instructions let the agent steer what the summary keeps |
-| Agent compacts too rarely / never (timing uncalibrated) | Best-effort nudge at 0.75 + automatic checkpoint (0.80) and summary (0.95) fallback |
-| Mid-history cache busting | Whole-prefix replacement only; the note is re-stamped **only at compaction time**, never per turn |
-| Instructions ignored (cheap model) | Instructions injected as higher-precedence over the default "include too much" directive; obedience verified by eval |
+| Brevity bias / structured-detail loss | Agent-authored `note_to_self`, always pinned, re-stamped verbatim |
+| Context collapse under repeated compaction | Note re-laid from stored state each compaction (incl. after resume reconstruction); instructions steer what the summary keeps |
+| Agent compacts too rarely / never | Best-effort nudge at 0.75 + automatic checkpoint (0.80) and summary (0.95) fallback |
+| Mid-history cache busting | Note re-stamped only inside `runPreCompactHook` (compaction time), never per turn |
+| Instructions ignored (cheap model) | Structural prompt swap when instructions present; gated on an obedience eval |
+| Durable note lost on restart | `pinnedNote` reconstructed from history on resume |
 
 ## Testing (TDD)
 
-Unit tests, written before implementation:
-
-- **Tool validation:** `compact` rejects empty `note_to_self` or `compaction_instructions`
-  with a clear error; on success the Session's `pinnedNote`, `pendingInstructions`, and
-  `forceRequested` are set.
-- **Force reaches the summary regardless of pressure:** calling `compact` at low pressure
-  performs a compaction that runs the LLM summary (so instructions have a consumer), not only
-  the deterministic checkpoint.
-- **Strategy independence:** the force path compacts under at least one strategy that does
-  **not** route through `MaybeCompact` (e.g. `session-log`), proving the `ForceCompact` seam
-  works where a `MaybeCompact` flag would not.
-- **Note re-stamped verbatim across compaction:** drive enough turns that the note drifts
-  before the cutoff, force a compaction, and assert exactly one `[NOTE TO SELF]` turn exists,
-  byte-for-byte equal to `pinnedNote`.
-- **No per-turn history churn:** across rounds with **no** compaction, history is not mutated
-  by note handling (guards the cache regression).
-- **Ordering:** after compaction with an active goal, the goal objective is the trailing
-  turn and the note immediately precedes it.
-- **Instructions obeyed (real, not mocked):** give the summarizer a history containing an
-  obviously-droppable block and an instruction to drop it; assert the produced summary
-  actually omits it. (String-presence of the instruction in the prompt is necessary but
-  **not** sufficient.)
-- **Deferred-force timing:** a `compact` that ends the agent's turn compacts within the same
-  activation (at the tool-round tail), not at the next user turn.
-- **Nudge semantics:** fires once when pressure crosses `WarnThreshold`, does not re-fire
-  until after a compaction, resets afterward, and does not double-signal with
-  `maybeWarnContextUsage`.
-- **Subagent parity + restriction:** an unrestricted subagent exposes `compact`; a subagent
-  restricted to an allowlist without `compact` does not.
-- **Locking / `-race`:** concurrent `Snapshot`/`Pressure` reads while `compact` writes Session
-  state pass `go test -race`.
-- **Threshold defaults:** the scaled-defaults test reflects `SummarizeThreshold = 0.95`.
-- **Pristine output:** `compact` on a too-short history is a safe no-op with a clear message;
-  any error path is captured and asserted (no stray error logs).
+- **Validation:** `compact` rejects empty args; a second `compact` in one round errors.
+- **Note pinned even with nothing to condense:** at low pressure / short history, `compact`
+  pins the note (re-stamped at the next compaction) and the tool reports "nothing to condense
+  yet" rather than claiming a summary ran.
+- **Instructions consumed when a summary runs:** at compactable history, the steered summary
+  fires and the produced summary reflects the instructions.
+- **Instructions obeyed (real, not mocked):** history with an obviously-droppable block +
+  "drop it" instruction → the summary omits it. Prompt-contains-the-string is necessary but
+  **not** sufficient; this eval gates the instruction feature.
+- **Strategy independence:** force compacts under a strategy that does not call `MaybeCompact`
+  (e.g. `session-log`).
+- **Note re-stamped verbatim across compaction:** drive the note past the cutoff, compact,
+  assert exactly one verbatim `[NOTE TO SELF]` turn.
+- **Ordering:** after compaction with an active goal, the objective is the trailing turn and
+  the note immediately precedes it.
+- **No per-turn churn:** across non-compaction rounds, note handling does not mutate history.
+- **Resume:** pin a note, compact, resume, compact again → the note survives.
+- **Deferred-force timing:** a `compact` that ends the turn compacts within the same activation.
+- **Nudge:** fires once past `WarnThreshold`, resets after compaction; user warning and agent
+  nudge derive from the same `Manager.Pressure()`.
+- **Subagents:** unrestricted subagent has `compact`; an allowlist-restricted one without it
+  does not.
+- **`-race`:** concurrent `Snapshot`/`Pressure` reads while `compact` writes Session state.
+- **Threshold defaults / TUI:** scaled-defaults test reflects 0.95; the TUI threshold tracks it.
+- **Pristine output:** no-op and error paths produce clear messages, no stray error logs.
 
 ## Resolved decisions
 
-1. **Force mechanism:** the Session calls **`Manager.ForceCompact`** (extended with an
-   `instructions` parameter) at the tool-round tail. Strategy-independent via the shared
-   `Manager` seam; instructions always consumed because `ForceCompact` always summarizes;
-   experimental strategies use the standard layers for agent-force (accepted tradeoff). `MaybeCompact`
-   is untouched.
-2. **Thresholds:** `WarnThreshold` 0.75 / `CheckpointThreshold` 0.80 (unchanged) /
-   `SummarizeThreshold` 0.95 (raised). The scaled-defaults test is updated accordingly; the
-   narrowed-margin risk is documented and accepted. All three remain configurable.
-3. **Tool return value:** confirmation message only — no post-compaction pressure or
-   tokens-freed reporting.
+1. **Force mechanism:** Session calls `Manager.ForceCompact(instructions)` at the round-loop
+   tail. Strategy-independent via the `Manager` seam; instructions consumed by the summary when
+   history is compactable; note pinned unconditionally; experimental strategies use standard
+   layers (accepted tradeoff). `MaybeCompact` untouched (via the steered wrapper).
+2. **Thresholds:** `WarnThreshold` 0.75 / `CheckpointThreshold` 0.80 / `SummarizeThreshold`
+   0.95. Scaled-defaults test and TUI constant updated; margin risk documented and accepted.
+3. **Tool return value:** confirmation only — but it does state whether a summary ran vs.
+   "note pinned, nothing to condense yet."
 
 ## Appendix A: review findings addressed
 
-| # | Finding | Resolution |
-|---|---------|-----------|
-| Force flag dead for 4/7 strategies | Critical | Route agent-force through `Manager.ForceCompact` (shared seam), not a `MaybeCompact` flag (§Design principle, §4) |
-| Instructions discarded when only checkpoint runs / non-summarizing strategies | Critical | `ForceCompact` always summarizes → instructions always have a consumer (§Design principle, §3) |
-| Pinned-note re-injection busts prompt cache | Major | Re-stamp **only at compaction time**, never per turn (§2) |
-| "Never summarized / verbatim forever" not guaranteed | Major | Survival is by re-stamping from stored state, not by living in the preserved zone (§2) |
-| Tool `Exec` has no Session/Manager handle | Major | `toolDeps` forwarder closures `setPinnedNote`/`requestForceCompact` (§1, Changes by file) |
-| Nudge can't fire before checkpoint on large jumps | Major | Reframed as best-effort; fallback is the guarantee (§5) |
-| Note displaces goal objective from trailing position | Moderate | Note laid before the objective in the shared preserved-artifact path (§2) |
-| `SummarizeThreshold` 0.95 breaks scaled-defaults test | Moderate | Test updated to 0.475; siblings audited (Changes by file) |
-| `/compact` sibling framing vs. not using `ForceCompact` | Moderate | Now genuinely uses `ForceCompact` (§1, §4) |
-| Instructions could leak to a later compaction | Moderate | Instructions live on the Session, passed as a `ForceCompact` arg, consumed once, cleared (§3) |
-| New `Manager` fields violate its lock invariant | Moderate | No new mutable `Manager` state; Session state under `s.mu` (§3, §4) |
-| Force fires at next user turn if `compact` ends the turn | Moderate | Compaction applied at the tool-round tail, same activation (§1, §4) |
-| Nudge collides with existing 0.80 warning | Moderate | Unify on `Manager.Pressure()`; reconcile the old warning (§5) |
-| Raising to 0.95 narrows safety margin | Moderate | Risk documented and accepted; checkpoint at 0.80 is earlier relief (§6) |
-| Subagent parity breaks under tool restriction | Moderate | Documented: `compact` is restrictable; tests cover both (§Subagents) |
-| Cheap-model may ignore instructions; test only checks assembly | Moderate | Higher-precedence placement + a real obedience eval (§3, Testing) |
-| Recoverability false for non-persistent sessions | Moderate | Gated on `stateDir != ""`; tool description warns in ephemeral sessions (§Recoverability, §1) |
+**Round 1 (force/instructions/note architecture):** force routed through `Manager.ForceCompact`
+instead of a `MaybeCompact` flag dead for 4/7 strategies; instructions reach the summarizer via
+that path; note re-stamped from stored state (not "lives in preserved zone"); tool reaches state
+via `toolDeps` closures; nudge reframed best-effort; note ordered with the goal objective; the
+0.95 test break, instruction-leak, Manager-lock, next-user-turn timing, nudge collision,
+subagent restriction, and non-persistent recoverability items.
+
+**Round 2 (the v2 revision's own holes):**
+
+| Finding | Resolution |
+|---------|-----------|
+| "Instructions always consumed" false on short history (no-op path) | Decoupled: note always pinned; instructions consumed only when a summary runs; tool reports which (§"two separable parts", §1, §3) |
+| Note re-stamp ordering self-contradictory; "after ForceCompact" displaces objective | Single re-stamp site inside `runPreCompactHook`, before the objective, for all paths (§2, §4) |
+| Automatic path has no "did it compact" signal for a post-return re-stamp | Re-stamp lives in the emit callback (`runPreCompactHook`), the only place with that signal (§2) |
+| `pinnedNote` lost on resume → durable note destroyed | Reconstruct `pinnedNote` from history on resume (§2, Testing) |
+| TUI `compactThreshold = 0.90` desyncs when raising to 0.95 | TUI tracks `SummarizeThreshold`, ideally via config (§6, Changes by file) |
+| Signature ripple under-scoped; "MaybeCompact not modified" false | Steered inner form + `""` wrapper keeps `MaybeCompact`/strategies/tests unchanged; only `ForceCompact` callers change, enumerated (§3, Changes by file) |
+| "Tool-round tail seam" precedent (content-filter pass) doesn't exist | Described as a **new** round-loop hook with its placement requirement; false precedent removed (§1) |
+| Two `compact` calls in one round drop the first silently | One `compact` per round; second errors (§1) |
+| Note re-stamp transcript persistence unspecified (panic/loss) | Routed through the nil-transcript-safe steering path in `runPreCompactHook` (§2) |
+| Cheap-model obedience vs. mandated 7 sections | Structural prompt swap when instructions present; gated on obedience eval (§3) |
+| `maybeWarnContextUsage` reconciliation asserted, not decided | Decided: keep as user-facing, drive from `Manager.Pressure()`; nudge is the sole agent signal (§5) |
