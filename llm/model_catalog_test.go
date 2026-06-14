@@ -270,6 +270,38 @@ func TestLookupModelInfo_OneMillionContext(t *testing.T) {
 	}
 }
 
+// A dated Anthropic ref that is NOT yet in the embedded catalog (a snapshot
+// newer than the bundled LiteLLM data) must still resolve to its family override
+// via familyModelID, so the effort clamp gets real levels instead of falling
+// back to the default max-capable set.
+func TestLookupModelInfo_UncatalogedDatedRefResolvesFamily(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("embedded catalog nil")
+	}
+	// A far-future date is not present in the bundled catalog.
+	if cat.GetModelInfo("claude-opus-4-5-20991231") != nil {
+		t.Skip("date unexpectedly present in catalog; pick another")
+	}
+	for _, ref := range []string{
+		"claude-opus-4-5-20991231",
+		"claude-opus-4-5-20991231[1m]",
+		"anthropic/claude-opus-4-5-20991231[1m]",
+	} {
+		mi := cat.LookupModelInfo(ref)
+		if mi == nil {
+			t.Errorf("LookupModelInfo(%q) = nil, want opus-4-5 family via familyModelID", ref)
+			continue
+		}
+		if len(mi.ReasoningEffortLevels) != 3 {
+			t.Errorf("LookupModelInfo(%q) levels = %v, want 3 (family)", ref, mi.ReasoningEffortLevels)
+		}
+	}
+	if mi := cat.LookupModelInfo("claude-opus-4-5-20991231[1m]"); mi != nil && mi.ContextWindow != 1_000_000 {
+		t.Errorf("[1m] context = %d, want 1000000", mi.ContextWindow)
+	}
+}
+
 func TestParseLiteLLMCatalog_CacheTierPricing(t *testing.T) {
 	body := `{
   "claude-opus-4-5": {

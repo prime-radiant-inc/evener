@@ -85,8 +85,17 @@ func (c *ModelCatalog) LookupModelInfo(modelID string) *ModelInfo {
 
 	mi := c.GetModelInfo(id)
 	if mi == nil {
+		// Provider-qualified ref ("anthropic/claude-…"): retry on the last segment.
 		if i := strings.LastIndex(id, "/"); i >= 0 && i+1 < len(id) {
-			mi = c.GetModelInfo(id[i+1:])
+			id = id[i+1:]
+			mi = c.GetModelInfo(id)
+		}
+	}
+	if mi == nil {
+		// A dated snapshot newer than the bundled catalog has no entry of its
+		// own; fall back to its family (claude-opus-4-5-YYYYMMDD → claude-opus-4-5).
+		if fam := familyModelID(id); fam != id {
+			mi = c.GetModelInfo(fam)
 		}
 	}
 	if mi != nil && oneMillion {

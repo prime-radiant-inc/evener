@@ -425,6 +425,15 @@ func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
 	}
 	if len(info.ReasoningEffortLevels) > 0 {
 		clone.effortLevels = append([]string(nil), info.ReasoningEffortLevels...)
+		// Keep the effort-enum tool schema (task_list) in sync with the live
+		// levels, or the model sees the constructor enum instead.
+		defs := append([]llm.ToolDefinition(nil), clone.toolDefs...)
+		for i := range defs {
+			if defs[i].Name == "task_list" {
+				defs[i] = tool.DefTaskList(clone.effortLevels)
+			}
+		}
+		clone.toolDefs = defs
 	}
 	if info.SupportsReasoning {
 		clone.reasoning = true

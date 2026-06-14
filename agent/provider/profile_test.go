@@ -4,7 +4,40 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
+
+	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/llm"
 )
+
+func findToolDef(p *Profile, name string) *llm.ToolDefinition {
+	for _, td := range p.ToolDefinitions() {
+		if td.Name == name {
+			d := td
+			return &d
+		}
+	}
+	return nil
+}
+
+// WithLiveModelInfo updates effortLevels from live provider metadata; the
+// task_list tool's reasoning_effort enum must be kept in sync, or the model
+// sees the constructor enum (e.g. OpenAI's low/medium/high/xhigh) instead of the
+// live model's levels (e.g. Kimi's minimal/low/medium/high).
+func TestProfile_WithLiveModelInfoSyncsEffortToolSchema(t *testing.T) {
+	p := newAnthropicProfile("claude-opus-4-6")
+	if findToolDef(p, "task_list") == nil {
+		t.Skip("profile has no task_list tool")
+	}
+	q := p.WithLiveModelInfo(llm.ModelInfo{ReasoningEffortLevels: []string{"minimal", "low", "medium", "high"}})
+
+	got := findToolDef(q, "task_list")
+	want := tool.DefTaskList([]string{"minimal", "low", "medium", "high"})
+	gb, _ := json.Marshal(got)
+	wb, _ := json.Marshal(want)
+	if !bytes.Equal(gb, wb) {
+		t.Errorf("task_list effort schema not synced to live levels after WithLiveModelInfo\n got=%s\nwant=%s", gb, wb)
+	}
+}
 
 // After an Anthropic model switch, WithModel must rebuild — not shallow-clone —
 // so every model-derived schema (the task_list reasoning_effort enum, context,
