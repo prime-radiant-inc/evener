@@ -1154,6 +1154,7 @@
     const kind = chip.dataset.chip;
     if (kind === "harness") { openHarnessPicker(chip); return; }
     if (kind === "model") { openModelPicker(chip); return; }
+    if (kind === "reasoning_effort") { openEffortPicker(chip); return; }
     if (kind === "working_dir") { openDirPicker(chip); return; }
     if (kind === "branch") { openTextPicker(chip, "branch", "branch / worktree"); return; }
     const display = chip.querySelector(".chip-value");
@@ -1445,6 +1446,64 @@
       document.addEventListener("click", offClick);
       document.addEventListener("keydown", onKey);
     }, 0);
+  }
+
+  // Fallback effort levels for models whose supported set the hub doesn't know.
+  // The daemon clamps to what the model actually accepts, so an over-broad list
+  // here is safe.
+  const DEFAULT_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
+
+  // effortLevelsForModel returns the reasoning-effort levels the given model
+  // (a "provider/model" ref) supports, from the /api/models entry, falling back
+  // to a default set when the model isn't found or declares none.
+  function effortLevelsForModel(models, modelRef) {
+    modelRef = (modelRef || "").trim();
+    for (let i = 0; i < models.length; i++) {
+      const m = models[i];
+      const full = (m.provider ? m.provider + "/" : "") + m.model;
+      if (modelRef && (full === modelRef || m.model === modelRef)) {
+        if (Array.isArray(m.reasoning_effort_levels) && m.reasoning_effort_levels.length > 0) {
+          return m.reasoning_effort_levels.slice();
+        }
+        return DEFAULT_EFFORT_LEVELS.slice();
+      }
+    }
+    return DEFAULT_EFFORT_LEVELS.slice();
+  }
+
+  function openEffortPicker(chip) {
+    const existing = document.querySelector(".chip-picker");
+    if (existing) { existing.remove(); return; }
+    const harness = currentHarness();
+    listModelsWithDiagnosticsForHarness(harness).then(result => {
+      const models = Array.isArray(result && result.models) ? result.models : [];
+      const modelHidden = document.querySelector('input[name="model"]');
+      const levels = effortLevelsForModel(models, modelHidden ? modelHidden.value : "");
+
+      const picker = document.createElement("div");
+      picker.className = "chip-picker";
+      const options = [{ value: "", label: "(default)" }];
+      levels.forEach(l => options.push({ value: l, label: l }));
+      options.push({ value: "none", label: "none" });
+      options.forEach(opt => {
+        const row = document.createElement("div");
+        row.className = "chip-picker-option";
+        row.textContent = opt.label;
+        row.addEventListener("click", () => {
+          setChipValue("reasoning_effort", opt.value);
+          picker.remove();
+        });
+        picker.appendChild(row);
+      });
+
+      chip.parentNode.style.position = "relative";
+      chip.parentNode.appendChild(picker);
+      picker.style.position = "absolute";
+      picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
+      picker.style.left = chip.offsetLeft + "px";
+      picker.style.zIndex = "50";
+      attachPickerDismiss(picker);
+    });
   }
 
   function listModelsForHarness(harness) {

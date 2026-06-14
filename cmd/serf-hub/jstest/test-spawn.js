@@ -347,6 +347,60 @@ assert(diagRows[0].includes("kimi") && diagRows[0].includes("list models: HTTP 4
 assert(diagModelDom.window.document.querySelector(".chip-picker-model-name"),
   "picker should still render available models alongside diagnostics");
 
+// The effort chip offers the SELECTED model's reasoning-effort levels (per
+// model), not a static list, plus (default)/none.
+const effortDom = new JSDOM(`<!DOCTYPE html><html><body>
+  <form data-spawn-form>
+    <button class="btn btn-chip" type="button" data-chip="harness"><span class="chip-value" data-chip-value-harness>serf</span></button>
+    <button class="btn btn-chip" type="button" data-chip="model"><span class="chip-value" data-chip-value-model>claude-opus-4-6</span></button>
+    <button class="btn btn-chip" type="button" data-chip="reasoning_effort"><span class="chip-value" data-chip-value-reasoning_effort>(default)</span></button>
+    <textarea name="prompt"></textarea>
+    <input type="hidden" name="harness" value="serf">
+    <input type="hidden" data-harness-option value="serf" data-label="serf">
+    <input type="hidden" name="model" value="anthropic/claude-opus-4-6">
+    <input type="hidden" name="reasoning_effort" value="">
+    <input type="hidden" name="working_dir" value="/tmp/effort">
+    <input type="hidden" name="branch" value="">
+    <input type="hidden" name="access_mode" value="full">
+    <input type="hidden" name="agent" value="default">
+    <button class="btn btn-primary spawn-btn" type="submit">spawn</button>
+  </form>
+</body></html>`, {
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+  url: "http://127.0.0.1:9180/new",
+});
+effortDom.window.SerfAppwire = {
+  listModels() {
+    return { then(resolve) { resolve([{ provider: "anthropic", model: "claude-opus-4-6" }]); return { catch() {} }; } };
+  },
+  listModelsWithDiagnostics() {
+    return {
+      then(resolve) {
+        resolve({
+          models: [{ provider: "anthropic", model: "claude-opus-4-6", reasoning_effort_levels: ["low", "medium", "high", "max"] }],
+          diagnostics: [],
+        });
+        return { catch() {} };
+      },
+    };
+  },
+};
+effortDom.window.eval(dirPickerSrc);
+effortDom.window.eval(spawnSrc);
+effortDom.window.document.dispatchEvent(new effortDom.window.Event("DOMContentLoaded", { bubbles: true }));
+effortDom.window.document.querySelector('button[data-chip="reasoning_effort"]').click();
+const effortOptions = Array.from(effortDom.window.document.querySelectorAll(".chip-picker .chip-picker-option")).map(el => el.textContent);
+assert(effortOptions.join(",") === "(default),low,medium,high,max,none",
+  "effort picker should list the model's levels + default/none, got " + JSON.stringify(effortOptions));
+assert(!effortOptions.includes("minimal"),
+  "effort picker should be per-model (claude-opus-4-6 has no 'minimal'), got " + JSON.stringify(effortOptions));
+Array.from(effortDom.window.document.querySelectorAll(".chip-picker-option")).find(el => el.textContent === "max").click();
+assert(effortDom.window.document.querySelector('input[name="reasoning_effort"]').value === "max",
+  "selecting an effort level should set the hidden reasoning_effort input");
+assert(effortDom.window.document.querySelector("[data-chip-value-reasoning_effort]").textContent === "max",
+  "selecting an effort level should update the chip display");
+
 let promptCalled = false;
 formDom.window.prompt = () => {
   promptCalled = true;

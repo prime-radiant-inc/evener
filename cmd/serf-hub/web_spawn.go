@@ -230,6 +230,9 @@ func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor) []map[string]
 				entry["supports_reasoning"] = mi.SupportsReasoning
 				entry["input_cost_per_million"] = mi.InputCostPerMillion
 				entry["output_cost_per_million"] = mi.OutputCostPerMillion
+				if len(mi.ReasoningEffortLevels) > 0 {
+					entry["reasoning_effort_levels"] = mi.ReasoningEffortLevels
+				}
 			}
 		}
 		out = append(out, entry)
@@ -319,6 +322,9 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 				}
 				if _, ok := entry["supports_reasoning"]; !ok {
 					entry["supports_reasoning"] = mi.SupportsReasoning
+				}
+				if len(mi.ReasoningEffortLevels) > 0 {
+					entry["reasoning_effort_levels"] = mi.ReasoningEffortLevels
 				}
 			}
 			out = append(out, entry)
