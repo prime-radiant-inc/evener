@@ -150,6 +150,17 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 			body["output_config"] = map[string]any{"effort": effort}
 		}
 	}
+	// Anthropic rejects a forced tool_choice ("any"/"tool") when extended thinking
+	// is enabled — "Thinking may not be enabled when tool_choice forces tool use".
+	// When effort turned thinking on, downgrade forcing to "auto" so the request
+	// is accepted; the model still reasons and then chooses its tools.
+	if _, thinking := body["thinking"]; thinking {
+		if tc, ok := body["tool_choice"].(map[string]any); ok {
+			if t, _ := tc["type"].(string); t == "any" || t == "tool" {
+				body["tool_choice"] = map[string]any{"type": "auto"}
+			}
+		}
+	}
 	if req.ProviderOptions != nil {
 		if ov, ok := req.ProviderOptions["anthropic"].(map[string]any); ok {
 			for k, v := range ov {
