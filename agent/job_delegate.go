@@ -144,7 +144,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	ownAllowance := s.delegationAllowance
 	s.mu.Unlock()
 	if args.DelegationAllowance >= ownAllowance {
-		return delegateStartFailed(fmt.Errorf("invalid_request: delegation_allowance must be less than your own allowance (%d)", ownAllowance))
+		return delegateStartFailed(fmt.Errorf("invalid_request: delegation_allowance must be less than your own allowance (%d); valid grants: %s", ownAllowance, validGrantRange(ownAllowance)))
 	}
 
 	blockTimeout := time.Duration(clampShellBlockTimeoutMS(args.BlockTimeoutMS)) * time.Millisecond
@@ -1101,6 +1101,15 @@ func delegateFinalizeFailedResult(run *runningJob, reason string, err error) del
 		TranscriptRef:       run.rec.TranscriptRef,
 		Err:                 err,
 	}
+}
+
+// validGrantRange renders the inclusive set a caller with `own` allowance may grant
+// to a child (always strictly less than its own): "0" at the floor, else "0..N-1".
+func validGrantRange(own int) string {
+	if own <= 1 {
+		return "0"
+	}
+	return fmt.Sprintf("0..%d", own-1)
 }
 
 func delegateStartFailed(err error) delegateResult {

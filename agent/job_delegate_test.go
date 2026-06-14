@@ -159,7 +159,7 @@ func TestDelegateRejectsAllowanceGEOwn(t *testing.T) {
 	if rejected.Err == nil {
 		t.Fatalf("delegate(delegation_allowance=2) with own allowance 2 should be rejected, got result %+v", rejected)
 	}
-	const wantMsg = "invalid_request: delegation_allowance must be less than your own allowance (2)"
+	const wantMsg = "invalid_request: delegation_allowance must be less than your own allowance (2); valid grants: 0..1"
 	if rejected.Err.Error() != wantMsg {
 		t.Fatalf("rejection message = %q, want %q", rejected.Err.Error(), wantMsg)
 	}
@@ -5179,4 +5179,28 @@ func TestCoordinatorTypeDelegateResumes(t *testing.T) {
 			t.Fatalf("validateRestoredDelegateRequiredTools no frozen tools: got error %v, want nil", err)
 		}
 	})
+}
+
+func TestDelegateGrantErrorEnumeratesValidRange(t *testing.T) {
+	cases := []struct {
+		ownAllowance int
+		wantContains string
+	}{
+		{ownAllowance: 1, wantContains: "valid grants: 0"},
+		{ownAllowance: 3, wantContains: "valid grants: 0..2"},
+	}
+	for _, tc := range cases {
+		s := newTestSession(t)
+		s.delegationAllowance = tc.ownAllowance
+		res := s.createDelegate(context.Background(), delegateArgs{
+			Task:                "do a thing",
+			DelegationAllowance: tc.ownAllowance, // >= own => rejected
+		})
+		if res.Err == nil {
+			t.Fatalf("own=%d: expected grant error, got nil", tc.ownAllowance)
+		}
+		if !strings.Contains(res.Err.Error(), tc.wantContains) {
+			t.Fatalf("own=%d: error %q missing %q", tc.ownAllowance, res.Err.Error(), tc.wantContains)
+		}
+	}
 }

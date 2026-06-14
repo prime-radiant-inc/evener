@@ -516,10 +516,14 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (string, error) 
 			jobs = append(jobs, projectJobRecord(s, rec))
 		}
 	}
+	s.mu.Lock()
+	allowance := s.delegationAllowance
+	s.mu.Unlock()
 	return marshalBoundedJobListResult(jobListResult{
-		Jobs:    jobs,
-		Count:   len(jobs),
-		Watches: jm.liveWatchSummaries(),
+		Jobs:                jobs,
+		Count:               len(jobs),
+		Watches:             jm.liveWatchSummaries(),
+		DelegationAllowance: allowance,
 	}, maxChars)
 }
 
@@ -619,9 +623,10 @@ type jobOutputMatch struct {
 }
 
 type jobListResult struct {
-	Jobs    []jobListEntry   `json:"jobs"`
-	Count   int              `json:"count"`
-	Watches []watchListEntry `json:"watches"`
+	Jobs                []jobListEntry   `json:"jobs"`
+	Count               int              `json:"count"`
+	Watches             []watchListEntry `json:"watches"`
+	DelegationAllowance int              `json:"delegation_allowance"`
 }
 
 // watchListEntry is one active watch in job_list's result (spec §4 F2),

@@ -3586,3 +3586,22 @@ func requiredParams(t *testing.T, name string, raw any) []string {
 		return nil
 	}
 }
+
+func TestJobListReportsDelegationAllowance(t *testing.T) {
+	s := newTestSession(t)
+	s.delegationAllowance = 2
+
+	out, err := jobListTool(s, decodeJobListArgs(t, `{}`), 1<<20)
+	if err != nil {
+		t.Fatalf("jobListTool: %v", err)
+	}
+	var got struct {
+		DelegationAllowance int `json:"delegation_allowance"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("unmarshal job_list output: %v (out=%s)", err, out)
+	}
+	if got.DelegationAllowance != 2 {
+		t.Fatalf("delegation_allowance = %d, want 2", got.DelegationAllowance)
+	}
+}
