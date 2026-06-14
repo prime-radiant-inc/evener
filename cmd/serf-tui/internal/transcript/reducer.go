@@ -69,6 +69,37 @@ func (r *TranscriptReducer) ApplyAgentMessageDelta(turnID, itemID, delta string)
 	}
 }
 
+// ResetAgentMessage discards the in-progress assistant message for itemID so a
+// retried model call's output replaces, rather than appends to, the partial
+// that was already streamed. No-op when the item is unknown.
+func (r *TranscriptReducer) ResetAgentMessage(turnID, itemID string) {
+	if itemID == "" {
+		return
+	}
+	idx, ok := r.messageIndexByItemID(itemID, MsgAssistant, turnID, TurnIndexFromID(turnID))
+	if !ok {
+		return
+	}
+	r.messages = append(r.messages[:idx], r.messages[idx+1:]...)
+	delete(r.activeMessages, itemID)
+	r.shiftActiveIndicesAfterRemoval(idx)
+}
+
+// shiftActiveIndicesAfterRemoval decrements the cached active-item indices that
+// sat after a removed message so they keep pointing at the same messages.
+func (r *TranscriptReducer) shiftActiveIndicesAfterRemoval(removed int) {
+	for id, i := range r.activeMessages {
+		if i > removed {
+			r.activeMessages[id] = i - 1
+		}
+	}
+	for id, i := range r.activeTools {
+		if i > removed {
+			r.activeTools[id] = i - 1
+		}
+	}
+}
+
 func (r *TranscriptReducer) ApplyUserMessageEcho(text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {

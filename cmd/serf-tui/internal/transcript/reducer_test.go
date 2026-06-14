@@ -218,6 +218,31 @@ func TestHubTranscriptReducerScopesAssistantDeltasByTurnID(t *testing.T) {
 	}
 }
 
+func TestHubTranscriptReducerResetDiscardsInProgressAssistant(t *testing.T) {
+	reducer := NewTranscriptReducer(nil, nil, nil)
+	reducer.ApplyAgentMessageDelta("turn_1", "assistant_1", "partial reply")
+	if len(reducer.messages) != 1 {
+		t.Fatalf("expected the in-progress assistant message, got %+v", reducer.messages)
+	}
+
+	reducer.ResetAgentMessage("turn_1", "assistant_1")
+	if len(reducer.messages) != 0 {
+		t.Fatalf("reset should discard the in-progress assistant message, got %+v", reducer.messages)
+	}
+
+	// The retry streams onto a fresh item; the discarded partial does not return.
+	reducer.ApplyAgentMessageDelta("turn_1", "assistant_2", "final reply")
+	if len(reducer.messages) != 1 || reducer.messages[0].Text != "final reply" || reducer.messages[0].ItemID != "assistant_2" {
+		t.Fatalf("post-reset messages=%+v", reducer.messages)
+	}
+
+	// Resetting an unknown item is a no-op.
+	reducer.ResetAgentMessage("turn_1", "nope")
+	if len(reducer.messages) != 1 {
+		t.Fatalf("reset of unknown item mutated messages: %+v", reducer.messages)
+	}
+}
+
 func TestHubTranscriptReducerLiveAndReplayReconstructSameTranscript(t *testing.T) {
 	user := appwire.ThreadItem{
 		Type:   "userMessage",

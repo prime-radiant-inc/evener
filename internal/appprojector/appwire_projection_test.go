@@ -850,8 +850,9 @@ func TestAppEventProjectorProjectsImageOnlySteeringInjected(t *testing.T) {
 // TestProjector_ForwardsProviderCause (kata cmfz) verifies that when an
 // EventError carries a structured ErrorCause (populated by agent.Session
 // when the underlying error is a typed llm.Error), the projector forwards
-// the cause into the NotifyWarning envelope so consumers can typed-branch
-// on Cause.Kind instead of substring-matching the message.
+// the cause into the failed-turn TurnError so consumers can typed-branch
+// on Cause.Kind instead of substring-matching the message. A genuine failure
+// is surfaced only as a failed turn — never also as a NotifyWarning.
 func TestProjector_ForwardsProviderCause(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
@@ -870,35 +871,8 @@ func TestProjector_ForwardsProviderCause(t *testing.T) {
 		},
 	})
 
-	var warning *AppNotification
-	for i := range out {
-		if out[i].Method == appwire.NotifyWarning {
-			warning = &out[i]
-			break
-		}
-	}
-	if warning == nil {
-		t.Fatalf("no warning notification: %+v", out)
-	}
-	params, ok := warning.Params.(map[string]any)
-	if !ok {
-		t.Fatalf("warning params=%T", warning.Params)
-	}
-	cause, ok := params["cause"].(*appwire.DiagnosticCause)
-	if !ok || cause == nil {
-		t.Fatalf("cause field missing/typed-wrong: got %T (params=%+v)", params["cause"], params)
-	}
-	if cause.Kind != "provider" {
-		t.Fatalf("cause.Kind=%q, want provider", cause.Kind)
-	}
-	if cause.Provider != "anthropic" {
-		t.Fatalf("cause.Provider=%q, want anthropic", cause.Provider)
-	}
-	if cause.Model != "claude-opus-4-7" {
-		t.Fatalf("cause.Model=%q, want claude-opus-4-7", cause.Model)
-	}
-	if cause.Status != 503 {
-		t.Fatalf("cause.Status=%d, want 503", cause.Status)
+	if hasAppNotification(out, appwire.NotifyWarning) {
+		t.Fatalf("non-cancelled error emitted a redundant NotifyWarning: %+v", out)
 	}
 	var completed *AppNotification
 	for i := range out {
@@ -928,7 +902,7 @@ func TestProjector_ForwardsProviderCause(t *testing.T) {
 
 // TestProjector_OmitsCauseWhenAbsent (kata cmfz) verifies that when an
 // EventError has no structured cause, the projector does not invent one
-// and the warning envelope's cause field stays absent (or nil).
+// and the failed-turn TurnError's cause stays nil.
 func TestProjector_OmitsCauseWhenAbsent(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
@@ -939,33 +913,22 @@ func TestProjector_OmitsCauseWhenAbsent(t *testing.T) {
 		Data:      events.ErrorData{Error: "something else broke"},
 	})
 
-	var warning *AppNotification
-	for i := range out {
-		if out[i].Method == appwire.NotifyWarning {
-			warning = &out[i]
-			break
-		}
+	if hasAppNotification(out, appwire.NotifyWarning) {
+		t.Fatalf("non-cancelled error emitted a redundant NotifyWarning: %+v", out)
 	}
-	if warning == nil {
-		t.Fatalf("no warning notification: %+v", out)
+	turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
+	if turn.Error == nil {
+		t.Fatalf("failed turn missing error: %+v", turn)
 	}
-	params, ok := warning.Params.(map[string]any)
-	if !ok {
-		t.Fatalf("warning params=%T", warning.Params)
-	}
-	raw, present := params["cause"]
-	if present && raw != nil {
-		// A *appwire.DiagnosticCause that is non-nil would be a defect.
-		if cause, ok := raw.(*appwire.DiagnosticCause); !ok || cause != nil {
-			t.Fatalf("expected cause absent or nil, got %T %+v", raw, raw)
-		}
+	if turn.Error.Cause != nil {
+		t.Fatalf("expected nil cause, got %+v", turn.Error.Cause)
 	}
 }
 
-// TestProjector_BackcompatNonProviderError (kata cmfz) regression-locks
-// the pre-existing warning envelope projection — message, an explicit
-// hub source, title, and hint must still pass through unchanged after
-// the cause field is added.
+// TestProjector_BackcompatNonProviderError (kata cmfz) regression-locks the
+// diagnostic projection for a non-provider error — message, an explicit hub
+// source, title, and hint must pass through unchanged on the failed-turn
+// TurnError, with no cause invented and no redundant NotifyWarning.
 func TestProjector_BackcompatNonProviderError(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
@@ -981,37 +944,137 @@ func TestProjector_BackcompatNonProviderError(t *testing.T) {
 		},
 	})
 
-	var warning *AppNotification
-	for i := range out {
-		if out[i].Method == appwire.NotifyWarning {
-			warning = &out[i]
-			break
+	if hasAppNotification(out, appwire.NotifyWarning) {
+		t.Fatalf("non-cancelled error emitted a redundant NotifyWarning: %+v", out)
+	}
+	turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
+	if turn.Error == nil {
+		t.Fatalf("failed turn missing error: %+v", turn)
+	}
+	if turn.Error.Message != "subscribe failed" {
+		t.Fatalf("message=%v", turn.Error.Message)
+	}
+	if turn.Error.Source != "hub" {
+		t.Fatalf("source=%v", turn.Error.Source)
+	}
+	if turn.Error.Title != "Live updates unavailable" {
+		t.Fatalf("title=%v", turn.Error.Title)
+	}
+	if turn.Error.Hint != "Retry the action." {
+		t.Fatalf("hint=%v", turn.Error.Hint)
+	}
+	if turn.Error.Cause != nil {
+		t.Fatalf("expected nil cause, got %+v", turn.Error.Cause)
+	}
+}
+
+// TestProjector_GenuineErrorEmitsSingleDiagnostic verifies that a non-cancelled
+// EventError surfaces exactly once — as a failed turn carrying the full
+// diagnostic (message/source/title/hint/cause) — and does NOT also emit a
+// redundant NotifyWarning. Emitting both made the same error render twice in
+// clients that show both channels (the web UI drew a "Provider warning" card
+// and a "Provider error" card for one failure).
+func TestProjector_GenuineErrorEmitsSingleDiagnostic(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventError,
+		SessionID: "th_1",
+		Data: events.ErrorData{
+			Error:  `openai error: chat.completions stream closed without [DONE] (model: "gpt-5.4-mini")`,
+			Source: "provider",
+			Title:  "Provider error",
+			Cause: &events.ErrorCause{
+				Kind:     "provider",
+				Provider: "openai",
+				Model:    "gpt-5.4-mini",
+			},
+		},
+	})
+
+	if hasAppNotification(out, appwire.NotifyWarning) {
+		t.Fatalf("non-cancelled error emitted a redundant NotifyWarning: %+v", out)
+	}
+	if !hasAppNotification(out, appwire.NotifyTurnCompleted) {
+		t.Fatalf("non-cancelled error did not complete the turn as failed: %+v", out)
+	}
+	turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
+	if turn.Status != appwire.TurnStatusFailed {
+		t.Fatalf("turn status=%s, want failed", turn.Status)
+	}
+	if turn.Error == nil {
+		t.Fatalf("failed turn missing error: %+v", turn)
+	}
+	if turn.Error.Message == "" || turn.Error.Title != "Provider error" || turn.Error.Source != "provider" {
+		t.Fatalf("failed turn error missing diagnostic fields: %+v", turn.Error)
+	}
+	if turn.Error.Cause == nil || turn.Error.Cause.Provider != "openai" {
+		t.Fatalf("failed turn error missing cause: %+v", turn.Error)
+	}
+}
+
+// TestProjector_AssistantTextResetDiscardsInProgressItem verifies that an
+// EventAssistantTextReset discards the in-progress assistant item (naming it so
+// consumers can remove it) and clears projector state so the next delta opens a
+// fresh item. With no in-progress assistant, it is a no-op.
+func TestProjector_AssistantTextResetDiscardsInProgressItem(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	p.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hi"}})
+
+	startOut := p.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1", Data: events.AssistantTextStartData{}})
+	startedItem := ""
+	for _, n := range startOut {
+		if n.Method == appwire.NotifyItemStarted {
+			if params, ok := n.Params.(map[string]any); ok {
+				if item, ok := params["item"].(appwire.ThreadItem); ok {
+					startedItem = item.ID
+				}
+			}
 		}
 	}
-	if warning == nil {
-		t.Fatalf("no warning notification: %+v", out)
+	if startedItem == "" {
+		t.Fatalf("assistant start did not open an item: %+v", startOut)
 	}
-	params, ok := warning.Params.(map[string]any)
-	if !ok {
-		t.Fatalf("warning params=%T", warning.Params)
-	}
-	if params["message"] != "subscribe failed" {
-		t.Fatalf("message=%v", params["message"])
-	}
-	if params["source"] != "hub" {
-		t.Fatalf("source=%v", params["source"])
-	}
-	if params["title"] != "Live updates unavailable" {
-		t.Fatalf("title=%v", params["title"])
-	}
-	if params["hint"] != "Retry the action." {
-		t.Fatalf("hint=%v", params["hint"])
-	}
-	// Cause should be absent since this EventError did not carry one.
-	if raw, present := params["cause"]; present && raw != nil {
-		if cause, ok := raw.(*appwire.DiagnosticCause); !ok || cause != nil {
-			t.Fatalf("expected cause absent or nil, got %T %+v", raw, raw)
+	p.Project(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "partial"}})
+
+	resetOut := p.Project(events.SessionEvent{Kind: events.EventAssistantTextReset, SessionID: "th_1", Data: events.AssistantTextResetData{}})
+	var resetParams *appwire.AgentMessageResetParams
+	for i := range resetOut {
+		if resetOut[i].Method == appwire.NotifyAgentMessageReset {
+			pp, ok := resetOut[i].Params.(appwire.AgentMessageResetParams)
+			if !ok {
+				t.Fatalf("reset params=%T", resetOut[i].Params)
+			}
+			resetParams = &pp
 		}
+	}
+	if resetParams == nil {
+		t.Fatalf("reset did not emit NotifyAgentMessageReset: %+v", resetOut)
+	}
+	if resetParams.ItemID != startedItem {
+		t.Fatalf("reset itemID=%q, want the discarded item %q", resetParams.ItemID, startedItem)
+	}
+
+	// State is cleared: the next delta opens a fresh item, not the discarded one.
+	deltaOut := p.Project(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "fresh"}})
+	freshItem := ""
+	for _, n := range deltaOut {
+		if n.Method == appwire.NotifyAgentMessageDelta {
+			if params, ok := n.Params.(appwire.AgentMessageDeltaParams); ok {
+				freshItem = params.ItemID
+			}
+		}
+	}
+	if freshItem == "" || freshItem == startedItem {
+		t.Fatalf("post-reset delta itemID=%q, want a fresh item distinct from %q", freshItem, startedItem)
+	}
+
+	// No in-progress assistant → reset is a no-op.
+	p.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "fresh"}})
+	noop := p.Project(events.SessionEvent{Kind: events.EventAssistantTextReset, SessionID: "th_1", Data: events.AssistantTextResetData{}})
+	if hasAppNotification(noop, appwire.NotifyAgentMessageReset) {
+		t.Fatalf("reset with no in-progress assistant should be a no-op: %+v", noop)
 	}
 }
 

@@ -807,28 +807,17 @@ func TestServerAppWireErrorEventNotifiesSubscribers(t *testing.T) {
 		Data:      events.ErrorData{Error: "provider unavailable"},
 	})
 
-	var sawWarning bool
+	// A genuine provider failure is surfaced exactly once — as a failed turn
+	// carrying the diagnostic. It must NOT also emit a redundant NotifyWarning
+	// (that made the same error render twice in clients showing both channels).
 	var sawFailedTurn bool
 	deadline := time.After(time.Second)
-	for !sawWarning || !sawFailedTurn {
+	for !sawFailedTurn {
 		select {
 		case got := <-client.Notifications():
 			switch got.Method {
 			case appwire.NotifyWarning:
-				var params struct {
-					Message string `json:"message"`
-					Source  string `json:"source"`
-				}
-				if err := json.Unmarshal(got.Params, &params); err != nil {
-					t.Fatalf("warning params: %v", err)
-				}
-				if params.Message != "provider unavailable" {
-					t.Fatalf("warning message=%q", params.Message)
-				}
-				if params.Source != string(diagnostic.SourceProvider) {
-					t.Fatalf("warning source=%q", params.Source)
-				}
-				sawWarning = true
+				t.Fatalf("non-cancelled provider error emitted a redundant NotifyWarning: %s", got.Params)
 			case appwire.NotifyTurnCompleted:
 				var params struct {
 					Turn appwire.Turn `json:"turn"`
@@ -841,7 +830,7 @@ func TestServerAppWireErrorEventNotifiesSubscribers(t *testing.T) {
 				}
 			}
 		case <-deadline:
-			t.Fatalf("missing notifications: warning=%v failedTurn=%v", sawWarning, sawFailedTurn)
+			t.Fatalf("missing failed-turn notification")
 		}
 	}
 }

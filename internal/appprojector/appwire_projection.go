@@ -204,6 +204,23 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			"turnId":   turnID,
 			"item":     item,
 		})}
+	case events.EventAssistantTextReset:
+		// A retry after partial output: discard the in-progress assistant item
+		// so the retry's stream replaces it rather than appending. No-op when
+		// nothing was streamed yet (no item to reset).
+		if p.assistantItem == "" {
+			return nil
+		}
+		itemID := p.assistantItem
+		turnID := p.activeTurnID
+		p.assistantItem = ""
+		p.assistantText = ""
+		return []AppNotification{p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			TurnID:   turnID,
+			ItemID:   itemID,
+		})}
 	case events.EventCommunicate:
 		data := eventData[events.CommunicateData](event.Data)
 		text := strings.TrimSpace(data.Message)
@@ -309,24 +326,32 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		info := diagnostic.FromFields(data.Source, data.Title, data.Hint, message)
 		cause := projectErrorCause(data.Cause)
-		warning := p.notification(appwire.NotifyWarning, map[string]any{
-			"threadId": p.threadID,
-			"ref":      p.ref,
-			"message":  message,
-			"source":   string(info.Source),
-			"title":    info.Title,
-			"hint":     info.Hint,
-			"cause":    cause,
-			"warning": events.WarningData{
-				Message: message,
-				Source:  string(info.Source),
-				Title:   info.Title,
-				Hint:    info.Hint,
-			},
-		})
+
+		// A user-cancelled turn is not a failure: surface it as a warning and
+		// let the interrupted SessionEnd own the turn's terminal state (do NOT
+		// complete the turn as failed here).
 		if isContextCanceledError(message) {
-			return []AppNotification{warning}
+			return []AppNotification{p.notification(appwire.NotifyWarning, map[string]any{
+				"threadId": p.threadID,
+				"ref":      p.ref,
+				"message":  message,
+				"source":   string(info.Source),
+				"title":    info.Title,
+				"hint":     info.Hint,
+				"cause":    cause,
+				"warning": events.WarningData{
+					Message: message,
+					Source:  string(info.Source),
+					Title:   info.Title,
+					Hint:    info.Hint,
+				},
+			})}
 		}
+
+		// A genuine turn failure is surfaced exactly once, as a failed turn. The
+		// TurnError carries the full diagnostic (message/source/title/hint/cause);
+		// emitting a separate NotifyWarning too would make the same error render
+		// twice in clients that show both the warning channel and turn errors.
 		p.ensureTurn()
 		turnID := p.activeTurnID
 		p.activeTurnID = ""
@@ -335,7 +360,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		p.toolItemsByKey = map[string]string{}
 		p.suppressedTools = map[string]struct{}{}
 		return []AppNotification{
-			warning,
 			p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,

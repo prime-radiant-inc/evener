@@ -250,6 +250,112 @@ func TestSession_StreamErrorReturnsSessionToIdle(t *testing.T) {
 	}
 }
 
+// TestSession_RetriesMidStreamFailure verifies that a retryable error surfaced
+// DURING stream consumption (after the HTTP response already returned 200) is
+// retried with the configured budget — not only open-time failures. A reasoning
+// -model cutoff arrives as a retryable StreamError mid-stream; without
+// consume-path retry, a single transient truncation fails the whole turn (the
+// gpt-5.4-mini "stream closed without [DONE]" incident).
+func TestSession_RetriesMidStreamFailure(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &streamingAdapter{
+		name: "openai",
+		streamScript: func(st *llm.ChanStream) {
+			// Open succeeds (200), then the stream closes with no finish event:
+			// a retryable "stream ended without finish event" mid-stream failure
+			// on every attempt, with no partial output delivered.
+			st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
+		},
+	}
+	c.Register(f)
+
+	noSleep := func(context.Context, time.Duration) error { return nil }
+	policy := llm.RetryPolicy{MaxRetries: 5, BaseDelay: time.Millisecond}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+		LLMSleep:       noSleep,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
+		t.Fatal("expected failure after exhausting the retry budget")
+	}
+
+	if _, streamCalls := f.Counts(); streamCalls != 6 {
+		t.Fatalf("stream calls = %d, want 6 (1 initial + 5 retries of the open+consume cycle)", streamCalls)
+	}
+}
+
+// TestSession_RetriesAfterPartialOutputAndResets verifies that a retryable
+// mid-stream failure is retried even after partial output was streamed to the
+// user, and that each retry first emits an assistant-text reset so the retry's
+// output replaces the discarded partial rather than appending to it.
+func TestSession_RetriesAfterPartialOutputAndResets(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &streamingAdapter{
+		name: "openai",
+		streamScript: func(st *llm.ChanStream) {
+			// Stream a partial assistant delta, then close without a finish
+			// event: a retryable failure with partial output already shown.
+			st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
+			st.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "t0"})
+			st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: "t0", Delta: "partial"})
+		},
+	}
+	c.Register(f)
+
+	var mu sync.Mutex
+	resets := 0
+	done := make(chan struct{})
+
+	noSleep := func(context.Context, time.Duration) error { return nil }
+	policy := llm.RetryPolicy{MaxRetries: 3, BaseDelay: time.Millisecond}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+		LLMSleep:       noSleep,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			if ev.Kind == events.EventAssistantTextReset {
+				mu.Lock()
+				resets++
+				mu.Unlock()
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
+		t.Fatal("expected failure after exhausting the retry budget")
+	}
+	sess.Close()
+	<-done
+
+	if _, streamCalls := f.Counts(); streamCalls != 4 {
+		t.Fatalf("stream calls = %d, want 4 (partial output must not block retry)", streamCalls)
+	}
+	mu.Lock()
+	gotResets := resets
+	mu.Unlock()
+	// One reset before each of the 3 retries: the partial shown by each failed
+	// attempt is discarded before the next attempt streams.
+	if gotResets != 3 {
+		t.Fatalf("assistant-text resets = %d, want 3 (one before each retry after partial)", gotResets)
+	}
+}
+
 // kata 3tgv: when the agent loop bails out of session.Input via a recoverable
 // LLM error (retry policy exhausted, stream-ended, etc.), the in-memory
 // turn_count was not being flushed to meta.json. The fix adds a maybeAutoSave

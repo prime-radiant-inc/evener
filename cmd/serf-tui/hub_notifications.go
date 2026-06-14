@@ -77,6 +77,13 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		if json.Unmarshal(notification.Params, &params) == nil {
 			m.applyAgentMessageDelta(params.TurnID, params.ItemID, params.Delta)
 		}
+	case appwire.NotifyAgentMessageReset:
+		var params appwire.AgentMessageResetParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			reducer := m.sessionTranscriptReducer()
+			reducer.ResetAgentMessage(params.TurnID, params.ItemID)
+			m.applySessionTranscriptReducer(reducer)
+		}
 	case appwire.NotifyToolOutputDelta:
 		var params appwire.ToolOutputDeltaParams
 		if json.Unmarshal(notification.Params, &params) == nil {
