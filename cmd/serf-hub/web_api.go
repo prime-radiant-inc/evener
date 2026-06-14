@@ -160,7 +160,7 @@ func (s *WebServer) handleAPISpawnSchema(w http.ResponseWriter, r *http.Request)
 		{Name: "working_dir", Type: "path"},
 		{Name: "model", Type: "model"},
 		{Name: "agent", Type: "string"},
-		{Name: "reasoning_effort", Type: "enum", Values: []string{"minimal", "low", "medium", "high", "xhigh", "max"}},
+		{Name: "reasoning_effort", Type: "enum", Values: []string{"minimal", "low", "medium", "high", "xhigh", "max", "none"}},
 	}})
 }
 

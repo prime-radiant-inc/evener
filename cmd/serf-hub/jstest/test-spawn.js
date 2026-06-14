@@ -395,8 +395,8 @@ effortDom.window.document.querySelector('button[data-chip="reasoning_effort"]').
 // The effort picker builds asynchronously after the REST fetch resolves.
 await new Promise((r) => setTimeout(r, 0));
 const effortOptions = Array.from(effortDom.window.document.querySelectorAll(".chip-picker .chip-picker-option")).map(el => el.textContent);
-assert(effortOptions.join(",") === "(default),low,medium,high,max",
-  "effort picker should list (default) + the model's levels (no redundant 'none'), got " + JSON.stringify(effortOptions));
+assert(effortOptions.join(",") === "(default),low,medium,high,max,none",
+  "effort picker should list (default) + the model's levels + 'none' (clears inherited default at launch), got " + JSON.stringify(effortOptions));
 assert(!effortOptions.includes("minimal"),
   "effort picker should be per-model (claude-opus-4-6 has no 'minimal'), got " + JSON.stringify(effortOptions));
 Array.from(effortDom.window.document.querySelectorAll(".chip-picker-option")).find(el => el.textContent === "max").click();

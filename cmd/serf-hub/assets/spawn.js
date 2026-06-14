@@ -1501,10 +1501,12 @@
 
       const picker = document.createElement("div");
       picker.className = "chip-picker";
-      // "(default)" already means "no override"; serf has no true disable, so
-      // "none" (which normalizes to "") is not offered as a distinct option.
+      // Launch context: "(default)" means "inherit the global/project default",
+      // while "none" overrides it to empty — the only way to clear an inherited
+      // high/max. Both are offered (they differ here, unlike at runtime).
       const options = [{ value: "", label: "(default)" }];
       levels.forEach(l => options.push({ value: l, label: l }));
+      options.push({ value: "none", label: "none" });
       options.forEach(opt => {
         const row = document.createElement("div");
         row.className = "chip-picker-option";

@@ -108,10 +108,11 @@ func LaunchOptionSchema() []LaunchOption {
 }
 
 func reasoningChoices() []LaunchOptionChoice {
-	// "none" is intentionally omitted: serf has no true reasoning-disable — it
-	// normalizes to "" (the same as "(default)"), so offering it as a distinct
-	// choice is misleading. The resolver still accepts "none" for back-compat.
-	return []LaunchOptionChoice{{Value: "", Label: "(default)"}, {Value: "minimal", Label: "minimal"}, {Value: "low", Label: "low"}, {Value: "medium", Label: "medium"}, {Value: "high", Label: "high"}, {Value: "xhigh", Label: "xhigh"}, {Value: "max", Label: "max"}}
+	// In layered launch config, "" ("(default)") means "no override → inherit the
+	// global/project default", whereas "none" overrides it to empty — the only
+	// way to CLEAR an inherited high/max from the launch UI. So both are kept and
+	// are genuinely distinct here (unlike the flat runtime path).
+	return []LaunchOptionChoice{{Value: "", Label: "(default)"}, {Value: "minimal", Label: "minimal"}, {Value: "low", Label: "low"}, {Value: "medium", Label: "medium"}, {Value: "high", Label: "high"}, {Value: "xhigh", Label: "xhigh"}, {Value: "max", Label: "max"}, {Value: "none", Label: "none (clear)"}}
 }
 
 func contextChoices() []LaunchOptionChoice {

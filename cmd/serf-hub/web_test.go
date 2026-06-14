@@ -4933,13 +4933,12 @@ func TestWeb_APISpawnSchema(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"minimal", "low", "medium", "high", "xhigh", "max"} {
+	// "none" is offered in the launch schema: in layered launch config it clears
+	// an inherited default (distinct from "(default)" which inherits).
+	for _, want := range []string{"minimal", "low", "medium", "high", "xhigh", "max", "none"} {
 		if !effortValues[want] {
 			t.Fatalf("reasoning_effort schema missing %q: %+v", want, effortValues)
 		}
-	}
-	if effortValues["none"] {
-		t.Fatalf("reasoning_effort schema should not offer 'none' (normalizes to default): %+v", effortValues)
 	}
 	if names["branch"] || names["access_mode"] {
 		t.Fatalf("schema exposes unsupported field: %+v", got.Fields)
