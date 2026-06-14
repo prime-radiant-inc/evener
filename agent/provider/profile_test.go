@@ -1,6 +1,40 @@
 package provider
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"testing"
+)
+
+// After an Anthropic model switch, WithModel must rebuild — not shallow-clone —
+// so every model-derived schema (the task_list reasoning_effort enum, context,
+// provider options) matches the new model. The switched profile's tool defs must
+// equal a freshly constructed profile for the target model.
+func TestAnthropicProfile_WithModelRebuildsToolSchemas(t *testing.T) {
+	switched := newAnthropicProfile("claude-opus-4-6").WithModel("claude-opus-4-5-20251101")
+	fresh := newAnthropicProfile("claude-opus-4-5-20251101")
+
+	sb, _ := json.Marshal(switched.ToolDefinitions())
+	fb, _ := json.Marshal(fresh.ToolDefinitions())
+	if !bytes.Equal(sb, fb) {
+		t.Errorf("WithModel(opus-4-5) tool defs differ from a fresh opus-4-5 profile (stale effort schema after switch)")
+	}
+	if switched.ContextWindowSize() != fresh.ContextWindowSize() {
+		t.Errorf("context window after switch = %d, want %d", switched.ContextWindowSize(), fresh.ContextWindowSize())
+	}
+}
+
+// A qualified, dated, "[1m]" openrouter-anthropic ref must report the 1M context
+// window — the GetModelInfo-based resolver can't see the suffix.
+func TestOpenRouterAnthropicProfile_OneMillionContext(t *testing.T) {
+	p := newOpenRouterAnthropicProfile("anthropic/claude-opus-4-5-20251101[1m]")
+	if p.ContextWindowSize() != 1_000_000 {
+		t.Errorf("openrouter-anthropic [1m] context = %d, want 1000000", p.ContextWindowSize())
+	}
+	if got := p.ReasoningEffortLevels(); len(got) != 3 {
+		t.Errorf("effort levels = %v, want 3 (opus-4-5 family)", got)
+	}
+}
 
 // A model carrying the Anthropic "[1m]" 1M-context suffix must resolve its
 // family's effort levels from the catalog (the key omits the suffix), not fall

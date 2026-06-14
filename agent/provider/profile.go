@@ -603,9 +603,11 @@ func (p *Profile) WithModel(model string) *Profile {
 		model = p.model
 	}
 
-	// Anthropic re-derives its context window and provider options from the
-	// model string: the [1m] suffix selects the 1M-token-context beta. It takes
-	// a dedicated path rather than the generic clone/rebuild below.
+	// Anthropic re-derives all model-dependent state from the model string (the
+	// [1m] suffix selects the 1M-context beta; effort levels and the tool schemas
+	// that embed the effort enum vary per model). It rebuilds via the constructor
+	// rather than shallow-cloning, so a model switch can't leave a stale
+	// max-capable effort set or task_list enum on a model capped at high.
 	if p.behaviorTag == "anthropic" {
 		// Strip the redundant "anthropic/" self-prefix; cross-provider refs are
 		// the Session resolver's job, so leave them unchanged here.
@@ -615,20 +617,8 @@ func (p *Profile) WithModel(model string) *Profile {
 				model = parts[1]
 			}
 		}
-		clone := *p
-		clone.model = model
-		has1M := strings.HasSuffix(model, anthropicSuffix1M)
-		if has1M {
-			clone.contextWindow = 1_000_000
-		} else {
-			clone.contextWindow = 200_000
-		}
-		clone.providerOpts = anthropicProviderOpts(has1M)
-		// Re-resolve effort levels for the new model: a shallow clone would keep
-		// the previous model's levels, leaving a max-capable set on a model capped
-		// at high after SetModel.
-		clone.effortLevels = resolveEffortLevels(model, anthropicDefaultEfforts)
-		return &clone
+		rebuilt := restampInstanceIdentity(newAnthropicProfile(model), p.behaviorTag, p.id)
+		return rebuilt.WithCommunicateOverridesFrom(p)
 	}
 
 	// Parse "provider/model" strings. decidePrefixAction classifies each
@@ -987,6 +977,13 @@ func newOpenRouterAnthropicProfile(model string) *Profile {
 
 	if efforts == nil {
 		efforts = resolveEffortLevels(model, defaultEfforts)
+	}
+	// The "[1m]" suffix selects the 1M-context beta, just as on the direct
+	// Anthropic profile. The GetModelInfo-based resolver above can't see it (the
+	// suffix isn't a catalog key), so set it explicitly for a qualified/dated
+	// "[1m]" ref like "anthropic/claude-opus-4-5-20251101[1m]".
+	if strings.HasSuffix(model, anthropicSuffix1M) {
+		contextWindow = 1_000_000
 	}
 	bp := buildBaseProfile(profileSpec{
 		id:              "openrouter-anthropic",
