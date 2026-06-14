@@ -1880,6 +1880,10 @@ func (s *relayLifecycleSource) SetThreadModel(context.Context, appwire.ThreadMod
 	return appwire.Unavailable("relay lifecycle source does not set models")
 }
 
+func (s *relayLifecycleSource) SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error {
+	return appwire.Unavailable("relay lifecycle source does not set reasoning effort")
+}
+
 func (s *relayLifecycleSource) GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 	return appwire.GoalSetResponse{}, appwire.Unavailable("relay lifecycle source does not set goals")
 }

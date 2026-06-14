@@ -321,6 +321,36 @@
               throw err;
             });
           } } },
+      { id: "reasoning-effort", title: "Set reasoning effort", hint: "", keywords: ["effort", "reasoning", "thinking"], scope: "session",
+        args: { kind: "enum", placeholder: "choose effort…",
+          // The daemon clamps to what the active model supports, so offering the
+          // full vocabulary here is safe.
+          source: () => Promise.resolve([
+            { id: "", label: "(default)" },
+            { id: "minimal", label: "minimal" },
+            { id: "low", label: "low" },
+            { id: "medium", label: "medium" },
+            { id: "high", label: "high" },
+            { id: "xhigh", label: "xhigh" },
+            { id: "none", label: "none" },
+          ]),
+          run: (ctx, item) => {
+            const eff = item.id || "";
+            const p = window.SerfAppwire ? window.SerfAppwire.setReasoningEffort(ctx.sessionId, eff) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/reasoning-effort", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ reasoning_effort: eff }),
+            });
+            return Promise.resolve(p).then((r) => {
+              if (r && typeof r.ok !== "undefined" && !r.ok) {
+                return blockedFromResponse("effort change failed", r);
+              }
+              if (window.SerfToast) window.SerfToast.show("Effort: " + (eff || "default"), "success");
+              return r;
+            }, (err) => {
+              if (window.SerfToast) window.SerfToast.show("Effort change failed", "error");
+              throw err;
+            });
+          } } },
       { id: "steer", title: "Steer model", hint: "inject mid-turn", keywords: [], scope: "session",
         args: { kind: "free", placeholder: "steer text…",
           run: (ctx, text) => {

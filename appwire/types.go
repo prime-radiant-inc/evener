@@ -16,6 +16,7 @@ const (
 	MethodThreadFork                = "thread/fork"
 	MethodThreadClear               = "thread/clear"
 	MethodThreadModelSet            = "thread/model/set"
+	MethodThreadReasoningEffortSet  = "thread/reasoning-effort/set"
 	MethodThreadCompactStart        = "thread/compact/start"
 	MethodThreadShutdown            = "thread/shutdown"
 	MethodTurnStart                 = "turn/start"
@@ -544,6 +545,14 @@ type ThreadModelSetParams struct {
 	Ref           string `json:"ref"`
 	ModelProvider string `json:"modelProvider"`
 	Model         string `json:"model"`
+}
+
+// ThreadReasoningEffortSetParams sets the reasoning effort on a running session.
+// An empty ReasoningEffort resets to the session/model default; "none" disables
+// reasoning. The daemon clamps the value to what the active model supports.
+type ThreadReasoningEffortSetParams struct {
+	Ref             string `json:"ref"`
+	ReasoningEffort string `json:"reasoningEffort"`
 }
 
 type TaskListParams struct {

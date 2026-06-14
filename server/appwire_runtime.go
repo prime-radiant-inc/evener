@@ -90,6 +90,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
 	appserver.HandleTyped(router, appwire.MethodThreadClear, s.handleAppThreadClear)
 	appserver.HandleTyped(router, appwire.MethodThreadModelSet, s.handleAppThreadModelSet)
+	appserver.HandleTyped(router, appwire.MethodThreadReasoningEffortSet, s.handleAppThreadReasoningEffortSet)
 	appserver.HandleTyped(router, appwire.MethodSerfTasksList, s.handleAppTasksList)
 	appserver.HandleTyped(router, appwire.MethodModelList, s.handleAppModelList)
 }
@@ -355,6 +356,17 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 		return appwire.EmptyResponse{}, appwire.Unavailable("model change not available")
 	}
 	fn(model)
+	return appwire.EmptyResponse{}, nil
+}
+
+func (s *Server) handleAppThreadReasoningEffortSet(_ context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
+	s.mu.RLock()
+	fn := s.reasoningEffortFunc
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.EmptyResponse{}, appwire.Unavailable("reasoning effort change not available")
+	}
+	fn(strings.TrimSpace(params.ReasoningEffort))
 	return appwire.EmptyResponse{}, nil
 }
 

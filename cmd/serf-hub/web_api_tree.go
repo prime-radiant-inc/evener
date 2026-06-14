@@ -414,6 +414,8 @@ func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 		s.handleAPIClear(w, r, routeID)
 	case "model":
 		s.handleAPIModel(w, r, routeID)
+	case "reasoning-effort":
+		s.handleAPIReasoningEffort(w, r, routeID)
 	case "interrupt", "compact", "shutdown":
 		s.handleSessionAction(w, r, routeID, sub)
 	default:

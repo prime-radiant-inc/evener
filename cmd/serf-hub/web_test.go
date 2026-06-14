@@ -1425,6 +1425,10 @@ func (s *scriptedAppSource) SetThreadModel(context.Context, appwire.ThreadModelS
 	return appwire.Unavailable("scripted source does not set models")
 }
 
+func (s *scriptedAppSource) SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error {
+	return appwire.Unavailable("scripted source does not set reasoning effort")
+}
+
 func (s *scriptedAppSource) GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 	return appwire.GoalSetResponse{}, appwire.Unavailable("scripted source does not set goals")
 }

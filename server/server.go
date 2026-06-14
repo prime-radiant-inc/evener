@@ -150,6 +150,7 @@ type Server struct {
 	contextMetricsFn    func() ContextMetrics
 	detailedStatusFn    func() DetailedStatus
 	modelFunc           func(string)
+	reasoningEffortFunc func(string)
 	listModelsFunc      func(context.Context) ([]ModelsResponseItem, error)
 	tasksFn             func() any
 	shutdownFunc        func()
@@ -403,6 +404,14 @@ func (s *Server) SetClearFunc(fn func(context.Context) error) {
 func (s *Server) SetModelFunc(fn func(string)) {
 	s.mu.Lock()
 	s.modelFunc = fn
+	s.mu.Unlock()
+}
+
+// SetReasoningEffortFunc sets the function called to change the reasoning effort
+// of the running session.
+func (s *Server) SetReasoningEffortFunc(fn func(string)) {
+	s.mu.Lock()
+	s.reasoningEffortFunc = fn
 	s.mu.Unlock()
 }
 

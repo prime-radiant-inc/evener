@@ -424,6 +424,13 @@ async function commandSweep() {
         const body = String(hit && hit.opts && hit.opts.body || "");
         assertCS(c, body.indexOf("anthropic/claude-opus-4-7") >= 0, "body carries provider/model id (got " + body + ")");
       } },
+    { name: "reasoning-effort", page: "session", query: "/effort", argEntry: "high",
+      expect: (c) => {
+        const hit = c.calls.fetches.find(f => f.url === "/s/01S/reasoning-effort");
+        assertCS(c, !!hit, "POST /s/01S/reasoning-effort");
+        const body = String(hit && hit.opts && hit.opts.body || "");
+        assertCS(c, body.indexOf("high") >= 0, "body carries effort level (got " + body + ")");
+      } },
     { name: "steer-blocked", page: "session", query: "/steer", argEntry: "less rambling", expectStaysOpen: true,
       expect: (c) => {
         const hit = c.calls.fetches.find(f => f.url === "/s/01S/steer");

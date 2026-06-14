@@ -9,6 +9,7 @@
     threadFork: "thread/fork",
     threadClear: "thread/clear",
     threadModelSet: "thread/model/set",
+    threadReasoningEffortSet: "thread/reasoning-effort/set",
     threadCompactStart: "thread/compact/start",
     threadShutdown: "thread/shutdown",
     turnStart: "turn/start",
@@ -442,6 +443,13 @@
     });
   }
 
+  function setReasoningEffort(sessionId, effort) {
+    return request(METHOD.threadReasoningEffortSet, {
+      ref: refForSession(sessionId),
+      reasoningEffort: effort || "",
+    });
+  }
+
   function forkThread(sessionId, body) {
     return request(METHOD.threadFork, {
       ref: refForSession(sessionId),
@@ -843,6 +851,7 @@
     drainAsSteer,
     action,
     setModel,
+    setReasoningEffort,
     forkThread,
     eventsFromThread,
     activeTurnIDFromThread,

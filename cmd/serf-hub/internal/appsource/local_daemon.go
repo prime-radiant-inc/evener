@@ -208,6 +208,16 @@ func (s *LocalDaemonSource) SetThreadModel(ctx context.Context, params appwire.T
 	})
 }
 
+func (s *LocalDaemonSource) SetThreadReasoningEffort(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) error {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return err
+	}
+	return s.withClient(ctx, entry, func(client *appwire.Client) error {
+		return client.ThreadReasoningEffortSet(ctx, params)
+	})
+}
+
 func (s *LocalDaemonSource) GoalSet(ctx context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {
