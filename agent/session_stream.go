@@ -19,22 +19,35 @@ type sessionModelResponse struct {
 
 func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile *provider.Profile, req llm.Request) (sessionModelResponse, error) {
 	if profile.SupportsStreaming() {
-		st, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Stream, error) {
+		// Retry the whole open+consume cycle: a retryable failure can surface
+		// at stream open (connect/4xx-5xx) OR mid-stream (truncation, after the
+		// HTTP response already returned 200). Wrapping only the open — as the
+		// old llm.Retry did here — left mid-stream truncations unretried, so a
+		// single transient cutoff failed the entire turn.
+		var result sessionModelResponse
+		streamUnavailableForProfile := false
+		err := llm.RetryStream(ctx, llm.RetryStreamOptions{
+			Policy: policy,
+			Sleep:  s.cfg.LLMSleep,
+		}, func(ctx context.Context) (bool, error) {
 			st, err := s.client.Stream(ctx, req)
-			if err == nil && st == nil {
-				return nil, nil
+			if streamUnavailable(err) || (err == nil && st == nil) {
+				streamUnavailableForProfile = true
+				return false, nil
 			}
-			if streamUnavailable(err) {
-				return nil, nil
+			if err != nil {
+				return false, err
 			}
-			return st, err
+			var partial bool
+			var consumeErr error
+			result, partial, consumeErr = s.consumeModelStream(ctx, req, st)
+			return partial, consumeErr
 		})
-		if err != nil {
-			return sessionModelResponse{}, err
+		if !streamUnavailableForProfile {
+			return result, err
 		}
-		if st != nil {
-			return s.consumeModelStream(ctx, req, st)
-		}
+		// Streaming unsupported by this provider/runtime — fall through to the
+		// non-streaming Complete path.
 	}
 
 	resp, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Response, error) {
@@ -75,7 +88,11 @@ func streamUnavailable(err error) bool {
 	return errors.Is(err, llm.ErrStreamUnsupported)
 }
 
-func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st llm.Stream) (sessionModelResponse, error) {
+// consumeModelStream drains one model stream. The bool return reports whether
+// any partial output was streamed to the user (an assistant-text or communicate
+// preview delta) before it returned — RetryStream uses it to decide whether a
+// retry must first reset the partial so the next attempt replaces it.
+func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st llm.Stream) (sessionModelResponse, bool, error) {
 	defer st.Close() //nolint:errcheck
 
 	acc := llm.NewStreamAccumulator()
@@ -168,21 +185,21 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			finished = true
 		case llm.StreamEventError:
 			if ev.Err != nil {
-				return sessionModelResponse{}, ev.Err
+				return sessionModelResponse{}, streamedAssistant, ev.Err
 			}
-			return sessionModelResponse{}, llm.NewStreamError(req.Provider, "stream error", nil)
+			return sessionModelResponse{}, streamedAssistant, llm.NewStreamError(req.Provider, "stream error", nil)
 		}
 	}
 
 	if !finished {
 		if err := ctx.Err(); err != nil {
-			return sessionModelResponse{}, err
+			return sessionModelResponse{}, streamedAssistant, err
 		}
-		return sessionModelResponse{}, llm.NewStreamError(req.Provider, "stream ended without finish event", nil)
+		return sessionModelResponse{}, streamedAssistant, llm.NewStreamError(req.Provider, "stream ended without finish event", nil)
 	}
 	resp := acc.Response()
 	if resp == nil {
-		return sessionModelResponse{}, llm.NewStreamError(req.Provider, "stream ended without response", nil)
+		return sessionModelResponse{}, streamedAssistant, llm.NewStreamError(req.Provider, "stream ended without response", nil)
 	}
 	if resp.Provider == "" {
 		resp.Provider = req.Provider
@@ -190,7 +207,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	if resp.Model == "" {
 		resp.Model = req.Model
 	}
-	return sessionModelResponse{Response: *resp, StreamedAssistant: streamedAssistant}, nil
+	return sessionModelResponse{Response: *resp, StreamedAssistant: streamedAssistant}, streamedAssistant, nil
 }
 
 func partialJSONStringField(raw, field string) (string, bool) {

@@ -250,6 +250,48 @@ func TestSession_StreamErrorReturnsSessionToIdle(t *testing.T) {
 	}
 }
 
+// TestSession_RetriesMidStreamFailure verifies that a retryable error surfaced
+// DURING stream consumption (after the HTTP response already returned 200) is
+// retried with the configured budget — not only open-time failures. A reasoning
+// -model cutoff arrives as a retryable StreamError mid-stream; without
+// consume-path retry, a single transient truncation fails the whole turn (the
+// gpt-5.4-mini "stream closed without [DONE]" incident).
+func TestSession_RetriesMidStreamFailure(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &streamingAdapter{
+		name: "openai",
+		streamScript: func(st *llm.ChanStream) {
+			// Open succeeds (200), then the stream closes with no finish event:
+			// a retryable "stream ended without finish event" mid-stream failure
+			// on every attempt, with no partial output delivered.
+			st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
+		},
+	}
+	c.Register(f)
+
+	noSleep := func(context.Context, time.Duration) error { return nil }
+	policy := llm.RetryPolicy{MaxRetries: 5, BaseDelay: time.Millisecond}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+		LLMSleep:       noSleep,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
+		t.Fatal("expected failure after exhausting the retry budget")
+	}
+
+	if _, streamCalls := f.Counts(); streamCalls != 6 {
+		t.Fatalf("stream calls = %d, want 6 (1 initial + 5 retries of the open+consume cycle)", streamCalls)
+	}
+}
+
 // kata 3tgv: when the agent loop bails out of session.Input via a recoverable
 // LLM error (retry policy exhausted, stream-ended, etc.), the in-memory
 // turn_count was not being flushed to meta.json. The fix adds a maybeAutoSave

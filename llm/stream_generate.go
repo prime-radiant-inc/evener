@@ -3,7 +3,6 @@ package llm
 import (
 	"context"
 	"errors"
-	"math/rand/v2"
 	"strings"
 	"sync"
 )
@@ -234,63 +233,24 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 				return finishEv, acc, hasPartialOutput, streamErr
 			}
 
-			// Retry the open+consume cycle using the policy's backoff.
-			//
-			// This mirrors the Codex run_with_retry pattern
-			// (codex-rs/codex-client/src/retry.rs): retry 429 / 5xx / transport
-			// errors from the initial connection AND stream-level truncations
-			// (stream ended without finish event) — but only when no partial
-			// output has been forwarded to the caller yet.
-			//
-			// Permanent provider errors (403 auth, 404 model-not-found, 400
-			// bad-request) short-circuit the chain after a single attempt
+			// Retry the open+consume cycle (see RetryStream): retry transient
+			// open failures (429/5xx/transport) AND mid-stream truncations
+			// (stream ended without finish event), but never after partial
+			// output has been forwarded to the caller — re-streaming would
+			// duplicate it. Permanent provider errors (403 auth, 404 model-
+			// not-found, 400 bad-request) short-circuit after a single attempt
 			// instead of burning the full budget (kata xgzz).
-			maxRetries := gs.policy.MaxRetries
-			if maxRetries < 0 {
-				maxRetries = 0
-			}
-			sleep := opts.Sleep
-			if sleep == nil {
-				sleep = DefaultSleep
-			}
-
 			var finishEv *StreamEvent
 			var acc *StreamAccumulator
-			var stepErr error
-			for attempt := 0; attempt <= maxRetries; attempt++ {
-				if callCtx.Err() != nil {
-					stepErr = callCtx.Err()
-					break
-				}
+			stepErr := RetryStream(callCtx, RetryStreamOptions{
+				Policy: gs.policy,
+				Sleep:  opts.Sleep,
+			}, func(context.Context) (bool, error) {
 				var hasPartial bool
-				finishEv, acc, hasPartial, stepErr = openAndConsumeStream()
-				if stepErr == nil {
-					break
-				}
-				if hasPartial {
-					// Partial data already delivered to the caller — surface
-					// immediately, no retry (Spec: do not retry after partial
-					// data delivered).
-					break
-				}
-				// Permanent (and Fallback — handled inside the adapter) errors
-				// don't get the rest of the retry budget. Only ErrorClassRetryable
-				// proceeds; the budget cap is checked next.
-				if Classify(stepErr) != ErrorClassRetryable || attempt == maxRetries {
-					break
-				}
-				delay, ok := retryDelay(gs.policy, rand.Float64, stepErr, attempt)
-				if !ok {
-					break
-				}
-				if gs.policy.OnRetry != nil {
-					gs.policy.OnRetry(stepErr, attempt+1, delay)
-				}
-				if sleepErr := sleep(callCtx, delay); sleepErr != nil {
-					stepErr = sleepErr
-					break
-				}
-			}
+				var err error
+				finishEv, acc, hasPartial, err = openAndConsumeStream()
+				return hasPartial, err
+			})
 
 			cancelStep()
 			if stepErr != nil {
