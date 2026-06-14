@@ -324,7 +324,8 @@
       { id: "reasoning-effort", title: "Set reasoning effort", hint: "", keywords: ["effort", "reasoning", "thinking"], scope: "session",
         args: { kind: "enum", placeholder: "choose effort…",
           // The daemon clamps to what the active model supports, so offering the
-          // full vocabulary here is safe.
+          // full vocabulary here is safe. "none" is omitted: it normalizes to
+          // "" (same as default), so it is not a distinct option.
           source: () => Promise.resolve([
             { id: "", label: "(default)" },
             { id: "minimal", label: "minimal" },
@@ -333,7 +334,6 @@
             { id: "high", label: "high" },
             { id: "xhigh", label: "xhigh" },
             { id: "max", label: "max" },
-            { id: "none", label: "none" },
           ]),
           run: (ctx, item) => {
             const eff = item.id || "";

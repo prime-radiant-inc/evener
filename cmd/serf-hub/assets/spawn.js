@@ -1501,9 +1501,10 @@
 
       const picker = document.createElement("div");
       picker.className = "chip-picker";
+      // "(default)" already means "no override"; serf has no true disable, so
+      // "none" (which normalizes to "") is not offered as a distinct option.
       const options = [{ value: "", label: "(default)" }];
       levels.forEach(l => options.push({ value: l, label: l }));
-      options.push({ value: "none", label: "none" });
       options.forEach(opt => {
         const row = document.createElement("div");
         row.className = "chip-picker-option";
