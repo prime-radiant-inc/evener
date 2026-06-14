@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providers/internal/kimicoding"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 )
 
@@ -156,5 +157,23 @@ func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "kimi", APIKey: "k"})
 	if a.BaseURL != defaultBaseURL {
 		t.Fatalf("backing BaseURL = %q, want %q", a.BaseURL, defaultBaseURL)
+	}
+}
+
+func TestAdapter_AnnouncesCodingAgentUserAgent(t *testing.T) {
+	var gotUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"m","model":"kimi-for-coding","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := NewForInstance(InstanceParams{Name: "kimi", BaseURL: srv.URL, APIKey: "k"})
+	if _, err := a.Complete(context.Background(), llm.Request{Model: "kimi-for-coding", Messages: []llm.Message{llm.User("hi")}}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if gotUA != kimicoding.UserAgent {
+		t.Fatalf("User-Agent = %q, want %q", gotUA, kimicoding.UserAgent)
 	}
 }

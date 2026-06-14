@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/anthropic"
+	"primeradiant.com/serf/llm/providers/internal/kimicoding"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 )
 
@@ -52,9 +53,10 @@ func NewForInstance(params InstanceParams) *adapter {
 		base = defaultBaseURL
 	}
 	return providerfwd.NewAnthropic(params.Name, providerName, &anthropic.Adapter{
-		APIKey:  params.APIKey,
-		BaseURL: strings.TrimRight(base, "/"),
-		Client:  &http.Client{Timeout: 0},
+		APIKey:         params.APIKey,
+		BaseURL:        strings.TrimRight(base, "/"),
+		Client:         &http.Client{Timeout: 0},
+		DefaultHeaders: map[string]string{"User-Agent": kimicoding.UserAgent},
 	})
 }
 
