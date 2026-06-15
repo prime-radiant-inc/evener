@@ -174,6 +174,38 @@ func TestFormatSessionFindings(t *testing.T) {
 	}
 }
 
+func TestFind_CurrentSessionUsesLiveTurnCount(t *testing.T) {
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// The current session's on-disk meta is stale mid-run (turnCount 0 here); its
+	// live count is only in memory. find must report the live count for the current
+	// session, not the stale disk value.
+	writeFindSession(t, dir, findMetaSpec{id: "LIVE0000", name: "current session", updated: now, turnCount: 0}, "hello world")
+
+	deps := &toolDeps{
+		stateDir:  dir,
+		sessionID: "LIVE0000",
+		currentMeta: func() schema.SessionMeta {
+			return schema.SessionMeta{ID: "LIVE0000", Name: "current session", TurnCount: 7, UpdatedAt: now}
+		},
+	}
+
+	matches := matchesFromEnvelope(t, decodeEnvelope(t, marshalFind(t, deps, map[string]any{})))
+	var cur map[string]any
+	for _, m := range matches {
+		if m["is_current"] == true {
+			cur = m
+		}
+	}
+	if cur == nil {
+		t.Fatalf("current session not in matches: %v", matches)
+	}
+	if got := cur["approx_turns"]; got != float64(7) {
+		t.Fatalf("current session approx_turns = %v, want 7 (live count, not stale disk 0)", got)
+	}
+}
+
 func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 	dir := newBucket(t)
 

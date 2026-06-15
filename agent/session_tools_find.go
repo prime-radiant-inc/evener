@@ -198,8 +198,18 @@ func clampFindLimit(p *int) int {
 
 // buildSessionRecord assembles the wire record for a candidate. ParentRef is
 // encoded relative to the current bucket (the ref the model can pass back).
-// currentID is the live session's ID; a match sets IsCurrent.
-func buildSessionRecord(c findCandidate, snips []snippet, currentID string) sessionRecord {
+// currentID is the live session's ID; a match sets IsCurrent. currentMeta (when
+// non-nil) supplies the live session's in-memory meta: the current session's
+// on-disk meta is stale mid-run (its turn count and updated-at are only flushed
+// at turn boundaries), so those freshness fields are overlaid from memory.
+func buildSessionRecord(c findCandidate, snips []snippet, currentID string, currentMeta func() schema.SessionMeta) sessionRecord {
+	turnCount := c.meta.TurnCount
+	updatedAt := c.meta.UpdatedAt
+	if currentMeta != nil && c.meta.ID == currentID {
+		live := currentMeta()
+		turnCount = live.TurnCount
+		updatedAt = live.UpdatedAt
+	}
 	parentRef := ""
 	if c.meta.ParentSessionID != "" {
 		parentRef = encodeRef(c.bucketHash, c.meta.ParentSessionID)
@@ -208,8 +218,8 @@ func buildSessionRecord(c findCandidate, snips []snippet, currentID string) sess
 		TranscriptRef: encodeRef(c.bucketHash, c.meta.ID),
 		Kind:          sessionKind(c.meta),
 		Title:         firstLineClamp(schema.SessionDisplayName(c.meta), 120),
-		UpdatedAt:     c.meta.UpdatedAt,
-		ApproxTurns:   c.meta.TurnCount,
+		UpdatedAt:     updatedAt,
+		ApproxTurns:   turnCount,
 		ParentRef:     parentRef,
 		Project:       projectName(c.meta),
 		IsCurrent:     c.meta.ID == currentID,
@@ -236,7 +246,7 @@ func sortCandidatesNewestFirst(candidates []findCandidate, currentID string) {
 
 // recordsUpTo builds sessionRecords for the first limit already-sorted candidates
 // that have a readable transcript on disk.
-func recordsUpTo(candidates []findCandidate, snipsFor func(c findCandidate) []snippet, currentID string, limit int) []sessionRecord {
+func recordsUpTo(candidates []findCandidate, snipsFor func(c findCandidate) []snippet, currentID string, limit int, currentMeta func() schema.SessionMeta) []sessionRecord {
 	var out []sessionRecord
 	for _, c := range candidates {
 		if len(out) >= limit {
@@ -245,7 +255,7 @@ func recordsUpTo(candidates []findCandidate, snipsFor func(c findCandidate) []sn
 		if !transcriptExists(c.bucketDir, c.meta.ID) {
 			continue
 		}
-		out = append(out, buildSessionRecord(c, snipsFor(c), currentID))
+		out = append(out, buildSessionRecord(c, snipsFor(c), currentID, currentMeta))
 	}
 	return out
 }
@@ -267,7 +277,7 @@ func execFindAcrossSessions(deps *toolDeps, query, scope string, limit int) (any
 
 	if query == "" {
 		// Catalog: metadata-only, no scan.
-		records = recordsUpTo(candidates, func(_ findCandidate) []snippet { return nil }, currentID, limit)
+		records = recordsUpTo(candidates, func(_ findCandidate) []snippet { return nil }, currentID, limit, deps.currentMeta)
 	} else {
 		// Content-search: track coverage.
 		n := 0
@@ -281,7 +291,7 @@ func execFindAcrossSessions(deps *toolDeps, query, scope string, limit int) (any
 				continue
 			}
 			if snips, matched := matchCandidate(c, query, needle, &n, &trunc); matched {
-				records = append(records, buildSessionRecord(c, snips, currentID))
+				records = append(records, buildSessionRecord(c, snips, currentID, deps.currentMeta))
 			}
 		}
 		scanned = &n
@@ -322,7 +332,7 @@ func execFindChildren(deps *toolDeps, ref string, limit int) (any, error) {
 	// every returned child must still be a read-able ref, so children are gated on
 	// the same transcriptExists (os.Stat, not a body open) as the catalog: a spawned
 	// child whose transcript was never flushed is not auditable and is excluded.
-	records := recordsUpTo(children, func(findCandidate) []snippet { return nil }, currentID, limit)
+	records := recordsUpTo(children, func(findCandidate) []snippet { return nil }, currentID, limit, deps.currentMeta)
 
 	return findSessionsEnvelope{
 		Matches:      records,
