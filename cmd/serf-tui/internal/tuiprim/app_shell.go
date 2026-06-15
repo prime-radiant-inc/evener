@@ -62,20 +62,26 @@ func (s AppShell) View() string {
 	}
 	if content == "" {
 		gap := max(0, s.Height-tuitext.ShellSectionLineCount(footer))
-		return strings.Repeat("\n", gap) + footer
+		return tuitext.LimitFirstLines(strings.Repeat("\n", gap)+footer, s.Height)
 	}
 	gap := s.Height - tuitext.ShellSectionLineCount(content) - tuitext.ShellSectionLineCount(footer) + 1
 	if gap < 2 {
 		gap = 2
 	}
-	return content + strings.Repeat("\n", gap) + footer
+	// Hard cap to Height, keeping the first lines: when chrome alone meets or
+	// exceeds Height the gap/floor math would otherwise overflow and, inline,
+	// scroll the TopBar off the top. Keeping the first Height lines preserves the
+	// header (the line we most need on screen) at the cost of the footer on a pane
+	// too short to hold both.
+	return tuitext.LimitFirstLines(content+strings.Repeat("\n", gap)+footer, s.Height)
 }
 
-// boundShellInner trims the overlay/body region so that, once the TopBar and
-// Footer chrome and their blank-line separators are accounted for, the whole
-// frame fits within height. It keeps the first lines of inner; callers that
-// need a particular line (such as a palette selection) kept in view must window
-// their own content before handing it to AppShell.
+// boundShellInner trims the overlay/body region toward the rows left between the
+// TopBar and Footer chrome (plus their blank-line separators). It keeps the first
+// lines of inner; callers that need a particular line (such as a palette
+// selection) kept in view must window their own content before handing it to
+// AppShell. This is the primary bound; View() additionally hard-caps the whole
+// frame to Height for the degenerate case where chrome alone exceeds Height.
 func boundShellInner(inner string, height int, topBar, footer string) string {
 	if inner == "" {
 		return inner
