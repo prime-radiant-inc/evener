@@ -227,6 +227,19 @@ func TestJobListRowIsLean(t *testing.T) {
 	if strings.Contains(body, ": null") || strings.Contains(body, ":null") {
 		t.Errorf("lean job_list must omit null fields:\n%s", body)
 	}
+	// The output-size field is named total_bytes everywhere the agent reads it
+	// (shell result, job_read_output, job_list) — not the old output_bytes alias.
+	if !strings.Contains(body, "total_bytes") {
+		t.Errorf("job_list row must report output size as total_bytes:\n%s", body)
+	}
+	if strings.Contains(body, "output_bytes") {
+		t.Errorf("job_list row must not use the old output_bytes name:\n%s", body)
+	}
+	// A shell job's row carries its command so the agent can identify it without
+	// digging into the transcript.
+	if !strings.Contains(body, `"command"`) || !strings.Contains(body, "sleep 30") {
+		t.Errorf("shell job_list row must include its command:\n%s", body)
+	}
 }
 
 func TestJobToolsControlBackgroundShellJob(t *testing.T) {
@@ -280,7 +293,7 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 			StartedAt           string  `json:"started_at"`
 			EndedAt             *string `json:"ended_at"`
 			ExitCode            *int    `json:"exit_code"`
-			OutputBytes         int64   `json:"output_bytes"`
+			TotalBytes          int64   `json:"total_bytes"`
 			TerminalGeneration  *string `json:"terminal_generation"`
 			TerminalNotifyState string  `json:"terminal_notification_state"`
 		} `json:"jobs"`

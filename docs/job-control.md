@@ -738,7 +738,7 @@ Return shape:
       "resumable": true,
       "started_at": "...",
       "last_activity": "...",
-      "output_bytes": 1234
+      "total_bytes": 1234
     }
   ],
   "count": 1,
@@ -777,7 +777,9 @@ Rows are lean for scanning: a field that is null/absent for a job is omitted (a 
 
 `last_activity` is the most recent parent-observable activity timestamp for the job, matching the `job_read_output` field of the same name (an output append, or the job's start when nothing newer is observable; for a terminal record with no live stamp it falls back to `ended_at`, then `started_at`). A running delegate that is working silently stays at its `started_at` until it appends output, which is the signal the quiet-job watchdog (see Notifications) acts on. A per-action "current action" field is intentionally not provided: a running delegate's mid-run action is not cheaply readable from parent-side state.
 
-`output_bytes` is the job's lifetime output byte count: the live so-far count for a running job, the final count once terminal.
+`total_bytes` is the job's lifetime output byte count: the live so-far count for a running job, the final count once terminal. It carries the same name in the shell result and `job_read_output`, so the field is identical across every tool.
+
+`command` is the shell command line for a shell job, so a row is identifiable without opening the transcript when `description` is sparse. It is omitted for delegate jobs (which have no command).
 
 `exit_code` is the process's own exit status only for a job that exited on its own (`completed`/`failed`). A `cancelled`, `stopped`, or `run_timeout` job was signalled rather than exiting cleanly, so it has no real exit status: `exit_code` is `-1` (a sentinel, not a shell code). Interpret a non-`completed` job from its `status` + `reason`, never from `exit_code`.
 

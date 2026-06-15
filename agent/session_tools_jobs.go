@@ -772,7 +772,14 @@ type jobListEntry struct {
 	// parent-side state without cross-session probing.
 	LastActivity *string `json:"last_activity"`
 	ExitCode     *int    `json:"exit_code,omitempty"`
-	OutputBytes  int64   `json:"output_bytes"`
+	// TotalBytes is the lifetime output byte count — the same name and concept the
+	// shell result and job_read_output report, so the field is consistent across
+	// every tool the agent reads.
+	TotalBytes int64 `json:"total_bytes"`
+	// Command is the shell command line for a shell job, omitted for delegates (which
+	// have none) so the row stays lean. It lets the agent identify a job without
+	// reading the transcript when the description is sparse.
+	Command *string `json:"command,omitempty"`
 	// Depth is the live-subtree distance from the calling session, populated only
 	// by job_list(include_descendants=true): 0 for the caller's own store, 1 for
 	// a direct child's store, and so on. It is the depth of the store the row was
@@ -1585,7 +1592,8 @@ func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {
 		EndedAt:            timePtrOrNil(rec.EndedAt),
 		LastActivity:       lastActivityProjection(rec),
 		ExitCode:           rec.ExitCode,
-		OutputBytes:        rec.OutputBytes,
+		TotalBytes:         rec.OutputBytes,
+		Command:            stringPtrOrNil(rec.Command),
 	}
 }
 
