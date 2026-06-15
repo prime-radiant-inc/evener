@@ -32,7 +32,7 @@ Philosophy: **small bounded default + legible window metadata + file-like naviga
 
 ## Part A — output context-management (TDD each task)
 
-- **A1.** Split constants: introduce `shellRideWholeBytes` (start 8 KiB) and `shellDefaultTailBytes` (1 KiB); repoint `job_shell.go:198` (snapshot tail) → `shellDefaultTailBytes` and `marshalCompleteOrHandleResult:246` (ride-whole) → `shellRideWholeBytes`. Tests: a 2 KiB completed command now returns a 1 KiB tail + `job_id`; a 4 KiB completed command rides whole + ephemeral (no `job_id`); an 8.001 KiB command becomes a handle.
+- **A1.** Split constants: introduce `shellRideWholeBytes` (8 KiB) and `shellDefaultTailBytes` (1 KiB); repoint `job_shell.go:198` (snapshot tail) → `shellDefaultTailBytes`, `marshalCompleteOrHandleResult:246` (ride-whole) → `shellRideWholeBytes`, and the keep-case tail → `shellDefaultTailBytes` (≤1 KiB peek, not `maxChars`). Tests: a 4 KiB completed command rides whole + ephemeral (no `job_id`); a ~9 KiB command becomes a handle (`job_id`, `truncated`) with a ≤1 KiB tail; `job_read_output` returns the full retained bytes.
 - **A2.** Add `total_bytes` + `dropped_bytes` + shown-range to the shell wire result (`shellToolResult`). `dropped_bytes` from `OutputStore.retainedStart`; `total_bytes` from `OutputStore.total`. Test: completed 2 KiB output → `total_bytes=2048, dropped_bytes=0, output_status=windowed`.
 - **A3.** Add `dropped_bytes` (= `retained_start`) to the `job_read_output` result (it already has `total_bytes`). Test: a job whose output exceeded 8 MiB reports `dropped_bytes>0, output_status=evicted`.
 - **A4.** Add the `output_status` enum + navigation hint to both results, derived from `(dropped_bytes, total_bytes, shown_bytes)`. Tests for all three states.
