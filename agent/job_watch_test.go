@@ -6004,7 +6004,7 @@ func observerReadOutput(t *testing.T, observer *Session, args map[string]any) (j
 func TestGrantedReadServesWatchedJobCrossStore(t *testing.T) {
 	fx := newGrantReadFixture(t)
 
-	out, err := observerReadOutput(t, fx.observer, map[string]any{"job_id": fx.watched, "tail_bytes": 65536})
+	out, err := observerReadOutput(t, fx.observer, map[string]any{"job_id": fx.watched, "tail_lines": 65536})
 	if err != nil {
 		t.Fatalf("granted read: %v", err)
 	}

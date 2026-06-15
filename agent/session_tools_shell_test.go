@@ -551,7 +551,7 @@ func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
 	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "r1",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_bytes":1048576}`),
+		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_lines":1048576}`),
 	})
 	if readRes.IsError {
 		t.Fatalf("job_read_output returned error: %s", readRes.Output)
@@ -651,8 +651,8 @@ func TestShellOutputStatus(t *testing.T) {
 	if o1.JobID != "" {
 		t.Fatalf("small command got job_id=%q, want ephemeral", o1.JobID)
 	}
-	if o1.OutputStatus != "complete" {
-		t.Fatalf("output_status = %q, want complete", o1.OutputStatus)
+	if o1.OutputStatus != "all_retained" {
+		t.Fatalf("output_status = %q, want all_retained", o1.OutputStatus)
 	}
 
 	r2 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -708,7 +708,7 @@ func TestShellHandlePeekTailIsSmall(t *testing.T) {
 	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "r1",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_bytes":1048576}`),
+		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_lines":1048576}`),
 	})
 	if readRes.IsError {
 		t.Fatalf("job_read_output returned error: %s", readRes.Output)

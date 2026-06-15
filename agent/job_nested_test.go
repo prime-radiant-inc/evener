@@ -666,7 +666,7 @@ func TestParentReadsNestedOutputViaOwnerRuntime(t *testing.T) {
 	res := parent.reg.ExecuteCall(context.Background(), parent.env, llm.ToolCallData{
 		ID:        "read",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":65536,"grep":"owner"}`, nested.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":65536,"grep":"owner"}`, nested.JobID)),
 	})
 	if res.IsError {
 		t.Fatalf("job_read_output returned error: %s", res.Output)
@@ -1072,7 +1072,7 @@ func TestNestedReadOutputBlockRefreshesOwnerRecord(t *testing.T) {
 		out, err := jobReadOutputTool(context.Background(), parent, map[string]any{
 			"job_id":      nested.JobID,
 			"max_wait_ms": 1000,
-			"tail_bytes":  65536,
+			"tail_lines":  65536,
 		}, 20000)
 		readDone <- readResult{out: out, err: err}
 	}()
@@ -2731,7 +2731,7 @@ func TestJobReadOutputDepth2Resolves(t *testing.T) {
 	// and serves the worker's live bytes.
 	out, err := jobReadOutputTool(context.Background(), root, map[string]any{
 		"job_id":     workerRec.JobID,
-		"tail_bytes": 65536,
+		"tail_lines": 65536,
 		"grep":       "grandchild",
 	}, 20000)
 	if err != nil {
@@ -2770,7 +2770,7 @@ func TestJobReadOutputDepth2Resolves(t *testing.T) {
 	_, err = jobReadOutputTool(context.Background(), root, map[string]any{
 		"job_id":      workerRec.JobID,
 		"max_wait_ms": 1000,
-		"tail_bytes":  65536,
+		"tail_lines":  65536,
 	}, 20000)
 	if err == nil || err.Error() != grantedReadBlockUnsupportedErr {
 		t.Fatalf("depth-2 max_wait_ms>0 error = %v, want %q", err, grantedReadBlockUnsupportedErr)

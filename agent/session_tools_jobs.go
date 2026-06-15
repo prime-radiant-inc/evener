@@ -18,10 +18,14 @@ import (
 )
 
 const (
-	// defaultJobOutputBytes is the bare job_read_output window (no head_bytes/
-	// tail_bytes): a small bounded default that stops auto-shoving large output;
-	// the agent pages with an explicit tail_bytes/head_bytes (up to maxJobOutputBytes).
-	defaultJobOutputBytes       = 8 * 1024
+	// digestHeadLines/digestTailLines size the bare job_read_output default: a
+	// head+tail line digest (first N + last N lines) with the middle elided. The
+	// agent pages with explicit head_lines/tail_lines for more.
+	digestHeadLines = 100
+	digestTailLines = 100
+	// jobLineReadBudget bounds the bytes read per side when slicing lines, so a
+	// pathological run of very long lines can't blow context.
+	jobLineReadBudget           = 256 * 1024
 	maxJobOutputBytes           = 1048576
 	maxJobOutputRetentionBytes  = 8 * 1024 * 1024
 	defaultJobListLimit         = 50
@@ -279,23 +283,16 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		}
 		granted = g
 	}
-	headBytes, hasHead, err := strictZeroJobBytesArg(args, "head_bytes")
+	headLines, hasHead, err := strictZeroJobBytesArg(args, "head_lines")
 	if err != nil {
 		return "", err
 	}
-	tailBytes, hasTail, err := strictZeroJobBytesArg(args, "tail_bytes")
+	tailLines, hasTail, err := strictZeroJobBytesArg(args, "tail_lines")
 	if err != nil {
 		return "", err
 	}
 	if hasHead && hasTail {
-		return "", errors.New("invalid_request: head_bytes and tail_bytes are mutually exclusive")
-	}
-	fromHead := hasHead
-	readBytes := defaultJobOutputBytes
-	if hasHead {
-		readBytes = headBytes
-	} else if hasTail {
-		readBytes = tailBytes
+		return "", errors.New("invalid_request: head_lines and tail_lines are mutually exclusive")
 	}
 	maxChars := registryMaxChars
 	grep := stringArg(args, "grep")
@@ -339,11 +336,43 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		}
 	}
 
+	// readWindow reads one byte window (head or tail) through whichever path
+	// applies — granted cross-session read or the own/closed-store fallback.
+	readWindow := func(budget int, fromHead bool) (jobReadOutputSnapshot, error) {
+		if granted != nil {
+			return granted.snapshot(budget, fromHead, nil)
+		}
+		return readSession.readJobOutputSnapshot(jm, fallbackTarget, jobID, budget, fromHead, nil)
+	}
+
 	var snap jobReadOutputSnapshot
-	if granted != nil {
-		snap, err = granted.snapshot(readBytes, fromHead, grepRE)
-	} else {
-		snap, err = readSession.readJobOutputSnapshot(jm, fallbackTarget, jobID, readBytes, fromHead, grepRE)
+	switch {
+	case grepRE != nil:
+		if granted != nil {
+			snap, err = granted.snapshot(jobLineReadBudget, false, grepRE)
+		} else {
+			snap, err = readSession.readJobOutputSnapshot(jm, fallbackTarget, jobID, jobLineReadBudget, false, grepRE)
+		}
+	case hasHead:
+		snap, err = readWindow(jobLineReadBudget, true)
+		if err == nil {
+			sliced, _, more := firstLineBytes([]byte(snap.Content), headLines)
+			snap.Content = string(sliced)
+			if more {
+				snap.Truncated = true // the line slice dropped later lines
+			}
+		}
+	case hasTail:
+		snap, err = readWindow(jobLineReadBudget, false)
+		if err == nil {
+			sliced, _, more := lastLineBytes([]byte(snap.Content), tailLines)
+			snap.Content = string(sliced)
+			if more {
+				snap.Truncated = true // the line slice dropped earlier lines
+			}
+		}
+	default:
+		snap, err = readJobOutputDigest(readWindow)
 	}
 	if err != nil {
 		return "", err

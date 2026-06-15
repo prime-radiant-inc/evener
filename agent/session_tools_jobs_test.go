@@ -44,7 +44,7 @@ func TestJobReadOutputReportsStatus(t *testing.T) {
 	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "r1",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_bytes":500}`),
+		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_lines":500}`),
 	})
 	if readRes.IsError {
 		t.Fatalf("job_read_output returned error: %s", readRes.Output)
@@ -66,8 +66,8 @@ func TestJobReadOutputReportsStatus(t *testing.T) {
 }
 
 // TestJobReadOutputDefaultWindowIsBounded pins A5: a bare job_read_output (no
-// head_bytes/tail_bytes) returns a small bounded default window, not up to the
-// full retention. The agent pages with an explicit tail_bytes for more.
+// head_lines/tail_lines) returns a small bounded default window, not up to the
+// full retention. The agent pages with an explicit tail_lines for more.
 func TestJobReadOutputDefaultWindowIsBounded(t *testing.T) {
 	s := newTestSession(t)
 
@@ -2558,7 +2558,7 @@ func TestJobToolsDefinitions(t *testing.T) {
 	required(t, tooldefs.DefJobSendMessage(), "job_send_message", []string{"target", "message"})
 
 	readProps := tooldefs.DefJobReadOutput().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"tail_bytes", "grep", "max_wait_ms"} {
+	for _, param := range []string{"tail_lines", "grep", "max_wait_ms"} {
 		if _, ok := readProps[param]; !ok {
 			t.Fatalf("job_read_output missing param %q", param)
 		}
@@ -2633,7 +2633,7 @@ func TestJobReadOutputRejectsInvalidArgs(t *testing.T) {
 		name string
 		args string
 	}{
-		{"tail_bytes", fmt.Sprintf(`{"job_id":%q,"tail_bytes":-1}`, shellOut.JobID)},
+		{"tail_lines", fmt.Sprintf(`{"job_id":%q,"tail_lines":-1}`, shellOut.JobID)},
 		{"grep", fmt.Sprintf(`{"job_id":%q,"grep":"["}`, shellOut.JobID)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3061,7 +3061,7 @@ func waitForJobOutput(t *testing.T, s *Session, jobID, want string) jobReadOutpu
 		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 			ID:        "read",
 			Name:      "job_read_output",
-			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":65536,"grep":"ready"}`, jobID)),
+			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":65536,"grep":"ready"}`, jobID)),
 		})
 		if res.IsError {
 			t.Fatalf("job_read_output returned error: %s", res.Output)
@@ -3088,7 +3088,7 @@ func waitForJobGrepMatchResult(t *testing.T, s *Session, jobID, want string, tai
 		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 			ID:        "read",
 			Name:      "job_read_output",
-			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":%d,"grep":%q}`, jobID, tailBytes, want)),
+			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":%d,"grep":%q}`, jobID, tailBytes, want)),
 		})
 		if res.IsError {
 			t.Fatalf("job_read_output returned error: %s", res.Output)
@@ -3433,11 +3433,11 @@ func TestGrantedReadBlockUnsupportedErrReword(t *testing.T) {
 	}
 }
 
-// TestJobReadOutputHeadBytesReadsFromStart verifies that head_bytes reads from
-// the beginning of retained output — the symmetric counterpart to tail_bytes.
+// TestJobReadOutputHeadBytesReadsFromStart verifies that head_lines reads from
+// the beginning of retained output — the symmetric counterpart to tail_lines.
 // A job whose head output was pushed out of the default tail window is only
-// reachable by grep or by head_bytes; this test closes that gap.
-func TestJobReadOutputHeadBytesReadsFromStart(t *testing.T) {
+// reachable by grep or by head_lines; this test closes that gap.
+func TestJobReadOutputHeadLinesReadsFromStart(t *testing.T) {
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -3459,59 +3459,62 @@ func TestJobReadOutputHeadBytesReadsFromStart(t *testing.T) {
 		waitForShellDone(t, s.jobManager, shellOut.JobID)
 	})
 
-	// Wait until the job has produced enough output to push HEAD_MARKER_9 out of the tail.
+	// Wait until TAIL_MARKER_7 has been written (the whole HEAD..filler..TAIL run).
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		_, total, _, err := s.jobManager.readOutput(shellOut.JobID, 1)
-		if err == nil && total > 70000 {
+		out, _, _, err := s.jobManager.readOutput(shellOut.JobID, jobLineReadBudget)
+		if err == nil && strings.Contains(out, "TAIL_MARKER_7") {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// (a) Default tail read must NOT contain HEAD_MARKER_9 (it was pushed out).
-	tailRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "read-tail",
+	// (a) The default head+tail digest must contain BOTH ends + an elision marker.
+	digRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read-digest",
 		Name:      "job_read_output",
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, shellOut.JobID)),
 	})
-	if tailRes.IsError {
-		t.Fatalf("job_read_output (tail) returned error: %s", tailRes.Output)
+	if digRes.IsError {
+		t.Fatalf("job_read_output (digest) returned error: %s", digRes.Output)
 	}
-	var tailOut jobReadOutputTestResult
-	if err := json.Unmarshal([]byte(tailRes.Output), &tailOut); err != nil {
-		t.Fatalf("unmarshal tail output: %v (output: %s)", err, tailRes.Output)
+	var digOut jobReadOutputTestResult
+	if err := json.Unmarshal([]byte(digRes.Output), &digOut); err != nil {
+		t.Fatalf("unmarshal digest output: %v (output: %s)", err, digRes.Output)
 	}
-	if strings.Contains(tailOut.Content, "HEAD_MARKER_9") {
-		t.Fatalf("default tail unexpectedly contains HEAD_MARKER_9 (output has not grown past tail window yet)")
+	if !strings.Contains(digOut.Content, "HEAD_MARKER_9") || !strings.Contains(digOut.Content, "TAIL_MARKER_7") {
+		t.Fatalf("default digest must contain both head and tail markers; content: %q", digOut.Content)
+	}
+	if !strings.Contains(digOut.Content, "elided") {
+		t.Fatalf("default digest must carry an elision marker; content: %q", digOut.Content)
 	}
 
-	// (b) head_bytes:1024 read must contain HEAD_MARKER_9, not TAIL_MARKER_7, and be truncated.
+	// (b) head_lines:1024 read must contain HEAD_MARKER_9, not TAIL_MARKER_7, and be truncated.
 	headRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "read-head",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"head_bytes":1024}`, shellOut.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"head_lines":1024}`, shellOut.JobID)),
 	})
 	if headRes.IsError {
-		t.Fatalf("job_read_output (head_bytes) returned error: %s", headRes.Output)
+		t.Fatalf("job_read_output (head_lines) returned error: %s", headRes.Output)
 	}
 	var headOut jobReadOutputTestResult
 	if err := json.Unmarshal([]byte(headRes.Output), &headOut); err != nil {
 		t.Fatalf("unmarshal head output: %v (output: %s)", err, headRes.Output)
 	}
 	if !strings.Contains(headOut.Content, "HEAD_MARKER_9") {
-		t.Fatalf("head_bytes read does not contain HEAD_MARKER_9; content: %q", headOut.Content)
+		t.Fatalf("head_lines read does not contain HEAD_MARKER_9; content: %q", headOut.Content)
 	}
 	if strings.Contains(headOut.Content, "TAIL_MARKER_7") {
-		t.Fatalf("head_bytes read unexpectedly contains TAIL_MARKER_7; content: %q", headOut.Content)
+		t.Fatalf("head_lines read unexpectedly contains TAIL_MARKER_7; content: %q", headOut.Content)
 	}
 	if !headOut.Truncated {
-		t.Fatalf("head_bytes read must report truncated=true (1024 < total output), got false")
+		t.Fatalf("head_lines read must report truncated=true (1024 < total output), got false")
 	}
 }
 
 // TestJobReadOutputHeadAndTailMutuallyExclusive verifies that supplying both
-// head_bytes and tail_bytes in the same call fails with invalid_request.
+// head_lines and tail_lines in the same call fails with invalid_request.
 func TestJobReadOutputHeadAndTailMutuallyExclusive(t *testing.T) {
 	s := newTestSession(t)
 	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30"})
@@ -3523,21 +3526,21 @@ func TestJobReadOutputHeadAndTailMutuallyExclusive(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "read",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"head_bytes":1024,"tail_bytes":1024}`, rec.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"head_lines":1024,"tail_lines":1024}`, rec.JobID)),
 	})
 	if !res.IsError {
-		t.Fatalf("job_read_output with head_bytes+tail_bytes succeeded, want error; output: %s", res.Output)
+		t.Fatalf("job_read_output with head_lines+tail_lines succeeded, want error; output: %s", res.Output)
 	}
 	if !strings.Contains(res.Output, "invalid_request") {
 		t.Fatalf("error = %q, want invalid_request", res.Output)
 	}
-	if !strings.Contains(res.Output, "head_bytes") {
-		t.Fatalf("error = %q, want mention of head_bytes", res.Output)
+	if !strings.Contains(res.Output, "head_lines") {
+		t.Fatalf("error = %q, want mention of head_lines", res.Output)
 	}
 }
 
-// TestJobReadOutputZeroHeadTailTreatedAsUnset verifies that head_bytes:0 and/or
-// tail_bytes:0 are treated as unset (strict-zero rule), matching max_wait_ms
+// TestJobReadOutputZeroHeadTailTreatedAsUnset verifies that head_lines:0 and/or
+// tail_lines:0 are treated as unset (strict-zero rule), matching max_wait_ms
 // behavior. Regression: gpt-5.5 sent both as 0 on every call, causing
 // invalid_request loops.
 func TestJobReadOutputZeroHeadTailTreatedAsUnset(t *testing.T) {
@@ -3566,9 +3569,9 @@ func TestJobReadOutputZeroHeadTailTreatedAsUnset(t *testing.T) {
 		name string
 		args string
 	}{
-		{"both_zero", fmt.Sprintf(`{"job_id":%q,"head_bytes":0,"tail_bytes":0}`, shellOut.JobID)},
-		{"tail_zero", fmt.Sprintf(`{"job_id":%q,"tail_bytes":0}`, shellOut.JobID)},
-		{"head_zero", fmt.Sprintf(`{"job_id":%q,"head_bytes":0}`, shellOut.JobID)},
+		{"both_zero", fmt.Sprintf(`{"job_id":%q,"head_lines":0,"tail_lines":0}`, shellOut.JobID)},
+		{"tail_zero", fmt.Sprintf(`{"job_id":%q,"tail_lines":0}`, shellOut.JobID)},
+		{"head_zero", fmt.Sprintf(`{"job_id":%q,"head_lines":0}`, shellOut.JobID)},
 	}
 
 	for _, tc := range cases {
@@ -3592,7 +3595,7 @@ func TestJobReadOutputZeroHeadTailTreatedAsUnset(t *testing.T) {
 	}
 }
 
-// TestJobReadOutputNegativeHeadBytesRejected verifies that head_bytes:-1
+// TestJobReadOutputNegativeHeadBytesRejected verifies that head_lines:-1
 // returns invalid_request with a non-negative message.
 func TestJobReadOutputNegativeHeadBytesRejected(t *testing.T) {
 	s := newTestSession(t)
@@ -3605,10 +3608,10 @@ func TestJobReadOutputNegativeHeadBytesRejected(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "read",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"head_bytes":-1}`, rec.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"head_lines":-1}`, rec.JobID)),
 	})
 	if !res.IsError {
-		t.Fatalf("job_read_output with head_bytes:-1 succeeded, want error; output: %s", res.Output)
+		t.Fatalf("job_read_output with head_lines:-1 succeeded, want error; output: %s", res.Output)
 	}
 	if !strings.Contains(res.Output, "invalid_request") {
 		t.Fatalf("error = %q, want invalid_request", res.Output)

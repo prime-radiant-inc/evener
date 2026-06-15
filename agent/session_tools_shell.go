@@ -273,16 +273,17 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResu
 	out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, true)
 
 	// FullOutput (TOOL_CALL_END, for observers/hooks) carries the complete output;
-	// the durable job retains it too. The model sees only a small peek tail
-	// (shellDefaultTailBytes) + the job_id — it pages the rest via job_read_output.
+	// the durable job retains it too. The model sees only a small head+tail digest
+	// + the job_id — it pages the rest via job_read_output.
 	fullBytes, err := json.Marshal(out)
 	if err != nil {
 		return tool.TextResult{}, err
 	}
 
 	peek := out
-	tail, peekTruncated := tailString(res.Output, shellDefaultTailBytes)
-	peek.Output = &tail
+	digest := shellInlineDigest(res.Output, res.TotalBytes, res.DroppedBytes)
+	peekTruncated := true
+	peek.Output = &digest
 	peek.Truncated = &peekTruncated
 	if maxChars > 0 {
 		model, err := marshalBoundedShellToolResult(peek, maxChars)
@@ -298,10 +299,12 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResu
 	return tool.TextResult{Output: string(pb), FullOutput: string(fullBytes)}, nil
 }
 
-// outputWindowStatus classifies an output window for the model: "complete" when
-// the whole log rode inline, "windowed" when the full log is retained but only
-// a slice was returned (page the rest via job_read_output), and "evicted" when
-// the oldest bytes were permanently dropped past the retention cap.
+// outputWindowStatus classifies an output window for the model: "all_retained"
+// when the returned window is the whole retained log, "windowed" when the full
+// log is retained but only a slice was returned (page the rest via
+// job_read_output), and "evicted" when the oldest bytes were permanently dropped
+// past the retention cap. It describes the WINDOW, not the job lifecycle — a
+// running job whose window covers everything-so-far still reports "all_retained".
 func outputWindowStatus(total, dropped int64, truncated bool) string {
 	if dropped > 0 {
 		return "evicted"
@@ -309,15 +312,7 @@ func outputWindowStatus(total, dropped int64, truncated bool) string {
 	if truncated {
 		return "windowed"
 	}
-	return "complete"
-}
-
-// tailString returns the last maxBytes bytes of s and whether it was truncated.
-func tailString(s string, maxBytes int) (string, bool) {
-	if len(s) <= maxBytes {
-		return s, false
-	}
-	return s[len(s)-maxBytes:], true
+	return "all_retained"
 }
 
 func marshalBoundedShellToolResult(out shellToolResult, maxChars int) (string, error) {

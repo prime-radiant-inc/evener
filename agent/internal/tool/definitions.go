@@ -225,14 +225,14 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 func DefJobReadOutput() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_read_output",
-		Description: "Read a job's output and status by `job_id` — reads never consume or acknowledge anything. Output is a navigable resource: a bare read returns a small bounded tail; pass `tail_bytes`/`head_bytes` to page a larger or earlier slice (up to the retained log), or `grep` to search it. The result reports `total_bytes` (lifetime output), `dropped_bytes` (bytes permanently evicted past the retention cap), and `output_status`: `complete` (you have it all), `windowed` (the full log is retained — read more for the rest), or `evicted` (`dropped_bytes` are gone). `grep` scans the **entire retained output** (up to the retention cap, not just the inline tail) and returns matching lines. Delegates return the report (and `structured_result`, when present). `max_wait_ms > 0` waits: with `grep`, until a match exists, the job ends, or the timeout elapses — the one-call way to wait for \"ready\"; without `grep`, until new output or terminal state.",
+		Description: "Read a job's output and status by `job_id` — reads never consume or acknowledge anything. By default returns a head+tail digest: the first ~100 and last ~100 lines with the middle elided (a marker states how much). Pass `head_lines`/`tail_lines` to page more from either end, or `grep` to search the whole log. The result reports `total_bytes` (lifetime output), `dropped_bytes` (permanently evicted past the retention cap), and `output_status`: `all_retained` (the window is the whole log), `windowed` (more is retained — read it), or `evicted` (`dropped_bytes` are gone). `grep` scans the **entire retained output**, not just the digest. Delegates return the report (and `structured_result`, when present) — to get a delegate's result, prefer this over `read_session_transcript`. `max_wait_ms > 0` waits: with `grep`, until a match exists, the job ends, or the timeout elapses; without `grep`, until new output or terminal state.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"job_id":      map[string]any{"type": "string"},
-				"tail_bytes":  map[string]any{"type": "integer", "default": 8192, "maximum": 1048576, "description": "Read this many bytes from the END of the output. Default is a small bounded window; raise it to page more."},
-				"head_bytes":  map[string]any{"type": "integer", "maximum": 1048576, "description": "Read this many bytes from the START of the output instead of the tail. Mutually exclusive with tail_bytes."},
+				"head_lines":  map[string]any{"type": "integer", "description": "Read this many lines from the START of the output instead of the head+tail digest. Mutually exclusive with tail_lines."},
+				"tail_lines":  map[string]any{"type": "integer", "description": "Read this many lines from the END of the output instead of the digest. Mutually exclusive with head_lines."},
 				"grep":        map[string]any{"type": "string"},
 				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): snapshot now. >0: wait up to this many ms for a grep match (with grep), or for new output / terminal state."},
 			},

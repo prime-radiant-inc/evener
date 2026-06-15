@@ -65,6 +65,69 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
 }
 
+// shellDigestHalfBytes bounds the bytes taken from each end for the inline shell
+// digest; shellDigestLines caps the lines per end (the byte budget usually binds
+// first). Net inline footprint stays ~1 KiB, split head/tail.
+const (
+	shellDigestHalfBytes = 512
+	shellDigestLines     = 200
+)
+
+// shellInlineDigest renders a compact head+tail digest of a completed command's
+// full output for the inline shell result: whole lines from the first and last
+// ~shellDigestHalfBytes with the middle elided. The full output stays in the
+// OutputStore, reachable via job_read_output.
+func shellInlineDigest(full string, total, dropped int64) string {
+	b := []byte(full)
+	headRaw := b
+	if len(headRaw) > shellDigestHalfBytes {
+		headRaw = headRaw[:shellDigestHalfBytes]
+	}
+	tailRaw := b
+	if len(tailRaw) > shellDigestHalfBytes {
+		tailRaw = tailRaw[len(tailRaw)-shellDigestHalfBytes:]
+	}
+	head, hN, _ := firstLineBytes(headRaw, shellDigestLines)
+	tail, tN, _ := lastLineBytes(tailRaw, shellDigestLines)
+	return assembleOutputDigest(head, hN, tail, tN, total, dropped)
+}
+
+// readJobOutputDigest builds the default head+tail digest snapshot using the
+// supplied window reader. It reads the head first; when the whole retained output
+// fits in the read budget it returns it whole (≤ digestHeadLines lines or
+// head+tail overlap) or a single-buffer digest; otherwise it reads the tail
+// separately and stitches a head + elision-marker + tail digest.
+func readJobOutputDigest(readWindow func(budget int, fromHead bool) (jobReadOutputSnapshot, error)) (jobReadOutputSnapshot, error) {
+	headSnap, err := readWindow(jobLineReadBudget, true)
+	if err != nil {
+		return jobReadOutputSnapshot{}, err
+	}
+	if !headSnap.Truncated && headSnap.DroppedBytes == 0 {
+		// The entire retained output fits in the head read.
+		content := []byte(headSnap.Content)
+		head, hN, more := firstLineBytes(content, digestHeadLines)
+		if !more {
+			return headSnap, nil
+		}
+		tail, tN, _ := lastLineBytes(content, digestTailLines)
+		if len(head)+len(tail) >= len(content) {
+			return headSnap, nil
+		}
+		headSnap.Content = assembleOutputDigest(head, hN, tail, tN, headSnap.TotalBytes, headSnap.DroppedBytes)
+		headSnap.Truncated = true
+		return headSnap, nil
+	}
+	tailSnap, err := readWindow(jobLineReadBudget, false)
+	if err != nil {
+		return jobReadOutputSnapshot{}, err
+	}
+	head, hN, _ := firstLineBytes([]byte(headSnap.Content), digestHeadLines)
+	tail, tN, _ := lastLineBytes([]byte(tailSnap.Content), digestTailLines)
+	tailSnap.Content = assembleOutputDigest(head, hN, tail, tN, tailSnap.TotalBytes, tailSnap.DroppedBytes)
+	tailSnap.Truncated = true
+	return tailSnap, nil
+}
+
 // firstLineBytes returns the first n lines of b (each line including its trailing
 // newline; a final line without a newline still counts), the number of lines
 // returned, and whether b held more lines than were returned.

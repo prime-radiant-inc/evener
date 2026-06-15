@@ -618,7 +618,6 @@ Canonical target shape:
 ```json
 {
   “job_id”: “job_...”,
-  “tail_bytes”: 65536,
   “grep”: “(?i)(ready|blocked|error)”,
   “max_wait_ms”: 30000
 }
@@ -626,12 +625,12 @@ Canonical target shape:
 
 Canonical behavior:
 
-- Omit `tail_bytes` to use the default retained tail size.
-- Pass `head_bytes` instead of `tail_bytes` to read from the start of retained output — the early lines that a tail read drops once the output grows past the tail window. `head_bytes` and `tail_bytes` are mutually exclusive; supplying both fails `invalid_request`. `head_bytes` has no default: omitting it uses `tail_bytes`. Maximum `head_bytes` is `1048576`; values above the maximum are clamped downward.
+- Omit `head_lines`/`tail_lines` for the default **head+tail digest**: the first ~100 and last ~100 lines of retained output, with the middle elided and a marker stating how much (bytes, and a permanent-loss note when output was evicted past the retention cap).
+- Pass `head_lines` to read that many whole lines from the START of retained output, or `tail_lines` from the END. They are mutually exclusive; supplying both fails `invalid_request`. Both omitted gives the digest. A per-side byte budget bounds a pathological run of very long lines.
 - `grep`, when supplied, searches retained output server-side using Go/RE2 syntax and returns bounded matching lines/chunks plus output metadata. Match entries should include a byte position such as `byte_offset` when available. In the core model-facing contract this is informational/triage metadata; agents can act on it only when an implementation also exposes advanced paging or a UI uses the coordinate to fetch surrounding context.
 - `grep` is for inspecting retained output, including terminal jobs. `job_watch.output_match` is for triggering a notification or configured send while a watched running job emits matching output.
 - Reads are non-consuming and non-acknowledging.
-- Default `tail_bytes` is `65536`; maximum `tail_bytes` is `1048576`. Omitted uses the default. Values above the maximum are clamped downward. Values `<=0` fail `invalid_request`.
+- The result reports `total_bytes` (lifetime output), `dropped_bytes` (bytes permanently evicted past the retention cap), and `output_status`: `all_retained` (the returned window is the whole retained log), `windowed` (more is retained — read it), or `evicted` (`dropped_bytes` are gone). `output_status` describes the WINDOW, not the job lifecycle — a running job whose window covers everything-so-far still reports `all_retained`.
 - `grep` always scans the full retained output; there is no scan-budget parameter, so a grep over retained bytes never silently misses a match for budget reasons. The returned `matches` array is bounded by match-count and per-line caps.
 - `max_wait_ms` for `job_read_output` defaults to `5000` when positive; minimum is `1000`; maximum is `60000` (the same bounds as `job_stop`, deliberately tighter than delegate creation: waiting reads are bounded conveniences measured in seconds). `0` and absent mean snapshot-now (no wait). Out-of-range positive values are clamped; negative values fail `invalid_request`.
 - With `max_wait_ms > 0`, the tool performs at most one bounded wait, then returns current state/output. Without `grep`, the wait ends on terminal state or more output. With `grep`, the wait ends when the retained output contains a match, on terminal state, or on timeout. Timeout never stops the job.
@@ -647,7 +646,7 @@ Canonical return shape:
   "type": "shell",
   "status": "running",
   "reason": null,
-  "content": "bounded output tail or grep excerpt",
+  "content": "head+tail digest, requested line slice, or grep excerpt",
   "grep": "(?i)(ready|blocked|error)",
   "matches": [
     {
@@ -656,6 +655,8 @@ Canonical return shape:
     }
   ],
   "total_bytes": 10000,
+  "dropped_bytes": 0,
+  "output_status": "all_retained",
   "truncated": false,
   "exit_code": null,
   "last_activity": "..."
@@ -666,7 +667,7 @@ Canonical return shape:
 
 #### Advanced output paging
 
-Absolute byte-offset paging, retained-start accounting, next offsets, and detailed truncation-reason arrays are implementation/UI capabilities, not the canonical agent-facing shape. There is no model-facing `limit_bytes` parameter: grep scans the full retained output, and result bounding is fixed policy rather than a knob. Model-facing examples should stay centered on `tail_bytes`, `grep`, and `max_wait_ms`. If an implementation exposes absolute paging to models, it must document validation, retention, and truncation behavior separately without making ordinary agents learn the paging algorithm.
+Absolute byte-offset paging, retained-start accounting, next offsets, and detailed truncation-reason arrays are implementation/UI capabilities, not the canonical agent-facing shape. There is no model-facing `limit_bytes` parameter: grep scans the full retained output, and result bounding is fixed policy rather than a knob. Model-facing examples should stay centered on the default digest, `head_lines`/`tail_lines`, `grep`, and `max_wait_ms`. If an implementation exposes absolute paging to models, it must document validation, retention, and truncation behavior separately without making ordinary agents learn the paging algorithm.
 
 `max_wait_ms > 0` with a nonterminal job waits until one of these occurs:
 

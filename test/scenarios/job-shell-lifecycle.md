@@ -15,7 +15,7 @@ hidden (`failed` / `exit_nonzero`); (c) `background: true` launch-and-return —
 context-managed-output change): a fast chatty command whose output exceeds the
 8 KiB ride-whole budget returns `completed` + `job_id` + a small peek tail +
 `output_status:"windowed"` + `total_bytes`, and the full output is reachable via
-`job_read_output`; a fast quiet command is ephemeral (`output_status:"complete"`).
+`job_read_output`; a fast quiet command is ephemeral (`output_status:"all_retained"`).
 Terminal-notification cardinality/format is job-notification-semantics.md.
 
 ## Pre-state
@@ -57,7 +57,7 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
    >    `yes COH_CHATTY_LINE | head -100000` (produces ~1.8MB of output,
    >    finishes in well under the session timeout). Report the full result JSON.
    > 2. If the step-1 result had a job_id, call job_read_output for it with
-   >    head_bytes 200 and report total_bytes, dropped_bytes, output_status,
+   >    head_lines 200 and report total_bytes, dropped_bytes, output_status,
    >    and whether the content starts with COH_CHATTY_LINE.
    > 3. Run the shell tool with command: `sh -c 'exit 0'` (fast quiet, no
    >    output). Report the full result JSON.
@@ -78,7 +78,7 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
 
 - Arm (a): the step-1 result JSON has `status` `"completed"`,
   `reason` `"exit_zero"`, `exit_code` `0`, `running_in_background` `false`,
-  `timed_out` `false`, NO `job_id`, `output_status` `"complete"`, and
+  `timed_out` `false`, NO `job_id`, `output_status` `"all_retained"`, and
   `output` containing BOTH `INLINE_OUT_OK` and `INLINE_ERR_OK`.
 - Arm (b): step 2 is a normal tool result (not a tool error) with
   `status` `"failed"`, `reason` `"exit_nonzero"`, `exit_code` `7`, and
@@ -109,8 +109,8 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
   - Turn-3 step-1 (chatty command): the result contains a `job_id` (output
     exceeded the 8 KiB ride-whole budget), `status` `"completed"`,
     `truncated` `true`, `output_status` `"windowed"`, `total_bytes` ≫ the
-    inline peek, and only a small (~1 KiB) tail of the output inline. The
-    step-2 `job_read_output` (head_bytes 200) returns `content` beginning
+    inline peek, and a small head+tail digest of the output inline. The
+    step-2 `job_read_output` (head_lines 200) returns `content` beginning
     with `COH_CHATTY_LINE`, `dropped_bytes` `0` (≪ 8 MiB retained), and
     `output_status` `"windowed"` — proving the head is reachable and nothing
     was evicted. The kept job emits NO terminal notification (synchronous
@@ -120,7 +120,7 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
     cannot reach the head.
   - Turn-3 step-3 (fast quiet command): the result has NO `job_id`,
     `status` `"completed"`, `reason` `"exit_zero"`, `output_status`
-    `"complete"` — ephemeral. Falsification: a `job_id` present for a quiet
+    `"all_retained"` — ephemeral. Falsification: a `job_id` present for a quiet
     zero-exit command (spurious durability noise).
   - Step-4 `job_list`: the fast-quiet job (step 3) does NOT appear. The
     chatty job (step 1) MAY appear as `completed` if still within the
