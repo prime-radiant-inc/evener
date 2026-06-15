@@ -1361,6 +1361,41 @@ func TestSession_SystemPromptFile_OverridesBasePrompt(t *testing.T) {
 	}
 }
 
+func TestSearchToolsDefaultPathAndFilterWhenOmitted(t *testing.T) {
+	dir := t.TempDir()
+	env := execenv.NewLocalExecutionEnvironment(dir)
+	if _, err := env.WriteFile("notes.txt", "the quick brown fox\n"); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "google"})
+	sess, err := NewSession(c, newGeminiProfile("gemini-test"), env, SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// glob with no path must default to the working dir. Regression: an omitted
+	// arg was rendered with fmt.Sprint as the literal string "<nil>", so glob
+	// searched a bogus "<nil>" directory and matched nothing.
+	globRes := sess.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+		ID: "g1", Name: "glob", Arguments: json.RawMessage(`{"pattern":"*.txt"}`),
+	})
+	if globRes.IsError || !strings.Contains(globRes.Output, "notes.txt") {
+		t.Fatalf("glob without path must find notes.txt in the working dir; got %q (err=%v)", globRes.Output, globRes.IsError)
+	}
+
+	// grep over a directory with no glob_filter must search all files. Regression:
+	// an omitted glob_filter became -g "<nil>", filtering every file out, so
+	// directory-wide grep silently returned empty.
+	grepRes := sess.reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+		ID: "r1", Name: "grep", Arguments: json.RawMessage(`{"pattern":"quick","path":"."}`),
+	})
+	if grepRes.IsError || !strings.Contains(grepRes.Output, "quick") {
+		t.Fatalf("grep over a directory without glob_filter must find the match; got %q (err=%v)", grepRes.Output, grepRes.IsError)
+	}
+}
+
 func TestSession_CoreTools_ListDir(t *testing.T) {
 	dir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)

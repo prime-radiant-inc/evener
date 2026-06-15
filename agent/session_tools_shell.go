@@ -149,7 +149,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 		Tool: llm.Tool{Definition: tool.DefListDir(), ReadOnly: true},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
-			path := fmt.Sprint(args["path"])
+			path := stringArg(args, "path")
 			depth := 1
 			if v, ok := args["depth"].(float64); ok && int(v) > 0 {
 				depth = int(v)
@@ -175,9 +175,9 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 		Tool: llm.Tool{Definition: tool.DefGrep(), ReadOnly: true},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
-			pat := fmt.Sprint(args["pattern"])
-			path := fmt.Sprint(args["path"])
-			glob := fmt.Sprint(args["glob_filter"])
+			pat := stringArg(args, "pattern")
+			path := stringArg(args, "path")
+			glob := stringArg(args, "glob_filter")
 			ci := false
 			if v, ok := args["case_insensitive"].(bool); ok {
 				ci = v
@@ -201,8 +201,8 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 		Tool: llm.Tool{Definition: tool.DefGlob(), ReadOnly: true},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
-			pat := fmt.Sprint(args["pattern"])
-			path := fmt.Sprint(args["path"])
+			pat := stringArg(args, "pattern")
+			path := stringArg(args, "path")
 			matches, err := env.Glob(pat, path)
 			if err != nil {
 				return "", err
