@@ -1,0 +1,79 @@
+package agent
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestAssembleOutputDigest(t *testing.T) {
+	head := []byte("h1\nh2\n")
+	tail := []byte("t1\nt2\n")
+
+	// Retained, nothing evicted: marker shows bytes elided + a recovery hint.
+	got := assembleOutputDigest(head, 2, tail, 2, 1000, 0)
+	if !strings.HasPrefix(got, "h1\nh2\n") || !strings.HasSuffix(got, "t1\nt2\n") {
+		t.Fatalf("digest must bracket head and tail:\n%s", got)
+	}
+	if !strings.Contains(got, "elided") || !strings.Contains(got, "head_lines") {
+		t.Fatalf("digest must carry an elision marker + recovery hint:\n%s", got)
+	}
+	if strings.Contains(got, "permanently dropped") {
+		t.Fatalf("no eviction here; marker must not claim permanent loss:\n%s", got)
+	}
+
+	// Evicted: marker must flag permanent loss past the cap.
+	got = assembleOutputDigest(head, 2, tail, 2, 9_000_000, 1_000_000)
+	if !strings.Contains(got, "permanently dropped") {
+		t.Fatalf("evicted digest must flag permanent loss:\n%s", got)
+	}
+}
+
+func TestFirstLineBytes(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       string
+		n        int
+		want     string
+		wantN    int
+		wantMore bool
+	}{
+		{"two of five", "l1\nl2\nl3\nl4\nl5\n", 2, "l1\nl2\n", 2, true},
+		{"all when n exceeds", "l1\nl2\n", 5, "l1\nl2\n", 2, false},
+		{"no trailing newline", "l1\nl2", 1, "l1\n", 1, true},
+		{"single partial line", "only", 3, "only", 1, false},
+		{"empty", "", 2, "", 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, n, more := firstLineBytes([]byte(c.in), c.n)
+			if string(got) != c.want || n != c.wantN || more != c.wantMore {
+				t.Fatalf("firstLineBytes(%q,%d) = (%q,%d,%v), want (%q,%d,%v)", c.in, c.n, got, n, more, c.want, c.wantN, c.wantMore)
+			}
+		})
+	}
+}
+
+func TestLastLineBytes(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       string
+		n        int
+		want     string
+		wantN    int
+		wantMore bool
+	}{
+		{"two of five", "l1\nl2\nl3\nl4\nl5\n", 2, "l4\nl5\n", 2, true},
+		{"all when n exceeds", "l1\nl2\n", 5, "l1\nl2\n", 2, false},
+		{"no trailing newline", "l1\nl2", 1, "l2", 1, true},
+		{"single partial line", "only", 3, "only", 1, false},
+		{"empty", "", 2, "", 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, n, more := lastLineBytes([]byte(c.in), c.n)
+			if string(got) != c.want || n != c.wantN || more != c.wantMore {
+				t.Fatalf("lastLineBytes(%q,%d) = (%q,%d,%v), want (%q,%d,%v)", c.in, c.n, got, n, more, c.want, c.wantN, c.wantMore)
+			}
+		})
+	}
+}
