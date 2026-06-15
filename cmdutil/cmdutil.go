@@ -66,11 +66,26 @@ func ResolveProfileWithLiveWindow(cfg providercfg.Config, ref string) (*provider
 		return nil, err
 	}
 	if isOpenAICompatTag(p.BehaviorTag()) {
-		if window := queryModelContextWindow(p.BehaviorTag(), p.Model()); window > 0 {
+		// Query the instance's own endpoint: an instance may set base_url in
+		// providers.toml (e.g. the Kimi coding plan at api.kimi.com/coding/v1)
+		// that the provider-type default does not know about.
+		baseURL, apiKey := instanceEndpoint(cfg, p.ID())
+		if window := queryModelContextWindow(p.BehaviorTag(), p.Model(), baseURL, apiKey); window > 0 {
 			p = provider.WithContextWindow(p, window)
 		}
 	}
 	return p, nil
+}
+
+// instanceEndpoint returns the base URL and inline api key configured for the
+// instance named name, or empty strings when not found.
+func instanceEndpoint(cfg providercfg.Config, name string) (baseURL, apiKey string) {
+	for _, inst := range cfg.Instances {
+		if inst.Name == name {
+			return strings.TrimSpace(inst.BaseURL), strings.TrimSpace(inst.APIKey)
+		}
+	}
+	return "", ""
 }
 
 // ResolveProfileForProvider resolves a bare provider/model pair to a
@@ -298,16 +313,25 @@ var providerEnvConfig = map[string]struct {
 // HTTP requests. `provider` must be the provider TYPE / behavior tag
 // (kimi/glm/openrouter), not an instance name — the lookup keys on
 // providerEnvConfig by that tag.
-var queryModelContextWindow = func(provider, model string) int {
+var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPIKey string) int {
 	cfg, ok := providerEnvConfig[provider]
 	if !ok {
 		return 0
 	}
-	apiKey := strings.TrimSpace(os.Getenv(cfg.apiKeyEnv))
+	// Prefer the instance's configured key/base URL (providers.toml) over the
+	// provider-type env var / default, so an instance with a custom endpoint
+	// (the Kimi coding plan) is queried at its real /models.
+	apiKey := strings.TrimSpace(instanceAPIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv(cfg.apiKeyEnv))
+	}
 	if apiKey == "" {
 		return 0
 	}
-	baseURL := strings.TrimSpace(os.Getenv(cfg.baseURLEnv))
+	baseURL := strings.TrimSpace(instanceBaseURL)
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(os.Getenv(cfg.baseURLEnv))
+	}
 	if baseURL == "" {
 		baseURL = cfg.defaultURL
 	}
