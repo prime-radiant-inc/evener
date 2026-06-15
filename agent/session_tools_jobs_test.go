@@ -65,6 +65,50 @@ func TestJobReadOutputReportsStatus(t *testing.T) {
 	}
 }
 
+// TestJobReadOutputDefaultWindowIsBounded pins A5: a bare job_read_output (no
+// head_bytes/tail_bytes) returns a small bounded default window, not up to the
+// full retention. The agent pages with an explicit tail_bytes for more.
+func TestJobReadOutputDefaultWindowIsBounded(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 20000","max_wait_ms":5000}`),
+	})
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Fatalf("20 KiB output returned no job_id")
+	}
+
+	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "r1",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `"}`),
+	})
+	if readRes.IsError {
+		t.Fatalf("job_read_output returned error: %s", readRes.Output)
+	}
+	var ro struct {
+		Content    string `json:"content"`
+		TotalBytes int64  `json:"total_bytes"`
+	}
+	if err := json.Unmarshal([]byte(readRes.Output), &ro); err != nil {
+		t.Fatalf("unmarshal read: %v", err)
+	}
+	if ro.TotalBytes < 20000 {
+		t.Fatalf("total_bytes = %d, want >= 20000", ro.TotalBytes)
+	}
+	if len(ro.Content) > 9000 {
+		t.Fatalf("bare-read content = %d bytes, want a small bounded default window (<= ~8 KiB)", len(ro.Content))
+	}
+}
+
 func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 	s := newTestSession(t)
 

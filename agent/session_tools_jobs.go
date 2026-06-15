@@ -18,7 +18,10 @@ import (
 )
 
 const (
-	defaultJobOutputBytes       = 65536
+	// defaultJobOutputBytes is the bare job_read_output window (no head_bytes/
+	// tail_bytes): a small bounded default that stops auto-shoving large output;
+	// the agent pages with an explicit tail_bytes/head_bytes (up to maxJobOutputBytes).
+	defaultJobOutputBytes       = 8 * 1024
 	maxJobOutputBytes           = 1048576
 	maxJobOutputRetentionBytes  = 8 * 1024 * 1024
 	defaultJobListLimit         = 50
