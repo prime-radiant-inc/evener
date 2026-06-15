@@ -17,18 +17,36 @@ type AppShell struct {
 }
 
 func (s AppShell) View() string {
-	contentSections := make([]string, 0, 3)
 	styles := tuitheme.DefaultTUIStyles()
-	if topBar := strings.TrimRight(s.TopBar, "\n"); topBar != "" {
-		contentSections = append(contentSections, styles.Title.Render(topBar))
-	}
-	if overlay := strings.TrimRight(s.Overlay, "\n"); overlay != "" {
-		contentSections = append(contentSections, overlay)
-	}
-	if body := strings.TrimRight(s.Body, "\n"); body != "" {
-		contentSections = append(contentSections, body)
+	topBar := strings.TrimRight(s.TopBar, "\n")
+	if topBar != "" {
+		topBar = styles.Title.Render(topBar)
 	}
 	footer := strings.TrimRight(s.Footer, "\n")
+
+	// Overlay and Body share the region between the (anchored) TopBar and
+	// Footer. On a short pane this region can overflow Height and, inline,
+	// scroll the TopBar off-screen. Trim it to whatever rows remain so the
+	// rendered frame never exceeds Height while keeping both chrome rows.
+	innerSections := make([]string, 0, 2)
+	if overlay := strings.TrimRight(s.Overlay, "\n"); overlay != "" {
+		innerSections = append(innerSections, overlay)
+	}
+	if body := strings.TrimRight(s.Body, "\n"); body != "" {
+		innerSections = append(innerSections, body)
+	}
+	inner := strings.Join(innerSections, "\n\n")
+	if s.Height > 0 {
+		inner = boundShellInner(inner, s.Height, topBar, footer)
+	}
+
+	contentSections := make([]string, 0, 2)
+	if topBar != "" {
+		contentSections = append(contentSections, topBar)
+	}
+	if inner != "" {
+		contentSections = append(contentSections, inner)
+	}
 	if len(contentSections) == 0 && footer == "" {
 		return ""
 	}
@@ -51,6 +69,35 @@ func (s AppShell) View() string {
 		gap = 2
 	}
 	return content + strings.Repeat("\n", gap) + footer
+}
+
+// boundShellInner trims the overlay/body region so that, once the TopBar and
+// Footer chrome and their blank-line separators are accounted for, the whole
+// frame fits within height. It keeps the first lines of inner; callers that
+// need a particular line (such as a palette selection) kept in view must window
+// their own content before handing it to AppShell.
+func boundShellInner(inner string, height int, topBar, footer string) string {
+	if inner == "" {
+		return inner
+	}
+	used := 0
+	separators := 0
+	for _, section := range []string{topBar, inner, footer} {
+		if tuitext.ShellSectionLineCount(section) > 0 {
+			separators++
+		}
+	}
+	for _, section := range []string{topBar, footer} {
+		used += tuitext.ShellSectionLineCount(section)
+	}
+	if separators > 1 {
+		used += 2 * (separators - 1)
+	}
+	available := height - used
+	if available < 1 {
+		available = 1
+	}
+	return tuitext.LimitFirstLines(inner, available)
 }
 
 func ActionBar(keys ...string) string {
