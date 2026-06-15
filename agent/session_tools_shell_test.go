@@ -549,7 +549,7 @@ func TestCompleteOrHandleEphemeral(t *testing.T) {
 }
 
 // TestCompleteOrHandleKeptLargeOutput pins spec §6.4(b): a fast command
-// whose output exceeds the inline embed budget (shellInlineOutputBytes = 64KB)
+// whose output exceeds the ride-whole budget (shellRideWholeBytes = 8KB)
 // returns a kept result with job_id + truncated:true, and job_read_output
 // returns the full retained bytes.
 func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
@@ -603,9 +603,88 @@ func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
 	}
 }
 
+// TestShellRideWholeThresholdIs8KiB pins the context-managed default: completed
+// output above shellRideWholeBytes (8 KiB) becomes a navigable handle (job_id)
+// rather than being auto-injected inline. A ~9 KiB command must return a job_id;
+// under the old 64 KiB threshold it rode whole with no job_id.
+func TestShellRideWholeThresholdIs8KiB(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000","max_wait_ms":5000}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Fatalf("9 KiB output returned no job_id; want a navigable handle above the 8 KiB ride-whole threshold")
+	}
+	if out.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+}
+
+// TestShellHandlePeekTailIsSmall pins the small-default-window rule: when
+// completed output becomes a handle, the inline result carries only a small
+// peek tail (shellDefaultTailBytes = 1 KiB), not the whole output — the full
+// bytes stay retrievable via job_read_output.
+func TestShellHandlePeekTailIsSmall(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000","max_wait_ms":5000}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID  string `json:"job_id"`
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Fatalf("9 KiB output returned no job_id; want a handle")
+	}
+	if len(out.Output) > 1200 {
+		t.Fatalf("inline peek tail = %d bytes, want a small peek (<= ~1 KiB), not the whole output", len(out.Output))
+	}
+
+	// The full bytes remain retrievable through the handle.
+	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "r1",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_bytes":1048576}`),
+	})
+	if readRes.IsError {
+		t.Fatalf("job_read_output returned error: %s", readRes.Output)
+	}
+	var readOut struct {
+		TotalBytes int64 `json:"total_bytes"`
+	}
+	if err := json.Unmarshal([]byte(readRes.Output), &readOut); err != nil {
+		t.Fatalf("unmarshal read output: %v", err)
+	}
+	if readOut.TotalBytes < 9000 {
+		t.Fatalf("retained TotalBytes = %d, want >= 9000", readOut.TotalBytes)
+	}
+}
+
 // TestCompleteOrHandleKeptToolResultOverflow pins spec §6.4(c): a command
-// whose output fits in 64KB (inline embed budget) but exceeds the
-// tool-result char bound still gets a durable job_id.
+// whose output fits in the ride-whole budget but exceeds the tool-result char
+// bound still gets a durable job_id.
 func TestCompleteOrHandleKeptToolResultOverflow(t *testing.T) {
 	// Use MaxChars:1 so even a tiny output overflows the tool-result bound.
 	s := newShellToolTestSession(t, SessionConfig{
@@ -614,12 +693,12 @@ func TestCompleteOrHandleKeptToolResultOverflow(t *testing.T) {
 		},
 	})
 
-	// 60KB < shellInlineOutputBytes (64KB), so layer 1 budget is fine, but
+	// 4KB < shellRideWholeBytes (8KB), so layer 1 budget is fine, but
 	// MaxChars:1 ensures the tool-result char bound is exceeded (layer 2).
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"head -c 60000 </dev/zero | tr '\\0' 'x'","max_wait_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"head -c 4000 </dev/zero | tr '\\0' 'x'","max_wait_ms":5000}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)

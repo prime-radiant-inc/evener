@@ -185,7 +185,7 @@ func shellToolResultMaxChars(reg *tool.Registry) int {
 
 func marshalShellToolResult(res shellResult, maxChars int) (tool.TextResult, error) {
 	// complete-or-handle (spec §0.6): within-bound results carry a settle
-	// closure. Apply both layers — inline embed budget (shellInlineOutputBytes)
+	// closure. Apply both layers — ride-whole budget (shellRideWholeBytes)
 	// and tool-result char bound (maxChars) — to decide keep vs discard.
 	if res.settle != nil {
 		return marshalCompleteOrHandleResult(res, maxChars)
@@ -223,7 +223,7 @@ func marshalShellToolResult(res shellResult, maxChars int) (tool.TextResult, err
 // marshalCompleteOrHandleResult implements spec §0.6 for within-bound shell
 // completions. It checks both layers:
 //
-//  1. Inline embed budget (shellInlineOutputBytes): output > 64KB cannot ride
+//  1. Ride-whole budget (shellRideWholeBytes): output > 8KB cannot ride whole
 //     in the inline result.
 //  2. Tool-result char bound (maxChars): marshaled JSON > bound also exceeds.
 //
@@ -242,8 +242,8 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResu
 		Truncated: &falseVal,
 	}
 
-	// Layer 1: inline embed budget.
-	embedExceeded := len(res.Output) > shellInlineOutputBytes
+	// Layer 1: ride-whole budget.
+	embedExceeded := len(res.Output) > shellRideWholeBytes
 
 	// Layer 2: tool-result char bound. Marshal with full output and check.
 	charBoundExceeded := false
@@ -267,28 +267,42 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResu
 		return tool.TextResult{Output: s, FullOutput: s}, nil
 	}
 
-	// Keep: output cannot ride inline in full. Commit + finalize the delayed job.
+	// Keep: output cannot ride whole inline. Commit + finalize the delayed job.
 	jobID := res.settle(true)
-
-	// Build the kept result with a bounded tail and job_id.
 	out.JobID = jobID
-	if maxChars > 0 {
-		model, err := marshalBoundedShellToolResult(out, maxChars)
-		if err != nil {
-			return tool.TextResult{}, err
-		}
-		b, err := json.Marshal(out)
-		if err != nil {
-			return tool.TextResult{}, err
-		}
-		return tool.TextResult{Output: model, FullOutput: string(b)}, nil
-	}
-	b, err := json.Marshal(out)
+
+	// FullOutput (TOOL_CALL_END, for observers/hooks) carries the complete output;
+	// the durable job retains it too. The model sees only a small peek tail
+	// (shellDefaultTailBytes) + the job_id — it pages the rest via job_read_output.
+	fullBytes, err := json.Marshal(out)
 	if err != nil {
 		return tool.TextResult{}, err
 	}
-	s := string(b)
-	return tool.TextResult{Output: s, FullOutput: s}, nil
+
+	peek := out
+	tail, peekTruncated := tailString(res.Output, shellDefaultTailBytes)
+	peek.Output = &tail
+	peek.Truncated = &peekTruncated
+	if maxChars > 0 {
+		model, err := marshalBoundedShellToolResult(peek, maxChars)
+		if err != nil {
+			return tool.TextResult{}, err
+		}
+		return tool.TextResult{Output: model, FullOutput: string(fullBytes)}, nil
+	}
+	pb, err := json.Marshal(peek)
+	if err != nil {
+		return tool.TextResult{}, err
+	}
+	return tool.TextResult{Output: string(pb), FullOutput: string(fullBytes)}, nil
+}
+
+// tailString returns the last maxBytes bytes of s and whether it was truncated.
+func tailString(s string, maxBytes int) (string, bool) {
+	if len(s) <= maxBytes {
+		return s, false
+	}
+	return s[len(s)-maxBytes:], true
 }
 
 func marshalBoundedShellToolResult(out shellToolResult, maxChars int) (string, error) {

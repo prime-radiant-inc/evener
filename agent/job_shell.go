@@ -16,6 +16,17 @@ const (
 	defaultShellBlockTimeoutMS = 120000
 	minShellBlockTimeoutMS     = 1000
 	maxShellBlockTimeoutMS     = 600000
+	// shellRideWholeBytes is the ride-whole threshold: completed output at or below
+	// this rides back inline (ephemeral, no durable job); above it the output
+	// becomes a navigable handle (job_id + a small peek tail). Kept small so the
+	// tool manages the agent's context instead of auto-injecting large output.
+	shellRideWholeBytes = 8 * 1024
+	// shellDefaultTailBytes is the small peek tail shown inline when output
+	// exceeds the ride-whole budget, and for running-job snapshots. The full
+	// output stays in the OutputStore, reachable via job_read_output.
+	shellDefaultTailBytes = 1024
+	// shellInlineOutputBytes is the read budget for delegate report output
+	// (a bounded final result, not raw logs); shell peeks use shellDefaultTailBytes.
 	shellInlineOutputBytes     = 64 * 1024
 	shellFinalizeAttempts      = 5
 	shellFinalizeRetryDelay    = 20 * time.Millisecond
@@ -195,7 +206,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			}
 			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 		}
-		output, _, truncated, _ := tailOutput(run.output, shellInlineOutputBytes)
+		output, _, truncated, _ := tailOutput(run.output, shellDefaultTailBytes)
 		go jm.finalizeShellWhenDone(run, waitCh, &runtimeTimedOut)
 		return shellResult{
 			JobID:               run.rec.JobID,
@@ -332,7 +343,7 @@ func (jm *jobManager) finishForegroundRuntimeTimeout(run *runningJob, wait shell
 		}
 		return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 	}
-	output, _, truncated, _ := tailOutput(run.output, shellInlineOutputBytes)
+	output, _, truncated, _ := tailOutput(run.output, shellDefaultTailBytes)
 	if err := jm.finalizeShellWithRetry(run.rec.JobID, status, reason, exitCode); err != nil {
 		go jm.finalizeShellUntilDurable(run.rec.JobID, status, reason, exitCode)
 		return shellResult{
