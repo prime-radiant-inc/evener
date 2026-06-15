@@ -224,13 +224,13 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 func DefJobReadOutput() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_read_output",
-		Description: "Read a job's output and status by `job_id` — reads never consume or acknowledge anything. Returns a bounded output tail (`tail_bytes`, the default) for shell jobs or the report (and `structured_result`, when present) for delegates; pass `head_bytes` instead to read from the START of the output (the early lines a tail read drops). `grep` searches the job's **entire retained output** and returns matching lines. `max_wait_ms > 0` waits: with `grep`, until a match exists, the job ends, or the timeout elapses — the one-call way to wait for \"ready\"; without `grep`, until new output or terminal state.",
+		Description: "Read a job's output and status by `job_id` — reads never consume or acknowledge anything. Output is a navigable resource: a bare read returns a small bounded tail; pass `tail_bytes`/`head_bytes` to page a larger or earlier slice (up to the retained log), or `grep` to search it. The result reports `total_bytes` (lifetime output), `dropped_bytes` (bytes permanently evicted past the retention cap), and `output_status`: `complete` (you have it all), `windowed` (the full log is retained — read more for the rest), or `evicted` (`dropped_bytes` are gone). `grep` scans the **entire retained output** (up to the retention cap, not just the inline tail) and returns matching lines. Delegates return the report (and `structured_result`, when present). `max_wait_ms > 0` waits: with `grep`, until a match exists, the job ends, or the timeout elapses — the one-call way to wait for \"ready\"; without `grep`, until new output or terminal state.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"job_id":      map[string]any{"type": "string"},
-				"tail_bytes":  map[string]any{"type": "integer", "default": 65536, "maximum": 1048576},
+				"tail_bytes":  map[string]any{"type": "integer", "default": 8192, "maximum": 1048576, "description": "Read this many bytes from the END of the output. Default is a small bounded window; raise it to page more."},
 				"head_bytes":  map[string]any{"type": "integer", "maximum": 1048576, "description": "Read this many bytes from the START of the output instead of the tail. Mutually exclusive with tail_bytes."},
 				"grep":        map[string]any{"type": "string"},
 				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): snapshot now. >0: wait up to this many ms for a grep match (with grep), or for new output / terminal state."},
