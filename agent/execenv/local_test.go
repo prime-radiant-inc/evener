@@ -114,6 +114,28 @@ func TestLocalExecutionEnvironment_ReadWriteEditFile(t *testing.T) {
 	}
 }
 
+// TestEditFile_NoMatch_ShowsNearestText pins the near-miss diagnostic: when an
+// old_string fails to match (here a partial first line that drops a leading
+// "entry exists. "), the error must echo the nearest actual line verbatim so the
+// model sees the dropped content and can self-correct — rather than re-submitting
+// the same wrong string against a bare "not found", as a live kimi run did three
+// times in a row.
+func TestEditFile_NoMatch_ShowsNearestText(t *testing.T) {
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	content := "  <p>\n    entry exists. The UI never displays stored values.\n  </p>\n  <section id=\"x\">\n"
+	if _, err := env.WriteFile("c.html", content); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// old_string starts partway into the line, dropping the leading "entry exists. ".
+	old := "    The UI never displays stored values.\n  </p>\n"
+	if _, err := env.EditFile("c.html", old, "REPLACED", false); err == nil {
+		t.Fatalf("expected a no-match error, got nil")
+	} else if !strings.Contains(err.Error(), "entry exists. The UI never displays stored values.") {
+		t.Fatalf("error must surface the nearest actual line so the dropped content is visible, got: %v", err)
+	}
+}
+
 func TestLocalExecutionEnvironment_WriteFile_OutsideRoot_Rejected(t *testing.T) {
 	// Writing to an absolute path above the worktree must fail. This is the
 	// guard that would have prevented the flint-oak-willow incident where a

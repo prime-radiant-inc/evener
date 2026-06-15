@@ -220,6 +220,9 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 		// Fuzzy fallback: try whitespace-normalized matching.
 		match := findFuzzyMatch(s, oldString)
 		if match == "" {
+			if near := nearestFileRegion(s, oldString); near != "" {
+				return "", fmt.Errorf("old_string not found in %s\nnearest text in the file (copy it exactly — your old_string may be a partial line or omit a line):\n%s", path, near)
+			}
 			return "", fmt.Errorf("old_string not found in %s", path)
 		}
 		oldString = match
@@ -277,6 +280,70 @@ func findFuzzyMatch(content, oldString string) string {
 // normalizeWS collapses all whitespace runs to single spaces and trims ends.
 func normalizeWS(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// nearestFileRegion returns the file region most similar to oldString's first
+// line, verbatim and spanning oldString's line count, so a failed edit_file
+// match can show the model the actual bytes at the intended site — surfacing a
+// dropped word or an omitted line, the usual causes of a near miss the fuzzy
+// matcher cannot rescue. Returns "" when nothing is similar enough to help.
+func nearestFileRegion(content, oldString string) string {
+	oldLines := strings.Split(strings.TrimRight(oldString, "\n"), "\n")
+	if len(oldLines) == 0 {
+		return ""
+	}
+	target := normalizeWS(oldLines[0])
+	if target == "" {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	best, bestScore := -1, 0.0
+	for i, line := range lines {
+		if score := lineSimilarity(normalizeWS(line), target); score > bestScore {
+			best, bestScore = i, score
+		}
+	}
+	if best < 0 || bestScore < 0.5 {
+		return ""
+	}
+	end := best + len(oldLines)
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return strings.Join(lines[best:end], "\n")
+}
+
+// lineSimilarity scores two whitespace-normalized lines in [0,1]: 1.0 when one
+// contains the other (the partial-line case), otherwise the Jaccard overlap of
+// their space-separated tokens.
+func lineSimilarity(a, b string) float64 {
+	if a == "" || b == "" {
+		return 0
+	}
+	if strings.Contains(a, b) || strings.Contains(b, a) {
+		return 1
+	}
+	sa, sb := wordSet(a), wordSet(b)
+	inter := 0
+	for w := range sa {
+		if sb[w] {
+			inter++
+		}
+	}
+	union := len(sa) + len(sb) - inter
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
+}
+
+// wordSet returns the set of space-separated tokens in s.
+func wordSet(s string) map[string]bool {
+	m := make(map[string]bool)
+	for _, w := range strings.Fields(s) {
+		m[w] = true
+	}
+	return m
 }
 
 // detectImageFormat checks file extension and magic bytes to identify image files.
