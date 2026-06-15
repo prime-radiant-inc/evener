@@ -55,10 +55,6 @@ func (p commandPalette) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // filter + blank (2), and blank + footer (2).
 const paletteOverlayChrome = 10
 
-func (p commandPalette) renderItems() string {
-	return p.renderItemsWindow(0)
-}
-
 // renderItemsWindow renders the filtered items, showing at most maxRows of them
 // windowed around the cursor so the selected entry stays visible. maxRows <= 0
 // shows every item.
