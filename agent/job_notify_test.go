@@ -88,6 +88,48 @@ func appendPendingJobNotificationRecord(t *testing.T, jm *jobManager, sessionID 
 	}
 }
 
+func TestNotificationTurnBareTextAckIsNotScolded(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// The agent already observed this job's result, so it acknowledges the
+			// terminal notification with bare text instead of calling communicate.
+			func(req llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("Acknowledged — already saw this job, no action needed.")}
+			},
+		},
+	}
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	jm, err := newJobManager(dir, sess.ID(), sess.enqueueJobNotification)
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	sess.jobManager = jm
+	appendPendingJobNotificationRecord(t, jm, sess.ID())
+	// An in-memory enqueue drives the notification turn; the durable record supplies
+	// the rendered payload.
+	sess.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("notification turn with a bare-text ack must not error: %v", err)
+	}
+
+	// Exactly one model request: a bare-text ack on a notification-driven turn ends
+	// the turn idle, rather than being scolded into a retry and a no-op communicate.
+	// A scold would re-call the model with steering, producing 2+ requests.
+	if reqs := adapter.Requests(); len(reqs) != 1 {
+		t.Fatalf("notification turn made %d model requests, want 1 (no bare-text scold/retry)", len(reqs))
+	}
+}
+
 func TestJobNotificationTurnDeliversPendingDurableRecord(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

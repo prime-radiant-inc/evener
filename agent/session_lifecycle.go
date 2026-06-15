@@ -638,6 +638,17 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		progressed = progressed || s.callsMadeProgress(calls)
 
 		if len(calls) == 0 {
+			// A bare-text response to a notification turn is the agent acknowledging
+			// a terminal notification it has nothing to act on (it often already read
+			// the job's output itself). Finish idle instead of scolding it toward a
+			// no-op communicate — the text is already in the transcript, and a
+			// system-initiated notification turn carries no user awaiting a reply.
+			// A truly empty (no-content) response is a model glitch and still routes
+			// through the empty-retry path below.
+			if kind == EntryNotification && !noContent {
+				s.finishProcessingAtBoundary(ctx, SessionIdle)
+				return "", progressed, nil
+			}
 			retry, ferr := s.handleNoToolCalls(noContent, &tracker)
 			if !retry {
 				return "", progressed, ferr

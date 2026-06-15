@@ -22,7 +22,9 @@ timeout leaves the job running and you free. Never hold your turn open for long
 work — run it in the background, keep working, and act on the notification. A
 terminal notification can land after you have already read the job's output
 yourself; that is expected confirmation, not new work — act on whichever arrives
-first and don't re-process the same result.
+first and don't re-process the same result. When a notification needs no action,
+a one-line acknowledgment is enough; you do not have to route it through
+`communicate`.
 
 `job_list` is always current. If you have waited unusually long with no
 notification, list jobs to re-orient before re-running anything.
