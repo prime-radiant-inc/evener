@@ -66,10 +66,19 @@ func shellInlineDigest(full string, total, dropped int64) string {
 	headRaw := b
 	if len(headRaw) > shellDigestHalfBytes {
 		headRaw = headRaw[:shellDigestHalfBytes]
+		// Drop a trailing partial line so the head ends on a line boundary and no
+		// mid-line fragment is shown before the elision marker.
+		if i := bytes.LastIndexByte(headRaw, '\n'); i >= 0 {
+			headRaw = headRaw[:i+1]
+		}
 	}
 	tailRaw := b
 	if len(tailRaw) > shellDigestHalfBytes {
 		tailRaw = tailRaw[len(tailRaw)-shellDigestHalfBytes:]
+		// Drop a leading partial line so the tail starts on a line boundary.
+		if i := bytes.IndexByte(tailRaw, '\n'); i >= 0 {
+			tailRaw = tailRaw[i+1:]
+		}
 	}
 	head, _, _ := firstLineBytes(headRaw, shellDigestLines)
 	tail, _, _ := lastLineBytes(tailRaw, shellDigestLines)

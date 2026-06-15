@@ -1,9 +1,41 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
+
+func TestShellInlineDigestWholeLines(t *testing.T) {
+	// Lines whose boundaries do not align with the per-side byte budget, so a naive
+	// byte cut would leave a partial line fragment at the head's end / tail's start.
+	var lines []string
+	for i := 0; i < 200; i++ {
+		lines = append(lines, fmt.Sprintf("line%03d: %s", i, strings.Repeat("x", 23)))
+	}
+	full := strings.Join(lines, "\n") + "\n"
+	orig := map[string]bool{}
+	for _, l := range lines {
+		orig[l] = true
+	}
+
+	d := shellInlineDigest(full, int64(len(full)), 0)
+
+	// Split into the head (before the elision marker) and tail (after it). Every
+	// rendered line must be a complete original line — no mid-line fragments.
+	head, rest, _ := strings.Cut(d, "…[")
+	_, tail, _ := strings.Cut(rest, "]…\n")
+	for _, section := range []string{head, tail} {
+		for _, l := range strings.Split(strings.Trim(section, "\n"), "\n") {
+			if l == "" {
+				continue
+			}
+			if !orig[l] {
+				t.Fatalf("digest contains a non-whole line fragment: %q\nfull digest:\n%s", l, d)
+			}
+		}
+	}
+}
 
 func TestAssembleOutputDigest(t *testing.T) {
 	head := []byte("h1\nh2\n")

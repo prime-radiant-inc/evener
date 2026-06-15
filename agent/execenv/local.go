@@ -238,7 +238,11 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 	if err := os.WriteFile(abs, []byte(s), 0o644); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("edited %s: %d replacement(s)%s", path, n, fuzzyNote), nil
+	plural := "s"
+	if n == 1 {
+		plural = ""
+	}
+	return fmt.Sprintf("edited %s: %d replacement%s%s", path, n, plural, fuzzyNote), nil
 }
 
 // findFuzzyMatch scans the file content for a substring that matches
