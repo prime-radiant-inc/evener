@@ -7,13 +7,14 @@ import (
 )
 
 // assembleOutputDigest renders a head+tail line digest: the head slice, an
-// elision marker describing what sits between, then the tail slice. headLines /
-// tailLines are the line counts already sliced into head / tail; total is the
+// elision marker describing what sits between, then the tail slice. total is the
 // lifetime output byte count and dropped is the bytes permanently evicted past
-// the retention cap. The marker estimates the elided line count from the shown
-// lines' average length (exact line totals are not tracked) and always states
-// exact elided bytes plus the recovery call.
-func assembleOutputDigest(head []byte, headLines int, tail []byte, tailLines int, total, dropped int64) string {
+// the retention cap. The marker states the EXACT elided byte count plus the
+// recovery call — never a line estimate: the store is byte-oriented and does not
+// track total lines, and estimating from the shown lines' average length is
+// unreliable (the head/tail sample is biased toward short lines, so a guess can
+// exceed the true total).
+func assembleOutputDigest(head, tail []byte, total, dropped int64) string {
 	elidedBytes := total - int64(len(head)) - int64(len(tail))
 	if elidedBytes < 0 {
 		elidedBytes = 0
@@ -23,32 +24,15 @@ func assembleOutputDigest(head []byte, headLines int, tail []byte, tailLines int
 	if len(head) > 0 && head[len(head)-1] != '\n' {
 		b.WriteByte('\n')
 	}
-	estLines := estimateElidedLines(elidedBytes, len(head)+len(tail), headLines+tailLines)
 	if dropped > 0 {
-		fmt.Fprintf(&b, "…[~%d lines / %s elided, %s of them permanently dropped past the retention cap — recover the retained middle with job_read_output(head_lines=… / tail_lines=… / grep=…)]…\n",
-			estLines, humanBytes(elidedBytes), humanBytes(dropped))
+		fmt.Fprintf(&b, "…[%s elided, %s of them permanently dropped past the retention cap — recover the retained middle with job_read_output(head_lines=… / tail_lines=… / grep=…)]…\n",
+			humanBytes(elidedBytes), humanBytes(dropped))
 	} else {
-		fmt.Fprintf(&b, "…[~%d lines / %s elided — read more with job_read_output(head_lines=… / tail_lines=… / grep=…)]…\n",
-			estLines, humanBytes(elidedBytes))
+		fmt.Fprintf(&b, "…[%s elided — read more with job_read_output(head_lines=… / tail_lines=… / grep=…)]…\n",
+			humanBytes(elidedBytes))
 	}
 	b.Write(tail)
 	return b.String()
-}
-
-// estimateElidedLines approximates how many lines `elidedBytes` covers from the
-// average line length of the shown content. Returns 0 when nothing is elided.
-func estimateElidedLines(elidedBytes int64, shownBytes, shownLines int) int64 {
-	if elidedBytes <= 0 {
-		return 0
-	}
-	if shownLines <= 0 || shownBytes <= 0 {
-		return 0
-	}
-	avg := int64(shownBytes) / int64(shownLines)
-	if avg < 1 {
-		avg = 1
-	}
-	return elidedBytes / avg
 }
 
 // humanBytes formats a byte count as a short human-readable string.
@@ -87,9 +71,9 @@ func shellInlineDigest(full string, total, dropped int64) string {
 	if len(tailRaw) > shellDigestHalfBytes {
 		tailRaw = tailRaw[len(tailRaw)-shellDigestHalfBytes:]
 	}
-	head, hN, _ := firstLineBytes(headRaw, shellDigestLines)
-	tail, tN, _ := lastLineBytes(tailRaw, shellDigestLines)
-	return assembleOutputDigest(head, hN, tail, tN, total, dropped)
+	head, _, _ := firstLineBytes(headRaw, shellDigestLines)
+	tail, _, _ := lastLineBytes(tailRaw, shellDigestLines)
+	return assembleOutputDigest(head, tail, total, dropped)
 }
 
 // readJobOutputDigest builds the default head+tail digest snapshot using the
@@ -105,15 +89,15 @@ func readJobOutputDigest(readWindow func(budget int, fromHead bool) (jobReadOutp
 	if !headSnap.Truncated && headSnap.DroppedBytes == 0 {
 		// The entire retained output fits in the head read.
 		content := []byte(headSnap.Content)
-		head, hN, more := firstLineBytes(content, headLines)
+		head, _, more := firstLineBytes(content, headLines)
 		if !more {
 			return headSnap, nil
 		}
-		tail, tN, _ := lastLineBytes(content, tailLines)
+		tail, _, _ := lastLineBytes(content, tailLines)
 		if len(head)+len(tail) >= len(content) {
 			return headSnap, nil
 		}
-		headSnap.Content = assembleOutputDigest(head, hN, tail, tN, headSnap.TotalBytes, headSnap.DroppedBytes)
+		headSnap.Content = assembleOutputDigest(head, tail, headSnap.TotalBytes, headSnap.DroppedBytes)
 		headSnap.Truncated = true
 		return headSnap, nil
 	}
@@ -121,9 +105,9 @@ func readJobOutputDigest(readWindow func(budget int, fromHead bool) (jobReadOutp
 	if err != nil {
 		return jobReadOutputSnapshot{}, err
 	}
-	head, hN, _ := firstLineBytes([]byte(headSnap.Content), headLines)
-	tail, tN, _ := lastLineBytes([]byte(tailSnap.Content), tailLines)
-	tailSnap.Content = assembleOutputDigest(head, hN, tail, tN, tailSnap.TotalBytes, tailSnap.DroppedBytes)
+	head, _, _ := firstLineBytes([]byte(headSnap.Content), headLines)
+	tail, _, _ := lastLineBytes([]byte(tailSnap.Content), tailLines)
+	tailSnap.Content = assembleOutputDigest(head, tail, tailSnap.TotalBytes, tailSnap.DroppedBytes)
 	tailSnap.Truncated = true
 	return tailSnap, nil
 }

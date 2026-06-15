@@ -9,22 +9,34 @@ func TestAssembleOutputDigest(t *testing.T) {
 	head := []byte("h1\nh2\n")
 	tail := []byte("t1\nt2\n")
 
-	// Retained, nothing evicted: marker shows bytes elided + a recovery hint.
-	got := assembleOutputDigest(head, 2, tail, 2, 1000, 0)
+	// Retained, nothing evicted: marker states EXACT elided bytes (total-head-tail)
+	// plus a recovery hint, and never a fabricated line-count estimate. The store is
+	// byte-oriented and does not track total lines, so any line figure would be a
+	// guess that can exceed the true count.
+	got := assembleOutputDigest(head, tail, 1000, 0)
 	if !strings.HasPrefix(got, "h1\nh2\n") || !strings.HasSuffix(got, "t1\nt2\n") {
 		t.Fatalf("digest must bracket head and tail:\n%s", got)
 	}
 	if !strings.Contains(got, "elided") || !strings.Contains(got, "head_lines") {
 		t.Fatalf("digest must carry an elision marker + recovery hint:\n%s", got)
 	}
+	if !strings.Contains(got, "988 B") {
+		t.Fatalf("digest must state exact elided bytes (1000-6-6=988):\n%s", got)
+	}
+	if strings.Contains(got, "~") {
+		t.Fatalf("digest must not fabricate a line-count estimate:\n%s", got)
+	}
 	if strings.Contains(got, "permanently dropped") {
 		t.Fatalf("no eviction here; marker must not claim permanent loss:\n%s", got)
 	}
 
-	// Evicted: marker must flag permanent loss past the cap.
-	got = assembleOutputDigest(head, 2, tail, 2, 9_000_000, 1_000_000)
+	// Evicted: marker must flag permanent loss past the cap, still with no estimate.
+	got = assembleOutputDigest(head, tail, 9_000_000, 1_000_000)
 	if !strings.Contains(got, "permanently dropped") {
 		t.Fatalf("evicted digest must flag permanent loss:\n%s", got)
+	}
+	if strings.Contains(got, "~") {
+		t.Fatalf("evicted digest must not fabricate a line-count estimate:\n%s", got)
 	}
 }
 
