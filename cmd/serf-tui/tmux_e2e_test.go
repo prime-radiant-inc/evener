@@ -420,19 +420,8 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 
 func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	requireTmux(t)
-	// PRODUCT BUG (xfail): browse-mode turn selection cannot be moved.
-	// commit 24261523 ("lint(serf-tui): drive golangci-lint to zero")
-	// deleted moveBrowseSelection as "unused" after the browse key handlers
-	// (hub_session_keys.go) had been changed so k/j and up/down only scroll
-	// the viewport. Nothing now mutates hubModel.browseSelected, so it stays
-	// pinned to lastBrowseMessageIndex() (the trailing agent message).
-	// startForkDraft therefore always sees a non-user message and reports
-	// "Select a user turn to fork." — forking any chosen user turn is
-	// unreachable from the keyboard. This test forks turn 1 and cannot pass
-	// until selection movement is restored. Re-enable (drop this Skip) once a
-	// key binding moves browseSelected across turns again.
-	t.Skip("xfail: browse-mode fork selection cannot be moved (browseSelected has no key binding; see commit 24261523)")
-
+	// Browse-mode fork: k/j move the selection cursor across turns (auto-
+	// scrolling to keep it visible) so a user turn can be reached and forked.
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -478,12 +467,6 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 
 func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 	requireTmux(t)
-	// PRODUCT BUG (xfail): same root cause as TestTUITmuxE2E_BrowseAndFork —
-	// browse-mode turn selection can no longer be moved, so the user turn
-	// cannot be reached to start a fork draft. Re-enable once selection
-	// movement is restored (see that test for the full diagnosis).
-	t.Skip("xfail: browse-mode fork selection cannot be moved (browseSelected has no key binding; see commit 24261523)")
-
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetFailFork(true)
