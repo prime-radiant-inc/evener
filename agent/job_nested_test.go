@@ -2521,7 +2521,7 @@ func TestNestedShellEndToEndThroughTools(t *testing.T) {
 	shellCall := child.reg.ExecuteCall(context.Background(), child.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'nested-e2e-ready\n'; sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"printf 'nested-e2e-ready\n'; sleep 30","background":true}`),
 	})
 	if shellCall.IsError {
 		t.Fatalf("child shell tool returned error: %s", shellCall.Output)

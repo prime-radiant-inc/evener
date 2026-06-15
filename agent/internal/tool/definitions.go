@@ -76,14 +76,14 @@ func DefEditFile() llm.ToolDefinition {
 func DefShell() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "shell",
-		Description: "Run a shell command. Waits up to `max_wait_ms` (or the session default, ~120s) and returns stdout, stderr, and exit code inline; a command still running at the bound is promoted to a durable background job — you get its `job_id`, the process is not killed. `max_runtime_ms` separately caps total process runtime. Serf notifies you automatically when a background job finishes. Prefer `rg`/`rg --files` for searching.",
+		Description: "Run a shell command. By default it runs in the foreground and returns stdout, stderr, and exit code inline when it finishes (up to the session command timeout, ~120s; a command still running at that bound is promoted to a durable background job — you get its `job_id`, the process is not killed). Set `background: true` to start the command and return its `job_id` immediately without waiting. `max_runtime_ms` separately caps total process runtime. Output is a navigable resource: large output returns a small tail plus a `job_id` — read the rest with `job_read_output` (its `total_bytes`/`dropped_bytes`/`output_status` say how much exists and whether any was evicted). Serf notifies you when a background job finishes. Prefer `rg`/`rg --files` for searching.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"command":        map[string]any{"type": "string"},
 				"description":    map[string]any{"type": "string"},
-				"max_wait_ms":    map[string]any{"type": "integer", "description": "Bound on how long this call waits, in ms (0 = the session default, 120s standard). A command still running at the bound is promoted to a durable background job. Use a small bound (e.g. 1000) to launch-and-return."},
+				"background":     map[string]any{"type": "boolean", "description": "false (default): run in the foreground and return when the command finishes (still running at the session timeout → promoted to a background job). true: start the command and return its job_id immediately."},
 				"max_runtime_ms": map[string]any{"type": "integer"},
 			},
 			"required": []string{"command"},

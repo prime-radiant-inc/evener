@@ -5,25 +5,23 @@ import (
 	"testing"
 )
 
-// TestSchemaMaxWaitUnification asserts the post-unification invariants for all
-// five wait-capable tools (spec §0.1-§0.4, §2):
-//   - "background" and "block" are absent (additionalProperties:false rejects them)
-//   - "block_timeout_ms" is absent from all five tools
-//   - "max_wait_ms" is present in each tool's properties with type "integer"
-//   - No minimum/maximum/default on max_wait_ms in any tool
-func TestSchemaMaxWaitUnification(t *testing.T) {
-	tools := []struct {
+// TestSchemaWaitKnobs asserts the one-wait-knob-per-tool invariant: shell's wait
+// knob is a `background` boolean; the other four wait-capable tools use
+// `max_wait_ms`. No tool carries both, and `block`/`block_timeout_ms` are gone
+// everywhere. (Supersedes the all-five max_wait_ms unification for shell — see
+// docs/superpowers/specs/2026-06-13-max-wait-unification.md.)
+func TestSchemaWaitKnobs(t *testing.T) {
+	maxWaitTools := []struct {
 		name string
 		def  func() map[string]any // returns the Parameters map
 	}{
-		{"shell", func() map[string]any { return DefShell().Parameters }},
 		{"delegate", func() map[string]any { return DefDelegate(nil).Parameters }},
 		{"job_send_message", func() map[string]any { return DefJobSendMessage().Parameters }},
 		{"job_read_output", func() map[string]any { return DefJobReadOutput().Parameters }},
 		{"job_stop", func() map[string]any { return DefJobStop().Parameters }},
 	}
 
-	for _, tc := range tools {
+	for _, tc := range maxWaitTools {
 		t.Run(tc.name, func(t *testing.T) {
 			params := tc.def()
 
@@ -34,16 +32,11 @@ func TestSchemaMaxWaitUnification(t *testing.T) {
 
 			props := params["properties"].(map[string]any)
 
-			// "background" and "block" must be gone.
-			for _, banned := range []string{"background", "block"} {
+			// background/block/block_timeout_ms must all be gone.
+			for _, banned := range []string{"background", "block", "block_timeout_ms"} {
 				if _, ok := props[banned]; ok {
 					t.Errorf("%s: property %q must not exist", tc.name, banned)
 				}
-			}
-
-			// "block_timeout_ms" must be gone.
-			if _, ok := props["block_timeout_ms"]; ok {
-				t.Errorf("%s: property %q must not exist", tc.name, "block_timeout_ms")
 			}
 
 			// "max_wait_ms" must be present with type integer.
@@ -69,23 +62,41 @@ func TestSchemaMaxWaitUnification(t *testing.T) {
 			}
 		})
 	}
+
+	// shell is the exception: its single wait knob is `background` (bool); it must
+	// NOT carry max_wait_ms/block/block_timeout_ms.
+	t.Run("shell", func(t *testing.T) {
+		params := DefShell().Parameters
+		if ap, ok := params["additionalProperties"]; !ok || ap != false {
+			t.Errorf("shell: additionalProperties = %v, want false", ap)
+		}
+		props := params["properties"].(map[string]any)
+		for _, banned := range []string{"max_wait_ms", "block", "block_timeout_ms"} {
+			if _, ok := props[banned]; ok {
+				t.Errorf("shell: property %q must not exist", banned)
+			}
+		}
+		bg, ok := props["background"].(map[string]any)
+		if !ok {
+			t.Fatalf("shell: missing required property background")
+		}
+		if typ, _ := bg["type"].(string); typ != "boolean" {
+			t.Errorf("shell: background type = %q, want boolean", typ)
+		}
+	})
 }
 
 func TestDefShellHasJobParams(t *testing.T) {
 	props := DefShell().Parameters["properties"].(map[string]any)
-	for _, p := range []string{"command", "description", "max_wait_ms", "max_runtime_ms"} {
+	for _, p := range []string{"command", "description", "background", "max_runtime_ms"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefShell missing param %q", p)
 		}
 	}
-	if _, ok := props["timeout_ms"]; ok {
-		t.Errorf("DefShell must not have the old timeout_ms param")
-	}
-	if _, ok := props["background"]; ok {
-		t.Errorf("DefShell must not have the removed background param")
-	}
-	if _, ok := props["block_timeout_ms"]; ok {
-		t.Errorf("DefShell must not have the removed block_timeout_ms param")
+	for _, banned := range []string{"timeout_ms", "max_wait_ms", "block_timeout_ms"} {
+		if _, ok := props[banned]; ok {
+			t.Errorf("DefShell must not have the %q param", banned)
+		}
 	}
 }
 

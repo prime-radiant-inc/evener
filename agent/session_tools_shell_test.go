@@ -39,7 +39,7 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	res := s.reg.ExecuteCall(ctx, s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -80,7 +80,7 @@ func TestShellToolTinyMaxCharsStillReturnsJSON(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"head -c 60000 </dev/zero | tr '\\0' 'x'","max_wait_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"head -c 60000 </dev/zero | tr '\\0' 'x'"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -120,7 +120,7 @@ func TestShellToolClampsSmallMaxRuntime(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 0.2; printf survived","max_wait_ms":5000,"max_runtime_ms":1}`),
+		Arguments: json.RawMessage(`{"command":"sleep 0.2; printf survived","max_runtime_ms":1}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -181,7 +181,7 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 		},
 		{
 			name: "max",
-			args: json.RawMessage(`{"command":"printf start; sleep 2; printf end","max_wait_ms":5000}`),
+			args: json.RawMessage(`{"command":"printf start; sleep 2; printf end"}`),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -222,7 +222,7 @@ func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T)
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -286,7 +286,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 	res := child.reg.ExecuteCall(context.Background(), child.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
 	})
 	if res.IsError {
 		t.Fatalf("child shell returned error: %s", res.Output)
@@ -346,7 +346,7 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 							ToolCall: &llm.ToolCallData{
 								ID:        "late-shell",
 								Name:      "shell",
-								Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
+								Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
 								Type:      "function",
 							},
 						}},
@@ -430,88 +430,52 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 // TestShellNegativeMaxWaitMSIsRejected pins spec §2: negative max_wait_ms is
 // invalid_request on shell. The old background+block_timeout_ms combo rejection
 // is gone (spec §3).
-func TestShellNegativeMaxWaitMSIsRejected(t *testing.T) {
+// TestShellRejectsMaxWaitMS pins that shell no longer accepts max_wait_ms: the
+// param is gone from the schema, so additionalProperties:false rejects it at the
+// registry (the wait knob on shell is `background`).
+func TestShellRejectsMaxWaitMS(t *testing.T) {
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"echo hi","max_wait_ms":-1}`),
+		Arguments: json.RawMessage(`{"command":"echo hi","max_wait_ms":1000}`),
 	})
 	if !res.IsError {
-		t.Fatalf("shell with max_wait_ms=-1 should return error, got success: %s", res.Output)
-	}
-	if !strings.Contains(res.Output, "max_wait_ms must be non-negative") {
-		t.Fatalf("shell error = %q, want error about max_wait_ms must be non-negative", res.Output)
+		t.Fatalf("shell with max_wait_ms should be rejected, got success: %s", res.Output)
 	}
 }
 
-// TestShellZeroMaxWaitMSIsAccepted pins that max_wait_ms=0 is accepted
-// (strict-provider safe: strict providers force every param including zero).
-func TestShellZeroMaxWaitMSIsAccepted(t *testing.T) {
-	s := newTestSession(t)
-
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"echo hi","max_wait_ms":0,"max_runtime_ms":0,"description":""}`),
-	})
-	// max_wait_ms=0 = session default; echo hi is fast, so it returns inline.
-	if res.IsError {
-		t.Fatalf("shell with strict-forced zero params should succeed, got error: %s", res.Output)
-	}
-}
-
-// TestParseShellToolArgsMaxWaitMS covers max_wait_ms decode at the tool boundary
-// (spec §2): negative → invalid_request error; 0/absent → no error (unset);
-// positive → no error (used as BlockTimeoutMS). Replaces the old
-// block_timeout_ms and background combo-rejection paths.
-func TestParseShellToolArgsMaxWaitMS(t *testing.T) {
-	// Negative must error.
-	_, err := parseShellToolArgs(map[string]any{
-		"command":     "echo hi",
-		"max_wait_ms": -1,
-	})
-	if err == nil {
-		t.Fatal("parseShellToolArgs with max_wait_ms=-1: want error, got nil")
-	}
-	if !strings.Contains(err.Error(), "max_wait_ms must be non-negative") {
-		t.Fatalf("parseShellToolArgs with max_wait_ms=-1 error = %q, want max_wait_ms must be non-negative", err.Error())
-	}
-
-	// Zero must succeed (unset).
+// TestParseShellToolArgsBackground covers the wait-knob decode at the tool
+// boundary: `background` decodes to shellArgs.Background; absent is false
+// (strict-provider safe). max_runtime_ms keeps its negative check.
+func TestParseShellToolArgsBackground(t *testing.T) {
 	args, err := parseShellToolArgs(map[string]any{
-		"command":     "echo hi",
-		"max_wait_ms": 0,
+		"command":    "echo hi",
+		"background": true,
 	})
 	if err != nil {
-		t.Fatalf("parseShellToolArgs with max_wait_ms=0: want success, got %v", err)
+		t.Fatalf("parseShellToolArgs with background=true: want success, got %v", err)
 	}
-	if args.BlockTimeoutMS != 0 {
-		t.Fatalf("BlockTimeoutMS = %d, want 0 for unset", args.BlockTimeoutMS)
+	if !args.Background {
+		t.Fatal("Background = false, want true")
 	}
 
-	// Absent must succeed (unset).
-	args, err = parseShellToolArgs(map[string]any{
-		"command": "echo hi",
-	})
+	// Absent background is false (the strict-provider-forced default).
+	args, err = parseShellToolArgs(map[string]any{"command": "echo hi"})
 	if err != nil {
-		t.Fatalf("parseShellToolArgs with absent max_wait_ms: want success, got %v", err)
+		t.Fatalf("parseShellToolArgs with absent background: want success, got %v", err)
 	}
-	if args.BlockTimeoutMS != 0 {
-		t.Fatalf("BlockTimeoutMS = %d, want 0 for absent max_wait_ms", args.BlockTimeoutMS)
+	if args.Background {
+		t.Fatal("Background = true, want false for absent background")
 	}
 
-	// Positive must succeed and set BlockTimeoutMS.
-	args, err = parseShellToolArgs(map[string]any{
-		"command":     "echo hi",
-		"max_wait_ms": 3000,
-	})
-	if err != nil {
-		t.Fatalf("parseShellToolArgs with max_wait_ms=3000: want success, got %v", err)
-	}
-	if args.BlockTimeoutMS != 3000 {
-		t.Fatalf("BlockTimeoutMS = %d, want 3000", args.BlockTimeoutMS)
+	// Negative max_runtime_ms still errors.
+	if _, err := parseShellToolArgs(map[string]any{
+		"command":        "echo hi",
+		"max_runtime_ms": -1,
+	}); err == nil {
+		t.Fatal("parseShellToolArgs with max_runtime_ms=-1: want error, got nil")
 	}
 }
 
@@ -524,7 +488,7 @@ func TestCompleteOrHandleEphemeral(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'hello\n'","max_wait_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"printf 'hello\n'"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -559,7 +523,7 @@ func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes x | head -c 70000","max_wait_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 70000"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -613,7 +577,7 @@ func TestShellRideWholeThresholdIs8KiB(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000","max_wait_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -642,7 +606,7 @@ func TestShellResultReportsOutputBytes(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000","max_wait_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -675,7 +639,7 @@ func TestShellOutputStatus(t *testing.T) {
 	r1 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'hi\n'","max_wait_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"printf 'hi\n'"}`),
 	})
 	var o1 struct {
 		JobID        string `json:"job_id"`
@@ -694,7 +658,7 @@ func TestShellOutputStatus(t *testing.T) {
 	r2 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c2",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000","max_wait_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000"}`),
 	})
 	var o2 struct {
 		JobID        string `json:"job_id"`
@@ -721,7 +685,7 @@ func TestShellHandlePeekTailIsSmall(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000","max_wait_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -776,7 +740,7 @@ func TestCompleteOrHandleKeptToolResultOverflow(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"head -c 4000 </dev/zero | tr '\\0' 'x'","max_wait_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"head -c 4000 </dev/zero | tr '\\0' 'x'"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
@@ -806,7 +770,7 @@ func TestCompleteOrHandleKeptNoNotification(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes x | head -c 70000","max_wait_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 70000"}`),
 	})
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)

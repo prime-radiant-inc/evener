@@ -8,7 +8,9 @@ delegates finish.
 
 Pick the waiting primitive by how many answers you need:
 
-- The result of a quick command now → plain `shell` (foreground).
+- The result of a quick command now → plain `shell` (foreground). To launch long
+  work without waiting → `shell` with `background: true` (returns a `job_id`
+  immediately; you are notified when it finishes).
 - One signal ("the server printed ready") → `job_read_output` with `max_wait_ms`
   and `grep`. One bounded wait, nothing to clean up afterward.
 - A recurring condition (every new match, periodic progress, event frames to an

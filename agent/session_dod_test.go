@@ -1841,7 +1841,7 @@ func TestSubAgentStatus_Values(t *testing.T) {
 		t.Fatalf("SubagentFailed = %q, want 'failed'", SubagentFailed)
 	}
 }
-func TestSession_ShellTool_UsesDefaultTimeoutAndAllowsOverride(t *testing.T) {
+func TestSession_ShellTool_UsesDefaultTimeout(t *testing.T) {
 	c := llm.NewClient()
 	f := &fakeAdapter{
 		name: "openai",
@@ -1881,44 +1881,6 @@ func TestSession_ShellTool_UsesDefaultTimeoutAndAllowsOverride(t *testing.T) {
 	if got != 120_000 {
 		t.Fatalf("default shell timeout: got %d want %d", got, 120_000)
 	}
-
-	// Override per-call max_wait_ms.
-	env2 := &captureEnv{wd: "/tmp"}
-	f2 := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi","max_wait_ms":1234}`)}},
-						},
-					},
-				}
-			},
-			func(req llm.Request) llm.Response { return finalResponse("ok") },
-		},
-	}
-	c2 := llm.NewClient()
-	c2.Register(f2)
-	sess2, err := NewSession(c2, NewOpenAIProfile("gpt-5.2"), env2, SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession2: %v", err)
-	}
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel2()
-	if _, err := sess2.ProcessInput(ctx2, "run", nil); err != nil {
-		t.Fatalf("ProcessInput2: %v", err)
-	}
-	sess2.Close()
-	got2, ok2 := env2.TimeoutForCommand("echo hi")
-	if !ok2 {
-		t.Fatal("expected ExecCommand call with 'echo hi'")
-	}
-	if got2 != 1234 {
-		t.Fatalf("override shell timeout: got %d want %d", got2, 1234)
-	}
 }
 
 func TestSession_ShellTool_CapsTimeoutToMaxCommandTimeoutMS(t *testing.T) {
@@ -1931,7 +1893,7 @@ func TestSession_ShellTool_CapsTimeoutToMaxCommandTimeoutMS(t *testing.T) {
 					Message: llm.Message{
 						Role: llm.RoleAssistant,
 						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi","max_wait_ms":999999}`)}},
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi"}`)}},
 						},
 					},
 				}
@@ -2021,7 +1983,7 @@ func TestSession_ShellTool_TimeoutAppendsMessageToToolResult(t *testing.T) {
 		"timed_out=true",
 		"Command timed out after 120000ms",
 		"You can retry with a longer timeout",
-		"max_wait_ms",
+		"max_runtime_ms",
 	} {
 		if !strings.Contains(toolResult, want) {
 			t.Fatalf("tool result missing %q:\n%s", want, toolResult)

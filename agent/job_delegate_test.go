@@ -2845,7 +2845,7 @@ func TestRuntimeLostDelegateResumeRelinksNestedJobsToNewJob(t *testing.T) {
 					ID:   "nested_shell",
 					Name: "shell",
 					Arguments: json.RawMessage(fmt.Sprintf(
-						`{"command":"printf 'runtime-lost-nested-ready\n'; sleep 30","description":%q,"max_wait_ms":1000}`,
+						`{"command":"printf 'runtime-lost-nested-ready\n'; sleep 30","description":%q,"background":true}`,
 						nestedDescription,
 					)),
 					Type: "function",

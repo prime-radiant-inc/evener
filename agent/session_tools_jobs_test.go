@@ -29,7 +29,7 @@ func TestJobReadOutputReportsStatus(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000","max_wait_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000"}`),
 	})
 	var out struct {
 		JobID string `json:"job_id"`
@@ -74,7 +74,7 @@ func TestJobReadOutputDefaultWindowIsBounded(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"yes x | head -c 20000","max_wait_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 20000"}`),
 	})
 	var out struct {
 		JobID string `json:"job_id"`
@@ -115,7 +115,7 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'ready-line\n'; sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"printf 'ready-line\n'; sleep 30","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -1127,7 +1127,7 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -1174,7 +1174,7 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 1; echo 'WATCH_OUTPUT_TOKEN_ONCE'; sleep 1","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"sleep 1; echo 'WATCH_OUTPUT_TOKEN_ONCE'; sleep 1","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -1408,7 +1408,7 @@ func TestJobWatchLargeEchoFieldsReturnBoundedSuccess(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -1589,7 +1589,7 @@ func TestJobStopDefaultReturnsRequestedCancellation(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -2462,7 +2462,7 @@ func TestJobSendMessageToShellJobNotMessageable(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -2613,7 +2613,7 @@ func TestJobReadOutputRejectsInvalidArgs(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'ready-line\n'; sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"printf 'ready-line\n'; sleep 30","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -2655,7 +2655,7 @@ func TestJobReadOutputGrepSearchesRetainedOutputBeyondTail(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'needle-start\n'; yes filler-line | head -c 70000; sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"printf 'needle-start\n'; yes filler-line | head -c 70000; sleep 30","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -2892,7 +2892,7 @@ func TestJobStopSchemaRejectsUnsupportedSignal(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -2928,7 +2928,7 @@ func TestJobStopAcceptsIncludeChildrenThroughRegistry(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -3443,7 +3443,7 @@ func TestJobReadOutputHeadBytesReadsFromStart(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'HEAD_MARKER_9\n'; yes filler-line | head -c 70000; printf '\nTAIL_MARKER_7\n'; sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"printf 'HEAD_MARKER_9\n'; yes filler-line | head -c 70000; printf '\nTAIL_MARKER_7\n'; sleep 30","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -3546,7 +3546,7 @@ func TestJobReadOutputZeroHeadTailTreatedAsUnset(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'ZERO_RULE_MARKER\n'; sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"printf 'ZERO_RULE_MARKER\n'; sleep 30","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -3783,7 +3783,7 @@ func TestJobStopReportsOutcomeAndPreviousStatus(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","max_wait_ms":1000}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)

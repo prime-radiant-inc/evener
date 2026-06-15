@@ -109,17 +109,11 @@ func parseShellToolArgs(args map[string]any) (shellArgs, error) {
 	parsed := shellArgs{
 		Command:     fmt.Sprint(args["command"]),
 		Description: stringArg(args, "description"),
+		// background false (the strict-provider-forced default) runs foreground and
+		// returns when the command finishes; true starts it and returns the job_id now.
+		Background: shellBoolArg(args, "background"),
 	}
 	var ok bool
-	// max_wait_ms: 0/absent = session default (unset); positive = explicit bound;
-	// negative = invalid_request. Zero reads as unset so strict-mode providers
-	// (OpenAI Responses) that force every parameter on every call still work.
-	if parsed.BlockTimeoutMS, ok = shellIntArg(args, "max_wait_ms"); !ok {
-		parsed.BlockTimeoutMS = 0
-	}
-	if parsed.BlockTimeoutMS < 0 {
-		return shellArgs{}, errors.New("invalid_request: max_wait_ms must be non-negative")
-	}
 	if parsed.MaxRuntimeMS, ok = shellIntArg(args, "max_runtime_ms"); !ok {
 		parsed.MaxRuntimeMS = 0
 	}
@@ -408,12 +402,16 @@ func applyShellTimeoutPolicy(deps *toolDeps, args shellArgs) shellArgs {
 }
 
 func runBufferedShell(ctx context.Context, env execenv.ExecutionEnvironment, deps *toolDeps, args shellArgs) (string, error) {
+	// A non-streaming environment has no job manager, so it cannot background a
+	// command; making that explicit beats silently running it in the foreground.
+	if args.Background {
+		return "", errors.New("invalid_request: background requires a streaming execution environment")
+	}
 	args = applyShellTimeoutPolicy(deps, args)
 	timeout := args.BlockTimeoutMS
-	timeoutParam := "max_wait_ms"
+	timeoutParam := "max_runtime_ms"
 	if args.MaxRuntimeMS > 0 && (timeout == 0 || args.MaxRuntimeMS < timeout) {
 		timeout = args.MaxRuntimeMS
-		timeoutParam = "max_runtime_ms"
 	}
 	res, err := env.ExecCommand(ctx, args.Command, timeout, "", nil)
 

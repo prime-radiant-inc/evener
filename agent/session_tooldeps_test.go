@@ -52,45 +52,35 @@ func (e *readBeforeWriteEnv) ExecCommand(ctx context.Context, command string, ti
 // its timeout policy from deps.cmdTimeouts and clamps an over-long request to the
 // max, with the clamped value reaching the environment's ExecCommand.
 func TestToolDeps_ShellTimeoutClamp(t *testing.T) {
-	const defTimeout = 5_000
-	const maxTimeout = 30_000
-
-	deps := &toolDeps{
-		cmdTimeouts: func() (int, int) { return defTimeout, maxTimeout },
+	// Shell has no per-call wait knob (its wait knob is `background`), so the
+	// session default command timeout is the value clamped to maxTimeout.
+	run := func(t *testing.T, defTimeout, maxTimeout, want int) {
+		t.Helper()
+		deps := &toolDeps{
+			cmdTimeouts: func() (int, int) { return defTimeout, maxTimeout },
+		}
+		reg := tool.NewRegistry()
+		if err := registerShellTools(reg, nil, deps); err != nil {
+			t.Fatalf("registerShellTools: %v", err)
+		}
+		env := &captureEnv{wd: "/work"}
+		res := reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
+			ID:        "c1",
+			Name:      "shell",
+			Arguments: json.RawMessage(`{"command":"echo hi"}`),
+		})
+		if res.IsError {
+			t.Fatalf("unexpected error: %q", res.Output)
+		}
+		if got := env.LastTimeoutMS(); got != want {
+			t.Fatalf("timeout: got %d, want %d", got, want)
+		}
 	}
 
-	reg := tool.NewRegistry()
-	if err := registerShellTools(reg, nil, deps); err != nil {
-		t.Fatalf("registerShellTools: %v", err)
-	}
-
-	env := &captureEnv{wd: "/work"}
-
-	// Request a timeout above the max; the handler must clamp to maxTimeout.
-	res := reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"echo hi","max_wait_ms":120000}`),
-	})
-	if res.IsError {
-		t.Fatalf("unexpected error: %q", res.Output)
-	}
-	if got := env.LastTimeoutMS(); got != maxTimeout {
-		t.Fatalf("clamped timeout: got %d, want %d", got, maxTimeout)
-	}
-
-	// No explicit timeout falls back to the default.
-	res = reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
-		ID:        "c2",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"echo hi"}`),
-	})
-	if res.IsError {
-		t.Fatalf("unexpected error: %q", res.Output)
-	}
-	if got := env.LastTimeoutMS(); got != defTimeout {
-		t.Fatalf("default timeout: got %d, want %d", got, defTimeout)
-	}
+	// Default above the max is clamped to the max.
+	t.Run("default clamped to max", func(t *testing.T) { run(t, 120_000, 30_000, 30_000) })
+	// Default below the max is used as-is.
+	t.Run("default under max", func(t *testing.T) { run(t, 5_000, 30_000, 5_000) })
 }
 
 // TestToolDeps_ReadBeforeWriteWarning drives write_file through registerFileTools
