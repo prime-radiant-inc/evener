@@ -18,7 +18,7 @@ func TestWeb_CredentialsRoute(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "/_partials/credentials") {
+	if !strings.Contains(rec.Body.String(), "/_partials/settings/credentials") {
 		t.Errorf("body did not reference the partial: %s", rec.Body.String())
 	}
 }

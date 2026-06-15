@@ -27,7 +27,6 @@ type WebServer struct {
 	workspaceTmpl       *template.Template
 	spawnTmpl           *template.Template
 	inputStripTmpl      *template.Template
-	credsTmpl           *template.Template
 	projectSettingsTmpl *template.Template
 	settingsTmpls       map[string]*template.Template
 	appRPC              *appserver.Server
@@ -52,19 +51,19 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	inputStripTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/input_strip.html",
 	))
-	credsTmpl := template.Must(template.ParseFS(templatesFS,
-		"templates/partials/credentials.html",
-	))
 	projectSettingsTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/settings/project.html",
 	))
-	settingsSections := []string{"general", "theme", "transcript", "notifications", "providers", "agents", "launch-serf", "launch-codex", "inrepo", "plugins", "skills", "mcp", "hub", "storage"}
+	settingsSections := []string{"general", "theme", "transcript", "notifications", "providers", "agents", "launch-serf", "launch-codex", "inrepo", "plugins", "skills", "mcp", "hub", "storage", "credentials"}
 	settingsTmpls := make(map[string]*template.Template, len(settingsSections))
 	for _, sec := range settingsSections {
-		settingsTmpls[sec] = template.Must(template.ParseFS(templatesFS,
-			"templates/partials/settings.html",
-			"templates/partials/settings/"+sec+".html",
-		))
+		files := []string{"templates/partials/settings.html"}
+		if sec == "credentials" {
+			files = append(files, "templates/partials/credentials.html")
+		} else {
+			files = append(files, "templates/partials/settings/"+sec+".html")
+		}
+		settingsTmpls[sec] = template.Must(template.ParseFS(templatesFS, files...))
 	}
 	sources := newHubSourceRegistry(cfg)
 	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
@@ -73,7 +72,6 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	web := &WebServer{
 		cfg: cfg, appTmpl: appTmpl, sidebarTmpl: sidebarTmpl,
 		workspaceTmpl: workspaceTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
-		credsTmpl:           credsTmpl,
 		projectSettingsTmpl: projectSettingsTmpl,
 		settingsTmpls:       settingsTmpls,
 		sources:             sources,

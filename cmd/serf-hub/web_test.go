@@ -4521,7 +4521,7 @@ func TestWeb_Settings_NavPresentForAllSections(t *testing.T) {
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    hubcore.NewPastIndex(""),
 	})
-	for _, sec := range []string{"general", "plugins", "skills", "mcp", "theme", "transcript", "hub"} {
+	for _, sec := range []string{"general", "plugins", "skills", "mcp", "theme", "transcript", "hub", "credentials"} {
 		body := settingsRequest(t, web, sec)
 		if !strings.Contains(body, "settings-nav") {
 			t.Errorf("section %q: settings-nav missing from full-shell response", sec)

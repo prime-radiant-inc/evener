@@ -2114,7 +2114,8 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
    settings-collection primitives (§2.4); the type-group header reuses the
    uppercase-mono section-label voice. */
 .credentials-pane { padding: var(--space-5); }
-.credentials-help { color: var(--text-muted); }
+.credentials-header-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-4); }
+.credentials-help { color: var(--text-muted); margin: 0; }
 
 /* Type group: a labeled cluster of instance rows. */
 .credentials-type-group:not(:first-child) { margin-top: var(--space-5); }
