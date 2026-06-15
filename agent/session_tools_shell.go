@@ -13,6 +13,57 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// defaultListDirLimit caps how many entries a list_dir call returns when the
+// caller does not specify a limit, so a listing of a huge directory cannot blow
+// past the tool-output size cap with no recovery handle.
+const defaultListDirLimit = 500
+
+// listDirResult is the paginated list_dir wire shape: a bounded page of entries
+// plus the totals an agent needs to decide whether to page further or narrow the
+// path/depth.
+type listDirResult struct {
+	Path      string             `json:"path"`
+	Entries   []execenv.DirEntry `json:"entries"`
+	Total     int                `json:"total"`
+	Returned  int                `json:"returned"`
+	Offset    int                `json:"offset"`
+	Truncated bool               `json:"truncated"`
+}
+
+// paginateDirEntries slices entries into the [offset, offset+limit) page (limit
+// <= 0 applies defaultListDirLimit, matching the strict-schema unset-as-zero
+// convention) and reports the totals. The page is always a non-nil slice so it
+// serializes as [] rather than null when empty.
+func paginateDirEntries(path string, entries []execenv.DirEntry, offset, limit int) listDirResult {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = defaultListDirLimit
+	}
+	total := len(entries)
+	start := offset
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	page := entries[start:end]
+	if len(page) == 0 {
+		page = []execenv.DirEntry{}
+	}
+	return listDirResult{
+		Path:      path,
+		Entries:   page,
+		Total:     total,
+		Returned:  len(page),
+		Offset:    offset,
+		Truncated: end < total,
+	}
+}
+
 func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	// shell
 	if err := reg.Register(tool.RegisteredTool{
@@ -45,7 +96,19 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if v, ok := args["depth"].(float64); ok && int(v) > 0 {
 				depth = int(v)
 			}
-			return env.ListDirectory(path, depth)
+			offset := 0
+			if v, ok := args["offset"].(float64); ok && int(v) > 0 {
+				offset = int(v)
+			}
+			limit := 0
+			if v, ok := args["limit"].(float64); ok && int(v) > 0 {
+				limit = int(v)
+			}
+			entries, err := env.ListDirectory(path, depth)
+			if err != nil {
+				return nil, err
+			}
+			return paginateDirEntries(path, entries, offset, limit), nil
 		},
 	})
 

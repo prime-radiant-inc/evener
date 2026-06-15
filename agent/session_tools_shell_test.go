@@ -16,6 +16,50 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+func TestPaginateDirEntries(t *testing.T) {
+	entries := []execenv.DirEntry{
+		{Name: "a"}, {Name: "b"}, {Name: "c"}, {Name: "d"}, {Name: "e"},
+	}
+
+	// First page of 2 of 5: truncated, total reported so the agent knows more exists.
+	r := paginateDirEntries("/x", entries, 0, 2)
+	if r.Path != "/x" || r.Total != 5 || r.Returned != 2 || len(r.Entries) != 2 || !r.Truncated || r.Offset != 0 {
+		t.Fatalf("first page = %+v", r)
+	}
+	if r.Entries[0].Name != "a" || r.Entries[1].Name != "b" {
+		t.Fatalf("first page entries = %+v", r.Entries)
+	}
+
+	// Middle page via offset.
+	r = paginateDirEntries("/x", entries, 2, 2)
+	if r.Returned != 2 || r.Entries[0].Name != "c" || !r.Truncated {
+		t.Fatalf("offset page = %+v", r)
+	}
+
+	// Last page: exactly reaches the end, not truncated.
+	r = paginateDirEntries("/x", entries, 4, 2)
+	if r.Returned != 1 || r.Entries[0].Name != "e" || r.Truncated {
+		t.Fatalf("last page = %+v", r)
+	}
+
+	// Offset past the end: empty page, not truncated, serializes entries as [] not null.
+	r = paginateDirEntries("/x", entries, 10, 2)
+	if r.Returned != 0 || r.Truncated {
+		t.Fatalf("past-end page = %+v", r)
+	}
+	b, _ := json.Marshal(r)
+	if !strings.Contains(string(b), `"entries":[]`) {
+		t.Fatalf("empty page must serialize entries as [] not null: %s", b)
+	}
+
+	// Unset limit (0, as strict-schema providers send) applies the default cap;
+	// a small dir is returned whole and untruncated.
+	r = paginateDirEntries("/x", entries, 0, 0)
+	if r.Returned != 5 || r.Truncated {
+		t.Fatalf("default-limit page = %+v", r)
+	}
+}
+
 type bufferedShellEnv struct {
 	agenttest.FakeEnv
 	timeoutMS int
