@@ -19,7 +19,10 @@ Pick the waiting primitive by how many answers you need:
 
 Blocking waits are bounded conveniences measured in seconds, not parking: a
 timeout leaves the job running and you free. Never hold your turn open for long
-work — run it in the background, keep working, and act on the notification.
+work — run it in the background, keep working, and act on the notification. A
+terminal notification can land after you have already read the job's output
+yourself; that is expected confirmation, not new work — act on whichever arrives
+first and don't re-process the same result.
 
 `job_list` is always current. If you have waited unusually long with no
 notification, list jobs to re-orient before re-running anything.

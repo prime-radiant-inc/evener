@@ -779,6 +779,8 @@ Rows are lean for scanning: a field that is null/absent for a job is omitted (a 
 
 `output_bytes` is the job's lifetime output byte count: the live so-far count for a running job, the final count once terminal.
 
+`exit_code` is the process's own exit status only for a job that exited on its own (`completed`/`failed`). A `cancelled`, `stopped`, or `run_timeout` job was signalled rather than exiting cleanly, so it has no real exit status: `exit_code` is `-1` (a sentinel, not a shell code). Interpret a non-`completed` job from its `status` + `reason`, never from `exit_code`.
+
 `job_list` returns a collection. Control/read tools operate on one `job_id`.
 
 ### `job_stop`
