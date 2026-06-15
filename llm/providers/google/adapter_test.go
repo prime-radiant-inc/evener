@@ -85,6 +85,99 @@ func TestAdapter_Complete_MapsToGeminiGenerateContent(t *testing.T) {
 	}
 }
 
+func TestAdapter_CountInputTokens_UsesCountTokensAPI(t *testing.T) {
+	var gotBody map[string]any
+	gotKey := ""
+	gotPath := ""
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.URL.Query().Get("key")
+		gotPath = r.URL.Path
+		if r.Method != http.MethodPost || !strings.Contains(r.URL.Path, ":countTokens") {
+			t.Fatalf("request = %s %s, want POST :countTokens", r.Method, r.URL.Path)
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"totalTokens":456}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	got, err := a.CountInputTokens(ctx, llm.Request{
+		Model: "gemini-test",
+		Messages: []llm.Message{
+			llm.System("sys"),
+			llm.User("hello"),
+		},
+		Tools: []llm.ToolDefinition{{
+			Name:        "lookup",
+			Description: "lookup things",
+			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CountInputTokens: %v", err)
+	}
+	if got.Tokens != 456 || !got.Exact || got.Source != llm.TokenCountSourceProvider {
+		t.Fatalf("CountInputTokens = %+v, want exact provider count", got)
+	}
+	if got.Provider != "google" || got.Model != "gemini-test" {
+		t.Fatalf("provider/model = %q/%q, want google/gemini-test", got.Provider, got.Model)
+	}
+	if gotKey != "k" {
+		t.Fatalf("key param = %q, want k", gotKey)
+	}
+	if !strings.HasSuffix(gotPath, "/v1beta/models/gemini-test:countTokens") {
+		t.Fatalf("path = %q", gotPath)
+	}
+	genReq, ok := gotBody["generateContentRequest"].(map[string]any)
+	if !ok {
+		t.Fatalf("generateContentRequest missing from body: %#v", gotBody)
+	}
+	if _, ok := genReq["contents"].([]any); !ok {
+		t.Fatalf("contents missing from generateContentRequest: %#v", genReq)
+	}
+	if _, ok := genReq["systemInstruction"].(map[string]any); !ok {
+		t.Fatalf("systemInstruction missing from generateContentRequest: %#v", genReq)
+	}
+	if _, ok := genReq["tools"].([]any); !ok {
+		t.Fatalf("tools missing from generateContentRequest: %#v", genReq)
+	}
+	if got.Raw == nil || got.Raw["totalTokens"] == nil {
+		t.Fatalf("raw count response missing totalTokens: %#v", got.Raw)
+	}
+}
+
+func TestAdapter_CountInputTokens_HTTPErrorMapping(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, ":countTokens") {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"message":"permission denied"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.CountInputTokens(ctx, llm.Request{Model: "gemini-test", Messages: []llm.Message{llm.User("hi")}})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if llm.Kind(err) != llm.KindAccessDenied {
+		t.Fatalf("Kind = %v, want %v (err=%v)", llm.Kind(err), llm.KindAccessDenied, err)
+	}
+}
+
 func TestAdapter_Complete_ToolChoice_MappedPerSpec(t *testing.T) {
 	var gotBody map[string]any
 
