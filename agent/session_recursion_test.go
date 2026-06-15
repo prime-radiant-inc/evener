@@ -75,9 +75,9 @@ func TestRootAllowanceFromConfig(t *testing.T) {
 		wantAllowance    int
 	}{
 		{
-			name:             "default (zero) gives 1",
+			name:             "default (zero) gives 2",
 			maxSubagentDepth: 0,
-			wantAllowance:    1,
+			wantAllowance:    2,
 		},
 		{
 			name:             "explicit 2 gives 2",
@@ -107,7 +107,7 @@ func TestRootAllowanceFromConfig(t *testing.T) {
 
 // TestRestoredRootAllowanceFromConfig verifies that a RESUMED root session
 // derives its delegationAllowance from MaxSubagentDepth, exactly like a fresh
-// root (spec §1: "Root allowance = config"). Zero MaxSubagentDepth defaults to 1.
+// root (spec §1: "Root allowance = config"). Zero MaxSubagentDepth defaults to 2.
 //
 // Red today: RestoreSessionFromMetaWithConfig sets delegationAllowance from the
 // zero-valued spawn carrier, so a restored root gets allowance 0 and every
@@ -122,9 +122,9 @@ func TestRestoredRootAllowanceFromConfig(t *testing.T) {
 		wantAllowance    int
 	}{
 		{
-			name:             "default (zero) gives 1",
+			name:             "default (zero) gives 2",
 			maxSubagentDepth: 0,
-			wantAllowance:    1,
+			wantAllowance:    2,
 		},
 		{
 			name:             "explicit 2 gives 2",

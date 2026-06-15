@@ -139,8 +139,8 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 
 	// Grant rule (spec §1): a session may grant a child a delegation_allowance
 	// strictly less than its own; allowance 0 = a leaf delegate. Under defaults
-	// (MaxSubagentDepth=1) the root's allowance is 1, so it may only grant 0 —
-	// recursion requires raising the config AND granting per spawn.
+	// (MaxSubagentDepth=2) the root's allowance is 2, so it may grant 1 (a delegate
+	// that can itself spawn leaves); deeper trees require raising the config.
 	s.mu.Lock()
 	ownAllowance := s.delegationAllowance
 	s.mu.Unlock()

@@ -259,7 +259,9 @@ func (c *SessionConfig) applyDefaults() {
 		c.MaxCommandTimeoutMS = 600_000
 	}
 	if c.MaxSubagentDepth <= 0 {
-		c.MaxSubagentDepth = 1
+		// Default 2: a root session's delegation allowance derives from this, so 2
+		// lets a delegate itself delegate one level (grant allowance 1) by default.
+		c.MaxSubagentDepth = 2
 	}
 	if c.EnableLoopDetection == nil {
 		v := true

@@ -595,6 +595,14 @@ func (s *Session) rebuildToolDefsCache() {
 		if registered[td.Name] {
 			if td.Name == "delegate" {
 				td = tool.DefDelegate(s.delegateAgentTypeNames())
+				// When this session can only grant allowance 0 (own allowance 1),
+				// delegation_allowance has a single legal value — a no-op knob. Hide it
+				// so the model is not offered a parameter it cannot meaningfully set.
+				if s.delegationAllowance <= 1 {
+					if props, ok := td.Parameters["properties"].(map[string]any); ok {
+						delete(props, "delegation_allowance")
+					}
+				}
 			}
 			if td.Name == "job_watch" {
 				td = tool.DefJobWatch(availableEventKindNames())
