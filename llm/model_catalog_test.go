@@ -624,3 +624,46 @@ func TestFamilyModelID(t *testing.T) {
 		}
 	}
 }
+
+// A Serf override entry that carries base metadata (a context window) and matches
+// no LiteLLM model materializes a Serf-only catalog entry — how Serf ships models
+// LiteLLM doesn't cover (kimi-for-coding). Overlay-only entries stay no-ops.
+func TestApplyOverrides_MaterializesSerfOnlyModel(t *testing.T) {
+	cat, err := parseLiteLLMCatalog([]byte(`{"existing-model": {"litellm_provider": "x"}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	applyOverrides(cat, []byte(`{
+		"serf-only":    {"provider": "kimi", "context_window": 262144, "supports_reasoning": true, "reasoning_effort_levels": ["minimal","low","medium","high"]},
+		"overlay-only": {"reasoning_effort_levels": ["low"]}
+	}`))
+
+	mi := cat.GetModelInfo("serf-only")
+	if mi == nil {
+		t.Fatal("serf-only model was not materialized")
+	}
+	if mi.ContextWindow != 262144 {
+		t.Errorf("ContextWindow = %d, want 262144", mi.ContextWindow)
+	}
+	if len(mi.ReasoningEffortLevels) != 4 {
+		t.Errorf("ReasoningEffortLevels = %v, want 4", mi.ReasoningEffortLevels)
+	}
+	// overlay-only carries no base metadata and matches no model → must NOT appear.
+	if cat.GetModelInfo("overlay-only") != nil {
+		t.Error("overlay-only entry (no context_window) should not create a catalog model")
+	}
+}
+
+func TestEmbeddedCatalog_KimiForCoding(t *testing.T) {
+	cat := EmbeddedModelCatalog()
+	mi := cat.GetModelInfo("kimi-for-coding")
+	if mi == nil {
+		t.Fatal("kimi-for-coding missing from embedded catalog")
+	}
+	if mi.ContextWindow != 262144 {
+		t.Errorf("kimi-for-coding ContextWindow = %d, want 262144", mi.ContextWindow)
+	}
+	if len(mi.ReasoningEffortLevels) == 0 {
+		t.Error("kimi-for-coding has no reasoning_effort_levels")
+	}
+}
