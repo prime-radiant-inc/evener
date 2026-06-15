@@ -568,13 +568,18 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (string, error) 
 	s.mu.Lock()
 	allowance := s.delegationAllowance
 	s.mu.Unlock()
-	return marshalBoundedJobListResult(jobListResult{
-		Jobs:                jobs,
-		Count:               len(jobs),
-		Watches:             jm.liveWatchSummaries(),
-		RecentWatches:       jm.recentWatchSummaries(),
-		DelegationAllowance: allowance,
-	}, maxChars)
+	result := jobListResult{
+		Jobs:          jobs,
+		Count:         len(jobs),
+		Watches:       jm.liveWatchSummaries(),
+		RecentWatches: jm.recentWatchSummaries(),
+	}
+	// Allowance ≤ 1 can only grant 0 — a no-op knob; surface it only when it
+	// actually enables fan-out (mirrors eliding the delegate schema param).
+	if allowance > 1 {
+		result.DelegationAllowance = allowance
+	}
+	return marshalBoundedJobListResult(result, maxChars)
 }
 
 func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
@@ -681,11 +686,14 @@ type jobOutputMatch struct {
 }
 
 type jobListResult struct {
-	Jobs                []jobListEntry     `json:"jobs"`
-	Count               int                `json:"count"`
-	Watches             []watchListEntry   `json:"watches"`
-	RecentWatches       []recentWatchEntry `json:"recent_watches"`
-	DelegationAllowance int                `json:"delegation_allowance"`
+	Jobs  []jobListEntry `json:"jobs"`
+	Count int            `json:"count"`
+	// Watches/RecentWatches/DelegationAllowance are supervision signal kept only
+	// when they carry information: no active watches, no recent watch history, and
+	// a no-op delegation allowance (≤ 1, which can only grant 0) are all omitted.
+	Watches             []watchListEntry   `json:"watches,omitempty"`
+	RecentWatches       []recentWatchEntry `json:"recent_watches,omitempty"`
+	DelegationAllowance int                `json:"delegation_allowance,omitempty"`
 }
 
 // watchListEntry is one active watch in job_list's result (spec §4 F2),
@@ -715,19 +723,24 @@ type recentWatchEntry struct {
 }
 
 type jobListEntry struct {
-	JobID              string  `json:"job_id"`
-	Type               string  `json:"type"`
-	Status             string  `json:"status"`
-	Reason             *string `json:"reason"`
-	Description        string  `json:"description"`
-	ParentJobID        *string `json:"parent_job_id"`
-	OwnerSessionID     string  `json:"owner_session_id"`
-	VisibleToSessionID string  `json:"visible_to_session_id"`
-	TranscriptRef      *string `json:"transcript_ref"`
-	Resumable          *bool   `json:"resumable"`
-	NotResumableReason *string `json:"not_resumable_reason"`
+	JobID          string  `json:"job_id"`
+	Type           string  `json:"type"`
+	Status         string  `json:"status"`
+	Reason         *string `json:"reason,omitempty"`
+	Description    string  `json:"description"`
+	ParentJobID    *string `json:"parent_job_id,omitempty"`
+	OwnerSessionID string  `json:"owner_session_id"`
+	// VisibleToSessionID is internal visibility routing — in a plain list it always
+	// equals the owner, so it is kept for tooling but omitted from the model wire.
+	VisibleToSessionID string `json:"-"`
+	// TranscriptRef/Resumable/NotResumableReason are omitempty: nil for the common
+	// running-shell scan (so they vanish), present where they carry signal (a
+	// delegate's transcript handle, a runtime-lost delegate's resumability).
+	TranscriptRef      *string `json:"transcript_ref,omitempty"`
+	Resumable          *bool   `json:"resumable,omitempty"`
+	NotResumableReason *string `json:"not_resumable_reason,omitempty"`
 	StartedAt          string  `json:"started_at"`
-	EndedAt            *string `json:"ended_at"`
+	EndedAt            *string `json:"ended_at,omitempty"`
 	// LastActivity is the most recent parent-observable activity timestamp
 	// (output append or start) for a running job; for a terminal record with no
 	// live stamp it falls back to ended_at, then started_at. A quiet running
@@ -736,7 +749,7 @@ type jobListEntry struct {
 	// delegate's mid-run "current action" is not cheaply readable from
 	// parent-side state without cross-session probing.
 	LastActivity *string `json:"last_activity"`
-	ExitCode     *int    `json:"exit_code"`
+	ExitCode     *int    `json:"exit_code,omitempty"`
 	OutputBytes  int64   `json:"output_bytes"`
 	// Depth is the live-subtree distance from the calling session, populated only
 	// by job_list(include_descendants=true): 0 for the caller's own store, 1 for

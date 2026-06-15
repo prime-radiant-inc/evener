@@ -109,6 +109,48 @@ func TestJobReadOutputDefaultWindowIsBounded(t *testing.T) {
 	}
 }
 
+// TestJobListRowIsLean pins that a job_list scan row drops detail-only fields
+// and null/empty fields: no transcript_ref/resumable/visible_to_session_id, no
+// explicit nulls, and no empty recent_watches array.
+func TestJobListRowIsLean(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	_ = json.Unmarshal([]byte(res.Output), &out)
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(out.JobID)
+		waitForShellDone(t, s.jobManager, out.JobID)
+	})
+
+	listRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "l1",
+		Name:      "job_list",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if listRes.IsError {
+		t.Fatalf("job_list returned error: %s", listRes.Output)
+	}
+	body := listRes.Output
+	for _, banned := range []string{"transcript_ref", "resumable", "not_resumable_reason", "visible_to_session_id", "recent_watches"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("lean job_list row must not contain %q:\n%s", banned, body)
+		}
+	}
+	if strings.Contains(body, ": null") || strings.Contains(body, ":null") {
+		t.Errorf("lean job_list must omit null fields:\n%s", body)
+	}
+}
+
 func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 	s := newTestSession(t)
 
@@ -182,7 +224,6 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 		job.Reason != nil ||
 		job.ParentJobID != nil ||
 		job.OwnerSessionID == "" ||
-		job.VisibleToSessionID == "" ||
 		job.StartedAt == "" ||
 		job.EndedAt != nil ||
 		job.ExitCode != nil {
@@ -635,14 +676,19 @@ func runJobListTool(t *testing.T, s *Session) jobListToolOutput {
 	return out
 }
 
-func TestJobListWatchesEmptyWhenNoneConfigured(t *testing.T) {
+func TestJobListWatchesOmittedWhenNoneConfigured(t *testing.T) {
 	s := newTestSession(t)
 	out := runJobListTool(t, s)
-	if out.Watches == nil {
-		t.Fatalf("job_list watches must serialize as an empty array, got null: %+v", out)
-	}
 	if len(out.Watches) != 0 {
-		t.Fatalf("job_list watches = %+v, want empty", out.Watches)
+		t.Fatalf("job_list watches = %+v, want omitted when none configured", out.Watches)
+	}
+	// The empty watches array is omitted from the wire entirely (lean scan), not
+	// serialized as `"watches":[]`.
+	raw := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID: "lraw", Name: "job_list", Arguments: json.RawMessage(`{}`),
+	})
+	if strings.Contains(raw.Output, "\"watches\"") {
+		t.Fatalf("job_list must omit the empty watches key:\n%s", raw.Output)
 	}
 }
 

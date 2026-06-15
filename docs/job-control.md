@@ -732,18 +732,12 @@ Return shape:
       "job_id": "job_...",
       "type": "delegate",
       "status": "running",
-      "reason": null,
       "description": "Investigate parser test",
-      "parent_job_id": null,
       "owner_session_id": "01JPARENT...",
-      "visible_to_session_id": "01JPARENT...",
       "transcript_ref": "local:01JCHILD...",
       "resumable": true,
-      "not_resumable_reason": null,
       "started_at": "...",
-      "ended_at": null,
       "last_activity": "...",
-      "exit_code": null,
       "output_bytes": 1234
     }
   ],
@@ -769,13 +763,15 @@ Return shape:
       "ended_at": "..."
     }
   ],
-  "delegation_allowance": 1
+  "delegation_allowance": 2
 }
 ```
 
-- `delegation_allowance` reports the calling session's current recursive-delegation budget: the largest value it may grant a child is one less (see Delegation allowance). `0` means this session is a leaf and has no `delegate` tool. It always rides the result so an agent can see its budget without re-reading its system prompt.
-- `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries a stable `id` (preserved across an idempotent re-configure; a replacement gets a fresh `id`), `target`, a one-line `condition` summary of the watch's trigger (`output_match`, `progress_interval_ms`, or `events` with an optional `every N`), `send_to` (empty for a notify-caller watch, otherwise the configured delivery target), `deliveries` (model-facing deliveries so far against the per-watch budget), and `created_at`. Drain-only residue from already-terminal watched jobs is not listed. `watches` always rides with the result; it is not subject to the job list's size bounding.
-- `recent_watches` is a bounded, latest-first ring of watches that have left the active set, so a watch that fired and then disappeared stays legible (it is not a watch vanishing into ambiguity). Each entry carries the same `id`/`target`/`condition`/`send_to`/`deliveries` plus `end_reason` — `auto_removed_terminal` (the watched job went terminal), `cleared` (`job_watch(clear=true)`), `replaced` (a different configuration superseded it), or `budget_exhausted` (it hit the per-watch delivery budget) — and `ended_at`. Combined with `deliveries`, this distinguishes a watch that fired before it was removed from one that never fired, and both from a watch that was never installed (absent from both lists). The ring is a debugging aid, not a durable audit log, and does not survive process restart.
+Rows are lean for scanning: a field that is null/absent for a job is omitted (a running shell row carries no `reason`, `exit_code`, `ended_at`, `transcript_ref`, or resumability keys), `visible_to_session_id` is internal routing and not emitted, and `owner_session_id` is only interesting under tree walks though it is always present. Detail beyond the scan (resumability assessment specifics, the full output) comes from `job_read_output`.
+
+- `delegation_allowance` reports the calling session's current recursive-delegation budget: the largest value it may grant a child is one less (see Delegation allowance). It is omitted when `<= 1` (a leaf with no `delegate` tool, or a budget that can only grant `0` — a no-op knob) and present when the session can actually fan out, so an agent sees a meaningful budget without re-reading its system prompt.
+- `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries a stable `id` (preserved across an idempotent re-configure; a replacement gets a fresh `id`), `target`, a one-line `condition` summary of the watch's trigger (`output_match`, `progress_interval_ms`, or `events` with an optional `every N`), `send_to` (empty for a notify-caller watch, otherwise the configured delivery target), `deliveries` (model-facing deliveries so far against the per-watch budget), and `created_at`. Drain-only residue from already-terminal watched jobs is not listed. `watches` rides with the result when non-empty (omitted from the lean scan when there are none); it is not subject to the job list's size bounding.
+- `recent_watches` is a bounded, latest-first ring of watches that have left the active set, so a watch that fired and then disappeared stays legible (it is not a watch vanishing into ambiguity). Each entry carries the same `id`/`target`/`condition`/`send_to`/`deliveries` plus `end_reason` — `auto_removed_terminal` (the watched job went terminal), `cleared` (`job_watch(clear=true)`), `replaced` (a different configuration superseded it), or `budget_exhausted` (it hit the per-watch delivery budget) — and `ended_at`. Combined with `deliveries`, this distinguishes a watch that fired before it was removed from one that never fired, and both from a watch that was never installed (absent from both lists). It is omitted from the lean scan when empty. The ring is a debugging aid, not a durable audit log, and does not survive process restart.
 
 `description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate jobs have no separate `description` argument in v1; implementations may derive a display label from the delegate `task` or leave `description` empty while retaining `task` in durable storage.
 
