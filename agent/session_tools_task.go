@@ -46,6 +46,23 @@ func formatTaskList(tasks []taskpkg.Task) string {
 	return b.String()
 }
 
+// formatTaskUpdates summarizes the explicit changes in an update batch as
+// "id→status" (or just "id" when only notes/deps/effort changed), so the update
+// acknowledgement reports what the agent changed without a separate view. It
+// deliberately covers only the caller's own updates, never an auto-advanced next
+// task (that is announced via separate current-task steering).
+func formatTaskUpdates(updates []taskpkg.TaskUpdate) string {
+	parts := make([]string, len(updates))
+	for i, u := range updates {
+		if u.Status != "" {
+			parts[i] = fmt.Sprintf("%d→%s", u.ID, u.Status)
+		} else {
+			parts[i] = fmt.Sprintf("%d", u.ID)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(tool.RegisteredTool{
@@ -178,11 +195,11 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				}
 
 				if !completedAny && manuallyStartedID == 0 {
-					return tool.StateResult{Output: "Updated.", State: store.View()}, nil
+					return tool.StateResult{Output: "Updated " + formatTaskUpdates(updates) + ".", State: store.View()}, nil
 				}
 
 				var msg strings.Builder
-				msg.WriteString("Updated. ")
+				msg.WriteString("Updated " + formatTaskUpdates(updates) + ". ")
 
 				if completedAny {
 					// Auto-advance unless the agent already picked what to do next.
