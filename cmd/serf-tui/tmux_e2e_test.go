@@ -847,6 +847,7 @@ func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmu
 	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
 	command := shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
+	pinTmuxWindowSize(t, session, width, height)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	app := &tmuxTUI{t: t, session: session}
 	app.WaitFor("SERF LIVE")
@@ -858,10 +859,23 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
 	command := shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
+	pinTmuxWindowSize(t, session, width, height)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	app := &tmuxTUI{t: t, session: session}
 	app.WaitFor("SERF LIVE")
 	return app
+}
+
+// pinTmuxWindowSize forces the session window to the exact geometry. tmux's
+// default window-size=latest sizes a detached window from attached clients (or a
+// server default like 80x24), silently ignoring new-session -x/-y — which on a
+// machine whose tmux clamps to a short pane makes height-sensitive layout tests
+// fail (e.g. a tall overlay overflowing and scrolling the header off-screen).
+// window-size=manual makes -x/-y and later resize-window authoritative.
+func pinTmuxWindowSize(t *testing.T, session string, width, height int) {
+	t.Helper()
+	runTmux(t, "set-option", "-t", session, "window-size", "manual")
+	runTmux(t, "resize-window", "-t", session, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
 }
 
 func (a *tmuxTUI) Close() {
