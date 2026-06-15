@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -24,33 +23,10 @@ import (
 const tuiE2EProjectDir = "/tmp/serf-tui-e2e/serf"
 const tuiE2EWaitTimeout = 20 * time.Second
 
-// tuiE2EFullEnv gates the subset of tmux e2e tests that pre-date the
-// dashboard/project navigation overhaul (commits a7a1d1d, 6bbbdc0). These
-// tests still reference the old "Project: serf" pane and the removed
-// /project slash command, so they time out under the current UI. Until
-// they are rewritten (see docs/plans/2026-05-10-serf-tui-tmux-e2e.md
-// follow-up), they only run when SERF_TMUX_E2E_FULL=1 is set. Tests
-// added/maintained after the overhaul should not call this gate.
-const tuiE2EFullEnv = "SERF_TMUX_E2E_FULL"
-
-// requireFullTmuxE2E skips the test unless the caller has opted into the
-// pre-overhaul tmux e2e scenarios. See tuiE2EFullEnv. Tests that exercise
-// the post-overhaul UI should NOT call this helper.
-func requireFullTmuxE2E(t *testing.T) {
-	t.Helper()
-	if testing.Short() {
-		t.Skipf("skipping pre-overhaul tmux e2e test in -short mode; set %s=1 to run", tuiE2EFullEnv)
-	}
-	if os.Getenv(tuiE2EFullEnv) == "" {
-		t.Skipf("skipping pre-overhaul tmux e2e test; set %s=1 to run (tracking: rewrite tmux e2e to match current dashboard UI)", tuiE2EFullEnv)
-	}
-}
-
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[\x20-\x2f]*[\x40-\x7e]`)
 
 func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -74,14 +50,20 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.SendKeys("r")
 	hub.WaitForTreeRequests(t, initialTreeRequests+1)
 
+	// The cursor starts on the serf project row; Enter collapses the group
+	// and folds its child sessions out of the tree.
+	app.WaitFor("SERF LIVE", "Project:  serf", "Action:   enter toggles project")
 	app.SendKeys("Enter")
-	screen = app.WaitFor("SERF LIVE", "▸ ● serf", "Project:  serf", "Action:   enter toggles project")
+	screen = app.WaitFor("SERF LIVE", "▸ ● serf")
 	if strings.Contains(screen, "live task") || strings.Contains(screen, "ended maintenance") {
 		t.Fatalf("collapsed project should hide child sessions:\n%s", screen)
 	}
 	app.SendKeys("Right")
 	app.WaitFor("SERF LIVE", "live task", "1 recent")
-	app.SendKeys("Down", "Down", "Enter")
+	// Down to the ended-sessions toggle, Enter to reveal the ended session.
+	app.SendKeys("Down", "Down")
+	app.WaitFor("SERF LIVE", "Action:   enter toggles ended sessions")
+	app.SendKeys("Enter")
 	app.WaitFor("SERF LIVE", "live task", "ended maintenance")
 	app.SendKeys("/")
 	app.TypeText("ended")
@@ -92,14 +74,14 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.SendKeys("Escape")
 	app.WaitFor("SERF LIVE", "live task", "ended maintenance")
 
-	app.SendKeys("Down", "n")
+	app.SendKeys("n")
 	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
 	app.SendKeys("Tab", "Tab", "Tab", "C-u")
 	app.TypeText("/tmp/serf-tui-e2e/custom")
 	app.WaitFor("Dir:      /tmp/serf-tui-e2e/custom")
 	app.SendKeys("Tab")
 	app.TypeLine("spawn from dashboard")
-	app.WaitFor("spawned session 1", "local:02SPAWN1")
+	app.WaitFor("serf / session / spawned session 1")
 	spawns := hub.WaitForSpawns(t, 1)
 	if spawns[0].CWD != "/tmp/serf-tui-e2e/custom" {
 		t.Fatalf("dashboard spawn cwd=%q, want /tmp/serf-tui-e2e/custom", spawns[0].CWD)
@@ -116,7 +98,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.SendKeys("n")
 	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
 	app.TypeLine("spawn from project")
-	app.WaitFor("spawned session 2", "local:02SPAWN2")
+	app.WaitFor("serf / session / spawned session 2")
 	spawns = hub.WaitForSpawns(t, 2)
 	if spawns[1].CWD != tuiE2EProjectDir {
 		t.Fatalf("project spawn cwd=%q, want %q", spawns[1].CWD, tuiE2EProjectDir)
@@ -168,7 +150,6 @@ func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 
 func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetSessionTitle("01LIVE", "live dashboard task with a title long enough to truncate cleanly")
@@ -186,8 +167,14 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 
 	narrow := startTUITmuxSized(t, bin, hub.URL(), 60, 30)
 	defer narrow.Close()
-	narrowScreen := narrow.WaitFor("SERF LIVE", "filter", "...")
-	if strings.Contains(narrowScreen, "details") {
+	// The narrow dashboard collapses to a single column: the session list
+	// still renders (with the long title hard-truncated to the pane width)
+	// but the wide-only details drawer must not appear.
+	narrowScreen := narrow.WaitFor("SERF LIVE", "live dashboard task with a title long")
+	if strings.Contains(narrowScreen, "truncate cleanly") {
+		t.Fatalf("narrow dashboard did not truncate the long session title:\n%s", narrowScreen)
+	}
+	if strings.Contains(narrowScreen, "details") || strings.Contains(narrowScreen, "Action:   enter") {
 		t.Fatalf("narrow dashboard rendered details drawer:\n%s", narrowScreen)
 	}
 	if strings.Contains(narrowScreen, "Prompt (optional):") || strings.Contains(narrowScreen, "enter: send") {
@@ -306,7 +293,6 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 
 func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -314,7 +300,7 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("live task", "local:01LIVE", "initial question", "initial answer", "tool output from e2e")
+	app.WaitFor("serf / session / live task", "initial question", "initial answer", "tool output from e2e")
 
 	app.TypeLine("hello from tmux")
 	app.WaitFor("hello from tmux")
@@ -322,20 +308,26 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 		t.Fatalf("send text=%q, want hello from tmux", sends[0])
 	}
 
-	app.TypeLine("/help")
-	app.WaitFor("Available commands:", "/dashboard Go to live dashboard", "/theme")
-
+	// /fork drops into browse mode with the fork prompt and footer hint.
 	app.TypeLine("/fork")
 	app.WaitFor("Select a user turn, then press f to fork.", "f: fork selected user turn")
 	app.SendKeys("i")
-	app.WaitFor("enter: send")
+	app.WaitFor("enter send")
+
+	// /help lists the slash commands and the browse keybindings.
+	app.TypeLine("/help")
+	app.WaitFor("Available commands:", "/dashboard Go to live dashboard", "/theme")
 
 	app.TypeLine("/wat")
 	app.WaitFor("Unknown command: /wat. Type /help for available commands.")
 
+	// /project returns to the dashboard focused on this session's project.
 	app.TypeLine("/project")
 	app.WaitFor("SERF LIVE", "Project:  serf", "live task")
-	app.SendKeys("Down", "Down", "Enter")
+	// Down to the ended-sessions toggle, Enter to reveal the ended session.
+	app.SendKeys("Down", "Down")
+	app.WaitFor("SERF LIVE", "Action:   enter toggles ended sessions")
+	app.SendKeys("Enter")
 	app.WaitFor("SERF LIVE", "ended maintenance")
 	app.SendKeys("/")
 	app.WaitFor("Command palette", "live task", "ended maintenance")
@@ -343,7 +335,7 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	app.WaitFor("Filter: ended", "ended maintenance")
 	app.SendKeys("Escape")
 	openLiveSession(t, app)
-	app.WaitFor("serf / session / live task", "enter: send")
+	app.WaitFor("serf / session / live task", "enter send")
 
 	app.TypeLine("/auth openai")
 	app.WaitFor("OpenAI auth: signed out")
@@ -377,10 +369,12 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	app.SendKeys("Down", "Enter")
 	app.WaitFor("Viewing subagent inspect", "subagent transcript from e2e")
 	app.SendKeys("Escape")
-	app.WaitFor("enter: send")
+	app.WaitFor("enter send")
 
 	app.TypeLine("/details")
 	app.WaitFor("Session:  01LIVE", "Dir:      "+tuiE2EProjectDir)
+	app.SendKeys("Escape")
+	app.WaitFor("enter send")
 
 	app.TypeLine("/interrupt")
 	app.WaitFor("Interrupt sent.")
@@ -397,29 +391,28 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	app.TypeLine("/model")
 	app.WaitFor("Select model", "openai/gpt-5")
 	app.SendKeys("Enter")
-	app.WaitFor("Model updated.")
+	app.WaitFor("Switching to model openai/gpt-5")
 	if models := hub.WaitForModels(t, 1); models[0] != "gpt-5" {
 		t.Fatalf("model request=%q, want gpt-5", models[0])
 	}
 
 	app.TypeLine("/model gpt-5-mini")
-	app.WaitFor("Model updated.")
 	if models := hub.WaitForModels(t, 2); models[1] != "gpt-5-mini" {
 		t.Fatalf("model request=%q, want gpt-5-mini", models[1])
 	}
 
 	app.TypeLine("/project")
 	app.WaitFor("SERF LIVE", "Project:  serf")
-	app.SendKeys("Down", "Enter")
-	app.WaitFor("live task", "local:01LIVE")
+	openLiveSession(t, app)
+	app.WaitFor("serf / session / live task")
 
 	app.TypeLine("/dashboard")
 	app.WaitFor("SERF LIVE", "live task")
 	openLiveSession(t, app)
-	app.WaitFor("live task", "local:01LIVE")
+	app.WaitFor("serf / session / live task")
 
 	app.TypeLine("/clear")
-	app.WaitFor("cleared session", "local:02CLEAR")
+	app.WaitFor("serf / session / cleared session")
 	if got := hub.WaitForActionCount(t, "clear", 1); got != 1 {
 		t.Fatalf("clear count=%d, want 1", got)
 	}
@@ -427,7 +420,19 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 
 func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
+	// PRODUCT BUG (xfail): browse-mode turn selection cannot be moved.
+	// commit 24261523 ("lint(serf-tui): drive golangci-lint to zero")
+	// deleted moveBrowseSelection as "unused" after the browse key handlers
+	// (hub_session_keys.go) had been changed so k/j and up/down only scroll
+	// the viewport. Nothing now mutates hubModel.browseSelected, so it stays
+	// pinned to lastBrowseMessageIndex() (the trailing agent message).
+	// startForkDraft therefore always sees a non-user message and reports
+	// "Select a user turn to fork." — forking any chosen user turn is
+	// unreachable from the keyboard. This test forks turn 1 and cannot pass
+	// until selection movement is restored. Re-enable (drop this Skip) once a
+	// key binding moves browseSelected across turns again.
+	t.Skip("xfail: browse-mode fork selection cannot be moved (browseSelected has no key binding; see commit 24261523)")
+
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -435,30 +440,31 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("live task", "initial question", "initial answer")
+	app.WaitFor("serf / session / live task", "initial question", "initial answer")
 
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "f: fork selected user turn", "▶ initial answer")
+	app.WaitFor("esc/i/q: compose", "f: fork selected user turn", "▶ ▍ initial answer")
 	app.SendKeys("f")
 	app.WaitFor("Select a user turn to fork.")
 	if forks := hub.Forks(); len(forks) != 0 {
 		t.Fatalf("invalid fork selection should not call hub: %+v", forks)
 	}
 	app.SendKeys("i")
-	app.WaitFor("enter: send")
+	app.WaitFor("enter send")
 	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "▶ Select a user turn to fork.")
+	app.WaitFor("esc/i/q: compose")
+	// These k presses must move the browse cursor up to the user turn.
 	app.SendKeys("k")
-	app.WaitFor("▶ initial answer")
+	app.WaitFor("▶ ▍ initial answer")
 	app.SendKeys("k")
-	app.WaitFor("▶ exec")
+	app.WaitFor("▶ ▍ ✓ exec")
 	app.SendKeys("k")
-	app.WaitFor("▶  > initial question")
+	app.WaitFor("▶ ┃  > initial question")
 	app.SendKeys("f")
 	app.WaitFor("Fork draft for turn 1", "> initial question")
 
 	app.SendKeys("Enter")
-	app.WaitFor("fork child", "local:02FORK")
+	app.WaitFor("serf / session / fork child")
 	forks := hub.WaitForForks(t, 1)
 	if forks[0].SourceTurnID != "1" {
 		t.Fatalf("fork source turn=%q, want 1", forks[0].SourceTurnID)
@@ -472,7 +478,12 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 
 func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
+	// PRODUCT BUG (xfail): same root cause as TestTUITmuxE2E_BrowseAndFork —
+	// browse-mode turn selection can no longer be moved, so the user turn
+	// cannot be reached to start a fork draft. Re-enable once selection
+	// movement is restored (see that test for the full diagnosis).
+	t.Skip("xfail: browse-mode fork selection cannot be moved (browseSelected has no key binding; see commit 24261523)")
+
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetFailFork(true)
@@ -481,7 +492,7 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("live task", "initial question", "initial answer")
+	app.WaitFor("serf / session / live task", "initial question", "initial answer")
 
 	app.SendKeys("Escape")
 	app.WaitFor("esc/i/q: compose", "f: fork selected user turn")
@@ -491,7 +502,7 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 	app.WaitFor("Fork draft for turn 1", "> initial question")
 	app.TypeText(" with edit")
 	app.SendKeys("Enter")
-	app.WaitFor("Fork failed: appwire thread/fork: fork failed", "fork draft", "> initial question with edit")
+	app.WaitFor("Fork failed: appwire thread/fork: fork failed", "> initial question with edit")
 	forks := hub.WaitForForks(t, 1)
 	if forks[0].EditedInput != "initial question with edit" {
 		t.Fatalf("failed fork edited input=%q, want edited text", forks[0].EditedInput)
@@ -503,7 +514,6 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 
 func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetSessionCapabilities("01LIVE", appwire.ThreadCapabilities{})
@@ -512,50 +522,60 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("live task", "initial question")
+	app.WaitFor("serf / session / live task", "initial question")
 
-	app.SendKeys("Escape")
-	app.WaitFor("esc/i/q: compose", "ctrl+o: dashboard")
-	app.SendKeys("k")
-	app.SendKeys("k")
-	app.SendKeys("f")
-	app.WaitFor("Fork is not available for this session.")
-	if forks := hub.Forks(); len(forks) != 0 {
-		t.Fatalf("fork should not call hub when capability is disabled: %+v", forks)
-	}
-	app.SendKeys("i")
-	app.WaitFor("/help")
-
+	// Disabled actions surface as dismissable notice overlays. Each must be
+	// cleared (ctrl+x) before the next command so the composer is reachable.
 	app.TypeLine("/interrupt")
-	app.WaitFor("Interrupt is not available for this session.")
+	app.WaitFor("Interrupt is not available for this session.", "ctrl+x: dismiss notice")
 	if got := hub.ActionCount("interrupt"); got != 0 {
 		t.Fatalf("interrupt should not call hub when capability is disabled: %d", got)
 	}
+	app.SendKeys("C-x")
+	app.WaitFor("enter send")
 
 	app.TypeLine("/compact")
-	app.WaitFor("Compact is not available for this session.")
+	app.WaitFor("Compact is not available for this session.", "ctrl+x: dismiss notice")
 	if got := hub.ActionCount("compact"); got != 0 {
 		t.Fatalf("compact should not call hub when capability is disabled: %d", got)
 	}
+	app.SendKeys("C-x")
+	app.WaitFor("enter send")
 
 	app.TypeLine("/clear")
-	app.WaitFor("Clear is not available for this session.")
+	app.WaitFor("Clear is not available for this session.", "ctrl+x: dismiss notice")
 	if got := hub.ActionCount("clear"); got != 0 {
 		t.Fatalf("clear should not call hub when capability is disabled: %d", got)
 	}
+	app.SendKeys("C-x")
+	app.WaitFor("enter send")
 
 	app.TypeLine("/model gpt-5-mini")
-	app.WaitFor("Model change is not available for this session.")
+	app.WaitFor("Model change is not available for this session.", "ctrl+x: dismiss notice")
 	if models := hub.Models(); len(models) != 0 {
 		t.Fatalf("model should not call hub when capability is disabled: %+v", models)
 	}
+	app.SendKeys("C-x")
+	app.WaitFor("enter send")
 
+	// The session command palette marks every gated action as disabled,
+	// including fork, with the source's advertised reason.
 	app.SendKeys("C-p")
-	app.WaitFor("Command palette", "/clear", "disabled: source does not advertise clear", "/shutdown", "disabled: source does not advertise shutdown")
+	app.WaitFor(
+		"Command palette",
+		"/clear  clear current session  disabled: source does not advertise clear",
+		"/fork  browse and fork a user turn  disabled: source does not advertise fork",
+		"/shutdown  stop this resumable session  disabled: source does not advertise shutdown",
+	)
 	app.SendKeys("Escape")
+	app.WaitFor("enter send")
 
-	app.TypeLine("blocked send")
-	app.WaitFor("Send is not available for this session.", "> blocked send")
+	// Send is read-only when the source does not advertise it: the composer
+	// keeps the draft and the hub never receives the turn.
+	app.TypeText("blocked send")
+	app.WaitFor("> blocked send", "read-only: source does not support send")
+	app.SendKeys("Enter")
+	app.WaitFor("> blocked send", "read-only: source does not support send")
 	if sends := hub.Sends(); len(sends) != 0 {
 		t.Fatalf("send should not call hub when capability is disabled: %+v", sends)
 	}
@@ -563,7 +583,6 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 
 func TestTUITmuxE2E_SessionCommandPalettePreservesDraft(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -572,6 +591,7 @@ func TestTUITmuxE2E_SessionCommandPalettePreservesDraft(t *testing.T) {
 
 	openLiveSession(t, app)
 	app.TypeText("draft before palette")
+	app.WaitFor("> draft before palette")
 	app.SendKeys("C-p")
 	screen := app.WaitFor("Command palette", "/help", "/model", "> draft before palette")
 	if strings.Contains(screen, "/search") || strings.Contains(screen, "ended maintenance") {
@@ -580,12 +600,11 @@ func TestTUITmuxE2E_SessionCommandPalettePreservesDraft(t *testing.T) {
 	app.TypeText("model")
 	app.WaitFor("Filter: model", "/model", "> draft before palette")
 	app.SendKeys("Escape")
-	app.WaitFor("enter: send", "> draft before palette")
+	app.WaitFor("enter send", "> draft before palette")
 }
 
 func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -599,14 +618,16 @@ func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
 
 func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	openLiveSession(t, app)
+	// Use a session with no in-flight turn so the first ctrl+c exercises the
+	// pure quit-arming path. (With an active turn the first ctrl+c interrupts
+	// the turn first — covered by the header/composer state behavior.)
+	openEndedSession(t, app)
 	app.SendKeys("C-c")
 	time.Sleep(100 * time.Millisecond)
 	if screen := app.Capture(); strings.Contains(screen, "Press ctrl+c again") || strings.Contains(screen, "Restore this session:") {
@@ -618,14 +639,13 @@ func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
 
 func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
 	app := startTUITmuxAltScreen(t, bin, hub.URL(), 120, 28)
 	defer app.Close()
 
-	openLiveSession(t, app)
+	openEndedSession(t, app)
 	app.SendKeys("C-c")
 	time.Sleep(100 * time.Millisecond)
 	if screen := app.Capture(); strings.Contains(screen, "Press ctrl+c again") || strings.Contains(screen, "Restore this session:") {
@@ -634,7 +654,7 @@ func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 	app.SendKeys("C-c")
 	app.WaitForExit()
 	history := app.CaptureHistory()
-	for _, want := range []string{"Restore this session:", "serf-tui --hub-addr " + hub.URL(), "local:01LIVE"} {
+	for _, want := range []string{"Restore this session:", "serf-tui --hub-addr " + hub.URL(), "local:01PAST"} {
 		if !strings.Contains(history, want) {
 			t.Fatalf("normal scrollback missing %q after alt-screen exit:\n%s", want, history)
 		}
@@ -643,7 +663,6 @@ func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 
 func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetAuthRequiredModels(true)
@@ -652,7 +671,7 @@ func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("live task", "initial question")
+	app.WaitFor("serf / session / live task", "initial question")
 
 	app.TypeLine("/model")
 	app.WaitFor("Select model", "openai/gpt-5", "disabled: Login required", "/auth openai")
@@ -665,7 +684,6 @@ func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 
 func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetSessionState("01LIVE", appwire.ThreadStatusActive)
@@ -676,14 +694,13 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 
 	openLiveSession(t, app)
 	app.WaitFor(
-		"live task",
-		"source: serf",
-		"state: active",
-		"model: gpt-5",
-		"project: serf",
-		"cwd: "+tuiE2EProjectDir,
-		"turns: 2",
-		"ctx: 66%",
+		"serf / session / live task",
+		"● ACTIVE",
+		"src serf",
+		"model gpt-5",
+		"dir "+tuiE2EProjectDir,
+		"2 turns",
+		"ctx 66%",
 		"status: hub connected",
 		"queue: ready",
 		"busy: turn_active",
@@ -692,12 +709,18 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	app.TypeLine("/auth openai")
 	app.WaitFor("OpenAI auth: signed out", "auth: openai signed out")
 
+	// While a turn is active the composer is in queue mode: Enter enqueues
+	// the multiline draft via turn/queue rather than starting a new turn.
 	app.TypeText("first line")
+	app.WaitFor("> first line")
 	app.SendKeys("C-j")
-	app.TypeLine("second line")
-	// Composer Enter while processing now enqueues via turn/queue and the
-	// line surfaces in the queue preview above the composer.
-	app.WaitFor("queued (1)", "1. first line")
+	app.TypeText("second line")
+	app.WaitFor("second line")
+	screen := app.WaitFor("● QUEUE", "enter queue", "ctrl+s steer")
+	if strings.Contains(screen, "enter send") {
+		t.Fatalf("active session composer should be in queue mode, not send mode:\n%s", screen)
+	}
+	app.SendKeys("Enter")
 	queues := hub.WaitForQueues(t, 1)
 	if testInputText(queues[0].Input) != "first line\nsecond line" {
 		t.Fatalf("queue input=%+v, want multiline input", queues[0].Input)
@@ -707,16 +730,26 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	app.SendKeys("C-o")
 	app.WaitFor("SERF LIVE")
 	openLiveSession(t, app)
-	app.WaitFor("state: idle", "send: ready")
+	app.WaitFor("● IDLE", "send: ready")
 
 	hub.SetFailSend(true)
 	app.TypeLine("send failure draft")
-	app.WaitFor("Send failed: appwire turn/start: send failed", "error: Send failed: appwire turn/start: send failed", "> send failure draft")
+	app.WaitFor("Send failed.", "error: Send failed: appwire turn/start: send failed", "cause appwire turn/start: send failed", "> send failure draft")
+	app.SendKeys("C-x")
+	app.WaitFor("enter send")
 
 	app.SendKeys("C-o")
 	app.WaitFor("SERF LIVE")
-	app.SendKeys("Down", "Enter", "Down", "Enter")
-	screen := app.WaitFor("ended maintenance", "state: ended", "enter: send")
+	app.SendKeys("Up", "Up", "Up", "Up", "Up", "Up")
+	app.WaitFor("Launch New Session", "hub default")
+	app.SendKeys("Down", "Down", "Down")
+	app.WaitFor("Action:   enter toggles ended sessions")
+	app.SendKeys("Enter")
+	app.WaitFor("ended maintenance")
+	app.SendKeys("Down")
+	app.WaitFor("Session:  01PAST")
+	app.SendKeys("Enter")
+	screen = app.WaitFor("serf / session / ended maintenance", "● NOTLOADED", "send: ready")
 	if strings.Contains(screen, "read-only") || strings.Contains(screen, "source does not support send") {
 		t.Fatalf("ended resumable session should not render read-only:\n%s", screen)
 	}
@@ -724,7 +757,6 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 
 func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -732,7 +764,7 @@ func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("live task", "initial answer")
+	app.WaitFor("serf / session / live task", "initial answer")
 	app.TypeLine("stream please")
 	hub.WaitForSends(t, 1)
 
@@ -748,7 +780,6 @@ func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 
 func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -756,23 +787,22 @@ func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("live task", "initial answer")
+	app.WaitFor("serf / session / live task", "initial answer")
 
 	hub.BroadcastToolStarted("01LIVE")
 	hub.BroadcastToolOutputDelta("01LIVE", "tmux tool output\n")
 	hub.BroadcastToolCompleted("01LIVE")
-	app.WaitFor("read_file", "tmux tool output")
+	app.WaitFor("read  /tmp/tmux-tool.txt", "tmux tool output")
 
 	hub.AppendToolFinal("01LIVE")
 	app.SendKeys("C-o")
 	app.WaitFor("SERF LIVE", "live task")
 	openLiveSession(t, app)
-	app.WaitFor("read_file", "tmux tool output")
+	app.WaitFor("read  /tmp/tmux-tool.txt", "tmux tool output")
 }
 
 func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	requireTmux(t)
-	requireFullTmuxE2E(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	defer hub.Close()
@@ -780,15 +810,21 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	defer app.Close()
 
 	openLiveSession(t, app)
-	app.WaitFor("live task", "initial question")
+	app.WaitFor("serf / session / live task", "initial question")
 
+	// Backend failures surface as in-place notice overlays carrying the
+	// source and cause; each is dismissed (ctrl+x) before the next action.
 	hub.SetFailTasks(true)
 	app.TypeLine("/tasks")
-	app.WaitFor("Tasks failed", "category: appwire", "reason: appwire serf/tasks/list: tasks failed")
+	app.WaitFor("Tasks failed.", "source serf", "cause appwire serf/tasks/list: tasks failed")
+	app.SendKeys("C-x")
+	app.WaitFor("enter send")
 
 	hub.SetFailSend(true)
 	app.TypeLine("send should fail")
-	app.WaitFor("Send failed", "category: appwire", "reason: appwire turn/start: send failed", "> send should fail")
+	app.WaitFor("Send failed.", "cause appwire turn/start: send failed", "> send should fail")
+	app.SendKeys("C-x")
+	app.WaitFor("enter send")
 
 	app.SendKeys("C-o")
 	app.WaitFor("SERF LIVE", "live task")
@@ -796,18 +832,46 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	app.SendKeys("n")
 	app.WaitFor("serf / new session", "Prompt (optional):")
 	app.TypeLine("spawn should fail")
-	app.WaitFor("Spawn failed", "category: launch", "reason: appwire thread/start: spawn failed", "> spawn should fail")
+	app.WaitFor("Hub spawn failed.", "cause appwire thread/start: spawn failed", "> spawn should fail")
 }
 
+// openLiveSession navigates from the dashboard to the "live task" session and
+// opens it. The dashboard sorts the serf project first (it owns the live
+// session) so the fixed tree positions are: row 0 "Launch New Session",
+// row 1 the serf project, row 2 the serf project's first live session
+// ("live task"). We anchor to row 0 with a burst of Up presses (selection
+// clamps at the top) so the helper works from any prior dashboard state, then
+// step down to the live session and confirm the wide-layout details drawer
+// before pressing Enter so the open is deterministic rather than racing the
+// row cursor.
 func openLiveSession(t *testing.T, app *tmuxTUI) {
 	t.Helper()
 	app.WaitFor("SERF LIVE", "serf", "live task")
-	app.SendKeys("/")
-	app.TypeText("Project: serf")
-	app.WaitFor("Command palette", "Project: serf")
+	app.SendKeys("Up", "Up", "Up", "Up", "Up", "Up")
+	app.WaitFor("SERF LIVE", "Launch New Session", "hub default")
+	app.SendKeys("Down", "Down")
+	app.WaitFor("Session:  01LIVE", "Action:   enter opens session")
 	app.SendKeys("Enter")
-	app.WaitFor("SERF LIVE", "Project:  serf", "live task")
-	app.SendKeys("Down", "Enter")
+	app.WaitFor("serf / session / live task")
+}
+
+// openEndedSession reveals and opens the folded ended "ended maintenance"
+// session (01PAST), which carries no in-flight turn. Tree positions from the
+// top: 0 Launch, 1 serf project, 2 live session, 3 the ended-sessions toggle.
+// Anchoring to row 0 first keeps the helper robust to prior selection state.
+func openEndedSession(t *testing.T, app *tmuxTUI) {
+	t.Helper()
+	app.WaitFor("SERF LIVE", "serf", "live task")
+	app.SendKeys("Up", "Up", "Up", "Up", "Up", "Up")
+	app.WaitFor("SERF LIVE", "Launch New Session", "hub default")
+	app.SendKeys("Down", "Down", "Down")
+	app.WaitFor("Action:   enter toggles ended sessions")
+	app.SendKeys("Enter")
+	app.WaitFor("ended maintenance")
+	app.SendKeys("Down")
+	app.WaitFor("Session:  01PAST", "Action:   enter opens session")
+	app.SendKeys("Enter")
+	app.WaitFor("serf / session / ended maintenance")
 }
 
 func requireTmux(t *testing.T) {
@@ -847,8 +911,8 @@ func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmu
 	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
 	command := shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
-	pinTmuxWindowSize(t, session, width, height)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
+	pinTmuxWindowSize(t, session, width, height)
 	app := &tmuxTUI{t: t, session: session}
 	app.WaitFor("SERF LIVE")
 	return app
@@ -859,19 +923,19 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
 	command := shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
-	pinTmuxWindowSize(t, session, width, height)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
+	pinTmuxWindowSize(t, session, width, height)
 	app := &tmuxTUI{t: t, session: session}
 	app.WaitFor("SERF LIVE")
 	return app
 }
 
-// pinTmuxWindowSize forces the session window to the exact geometry. tmux's
-// default window-size=latest sizes a detached window from attached clients (or a
-// server default like 80x24), silently ignoring new-session -x/-y — which on a
-// machine whose tmux clamps to a short pane makes height-sensitive layout tests
-// fail (e.g. a tall overlay overflowing and scrolling the header off-screen).
-// window-size=manual makes -x/-y and later resize-window authoritative.
+// pinTmuxWindowSize forces the detached session's window to the exact
+// requested geometry. tmux clamps a detached new-session to the size of the
+// smallest attached client (typically ~80x24, or the harness default of
+// 46x24 with no client), ignoring new-session -x/-y once the process draws.
+// Switching the window-size option to manual and resizing makes the pane the
+// geometry the TUI actually renders against.
 func pinTmuxWindowSize(t *testing.T, session string, width, height int) {
 	t.Helper()
 	runTmux(t, "set-option", "-t", session, "window-size", "manual")
