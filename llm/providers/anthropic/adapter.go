@@ -148,6 +148,80 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	return r, nil
 }
 
+func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.InputTokenCount, error) {
+	if a.Client == nil {
+		a.Client = &http.Client{Timeout: 0}
+	}
+
+	body, err := a.buildRequestBody(req)
+	if err != nil {
+		return llm.InputTokenCount{}, err
+	}
+	delete(body, "max_tokens")
+	delete(body, "temperature")
+	delete(body, "top_p")
+	delete(body, "stop_sequences")
+	delete(body, "service_tier")
+	delete(body, "cache_control")
+
+	b, err := json.Marshal(body)
+	if err != nil {
+		return llm.InputTokenCount{}, err
+	}
+
+	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
+	defer adapterCancel()
+
+	endpoint := a.BaseURL + "/v1/messages/count_tokens"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(b))
+	if err != nil {
+		return llm.InputTokenCount{}, err
+	}
+	a.setAnthropicHeaders(httpReq, req.ProviderOptions)
+
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return llm.InputTokenCount{}, llm.WrapContextError("anthropic", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	rawBytes, _ := io.ReadAll(resp.Body)
+	var raw map[string]any
+	_ = json.Unmarshal(rawBytes, &raw)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		msg := "messages.count_tokens failed: " + strings.TrimSpace(string(rawBytes))
+		return llm.InputTokenCount{}, llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
+	}
+
+	tokens := intFromAny(raw["input_tokens"])
+	return llm.InputTokenCount{
+		Tokens:   tokens,
+		Exact:    true,
+		Source:   llm.TokenCountSourceProvider,
+		Provider: a.Name(),
+		Model:    req.Model,
+		Raw:      raw,
+	}, nil
+}
+
+func intFromAny(v any) int {
+	switch x := v.(type) {
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case float64:
+		return int(x)
+	case json.Number:
+		i, _ := x.Int64()
+		return int(i)
+	default:
+		return 0
+	}
+}
+
 func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
