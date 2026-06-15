@@ -54,6 +54,8 @@ type shellResult struct {
 	ExitCode            *int
 	Output              string
 	Truncated           bool
+	TotalBytes          int64
+	DroppedBytes        int64
 	// settle is non-nil when the command finished within its max_wait_ms bound.
 	// Calling settle(true) commits the delayed job (making it durable) and
 	// finalizes it, returning its job_id. Calling settle(false) discards the
@@ -158,7 +160,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			return jm.finishForegroundRuntimeTimeout(run, wait)
 		}
 		status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, runtimeTimedOut.Load(), wait.err)
-		output, _, truncated, _ := fullOutput(run.output)
+		output, total, truncated, _ := fullOutput(run.output)
 		// complete-or-handle (spec §0.6): defer keep/discard so marshalShellToolResult
 		// can apply both layers (embed budget + tool-result char bound) before deciding.
 		settle := func(keep bool) string {
@@ -187,6 +189,8 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			ExitCode:            exitCode,
 			Output:              output,
 			Truncated:           truncated,
+			TotalBytes:          total,
+			DroppedBytes:        run.output.RetainedStart(),
 			settle:              settle,
 		}
 	case <-runtimeTimeoutCh:
@@ -206,7 +210,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			}
 			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 		}
-		output, _, truncated, _ := tailOutput(run.output, shellDefaultTailBytes)
+		output, total, truncated, _ := tailOutput(run.output, shellDefaultTailBytes)
 		go jm.finalizeShellWhenDone(run, waitCh, &runtimeTimedOut)
 		return shellResult{
 			JobID:               run.rec.JobID,
@@ -217,11 +221,13 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			TimedOut:            true,
 			Output:              output,
 			Truncated:           truncated,
+			TotalBytes:          total,
+			DroppedBytes:        run.output.RetainedStart(),
 		}
 	case <-ctxDone:
 		handle.Signal()
 		wait := <-waitCh
-		output, _, truncated, _ := fullOutput(run.output)
+		output, total, truncated, _ := fullOutput(run.output)
 		jm.discardDelayedShell(run)
 		return shellResult{
 			Type:                string(run.rec.Type),
@@ -232,6 +238,8 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			ExitCode:            &wait.exitCode,
 			Output:              output,
 			Truncated:           truncated,
+			TotalBytes:          total,
+			DroppedBytes:        run.output.RetainedStart(),
 		}
 	}
 }
@@ -343,7 +351,8 @@ func (jm *jobManager) finishForegroundRuntimeTimeout(run *runningJob, wait shell
 		}
 		return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 	}
-	output, _, truncated, _ := tailOutput(run.output, shellDefaultTailBytes)
+	output, total, truncated, _ := tailOutput(run.output, shellDefaultTailBytes)
+	dropped := run.output.RetainedStart()
 	if err := jm.finalizeShellWithRetry(run.rec.JobID, status, reason, exitCode); err != nil {
 		go jm.finalizeShellUntilDurable(run.rec.JobID, status, reason, exitCode)
 		return shellResult{
@@ -356,6 +365,8 @@ func (jm *jobManager) finishForegroundRuntimeTimeout(run *runningJob, wait shell
 			ExitCode:            exitCode,
 			Output:              output,
 			Truncated:           truncated,
+			TotalBytes:          total,
+			DroppedBytes:        dropped,
 		}
 	}
 	return shellResult{
@@ -368,6 +379,8 @@ func (jm *jobManager) finishForegroundRuntimeTimeout(run *runningJob, wait shell
 		ExitCode:            exitCode,
 		Output:              output,
 		Truncated:           truncated,
+		TotalBytes:          total,
+		DroppedBytes:        dropped,
 	}
 }
 

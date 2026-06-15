@@ -633,6 +633,84 @@ func TestShellRideWholeThresholdIs8KiB(t *testing.T) {
 	}
 }
 
+// TestShellResultReportsOutputBytes pins the legibility metadata: a handle
+// result reports total_bytes (lifetime output) so the agent knows how much
+// exists beyond the peek, and dropped_bytes=0 when nothing was evicted.
+func TestShellResultReportsOutputBytes(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000","max_wait_ms":5000}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID        string `json:"job_id"`
+		TotalBytes   int64  `json:"total_bytes"`
+		DroppedBytes int64  `json:"dropped_bytes"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Fatalf("9 KiB output returned no job_id; want a handle")
+	}
+	if out.TotalBytes < 9000 {
+		t.Fatalf("total_bytes = %d, want >= 9000 (lifetime output)", out.TotalBytes)
+	}
+	if out.DroppedBytes != 0 {
+		t.Fatalf("dropped_bytes = %d, want 0 (nothing evicted under the 8 MiB cap)", out.DroppedBytes)
+	}
+}
+
+// TestShellOutputStatus pins the self-describing window status: a small command
+// that rides whole is "complete"; a handle whose full log is retained but only
+// peeked is "windowed".
+func TestShellOutputStatus(t *testing.T) {
+	s := newTestSession(t)
+
+	r1 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"printf 'hi\n'","max_wait_ms":5000}`),
+	})
+	var o1 struct {
+		JobID        string `json:"job_id"`
+		OutputStatus string `json:"output_status"`
+	}
+	if err := json.Unmarshal([]byte(r1.Output), &o1); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, r1.Output)
+	}
+	if o1.JobID != "" {
+		t.Fatalf("small command got job_id=%q, want ephemeral", o1.JobID)
+	}
+	if o1.OutputStatus != "complete" {
+		t.Fatalf("output_status = %q, want complete", o1.OutputStatus)
+	}
+
+	r2 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000","max_wait_ms":5000}`),
+	})
+	var o2 struct {
+		JobID        string `json:"job_id"`
+		OutputStatus string `json:"output_status"`
+	}
+	if err := json.Unmarshal([]byte(r2.Output), &o2); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, r2.Output)
+	}
+	if o2.JobID == "" {
+		t.Fatalf("9 KiB output got no job_id, want a handle")
+	}
+	if o2.OutputStatus != "windowed" {
+		t.Fatalf("output_status = %q, want windowed", o2.OutputStatus)
+	}
+}
+
 // TestShellHandlePeekTailIsSmall pins the small-default-window rule: when
 // completed output becomes a handle, the inline result carries only a small
 // peek tail (shellDefaultTailBytes = 1 KiB), not the whole output — the full

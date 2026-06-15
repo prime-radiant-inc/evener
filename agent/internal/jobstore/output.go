@@ -106,6 +106,15 @@ func (o *OutputStore) Len() int64 {
 	return o.total
 }
 
+// RetainedStart returns the lifetime offset of byte 0 in the retained file:
+// the number of bytes permanently evicted off the head by the retention cap
+// (0 when nothing has been pruned).
+func (o *OutputStore) RetainedStart() int64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.retainedStart
+}
+
 // Tail returns the last maxBytes bytes of the log, the total byte count, and
 // whether the returned slice is a truncated tail of a larger log.
 func (o *OutputStore) Tail(maxBytes int) (buf []byte, total int64, truncated bool, err error) {

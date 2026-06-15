@@ -203,6 +203,9 @@ func marshalShellToolResult(res shellResult, maxChars int) (tool.TextResult, err
 	if !res.RunningInBackground || res.Output != "" {
 		out.Output = &res.Output
 		out.Truncated = &res.Truncated
+		out.TotalBytes = res.TotalBytes
+		out.DroppedBytes = res.DroppedBytes
+		out.OutputStatus = shellOutputStatus(res.TotalBytes, res.DroppedBytes, res.Truncated)
 	}
 	b, err := json.Marshal(out)
 	if err != nil {
@@ -233,13 +236,15 @@ func marshalShellToolResult(res shellResult, maxChars int) (tool.TextResult, err
 func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResult, error) {
 	falseVal := false
 	out := shellToolResult{
-		Type:      res.Type,
-		Status:    res.Status,
-		Reason:    shellStringPtrOrNil(res.Reason),
-		TimedOut:  res.TimedOut,
-		ExitCode:  res.ExitCode,
-		Output:    &res.Output,
-		Truncated: &falseVal,
+		Type:         res.Type,
+		Status:       res.Status,
+		Reason:       shellStringPtrOrNil(res.Reason),
+		TimedOut:     res.TimedOut,
+		ExitCode:     res.ExitCode,
+		Output:       &res.Output,
+		Truncated:    &falseVal,
+		TotalBytes:   res.TotalBytes,
+		DroppedBytes: res.DroppedBytes,
 	}
 
 	// Layer 1: ride-whole budget.
@@ -259,6 +264,7 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResu
 	if !embedExceeded && !charBoundExceeded {
 		// Ephemeral: complete output fits inline. Discard the delayed job.
 		_ = res.settle(false)
+		out.OutputStatus = shellOutputStatus(res.TotalBytes, res.DroppedBytes, false)
 		b, err := json.Marshal(out)
 		if err != nil {
 			return tool.TextResult{}, err
@@ -270,6 +276,7 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResu
 	// Keep: output cannot ride whole inline. Commit + finalize the delayed job.
 	jobID := res.settle(true)
 	out.JobID = jobID
+	out.OutputStatus = shellOutputStatus(res.TotalBytes, res.DroppedBytes, true)
 
 	// FullOutput (TOOL_CALL_END, for observers/hooks) carries the complete output;
 	// the durable job retains it too. The model sees only a small peek tail
@@ -295,6 +302,20 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResu
 		return tool.TextResult{}, err
 	}
 	return tool.TextResult{Output: string(pb), FullOutput: string(fullBytes)}, nil
+}
+
+// shellOutputStatus classifies an output window for the model: "complete" when
+// the whole log rode inline, "windowed" when the full log is retained but only
+// a slice was returned (page the rest via job_read_output), and "evicted" when
+// the oldest bytes were permanently dropped past the retention cap.
+func shellOutputStatus(total, dropped int64, truncated bool) string {
+	if dropped > 0 {
+		return "evicted"
+	}
+	if truncated {
+		return "windowed"
+	}
+	return "complete"
 }
 
 // tailString returns the last maxBytes bytes of s and whether it was truncated.
@@ -358,6 +379,9 @@ type shellToolResult struct {
 	ExitCode            *int    `json:"exit_code,omitempty"`
 	Output              *string `json:"output,omitempty"`
 	Truncated           *bool   `json:"truncated,omitempty"`
+	TotalBytes          int64   `json:"total_bytes,omitempty"`
+	DroppedBytes        int64   `json:"dropped_bytes,omitempty"`
+	OutputStatus        string  `json:"output_status,omitempty"`
 }
 
 func shellStringPtrOrNil(s string) *string {
