@@ -205,7 +205,7 @@ func marshalShellToolResult(res shellResult, maxChars int) (tool.TextResult, err
 		out.Truncated = &res.Truncated
 		out.TotalBytes = res.TotalBytes
 		out.DroppedBytes = res.DroppedBytes
-		out.OutputStatus = shellOutputStatus(res.TotalBytes, res.DroppedBytes, res.Truncated)
+		out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, res.Truncated)
 	}
 	b, err := json.Marshal(out)
 	if err != nil {
@@ -264,7 +264,7 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResu
 	if !embedExceeded && !charBoundExceeded {
 		// Ephemeral: complete output fits inline. Discard the delayed job.
 		_ = res.settle(false)
-		out.OutputStatus = shellOutputStatus(res.TotalBytes, res.DroppedBytes, false)
+		out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, false)
 		b, err := json.Marshal(out)
 		if err != nil {
 			return tool.TextResult{}, err
@@ -276,7 +276,7 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResu
 	// Keep: output cannot ride whole inline. Commit + finalize the delayed job.
 	jobID := res.settle(true)
 	out.JobID = jobID
-	out.OutputStatus = shellOutputStatus(res.TotalBytes, res.DroppedBytes, true)
+	out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, true)
 
 	// FullOutput (TOOL_CALL_END, for observers/hooks) carries the complete output;
 	// the durable job retains it too. The model sees only a small peek tail
@@ -304,11 +304,11 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResu
 	return tool.TextResult{Output: string(pb), FullOutput: string(fullBytes)}, nil
 }
 
-// shellOutputStatus classifies an output window for the model: "complete" when
+// outputWindowStatus classifies an output window for the model: "complete" when
 // the whole log rode inline, "windowed" when the full log is retained but only
 // a slice was returned (page the rest via job_read_output), and "evicted" when
 // the oldest bytes were permanently dropped past the retention cap.
-func shellOutputStatus(total, dropped int64, truncated bool) string {
+func outputWindowStatus(total, dropped int64, truncated bool) string {
 	if dropped > 0 {
 		return "evicted"
 	}

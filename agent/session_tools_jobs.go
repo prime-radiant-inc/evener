@@ -354,6 +354,8 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		Reason:       stringPtrOrNil(rec.Reason),
 		Content:      snap.Content,
 		TotalBytes:   snap.TotalBytes,
+		DroppedBytes: snap.DroppedBytes,
+		OutputStatus: outputWindowStatus(snap.TotalBytes, snap.DroppedBytes, snap.Truncated),
 		Truncated:    snap.Truncated,
 		ExitCode:     rec.ExitCode,
 		LastActivity: lastActivityProjection(rec),
@@ -374,12 +376,13 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 }
 
 type jobReadOutputSnapshot struct {
-	Manager    *jobManager
-	Record     *jobstore.JobRecord
-	Content    string
-	TotalBytes int64
-	Truncated  bool
-	Matches    []jobstore.Match
+	Manager      *jobManager
+	Record       *jobstore.JobRecord
+	Content      string
+	TotalBytes   int64
+	DroppedBytes int64
+	Truncated    bool
+	Matches      []jobstore.Match
 }
 
 // readJobOutputSnapshot reads jobID's snapshot from jm, retrying through the
@@ -401,7 +404,7 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, fallbackTarget *Session,
 			return jobReadOutputSnapshot{}, fallbackErr
 		}
 
-		content, totalBytes, truncated, err := jm.readJobWindow(jobID, readBytes, fromHead)
+		content, totalBytes, dropped, truncated, err := jm.readJobWindow(jobID, readBytes, fromHead)
 		if err != nil {
 			next, ok, fallbackErr := fallbackTarget.jobReadClosedStoreFallback(jm, err)
 			if ok {
@@ -444,12 +447,13 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, fallbackTarget *Session,
 		}
 
 		return jobReadOutputSnapshot{
-			Manager:    jm,
-			Record:     rec,
-			Content:    content,
-			TotalBytes: totalBytes,
-			Truncated:  truncated,
-			Matches:    matches,
+			Manager:      jm,
+			Record:       rec,
+			Content:      content,
+			TotalBytes:   totalBytes,
+			DroppedBytes: dropped,
+			Truncated:    truncated,
+			Matches:      matches,
 		}, nil
 	}
 }
@@ -460,7 +464,7 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, fallbackTarget *Session,
 // handle on the parent's jobManager), and there is no closed-store fallback
 // chain — a failed parent-side read is a real error.
 func (g *grantedJobRead) snapshot(readBytes int, fromHead bool, grepRE *regexp.Regexp) (jobReadOutputSnapshot, error) {
-	content, totalBytes, truncated, err := g.readWindow(readBytes, fromHead)
+	content, totalBytes, dropped, truncated, err := g.readWindow(readBytes, fromHead)
 	if err != nil {
 		return jobReadOutputSnapshot{}, err
 	}
@@ -472,11 +476,12 @@ func (g *grantedJobRead) snapshot(readBytes int, fromHead bool, grepRE *regexp.R
 		}
 	}
 	return jobReadOutputSnapshot{
-		Record:     g.record,
-		Content:    content,
-		TotalBytes: totalBytes,
-		Truncated:  truncated,
-		Matches:    matches,
+		Record:       g.record,
+		Content:      content,
+		TotalBytes:   totalBytes,
+		DroppedBytes: dropped,
+		Truncated:    truncated,
+		Matches:      matches,
 	}, nil
 }
 
@@ -625,6 +630,8 @@ type jobReadOutputResult struct {
 	Grep                   *string           `json:"grep,omitempty"`
 	Matches                *[]jobOutputMatch `json:"matches,omitempty"`
 	TotalBytes             int64             `json:"total_bytes"`
+	DroppedBytes           int64             `json:"dropped_bytes,omitempty"`
+	OutputStatus           string            `json:"output_status,omitempty"`
 	Truncated              bool              `json:"truncated"`
 	ExitCode               *int              `json:"exit_code"`
 	StructuredResult       any               `json:"structured_result,omitempty"`

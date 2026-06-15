@@ -662,12 +662,42 @@ func (jm *jobManager) readOutputHead(jobID string, headBytes int) (content strin
 // readJobWindow reads either the head or the tail of a job's retained output
 // depending on fromHead. When fromHead is true it delegates to readOutputHead,
 // otherwise to readOutput (tail). This is the single dispatch point that lets
-// callers pass a direction flag without knowing the underlying method names.
-func (jm *jobManager) readJobWindow(jobID string, bytes int, fromHead bool) (content string, total int64, truncated bool, err error) {
+// callers pass a direction flag without knowing the underlying method names. It
+// also reports dropped: the bytes permanently evicted off the head by retention.
+func (jm *jobManager) readJobWindow(jobID string, bytes int, fromHead bool) (content string, total int64, dropped int64, truncated bool, err error) {
 	if fromHead {
-		return jm.readOutputHead(jobID, bytes)
+		content, total, truncated, err = jm.readOutputHead(jobID, bytes)
+	} else {
+		content, total, truncated, err = jm.readOutput(jobID, bytes)
 	}
-	return jm.readOutput(jobID, bytes)
+	if err != nil {
+		return content, total, 0, truncated, err
+	}
+	dropped, err = jm.outputDropped(jobID)
+	return content, total, dropped, truncated, err
+}
+
+// outputDropped returns the number of bytes permanently evicted off the head of
+// jobID's output by the retention cap (0 when nothing has been pruned), for both
+// the live store and the closed-file fallback.
+func (jm *jobManager) outputDropped(jobID string) (int64, error) {
+	jm.mu.Lock()
+	run := jm.running[jobID]
+	jm.mu.Unlock()
+	if run != nil {
+		return run.output.RetainedStart(), nil
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		return 0, err
+	}
+	rec := recs[jobID]
+	if rec == nil {
+		return 0, fmt.Errorf("job %q not found", jobID)
+	}
+	path := jm.outputPathForJob(rec, jobID)
+	_, retainedStart, err := validatedOutputStatsForRecord(path, rec)
+	return retainedStart, err
 }
 
 func (jm *jobManager) appendJobOutput(jobID string, output *jobstore.OutputStore, b []byte) (int, error) {

@@ -1965,7 +1965,7 @@ func (jm *jobManager) watchReadGrantObserver(observerJobID string) (childSession
 // never touches parent Session state.
 type grantedJobRead struct {
 	record     *jobstore.JobRecord
-	readWindow func(bytes int, fromHead bool) (content string, total int64, truncated bool, err error)
+	readWindow func(bytes int, fromHead bool) (content string, total int64, dropped int64, truncated bool, err error)
 	grepOutput func(re *regexp.Regexp) ([]jobstore.Match, error)
 }
 
@@ -1993,7 +1993,7 @@ func (s *Session) lookupGrantedJobRead(observerSessionID, jobID string) (*grante
 	}
 	return &grantedJobRead{
 		record: cloneJobRecord(rec),
-		readWindow: func(bytes int, fromHead bool) (string, int64, bool, error) {
+		readWindow: func(bytes int, fromHead bool) (string, int64, int64, bool, error) {
 			return jm.readJobWindow(jobID, bytes, fromHead)
 		},
 		grepOutput: func(re *regexp.Regexp) ([]jobstore.Match, error) {

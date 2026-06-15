@@ -20,6 +20,51 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// TestJobReadOutputReportsStatus pins job_read_output legibility: a small read
+// window of a fully-retained log reports output_status="windowed" with
+// dropped_bytes=0, so the model knows the rest is reachable, not lost.
+func TestJobReadOutputReportsStatus(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"yes x | head -c 9000","max_wait_ms":5000}`),
+	})
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Fatalf("9 KiB output returned no job_id")
+	}
+
+	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "r1",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_bytes":500}`),
+	})
+	if readRes.IsError {
+		t.Fatalf("job_read_output returned error: %s", readRes.Output)
+	}
+	var ro struct {
+		TotalBytes   int64  `json:"total_bytes"`
+		DroppedBytes int64  `json:"dropped_bytes"`
+		OutputStatus string `json:"output_status"`
+	}
+	if err := json.Unmarshal([]byte(readRes.Output), &ro); err != nil {
+		t.Fatalf("unmarshal read: %v (output: %s)", err, readRes.Output)
+	}
+	if ro.OutputStatus != "windowed" {
+		t.Fatalf("output_status = %q, want windowed (total %d > shown, dropped %d)", ro.OutputStatus, ro.TotalBytes, ro.DroppedBytes)
+	}
+	if ro.DroppedBytes != 0 {
+		t.Fatalf("dropped_bytes = %d, want 0", ro.DroppedBytes)
+	}
+}
+
 func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 	s := newTestSession(t)
 
