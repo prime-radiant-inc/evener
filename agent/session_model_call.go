@@ -141,6 +141,11 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.
 		// Populate compaction metadata so checkpoint/summarize have session context.
 		s.contextMgr.Meta = s.buildCompactionMeta()
 
+		// Variant B (forced note): if a compaction is imminent, elicit + pin a
+		// must-keep note from the model BEFORE the fold, so erosion-prone facts are
+		// re-stamped verbatim rather than decaying through successive summaries.
+		s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, len(sys))
+
 		emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &historyTurns)
 		if err := s.strategy.ManageContext(ctx, &historyTurns, len(sys), emitFn); err != nil {
 			s.emit(events.EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
@@ -190,7 +195,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		histCopy := append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
 		emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
-		s.contextMgr.ForceCompact(ctx, &histCopy, emitFn)
+		s.contextMgr.ForceCompact(ctx, &histCopy, "", emitFn)
 		flushCompactionHooks()
 		s.mu.Lock()
 		s.history = histCopy

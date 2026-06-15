@@ -201,12 +201,15 @@ func RenderMessage(msg transcript.ChatMessage, width int, focused bool) string {
 	return ""
 }
 
+// SelectionPrefix marks the first line of the browse-mode selected message.
+const SelectionPrefix = "▶ "
+
 func RenderSelectedMessage(rendered string, focused bool) string {
 	if !focused || rendered == "" {
 		return rendered
 	}
 	lines := strings.Split(rendered, "\n")
-	lines[0] = "▶ " + lines[0]
+	lines[0] = SelectionPrefix + lines[0]
 	return strings.Join(lines, "\n")
 }
 

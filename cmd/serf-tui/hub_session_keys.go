@@ -180,9 +180,9 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "up", "down", "left", "right":
 			return m.updateSessionBrowseComposerKey(msg)
 		case "k":
-			m.session.viewport.ScrollUp(1)
+			m.moveBrowseSelection(-1)
 		case "j":
-			m.session.viewport.ScrollDown(1)
+			m.moveBrowseSelection(1)
 		case "pgup":
 			m.moveBrowsePage(-1)
 		case "pgdown":

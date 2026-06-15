@@ -203,6 +203,17 @@ type Session struct {
 	taskNudgeFired    bool // whether the "consider using task_list" nudge has fired
 	totalRounds       int  // cumulative tool rounds across all inputs
 
+	// self-compaction state (compact tool)
+	pinnedNote          string // note awaiting handoff at the next compaction (agent- or elicitor-authored); injected verbatim then cleared
+	pendingInstructions string // compaction_instructions awaiting the round-tail force
+	forceRequested      bool   // a compact tool call is pending this round
+	nudgedSinceCompact  bool   // warning-nudge latch; reset on any compaction
+
+	// elicitNoteFn overrides the note-elicitation call (tests inject a stub); nil
+	// uses contextMgr.ElicitNote (Variant B of the forced-note mechanism — see
+	// maybeElicitNoteBeforeCompaction).
+	elicitNoteFn func(context.Context, []schema.Turn) (string, error)
+
 	// stuck detection
 	loopDetectionCount int // how many times loop detection has fired
 	readOnlyStreak     int // consecutive rounds with only read-only tool calls

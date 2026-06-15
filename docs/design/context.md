@@ -68,6 +68,139 @@ passes internally, reporting combined usage in the response. This inflates
 skip `RecordInputTokens` entirely. The previous measurement remains valid; the next
 non-web-search response will establish a fresh baseline.
 
+## Self-Compaction (agent-invoked)
+
+Agents can compact their own context at a clean stopping point using the `compact`
+tool, rather than waiting for the automatic pressure-triggered layers.
+
+### The `compact` tool
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `note_to_self` | yes | Note handed back to the agent verbatim right after the compaction, then cleared. Empty string clears a pending note. |
+| `compaction_instructions` | no | Steers what the summary keeps vs. drops. |
+
+When only `note_to_self` is empty and no `compaction_instructions` are given, no
+compaction is scheduled — just the note is cleared. Otherwise a force-compaction is
+queued at the tool-round tail and the tool returns a prediction (not past-tense
+confirmation, since the compaction hasn't happened yet).
+
+### The note: a one-shot handoff across the compaction boundary
+
+The note is a message from the agent's *pre-compaction* self to its *post-compaction*
+self — not a sticky pin re-stamped forever. It is stored on the `Session` (`pinnedNote`
+field), persisted in `SessionMeta.PinnedNote` (`"pinned_note"` JSON key) so an
+un-consumed note survives resume, and restored on resume.
+
+At the next compaction `runPreCompactHook` injects the note **once** into the fresh
+post-compaction context as a visible `TurnSteering` turn:
+
+```
+Here's your note to yourself from before compaction:
+<note text>
+```
+
+and then **clears** the slot (`clearPinnedNote`). It is not re-stamped at future
+compactions: after injection it is ordinary context that folds naturally on the next
+cycle, like everything else. The slot reopening is what lets the next cycle capture a
+*fresh* note (see *Forced-note elicitation* below).
+
+The handoff turn is inserted after plugin `PreCompact` output and **before** the goal
+objective, so the goal objective remains the trailing (strongest-recency) steering turn
+that `safeCutoff` protects past the compaction boundary.
+
+This handoff model (rather than a forever-pin) is deliberate: it means the harness and
+the agent never fight over a sticky field, the agent's note is never silently
+overwritten, and the agent *sees* its own prior note as a message it can act on or
+re-issue. The trade-off: a fact is protected through the *next* summary, and persists
+across many compactions only if it keeps being re-noted or re-elicited each cycle —
+facts that drop out of the recent window are allowed to fade.
+
+### Agent-force path
+
+The `compact` tool calls `requestForceCompact(instructions)`, which sets a pending
+flag on the session. After the tool round drains, `applyPendingForceCompact` consumes
+the request and calls `Manager.ForceCompact(ctx, history, instructions, emitFn)`.
+This is the same `Manager` seam used by the `/compact` user command; passing non-empty
+`instructions` routes through `summarizeWithLLMSteered`, which replaces the default
+mandatory-sections prompt with the agent's directive.
+
+`ForceCompact` returns a `bool` indicating whether a summary turn was actually
+produced (false when there is no LLM client or the history is too short to summarize).
+
+### Warn nudge
+
+When pressure crosses `WarnThreshold` (0.75), `maybeNudgeSelfCompact` injects a
+one-shot steering nudge asking the agent to call `compact` at its next clean seam.
+The nudge is best-effort: a single large tool result can jump past `CheckpointThreshold`
+before the nudge fires. The automatic checkpoint and summary layers remain the
+guarantee. The latch resets on any compaction (force or automatic) so the nudge can
+fire again after the next compaction cycle.
+
+### Forced-note elicitation (on by default)
+
+The warn nudge only steers the agent — it can decline, or jump past the seam before
+acting. The forced-note mechanism is the harness's own guarantee that the
+hardest-to-recover details survive a compaction even when the agent never calls
+`compact`. It is **always on** (there is no opt-out flag — it is cheap and gated tightly).
+
+When a compaction is imminent — pressure at or above `CheckpointThreshold` — and **no
+note is already set**, `maybeElicitNoteBeforeCompaction` (in
+`agent/session_self_compact.go`) runs *before* `ManageContext` folds the history. It
+asks the model, via `Manager.ElicitNote`, to enumerate everything that must survive
+verbatim, with the prompt explicitly targeting the classes a lossy summary erodes:
+opaque tokens, IDs, hashes, version tags, exact numbers and thresholds,
+file/column/endpoint names. The reply is set as the note (`setPinnedNote`), so the same
+compaction's `runPreCompactHook` hands it off (and then clears it).
+
+**Scope — only what is about to be lost.** The elicitor renders just the prefix the
+compaction will fold (`history[:len-PreserveRecentTurns]`); the most-recent preserved
+turns survive verbatim and need no rescuing. The rendering (`renderHistoryForElicit`)
+includes tool-call arguments and **full tool-result content** — in a coding agent the
+exact values worth keeping (tokens, IDs, paths, command output) live in tool output,
+so a `Message.Text()`-only flatten would be blind to them. When the foldable prefix
+exceeds the 80K-char budget it is **tail-truncated** (the turns nearest the boundary,
+i.e. the freshest about-to-be-lost facts, are kept). The call uses the summarization
+model with the same fallback loop as the summarizer.
+
+**Skip-when-set is the latch.** Because elicitation skips whenever a note is already
+present, the agent's own `compact`-tool note is never overwritten, and a turn stuck
+above the checkpoint does not re-fire the side LLM call every round. The slot reopens
+only when the compaction consumes the note, so the *next* cycle elicits a fresh note —
+this is what keeps exact strings from decaying across *successive* summaries (the
+erosion case the manual note alone doesn't cover, since the agent rarely re-issues it).
+
+It is best-effort and never blocks compaction:
+
+- No context manager → skip silently.
+- A note is already set (agent- or elicitor-authored) → skip; the existing note wins.
+- Pressure below `CheckpointThreshold`, or history ≤ `PreserveRecentTurns` (nothing
+  foldable yet) → nothing to capture, skip.
+- No LLM client available (`HasClient()` false) and no injected `elicitNoteFn` → skip.
+- Elicitation call errors → emit an `EventWarning` and let the normal compaction proceed.
+- Empty reply → leave the slot empty.
+
+Wiring: `prepareModelRequest` (in `agent/session_model_call.go`) calls
+`maybeElicitNoteBeforeCompaction` inside the `s.strategy != nil` block, immediately
+before the compaction hooks run, so the freshly set note is in place when the handoff
+happens. A test seam, `Session.elicitNoteFn`, overrides the elicitor for deterministic
+unit tests; production leaves it nil and falls back to `Manager.ElicitNote`.
+
+**Limit — secrets.** A value framed as a credential (e.g. `DEPLOY_TOKEN=…` in a `.env`
+dump) is **redacted by the model** during elicitation: it sees the tool output but
+refuses to echo the secret verbatim. The mechanism rescues non-secret opaque
+identifiers (build/artifact ids, commit hashes, version tags, request ids, exact
+numbers), which is where erosion actually bites; secrets should not be relied on to
+survive compaction this way.
+
+Validation: a deterministic unit test (`renderHistoryForElicit` captures tool content
+and keeps the recent tail), an eval that the **real model** captures an opaque id which
+lives only in a tool result (`contextmgr.TestElicitNoteCapturesToolResult`), and a live
+full-loop test against a real OAuth `gpt-5.5` session — two turns, a real compaction
+folding ~130K→40 tokens, with no `compact` call by the agent — that the harness elicits
+a note the compaction hands back carrying the folded id verbatim
+(`agent/forced_note_live_test.go`, `//go:build eval`).
+
 ## Compaction Layers
 
 Two layers, applied progressively as pressure rises:
@@ -75,7 +208,7 @@ Two layers, applied progressively as pressure rises:
 | Layer | Threshold | Method | Destructiveness |
 |-------|-----------|--------|-----------------|
 | **Checkpoint** | >= 80% | Deterministic state snapshot | Replaces old history with structured summary |
-| **LLM Summarize** | >= 90% | LLM-generated narrative summary | Replaces old history with LLM prose |
+| **LLM Summarize** | >= 95% | LLM-generated narrative summary | Replaces old history with LLM prose |
 
 Both layers preserve the most recent `PreserveRecentTurns` turns (default 6) to
 maintain conversation coherence.
@@ -131,15 +264,26 @@ The checkpoint turn uses `TurnCheckpoint` kind and `llm.RoleUser` role.
 ### LLM Summarize (Layer 2)
 
 Calls the provider's cheap model to generate a narrative summary. Only fires when
-checkpoint alone doesn't free enough space (>= 90% after checkpoint). The prompt is
-capped at ~50K chars to fit within cheap model context windows.
+checkpoint alone doesn't free enough space (>= 95% after checkpoint). The prompt is
+capped at ~80K chars to fit within cheap model context windows.
 
 The summary turn uses `TurnSummary` kind and `llm.RoleUser` role.
 
 ## ForceCompact
 
-User-initiated compaction (`/compact` command) runs both layers unconditionally,
-regardless of current pressure. Uses the same checkpoint and summarize logic.
+`Manager.ForceCompact(ctx, history, instructions, emitFn) bool` runs both compaction
+layers unconditionally, regardless of current pressure. It returns `true` if an LLM
+summary turn was actually produced, `false` when there is no client or the history
+is too short.
+
+The `instructions` parameter (empty string for default behavior) is forwarded to
+`summarizeWithLLMSteered`, which replaces the default mandatory-sections prompt with
+the caller's directive. This is how agent-invoked self-compaction steers the summary.
+
+`ForceCompact` is used by two callers:
+- **`/compact` user command** (`Session.Compact`): passes `instructions = ""`.
+- **`compact` tool** (`applyPendingForceCompact`): passes the agent's
+  `compaction_instructions` string (may be empty).
 
 **Transcript callbacks**: Both `MaybeCompact` and `ForceCompact` fire
 `OnCompactionTurn` for checkpoint and summary turns. The session wires this to
@@ -194,7 +338,11 @@ estimation uses the stale window size.
 
 | Field | Default | Description |
 |-------|---------|-------------|
+| `WarnThreshold` | 0.75 | Pressure at which the agent is nudged to self-compact (best-effort, one-shot per compaction cycle) |
 | `CheckpointThreshold` | 0.80 | Pressure threshold for deterministic checkpoint |
-| `SummarizeThreshold` | 0.90 | Pressure threshold for LLM summarization |
+| `SummarizeThreshold` | 0.95 | Pressure threshold for LLM summarization |
 | `PreserveRecentTurns` | 6 | Turns kept intact during compaction |
-| `CompactionThresholdScale` | 1.0 | Multiplier for all thresholds (for testing) |
+| `CompactionThresholdScale` | 1.0 | Multiplier for all thresholds (test-only; clamped to a 0.20 floor) |
+
+The note-elicitation guarantee is always on; it is gated tightly enough (skip unless a
+compaction is imminent *and* no note is already set) that no opt-out flag is warranted.

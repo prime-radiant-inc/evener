@@ -232,6 +232,24 @@ func (m hubModel) renderSessionMainBody() string {
 func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 	title := firstNonEmptyString(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
 	topBar = truncateSessionLine("serf / session / "+title, m.sessionHeaderWidth())
+
+	// Footer is computed before the overlay so the command palette can window
+	// itself to the rows left between the anchored TopBar and Footer (mirrors the
+	// dashboard path); the footer never depends on the overlay content.
+	switch {
+	case m.transcriptView != nil:
+		footer = tuiprim.ActionBarForWidth(m.width, "esc/i/q: return to chat", "ctrl+o: dashboard")
+	case m.session.scrollMode:
+		keys := []string{"esc/i/q: compose", "ctrl+t: expand tools"}
+		if m.detail.Capabilities.Fork {
+			keys = append(keys, "f: fork selected user turn")
+		}
+		keys = append(keys, "ctrl+o: dashboard")
+		footer = tuiprim.ActionBarForWidth(m.width, keys...) + "\n" + m.sessionComposerPanel().View()
+	default:
+		footer = m.sessionComposerPanel().View()
+	}
+
 	var overlay strings.Builder
 	if m.sessionModelPicker != nil {
 		overlay.WriteString(m.sessionModelPicker.View())
@@ -250,7 +268,7 @@ func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 		overlay.WriteString("\n\n")
 	}
 	if m.commandPalette != nil {
-		overlay.WriteString(m.commandPalette.View())
+		overlay.WriteString(m.commandPalette.ViewWithMaxHeight(paletteOverlayHeight(m.height, topBar, "", footer)))
 		overlay.WriteString("\n\n")
 	}
 	if m.launchOverridesModal != nil {
@@ -262,21 +280,6 @@ func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 		overlay.WriteString("\n\n")
 	}
 	overlayText = overlay.String()
-	var kbdFooter string
-	switch {
-	case m.transcriptView != nil:
-		kbdFooter = tuiprim.ActionBarForWidth(m.width, "esc/i/q: return to chat", "ctrl+o: dashboard")
-	case m.session.scrollMode:
-		keys := []string{"esc/i/q: compose", "ctrl+t: expand tools"}
-		if m.detail.Capabilities.Fork {
-			keys = append(keys, "f: fork selected user turn")
-		}
-		keys = append(keys, "ctrl+o: dashboard")
-		kbdFooter = tuiprim.ActionBarForWidth(m.width, keys...) + "\n" + m.sessionComposerPanel().View()
-	default:
-		kbdFooter = m.sessionComposerPanel().View()
-	}
-	footer = kbdFooter
 	return topBar, overlayText, footer
 }
 

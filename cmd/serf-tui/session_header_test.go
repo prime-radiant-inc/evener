@@ -59,7 +59,7 @@ func TestSessionHeaderShowsRichContextWhenWindowKnown(t *testing.T) {
 		width: 200,
 	}
 	got := strings.Join(rich.sessionHeaderLines(), "\n")
-	if !strings.Contains(got, "ctx 46k/200k (23%, 134k to compact)") {
+	if !strings.Contains(got, "ctx 46k/200k (23%, 144k to compact)") {
 		t.Errorf("rich ctx fragment missing in meta strip:\n%s", got)
 	}
 
