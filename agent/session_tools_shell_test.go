@@ -60,6 +60,42 @@ func TestPaginateDirEntries(t *testing.T) {
 	}
 }
 
+func TestPaginateDirEntriesStaysUnderToolCap(t *testing.T) {
+	// list_dir's tool-output cap (registry defaultToolLimit) — the marshalled page
+	// must stay under it so the generic char truncator never guts the entries array.
+	const toolCap = 20_000
+
+	// A large directory of realistically-named entries whose full listing would
+	// blow past the cap many times over.
+	var entries []execenv.DirEntry
+	for i := 0; i < 5000; i++ {
+		entries = append(entries, execenv.DirEntry{Name: "some-package-binary-name-" + strings.Repeat("x", 12), Size: 12345})
+	}
+
+	// Even with no caller limit (the strict-zero default), the page is bounded by a
+	// record budget: returned < total, truncated true, and at least one entry.
+	r := paginateDirEntries("/usr/bin", entries, 0, 0)
+	if r.Total != 5000 {
+		t.Fatalf("total = %d, want 5000", r.Total)
+	}
+	if !r.Truncated || r.Returned >= r.Total || r.Returned == 0 {
+		t.Fatalf("budget-bounded page = {returned:%d total:%d truncated:%v}, want a bounded non-empty prefix", r.Returned, r.Total, r.Truncated)
+	}
+	b, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(b) > toolCap {
+		t.Fatalf("marshalled page is %d chars, exceeds the %d tool cap — would be middle-truncated", len(b), toolCap)
+	}
+
+	// Paging from the returned offset advances through the directory.
+	next := paginateDirEntries("/usr/bin", entries, r.Returned, 0)
+	if next.Offset != r.Returned || next.Returned == 0 || next.Entries[0].Name == "" {
+		t.Fatalf("second page = {offset:%d returned:%d}, want continuation", next.Offset, next.Returned)
+	}
+}
+
 type bufferedShellEnv struct {
 	agenttest.FakeEnv
 	timeoutMS int

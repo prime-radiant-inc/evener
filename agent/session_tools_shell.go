@@ -13,10 +13,18 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// defaultListDirLimit caps how many entries a list_dir call returns when the
-// caller does not specify a limit, so a listing of a huge directory cannot blow
-// past the tool-output size cap with no recovery handle.
-const defaultListDirLimit = 500
+const (
+	// defaultListDirLimit caps how many entries a list_dir call returns when the
+	// caller gives no limit. The char budget below usually binds first on a large
+	// directory; this is the ceiling for a directory of very short names.
+	defaultListDirLimit = 1000
+	// listDirCharBudget bounds the marshalled entries so the result stays well under
+	// list_dir's tool-output char cap (registry defaultToolLimit, 20k) and never
+	// trips the generic middle-truncator, which would gut the entries array into
+	// invalid JSON. list_dir is ls: truncation drops whole trailing records, in
+	// record units, with an accurate count — not characters from the middle.
+	listDirCharBudget = 16_000
+)
 
 // listDirResult is the paginated list_dir wire shape: a bounded page of entries
 // plus the totals an agent needs to decide whether to page further or narrow the
@@ -30,9 +38,18 @@ type listDirResult struct {
 	Truncated bool               `json:"truncated"`
 }
 
-// paginateDirEntries slices entries into the [offset, offset+limit) page (limit
-// <= 0 applies defaultListDirLimit, matching the strict-schema unset-as-zero
-// convention) and reports the totals. The page is always a non-nil slice so it
+// dirEntrySize over-estimates an entry's pretty-printed JSON size (the
+// MarshalIndent scaffold for name/is_dir/size plus the name) so the running
+// budget keeps the real marshalled result under the cap.
+func dirEntrySize(e execenv.DirEntry) int {
+	return len(e.Name) + 64
+}
+
+// paginateDirEntries returns the entries starting at offset as a page bounded by
+// both limit (entry count; <= 0 applies defaultListDirLimit, matching the
+// strict-schema unset-as-zero convention) and listDirCharBudget (marshalled
+// size), whichever binds first, and reports the totals. At least one entry is
+// always returned when any remain past offset. The page is a non-nil slice so it
 // serializes as [] rather than null when empty.
 func paginateDirEntries(path string, entries []execenv.DirEntry, offset, limit int) listDirResult {
 	if offset < 0 {
@@ -46,13 +63,17 @@ func paginateDirEntries(path string, entries []execenv.DirEntry, offset, limit i
 	if start > total {
 		start = total
 	}
-	end := start + limit
-	if end > total {
-		end = total
-	}
-	page := entries[start:end]
-	if len(page) == 0 {
-		page = []execenv.DirEntry{}
+	page := make([]execenv.DirEntry, 0, limit)
+	used := 0
+	end := start
+	for end < total && len(page) < limit {
+		sz := dirEntrySize(entries[end])
+		if len(page) > 0 && used+sz > listDirCharBudget {
+			break
+		}
+		page = append(page, entries[end])
+		used += sz
+		end++
 	}
 	return listDirResult{
 		Path:      path,
