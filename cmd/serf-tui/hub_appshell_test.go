@@ -18,6 +18,52 @@ func TestHubModelAppShellKeepsDashboardFooterUnderPaletteOverlay(t *testing.T) {
 	requireOrderedText(t, got, "SERF LIVE", "Command palette", "dashboard")
 }
 
+func TestHubModelAppShellBoundsPaletteOverlayToShortHeight(t *testing.T) {
+	m := sampleHubModel(80)
+	m.height = 12
+	m.openCommandPalette()
+
+	got := m.View()
+	if !strings.Contains(got, "SERF LIVE") {
+		t.Fatalf("short-height palette frame lost the SERF LIVE header:\n%s", got)
+	}
+	if !strings.Contains(got, "dashboard") {
+		t.Fatalf("short-height palette frame lost the dashboard footer hint:\n%s", got)
+	}
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+	if len(lines) > m.height {
+		t.Fatalf("rendered %d lines, exceeds height %d:\n%s", len(lines), m.height, got)
+	}
+}
+
+func TestHubModelAppShellKeepsPaletteSelectionVisibleWhenWindowed(t *testing.T) {
+	m := sampleHubModel(80)
+	m.height = 20
+	m.openCommandPalette()
+
+	// Drive the cursor to the last entry; on a short pane the windowed
+	// overlay must still render the selected row.
+	filtered := m.commandPalette.panel.Filtered()
+	for i := 0; i < len(filtered); i++ {
+		updated, _ := m.commandPalette.Update(tea.KeyMsg{Type: tea.KeyDown})
+		palette := updated.(commandPalette)
+		m.commandPalette = &palette
+	}
+	selected := filtered[len(filtered)-1].Label
+
+	got := m.View()
+	if !strings.Contains(got, "> ") {
+		t.Fatalf("windowed palette dropped the selection cursor:\n%s", got)
+	}
+	if !strings.Contains(got, selected) {
+		t.Fatalf("windowed palette dropped selected entry %q:\n%s", selected, got)
+	}
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+	if len(lines) > m.height {
+		t.Fatalf("rendered %d lines, exceeds height %d:\n%s", len(lines), m.height, got)
+	}
+}
+
 func TestHubModelAppShellSessionTopBarAndComposerRegion(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgAssistant, Text: "Ready for shell work."}}

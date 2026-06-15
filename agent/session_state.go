@@ -64,6 +64,7 @@ func (s *Session) Meta() schema.SessionMeta {
 		ForkLabel:       s.fork.label,
 		IsSubagent:      isSubagent,
 		Goal:            s.goalSnapshotForMeta(),
+		PinnedNote:      s.pinnedNote,
 	}
 }
 

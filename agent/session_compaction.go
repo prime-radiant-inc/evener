@@ -28,7 +28,7 @@ func (s *Session) Compact(ctx context.Context) error {
 	s.mu.Unlock()
 
 	emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
-	s.contextMgr.ForceCompact(ctx, &histCopy, emitFn)
+	s.contextMgr.ForceCompact(ctx, &histCopy, "", emitFn)
 	flushCompactionHooks()
 
 	s.mu.Lock()
@@ -37,6 +37,14 @@ func (s *Session) Compact(ctx context.Context) error {
 
 	s.maybeAutoSave()
 	return nil
+}
+
+// noteHandoffPrefix frames the agent's note as a message from its pre-compaction
+// self when it is injected into the fresh post-compaction context.
+const noteHandoffPrefix = "Here's your note to yourself from before compaction:"
+
+func renderNoteHandoff(note string) string {
+	return noteHandoffPrefix + "\n" + note
 }
 
 type steeringTurnRecord struct {
@@ -51,6 +59,9 @@ func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn
 		if kind == events.EventContextCompaction && !preCompactRan {
 			preCompactRan = true
 			pendingSteering = append(pendingSteering, s.runPreCompactHook(ctx, history)...)
+			s.mu.Lock()
+			s.nudgedSinceCompact = false // reset nudge latch on ANY compaction
+			s.mu.Unlock()
 		}
 		s.emit(kind, data)
 	}
@@ -80,6 +91,10 @@ func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn)
 		for _, m := range compactResult.UserMessages {
 			s.deliverHookUserMessage(m)
 		}
+	}
+	if note := s.PinnedNote(); note != "" {
+		messages = append(messages, renderNoteHandoff(note))
+		s.clearPinnedNote() // one-shot handoff: consumed by this compaction, not re-stamped
 	}
 	messages = append(messages, s.goalCompactionSteering()...)
 	return appendSteeringMessagesToHistory(history, messages)

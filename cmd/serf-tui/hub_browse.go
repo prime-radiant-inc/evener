@@ -86,6 +86,60 @@ func (m *hubModel) moveBrowsePage(direction int) {
 	m.session.viewport.ScrollDown(step)
 }
 
+// moveBrowseSelection moves the browse cursor to the next renderable message in
+// the given direction (skipping ones that render empty) and scrolls the viewport
+// so the newly-selected turn stays visible. Moving the selection is the only way
+// to reach a user turn to fork; f forks the selected user turn. At either end the
+// selection is left unchanged.
+func (m *hubModel) moveBrowseSelection(direction int) {
+	if len(m.session.messages) == 0 {
+		m.browseSelected = -1
+		return
+	}
+	idx := m.browseSelected
+	if idx < 0 || idx >= len(m.session.messages) {
+		idx = m.lastBrowseMessageIndex()
+	}
+	width := max(m.width, 80)
+	for {
+		idx += direction
+		if idx < 0 || idx >= len(m.session.messages) {
+			return // hit an end — keep the current selection
+		}
+		if msgrender.RenderMessage(m.session.messages[idx], width, false) != "" {
+			m.browseSelected = idx
+			m.scrollBrowseSelectionIntoView()
+			return
+		}
+	}
+}
+
+// scrollBrowseSelectionIntoView re-syncs the body (so the ▶ cursor sits on the
+// new selection) and scrolls the viewport so that cursor line is visible.
+func (m *hubModel) scrollBrowseSelectionIntoView() {
+	m.syncSessionViewport()
+	height := m.session.viewport.Height
+	if height < 1 {
+		return
+	}
+	cursor := -1
+	for i, line := range strings.Split(m.renderSessionMainBody(), "\n") {
+		if strings.HasPrefix(line, msgrender.SelectionPrefix) {
+			cursor = i
+			break
+		}
+	}
+	if cursor < 0 {
+		return
+	}
+	switch top := m.session.viewport.YOffset; {
+	case cursor < top:
+		m.session.viewport.SetYOffset(cursor)
+	case cursor >= top+height:
+		m.session.viewport.SetYOffset(cursor - height + 1)
+	}
+}
+
 func (m hubModel) selectedBrowseMessage() (int, transcript.ChatMessage, bool) {
 	if m.browseSelected < 0 || m.browseSelected >= len(m.session.messages) {
 		return -1, transcript.ChatMessage{}, false

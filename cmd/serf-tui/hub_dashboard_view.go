@@ -30,11 +30,13 @@ func (m hubModel) dashboardView() string {
 		b.WriteString("\n\n")
 	}
 	if m.commandPalette != nil {
+		footer := tuiprim.ActionBarForWidth(m.width, "up/down select", "enter open/toggle", "n new", "/ palette", "ctrl+o dashboard", "q quit")
+		overlayHeight := paletteOverlayHeight(m.height, topBar, b.String(), footer)
 		return tuiprim.AppShell{
 			TopBar:  topBar,
 			Body:    b.String(),
-			Overlay: m.commandPalette.View(),
-			Footer:  tuiprim.ActionBarForWidth(m.width, "up/down select", "enter open/toggle", "n new", "/ palette", "ctrl+o dashboard", "q quit"),
+			Overlay: m.commandPalette.ViewWithMaxHeight(overlayHeight),
+			Footer:  footer,
 			Height:  m.height,
 		}.View()
 	}
@@ -105,6 +107,22 @@ func (m hubModel) dashboardView() string {
 		Footer: footer,
 		Height: m.height,
 	}.View()
+}
+
+// paletteOverlayHeight returns the rows available for the command-palette
+// overlay between the anchored TopBar and Footer, mirroring dashboardRowLimit so
+// the overlay windows itself instead of overflowing a short pane. A zero or
+// negative total height means "unbounded" and yields 0.
+func paletteOverlayHeight(totalHeight int, topBar, bodyPrefix, footer string) int {
+	if totalHeight <= 0 {
+		return 0
+	}
+	height := sessionShellBodyHeight(totalHeight, topBar, "", footer)
+	height -= tuitext.ShellSectionLineCount(bodyPrefix)
+	if height < 1 {
+		return 1
+	}
+	return height
 }
 
 func (m hubModel) dashboardUsesWideLayout() bool {

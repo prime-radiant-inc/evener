@@ -54,8 +54,12 @@ type Manager struct {
 	// maskObservations/clearThinking directly.
 	ObservationMaskThreshold float64
 	ThinkingClearThreshold   float64
-	CheckpointThreshold      float64
-	SummarizeThreshold       float64
+	// WarnThreshold is the pressure fraction at which the Session nudges the
+	// agent to self-compact at its next clean seam (best-effort; the checkpoint
+	// and summary layers remain the guarantee).
+	WarnThreshold       float64
+	CheckpointThreshold float64
+	SummarizeThreshold  float64
 
 	PreserveRecentTurns int
 
@@ -75,8 +79,9 @@ func NewManager(profile *provider.Profile, client *llm.Client) *Manager {
 		client:                   client,
 		ObservationMaskThreshold: 0.60,
 		ThinkingClearThreshold:   0.70,
+		WarnThreshold:            0.75,
 		CheckpointThreshold:      0.80,
-		SummarizeThreshold:       0.90,
+		SummarizeThreshold:       0.95,
 		PreserveRecentTurns:      6,
 	}
 }
@@ -212,6 +217,7 @@ func ApplyThresholdScale(cm *Manager, scale float64) {
 		}
 		cm.ObservationMaskThreshold = clamp(cm.ObservationMaskThreshold * scale)
 		cm.ThinkingClearThreshold = clamp(cm.ThinkingClearThreshold * scale)
+		cm.WarnThreshold = clamp(cm.WarnThreshold * scale)
 		cm.CheckpointThreshold = clamp(cm.CheckpointThreshold * scale)
 		cm.SummarizeThreshold = clamp(cm.SummarizeThreshold * scale)
 	}
@@ -364,12 +370,15 @@ func (cm *Manager) MaybeCompact(
 }
 
 // ForceCompact runs all compaction layers unconditionally, regardless of context pressure.
-// Used for user-initiated compaction (e.g. /compact command).
+// Used for user-initiated compaction (e.g. /compact command). instructions is forwarded
+// to the LLM summarization layer; pass "" for default behavior. Returns true if a summary
+// was actually generated (false when there is no client or the history is too short to summarize).
 func (cm *Manager) ForceCompact(
 	ctx context.Context,
 	history *[]schema.Turn,
+	instructions string,
 	emitFn func(events.EventKind, events.EventData),
-) {
+) (summarized bool) {
 	// Reset token measurement so inter-layer estimates use char/4.
 	cm.mu.Lock()
 	cm.lastInputTokens = 0
@@ -396,12 +405,14 @@ func (cm *Manager) ForceCompact(
 	if cm.client != nil {
 		turnsBefore = len(*history)
 		before = estimateTokens(*history)
-		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
+		lenBefore := len(*history)
+		result, err := cm.summarizeWithLLMSteered(ctx, *history, cm.PreserveRecentTurns, instructions)
 		if err != nil {
 			emitFn(events.EventWarning, events.WarningData{
 				Message: "LLM summarization failed: " + err.Error(),
 			})
 		} else {
+			summarized = len(result) != lenBefore
 			*history = result
 			after := estimateTokens(*history)
 			emitFn(events.EventContextCompaction, events.ContextCompactionData{
@@ -422,6 +433,7 @@ func (cm *Manager) ForceCompact(
 	cm.lastInputTokens = 0
 	cm.historyLenAtMeasure = 0
 	cm.mu.Unlock()
+	return summarized
 }
 
 // --- Observation masking (Layer 1) ---
@@ -1011,10 +1023,204 @@ func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
 	}
 }
 
+// defaultSummaryPrefix is the instruction block used when no caller instructions
+// are provided. It mandates seven specific sections and directs the LLM to
+// err on the side of verbosity.
+var defaultSummaryPrefix = `You are performing a CONTEXT CHECKPOINT COMPACTION. This session is being continued from a previous conversation that ran out of context. Create a detailed handoff summary that another instance of yourself will use to seamlessly continue the work.
+
+Your summary MUST include ALL of the following sections:
+
+## Conversation Timeline
+Reproduce user messages and agent replies in chronological, interleaved order. Preserve user messages verbatim. Summarize agent replies only when needed for brevity, but keep commitments, decisions, and final answers clear.
+
+## Progress
+What has been accomplished so far. Be specific about:
+- Files created or modified (full paths)
+- Specific changes made to each file
+- Tests written or run and their results
+- Commands executed and their outcomes
+
+## Key Decisions
+Important decisions made during the session and why. Include:
+- Architecture or design choices
+- Trade-offs considered
+- User preferences or constraints discovered
+
+## Current State
+Precisely what was being worked on when context ran out:
+- What file was being edited
+- What problem was being debugged
+- What test was failing
+
+## Pending Work
+Clear, actionable next steps that remain. Be specific enough that the next instance can immediately start working.
+
+## Analytical Findings
+Specific technical discoveries made during the session:
+- What algorithms, approaches, or parameter values were found to work
+- What debugging insights were gained (root causes, validated hypotheses)
+- What code patterns, data structures, or API behaviors were discovered
+- Include specific values, numbers, and names — not vague summaries
+
+## Critical Context
+Any data, file paths, variable names, error messages, API details, or other specific information needed to continue. Focus on information that CANNOT be re-derived from reading the codebase.
+
+Be thorough and structured. Err on the side of including too much rather than too little — lost context is expensive, extra tokens are cheap.
+
+`
+
+// buildSummaryPrompt constructs the full LLM prompt for context compaction.
+// When instructions are non-empty the prompt is instruction-led: the
+// mandatory-7-sections block is replaced by the caller's directive.
+// When instructions are empty the default prompt is used unchanged.
+func buildSummaryPrompt(historyText, instructions string) string {
+	if instructions != "" {
+		return `You are performing a CONTEXT CHECKPOINT COMPACTION for an agent continuing its own work.
+
+## CALLER INSTRUCTIONS (these take precedence)
+` + instructions + `
+
+Follow the caller instructions above when deciding what to preserve verbatim and what to drop or condense. Where they conflict with the general guidance below, the caller instructions win. Still produce a coherent handoff: keep decisions, current state, and actionable next steps. Do not invent content.
+
+` + historyText
+	}
+	return defaultSummaryPrefix + historyText
+}
+
+// noteElicitationPrompt asks the model, at compaction time, to enumerate the
+// details that must survive verbatim — explicitly targeting the kinds a lossy
+// summary erodes (opaque tokens, exact numbers, hashes, names). Used by the
+// forced-note-at-compaction mechanism: the reply is pinned as the note before the
+// compaction folds the history, so those details are re-stamped verbatim rather
+// than decaying through successive summaries.
+const noteElicitationPrompt = `Your conversation context is about to be COMPACTED — most of it will be replaced by a lossy summary. Before that happens, list everything that MUST survive VERBATIM for the work to continue.
+
+Focus especially on details a summary tends to drop or paraphrase: exact tokens, IDs, hashes, version tags, exact numbers and thresholds, file/column/endpoint names, and specific decisions. Preserve exact strings — do not abbreviate or round.
+
+Output a concise bullet list of the must-keep items, nothing else.`
+
+// HasClient reports whether an LLM client is available (note elicitation and LLM
+// summarization both require one).
+func (cm *Manager) HasClient() bool { return cm.client != nil }
+
+// noteElicitChars caps the history rendered into the elicitation prompt.
+const noteElicitChars = 80_000
+
+// ElicitNote asks the model to enumerate the must-survive-verbatim details from
+// the given history, for pinning as a note before a compaction (Variant B of the
+// forced-note-at-compaction mechanism). The caller passes the prefix the
+// compaction is about to fold (the recent preserved turns survive verbatim and
+// need no rescuing). Returns the model's bullet list. Falls back across the
+// configured summarization models on transient errors, like the summarizer.
+func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn) (string, error) {
+	if cm.client == nil {
+		return "", errors.New("note elicitation requires an LLM client")
+	}
+	prof := cm.currentProfile()
+	routes := summarizationModels(prof)
+	if len(routes) == 0 {
+		return "", errors.New("no model available for note elicitation")
+	}
+	prompt := noteElicitationPrompt + "\n\n--- CONVERSATION SO FAR ---\n" + renderHistoryForElicit(history, noteElicitChars)
+	var resp llm.Response
+	var lastErr error
+	for _, route := range routes {
+		req := llm.Request{
+			Model:    route.model,
+			Provider: route.provider,
+			Messages: []llm.Message{llm.User(prompt)},
+		}
+		resp, lastErr = cm.client.Complete(ctx, req)
+		if lastErr == nil {
+			break
+		}
+		if route != routes[len(routes)-1] && !shouldFallbackSummarizationModel(ctx, lastErr) {
+			break
+		}
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return strings.TrimSpace(resp.Text()), nil
+}
+
+// renderHistoryForElicit flattens turns into a plain-text transcript for the
+// note-elicitation prompt, capped at maxChars and keeping the MOST RECENT content
+// (it walks from the tail). Unlike the summarizer's rendering it includes
+// tool-call arguments and FULL, untruncated tool-result content: the elicitor's
+// whole job is to recover exact opaque values (tokens, IDs, hashes, paths) that
+// in a coding agent live in tool output, so per-result truncation would defeat
+// it — the maxChars budget is what bounds total size.
+func renderHistoryForElicit(history []schema.Turn, maxChars int) string {
+	var parts []string
+	total := 0
+	for i := len(history) - 1; i >= 0; i-- {
+		s := renderTurnForElicit(history[i])
+		if s == "" {
+			continue
+		}
+		if total+len(s) > maxChars {
+			if rem := maxChars - total; rem > 0 {
+				parts = append(parts, "[... earlier history truncated ...]\n"+s[len(s)-rem:])
+			}
+			break
+		}
+		parts = append(parts, s)
+		total += len(s)
+	}
+	// parts were collected tail-first; reverse to chronological order.
+	for l, r := 0, len(parts)-1; l < r; l, r = l+1, r-1 {
+		parts[l], parts[r] = parts[r], parts[l]
+	}
+	return strings.Join(parts, "")
+}
+
+// renderTurnForElicit renders one turn as labeled plain text, including tool-call
+// arguments and tool-result content — the parts that carry the exact values the
+// elicitor must preserve. Returns "" for turns with no textual content.
+func renderTurnForElicit(t schema.Turn) string {
+	var b strings.Builder
+	for _, p := range t.Message.Content {
+		switch p.Kind {
+		case llm.ContentText:
+			if p.Text != "" {
+				b.WriteString(p.Text + "\n")
+			}
+		case llm.ContentToolCall:
+			if p.ToolCall != nil {
+				b.WriteString(fmt.Sprintf("Tool call %s(%s)\n", p.ToolCall.Name, strings.TrimSpace(string(p.ToolCall.Arguments))))
+			}
+		case llm.ContentToolResult:
+			if p.ToolResult != nil {
+				b.WriteString(fmt.Sprintf("Tool result %s: %s\n", p.ToolResult.Name, fmt.Sprint(p.ToolResult.Content)))
+			}
+		}
+	}
+	if strings.TrimSpace(b.String()) == "" {
+		return ""
+	}
+	label := ""
+	switch t.Kind {
+	case schema.TurnUserInput:
+		label = "User: "
+	case schema.TurnAssistant:
+		label = "Assistant: "
+	case schema.TurnSteering, schema.TurnCheckpoint, schema.TurnSummary:
+		label = "Context: "
+	}
+	return label + b.String()
+}
+
 // summarizeWithLLM calls the cheap model to generate a narrative summary of
 // old history. Replaces old history with a single user message containing the
 // summary, preserving the most recent turns.
 func (cm *Manager) summarizeWithLLM(ctx context.Context, history []schema.Turn, preserveRecent int) ([]schema.Turn, error) {
+	return cm.summarizeWithLLMSteered(ctx, history, preserveRecent, "")
+}
+
+// summarizeWithLLMSteered is like summarizeWithLLM but accepts optional caller
+// instructions that replace the default mandatory-sections prompt when non-empty.
+func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema.Turn, preserveRecent int, instructions string) ([]schema.Turn, error) {
 	if len(history) <= preserveRecent {
 		return history, nil
 	}
@@ -1089,49 +1295,7 @@ func (cm *Manager) summarizeWithLLM(ctx context.Context, history []schema.Turn, 
 		}
 	}
 
-	prefix := `You are performing a CONTEXT CHECKPOINT COMPACTION. This session is being continued from a previous conversation that ran out of context. Create a detailed handoff summary that another instance of yourself will use to seamlessly continue the work.
-
-Your summary MUST include ALL of the following sections:
-
-## Conversation Timeline
-Reproduce user messages and agent replies in chronological, interleaved order. Preserve user messages verbatim. Summarize agent replies only when needed for brevity, but keep commitments, decisions, and final answers clear.
-
-## Progress
-What has been accomplished so far. Be specific about:
-- Files created or modified (full paths)
-- Specific changes made to each file
-- Tests written or run and their results
-- Commands executed and their outcomes
-
-## Key Decisions
-Important decisions made during the session and why. Include:
-- Architecture or design choices
-- Trade-offs considered
-- User preferences or constraints discovered
-
-## Current State
-Precisely what was being worked on when context ran out:
-- What file was being edited
-- What problem was being debugged
-- What test was failing
-
-## Pending Work
-Clear, actionable next steps that remain. Be specific enough that the next instance can immediately start working.
-
-## Analytical Findings
-Specific technical discoveries made during the session:
-- What algorithms, approaches, or parameter values were found to work
-- What debugging insights were gained (root causes, validated hypotheses)
-- What code patterns, data structures, or API behaviors were discovered
-- Include specific values, numbers, and names — not vague summaries
-
-## Critical Context
-Any data, file paths, variable names, error messages, API details, or other specific information needed to continue. Focus on information that CANNOT be re-derived from reading the codebase.
-
-Be thorough and structured. Err on the side of including too much rather than too little — lost context is expensive, extra tokens are cheap.
-
-`
-	prompt := prefix + b.String()
+	prompt := buildSummaryPrompt(b.String(), instructions)
 
 	sumProfile := cm.currentProfile()
 	routes := summarizationModels(sumProfile)

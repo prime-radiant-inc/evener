@@ -1,11 +1,14 @@
 package cmdutil
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/serf/llm/providers/kimicoding"
 )
 
 func TestMaxRoundsToConfig(t *testing.T) {
@@ -200,7 +203,7 @@ func stubQueryModelContextWindow(t *testing.T, fn func(provider, model string) i
 		gotMod  string
 	}{}
 	orig := queryModelContextWindow
-	queryModelContextWindow = func(provider, model string) int {
+	queryModelContextWindow = func(provider, model, _, _ string) int {
 		rec.called = true
 		rec.gotProv = provider
 		rec.gotMod = model
@@ -364,5 +367,56 @@ func TestStringSliceFlag(t *testing.T) {
 	}
 	if len(f) != 2 || f[0] != "a" || f[1] != "b" {
 		t.Fatalf("values = %v, want [a b]", []string(f))
+	}
+}
+
+// The real queryModelContextWindow must query the instance's base URL (passed
+// explicitly) rather than the provider-type default — so a Kimi coding-plan
+// instance (custom base_url in providers.toml) is sized from its own /models.
+func TestQueryModelContextWindow_UsesInstanceBaseURL(t *testing.T) {
+	var gotPath, gotAuth, gotUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"kimi-for-coding","context_length":262144}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	got := queryModelContextWindow("kimi", "kimi-for-coding", srv.URL, "inst-key")
+	if got != 262144 {
+		t.Fatalf("queryModelContextWindow = %d, want 262144 (must hit the instance base URL)", got)
+	}
+	if gotPath != "/models" {
+		t.Fatalf("path = %q, want /models", gotPath)
+	}
+	if gotAuth != "Bearer inst-key" {
+		t.Fatalf("auth = %q, want Bearer inst-key (instance api key)", gotAuth)
+	}
+	// Kimi For Coding gates on a coding-agent User-Agent allowlist, so the
+	// /models probe must announce it just like the chat adapters do.
+	if gotUA != kimicoding.UserAgent {
+		t.Fatalf("User-Agent = %q, want %q (Kimi coding-agent allowlist)", gotUA, kimicoding.UserAgent)
+	}
+}
+
+// Only the Kimi coding plan gates on the coding-agent User-Agent, so other
+// openai-compat providers must not have it spoofed onto their /models probe.
+func TestQueryModelContextWindow_NonKimiOmitsCodingUserAgent(t *testing.T) {
+	var gotUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"glm-4.6","context_length":200000}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	got := queryModelContextWindow("glm", "glm-4.6", srv.URL, "inst-key")
+	if got != 200000 {
+		t.Fatalf("queryModelContextWindow = %d, want 200000", got)
+	}
+	if gotUA == kimicoding.UserAgent {
+		t.Fatalf("User-Agent = %q, must not announce the Kimi coding-agent UA for glm", gotUA)
 	}
 }

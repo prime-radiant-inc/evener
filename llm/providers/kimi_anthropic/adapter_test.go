@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/llm"
-	"primeradiant.com/serf/llm/providers/internal/kimicoding"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
+	"primeradiant.com/serf/llm/providers/kimicoding"
 )
 
 func TestAdapter_Name(t *testing.T) {

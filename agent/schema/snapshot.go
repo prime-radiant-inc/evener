@@ -55,6 +55,9 @@ type SessionMeta struct {
 	// Goal holds the persisted goal state so the objective survives daemon
 	// restart and serf resume. It is nil when no goal is active or has been set.
 	Goal *GoalSnapshot `json:"goal,omitempty"`
+	// PinnedNote is the agent's self-compaction note_to_self, persisted so it
+	// survives daemon restart and serf resume (mirrors Goal).
+	PinnedNote string `json:"pinned_note,omitempty"`
 }
 
 // GoalSnapshot is the wire form of a goal.Goal persisted inside SessionMeta.

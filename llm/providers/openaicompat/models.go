@@ -40,6 +40,11 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 	var result struct {
 		Data []struct {
 			ID string `json:"id"`
+			// context_length is reported by Kimi (kimi-for-coding = 262144) and
+			// OpenRouter; absent on stock OpenAI. When present it flows into the
+			// profile via WithLiveModelInfo so context management uses the model's
+			// real window instead of the 128K default.
+			ContextLength int `json:"context_length"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -49,9 +54,10 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 	models := make([]llm.ModelInfo, 0, len(result.Data))
 	for _, m := range result.Data {
 		models = append(models, llm.ModelInfo{
-			ID:          m.ID,
-			Provider:    "openai-compatible",
-			DisplayName: m.ID,
+			ID:            m.ID,
+			Provider:      "openai-compatible",
+			DisplayName:   m.ID,
+			ContextWindow: m.ContextLength,
 		})
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })

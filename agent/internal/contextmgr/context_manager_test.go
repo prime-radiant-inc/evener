@@ -1974,7 +1974,7 @@ func TestForceCompact_RunsAllLayers(t *testing.T) {
 		}
 	}
 
-	cm.ForceCompact(context.Background(), &history, emitFn)
+	cm.ForceCompact(context.Background(), &history, "", emitFn)
 
 	// Both layers should fire: checkpoint then summarize.
 	if len(layers) != 2 {
@@ -2008,7 +2008,7 @@ func TestForceCompact_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	}
 
 	emitFn := func(kind events.EventKind, data events.EventData) {}
-	cm.ForceCompact(context.Background(), &history, emitFn)
+	cm.ForceCompact(context.Background(), &history, "", emitFn)
 
 	// L3 creates a checkpoint turn. OnCompactionTurn should have been called.
 	found := false
@@ -2053,7 +2053,7 @@ func TestForceCompact_FiresOnCompactionTurn_Summary(t *testing.T) {
 	}
 
 	emitFn := func(kind events.EventKind, data events.EventData) {}
-	cm.ForceCompact(context.Background(), &history, emitFn)
+	cm.ForceCompact(context.Background(), &history, "", emitFn)
 
 	// Both L3 (checkpoint) and L4 (summary) should fire callbacks.
 	foundCheckpoint, foundSummary := false, false
@@ -2096,11 +2096,30 @@ func TestForceCompact_BelowThreshold(t *testing.T) {
 		}
 	}
 
-	cm.ForceCompact(context.Background(), &history, emitFn)
+	cm.ForceCompact(context.Background(), &history, "", emitFn)
 
 	// Checkpoint should fire. Summarize skipped (no client).
 	if len(layers) != 1 || layers[0] != "checkpoint" {
 		t.Fatalf("expected [checkpoint], got %v", layers)
+	}
+}
+
+func TestForceCompact_ReportsSummarized(t *testing.T) {
+	// With a nil client there is no summary layer, so ForceCompact should
+	// return false regardless of history length.
+	profile := testProfile("openai", "test", 100_000)
+	cm := NewManager(profile, nil) // nil client → no summary layer
+	cm.PreserveRecentTurns = 2
+
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("question one")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer one")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+	}
+	emitFn := func(events.EventKind, events.EventData) {}
+	summarized := cm.ForceCompact(context.Background(), &history, "", emitFn)
+	if summarized {
+		t.Fatal("no client and short history → no summary; should report false")
 	}
 }
 
@@ -2268,5 +2287,30 @@ func TestCheckpoint_WorkingNotes_ShedOldestFirst(t *testing.T) {
 	lastNote := notes[len(notes)-1]
 	if !strings.Contains(lastNote, "Note 149:") {
 		t.Fatalf("latest note should be preserved, got: %q", lastNote)
+	}
+}
+
+// --- buildSummaryPrompt ---
+
+func TestBuildSummaryPrompt_NoInstructions(t *testing.T) {
+	p := buildSummaryPrompt("User: hi\n", "")
+	if !strings.Contains(p, "Your summary MUST include ALL of the following sections") {
+		t.Fatal("default prompt should mandate the standard sections")
+	}
+	if strings.Contains(p, "CALLER INSTRUCTIONS") {
+		t.Fatal("no caller-instruction block expected when instructions empty")
+	}
+}
+
+func TestBuildSummaryPrompt_WithInstructions(t *testing.T) {
+	p := buildSummaryPrompt("User: hi\n", "Drop the vendored build logs; keep the migration plan verbatim.")
+	if !strings.Contains(p, "Drop the vendored build logs") {
+		t.Fatal("caller instructions must appear in the prompt")
+	}
+	if strings.Contains(p, "Your summary MUST include ALL of the following sections") {
+		t.Fatal("the mandatory-7-sections block must be replaced, not retained, when instructions are present")
+	}
+	if !strings.Contains(p, "CALLER INSTRUCTIONS (these take precedence)") {
+		t.Fatal("expected the instruction-led header")
 	}
 }

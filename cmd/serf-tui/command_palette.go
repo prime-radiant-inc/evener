@@ -50,14 +50,28 @@ func (p commandPalette) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, cmd
 }
 
+// paletteOverlayChrome is the number of rows tuiprim.Overlay adds around the
+// item list: rounded border (2), vertical padding (2), title + blank (2),
+// filter + blank (2), and blank + footer (2).
+const paletteOverlayChrome = 10
+
 func (p commandPalette) renderItems() string {
+	return p.renderItemsWindow(0)
+}
+
+// renderItemsWindow renders the filtered items, showing at most maxRows of them
+// windowed around the cursor so the selected entry stays visible. maxRows <= 0
+// shows every item.
+func (p commandPalette) renderItemsWindow(maxRows int) string {
 	th := tuitheme.ActiveTheme()
 	filtered := p.panel.Filtered()
 	if len(filtered) == 0 {
 		return lipgloss.NewStyle().Foreground(th.TextDim).Render("  No matching commands.")
 	}
+	start, end := paletteItemWindow(len(filtered), p.panel.Cursor(), maxRows)
 	var rows []string
-	for i, item := range filtered {
+	for i := start; i < end; i++ {
+		item := filtered[i]
 		cursor := "  "
 		if i == p.panel.Cursor() {
 			cursor = "> "
@@ -77,6 +91,13 @@ func (p commandPalette) renderItems() string {
 }
 
 func (p commandPalette) View() string {
+	return p.ViewWithMaxHeight(0)
+}
+
+// ViewWithMaxHeight renders the palette overlay, windowing its item list so the
+// whole box fits within maxHeight rows while keeping the selected entry in view.
+// maxHeight <= 0 renders every item.
+func (p commandPalette) ViewWithMaxHeight(maxHeight int) string {
 	th := tuitheme.ActiveTheme()
 	var filterLine string
 	if p.panel.Filter() == "" {
@@ -84,7 +105,14 @@ func (p commandPalette) View() string {
 	} else {
 		filterLine = "Filter: " + p.panel.Filter()
 	}
-	body := filterLine + "\n\n" + p.renderItems()
+	itemRows := 0
+	if maxHeight > 0 {
+		itemRows = maxHeight - paletteOverlayChrome
+		if itemRows < 1 {
+			itemRows = 1
+		}
+	}
+	body := filterLine + "\n\n" + p.renderItemsWindow(itemRows)
 	width := p.panel.Width()
 	if width <= 0 {
 		width = 80
@@ -92,6 +120,31 @@ func (p commandPalette) View() string {
 	width = min(max(width, 44), 96)
 	footer := tuiprim.ActionBarForWidth(width, tuiprim.KbdHint("↑↓", "navigate"), tuiprim.KbdHint("enter", "run"), tuiprim.KbdHint("esc", "cancel"))
 	return tuiprim.Overlay(tuiprim.OverlayOpts{Title: p.panel.Title(), Width: width, Body: body, Footer: footer})
+}
+
+// paletteItemWindow centers a window of at most maxRows items on the cursor,
+// mirroring dashboardRowWindow so the selected entry stays visible.
+func paletteItemWindow(count, cursor, maxRows int) (int, int) {
+	if count <= 0 {
+		return 0, 0
+	}
+	if maxRows <= 0 || maxRows >= count {
+		return 0, count
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= count {
+		cursor = count - 1
+	}
+	start := cursor - maxRows/2
+	if start < 0 {
+		start = 0
+	}
+	if start+maxRows > count {
+		start = count - maxRows
+	}
+	return start, start + maxRows
 }
 
 func (p commandPalette) selectedEntry() (commandPaletteEntry, bool) {

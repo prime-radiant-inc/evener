@@ -150,7 +150,8 @@ func TestCompactionThresholdScale(t *testing.T) {
 	check("ObservationMaskThreshold", cm.ObservationMaskThreshold, 0.30) // 0.60 * 0.5
 	check("ThinkingClearThreshold", cm.ThinkingClearThreshold, 0.35)     // 0.70 * 0.5
 	check("CheckpointThreshold", cm.CheckpointThreshold, 0.40)           // 0.80 * 0.5
-	check("SummarizeThreshold", cm.SummarizeThreshold, 0.45)             // 0.90 * 0.5
+	check("SummarizeThreshold", cm.SummarizeThreshold, 0.475)            // 0.95 * 0.5
+	check("WarnThreshold", cm.WarnThreshold, 0.375)                      // 0.75 * 0.5
 	sess.Close()
 
 	// Scale=0.1 clamps to 0.20 floor.
