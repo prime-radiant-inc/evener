@@ -27,7 +27,7 @@ reported as supervision loss, never as command failure (line 1001).
 1. Spawn a session via `/api/spawn` with `working_dir=$tmpdir`.
    Capture `SID`. Prompt:
 
-   > Run the shell tool with max_wait_ms 1000 and this command:
+   > Run the shell tool with background true and this command:
    > `sh -c 'i=0; while [ "$i" -lt 60 ]; do i=$((i+1)); echo "TICK_$i"; sleep 1; done; echo PRODUCER_DONE'`.
    > Report the job_id verbatim, then end your turn. Do not read or
    > wait on it.

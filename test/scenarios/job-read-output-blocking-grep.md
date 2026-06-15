@@ -24,7 +24,7 @@ rules. Executed by plan Phase 5.2.
    semantics:
 
    > Do these steps in order, with no other tool calls in between.
-   > 1. Run the shell tool with max_wait_ms 1000 and command:
+   > 1. Run the shell tool with background true and command:
    >    `sh -c 'sleep 3; echo boot_noise_alpha; sleep 7; echo boot_noise_beta; sleep 10; echo GREP_READY_TOKEN_9; sleep 300'`.
    >    Capture the job_id.
    > 2. Immediately call job_read_output with: that job_id,

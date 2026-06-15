@@ -36,7 +36,7 @@ sidecar composition". Executed by plan Phase 5.2.
    >    then call communicate with exactly OBSERVER_DONE and finish. Do
    >    not start any delegate of your own." Capture the observer's
    >    job_id and transcript_ref.
-   > 2. Run the shell tool with max_wait_ms 1000 and this command:
+   > 2. Run the shell tool with background true and this command:
    >    `sh -c 'sleep 20; echo SIDECAR_TOKEN_OK; sleep 240'`. Capture
    >    the shell job_id.
    > 3. Call `job_watch` with: target the shell job_id, output_match

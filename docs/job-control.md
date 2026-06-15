@@ -15,7 +15,7 @@ Two public job types are in scope:
 
 The default model-facing posture is:
 
-> Shell work runs foreground by default and is promoted to a durable background job when the foreground wait times out. Delegate work returns a `job_id` immediately by default; use `max_wait_ms` to wait inline. Rely on automatic terminal notifications plus one-off `job_read_output`/`job_list` inspection for follow-up. Do not poll.
+> Shell work runs foreground by default (set `background: true` to launch-and-return) and is promoted to a durable background job when the foreground wait times out. Delegate work returns a `job_id` immediately by default; use `max_wait_ms` to wait inline. Rely on automatic terminal notifications plus one-off `job_read_output`/`job_list` inspection for follow-up. Do not poll.
 
 The target model intentionally does **not** expose:
 
@@ -25,13 +25,13 @@ The target model intentionally does **not** expose:
 - `close_agent`
 - external `agent_id`
 
-Stopping is handled by `job_stop`. Retention is policy-based, not model-acknowledgement-based. Waiting, when needed, is controlled by `max_wait_ms` on job creation/output with a bounded timeout, not a separate wait tool.
+Stopping is handled by `job_stop`. Retention is policy-based, not model-acknowledgement-based. Waiting, when needed, is bounded — `max_wait_ms` on `delegate`/`job_read_output`/`job_stop`, or `background` on shell — not a separate wait tool.
 
 ## Model-facing guidance requirements
 
 This reference contract is not itself the runtime system prompt, but the following guidance **must** be reflected in the tool descriptions and in Serf's `Background jobs` system-prompt section. These bullets are normative for model-facing documentation because they shape whether agents use jobs correctly:
 
-- Shell commands run foreground by default and return inline output for quick commands. Use `max_wait_ms: 1000` to launch-and-return immediately; omit `max_wait_ms` or set it to `0` for the session-default foreground wait. Foreground shell commands that exceed their wait bound are promoted to durable background jobs and return a `job_id`.
+- Shell commands run foreground by default and return inline output for quick commands. Set `background: true` to launch-and-return immediately; omit `background` (or set it `false`) for the session-default foreground wait. Foreground shell commands that exceed that wait are promoted to durable background jobs and return a `job_id`.
 - Delegate work starts in the background by default (no `job_id` wait); use `max_wait_ms` when you want to wait inline for up to N ms. Shell and delegate defaults differ deliberately: shell commands are usually short decision-producing calls, while delegates are independent agentic work.
 - Use `delegate` to start a new delegate conversation/job. It does not continue an existing conversation.
 - Use `job_send_message` for follow-up on a messageable target: if a delegate target is running, it injects guidance; if a delegate target is terminal and resumable, it starts a new delegate job in that same delegate conversation by default. Use `on_finished="fail"` only for live-only nudges that must not resume terminal work.
@@ -60,7 +60,8 @@ Several tools can wait, but they wait on different things. Pick by intent, and d
 
 | Intent | Use |
 | --- | --- |
-| Run a command and wait up to N ms for it | `shell(max_wait_ms=N)` — promoted to a background job at the bound |
+| Run a command and use its output | `shell` — foreground; promoted to a background job if it exceeds the session timeout |
+| Launch a long command without waiting | `shell(background=true)` — returns a `job_id` immediately |
 | Start a delegate and wait up to N ms for its result | `delegate(max_wait_ms=N)` — a timeout leaves it running |
 | Learn when a backgrounded job finishes | the automatic terminal notification — nothing to call |
 | Wait until a job's output contains X | `job_read_output(grep=X, max_wait_ms=N)`, or `job_watch(output_match=X)` to be notified |
@@ -177,24 +178,23 @@ Canonical foreground shape for ordinary commands:
 }
 ```
 
-Shell defaults to foreground because most shell calls are short and decision-producing. Omit `max_wait_ms` (or set to `0`) for ordinary commands whose output determines the next step — this uses the session-default wait (120s standard). Use `max_wait_ms: 1000` to launch-and-return immediately for deliberate background work such as a dev server or a long command the agent should not wait on.
+Shell defaults to foreground because most shell calls are short and decision-producing. Omit `background` (or set it to `false`) for ordinary commands whose output determines the next step — the call waits up to the session command timeout (120s standard), then promotes the command to a durable background job if it is still running. Set `background: true` to launch-and-return immediately for deliberate background work such as a dev server or a long command the agent should not wait on.
 
 Launch-and-return (immediate background) shape:
 
 ```json
 {
   "command": "npm run dev",
-  "max_wait_ms": 1000,
+  "background": true,
   "description": "start dev server"
 }
 ```
 
-Foreground with explicit wait/runtime bounds:
+Foreground with an explicit process-runtime cap:
 
 ```json
 {
   "command": "go test ./...",
-  "max_wait_ms": 120000,
   "max_runtime_ms": 900000,
   "description": "run tests"
 }
@@ -202,26 +202,22 @@ Foreground with explicit wait/runtime bounds:
 
 Defaults and timeout semantics:
 
-- `max_wait_ms` unset (or `0`) uses the session-default foreground wait (120s in stock provider profiles).
-- With a positive `max_wait_ms`, the tool blocks up to that many ms for terminal status.
-- A shell command that completes within the wait bound returns inline output and is ephemeral by default: no durable `job_id` is required and it does not appear in `job_list`.
-- If a shell command exceeds the wait bound, Serf promotes it to a durable background job and returns current bounded output/status with a `job_id`. The normal terminal notification remains armed for the eventual terminal state.
-- `max_wait_ms` is a tool-call wait bound only. It is **not** a process runtime timeout.
-- `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Serf stops it and finalizes the job as `stopped` with reason `run_timeout`. The name is intentionally distinct from `max_wait_ms`: `max_wait_ms` controls how long the tool call waits; `max_runtime_ms` controls how long the process may run.
-- Omitted `max_runtime_ms` means implementation-defined shell runtime policy. Recommended policy: default finite runtime for foreground/promoted shell jobs, no default runtime limit for low-wait (launch-and-return) shell jobs unless configured by the user/tool call.
-- A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the tool call wait expired; it never means the process hit `max_runtime_ms`.
+- `background` unset (or `false`): the call runs the command in the foreground and waits up to the session command timeout (120s in stock provider profiles) for it to finish.
+- A foreground shell command that completes within that wait returns inline output and is ephemeral by default: no durable `job_id` is required and it does not appear in `job_list`.
+- A foreground shell command still running at the session command timeout is promoted to a durable background job: Serf returns the current bounded output/status with a `job_id`, and the normal terminal notification remains armed for the eventual terminal state.
+- `background: true`: Serf starts the command and returns a `job_id` immediately without waiting. The terminal notification fires when it finishes.
+- `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Serf stops it and finalizes the job as `stopped` with reason `run_timeout`. It bounds how long the process may *run*, distinct from the foreground wait.
+- Omitted `max_runtime_ms` means implementation-defined shell runtime policy. Recommended policy: default finite runtime for foreground/promoted shell jobs, no default runtime limit for `background: true` shell jobs unless configured by the user/tool call.
+- A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the foreground wait expired; it never means the process hit `max_runtime_ms`.
 - To wait for a launch-and-return command to reach a state (e.g. a server printing "ready"), use `job_read_output(job_id, grep, max_wait_ms)` for a synchronous bounded wait, or `job_watch(job_id, output_match)` to be notified — an output-match watch catch-up-scans a job's retained output even if it already finished.
 
-Normative wait bounds:
+Normative foreground-wait bounds:
 
-- Default `max_wait_ms`: `0` (session default, 120000 in stock provider profiles).
-- Minimum positive `max_wait_ms`: `1000`.
-- Maximum `max_wait_ms`: `600000`.
-- Positive values below the minimum are clamped upward. Values above the maximum are clamped downward. Negative values fail `invalid_request`.
+- The foreground wait is the session command timeout (`DefaultCommandTimeoutMS`, 120000 in stock provider profiles), clamped to `MaxCommandTimeoutMS`. Shell has no per-call wait parameter; `background` chooses foreground (wait, then promote) vs. immediate return.
 
 Normative runtime timeout bounds:
 
-- `max_runtime_ms` is the process-killing deadline and must be distinct from `max_wait_ms`, which only bounds how long a tool call waits.
+- `max_runtime_ms` is the process-killing deadline and must be distinct from the foreground wait (the session command timeout), which only bounds how long the call waits before promoting to background.
 - Minimum positive `max_runtime_ms`: `1000`.
 - Implementations must document default/max/clamp behavior for `max_runtime_ms`.
 - Negative values fail `invalid_request`.
@@ -316,7 +312,7 @@ Defaults:
 - `max_wait_ms` unset (or `0`) means return the `job_id` immediately without waiting for the delegate to finish.
 - Each `delegate` call creates a new delegate job and a new child session.
 - `delegate` does not accept `target`, `mode`, `job_id`, or `transcript_ref` for continuation.
-- With a positive `max_wait_ms`, the tool performs one bounded foreground wait of up to that many ms; timeout leaves the delegate job running in the background with reason `foreground_timeout`. `max_wait_ms` has the same wait semantics and bounds as shell creation.
+- With a positive `max_wait_ms`, the tool performs one bounded foreground wait of up to that many ms; timeout leaves the delegate job running in the background with reason `foreground_timeout`.
 - Delegates have no model-facing `max_runtime_ms` in v1. Delegate runtime limits, if any, are implementation policy rather than a tool argument.
 - `result_schema`, when supplied, is a JSON Schema-like contract for the initial delegate final result and for resumed turns in the same delegate conversation. The delegate output remains readable as prose/log text, and Serf validates and surfaces a structured result when possible. When validation or capture fails for a schema-backed delegate result, Serf omits `structured_result`, sets `structured_result_valid:false`, and includes a machine-readable `structured_result_reason`.
 - Delegate interaction is turn-based in this target contract. A delegate that needs more input should finish with a request for that input; the parent follows up with `job_send_message`. Mid-turn interactive input/awaiting-input notifications are not a v1 guarantee. Delegate `status="completed"` means the delegate turn ended normally; it does not assert that the requested task succeeded. Agents must inspect `output`, `structured_result`, or task-specific schema fields for task success/failure.
@@ -637,7 +633,7 @@ Canonical behavior:
 - Reads are non-consuming and non-acknowledging.
 - Default `tail_bytes` is `65536`; maximum `tail_bytes` is `1048576`. Omitted uses the default. Values above the maximum are clamped downward. Values `<=0` fail `invalid_request`.
 - `grep` always scans the full retained output; there is no scan-budget parameter, so a grep over retained bytes never silently misses a match for budget reasons. The returned `matches` array is bounded by match-count and per-line caps.
-- `max_wait_ms` for `job_read_output` defaults to `5000` when positive; minimum is `1000`; maximum is `60000` (the same bounds as `job_stop`, deliberately tighter than shell/delegate creation: waiting reads are bounded conveniences measured in seconds). `0` and absent mean snapshot-now (no wait). Out-of-range positive values are clamped; negative values fail `invalid_request`.
+- `max_wait_ms` for `job_read_output` defaults to `5000` when positive; minimum is `1000`; maximum is `60000` (the same bounds as `job_stop`, deliberately tighter than delegate creation: waiting reads are bounded conveniences measured in seconds). `0` and absent mean snapshot-now (no wait). Out-of-range positive values are clamped; negative values fail `invalid_request`.
 - With `max_wait_ms > 0`, the tool performs at most one bounded wait, then returns current state/output. Without `grep`, the wait ends on terminal state or more output. With `grep`, the wait ends when the retained output contains a match, on terminal state, or on timeout. Timeout never stops the job.
 - `max_wait_ms` is not a polling primitive and must not be used repeatedly in a loop. Terminal notifications remain the normal completion mechanism.
 - `job_read_output` must work for terminal durable jobs after the live runtime is gone, as long as the job record/output file is retained.
@@ -1278,7 +1274,7 @@ The contract-level requirements are:
 
 - generic jobs for shell and delegate work;
 - globally unique opaque `job_id` as primary handle;
-- foreground shell default (unset `max_wait_ms` waits the session timeout) with promotion to a durable background job on timeout; delegate default returns the job immediately (unset `max_wait_ms`);
+- foreground shell default (`background:false` waits the session timeout) with promotion to a durable background job on timeout; delegate default returns the job immediately (unset `max_wait_ms`);
 - automatic terminal notification with durable no-loss/dedupe semantics;
 - `job_watch` for condition-triggered caller notifications and configured sends, including v1 observer sidecar event/frame delivery;
 - bounded output inspection and retained-output grep through `job_read_output`;

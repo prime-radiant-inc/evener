@@ -7,6 +7,16 @@ megabyte must stay reachable) · **Date:** 2026-06-13 · **Branch:**
 `job-control-spec` · **Sequenced before** PRI-2204 so recursion lands on the
 final tool surface.
 
+> **Superseded for `shell` (2026-06-15).** The shell slice of this unification was
+> reversed: `shell` drops `max_wait_ms` and takes a `background: bool` instead. Shell's
+> common case is foreground (the opposite of every other tool), so under strict-schema
+> auto-fill the shared `max_wait_ms` zero silently flipped meaning between tools. The
+> other four tools (`delegate`, `job_send_message`, `job_read_output`, `job_stop`) keep
+> `max_wait_ms` exactly as specified below. The "one wait knob per tool" principle still
+> holds — shell's knob is now `background` — and the `block_timeout_ms`+`background` combo
+> §1 killed stays inexpressible, because shell gains no second wait knob. See
+> `docs/superpowers/plans/2026-06-15-job-output-context-management.md` (Part C).
+
 ## §0 Decisions (Jesse's, 2026-06-13)
 
 1. The parameter is named **`max_wait_ms`**.

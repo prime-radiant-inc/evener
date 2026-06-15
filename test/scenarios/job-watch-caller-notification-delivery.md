@@ -35,7 +35,7 @@ Run 1 — idle wake, both delivery flavors on one fire:
 2. Prompt:
 
    > Do these steps in order.
-   > 1. Run the shell tool with max_wait_ms 1000 and command:
+   > 1. Run the shell tool with background true and command:
    >    `sh -c 'sleep 25; echo WAKE_TOKEN_GO; sleep 240'`. Capture the
    >    job_id.
    > 2. Call job_watch with target that job_id and output_match
@@ -61,7 +61,7 @@ Run 2 — busy session, three fires, one rendered frame:
 
    > Read AGENTS.md in your working directory first; its pacing rules
    > are mandatory for this turn. Then:
-   > 1. Run the shell tool with max_wait_ms 1000 and command:
+   > 1. Run the shell tool with background true and command:
    >    `sh -c 'sleep 10; echo TICK_MARK_1; sleep 6; echo TICK_MARK_2; sleep 6; echo TICK_MARK_3; sleep 240'`.
    >    Capture the job_id.
    > 2. Call job_watch with target that job_id, output_match

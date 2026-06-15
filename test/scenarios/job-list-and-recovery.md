@@ -27,14 +27,14 @@ already covered by subagent-list-and-output.md.
 2. Turn 1 — build a mixed inventory, then filter (one turn, ordered):
 
    > Do these steps in order. Report every tool result verbatim.
-   > 1. Run the shell tool with max_wait_ms 1000 and command:
+   > 1. Run the shell tool with background true and command:
    >    `sh -c 'sleep 2; exit 7'`. Capture the job_id (call it J1).
-   > 2. Run the shell tool with max_wait_ms 1000 and command:
+   > 2. Run the shell tool with background true and command:
    >    `sh -c 'sleep 2; true'`. Capture the job_id (J2). Call
    >    job_list with status ["running"] and report whether J2 appears.
    >    Then call job_list with no filters and report whether J2 appears
    >    and with what status.
-   > 3. Run the shell tool with max_wait_ms 1000 and command:
+   > 3. Run the shell tool with background true and command:
    >    `sh -c 'echo LIST_RUN_TOKEN; sleep 300'`. Capture the job_id
    >    (J3).
    > 4. Call delegate with this exact task: "Communicate exactly
@@ -50,7 +50,7 @@ already covered by subagent-list-and-output.md.
 3. Turn 2 — re-orientation before any notification (new user prompt):
 
    > Do these steps in order, with no other tool calls.
-   > 1. Run the shell tool with max_wait_ms 1000 and command:
+   > 1. Run the shell tool with background true and command:
    >    `sh -c 'sleep 6; echo REORIENT_DONE'`. Capture the job_id (J5).
    > 2. Run the foreground shell command `sleep 15`.
    > 3. Call job_list with no filters and report J5's status verbatim.
@@ -64,11 +64,11 @@ already covered by subagent-list-and-output.md.
 Turn 1:
 
 - Filters are exact set selections:
-  - step 5 (`type=["shell"]`): J1, J2, J3 — and NOT J4. Both J1 and
-    J2 used bound-outliving fixtures (`sleep 2` vs `max_wait_ms 1000`)
-    so they are promoted to durable running records at step-1/2 call
-    time; by step 5 (~2s later) they are terminal (spec §3
-    complete-or-handle: promoted jobs finalize normally).
+  - step 5 (`type=["shell"]`): J1, J2, J3 — and NOT J4. J1 and J2 are
+    backgrounded (`background true`) over a `sleep 2`, so they are
+    durable running records at step-1/2 call time; by step 5 (~2s
+    later) they are terminal (spec §3 complete-or-handle: background
+    jobs finalize normally).
   - step 6 (`status=["running"]`): J3 (plus J4 only if the delegate
     is still mid-run at that moment); J1 and J2 may be terminal by
     this point — the 2s sleep vs ~1s between steps makes this timing-
@@ -130,8 +130,8 @@ Turn 2:
 
 ## Sharp edges
 
-- Step 2's J2 fixture (`sleep 2; true` with `max_wait_ms 1000`) is
-  bound-outliving: J2 is reliably promoted and running at list time.
+- Step 2's J2 fixture (`sleep 2; true`, `background true`) returns a
+  running record immediately and stays running at list time (~2s window).
   The running-filter SHOULD show J2; a miss means promotion didn't
   create a durable record (a regression). The original short-job race
   (spec §3 arc) is subsumed — the normative assertion is now durable

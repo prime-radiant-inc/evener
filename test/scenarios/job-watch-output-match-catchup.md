@@ -27,7 +27,7 @@ Phase 5.2.
 2. Turn 1 — arm (a), attach after the tokens already printed:
 
    > Do these steps in order.
-   > 1. Run the shell tool with max_wait_ms 1000 and command:
+   > 1. Run the shell tool with background true and command:
    >    `sh -c 'echo LEVEL_TOKEN_A; echo LEVEL_TOKEN_B; sleep 30; echo LEVEL_TOKEN_C; sleep 240'`.
    >    Capture the job_id.
    > 2. Call job_read_output for that job_id once (no block) and
@@ -45,7 +45,7 @@ Phase 5.2.
 
    > Do these steps in order. Steps 3 and 4 may return tool errors —
    > report everything verbatim.
-   > 1. Run the shell tool with max_wait_ms 1000 and command:
+   > 1. Run the shell tool with background true and command:
    >    `sh -c 'echo CATCHUP_TOKEN_OK'`. Capture the job_id, then call
    >    job_read_output for it with max_wait_ms 5000, and confirm
    >    status is completed.
