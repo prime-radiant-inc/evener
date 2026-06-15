@@ -877,7 +877,7 @@ func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 		Name:      "task_list",
 		Arguments: json.RawMessage(`{"action": "view"}`),
 	})
-	if !strings.Contains(viewRes2.Output, `"done"`) {
+	if !strings.Contains(viewRes2.Output, "[done]") {
 		t.Fatalf("view after update missing done status: %s", viewRes2.Output)
 	}
 }

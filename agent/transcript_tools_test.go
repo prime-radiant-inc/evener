@@ -141,6 +141,39 @@ func matchesFromEnvelope(t *testing.T, env map[string]any) []map[string]any {
 //   - the 5 always-present fields are present in each record
 //   - fields that were removed from the spec (session_id, model, profile_id,
 //     created_at, default_read, has_transcript) are absent from the wire JSON
+func TestFormatSessionFindings(t *testing.T) {
+	scanned := 42
+	env := findSessionsEnvelope{
+		ScopeApplied: "current_project",
+		Scanned:      &scanned,
+		Matches: []sessionRecord{
+			{
+				TranscriptRef: "local:01ABC",
+				Kind:          "delegate",
+				Title:         "Investigate parser test",
+				UpdatedAt:     time.Date(2026, 6, 14, 15, 4, 0, 0, time.UTC),
+				ApproxTurns:   12,
+				Project:       "serf",
+				Snippets:      []snippet{{Seq: 9, Role: "assistant", Snippet: "the lexer drops trailing newlines"}},
+			},
+		},
+	}
+
+	out := formatSessionFindings(env)
+	if strings.Contains(out, "{") || strings.Contains(out, `"transcript_ref"`) || strings.Contains(out, "matches") {
+		t.Fatalf("findings must be plain text, not JSON:\n%s", out)
+	}
+	for _, want := range []string{"local:01ABC", "Investigate parser test", "delegate", "12", "the lexer drops trailing newlines", "current_project", "42"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("findings missing %q:\n%s", want, out)
+		}
+	}
+
+	if got := formatSessionFindings(findSessionsEnvelope{ScopeApplied: "current_project"}); !strings.Contains(got, "No matching sessions") {
+		t.Fatalf("empty findings should say so: %q", got)
+	}
+}
+
 func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 	dir := newBucket(t)
 

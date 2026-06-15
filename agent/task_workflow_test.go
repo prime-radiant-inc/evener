@@ -10,6 +10,28 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+func TestFormatTaskList(t *testing.T) {
+	tasks := []taskpkg.Task{
+		{ID: 1, Type: taskpkg.TaskTypeImplement, Description: "Set up parser", Status: taskpkg.TaskDone},
+		{ID: 2, Type: taskpkg.TaskTypeImplement, Description: "Wire the lexer", Status: taskpkg.TaskInProgress, DependsOn: []int{1}, ReasoningEffort: "high"},
+		{ID: 3, Type: taskpkg.TaskTypeVerify, Description: "Check output", Status: taskpkg.TaskOpen, Notes: []string{"deferred until parser lands"}},
+	}
+
+	out := formatTaskList(tasks)
+	if strings.Contains(out, "{") || strings.Contains(out, `"id"`) || strings.Contains(out, `"status"`) {
+		t.Fatalf("task list must be plain text, not JSON:\n%s", out)
+	}
+	for _, want := range []string{"1.", "Set up parser", "done", "in_progress", "Wire the lexer", "depends on: 1", "effort: high", "deferred until parser lands", "1/3"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("task list missing %q:\n%s", want, out)
+		}
+	}
+
+	if got := formatTaskList(nil); got != "No tasks." {
+		t.Fatalf("empty task list = %q, want %q", got, "No tasks.")
+	}
+}
+
 func TestTaskWorkflow_PopulateAndAutoStart(t *testing.T) {
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "workflow-test")

@@ -112,9 +112,60 @@ func findSessionTranscriptsTool(deps *toolDeps) tool.RegisteredTool {
 		Tool: llm.Tool{Definition: tool.DefFindSessionTranscripts(), ReadOnly: true},
 		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
-			return execFindSessionTranscripts(deps, args)
+			v, err := execFindSessionTranscripts(deps, args)
+			if err != nil {
+				return nil, err
+			}
+			env, ok := v.(findSessionsEnvelope)
+			if !ok {
+				return v, nil
+			}
+			return formatSessionFindings(env), nil
 		},
 	}
+}
+
+// formatSessionFindings renders the find result as plain text: one numbered block
+// per matching session — the transcript_ref handle, title, and metadata, with any
+// matched snippets indented beneath — and a footer reporting the scope and (when a
+// content scan ran) how many sessions were scanned. The structured envelope is the
+// return value of execFindSessionTranscripts, used directly by tests.
+func formatSessionFindings(env findSessionsEnvelope) string {
+	if len(env.Matches) == 0 {
+		return fmt.Sprintf("No matching sessions (scope: %s).", env.ScopeApplied)
+	}
+	var b strings.Builder
+	for i, m := range env.Matches {
+		fmt.Fprintf(&b, "%d. %s — %s\n", i+1, m.TranscriptRef, m.Title)
+		meta := fmt.Sprintf("   %s · ~%d turns · updated %s", m.Kind, m.ApproxTurns, m.UpdatedAt.Format("2006-01-02 15:04"))
+		if m.Project != "" {
+			meta += " · project " + m.Project
+		}
+		if m.IsCurrent {
+			meta += " · current"
+		}
+		b.WriteString(meta + "\n")
+		if m.ParentRef != "" {
+			fmt.Fprintf(&b, "   parent: %s\n", m.ParentRef)
+		}
+		for _, s := range m.Snippets {
+			fmt.Fprintf(&b, "   seq %d (%s): %s\n", s.Seq, s.Role, s.Snippet)
+		}
+	}
+	footer := fmt.Sprintf("\n%d match", len(env.Matches))
+	if len(env.Matches) != 1 {
+		footer += "es"
+	}
+	footer += fmt.Sprintf(" (scope: %s", env.ScopeApplied)
+	if env.Scanned != nil {
+		footer += fmt.Sprintf(", scanned %d", *env.Scanned)
+		if env.ScanTruncated != nil && *env.ScanTruncated {
+			footer += ", scan truncated"
+		}
+	}
+	footer += ")"
+	b.WriteString(footer)
+	return b.String()
 }
 
 // execFindSessionTranscripts dispatches to execFindChildren when children_of is

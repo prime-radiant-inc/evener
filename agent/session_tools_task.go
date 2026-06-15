@@ -12,6 +12,40 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// formatTaskList renders the task list as plain text, like a to-do list: one task
+// per line as "<id>. [<status>] <type> — <description>" with dependencies and any
+// accumulated notes, then a progress footer. The structured snapshot rides along
+// separately as the StateResult.State for the hub UI.
+func formatTaskList(tasks []taskpkg.Task) string {
+	if len(tasks) == 0 {
+		return "No tasks."
+	}
+	var b strings.Builder
+	done := 0
+	for _, t := range tasks {
+		if t.Status == taskpkg.TaskDone {
+			done++
+		}
+		fmt.Fprintf(&b, "%d. [%s] %s — %s", t.ID, t.Status, t.Type, t.Description)
+		if len(t.DependsOn) > 0 {
+			parts := make([]string, len(t.DependsOn))
+			for i, d := range t.DependsOn {
+				parts[i] = fmt.Sprintf("%d", d)
+			}
+			fmt.Fprintf(&b, " (depends on: %s)", strings.Join(parts, ", "))
+		}
+		b.WriteByte('\n')
+		if t.ReasoningEffort != "" {
+			fmt.Fprintf(&b, "   effort: %s\n", t.ReasoningEffort)
+		}
+		for _, n := range t.Notes {
+			fmt.Fprintf(&b, "   note: %s\n", n)
+		}
+	}
+	fmt.Fprintf(&b, "\nProgress: %d/%d tasks complete.", done, len(tasks))
+	return b.String()
+}
+
 func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(tool.RegisteredTool{
@@ -23,7 +57,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 			action := fmt.Sprint(args["action"])
 			switch action {
 			case "view":
-				return store.View(), nil
+				return tool.StateResult{Output: formatTaskList(store.View()), State: store.View()}, nil
 			case "append":
 				raw, ok := args["tasks"].([]any)
 				if !ok || len(raw) == 0 {
