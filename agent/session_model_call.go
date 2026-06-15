@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/contextestimate"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -27,7 +27,7 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, msgs []llm.Me
 
 	totalChars := 0
 	for _, m := range msgs {
-		totalChars += messageCharCount(m)
+		totalChars += contextestimate.MessageCharCount(m)
 	}
 	approxTokens := float64(totalChars) / 4.0
 	threshold := float64(cw) * 0.8
@@ -44,48 +44,6 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, msgs []llm.Me
 		Percent:           pct,
 	})
 	return true
-}
-
-func messageCharCount(m llm.Message) int {
-	n := 0
-	n += len(m.Name)
-	n += len(m.ToolCallID)
-	for _, p := range m.Content {
-		switch p.Kind {
-		case llm.ContentText:
-			n += len(p.Text)
-		case llm.ContentToolCall:
-			if p.ToolCall != nil {
-				n += len(p.ToolCall.ID)
-				n += len(p.ToolCall.Name)
-				n += len(p.ToolCall.Arguments)
-			}
-		case llm.ContentToolResult:
-			if p.ToolResult != nil {
-				n += len(p.ToolResult.ToolCallID)
-				n += len(p.ToolResult.Name)
-				switch x := p.ToolResult.Content.(type) {
-				case string:
-					n += len(x)
-				case []byte:
-					n += len(x)
-				default:
-					b, _ := json.Marshal(x)
-					n += len(b)
-				}
-			}
-		case llm.ContentThinking, llm.ContentRedThinking:
-			if p.Thinking != nil {
-				n += len(p.Thinking.Text)
-				n += len(p.Thinking.Signature)
-			}
-		default:
-			// Fallback to a best-effort JSON encoding.
-			b, _ := json.Marshal(p)
-			n += len(b)
-		}
-	}
-	return n
 }
 
 // prepareModelRequest runs the per-round input phases and assembles the llm.Request

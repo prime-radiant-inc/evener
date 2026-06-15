@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/contextestimate"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -225,58 +226,7 @@ func ApplyThresholdScale(cm *Manager, scale float64) {
 
 // estimateTokens estimates token count for turns using the char/4 heuristic.
 func estimateTokens(turns []schema.Turn) int {
-	chars := 0
-	for _, t := range turns {
-		chars += messageCharCount(t.Message)
-	}
-	return chars / 4
-}
-
-// messageCharCount returns the total character count of a message's text,
-// tool-call, tool-result, and thinking content. It is the basis of the char/4
-// token estimate. Package agent keeps its own copy for the symmetric estimate
-// it makes on the session side; duplicating a small pure helper is preferable
-// to cross-importing it.
-func messageCharCount(m llm.Message) int {
-	n := 0
-	n += len(m.Name)
-	n += len(m.ToolCallID)
-	for _, p := range m.Content {
-		switch p.Kind {
-		case llm.ContentText:
-			n += len(p.Text)
-		case llm.ContentToolCall:
-			if p.ToolCall != nil {
-				n += len(p.ToolCall.ID)
-				n += len(p.ToolCall.Name)
-				n += len(p.ToolCall.Arguments)
-			}
-		case llm.ContentToolResult:
-			if p.ToolResult != nil {
-				n += len(p.ToolResult.ToolCallID)
-				n += len(p.ToolResult.Name)
-				switch x := p.ToolResult.Content.(type) {
-				case string:
-					n += len(x)
-				case []byte:
-					n += len(x)
-				default:
-					b, _ := json.Marshal(x)
-					n += len(b)
-				}
-			}
-		case llm.ContentThinking, llm.ContentRedThinking:
-			if p.Thinking != nil {
-				n += len(p.Thinking.Text)
-				n += len(p.Thinking.Signature)
-			}
-		default:
-			// Fallback to a best-effort JSON encoding.
-			b, _ := json.Marshal(p)
-			n += len(b)
-		}
-	}
-	return n
+	return contextestimate.EstimateTurnsTokens(turns)
 }
 
 // --- MaybeCompact orchestrator ---

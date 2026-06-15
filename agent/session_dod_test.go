@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -885,6 +886,39 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 	}
 	if warned {
 		t.Fatalf("did not expect WARNING event")
+	}
+}
+
+func TestSession_ContextWindowAwareness_DoesNotWarnForLargeImageBytes(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "tiny",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("ok") },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, WithContextWindow(WithProviderID(NewOpenAIProfile("m"), "tiny"), 262_144), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sess.ProcessInput(ctx, "describe this image", []ImageAttachment{{
+		MediaType: "image/png",
+		Data:      bytes.Repeat([]byte{0x89}, 1_500_000),
+	}})
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	for ev := range sess.Events() {
+		if d, ok := ev.Data.(events.WarningData); ok && strings.Contains(d.Message, "of context window") {
+			t.Fatalf("did not expect context-window warning: %q", d.Message)
+		}
 	}
 }
 
