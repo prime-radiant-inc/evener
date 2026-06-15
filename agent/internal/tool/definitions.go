@@ -143,9 +143,10 @@ func DefJobSendMessage() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "job_send_message",
 		Description: "Send a follow-up message to a delegate by `job_id` — or, from an observer, commentary to `caller`. " +
-			"A running delegate is steered mid-run; a finished one is resumed in the same conversation as a new job " +
-			"(new `job_id` returned, returns immediately by default). Set `on_finished=\"fail\"` only when you require a " +
-			"currently live target: the call then fails with `target_terminal` instead of resuming.",
+			"A delegate steered while it is mid-turn returns on delivery (`action:\"sent\"`, same `job_id`); a finished " +
+			"delegate — or a running one that is idle between turns — is resumed in the same conversation as a new job " +
+			"(`action:\"resumed\"`, new `job_id`, returns immediately by default). Set `on_finished=\"fail\"` only when you " +
+			"require a currently live target: the call then fails with `target_terminal` instead of resuming.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
