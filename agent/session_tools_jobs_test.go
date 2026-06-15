@@ -95,7 +95,7 @@ func TestJobReadOutputDefaultWindowIsBounded(t *testing.T) {
 		t.Fatalf("job_read_output returned error: %s", readRes.Output)
 	}
 	var ro struct {
-		Content    string `json:"content"`
+		Content    string `json:"output"`
 		TotalBytes int64  `json:"total_bytes"`
 	}
 	if err := json.Unmarshal([]byte(readRes.Output), &ro); err != nil {
@@ -106,6 +106,84 @@ func TestJobReadOutputDefaultWindowIsBounded(t *testing.T) {
 	}
 	if len(ro.Content) > 9000 {
 		t.Fatalf("bare-read content = %d bytes, want a small bounded default window (<= ~8 KiB)", len(ro.Content))
+	}
+}
+
+// TestJobReadOutputHeadAndTailTogether pins that head_lines + tail_lines in one
+// call returns a custom-sized head+tail digest (not an error): the first N + last
+// M lines with the middle elided.
+func TestJobReadOutputHeadAndTailTogether(t *testing.T) {
+	s := newTestSession(t)
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"seq 1 5000","max_runtime_ms":5000}`),
+	})
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	_ = json.Unmarshal([]byte(res.Output), &out)
+	if out.JobID == "" {
+		t.Fatalf("seq 1 5000 should be a handle: %s", res.Output)
+	}
+	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "r1",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","head_lines":3,"tail_lines":3}`),
+	})
+	if readRes.IsError {
+		t.Fatalf("head_lines+tail_lines together must be allowed, got error: %s", readRes.Output)
+	}
+	var ro struct {
+		Content string `json:"output"`
+	}
+	if err := json.Unmarshal([]byte(readRes.Output), &ro); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, want := range []string{"1\n", "5000\n", "elided"} {
+		if !strings.Contains(ro.Content, want) {
+			t.Fatalf("head+tail digest missing %q:\n%s", want, ro.Content)
+		}
+	}
+}
+
+// TestJobReadOutputFromLineMiddleSlice pins the middle-slice accessor: from_line
+// + line_count returns exactly that line range, marked windowed (lines exist on
+// both sides).
+func TestJobReadOutputFromLineMiddleSlice(t *testing.T) {
+	s := newTestSession(t)
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"seq 1 5000","max_runtime_ms":5000}`),
+	})
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	_ = json.Unmarshal([]byte(res.Output), &out)
+	if out.JobID == "" {
+		t.Fatalf("seq 1 5000 should be a handle: %s", res.Output)
+	}
+	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "r1",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","from_line":2500,"line_count":3}`),
+	})
+	if readRes.IsError {
+		t.Fatalf("from_line read error: %s", readRes.Output)
+	}
+	var ro struct {
+		Content      string `json:"output"`
+		OutputStatus string `json:"output_status"`
+	}
+	if err := json.Unmarshal([]byte(readRes.Output), &ro); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if ro.Content != "2500\n2501\n2502\n" {
+		t.Fatalf("from_line slice = %q, want lines 2500-2502", ro.Content)
+	}
+	if ro.OutputStatus != "windowed" {
+		t.Fatalf("output_status = %q, want windowed (lines exist on both sides)", ro.OutputStatus)
 	}
 }
 
@@ -3051,7 +3129,7 @@ type jobReadOutputTestResult struct {
 	Type    string  `json:"type"`
 	Status  string  `json:"status"`
 	Reason  *string `json:"reason"`
-	Content string  `json:"content"`
+	Content string  `json:"output"`
 	Grep    string  `json:"grep"`
 	Matches []struct {
 		ByteOffset *int64 `json:"byte_offset"`
@@ -3561,7 +3639,7 @@ func TestJobReadOutputHeadLinesReadsFromStart(t *testing.T) {
 
 // TestJobReadOutputHeadAndTailMutuallyExclusive verifies that supplying both
 // head_lines and tail_lines in the same call fails with invalid_request.
-func TestJobReadOutputHeadAndTailMutuallyExclusive(t *testing.T) {
+func TestJobReadOutputFromLineExclusiveWithHeadTail(t *testing.T) {
 	s := newTestSession(t)
 	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -3572,16 +3650,13 @@ func TestJobReadOutputHeadAndTailMutuallyExclusive(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "read",
 		Name:      "job_read_output",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"head_lines":1024,"tail_lines":1024}`, rec.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"from_line":5,"head_lines":3}`, rec.JobID)),
 	})
 	if !res.IsError {
-		t.Fatalf("job_read_output with head_lines+tail_lines succeeded, want error; output: %s", res.Output)
+		t.Fatalf("job_read_output with from_line+head_lines succeeded, want error; output: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "invalid_request") {
-		t.Fatalf("error = %q, want invalid_request", res.Output)
-	}
-	if !strings.Contains(res.Output, "head_lines") {
-		t.Fatalf("error = %q, want mention of head_lines", res.Output)
+	if !strings.Contains(res.Output, "invalid_request") || !strings.Contains(res.Output, "from_line") {
+		t.Fatalf("error = %q, want invalid_request mentioning from_line", res.Output)
 	}
 }
 

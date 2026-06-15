@@ -79,7 +79,7 @@ Resume-after-STOP is subagent-cancel-runaway.md; the observer
   the invariant is DELIVERY, not which path carried it.
   - Live steer (the outcome this card biases toward via the initial
     sleep): `action` `"sent"`, `job_id` == JA (NO new job), `status`
-    `"running"`; the eventual JA read's `content` contains
+    `"running"`; the eventual JA read's `output` contains
     `STEER_MARK_88`, and the child transcript carries the instruction
     as a STEERING entry BEFORE the child's final communicate.
   - Legal race outcome (delegate finished first — the contract's

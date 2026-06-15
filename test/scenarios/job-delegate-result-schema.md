@@ -62,14 +62,14 @@ the structured fields are how the parent judges outcome.
   `structured_result` equal to `{"verdict":"ok","count":7}`, and
   `structured_result_valid` `true`. The follow-up `job_read_output`
   exposes the SAME three facts (line 652) plus the prose report in
-  `content`. Falsification: `structured_result` absent or carrying
+  `output`. Falsification: `structured_result` absent or carrying
   the default communicate envelope keys (`message`/`data`/
   `artifacts`) instead of the schema's own fields.
 - Arm (b): the read of the violating job shows `status` `"completed"`
   (the delegate TURN ended normally — line 295) while the structured
   triplet reports the violation: NO `structured_result` field,
   `structured_result_valid` `false`, and `structured_result_reason`
-  `"schema_validation_failed"`. The prose `content` is still readable.
+  `"schema_validation_failed"`. The prose `output` is still readable.
   `jobs.jsonl`'s `job_finished` for that job carries the same
   valid/reason pair (durable, not recomputed per read).
   <!-- pin: the reason vocabulary is implementation-defined

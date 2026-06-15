@@ -97,7 +97,7 @@ func shellInlineDigest(full string, total, dropped int64) string {
 // fits in the read budget it returns it whole (≤ digestHeadLines lines or
 // head+tail overlap) or a single-buffer digest; otherwise it reads the tail
 // separately and stitches a head + elision-marker + tail digest.
-func readJobOutputDigest(readWindow func(budget int, fromHead bool) (jobReadOutputSnapshot, error)) (jobReadOutputSnapshot, error) {
+func readJobOutputDigest(readWindow func(budget int, fromHead bool) (jobReadOutputSnapshot, error), headLines, tailLines int) (jobReadOutputSnapshot, error) {
 	headSnap, err := readWindow(jobLineReadBudget, true)
 	if err != nil {
 		return jobReadOutputSnapshot{}, err
@@ -105,11 +105,11 @@ func readJobOutputDigest(readWindow func(budget int, fromHead bool) (jobReadOutp
 	if !headSnap.Truncated && headSnap.DroppedBytes == 0 {
 		// The entire retained output fits in the head read.
 		content := []byte(headSnap.Content)
-		head, hN, more := firstLineBytes(content, digestHeadLines)
+		head, hN, more := firstLineBytes(content, headLines)
 		if !more {
 			return headSnap, nil
 		}
-		tail, tN, _ := lastLineBytes(content, digestTailLines)
+		tail, tN, _ := lastLineBytes(content, tailLines)
 		if len(head)+len(tail) >= len(content) {
 			return headSnap, nil
 		}
@@ -121,11 +121,53 @@ func readJobOutputDigest(readWindow func(budget int, fromHead bool) (jobReadOutp
 	if err != nil {
 		return jobReadOutputSnapshot{}, err
 	}
-	head, hN, _ := firstLineBytes([]byte(headSnap.Content), digestHeadLines)
-	tail, tN, _ := lastLineBytes([]byte(tailSnap.Content), digestTailLines)
+	head, hN, _ := firstLineBytes([]byte(headSnap.Content), headLines)
+	tail, tN, _ := lastLineBytes([]byte(tailSnap.Content), tailLines)
 	tailSnap.Content = assembleOutputDigest(head, hN, tail, tN, tailSnap.TotalBytes, tailSnap.DroppedBytes)
 	tailSnap.Truncated = true
 	return tailSnap, nil
+}
+
+// midLineBytes returns the lines [fromLine, fromLine+count) of b (1-based,
+// inclusive of trailing newlines), the count returned, and whether lines exist
+// before the window (before) or after it (after) within b.
+func midLineBytes(b []byte, fromLine, count int) (slice []byte, lines int, before, after bool) {
+	if fromLine < 1 {
+		fromLine = 1
+	}
+	if count < 1 || len(b) == 0 {
+		return nil, 0, fromLine > 1 && len(b) > 0, false
+	}
+	start, end, idx, pos := -1, -1, 0, 0
+	for pos < len(b) {
+		lineStart := pos
+		nl := bytes.IndexByte(b[pos:], '\n')
+		lineEnd := len(b)
+		if nl >= 0 {
+			lineEnd = pos + nl + 1
+		}
+		idx++ // 1-based line number
+		switch {
+		case idx < fromLine:
+			before = true
+		case idx < fromLine+count:
+			if start < 0 {
+				start = lineStart
+			}
+			end = lineEnd
+			lines++
+		default:
+			after = true
+		}
+		if after {
+			break
+		}
+		pos = lineEnd
+	}
+	if start < 0 {
+		return nil, 0, before, after
+	}
+	return b[start:end], lines, before, after
 }
 
 // firstLineBytes returns the first n lines of b (each line including its trailing

@@ -626,7 +626,7 @@ Canonical target shape:
 Canonical behavior:
 
 - Omit `head_lines`/`tail_lines` for the default **head+tail digest**: the first ~100 and last ~100 lines of retained output, with the middle elided and a marker stating how much (bytes, and a permanent-loss note when output was evicted past the retention cap).
-- Pass `head_lines` to read that many whole lines from the START of retained output, or `tail_lines` from the END. They are mutually exclusive; supplying both fails `invalid_request`. Both omitted gives the digest. A per-side byte budget bounds a pathological run of very long lines.
+- Pass `head_lines` to read that many whole lines from the START of retained output, `tail_lines` from the END, or **both together** for a custom-sized head+tail digest. For an arbitrary middle window, use `from_line` (1-based) + `line_count` (default 100); `from_line` cannot be combined with `head_lines`/`tail_lines`. Omit all of them for the default digest. A per-side byte budget bounds a pathological run of very long lines.
 - `grep`, when supplied, searches retained output server-side using Go/RE2 syntax and returns bounded matching lines/chunks plus output metadata. Match entries should include a byte position such as `byte_offset` when available. In the core model-facing contract this is informational/triage metadata; agents can act on it only when an implementation also exposes advanced paging or a UI uses the coordinate to fetch surrounding context.
 - `grep` is for inspecting retained output, including terminal jobs. `job_watch.output_match` is for triggering a notification or configured send while a watched running job emits matching output.
 - Reads are non-consuming and non-acknowledging.
@@ -646,7 +646,7 @@ Canonical return shape:
   "type": "shell",
   "status": "running",
   "reason": null,
-  "content": "head+tail digest, requested line slice, or grep excerpt",
+  "output": "head+tail digest, requested line slice, or grep excerpt",
   "grep": "(?i)(ready|blocked|error)",
   "matches": [
     {

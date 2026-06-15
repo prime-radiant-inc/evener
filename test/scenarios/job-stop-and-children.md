@@ -71,7 +71,7 @@ Turn 1:
   although the job is a plain interruptible sleep that confirms
   cancellation in well under the 5s bound.
 - Output survives the stop: the step-4 read returns `status`
-  `"cancelled"`, `reason` `"stopped_by_parent"`, and `content`
+  `"cancelled"`, `reason` `"stopped_by_parent"`, and `output`
   containing `STOP_RETAIN_TOKEN`. Falsification: `job ... not found`,
   empty content, or `output_unavailable` — stop deleted or hid history
   (violates lines 750-751).

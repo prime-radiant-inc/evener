@@ -58,7 +58,7 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
    >    finishes in well under the session timeout). Report the full result JSON.
    > 2. If the step-1 result had a job_id, call job_read_output for it with
    >    head_lines 200 and report total_bytes, dropped_bytes, output_status,
-   >    and whether the content starts with COH_CHATTY_LINE.
+   >    and whether the output starts with COH_CHATTY_LINE.
    > 3. Run the shell tool with command: `sh -c 'exit 0'` (fast quiet, no
    >    output). Report the full result JSON.
    > 4. Call job_list with no filters and report whether any job_id from
@@ -110,7 +110,7 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
     exceeded the 8 KiB ride-whole budget), `status` `"completed"`,
     `truncated` `true`, `output_status` `"windowed"`, `total_bytes` ≫ the
     inline peek, and a small head+tail digest of the output inline. The
-    step-2 `job_read_output` (head_lines 200) returns `content` beginning
+    step-2 `job_read_output` (head_lines 200) returns `output` beginning
     with `COH_CHATTY_LINE`, `dropped_bytes` `0` (≪ 8 MiB retained), and
     `output_status` `"windowed"` — proving the head is reachable and nothing
     was evicted. The kept job emits NO terminal notification (synchronous

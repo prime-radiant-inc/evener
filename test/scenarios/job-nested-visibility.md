@@ -71,7 +71,7 @@ watched job) is job-watch-sidecar-observer.md, not this card.
 - The nested job OUTLIVES its creating delegate: the delegate is
   `completed` while the nested job still runs — background jobs are
   not tied to the creating turn (line 9).
-- Arm (b): the step-3 read returns `status` `"running"` and `content`
+- Arm (b): the step-3 read returns `status` `"running"` and `output`
   containing `NEST_TOKEN_1` — the parent read its output through the
   parent-visible id with no extra handle. Falsification:
   `target_not_found`/`not found` or empty content while the child
@@ -87,7 +87,7 @@ watched job) is job-watch-sidecar-observer.md, not this card.
   exactly this).
 - Arm (d): the step-5 read — AFTER the delegate finished (long since
   terminal) and the nested job itself is now terminal — still returns
-  the retained output: `status` `"cancelled"`, `content` containing
+  the retained output: `status` `"cancelled"`, `output` containing
   `NEST_TOKEN_1` and NOT `NEST_TOKEN_2` (never printed; the sleep was
   cut short). The forwarded job's output remains readable by the
   parent after both lifetimes ended (line 940). Falsification: the

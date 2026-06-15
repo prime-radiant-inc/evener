@@ -291,8 +291,19 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	if err != nil {
 		return "", err
 	}
-	if hasHead && hasTail {
-		return "", errors.New("invalid_request: head_lines and tail_lines are mutually exclusive")
+	fromLine, hasFromLine, err := strictZeroJobBytesArg(args, "from_line")
+	if err != nil {
+		return "", err
+	}
+	lineCount, _, err := strictZeroJobBytesArg(args, "line_count")
+	if err != nil {
+		return "", err
+	}
+	if hasFromLine && (hasHead || hasTail) {
+		return "", errors.New("invalid_request: from_line cannot be combined with head_lines/tail_lines")
+	}
+	if hasFromLine && lineCount <= 0 {
+		lineCount = digestHeadLines // default window when from_line has no line_count
 	}
 	maxChars := registryMaxChars
 	grep := stringArg(args, "grep")
@@ -353,6 +364,17 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		} else {
 			snap, err = readSession.readJobOutputSnapshot(jm, fallbackTarget, jobID, jobLineReadBudget, false, grepRE)
 		}
+	case hasFromLine:
+		snap, err = readWindow(maxJobOutputBytes, true)
+		if err == nil {
+			sliced, _, before, after := midLineBytes([]byte(snap.Content), fromLine, lineCount)
+			snap.Content = string(sliced)
+			if before || after {
+				snap.Truncated = true // lines outside the requested range exist
+			}
+		}
+	case hasHead && hasTail:
+		snap, err = readJobOutputDigest(readWindow, headLines, tailLines)
 	case hasHead:
 		snap, err = readWindow(jobLineReadBudget, true)
 		if err == nil {
@@ -372,7 +394,7 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 			}
 		}
 	default:
-		snap, err = readJobOutputDigest(readWindow)
+		snap, err = readJobOutputDigest(readWindow, digestHeadLines, digestTailLines)
 	}
 	if err != nil {
 		return "", err
@@ -663,7 +685,7 @@ type jobReadOutputResult struct {
 	Type                   string            `json:"type"`
 	Status                 string            `json:"status"`
 	Reason                 *string           `json:"reason"`
-	Content                string            `json:"content"`
+	Content                string            `json:"output"`
 	Grep                   *string           `json:"grep,omitempty"`
 	Matches                *[]jobOutputMatch `json:"matches,omitempty"`
 	TotalBytes             int64             `json:"total_bytes"`
