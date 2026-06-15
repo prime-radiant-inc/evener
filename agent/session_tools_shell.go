@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -299,7 +298,7 @@ func shellToolResultMaxChars(reg *tool.Registry) int {
 	return registered.Limit.MaxChars
 }
 
-func marshalShellToolResult(res shellResult, maxChars int) (tool.TextResult, error) {
+func marshalShellToolResult(res shellResult, maxChars int) (tool.StateResult, error) {
 	// complete-or-handle (spec §0.6): within-bound results carry a settle
 	// closure. Apply both layers — ride-whole budget (shellRideWholeBytes)
 	// and tool-result char bound (maxChars) — to decide keep vs discard.
@@ -323,20 +322,7 @@ func marshalShellToolResult(res shellResult, maxChars int) (tool.TextResult, err
 		out.DroppedBytes = res.DroppedBytes
 		out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, res.Truncated)
 	}
-	b, err := json.Marshal(out)
-	if err != nil {
-		return tool.TextResult{}, err
-	}
-	full := string(b)
-	model := full
-	if maxChars > 0 {
-		var err error
-		model, err = marshalBoundedShellToolResult(out, maxChars)
-		if err != nil {
-			return tool.TextResult{}, err
-		}
-	}
-	return tool.TextResult{Output: model, FullOutput: full}, nil
+	return tool.StateResult{Output: formatShellResult(out), State: out}, nil
 }
 
 // marshalCompleteOrHandleResult implements spec §0.6 for within-bound shell
@@ -349,7 +335,7 @@ func marshalShellToolResult(res shellResult, maxChars int) (tool.TextResult, err
 // If either layer triggers → settle(true) keeps the delayed job (durable),
 // returns a truncated tail + job_id. Otherwise → settle(false) discards the
 // delayed job (ephemeral), returns complete output inline with no job_id.
-func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResult, error) {
+func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.StateResult, error) {
 	falseVal := false
 	out := shellToolResult{
 		Type:         res.Type,
@@ -363,30 +349,17 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResu
 		DroppedBytes: res.DroppedBytes,
 	}
 
-	// Layer 1: ride-whole budget.
+	out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, false)
+
+	// Two layers decide keep vs ephemeral (spec §6.4c): the ride-whole budget
+	// (output too big to inline) and the tool-result char bound (the rendered
+	// result would overflow maxChars). Either → keep a durable job so the model
+	// can page; neither → return the complete output inline and discard the job.
 	embedExceeded := len(res.Output) > shellRideWholeBytes
-
-	// Layer 2: tool-result char bound. Marshal with full output and check.
-	charBoundExceeded := false
-	if !embedExceeded && maxChars > 0 {
-		b, err := json.Marshal(out)
-		if err != nil {
-			_ = res.settle(false)
-			return tool.TextResult{}, err
-		}
-		charBoundExceeded = jsonCharLen(b) > maxChars
-	}
-
+	charBoundExceeded := !embedExceeded && maxChars > 0 && len([]rune(formatShellResult(out))) > maxChars
 	if !embedExceeded && !charBoundExceeded {
-		// Ephemeral: complete output fits inline. Discard the delayed job.
 		_ = res.settle(false)
-		out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, false)
-		b, err := json.Marshal(out)
-		if err != nil {
-			return tool.TextResult{}, err
-		}
-		s := string(b)
-		return tool.TextResult{Output: s, FullOutput: s}, nil
+		return tool.StateResult{Output: formatShellResult(out), State: out}, nil
 	}
 
 	// Keep: output cannot ride whole inline. Commit + finalize the delayed job.
@@ -394,31 +367,13 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.TextResu
 	out.JobID = jobID
 	out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, true)
 
-	// FullOutput (TOOL_CALL_END, for observers/hooks) carries the complete output;
-	// the durable job retains it too. The model sees only a small head+tail digest
-	// + the job_id — it pages the rest via job_read_output.
-	fullBytes, err := json.Marshal(out)
-	if err != nil {
-		return tool.TextResult{}, err
-	}
-
-	peek := out
+	// The model sees only a small head+tail digest + the job_id — it pages the rest
+	// via job_read_output. The full output is retained in the durable job.
 	digest := shellInlineDigest(res.Output, res.TotalBytes, res.DroppedBytes)
 	peekTruncated := true
-	peek.Output = &digest
-	peek.Truncated = &peekTruncated
-	if maxChars > 0 {
-		model, err := marshalBoundedShellToolResult(peek, maxChars)
-		if err != nil {
-			return tool.TextResult{}, err
-		}
-		return tool.TextResult{Output: model, FullOutput: string(fullBytes)}, nil
-	}
-	pb, err := json.Marshal(peek)
-	if err != nil {
-		return tool.TextResult{}, err
-	}
-	return tool.TextResult{Output: string(pb), FullOutput: string(fullBytes)}, nil
+	out.Output = &digest
+	out.Truncated = &peekTruncated
+	return tool.StateResult{Output: formatShellResult(out), State: out}, nil
 }
 
 // outputWindowStatus classifies an output window for the model: "all_retained"
@@ -437,47 +392,43 @@ func outputWindowStatus(total, dropped int64, truncated bool) string {
 	return "all_retained"
 }
 
-func marshalBoundedShellToolResult(out shellToolResult, maxChars int) (string, error) {
-	b, err := json.Marshal(out)
-	if err != nil {
-		return "", err
-	}
-	if jsonCharLen(b) <= maxChars || out.Output == nil {
-		return string(b), nil
-	}
-
-	original := []rune(*out.Output)
-	truncated := true
-	out.Truncated = &truncated
-
-	best := ""
-	lo, hi := 0, len(original)
-	for lo <= hi {
-		mid := lo + (hi-lo)/2
-		candidate := string(original[len(original)-mid:])
-		out.Output = &candidate
-		b, err = json.Marshal(out)
-		if err != nil {
-			return "", err
-		}
-		if jsonCharLen(b) <= maxChars {
-			best = candidate
-			lo = mid + 1
-		} else {
-			hi = mid - 1
-		}
-	}
-
-	out.Output = &best
-	b, err = json.Marshal(out)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
-}
-
 func jsonCharLen(b []byte) int {
 	return len([]rune(string(b)))
+}
+
+// formatShellResult renders a shell result as plain text for the model: the
+// command output (a digest when windowed), then a bracketed footer carrying the
+// structured signals — exit code, timeout/background status, the job_id to page a
+// windowed or backgrounded job, and any retention-cap loss. The full structured
+// result rides alongside as StateResult.State for the hub.
+func formatShellResult(out shellToolResult) string {
+	var b strings.Builder
+	if out.Output != nil && *out.Output != "" {
+		b.WriteString(*out.Output)
+		if !strings.HasSuffix(*out.Output, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	var foot []string
+	if out.ExitCode != nil && !out.RunningInBackground {
+		foot = append(foot, fmt.Sprintf("exit %d", *out.ExitCode))
+	}
+	if out.TimedOut {
+		foot = append(foot, "timed out")
+	}
+	switch {
+	case out.RunningInBackground && out.JobID != "":
+		foot = append(foot, "running in background as "+out.JobID)
+	case out.JobID != "":
+		foot = append(foot, "output windowed — read more with job_read_output(job_id="+out.JobID+")")
+	}
+	if out.DroppedBytes > 0 {
+		foot = append(foot, fmt.Sprintf("%d bytes dropped past the retention cap", out.DroppedBytes))
+	}
+	if len(foot) > 0 {
+		b.WriteString("[" + strings.Join(foot, " · ") + "]")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 type shellToolResult struct {

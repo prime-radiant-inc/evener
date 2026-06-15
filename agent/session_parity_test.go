@@ -210,7 +210,7 @@ func TestParity_ShellCommandExecution(t *testing.T) {
 	}
 }
 
-func TestParity_ShellCommandTimeout(t *testing.T) {
+func TestParity_ShellBackgroundLaunch(t *testing.T) {
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
 			steps := []func(llm.Request) llm.Response{
@@ -241,20 +241,24 @@ func TestParity_ShellCommandTimeout(t *testing.T) {
 			}
 			sess.Close()
 
-			// Tool result should mention timeout.
+			// A background launch should be reflected consistently across providers:
+			// the shell tool result reports the job is running in the background.
 			reqs := f.Requests()
 			found := false
 			for _, r := range reqs {
 				for _, m := range r.Messages {
 					for _, p := range m.Content {
-						if p.Kind == llm.ContentToolResult && strings.Contains(fmt.Sprint(p.ToolResult.Content), "timed_out") {
+						if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
+							continue
+						}
+						if strings.Contains(fmt.Sprint(p.ToolResult.Content), "running in background") {
 							found = true
 						}
 					}
 				}
 			}
 			if !found {
-				t.Fatal("timeout not reflected in tool results")
+				t.Fatal("background launch not reflected in tool results")
 			}
 		})
 	}

@@ -1825,27 +1825,14 @@ func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsShellJSONValid(t *t
 	if toolResult == "" {
 		t.Fatalf("expected tool result content")
 	}
-	if got := len([]rune(toolResult)); got > 800 {
-		t.Fatalf("tool result escaped configured max chars: got %d want <= 800", got)
+	// Shell returns plain text now (output + footer), not JSON. The per-tool char
+	// limit still bounds it far below the 60k raw output; allow the registry
+	// truncation marker's overhead on top of the configured 800.
+	if got := len([]rune(toolResult)); got > 1200 {
+		t.Fatalf("tool result not bounded by configured limit: got %d (want ~800 + marker)", got)
 	}
-
-	var shellResult struct {
-		Status    string `json:"status"`
-		Reason    string `json:"reason"`
-		ExitCode  int    `json:"exit_code"`
-		Output    string `json:"output"`
-		Truncated bool   `json:"truncated"`
-	}
-	if err := json.Unmarshal([]byte(toolResult), &shellResult); err != nil {
-		t.Fatalf("expected valid JSON shell result: %v\n%s", err, toolResult)
-	}
-	if shellResult.Status != "completed" ||
-		shellResult.Reason != "exit_zero" ||
-		shellResult.ExitCode != 0 ||
-		!shellResult.Truncated ||
-		shellResult.Output == "" ||
-		len(shellResult.Output) >= 60_000 {
-		t.Fatalf("unexpected shell result: %+v", shellResult)
+	if !strings.Contains(toolResult, "Tool output was truncated") && !strings.Contains(toolResult, "elided") {
+		t.Fatalf("a 60k output under an 800-char limit must show truncation/elision: %s", toolResult)
 	}
 }
 
@@ -1915,25 +1902,13 @@ func TestSession_ToolOutputTruncation_LineLimitPreservesStreamingShellJSON(t *te
 	if truncated == "" {
 		t.Fatalf("expected tool result content")
 	}
-	var shellResult struct {
-		Status              string `json:"status"`
-		Reason              string `json:"reason"`
-		RunningInBackground bool   `json:"running_in_background"`
-		ExitCode            int    `json:"exit_code"`
-		Output              string `json:"output"`
-		Truncated           bool   `json:"truncated"`
+	// Shell returns plain text now; the MaxLines:4 limit truncates it to a head+tail
+	// of the output lines. The head (l0) and tail (l9) survive the line truncation.
+	if !strings.Contains(truncated, "l0") || !strings.Contains(truncated, "l9") {
+		t.Fatalf("line-truncated result must keep head and tail lines: %s", truncated)
 	}
-	if err := json.Unmarshal([]byte(truncated), &shellResult); err != nil {
-		t.Fatalf("expected JSON shell result: %v\n%s", err, truncated)
-	}
-	if shellResult.Status != "completed" ||
-		shellResult.Reason != "exit_zero" ||
-		shellResult.RunningInBackground ||
-		shellResult.ExitCode != 0 ||
-		shellResult.Truncated ||
-		!strings.Contains(shellResult.Output, "l0\n") ||
-		!strings.Contains(shellResult.Output, "l9\n") {
-		t.Fatalf("unexpected shell result: %+v", shellResult)
+	if got := strings.Count(truncated, "\n"); got > 8 {
+		t.Fatalf("result not line-bounded: %d newlines, want the MaxLines:4 head+tail+marker", got)
 	}
 }
 

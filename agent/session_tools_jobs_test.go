@@ -20,6 +20,37 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// toolResultJSON returns the structured JSON for a tool result: the StateResult
+// ride-along (tool_state) when the tool sets one — the case for shell and the job
+// tools, which now return plain text to the model and the struct as state — else
+// the model-facing output (tools that still return JSON directly, e.g. delegate).
+func toolResultJSON(res tooldefs.ExecResult) []byte {
+	if len(res.ToolState) > 0 {
+		return res.ToolState
+	}
+	return []byte(res.Output)
+}
+
+// handlerJSON returns the structured JSON from a tool handler called directly
+// (not via the registry), whose return is now a tooldefs.StateResult: it marshals
+// the State. Tools still returning a JSON string yield that string verbatim.
+func handlerJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	switch r := v.(type) {
+	case tooldefs.StateResult:
+		b, err := json.Marshal(r.State)
+		if err != nil {
+			t.Fatalf("marshal handler state: %v", err)
+		}
+		return b
+	case string:
+		return []byte(r)
+	default:
+		t.Fatalf("unexpected handler result type %T", v)
+		return nil
+	}
+}
+
 // TestJobReadOutputReportsStatus pins job_read_output legibility: a small read
 // window of a fully-retained log reports output_status="windowed" with
 // dropped_bytes=0, so the model knows the rest is reachable, not lost.
@@ -34,7 +65,7 @@ func TestJobReadOutputReportsStatus(t *testing.T) {
 	var out struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" {
@@ -54,7 +85,7 @@ func TestJobReadOutputReportsStatus(t *testing.T) {
 		DroppedBytes int64  `json:"dropped_bytes"`
 		OutputStatus string `json:"output_status"`
 	}
-	if err := json.Unmarshal([]byte(readRes.Output), &ro); err != nil {
+	if err := json.Unmarshal(toolResultJSON(readRes), &ro); err != nil {
 		t.Fatalf("unmarshal read: %v (output: %s)", err, readRes.Output)
 	}
 	if ro.OutputStatus != "windowed" {
@@ -79,7 +110,7 @@ func TestJobReadOutputDefaultWindowIsBounded(t *testing.T) {
 	var out struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" {
@@ -98,7 +129,7 @@ func TestJobReadOutputDefaultWindowIsBounded(t *testing.T) {
 		Content    string `json:"output"`
 		TotalBytes int64  `json:"total_bytes"`
 	}
-	if err := json.Unmarshal([]byte(readRes.Output), &ro); err != nil {
+	if err := json.Unmarshal(toolResultJSON(readRes), &ro); err != nil {
 		t.Fatalf("unmarshal read: %v", err)
 	}
 	if ro.TotalBytes < 20000 {
@@ -122,7 +153,7 @@ func TestJobReadOutputHeadAndTailTogether(t *testing.T) {
 	var out struct {
 		JobID string `json:"job_id"`
 	}
-	_ = json.Unmarshal([]byte(res.Output), &out)
+	_ = json.Unmarshal(toolResultJSON(res), &out)
 	if out.JobID == "" {
 		t.Fatalf("seq 1 5000 should be a handle: %s", res.Output)
 	}
@@ -137,7 +168,7 @@ func TestJobReadOutputHeadAndTailTogether(t *testing.T) {
 	var ro struct {
 		Content string `json:"output"`
 	}
-	if err := json.Unmarshal([]byte(readRes.Output), &ro); err != nil {
+	if err := json.Unmarshal(toolResultJSON(readRes), &ro); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	for _, want := range []string{"1\n", "5000\n", "elided"} {
@@ -160,7 +191,7 @@ func TestJobReadOutputFromLineMiddleSlice(t *testing.T) {
 	var out struct {
 		JobID string `json:"job_id"`
 	}
-	_ = json.Unmarshal([]byte(res.Output), &out)
+	_ = json.Unmarshal(toolResultJSON(res), &out)
 	if out.JobID == "" {
 		t.Fatalf("seq 1 5000 should be a handle: %s", res.Output)
 	}
@@ -176,7 +207,7 @@ func TestJobReadOutputFromLineMiddleSlice(t *testing.T) {
 		Content      string `json:"output"`
 		OutputStatus string `json:"output_status"`
 	}
-	if err := json.Unmarshal([]byte(readRes.Output), &ro); err != nil {
+	if err := json.Unmarshal(toolResultJSON(readRes), &ro); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if ro.Content != "2500\n2501\n2502\n" {
@@ -204,7 +235,7 @@ func TestJobListRowIsLean(t *testing.T) {
 	var out struct {
 		JobID string `json:"job_id"`
 	}
-	_ = json.Unmarshal([]byte(res.Output), &out)
+	_ = json.Unmarshal(toolResultJSON(res), &out)
 	t.Cleanup(func() {
 		_, _ = s.jobManager.stop(out.JobID)
 		waitForShellDone(t, s.jobManager, out.JobID)
@@ -218,27 +249,27 @@ func TestJobListRowIsLean(t *testing.T) {
 	if listRes.IsError {
 		t.Fatalf("job_list returned error: %s", listRes.Output)
 	}
+	// The model-facing job_list is plain text: a lean one-line row carrying no JSON
+	// noise (no null fields, internal keys, or resumable/transcript clutter for an
+	// ordinary running shell job).
 	body := listRes.Output
-	for _, banned := range []string{"transcript_ref", "resumable", "not_resumable_reason", "visible_to_session_id", "recent_watches"} {
+	for _, banned := range []string{"transcript_ref", "resumable", "not_resumable_reason", "visible_to_session_id", "recent_watches", "null", "{"} {
 		if strings.Contains(body, banned) {
 			t.Errorf("lean job_list row must not contain %q:\n%s", banned, body)
 		}
 	}
-	if strings.Contains(body, ": null") || strings.Contains(body, ":null") {
-		t.Errorf("lean job_list must omit null fields:\n%s", body)
-	}
-	// The output-size field is named total_bytes everywhere the agent reads it
-	// (shell result, job_read_output, job_list) — not the old output_bytes alias.
-	if !strings.Contains(body, "total_bytes") {
-		t.Errorf("job_list row must report output size as total_bytes:\n%s", body)
-	}
-	if strings.Contains(body, "output_bytes") {
-		t.Errorf("job_list row must not use the old output_bytes name:\n%s", body)
-	}
-	// A shell job's row carries its command so the agent can identify it without
-	// digging into the transcript.
-	if !strings.Contains(body, `"command"`) || !strings.Contains(body, "sleep 30") {
+	// A shell job's row identifies it by its command and reports its output size.
+	if !strings.Contains(body, "sleep 30") {
 		t.Errorf("shell job_list row must include its command:\n%s", body)
+	}
+	if !strings.Contains(body, "bytes") {
+		t.Errorf("shell job_list row must report its output size:\n%s", body)
+	}
+	// The structured row (State) names the size field total_bytes everywhere the
+	// agent reads it (shell result, job_read_output, job_list) — not output_bytes.
+	state := string(toolResultJSON(listRes))
+	if !strings.Contains(state, "total_bytes") || strings.Contains(state, "output_bytes") {
+		t.Errorf("job_list state must use total_bytes, not output_bytes:\n%s", state)
 	}
 }
 
@@ -258,7 +289,7 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 		Type   string `json:"type"`
 		Status string `json:"status"`
 	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
 	if shellOut.JobID == "" || shellOut.Type != string(jobstore.JobShell) || shellOut.Status != string(jobstore.StatusRunning) {
@@ -299,7 +330,7 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 		} `json:"jobs"`
 		Count int `json:"count"`
 	}
-	if err := json.Unmarshal([]byte(listRes.Output), &listOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(listRes), &listOut); err != nil {
 		t.Fatalf("unmarshal job_list output: %v (output: %s)", err, listRes.Output)
 	}
 	if listOut.Count != len(listOut.Jobs) {
@@ -350,7 +381,7 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 		Status string  `json:"status"`
 		Reason *string `json:"reason"`
 	}
-	if err := json.Unmarshal([]byte(stopRes.Output), &stopOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(stopRes), &stopOut); err != nil {
 		t.Fatalf("unmarshal job_stop output: %v (output: %s)", err, stopRes.Output)
 	}
 	if stopOut.JobID != shellOut.JobID || stopOut.Status != string(jobstore.StatusCancelled) || stopOut.Reason == nil || *stopOut.Reason != "stopped_by_parent" {
@@ -394,7 +425,7 @@ func TestJobListToolIncludeNestedSurfacesForwardedRecords(t *testing.T) {
 			t.Fatalf("job_list returned error: %s", res.Output)
 		}
 		var out jobListToolOutput
-		if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 			t.Fatalf("unmarshal job_list output: %v (output: %s)", err, res.Output)
 		}
 		return out
@@ -434,7 +465,7 @@ func TestJobListDefaultListingOmitsDepth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jobListTool: %v", err)
 	}
-	if strings.Contains(out, `"depth"`) {
+	if strings.Contains(string(handlerJSON(t, out)), `"depth"`) {
 		t.Fatalf("default job_list output contains depth key: %s", out)
 	}
 }
@@ -560,7 +591,7 @@ func TestJobListIncludeDescendantsWalksLiveTree(t *testing.T) {
 			t.Fatalf("jobListTool(%s): %v", args, err)
 		}
 		var parsed jobListDescendantOutput
-		if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		if err := json.Unmarshal(handlerJSON(t, out), &parsed); err != nil {
 			t.Fatalf("unmarshal job_list output: %v (output: %s)", err, out)
 		}
 		return parsed
@@ -707,7 +738,7 @@ func TestJobListIncludeDescendantsProjectsRuntimeLostViaOwner(t *testing.T) {
 		t.Fatalf("jobListTool(include_descendants): %v", err)
 	}
 	var parsed jobListDescendantOutput
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &parsed); err != nil {
 		t.Fatalf("unmarshal job_list output: %v (output: %s)", err, out)
 	}
 
@@ -761,7 +792,7 @@ func runJobListTool(t *testing.T, s *Session) jobListToolOutput {
 		t.Fatalf("job_list returned error: %s", res.Output)
 	}
 	var out jobListToolOutput
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal job_list output: %v (output: %s)", err, res.Output)
 	}
 	return out
@@ -925,49 +956,6 @@ func TestJobListExcludesTerminalFlushWatches(t *testing.T) {
 	}
 	if len(out.Watches) != 0 {
 		t.Fatalf("watches = %+v, want only live watches (none)", out.Watches)
-	}
-}
-
-func TestMarshalBoundedJobListResultKeepsWatchesWhenJobsTrimmed(t *testing.T) {
-	// A tiny budget forces the bound to drop every job; the watches array must
-	// still ride along in the result (spec §4 F2 watches are not job-bounded).
-	in := jobListResult{
-		Jobs: []jobListEntry{
-			{JobID: "job_AAAAAAAAAAAAAAAAAAAAAAAA", Type: "shell", Status: "running"},
-			{JobID: "job_BBBBBBBBBBBBBBBBBBBBBBBB", Type: "shell", Status: "running"},
-		},
-		Count:   2,
-		Watches: []watchListEntry{{Target: "caller", Condition: "progress_interval_ms: 1000", CreatedAt: "t"}},
-	}
-	full, err := json.Marshal(in)
-	if err != nil {
-		t.Fatalf("marshal full: %v", err)
-	}
-	watchesOnly := jobListResult{Watches: in.Watches}
-	floor, err := json.Marshal(watchesOnly)
-	if err != nil {
-		t.Fatalf("marshal floor: %v", err)
-	}
-	// A budget below the full size but at/above the empty-jobs floor forces the
-	// fallback that nils Jobs while keeping the rest of the result.
-	budget := len(floor)
-	if budget >= len(full) {
-		t.Fatalf("test budget %d must be below full size %d", budget, len(full))
-	}
-
-	out, err := marshalBoundedJobListResult(in, budget)
-	if err != nil {
-		t.Fatalf("marshalBoundedJobListResult: %v", err)
-	}
-	var got jobListResult
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatalf("unmarshal bounded output: %v (output: %s)", err, out)
-	}
-	if len(got.Jobs) != 0 {
-		t.Fatalf("bounded jobs = %+v, want trimmed to empty", got.Jobs)
-	}
-	if len(got.Watches) != 1 || got.Watches[0].Target != "caller" {
-		t.Fatalf("bounded watches = %+v, want the watch preserved", got.Watches)
 	}
 }
 
@@ -1206,7 +1194,7 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 				t.Fatalf("jobstore event count = %d, want unchanged %d", got, beforeEvents)
 			}
 			var out jobListToolOutput
-			if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			if err := json.Unmarshal(handlerJSON(t, raw), &out); err != nil {
 				t.Fatalf("unmarshal job_list: %v (output: %s)", err, raw)
 			}
 			listed := findJobListToolOutput(out.Jobs, rec.JobID)
@@ -1246,7 +1234,7 @@ func TestJobListStoppedDelegateResumabilityDoesNotBuildResumeHistory(t *testing.
 		t.Fatalf("jobListTool: %v", err)
 	}
 	var out jobListToolOutput
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, raw), &out); err != nil {
 		t.Fatalf("unmarshal job_list: %v (output: %s)", err, raw)
 	}
 	listed := findJobListToolOutput(out.Jobs, rec.JobID)
@@ -1272,7 +1260,7 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 	var shellOut struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
 	if shellOut.JobID == "" {
@@ -1291,13 +1279,14 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("job_watch returned error: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, `"watching":true`) {
-		t.Fatalf("job_watch output = %s, want watching true", res.Output)
+	watchJSON := string(toolResultJSON(res))
+	if !strings.Contains(watchJSON, `"watching":true`) {
+		t.Fatalf("job_watch state = %s, want watching true", watchJSON)
 	}
 	// The contract's install example shows replaced_existing explicitly false,
 	// not omitted (docs/job-control.md § job_watch result).
-	if !strings.Contains(res.Output, `"replaced_existing":false`) {
-		t.Fatalf("job_watch output = %s, want explicit replaced_existing:false", res.Output)
+	if !strings.Contains(watchJSON, `"replaced_existing":false`) {
+		t.Fatalf("job_watch state = %s, want explicit replaced_existing:false", watchJSON)
 	}
 	if s.jobManager.watchCount() != 1 {
 		t.Fatalf("watch count = %d, want 1", s.jobManager.watchCount())
@@ -1319,7 +1308,7 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	var shellOut struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
 	if shellOut.JobID == "" {
@@ -1404,7 +1393,7 @@ func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 		TerminalCatchup bool   `json:"terminal_catchup"`
 		Status          string `json:"status"`
 	}
-	if err := json.Unmarshal([]byte(watchRes.Output), &matched); err != nil {
+	if err := json.Unmarshal(toolResultJSON(watchRes), &matched); err != nil {
 		t.Fatalf("unmarshal watch output: %v (%s)", err, watchRes.Output)
 	}
 	if matched.Watching || !matched.Fired || !matched.TerminalCatchup || matched.Status != "completed" {
@@ -1421,11 +1410,12 @@ func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 	if noMatchRes.IsError {
 		t.Fatalf("non-matching terminal catch-up must not error: %s", noMatchRes.Output)
 	}
-	if !strings.Contains(noMatchRes.Output, `"terminal_catchup":true`) {
-		t.Fatalf("non-matching catch-up tool result = %s, want terminal_catchup", noMatchRes.Output)
+	noMatchJSON := string(toolResultJSON(noMatchRes))
+	if !strings.Contains(noMatchJSON, `"terminal_catchup":true`) {
+		t.Fatalf("non-matching catch-up state = %s, want terminal_catchup", noMatchJSON)
 	}
-	if !strings.Contains(noMatchRes.Output, `"fired":false`) {
-		t.Fatalf("non-matching catch-up must report explicit fired:false (contract §7.1): %s", noMatchRes.Output)
+	if !strings.Contains(noMatchJSON, `"fired":false`) {
+		t.Fatalf("non-matching catch-up must report explicit fired:false (contract §7.1): %s", noMatchJSON)
 	}
 }
 
@@ -1539,73 +1529,6 @@ func TestJobSendMessageToolMainAliasFailsTargetNotFoundWithoutSideEffects(t *tes
 	}
 }
 
-func TestJobWatchLargeEchoFieldsReturnBoundedSuccess(t *testing.T) {
-	s := newTestSession(t)
-
-	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "shell",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
-	})
-	if shellRes.IsError {
-		t.Fatalf("shell returned error: %s", shellRes.Output)
-	}
-	var shellOut struct {
-		JobID string `json:"job_id"`
-	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
-		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
-	}
-	t.Cleanup(func() {
-		_, _ = s.jobManager.stop(shellOut.JobID)
-		waitForShellDone(t, s.jobManager, shellOut.JobID)
-	})
-
-	largeMessage := strings.Repeat("watch-message-", jobToolResultDefaultMaxChar)
-	args, err := json.Marshal(map[string]any{
-		"target":       shellOut.JobID,
-		"output_match": "ready",
-		"send": map[string]any{
-			"to":      "caller",
-			"message": largeMessage,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "watch",
-		Name:      "job_watch",
-		Arguments: args,
-	})
-	if res.IsError {
-		t.Fatalf("job_watch returned error after installing watch candidate: %s", res.Output)
-	}
-	if len([]rune(res.Output)) > jobToolResultDefaultMaxChar {
-		t.Fatalf("job_watch output length = %d, want <= %d", len([]rune(res.Output)), jobToolResultDefaultMaxChar)
-	}
-	var out struct {
-		Target   string `json:"target"`
-		Watching bool   `json:"watching"`
-		Send     *struct {
-			To      string `json:"to"`
-			Message string `json:"message"`
-		} `json:"send"`
-	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
-		t.Fatalf("unmarshal job_watch output: %v (output: %s)", err, res.Output)
-	}
-	if out.Target != shellOut.JobID || !out.Watching || out.Send == nil || out.Send.To != "caller" {
-		t.Fatalf("job_watch output = %+v, want watching response for %s", out, shellOut.JobID)
-	}
-	if out.Send.Message == largeMessage {
-		t.Fatal("job_watch output echoed unbounded send.message")
-	}
-	if s.jobManager.watchCount() != 1 {
-		t.Fatalf("watch count = %d, want 1", s.jobManager.watchCount())
-	}
-}
-
 func TestJobWatchSendToRequired(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1648,7 +1571,7 @@ func TestJobWatchEmptySendPlaceholderIsOmitted(t *testing.T) {
 		t.Fatalf("job_watch returned error for empty send placeholder: %s", res.Output)
 	}
 	var out jobWatchToolResult
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal job_watch output: %v (output: %s)", err, res.Output)
 	}
 	if out.Send != nil {
@@ -1671,13 +1594,13 @@ func TestMarshalWatchResultSurfacesFired(t *testing.T) {
 		t.Fatalf("marshal fired result: %v", err)
 	}
 	var fired jobWatchToolResult
-	if err := json.Unmarshal([]byte(firedOut), &fired); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, firedOut), &fired); err != nil {
 		t.Fatalf("unmarshal fired result: %v (%s)", err, firedOut)
 	}
 	if !fired.Fired {
 		t.Fatalf("fired result must project fired=true, got %s", firedOut)
 	}
-	if !strings.Contains(firedOut, `"fired":true`) {
+	if !strings.Contains(string(handlerJSON(t, firedOut)), `"fired":true`) {
 		t.Fatalf("fired result JSON = %s, want it to contain \"fired\":true", firedOut)
 	}
 
@@ -1691,11 +1614,11 @@ func TestMarshalWatchResultSurfacesFired(t *testing.T) {
 		t.Fatalf("marshal not-fired result: %v", err)
 	}
 	// Contract §7.1: fired serializes explicitly even when false.
-	if !strings.Contains(notFiredOut, `"fired":false`) {
+	if !strings.Contains(string(handlerJSON(t, notFiredOut)), `"fired":false`) {
 		t.Fatalf("not-fired result JSON = %s, want explicit \"fired\":false", notFiredOut)
 	}
 	var notFired jobWatchToolResult
-	if err := json.Unmarshal([]byte(notFiredOut), &notFired); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, notFiredOut), &notFired); err != nil {
 		t.Fatalf("unmarshal not-fired result: %v (%s)", err, notFiredOut)
 	}
 	if notFired.Fired {
@@ -1734,7 +1657,7 @@ func TestJobStopDefaultReturnsRequestedCancellation(t *testing.T) {
 	var shellOut struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
 	if shellOut.JobID == "" {
@@ -1754,7 +1677,7 @@ func TestJobStopDefaultReturnsRequestedCancellation(t *testing.T) {
 		Status string  `json:"status"`
 		Reason *string `json:"reason"`
 	}
-	if err := json.Unmarshal([]byte(stopRes.Output), &stopOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(stopRes), &stopOut); err != nil {
 		t.Fatalf("unmarshal job_stop output: %v (output: %s)", err, stopRes.Output)
 	}
 	if stopOut.JobID != shellOut.JobID || stopOut.Status != string(jobstore.StatusCancelled) || stopOut.Reason == nil || *stopOut.Reason != "stopped_by_parent" {
@@ -1791,7 +1714,7 @@ func TestJobStopBlockTimeoutReturnsStopPending(t *testing.T) {
 		Status string  `json:"status"`
 		Reason *string `json:"reason"`
 	}
-	if err := json.Unmarshal([]byte(out), &stopOut); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &stopOut); err != nil {
 		t.Fatalf("unmarshal job_stop output: %v (output: %s)", err, out)
 	}
 	if stopOut.JobID != rec.JobID || stopOut.Status != string(jobstore.StatusRunning) || stopOut.Reason == nil || *stopOut.Reason != "stop_pending" {
@@ -1837,7 +1760,7 @@ func TestDelegateToolForegroundReturnsStructuredResult(t *testing.T) {
 		StructuredResult      map[string]any `json:"structured_result"`
 		StructuredResultValid bool           `json:"structured_result_valid"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal delegate output: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" ||
@@ -1879,7 +1802,7 @@ func TestDelegateToolForegroundSchemaResultMissingProjectsReason(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("delegate returned error: %s", res.Output)
 	}
-	assertStructuredResultInvalidReason(t, res.Output, "schema_result_missing")
+	assertStructuredResultInvalidReason(t, string(toolResultJSON(res)), "schema_result_missing")
 }
 
 func TestDelegateToolForegroundNoSchemaNoStructuredOmitsStructuredFields(t *testing.T) {
@@ -1938,7 +1861,7 @@ func TestJobReadOutputReturnsBackgroundDelegateStructuredResult(t *testing.T) {
 		JobID  string `json:"job_id"`
 		Status string `json:"status"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &delegateOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &delegateOut); err != nil {
 		t.Fatalf("unmarshal delegate output: %v (output: %s)", err, res.Output)
 	}
 	if delegateOut.JobID == "" || delegateOut.Status != string(jobstore.StatusRunning) {
@@ -1955,7 +1878,7 @@ func TestJobReadOutputReturnsBackgroundDelegateStructuredResult(t *testing.T) {
 		t.Fatalf("job_read_output returned error: %s", readRes.Output)
 	}
 	var readOut jobReadOutputTestResult
-	if err := json.Unmarshal([]byte(readRes.Output), &readOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(readRes), &readOut); err != nil {
 		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, readRes.Output)
 	}
 	if readOut.Status != string(jobstore.StatusCompleted) ||
@@ -1996,7 +1919,7 @@ func TestJobReadOutputReturnsBackgroundDelegateSchemaResultMissingReason(t *test
 		JobID  string `json:"job_id"`
 		Status string `json:"status"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &delegateOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &delegateOut); err != nil {
 		t.Fatalf("unmarshal delegate output: %v (output: %s)", err, res.Output)
 	}
 	if delegateOut.JobID == "" || delegateOut.Status != string(jobstore.StatusRunning) {
@@ -2012,7 +1935,7 @@ func TestJobReadOutputReturnsBackgroundDelegateSchemaResultMissingReason(t *test
 	if readRes.IsError {
 		t.Fatalf("job_read_output returned error: %s", readRes.Output)
 	}
-	assertStructuredResultInvalidReason(t, readRes.Output, "schema_result_missing")
+	assertStructuredResultInvalidReason(t, string(toolResultJSON(readRes)), "schema_result_missing")
 }
 
 func TestJobReadOutputBlockReturnsOnNewOutput(t *testing.T) {
@@ -2049,7 +1972,7 @@ func TestJobReadOutputBlockReturnsOnNewOutput(t *testing.T) {
 		t.Fatalf("job_read_output blocked for %s, want return on output before timeout", elapsed)
 	}
 	var out jobReadOutputTestResult
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
 	}
 	if !strings.Contains(out.Content, "new output") || out.Status != string(jobstore.StatusRunning) {
@@ -2092,7 +2015,7 @@ func blockingGrepRead(t *testing.T, s *Session, jobID, grep string, timeoutMS in
 		t.Fatalf("job_read_output returned error: %s", res.Output)
 	}
 	var out jobReadOutputTestResult
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
 	}
 	return out, elapsed
@@ -2355,7 +2278,7 @@ func TestJobSendMessageForegroundResumeReturnsTerminalResult(t *testing.T) {
 		Output              string `json:"output"`
 		Truncated           bool   `json:"truncated"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal job_send_message output: %v (output: %s)", err, res.Output)
 	}
 	if out.Target != first.JobID ||
@@ -2444,7 +2367,7 @@ func TestJobSendMessageRestoreRuntimeLostStructuredInvalidResult(t *testing.T) {
 		StructuredResultReason string         `json:"structured_result_reason"`
 		RunningInBackground    bool           `json:"running_in_background"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal job_send_message output: %v (output: %s)", err, res.Output)
 	}
 	if out.Target != first.JobID ||
@@ -2494,7 +2417,7 @@ func TestMarshalDelegateResultsBoundLargeOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalDelegateResult: %v", err)
 	}
-	if !json.Valid([]byte(out)) {
+	if !json.Valid(handlerJSON(t, out)) {
 		t.Fatalf("delegate result returned invalid JSON: %s", out)
 	}
 	if len([]rune(out)) > jobToolResultMinJSONChars {
@@ -2504,43 +2427,13 @@ func TestMarshalDelegateResultsBoundLargeOutput(t *testing.T) {
 		Output    string `json:"output"`
 		Truncated bool   `json:"truncated"`
 	}
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &parsed); err != nil {
 		t.Fatalf("unmarshal delegate result: %v", err)
 	}
 	if !parsed.Truncated {
 		t.Fatalf("truncated = false, want true in %s", out)
 	}
 	if !strings.Contains(parsed.Output, "delegate-tail") {
-		t.Fatalf("output tail not retained: %q", parsed.Output)
-	}
-
-	sendOut, err := marshalSendMessageResult(sendMessageResult{
-		Target:              "job_old",
-		JobID:               "job_new",
-		Type:                string(jobstore.JobDelegate),
-		Status:              jobstore.StatusCompleted,
-		RunningInBackground: false,
-		Action:              "resumed",
-		ResumedFromJobID:    "job_old",
-		TranscriptRef:       "local:child",
-		Output:              strings.Repeat("prefix-", 200) + "send-tail",
-	}, jobToolResultMinJSONChars)
-	if err != nil {
-		t.Fatalf("marshalSendMessageResult: %v", err)
-	}
-	if !json.Valid([]byte(sendOut)) {
-		t.Fatalf("send result returned invalid JSON: %s", sendOut)
-	}
-	if len([]rune(sendOut)) > jobToolResultMinJSONChars {
-		t.Fatalf("send result length = %d, want <= %d", len([]rune(sendOut)), jobToolResultMinJSONChars)
-	}
-	if err := json.Unmarshal([]byte(sendOut), &parsed); err != nil {
-		t.Fatalf("unmarshal send result: %v", err)
-	}
-	if !parsed.Truncated {
-		t.Fatalf("truncated = false, want true in %s", sendOut)
-	}
-	if !strings.Contains(parsed.Output, "send-tail") {
 		t.Fatalf("output tail not retained: %q", parsed.Output)
 	}
 }
@@ -2607,7 +2500,7 @@ func TestJobSendMessageToShellJobNotMessageable(t *testing.T) {
 	var shellOut struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
 	if shellOut.JobID == "" {
@@ -2649,7 +2542,7 @@ func TestJobSendMessageAliasTargetReturnsRuntimeShape(t *testing.T) {
 		MessageType string `json:"message_type"`
 		JobID       string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal job_send_message output: %v (output: %s)", err, res.Output)
 	}
 	if out.Target != "caller" || !out.Delivered || out.Action != "sent" || out.MessageType != "runtime" {
@@ -2758,7 +2651,7 @@ func TestJobReadOutputRejectsInvalidArgs(t *testing.T) {
 	var shellOut struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
 	t.Cleanup(func() {
@@ -2800,7 +2693,7 @@ func TestJobReadOutputGrepSearchesRetainedOutputBeyondTail(t *testing.T) {
 	var shellOut struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
 	t.Cleanup(func() {
@@ -2809,52 +2702,11 @@ func TestJobReadOutputGrepSearchesRetainedOutputBeyondTail(t *testing.T) {
 	})
 
 	readOut := waitForJobGrepMatchResult(t, s, shellOut.JobID, "needle-start", 1024)
-	if strings.Contains(readOut.Content, "needle-start") {
-		t.Fatalf("tail content unexpectedly contains retained-only match: %q", readOut.Content)
-	}
 	if len(readOut.Matches) != 1 || !strings.Contains(readOut.Matches[0].Line, "needle-start") {
 		t.Fatalf("matches = %+v, want retained output match", readOut.Matches)
 	}
 	if readOut.Matches[0].ByteOffset == nil || *readOut.Matches[0].ByteOffset != 0 {
 		t.Fatalf("match byte offset = %+v, want 0", readOut.Matches[0].ByteOffset)
-	}
-}
-
-func TestJobReadOutputDropsOversizedStructuredResultWhenBounding(t *testing.T) {
-	valid := true
-	reason := "schema_result_too_large"
-	out, err := marshalBoundedJobReadOutputResult(jobReadOutputResult{
-		JobID:                  "job_delegate",
-		Type:                   string(jobstore.JobDelegate),
-		Status:                 string(jobstore.StatusCompleted),
-		Content:                strings.Repeat("output-", 200),
-		TotalBytes:             1400,
-		Truncated:              true,
-		StructuredResult:       map[string]any{"payload": strings.Repeat("x", jobToolResultMinJSONChars)},
-		StructuredResultValid:  &valid,
-		StructuredResultReason: reason,
-	}, jobToolResultMinJSONChars)
-	if err != nil {
-		t.Fatalf("marshalBoundedJobReadOutputResult: %v", err)
-	}
-	if !json.Valid([]byte(out)) {
-		t.Fatalf("job_read_output projection returned invalid JSON: %s", out)
-	}
-	if len([]rune(out)) > jobToolResultMinJSONChars {
-		t.Fatalf("job_read_output projection length = %d, want <= %d", len([]rune(out)), jobToolResultMinJSONChars)
-	}
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		t.Fatalf("unmarshal bounded projection: %v", err)
-	}
-	if _, ok := parsed["structured_result"]; ok {
-		t.Fatalf("bounded projection kept oversized structured_result: %s", out)
-	}
-	if parsed["structured_result_valid"] != false {
-		t.Fatalf("structured_result_valid = %v, want false", parsed["structured_result_valid"])
-	}
-	if parsed["structured_result_reason"] != "projection_too_large" {
-		t.Fatalf("reason = %v, want projection_too_large", parsed["structured_result_reason"])
 	}
 }
 
@@ -2893,7 +2745,7 @@ func TestJobReadOutputProjectionTooLargeDoesNotMutateDurableStructuredResult(t *
 	var delegateOut struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &delegateOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &delegateOut); err != nil {
 		t.Fatalf("unmarshal delegate output: %v (output: %s)", err, res.Output)
 	}
 	waitForShellDone(t, s.jobManager, delegateOut.JobID)
@@ -2906,7 +2758,7 @@ func TestJobReadOutputProjectionTooLargeDoesNotMutateDurableStructuredResult(t *
 	if readRes.IsError {
 		t.Fatalf("job_read_output returned error: %s", readRes.Output)
 	}
-	assertStructuredResultInvalidReason(t, readRes.Output, "projection_too_large")
+	assertStructuredResultInvalidReason(t, string(toolResultJSON(readRes)), "projection_too_large")
 
 	rec := loadShellRecord(t, s.jobManager, delegateOut.JobID)
 	structured, ok := rec.StructuredResult.(map[string]any)
@@ -2965,9 +2817,6 @@ func TestJobReadOutputGrepSearchesTerminalOutputFileBeyondTail(t *testing.T) {
 	readOut := waitForJobGrepMatchResult(t, s, jobID, "needle-start", 1024)
 	if readOut.Status != string(jobstore.StatusCompleted) {
 		t.Fatalf("status = %q, want completed", readOut.Status)
-	}
-	if strings.Contains(readOut.Content, "needle-start") {
-		t.Fatalf("tail content unexpectedly contains retained-only match: %q", readOut.Content)
 	}
 	if len(readOut.Matches) != 1 || !strings.Contains(readOut.Matches[0].Line, "needle-start") {
 		t.Fatalf("matches = %+v, want terminal retained output match", readOut.Matches)
@@ -3037,7 +2886,7 @@ func TestJobStopSchemaRejectsUnsupportedSignal(t *testing.T) {
 	var shellOut struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
 	t.Cleanup(func() {
@@ -3073,7 +2922,7 @@ func TestJobStopAcceptsIncludeChildrenThroughRegistry(t *testing.T) {
 	var shellOut struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
 	t.Cleanup(func() {
@@ -3159,7 +3008,7 @@ type jobReadOutputTestResult struct {
 func assertStructuredResultInvalidReason(t *testing.T, out, reason string) {
 	t.Helper()
 	var parsed map[string]any
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &parsed); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := parsed["structured_result"]; ok {
@@ -3176,7 +3025,7 @@ func assertStructuredResultInvalidReason(t *testing.T, out, reason string) {
 func assertStructuredResultFieldsAbsent(t *testing.T, out string) {
 	t.Helper()
 	var parsed map[string]any
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &parsed); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := parsed["structured_result"]; ok {
@@ -3205,7 +3054,7 @@ func waitForJobOutput(t *testing.T, s *Session, jobID, want string) jobReadOutpu
 		}
 		last = res.Output
 		var out jobReadOutputTestResult
-		if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 			t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
 		}
 		if strings.Contains(out.Content, want) {
@@ -3232,7 +3081,7 @@ func waitForJobGrepMatchResult(t *testing.T, s *Session, jobID, want string, tai
 		}
 		last = res.Output
 		var out jobReadOutputTestResult
-		if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 			t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
 		}
 		if out.TotalBytes > int64(tailBytes) && len(out.Matches) > 0 {
@@ -3384,7 +3233,7 @@ func TestDelegateAndSendMessageAcceptZeroMaxWaitMS(t *testing.T) {
 		JobID               string `json:"job_id"`
 		RunningInBackground bool   `json:"running_in_background"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &spawned); err != nil || spawned.JobID == "" {
+	if err := json.Unmarshal(toolResultJSON(res), &spawned); err != nil || spawned.JobID == "" {
 		t.Fatalf("delegate result missing job_id: %s", res.Output)
 	}
 	if !spawned.RunningInBackground {
@@ -3448,7 +3297,7 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 			RunningInBackground bool   `json:"running_in_background"`
 			JobID               string `json:"job_id"`
 		}
-		if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
 		if !out.RunningInBackground || out.JobID == "" {
@@ -3588,7 +3437,7 @@ func TestJobReadOutputHeadLinesReadsFromStart(t *testing.T) {
 	var shellOut struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
 	t.Cleanup(func() {
@@ -3616,7 +3465,7 @@ func TestJobReadOutputHeadLinesReadsFromStart(t *testing.T) {
 		t.Fatalf("job_read_output (digest) returned error: %s", digRes.Output)
 	}
 	var digOut jobReadOutputTestResult
-	if err := json.Unmarshal([]byte(digRes.Output), &digOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(digRes), &digOut); err != nil {
 		t.Fatalf("unmarshal digest output: %v (output: %s)", err, digRes.Output)
 	}
 	if !strings.Contains(digOut.Content, "HEAD_MARKER_9") || !strings.Contains(digOut.Content, "TAIL_MARKER_7") {
@@ -3636,7 +3485,7 @@ func TestJobReadOutputHeadLinesReadsFromStart(t *testing.T) {
 		t.Fatalf("job_read_output (head_lines) returned error: %s", headRes.Output)
 	}
 	var headOut jobReadOutputTestResult
-	if err := json.Unmarshal([]byte(headRes.Output), &headOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(headRes), &headOut); err != nil {
 		t.Fatalf("unmarshal head output: %v (output: %s)", err, headRes.Output)
 	}
 	if !strings.Contains(headOut.Content, "HEAD_MARKER_9") {
@@ -3691,7 +3540,7 @@ func TestJobReadOutputZeroHeadTailTreatedAsUnset(t *testing.T) {
 	var shellOut struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
 	t.Cleanup(func() {
@@ -3719,7 +3568,7 @@ func TestJobReadOutputZeroHeadTailTreatedAsUnset(t *testing.T) {
 				t.Fatalf("job_read_output(%s) returned error: %s", tc.name, res.Output)
 			}
 			var out jobReadOutputTestResult
-			if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+			if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 				t.Fatalf("unmarshal output: %v (output: %s)", err, res.Output)
 			}
 			if !strings.Contains(out.Content, "ZERO_RULE_MARKER") {
@@ -3824,7 +3673,7 @@ func TestJobListReportsDelegationAllowance(t *testing.T) {
 	var got struct {
 		DelegationAllowance int `json:"delegation_allowance"`
 	}
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &got); err != nil {
 		t.Fatalf("unmarshal job_list output: %v (out=%s)", err, out)
 	}
 	if got.DelegationAllowance != 2 {
@@ -3875,7 +3724,7 @@ func TestMarshalSendMessageResultCarriesWaitIgnoredReason(t *testing.T) {
 	var got struct {
 		WaitIgnoredReason string `json:"wait_ignored_reason"`
 	}
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &got); err != nil {
 		t.Fatalf("unmarshal: %v (out=%s)", err, out)
 	}
 	if got.WaitIgnoredReason != reason {
@@ -3887,7 +3736,7 @@ func TestMarshalSendMessageResultCarriesWaitIgnoredReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalSendMessageResult (empty): %v", err)
 	}
-	if strings.Contains(out2, "wait_ignored_reason") {
+	if strings.Contains(string(handlerJSON(t, out2)), "wait_ignored_reason") {
 		t.Fatalf("wait_ignored_reason must be omitted when empty, got %s", out2)
 	}
 }
@@ -3928,7 +3777,7 @@ func TestJobStopReportsOutcomeAndPreviousStatus(t *testing.T) {
 	var shellOut struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
 	if shellOut.JobID == "" {
@@ -3944,7 +3793,7 @@ func TestJobStopReportsOutcomeAndPreviousStatus(t *testing.T) {
 		PreviousStatus string `json:"previous_status"`
 		Outcome        string `json:"outcome"`
 	}
-	if err := json.Unmarshal([]byte(out), &stopOut); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &stopOut); err != nil {
 		t.Fatalf("unmarshal job_stop output: %v (out=%s)", err, out)
 	}
 	if stopOut.Outcome != "cancelled_by_request" {
@@ -4021,7 +3870,7 @@ func TestJobListSurfacesRecentWatches(t *testing.T) {
 			EndReason string `json:"end_reason"`
 		} `json:"recent_watches"`
 	}
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &got); err != nil {
 		t.Fatalf("unmarshal: %v (out=%s)", err, out)
 	}
 	if len(got.RecentWatches) != 1 || got.RecentWatches[0].EndReason != "cleared" || got.RecentWatches[0].Target != rec.JobID {

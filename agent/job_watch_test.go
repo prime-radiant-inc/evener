@@ -5552,7 +5552,7 @@ func TestMarshalWatchResultTerminalCatchupProjection(t *testing.T) {
 		TerminalCatchup bool   `json:"terminal_catchup"`
 		Status          string `json:"status"`
 	}
-	if err := json.Unmarshal([]byte(fired), &firedOut); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, fired), &firedOut); err != nil {
 		t.Fatalf("unmarshal fired: %v (%s)", err, fired)
 	}
 	if firedOut.Watching || !firedOut.Fired || !firedOut.TerminalCatchup || firedOut.Status != "completed" {
@@ -5569,11 +5569,11 @@ func TestMarshalWatchResultTerminalCatchupProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal not-fired: %v", err)
 	}
-	if !strings.Contains(notFired, `"terminal_catchup":true`) || !strings.Contains(notFired, `"status":"failed"`) {
+	if !strings.Contains(string(handlerJSON(t, notFired)), `"terminal_catchup":true`) || !strings.Contains(string(handlerJSON(t, notFired)), `"status":"failed"`) {
 		t.Fatalf("not-fired projection = %s, want terminal_catchup+status", notFired)
 	}
 	// Contract §7.1 promises "fired=false on none" — explicit, not omitted.
-	if !strings.Contains(notFired, `"fired":false`) {
+	if !strings.Contains(string(handlerJSON(t, notFired)), `"fired":false`) {
 		t.Fatalf("not-fired projection must report explicit fired:false: %s", notFired)
 	}
 }
@@ -5990,7 +5990,7 @@ func observerReadOutput(t *testing.T, observer *Session, args map[string]any) (j
 		return jobReadOutputTestResult{}, err
 	}
 	var res jobReadOutputTestResult
-	if err := json.Unmarshal([]byte(out), &res); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &res); err != nil {
 		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, out)
 	}
 	return res, nil

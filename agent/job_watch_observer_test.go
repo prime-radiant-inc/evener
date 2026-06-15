@@ -25,7 +25,7 @@ func TestWatchSendBuildsObserverFrame(t *testing.T) {
 	var shellOut struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
 	if shellOut.JobID == "" {

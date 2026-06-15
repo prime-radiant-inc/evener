@@ -360,7 +360,7 @@ func TestCommunicate_InboxDrainsSteering(t *testing.T) {
 
 	// Parse the JSON to verify inbox is empty.
 	var resp2 map[string]any
-	if err := json.Unmarshal([]byte(res2.Output), &resp2); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res2), &resp2); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	inbox2, _ := resp2["inbox"].([]any)

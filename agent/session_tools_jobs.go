@@ -117,7 +117,7 @@ func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	})
 }
 
-func jobSendMessageTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
+func jobSendMessageTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
 	a := sendMessageArgs{
 		Target:     stringArg(args, "target"),
 		Message:    stringArg(args, "message"),
@@ -161,7 +161,7 @@ func liveSteerWaitIgnoredReason(blockTimeoutMS int, status jobstore.Status, acti
 	return ""
 }
 
-func jobWatchTool(s *Session, args map[string]any, maxChars int) (string, error) {
+func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	jm, err := sessionJobManager(s)
 	if err != nil {
 		return "", err
@@ -230,7 +230,7 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 	return marshalDelegateResult(res, maxChars)
 }
 
-func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, registryMaxChars int) (string, error) {
+func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, registryMaxChars int) (any, error) {
 	jobID := strings.TrimSpace(stringArg(args, "job_id"))
 	if jobID == "" {
 		return "", errors.New("invalid_request: job_id is required")
@@ -426,7 +426,83 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		projected := projectJobOutputMatches(snap.Matches)
 		result.Matches = &projected
 	}
-	return marshalBoundedJobReadOutputResult(result, maxChars)
+	header := ""
+	if hasFromLine {
+		header = fmt.Sprintf("--- from line %d ---", fromLine)
+	}
+	return tool.StateResult{Output: formatJobReadOutput(&result, header, maxChars), State: result}, nil
+}
+
+// formatJobReadOutput renders a job_read_output result as plain text: an optional
+// line-range header, the output (or grep matches), then a bracketed footer with
+// job_id, status, exit code, output_status, and the retained/dropped byte counts.
+// A delegate's structured_result is appended as JSON since it is genuinely
+// structured data the caller requested. Graceful degradation (spec): if including
+// the structured_result would overflow maxChars it is dropped from the model wire
+// and flagged (projection_too_large) — mutating out so the State reflects the drop
+// — while the durable record keeps the full value. The footer always survives so
+// the model can re-read with a narrower window.
+func formatJobReadOutput(out *jobReadOutputResult, header string, maxChars int) string {
+	if out.Matches != nil {
+		var b strings.Builder
+		for _, m := range *out.Matches {
+			fmt.Fprintf(&b, "%d: %s\n", m.ByteOffset, m.Line)
+		}
+		fmt.Fprintf(&b, "[%d match(es) for %q in job %s]", len(*out.Matches), derefString(out.Grep), out.JobID)
+		return b.String()
+	}
+
+	var body strings.Builder
+	if header != "" {
+		body.WriteString(header)
+		body.WriteByte('\n')
+	}
+	if out.Content != "" {
+		body.WriteString(out.Content)
+		if !strings.HasSuffix(out.Content, "\n") {
+			body.WriteByte('\n')
+		}
+	}
+	foot := []string{"job " + out.JobID, out.Status}
+	if out.ExitCode != nil {
+		foot = append(foot, fmt.Sprintf("exit %d", *out.ExitCode))
+	}
+	if out.OutputStatus != "" {
+		foot = append(foot, out.OutputStatus)
+	}
+	if out.TotalBytes > 0 {
+		foot = append(foot, humanBytes(out.TotalBytes)+" total")
+	}
+	if out.DroppedBytes > 0 {
+		foot = append(foot, humanBytes(out.DroppedBytes)+" dropped")
+	}
+	base := body.String() + "[" + strings.Join(foot, " · ") + "]"
+
+	if out.StructuredResult == nil {
+		return base
+	}
+	srText := ""
+	if sr, err := json.Marshal(out.StructuredResult); err == nil {
+		valid := out.StructuredResultValid != nil && *out.StructuredResultValid
+		srText = fmt.Sprintf("\nstructured_result (valid=%v): %s", valid, sr)
+	}
+	if maxChars <= 0 || len([]rune(base+srText)) <= maxChars {
+		return base + srText
+	}
+	// Too large to fit: drop the structured_result from the wire and flag it, so the
+	// State the hub renders reflects the drop while the durable record is untouched.
+	out.StructuredResult = nil
+	invalid := false
+	out.StructuredResultValid = &invalid
+	out.StructuredResultReason = structuredResultReasonProjectionTooLarge
+	return base + "\n[structured_result omitted: projection_too_large — re-read this job to retrieve it]"
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 type jobReadOutputSnapshot struct {
@@ -561,7 +637,7 @@ func (s *Session) jobReadClosedStoreFallback(current *jobManager, err error) (*j
 	return local, true, nil
 }
 
-func jobListTool(s *Session, args map[string]any, maxChars int) (string, error) {
+func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	jm, err := sessionJobManager(s)
 	if err != nil {
 		return "", err
@@ -601,10 +677,79 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (string, error) 
 	if allowance > 1 {
 		result.DelegationAllowance = allowance
 	}
-	return marshalBoundedJobListResult(result, maxChars)
+	_ = maxChars
+	return tool.StateResult{Output: formatJobList(result), State: result}, nil
 }
 
-func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
+// formatJobList renders job_list as plain text: a schema header, then one job per
+// line — job_id, type, status, a label (description or shell command), and a
+// bracketed detail tail (started time, reason, exit code, size, resumability) —
+// then a count footer with the delegation allowance and any active/recent watches.
+func formatJobList(out jobListResult) string {
+	var b strings.Builder
+	if len(out.Jobs) > 0 {
+		b.WriteString("# job_id  type  status  label  [started · reason · exit · bytes]\n")
+	}
+	for _, j := range out.Jobs {
+		fmt.Fprintf(&b, "%s  %s  %s", j.JobID, j.Type, j.Status)
+		if j.Depth > 0 {
+			fmt.Fprintf(&b, "  depth=%d", j.Depth)
+		}
+		label := j.Description
+		if label == "" && j.Command != nil {
+			label = *j.Command
+		}
+		if label != "" {
+			fmt.Fprintf(&b, "  %s", label)
+		}
+		var detail []string
+		if started := shortTimestamp(j.StartedAt); started != "" {
+			detail = append(detail, "started "+started)
+		}
+		if j.Reason != nil && *j.Reason != "" {
+			detail = append(detail, *j.Reason)
+		}
+		if j.ExitCode != nil {
+			detail = append(detail, fmt.Sprintf("exit %d", *j.ExitCode))
+		}
+		detail = append(detail, fmt.Sprintf("%d bytes", j.TotalBytes))
+		// Surface resumability only when a job actually is resumable; resumable=false
+		// for an ordinary shell job is noise (keeps rows lean).
+		if j.Resumable != nil && *j.Resumable {
+			detail = append(detail, "resumable")
+		}
+		fmt.Fprintf(&b, "  [%s]\n", strings.Join(detail, " · "))
+	}
+	if len(out.Jobs) == 0 {
+		b.WriteString("No jobs.\n")
+	}
+	fmt.Fprintf(&b, "\n%d job(s).", out.Count)
+	if out.DelegationAllowance > 0 {
+		fmt.Fprintf(&b, " delegation_allowance: %d.", out.DelegationAllowance)
+	}
+	for _, w := range out.Watches {
+		fmt.Fprintf(&b, "\nwatch %s → %s (%s)", w.ID, w.Target, w.Condition)
+	}
+	for _, w := range out.RecentWatches {
+		fmt.Fprintf(&b, "\nrecent watch %s → %s (%s, %d delivered)", w.ID, w.Target, w.EndReason, w.Deliveries)
+	}
+	return b.String()
+}
+
+// shortTimestamp renders an RFC3339Nano timestamp as "YYYY-MM-DD HH:MM" for
+// compact display, returning "" if it cannot be parsed.
+func shortTimestamp(ts string) string {
+	if ts == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return ""
+	}
+	return t.Format("2006-01-02 15:04")
+}
+
+func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
 	jm, err := sessionJobManager(s)
 	if err != nil {
 		return "", err
@@ -671,13 +816,15 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 	if childStopErr != nil {
 		return "", childStopErr
 	}
-	return marshalBoundedJSON(jobStopResult{
+	_ = maxChars
+	stop := jobStopResult{
 		JobID:          rec.JobID,
 		Status:         string(rec.Status),
 		Reason:         stringPtrOrNil(rec.Reason),
 		PreviousStatus: string(previousStatus),
 		Outcome:        classifyStopOutcome(previousStatus, rec),
-	}, maxChars)
+	}
+	return tool.StateResult{Output: formatJobStop(stop), State: stop}, nil
 }
 
 type jobReadOutputResult struct {
@@ -797,6 +944,16 @@ type jobStopResult struct {
 	Outcome        string  `json:"outcome"`
 }
 
+// formatJobStop renders a job_stop result as a single plain-text line matching the
+// job-family footer style: [job <id> · <status> · <outcome> · <reason>].
+func formatJobStop(out jobStopResult) string {
+	parts := []string{"job " + out.JobID, out.Status, out.Outcome}
+	if out.Reason != nil && *out.Reason != "" {
+		parts = append(parts, *out.Reason)
+	}
+	return "[" + strings.Join(parts, " · ") + "]"
+}
+
 // classifyStopOutcome distinguishes a stop that cancelled a live job from one that
 // raced with, or arrived after, the job's own completion. previous is the job's
 // status read before the stop signal; rec is the record after it.
@@ -876,14 +1033,16 @@ type delegateToolResult struct {
 	StructuredResultReason string  `json:"structured_result_reason,omitempty"`
 }
 
-func marshalSendMessageResult(res sendMessageResult, maxChars int) (string, error) {
+func marshalSendMessageResult(res sendMessageResult, maxChars int) (any, error) {
+	_ = maxChars
 	if res.MessageType == "runtime" {
-		return marshalBoundedJSON(jobSendMessageAliasResult{
+		alias := jobSendMessageAliasResult{
 			Target:      res.Target,
 			Delivered:   res.Delivered,
 			Action:      res.Action,
 			MessageType: res.MessageType,
-		}, maxChars)
+		}
+		return tool.StateResult{Output: formatSendMessageAlias(alias), State: alias}, nil
 	}
 	out := jobSendMessageDelegateResult{
 		Target:              res.Target,
@@ -908,10 +1067,54 @@ func marshalSendMessageResult(res sendMessageResult, maxChars int) (string, erro
 		out.StructuredResultValid = &valid
 		out.StructuredResultReason = res.StructuredResultReason
 	}
-	return marshalBoundedSendMessageDelegateResult(out, maxChars)
+	return tool.StateResult{Output: formatSendMessageDelegate(out), State: out}, nil
 }
 
-func marshalWatchResult(res watchResult, maxChars int) (string, error) {
+// formatSendMessageAlias renders a runtime-alias send result as a one-line footer.
+func formatSendMessageAlias(a jobSendMessageAliasResult) string {
+	delivered := "delivered"
+	if !a.Delivered {
+		delivered = "not delivered"
+	}
+	return fmt.Sprintf("[message to %s · %s · %s]", a.Target, a.Action, delivered)
+}
+
+// formatSendMessageDelegate renders a delegate send/steer/resume result: any reply
+// output, a bracketed footer, and the structured_result (JSON, genuinely
+// structured) when present.
+func formatSendMessageDelegate(out jobSendMessageDelegateResult) string {
+	var b strings.Builder
+	if out.Output != nil && *out.Output != "" {
+		b.WriteString(*out.Output)
+		if !strings.HasSuffix(*out.Output, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	foot := []string{"message to " + out.Target, out.Action}
+	if out.JobID != "" {
+		foot = append(foot, "job "+out.JobID)
+	}
+	if out.Status != "" {
+		foot = append(foot, out.Status)
+	}
+	if out.RunningInBackground {
+		foot = append(foot, "running in background")
+	}
+	if out.WaitIgnoredReason != "" {
+		foot = append(foot, "wait ignored: "+out.WaitIgnoredReason)
+	}
+	b.WriteString("[" + strings.Join(foot, " · ") + "]")
+	if out.StructuredResult != nil {
+		if sr, err := json.Marshal(out.StructuredResult); err == nil {
+			valid := out.StructuredResultValid != nil && *out.StructuredResultValid
+			fmt.Fprintf(&b, "\nstructured_result (valid=%v): %s", valid, sr)
+		}
+	}
+	return b.String()
+}
+
+func marshalWatchResult(res watchResult, maxChars int) (any, error) {
+	_ = maxChars
 	out := jobWatchToolResult{
 		Target:             res.Target,
 		Watching:           res.Watching,
@@ -930,29 +1133,45 @@ func marshalWatchResult(res watchResult, maxChars int) (string, error) {
 			IncludeExcerpt: res.Send.IncludeExcerpt,
 		}
 	}
-	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
-		return fit, err
+	return tool.StateResult{Output: formatJobWatch(out), State: out}, nil
+}
+
+// formatJobWatch renders a job_watch result as a one-line footer summarizing the
+// watch's target, trigger condition, and disposition.
+func formatJobWatch(out jobWatchToolResult) string {
+	if !out.Watching {
+		return fmt.Sprintf("[watch on %s cleared]", out.Target)
 	}
-	out.Target = limitWatchText(out.Target, maxJobWatchResultTextChars)
-	out.OutputMatch = limitWatchText(out.OutputMatch, maxJobWatchResultTextChars)
-	out.Events = boundedJobWatchResultEvents(out.Events)
-	if out.Send != nil {
-		out.Send.To = limitWatchText(out.Send.To, maxJobWatchResultTextChars)
-		out.Send.Message = limitWatchText(out.Send.Message, maxJobWatchResultTextChars)
+	parts := []string{"watching " + out.Target}
+	var cond []string
+	if out.OutputMatch != "" {
+		cond = append(cond, "output_match: "+out.OutputMatch)
 	}
-	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
-		return fit, err
+	if len(out.Events) > 0 {
+		cond = append(cond, "events: "+strings.Join(out.Events, ","))
 	}
-	out.OutputMatch = ""
-	out.Events = nil
-	if out.Send != nil {
-		out.Send.Message = ""
+	if out.ProgressIntervalMS > 0 {
+		cond = append(cond, fmt.Sprintf("every %dms", out.ProgressIntervalMS))
 	}
-	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
-		return fit, err
+	if len(cond) > 0 {
+		parts = append(parts, strings.Join(cond, " "))
 	}
-	out.Send = nil
-	return marshalBoundedJSON(out, maxChars)
+	if out.Send != nil && out.Send.To != "" {
+		parts = append(parts, "→ "+out.Send.To)
+	}
+	if out.ReplacedExisting {
+		parts = append(parts, "replaced existing")
+	}
+	if out.Fired {
+		parts = append(parts, "fired")
+	}
+	if out.TerminalCatchup {
+		parts = append(parts, "terminal catch-up")
+	}
+	if out.Status != "" {
+		parts = append(parts, out.Status)
+	}
+	return "[" + strings.Join(parts, " · ") + "]"
 }
 
 func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
@@ -976,26 +1195,6 @@ func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
 		out.StructuredResultReason = res.StructuredResultReason
 	}
 	return marshalBoundedDelegateResult(out, maxChars)
-}
-
-func marshalBoundedSendMessageDelegateResult(out jobSendMessageDelegateResult, maxChars int) (string, error) {
-	if fit, ok, err := marshalSendMessageDelegateResultWithOutputLimit(out, maxChars); err != nil || ok {
-		return fit, err
-	}
-	empty := ""
-	out.Output = &empty
-	truncated := true
-	out.Truncated = &truncated
-	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
-		return fit, err
-	}
-	if out.StructuredResult != nil {
-		out.StructuredResult = nil
-		invalid := false
-		out.StructuredResultValid = &invalid
-		out.StructuredResultReason = structuredResultReasonProjectionTooLarge
-	}
-	return marshalBoundedJSON(out, maxChars)
 }
 
 func marshalSendMessageDelegateResultWithOutputLimit(out jobSendMessageDelegateResult, maxChars int) (string, bool, error) {
@@ -1054,17 +1253,6 @@ func marshalDelegateResultWithOutputLimit(out delegateToolResult, maxChars int) 
 		}
 		return string(b), nil
 	})
-}
-
-func marshalBoundedJSONWithFit(v any, maxChars int) (string, bool, error) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "", false, err
-	}
-	if maxChars <= 0 || jsonCharLen(b) <= maxChars {
-		return string(b), true, nil
-	}
-	return "", false, nil
 }
 
 func marshalWithOutputLimit(maxChars, outputRunes int, marshal func(keep int) (string, error)) (string, bool, error) {
@@ -1235,21 +1423,6 @@ func isEmptyWatchSend(values map[string]any) bool {
 	return strings.TrimSpace(stringArg(values, "to")) == "" &&
 		stringArg(values, "message") == "" &&
 		!shellBoolArg(values, "include_excerpt")
-}
-
-func boundedJobWatchResultEvents(events []string) []string {
-	if len(events) == 0 {
-		return nil
-	}
-	limit := len(events)
-	if limit > maxJobWatchResultEvents {
-		limit = maxJobWatchResultEvents
-	}
-	out := make([]string, 0, limit)
-	for _, event := range events[:limit] {
-		out = append(out, limitWatchText(event, maxJobWatchResultTextChars))
-	}
-	return out
 }
 
 func validateJobGrepPattern(pattern string, maxChars int) error {
@@ -1597,97 +1770,6 @@ func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {
 	}
 }
 
-func marshalBoundedJobReadOutputResult(out jobReadOutputResult, maxChars int) (string, error) {
-	b, err := json.Marshal(out)
-	if err != nil {
-		return "", err
-	}
-	if jsonCharLen(b) <= maxChars {
-		return string(b), nil
-	}
-
-	out.Truncated = true
-	if fit, ok, err := marshalJobReadOutputWithContentLimit(out, maxChars); err != nil || ok {
-		return fit, err
-	}
-	if out.Matches != nil {
-		empty := []jobOutputMatch{}
-		out.Matches = &empty
-	}
-	if fit, ok, err := marshalJobReadOutputWithContentLimit(out, maxChars); err != nil || ok {
-		return fit, err
-	}
-	if out.StructuredResult != nil {
-		out.StructuredResult = nil
-		invalid := false
-		out.StructuredResultValid = &invalid
-		out.StructuredResultReason = structuredResultReasonProjectionTooLarge
-		if fit, ok, err := marshalJobReadOutputWithContentLimit(out, maxChars); err != nil || ok {
-			return fit, err
-		}
-	}
-	out.Content = ""
-	return marshalBoundedJSON(out, maxChars)
-}
-
-func marshalJobReadOutputWithContentLimit(out jobReadOutputResult, maxChars int) (string, bool, error) {
-	original := []rune(out.Content)
-	best := ""
-	bestOK := false
-	lo, hi := 0, len(original)
-	for lo <= hi {
-		mid := lo + (hi-lo)/2
-		out.Content = string(original[len(original)-mid:])
-		b, err := json.Marshal(out)
-		if err != nil {
-			return "", false, err
-		}
-		if jsonCharLen(b) <= maxChars {
-			best = string(b)
-			bestOK = true
-			lo = mid + 1
-		} else {
-			hi = mid - 1
-		}
-	}
-	return best, bestOK, nil
-}
-
-func marshalBoundedJobListResult(out jobListResult, maxChars int) (string, error) {
-	b, err := json.Marshal(out)
-	if err != nil {
-		return "", err
-	}
-	if jsonCharLen(b) <= maxChars {
-		return string(b), nil
-	}
-
-	jobs := out.Jobs
-	best := ""
-	lo, hi := 0, len(jobs)
-	for lo <= hi {
-		mid := lo + (hi-lo)/2
-		out.Jobs = jobs[:mid]
-		out.Count = len(out.Jobs)
-		b, err = json.Marshal(out)
-		if err != nil {
-			return "", err
-		}
-		if jsonCharLen(b) <= maxChars {
-			best = string(b)
-			lo = mid + 1
-		} else {
-			hi = mid - 1
-		}
-	}
-	if best != "" {
-		return best, nil
-	}
-	out.Jobs = nil
-	out.Count = 0
-	return marshalBoundedJSON(out, maxChars)
-}
-
 func marshalBoundedJSON(v any, maxChars int) (string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -1697,6 +1779,20 @@ func marshalBoundedJSON(v any, maxChars int) (string, error) {
 		return "", fmt.Errorf("job tool JSON output exceeds %d characters after bounding", maxChars)
 	}
 	return string(b), nil
+}
+
+// marshalBoundedJSONWithFit marshals v and returns (json, true, nil) when it fits
+// maxChars, or ("", false, nil) when it does not — letting the caller progressively
+// drop fields to fit. Used by the delegate result path, which keeps JSON output.
+func marshalBoundedJSONWithFit(v any, maxChars int) (string, bool, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", false, err
+	}
+	if maxChars <= 0 || jsonCharLen(b) <= maxChars {
+		return string(b), true, nil
+	}
+	return "", false, nil
 }
 
 func jobToolResultMaxChars(reg *tool.Registry, name string) int {

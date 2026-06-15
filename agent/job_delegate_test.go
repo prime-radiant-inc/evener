@@ -567,7 +567,7 @@ func TestDelegateStopMapsToCancelled(t *testing.T) {
 		t.Fatalf("jobStopTool: %v", err)
 	}
 	var stop jobStopResult
-	if err := json.Unmarshal([]byte(out), &stop); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &stop); err != nil {
 		t.Fatalf("unmarshal job_stop output: %v (output: %s)", err, out)
 	}
 	if stop.JobID != res.JobID || stop.Status != string(jobstore.StatusCancelled) || stop.Reason == nil || *stop.Reason != "stopped_by_parent" {
@@ -2940,7 +2940,7 @@ func TestRuntimeLostDelegateResumeRelinksNestedJobsToNewJob(t *testing.T) {
 		t.Fatalf("job_stop include_children on resumed job: %v", err)
 	}
 	var stop jobStopResult
-	if err := json.Unmarshal([]byte(stopOut), &stop); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, stopOut), &stop); err != nil {
 		t.Fatalf("unmarshal job_stop: %v (output: %s)", err, stopOut)
 	}
 	if stop.JobID != res.JobID {

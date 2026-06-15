@@ -55,7 +55,7 @@ func readJobListEntry(t *testing.T, s *Session, jobID string) jobListToolEntry {
 		t.Fatalf("job_list returned error: %s", res.Output)
 	}
 	var out jobListToolOutput
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal job_list output: %v (output: %s)", err, res.Output)
 	}
 	entry := findJobListToolOutput(out.Jobs, jobID)
@@ -161,7 +161,7 @@ func TestJobReadOutputCarriesLastActivity(t *testing.T) {
 		t.Fatalf("job_read_output returned error: %s", res.Output)
 	}
 	var out jobReadOutputTestResult
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
 	}
 	if out.LastActivity == nil {

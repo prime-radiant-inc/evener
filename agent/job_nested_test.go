@@ -672,7 +672,7 @@ func TestParentReadsNestedOutputViaOwnerRuntime(t *testing.T) {
 		t.Fatalf("job_read_output returned error: %s", res.Output)
 	}
 	var out jobReadOutputTestResult
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID != nested.JobID || out.Status != string(jobstore.StatusRunning) || !strings.Contains(out.Content, "nested owner line") {
@@ -1064,7 +1064,7 @@ func TestNestedReadOutputBlockRefreshesOwnerRecord(t *testing.T) {
 	}
 
 	type readResult struct {
-		out string
+		out any
 		err error
 	}
 	readDone := make(chan readResult, 1)
@@ -1093,7 +1093,7 @@ func TestNestedReadOutputBlockRefreshesOwnerRecord(t *testing.T) {
 		t.Fatalf("job_read_output returned error: %v", got.err)
 	}
 	var out jobReadOutputTestResult
-	if err := json.Unmarshal([]byte(got.out), &out); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, got.out), &out); err != nil {
 		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, got.out)
 	}
 	if !strings.Contains(out.Content, "finished during block") {
@@ -1190,7 +1190,7 @@ func TestStopDelegateIncludeChildrenStopsNested(t *testing.T) {
 		t.Fatalf("job_stop include_children: %v", err)
 	}
 	var stop jobStopResult
-	if err := json.Unmarshal([]byte(out), &stop); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &stop); err != nil {
 		t.Fatalf("unmarshal job_stop: %v (output: %s)", err, out)
 	}
 	if stop.JobID != delegate.JobID {
@@ -1354,7 +1354,7 @@ func TestStopOwnerGoneNestedTerminalRecordReturnsStatus(t *testing.T) {
 		t.Fatalf("job_stop terminal owner-gone nested job: %v", err)
 	}
 	var stop jobStopResult
-	if err := json.Unmarshal([]byte(out), &stop); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &stop); err != nil {
 		t.Fatalf("unmarshal job_stop: %v (output: %s)", err, out)
 	}
 	if stop.JobID != "job_terminal_nested" || stop.Status != string(jobstore.StatusCompleted) {
@@ -2496,7 +2496,7 @@ func TestNestedShellEndToEndThroughTools(t *testing.T) {
 		t.Fatalf("delegate tool returned error: %s", delegateCall.Output)
 	}
 	var delegate delegateToolResult
-	if err := json.Unmarshal([]byte(delegateCall.Output), &delegate); err != nil {
+	if err := json.Unmarshal(toolResultJSON(delegateCall), &delegate); err != nil {
 		t.Fatalf("unmarshal delegate result: %v (output: %s)", err, delegateCall.Output)
 	}
 	if delegate.JobID == "" || !delegate.RunningInBackground || delegate.TranscriptRef == "" {
@@ -2527,7 +2527,7 @@ func TestNestedShellEndToEndThroughTools(t *testing.T) {
 		t.Fatalf("child shell tool returned error: %s", shellCall.Output)
 	}
 	var shell shellToolResult
-	if err := json.Unmarshal([]byte(shellCall.Output), &shell); err != nil {
+	if err := json.Unmarshal(toolResultJSON(shellCall), &shell); err != nil {
 		t.Fatalf("unmarshal shell result: %v (output: %s)", err, shellCall.Output)
 	}
 	if shell.JobID == "" || !shell.RunningInBackground || shell.Status != string(jobstore.StatusRunning) {
@@ -2550,7 +2550,7 @@ func TestNestedShellEndToEndThroughTools(t *testing.T) {
 		t.Fatalf("default job_list returned error: %s", defaultListCall.Output)
 	}
 	var defaultList jobListToolOutput
-	if err := json.Unmarshal([]byte(defaultListCall.Output), &defaultList); err != nil {
+	if err := json.Unmarshal(toolResultJSON(defaultListCall), &defaultList); err != nil {
 		t.Fatalf("unmarshal default job_list: %v (output: %s)", err, defaultListCall.Output)
 	}
 	if jobListToolOutputContains(defaultList.Jobs, nestedID) {
@@ -2566,7 +2566,7 @@ func TestNestedShellEndToEndThroughTools(t *testing.T) {
 		t.Fatalf("include_nested job_list returned error: %s", nestedListCall.Output)
 	}
 	var nestedList jobListToolOutput
-	if err := json.Unmarshal([]byte(nestedListCall.Output), &nestedList); err != nil {
+	if err := json.Unmarshal(toolResultJSON(nestedListCall), &nestedList); err != nil {
 		t.Fatalf("unmarshal include_nested job_list: %v (output: %s)", err, nestedListCall.Output)
 	}
 	nestedEntry := findJobListToolOutput(nestedList.Jobs, nestedID)
@@ -2591,7 +2591,7 @@ func TestNestedShellEndToEndThroughTools(t *testing.T) {
 		t.Fatalf("job_stop returned error: %s", stopCall.Output)
 	}
 	var stop jobStopResult
-	if err := json.Unmarshal([]byte(stopCall.Output), &stop); err != nil {
+	if err := json.Unmarshal(toolResultJSON(stopCall), &stop); err != nil {
 		t.Fatalf("unmarshal job_stop: %v (output: %s)", err, stopCall.Output)
 	}
 	if stop.JobID != nestedID || (stop.Status != string(jobstore.StatusCancelled) && stop.Status != string(jobstore.StatusStopped)) {
@@ -2738,7 +2738,7 @@ func TestJobReadOutputDepth2Resolves(t *testing.T) {
 		t.Fatalf("job_read_output(worker job) returned error: %v", err)
 	}
 	var read jobReadOutputTestResult
-	if err := json.Unmarshal([]byte(out), &read); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &read); err != nil {
 		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, out)
 	}
 	if read.JobID != workerRec.JobID || read.Status != string(jobstore.StatusRunning) {
@@ -2970,7 +2970,7 @@ func TestJobStopCascadesToWorkers(t *testing.T) {
 		t.Fatalf("job_stop coordinator delegate: %v", err)
 	}
 	var stop jobStopResult
-	if err := json.Unmarshal([]byte(out), &stop); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &stop); err != nil {
 		t.Fatalf("unmarshal job_stop: %v (output: %s)", err, out)
 	}
 	if stop.JobID != coordDelegateJobID {
@@ -3062,7 +3062,7 @@ func TestJobStopTerminalDelegateCascadesToLiveWorkers(t *testing.T) {
 		t.Fatalf("job_stop terminal coordinator delegate: %v", err)
 	}
 	var stop jobStopResult
-	if err := json.Unmarshal([]byte(out), &stop); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &stop); err != nil {
 		t.Fatalf("unmarshal job_stop: %v (output: %s)", err, out)
 	}
 	if stop.JobID != coordDelegateJobID || stop.Status != string(jobstore.StatusCompleted) {
@@ -3131,7 +3131,7 @@ func TestJobStopStaleSupersededDelegateDoesNotCascade(t *testing.T) {
 		t.Fatalf("job_stop stale superseded delegate: %v", err)
 	}
 	var stop jobStopResult
-	if err := json.Unmarshal([]byte(out), &stop); err != nil {
+	if err := json.Unmarshal(handlerJSON(t, out), &stop); err != nil {
 		t.Fatalf("unmarshal job_stop: %v (output: %s)", err, out)
 	}
 	if stop.JobID != staleDelegateJobID || stop.Status != string(jobstore.StatusStopped) {

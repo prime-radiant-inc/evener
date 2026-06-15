@@ -167,7 +167,7 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 		Status              string `json:"status"`
 		RunningInBackground bool   `json:"running_in_background"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" ||
@@ -184,50 +184,6 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	jobs := s.jobManager.list(listFilter{})
 	if len(jobs) != 1 || jobs[0].JobID != out.JobID || jobs[0].Status != jobstore.StatusRunning {
 		t.Fatalf("jobs = %+v, want one running shell job %q", jobs, out.JobID)
-	}
-}
-
-func TestShellToolTinyMaxCharsStillReturnsJSON(t *testing.T) {
-	s := newShellToolTestSession(t, SessionConfig{
-		ToolOutputLimits: map[string]schema.ToolOutputLimit{
-			"shell": {MaxChars: 1, Strategy: schema.TruncHeadTail},
-		},
-	})
-
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"head -c 60000 </dev/zero | tr '\\0' 'x'"}`),
-	})
-	if res.IsError {
-		t.Fatalf("shell returned error: %s", res.Output)
-	}
-	if strings.Contains(res.Output, "Tool output was truncated") {
-		t.Fatalf("registry truncated shell JSON:\n%s", res.Output)
-	}
-	if got := len([]rune(res.Output)); got > shellToolResultMinJSONChars {
-		t.Fatalf("shell JSON escaped internal minimum: got %d want <= %d", got, shellToolResultMinJSONChars)
-	}
-	if len(res.FullOutput) <= len(res.Output) {
-		t.Fatalf("FullOutput length = %d, Output length = %d; want full event payload preserved", len(res.FullOutput), len(res.Output))
-	}
-
-	var out struct {
-		JobID     string `json:"job_id"`
-		Status    string `json:"status"`
-		Output    string `json:"output"`
-		Truncated bool   `json:"truncated"`
-	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
-		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
-	}
-	// 60KB output exceeds the tool-result char bound (MaxChars:1) — complete-or-handle
-	// keeps the job durable so the full output remains accessible (spec §6.4c).
-	if out.JobID == "" {
-		t.Fatalf("shell output missing job_id: want kept durable record for tool-result overflow (spec §6.4c)")
-	}
-	if out.Status != string(jobstore.StatusCompleted) || out.Output == "" || !out.Truncated || len(out.Output) >= 60_000 {
-		t.Fatalf("shell output = %+v, want completed truncated JSON", out)
 	}
 }
 
@@ -251,7 +207,7 @@ func TestShellToolClampsSmallMaxRuntime(t *testing.T) {
 		Output    string `json:"output"`
 		Truncated bool   `json:"truncated"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
 	}
 	if out.Status != string(jobstore.StatusCompleted) ||
@@ -316,7 +272,7 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 				Reason              string `json:"reason"`
 				RunningInBackground bool   `json:"running_in_background"`
 			}
-			if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+			if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 				t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
 			}
 			if out.JobID == "" ||
@@ -347,7 +303,7 @@ func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T)
 	var out struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" {
@@ -411,7 +367,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 	var out struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal child shell output: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" {
@@ -615,7 +571,7 @@ func TestCompleteOrHandleEphemeral(t *testing.T) {
 		Status string `json:"status"`
 		Output string `json:"output"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID != "" {
@@ -650,7 +606,7 @@ func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
 		Status    string `json:"status"`
 		Truncated bool   `json:"truncated"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" {
@@ -676,7 +632,7 @@ func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
 	var readOut struct {
 		TotalBytes int64 `json:"total_bytes"`
 	}
-	if err := json.Unmarshal([]byte(readRes.Output), &readOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(readRes), &readOut); err != nil {
 		t.Fatalf("unmarshal read output: %v", err)
 	}
 	if readOut.TotalBytes < 70000 {
@@ -703,7 +659,7 @@ func TestShellRideWholeThresholdIs8KiB(t *testing.T) {
 		JobID  string `json:"job_id"`
 		Status string `json:"status"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" {
@@ -733,7 +689,7 @@ func TestShellResultReportsOutputBytes(t *testing.T) {
 		TotalBytes   int64  `json:"total_bytes"`
 		DroppedBytes int64  `json:"dropped_bytes"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" {
@@ -762,7 +718,7 @@ func TestShellOutputStatus(t *testing.T) {
 		JobID        string `json:"job_id"`
 		OutputStatus string `json:"output_status"`
 	}
-	if err := json.Unmarshal([]byte(r1.Output), &o1); err != nil {
+	if err := json.Unmarshal(toolResultJSON(r1), &o1); err != nil {
 		t.Fatalf("unmarshal: %v (output: %s)", err, r1.Output)
 	}
 	if o1.JobID != "" {
@@ -781,7 +737,7 @@ func TestShellOutputStatus(t *testing.T) {
 		JobID        string `json:"job_id"`
 		OutputStatus string `json:"output_status"`
 	}
-	if err := json.Unmarshal([]byte(r2.Output), &o2); err != nil {
+	if err := json.Unmarshal(toolResultJSON(r2), &o2); err != nil {
 		t.Fatalf("unmarshal: %v (output: %s)", err, r2.Output)
 	}
 	if o2.JobID == "" {
@@ -811,7 +767,7 @@ func TestShellHandlePeekTailIsSmall(t *testing.T) {
 		JobID  string `json:"job_id"`
 		Output string `json:"output"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" {
@@ -833,7 +789,7 @@ func TestShellHandlePeekTailIsSmall(t *testing.T) {
 	var readOut struct {
 		TotalBytes int64 `json:"total_bytes"`
 	}
-	if err := json.Unmarshal([]byte(readRes.Output), &readOut); err != nil {
+	if err := json.Unmarshal(toolResultJSON(readRes), &readOut); err != nil {
 		t.Fatalf("unmarshal read output: %v", err)
 	}
 	if readOut.TotalBytes < 9000 {
@@ -867,7 +823,7 @@ func TestCompleteOrHandleKeptToolResultOverflow(t *testing.T) {
 		Status    string `json:"status"`
 		Truncated bool   `json:"truncated"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" {
@@ -895,7 +851,7 @@ func TestCompleteOrHandleKeptNoNotification(t *testing.T) {
 	var out struct {
 		JobID string `json:"job_id"`
 	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 		t.Fatalf("unmarshal: %v (output: %s)", err, res.Output)
 	}
 	if out.JobID == "" {
