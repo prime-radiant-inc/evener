@@ -1479,7 +1479,7 @@ func findJobRecord(jm *jobManager, jobID string) (*jobstore.JobRecord, error) {
 			return rec, nil
 		}
 	}
-	return nil, fmt.Errorf("job %q not found", jobID)
+	return nil, errJobNotFound(jobID)
 }
 
 func waitForJobDone(ctx context.Context, jm *jobManager, jobID string, timeout time.Duration) bool {

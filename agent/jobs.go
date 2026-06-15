@@ -611,6 +611,14 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 	})
 }
 
+// errJobNotFound is the shared not-found error for a job lookup by id. It points
+// the model at job_list to recover: an unknown id is usually a guessed value or a
+// foreground command whose output rode inline and kept no durable job — in both
+// cases job_list shows the ids that actually exist.
+func errJobNotFound(jobID string) error {
+	return fmt.Errorf("job %q not found — use job_list to see this session's jobs", jobID)
+}
+
 func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, total int64, truncated bool, err error) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
@@ -625,7 +633,7 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 	}
 	rec := recs[jobID]
 	if rec == nil {
-		return "", 0, false, fmt.Errorf("job %q not found", jobID)
+		return "", 0, false, errJobNotFound(jobID)
 	}
 	path := jm.outputPathForJob(rec, jobID)
 	validatedTotal, _, err := validatedOutputStatsForRecord(path, rec)
@@ -649,7 +657,7 @@ func (jm *jobManager) readOutputHead(jobID string, headBytes int) (content strin
 	}
 	rec := recs[jobID]
 	if rec == nil {
-		return "", 0, false, fmt.Errorf("job %q not found", jobID)
+		return "", 0, false, errJobNotFound(jobID)
 	}
 	path := jm.outputPathForJob(rec, jobID)
 	validatedTotal, _, err := validatedOutputStatsForRecord(path, rec)
@@ -693,7 +701,7 @@ func (jm *jobManager) outputDropped(jobID string) (int64, error) {
 	}
 	rec := recs[jobID]
 	if rec == nil {
-		return 0, fmt.Errorf("job %q not found", jobID)
+		return 0, errJobNotFound(jobID)
 	}
 	path := jm.outputPathForJob(rec, jobID)
 	_, retainedStart, err := validatedOutputStatsForRecord(path, rec)
@@ -729,7 +737,7 @@ func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp) ([]jobstore.Ma
 	}
 	rec := recs[jobID]
 	if rec == nil {
-		return nil, fmt.Errorf("job %q not found", jobID)
+		return nil, errJobNotFound(jobID)
 	}
 	path := jm.outputPathForJob(rec, jobID)
 	_, retainedStart, err := validatedOutputStatsForRecord(path, rec)
@@ -842,7 +850,7 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 	}
 	rec := recs[jobID]
 	if rec == nil {
-		return nil, fmt.Errorf("job %q not found", jobID)
+		return nil, errJobNotFound(jobID)
 	}
 	return cloneJobRecord(rec), nil
 }

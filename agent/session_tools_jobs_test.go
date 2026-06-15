@@ -96,6 +96,26 @@ func TestJobReadOutputReportsStatus(t *testing.T) {
 	}
 }
 
+// TestJobReadOutputUnknownIDPointsToJobList pins the not-found recovery hint:
+// when a job_id resolves to nothing (a guessed id, or a foreground command whose
+// output rode inline and kept no durable job), the error must redirect the model
+// to job_list rather than dead-ending on a bare "not found".
+func TestJobReadOutputUnknownIDPointsToJobList(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "r1",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(`{"job_id":"0"}`),
+	})
+	if !res.IsError {
+		t.Fatalf("expected an error for an unknown job id, got: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "job_list") {
+		t.Fatalf("not-found error must point the model at job_list, got: %s", res.Output)
+	}
+}
+
 // TestJobReadOutputDefaultWindowIsBounded pins A5: a bare job_read_output (no
 // head_lines/tail_lines) returns a small bounded default window, not up to the
 // full retention. The agent pages with an explicit tail_lines for more.
