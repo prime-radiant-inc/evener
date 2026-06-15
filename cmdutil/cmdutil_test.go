@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/serf/llm/providers/kimicoding"
 )
 
 func TestMaxRoundsToConfig(t *testing.T) {
@@ -373,10 +374,11 @@ func TestStringSliceFlag(t *testing.T) {
 // explicitly) rather than the provider-type default — so a Kimi coding-plan
 // instance (custom base_url in providers.toml) is sized from its own /models.
 func TestQueryModelContextWindow_UsesInstanceBaseURL(t *testing.T) {
-	var gotPath, gotAuth string
+	var gotPath, gotAuth, gotUA string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
+		gotUA = r.Header.Get("User-Agent")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[{"id":"kimi-for-coding","context_length":262144}]}`))
 	}))
@@ -391,5 +393,30 @@ func TestQueryModelContextWindow_UsesInstanceBaseURL(t *testing.T) {
 	}
 	if gotAuth != "Bearer inst-key" {
 		t.Fatalf("auth = %q, want Bearer inst-key (instance api key)", gotAuth)
+	}
+	// Kimi For Coding gates on a coding-agent User-Agent allowlist, so the
+	// /models probe must announce it just like the chat adapters do.
+	if gotUA != kimicoding.UserAgent {
+		t.Fatalf("User-Agent = %q, want %q (Kimi coding-agent allowlist)", gotUA, kimicoding.UserAgent)
+	}
+}
+
+// Only the Kimi coding plan gates on the coding-agent User-Agent, so other
+// openai-compat providers must not have it spoofed onto their /models probe.
+func TestQueryModelContextWindow_NonKimiOmitsCodingUserAgent(t *testing.T) {
+	var gotUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"glm-4.6","context_length":200000}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	got := queryModelContextWindow("glm", "glm-4.6", srv.URL, "inst-key")
+	if got != 200000 {
+		t.Fatalf("queryModelContextWindow = %d, want 200000", got)
+	}
+	if gotUA == kimicoding.UserAgent {
+		t.Fatalf("User-Agent = %q, must not announce the Kimi coding-agent UA for glm", gotUA)
 	}
 }

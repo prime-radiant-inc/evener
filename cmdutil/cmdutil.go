@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/serf/llm/providers/kimicoding"
 	"primeradiant.com/serf/server"
 )
 
@@ -345,6 +346,12 @@ var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPI
 		return 0
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if provider == "kimi" {
+		// Kimi For Coding gates its endpoints behind a coding-agent User-Agent
+		// allowlist; announce it so the /models query survives if the gate is
+		// extended to /models (today the catalog backstops the window anyway).
+		req.Header.Set("User-Agent", kimicoding.UserAgent)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
