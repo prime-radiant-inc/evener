@@ -16,9 +16,11 @@ type ExecResult struct {
 
 // DirEntry describes a single entry returned when listing a directory.
 type DirEntry struct {
-	Name  string `json:"name"`
-	IsDir bool   `json:"is_dir"`
-	Size  int64  `json:"size,omitempty"`
+	Name      string `json:"name"`
+	IsDir     bool   `json:"is_dir"`
+	IsSymlink bool   `json:"is_symlink,omitempty"`
+	IsExec    bool   `json:"is_exec,omitempty"`
+	Size      int64  `json:"size,omitempty"`
 }
 
 // StreamingExecutor is an optional capability: a long-running command whose

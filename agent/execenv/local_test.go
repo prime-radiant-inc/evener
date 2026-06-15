@@ -338,6 +338,41 @@ func TestEditFile_FuzzyMatch_CompletelyWrongString_StillFails(t *testing.T) {
 	}
 }
 
+func TestLocalExecutionEnvironment_ListDirectory_TypeFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink/exec-bit semantics differ on Windows")
+	}
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	if _, err := env.WriteFile("plain.txt", "hi"); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "run.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write exec: %v", err)
+	}
+	if err := os.Symlink("plain.txt", filepath.Join(dir, "link")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	ents, err := env.ListDirectory("", 1)
+	if err != nil {
+		t.Fatalf("ListDirectory: %v", err)
+	}
+	byName := map[string]DirEntry{}
+	for _, e := range ents {
+		byName[e.Name] = e
+	}
+	if e := byName["plain.txt"]; e.IsSymlink || e.IsExec {
+		t.Fatalf("plain.txt = %+v, want neither symlink nor exec", e)
+	}
+	if e := byName["run.sh"]; !e.IsExec || e.IsSymlink {
+		t.Fatalf("run.sh = %+v, want exec, not symlink", e)
+	}
+	if e := byName["link"]; !e.IsSymlink {
+		t.Fatalf("link = %+v, want symlink", e)
+	}
+}
+
 func TestLocalExecutionEnvironment_ListDirectory_Depth(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)

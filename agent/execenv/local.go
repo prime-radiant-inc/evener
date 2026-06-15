@@ -346,9 +346,15 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 				relName = filepath.Join(relPrefix, name)
 			}
 			de := DirEntry{Name: relName, IsDir: ent.IsDir()}
+			if ent.Type()&os.ModeSymlink != 0 {
+				de.IsSymlink = true
+			}
 			if !ent.IsDir() {
 				if info, err := ent.Info(); err == nil {
 					de.Size = info.Size()
+					if info.Mode()&0o111 != 0 {
+						de.IsExec = true
+					}
 				}
 			}
 			out = append(out, de)

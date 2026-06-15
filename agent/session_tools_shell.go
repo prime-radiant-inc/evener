@@ -56,9 +56,15 @@ func formatDirListing(r listDirResult) string {
 			b.WriteByte('\n')
 		}
 		b.WriteString(e.Name)
-		if e.IsDir {
+		switch {
+		case e.IsDir:
 			b.WriteByte('/')
-		} else {
+		case e.IsSymlink:
+			b.WriteByte('@')
+		case e.IsExec:
+			b.WriteByte('*')
+		}
+		if !e.IsDir {
 			b.WriteByte('\t')
 			b.WriteString(strconv.FormatInt(e.Size, 10))
 		}

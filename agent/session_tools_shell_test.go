@@ -61,11 +61,14 @@ func TestFormatDirListing(t *testing.T) {
 	entries := []execenv.DirEntry{
 		{Name: "alpha", Size: 10},
 		{Name: "sub", IsDir: true},
+		{Name: "link", IsSymlink: true, Size: 7},
+		{Name: "run", IsExec: true, Size: 99},
 		{Name: "zeta", Size: 2048},
 	}
 
-	// A whole small directory renders like ls: one entry per line, directories end
-	// with a slash, files show their size, and there is no JSON scaffolding.
+	// A whole small directory renders like ls -F: one entry per line, with a type
+	// sigil — '/' for directories, '@' for symlinks, '*' for executables — files
+	// show their size, and there is no JSON scaffolding.
 	out := formatDirListing(paginateDirEntries("/d", entries, 0, 0))
 	if strings.Contains(out, "{") || strings.Contains(out, `"name"`) || strings.Contains(out, "is_dir") {
 		t.Fatalf("listing must be plain text, not JSON:\n%s", out)
@@ -73,10 +76,16 @@ func TestFormatDirListing(t *testing.T) {
 	if !strings.Contains(out, "sub/") {
 		t.Fatalf("directory entry must end with a slash:\n%s", out)
 	}
-	if !strings.Contains(out, "alpha\t10") || !strings.Contains(out, "zeta\t2048") {
-		t.Fatalf("file entry must show name and size:\n%s", out)
+	if !strings.Contains(out, "link@\t7") {
+		t.Fatalf("symlink entry must carry an @ sigil:\n%s", out)
 	}
-	if !strings.Contains(out, "3 entries") {
+	if !strings.Contains(out, "run*\t99") {
+		t.Fatalf("executable entry must carry a * sigil:\n%s", out)
+	}
+	if !strings.Contains(out, "alpha\t10") || !strings.Contains(out, "zeta\t2048") {
+		t.Fatalf("plain file entry must show name and size with no sigil:\n%s", out)
+	}
+	if !strings.Contains(out, "5 entries") {
 		t.Fatalf("a complete listing reports the total count:\n%s", out)
 	}
 
