@@ -16,7 +16,6 @@ import (
 	"sync"
 
 	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/contextestimate"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -226,7 +225,11 @@ func ApplyThresholdScale(cm *Manager, scale float64) {
 
 // estimateTokens estimates token count for turns using the char/4 heuristic.
 func estimateTokens(turns []schema.Turn) int {
-	return contextestimate.EstimateTurnsTokens(turns)
+	messages := make([]llm.Message, 0, len(turns))
+	for _, t := range turns {
+		messages = append(messages, t.Message)
+	}
+	return llm.EstimateMessagesInputTokens(messages).Tokens
 }
 
 // --- MaybeCompact orchestrator ---

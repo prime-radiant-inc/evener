@@ -9,14 +9,13 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/contextestimate"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
-func (s *Session) maybeWarnContextUsage(profile *provider.Profile, msgs []llm.Message) bool {
+func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Request) bool {
 	if s == nil || profile == nil {
 		return false
 	}
@@ -25,11 +24,8 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, msgs []llm.Me
 		return false
 	}
 
-	totalChars := 0
-	for _, m := range msgs {
-		totalChars += contextestimate.MessageCharCount(m)
-	}
-	approxTokens := float64(totalChars) / 4.0
+	count := llm.EstimateInputTokens(req)
+	approxTokens := float64(count.Tokens)
 	threshold := float64(cw) * 0.8
 	if approxTokens <= threshold {
 		return false

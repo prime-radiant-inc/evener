@@ -124,14 +124,22 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 }
 
 func estimateMessagesInputTokens(provider, model string, messages []Message) int {
-	total := 0
+	chars := 0
+	tokens := 0
 	for _, m := range messages {
-		total += estimateMessageInputTokens(provider, model, m)
+		c, t := estimateMessageInputParts(provider, model, m)
+		chars += c
+		tokens += t
 	}
-	return total
+	return tokens + chars/4
 }
 
 func estimateMessageInputTokens(provider, model string, m Message) int {
+	chars, tokens := estimateMessageInputParts(provider, model, m)
+	return tokens + chars/4
+}
+
+func estimateMessageInputParts(provider, model string, m Message) (int, int) {
 	chars := len(m.Name) + len(m.ToolCallID)
 	tokens := 0
 	for _, p := range m.Content {
@@ -186,7 +194,7 @@ func estimateMessageInputTokens(provider, model string, m Message) int {
 			chars += len(b)
 		}
 	}
-	return tokens + chars/4
+	return chars, tokens
 }
 
 func estimateImageTokens(provider, model string, img *ImageData) int {

@@ -585,7 +585,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// Context window awareness: emit a warning when we exceed ~80% of the profile's context window.
 		if !ctxWarned {
-			if s.maybeWarnContextUsage(profile, req.Messages) {
+			if s.maybeWarnContextUsage(profile, req) {
 				ctxWarned = true
 			}
 		}
