@@ -2,11 +2,13 @@
 // coding plan (Moonshot AI) via its Anthropic-compatible API. It wraps the
 // anthropic adapter pointed at the coding endpoint (https://api.kimi.com/coding).
 //
-// This is the sanctioned route for Claude-Code-style agents: Kimi gates the
-// OpenAI-compatible /chat/completions endpoint behind a coding-agent User-Agent
-// allowlist, while the Anthropic Messages endpoint is ungated and keeps the
-// model's native tool-use and thinking format end-to-end. The separate "kimi"
-// provider type points at Moonshot's OpenAI-compatible API and is unaffected.
+// Both Kimi coding routes require a coding-agent User-Agent allowlist, which
+// serf supplies on every request (see kimicoding.UserAgent, sent by both this
+// adapter and the OpenAI-compatible "kimi" provider). This Anthropic-route
+// adapter is preferred for Claude-Code-style agents because the Anthropic
+// Messages endpoint keeps the model's native tool-use and thinking format
+// end-to-end. The separate "kimi" provider type points at the same coding plan
+// over Moonshot's OpenAI-compatible /chat/completions API.
 package kimi_anthropic
 
 import (
@@ -17,8 +19,8 @@ import (
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/anthropic"
-	"primeradiant.com/serf/llm/providers/internal/kimicoding"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
+	"primeradiant.com/serf/llm/providers/kimicoding"
 )
 
 const defaultBaseURL = "https://api.kimi.com/coding"

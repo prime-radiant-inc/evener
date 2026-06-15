@@ -1,6 +1,6 @@
 // Package kimicoding holds constants shared by the Kimi coding-plan provider
 // adapters (kimi over the OpenAI route and kimi-anthropic over the Anthropic
-// route).
+// route) and the cmdutil live context-window probe.
 package kimicoding
 
 // UserAgent is the User-Agent the Kimi coding-plan adapters announce. Kimi For

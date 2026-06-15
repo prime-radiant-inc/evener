@@ -8,8 +8,8 @@ import (
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
-	"primeradiant.com/serf/llm/providers/internal/kimicoding"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
+	"primeradiant.com/serf/llm/providers/kimicoding"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
 

@@ -1,5 +1,10 @@
 #!/bin/sh
-set -eu
+set -u
+
+# Per-test wall-clock limit (seconds). A hung test must not wedge the whole
+# suite, so each test runs under `timeout` and a TIMEOUT is reported as a
+# failure while the loop continues. Override with JSTEST_TIMEOUT.
+TIMEOUT="${JSTEST_TIMEOUT:-90}"
 
 if [ -z "${NODE_PATH:-}" ]; then
   if [ -d "./node_modules" ]; then
@@ -10,6 +15,24 @@ if [ -z "${NODE_PATH:-}" ]; then
   export NODE_PATH
 fi
 
+fail=0
 for test in test-*.js; do
-  node "$test"
+  out=$(timeout "$TIMEOUT" node "$test" 2>&1)
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "OK      $test"
+  elif [ "$rc" -eq 124 ]; then
+    echo "TIMEOUT $test (exceeded ${TIMEOUT}s)"
+    fail=1
+  else
+    echo "FAIL($rc) $test"
+    echo "$out" | tail -20
+    fail=1
+  fi
 done
+
+if [ "$fail" -ne 0 ]; then
+  echo "jstest: one or more tests failed"
+  exit 1
+fi
+echo "jstest: all tests passed"

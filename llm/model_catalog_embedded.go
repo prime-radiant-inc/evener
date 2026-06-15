@@ -53,21 +53,29 @@ func EmbeddedModelCatalog() *ModelCatalog {
 }
 
 // applyOverrides merges Serf-specific model metadata on top of the base catalog.
+// An override entry that matches an existing model (by exact ID, or by dated-family
+// ID for dated snapshots) overlays it. An override entry that matches no model and
+// carries base metadata (a context window) materializes a Serf-only catalog entry —
+// this is how Serf ships models LiteLLM doesn't cover, e.g. kimi-for-coding.
+// Overlay-only entries that match nothing (and the "_comment" key) are no-ops.
 func applyOverrides(cat *ModelCatalog, data []byte) {
 	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return
 	}
 
+	applied := make(map[string]bool, len(raw))
 	for i := range cat.Models {
 		m := &cat.Models[i]
 		entry, ok := raw[m.ID]
+		key := m.ID
 		if !ok {
 			// Dated snapshots (claude-opus-4-5-20251101[-v1]) carry no override of
 			// their own; inherit the bare family override so effort metadata applies
 			// to dated IDs too. An exact match above always wins.
 			if fam := familyModelID(m.ID); fam != m.ID {
 				entry, ok = raw[fam]
+				key = fam
 			}
 			if !ok {
 				continue
@@ -77,26 +85,75 @@ func applyOverrides(cat *ModelCatalog, data []byte) {
 		if !ok {
 			continue
 		}
-		if levels, ok := ov["reasoning_effort_levels"].([]any); ok {
-			m.ReasoningEffortLevels = nil
-			for _, lvl := range levels {
-				if s, ok := lvl.(string); ok {
-					m.ReasoningEffortLevels = append(m.ReasoningEffortLevels, s)
-				}
-			}
+		applyOverlayFields(m, ov)
+		applied[key] = true
+	}
+
+	// Materialize Serf-only models: override keys that matched no existing model
+	// and carry base metadata (a context window).
+	for id, entry := range raw {
+		if applied[id] {
+			continue
 		}
-		if v, ok := ov["supports_adaptive_thinking"].(bool); ok {
-			m.SupportsAdaptiveThinking = v
+		ov, ok := entry.(map[string]any)
+		if !ok {
+			continue // e.g. the "_comment" string key
 		}
-		if v, ok := ov["supports_effort_parameter"].(bool); ok {
-			m.SupportsEffortParameter = v
+		cw := overrideInt(ov["context_window"])
+		if cw <= 0 {
+			continue // overlay-only entry; nothing to materialize
 		}
-		if v, ok := ov["supports_web_search"].(bool); ok {
-			b := v
-			m.SupportsWebSearch = &b
+		m := ModelInfo{ID: id, ContextWindow: cw}
+		if s, ok := ov["provider"].(string); ok {
+			m.Provider = normalizeCatalogProvider(s)
 		}
+		if s, ok := ov["display_name"].(string); ok {
+			m.DisplayName = s
+		}
+		if v, ok := ov["supports_reasoning"].(bool); ok {
+			m.SupportsReasoning = v
+		}
+		if v, ok := ov["supports_tools"].(bool); ok {
+			m.SupportsTools = v
+		}
+		applyOverlayFields(&m, ov)
+		cat.Models = append(cat.Models, m)
 	}
 
 	// Rebuild index after modifications.
 	cat.byID = nil
+}
+
+// applyOverlayFields applies the Serf overlay fields (effort levels, capability
+// flags) from an override entry onto a model.
+func applyOverlayFields(m *ModelInfo, ov map[string]any) {
+	if levels, ok := ov["reasoning_effort_levels"].([]any); ok {
+		m.ReasoningEffortLevels = nil
+		for _, lvl := range levels {
+			if s, ok := lvl.(string); ok {
+				m.ReasoningEffortLevels = append(m.ReasoningEffortLevels, s)
+			}
+		}
+	}
+	if v, ok := ov["supports_adaptive_thinking"].(bool); ok {
+		m.SupportsAdaptiveThinking = v
+	}
+	if v, ok := ov["supports_effort_parameter"].(bool); ok {
+		m.SupportsEffortParameter = v
+	}
+	if v, ok := ov["supports_web_search"].(bool); ok {
+		b := v
+		m.SupportsWebSearch = &b
+	}
+}
+
+// overrideInt coerces a JSON-decoded number (float64 from encoding/json) to int.
+func overrideInt(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	}
+	return 0
 }

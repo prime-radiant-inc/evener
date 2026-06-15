@@ -2340,3 +2340,23 @@ func TestNewForInstance_EnvPathPreservesName(t *testing.T) {
 		t.Fatalf("Name() = %q, want openai-compatible", a.Name())
 	}
 }
+
+func TestAdapter_ListModels_ParsesContextLength(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"kimi-for-coding","context_length":262144}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{BaseURL: srv.URL, Client: srv.Client()}
+	models, err := a.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("len(models) = %d, want 1", len(models))
+	}
+	if models[0].ContextWindow != 262144 {
+		t.Fatalf("ContextWindow = %d, want 262144 (provider context_length must be parsed)", models[0].ContextWindow)
+	}
+}
