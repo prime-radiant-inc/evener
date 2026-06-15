@@ -125,8 +125,8 @@ func TestContextManager_CumulativeUsage_ThreadSafe(t *testing.T) {
 // --- Phase 2: Observation masking ---
 
 func TestSummarizeToolResult_ReadFile(t *testing.T) {
-	// Simulate a read_file result: line-numbered content.
-	lines := "1 | package main\n2 | func main() {}\n"
+	// Simulate a read_file result: line-numbered content (cat -n style, tab separator).
+	lines := "1\tpackage main\n2\tfunc main() {}\n"
 	got := summarizeToolResult("read_file", lines, json.RawMessage(`{"file_path":"auth.go"}`))
 	want := "[read_file: auth.go, 2 lines]"
 	if got != want {

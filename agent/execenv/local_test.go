@@ -102,8 +102,8 @@ func TestLocalExecutionEnvironment_ReadWriteEditFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if !strings.Contains(got, "1 | hello") {
-		t.Fatalf("expected line numbers, got:\n%s", got)
+	if !strings.Contains(got, "1\thello") {
+		t.Fatalf("expected tab-separated line numbers (cat -n style), got:\n%s", got)
 	}
 	if _, err := env.EditFile("a.txt", "world", "WORLD", false); err != nil {
 		t.Fatalf("EditFile: %v", err)
