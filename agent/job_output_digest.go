@@ -211,5 +211,5 @@ func lastLineBytes(b []byte, n int) (slice []byte, lines int, more bool) {
 			return b[nl+1:], lines, true
 		}
 	}
-	return b[end-end:], lines, true
+	return b, lines, true
 }

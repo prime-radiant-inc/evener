@@ -1197,25 +1197,6 @@ func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
 	return marshalBoundedDelegateResult(out, maxChars)
 }
 
-func marshalSendMessageDelegateResultWithOutputLimit(out jobSendMessageDelegateResult, maxChars int) (string, bool, error) {
-	if out.Output == nil {
-		return marshalBoundedJSONWithFit(out, maxChars)
-	}
-	original := []rune(*out.Output)
-	originalTruncated := out.Truncated != nil && *out.Truncated
-	return marshalWithOutputLimit(maxChars, len(original), func(keep int) (string, error) {
-		tail := string(original[len(original)-keep:])
-		out.Output = &tail
-		truncated := originalTruncated || keep < len(original)
-		out.Truncated = &truncated
-		b, err := json.Marshal(out)
-		if err != nil {
-			return "", err
-		}
-		return string(b), nil
-	})
-}
-
 func marshalBoundedDelegateResult(out delegateToolResult, maxChars int) (string, error) {
 	if fit, ok, err := marshalDelegateResultWithOutputLimit(out, maxChars); err != nil || ok {
 		return fit, err

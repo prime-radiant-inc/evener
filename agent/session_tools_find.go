@@ -156,7 +156,7 @@ func formatSessionFindings(env findSessionsEnvelope) string {
 	if len(env.Matches) != 1 {
 		footer += "es"
 	}
-	footer += fmt.Sprintf(" (scope: %s", env.ScopeApplied)
+	footer += " (scope: " + env.ScopeApplied
 	if env.Scanned != nil {
 		footer += fmt.Sprintf(", scanned %d", *env.Scanned)
 		if env.ScanTruncated != nil && *env.ScanTruncated {

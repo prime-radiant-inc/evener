@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/serf/agent/execenv"
@@ -30,7 +31,7 @@ func formatTaskList(tasks []taskpkg.Task) string {
 		if len(t.DependsOn) > 0 {
 			parts := make([]string, len(t.DependsOn))
 			for i, d := range t.DependsOn {
-				parts[i] = fmt.Sprintf("%d", d)
+				parts[i] = strconv.Itoa(d)
 			}
 			fmt.Fprintf(&b, " (depends on: %s)", strings.Join(parts, ", "))
 		}
@@ -57,7 +58,7 @@ func formatTaskUpdates(updates []taskpkg.TaskUpdate) string {
 		if u.Status != "" {
 			parts[i] = fmt.Sprintf("%d→%s", u.ID, u.Status)
 		} else {
-			parts[i] = fmt.Sprintf("%d", u.ID)
+			parts[i] = strconv.Itoa(u.ID)
 		}
 	}
 	return strings.Join(parts, ", ")
