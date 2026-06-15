@@ -43,7 +43,7 @@ func DefWriteFile() llm.ToolDefinition {
 func DefListDir() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "list_dir",
-		Description: "List the contents of a directory path. Use depth to control recursion when exploring project structure (1 means this directory only). Entries return as a bounded page sorted by name (kept small enough to fit the result), reporting total/returned/truncated; when truncated, read the next page with offset (set it to the running count of entries already seen), narrow with a more specific path, or reduce depth.",
+		Description: "List the contents of a directory path, like ls. Use depth to control recursion when exploring project structure (1 means this directory only). Returns one entry per line — directories end with '/', files show a tab-separated size — sorted by name, followed by a count footer. The listing is a bounded page kept small enough to fit; when the footer says it is truncated, read the next page with offset (set it to the running count of entries already seen), narrow with a more specific path, or reduce depth.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

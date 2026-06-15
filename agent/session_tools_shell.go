@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/serf/agent/execenv"
@@ -18,31 +19,62 @@ const (
 	// caller gives no limit. The char budget below usually binds first on a large
 	// directory; this is the ceiling for a directory of very short names.
 	defaultListDirLimit = 1000
-	// listDirCharBudget bounds the marshalled entries so the result stays well under
-	// list_dir's tool-output char cap (registry defaultToolLimit, 20k) and never
-	// trips the generic middle-truncator, which would gut the entries array into
-	// invalid JSON. list_dir is ls: truncation drops whole trailing records, in
-	// record units, with an accurate count — not characters from the middle.
+	// listDirCharBudget bounds the rendered listing so it stays well under list_dir's
+	// tool-output char cap (registry defaultToolLimit, 20k) and never trips the
+	// generic middle-truncator. list_dir is ls: truncation drops whole trailing
+	// records, in record units, with an accurate count — not characters from the
+	// middle.
 	listDirCharBudget = 16_000
 )
 
-// listDirResult is the paginated list_dir wire shape: a bounded page of entries
-// plus the totals an agent needs to decide whether to page further or narrow the
-// path/depth.
+// listDirResult is a bounded page of directory entries plus the totals an agent
+// needs to decide whether to page further or narrow the path/depth. It is
+// rendered to plain text by formatDirListing.
 type listDirResult struct {
-	Path      string             `json:"path"`
-	Entries   []execenv.DirEntry `json:"entries"`
-	Total     int                `json:"total"`
-	Returned  int                `json:"returned"`
-	Offset    int                `json:"offset"`
-	Truncated bool               `json:"truncated"`
+	Path      string
+	Entries   []execenv.DirEntry
+	Total     int
+	Returned  int
+	Offset    int
+	Truncated bool
 }
 
-// dirEntrySize over-estimates an entry's pretty-printed JSON size (the
-// MarshalIndent scaffold for name/is_dir/size plus the name) so the running
-// budget keeps the real marshalled result under the cap.
+// dirEntrySize over-estimates an entry's rendered line length (name, an optional
+// slash or tab-separated size, and a newline) so the running budget keeps the
+// rendered listing under the cap.
 func dirEntrySize(e execenv.DirEntry) int {
-	return len(e.Name) + 64
+	return len(e.Name) + 16
+}
+
+// formatDirListing renders a page as plain text, ls-style: one entry per line,
+// directories suffixed with "/", files shown as "name\tsize", followed by a count
+// footer that says how to page when the listing is truncated.
+func formatDirListing(r listDirResult) string {
+	var b strings.Builder
+	for i, e := range r.Entries {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(e.Name)
+		if e.IsDir {
+			b.WriteByte('/')
+		} else {
+			b.WriteByte('\t')
+			b.WriteString(strconv.FormatInt(e.Size, 10))
+		}
+	}
+	if b.Len() > 0 {
+		b.WriteString("\n\n")
+	}
+	switch {
+	case r.Truncated:
+		fmt.Fprintf(&b, "%d of %d entries (offset %d) — more with list_dir(offset=%d)", r.Returned, r.Total, r.Offset, r.Offset+r.Returned)
+	case r.Offset > 0:
+		fmt.Fprintf(&b, "%d of %d entries (offset %d)", r.Returned, r.Total, r.Offset)
+	default:
+		fmt.Fprintf(&b, "%d entries", r.Total)
+	}
+	return b.String()
 }
 
 // paginateDirEntries returns the entries starting at offset as a page bounded by
@@ -129,7 +161,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if err != nil {
 				return nil, err
 			}
-			return paginateDirEntries(path, entries, offset, limit), nil
+			return formatDirListing(paginateDirEntries(path, entries, offset, limit)), nil
 		},
 	})
 

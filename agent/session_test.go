@@ -1389,7 +1389,12 @@ func TestSession_CoreTools_ListDir(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("list_dir error: %s", res.Output)
 	}
-	for _, want := range []string{`"name": "a.txt"`, `"name": "sub"`, `"name": "sub/b.txt"`} {
+	// Plain-text ls-style output: files as "name\tsize", directories suffixed "/",
+	// nested names depth-prefixed (depth=2).
+	if strings.Contains(res.Output, "{") {
+		t.Fatalf("list_dir output must be plain text, not JSON:\n%s", res.Output)
+	}
+	for _, want := range []string{"a.txt\t", "sub/\n", "sub/b.txt\t"} {
 		if !strings.Contains(res.Output, want) {
 			t.Fatalf("list_dir missing %q:\n%s", want, res.Output)
 		}

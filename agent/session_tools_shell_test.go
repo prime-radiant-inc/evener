@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -42,14 +43,10 @@ func TestPaginateDirEntries(t *testing.T) {
 		t.Fatalf("last page = %+v", r)
 	}
 
-	// Offset past the end: empty page, not truncated, serializes entries as [] not null.
+	// Offset past the end: empty page, not truncated.
 	r = paginateDirEntries("/x", entries, 10, 2)
 	if r.Returned != 0 || r.Truncated {
 		t.Fatalf("past-end page = %+v", r)
-	}
-	b, _ := json.Marshal(r)
-	if !strings.Contains(string(b), `"entries":[]`) {
-		t.Fatalf("empty page must serialize entries as [] not null: %s", b)
 	}
 
 	// Unset limit (0, as strict-schema providers send) applies the default cap;
@@ -57,6 +54,40 @@ func TestPaginateDirEntries(t *testing.T) {
 	r = paginateDirEntries("/x", entries, 0, 0)
 	if r.Returned != 5 || r.Truncated {
 		t.Fatalf("default-limit page = %+v", r)
+	}
+}
+
+func TestFormatDirListing(t *testing.T) {
+	entries := []execenv.DirEntry{
+		{Name: "alpha", Size: 10},
+		{Name: "sub", IsDir: true},
+		{Name: "zeta", Size: 2048},
+	}
+
+	// A whole small directory renders like ls: one entry per line, directories end
+	// with a slash, files show their size, and there is no JSON scaffolding.
+	out := formatDirListing(paginateDirEntries("/d", entries, 0, 0))
+	if strings.Contains(out, "{") || strings.Contains(out, `"name"`) || strings.Contains(out, "is_dir") {
+		t.Fatalf("listing must be plain text, not JSON:\n%s", out)
+	}
+	if !strings.Contains(out, "sub/") {
+		t.Fatalf("directory entry must end with a slash:\n%s", out)
+	}
+	if !strings.Contains(out, "alpha\t10") || !strings.Contains(out, "zeta\t2048") {
+		t.Fatalf("file entry must show name and size:\n%s", out)
+	}
+	if !strings.Contains(out, "3 entries") {
+		t.Fatalf("a complete listing reports the total count:\n%s", out)
+	}
+
+	// A truncated page reports the count and how to fetch the next page.
+	many := make([]execenv.DirEntry, 50)
+	for i := range many {
+		many[i] = execenv.DirEntry{Name: fmt.Sprintf("f%02d", i)}
+	}
+	out = formatDirListing(paginateDirEntries("/d", many, 0, 10))
+	if !strings.Contains(out, "10 of 50 entries") || !strings.Contains(out, "offset=10") {
+		t.Fatalf("truncated listing must report count and next offset:\n%s", out)
 	}
 }
 
@@ -81,12 +112,9 @@ func TestPaginateDirEntriesStaysUnderToolCap(t *testing.T) {
 	if !r.Truncated || r.Returned >= r.Total || r.Returned == 0 {
 		t.Fatalf("budget-bounded page = {returned:%d total:%d truncated:%v}, want a bounded non-empty prefix", r.Returned, r.Total, r.Truncated)
 	}
-	b, err := json.MarshalIndent(r, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if len(b) > toolCap {
-		t.Fatalf("marshalled page is %d chars, exceeds the %d tool cap — would be middle-truncated", len(b), toolCap)
+	out := formatDirListing(r)
+	if len(out) > toolCap {
+		t.Fatalf("rendered page is %d chars, exceeds the %d tool cap — would be middle-truncated", len(out), toolCap)
 	}
 
 	// Paging from the returned offset advances through the directory.
