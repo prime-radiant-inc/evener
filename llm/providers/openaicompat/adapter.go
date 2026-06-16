@@ -110,6 +110,13 @@ func (a *Adapter) setChatHeaders(httpReq *http.Request) {
 	}
 }
 
+// ChatCompletionsBody returns the OpenAI-compatible chat request body used by
+// this adapter. Provider wrappers use it when an adjacent endpoint accepts the
+// same message shape.
+func (a *Adapter) ChatCompletionsBody(req llm.Request, stream bool) (map[string]any, error) {
+	return buildRequestBody(req, stream, a.Quirks)
+}
+
 // Complete sends a non-streaming Chat Completions request.
 func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	if a.Client == nil {

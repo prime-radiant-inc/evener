@@ -233,6 +233,90 @@ func TestAdapter_Complete_HTTPErrorMapping_AuthenticationError(t *testing.T) {
 	}
 }
 
+func TestAdapter_CountInputTokens_UsesMessagesCountTokensAPI(t *testing.T) {
+	var gotBody map[string]any
+	gotBeta := ""
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/count_tokens" {
+			t.Fatalf("request = %s %s, want POST /v1/messages/count_tokens", r.Method, r.URL.Path)
+		}
+		gotBeta = r.Header.Get("anthropic-beta")
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"input_tokens":123}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	got, err := a.CountInputTokens(ctx, llm.Request{
+		Model: "claude-test",
+		Messages: []llm.Message{
+			llm.System("sys"),
+			llm.User("hello"),
+		},
+		ProviderOptions: map[string]any{
+			"anthropic": map[string]any{
+				"beta_headers": "token-counting-beta",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CountInputTokens: %v", err)
+	}
+	if got.Tokens != 123 || !got.Exact || got.Source != llm.TokenCountSourceProvider {
+		t.Fatalf("CountInputTokens = %+v, want exact provider count", got)
+	}
+	if got.Provider != "anthropic" || got.Model != "claude-test" {
+		t.Fatalf("provider/model = %q/%q, want anthropic/claude-test", got.Provider, got.Model)
+	}
+	if gotBeta != "token-counting-beta" {
+		t.Fatalf("anthropic-beta = %q, want token-counting-beta", gotBeta)
+	}
+	if gotBody["model"] != "claude-test" {
+		t.Fatalf("model = %#v, want claude-test", gotBody["model"])
+	}
+	if _, ok := gotBody["messages"].([]any); !ok {
+		t.Fatalf("messages missing from body: %#v", gotBody)
+	}
+	if _, ok := gotBody["system"].([]any); !ok {
+		t.Fatalf("system missing from body: %#v", gotBody)
+	}
+	if got.Raw == nil || got.Raw["input_tokens"] == nil {
+		t.Fatalf("raw count response missing input_tokens: %#v", got.Raw)
+	}
+}
+
+func TestAdapter_CountInputTokens_HTTPErrorMapping(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages/count_tokens" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"slow down"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.CountInputTokens(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if llm.Kind(err) != llm.KindRateLimit {
+		t.Fatalf("Kind = %v, want %v (err=%v)", llm.Kind(err), llm.KindRateLimit, err)
+	}
+}
+
 func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 	var gotBody map[string]any
 

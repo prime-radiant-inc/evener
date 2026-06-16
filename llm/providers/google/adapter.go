@@ -170,6 +170,89 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	return r, nil
 }
 
+func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.InputTokenCount, error) {
+	if a.Client == nil {
+		a.Client = &http.Client{Timeout: 0}
+	}
+
+	system, contents, err := toGeminiContents(req.Messages)
+	if err != nil {
+		return llm.InputTokenCount{}, err
+	}
+	genReq, err := a.buildRequestBody(req, system, contents)
+	if err != nil {
+		return llm.InputTokenCount{}, err
+	}
+	genReq["model"] = "models/" + req.Model
+	body := map[string]any{"generateContentRequest": genReq}
+
+	b, err := json.Marshal(body)
+	if err != nil {
+		return llm.InputTokenCount{}, err
+	}
+
+	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
+	defer adapterCancel()
+
+	endpoint := fmt.Sprintf("%s/v1beta/models/%s:countTokens", a.BaseURL, url.PathEscape(req.Model))
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return llm.InputTokenCount{}, err
+	}
+	q := u.Query()
+	q.Set("key", a.APIKey)
+	u.RawQuery = q.Encode()
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(b))
+	if err != nil {
+		return llm.InputTokenCount{}, err
+	}
+	a.setJSONHeaders(httpReq)
+
+	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return llm.InputTokenCount{}, llm.WrapContextError("google", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	rawBytes, _ := io.ReadAll(resp.Body)
+	var raw map[string]any
+	_ = json.Unmarshal(rawBytes, &raw)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		msg := "countTokens failed: " + strings.TrimSpace(string(rawBytes))
+		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
+		return llm.InputTokenCount{}, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
+	}
+
+	tokens := tokenCountInt(raw["totalTokens"])
+	return llm.InputTokenCount{
+		Tokens:   tokens,
+		Exact:    true,
+		Source:   llm.TokenCountSourceProvider,
+		Provider: a.Name(),
+		Model:    req.Model,
+		Raw:      raw,
+	}, nil
+}
+
+func tokenCountInt(v any) int {
+	switch x := v.(type) {
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case float64:
+		return int(x)
+	case json.Number:
+		i, _ := x.Int64()
+		return int(i)
+	default:
+		return 0
+	}
+}
+
 func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}

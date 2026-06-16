@@ -85,6 +85,31 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 	}
 }
 
+func TestEstimateTokens_ImageDataDoesNotScaleWithByteLength(t *testing.T) {
+	turnsWithImage := func(size int) []schema.Turn {
+		return []schema.Turn{{Kind: schema.TurnUserInput, Message: llm.Message{
+			Role: llm.RoleUser,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "describe this image"},
+				{Kind: llm.ContentImage, Image: &llm.ImageData{
+					Data:      make([]byte, size),
+					MediaType: "image/png",
+				}},
+			},
+		}}}
+	}
+
+	small := estimateTokens(turnsWithImage(1))
+	large := estimateTokens(turnsWithImage(1_500_000))
+
+	if large != small {
+		t.Fatalf("EstimateTokens scaled with raw image bytes: small=%d large=%d", small, large)
+	}
+	if large > 1_000 {
+		t.Fatalf("EstimateTokens counted raw image payload: got %d", large)
+	}
+}
+
 func TestContextManager_AddUsage_Accumulates(t *testing.T) {
 	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil)
 	cm.AddUsage(llm.Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150})
