@@ -10,7 +10,7 @@ const path = require("path");
 
 // Dependency order: leaf helpers first, then consumers, then the core/bootstrap
 // in renderer.js last. Must match the <script> order in templates/app.html.
-const RENDERER_FILES = ["renderer.js"];
+const RENDERER_FILES = ["renderer-format.js", "renderer.js"];
 
 function rendererSources() {
   return RENDERER_FILES.map((f) =>
