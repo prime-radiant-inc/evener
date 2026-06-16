@@ -33,13 +33,16 @@ func New(data EventData) SessionEvent {
 // Per-payload eventKind markers. Each binds a payload struct to its EventKind
 // and, via the compile-time assertions below, to the EventData interface.
 
-func (SessionStartData) eventKind() EventKind        { return EventSessionStart }
-func (SessionEndData) eventKind() EventKind          { return EventSessionEnd }
-func (UserInputData) eventKind() EventKind           { return EventUserInput }
-func (AssistantTextStartData) eventKind() EventKind  { return EventAssistantTextStart }
-func (AssistantTextDeltaData) eventKind() EventKind  { return EventAssistantTextDelta }
-func (AssistantTextEndData) eventKind() EventKind    { return EventAssistantTextEnd }
-func (AssistantTextResetData) eventKind() EventKind  { return EventAssistantTextReset }
+func (SessionStartData) eventKind() EventKind       { return EventSessionStart }
+func (SessionEndData) eventKind() EventKind         { return EventSessionEnd }
+func (UserInputData) eventKind() EventKind          { return EventUserInput }
+func (AssistantTextStartData) eventKind() EventKind { return EventAssistantTextStart }
+func (AssistantTextDeltaData) eventKind() EventKind { return EventAssistantTextDelta }
+func (AssistantTextEndData) eventKind() EventKind   { return EventAssistantTextEnd }
+func (AssistantTextResetData) eventKind() EventKind { return EventAssistantTextReset }
+func (ReasoningSummaryDeltaData) eventKind() EventKind {
+	return EventReasoningSummaryDelta
+}
 func (ToolCallStartData) eventKind() EventKind       { return EventToolCallStart }
 func (ToolCallOutputDeltaData) eventKind() EventKind { return EventToolCallOutputDelta }
 func (ToolCallEndData) eventKind() EventKind         { return EventToolCallEnd }
@@ -72,6 +75,7 @@ var (
 	_ EventData = UserInputData{}
 	_ EventData = AssistantTextStartData{}
 	_ EventData = AssistantTextDeltaData{}
+	_ EventData = ReasoningSummaryDeltaData{}
 	_ EventData = AssistantTextEndData{}
 	_ EventData = ToolCallStartData{}
 	_ EventData = ToolCallOutputDeltaData{}

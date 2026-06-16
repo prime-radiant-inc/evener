@@ -52,25 +52,26 @@ const (
 )
 
 const (
-	NotifyThreadStarted        = "thread/started"
-	NotifyThreadClosed         = "thread/closed"
-	NotifyThreadStatusChanged  = "thread/status/changed"
-	NotifyThreadQueueChanged   = "thread/queueChanged"
-	NotifyTurnStarted          = "turn/started"
-	NotifyTurnCompleted        = "turn/completed"
-	NotifyItemStarted          = "item/started"
-	NotifyItemCompleted        = "item/completed"
-	NotifyAgentMessageDelta    = "item/agentMessage/delta"
-	NotifyAgentMessageReset    = "item/agentMessage/reset"
-	NotifyToolOutputDelta      = "item/toolOutput/delta"
-	NotifyWarning              = "warning"
-	NotifySerfContextPressure  = "serf/thread/contextPressure/updated"
-	NotifySerfTaskUpdated      = "serf/task/updated"
-	NotifySerfSteeringInjected = "serf/steering/injected"
-	NotifySerfJobStarted       = "serf/job/started"
-	NotifySerfJobFinished      = "serf/job/finished"
-	NotifySerfAuthUpdated      = "serf/auth/updated"
-	NotifySerfLaunchUpdated    = "serf/launch/updated"
+	NotifyThreadStarted         = "thread/started"
+	NotifyThreadClosed          = "thread/closed"
+	NotifyThreadStatusChanged   = "thread/status/changed"
+	NotifyThreadQueueChanged    = "thread/queueChanged"
+	NotifyTurnStarted           = "turn/started"
+	NotifyTurnCompleted         = "turn/completed"
+	NotifyItemStarted           = "item/started"
+	NotifyItemCompleted         = "item/completed"
+	NotifyAgentMessageDelta     = "item/agentMessage/delta"
+	NotifyAgentMessageReset     = "item/agentMessage/reset"
+	NotifyReasoningSummaryDelta = "item/reasoning/summaryTextDelta"
+	NotifyToolOutputDelta       = "item/toolOutput/delta"
+	NotifyWarning               = "warning"
+	NotifySerfContextPressure   = "serf/thread/contextPressure/updated"
+	NotifySerfTaskUpdated       = "serf/task/updated"
+	NotifySerfSteeringInjected  = "serf/steering/injected"
+	NotifySerfJobStarted        = "serf/job/started"
+	NotifySerfJobFinished       = "serf/job/finished"
+	NotifySerfAuthUpdated       = "serf/auth/updated"
+	NotifySerfLaunchUpdated     = "serf/launch/updated"
 )
 
 const (
@@ -687,6 +688,19 @@ type AgentMessageDeltaParams struct {
 	TurnID   string `json:"turnId"`
 	ItemID   string `json:"itemId"`
 	Delta    string `json:"delta"`
+}
+
+// ReasoningSummaryDeltaParams is the params shape for the
+// item/reasoning/summaryTextDelta notification: an incremental chunk of the
+// model's reasoning summary for the named reasoning item. Mirrors the Codex
+// app-server reasoning stream so the web UI can render thinking live.
+type ReasoningSummaryDeltaParams struct {
+	ThreadID     string `json:"threadId"`
+	Ref          string `json:"ref,omitempty"`
+	TurnID       string `json:"turnId"`
+	ItemID       string `json:"itemId"`
+	SummaryIndex int    `json:"summaryIndex"`
+	Delta        string `json:"delta"`
 }
 
 // AgentMessageResetParams is the params shape for the item/agentMessage/reset

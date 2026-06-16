@@ -64,6 +64,14 @@ type AssistantTextDeltaData struct {
 // assistant message, which consumers already track.
 type AssistantTextResetData struct{}
 
+// ReasoningSummaryDeltaData is the payload for an EventReasoningSummaryDelta
+// event: an incremental chunk of the model's reasoning summary. SummaryIndex
+// increments when the model opens a new reasoning section.
+type ReasoningSummaryDeltaData struct {
+	Delta        string `json:"delta"`
+	SummaryIndex int    `json:"summary_index"`
+}
+
 // AssistantTextEndData is the payload for an EventAssistantTextEnd event.
 type AssistantTextEndData struct {
 	Text         string    `json:"text"`

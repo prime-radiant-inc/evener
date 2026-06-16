@@ -62,6 +62,36 @@ func TestAppEventProjectorTurnStartedCarriesStartedAt(t *testing.T) {
 	}
 }
 
+func TestAppEventProjectorProjectsReasoningDelta(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventReasoningSummaryDelta, SessionID: "th_1", Data: events.ReasoningSummaryDeltaData{Delta: "thinking..."}})
+
+	var delta *appwire.ReasoningSummaryDeltaParams
+	var startedReasoning bool
+	for _, n := range out {
+		switch n.Method {
+		case appwire.NotifyReasoningSummaryDelta:
+			p := n.Params.(appwire.ReasoningSummaryDeltaParams)
+			delta = &p
+		case appwire.NotifyItemStarted:
+			item := notificationThreadItem(t, []AppNotification{n}, appwire.NotifyItemStarted)
+			if item.Type == "reasoning" {
+				startedReasoning = true
+			}
+		}
+	}
+	if !startedReasoning {
+		t.Fatalf("expected a reasoning item/started, got %+v", out)
+	}
+	if delta == nil {
+		t.Fatalf("no reasoning delta notification: %+v", out)
+	}
+	if delta.ThreadID != "th_1" || delta.Ref != "local:th_1" || delta.TurnID == "" || delta.ItemID == "" || delta.Delta != "thinking..." {
+		t.Fatalf("reasoning delta params=%+v", *delta)
+	}
+}
+
 func TestAppEventProjectorJSONUsesCodexLifecycleShape(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	out := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})

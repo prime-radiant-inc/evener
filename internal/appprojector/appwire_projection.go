@@ -28,6 +28,7 @@ type AppEventProjector struct {
 	activeTurnID    string
 	assistantItem   string
 	assistantText   string
+	reasoningItem   string
 	toolItemsByKey  map[string]string
 	suppressedTools map[string]struct{}
 
@@ -77,6 +78,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.activeTurnID = ""
 			p.assistantItem = ""
 			p.assistantText = ""
+			p.reasoningItem = ""
 			p.toolItemsByKey = map[string]string{}
 			p.suppressedTools = map[string]struct{}{}
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
@@ -122,6 +124,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.activeTurnID = ""
 			p.assistantItem = ""
 			p.assistantText = ""
+			p.reasoningItem = ""
 			p.toolItemsByKey = map[string]string{}
 			p.suppressedTools = map[string]struct{}{}
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
@@ -159,6 +162,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		p.ensureTurn()
 		p.assistantItem = p.nextItemID("assistant")
 		p.assistantText = ""
+		p.reasoningItem = ""
 		return []AppNotification{p.notification(appwire.NotifyItemStarted, map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
@@ -181,6 +185,32 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			ItemID:   p.assistantItem,
 			Delta:    data.Delta,
 		})}
+	case events.EventReasoningSummaryDelta:
+		data := eventData[events.ReasoningSummaryDeltaData](event.Data)
+		created := p.ensureReasoningItem()
+		var out []AppNotification
+		if created {
+			out = append(out, p.notification(appwire.NotifyItemStarted, map[string]any{
+				"threadId": p.threadID,
+				"ref":      p.ref,
+				"turnId":   p.activeTurnID,
+				"item": appwire.ThreadItem{
+					Type:   "reasoning",
+					ID:     p.reasoningItem,
+					TurnID: p.activeTurnID,
+					Status: appwire.TurnStatusInProgress,
+				},
+			}))
+		}
+		out = append(out, p.notification(appwire.NotifyReasoningSummaryDelta, appwire.ReasoningSummaryDeltaParams{
+			ThreadID:     p.threadID,
+			Ref:          p.ref,
+			TurnID:       p.activeTurnID,
+			ItemID:       p.reasoningItem,
+			SummaryIndex: data.SummaryIndex,
+			Delta:        data.Delta,
+		}))
+		return out
 	case events.EventAssistantTextEnd:
 		p.ensureAssistantItem()
 		data := eventData[events.AssistantTextEndData](event.Data)
@@ -481,6 +511,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.activeTurnID = ""
 			p.assistantItem = ""
 			p.assistantText = ""
+			p.reasoningItem = ""
 			p.toolItemsByKey = map[string]string{}
 			p.suppressedTools = map[string]struct{}{}
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
@@ -743,6 +774,18 @@ func (p *AppEventProjector) ensureAssistantItem() {
 	if p.assistantItem == "" {
 		p.assistantItem = p.nextItemID("assistant")
 	}
+}
+
+// ensureReasoningItem makes sure an in-progress reasoning item exists for the
+// active turn, returning true when it had to create one (so the caller emits a
+// single item/started before the first delta).
+func (p *AppEventProjector) ensureReasoningItem() bool {
+	p.ensureTurn()
+	if p.reasoningItem == "" {
+		p.reasoningItem = p.nextItemID("reasoning")
+		return true
+	}
+	return false
 }
 
 func (p *AppEventProjector) nextItemID(prefix string) string {

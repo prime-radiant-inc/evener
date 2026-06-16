@@ -32,6 +32,9 @@ const (
 	// call retried after streaming partial output emits this so the retry's
 	// output replaces, rather than appends to, the partial that was shown.
 	EventAssistantTextReset EventKind = "ASSISTANT_TEXT_RESET"
+	// EventReasoningSummaryDelta carries an incremental chunk of the model's
+	// reasoning summary (the readable "thinking" stream hosted models emit).
+	EventReasoningSummaryDelta EventKind = "REASONING_SUMMARY_DELTA"
 	// EventToolCallStart marks the start of a tool call.
 	EventToolCallStart EventKind = "TOOL_CALL_START"
 	// EventToolCallOutputDelta carries an incremental chunk of tool call output.
