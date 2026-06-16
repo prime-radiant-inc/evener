@@ -101,6 +101,8 @@ Each commit passed the pre-commit gate (lint/build/test); TDD throughout.
 | `f8e572f4` | Split `renderer.js`: extract `renderer-format.js` (stateless helpers) |
 | `1ceed61c` | Split `renderer.js`: extract `renderer-tools.js` (tool-output renderers; `toolRendererFor` public) |
 | `4b9561b1` | Split `renderer.js`: extract `renderer-panels.js` (tasks/details panels + chrome) |
+| `c6f7eb19` | appwire maps reasoning notifications → `REASONING_START`/`REASONING_DELTA` client events |
+| `278f7cc1` | Render live thinking as a quiet collapsible `.think` block (renderer + `style.css`) |
 
 **Serf-harness backend for live thinking is complete**, and the renderer is now modular
 (`renderer.js` 3630 → ~2170 lines). The no-bundler modules share `window.SerfRendererInternal`
@@ -111,13 +113,17 @@ stateful `SerfRenderer` core + bootstrap (this is where the thinking block lands
 4. **Codex-adapter parity:** `cmd/serf-hub/internal/appsource/codex_source.go` `mapNotification`
    (~L703) forward `item/reasoning/summaryTextDelta` (+ `summaryPartAdded`, `item/started` type
    `reasoning`); `codex_mapping.go` `mapCodexTurn` set `StartedAt` from Codex `started_at`.
-5. **Web render (the visible payoff):** `cmd/serf-hub/assets/appwire.js` `eventsFromNotification`
-   (~L786, mirror `item/agentMessage/delta`→`ASSISTANT_TEXT_DELTA`) map
-   `item/reasoning/summaryTextDelta`→a `REASONING_DELTA` client event; `renderer.js` `handle()`
-   switch renders the quiet collapsible "thinking" block (streams the summary; collapses on
-   assistant start / turn complete).
+5. ~~**Web render (the visible payoff):**~~ **DONE** (`c6f7eb19`, `278f7cc1`). `appwire.js`
+   `eventsFromNotification` maps `item/started` (type `reasoning`) → `REASONING_START` and
+   `item/reasoning/summaryTextDelta` → `REASONING_DELTA` (mirrors the agentMessage path,
+   `markLiveItem` for liveness). `renderer.js` `handle()` streams these into a quiet collapsible
+   `.think` block (open while live; collapses to "Thought for Ns" + preview on
+   `ASSISTANT_TEXT_START` / `TURN_COMPLETED`; empty thoughts removed). Styles in `style.css`
+   (`.think`/`.think-body`/`.pv`). Tests: `test-appwire-lifecycle-notifications.js`,
+   `test-renderer-thinking.js`. Visually smoke-tested with the real assets.
 6. **Client liveness timer:** `renderer.js` track `lastFrameAt` on every notification; honest
-   "no updates for Ns" past ~20–30s while active.
+   "no updates for Ns" past ~20–30s while active. (Reasoning frames now flow, so the timer is
+   honest during the think phase.)
 
 Tests: JS harness `cmd/serf-hub/jstest/` (`run-all.sh`; mirror
 `test-appwire-lifecycle-notifications.js` / `test-renderer.js`). Web changes need a rebuild —
