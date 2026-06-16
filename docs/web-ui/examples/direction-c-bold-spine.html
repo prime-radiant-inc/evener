@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=1440, initial-scale=1" />
+<title>Serf — Live Session</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Familjen+Grotesk:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    /* ── warm-dark surfaces ── */
+    --bg:        #100f0d;   /* warm charcoal */
+    --bg-sink:   #0b0a09;   /* deepest */
+    --raised:    #1a1815;
+    --raised-2:  #211e1a;
+    --hair:      #2c2823;   /* hairline rule */
+    --hair-2:    #3a352e;
+
+    /* ── text ── */
+    --text:      #efe9e0;
+    --muted:     #9d958a;
+    --faint:     #6f685e;
+
+    /* ── signature: ELECTRIC LIME is the brand ── */
+    --signal:    #c3e88d;
+    --signal-dim:#8fae62;
+    --signal-glow: rgba(195,232,141,.30);
+
+    /* ── working / live (a confident warm-cyan, distinct from lime brand) ── */
+    --work:      #5fd0c5;
+    --work-dim:  #3c8a83;
+
+    /* ── attention / steering ── */
+    --coral:     #ff7a6b;
+    --coral-dim: #b8524a;
+
+    /* ── done ── */
+    --done:      #6fe3a0;
+    --done-dim:  #3f8a63;
+
+    /* ── subagent: a contrasting warm amber ── */
+    --sub:       #ffb454;
+    --sub-dim:   #b07e3c;
+
+    --idle:      #6f685e;
+
+    --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
+    --sans:'Familjen Grotesk',system-ui,sans-serif;
+    --display:'Bricolage Grotesque',var(--sans);
+
+    --spine-x: 26px; /* x-offset of spine within transcript gutter */
+  }
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{
+    background:
+      radial-gradient(1200px 600px at 78% -8%, rgba(195,232,141,.045), transparent 60%),
+      radial-gradient(900px 500px at 12% 108%, rgba(255,180,84,.035), transparent 55%),
+      var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    font-size:15px;
+    line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+    overflow:hidden;
+  }
+  /* subtle grain */
+  body::after{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:.035;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  ::selection{background:var(--signal-glow);color:#fff;}
+
+  .app{display:grid;grid-template-columns:300px 1fr;height:100vh;}
+
+  /* ════════════════ SIDEBAR ════════════════ */
+  .side{
+    background:linear-gradient(180deg,var(--bg-sink),var(--bg) 40%);
+    border-right:1px solid var(--hair);
+    display:flex;flex-direction:column;min-height:0;
+  }
+  .brand{
+    display:flex;align-items:center;gap:11px;
+    padding:20px 20px 16px;border-bottom:1px solid var(--hair);
+  }
+  .mark{
+    font-family:var(--display);font-weight:800;font-size:27px;letter-spacing:-.04em;
+    line-height:1;color:var(--text);position:relative;display:inline-block;
+  }
+  .mark .f{color:var(--signal);}
+  /* graphic wordmark: lime block under the R */
+  .mark::after{
+    content:"";position:absolute;left:0;bottom:-5px;height:3px;width:100%;
+    background:linear-gradient(90deg,var(--signal),transparent 85%);
+    border-radius:2px;
+  }
+  .brand .tag{
+    font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--faint);margin-left:auto;padding-top:4px;
+  }
+
+  .actions{display:flex;gap:6px;padding:13px 16px;border-bottom:1px solid var(--hair);}
+  .act{
+    flex:1;display:flex;align-items:center;justify-content:center;gap:6px;
+    font-size:12.5px;color:var(--muted);background:var(--raised);
+    border:1px solid var(--hair);border-radius:8px;padding:7px 8px;cursor:pointer;
+    transition:.16s;white-space:nowrap;
+  }
+  .act:hover{color:var(--text);border-color:var(--hair-2);background:var(--raised-2);}
+  .act.k{flex:1.3;}
+  .act .kbd{font-family:var(--mono);font-size:10px;color:var(--faint);border:1px solid var(--hair-2);border-radius:4px;padding:1px 4px;}
+  .act .plus{color:var(--signal);font-weight:700;}
+
+  .nav{flex:1;overflow-y:auto;padding:8px 10px 24px;}
+  .nav::-webkit-scrollbar{width:9px;}
+  .nav::-webkit-scrollbar-thumb{background:var(--hair);border-radius:8px;border:2px solid var(--bg-sink);}
+  .nav::-webkit-scrollbar-thumb:hover{background:var(--hair-2);}
+
+  .grouphdr{
+    font-family:var(--mono);font-size:10px;letter-spacing:.2em;text-transform:uppercase;
+    color:var(--faint);padding:16px 12px 7px;display:flex;align-items:center;gap:8px;
+  }
+  .grouphdr .ct{color:var(--signal-dim);}
+  .grouphdr .ln{flex:1;height:1px;background:var(--hair);}
+
+  /* status-rail rows */
+  .row{
+    position:relative;display:flex;align-items:center;gap:9px;
+    padding:8px 11px 8px 13px;border-radius:9px;cursor:pointer;
+    color:var(--muted);transition:.14s;margin:1px 0;
+  }
+  .row:hover{background:var(--raised);color:var(--text);}
+  .row .dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--idle);position:relative;}
+  .row .body{min-width:0;flex:1;}
+  .row .ttl{font-size:13.5px;color:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500;}
+  .row .meta{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .row .meta .mdl{color:var(--muted);}
+
+  /* live status dots with pulse */
+  .dot.working{background:var(--work);box-shadow:0 0 0 0 var(--work);animation:pulseRing 1.9s infinite;}
+  .dot.attn{background:var(--coral);box-shadow:0 0 0 0 var(--coral);animation:pulseRing 1.9s infinite;}
+  .dot.done{background:var(--done);}
+  .dot.idle{background:var(--idle);}
+  @keyframes pulseRing{
+    0%{box-shadow:0 0 0 0 rgba(95,208,197,.45);}
+    70%{box-shadow:0 0 0 7px rgba(95,208,197,0);}
+    100%{box-shadow:0 0 0 0 rgba(95,208,197,0);}
+  }
+  .dot.attn{animation:pulseRingC 1.9s infinite;}
+  @keyframes pulseRingC{
+    0%{box-shadow:0 0 0 0 rgba(255,122,107,.5);}
+    70%{box-shadow:0 0 0 7px rgba(255,122,107,0);}
+    100%{box-shadow:0 0 0 0 rgba(255,122,107,0);}
+  }
+
+  /* selected row: lime accent bar */
+  .row.sel{background:var(--raised-2);color:var(--text);}
+  .row.sel::before{
+    content:"";position:absolute;left:0;top:6px;bottom:6px;width:3px;border-radius:3px;
+    background:var(--signal);box-shadow:0 0 10px var(--signal-glow);
+  }
+  .row.sel .ttl{color:var(--text);font-weight:600;}
+
+  /* disclosure group rows */
+  .disc{
+    display:flex;align-items:center;gap:8px;padding:7px 11px;border-radius:8px;cursor:pointer;
+    color:var(--muted);font-family:var(--display);font-weight:600;font-size:12.5px;
+    letter-spacing:.02em;transition:.14s;
+  }
+  .disc:hover{background:var(--raised);color:var(--text);}
+  .disc .car{color:var(--faint);font-size:10px;width:10px;display:inline-block;transition:.18s;}
+  .disc .nm{text-transform:uppercase;letter-spacing:.08em;font-size:11px;}
+  .disc .when{font-family:var(--mono);font-size:10px;color:var(--faint);margin-left:auto;font-weight:400;letter-spacing:0;}
+  .disc .liverollup{width:7px;height:7px;border-radius:50%;background:var(--work);margin-left:6px;box-shadow:0 0 8px var(--work);animation:pulseRing 1.9s infinite;}
+
+  .indent{margin-left:14px;padding-left:10px;border-left:1px solid var(--hair);}
+
+  /* subagent rows (de-weighted) */
+  .subrow{
+    display:flex;align-items:center;gap:8px;padding:5px 10px 5px 4px;
+    font-family:var(--mono);font-size:11px;color:var(--faint);
+    border-radius:7px;cursor:pointer;position:relative;
+  }
+  .subrow:hover{background:var(--raised);color:var(--muted);}
+  .subrow .con{color:var(--hair-2);flex:0 0 auto;}
+  .subrow .g{flex:0 0 auto;}
+  .subrow .g.done{color:var(--done);}
+  .subrow .g.run{color:var(--sub);animation:spin 1.5s linear infinite;display:inline-block;}
+  .subrow .more{color:var(--sub-dim);}
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  /* ════════════════ WORKSPACE ════════════════ */
+  .work{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg);position:relative;}
+
+  .titlebar{
+    display:flex;align-items:center;gap:14px;padding:16px 26px;
+    border-bottom:1px solid var(--hair);
+    background:linear-gradient(180deg,var(--raised),transparent);
+    flex:0 0 auto;
+  }
+  .titlebar h1{
+    font-family:var(--display);font-weight:700;font-size:20px;letter-spacing:-.02em;
+    margin:0;color:var(--text);
+  }
+  .chip{
+    font-family:var(--mono);font-size:11px;color:var(--text);
+    background:var(--raised-2);border:1px solid var(--hair-2);
+    border-radius:6px;padding:3px 9px;display:inline-flex;align-items:center;gap:6px;
+  }
+  .chip .cdot{width:6px;height:6px;border-radius:50%;background:var(--signal);}
+  .tb-spacer{flex:1;}
+  .tb-act{
+    font-size:13px;color:var(--muted);padding:6px 13px;border-radius:8px;cursor:pointer;
+    border:1px solid transparent;transition:.15s;font-weight:500;
+  }
+  .tb-act:hover{color:var(--text);background:var(--raised);}
+  .tb-act.warn{color:var(--coral);}
+  .tb-act.warn:hover{background:rgba(255,122,107,.10);border-color:var(--coral-dim);}
+
+  /* transcript scroller */
+  .scrollwrap{flex:1;min-height:0;position:relative;overflow:hidden;}
+  .scroll{
+    height:100%;overflow-y:auto;padding:30px 48px 40px 0;
+  }
+  .scroll::-webkit-scrollbar{width:11px;}
+  .scroll::-webkit-scrollbar-thumb{background:var(--hair);border-radius:8px;border:3px solid var(--bg);}
+  .scroll::-webkit-scrollbar-thumb:hover{background:var(--hair-2);}
+
+  /* ── THE SPINE ── the signature element.
+     A vertical activity timeline. Entries sit to the right; each connects to a node. */
+  .stream{
+    position:relative;max-width:840px;margin:0 auto;
+    padding-left:74px;  /* room for the spine gutter */
+  }
+  /* the continuous spine line */
+  .spine{
+    position:absolute;left:var(--spine-x);top:6px;bottom:0;width:3px;border-radius:3px;
+    background:linear-gradient(180deg,
+      var(--work) 0%,
+      var(--work-dim) 16%,
+      var(--sub-dim) 30%,
+      var(--signal-dim) 46%,
+      var(--work) 62%,
+      var(--signal) 74%,
+      var(--coral) 88%,
+      var(--hair-2) 100%);
+    opacity:.55;
+  }
+  /* moving energy traveling down the spine */
+  .spine .pulse{
+    position:absolute;left:-3px;width:9px;height:54px;border-radius:9px;
+    background:linear-gradient(180deg,transparent,var(--signal),transparent);
+    filter:blur(2px);opacity:.9;
+    animation:travel 5.2s cubic-bezier(.5,0,.5,1) infinite;
+  }
+  @keyframes travel{
+    0%{top:-10%;opacity:0;}
+    8%{opacity:.95;}
+    78%{top:78%;opacity:.95;}
+    92%{opacity:0;}
+    100%{top:92%;opacity:0;}
+  }
+
+  /* a transcript entry */
+  .entry{position:relative;margin-bottom:26px;}
+  /* node on the spine + connector to the entry card */
+  .entry > .node{
+    position:absolute;left:calc(var(--spine-x) - 74px + 0px);top:4px;
+    width:0;height:0; /* anchor; we draw via children */
+  }
+  .node .knob{
+    position:absolute;left:calc(var(--spine-x) - 7px);top:0;
+    width:17px;height:17px;border-radius:50%;
+    background:var(--bg);border:3px solid var(--hair-2);
+    z-index:3;transition:.2s;
+  }
+  .node .knob .glyph{
+    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    font-family:var(--mono);font-size:9px;line-height:1;
+  }
+  /* connector elbow from spine to card */
+  .node .arm{
+    position:absolute;left:calc(var(--spine-x) + 9px);top:8px;height:2px;width:38px;
+    background:linear-gradient(90deg,var(--hair-2),transparent);
+  }
+
+  /* node color variants */
+  .node.user  .knob{border-color:var(--muted);background:var(--raised-2);}
+  .node.think .knob{border-color:var(--hair-2);width:13px;height:13px;left:calc(var(--spine-x) - 5px);top:2px;}
+  .node.asst  .knob{border-color:var(--signal);box-shadow:0 0 12px var(--signal-glow);}
+  .node.tool  .knob{border-color:var(--done);}
+  .node.sub   .knob{border-color:var(--sub);}
+  .node.steer .knob{border-color:var(--coral);background:var(--coral);box-shadow:0 0 16px rgba(255,122,107,.5);}
+  .node.live  .knob{border-color:var(--work);}
+
+  /* ACTIVE node pulses */
+  .node.active .knob{
+    border-color:var(--work);background:var(--bg);
+    animation:knobPulse 1.7s ease-in-out infinite;
+  }
+  @keyframes knobPulse{
+    0%,100%{box-shadow:0 0 0 0 rgba(95,208,197,.55),0 0 14px rgba(95,208,197,.4);}
+    50%{box-shadow:0 0 0 7px rgba(95,208,197,0),0 0 22px rgba(95,208,197,.65);}
+  }
+
+  /* ── entry content cards ── */
+  .who{
+    font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--faint);margin-bottom:7px;display:flex;align-items:center;gap:9px;
+  }
+  .who .badge{
+    font-family:var(--display);font-weight:700;font-size:10px;letter-spacing:.06em;
+    padding:2px 7px;border-radius:5px;
+  }
+  .badge.you{color:var(--signal);background:rgba(195,232,141,.10);border:1px solid rgba(195,232,141,.28);}
+  .badge.serf{color:var(--work);background:rgba(95,208,197,.10);border:1px solid rgba(95,208,197,.28);}
+
+  /* USER message — loud, human */
+  .userbox{
+    background:linear-gradient(180deg,var(--raised-2),var(--raised));
+    border:1px solid var(--hair-2);border-left:3px solid var(--signal);
+    border-radius:4px 12px 12px 12px;padding:15px 18px;
+    font-size:16px;line-height:1.6;color:var(--text);
+  }
+
+  /* ASSISTANT prose — the loudest readable thing */
+  .prose{font-size:16px;line-height:1.68;color:var(--text);letter-spacing:-.002em;}
+  .prose code{
+    font-family:var(--mono);font-size:13.5px;background:var(--raised-2);
+    color:var(--signal);padding:1px 6px;border-radius:5px;border:1px solid var(--hair);
+  }
+  .caret{
+    display:inline-block;width:9px;height:1.05em;vertical-align:-2px;margin-left:1px;
+    background:var(--work);border-radius:1px;animation:blink 1.05s steps(1) infinite;
+    box-shadow:0 0 8px var(--work);
+  }
+  @keyframes blink{50%{opacity:0;}}
+
+  /* THINKING block — quiet, distinct */
+  .think{
+    display:flex;align-items:center;gap:11px;font-size:13px;color:var(--muted);
+    background:repeating-linear-gradient(135deg,var(--raised) 0 8px,transparent 8px 16px),var(--bg);
+    border:1px dashed var(--hair-2);border-radius:9px;padding:9px 14px;cursor:pointer;transition:.15s;
+  }
+  .think:hover{border-color:var(--faint);}
+  .think .lbl{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap;letter-spacing:.04em;}
+  .think .prev{color:var(--faint);font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;}
+  .think .exp{font-size:11px;color:var(--signal-dim);margin-left:auto;white-space:nowrap;}
+  .think-full{display:none;margin-top:8px;font-size:13px;color:var(--muted);line-height:1.6;
+    border-left:2px solid var(--hair-2);padding:4px 0 4px 14px;}
+  .think-full.open{display:block;}
+
+  /* COLLAPSED TOOL CLUSTER — subordinate */
+  .cluster{
+    display:flex;align-items:center;gap:11px;
+    font-family:var(--mono);font-size:12px;color:var(--muted);
+    background:var(--raised);border:1px solid var(--hair);border-radius:9px;
+    padding:9px 14px;cursor:pointer;transition:.15s;
+  }
+  .cluster:hover{border-color:var(--hair-2);background:var(--raised-2);}
+  .cluster .ck{color:var(--done);font-weight:600;}
+  .cluster .ct{color:var(--faint);}
+  .cluster .seq{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;}
+  .cluster .seq .sep{color:var(--hair-2);padding:0 2px;}
+  .cluster .exp{color:var(--signal-dim);margin-left:auto;white-space:nowrap;}
+  .cluster-steps{display:none;margin-top:8px;padding-left:8px;border-left:2px solid var(--hair);
+    font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:2;}
+  .cluster-steps.open{display:block;}
+  .cluster-steps .st{display:flex;gap:9px;}
+  .cluster-steps .st .ok{color:var(--done);}
+
+  /* SUBAGENTS PANEL — first-class, amber accent */
+  .subpanel{
+    background:linear-gradient(180deg,rgba(255,180,84,.05),var(--raised));
+    border:1px solid var(--sub-dim);border-radius:12px;overflow:hidden;
+  }
+  .subpanel .hdr{
+    display:flex;align-items:center;gap:10px;padding:11px 16px;
+    border-bottom:1px solid rgba(255,180,84,.18);
+  }
+  .subpanel .hdr .ttl{
+    font-family:var(--display);font-weight:700;font-size:13px;letter-spacing:.01em;color:var(--sub);
+  }
+  .subpanel .hdr .stat{font-family:var(--mono);font-size:11px;color:var(--muted);display:flex;gap:9px;align-items:center;}
+  .subpanel .hdr .stat .r{color:var(--sub);}
+  .subpanel .hdr .stat .d{color:var(--done);}
+  .subpanel .hdr .stat .el{color:var(--faint);margin-left:auto;}
+  .subpanel .hdr .branchicon{font-family:var(--mono);color:var(--sub-dim);font-size:13px;}
+
+  .subitem{display:flex;align-items:center;gap:12px;padding:10px 16px;transition:.14s;position:relative;}
+  .subitem + .subitem{border-top:1px solid var(--hair);}
+  .subitem:hover{background:rgba(255,180,84,.04);}
+  .subitem .g{flex:0 0 auto;font-family:var(--mono);font-size:13px;}
+  .subitem .g.done{color:var(--done);}
+  .subitem .g.run{color:var(--sub);animation:spin 1.5s linear infinite;display:inline-block;}
+  .subitem .nm{font-family:var(--mono);font-size:13px;color:var(--text);font-weight:500;flex:0 0 auto;}
+  .subitem .last{color:var(--muted);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;}
+  .subitem .last .code{font-family:var(--mono);font-size:12px;color:var(--faint);}
+  .subitem .dur{font-family:var(--mono);font-size:11px;color:var(--faint);flex:0 0 auto;}
+  .subitem .view{
+    font-size:12px;color:var(--sub);flex:0 0 auto;cursor:pointer;font-weight:500;
+    padding:2px 8px;border:1px solid var(--sub-dim);border-radius:6px;transition:.14s;white-space:nowrap;
+  }
+  .subitem .view:hover{background:rgba(255,180,84,.12);color:var(--sub);}
+
+  /* ACTIVE TOOL CALL (expanded, running) */
+  .toolcall{
+    background:var(--raised);border:1px solid var(--hair-2);border-radius:12px;padding:14px 16px;
+    position:relative;overflow:hidden;
+  }
+  .toolcall::before{
+    content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--work);
+    animation:scanbar 2.2s ease-in-out infinite;
+  }
+  @keyframes scanbar{0%,100%{opacity:.5;}50%{opacity:1;box-shadow:0 0 14px var(--work);}}
+  .toolcall .top{display:flex;align-items:center;gap:10px;margin-bottom:9px;}
+  .toolcall .spin{color:var(--work);font-family:var(--mono);font-size:14px;animation:spin 1.4s linear infinite;display:inline-block;}
+  .toolcall .purpose{font-family:var(--display);font-weight:700;font-size:14.5px;color:var(--text);letter-spacing:.005em;}
+  .toolcall .running{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--work);margin-left:auto;}
+  .toolcall .cmd{
+    font-family:var(--mono);font-size:12.5px;color:var(--muted);
+    background:var(--bg-sink);border:1px solid var(--hair);border-radius:7px;padding:7px 11px;
+    display:inline-flex;align-items:center;gap:8px;
+  }
+  .toolcall .cmd .verb{color:var(--work);}
+  .toolcall .cmd .fn{color:var(--signal);}
+
+  /* STEERING — LOUD human interruption on the spine */
+  .steer{
+    position:relative;
+    background:
+      linear-gradient(180deg,rgba(255,122,107,.14),rgba(255,122,107,.05)),var(--raised);
+    border:1.5px solid var(--coral);border-radius:12px;padding:14px 18px;
+    box-shadow:0 0 0 1px rgba(255,122,107,.12),0 8px 30px -12px rgba(255,122,107,.45);
+  }
+  .steer .tag{
+    display:inline-flex;align-items:center;gap:7px;
+    font-family:var(--display);font-weight:800;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--coral);margin-bottom:7px;
+  }
+  .steer .tag .glyph{font-family:var(--mono);font-size:13px;}
+  .steer .tag .human{color:var(--text);background:var(--coral);border-radius:4px;padding:1px 7px;font-size:9px;letter-spacing:.1em;}
+  .steer .msg{font-size:15.5px;color:var(--text);line-height:1.55;}
+  /* diagonal hazard ticks on the left edge */
+  .steer::after{
+    content:"";position:absolute;left:0;top:0;bottom:0;width:6px;border-radius:12px 0 0 12px;
+    background:repeating-linear-gradient(45deg,var(--coral) 0 5px,#7a2a23 5px 10px);
+  }
+
+  /* LIVENESS indicator at streaming tail */
+  .liveness{
+    display:flex;align-items:center;gap:12px;margin:6px auto 0;max-width:840px;
+    padding-left:74px;
+  }
+  .liveband{
+    display:inline-flex;align-items:center;gap:11px;
+    font-family:var(--mono);font-size:12px;color:var(--text);
+    background:linear-gradient(90deg,rgba(95,208,197,.10),transparent);
+    border:1px solid var(--work-dim);border-radius:999px;padding:7px 16px 7px 13px;
+  }
+  .liveband .ld{width:8px;height:8px;border-radius:50%;background:var(--work);box-shadow:0 0 0 0 var(--work);animation:pulseRing 1.9s infinite;}
+  .liveband .w{color:var(--work);letter-spacing:.04em;}
+  .liveband .sep{color:var(--hair-2);}
+  .liveband .t{color:var(--text);}
+  .liveband .blk{color:var(--sub);}
+
+  /* JUMP-TO-LATEST PILL */
+  .jump{
+    position:absolute;right:34px;bottom:26px;z-index:40;
+    display:inline-flex;align-items:center;gap:9px;
+    font-family:var(--sans);font-weight:600;font-size:13px;color:var(--bg);
+    background:var(--signal);border:none;border-radius:999px;
+    padding:9px 17px 9px 14px;cursor:pointer;
+    box-shadow:0 10px 30px -6px var(--signal-glow),0 0 0 1px rgba(195,232,141,.4);
+    transition:transform .16s cubic-bezier(.3,1.4,.5,1),box-shadow .16s,background .16s;
+  }
+  .jump .arr{font-size:14px;transition:transform .2s;}
+  .jump .n{font-family:var(--mono);background:rgba(16,15,13,.18);border-radius:999px;padding:1px 8px;font-size:12px;}
+  .jump:hover{transform:translateY(-3px) scale(1.03);box-shadow:0 16px 38px -6px var(--signal-glow),0 0 0 1px var(--signal);}
+  .jump:hover .arr{transform:translateY(3px);}
+  .jump:active{transform:translateY(-1px) scale(.99);}
+
+  /* COMPOSER */
+  .composer{
+    flex:0 0 auto;border-top:1px solid var(--hair);
+    background:linear-gradient(0deg,var(--bg-sink),transparent);
+    padding:16px 26px 20px;
+  }
+  .composer .box{
+    max-width:914px;margin:0 auto;background:var(--raised);
+    border:1px solid var(--hair-2);border-radius:14px;padding:13px 15px;transition:.16s;
+  }
+  .composer .box:focus-within{
+    border-color:var(--signal);box-shadow:0 0 0 3px rgba(195,232,141,.16),0 0 26px -8px var(--signal-glow);
+  }
+  .composer textarea{
+    width:100%;border:none;background:transparent;resize:none;outline:none;
+    color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.55;
+    min-height:26px;
+  }
+  .composer textarea::placeholder{color:var(--faint);}
+  .composer .bar{display:flex;align-items:center;gap:10px;margin-top:11px;}
+  .composer .left{display:flex;align-items:center;gap:9px;}
+  .composer .iconbtn{
+    width:30px;height:30px;display:flex;align-items:center;justify-content:center;
+    border-radius:8px;border:1px solid var(--hair-2);color:var(--muted);cursor:pointer;
+    font-size:17px;background:var(--raised-2);transition:.14s;
+  }
+  .composer .iconbtn:hover{color:var(--signal);border-color:var(--signal-dim);}
+  .composer .grow{flex:1;}
+  .btn{
+    font-family:var(--sans);font-weight:600;font-size:13.5px;border-radius:9px;cursor:pointer;
+    padding:8px 17px;transition:.15s;border:1px solid transparent;display:inline-flex;align-items:center;gap:8px;
+  }
+  .btn .kbd{font-family:var(--mono);font-size:10px;opacity:.7;border:1px solid currentColor;border-radius:4px;padding:0 4px;}
+  .btn.send{background:var(--signal);color:var(--bg);box-shadow:0 6px 18px -8px var(--signal-glow);}
+  .btn.send:hover{filter:brightness(1.08);transform:translateY(-1px);}
+  .btn.steer{background:transparent;color:var(--coral);border-color:var(--coral-dim);}
+  .btn.steer:hover{background:rgba(255,122,107,.10);border-color:var(--coral);}
+
+  /* ── page-load staggered reveal ── */
+  .reveal{opacity:0;transform:translateY(10px);animation:rise .6s cubic-bezier(.2,.7,.3,1) forwards;}
+  @keyframes rise{to{opacity:1;transform:none;}}
+  .stream > .reveal:nth-child(2){animation-delay:.06s;}
+  .stream > .reveal:nth-child(3){animation-delay:.13s;}
+  .stream > .reveal:nth-child(4){animation-delay:.20s;}
+  .stream > .reveal:nth-child(5){animation-delay:.27s;}
+  .stream > .reveal:nth-child(6){animation-delay:.34s;}
+  .stream > .reveal:nth-child(7){animation-delay:.41s;}
+  .stream > .reveal:nth-child(8){animation-delay:.48s;}
+  .stream > .reveal:nth-child(9){animation-delay:.55s;}
+  .side .reveal{animation-delay:.05s;}
+
+  :focus-visible{outline:2px solid var(--signal);outline-offset:2px;border-radius:4px;}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ════════════ SIDEBAR ════════════ -->
+  <aside class="side">
+    <div class="brand">
+      <span class="mark">SE<span class="f">R</span>F</span>
+      <span class="tag">live</span>
+    </div>
+
+    <div class="actions">
+      <button class="act"><span class="plus">＋</span> New</button>
+      <button class="act k">Search <span class="kbd">⌘K</span></button>
+      <button class="act">Settings</button>
+    </div>
+
+    <nav class="nav">
+      <!-- LIVE -->
+      <div class="grouphdr"><span>Live</span><span class="ct">2</span><span class="ln"></span></div>
+
+      <div class="row sel">
+        <span class="dot working"></span>
+        <span class="body">
+          <span class="ttl">Refactor auth token cache</span>
+          <span class="meta"><span class="mdl">serf</span> · working 1:12</span>
+        </span>
+      </div>
+      <div class="row">
+        <span class="dot attn"></span>
+        <span class="body">
+          <span class="ttl">Audit error handling</span>
+          <span class="meta"><span class="mdl">kimi</span> · needs you</span>
+        </span>
+      </div>
+
+      <!-- RECENT -->
+      <div class="grouphdr"><span>Recent</span><span class="ln"></span></div>
+
+      <div class="disc" onclick="toggleGroup(this)">
+        <span class="car" style="transform:rotate(90deg)">▸</span>
+        <span class="nm">SERF</span>
+        <span class="liverollup"></span>
+        <span class="when">5m</span>
+      </div>
+      <div class="indent groupbody">
+        <div class="row sel" style="padding-left:11px">
+          <span class="dot working"></span>
+          <span class="body">
+            <span class="ttl">Refactor auth token cache</span>
+            <span class="meta">working · 1:12</span>
+          </span>
+        </div>
+        <div class="indent" style="margin-left:8px">
+          <div class="subrow"><span class="con">⤷</span><span class="g done">✓</span> trace-callers · done</div>
+          <div class="subrow"><span class="con">⤷</span><span class="g run">⟳</span> find-tests · running</div>
+          <div class="subrow"><span class="con">⤷</span><span class="more">+2 subagents · 2✓</span></div>
+        </div>
+        <div class="row" style="padding-left:11px">
+          <span class="dot idle"></span>
+          <span class="body">
+            <span class="ttl" style="color:var(--muted)">Fix flaky CI</span>
+            <span class="meta">idle · 3h</span>
+          </span>
+        </div>
+      </div>
+
+      <div class="disc" onclick="toggleGroup(this)">
+        <span class="car">▸</span><span class="nm">KIMI-EFFORT</span><span class="when">2h</span>
+      </div>
+      <div class="indent groupbody" style="display:none"></div>
+
+      <div class="disc" onclick="toggleGroup(this)">
+        <span class="car">▸</span><span class="nm">PRIME-RADIANT</span><span class="when">1d</span>
+      </div>
+      <div class="indent groupbody" style="display:none"></div>
+
+      <!-- OLDER -->
+      <div class="grouphdr"><span>Older</span><span class="ln"></span></div>
+      <div class="disc" onclick="toggleGroup(this)">
+        <span class="car">▸</span><span class="nm" style="text-transform:none;letter-spacing:0;font-family:var(--mono);font-weight:400;font-size:12px">serf-docs</span><span class="when">9d</span>
+      </div>
+      <div class="indent groupbody" style="display:none"></div>
+
+      <!-- TEST RUNS -->
+      <div class="disc" onclick="toggleGroup(this)" style="margin-top:14px;opacity:.7">
+        <span class="car">▸</span><span class="nm">TEST RUNS</span>
+        <span class="when" style="color:var(--signal-dim)">26</span>
+      </div>
+      <div class="indent groupbody" style="display:none"></div>
+    </nav>
+  </aside>
+
+  <!-- ════════════ WORKSPACE ════════════ -->
+  <main class="work">
+    <div class="titlebar">
+      <h1>Refactor auth token cache</h1>
+      <span class="chip"><span class="cdot"></span>gpt-5.5</span>
+      <span class="tb-spacer"></span>
+      <button class="tb-act">Details</button>
+      <button class="tb-act warn">Interrupt</button>
+      <button class="tb-act">Compact</button>
+    </div>
+
+    <div class="scrollwrap">
+      <div class="scroll" id="scroll">
+        <div class="stream">
+          <!-- ── THE SPINE ── -->
+          <div class="spine"><span class="pulse"></span></div>
+
+          <!-- 1. USER -->
+          <div class="entry reveal">
+            <div class="node user"><span class="knob"></span><span class="arm"></span></div>
+            <div class="who"><span class="badge you">YOU</span> opened the session</div>
+            <div class="userbox">
+              The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how callers use it too.
+            </div>
+          </div>
+
+          <!-- 2. THINKING (collapsed) -->
+          <div class="entry reveal">
+            <div class="node think"><span class="knob"></span><span class="arm"></span></div>
+            <div class="think" onclick="toggleThink(this)">
+              <span class="lbl">Thought for 6s</span>
+              <span class="prev">The eviction probably keys off the wrong timestamp…</span>
+              <span class="exp">expand ▾</span>
+            </div>
+            <div class="think-full">
+              The eviction probably keys off the wrong timestamp. If <code>evictExpired()</code> sweeps on <code>lastUsed</code> rather than <code>expiresAt</code>, then a token that is valid but idle gets dropped on the next sweep. I should confirm by reading the cache implementation and tracing all callers before touching the comparison.
+            </div>
+          </div>
+
+          <!-- 3. ASSISTANT -->
+          <div class="entry reveal">
+            <div class="node asst"><span class="knob"></span><span class="arm"></span></div>
+            <div class="who"><span class="badge serf">SERF</span> assistant</div>
+            <div class="prose">
+              I'll trace how the cache is used, then fix the eviction logic. Looking at the cache and its callers now.
+            </div>
+          </div>
+
+          <!-- 4. COLLAPSED TOOL CLUSTER -->
+          <div class="entry reveal">
+            <div class="node tool"><span class="knob"><span class="glyph" style="color:var(--done)">✓</span></span><span class="arm"></span></div>
+            <div class="cluster" onclick="toggleCluster(this)">
+              <span class="ck">✓ 4 steps</span>
+              <span class="seq"><span class="sep">·</span> read cache.go <span class="sep">·</span> grep callers <span class="sep">·</span> ran tests <span class="sep">·</span> exit 0</span>
+              <span class="exp">expand ▾</span>
+            </div>
+            <div class="cluster-steps">
+              <div class="st"><span class="ok">✓</span> read <span style="color:var(--signal)">cache.go</span> · 214 lines</div>
+              <div class="st"><span class="ok">✓</span> grep <span style="color:var(--signal)">TokenCache</span> callers · 7 matches</div>
+              <div class="st"><span class="ok">✓</span> read <span style="color:var(--signal)">cache_test.go</span> · 96 lines</div>
+              <div class="st"><span class="ok">✓</span> ran <span style="color:var(--signal)">go test ./auth/...</span> · exit 0 · 1.8s</div>
+            </div>
+          </div>
+
+          <!-- 5. SUBAGENTS PANEL -->
+          <div class="entry reveal">
+            <div class="node sub active"><span class="knob"></span><span class="arm"></span></div>
+            <div class="subpanel">
+              <div class="hdr">
+                <span class="branchicon">⑂</span>
+                <span class="ttl">Subagents (2)</span>
+                <span class="stat">
+                  <span class="r">⟳ 1 running</span><span class="sep">·</span>
+                  <span class="d">✓ 1 done</span>
+                  <span class="el">1:04</span>
+                </span>
+              </div>
+              <div class="subitem">
+                <span class="g done">✓</span>
+                <span class="nm">trace-callers</span>
+                <span class="last">found 7 call sites</span>
+                <span class="dur">3.1s</span>
+                <span class="view">view →</span>
+              </div>
+              <div class="subitem">
+                <span class="g run">⟳</span>
+                <span class="nm">find-tests</span>
+                <span class="last">running · reading <span class="code">cache_test.go</span></span>
+                <span class="dur">0:48</span>
+                <span class="view">view →</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 6. ASSISTANT (streaming) -->
+          <div class="entry reveal">
+            <div class="node asst active"><span class="knob"></span><span class="arm"></span></div>
+            <div class="who"><span class="badge serf">SERF</span> assistant · streaming</div>
+            <div class="prose">
+              Root cause: <code>evictExpired()</code> compares against <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than the sweep interval is dropped even when still valid. Patching it now<span class="caret"></span>
+            </div>
+          </div>
+
+          <!-- 7. ACTIVE TOOL CALL (running) -->
+          <div class="entry reveal">
+            <div class="node tool active"><span class="knob"><span class="glyph" style="color:var(--work)">⟳</span></span><span class="arm"></span></div>
+            <div class="toolcall">
+              <div class="top">
+                <span class="spin">⟳</span>
+                <span class="purpose">Fix the eviction comparison</span>
+                <span class="running">running</span>
+              </div>
+              <span class="cmd"><span class="verb">edit</span> cache.go <span style="color:var(--hair-2)">·</span> <span class="fn">evictExpired()</span></span>
+            </div>
+          </div>
+
+          <!-- 8. STEERING (LOUD) -->
+          <div class="entry reveal">
+            <div class="node steer"><span class="knob"></span><span class="arm" style="background:linear-gradient(90deg,var(--coral),transparent)"></span></div>
+            <div class="steer">
+              <div class="tag"><span class="glyph">↳</span> Steer <span class="human">human</span></div>
+              <div class="msg">also add a regression test for the idle-but-valid case</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- LIVENESS -->
+        <div class="liveness reveal">
+          <span class="liveband">
+            <span class="ld"></span>
+            <span class="w">working</span><span class="sep">·</span>
+            <span class="t">1:12</span><span class="sep">·</span>
+            <span class="blk">waiting on 1 subagent</span>
+          </span>
+        </div>
+      </div>
+
+      <!-- JUMP PILL -->
+      <button class="jump" id="jump" onclick="document.getElementById('scroll').scrollTo({top:99999,behavior:'smooth'})">
+        <span class="arr">↓</span> new <span class="n">2</span>
+      </button>
+    </div>
+
+    <!-- COMPOSER -->
+    <div class="composer">
+      <div class="box">
+        <textarea id="ta" rows="1" placeholder="Message the agent…"></textarea>
+        <div class="bar">
+          <div class="left">
+            <span class="chip"><span class="cdot"></span>gpt-5.5</span>
+            <button class="iconbtn" title="Attach">＋</button>
+          </div>
+          <span class="grow"></span>
+          <button class="btn steer">Send as steer <span class="kbd">⌥↵</span></button>
+          <button class="btn send">Send <span class="kbd">↵</span></button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+  function toggleThink(el){
+    var full = el.nextElementSibling;
+    full.classList.toggle('open');
+    var exp = el.querySelector('.exp');
+    exp.textContent = full.classList.contains('open') ? 'collapse ▴' : 'expand ▾';
+  }
+  function toggleCluster(el){
+    var steps = el.nextElementSibling;
+    steps.classList.toggle('open');
+    var exp = el.querySelector('.exp');
+    exp.textContent = steps.classList.contains('open') ? 'collapse ▴' : 'expand ▾';
+  }
+  function toggleGroup(el){
+    var body = el.nextElementSibling;
+    if(!body || !body.classList.contains('groupbody')) return;
+    var car = el.querySelector('.car');
+    var open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : 'block';
+    car.style.transform = open ? '' : 'rotate(90deg)';
+  }
+  // auto-grow composer
+  var ta = document.getElementById('ta');
+  ta.addEventListener('input', function(){ ta.style.height='auto'; ta.style.height=ta.scrollHeight+'px'; });
+  // hide jump pill once scrolled near bottom
+  var sc = document.getElementById('scroll'), jump = document.getElementById('jump');
+  sc.addEventListener('scroll', function(){
+    var nearBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 80;
+    jump.style.opacity = nearBottom ? '0' : '1';
+    jump.style.pointerEvents = nearBottom ? 'none' : 'auto';
+  });
+</script>
+</body>
+</html>

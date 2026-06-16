@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf — Refactor auth token cache</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  /* ---- neutral ramp ---- */
+  --bg:#0e0f13; --surface:#16181d; --surface-2:#1c1f26;
+  --line:#23262e; --hair:#2d313b;
+  --ink:#e8e9ee;      /* primary text */
+  --ink-2:#abb1be;    /* secondary text  (AA) */
+  --ink-3:#7e8593;    /* tertiary text   (AA, ~4.8:1) */
+  --ink-4:#4b5060;    /* hairlines / non-text only */
+  /* ---- semantic colors: FOUR meanings, each exactly one ---- */
+  --accent:#7aa2f7;     /* blue   = live/active + interactive (links, primary, focus) */
+  --error:#f7768e;      /* red    = failed-to-run / broke (needs your eye) */
+  --attention:#e2b06a;  /* amber  = needs you / awaiting input (needs your eye) */
+  --done:#7e8593;       /* neutral = done/settled: the EXPECTED state, recedes (no color) */
+  --success:#8aa873;    /* dim green: reserved for genuine GOOD-NEWS highlights only, used sparingly */
+  --accent-soft:rgba(122,162,247,.10);
+  --attention-soft:rgba(226,176,106,.09);
+  /* ---- type ---- */
+  --sans:'Hanken Grotesk',system-ui,sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,monospace;
+  --fs-xs:11px; --fs-sm:12px; --fs-base:13px; --fs-md:15px; --fs-lg:18px;
+  /* ---- spacing scale ---- */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
+  --r:5px; --r-pill:999px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:var(--fs-base);line-height:1.5;-webkit-font-smoothing:antialiased;letter-spacing:-0.004em;overflow:hidden}
+.app{display:grid;grid-template-columns:280px 1fr;height:100vh}
+.num{font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+
+/* ============ SIDEBAR ============ */
+.sidebar{background:#101117;border-right:1px solid var(--line);display:flex;flex-direction:column;overflow:hidden}
+.sb-actions{display:flex;align-items:center;gap:2px;padding:var(--s3)}
+.sb-act{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s2);border-radius:var(--r);color:var(--ink-2);font-size:var(--fs-sm)}
+.sb-act:hover{background:var(--surface);color:var(--ink)}
+.sb-act .plus{color:var(--accent);font-weight:700}
+.sb-act .k{font-family:var(--mono);font-size:9.5px;color:var(--ink-3);border:1px solid var(--line);padding:1px 4px;border-radius:3px}
+.sb-spacer{flex:1}
+.sb-scroll{overflow-y:auto;padding:var(--s1) var(--s2) var(--s5);flex:1}
+.sb-scroll::-webkit-scrollbar{width:8px}
+.sb-scroll::-webkit-scrollbar-thumb{background:var(--hair);border-radius:8px;border:2px solid #101117}
+
+.tier{margin-top:var(--s4)}
+.tier-h{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase;padding:0 var(--s2) var(--s2)}
+.proj{display:flex;align-items:center;gap:var(--s2);width:100%;text-align:left;padding:var(--s2);border-radius:var(--r);min-height:30px}
+.proj:hover{background:var(--surface)}
+.proj .chev{font-size:8px;color:var(--ink-3);width:8px}
+.proj .name{font-size:var(--fs-sm);font-weight:600;color:var(--ink-2);letter-spacing:.01em}
+.proj .roll{width:6px;height:6px;border-radius:50%}
+.roll.live{background:var(--accent)} .roll.attn{background:var(--attention)}
+.proj .age{font-family:var(--sans);font-size:var(--fs-xs);color:var(--ink-3);margin-left:auto}
+.proj .count{font-size:var(--fs-xs);color:var(--ink-4);margin-left:var(--s2)}
+.kids{padding-left:var(--s2)}
+
+.row{display:flex;align-items:flex-start;gap:var(--s2);width:100%;text-align:left;padding:var(--s2);border-radius:var(--r);position:relative;min-height:32px}
+.row:hover{background:var(--surface)}
+.row.sel{background:var(--surface-2)}
+.row .dot{width:6px;height:6px;border-radius:50%;flex:none;margin-top:5px}
+.dot.live{background:var(--accent)} .dot.attn{background:var(--attention)} .dot.idle{background:var(--ink-4)}
+.r-title{font-size:var(--fs-sm);font-weight:500;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.sel .r-title{font-weight:600}
+.r-meta{font-size:var(--fs-xs);color:var(--ink-3);margin-top:1px}
+.r-meta .live{color:var(--accent)} .r-meta .attn{color:var(--attention)}
+.r-main{min-width:0;flex:1;display:flex;flex-direction:column}
+
+.sub{display:flex;align-items:center;gap:var(--s2);width:100%;text-align:left;padding:3px var(--s2) 3px 24px;position:relative;border-radius:var(--r);min-height:26px}
+.sub:hover{background:var(--surface)}
+.sub::before{content:"";position:absolute;left:14px;top:0;bottom:0;width:1px;background:var(--hair)}
+.sub .s-title{font-size:var(--fs-xs);color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+.sub .g{font-size:10px}
+.g.done{color:var(--done)} .g.run{color:var(--accent)} .g.err{color:var(--error)}
+.sub.more .s-title{font-style:italic}
+
+/* ============ WORKSPACE ============ */
+.ws{display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+.titlebar{display:flex;align-items:center;gap:var(--s3);padding:0 var(--s5);height:50px;border-bottom:1px solid var(--line);flex:none}
+.tb-title{font-size:14px;font-weight:600}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:var(--r-pill);background:var(--surface);font-size:var(--fs-xs);color:var(--ink-2)}
+.chip .v{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink)}
+.chip .mdot{width:5px;height:5px;border-radius:50%;background:var(--ink-3)} /* neutral: availability, not status */
+.tb-actions{margin-left:auto}
+.tb-btn{padding:5px 11px;border-radius:var(--r);font-size:var(--fs-sm);color:var(--ink-2)}
+.tb-btn:hover{background:var(--surface);color:var(--ink)}
+
+.scroll-wrap{position:relative;flex:1;overflow:hidden}
+.transcript{height:100%;overflow-y:auto;padding:var(--s3) 0 var(--s5)}
+.transcript::-webkit-scrollbar{width:11px}
+.transcript::-webkit-scrollbar-thumb{background:var(--hair);border-radius:11px;border:3px solid var(--bg)}
+.feed{max-width:720px;margin:0 auto;padding:0 var(--s5)}
+
+.turn{padding:var(--s5) 0}
+.turn + .turn{border-top:1px solid var(--line)}
+
+/* USER prompt — demoted, but a findable left-edge anchor */
+.you{display:flex;gap:var(--s3);align-items:baseline}
+.you .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none;width:34px;padding-top:1px}
+.you .q{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+
+/* AGENT prose — the hero (sans), no container */
+.agent{margin-top:var(--s4);font-size:var(--fs-md);line-height:1.62;color:var(--ink);letter-spacing:-0.004em}
+.agent.lead{margin-top:var(--s3)}
+.agent code{font-family:var(--mono);font-size:12.5px;color:var(--ink);border-bottom:1px solid var(--hair)}
+.cursor{display:inline-block;width:2px;height:17px;background:var(--accent);margin-left:3px;vertical-align:-3px;animation:soft 1.3s ease-in-out infinite}
+
+/* thinking — quietest, collapsible */
+.think{margin-top:var(--s4);font-size:var(--fs-sm);color:var(--ink-3);display:flex;gap:var(--s2);align-items:baseline;width:100%;text-align:left;min-height:24px}
+.think:hover{color:var(--ink-2)}
+.think .pv{font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.think-body{display:none;margin-top:var(--s2);font-size:var(--fs-sm);color:var(--ink-2);line-height:1.6;font-style:italic;padding-left:18px;border-left:1px solid var(--line)}
+.think.open .think-body{display:block}
+.think.open .pv{display:none}
+
+/* tool history — one quiet line */
+.tools{margin-top:var(--s4);font-size:var(--fs-sm);color:var(--ink-3);display:flex;gap:var(--s2);align-items:baseline;width:100%;text-align:left;min-height:24px}
+.tools:hover{color:var(--ink-2)}
+.tools .ok{color:var(--done);font-family:var(--mono);font-size:var(--fs-xs)}
+.tools .sum b{color:var(--ink-2);font-weight:600}
+.tools .ex{margin-left:6px;color:var(--accent)}
+.tools-detail{display:none;margin-top:var(--s2);flex-direction:column;gap:6px;padding-left:18px;border-left:1px solid var(--line)}
+.tools-detail.open{display:flex}
+.tline{display:flex;gap:var(--s3);align-items:baseline;font-size:var(--fs-sm)}
+.tline .ok{color:var(--done);font-family:var(--mono);font-size:10.5px}
+.tline .p{color:var(--ink-2)}
+.tline .cmd{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);margin-left:auto}
+
+/* active tool — single rail tick, no box */
+.active{margin-top:var(--s4);display:flex;gap:var(--s3);align-items:baseline;padding-left:11px;position:relative}
+.active::before{content:"";position:absolute;left:0;top:3px;height:13px;width:2px;background:var(--accent);border-radius:2px}
+.active .lbl{font-size:var(--fs-base);color:var(--ink)}
+.active .cmd{font-family:var(--mono);font-size:var(--fs-xs);color:var(--accent);margin-left:auto}
+
+/* subagents — the ONE emphasized module. ONE device: a neutral box. rows = spacing, no inter-row rules */
+.subs{margin-top:var(--s4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:var(--s3) var(--s4)}
+.subs-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.subs-h .t{font-size:var(--fs-sm);font-weight:600;color:var(--ink)}
+.subs-h .tally{font-size:var(--fs-xs);color:var(--ink-2)}
+.subs-h .tally .r{color:var(--accent)} .subs-h .tally .o{color:var(--done)} .subs-h .tally .f{color:var(--error)}
+.subs-h .el{font-size:var(--fs-xs);color:var(--ink-3);margin-left:auto}
+.sub-r{display:flex;align-items:baseline;gap:var(--s3);padding:var(--s1) 0;width:100%;text-align:left}
+.sub-r .g{font-family:var(--mono);font-size:var(--fs-xs);width:12px}
+.sub-r .nm{font-family:var(--mono);font-size:11.5px;color:var(--ink)}
+.sub-r .res{font-size:var(--fs-sm);color:var(--ink-2)}
+.sub-r .res .live{color:var(--accent)}
+.sub-r .dur{font-size:var(--fs-xs);color:var(--ink-3);margin-left:auto}
+.sub-r .lk{font-size:var(--fs-xs);color:var(--ink-3);margin-left:var(--s3)}
+.sub-r:hover .lk{color:var(--accent)}
+
+/* steer — quiet, like the user prompt (it IS the user's own message). neutral tick on purpose. */
+.steer{margin-top:var(--s4);display:flex;gap:var(--s3);align-items:baseline;padding-left:11px;position:relative}
+.steer::before{content:"";position:absolute;left:0;top:4px;height:12px;width:2px;background:var(--hair);border-radius:2px}
+.steer .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none}
+.steer .txt{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+
+/* jump pill — calm; can be made attention-aware (amber) when there's something needing you */
+.jump{position:absolute;right:var(--s5);bottom:var(--s4);display:inline-flex;align-items:center;gap:7px;padding:7px 13px;border-radius:var(--r-pill);background:var(--surface-2);color:var(--ink);font-size:var(--fs-sm);border:1px solid var(--hair)}
+.jump:hover{background:var(--hair)}
+.jump .n{color:var(--accent)}
+
+/* liveness — PINNED strip, always reachable (does not scroll off) */
+.livebar{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s5);border-top:1px solid var(--line);background:#101117;font-size:var(--fs-sm);color:var(--ink-2);flex:none}
+.livebar .d{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:breathe 2.6s ease-in-out infinite}
+.livebar .el{color:var(--ink);margin-left:2px}
+.livebar .wait{color:var(--ink-2)}
+.livebar .feed-w{max-width:720px;margin:0 auto;width:100%;display:flex;align-items:center;gap:var(--s2)}
+
+/* composer */
+.composer{border-top:1px solid var(--line);padding:var(--s3) var(--s5) var(--s4);flex:none;background:#101117}
+.c-inner{max-width:720px;margin:0 auto}
+.input{border:1px solid var(--hair);border-radius:var(--r);background:var(--surface);transition:border-color .12s,box-shadow .12s}
+.input:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.ta{width:100%;background:none;border:none;resize:none;color:var(--ink);font-family:var(--sans);font-size:14px;padding:11px 13px;outline:none;min-height:50px}
+.ta::placeholder{color:var(--ink-3)}
+.cbar{display:flex;align-items:center;gap:var(--s2);padding:7px 9px;border-top:1px solid var(--line)}
+.cbtn{padding:5px 9px;border-radius:var(--r);font-size:var(--fs-sm);color:var(--ink-2)}
+.cbtn:hover{background:var(--surface-2);color:var(--ink)}
+.c-sp{flex:1}
+.intr:hover{color:var(--error);background:var(--surface-2)}
+.steerbtn .k{font-family:var(--mono);font-size:9.5px;color:var(--ink-3)}
+.send{background:var(--accent);color:#0a0c14;font-weight:600;padding:6px 15px;border-radius:var(--r);font-size:var(--fs-sm)}
+.send:hover{filter:brightness(1.08)}
+
+@keyframes soft{0%,100%{opacity:.85}50%{opacity:.2}}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.45}}
+@keyframes in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+.turn{animation:in .32s ease both}
+.turn:nth-child(2){animation-delay:.04s}.turn:nth-child(3){animation-delay:.08s}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar">
+    <div class="sb-actions">
+      <button class="sb-act"><span class="plus">＋</span> New</button>
+      <button class="sb-act">Search <span class="k">⌘K</span></button>
+      <span class="sb-spacer"></span>
+      <button class="sb-act">Settings</button>
+    </div>
+    <div class="sb-scroll">
+
+      <div class="tier">
+        <div class="tier-h">Active</div>
+        <button class="proj"><span class="chev">▾</span><span class="name">SERF</span><span class="roll live"></span><span class="age num">5m</span></button>
+        <div class="kids">
+          <button class="row sel"><span class="dot live"></span><span class="r-main"><span class="r-title">Refactor auth token cache</span><span class="r-meta"><span class="live">working</span> · <span class="num">1:12</span></span></span></button>
+          <button class="sub"><span class="s-title">trace-callers</span><span class="g done">✓ done</span></button>
+          <button class="sub"><span class="s-title">find-tests</span><span class="g run">⟳ running</span></button>
+          <button class="sub more"><span class="s-title">+2 subagents</span><span class="g done">2 ✓</span></button>
+          <button class="row"><span class="dot idle"></span><span class="r-main"><span class="r-title">Fix flaky CI</span><span class="r-meta">idle · <span class="num">3h</span></span></span></button>
+        </div>
+        <button class="proj"><span class="chev">▾</span><span class="name">KIMI-EFFORT</span><span class="roll attn"></span><span class="age num">1m</span></button>
+        <div class="kids">
+          <button class="row"><span class="dot attn"></span><span class="r-main"><span class="r-title">Audit error handling</span><span class="r-meta"><span class="attn">needs you</span> · <span class="num">1m</span></span></span></button>
+        </div>
+      </div>
+
+      <div class="tier">
+        <div class="tier-h">Recent</div>
+        <button class="proj"><span class="chev">▸</span><span class="name">PRIME-RADIANT</span><span class="age num">1d</span><span class="count num">7</span></button>
+      </div>
+
+      <div class="tier">
+        <div class="tier-h">Older</div>
+        <button class="proj"><span class="chev">▸</span><span class="name">serf-docs</span><span class="age num">9d</span><span class="count num">3</span></button>
+      </div>
+
+      <div class="tier">
+        <button class="proj"><span class="chev">▸</span><span class="name" style="color:var(--ink-3)">Test runs</span><span class="count num">26</span></button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ WORKSPACE ============ -->
+  <main class="ws">
+    <header class="titlebar">
+      <div class="tb-title">Refactor auth token cache</div>
+      <div class="tb-actions"><button class="tb-btn">Details&nbsp; ⋯</button></div>
+    </header>
+
+    <div class="scroll-wrap">
+      <div class="transcript" id="transcript">
+        <div class="feed">
+          <div class="turn">
+            <div class="you"><span class="tag">You</span><span class="q">The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how callers use it too.</span></div>
+
+            <button class="think" onclick="this.classList.toggle('open')">
+              <span>✦ Thought for <span class="num">6s</span></span><span class="pv">— the eviction probably keys off the wrong timestamp…</span>
+              <span class="think-body">The eviction probably keys off the wrong timestamp. If <code>evictExpired</code> uses last-access rather than absolute expiry, any token idle past one sweep interval is dropped though still valid. Confirm by reading the cache, then check every caller.</span>
+            </button>
+
+            <div class="agent lead">I'll trace how the cache is used, then fix the eviction logic. Looking at the cache and its callers now.</div>
+
+            <button class="tools" onclick="document.getElementById('td').classList.toggle('open')">
+              <span class="ok">✓</span><span class="sum"><b>4 steps</b> · read cache.go · grep callers · ran tests</span><span class="ex">expand</span>
+            </button>
+            <div class="tools-detail" id="td">
+              <div class="tline"><span class="ok">✓</span><span class="p">Read the cache implementation</span><span class="cmd">read cache.go</span></div>
+              <div class="tline"><span class="ok">✓</span><span class="p">Find every caller of the cache</span><span class="cmd">grep -rn TokenCache</span></div>
+              <div class="tline"><span class="ok">✓</span><span class="p">Locate the eviction logic</span><span class="cmd">grep evictExpired</span></div>
+              <div class="tline"><span class="ok">✓</span><span class="p">Run the existing cache tests</span><span class="cmd">go test ./cache</span></div>
+            </div>
+
+            <div class="subs">
+              <div class="subs-h"><span class="t">Subagents (2)</span><span class="tally"><span class="r">⟳ 1 running</span> · <span class="o">✓ 1 done</span></span><span class="el num">1:04</span></div>
+              <button class="sub-r"><span class="g done">✓</span><span class="nm">trace-callers</span><span class="res">found 7 call sites</span><span class="dur num">3.1s</span><span class="lk">view →</span></button>
+              <button class="sub-r"><span class="g run">⟳</span><span class="nm">find-tests</span><span class="res"><span class="live">running</span> · reading cache_test.go</span><span class="dur num">0:48</span><span class="lk">view →</span></button>
+            </div>
+
+            <div class="agent">Root cause: <code>evictExpired()</code> compares against <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than the sweep interval is dropped even when still valid. Patching it now<span class="cursor"></span></div>
+
+            <div class="active"><span class="lbl">Fixing the eviction comparison</span><span class="cmd">edit cache.go · evictExpired()</span></div>
+
+            <div class="steer"><span class="tag">You steered</span><span class="txt">also add a regression test for the idle-but-valid case</span></div>
+          </div>
+        </div>
+
+        <button class="jump" id="jump">↓ <span class="n num">2</span> new</button>
+      </div>
+      </div>
+
+      <!-- liveness: PINNED, always reachable -->
+      <div class="livebar"><div class="feed-w"><span class="d"></span>working · <span class="el num">1:12</span> · <span class="wait">waiting on 1 subagent</span></div></div>
+
+      <div class="composer">
+        <div class="c-inner">
+          <div class="input">
+            <textarea class="ta" placeholder="Message the agent…"></textarea>
+            <div class="cbar">
+              <span class="chip" style="background:var(--surface-2)"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+              <button class="cbtn">＋</button>
+              <span class="c-sp"></span>
+              <button class="cbtn intr">■ Interrupt</button>
+              <button class="cbtn steerbtn">Send as steer <span class="k">⌥↵</span></button>
+              <button class="send">Send ↵</button>
+            </div>
+          </div>
+        </div>
+      </div>
+  </main>
+</div>
+
+<script>
+const tr=document.getElementById('transcript'),jump=document.getElementById('jump');
+function upd(){const nb=tr.scrollHeight-tr.scrollTop-tr.clientHeight<60;jump.style.opacity=nb?'0':'1';jump.style.pointerEvents=nb?'none':'auto';}
+tr.addEventListener('scroll',upd);
+jump.addEventListener('click',()=>tr.scrollTo({top:tr.scrollHeight,behavior:'smooth'}));
+tr.scrollTop=Math.max(0,tr.scrollHeight-tr.clientHeight-120);upd();
+</script>
+</body>
+</html>

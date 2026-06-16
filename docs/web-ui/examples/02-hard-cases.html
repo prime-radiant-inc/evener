@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf — Refactor auth token cache</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0e0f13; --bg-1:#101117; --raised:#16181d; --raised-2:#1a1d23;
+  --rule:#21232b; --rule-2:#2b2e37;
+  --text:#e7e8ec; --muted:#969aa5; --dim:#5d616c; --faint:#3a3d46;
+  --blue:#7aa2f7; --green:#9ece6a; --amber:#e0af68; --purple:#b1a3e0; --red:#f7768e; --cyan:#8fd0f0;
+  --amber-tint:rgba(224,175,104,.07); --purple-tint:rgba(177,163,224,.05); --blue-tint:rgba(122,162,247,.06);
+  --sans:'Hanken Grotesk',system-ui,sans-serif;
+  --serif:'Source Serif 4',Georgia,serif;
+  --mono:'JetBrains Mono',ui-monospace,monospace;
+  --r:5px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased;letter-spacing:-0.004em;overflow:hidden}
+.app{display:grid;grid-template-columns:280px 1fr;height:100vh}
+.mono{font-family:var(--mono);font-size:11.5px;letter-spacing:0}
+
+/* ---------- SIDEBAR ---------- */
+.sidebar{background:var(--bg-1);border-right:1px solid var(--rule);display:flex;flex-direction:column;overflow:hidden}
+.sb-actions{display:flex;align-items:center;gap:2px;padding:11px 12px}
+.sb-act{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:var(--r);color:var(--muted);font-size:12.5px;cursor:pointer}
+.sb-act:hover{background:var(--raised);color:var(--text)}
+.sb-act .plus{color:var(--blue);font-weight:700}
+.sb-act .k{font-family:var(--mono);font-size:9.5px;color:var(--dim);border:1px solid var(--rule);padding:1px 4px;border-radius:3px}
+.sb-spacer{flex:1}
+.sb-scroll{overflow-y:auto;padding:4px 8px 24px;flex:1}
+.sb-scroll::-webkit-scrollbar{width:8px}
+.sb-scroll::-webkit-scrollbar-thumb{background:var(--rule-2);border-radius:8px;border:2px solid var(--bg-1)}
+
+.grp{margin-top:14px}
+.grp-h{display:flex;align-items:center;gap:6px;padding:2px 6px 6px;font-size:10.5px;font-weight:600;color:var(--dim);letter-spacing:.06em;text-transform:uppercase}
+.grp-h .count{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--faint)}
+.grp-h.click{cursor:pointer}.grp-h.click:hover{color:var(--muted)}
+
+.row{display:flex;align-items:flex-start;gap:9px;padding:6px 8px;border-radius:var(--r);cursor:pointer;position:relative}
+.row:hover{background:var(--raised)}
+.row.sel{background:var(--raised-2)}
+.dot{width:6px;height:6px;border-radius:50%;flex:none;margin-top:5px}
+.dot.working{background:var(--blue)}
+.dot.attention{background:var(--red)}
+.dot.idle{background:var(--faint)}
+.r-title{font-size:12.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.sel .r-title{font-weight:600}
+.r-meta{font-size:11px;color:var(--dim);margin-top:1px}
+.r-meta .src{font-family:var(--mono);font-size:10px;color:var(--muted)}
+.r-meta .working{color:var(--blue)}
+.r-meta .attn{color:var(--red)}
+.r-main{min-width:0;flex:1}
+
+.proj{display:flex;align-items:center;gap:7px;padding:5px 8px;border-radius:var(--r);cursor:pointer}
+.proj:hover{background:var(--raised)}
+.proj .chev{font-size:8px;color:var(--dim);width:8px}
+.proj .name{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.01em}
+.proj .live{width:5px;height:5px;border-radius:50%;background:var(--blue)}
+.proj .live.attn{background:var(--red)}
+.proj.open .chev{transform:none}
+.proj .age{font-family:var(--mono);font-size:9.5px;color:var(--dim);margin-left:auto}
+.proj .count{font-family:var(--mono);font-size:9.5px;color:var(--faint);margin-left:7px}
+.kids{padding-left:7px}
+
+.sub{display:flex;align-items:center;gap:8px;padding:3px 8px 3px 24px;position:relative;cursor:pointer;border-radius:var(--r)}
+.sub:hover{background:var(--raised)}
+.sub::before{content:"";position:absolute;left:14px;top:0;bottom:0;width:1px;background:var(--rule-2)}
+.sub .s-title{font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+.sub .g{font-family:var(--mono);font-size:10px}
+.g.done{color:var(--green)}.g.run{color:var(--blue)}
+.sub.more .s-title{font-style:italic}
+
+/* ---------- WORKSPACE ---------- */
+.ws{display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+.titlebar{display:flex;align-items:center;gap:12px;padding:0 22px;height:50px;border-bottom:1px solid var(--rule);flex:none}
+.tb-title{font-size:14px;font-weight:600}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;background:var(--raised);font-size:11px;color:var(--muted)}
+.chip .v{font-family:var(--mono);font-size:11px;color:var(--text)}
+.chip .dotc{width:5px;height:5px;border-radius:50%;background:var(--green)}
+.tb-actions{margin-left:auto;display:flex;gap:2px}
+.tb-btn{padding:5px 11px;border-radius:var(--r);font-size:12px;color:var(--muted);cursor:pointer}
+.tb-btn:hover{background:var(--raised);color:var(--text)}
+.tb-btn.warn:hover{color:var(--red)}
+
+.scroll-wrap{position:relative;flex:1;overflow:hidden}
+.transcript{height:100%;overflow-y:auto;padding:10px 0 30px}
+.transcript::-webkit-scrollbar{width:11px}
+.transcript::-webkit-scrollbar-thumb{background:var(--rule-2);border-radius:11px;border:3px solid var(--bg)}
+.feed{max-width:720px;margin:0 auto;padding:0 28px}
+
+/* turn rhythm: whitespace + faint divider, NO boxes */
+.turn{padding:22px 0}
+.turn + .turn{border-top:1px solid var(--rule)}
+
+/* USER prompt — demoted, quiet, no box */
+.you{display:flex;gap:10px;align-items:baseline;color:var(--muted)}
+.you .tag{font-size:10.5px;font-weight:600;color:var(--dim);letter-spacing:.04em;text-transform:uppercase;flex:none;width:38px;padding-top:1px}
+.you .q{font-size:13px;color:var(--muted);line-height:1.55}
+
+/* AGENT prose — the hero (sans), no box: leads via size + contrast + space */
+.agent{margin-top:16px;font-size:15.5px;line-height:1.62;color:var(--text);letter-spacing:-0.004em}
+.agent.lead{margin-top:14px}
+.agent code{font-family:var(--mono);font-size:12.5px;color:var(--text);background:var(--raised-2);padding:1px 5px;border-radius:3px}
+.cursor{display:inline-block;width:2px;height:17px;background:var(--blue);margin-left:3px;vertical-align:-3px;animation:soft 1.25s ease-in-out infinite}
+@keyframes soft{0%,100%{opacity:.85}50%{opacity:.18}}
+
+/* thinking — quietest, collapsible, no box */
+.think{margin-top:14px;font-size:12px;color:var(--dim);cursor:pointer;display:flex;gap:8px;align-items:baseline}
+.think:hover{color:var(--muted)}
+.think .ic{font-size:10px}
+.think .pv{font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.think-body{display:none;margin-top:8px;font-size:12.5px;color:var(--muted);line-height:1.6;font-style:italic;padding-left:18px;border-left:1px solid var(--rule)}
+.think.open .think-body{display:block}
+.think.open .pv{display:none}
+
+/* tool history — one quiet line, no box */
+.tools{margin-top:14px;font-size:12px;color:var(--dim);cursor:pointer;display:flex;gap:9px;align-items:baseline}
+.tools:hover{color:var(--muted)}
+.tools .ok{color:var(--green);font-family:var(--mono);font-size:11px}
+.tools .sum b{color:var(--muted);font-weight:600}
+.tools .ex{margin-left:6px;color:var(--faint)}
+.tools-detail{display:none;margin-top:8px;flex-direction:column;gap:5px;padding-left:18px;border-left:1px solid var(--rule)}
+.tools-detail.open{display:flex}
+.tline{display:flex;gap:10px;align-items:baseline;font-size:12px}
+.tline .ok{color:var(--green);font-family:var(--mono);font-size:10.5px}
+.tline .p{color:var(--muted)}
+.tline .cmd{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-left:auto}
+
+/* active tool — quiet line, single rail tick, no box, no spinner */
+.active{margin-top:16px;display:flex;gap:11px;align-items:baseline;padding-left:11px;position:relative}
+.active::before{content:"";position:absolute;left:0;top:3px;height:13px;width:2px;background:var(--blue);border-radius:2px}
+.active .lbl{font-size:13px;color:var(--text)}
+.active .cmd{font-family:var(--mono);font-size:11px;color:var(--blue);margin-left:auto}
+.active .st{font-size:11px;color:var(--blue)}
+
+/* subagents — the ONE emphasized module: a neutral raised box (the single containment device) */
+.subs{margin-top:16px;background:var(--raised);border:1px solid var(--rule);border-radius:var(--r);padding:11px 14px}
+.subs-h{display:flex;align-items:baseline;gap:10px;margin-bottom:9px}
+.subs-h .t{font-size:12px;font-weight:600;color:var(--text)}
+.subs-h .t b{color:var(--muted);font-weight:600}
+.subs-h .tally{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.subs-h .tally .r{color:var(--blue)}.subs-h .tally .o{color:var(--green)}
+.subs-h .el{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-left:auto}
+.sub-r{display:flex;align-items:baseline;gap:10px;padding:5px 0;cursor:pointer}
+.sub-r + .sub-r{border-top:1px solid var(--rule)}
+.sub-r .g{font-family:var(--mono);font-size:11px;width:12px}
+.sub-r .nm{font-family:var(--mono);font-size:11.5px;color:var(--text)}
+.sub-r .res{font-size:12px;color:var(--muted)}
+.sub-r .res .live{color:var(--blue)}
+.sub-r .dur{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-left:auto}
+.sub-r .lk{font-size:11px;color:var(--blue);opacity:0}
+.sub-r:hover .lk{opacity:.9}
+
+/* STEER — quiet, like the user prompt (it IS the user's own message): just a thin amber tick */
+.steer{margin-top:16px;display:flex;gap:10px;align-items:baseline;padding-left:11px;position:relative}
+.steer::before{content:"";position:absolute;left:0;top:4px;height:12px;width:2px;background:var(--rule-2);border-radius:2px}
+.steer .lbl{font-size:10.5px;font-weight:600;color:var(--dim);letter-spacing:.04em;text-transform:uppercase;flex:none;padding-top:1px}
+.steer .txt{font-size:13px;color:var(--muted);line-height:1.55}
+
+/* liveness — single quiet line, one subtle breathing dot */
+.liveness{max-width:720px;margin:14px auto 0;padding:0 28px}
+.live{display:inline-flex;align-items:center;gap:9px;font-size:12px;color:var(--muted)}
+.live .d{width:6px;height:6px;border-radius:50%;background:var(--blue);animation:breathe 2.6s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.45}}
+.live .el{font-family:var(--mono);font-size:11px;color:var(--text)}
+.live .wait{color:var(--muted)}
+
+/* jump pill — calm */
+.jump{position:absolute;right:26px;bottom:20px;display:inline-flex;align-items:center;gap:7px;padding:7px 13px;border-radius:999px;background:var(--raised-2);color:var(--text);font-size:12px;border:1px solid var(--rule-2);cursor:pointer;transition:background .12s}
+.jump:hover{background:var(--rule-2)}
+.jump .n{font-family:var(--mono);color:var(--blue)}
+
+/* composer */
+.composer{border-top:1px solid var(--rule);padding:13px 28px 16px;flex:none;background:var(--bg-1)}
+.c-inner{max-width:720px;margin:0 auto}
+.input{border:1px solid var(--rule-2);border-radius:var(--r);background:var(--raised);transition:border-color .12s}
+.input:focus-within{border-color:var(--blue)}
+.ta{width:100%;background:none;border:none;resize:none;color:var(--text);font-family:var(--sans);font-size:14px;padding:11px 13px;outline:none;min-height:50px}
+.ta::placeholder{color:var(--dim)}
+.cbar{display:flex;align-items:center;gap:8px;padding:7px 9px;border-top:1px solid var(--rule)}
+.cbtn{padding:4px 9px;border-radius:var(--r);font-size:12px;color:var(--muted);cursor:pointer;background:none;border:none}
+.cbtn:hover{background:var(--raised-2);color:var(--text)}
+.c-sp{flex:1}
+.intr{color:var(--muted)}
+.intr:hover{color:var(--red);background:var(--raised-2)}
+.steerbtn{color:var(--muted)}
+.steerbtn .k{font-family:var(--mono);font-size:9.5px;color:var(--dim)}
+.send{background:var(--blue);color:#0a0c14;font-weight:600;padding:6px 15px;border-radius:var(--r);border:none;cursor:pointer;font-size:12.5px}
+.send:hover{filter:brightness(1.07)}
+
+/* ERROR tool — red rail, primary purpose, command demoted */
+.errblock{margin-top:16px;padding-left:11px;position:relative}
+.errblock::before{content:"";position:absolute;left:0;top:3px;height:14px;width:2px;background:var(--red);border-radius:2px}
+.errblock .eh{display:flex;gap:11px;align-items:baseline}
+.errblock .eh .x{color:var(--red);font-family:var(--mono);font-size:11px}
+.errblock .eh .lbl{font-size:13px;color:var(--text)}
+.errblock .eh .cmd{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:auto}
+/* long / mono output (truncated by default, expandable) */
+.out{margin-top:9px;background:var(--bg-1);border:1px solid var(--rule);border-radius:var(--r);overflow:hidden}
+.out .body{max-height:150px;overflow:hidden;transition:max-height .15s}
+.out.open .body{max-height:1200px;overflow:auto}
+.out pre{font-family:var(--mono);font-size:11.5px;line-height:1.65;color:var(--muted);padding:10px 13px;white-space:pre;margin:0}
+.out pre .er{color:var(--red)}
+.out .more{display:flex;align-items:center;gap:8px;padding:7px 13px;border-top:1px solid var(--rule);font-size:11.5px;color:var(--blue);cursor:pointer;background:var(--bg-1)}
+.out .more .c{font-family:var(--mono);color:var(--dim)}
+.out.open .more .lead::after{content:"collapse"}
+.out .more .lead::after{content:"expand"}
+/* image card */
+.imgcard{margin-top:14px;display:inline-block;max-width:440px;border:1px solid var(--rule);border-radius:var(--r);overflow:hidden;background:var(--bg-1);cursor:pointer;vertical-align:top}
+.imgcard svg{display:block;width:100%;height:auto;background:var(--raised)}
+.imgcard .cap{display:flex;gap:8px;align-items:center;padding:7px 11px;border-top:1px solid var(--rule);font-size:11px;color:var(--muted)}
+.imgcard .cap .fn{font-family:var(--mono);font-size:10.5px;color:var(--text)}
+.imgcard .cap .ex{margin-left:auto;color:var(--blue)}
+
+/* one-time, gentle, NON-looping load reveal only */
+.turn{animation:in .35s ease both}
+.turn:nth-child(2){animation-delay:.04s}.turn:nth-child(3){animation-delay:.08s}
+@keyframes in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="sb-actions">
+      <div class="sb-act"><span class="plus">＋</span> New</div>
+      <div class="sb-act">Search <span class="k">⌘K</span></div>
+      <div class="sb-spacer"></div>
+      <div class="sb-act">Settings</div>
+    </div>
+    <div class="sb-scroll">
+
+      <div class="grp">
+        <div class="grp-h">Active</div>
+        <div class="proj open"><span class="chev">▾</span><span class="name">SERF</span><span class="live"></span><span class="age">5m</span></div>
+        <div class="kids">
+          <div class="row sel"><span class="dot working"></span><div class="r-main"><div class="r-title">Refactor auth token cache</div><div class="r-meta"><span class="working">working</span> · 1:12</div></div></div>
+          <div class="sub"><span class="s-title">trace-callers</span><span class="g done">✓ done</span></div>
+          <div class="sub"><span class="s-title">find-tests</span><span class="g run">⟳ running</span></div>
+          <div class="sub more"><span class="s-title">+2 subagents</span><span class="g done">2✓</span></div>
+          <div class="row"><span class="dot idle"></span><div class="r-main"><div class="r-title">Fix flaky CI</div><div class="r-meta">idle · 3h</div></div></div>
+        </div>
+        <div class="proj open"><span class="chev">▾</span><span class="name">KIMI-EFFORT</span><span class="live attn"></span><span class="age">1m</span></div>
+        <div class="kids">
+          <div class="row"><span class="dot attention"></span><div class="r-main"><div class="r-title">Audit error handling</div><div class="r-meta"><span class="attn">needs you</span> · 1m</div></div></div>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="grp-h">Recent</div>
+        <div class="proj"><span class="chev">▸</span><span class="name">PRIME-RADIANT</span><span class="age">1d</span><span class="count">7</span></div>
+      </div>
+
+      <div class="grp">
+        <div class="grp-h">Older</div>
+        <div class="proj"><span class="chev">▸</span><span class="name">serf-docs</span><span class="age">9d</span><span class="count">3</span></div>
+      </div>
+
+      <div class="grp">
+        <div class="grp-h click">▸&nbsp; Test runs <span class="count">26</span></div>
+      </div>
+    </div>
+  </aside>
+
+  <main class="ws">
+    <header class="titlebar">
+      <div class="tb-title">Refactor auth token cache</div>
+      <div class="tb-actions"><div class="tb-btn">Details&nbsp; ⋯</div></div>
+    </header>
+
+    <div class="scroll-wrap">
+      <div class="transcript" id="transcript">
+        <div class="feed">
+
+          <div class="turn">
+            <div class="you"><span class="tag">You</span><span class="q">After patching, run the full suite and check every caller in parallel.</span></div>
+
+            <div class="agent lead">Running the suite and fanning out a checker per caller package.</div>
+
+            <!-- HARD CASE 1: heavy subagent fan-out with a failure + overflow -->
+            <div class="subs">
+              <div class="subs-h"><span class="t">Subagents <b>(8)</b></span><span class="tally"><span class="r">⟳ 2 running</span> · <span class="o">✓ 5 done</span> · <span style="color:var(--red)">✕ 1 failed</span></span><span class="el">2:14</span></div>
+              <div class="sub-r"><span class="g done">✓</span><span class="nm">auth/login</span><span class="res">ok · 12 callers</span><span class="dur">4.2s</span><span class="lk">view →</span></div>
+              <div class="sub-r"><span class="g done">✓</span><span class="nm">auth/refresh</span><span class="res">ok</span><span class="dur">3.8s</span><span class="lk">view →</span></div>
+              <div class="sub-r"><span class="g done">✓</span><span class="nm">api/middleware</span><span class="res">ok</span><span class="dur">5.1s</span><span class="lk">view →</span></div>
+              <div class="sub-r"><span class="g" style="color:var(--red)">✕</span><span class="nm">billing/worker</span><span class="res" style="color:var(--red)">assertion failed</span><span class="dur">6.0s</span><span class="lk">view →</span></div>
+              <div class="sub-r"><span class="g done">✓</span><span class="nm">gateway/proxy</span><span class="res">ok</span><span class="dur">4.4s</span><span class="lk">view →</span></div>
+              <div class="sub-r"><span class="g run">⟳</span><span class="nm">search/indexer</span><span class="res"><span class="live">running</span> · scanning usages</span><span class="dur">0:41</span><span class="lk">view →</span></div>
+              <div class="sub-r"><span class="g" style="color:var(--muted)">+2</span><span class="res">cron/sweeper ✓ · admin/console ⟳ running</span><span class="lk" style="opacity:.85">expand</span></div>
+            </div>
+
+            <div class="agent">All callers pass except <code>billing/worker</code>, which relied on the old aggressive eviction. The suite surfaced one real failure:</div>
+
+            <!-- HARD CASE 2: error with truncated stderr -->
+            <div class="errblock"><div class="eh"><span class="x">✕</span><span class="lbl">Test suite failed in billing/worker</span><span class="cmd">go test ./billing/...</span></div></div>
+            <div class="out" id="o1">
+              <div class="body"><pre>--- FAIL: TestTokenEvictedAfterIdle (0.01s)
+    worker_test.go:142: expected token evicted after 30s idle
+        got: token still valid (expiresAt 2026-06-16T14:55:02Z)
+    worker_test.go:147: cache.Len() = 1, want 0
+--- FAIL: TestSweepDropsStale (0.00s)
+    worker_test.go:201: sweep removed a still-valid token
+<span class="er">FAIL</span>    primeradiant.com/billing/worker   0.044s</pre></div>
+              <div class="more" onclick="document.getElementById('o1').classList.toggle('open')"><span class="lead"></span> <span class="c">· 84 more lines</span></div>
+            </div>
+
+            <div class="agent">It asserts tokens expire after idle — that assumption is now wrong by design. Here's the eviction flow, before vs. after the fix:</div>
+
+            <!-- HARD CASE 3: inline image -->
+            <div class="imgcard" id="img">
+              <svg viewBox="0 0 440 196" xmlns="http://www.w3.org/2000/svg">
+                <rect width="440" height="196" fill="#16181d"/>
+                <text x="22" y="28" fill="#969aa5" font-family="sans-serif" font-size="10.5" letter-spacing="1.5">BEFORE — evicts idle-but-valid</text>
+                <rect x="22" y="40" width="84" height="32" rx="5" fill="none" stroke="#2b2e37"/>
+                <text x="64" y="60" fill="#e7e8ec" font-size="11.5" font-family="monospace" text-anchor="middle">token</text>
+                <line x1="106" y1="56" x2="184" y2="56" stroke="#5d616c" stroke-width="1.4"/>
+                <polygon points="184,52 192,56 184,60" fill="#5d616c"/>
+                <text x="146" y="50" fill="#969aa5" font-size="9.5" font-family="monospace" text-anchor="middle">idle 30s</text>
+                <rect x="192" y="40" width="104" height="32" rx="5" fill="none" stroke="#f7768e"/>
+                <text x="244" y="60" fill="#f7768e" font-size="11.5" font-family="monospace" text-anchor="middle">evicted ✕</text>
+                <text x="312" y="60" fill="#5d616c" font-size="9.5" font-family="monospace">cmp lastUsed</text>
+                <text x="22" y="120" fill="#969aa5" font-family="sans-serif" font-size="10.5" letter-spacing="1.5">AFTER — keeps until real expiry</text>
+                <rect x="22" y="132" width="84" height="32" rx="5" fill="none" stroke="#2b2e37"/>
+                <text x="64" y="152" fill="#e7e8ec" font-size="11.5" font-family="monospace" text-anchor="middle">token</text>
+                <line x1="106" y1="148" x2="184" y2="148" stroke="#5d616c" stroke-width="1.4"/>
+                <polygon points="184,144 192,148 184,152" fill="#5d616c"/>
+                <text x="146" y="142" fill="#969aa5" font-size="9.5" font-family="monospace" text-anchor="middle">idle 30s</text>
+                <rect x="192" y="132" width="104" height="32" rx="5" fill="none" stroke="#9ece6a"/>
+                <text x="244" y="152" fill="#9ece6a" font-size="11.5" font-family="monospace" text-anchor="middle">kept ✓</text>
+                <text x="312" y="152" fill="#5d616c" font-size="9.5" font-family="monospace">cmp expiresAt</text>
+              </svg>
+              <div class="cap"><span class="fn">eviction-flow.svg</span><span>440×196</span><span class="ex">expand ⤢</span></div>
+            </div>
+
+            <div class="agent">Fixing the billing expectation to assert idle-but-valid tokens survive.</div>
+            <div class="active"><span class="lbl">Fix billing/worker expectation</span><span class="cmd">edit billing/worker_test.go</span></div>
+
+            <!-- HARD CASE 4: very long output -->
+            <div class="you"><span class="tag">You</span><span class="q">show me the full test log</span></div>
+            <div class="tools" style="cursor:default"><span class="ok">✓</span><span class="sum"><b>read</b> test.log · 2,426 lines</span></div>
+            <div class="out" id="o2">
+              <div class="body"><pre>=== RUN   TestTokenCache
+=== RUN   TestTokenCache/stores_and_returns
+=== RUN   TestTokenCache/respects_expiresAt
+=== RUN   TestTokenCache/idle_but_valid_survives
+--- PASS: TestTokenCache (0.03s)
+=== RUN   TestEvictExpired
+    cache_test.go:88: seeding 10000 tokens
+    cache_test.go:91: advancing clock 45s
+--- PASS: TestEvictExpired (0.12s)</pre></div>
+              <div class="more" onclick="document.getElementById('o2').classList.toggle('open')"><span class="lead"></span> <span class="c">· 2,418 more lines</span></div>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="liveness"><span class="live"><span class="d"></span>working · <span class="el">2:14</span> · <span class="wait">waiting on 2 subagents</span></span></div>
+      </div>
+
+      <button class="jump" id="jump">↓ <span class="n">2</span> new</button>
+    </div>
+
+    <div class="composer">
+      <div class="c-inner">
+        <div class="input">
+          <textarea class="ta" placeholder="Message the agent…"></textarea>
+          <div class="cbar">
+            <span class="chip" style="background:var(--raised-2)"><span class="dotc"></span><span class="v">gpt-5.5</span></span>
+            <span class="cbtn">＋</span>
+            <span class="c-sp"></span>
+            <span class="cbtn intr">■ Interrupt</span>
+            <span class="cbtn steerbtn">Send as steer <span class="k">⌥↵</span></span>
+            <button class="send">Send ↵</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const tr=document.getElementById('transcript'),jump=document.getElementById('jump');
+function upd(){const nb=tr.scrollHeight-tr.scrollTop-tr.clientHeight<60;jump.style.opacity=nb?'0':'1';jump.style.pointerEvents=nb?'none':'auto';}
+tr.addEventListener('scroll',upd);
+jump.addEventListener('click',()=>tr.scrollTo({top:tr.scrollHeight,behavior:'smooth'}));
+tr.scrollTop=Math.max(0,tr.scrollHeight-tr.clientHeight-120);upd();
+</script>
+</body>
+</html>

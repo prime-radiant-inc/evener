@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf — Refactor auth token cache</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0c0d12; --bg-1:#101218; --bg-raised:#15171f; --bg-raised-2:#1b1e28;
+  --rule:#22242e; --rule-strong:#2e313d;
+  --text:#e6e7ee; --text-muted:#9094a3; --text-dim:#5f6473;
+  --blue:#7aa2f7; --purple:#bb9af7; --green:#9ece6a; --red:#f7768e; --amber:#e0af68; --cyan:#7dcfff;
+  --blue-dim:rgba(122,162,247,.14); --purple-dim:rgba(187,154,247,.13); --green-dim:rgba(158,206,106,.14);
+  --red-dim:rgba(247,118,142,.14); --amber-dim:rgba(224,175,104,.14);
+  --font-sans:'Hanken Grotesk',system-ui,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,monospace;
+  --r:4px; --r-pill:999px;
+  --sp1:2px; --sp2:4px; --sp3:6px; --sp4:8px; --sp5:12px; --sp6:16px; --sp7:24px; --sp8:32px;
+}
+*{box-sizing:border-box; margin:0; padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--text);
+  font-family:var(--font-sans); font-size:13px; line-height:1.5;
+  -webkit-font-smoothing:antialiased; letter-spacing:-0.005em;
+  overflow:hidden;
+}
+.app{display:grid; grid-template-columns:288px 1fr; height:100vh}
+.mono{font-family:var(--font-mono); font-size:11.5px; letter-spacing:0}
+
+/* ============ SIDEBAR ============ */
+.sidebar{
+  background:var(--bg-1); border-right:1px solid var(--rule);
+  display:flex; flex-direction:column; overflow:hidden;
+}
+.sb-actions{display:flex; align-items:center; gap:2px; padding:10px 10px; border-bottom:1px solid var(--rule)}
+.sb-act{
+  display:flex; align-items:center; gap:6px; padding:6px 9px; border-radius:var(--r);
+  color:var(--text-muted); font-size:12.5px; font-weight:500; cursor:pointer; border:1px solid transparent;
+}
+.sb-act:hover{background:var(--bg-raised); color:var(--text)}
+.sb-act .k{font-family:var(--font-mono); font-size:10px; color:var(--text-dim); border:1px solid var(--rule); padding:1px 4px; border-radius:3px}
+.sb-act.primary{color:var(--text)}
+.sb-act.primary .plus{color:var(--blue); font-weight:700}
+.sb-spacer{flex:1}
+.sb-scroll{overflow-y:auto; padding:6px 8px 24px; flex:1}
+.sb-scroll::-webkit-scrollbar{width:9px}
+.sb-scroll::-webkit-scrollbar-thumb{background:var(--rule-strong); border-radius:9px; border:3px solid var(--bg-1)}
+
+.grp{margin-top:10px}
+.grp-h{
+  display:flex; align-items:center; gap:6px; padding:4px 8px 4px 6px;
+  font-size:11px; font-weight:600; color:var(--text-dim); letter-spacing:.03em;
+  text-transform:uppercase; cursor:default;
+}
+.grp-h .count{margin-left:auto; font-family:var(--font-mono); font-size:10.5px; color:var(--text-dim); font-weight:500}
+.grp-h.click{cursor:pointer}
+.grp-h.click:hover{color:var(--text-muted)}
+.chev{width:10px; color:var(--text-dim); font-size:9px; transition:transform .12s}
+
+/* session rows */
+.row{
+  display:flex; align-items:flex-start; gap:8px; padding:6px 8px; border-radius:var(--r);
+  cursor:pointer; position:relative;
+}
+.row:hover{background:var(--bg-raised)}
+.row.sel{background:var(--bg-raised-2)}
+.row.sel::before{content:""; position:absolute; left:0; top:6px; bottom:6px; width:2px; background:var(--blue); border-radius:2px}
+.dot{width:7px; height:7px; border-radius:50%; flex:none; margin-top:5px}
+.dot.working{background:var(--blue); box-shadow:0 0 0 3px var(--blue-dim)}
+.dot.attention{background:var(--red); box-shadow:0 0 0 3px var(--red-dim)}
+.dot.idle{background:var(--text-dim)}
+.dot.done{background:var(--green)}
+.r-main{min-width:0; flex:1}
+.r-title{font-size:12.5px; font-weight:500; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.row.sel .r-title{font-weight:600}
+.r-meta{font-size:11px; color:var(--text-dim); margin-top:1px; display:flex; gap:5px; align-items:center}
+.r-meta .src{font-family:var(--font-mono); font-size:10px; color:var(--text-muted)}
+.r-meta .working{color:var(--blue)}
+.r-meta .attn{color:var(--red); font-weight:500}
+
+/* project header rows */
+.proj{display:flex; align-items:center; gap:6px; padding:5px 8px; border-radius:var(--r); cursor:pointer}
+.proj:hover{background:var(--bg-raised)}
+.proj .name{font-size:12px; font-weight:600; color:var(--text-muted); letter-spacing:.01em}
+.proj .count{margin-left:auto; font-family:var(--font-mono); font-size:10.5px; color:var(--text-dim)}
+.proj .age{font-family:var(--font-mono); font-size:10px; color:var(--text-dim); margin-left:8px}
+.proj .live-dot{width:6px;height:6px;border-radius:50%;background:var(--blue);box-shadow:0 0 0 3px var(--blue-dim)}
+.proj-children{padding-left:6px}
+
+/* subagent rows (de-weighted) */
+.sub{
+  display:flex; align-items:center; gap:7px; padding:3px 8px 3px 22px; position:relative;
+  cursor:pointer; border-radius:var(--r);
+}
+.sub:hover{background:var(--bg-raised)}
+.sub::before{content:""; position:absolute; left:13px; top:0; bottom:0; width:1px; background:var(--rule-strong)}
+.sub .branch{position:absolute; left:13px; top:50%; width:6px; height:1px; background:var(--rule-strong)}
+.sub .s-title{font-size:11.5px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1}
+.sub .glyph{font-family:var(--font-mono); font-size:10.5px}
+.glyph.done{color:var(--green)}
+.glyph.run{color:var(--purple)}
+.sub.more .s-title{color:var(--text-dim); font-style:italic}
+.sub-tally{font-family:var(--font-mono);font-size:10px;color:var(--text-dim)}
+
+/* ============ WORKSPACE ============ */
+.ws{display:flex; flex-direction:column; min-width:0; background:var(--bg)}
+.titlebar{
+  display:flex; align-items:center; gap:12px; padding:0 18px; height:48px;
+  border-bottom:1px solid var(--rule); flex:none;
+}
+.tb-title{font-size:14px; font-weight:600; color:var(--text); letter-spacing:-0.01em}
+.chip{
+  display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border-radius:var(--r-pill);
+  background:var(--bg-raised); border:1px solid var(--rule); font-size:11px; color:var(--text-muted);
+}
+.chip .v{font-family:var(--font-mono); font-size:11px; color:var(--text)}
+.chip.model .dotc{width:6px;height:6px;border-radius:50%;background:var(--green)}
+.tb-actions{margin-left:auto; display:flex; gap:4px}
+.tb-btn{padding:5px 11px; border-radius:var(--r); font-size:12px; color:var(--text-muted); cursor:pointer; border:1px solid transparent}
+.tb-btn:hover{background:var(--bg-raised); color:var(--text)}
+.tb-btn.warn:hover{color:var(--red)}
+
+.scroll-wrap{position:relative; flex:1; overflow:hidden}
+.transcript{height:100%; overflow-y:auto; padding:18px 0 28px}
+.transcript::-webkit-scrollbar{width:11px}
+.transcript::-webkit-scrollbar-thumb{background:var(--rule-strong); border-radius:11px; border:3px solid var(--bg)}
+.feed{max-width:780px; margin:0 auto; padding:0 28px}
+
+/* generic entry with status rail */
+.entry{position:relative; padding:10px 0 10px 18px; animation:rise .4s ease both}
+.entry::before{content:""; position:absolute; left:0; top:12px; bottom:12px; width:2px; border-radius:2px; background:var(--rule-strong)}
+.entry.agent::before{background:var(--blue)}
+.entry.user::before{background:var(--text-dim)}
+.entry.done::before{background:var(--green)}
+.entry.sub::before{background:var(--purple)}
+.entry.steer::before{background:var(--amber)}
+.entry.active::before{background:linear-gradient(var(--blue),var(--blue)); animation:railpulse 1.6s ease-in-out infinite}
+.e-label{display:flex; align-items:center; gap:8px; font-size:11px; color:var(--text-dim); margin-bottom:4px; font-weight:500}
+.e-label .who{color:var(--text-muted); font-weight:600; letter-spacing:.02em}
+.e-time{font-family:var(--font-mono); font-size:10px; color:var(--text-dim); margin-left:auto}
+
+/* user */
+.user .bubble{
+  background:var(--bg-raised); border:1px solid var(--rule); border-radius:var(--r);
+  padding:9px 13px; font-size:13.5px; line-height:1.55; color:var(--text);
+}
+/* assistant prose — the loud thing */
+.agent .prose{font-size:14.5px; line-height:1.62; color:var(--text); letter-spacing:-0.006em}
+.agent .prose code{font-family:var(--font-mono); font-size:12.5px; background:var(--bg-raised); border:1px solid var(--rule); padding:1px 5px; border-radius:3px; color:var(--cyan)}
+.caret{display:inline-block; width:7px; height:16px; background:var(--blue); margin-left:2px; vertical-align:-2px; animation:blink 1s step-end infinite}
+
+/* thinking — quiet, collapsible */
+.thinking{padding:7px 0 7px 18px; position:relative}
+.thinking::before{content:""; position:absolute; left:0; top:9px; bottom:9px; width:2px; background:var(--rule); border-radius:2px}
+.think-head{display:flex; align-items:center; gap:8px; cursor:pointer; color:var(--text-dim); font-size:12px}
+.think-head:hover{color:var(--text-muted)}
+.think-head .ic{font-size:11px}
+.think-preview{font-style:italic; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1}
+.think-body{display:none; margin-top:7px; font-size:12.5px; color:var(--text-muted); line-height:1.6; font-style:italic}
+.thinking.open .think-body{display:block}
+.thinking.open .think-preview{display:none}
+
+/* collapsed tool cluster */
+.tool-cluster{
+  margin:4px 0; padding:7px 12px; border:1px solid var(--rule); border-radius:var(--r);
+  background:var(--bg-1); display:flex; align-items:center; gap:9px; cursor:pointer; font-size:12px;
+}
+.tool-cluster:hover{border-color:var(--rule-strong)}
+.tool-cluster .ok{color:var(--green); font-family:var(--font-mono); font-size:11px}
+.tool-cluster .summary{color:var(--text-muted)}
+.tool-cluster .summary b{color:var(--text); font-weight:600}
+.tool-cluster .steps{font-family:var(--font-mono); font-size:11px; color:var(--text-dim)}
+.tool-cluster .expand{margin-left:auto; color:var(--text-dim); font-size:11px}
+.cluster-detail{display:none; margin:2px 0 6px; padding-left:6px; flex-direction:column; gap:2px}
+.cluster-detail.open{display:flex}
+.tool-line{display:flex; align-items:center; gap:9px; padding:5px 12px; font-size:12px; border-left:2px solid var(--green); background:var(--bg-1); border-radius:0 var(--r) var(--r) 0}
+.tool-line .ok{color:var(--green); font-family:var(--font-mono); font-size:11px}
+.tool-line .purpose{color:var(--text)}
+.tool-line .cmd{font-family:var(--font-mono); font-size:11px; color:var(--text-muted); background:var(--bg-raised); border:1px solid var(--rule); padding:1px 6px; border-radius:3px; margin-left:auto}
+
+/* active tool */
+.active-tool{
+  margin:6px 0; border:1px solid var(--blue-dim); border-radius:var(--r); overflow:hidden;
+  background:linear-gradient(180deg,var(--blue-dim),transparent 60%);
+}
+.at-head{display:flex; align-items:center; gap:9px; padding:9px 12px}
+.at-spin{width:11px;height:11px;border-radius:50%;border:2px solid var(--blue-dim);border-top-color:var(--blue);animation:spin .8s linear infinite}
+.at-purpose{font-size:13px; color:var(--text); font-weight:500}
+.at-cmd{font-family:var(--font-mono); font-size:11px; color:var(--blue); background:var(--bg-raised); border:1px solid var(--rule); padding:2px 7px; border-radius:3px; margin-left:auto}
+.at-shim{height:2px; background:linear-gradient(90deg,transparent,var(--blue),transparent); background-size:40% 100%; animation:shim 1.4s linear infinite}
+
+/* subagents panel */
+.sa-panel{margin:6px 0; border:1px solid var(--rule); border-left:2px solid var(--purple); border-radius:0 var(--r) var(--r) 0; background:var(--bg-1)}
+.sa-head{display:flex; align-items:center; gap:9px; padding:9px 13px; border-bottom:1px solid var(--rule)}
+.sa-head .label{font-size:12.5px; font-weight:600; color:var(--text)}
+.sa-head .label b{color:var(--purple)}
+.sa-head .tally{font-family:var(--font-mono); font-size:11px; color:var(--text-muted); display:flex; gap:10px}
+.sa-head .tally .run{color:var(--purple)}
+.sa-head .tally .ok{color:var(--green)}
+.sa-head .elapsed{font-family:var(--font-mono); font-size:11px; color:var(--text-dim); margin-left:auto}
+.sa-row{display:flex; align-items:center; gap:10px; padding:8px 13px; cursor:pointer}
+.sa-row+.sa-row{border-top:1px solid var(--rule)}
+.sa-row:hover{background:var(--bg-raised)}
+.sa-glyph{font-family:var(--font-mono); font-size:12px; width:14px; text-align:center}
+.sa-glyph.done{color:var(--green)}
+.sa-glyph.run{color:var(--purple); animation:pulse 1.4s ease-in-out infinite}
+.sa-name{font-size:12.5px; font-weight:500; color:var(--text); font-family:var(--font-mono); font-size:12px}
+.sa-detail{font-size:12px; color:var(--text-muted)}
+.sa-detail .live{color:var(--purple)}
+.sa-dur{font-family:var(--font-mono); font-size:11px; color:var(--text-dim); margin-left:auto}
+.sa-link{font-size:11px; color:var(--cyan); opacity:.8}
+.sa-row:hover .sa-link{opacity:1}
+
+/* steering — loud */
+.steer-msg{
+  margin:10px 0; padding:11px 14px; border-radius:var(--r);
+  background:var(--amber-dim); border:1px solid rgba(224,175,104,.35); border-left:3px solid var(--amber);
+  display:flex; gap:10px; align-items:flex-start;
+}
+.steer-msg .ic{color:var(--amber); font-size:13px; margin-top:1px}
+.steer-msg .st-label{font-size:10.5px; font-weight:700; color:var(--amber); text-transform:uppercase; letter-spacing:.06em; margin-bottom:2px}
+.steer-msg .st-text{font-size:13.5px; color:var(--text); line-height:1.5}
+
+/* liveness */
+.liveness{max-width:780px; margin:8px auto 0; padding:0 28px}
+.live-pill{
+  display:inline-flex; align-items:center; gap:9px; padding:6px 13px; border-radius:var(--r-pill);
+  background:var(--bg-raised); border:1px solid var(--rule); font-size:12px; color:var(--text-muted);
+}
+.live-pill .bdot{width:7px;height:7px;border-radius:50%;background:var(--blue);animation:pulse 1.3s ease-in-out infinite}
+.live-pill .el{font-family:var(--font-mono); font-size:11px; color:var(--text)}
+.live-pill .wait{color:var(--purple)}
+
+/* jump pill */
+.jump{
+  position:absolute; right:24px; bottom:18px; display:inline-flex; align-items:center; gap:7px;
+  padding:7px 14px; border-radius:var(--r-pill); background:var(--blue); color:#0a0c14; font-size:12px; font-weight:600;
+  cursor:pointer; box-shadow:0 6px 20px rgba(0,0,0,.45); border:none; transition:transform .12s, filter .12s;
+}
+.jump:hover{transform:translateY(-1px); filter:brightness(1.08)}
+.jump .n{font-family:var(--font-mono)}
+
+/* composer */
+.composer{border-top:1px solid var(--rule); padding:12px 28px 16px; flex:none; background:var(--bg-1)}
+.composer-inner{max-width:780px; margin:0 auto}
+.input-card{border:1px solid var(--rule-strong); border-radius:var(--r); background:var(--bg-raised); transition:border-color .12s}
+.input-card:focus-within{border-color:var(--blue); box-shadow:0 0 0 3px var(--blue-dim)}
+.ta{width:100%; background:none; border:none; resize:none; color:var(--text); font-family:var(--font-sans); font-size:14px; padding:11px 13px; outline:none; min-height:54px}
+.ta::placeholder{color:var(--text-dim)}
+.composer-bar{display:flex; align-items:center; gap:8px; padding:7px 9px; border-top:1px solid var(--rule)}
+.cbtn{padding:4px 9px; border-radius:var(--r); font-size:12px; color:var(--text-muted); cursor:pointer; border:1px solid transparent; background:none}
+.cbtn:hover{background:var(--bg-raised-2); color:var(--text)}
+.c-spacer{flex:1}
+.btn-steer{color:var(--text-muted); border:1px solid var(--rule)}
+.btn-steer .k{font-family:var(--font-mono); font-size:10px; color:var(--text-dim)}
+.btn-send{background:var(--blue); color:#0a0c14; font-weight:600; padding:6px 16px; border-radius:var(--r); border:none; cursor:pointer; font-size:12.5px}
+.btn-send:hover{filter:brightness(1.08)}
+
+@keyframes rise{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none}}
+@keyframes blink{50%{opacity:0}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+@keyframes railpulse{0%,100%{opacity:1}50%{opacity:.5}}
+@keyframes shim{0%{background-position:-40% 0}100%{background-position:140% 0}}
+.entry:nth-child(1){animation-delay:.02s}.entry:nth-child(2){animation-delay:.05s}.entry:nth-child(3){animation-delay:.08s}
+.entry:nth-child(4){animation-delay:.11s}.entry:nth-child(5){animation-delay:.14s}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ===================== SIDEBAR ===================== -->
+  <aside class="sidebar">
+    <div class="sb-actions">
+      <div class="sb-act primary"><span class="plus">＋</span> New</div>
+      <div class="sb-act">Search <span class="k">⌘K</span></div>
+      <div class="sb-spacer"></div>
+      <div class="sb-act">Settings</div>
+    </div>
+    <div class="sb-scroll">
+
+      <div class="grp">
+        <div class="grp-h">Live <span class="count">2</span></div>
+        <div class="row sel">
+          <span class="dot working"></span>
+          <div class="r-main">
+            <div class="r-title">Refactor auth token cache</div>
+            <div class="r-meta"><span class="src">serf</span> · <span class="working">working 1:12</span></div>
+          </div>
+        </div>
+        <div class="row">
+          <span class="dot attention"></span>
+          <div class="r-main">
+            <div class="r-title">Audit error handling</div>
+            <div class="r-meta"><span class="src">kimi</span> · <span class="attn">needs you</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="grp-h">Recent</div>
+        <div class="proj"><span class="chev">▾</span><span class="name">SERF</span><span class="live-dot"></span><span class="age">5m</span><span class="count">·</span></div>
+        <div class="proj-children">
+          <div class="row sel">
+            <span class="dot working"></span>
+            <div class="r-main">
+              <div class="r-title">Refactor auth token cache</div>
+              <div class="r-meta"><span class="working">working</span> · 1:12</div>
+            </div>
+          </div>
+          <div class="sub"><span class="branch"></span><span class="s-title">trace-callers</span><span class="glyph done">✓ done</span></div>
+          <div class="sub"><span class="branch"></span><span class="s-title">find-tests</span><span class="glyph run">⟳ running</span></div>
+          <div class="sub more"><span class="branch"></span><span class="s-title">+2 subagents</span><span class="sub-tally">2✓</span></div>
+          <div class="row">
+            <span class="dot idle"></span>
+            <div class="r-main">
+              <div class="r-title">Fix flaky CI</div>
+              <div class="r-meta">idle · 3h</div>
+            </div>
+          </div>
+        </div>
+        <div class="proj"><span class="chev" style="transform:rotate(-90deg)">▾</span><span class="name">KIMI-EFFORT</span><span class="count">22</span><span class="age">2h</span></div>
+        <div class="proj"><span class="chev" style="transform:rotate(-90deg)">▾</span><span class="name">PRIME-RADIANT</span><span class="count">7</span><span class="age">1d</span></div>
+      </div>
+
+      <div class="grp">
+        <div class="grp-h">Older</div>
+        <div class="proj"><span class="chev" style="transform:rotate(-90deg)">▾</span><span class="name">serf-docs</span><span class="count">3</span><span class="age">9d</span></div>
+      </div>
+
+      <div class="grp">
+        <div class="grp-h click">▸&nbsp; Test runs <span class="count">26</span></div>
+      </div>
+
+    </div>
+  </aside>
+
+  <!-- ===================== WORKSPACE ===================== -->
+  <main class="ws">
+    <header class="titlebar">
+      <div class="tb-title">Refactor auth token cache</div>
+      <span class="chip model"><span class="dotc"></span>model <span class="v">gpt-5.5</span></span>
+      <div class="tb-actions">
+        <div class="tb-btn">Details</div>
+        <div class="tb-btn warn">Interrupt</div>
+        <div class="tb-btn">Compact</div>
+      </div>
+    </header>
+
+    <div class="scroll-wrap">
+      <div class="transcript" id="transcript">
+        <div class="feed">
+
+          <!-- user -->
+          <div class="entry user">
+            <div class="e-label"><span class="who">You</span><span class="e-time">2:41 PM</span></div>
+            <div class="bubble">The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how callers use it too.</div>
+          </div>
+
+          <!-- thinking -->
+          <div class="thinking" id="think" onclick="document.getElementById('think').classList.toggle('open')">
+            <div class="think-head">
+              <span class="ic">✦</span><span>Thought for 6s</span>
+              <span class="think-preview">— the eviction probably keys off the wrong timestamp…</span>
+            </div>
+            <div class="think-body">The eviction probably keys off the wrong timestamp. If <code>evictExpired</code> uses last-access rather than the absolute expiry, then any token that simply sits idle past one sweep interval will be dropped even though it's still valid. I should confirm by reading the cache, then check every caller to be sure none depend on the aggressive eviction.</div>
+          </div>
+
+          <!-- assistant -->
+          <div class="entry agent">
+            <div class="e-label"><span class="who">Agent</span><span class="e-time">2:41 PM</span></div>
+            <div class="prose">I'll trace how the cache is used, then fix the eviction logic. Looking at the cache and its callers now.</div>
+          </div>
+
+          <!-- collapsed tool cluster -->
+          <div class="entry done">
+            <div class="tool-cluster" onclick="document.getElementById('cd').classList.toggle('open')">
+              <span class="ok">✓</span>
+              <span class="steps">4 steps</span>
+              <span class="summary"><b>read</b> cache.go · <b>grep</b> callers · <b>ran</b> tests · exit 0</span>
+              <span class="expand">expand ▾</span>
+            </div>
+            <div class="cluster-detail" id="cd">
+              <div class="tool-line"><span class="ok">✓</span><span class="purpose">Read the cache implementation</span><span class="cmd">read cache.go</span></div>
+              <div class="tool-line"><span class="ok">✓</span><span class="purpose">Find every caller of the cache</span><span class="cmd">grep -rn TokenCache</span></div>
+              <div class="tool-line"><span class="ok">✓</span><span class="purpose">Locate the eviction logic</span><span class="cmd">grep evictExpired</span></div>
+              <div class="tool-line"><span class="ok">✓</span><span class="purpose">Run the existing cache tests</span><span class="cmd">go test ./cache</span></div>
+            </div>
+          </div>
+
+          <!-- subagents panel -->
+          <div class="entry sub">
+            <div class="sa-panel">
+              <div class="sa-head">
+                <span class="label">Subagents <b>(2)</b></span>
+                <span class="tally"><span class="run">⟳ 1 running</span><span class="ok">✓ 1 done</span></span>
+                <span class="elapsed">1:04</span>
+              </div>
+              <div class="sa-row">
+                <span class="sa-glyph done">✓</span>
+                <span class="sa-name">trace-callers</span>
+                <span class="sa-detail">found 7 call sites</span>
+                <span class="sa-dur">3.1s</span>
+                <span class="sa-link">view →</span>
+              </div>
+              <div class="sa-row">
+                <span class="sa-glyph run">⟳</span>
+                <span class="sa-name">find-tests</span>
+                <span class="sa-detail"><span class="live">running</span> · reading <span style="font-family:var(--font-mono);font-size:11px">cache_test.go</span></span>
+                <span class="sa-dur">0:48</span>
+                <span class="sa-link">view →</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- streaming assistant -->
+          <div class="entry agent active">
+            <div class="e-label"><span class="who">Agent</span><span class="e-time">now</span></div>
+            <div class="prose">Root cause: <code>evictExpired()</code> compares against <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than the sweep interval is dropped even when still valid. Patching it now<span class="caret"></span></div>
+          </div>
+
+          <!-- active tool -->
+          <div class="entry active">
+            <div class="active-tool">
+              <div class="at-head">
+                <span class="at-spin"></span>
+                <span class="at-purpose">Fix the eviction comparison</span>
+                <span class="at-cmd">edit cache.go · evictExpired()</span>
+              </div>
+              <div class="at-shim"></div>
+            </div>
+          </div>
+
+          <!-- steering -->
+          <div class="entry steer">
+            <div class="steer-msg">
+              <span class="ic">↳</span>
+              <div>
+                <div class="st-label">You steered</div>
+                <div class="st-text">also add a regression test for the idle-but-valid case</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="liveness">
+          <span class="live-pill"><span class="bdot"></span>working · <span class="el">1:12</span> · <span class="wait">waiting on 1 subagent</span></span>
+        </div>
+      </div>
+
+      <button class="jump" id="jump">↓ <span class="n">2</span> new</button>
+    </div>
+
+    <div class="composer">
+      <div class="composer-inner">
+        <div class="input-card">
+          <textarea class="ta" placeholder="Message the agent…"></textarea>
+          <div class="composer-bar">
+            <span class="chip model" style="background:var(--bg-raised-2)"><span class="dotc"></span><span class="v">gpt-5.5</span></span>
+            <span class="cbtn">＋</span>
+            <span class="c-spacer"></span>
+            <span class="cbtn btn-steer">Send as steer <span class="k">⌥↵</span></span>
+            <button class="btn-send">Send ↵</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+// jump pill hides when scrolled near bottom
+const tr=document.getElementById('transcript'), jump=document.getElementById('jump');
+function upd(){const nb=tr.scrollHeight-tr.scrollTop-tr.clientHeight<60; jump.style.opacity=nb?'0':'1'; jump.style.pointerEvents=nb?'none':'auto';}
+tr.addEventListener('scroll',upd);
+jump.addEventListener('click',()=>tr.scrollTo({top:tr.scrollHeight,behavior:'smooth'}));
+// start scrolled up a touch so the pill shows
+tr.scrollTop=Math.max(0,tr.scrollHeight-tr.clientHeight-140); upd();
+</script>
+</body>
+</html>
