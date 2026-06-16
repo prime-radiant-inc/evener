@@ -4,8 +4,6 @@ const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require("jsdom");
 
-const RENDERER_PATH = path.resolve(__dirname, "../assets/renderer.js");
-const rendererSrc = fs.readFileSync(RENDERER_PATH, "utf8");
 const COMPOSER_PATH = path.resolve(__dirname, "../assets/composer-attachments.js");
 const composerSrc = fs.readFileSync(COMPOSER_PATH, "utf8");
 
@@ -115,7 +113,7 @@ Object.defineProperty(window, "innerHeight", {
 // composer-attachments.js must register SerfComposerAttachments before the
 // renderer's bindInputForm wires it in.
 window.eval(composerSrc);
-window.eval(rendererSrc);
+require("./load-renderer").evalRenderer(window);
 
 const conv = window.document.getElementById("conversation");
 window.SerfRenderer.init(conv);

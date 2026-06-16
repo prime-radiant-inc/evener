@@ -3,8 +3,6 @@
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
-const RENDERER_PATH = "../assets/renderer.js";
-const rendererSrc = fs.readFileSync(RENDERER_PATH, "utf8");
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div class="workspace-actions">
@@ -21,7 +19,7 @@ const { window } = dom;
 window.marked = { parse: t => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
 
-window.eval(rendererSrc);
+require("./load-renderer").evalRenderer(window);
 
 // Build the panel directly using the internal renderer.
 const tasks = [

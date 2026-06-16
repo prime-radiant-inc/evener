@@ -4,8 +4,6 @@ const fs = require("fs");
 const path = require("path");
 const { JSDOM, ResourceLoader } = require("jsdom");
 
-const RENDERER_PATH = "../assets/renderer.js";
-const rendererSrc = fs.readFileSync(RENDERER_PATH, "utf8");
 
 // Build a tiny app shell that the renderer expects.
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
@@ -34,7 +32,7 @@ window.fetch = (url) => Promise.resolve({
 window.HTMLElement.prototype.contains = window.HTMLElement.prototype.contains || function () { return false; };
 
 // Eval renderer.js inside the JSDOM window.
-window.eval(rendererSrc);
+require("./load-renderer").evalRenderer(window);
 
 // Initialize the renderer on #conversation explicitly.
 const conv = window.document.getElementById("conversation");

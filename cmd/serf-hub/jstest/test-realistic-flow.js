@@ -4,8 +4,6 @@
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
-const RENDERER_PATH = "../assets/renderer.js";
-const rendererSrc = fs.readFileSync(RENDERER_PATH, "utf8");
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div class="workspace-actions">
@@ -20,7 +18,7 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
 const { window } = dom;
 window.marked = { parse: t => t.replace(/^# /m, "<h1>").replace(/$/m, "</h1>") };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
-window.eval(rendererSrc);
+require("./load-renderer").evalRenderer(window);
 const conv = window.document.getElementById("conversation");
 window.SerfRenderer.init(conv);
 

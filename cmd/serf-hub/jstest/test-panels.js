@@ -3,8 +3,6 @@
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
-const RENDERER_PATH = "../assets/renderer.js";
-const rendererSrc = fs.readFileSync(RENDERER_PATH, "utf8");
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div class="workspace-actions">
@@ -36,7 +34,7 @@ window.SerfFocusTrap = {
   deactivate: function () { /* no-op */ },
 };
 
-window.eval(rendererSrc);
+require("./load-renderer").evalRenderer(window);
 
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };

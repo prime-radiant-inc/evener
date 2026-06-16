@@ -6,7 +6,6 @@ const path = require("path");
 const { JSDOM } = require("jsdom");
 
 const appwireSrc = fs.readFileSync(path.resolve(__dirname, "../assets/appwire.js"), "utf8");
-const rendererSrc = fs.readFileSync(path.resolve(__dirname, "../assets/renderer.js"), "utf8");
 const threadFixture = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../../appwire/testdata/tool-groups-thread.json"), "utf8"));
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
@@ -31,7 +30,7 @@ const { window } = dom;
 window.marked = { parse: (t) => t };
 window.eval(appwireSrc);
 window.SerfAppwire.tasks = () => Promise.resolve([]);
-window.eval(rendererSrc);
+require("./load-renderer").evalRenderer(window);
 
 const conv = window.document.getElementById("conversation");
 window.SerfRenderer.init(conv);

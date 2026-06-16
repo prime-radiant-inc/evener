@@ -9,7 +9,6 @@
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
-const RENDERER_SRC = fs.readFileSync("../assets/renderer.js", "utf8");
 const DIAGNOSTICS_SRC = fs.readFileSync("../assets/diagnostics.js", "utf8");
 
 function newHarness() {
@@ -35,7 +34,7 @@ function newHarness() {
 
   // Load diagnostics first — renderer reads window.SerfDiagnostics.classify().
   window.eval(DIAGNOSTICS_SRC);
-  window.eval(RENDERER_SRC);
+  require("./load-renderer").evalRenderer(window);
 
   const conv = window.document.getElementById("conversation");
   window.SerfRenderer.init(conv);

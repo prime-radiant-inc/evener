@@ -9,8 +9,6 @@ const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require("jsdom");
 
-const RENDERER_PATH = path.resolve(__dirname, "../assets/renderer.js");
-const rendererSrc = fs.readFileSync(RENDERER_PATH, "utf8");
 
 // Composer template mirrors templates/partials/workspace.html: queue is
 // advertised as available (data-capability-queue=true) while send is OFF
@@ -82,7 +80,7 @@ Object.defineProperty(window.HTMLTextAreaElement.prototype, "scrollHeight", {
 });
 Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
 
-window.eval(rendererSrc);
+require("./load-renderer").evalRenderer(window);
 
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };

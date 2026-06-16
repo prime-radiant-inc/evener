@@ -4,9 +4,7 @@
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
-const RENDERER_PATH = "../assets/renderer.js";
 const STYLE_PATH = "../assets/style.css";
-const rendererSrc = fs.readFileSync(RENDERER_PATH, "utf8");
 const styleSrc = fs.readFileSync(STYLE_PATH, "utf8");
 
 function newHarness() {
@@ -26,7 +24,7 @@ function newHarness() {
   const { window } = dom;
   window.marked = { parse: t => String(t || "").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>") };
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
-  window.eval(rendererSrc);
+  require("./load-renderer").evalRenderer(window);
   const conv = window.document.getElementById("conversation");
   window.SerfRenderer.init(conv);
   return { window, conv };
@@ -502,7 +500,7 @@ await (async function () {
   const { window } = dom;
   window.marked = { parse: t => String(t || "").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>") };
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
-  window.eval(rendererSrc);
+  require("./load-renderer").evalRenderer(window);
   const conv = window.document.getElementById("conversation-cwd");
   window.SerfRenderer.init(conv);
 
@@ -553,7 +551,7 @@ await (async function () {
   const { window } = dom;
   window.marked = { parse: t => String(t || "") };
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
-  window.eval(rendererSrc);
+  require("./load-renderer").evalRenderer(window);
   const conv = window.document.getElementById("conversation-home");
   window.SerfRenderer.init(conv);
   await new Promise(r => setTimeout(r, 30));

@@ -20,7 +20,6 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
 // ── renderer: ASSISTANT_TEXT_RESET discards the in-progress message ──────────
 {
-  const rendererSrc = fs.readFileSync("../assets/renderer.js", "utf8");
   const dom = new JSDOM(`<!DOCTYPE html><html><body>
     <header class="workspace-header" data-session-id="01TEST"></header>
     <div id="conversation" data-session-id="01TEST" data-state="active"></div>
@@ -29,7 +28,7 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   const { window } = dom;
   window.marked = { parse: (t) => t };
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
-  window.eval(rendererSrc);
+  require("./load-renderer").evalRenderer(window);
   const conv = window.document.getElementById("conversation");
   window.SerfRenderer.init(conv);
 

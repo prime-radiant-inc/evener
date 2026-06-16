@@ -5,7 +5,6 @@ const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require("jsdom");
 
-const rendererSrc = fs.readFileSync(path.resolve(__dirname, "../assets/renderer.js"), "utf8");
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div class="workspace-actions">
@@ -83,7 +82,7 @@ window.SerfAppwire = {
   },
 };
 
-window.eval(rendererSrc);
+require("./load-renderer").evalRenderer(window);
 
 const conv = window.document.getElementById("conversation");
 window.SerfRenderer.init(conv);

@@ -2,7 +2,6 @@ const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require("jsdom");
 
-const rendererSrc = fs.readFileSync(path.resolve(__dirname, "../assets/renderer.js"), "utf8");
 
 function createWindow(overrides) {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>
@@ -54,7 +53,7 @@ function createWindow(overrides) {
     eventsFromThread: () => [],
     eventsFromNotification: () => [],
   }, overrides);
-  window.eval(rendererSrc);
+  require("./load-renderer").evalRenderer(window);
   window.SerfRenderer.init(window.document.getElementById("conversation"));
   return window;
 }

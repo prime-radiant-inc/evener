@@ -2,8 +2,6 @@
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
-const RENDERER_PATH = "../assets/renderer.js";
-const rendererSrc = fs.readFileSync(RENDERER_PATH, "utf8");
 
 function newHarness() {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>
@@ -25,7 +23,7 @@ function newHarness() {
   window.marked = { parse: (t) => t };
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
 
-  window.eval(rendererSrc);
+  require("./load-renderer").evalRenderer(window);
   const conv = window.document.getElementById("conversation");
   window.SerfRenderer.init(conv);
   return { window, conv };

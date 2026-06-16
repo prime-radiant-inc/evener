@@ -4,7 +4,6 @@ const assert = require("assert");
 const { JSDOM } = require("jsdom");
 
 const pendingSrc = fs.readFileSync(path.resolve(__dirname, "../assets/pending.js"), "utf8");
-const rendererSrc = fs.readFileSync(path.resolve(__dirname, "../assets/renderer.js"), "utf8");
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <header class="workspace-header" data-session-id="01TEST"></header>
@@ -52,7 +51,7 @@ window.SerfAppwire = {
 };
 
 window.eval(pendingSrc);
-window.eval(rendererSrc);
+require("./load-renderer").evalRenderer(window);
 
 (async () => {
   const conv = window.document.getElementById("conversation");
