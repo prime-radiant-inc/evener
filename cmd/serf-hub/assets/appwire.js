@@ -749,6 +749,7 @@
         if (item.text) out.push(["ASSISTANT_TEXT_DELTA", { delta: item.text }]);
         return out;
       }
+      if (type === "reasoning") return [["REASONING_START", { itemId: item.id || "" }]];
       if (type === "commandExecution") {
         const callID = firstNonEmpty(item.callId, item.id);
         const itemID = item.id || "";
@@ -786,6 +787,10 @@
     if (method === "item/agentMessage/delta") {
       markLiveItem(params, { id: params.itemId }, { delta: true });
       return [["ASSISTANT_TEXT_DELTA", { delta: params.delta || "" }]];
+    }
+    if (method === "item/reasoning/summaryTextDelta") {
+      markLiveItem(params, { id: params.itemId }, { delta: true });
+      return [["REASONING_DELTA", { delta: params.delta || "", itemId: params.itemId || "" }]];
     }
     if (method === "item/agentMessage/reset") {
       deleteLiveItem(params, { id: params.itemId });

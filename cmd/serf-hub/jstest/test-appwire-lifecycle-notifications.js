@@ -34,6 +34,27 @@ pass(closed.length === 1, "thread/closed should produce one event");
 pass(closed[0] && closed[0][0] === "SESSION_END", "thread/closed should map to SESSION_END");
 pass(closed[0] && closed[0][1].reason === "done", "SESSION_END should carry reason");
 
+// Reasoning (live thinking): item/started type "reasoning" maps to REASONING_START,
+// and item/reasoning/summaryTextDelta maps to REASONING_DELTA. Mirrors the
+// agentMessage start/delta path so the client can stream the live thought.
+const reasoningStart = dom.window.SerfAppwire.eventsFromNotification("item/started", {
+  threadId: "th_codex",
+  item: { type: "reasoning", id: "r1" },
+});
+pass(reasoningStart.length === 1, "item/started reasoning should produce one event");
+pass(reasoningStart[0] && reasoningStart[0][0] === "REASONING_START", "item/started reasoning should map to REASONING_START");
+pass(reasoningStart[0] && reasoningStart[0][1].itemId === "r1", "REASONING_START should carry itemId");
+
+const reasoningDelta = dom.window.SerfAppwire.eventsFromNotification("item/reasoning/summaryTextDelta", {
+  threadId: "th_codex",
+  itemId: "r1",
+  delta: "let me think",
+});
+pass(reasoningDelta.length === 1, "item/reasoning/summaryTextDelta should produce one event");
+pass(reasoningDelta[0] && reasoningDelta[0][0] === "REASONING_DELTA", "summaryTextDelta should map to REASONING_DELTA");
+pass(reasoningDelta[0] && reasoningDelta[0][1].delta === "let me think", "REASONING_DELTA should carry the delta");
+pass(reasoningDelta[0] && reasoningDelta[0][1].itemId === "r1", "REASONING_DELTA should carry itemId");
+
 if (failures.length > 0) {
   for (const failure of failures) console.log(failure);
   process.exit(1);
