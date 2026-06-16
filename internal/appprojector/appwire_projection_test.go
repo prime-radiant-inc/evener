@@ -42,6 +42,26 @@ func TestAppEventProjectorCarriesUserInputTranscriptEntryIndex(t *testing.T) {
 	}
 }
 
+func TestAppEventProjectorTurnStartedCarriesStartedAt(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	ts := time.Unix(1_700_000_000, 0).UTC()
+	out := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Timestamp: ts, Data: events.UserInputData{Text: "hello"}})
+
+	started := notificationParamsJSON(t, out, appwire.NotifyTurnStarted)
+	var params struct {
+		Turn appwire.Turn `json:"turn"`
+	}
+	if err := json.Unmarshal(started, &params); err != nil {
+		t.Fatalf("turn/started json: %v", err)
+	}
+	if params.Turn.StartedAt == nil {
+		t.Fatalf("turn/started StartedAt is nil, want %d", ts.Unix())
+	}
+	if *params.Turn.StartedAt != ts.Unix() {
+		t.Fatalf("turn/started StartedAt=%d, want %d", *params.Turn.StartedAt, ts.Unix())
+	}
+}
+
 func TestAppEventProjectorJSONUsesCodexLifecycleShape(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	out := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})

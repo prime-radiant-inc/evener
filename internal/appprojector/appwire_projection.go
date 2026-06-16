@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/appwire"
@@ -99,7 +100,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.notification(appwire.NotifyTurnStarted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
-				"turn":     appwire.Turn{ID: turnID, Status: appwire.TurnStatusInProgress},
+				"turn":     startedTurn(turnID, event.Timestamp),
 			}),
 			p.notification(appwire.NotifyItemCompleted, map[string]any{
 				"threadId": p.threadID,
@@ -143,7 +144,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.notification(appwire.NotifyTurnStarted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
-				"turn":     appwire.Turn{ID: turnID, Status: appwire.TurnStatusInProgress},
+				"turn":     startedTurn(turnID, event.Timestamp),
 			}),
 			p.notification(appwire.NotifyItemCompleted, map[string]any{
 				"threadId": p.threadID,
@@ -504,6 +505,18 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 
 func (p *AppEventProjector) notification(method string, params any) AppNotification {
 	return AppNotification{ThreadID: p.threadID, Method: method, Params: params}
+}
+
+// startedTurn builds an in-progress turn carrying its start time so the web UI
+// can report how long the active turn has been running. A zero timestamp leaves
+// StartedAt unset rather than reporting the Unix epoch.
+func startedTurn(id string, startedAt time.Time) appwire.Turn {
+	turn := appwire.Turn{ID: id, Status: appwire.TurnStatusInProgress}
+	if !startedAt.IsZero() {
+		unix := startedAt.Unix()
+		turn.StartedAt = &unix
+	}
+	return turn
 }
 
 func (p *AppEventProjector) systemAnnouncement(prefix, description, text string) []AppNotification {
