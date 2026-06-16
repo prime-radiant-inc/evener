@@ -115,6 +115,33 @@ func TestClient_CountInputTokens_UsesAdapterCounter(t *testing.T) {
 	}
 }
 
+func TestClient_CountInputTokens_FallsBackWhenCounterUnsupported(t *testing.T) {
+	c := NewClient()
+	a := &countAdapter{
+		name: "unsupported",
+		err:  ErrInputTokenCountUnsupported,
+	}
+	c.Register(a)
+
+	got, err := c.CountInputTokens(context.Background(), Request{
+		Provider: "unsupported",
+		Model:    "m",
+		Messages: []Message{User("hello world")},
+	})
+	if err != nil {
+		t.Fatalf("CountInputTokens: %v", err)
+	}
+	if got.Exact {
+		t.Fatalf("fallback estimate should not be exact: %+v", got)
+	}
+	if got.Source != TokenCountSourceLocalEstimate {
+		t.Fatalf("Source = %q, want %q", got.Source, TokenCountSourceLocalEstimate)
+	}
+	if got.Provider != "unsupported" {
+		t.Fatalf("Provider = %q, want unsupported", got.Provider)
+	}
+}
+
 func TestClient_CountInputTokens_FallsBackToLocalEstimate(t *testing.T) {
 	c := NewClient()
 	c.Register(&fakeAdapter{name: "plain"})

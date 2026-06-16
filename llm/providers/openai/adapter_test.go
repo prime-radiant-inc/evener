@@ -97,6 +97,154 @@ func TestAdapter_Complete_MapsToResponsesAPI(t *testing.T) {
 	}
 }
 
+func TestAdapter_CountInputTokens_UsesResponsesInputTokensEndpoint(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	var gotOrg string
+	var gotProject string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotOrg = r.Header.Get("OpenAI-Organization")
+		gotProject = r.Header.Get("OpenAI-Project")
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"response.input_tokens","input_tokens":456}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{
+		APIKey:    "k",
+		BaseURL:   srv.URL,
+		OrgID:     "org_123",
+		ProjectID: "proj_456",
+		Client:    srv.Client(),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	maxTokens := 99
+	temp := 0.2
+	got, err := a.CountInputTokens(ctx, llm.Request{
+		Model:       "gpt-5.2",
+		Messages:    []llm.Message{llm.System("sys"), llm.User("hello")},
+		MaxTokens:   &maxTokens,
+		Temperature: &temp,
+		Tools: []llm.ToolDefinition{{
+			Name:       "lookup",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CountInputTokens: %v", err)
+	}
+	if got.Tokens != 456 || !got.Exact || got.Source != llm.TokenCountSourceProvider {
+		t.Fatalf("CountInputTokens = %+v, want exact provider count", got)
+	}
+	if got.Provider != "openai" || got.Model != "gpt-5.2" {
+		t.Fatalf("provider/model = %q/%q, want openai/gpt-5.2", got.Provider, got.Model)
+	}
+	if gotPath != "/v1/responses/input_tokens" {
+		t.Fatalf("path = %q, want /v1/responses/input_tokens", gotPath)
+	}
+	if gotOrg != "org_123" || gotProject != "proj_456" {
+		t.Fatalf("org/project headers = %q/%q", gotOrg, gotProject)
+	}
+	if gotBody["model"] != "gpt-5.2" {
+		t.Fatalf("model = %#v, want gpt-5.2", gotBody["model"])
+	}
+	if _, ok := gotBody["instructions"]; !ok {
+		t.Fatalf("instructions missing from body: %#v", gotBody)
+	}
+	if _, ok := gotBody["input"]; !ok {
+		t.Fatalf("input missing from body: %#v", gotBody)
+	}
+	if _, ok := gotBody["tools"]; !ok {
+		t.Fatalf("tools missing from body: %#v", gotBody)
+	}
+	for _, key := range []string{"max_output_tokens", "temperature", "top_p", "stop", "store", "include"} {
+		if _, ok := gotBody[key]; ok {
+			t.Fatalf("%s should be omitted from token-count body: %#v", key, gotBody)
+		}
+	}
+}
+
+func TestAdapter_CountInputTokens_CodexBackendFallsBackToLocalEstimate(t *testing.T) {
+	a := &Adapter{
+		name:             "openai",
+		APIKey:           "oauth-token",
+		BaseURL:          defaultChatGPTBaseURL,
+		ResponsesPath:    defaultCodexResponses,
+		ChatGPTAccountID: "acct_123",
+	}
+	c := llm.NewClient()
+	c.Register(a)
+
+	got, err := c.CountInputTokens(context.Background(), llm.Request{
+		Provider: "openai",
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hello world")},
+	})
+	if err != nil {
+		t.Fatalf("CountInputTokens: %v", err)
+	}
+	if got.Exact {
+		t.Fatalf("fallback estimate should not be exact: %+v", got)
+	}
+	if got.Source != llm.TokenCountSourceLocalEstimate {
+		t.Fatalf("Source = %q, want %q", got.Source, llm.TokenCountSourceLocalEstimate)
+	}
+}
+
+func TestAdapter_Integration_CountInputTokens(t *testing.T) {
+	key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	if key == "" {
+		t.Skip("OPENAI_API_KEY not set")
+	}
+	if testing.Short() {
+		t.Skip("skipping live OpenAI integration test in short mode")
+	}
+	model := strings.TrimSpace(os.Getenv("SERF_OPENAI_COUNT_TOKENS_MODEL"))
+	if model == "" {
+		model = "gpt-5.2"
+	}
+	base := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
+	if base == "" {
+		base = defaultAPIBaseURL
+	}
+
+	a := &Adapter{
+		name:      "openai",
+		APIKey:    key,
+		BaseURL:   strings.TrimRight(base, "/"),
+		OrgID:     strings.TrimSpace(os.Getenv("OPENAI_ORG_ID")),
+		ProjectID: strings.TrimSpace(os.Getenv("OPENAI_PROJECT_ID")),
+		Client:    &http.Client{Timeout: 0},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	got, err := a.CountInputTokens(ctx, llm.Request{
+		Model:    model,
+		Messages: []llm.Message{llm.System("You count inputs."), llm.User("Count these input tokens for serf.")},
+		Tools: []llm.ToolDefinition{{
+			Name:        "lookup",
+			Description: "Looks up a short value.",
+			Parameters:  map[string]any{"type": "object", "properties": map[string]any{"key": map[string]any{"type": "string"}}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CountInputTokens: %v", err)
+	}
+	if got.Tokens <= 0 || !got.Exact || got.Source != llm.TokenCountSourceProvider {
+		t.Fatalf("CountInputTokens = %+v, want positive exact provider count", got)
+	}
+	t.Logf("openai count tokens: provider=%s model=%s tokens=%d", got.Provider, got.Model, got.Tokens)
+}
+
 func TestAdapter_BuildRequestBody_ResponsesControls(t *testing.T) {
 	a := &Adapter{}
 	maxToolCalls := 0

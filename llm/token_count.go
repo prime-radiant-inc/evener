@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -21,6 +22,8 @@ const (
 	TokenCountSourceLocalEstimate TokenCountSource = "local_estimate"
 	TokenCountSourceProvider      TokenCountSource = "provider"
 )
+
+var ErrInputTokenCountUnsupported = errors.New("input token count unsupported")
 
 // InputTokenCount reports input tokens for a request. Exact=false means the
 // count is a local estimate; exact provider responses and normal post-call
@@ -98,6 +101,11 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 	if counter, ok := adapter.(InputTokenCounter); ok {
 		out, err := counter.CountInputTokens(ctx, req)
 		if err != nil {
+			if errors.Is(err, ErrInputTokenCountUnsupported) {
+				out := EstimateInputTokens(req)
+				out.Provider = prov
+				return out, nil
+			}
 			tag := c.behaviorTagFor(prov)
 			err = RewriteErrorProvider(err, prov)
 			err = StampErrorBehaviorTag(err, tag)
