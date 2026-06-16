@@ -661,6 +661,7 @@
           this.setActiveTurnId(data.turnId || "");
           break;
         case "TURN_COMPLETED":
+          this.finalizeReasoning();
           if (!data.turnId || data.turnId === this.activeTurnId) {
             this.setActiveTurnId("");
             if (this.turnAcceptsActions(this.state)) this.updateThreadState("idle");
@@ -673,6 +674,7 @@
             this.resetLiveCapabilities();
             history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));
             this.conversation.innerHTML = "";
+            this.reasoningEl = null;
             this.activeMessages.clear();
             this.activeTools.clear();
             this.activeJobs.clear();
@@ -727,6 +729,7 @@
           if (data.turnId) userWrap.dataset.turnId = String(data.turnId);
           break;
         case "ASSISTANT_TEXT_START":
+          this.finalizeReasoning();
           this.entryIndex++;
           this.beginAssistantMessage();
           break;
@@ -738,6 +741,12 @@
           break;
         case "ASSISTANT_TEXT_RESET":
           this.resetAssistantMessage();
+          break;
+        case "REASONING_START":
+          this.beginReasoning();
+          break;
+        case "REASONING_DELTA":
+          this.appendReasoningDelta(data.delta || "");
           break;
         case "TOOL_CALL_START":
           if (data.tool_name === "communicate") {
@@ -1185,6 +1194,58 @@
         return;
       }
       this.renderAssistantMessage(m, finalText);
+    },
+
+    // Live thinking: a quiet, collapsible block that streams the model's
+    // reasoning summary while it works, then collapses to "Thought for Ns".
+    // One per turn; the projector emits a single reasoning item per turn.
+    beginReasoning() {
+      if (this.reasoningEl) return;
+      this.cheapToolCluster = null;
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "think open";
+      const label = document.createElement("span");
+      label.className = "think-label";
+      label.textContent = "✦ Thinking…";
+      const pv = document.createElement("span");
+      pv.className = "pv";
+      const body = document.createElement("span");
+      body.className = "think-body";
+      el.appendChild(label);
+      el.appendChild(pv);
+      el.appendChild(body);
+      el.addEventListener("click", () => el.classList.toggle("open"));
+      this.conversation.appendChild(el);
+      this.reasoningEl = el;
+      this.reasoningBuf = "";
+      this.reasoningStartedAt = Date.now();
+    },
+
+    appendReasoningDelta(delta) {
+      if (!this.reasoningEl) this.beginReasoning();
+      this.reasoningBuf += delta || "";
+      const body = this.reasoningEl.querySelector(".think-body");
+      const pv = this.reasoningEl.querySelector(".pv");
+      if (body) body.textContent = this.reasoningBuf;
+      if (pv) pv.textContent = "— " + clip(this.reasoningBuf.replace(/\s+/g, " ").trim(), 80);
+    },
+
+    // finalizeReasoning collapses the in-progress thought to a one-line summary
+    // (or drops it if nothing streamed). Called when the assistant starts its
+    // answer or the turn completes.
+    finalizeReasoning() {
+      const el = this.reasoningEl;
+      if (!el) return;
+      this.reasoningEl = null;
+      if (!String(this.reasoningBuf || "").trim()) {
+        if (el.parentNode) el.parentNode.removeChild(el);
+        return;
+      }
+      el.classList.remove("open");
+      const secs = Math.max(1, Math.round((Date.now() - (this.reasoningStartedAt || Date.now())) / 1000));
+      const label = el.querySelector(".think-label");
+      if (label) label.innerHTML = "✦ Thought for <span class=\"num\">" + secs + "s</span>";
     },
 
     beginToolCall(data) {
