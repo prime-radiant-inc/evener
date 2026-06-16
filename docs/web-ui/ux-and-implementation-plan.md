@@ -97,8 +97,16 @@ Each commit passed the pre-commit gate (lint/build/test); TDD throughout.
 | `c3b99ad7` | `Turn.StartedAt` in the appwire projector (`startedTurn` helper) → honest turn-elapsed |
 | `db9174a0` | Reasoning → appwire `item/reasoning/summaryTextDelta`; reasoning is a first-class in-progress item (`EventReasoningSummaryDelta`, `ReasoningSummaryDeltaData`, `ReasoningSummaryDeltaParams`) |
 | `cc34e524` | Serf harness **emits** reasoning on `llm.StreamEventReasoningDelta` (was fed only to the accumulator and discarded) |
+| `09f3d552` | Route renderer jstests through a shared `jstest/load-renderer.js` bundle loader (centralizes script load order) |
+| `f8e572f4` | Split `renderer.js`: extract `renderer-format.js` (stateless helpers) |
+| `1ceed61c` | Split `renderer.js`: extract `renderer-tools.js` (tool-output renderers; `toolRendererFor` public) |
+| `4b9561b1` | Split `renderer.js`: extract `renderer-panels.js` (tasks/details panels + chrome) |
 
-**Serf-harness backend for live thinking is complete.** Remaining:
+**Serf-harness backend for live thinking is complete**, and the renderer is now modular
+(`renderer.js` 3630 → ~2170 lines). The no-bundler modules share `window.SerfRendererInternal`
+and load in dependency order (`renderer-format` → `renderer-tools` → `renderer-panels` →
+`renderer`) in both `templates/app.html` and `jstest/load-renderer.js`. `renderer.js` retains the
+stateful `SerfRenderer` core + bootstrap (this is where the thinking block lands). Remaining:
 
 4. **Codex-adapter parity:** `cmd/serf-hub/internal/appsource/codex_source.go` `mapNotification`
    (~L703) forward `item/reasoning/summaryTextDelta` (+ `summaryPartAdded`, `item/started` type
@@ -115,9 +123,12 @@ Tests: JS harness `cmd/serf-hub/jstest/` (`run-all.sh`; mirror
 `test-appwire-lifecycle-notifications.js` / `test-renderer.js`). Web changes need a rebuild —
 assets are embedded: `make build-hub` + restart.
 
-**Recommended before #5:** `renderer.js` is ~2,600 lines. Consider refactoring it into focused
-modules (per entry-type renderer + the event dispatch) first, keeping the jstest gate green, so
-the thinking block lands in a maintainable file rather than growing the monolith.
+**Adding a renderer module:** define it as an IIFE that imports what it needs from
+`window.SerfRendererInternal` (destructured at the top, so call sites stay unchanged) and
+publishes its exports back onto the same object via `Object.assign`. Add it to the `<script>` list
+in `templates/app.html` *and* to `RENDERER_FILES` in `jstest/load-renderer.js`, both in dependency
+order before `renderer.js`. The const-import + same-name-function collision means an incomplete
+extraction fails loudly as a `SyntaxError`, so `node --check` catches it before the gate.
 
 ---
 
