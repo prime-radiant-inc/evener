@@ -62,6 +62,37 @@ func TestAdapter_E2E_AnthropicTransportServiceTierAndCaching(t *testing.T) {
 	}
 }
 
+func TestAdapter_E2E_AnthropicCountInputTokens(t *testing.T) {
+	a, model := anthropicE2EAdapter(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req := llm.Request{
+		Model:    model,
+		Messages: []llm.Message{llm.User("Count this short Serf token-counting prompt.")},
+	}
+	got, err := a.CountInputTokens(ctx, req)
+	if err != nil {
+		t.Fatalf("CountInputTokens: %v", err)
+	}
+	if !got.Exact {
+		t.Fatalf("Exact = false, want true")
+	}
+	if got.Source != llm.TokenCountSourceProvider {
+		t.Fatalf("Source = %q, want %q", got.Source, llm.TokenCountSourceProvider)
+	}
+	if got.Tokens <= 0 {
+		t.Fatalf("Tokens = %d, want positive", got.Tokens)
+	}
+	if got.Provider != a.Name() || got.Model != model {
+		t.Fatalf("provider/model = %q/%q, want %q/%q", got.Provider, got.Model, a.Name(), model)
+	}
+	if got.Raw == nil || got.Raw["input_tokens"] == nil {
+		t.Fatalf("raw response missing input_tokens: %#v", got.Raw)
+	}
+	t.Logf("anthropic count tokens: provider=%s model=%s tokens=%d", got.Provider, got.Model, got.Tokens)
+}
+
 func TestAdapter_E2E_AnthropicThinkingAndRoundTrip(t *testing.T) {
 	a, model := anthropicE2EAdapter(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

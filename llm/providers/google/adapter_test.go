@@ -140,6 +140,9 @@ func TestAdapter_CountInputTokens_UsesCountTokensAPI(t *testing.T) {
 	if !ok {
 		t.Fatalf("generateContentRequest missing from body: %#v", gotBody)
 	}
+	if genReq["model"] != "models/gemini-test" {
+		t.Fatalf("generateContentRequest.model = %#v, want models/gemini-test", genReq["model"])
+	}
 	if _, ok := genReq["contents"].([]any); !ok {
 		t.Fatalf("contents missing from generateContentRequest: %#v", genReq)
 	}
@@ -1643,6 +1646,44 @@ func TestAdapter_Integration_WebSearch(t *testing.T) {
 		t.Fatalf("expected at least one ContentWebSearch part in response; got content kinds: %v", contentKinds(resp.Message.Content))
 	}
 	t.Logf("response text (truncated): %.200s", resp.Text())
+}
+
+func TestAdapter_Integration_CountInputTokens(t *testing.T) {
+	if os.Getenv("GEMINI_API_KEY") == "" && os.Getenv("GOOGLE_API_KEY") == "" {
+		t.Skip("GEMINI_API_KEY not set")
+	}
+
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req := llm.Request{
+		Model:    "gemini-2.5-flash",
+		Messages: []llm.Message{llm.User("Count this short Serf token-counting prompt.")},
+	}
+	got, err := a.CountInputTokens(ctx, req)
+	if err != nil {
+		t.Fatalf("CountInputTokens: %v", err)
+	}
+	if !got.Exact {
+		t.Fatalf("Exact = false, want true")
+	}
+	if got.Source != llm.TokenCountSourceProvider {
+		t.Fatalf("Source = %q, want %q", got.Source, llm.TokenCountSourceProvider)
+	}
+	if got.Tokens <= 0 {
+		t.Fatalf("Tokens = %d, want positive", got.Tokens)
+	}
+	if got.Provider != a.Name() || got.Model != req.Model {
+		t.Fatalf("provider/model = %q/%q, want %q/%q", got.Provider, got.Model, a.Name(), req.Model)
+	}
+	if got.Raw == nil || got.Raw["totalTokens"] == nil {
+		t.Fatalf("raw response missing totalTokens: %#v", got.Raw)
+	}
+	t.Logf("google count tokens: provider=%s model=%s tokens=%d", got.Provider, got.Model, got.Tokens)
 }
 
 func TestAdapter_Integration_WebSearch_WithFunctionTools(t *testing.T) {

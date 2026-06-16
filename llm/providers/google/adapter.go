@@ -183,6 +183,7 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 	if err != nil {
 		return llm.InputTokenCount{}, err
 	}
+	genReq["model"] = "models/" + req.Model
 	body := map[string]any{"generateContentRequest": genReq}
 
 	b, err := json.Marshal(body)
