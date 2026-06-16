@@ -124,6 +124,12 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		emitAssistantStart()
 		s.emit(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: delta})
 	}
+	emitReasoningDelta := func(delta string) {
+		if delta == "" {
+			return
+		}
+		s.emit(events.EventReasoningSummaryDelta, events.ReasoningSummaryDeltaData{Delta: delta})
+	}
 	emitCommunicatePreview := func(callID string) {
 		args := ""
 		if b := toolArgs[callID]; b != nil {
@@ -148,6 +154,8 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			emitAssistantStart()
 		case llm.StreamEventTextDelta:
 			emitAssistantDelta(ev.Delta)
+		case llm.StreamEventReasoningDelta:
+			emitReasoningDelta(ev.ReasoningDelta)
 		case llm.StreamEventToolCallStart:
 			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
 				break

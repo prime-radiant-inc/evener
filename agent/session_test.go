@@ -439,6 +439,68 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterPauseTurnGap(t *testing.T) {
 	}
 }
 
+// TestSession_EmitsReasoningSummaryDelta verifies the serf harness no longer
+// discards the model's reasoning: a REASONING_DELTA stream event is surfaced as
+// an EventReasoningSummaryDelta so the web UI can render thinking live.
+func TestSession_EmitsReasoningSummaryDelta(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	commCall := communicateCall("c1", "the answer")
+	f := &streamingAdapter{
+		name: "openai",
+		streamScript: func(st *llm.ChanStream) {
+			st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
+			st.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: "let me think"})
+			st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &llm.ToolCallData{ID: commCall.ID, Name: commCall.Name, Type: "function"}})
+			st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &llm.ToolCallData{ID: commCall.ID, Arguments: commCall.Arguments}})
+			st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &commCall})
+			finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+			st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+		},
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, LLMRetryPolicy: &policy})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var mu sync.Mutex
+	var reasoning []string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			if ev.Kind != events.EventReasoningSummaryDelta {
+				continue
+			}
+			if data, ok := ev.Data.(events.ReasoningSummaryDeltaData); ok {
+				mu.Lock()
+				reasoning = append(reasoning, data.Delta)
+				mu.Unlock()
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reasoning) == 0 {
+		t.Fatal("no EventReasoningSummaryDelta emitted; reasoning was discarded")
+	}
+	if reasoning[0] != "let me think" {
+		t.Fatalf("reasoning delta = %q, want %q", reasoning[0], "let me think")
+	}
+}
+
 // kata 3tgv: a session that errors out on the very first LLM call (before
 // any assistant turn lands) must still leave a meta.json on disk with the
 // correct (zero) turn_count — file must be current, not missing or stale.
