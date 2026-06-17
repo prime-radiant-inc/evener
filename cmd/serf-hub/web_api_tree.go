@@ -17,7 +17,7 @@ import (
 )
 
 // archiveDecisions returns the current set of user-explicit archive decisions.
-// It is nil-safe: a nil or unconfigured Archive store returns an empty map.
+// Returns an empty map (never nil) when cfg.Archive is nil or Decisions() fails.
 func (s *WebServer) archiveDecisions() map[hubcore.ArchiveKey]bool {
 	if s.cfg.Archive == nil {
 		return map[hubcore.ArchiveKey]bool{}
