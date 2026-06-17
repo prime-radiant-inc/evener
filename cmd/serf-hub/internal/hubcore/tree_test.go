@@ -269,3 +269,139 @@ func TestBuildTree_NoProjectFallback(t *testing.T) {
 		t.Fatalf("live: %d", len(tree.Live))
 	}
 }
+
+// projectByName finds the TreeProject with the given name, or fails.
+func projectByName(t *testing.T, tree Tree, name string) TreeProject {
+	t.Helper()
+	for _, p := range tree.Projects {
+		if p.Name == name {
+			return p
+		}
+	}
+	t.Fatalf("project %q not found in %v", name, projectNames(tree))
+	return TreeProject{}
+}
+
+func projectNames(tree Tree) []string {
+	names := make([]string, 0, len(tree.Projects))
+	for _, p := range tree.Projects {
+		names = append(names, p.Name)
+	}
+	return names
+}
+
+func TestBuildTree_TiersProjectsByRecencyAndLiveness(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		// A live project — has an awaiting live session => ACTIVE tier.
+		{ID: "01LIVE", UpdatedAt: now.Add(-time.Minute), OriginalPrompt: "live work",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+		// Touched 3h ago, not live => RECENT tier.
+		{ID: "01RECENT", UpdatedAt: now.Add(-3 * time.Hour), OriginalPrompt: "recent work",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/bravo"}},
+		// Touched 5 days ago, not live => OLDER tier.
+		{ID: "01OLD", UpdatedAt: now.Add(-5 * 24 * time.Hour), OriginalPrompt: "old work",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/charlie"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusAwaiting},
+	}
+
+	tree := BuildTree(metas, live)
+
+	if got := projectByName(t, tree, "alpha").Tier; got != TierActive {
+		t.Errorf("alpha tier = %q, want %q", got, TierActive)
+	}
+	if got := projectByName(t, tree, "bravo").Tier; got != TierRecent {
+		t.Errorf("bravo tier = %q, want %q", got, TierRecent)
+	}
+	if got := projectByName(t, tree, "charlie").Tier; got != TierOlder {
+		t.Errorf("charlie tier = %q, want %q", got, TierOlder)
+	}
+}
+
+func TestBuildTree_BucketsE2eTestRunsIntoTestTier(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		// A real, freshly-touched project — should NOT be in the test tier
+		// even though it sorts most-recent.
+		{ID: "01REAL", UpdatedAt: now, OriginalPrompt: "real work",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	// Many serf-e2e-* throwaway projects, each a single session, some very recent.
+	for i := 0; i < 25; i++ {
+		metas = append(metas, schema.SessionMeta{
+			ID:             "01E2E" + string(rune('A'+i)),
+			UpdatedAt:      now.Add(-time.Duration(i) * time.Minute),
+			OriginalPrompt: "e2e probe",
+			EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-" + string(rune('a'+i))},
+		})
+	}
+
+	tree := BuildTree(metas, nil)
+
+	// Every serf-e2e-* project lands in the test tier.
+	testCount := 0
+	for _, p := range tree.Projects {
+		if strings.HasPrefix(p.Name, "serf-e2e-") {
+			if p.Tier != TierTest {
+				t.Errorf("project %q tier = %q, want %q", p.Name, p.Tier, TierTest)
+			}
+			testCount++
+		}
+	}
+	if testCount != 25 {
+		t.Errorf("expected 25 serf-e2e projects, got %d", testCount)
+	}
+
+	// The real project is NOT in the test tier.
+	if got := projectByName(t, tree, "serf").Tier; got != TierActive && got != TierRecent {
+		t.Errorf("real project tier = %q, want active or recent (not test)", got)
+	}
+}
+
+func TestBuildTree_RecentEvenWhenE2eSortsFirst(t *testing.T) {
+	// A serf-e2e run touched *now* must not push the real project below it:
+	// the real project must still be reachable (active/recent), and the e2e
+	// run must be bucketed into the test tier regardless of recency.
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01REAL", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "real",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01E2E", UpdatedAt: now, OriginalPrompt: "probe",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-zzz"}},
+	}
+	tree := BuildTree(metas, nil)
+	if got := projectByName(t, tree, "serf-e2e-zzz").Tier; got != TierTest {
+		t.Errorf("e2e tier = %q, want %q", got, TierTest)
+	}
+	if got := projectByName(t, tree, "serf").Tier; got != TierRecent {
+		t.Errorf("real tier = %q, want %q", got, TierRecent)
+	}
+}
+
+func TestBuildTree_OrdersProjectsByRecencyWithinResult(t *testing.T) {
+	// Projects should be emitted in tier order (active, recent, older, test),
+	// and within a tier most-recent first.
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		// older
+		{ID: "01OLD", UpdatedAt: now.Add(-10 * 24 * time.Hour), OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/old-proj"}},
+		// recent, touched 2h ago
+		{ID: "01R2", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/recent-older"}},
+		// recent, touched 10m ago (more recent than recent-older)
+		{ID: "01R1", UpdatedAt: now.Add(-10 * time.Minute), OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/recent-newer"}},
+		// e2e test
+		{ID: "01E", UpdatedAt: now, OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-a"}},
+	}
+	tree := BuildTree(metas, nil)
+	got := projectNames(tree)
+	want := []string{"recent-newer", "recent-older", "old-proj", "serf-e2e-a"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("project order = %v, want %v", got, want)
+	}
+}
