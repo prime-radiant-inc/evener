@@ -453,6 +453,16 @@
     return value + " " + (value === 1 ? "byte" : "bytes");
   }
 
+  // formatTokenCount renders a token count compactly ("23k") to match the
+  // server's web_format.formatTokenCount, so the JS-side compaction expand
+  // reads the same way as the server-rendered context gauge.
+  function formatTokenCount(n) {
+    let value = Number(n);
+    if (!Number.isFinite(value) || value < 0) value = 0;
+    if (value < 1000) return String(Math.round(value));
+    return Math.round(value / 1000) + "k";
+  }
+
   function compactParts(parts) {
     return parts.map(p => String(p || "").trim()).filter(Boolean).join(" · ");
   }
@@ -557,6 +567,7 @@
     parseToolState,
     parseToolJSON,
     formatBytes,
+    formatTokenCount,
     compactParts,
     toolLooksGood,
     toolEventTime,

@@ -1383,6 +1383,15 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
   height: 100%;
   background: var(--state-processing);
 }
+/* Near the context limit (>=80% of the window, mockup #17 Alt A): the whole
+   gauge changes register to amber and a ⚠ glyph pairs the color so it reads
+   without color (colorblind-safe). Amber = "needs your eye", not red — it is a
+   real client-side threshold on real token numbers, not an "auto-compaction
+   firing soon" signal (there is none). */
+.input-status .context.context-warn .status-key,
+.input-status .context.context-warn .context-numbers { color: var(--state-awaiting); }
+.input-status .context-fill.context-warn { background: var(--state-awaiting); }
+.input-status .context-warn-glyph { color: var(--state-awaiting); font-size: var(--text-xs); }
 
 /* Generic context/cost styling — kept for status_bar.html and other surfaces. */
 .context { display: inline-flex; align-items: center; gap: var(--space-3); }
@@ -1880,6 +1889,18 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
 .task-system-detail dd { margin: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .system-line-pointer { display: inline-block; text-decoration: none; cursor: pointer; }
 .system-line-pointer:hover { color: var(--text); }
+
+/* Context compaction (mockup #17 Alt A): a quiet neutral lifecycle one-liner
+   that expands to the real before/after math. Settled = neutral (it is a DONE
+   event), glyph-paired (⊟), never color/alarm. */
+.context-compaction-line { font-style: normal; }
+.context-compaction-line > summary { cursor: pointer; list-style: none; display: inline-flex; align-items: baseline; gap: var(--space-2); color: var(--text-muted); }
+.context-compaction-line > summary::-webkit-details-marker { display: none; }
+.context-compaction-glyph { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); font-style: normal; }
+.context-compaction-label { color: var(--text); font-weight: 600; font-style: normal; }
+.context-compaction-delta { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.context-compaction-body { margin: var(--space-2) 0 0 var(--space-5); border-left: 1px solid var(--rule); padding-left: var(--space-3); }
+.context-compaction-stat { color: var(--text-muted); font-size: var(--text-xs); font-style: normal; font-variant-numeric: tabular-nums; line-height: var(--leading-relaxed); }
 
 /* Steering messages: render as a system insertion between user and agent
  * messages — full-width divider with the summary centered between rules.

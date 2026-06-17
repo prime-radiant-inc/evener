@@ -29,6 +29,7 @@
     parseToolState,
     parseToolJSON,
     formatBytes,
+    formatTokenCount,
     compactParts,
     toolLooksGood,
     toolEventTime,
@@ -874,6 +875,10 @@
           this.appendBanner("error", data.error || data.message || "", data);
           break;
         case "SYSTEM_MESSAGE":
+          if (data && data.raw && data.raw.compaction) {
+            this.appendContextCompaction(data.raw.compaction);
+            break;
+          }
           if (!shouldRenderSystemMessage(data)) break;
           this.appendSystemMessage(data);
           break;
@@ -913,6 +918,69 @@
         const added = this.conversation ? this.conversation.children.length - entriesBefore : 0;
         if (added > 0) this.noteNewContent(added);
       }
+    },
+
+    // appendContextCompaction renders the context-compaction lifecycle event
+    // (mockup #17 Alt A): a quiet neutral system one-liner that EXPANDS to show
+    // the real before/after math (tokens before→after, turns before→after,
+    // layer). It is a DONE event — never a silent rug-pull — and shows only the
+    // real numbers carried in the projection (no invented "auto-compaction"
+    // language). `c` is the structured compaction payload from raw.compaction.
+    appendContextCompaction(c) {
+      c = c || {};
+      this.endCheapCluster();
+      this.closeSubagentModule();
+
+      const turnsBefore = Number(c.turns_before || c.turnsBefore || 0);
+      const turnsAfter = Number(c.turns_after || c.turnsAfter || 0);
+      const tokBefore = Number(c.est_tokens_before || c.estTokensBefore || 0);
+      const tokAfter = Number(c.est_tokens_after || c.estTokensAfter || 0);
+      const layer = String(c.layer || "");
+
+      const el = document.createElement("details");
+      el.className = "system-line context-compaction-line";
+
+      const summary = document.createElement("summary");
+      const glyph = document.createElement("span");
+      glyph.className = "context-compaction-glyph";
+      glyph.textContent = "⊟";
+      const label = document.createElement("span");
+      label.className = "context-compaction-label";
+      label.textContent = "Context compacted";
+      summary.append(glyph, label);
+      // Quiet inline delta on the summary, only from real numbers.
+      const deltaBits = [];
+      if (turnsBefore || turnsAfter) deltaBits.push(turnsBefore + " turns → summary");
+      if (tokBefore && tokAfter) {
+        deltaBits.push(formatTokenCount(tokBefore) + " → " + formatTokenCount(tokAfter));
+      }
+      if (deltaBits.length) {
+        const delta = document.createElement("span");
+        delta.className = "context-compaction-delta";
+        delta.textContent = " · " + deltaBits.join(" · ");
+        summary.append(delta);
+      }
+
+      const body = document.createElement("div");
+      body.className = "context-compaction-body";
+      const rows = [];
+      if (tokBefore || tokAfter) {
+        rows.push("Estimated tokens: " + formatTokenCount(tokBefore) + " → " + formatTokenCount(tokAfter));
+      }
+      if (turnsBefore || turnsAfter) {
+        rows.push("Turns: " + turnsBefore + " → " + turnsAfter);
+      }
+      if (layer) rows.push("Layer: " + layer);
+      rows.push("Earlier turns were summarized to make room. They remain in this transcript above, but are no longer in the model's context window.");
+      for (const row of rows) {
+        const line = document.createElement("div");
+        line.className = "context-compaction-stat";
+        line.textContent = row;
+        body.appendChild(line);
+      }
+
+      el.append(summary, body);
+      this.conversation.appendChild(el);
     },
 
     // appendSystemMessage renders a lifecycle event (skill activated, plugin

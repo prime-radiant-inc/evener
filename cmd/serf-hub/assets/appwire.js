@@ -552,7 +552,12 @@
       if (!item.text) return [];
       const hookLine = hookSystemLineText(item);
       if (hookLine) return [["SYSTEM_LINE", { text: hookLine }]];
-      return [["SYSTEM_MESSAGE", { title: item.description || "System", text: item.text || "" }]];
+      const payload = { title: item.description || "System", text: item.text || "" };
+      // Carry the structured detail (e.g. compaction before/after numbers under
+      // raw.compaction) so the renderer can draw an honest, inspectable expand
+      // from real numbers rather than re-parsing the prose (mockup #17 Alt A).
+      if (item.raw != null && item.raw !== "") payload.raw = item.raw;
+      return [["SYSTEM_MESSAGE", payload]];
     }
     if (type === "agentMessage") {
       if (!item.text) return [];
