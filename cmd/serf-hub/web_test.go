@@ -934,7 +934,7 @@ func TestWeb_Sidebar_RendersTieredProjects(t *testing.T) {
 		`data-tier="active"`,
 		`data-tier="older"`,
 		`data-tier="test"`,
-		`>test runs<`,                  // test-tier label
+		`>Test runs<`,                  // test-tier label (sentence-case sans, mockup #2)
 		`data-default-expanded="true"`, // active-tier projects start expanded
 		`class="project-age"`,          // relative age on the project header
 		`<span class="project-name">live-proj</span>`,

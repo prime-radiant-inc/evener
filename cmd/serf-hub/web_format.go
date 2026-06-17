@@ -176,17 +176,20 @@ func searchPastTitle(pe hubcore.PastEntry) string {
 }
 
 func stateLabel(state string) string {
+	// Sentence-case sans status labels (mockup #2): the status badge no longer
+	// shouts in ALL-CAPS mono, so the display text carries the capitalization.
+	// "active" reads as "Working" — the human word for a live, running session.
 	switch state {
 	case "awaiting":
-		return "awaiting"
+		return "Awaiting"
 	case "active":
-		return "active"
+		return "Working"
 	case "warning":
-		return "warning"
+		return "Warning"
 	case "idle":
-		return "idle"
+		return "Idle"
 	case "notLoaded":
-		return "notLoaded"
+		return "Not loaded"
 	}
 	return state
 }
