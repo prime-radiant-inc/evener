@@ -56,9 +56,12 @@ The fixes are the [design-system](design-system.md) component grammar + the work
 ## 4. Scroll behavior
 
 Stick-to-bottom **only when already at bottom** (measure `scrollHeight - scrollTop - clientHeight
-< ~50px` *before* the DOM mutation; scroll after only if it was true). Otherwise show a floating
-"↓ N new" pill (attention-aware: "↓ needs you" when the new content needs the user). Local echo
-of the user's own send stays unconditional. Compensate scroll anchor on replace/prepend.
+< ~50px` *before* the DOM mutation; scroll after only if it was true). Local echo of the user's
+own send stays unconditional. **Core landed** — `handle()` measures `isNearBottom()` before the
+switch and only re-sticks if true; `appendLocalUserMessage` stays unconditional. Test:
+`test-renderer-scroll.js`. **Follow-ups (not yet built):** the floating "↓ N new" pill
+(attention-aware "↓ needs you" when the new content needs the user) and scroll-anchor
+compensation on replace/prepend.
 
 ## 5. Liveness (honest working-vs-stalled) {#liveness}
 

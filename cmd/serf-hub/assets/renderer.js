@@ -662,6 +662,9 @@
         this.eventBuffer.push([kind, ev]);
         return;
       }
+      // Measure before the DOM mutation: only stick to the bottom if the reader
+      // is already there, so streaming frames don't yank them off history.
+      const stick = this.isNearBottom();
       let data = {};
       try { data = JSON.parse(ev.data); } catch (e) {}
       switch (kind) {
@@ -853,7 +856,7 @@
           // to avoid duplicates.
           break;
       }
-      this.scrollToBottom();
+      if (stick) this.scrollToBottom();
     },
 
     appendSystemMessage(data) {
@@ -1835,6 +1838,14 @@
 
     scrollToBottom() {
       this.conversation.scrollTop = this.conversation.scrollHeight;
+    },
+
+    // isNearBottom reports whether the transcript is scrolled to (or within a
+    // line or two of) the bottom — the condition for auto-sticking on new frames.
+    isNearBottom() {
+      const el = this.conversation;
+      if (!el) return true;
+      return (el.scrollHeight - el.scrollTop - el.clientHeight) < 50;
     },
 
     bindInputForm() {
