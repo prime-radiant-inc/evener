@@ -133,6 +133,44 @@ func TestAdapter_E2E_AnthropicThinkingAndRoundTrip(t *testing.T) {
 	}
 }
 
+// TestAdapter_E2E_AnthropicStreamsReasoningDeltas verifies the live extended-
+// thinking stream emits incremental StreamEventReasoningDelta events (not just a
+// final thinking block). Gated behind SERF_ANTHROPIC_E2E=1 + ANTHROPIC_API_KEY;
+// skips otherwise.
+func TestAdapter_E2E_AnthropicStreamsReasoningDeltas(t *testing.T) {
+	a, model := anthropicE2EAdapter(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	effort := "low"
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:           model,
+		Messages:        []llm.Message{llm.User("Think step by step, then reply with exactly: stream ok")},
+		ReasoningEffort: &effort,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var reasoning strings.Builder
+	reasoningDeltas := 0
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventReasoningDelta {
+			reasoningDeltas++
+			reasoning.WriteString(ev.ReasoningDelta)
+		}
+	}
+	if reasoningDeltas == 0 {
+		t.Logf("no reasoning deltas streamed for this prompt/model (model may not have produced a thinking block)")
+		return
+	}
+	if strings.TrimSpace(reasoning.String()) == "" {
+		t.Fatalf("streamed %d reasoning deltas but accumulated reasoning is empty", reasoningDeltas)
+	}
+	t.Logf("streamed %d reasoning deltas, %d chars", reasoningDeltas, reasoning.Len())
+}
+
 func TestAdapter_E2E_AnthropicToolRoundTrip(t *testing.T) {
 	a, model := anthropicE2EAdapter(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

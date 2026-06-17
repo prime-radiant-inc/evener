@@ -308,6 +308,21 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 	blocks := map[int]*blockState{}
 	maxIdx := -1
 
+	// reasoningBlockIdx tracks the block index whose reasoning deltas were last
+	// emitted. When thinking spans multiple separate content blocks, a blank line
+	// is inserted between them (mirrors the OpenAI summary-part behavior) so the
+	// live "thinking" view stays readable. -1 means no reasoning emitted yet.
+	reasoningBlockIdx := -1
+	// emitReasoningDelta streams a reasoning delta, inserting a section break
+	// before the first delta of a thinking block that differs from the previous.
+	emitReasoningDelta := func(idx int, delta string) {
+		if reasoningBlockIdx != -1 && idx != reasoningBlockIdx {
+			s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: "\n\n"})
+		}
+		reasoningBlockIdx = idx
+		s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: delta})
+	}
+
 	getBlock := func(idx int) *blockState {
 		st := blocks[idx]
 		if st == nil {
@@ -410,7 +425,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 						}
 						if t != "" {
 							st.thinking.WriteString(t)
-							s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: t})
+							emitReasoningDelta(idx, t)
 						}
 					case "server_tool_use":
 						st.toolID, _ = cb["id"].(string)
@@ -460,7 +475,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 								s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
 							}
 							st.thinking.WriteString(delta)
-							s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: delta})
+							emitReasoningDelta(idx, delta)
 						}
 					case "signature_delta":
 						if delta, _ := d["signature"].(string); delta != "" {
