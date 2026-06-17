@@ -97,7 +97,10 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		body["metadata"] = req.Metadata
 	}
 	if req.ReasoningEffort != nil {
-		body["reasoning"] = map[string]any{"effort": *req.ReasoningEffort, "summary": "detailed"}
+		body["reasoning"] = map[string]any{
+			"effort":  *req.ReasoningEffort,
+			"summary": reasoningSummaryLevel(req.Model),
+		}
 	}
 	include := append([]string{}, req.Include...)
 	if req.ReasoningEffort != nil {
@@ -683,6 +686,23 @@ func defaultImageDetail(model string) string {
 		return "original"
 	}
 	return "high"
+}
+
+// reasoningSummaryLevel returns the reasoning.summary level to request for the
+// model. The Responses API rejects an unsupported summary level with a 400, and
+// support is per-model (e.g. the computer-use model only does "concise"), so we
+// cannot send "detailed" unconditionally.
+//
+// gpt-5.x exposes "detailed" plaintext summaries, which the serf live-thinking
+// block depends on (verified live on gpt-5.5). For every other reasoning model
+// we send "auto": the OpenAI docs define "auto" as equivalent to "detailed" for
+// most reasoning models today while letting the API pick a supported level, so
+// it never 400s and still yields the richest summary the model offers.
+func reasoningSummaryLevel(model string) string {
+	if strings.HasPrefix(model, "gpt-5") || strings.HasPrefix(model, "gpt-6") {
+		return "detailed"
+	}
+	return "auto"
 }
 
 func toResponsesInput(msgs []llm.Message, model string) (instructions string, items []any, _ error) {

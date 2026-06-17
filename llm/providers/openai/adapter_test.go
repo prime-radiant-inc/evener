@@ -290,6 +290,51 @@ func TestAdapter_BuildRequestBody_ResponsesControls(t *testing.T) {
 	}
 }
 
+func TestAdapter_BuildRequestBody_ReasoningSummaryIsModelAware(t *testing.T) {
+	effort := "high"
+	cases := []struct {
+		name        string
+		model       string
+		wantSummary string
+	}{
+		// gpt-5.x supports detailed summaries; live thinking depends on it.
+		{name: "gpt-5.5", model: "gpt-5.5", wantSummary: "detailed"},
+		{name: "gpt-5.4-mini", model: "gpt-5.4-mini", wantSummary: "detailed"},
+		{name: "gpt-5", model: "gpt-5", wantSummary: "detailed"},
+		{name: "gpt-6", model: "gpt-6", wantSummary: "detailed"},
+		// Unknown / non-gpt-5 reasoning models fall back to "auto", which the API
+		// resolves to the best supported level (detailed where available) and never
+		// 400s on an unsupported value.
+		{name: "o4-mini", model: "o4-mini", wantSummary: "auto"},
+		{name: "o3", model: "o3", wantSummary: "auto"},
+		{name: "computer-use-preview", model: "computer-use-preview", wantSummary: "auto"},
+		{name: "future-unknown", model: "some-future-model", wantSummary: "auto"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := (&Adapter{}).buildRequestBody(llm.Request{
+				Model:           tc.model,
+				Messages:        []llm.Message{llm.User("hi")},
+				ReasoningEffort: &effort,
+			})
+			if err != nil {
+				t.Fatalf("buildRequestBody: %v", err)
+			}
+			r, ok := body["reasoning"].(map[string]any)
+			if !ok {
+				t.Fatalf("reasoning missing/not a map: %#v", body["reasoning"])
+			}
+			if r["effort"] != effort {
+				t.Fatalf("reasoning.effort = %#v, want %q", r["effort"], effort)
+			}
+			if r["summary"] != tc.wantSummary {
+				t.Fatalf("reasoning.summary = %#v, want %q", r["summary"], tc.wantSummary)
+			}
+		})
+	}
+}
+
 func TestAdapter_BuildRequestBody_ResponsesControlsDefaultStoreFalse(t *testing.T) {
 	explicitFalse := false
 	cases := []struct {
