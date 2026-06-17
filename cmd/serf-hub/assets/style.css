@@ -734,6 +734,123 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   .sb-row { grid-template-columns: 1fr; justify-content: center; }
 }
 
+/* ============================================================
+   Sidebar tiering (project-first IA)
+   Ranks projects into ACTIVE / RECENT / OLDER / TEST RUNS bands
+   so live work floats to the top and the disposable serf-e2e-*
+   sprawl folds into one band. Self-contained: only touches the
+   .sidebar-tier / .tier-header / project-name / project-age /
+   subagent-row family. Mono is reserved for machine text — tier
+   labels and ages stay mono; project names are sans, not all-caps.
+   ============================================================ */
+
+/* Tier band wrapper + spacing between bands. */
+.sidebar-tier { margin-bottom: var(--space-4); }
+.sidebar-tier:last-child { margin-bottom: 0; }
+/* Tier header reuses the section-header treatment (mono, uppercase,
+   tracked) — these are machine-ish section labels, not content. */
+.tier-header { color: var(--text-dim); }
+.tier-header .count { margin-left: auto; letter-spacing: 0; font-family: var(--font-mono); color: var(--text-muted); }
+
+/* Project name: sans, sentence-case, NOT the all-caps mono of the old
+   header. This is the highest-signal label in the band, so it reads as
+   product content rather than a machine identifier. Overrides the mono /
+   uppercase inherited from .project-header. */
+.project-name {
+  font-family: var(--font-sans);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: var(--text-sm);
+  color: var(--text);
+}
+/* In de-weighted bands (recent/older/test) the project name dims so the
+   active band stays visually dominant. */
+.sidebar-tier[data-tier="recent"] .project-name,
+.sidebar-tier[data-tier="older"] .project-name,
+.sidebar-tier[data-tier="test"] .project-name { color: var(--text-muted); }
+
+/* Relative age — mono, dim, sits right after the name. Machine-ish value,
+   so mono is correct per the mono-by-content rule. */
+.project-age {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+/* Count moves off the far-right auto-margin: name flexes, age + count
+   cluster after it, rollup dot / action buttons trail. */
+.project-header .project-count { margin-left: var(--space-1); }
+
+/* De-weighted single-line subagent row. Indented under its parent, dim,
+   one line with a terminal-state glyph (✓ done / ⟳ running / ✕ needs-you).
+   Replaces the 2-column .sb-row.sub treatment for subagents specifically;
+   forks keep the full row. */
+.subagent-row {
+  grid-template-columns: 14px 1fr;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 2px var(--space-4) 2px var(--space-7);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}
+.subagent-row .subagent-glyph {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--state-subagent);
+  text-align: center;
+  line-height: 1.2;
+}
+.subagent-row[data-state="active"]   .subagent-glyph { color: var(--state-processing); }
+.subagent-row[data-state="awaiting"] .subagent-glyph,
+.subagent-row[data-state="warning"]  .subagent-glyph { color: var(--state-warning); }
+.subagent-row .subagent-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+.subagent-row:hover .subagent-title { color: var(--text); }
+
+/* Overflow subagents (past 3) hide until the parent's "+N subagents"
+   toggle expands them. JS flips data-subagents-expanded on the children
+   container. */
+.subagent-overflow { display: none; }
+.project-children[data-subagents-expanded] .subagent-overflow { display: grid; }
+
+/* "+N subagents" fold toggle — dim, indented to match subagent rows. */
+.subagent-toggle {
+  display: block;
+  width: calc(100% - var(--space-7));
+  margin-left: var(--space-7);
+  padding: 2px var(--space-4);
+  background: transparent;
+  border: none;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.subagent-toggle:hover { color: var(--text-muted); }
+/* When expanded the label flips to "− hide" via JS textContent; no glyph
+   prefix is added here so the "+N subagents" text stands on its own. */
+
+/* Rail mode: hide tier headers, age, and subagent rows along with the
+   rest of the text-bearing chrome. */
+body.app[data-sidebar-rail] .tier-header,
+body.app[data-sidebar-rail] .project-age,
+body.app[data-sidebar-rail] .subagent-toggle { display: none; }
+body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
+@container sidebar (max-width: 80px) {
+  .tier-header span,
+  .project-age,
+  .subagent-toggle,
+  .subagent-row .subagent-title { display: none; }
+}
+
 /* Workspace pane */
 .workspace-header { padding: var(--space-4) var(--space-6) var(--space-4); border-bottom: 1px solid var(--rule); }
 .workspace-title-row { display: flex; align-items: center; gap: var(--space-4); }

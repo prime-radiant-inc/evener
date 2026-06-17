@@ -28,6 +28,7 @@ type TreeProject struct {
 	// MostRecent is the project's newest top-level session activity, used to
 	// rank projects within a tier (most-recent first).
 	MostRecent time.Time
+	Age        string // pre-formatted relative age of MostRecent ("now", "2m", "3h", "5d")
 }
 
 // Sidebar tiers. Projects are grouped into one of these bands so live work
@@ -99,6 +100,58 @@ type TreeNode struct {
 	UpdatedAt time.Time
 	Age       string // pre-formatted "now", "2m", "3h", "5d"
 	Children  []TreeNode
+}
+
+// TierGroup is a labeled band of projects for the sidebar. Tiers render
+// top-to-bottom in TierGroups order.
+type TierGroup struct {
+	Tier     string // "active" | "recent" | "older" | "test"
+	Label    string // display label, e.g. "active", "test runs"
+	Expanded bool   // tier auto-expands its projects (only the active tier)
+	Projects []TreeProject
+}
+
+// tierLabel returns the sidebar header text for a tier.
+func tierLabel(tier string) string {
+	switch tier {
+	case TierActive:
+		return "active"
+	case TierRecent:
+		return "recent"
+	case TierOlder:
+		return "older"
+	default: // TierTest
+		return "test runs"
+	}
+}
+
+// TierGroups buckets the tree's projects into ordered, labeled tier groups,
+// preserving the within-tier ordering BuildTree already established. Empty
+// tiers are omitted so the sidebar never shows a blank band.
+func (t Tree) TierGroups() []TierGroup {
+	order := []string{TierActive, TierRecent, TierOlder, TierTest}
+	byTier := make(map[string][]TreeProject, len(order))
+	for _, p := range t.Projects {
+		tier := p.Tier
+		if tier == "" {
+			tier = TierOlder
+		}
+		byTier[tier] = append(byTier[tier], p)
+	}
+	groups := make([]TierGroup, 0, len(order))
+	for _, tier := range order {
+		projects := byTier[tier]
+		if len(projects) == 0 {
+			continue
+		}
+		groups = append(groups, TierGroup{
+			Tier:     tier,
+			Label:    tierLabel(tier),
+			Expanded: tier == TierActive,
+			Projects: projects,
+		})
+	}
+	return groups
 }
 
 // AttentionRank maps a state string to a sort key.
@@ -425,6 +478,7 @@ func BuildTree(metas []schema.SessionMeta, live []LiveEntry) Tree {
 			RollupState: rollup,
 			Tier:        tierFor(pname, rollup, mostRecent, now),
 			MostRecent:  mostRecent,
+			Age:         AgeString(mostRecent),
 		})
 	}
 

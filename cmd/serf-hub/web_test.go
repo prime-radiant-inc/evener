@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -901,6 +902,100 @@ func TestWeb_Sidebar_RendersTreeWithLiveAndProjects(t *testing.T) {
 	}
 	if !strings.Contains(body, "/s/01PAST") {
 		t.Errorf("missing session URL")
+	}
+}
+
+func TestWeb_Sidebar_RendersTieredProjects(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		// Live/active project — ACTIVE tier, auto-expanded.
+		{ID: "01LIVE", UpdatedAt: now, OriginalPrompt: "ship the feature",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/live-proj"}},
+		// Touched 8 days ago — OLDER tier, collapsed.
+		{ID: "01OLD", UpdatedAt: now.Add(-8 * 24 * time.Hour), OriginalPrompt: "ancient work",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/old-proj"}},
+		// Disposable e2e run — TEST RUNS tier.
+		{ID: "01E2E", UpdatedAt: now, OriginalPrompt: "e2e probe",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-abc"}},
+	}
+	live := []hubcore.LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusAwaiting},
+	}
+	tree := hubcore.BuildTree(metas, live)
+
+	tmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "sidebar", tree); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	body := buf.String()
+
+	for _, want := range []string{
+		`data-tier="active"`,
+		`data-tier="older"`,
+		`data-tier="test"`,
+		`>test runs<`,                  // test-tier label
+		`data-default-expanded="true"`, // active-tier projects start expanded
+		`class="project-age"`,          // relative age on the project header
+		`<span class="project-name">live-proj</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("sidebar missing %q:\n%s", want, body)
+		}
+	}
+
+	// The OLDER-tier project must NOT carry the auto-expand hint and must
+	// render collapsed by default.
+	if !strings.Contains(body, `data-project-key="old-proj"`) {
+		t.Fatalf("old-proj missing:\n%s", body)
+	}
+	// Past-only / non-live projects omit the rollup dot.
+	if strings.Contains(body, `data-project-key="old-proj"`) {
+		idx := strings.Index(body, `data-project-key="old-proj"`)
+		seg := body[idx:]
+		if end := strings.Index(seg, "</header>"); end > 0 {
+			if strings.Contains(seg[:end], "project-rollup-dot") {
+				t.Errorf("older non-live project should omit rollup dot")
+			}
+		}
+	}
+}
+
+func TestWeb_Sidebar_FoldsExcessSubagents(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01PARENT", UpdatedAt: now, OriginalPrompt: "parent",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/p"}},
+	}
+	// Five subagents under the parent — past 3 should be marked overflow and a
+	// "+2 subagents" toggle should render.
+	for i := 0; i < 5; i++ {
+		metas = append(metas, schema.SessionMeta{
+			ID:              "01SUB" + string(rune('A'+i)),
+			UpdatedAt:       now.Add(-time.Duration(i) * time.Minute),
+			OriginalPrompt:  "sub work",
+			IsSubagent:      true,
+			ParentSessionID: "01PARENT",
+			EnvInfo:         schema.EnvironmentInfo{WorkingDir: "/projects/p"},
+		})
+	}
+	tree := hubcore.BuildTree(metas, nil)
+
+	tmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "sidebar", tree); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	body := buf.String()
+
+	if got := strings.Count(body, "subagent-overflow"); got != 2 {
+		t.Errorf("expected 2 overflow subagents, got %d:\n%s", got, body)
+	}
+	if !strings.Contains(body, "+2 subagents") {
+		t.Errorf("expected '+2 subagents' toggle:\n%s", body)
+	}
+	if got := strings.Count(body, "subagent-row"); got != 5 {
+		t.Errorf("expected 5 subagent rows total, got %d", got)
 	}
 }
 
@@ -4261,8 +4356,8 @@ func TestWeb_Sidebar_RollupState_AwaitingHasPriority(t *testing.T) {
 }
 
 // TestWeb_Sidebar_RollupState_NoLiveChildrenHides confirms that a
-// past-only project renders the dot with an empty data-state, which the
-// CSS rule hides.
+// past-only project omits the rollup dot entirely — the dot only renders
+// when something is live or needs attention.
 func TestWeb_Sidebar_RollupState_NoLiveChildrenHides(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
@@ -4293,8 +4388,8 @@ func TestWeb_Sidebar_RollupState_NoLiveChildrenHides(t *testing.T) {
 		t.Fatalf("status: %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `class="project-rollup-dot" data-state=""`) {
-		t.Errorf("past-only project rollup dot should have empty data-state; body=\n%s", body)
+	if strings.Contains(body, `project-rollup-dot`) {
+		t.Errorf("past-only project should omit the rollup dot entirely; body=\n%s", body)
 	}
 }
 

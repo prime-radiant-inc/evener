@@ -37,10 +37,17 @@ type WebServer struct {
 	resumeLocks map[string]*sync.Mutex // sessionID -> per-session lock
 }
 
+// sidebarTemplateFuncs supplies small integer helpers the sidebar template
+// needs to count and fold subagent rows ("+N subagents").
+var sidebarTemplateFuncs = template.FuncMap{
+	"add": func(a, b int) int { return a + b },
+	"sub": func(a, b int) int { return a - b },
+}
+
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
 func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	appTmpl := template.Must(template.ParseFS(templatesFS, "templates/app.html"))
-	sidebarTmpl := template.Must(template.ParseFS(templatesFS, "templates/partials/sidebar.html"))
+	sidebarTmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
 	workspaceTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/workspace.html",
 		"templates/partials/input_strip.html",

@@ -380,6 +380,59 @@ func TestBuildTree_RecentEvenWhenE2eSortsFirst(t *testing.T) {
 	}
 }
 
+func TestTierGroups_OmitsEmptyAndAutoExpandsActive(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01LIVE", UpdatedAt: now, OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+		{ID: "01OLD", UpdatedAt: now.Add(-9 * 24 * time.Hour), OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/charlie"}},
+		{ID: "01E2E", UpdatedAt: now, OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-a"}},
+	}
+	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusActive}}
+
+	groups := BuildTree(metas, live).TierGroups()
+
+	// active, older, test — recent is omitted (no project qualifies).
+	gotTiers := make([]string, 0, len(groups))
+	for _, g := range groups {
+		gotTiers = append(gotTiers, g.Tier)
+	}
+	want := []string{TierActive, TierOlder, TierTest}
+	if strings.Join(gotTiers, ",") != strings.Join(want, ",") {
+		t.Fatalf("tier groups = %v, want %v", gotTiers, want)
+	}
+
+	// Only the active tier auto-expands.
+	for _, g := range groups {
+		if g.Tier == TierActive && !g.Expanded {
+			t.Errorf("active tier should be expanded")
+		}
+		if g.Tier != TierActive && g.Expanded {
+			t.Errorf("%q tier should not be expanded", g.Tier)
+		}
+	}
+
+	// Test tier label is "test runs".
+	for _, g := range groups {
+		if g.Tier == TierTest && g.Label != "test runs" {
+			t.Errorf("test tier label = %q, want %q", g.Label, "test runs")
+		}
+	}
+}
+
+func TestTreeProject_AgeIsFormatted(t *testing.T) {
+	now := time.Now()
+	tree := BuildTree([]schema.SessionMeta{
+		{ID: "01A", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+	}, nil)
+	if got := projectByName(t, tree, "alpha").Age; got != "2h" {
+		t.Errorf("age = %q, want 2h", got)
+	}
+}
+
 func TestBuildTree_OrdersProjectsByRecencyWithinResult(t *testing.T) {
 	// Projects should be emitted in tier order (active, recent, older, test),
 	// and within a tier most-recent first.
