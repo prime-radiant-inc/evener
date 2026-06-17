@@ -99,10 +99,46 @@
           chevron.textContent = "▾";
           chevron.setAttribute("aria-expanded", "true");
         }
-        // Persist the expansion so it survives sidebar re-renders.
+        // Persist the expansion so it survives sidebar re-renders, and lazy-load
+        // the rows the collapsed payload omitted.
         setCollapsed(key, false, activeSection);
+        loadProjectChildren(activeSection);
       }
     }
+  }
+
+  // loadProjectChildren lazy-loads a collapsed project's session rows. The
+  // server omits collapsed projects' rows from the default sidebar payload (the
+  // scale fix), so the first expand fetches them from /_partials/sidebar/project
+  // and injects the fragment. A data-children-loaded marker prevents a refetch
+  // on re-expand. Projects that already have inline children (auto-expanded live
+  // ones) are left alone.
+  function loadProjectChildren(section) {
+    var key = section.getAttribute("data-project-key");
+    if (!key) return;
+    var children = section.querySelector(".project-children");
+    if (!children) return;
+    // Already loaded, or rendered inline by the server — nothing to fetch.
+    if (children.hasAttribute("data-children-loaded")) return;
+    if (children.children.length > 0) {
+      children.setAttribute("data-children-loaded", "");
+      return;
+    }
+    children.setAttribute("data-children-loaded", "");
+    window.fetch("/_partials/sidebar/project?key=" + encodeURIComponent(key), {
+      headers: { "HX-Request": "true" },
+    }).then(function (resp) {
+      if (!resp || !resp.ok) {
+        children.removeAttribute("data-children-loaded"); // allow retry
+        return;
+      }
+      return resp.text().then(function (html) {
+        children.innerHTML = html;
+        if (window.htmx && window.htmx.process) window.htmx.process(children);
+      });
+    }).catch(function () {
+      children.removeAttribute("data-children-loaded"); // allow retry
+    });
   }
 
   function onChevronClick(e) {
@@ -118,6 +154,7 @@
     chevron.textContent = nextCollapsed ? "▸" : "▾";
     chevron.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
     setCollapsed(key, nextCollapsed, section);
+    if (!nextCollapsed) loadProjectChildren(section);
   }
 
   if (document.readyState === "loading") {
