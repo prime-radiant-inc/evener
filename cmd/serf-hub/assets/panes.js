@@ -75,9 +75,10 @@
   var WIDTH_KEY = "serf-hub.panes.width";
 
   function setSidePanesWidth(px) {
-    var w = Math.max(280, Math.min(900, Math.round(px)));
+    var maxW = Math.min(1200, window.innerWidth - 360);
+    var w = Math.max(280, Math.min(maxW, Math.round(px)));
     var r = region();
-    if (r) r.style.setProperty("--pane-w", w + "px");
+    if (r) r.style.setProperty("--side-panes-w", w + "px");
     try { window.localStorage.setItem(WIDTH_KEY, String(w)); } catch (e) { /* ignore */ }
     return w;
   }

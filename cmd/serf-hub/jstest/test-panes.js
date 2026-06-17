@@ -49,9 +49,11 @@ P.restore();
 if (!P.openHrefs().includes("/s/keep-1")) throw new Error("restore did not reopen pane");
 console.log("test-panes persistence: ok");
 
+// max = Math.min(1200, window.innerWidth - 360); jsdom innerWidth = 1024 → max = 664
+var expectedMax = Math.min(1200, dom.window.innerWidth - 360);
 P.setSidePanesWidth(10000);
-if (parseInt(dom.window.localStorage.getItem("serf-hub.panes.width"), 10) !== 900)
-  throw new Error("width not clamped to max");
+if (parseInt(dom.window.localStorage.getItem("serf-hub.panes.width"), 10) !== expectedMax)
+  throw new Error("width not clamped to max (expected " + expectedMax + ")");
 P.setSidePanesWidth(10);
 if (parseInt(dom.window.localStorage.getItem("serf-hub.panes.width"), 10) !== 280)
   throw new Error("width not clamped to min");

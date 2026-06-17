@@ -2379,18 +2379,23 @@
       // Hidden (not added) when SerfPanes is unavailable, e.g. this renderer is
       // itself inside a pane iframe, so panes cannot nest.
       if (window.SerfPanes && !row.querySelector(".open-beside-btn")) {
-        var beside = document.createElement("button");
-        beside.type = "button";
+        var beside = document.createElement("span");
         beside.className = "open-beside-btn";
+        beside.setAttribute("role", "button");
+        beside.setAttribute("tabindex", "0");
         beside.setAttribute("aria-label", "open subagent beside");
         beside.title = "open beside";
         beside.textContent = "⇲";
-        beside.addEventListener("click", function (e) {
+        function openBeside(e) {
           e.preventDefault();
           e.stopPropagation(); // do not trigger the row's navigateTo
           var ref = row.dataset.transcriptRef;
           var label = (row.querySelector(".nm") || {}).textContent || ref;
           window.SerfPanes.open("/s/" + encodeURIComponent(ref), label);
+        }
+        beside.addEventListener("click", openBeside);
+        beside.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" || e.key === " ") openBeside(e);
         });
         row.appendChild(beside);
       }

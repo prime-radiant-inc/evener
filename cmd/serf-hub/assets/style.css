@@ -477,9 +477,9 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 #sidebar { width: 260px; flex-shrink: 0; height: 100vh; border-right: 1px solid var(--rule); overflow-y: auto; }
 #workspace { position: relative; flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 /* Multi-pane: side panes sit as flex columns to the right of #workspace. */
-.side-panes { display: flex; flex-direction: row; min-width: 0; height: 100vh; }
+.side-panes { display: flex; flex-direction: row; min-width: 0; height: 100vh; width: var(--side-panes-w, 420px); }
 .side-panes[hidden] { display: none; }
-.pane { display: flex; flex-direction: column; min-width: 0; width: var(--pane-w, 420px);
+.pane { display: flex; flex-direction: column; min-width: 240px; flex: 1;
   border-left: 1px solid var(--rule); height: 100vh; overflow: hidden; }
 .pane-header { display: flex; align-items: center; gap: var(--space-2);
   padding: 0 var(--space-3); height: 38px; flex-shrink: 0; border-bottom: 1px solid var(--rule);
