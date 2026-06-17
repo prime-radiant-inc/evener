@@ -54,83 +54,100 @@
   </div>
   {{end}}
 
-  {{range .Projects}}
-  <section class="sidebar-section project-section collapsed" data-project-key="{{.Name}}">
-    <header class="project-header">
-      <button type="button" class="btn btn-icon project-chevron" aria-label="expand project" aria-expanded="false">▸</button>
-      <span class="project-name">{{.Name}}</span>
-      <span class="count project-count">{{len .Sessions}}</span>
-      <span class="project-rollup-dot" data-state="{{.RollupState}}"></span>
-      {{if .WorkingDir}}
-      <a class="btn btn-icon project-gear-btn"
-         title="project settings for {{.Name}}"
-         href="/settings/project?cwd={{.WorkingDir | urlquery}}"
-         hx-get="/_partials/settings/project?cwd={{.WorkingDir | urlquery}}"
-         hx-target="#workspace"
-         hx-swap="innerHTML"
-         hx-push-url="/settings/project?cwd={{.WorkingDir | urlquery}}">⚙</a>
-      <a class="btn btn-icon project-new-btn"
-         title="new session in {{.Name}}"
-         href="/new?dir={{.WorkingDir | urlquery}}"
-         hx-get="/_partials/workspace/spawn?dir={{.WorkingDir | urlquery}}"
-         hx-target="#workspace"
-         hx-swap="innerHTML"
-         hx-push-url="/new?dir={{.WorkingDir | urlquery}}">＋</a>
-      {{end}}
+  {{range .TierGroups}}
+  <section class="sidebar-tier" data-tier="{{.Tier}}">
+    <header class="sidebar-section-header tier-header">
+      <span>{{.Label}}</span>
+      {{if eq .Tier "test"}}<span class="count">{{len .Projects}}</span>{{end}}
     </header>
-    <div class="project-children">
-    {{if not .Sessions}}
-    <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
-    <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
-    <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
-    {{end}}
-    {{range .Sessions}}
-    <a class="sb-row"
-       data-state="{{.State}}"
-       href="/s/{{.ID}}"
-       hx-get="/_partials/s/{{.ID}}/workspace"
-       hx-target="#workspace"
-       hx-swap="innerHTML"
-       hx-push-url="/s/{{.ID}}">
-      <div class="dot-col"><span class="status-dot" data-state="{{.State}}"></span></div>
-      <div class="text-col">
-        <div class="title">{{.Title}}</div>
-        <div class="meta">{{if .Branch}}<span>{{.Branch}}</span>{{end}}<span>{{.Age}}</span></div>
-      </div>
-    </a>
-    {{range .Children}}
-      {{if eq .Kind "subagent"}}
-      <a class="sb-row sub"
-         data-state="{{.State}}"
-         href="/s/{{.ID}}"
-         hx-get="/_partials/s/{{.ID}}/workspace"
-         hx-target="#workspace"
-         hx-swap="innerHTML"
-         hx-push-url="/s/{{.ID}}">
-        <div class="dot-col"><span class="status-dot subagent" data-state="{{.State}}"></span></div>
-        <div class="text-col">
-          <div class="title">{{.Title}}</div>
-          <div class="meta"><span>subagent</span><span>{{.Age}}</span></div>
-        </div>
-      </a>
-      {{else if eq .Kind "fork"}}
-      <a class="sb-row fork"
-         data-state="{{.State}}"
-         href="/s/{{.ID}}"
-         hx-get="/_partials/s/{{.ID}}/workspace"
-         hx-target="#workspace"
-         hx-swap="innerHTML"
-         hx-push-url="/s/{{.ID}}">
-        <div class="dot-col"><span class="fork-glyph" data-state="{{.State}}">⎇</span></div>
-        <div class="text-col">
-          <div class="title">{{.Title}}</div>
-          <div class="meta"><span>fork</span><span>{{.Age}}</span></div>
-        </div>
-      </a>
+    {{$expanded := .Expanded}}
+    {{range .Projects}}
+    <section class="sidebar-section project-section{{if not $expanded}} collapsed{{end}}" data-project-key="{{.Name}}"{{if $expanded}} data-default-expanded="true"{{end}}>
+      <header class="project-header">
+        <button type="button" class="btn btn-icon project-chevron" aria-label="expand project" aria-expanded="{{if $expanded}}true{{else}}false{{end}}">{{if $expanded}}▾{{else}}▸{{end}}</button>
+        <span class="project-name">{{.Name}}</span>
+        <span class="project-age">{{.Age}}</span>
+        <span class="count project-count">{{len .Sessions}}</span>
+        {{if .RollupState}}<span class="project-rollup-dot" data-state="{{.RollupState}}"></span>{{end}}
+        {{if .WorkingDir}}
+        <a class="btn btn-icon project-gear-btn"
+           title="project settings for {{.Name}}"
+           href="/settings/project?cwd={{.WorkingDir | urlquery}}"
+           hx-get="/_partials/settings/project?cwd={{.WorkingDir | urlquery}}"
+           hx-target="#workspace"
+           hx-swap="innerHTML"
+           hx-push-url="/settings/project?cwd={{.WorkingDir | urlquery}}">⚙</a>
+        <a class="btn btn-icon project-new-btn"
+           title="new session in {{.Name}}"
+           href="/new?dir={{.WorkingDir | urlquery}}"
+           hx-get="/_partials/workspace/spawn?dir={{.WorkingDir | urlquery}}"
+           hx-target="#workspace"
+           hx-swap="innerHTML"
+           hx-push-url="/new?dir={{.WorkingDir | urlquery}}">＋</a>
+        {{end}}
+      </header>
+      <div class="project-children">
+      {{if not .Sessions}}
+      <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
+      <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
+      <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
       {{end}}
+      {{range .Sessions}}
+      <a class="sb-row"
+         data-state="{{.State}}"
+         href="/s/{{.ID}}"
+         hx-get="/_partials/s/{{.ID}}/workspace"
+         hx-target="#workspace"
+         hx-swap="innerHTML"
+         hx-push-url="/s/{{.ID}}">
+        <div class="dot-col"><span class="status-dot" data-state="{{.State}}"></span></div>
+        <div class="text-col">
+          <div class="title">{{.Title}}</div>
+          <div class="meta">{{if .Branch}}<span>{{.Branch}}</span>{{end}}<span>{{.Age}}</span></div>
+        </div>
+      </a>
+      {{/* Subagents are de-weighted: dim, single-line, indented, terminal-state
+           glyph. Past 3 they fold behind a "+N subagents" toggle so a busy
+           parent doesn't flood the sidebar. Forks stay full rows. */}}
+      {{$subagentCount := 0}}
+      {{range .Children}}{{if eq .Kind "subagent"}}{{$subagentCount = add $subagentCount 1}}{{end}}{{end}}
+      {{$subagentIdx := 0}}
+      {{range .Children}}
+        {{if eq .Kind "subagent"}}
+        {{$subagentIdx = add $subagentIdx 1}}
+        <a class="sb-row sub subagent-row{{if gt $subagentIdx 3}} subagent-overflow{{end}}"
+           data-state="{{.State}}"
+           href="/s/{{.ID}}"
+           hx-get="/_partials/s/{{.ID}}/workspace"
+           hx-target="#workspace"
+           hx-swap="innerHTML"
+           hx-push-url="/s/{{.ID}}">
+          <span class="subagent-glyph" data-state="{{.State}}" aria-hidden="true">{{if eq .State "active"}}⟳{{else if or (eq .State "awaiting") (eq .State "warning")}}✕{{else}}✓{{end}}</span>
+          <span class="subagent-title">{{.Title}}</span>
+        </a>
+        {{else if eq .Kind "fork"}}
+        <a class="sb-row fork"
+           data-state="{{.State}}"
+           href="/s/{{.ID}}"
+           hx-get="/_partials/s/{{.ID}}/workspace"
+           hx-target="#workspace"
+           hx-swap="innerHTML"
+           hx-push-url="/s/{{.ID}}">
+          <div class="dot-col"><span class="fork-glyph" data-state="{{.State}}">⎇</span></div>
+          <div class="text-col">
+            <div class="title">{{.Title}}</div>
+            <div class="meta"><span>fork</span><span>{{.Age}}</span></div>
+          </div>
+        </a>
+        {{end}}
+      {{end}}
+      {{if gt $subagentCount 3}}
+      <button type="button" class="subagent-toggle" aria-expanded="false">+{{sub $subagentCount 3}} subagents</button>
+      {{end}}
+      {{end}}
+      </div>
+    </section>
     {{end}}
-    {{end}}
-    </div>
   </section>
   {{end}}
 </nav>

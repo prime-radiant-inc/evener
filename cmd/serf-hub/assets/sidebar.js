@@ -1,27 +1,47 @@
-// Sidebar project collapse/expand. Projects default collapsed; explicit
-// expansions persist under localStorage["serf-hub.sidebar.expanded.<key>"].
-// The chevron glyph is the only click target on the header — count and
-// rollup dot remain passive so they don't accidentally toggle when users
-// glance at the row.
+// Sidebar project collapse/expand. Each project's collapsed state persists
+// under localStorage["serf-hub.sidebar.expanded.<key>"] as an explicit
+// "true"/"false". With no stored value a project falls back to its tier
+// default: active-tier projects (data-default-expanded) start expanded, all
+// others start collapsed — so live work is visible without burying the user
+// under every past project. An explicit user toggle always wins over the
+// default. The chevron glyph is the only click target on the header — count,
+// age, and rollup dot remain passive so they don't accidentally toggle when
+// users glance at the row.
 (function () {
   "use strict";
 
   var STORAGE_PREFIX = "serf-hub.sidebar.expanded.";
 
-  function isCollapsed(key) {
-    try {
-      return window.localStorage.getItem(STORAGE_PREFIX + key) !== "true";
-    } catch (e) {
-      return true;
-    }
+  // defaultExpanded reads the tier hint baked into the section by the server.
+  function defaultExpanded(section) {
+    return section.getAttribute("data-default-expanded") === "true";
   }
 
-  function setCollapsed(key, collapsed) {
+  // isCollapsed resolves a project's collapsed state: an explicit stored
+  // value wins; otherwise the tier default decides.
+  function isCollapsed(key, section) {
+    var stored = null;
     try {
-      if (collapsed) {
+      stored = window.localStorage.getItem(STORAGE_PREFIX + key);
+    } catch (e) {
+      stored = null;
+    }
+    if (stored === "true") return false; // explicitly expanded
+    if (stored === "false") return true; // explicitly collapsed
+    return !defaultExpanded(section); // no explicit value → tier default
+  }
+
+  // setCollapsed persists the explicit state, but prunes the entry when the
+  // state matches the section's tier default — so storage only carries
+  // deviations from the default and a default-collapsed project the user
+  // collapses leaves no residue.
+  function setCollapsed(key, collapsed, section) {
+    var matchesDefault = collapsed === !defaultExpanded(section);
+    try {
+      if (matchesDefault) {
         window.localStorage.removeItem(STORAGE_PREFIX + key);
       } else {
-        window.localStorage.setItem(STORAGE_PREFIX + key, "true");
+        window.localStorage.setItem(STORAGE_PREFIX + key, collapsed ? "false" : "true");
       }
     } catch (e) {
       // localStorage may be disabled; collapse still works for this session.
@@ -31,7 +51,7 @@
   function applyCollapseState(section) {
     var key = section.getAttribute("data-project-key");
     if (!key) return;
-    var collapsed = isCollapsed(key);
+    var collapsed = isCollapsed(key, section);
     section.classList.toggle("collapsed", collapsed);
     var chevron = section.querySelector(".project-chevron");
     if (chevron) {
@@ -74,7 +94,7 @@
           chevron.setAttribute("aria-expanded", "true");
         }
         // Persist the expansion so it survives sidebar re-renders.
-        setCollapsed(key, false);
+        setCollapsed(key, false, activeSection);
       }
     }
   }
@@ -91,7 +111,7 @@
     section.classList.toggle("collapsed", nextCollapsed);
     chevron.textContent = nextCollapsed ? "▸" : "▾";
     chevron.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
-    setCollapsed(key, nextCollapsed);
+    setCollapsed(key, nextCollapsed, section);
   }
 
   if (document.readyState === "loading") {
@@ -177,6 +197,34 @@
   }
 
   document.addEventListener("click", onChevronClick);
+
+  // "+N subagents" fold toggle — reveals/hides the overflow subagent rows
+  // (those past the first 3) within a project. The toggle flips
+  // data-subagents-expanded on the .project-children container (CSS reveals
+  // .subagent-overflow rows) and swaps its own label between "+N subagents"
+  // and "− hide". Not persisted: subagent rows are ephemeral and the parent
+  // project's collapse state already governs visibility across re-renders.
+  function onSubagentToggle(e) {
+    var toggle = e.target.closest(".subagent-toggle");
+    if (!toggle) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var children = toggle.closest(".project-children");
+    if (!children) return;
+    var expanded = children.hasAttribute("data-subagents-expanded");
+    if (expanded) {
+      children.removeAttribute("data-subagents-expanded");
+      toggle.setAttribute("aria-expanded", "false");
+      if (toggle.dataset.collapsedLabel) toggle.textContent = toggle.dataset.collapsedLabel;
+    } else {
+      // Remember the "+N subagents" label so we can restore it on collapse.
+      toggle.dataset.collapsedLabel = toggle.textContent;
+      children.setAttribute("data-subagents-expanded", "");
+      toggle.setAttribute("aria-expanded", "true");
+      toggle.textContent = "− hide";
+    }
+  }
+  document.addEventListener("click", onSubagentToggle);
 
   // Mobile hamburger: toggle a body[data-sidebar-open] flag that the
   // mobile media query reads to slide the sidebar in. Tapping a sidebar
