@@ -726,6 +726,13 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 			params.Ref = appwire.Ref{SourceID: s.sourceID, ThreadID: params.ThreadID}.String()
 			return notificationMessage(appwire.NotifyAgentMessageDelta, params)
 		}
+	case appwire.NotifyReasoningSummaryDelta:
+		var params appwire.ReasoningSummaryDeltaParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			params.ThreadID = firstNonEmpty(params.ThreadID, threadID)
+			params.Ref = appwire.Ref{SourceID: s.sourceID, ThreadID: params.ThreadID}.String()
+			return notificationMessage(appwire.NotifyReasoningSummaryDelta, params)
+		}
 	case appwire.NotifyThreadStatusChanged:
 		var params struct {
 			ThreadID string            `json:"threadId"`

@@ -437,6 +437,41 @@ func TestMapCodexNotificationPreservesUserMessageImages(t *testing.T) {
 	})
 }
 
+func TestMapCodexItemReasoningPreservesType(t *testing.T) {
+	raw := json.RawMessage(`{"type":"reasoning","id":"item_r1","text":"weighing the cache eviction logic"}`)
+	item := mapCodexItem("turn_1", raw)
+	if item.Type != "reasoning" {
+		t.Fatalf("a reasoning item must keep type reasoning (not be mapped to a tool call), got %q: %+v", item.Type, item)
+	}
+	if item.ID != "item_r1" || item.TurnID != "turn_1" {
+		t.Fatalf("item identity=%+v", item)
+	}
+}
+
+func TestMapCodexNotificationNormalizesReasoningDelta(t *testing.T) {
+	source := NewCodexSource(CodexSourceConfig{ID: "codex"}, nil)
+	notification := notificationMessage(appwire.NotifyReasoningSummaryDelta, map[string]any{
+		"turnId": "turn_1",
+		"itemId": "item_r1",
+		"delta":  "let me check the cache",
+	})
+
+	mapped := source.mapNotification("th_codex", notification)
+	if mapped.Method != appwire.NotifyReasoningSummaryDelta {
+		t.Fatalf("method=%q", mapped.Method)
+	}
+	var params appwire.ReasoningSummaryDeltaParams
+	if err := json.Unmarshal(mapped.Params, &params); err != nil {
+		t.Fatalf("params: %v", err)
+	}
+	if params.ThreadID != "th_codex" || params.Ref != "codex:th_codex" {
+		t.Fatalf("reasoning delta must be source-qualified, got threadId=%q ref=%q", params.ThreadID, params.Ref)
+	}
+	if params.TurnID != "turn_1" || params.ItemID != "item_r1" || params.Delta != "let me check the cache" {
+		t.Fatalf("reasoning delta payload=%+v", params)
+	}
+}
+
 func assertCodexImageItems(t *testing.T, got, want []appwire.InputItem) {
 	t.Helper()
 	if len(got) != len(want) {

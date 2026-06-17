@@ -99,6 +99,9 @@ func mapCodexItem(turnID string, raw json.RawMessage) appwire.ThreadItem {
 		item.ArgumentsJSON = string(obj["arguments"])
 		item.Status = rawString(obj["status"])
 		item.Output = string(obj["contentItems"])
+	case "reasoning":
+		item.Type = "reasoning"
+		item.Text = rawString(obj["text"])
 	default:
 		item.Type = "commandExecution"
 		item.ToolName = itemType
