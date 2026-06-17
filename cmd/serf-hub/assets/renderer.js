@@ -47,10 +47,15 @@
   const { toggleTasksPanel, currentTaskSummary, updateTasksBadge } =
     window.SerfRendererInternal;
 
-  // Liveness: how long an active session can go without a frame before we drop
-  // the reassuring pulse and say "no updates for Ns". Reasoning now streams as
-  // frames, so a real gap means a genuinely silent phase — not normal thinking.
-  const LIVENESS_STALE_MS = 20000;
+  // Liveness has two honest thresholds (mockup #13). A short silence is
+  // EXPECTED (the model is thinking, a long tool is running), so once we cross
+  // QUIET we surface a calm, quantized "quiet ~Nm" line but keep breathing.
+  // Only once silence crosses STALL do we escalate to concern — amber, a glyph,
+  // and the dropped pulse — because past that point we can no longer honestly
+  // claim the agent is alive. Reasoning streams as frames, so a real gap means
+  // a genuinely silent phase, not normal thinking.
+  const LIVENESS_QUIET_MS = 20000;
+  const LIVENESS_STALL_MS = 180000;
   const LIVENESS_TICK_MS = 3000;
 
   const SerfRenderer = {
@@ -134,12 +139,14 @@
       // count, preview is the head-first list.
       this.queueState = { depth: 0, preview: [] };
       this.lastFrameAt = Date.now();     // wall-clock of the last frame, for honest liveness
-      this.livenessStale = false;
+      this.livenessLevel = "none";       // none | quiet | concern (mockup #13)
       // New-content pill: counts transcript entries that rendered while the
       // reader was scrolled up, so the floating "↓ N new" affordance can tell
       // them content arrived off-screen. Reset to zero on every session.
       this.newContentCount = 0;
+      this.newContentPaintedCount = 0;
       this.newContentNeedsYou = false;
+      this.newContentJumpTarget = null;
 
       this.conversation.innerHTML = "";
 
@@ -1389,26 +1396,52 @@
       this.livenessTimer = setInterval(() => this.refreshLiveness(), LIVENESS_TICK_MS);
     },
 
-    // refreshLiveness surfaces an honest "no updates for Ns" while an actively
-    // working session has gone quiet, and drops the reassuring status-dot pulse
-    // so a hung agent never looks identical to a busy one.
+    // refreshLiveness runs the honest calm→concern model (mockup #13) while an
+    // actively working session has gone quiet:
+    //   gap < QUIET            calm — no line, the dot keeps breathing.
+    //   QUIET ≤ gap < STALL    calm-quiet — a NEUTRAL "quiet ~Nm" line with a
+    //                          coarse bucket (not a rising counter); the dot
+    //                          keeps breathing, because a short silence is
+    //                          expected, not a stall.
+    //   gap ≥ STALL            concern — amber + a glyph + "may be stalled";
+    //                          the dot stops breathing, because we can no longer
+    //                          honestly claim the agent is alive. Escalation
+    //                          REMOVES the alive cue rather than adding a loop.
     refreshLiveness() {
       const el = this.livenessEl;
       if (!el) return;
       const gap = this.lastFrameAt ? (Date.now() - this.lastFrameAt) : 0;
-      const stale = this.state === "active" && gap > LIVENESS_STALE_MS;
-      if (stale) {
-        el.textContent = "still working · no updates for " + this.formatLivenessGap(gap);
+      let level = "none";
+      if (this.state === "active") {
+        if (gap >= LIVENESS_STALL_MS) level = "concern";
+        else if (gap >= LIVENESS_QUIET_MS) level = "quiet";
+      }
+      if (level === "quiet") {
+        el.dataset.level = "quiet";
+        el.textContent = "working · quiet " + this.formatLivenessQuiet(gap);
+        el.hidden = false;
+      } else if (level === "concern") {
+        el.dataset.level = "concern";
+        el.textContent = "";
+        const glyph = document.createElement("span");
+        glyph.className = "liveness-glyph";
+        glyph.textContent = "!";
+        el.appendChild(glyph);
+        el.appendChild(document.createTextNode(
+          "no updates for " + this.formatLivenessGap(gap) + " — may be stalled"));
         el.hidden = false;
       } else {
         el.hidden = true;
         el.textContent = "";
+        el.removeAttribute("data-level");
       }
-      if (stale !== this.livenessStale) {
-        this.livenessStale = stale;
+      if (level !== this.livenessLevel) {
+        this.livenessLevel = level;
+        // Only the concern band flags the conversation as stalled and drops the
+        // reassuring pulse; the calm-quiet band leaves both alone.
         if (this.conversation) {
-          if (stale) this.conversation.dataset.stale = "true";
-          else this.conversation.removeAttribute("data-stale");
+          if (level === "concern") this.conversation.dataset.stalled = "true";
+          else this.conversation.removeAttribute("data-stalled");
         }
         applyStatusDotPulse(document);
       }
@@ -1420,6 +1453,16 @@
       const m = Math.floor(secs / 60);
       const s = secs % 60;
       return m + "m" + (s ? " " + s + "s" : "");
+    },
+
+    // formatLivenessQuiet rounds a calm-quiet gap to a coarse bucket so the line
+    // shows a stable word (~30s, ~1m, ~2m) instead of a per-second rising
+    // counter. Buckets: 20–45s → ~30s, 45–90s → ~1m, 90s–STALL → ~2m.
+    formatLivenessQuiet(ms) {
+      const secs = ms / 1000;
+      if (secs < 45) return "~30s";
+      if (secs < 90) return "~1m";
+      return "~2m";
     },
 
     beginToolCall(data) {
@@ -1538,6 +1581,12 @@
       if (m.statusEl) {
         m.statusEl.textContent = ok ? "✓" : "✕";
         m.statusEl.className = "tool-status " + (ok ? "tool-status-good" : "tool-status-bad");
+      }
+      // Mark an errored row as a queryable attention anchor so the new-content
+      // pill can find a buried failure below (or above) the fold (mockup #14).
+      if (m.el) {
+        if (ok) m.el.removeAttribute("data-attention");
+        else m.el.dataset.attention = "error";
       }
       if (data.error) {
         m.resultEl.textContent = "";
@@ -2409,6 +2458,40 @@
       return (el.scrollHeight - el.scrollTop - el.clientHeight) < 50;
     },
 
+    // isAnchorBelow / isAnchorAbove report where an attention anchor sits
+    // relative to the current viewport, so the pill's arrow can point toward it.
+    isAnchorBelow(el) {
+      const sc = this.conversation;
+      if (!sc || !el) return false;
+      return el.offsetTop > sc.scrollTop + sc.clientHeight - 24;
+    },
+    isAnchorAbove(el) {
+      const sc = this.conversation;
+      if (!sc || !el) return false;
+      return el.offsetTop + el.offsetHeight < sc.scrollTop + 24;
+    },
+
+    // pickUrgentAnchor picks the most urgent attention anchor relative to the
+    // viewport (mockup #14): error > needs-you > plain new. An errored tool row
+    // (data-attention="error") is a per-row anchor we can jump to; needs-you is
+    // a whole-session signal whose target is the transcript tail. Returns
+    // {kind, dir, el} or null when nothing urgent is off-screen.
+    pickUrgentAnchor() {
+      const sc = this.conversation;
+      if (!sc) return null;
+      const errors = Array.from(sc.querySelectorAll('.tool-call[data-attention="error"]'));
+      const errBelow = errors.find(el => this.isAnchorBelow(el));
+      if (errBelow) return { kind: "error", dir: "down", el: errBelow };
+      const errAbove = errors.find(el => this.isAnchorAbove(el));
+      if (errAbove) return { kind: "error", dir: "up", el: errAbove };
+      // Needs-you is a session-level signal; its home is the latest content at
+      // the tail, which is always below the reader while they're scrolled up.
+      if (this.newContentNeedsYou || this.state === "awaiting") {
+        return { kind: "needs-you", dir: "down", el: null };
+      }
+      return null;
+    },
+
     // bindScrollAffordance wires the floating "↓ N new" pill. The pill lives in
     // the conversation's positioned parent (not inside the scroll area), so it
     // stays anchored near the bottom of the transcript while content scrolls
@@ -2424,10 +2507,7 @@
         pill.className = "new-content-pill";
         pill.setAttribute("data-new-content-pill", "");
         pill.hidden = true;
-        pill.addEventListener("click", () => {
-          this.scrollToBottom();
-          this.clearNewContentPill();
-        });
+        pill.addEventListener("click", () => this.jumpToNewContent());
         host.appendChild(pill);
       }
       // Avoid stacking listeners when init runs again on a re-entered element.
@@ -2435,6 +2515,10 @@
         el.__serfScrollPillBound = true;
         el.addEventListener("scroll", () => {
           if (this.isNearBottom()) this.clearNewContentPill();
+          // Re-evaluate the urgent anchor as the reader scrolls, so the arrow
+          // flips (↓→↑) when they pass an error and the label tracks what's
+          // still off-screen — without churning the debounced count.
+          else if (this.newContentCount > 0) this.renderNewContentPill();
         });
       }
       this.clearNewContentPill();
@@ -2456,6 +2540,12 @@
       this.renderNewContentPill();
     },
 
+    // renderNewContentPill paints the floating pill, glyph-paired and aware of
+    // the most urgent thing off-screen (mockup #14): "✕ error" (red) outranks
+    // "◆ needs you" (amber) outranks the plain "↓ N new" (neutral). The arrow
+    // points ↓ to an urgent anchor below the viewport, ↑ once you've scrolled
+    // past it. Only the plain count is debounced — a burst of appends settles to
+    // one number rather than churning — while urgency repaints immediately.
     renderNewContentPill() {
       const pill = this.newContentPillEl();
       if (!pill) return;
@@ -2463,23 +2553,74 @@
         this.clearNewContentPill();
         return;
       }
-      if (this.newContentNeedsYou) {
-        pill.textContent = "↓ needs you";
-        pill.classList.add("needs-you");
-      } else {
-        pill.textContent = "↓ " + this.newContentCount + " new";
-        pill.classList.remove("needs-you");
-      }
       pill.hidden = false;
+      const urgent = this.pickUrgentAnchor();
+      pill.classList.remove("needs-you", "error");
+      if (urgent && urgent.kind === "error") {
+        this.newContentJumpTarget = urgent.el;
+        pill.classList.add("error");
+        pill.textContent = (urgent.dir === "up" ? "↑" : "↓") + " ✕ error";
+      } else if (urgent && urgent.kind === "needs-you") {
+        this.newContentJumpTarget = null;
+        pill.classList.add("needs-you");
+        pill.textContent = "↓ ◆ needs you";
+      } else {
+        this.newContentJumpTarget = null;
+        // The plain count is the only churning value, so it is debounced: a
+        // burst of appends settles to one number instead of repainting the
+        // badge on every frame. Show the last settled value now and schedule a
+        // trailing commit of the latest count.
+        pill.textContent = "↓ " + this.newContentPaintedCount + " new";
+        this.scheduleNewContentCountPaint();
+      }
+    },
+
+    // scheduleNewContentCountPaint commits the live count to the pill on a
+    // trailing debounce so a burst of appends repaints the number once it
+    // settles, not on every frame.
+    scheduleNewContentCountPaint() {
+      if (this.newContentCountTimer) clearTimeout(this.newContentCountTimer);
+      this.newContentCountTimer = setTimeout(() => {
+        this.newContentCountTimer = null;
+        this.newContentPaintedCount = this.newContentCount;
+        const pill = this.newContentPillEl();
+        // Repaint only while still showing the plain count (urgency takes over
+        // the label otherwise).
+        if (pill && !pill.hidden && !pill.classList.contains("needs-you") &&
+            !pill.classList.contains("error")) {
+          pill.textContent = "↓ " + this.newContentPaintedCount + " new";
+        }
+      }, 300);
+    },
+
+    // jumpToNewContent jumps to the urgent anchor (smooth) when there is one,
+    // otherwise scrolls to the bottom, then recomputes the pill.
+    jumpToNewContent() {
+      const sc = this.conversation;
+      const target = this.newContentJumpTarget;
+      if (sc && target && sc.contains(target)) {
+        sc.scrollTo({ top: Math.max(0, target.offsetTop - 16), behavior: "smooth" });
+        // We've moved; the urgent anchor (and the count) must be recomputed.
+        if (this.isNearBottom()) this.clearNewContentPill();
+        else this.renderNewContentPill();
+      } else {
+        this.scrollToBottom();
+      }
     },
 
     clearNewContentPill() {
       this.newContentCount = 0;
+      this.newContentPaintedCount = 0;
       this.newContentNeedsYou = false;
+      this.newContentJumpTarget = null;
+      if (this.newContentCountTimer) {
+        clearTimeout(this.newContentCountTimer);
+        this.newContentCountTimer = null;
+      }
       const pill = this.newContentPillEl();
       if (!pill) return;
       pill.hidden = true;
-      pill.classList.remove("needs-you");
+      pill.classList.remove("needs-you", "error");
       pill.textContent = "";
     },
 
@@ -2910,12 +3051,13 @@
   // after any DOM change that may have introduced status dots.
   function applyStatusDotPulse(root) {
     const scope = root || document;
-    // A session that's gone silent must not keep breathing as if all is well.
-    const stale = !!document.querySelector('.conversation[data-stale="true"]');
+    // A session past the stall threshold must not keep breathing as if all is
+    // well — but a brief calm-quiet gap is expected and keeps the pulse.
+    const stalled = !!document.querySelector('.conversation[data-stalled="true"]');
     const dots = scope.querySelectorAll(".status-dot[data-state]");
     dots.forEach(dot => {
       const state = dot.getAttribute("data-state");
-      const shouldPulse = !stale && (state === "active" || state === "awaiting" || state === "errored");
+      const shouldPulse = !stalled && (state === "active" || state === "awaiting" || state === "errored");
       if (shouldPulse) {
         dot.setAttribute("data-pulse", "");
       } else {
