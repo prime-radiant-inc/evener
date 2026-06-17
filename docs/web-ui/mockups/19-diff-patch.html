@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf mockups · #18 Rich content — diff / patch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- base design tokens + transcript component grammar -->
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ============================================================
+   TOPIC #18 (diff/patch sub-list) — how the agent shows an edit
+   Built on tokens.css. The base sheet is a full-app two-column
+   grid; this file overrides body layout to a scrolling gallery
+   and adds only the four diff treatments.
+
+   Today an edit renders as a bare mono "edit cache.go" line with
+   no visible change. Reviewing what the agent changed is a top
+   reason to watch a coding agent — so the diff has to be legible
+   AND honor the 4-color system.
+
+   CRITICAL CONSTRAINT (design-system §2/§3, 4-color system):
+   diff add/remove must NOT use the semantic colors. Semantic red
+   (--error #f7768e) means "a tool/agent broke"; semantic green
+   (--success #8aa873) means "genuine good news". A removed line
+   is not an error and an added line is not good news — they are
+   neutral structural facts. So the diff palette below is its own
+   pair, deliberately DESATURATED and shifted away from the
+   semantic hues, and the +/− gutter sign carries the meaning so
+   the color is only a faint reinforcement (dual-channel,
+   colorblind-safe). One containment device per block: a neutral
+   box (or a left rail), never both.
+   ============================================================ */
+
+/* gallery shell: undo the base app grid, let the page scroll */
+body{overflow:auto}
+.gallery{max-width:840px;margin:0 auto;padding:var(--s6) var(--s5) 96px}
+.page-h{margin-bottom:var(--s5)}
+.page-h h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.page-h p{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);line-height:1.6;max-width:62ch}
+.page-h .principles{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6}
+.page-h .principles b{color:var(--ink-2);font-weight:600}
+
+.alt{margin-top:var(--s6);border-top:1px solid var(--line);padding-top:var(--s5)}
+.alt-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.alt-h .badge{font-size:var(--fs-sm);font-weight:700;color:var(--bg);background:var(--ink-2);border-radius:var(--r-pill);padding:1px 9px;letter-spacing:.02em}
+.alt-h .ttl{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.cap{font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:70ch;margin-bottom:var(--s4)}
+.cap b{color:var(--ink-2);font-weight:600}
+.cap .trade{color:var(--attention)}
+.cap code{font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+/* simulated transcript viewport so each alt reads like the real product */
+.stage{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:var(--s4) var(--s5);max-width:720px}
+.case-l{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase;margin:var(--s5) 0 var(--s1)}
+.case-l:first-child{margin-top:0}
+.stage .agent:first-child{margin-top:0}
+
+/* ---------------------------------------------------------------
+   DIFF PALETTE — the load-bearing decision of this topic.
+   Two desaturated, low-chroma hues that read as "added / removed
+   structure", clearly separated from the semantic --error red and
+   --success green so they never get mistaken for failure/good-news.
+
+   --error   is #f7768e (hot pink-red, high chroma)
+   --success is #8aa873 (mid green)
+   The diff pair below is muted toward slate so a glance never
+   confuses "line removed" with "step failed".
+   --------------------------------------------------------------- */
+:root{
+  --diff-add-ink:#92b8a4;                  /* desaturated teal-green: ADDED text (muted, ≠ --success) */
+  --diff-del-ink:#c79aa6;                  /* desaturated dusty-rose: REMOVED text (muted, ≠ --error) */
+  --diff-add-bg:rgba(118,170,142,.085);    /* very faint add tint */
+  --diff-del-bg:rgba(176,128,142,.075);    /* very faint del tint */
+  --diff-add-gutter:#6f9a82;               /* + sign, slightly stronger than the line ink */
+  --diff-del-gutter:#b07f8e;               /* − sign */
+}
+
+/* ---- shared: the collapsed edit summary line (the headline) ---- */
+.editline{margin-top:var(--s4);display:flex;gap:var(--s2);align-items:baseline;width:100%;text-align:left;font-size:var(--fs-base)}
+.editline .g{color:var(--done);font-family:var(--mono);font-size:var(--fs-xs)}
+.editline .lede{color:var(--ink-2)}
+.editline .lede b{color:var(--ink);font-weight:600}
+.editline .file{font-family:var(--mono);font-size:11.5px;color:var(--ink-2)}
+/* the +N −N stat — uses the DIFF palette, never semantic colors */
+.stat{font-family:var(--mono);font-size:var(--fs-xs);font-variant-numeric:tabular-nums;white-space:nowrap}
+.stat .add{color:var(--diff-add-gutter)}
+.stat .del{color:var(--diff-del-gutter)}
+.editline .stat{margin-left:6px}
+.editline .ex{margin-left:auto;color:var(--accent);font-size:var(--fs-sm)}
+
+/* ---- shared: the ONE containment device for a diff: a neutral box ---- */
+.diff{margin-top:var(--s2);background:#101117;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.diff .fhead{display:flex;align-items:center;gap:var(--s2);padding:6px var(--s4);background:#0c0d12;border-bottom:1px solid var(--line);font-size:var(--fs-xs)}
+.diff .fhead .fn{font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+.diff .fhead .hunk{font-family:var(--mono);font-size:10.5px;color:var(--ink-3)}
+.diff .fhead .stat{margin-left:auto}
+
+/* unified diff rows: gutter sign is the PRIMARY channel, tint is secondary */
+.diff pre{margin:0;font-family:var(--mono);font-size:11.5px;line-height:1.7;white-space:pre;overflow-x:auto}
+.dl{display:grid;grid-template-columns:30px 1fr;align-items:baseline}
+.dl .ln{color:var(--ink-4);text-align:right;padding-right:9px;font-variant-numeric:tabular-nums;-webkit-user-select:none;user-select:none}
+.dl .tx{padding-right:var(--s4)}
+.dl.ctx .tx{color:var(--ink-3)}                                   /* context: recedes */
+.dl.add{background:var(--diff-add-bg)}
+.dl.add .tx{color:var(--diff-add-ink)}
+.dl.add .ln{color:var(--diff-add-gutter)}
+.dl.add .ln::after{content:"+";margin-left:5px;color:var(--diff-add-gutter);font-weight:500}
+.dl.del{background:var(--diff-del-bg)}
+.dl.del .tx{color:var(--diff-del-ink)}
+.dl.del .ln{color:var(--diff-del-gutter)}
+.dl.del .ln::after{content:"\2212";margin-left:5px;color:var(--diff-del-gutter);font-weight:500}  /* real minus */
+.dl.ctx .ln::after{content:"\00a0";margin-left:5px}               /* keep columns aligned */
+.diff .hsep{padding:3px var(--s4) 3px 39px;background:#0c0d12;color:var(--ink-4);font-family:var(--mono);font-size:10.5px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+
+.diff .ctl{display:flex;align-items:center;gap:var(--s2);padding:7px var(--s4);border-top:1px solid var(--line);font-size:var(--fs-xs);color:var(--accent);background:#0c0d12}
+.diff .ctl .meta{color:var(--ink-3);margin-left:auto;font-variant-numeric:tabular-nums}
+.diff .ctl button{color:var(--accent);font-size:var(--fs-xs)}
+.diff .ctl button:hover{text-decoration:underline}
+
+/* =====================================================================
+   ALT A — collapsed "+N −N" → expand to unified diff (desaturated)
+   ===================================================================== */
+.aA .diff{display:none}
+.aA .editline.open + .diff{display:block}
+
+/* =====================================================================
+   ALT B — split before/after, ONE neutral box (small hunks)
+   ===================================================================== */
+.bsplit{margin-top:var(--s2);background:#101117;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.bsplit .fhead{display:flex;align-items:center;gap:var(--s2);padding:6px var(--s4);background:#0c0d12;border-bottom:1px solid var(--line);font-size:var(--fs-xs)}
+.bsplit .fhead .fn{font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+.bsplit .fhead .stat{margin-left:auto}
+.bcols{display:grid;grid-template-columns:1fr 1fr}
+.bcols .pane{min-width:0}
+.bcols .pane + .pane{border-left:1px solid var(--line)}           /* a divider line, not a 2nd box */
+.bcols .pane-h{font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-4);padding:5px var(--s3);background:#0c0d12}
+.bcols pre{margin:0;font-family:var(--mono);font-size:11px;line-height:1.7;white-space:pre;overflow-x:auto;padding:0 0 6px}
+.bcols .bl{display:grid;grid-template-columns:26px 1fr;align-items:baseline;padding:0 var(--s3)}
+.bcols .bl .ln{color:var(--ink-4);text-align:right;padding-right:8px;font-variant-numeric:tabular-nums;-webkit-user-select:none;user-select:none}
+.bcols .bl.ctx .tx{color:var(--ink-3)}
+.bcols .left .bl.chg{background:var(--diff-del-bg)}
+.bcols .left .bl.chg .tx{color:var(--diff-del-ink)}
+.bcols .left .bl.chg .ln{color:var(--diff-del-gutter)}
+.bcols .right .bl.chg{background:var(--diff-add-bg)}
+.bcols .right .bl.chg .tx{color:var(--diff-add-ink)}
+.bcols .right .bl.chg .ln{color:var(--diff-add-gutter)}
+.bcols .bl.pad{visibility:hidden}                                  /* alignment filler */
+
+/* =====================================================================
+   ALT C — stat-only by default, diff strictly on demand
+   ===================================================================== */
+.aC .statrow{margin-top:var(--s4);display:flex;gap:var(--s2);align-items:baseline;width:100%;text-align:left;font-size:var(--fs-base)}
+.aC .statrow .g{color:var(--done);font-family:var(--mono);font-size:var(--fs-xs)}
+.aC .statrow .file{font-family:var(--mono);font-size:11.5px;color:var(--ink-2)}
+.aC .statrow .stat{margin-left:6px}
+/* tiny inline bar of squares — proportion of add vs remove, desaturated */
+.aC .sparks{display:inline-flex;gap:2px;margin-left:8px;align-items:center}
+.aC .sparks i{width:6px;height:6px;border-radius:1px;display:inline-block}
+.aC .sparks i.a{background:var(--diff-add-gutter)}
+.aC .sparks i.d{background:var(--diff-del-gutter)}
+.aC .statrow .ex{margin-left:auto;color:var(--accent);font-size:var(--fs-sm)}
+.aC .diff{display:none}
+.aC .statrow.open + .diff{display:block}
+
+/* =====================================================================
+   ALT D — inline-in-prose hunk under the explanation sentence
+   ===================================================================== */
+/* no box: a single left rail is the containment device, so the hunk
+   reads as part of the agent's sentence, not a separate widget. */
+.aD .proseedit{margin-top:var(--s3);padding-left:13px;position:relative}
+.aD .proseedit::before{content:"";position:absolute;left:0;top:4px;bottom:6px;width:2px;background:var(--hair);border-radius:2px}
+.aD .proseedit .meta{display:flex;align-items:baseline;gap:var(--s2);font-size:var(--fs-sm);color:var(--ink-3)}
+.aD .proseedit .meta .file{font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+.aD .proseedit .meta .stat{margin-left:4px}
+.aD .proseedit .meta .ex{margin-left:auto;color:var(--accent);font-size:var(--fs-xs)}
+.aD .proseedit pre{margin:6px 0 0;font-family:var(--mono);font-size:11.5px;line-height:1.7;white-space:pre;overflow-x:auto}
+.aD .pl{display:grid;grid-template-columns:18px 1fr;align-items:baseline}
+.aD .pl .s{font-weight:500;-webkit-user-select:none;user-select:none}
+.aD .pl.ctx .tx{color:var(--ink-3)}
+.aD .pl.ctx .s::after{content:"\00a0"}
+.aD .pl.add .s{color:var(--diff-add-gutter)}
+.aD .pl.add .s::after{content:"+"}
+.aD .pl.add .tx{color:var(--diff-add-ink)}
+.aD .pl.del .s{color:var(--diff-del-gutter)}
+.aD .pl.del .s::after{content:"\2212"}
+.aD .pl.del .tx{color:var(--diff-del-ink)}
+
+/* legend strip showing diff hues vs. semantic hues side by side */
+.legend{display:flex;flex-wrap:wrap;gap:var(--s4);margin-top:var(--s4);padding:var(--s3) var(--s4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r);font-size:var(--fs-xs);color:var(--ink-3)}
+.legend .grp{display:flex;align-items:center;gap:var(--s2)}
+.legend .sw{width:11px;height:11px;border-radius:3px;flex:none}
+.legend .grp .nm{color:var(--ink-2)}
+.legend .vs{color:var(--ink-4);align-self:center}
+</style>
+</head>
+<body>
+<div class="gallery">
+
+  <div class="page-h">
+    <h1>#18 — Rich content: diff / patch</h1>
+    <p>Four directions for showing <i>what the agent changed</i> in a file. Today an edit is a bare
+       mono <code style="font-family:var(--mono);color:var(--ink-2)">edit cache.go</code> line with no
+       diff — yet reviewing the change is one of the main reasons a person watches a coding agent at
+       all. Each alternative renders the same small Go edit so they compare apples-to-apples.</p>
+    <div class="principles">
+      Held constant: <b>+/− carries the meaning, color only reinforces it</b> (dual-channel,
+      colorblind-safe); the add/remove hues are <b>desaturated and deliberately separate from the
+      semantic colors</b> — a removed line is not an error, an added line is not good news; <b>one
+      containment device</b> per block (a neutral box <i>or</i> a left rail, never both); the diff is
+      machine text, so it is mono and demoted — the agent's prose still leads.
+    </div>
+
+    <!-- the load-bearing legend: diff hues must not read as error/success -->
+    <div class="legend">
+      <span style="color:var(--ink-2);font-weight:600">Palette guard:</span>
+      <span class="grp"><span class="sw" style="background:var(--diff-add-gutter)"></span><span class="nm">+ added</span></span>
+      <span class="grp"><span class="sw" style="background:var(--diff-del-gutter)"></span><span class="nm">− removed</span></span>
+      <span class="vs">— must stay distinct from —</span>
+      <span class="grp"><span class="sw" style="background:var(--success)"></span><span class="nm">success (good news)</span></span>
+      <span class="grp"><span class="sw" style="background:var(--error)"></span><span class="nm">error (broke)</span></span>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ALT A — collapsed +N −N → expand to unified diff (desaturated)
+       ============================================================ -->
+  <section class="alt aA">
+    <div class="alt-h"><span class="badge">A</span><span class="ttl">Collapsed +N −N → unified diff</span></div>
+    <div class="cap">The edit collapses to one scannable line — <b>edited <code>cache.go</code> · +6 −2</b> —
+      and expands to a full unified diff in a single neutral box. Gutter signs do the work;
+      the tints are barely-there desaturated teal/rose so a glance never confuses a removed line
+      with a failure. This is the <b>default</b>: dense in the column, full detail one click away.
+      <span class="trade">Trade-off:</span> a multi-hunk patch can get tall once expanded — fine for
+      one focused edit, want collapse-once-scrolled-past for big ones.</div>
+
+    <div class="stage">
+      <div class="agent lead">Root cause confirmed: <code>evictExpired()</code> compares against
+        <code>lastUsed</code> instead of <code>expiresAt</code>. I switched the comparison and dropped
+        the now-dead idle check.</div>
+
+      <div class="case-l">Collapsed (default)</div>
+      <button class="editline" onclick="this.classList.toggle('open');this.querySelector('.ex').textContent=this.classList.contains('open')?'hide diff':'view diff'">
+        <span class="g">✓</span>
+        <span class="lede">edited <span class="file">internal/auth/cache.go</span></span>
+        <span class="stat"><span class="add">+6</span> <span class="del">&minus;2</span></span>
+        <span class="ex">view diff</span>
+      </button>
+      <div class="diff">
+        <div class="fhead"><span class="fn">internal/auth/cache.go</span><span class="hunk">func evictExpired()</span><span class="stat"><span class="add">+6</span> <span class="del">&minus;2</span></span></div>
+        <pre><div class="dl ctx"><span class="ln">61</span><span class="tx">func (c *TokenCache) evictExpired(now time.Time) {</span></div><div class="dl ctx"><span class="ln">62</span><span class="tx">	for k, e := range c.entries {</span></div><div class="dl del"><span class="ln">63</span><span class="tx">		if now.Sub(e.lastUsed) &gt; c.sweepInterval {</span></div><div class="dl del"><span class="ln">64</span><span class="tx">			delete(c.entries, k)</span></div><div class="dl add"><span class="ln">63</span><span class="tx">		if now.After(e.expiresAt) {</span></div><div class="dl add"><span class="ln">64</span><span class="tx">			delete(c.entries, k)</span></div><div class="dl add"><span class="ln">65</span><span class="tx">			c.metrics.Evicted++</span></div><div class="dl ctx"><span class="ln">66</span><span class="tx">		}</span></div><div class="dl ctx"><span class="ln">67</span><span class="tx">	}</span></div><div class="dl add"><span class="ln">68</span><span class="tx">	c.lastSweep = now</span></div><div class="dl add"><span class="ln">69</span><span class="tx">	c.metrics.Sweeps++</span></div><div class="dl ctx"><span class="ln">70</span><span class="tx">}</span></div></pre>
+        <div class="ctl"><span class="meta">1 hunk · rode whole into context</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ALT B — split before/after, ONE neutral box (small hunks)
+       ============================================================ -->
+  <section class="alt aB">
+    <div class="alt-h"><span class="badge">B</span><span class="ttl">Split before / after</span></div>
+    <div class="cap">For a <b>small hunk</b>, old and new sit side by side in one neutral box (a single
+      internal divider line — <i>not</i> a second container — separates the panes). Easiest to read when
+      a line was <i>reworded</i> rather than purely added or removed, because the eye scans across.
+      <span class="trade">Trade-off:</span> halves the usable width, so long lines wrap or scroll; best
+      reserved for short edits — a wide refactor reads better unified (A).</div>
+
+    <div class="stage">
+      <div class="agent lead">Swapped the eviction predicate to use absolute expiry.</div>
+
+      <div class="bsplit">
+        <div class="fhead"><span class="fn">internal/auth/cache.go</span><span class="stat"><span class="add">+1</span> <span class="del">&minus;1</span></span></div>
+        <div class="bcols">
+          <div class="pane left">
+            <div class="pane-h">Before</div>
+            <pre><div class="bl ctx"><span class="ln">62</span><span class="tx">for k, e := range c.entries {</span></div><div class="bl chg"><span class="ln">63</span><span class="tx">  if now.Sub(e.lastUsed)</span></div><div class="bl chg"><span class="ln"></span><span class="tx">     &gt; c.sweepInterval {</span></div><div class="bl ctx"><span class="ln">64</span><span class="tx">    delete(c.entries, k)</span></div><div class="bl pad"><span class="ln">·</span><span class="tx">.</span></div></pre>
+          </div>
+          <div class="pane right">
+            <div class="pane-h">After</div>
+            <pre><div class="bl ctx"><span class="ln">62</span><span class="tx">for k, e := range c.entries {</span></div><div class="bl chg"><span class="ln">63</span><span class="tx">  if now.After(e.expiresAt) {</span></div><div class="bl pad"><span class="ln">·</span><span class="tx">.</span></div><div class="bl ctx"><span class="ln">64</span><span class="tx">    delete(c.entries, k)</span></div><div class="bl ctx"><span class="ln">65</span><span class="tx">    c.metrics.Evicted++</span></div></pre>
+          </div>
+        </div>
+      </div>
+      <div class="cap" style="margin:6px 0 0">The changed lines get the desaturated del-tint on the left,
+        add-tint on the right; unchanged context stays neutral on both sides so only the reworded line draws the eye.</div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ALT C — stat-only by default, diff strictly on demand
+       ============================================================ -->
+  <section class="alt aC">
+    <div class="alt-h"><span class="badge">C</span><span class="ttl">Stat-only by default</span></div>
+    <div class="cap">The quietest default: just <b><code>cache.go</code> +6 −2</b> with a tiny
+      proportion bar — no diff body at all until you ask. Keeps a turn with many edits from becoming a
+      wall of code; you skim the <i>shape</i> of the change set, then open only the one you care about.
+      <span class="trade">Trade-off:</span> reviewing always costs a click — wrong default if the whole
+      point of the session <i>is</i> reading every diff (then A is better). Same expanded box as A.</div>
+
+    <div class="stage">
+      <div class="agent lead">Applied the fix and a small follow-on across two files.</div>
+
+      <div class="case-l">Stat-only (default) — a small change set</div>
+      <button class="statrow" onclick="this.classList.toggle('open');this.querySelector('.ex').textContent=this.classList.contains('open')?'hide':'view diff'">
+        <span class="g">✓</span>
+        <span class="file">internal/auth/cache.go</span>
+        <span class="stat"><span class="add">+6</span> <span class="del">&minus;2</span></span>
+        <span class="sparks"><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="d"></i><i class="d"></i></span>
+        <span class="ex">view diff</span>
+      </button>
+      <div class="diff">
+        <div class="fhead"><span class="fn">internal/auth/cache.go</span><span class="hunk">func evictExpired()</span><span class="stat"><span class="add">+6</span> <span class="del">&minus;2</span></span></div>
+        <pre><div class="dl ctx"><span class="ln">62</span><span class="tx">	for k, e := range c.entries {</span></div><div class="dl del"><span class="ln">63</span><span class="tx">		if now.Sub(e.lastUsed) &gt; c.sweepInterval {</span></div><div class="dl add"><span class="ln">63</span><span class="tx">		if now.After(e.expiresAt) {</span></div><div class="dl ctx"><span class="ln">64</span><span class="tx">			delete(c.entries, k)</span></div><div class="dl add"><span class="ln">65</span><span class="tx">			c.metrics.Evicted++</span></div><div class="dl ctx"><span class="ln">66</span><span class="tx">		}</span></div></pre>
+        <div class="ctl"><span class="meta">1 of 1 hunk</span></div>
+      </div>
+
+      <div class="case-l">Stat-only — a mostly-deletions file (shape reads at a glance)</div>
+      <button class="statrow" onclick="this.classList.toggle('open');this.querySelector('.ex').textContent=this.classList.contains('open')?'hide':'view diff'">
+        <span class="g">✓</span>
+        <span class="file">internal/auth/cache_test.go</span>
+        <span class="stat"><span class="add">+1</span> <span class="del">&minus;9</span></span>
+        <span class="sparks"><i class="a"></i><i class="d"></i><i class="d"></i><i class="d"></i><i class="d"></i><i class="d"></i><i class="d"></i><i class="d"></i><i class="d"></i><i class="d"></i></span>
+        <span class="ex">view diff</span>
+      </button>
+      <div class="diff">
+        <div class="fhead"><span class="fn">internal/auth/cache_test.go</span><span class="hunk">TestEvictByIdle (removed)</span><span class="stat"><span class="add">+1</span> <span class="del">&minus;9</span></span></div>
+        <pre><div class="dl del"><span class="ln">40</span><span class="tx">func TestEvictByIdle(t *testing.T) {</span></div><div class="dl del"><span class="ln">41</span><span class="tx">	c := newCache(10 * time.Second)</span></div><div class="dl del"><span class="ln">42</span><span class="tx">	c.Put("k", tok(future))</span></div><div class="dl del"><span class="ln">43</span><span class="tx">	c.evictExpired(now.Add(time.Minute))</span></div><div class="dl del"><span class="ln">44</span><span class="tx">	if _, ok := c.Get("k"); ok {</span></div><div class="dl del"><span class="ln">45</span><span class="tx">		t.Fatal("idle token should be gone")</span></div><div class="dl del"><span class="ln">46</span><span class="tx">	}</span></div><div class="dl del"><span class="ln">47</span><span class="tx">}</span></div><div class="dl add"><span class="ln">40</span><span class="tx">// idle-but-valid retention covered by TestEvictByExpiry</span></div></pre>
+        <div class="ctl"><span class="meta">1 of 1 hunk · obsolete test removed</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ALT D — inline-in-prose hunk under the explanation sentence
+       ============================================================ -->
+  <section class="alt aD">
+    <div class="alt-h"><span class="badge">D</span><span class="ttl">Inline-in-prose hunk</span></div>
+    <div class="cap">The hunk sits <b>directly under the sentence that explains it</b>, on a single quiet left
+      rail (the one containment device — no box), so the change reads as part of the agent's narration
+      rather than a separate widget. Best when the agent is walking you through a focused, one- or
+      two-line fix and the <i>why</i> matters as much as the <i>what</i>.
+      <span class="trade">Trade-off:</span> doesn't scale — a turn with several edits would stack rails
+      and bury the prose; for many or large changes, fall back to A/C's collapsed lines.</div>
+
+    <div class="stage">
+      <div class="agent lead">The bug is one comparison. <code>evictExpired()</code> was treating
+        <i>idle</i> as <i>expired</i> — here's the exact change:</div>
+
+      <div class="proseedit">
+        <div class="meta"><span class="file">internal/auth/cache.go</span><span class="stat"><span class="add">+1</span> <span class="del">&minus;1</span></span><span>· func evictExpired()</span><span class="ex">open file ↗</span></div>
+        <pre><div class="pl ctx"><span class="s"></span><span class="tx">for k, e := range c.entries {</span></div><div class="pl del"><span class="s"></span><span class="tx">  if now.Sub(e.lastUsed) &gt; c.sweepInterval {</span></div><div class="pl add"><span class="s"></span><span class="tx">  if now.After(e.expiresAt) {</span></div><div class="pl ctx"><span class="s"></span><span class="tx">    delete(c.entries, k)</span></div></pre>
+      </div>
+
+      <div class="agent">So idle-but-valid tokens now survive a sweep; only genuinely expired ones are
+        dropped. I also added a regression test for that case:</div>
+
+      <div class="proseedit">
+        <div class="meta"><span class="file">internal/auth/cache_test.go</span><span class="stat"><span class="add">+5</span> <span class="del">&minus;0</span></span><span class="ex">open file ↗</span></div>
+        <pre><div class="pl add"><span class="s"></span><span class="tx">func TestIdleButValidSurvives(t *testing.T) {</span></div><div class="pl add"><span class="s"></span><span class="tx">	c := newCache(10 * time.Second)</span></div><div class="pl add"><span class="s"></span><span class="tx">	c.Put("k", tok(now.Add(time.Hour)))</span></div><div class="pl add"><span class="s"></span><span class="tx">	c.evictExpired(now.Add(time.Minute))</span></div><div class="pl add"><span class="s"></span><span class="tx">	mustGet(t, c, "k")</span></div></pre>
+      </div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

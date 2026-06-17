@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf Mockups — #14 New-content pill & error-findability</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="./tokens.css" rel="stylesheet">
+<style>
+/* ====================================================================
+   TOPIC #14 — NEW-CONTENT PILL & ERROR-FINDABILITY
+   ----------------------------------------------------------------------
+   The shipped "↓ N new" pill has three problems:
+     1. It can FLICKER. The count rides scrollHeight, which grows in
+        bursts as tool output streams in while you read up — a corner
+        badge whose number jitters every frame is a blinking element,
+        which principle 5 forbids ("No blinking/flashing").
+     2. It is NEUTRAL regardless of WHAT is below. "3 new" reads the same
+        whether those 3 are routine tool lines or a session that is now
+        BLOCKED waiting on you / a tool that ERRORED.
+     3. There are NO scroll-track markers. A buried error or needs-you
+        prompt in a long transcript is unfindable except by scrolling
+        the whole thing — color in the flow scrolls off with the flow.
+
+   Four treatments (A/B/C/D), each a REAL scrollable transcript of the
+   SAME session. Each transcript has off-screen content below the fold:
+   a buried ✕ ERROR (a tool that failed to run) and a buried ◆ NEEDS-YOU
+   (the agent is asking a permission question, blocked). Scroll each one
+   to see the treatment react. A small JS demo drives the live behavior.
+
+   Color discipline (the whole point of the topic):
+     blue  = live / interactive          (the calm "N new" count)
+     amber = needs you / awaiting   (◆)  (reserved: a blocked session)
+     red   = failed-to-run / broke  (✕)  (reserved: a tool/agent error)
+     neutral = done / settled            (everything that recedes)
+   No blinking anywhere. Amber/red appear ONLY for needs-you / error.
+   ==================================================================== */
+
+/* tokens.css sets body{overflow:hidden} + the live .app grid. This is a
+   gallery page, so re-allow page scroll and lay the specimens out. */
+body{overflow:auto}
+.gallery{max-width:1240px;margin:0 auto;padding:var(--s6) var(--s5)}
+.gallery > header{margin-bottom:var(--s5)}
+.gallery h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.gallery .lede{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);max-width:760px;line-height:1.65}
+.gallery .lede b{color:var(--ink-2);font-weight:600}
+.gallery .lede .amb{color:var(--attention);font-weight:600}
+.gallery .lede .err{color:var(--error);font-weight:600}
+.gallery .lede .blu{color:var(--accent);font-weight:600}
+.gallery .lede code{font-family:var(--mono);font-size:12px;color:var(--ink);border-bottom:1px solid var(--hair)}
+
+.legend{display:flex;flex-wrap:wrap;gap:var(--s4);margin-top:var(--s4);padding:var(--s3) var(--s4);border:1px dashed var(--hair);border-radius:var(--r)}
+.legend .item{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-xs);color:var(--ink-3)}
+.legend .swatch{width:8px;height:8px;border-radius:50%}
+.legend .swatch.live{background:var(--accent)} .legend .swatch.attn{background:var(--attention)}
+.legend .swatch.err{background:var(--error)} .legend .swatch.idle{background:var(--ink-4)}
+.legend .gly{font-weight:700}
+.legend .gly.attn{color:var(--attention)} .legend .gly.err{color:var(--error)} .legend .gly.live{color:var(--accent)}
+
+/* the four-up grid of specimens */
+.alts{display:grid;grid-template-columns:repeat(2,1fr);gap:var(--s5);margin-top:var(--s5)}
+@media (max-width:1080px){.alts{grid-template-columns:1fr}}
+
+.spec{display:flex;flex-direction:column;gap:var(--s3)}
+.spec-cap{display:flex;flex-direction:column;gap:3px}
+.spec-cap .id{display:flex;align-items:baseline;gap:var(--s2)}
+.spec-cap .id b{font-size:var(--fs-base);font-weight:700;color:var(--ink)}
+.spec-cap .id .idea{font-size:var(--fs-sm);color:var(--ink-2)}
+.spec-cap .trade{font-size:var(--fs-xs);color:var(--ink-3);line-height:1.55;max-width:560px}
+.spec-cap .trade .plus{color:var(--ink-2)}
+
+/* ============ the device frame: a real, scrollable transcript ============ */
+.frame{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--bg);
+       display:flex;flex-direction:column;height:520px}
+.ftb{display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4);height:44px;border-bottom:1px solid var(--line);flex:none}
+.ftb .ttl{font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ftb .ov{margin-left:auto;font-size:var(--fs-xs);color:var(--ink-3)}
+
+/* the scroll viewport (position:relative so the pill/minimap anchor to it) */
+.view{position:relative;flex:1;overflow:hidden;min-height:0}
+.scroller{height:100%;overflow-y:auto;padding:var(--s3) 0 var(--s5);scroll-behavior:smooth}
+.scroller::-webkit-scrollbar{width:11px}
+.scroller::-webkit-scrollbar-thumb{background:var(--hair);border-radius:11px;border:3px solid var(--bg)}
+/* C hides the native scrollbar in favor of the custom minimap */
+.scroller.minimap{scrollbar-width:none}
+.scroller.minimap::-webkit-scrollbar{width:0;display:none}
+.tfeed{max-width:640px;margin:0 auto;padding:0 var(--s4)}
+
+/* ---- transcript primitives (a trimmed echo of the golden grammar) ---- */
+.tturn{padding:var(--s4) 0}
+.tturn + .tturn{border-top:1px solid var(--line)}
+.uyou{display:flex;gap:var(--s3);align-items:baseline}
+.uyou .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none;width:30px;padding-top:1px}
+.uyou .q{font-size:var(--fs-sm);color:var(--ink-2);line-height:1.55}
+.aprose{margin-top:var(--s3);font-size:var(--fs-base);line-height:1.6;color:var(--ink)}
+.aprose code{font-family:var(--mono);font-size:11.5px;color:var(--ink);border-bottom:1px solid var(--hair)}
+.ttool{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);display:flex;gap:var(--s2);align-items:baseline}
+.ttool .ok{color:var(--done);font-family:var(--mono);font-size:var(--fs-xs)}
+.ttool .sum b{color:var(--ink-2);font-weight:600}
+.tthink{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);font-style:italic;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* an ERROR row — red left rail (one device, no box), summary promoted */
+.terr{margin-top:var(--s3);display:flex;gap:var(--s3);align-items:baseline;padding-left:11px;position:relative}
+.terr::before{content:"";position:absolute;left:0;top:3px;bottom:3px;width:2px;background:var(--error);border-radius:2px}
+.terr .g{color:var(--error);font-size:12px;flex:none}
+.terr .m{font-size:var(--fs-sm);color:var(--ink)}
+.terr .m b{color:var(--error);font-weight:600}
+.terr .cmd{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);display:block;margin-top:2px}
+
+/* a NEEDS-YOU row — amber container (the one device) with a blue action */
+.task{margin-top:var(--s3);background:var(--attention-soft);border:1px solid rgba(226,176,106,.30);border-radius:var(--r);padding:var(--s3)}
+.task .h{display:flex;align-items:center;gap:var(--s2);font-size:var(--fs-xs);font-weight:600;color:var(--attention)}
+.task .ask{margin-top:6px;font-size:var(--fs-sm);color:var(--ink);line-height:1.5}
+.task .ask code{font-family:var(--mono);font-size:11.5px;color:var(--ink);border-bottom:1px solid var(--hair)}
+.task .acts{margin-top:var(--s3);display:flex;gap:var(--s2)}
+.task .btn{font-size:var(--fs-xs);padding:4px 11px;border-radius:var(--r);border:1px solid var(--hair);color:var(--ink-2)}
+.task .btn.primary{background:var(--accent);color:#0a0c14;font-weight:600;border-color:transparent}
+
+/* a live tail so each transcript reads as in-progress */
+.tactive{margin-top:var(--s3);display:flex;gap:var(--s3);align-items:baseline;padding-left:11px;position:relative}
+.tactive::before{content:"";position:absolute;left:0;top:3px;height:12px;width:2px;background:var(--accent);border-radius:2px}
+.tactive .lbl{font-size:var(--fs-sm);color:var(--ink)}
+
+/* ---- a pinned liveness strip (shared; sits below the viewport) ---- */
+.flive{display:flex;align-items:center;gap:var(--s2);padding:6px var(--s4);border-top:1px solid var(--line);
+       background:#101117;font-size:var(--fs-xs);color:var(--ink-2);flex:none}
+.flive .d{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:fbreathe 2.6s ease-in-out infinite;flex:none}
+.flive .el{color:var(--ink)}
+@keyframes fbreathe{0%,100%{opacity:1}50%{opacity:.45}}
+
+/* a tiny instruction line under each frame */
+.tryline{font-size:var(--fs-xs);color:var(--ink-3);display:flex;align-items:center;gap:6px}
+.tryline .k{font-family:var(--mono);font-size:10px;color:var(--ink-3);border:1px solid var(--line);border-radius:3px;padding:1px 5px}
+
+/* ====================================================================
+   SHARED PILL BASE
+   The pill is a real <button>, bottom-right of the viewport, focus-ring
+   capable. It NEVER blinks. State changes use opacity/color transitions
+   only. The count is debounced (see JS) so the number never jitters.
+   ==================================================================== */
+.pill{position:absolute;right:var(--s4);bottom:var(--s3);display:inline-flex;align-items:center;gap:7px;
+      padding:7px 13px;border-radius:var(--r-pill);font-size:var(--fs-sm);font-weight:500;
+      background:var(--surface-2);color:var(--ink);border:1px solid var(--hair);
+      box-shadow:0 6px 20px rgba(0,0,0,.45);
+      opacity:0;transform:translateY(6px);pointer-events:none;
+      transition:opacity .18s ease,transform .18s ease,color .18s ease,border-color .18s ease,background .18s ease}
+.pill.show{opacity:1;transform:none;pointer-events:auto}
+.pill:hover{filter:brightness(1.12)}
+.pill .n{font-variant-numeric:tabular-nums;color:var(--accent)}
+.pill .g{font-size:11px}
+
+/* ====================================================================
+   A — STICKY DEBOUNCED COUNT
+   Plain neutral "↓ N new" — but the count is COMMITTED on a debounce
+   (settles ~400ms after the last append) so it never jitters frame-to-
+   frame, and the pill, once shown, stays put until you reach bottom
+   (sticky: no appear/disappear churn near the threshold). It is honest
+   about quantity, agnostic about kind. This is the no-flicker baseline.
+   ==================================================================== */
+/* (uses the shared .pill base; no extra color) */
+
+/* ====================================================================
+   B — SPLIT CALM / URGENT COLOR
+   The same sticky-debounced pill, but its IDENTITY follows the most
+   urgent thing below the fold:
+       ↓ N new        neutral/blue  (routine — recedes)
+       ↓ needs you    amber  ◆      (a blocked prompt is below)
+       ↑ error        red    ✕      (a failed tool is below; arrow flips
+                                      to point UP if the error is above)
+   Urgency wins over recency: amber/red override the plain count. This is
+   the attention-aware variant the topic asks for.
+   ==================================================================== */
+.pill.attn{color:var(--attention);border-color:var(--attention);background:var(--attention-soft)}
+.pill.attn .n{color:var(--attention)}
+.pill.err{color:var(--error);border-color:var(--error);background:rgba(247,118,142,.10)}
+.pill.err .n{color:var(--error)}
+
+/* ====================================================================
+   C — SCROLLBAR MINIMAP TICKS
+   A custom scroll track on the right edge of the viewport. The thumb
+   shows where you are; fixed TICKS mark every attention point in the
+   WHOLE transcript at its proportional position, so a buried error/
+   needs-you is findable at a glance and clickable to jump. The pill
+   here is just the calm count; the track carries the "where" signal.
+   ==================================================================== */
+.mtrack{position:absolute;top:6px;bottom:6px;right:3px;width:10px;border-radius:var(--r-pill);
+        background:rgba(255,255,255,.03);z-index:4}
+.mthumb{position:absolute;left:1px;right:1px;border-radius:var(--r-pill);background:var(--hair);min-height:24px}
+/* ticks: a glyph-paired marker; color carries meaning, glyph makes it colorblind-safe */
+.mtick{position:absolute;left:-3px;width:16px;height:16px;margin-top:-8px;border-radius:50%;
+       display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;
+       background:var(--surface-2);border:1px solid var(--hair);color:var(--ink-3);cursor:pointer;
+       transition:transform .12s ease}
+.mtick:hover{transform:scale(1.18)}
+.mtick.err{color:var(--error);border-color:var(--error)}
+.mtick.attn{color:var(--attention);border-color:var(--attention)}
+/* a hover label so a tick is legible without jumping */
+.mtick .tip{position:absolute;right:20px;top:50%;transform:translateY(-50%);white-space:nowrap;
+            background:var(--surface-2);border:1px solid var(--hair);border-radius:var(--r);
+            padding:3px 8px;font-size:10px;font-weight:500;color:var(--ink);
+            opacity:0;pointer-events:none;transition:opacity .12s ease;box-shadow:0 4px 14px rgba(0,0,0,.5)}
+.mtick.err .tip{border-color:var(--error)} .mtick.attn .tip{border-color:var(--attention)}
+.mtick:hover .tip{opacity:1}
+
+/* ====================================================================
+   D — NEXT-ATTENTION CYCLER
+   One pill that names the NEXT unseen attention item by kind and jumps
+   straight to it, then advances to the one after. Routine "N new" is
+   demoted to a small neutral sub-count beside it. You "work the queue"
+   of important things instead of scrolling blindly past them.
+       ◆ needs you   →   ✕ error   →   (caught up: plain ↓ N new)
+   ==================================================================== */
+.pillD{position:absolute;right:var(--s4);bottom:var(--s3);display:inline-flex;align-items:stretch;
+       border-radius:var(--r-pill);overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,.45);
+       opacity:0;transform:translateY(6px);pointer-events:none;transition:opacity .18s ease,transform .18s ease}
+.pillD.show{opacity:1;transform:none;pointer-events:auto}
+.pillD .lead{display:inline-flex;align-items:center;gap:7px;padding:7px 13px;font-size:var(--fs-sm);font-weight:600;
+             background:var(--surface-2);color:var(--ink)}
+.pillD .lead.attn{color:var(--attention);background:var(--attention-soft)}
+.pillD .lead.err{color:var(--error);background:rgba(247,118,142,.10)}
+.pillD .lead .g{font-size:11px}
+.pillD .lead .next{font-weight:400;color:var(--ink-3);font-size:var(--fs-xs)}
+/* the routine sub-count, demoted */
+.pillD .rest{display:inline-flex;align-items:center;gap:5px;padding:7px 11px;font-size:var(--fs-xs);
+             color:var(--ink-3);background:var(--surface);border-left:1px solid var(--line)}
+.pillD .rest .n{font-variant-numeric:tabular-nums;color:var(--accent)}
+.pillD:hover .lead{filter:brightness(1.1)}
+
+/* a flash-free "arrived" pulse target: a one-shot ring, NOT a blink */
+@keyframes arrivering{0%{box-shadow:0 0 0 0 var(--ring)}100%{box-shadow:0 0 0 8px transparent}}
+.arrived{animation:arrivering .7s ease-out 1}
+.arrived.err{--ring:rgba(247,118,142,.45)}
+.arrived.attn{--ring:rgba(226,176,106,.45)}
+@media (prefers-reduced-motion:reduce){.arrived{animation:none!important}}
+
+footer.note{margin-top:var(--s6);font-size:var(--fs-xs);color:var(--ink-3);line-height:1.65;max-width:840px}
+footer.note b{color:var(--ink-2);font-weight:600}
+footer.note .amb{color:var(--attention);font-weight:600}
+footer.note .err{color:var(--error);font-weight:600}
+footer.note .blu{color:var(--accent);font-weight:600}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important}.scroller{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<div class="gallery">
+
+  <header>
+    <h1>#14 — New-content pill &amp; error-findability</h1>
+    <p class="lede">
+      The shipped <code>↓ N new</code> pill <b>flickers</b> (its count rides <code>scrollHeight</code>, which grows in
+      bursts as output streams while you read up — a jittering corner badge is a blinking element, which the principles
+      forbid), it is <b>kind-agnostic</b> (3 new tool lines look the same as a session that just went
+      <span class="amb">blocked</span> or a tool that <span class="err">errored</span>), and there are
+      <b>no scroll-track markers</b> to <em>find</em> a buried error or needs-you in a long transcript. Each alternative
+      below is a <b>real, scrollable transcript</b> of the same session: scroll up and you'll have a buried
+      <span class="err">✕ error</span> and a buried <span class="amb">◆ needs-you</span> off-screen. Watch how each
+      treatment reacts. <span class="blu">Blue</span> = the calm count; <span class="amb">amber ◆</span> = needs you;
+      <span class="err">red ✕</span> = error. <b>No blinking anywhere</b>; amber/red appear only for needs-you/error.
+    </p>
+    <div class="legend">
+      <span class="item"><span class="swatch live"></span><span class="gly live">↓</span> new content — calm count (blue/neutral)</span>
+      <span class="item"><span class="swatch attn"></span><span class="gly attn">◆</span> needs you / awaiting (amber)</span>
+      <span class="item"><span class="swatch err"></span><span class="gly err">✕</span> failed to run / error (red)</span>
+      <span class="item"><span class="swatch idle"></span> done / settled (neutral, recedes)</span>
+    </div>
+  </header>
+
+  <div class="alts">
+
+    <!-- ============================================================ A -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>A</b><span class="idea">Sticky debounced count</span></div>
+        <div class="trade">
+          The plain <code>↓ N new</code>, fixed: the count is <span class="plus">committed on a ~400ms debounce</span>
+          (it settles after the burst, never jitters per-frame) and the pill is <span class="plus">sticky</span> — once
+          shown it stays until you reach bottom, no flicker at the threshold.
+          <span class="plus">+ Minimal, honest, kills the blink.</span>
+          − Still kind-agnostic: it can't tell you an error or a prompt is what's below.
+        </div>
+      </div>
+      <div class="frame">
+        <div class="ftb"><span class="ttl">Refactor auth token cache</span><span class="ov">Details&nbsp;⋯</span></div>
+        <div class="view">
+          <div class="scroller" id="scA" data-demo="A">
+            <div class="tfeed" id="feedA"></div>
+          </div>
+          <button class="pill" id="pillA"><span class="g">↓</span><span><span class="n num">0</span> new</span></button>
+        </div>
+        <div class="flive"><span class="d"></span>working · <span class="el num">1:48</span></div>
+      </div>
+      <div class="tryline"><span class="k">scroll up</span> the count settles after the burst; the pill stays put until you return to bottom.</div>
+    </section>
+
+    <!-- ============================================================ B -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>B</b><span class="idea">Split calm / urgent color</span></div>
+        <div class="trade">
+          The same sticky-debounced pill, now <span class="plus">attention-aware</span>: its identity follows the most
+          urgent thing below — <code>↓ N new</code> (neutral) → <span class="plus">↓ needs you (amber ◆)</span> →
+          <span class="plus">↑ error (red ✕, arrow points toward it)</span>. Urgency overrides the plain count.
+          <span class="plus">+ One glance tells you both that there's new content AND that it matters.</span>
+          − Conflates "where" into one label when several kinds are off-screen at once.
+        </div>
+      </div>
+      <div class="frame">
+        <div class="ftb"><span class="ttl">Refactor auth token cache</span><span class="ov">Details&nbsp;⋯</span></div>
+        <div class="view">
+          <div class="scroller" id="scB" data-demo="B">
+            <div class="tfeed" id="feedB"></div>
+          </div>
+          <button class="pill" id="pillB"><span class="g">↓</span><span class="lbl"><span class="n num">0</span> new</span></button>
+        </div>
+        <div class="flive"><span class="d"></span>working · <span class="el num">1:48</span></div>
+      </div>
+      <div class="tryline"><span class="k">scroll up past</span> the error and prompt — the pill turns red, then amber, by what's hidden.</div>
+    </section>
+
+    <!-- ============================================================ C -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>C</b><span class="idea">Scrollbar minimap ticks</span></div>
+        <div class="trade">
+          A custom scroll track: the thumb shows where you are; fixed <span class="plus">ticks mark every attention
+          point in the WHOLE transcript</span> at its true position — <span class="plus">✕ red error, ◆ amber
+          needs-you</span> — findable at a glance, click to jump. The pill stays the calm count.
+          <span class="plus">+ Shows <em>where</em> and <em>how many</em>, above and below, at once.</span>
+          − Needs a custom scrollbar; ticks crowd in very dense transcripts.
+        </div>
+      </div>
+      <div class="frame">
+        <div class="ftb"><span class="ttl">Refactor auth token cache</span><span class="ov">Details&nbsp;⋯</span></div>
+        <div class="view">
+          <div class="scroller minimap" id="scC" data-demo="C">
+            <div class="tfeed" id="feedC"></div>
+          </div>
+          <div class="mtrack" id="trackC"><div class="mthumb" id="thumbC"></div></div>
+          <button class="pill" id="pillC"><span class="g">↓</span><span><span class="n num">0</span> new</span></button>
+        </div>
+        <div class="flive"><span class="d"></span>working · <span class="el num">1:48</span></div>
+      </div>
+      <div class="tryline"><span class="k">click a tick</span> on the right track to jump straight to the error or the prompt.</div>
+    </section>
+
+    <!-- ============================================================ D -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>D</b><span class="idea">Next-attention cycler</span></div>
+        <div class="trade">
+          One pill that <span class="plus">names the next unseen attention item and jumps to it</span>, then advances:
+          <span class="plus">◆ needs you → ✕ error → caught up</span>. Routine new content is demoted to a small
+          neutral sub-count beside it. You work the queue of what matters instead of scrolling past it.
+          <span class="plus">+ Directs the eye to the consequential thing first, in priority order.</span>
+          − More machinery; hides the "where" until you press it.
+        </div>
+      </div>
+      <div class="frame">
+        <div class="ftb"><span class="ttl">Refactor auth token cache</span><span class="ov">Details&nbsp;⋯</span></div>
+        <div class="view">
+          <div class="scroller" id="scD" data-demo="D">
+            <div class="tfeed" id="feedD"></div>
+          </div>
+          <button class="pillD" id="pillD">
+            <span class="lead" id="pillDlead"><span class="g">↓</span><span class="txt">new</span> <span class="next">jump →</span></span>
+            <span class="rest"><span class="n num">0</span> new</span>
+          </button>
+        </div>
+        <div class="flive"><span class="d"></span>working · <span class="el num">1:48</span></div>
+      </div>
+      <div class="tryline"><span class="k">press the pill</span> to jump to needs-you, then again for the error, then it's the calm count.</div>
+    </section>
+
+  </div>
+
+  <footer class="note">
+    <b>Recommendation: B (split calm/urgent color) as the default pill, with C (minimap ticks) layered on for the
+    "where, exactly" answer in long transcripts.</b>
+    All four share the same foundation that fixes the literal bug: a <b>debounced, sticky</b> count that never jitters
+    (principle 5). On top of that, B is the smallest change that makes the pill <em>honest about kind</em> — a
+    <span class="amb">◆ needs you</span> or <span class="err">✕ error</span> below the fold reads instantly, and the
+    arrow flips to point the right way — which is the core of error-findability for the common case of one attention
+    item. C is the complement for <b>multiple</b> buried items or for pinpointing position: it answers "where and how
+    many" both above and below the fold without scrolling, and it's the only treatment that surfaces attention you've
+    already scrolled <em>past</em>. D is elegant for power users working a queue but adds machinery and hides the
+    "where," so it's a keyboard-affordance layer, not the default. A alone is correct but insufficient — it kills the
+    flicker yet stays kind-agnostic, the very gap this topic exists to close. Across all four: the count is
+    <span class="blu">blue/neutral</span> and recedes; <span class="amb">amber ◆</span> and <span class="err">red ✕</span>
+    are spent only on needs-you and error, always glyph-paired; nothing blinks — state changes are opacity/color
+    transitions and a single one-shot "arrived" ring, never a pulse.
+  </footer>
+
+</div>
+
+<script>
+/* ====================================================================
+   DEMO ENGINE
+   Builds the same long transcript into each frame, with a buried ERROR
+   and a buried NEEDS-YOU placed mid-history (so they're off-screen when
+   you start at the bottom and scroll UP, and below-fold when you scroll
+   up past them). Then wires the four treatments. All behavior here is
+   purely illustrative of the design — no blinking, transitions only.
+   ==================================================================== */
+
+/* ---- transcript content. `kind` flags the two attention anchors. ---- */
+const TURNS = [
+  {you:"The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how callers use it too."},
+  {think:"The eviction probably keys off the wrong timestamp — last-access rather than absolute expiry…"},
+  {prose:"I'll trace how the cache is used, then fix the eviction logic. Reading the cache and its callers now."},
+  {tool:"4 steps · read cache.go · grep callers · ran tests"},
+  {prose:"Found it. <code>evictExpired()</code> compares against <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than the sweep interval is dropped even when still valid."},
+  {tool:"2 steps · read eviction.go · grep evictExpired"},
+  {prose:"Patching the comparison and adding a guard for the idle-but-valid case. Then I'll run the cache suite to confirm nothing else relied on the old behavior."},
+  /* ---- buried ERROR: a tool that failed to run ---- */
+  {kind:"err", err:{m:"<b>go test ./cache</b> failed to run",cmd:"exit 2 · cannot find package \"./cache/internal/clock\" (missing go.sum entry)"}},
+  {prose:"The test binary won't build — a dependency isn't vendored. I can run <code>go mod download</code> to fix the missing <code>go.sum</code> entry, but that touches the lockfile."},
+  {think:"Editing go.sum is a write outside the cache package the user scoped me to…"},
+  /* ---- buried NEEDS-YOU: the agent is blocked, asking permission ---- */
+  {kind:"attn", task:{ask:"Run <code>go mod download</code> to add the missing <code>go.sum</code> entry? It modifies the lockfile outside <code>./cache</code>."}},
+  {prose:"While that's pending I drafted the regression test for the idle-but-valid token so it's ready to run once the build is fixed."},
+  {tool:"1 step · wrote cache_eviction_test.go"},
+  {prose:"The fix itself is in place; the comparison now uses <code>expiresAt</code> and the sweep leaves idle-but-valid tokens alone. Verification is blocked only on the dependency question above."},
+  {think:"Once permitted, run the suite, confirm green, then summarize the diff for review…"},
+  {active:"Waiting on your answer before running the suite"},
+];
+
+const ATTN_LABEL = {err:"error", attn:"needs you"};
+const ATTN_GLYPH = {err:"✕", attn:"◆"};
+
+function renderTurn(t){
+  const el = document.createElement('div');
+  el.className = 'tturn';
+  if (t.kind) el.dataset.kind = t.kind;
+  let h = '';
+  if (t.you)   h += `<div class="uyou"><span class="tag">You</span><span class="q">${t.you}</span></div>`;
+  if (t.think) h += `<div class="tthink">✦ ${t.think}</div>`;
+  if (t.prose) h += `<div class="aprose">${t.prose}</div>`;
+  if (t.tool)  h += `<div class="ttool"><span class="ok">✓</span><span class="sum">${t.tool}</span></div>`;
+  if (t.err)   h += `<div class="terr"><span class="g">✕</span><span class="m"><b>${t.err.m}</b><span class="cmd">${t.err.cmd}</span></span></div>`;
+  if (t.task)  h += `<div class="task"><div class="h">◆ Needs you · permission</div><div class="ask">${t.task.ask}</div>`+
+                    `<div class="acts"><button class="btn primary">Allow</button><button class="btn">Deny</button></div></div>`;
+  if (t.active)h += `<div class="tactive"><span class="lbl">${t.active}</span></div>`;
+  el.innerHTML = h;
+  return el;
+}
+
+/* build the feed; return the attention anchors in document order */
+function buildFeed(feed){
+  feed.innerHTML = '';
+  const anchors = [];
+  TURNS.forEach(t => {
+    const el = renderTurn(t);
+    feed.appendChild(el);
+    if (t.kind) anchors.push({kind:t.kind, el});
+  });
+  return anchors;
+}
+
+function nearBottom(sc){ return sc.scrollHeight - sc.scrollTop - sc.clientHeight < 40; }
+
+/* an element's offset is "below the current viewport bottom" */
+function isBelow(sc, el){ return el.offsetTop > sc.scrollTop + sc.clientHeight - 24; }
+/* …"above the current viewport top" */
+function isAbove(sc, el){ return el.offsetTop + el.offsetHeight < sc.scrollTop + 24; }
+
+/* a fake "new content" counter that grows in bursts while you read up,
+   to exercise the debounce. Starts at a value once you leave bottom. */
+function makeBurstCounter(onTick){
+  let n = 0, timer = null;
+  function start(){
+    if (timer) return;
+    timer = setInterval(() => { n += (1 + Math.floor(Math.random()*3)); onTick(n); }, 900);
+  }
+  function stop(){ clearInterval(timer); timer = null; }
+  function reset(){ n = 0; onTick(0); }
+  return {start, stop, reset, get:() => n};
+}
+
+/* debounce helper: commit a value only after it stops changing */
+function debouncer(ms, commit){
+  let t = null, pending = 0;
+  return v => { pending = v; clearTimeout(t); t = setTimeout(() => commit(pending), ms); };
+}
+
+/* start each scroller near the bottom, like a live session */
+function settleToBottom(sc){ sc.scrollTop = sc.scrollHeight; }
+
+/* ---------------------------------------------------------------- A */
+(function initA(){
+  const sc = document.getElementById('scA'), pill = document.getElementById('pillA');
+  const nEl = pill.querySelector('.n');
+  buildFeed(document.getElementById('feedA'));
+  const commit = debouncer(400, v => { nEl.textContent = v; });   // …but we only paint on settle
+  const burst = makeBurstCounter(v => commit(v));                   // raw value jitters…
+  function sync(){
+    if (nearBottom(sc)){ pill.classList.remove('show'); burst.stop(); burst.reset(); }
+    else { pill.classList.add('show'); burst.start(); }
+  }
+  sc.addEventListener('scroll', sync);
+  pill.addEventListener('click', () => sc.scrollTo({top:sc.scrollHeight, behavior:'smooth'}));
+  settleToBottom(sc); sync();
+})();
+
+/* ---------------------------------------------------------------- B */
+(function initB(){
+  const sc = document.getElementById('scB'), pill = document.getElementById('pillB');
+  const lbl = pill.querySelector('.lbl'), arrow = pill.querySelector('.g');
+  const anchors = buildFeed(document.getElementById('feedB'));
+  let state = 'new';
+  // only paint the count on settle, and only while in the plain "new" state
+  const commitN = debouncer(400, v => {
+    const n = pill.querySelector('.n');
+    if (state === 'new' && n) n.textContent = v;
+  });
+  const burst = makeBurstCounter(v => commitN(v));
+  function urgentBelow(){
+    // priority: error wins over needs-you wins over plain new
+    const below = anchors.filter(a => isBelow(sc, a.el));
+    const above = anchors.filter(a => isAbove(sc, a.el));
+    if (below.some(a=>a.kind==='err'))  return {kind:'err',  dir:'down', el:below.find(a=>a.kind==='err').el};
+    if (above.some(a=>a.kind==='err'))  return {kind:'err',  dir:'up',   el:above.find(a=>a.kind==='err').el};
+    if (below.some(a=>a.kind==='attn')) return {kind:'attn', dir:'down', el:below.find(a=>a.kind==='attn').el};
+    if (above.some(a=>a.kind==='attn')) return {kind:'attn', dir:'up',   el:above.find(a=>a.kind==='attn').el};
+    return null;
+  }
+  let jumpTarget = null;
+  function paint(){
+    if (nearBottom(sc)){ pill.classList.remove('show','attn','err'); burst.stop(); burst.reset(); state='new'; jumpTarget=null; return; }
+    pill.classList.add('show'); burst.start();
+    const u = urgentBelow();
+    pill.classList.remove('attn','err');
+    if (u){
+      state = u.kind; jumpTarget = u.el;
+      pill.classList.add(u.kind);
+      arrow.textContent = u.dir === 'up' ? '↑' : '↓';
+      lbl.innerHTML = `${ATTN_GLYPH[u.kind]} ${ATTN_LABEL[u.kind]}`;
+    } else {
+      state = 'new'; jumpTarget = null;
+      arrow.textContent = '↓';
+      lbl.innerHTML = `<span class="n num">${burst.get()}</span> new`;
+    }
+  }
+  sc.addEventListener('scroll', paint);
+  pill.addEventListener('click', () => {
+    const dest = jumpTarget ? jumpTarget.offsetTop - 16 : sc.scrollHeight;
+    sc.scrollTo({top:dest, behavior:'smooth'});
+  });
+  settleToBottom(sc); paint();
+})();
+
+/* ---------------------------------------------------------------- C */
+(function initC(){
+  const sc = document.getElementById('scC'), pill = document.getElementById('pillC');
+  const track = document.getElementById('trackC'), thumb = document.getElementById('thumbC');
+  const nEl = pill.querySelector('.n');
+  const anchors = buildFeed(document.getElementById('feedC'));
+  const commit = debouncer(400, v => { nEl.textContent = v; });
+  const burst = makeBurstCounter(v => commit(v));
+
+  // place a tick per attention anchor at its proportional position
+  anchors.forEach(a => {
+    const tick = document.createElement('button');
+    tick.className = `mtick ${a.kind}`;
+    tick.innerHTML = `${ATTN_GLYPH[a.kind]}<span class="tip">${ATTN_GLYPH[a.kind]} ${ATTN_LABEL[a.kind]}</span>`;
+    tick.addEventListener('click', () => sc.scrollTo({top:a.el.offsetTop - 16, behavior:'smooth'}));
+    track.appendChild(tick);
+    a._tick = tick;
+  });
+  function layout(){
+    const h = track.clientHeight, total = sc.scrollHeight, view = sc.clientHeight;
+    // thumb
+    const th = Math.max(24, h * view / total);
+    const top = (h - th) * (sc.scrollTop / Math.max(1, total - view));
+    thumb.style.height = th + 'px';
+    thumb.style.top = top + 'px';
+    // ticks
+    anchors.forEach(a => {
+      const frac = (a.el.offsetTop + a.el.offsetHeight/2) / total;
+      a._tick.style.top = (h * frac) + 'px';
+    });
+  }
+  function sync(){
+    layout();
+    if (nearBottom(sc)){ pill.classList.remove('show'); burst.stop(); burst.reset(); }
+    else { pill.classList.add('show'); burst.start(); }
+  }
+  // drag-less click-to-position on the track
+  track.addEventListener('click', e => {
+    if (e.target !== track) return;
+    const rect = track.getBoundingClientRect();
+    const frac = (e.clientY - rect.top) / rect.height;
+    sc.scrollTo({top: frac * (sc.scrollHeight - sc.clientHeight), behavior:'smooth'});
+  });
+  sc.addEventListener('scroll', sync);
+  pill.addEventListener('click', () => sc.scrollTo({top:sc.scrollHeight, behavior:'smooth'}));
+  window.addEventListener('resize', layout);
+  settleToBottom(sc); sync();
+})();
+
+/* ---------------------------------------------------------------- D */
+(function initD(){
+  const sc = document.getElementById('scD'), pill = document.getElementById('pillD');
+  const lead = document.getElementById('pillDlead');
+  const restN = pill.querySelector('.rest .n');
+  const anchors = buildFeed(document.getElementById('feedD'));
+  const commit = debouncer(400, v => { restN.textContent = v; });
+  const burst = makeBurstCounter(v => commit(v));
+  // priority order for the cycler: needs-you first, then error
+  const QUEUE = ['attn','err'];
+  function nextUnseen(){
+    // an item is "unseen" if it is currently below the fold (you haven't reached it)
+    for (const kind of QUEUE){
+      const a = anchors.find(x => x.kind===kind && isBelow(sc, x.el));
+      if (a) return a;
+    }
+    return null;
+  }
+  function paint(){
+    if (nearBottom(sc)){ pill.classList.remove('show'); burst.stop(); burst.reset(); return; }
+    pill.classList.add('show'); burst.start();
+    const a = nextUnseen();
+    lead.classList.remove('attn','err');
+    if (a){
+      lead.classList.add(a.kind);
+      lead.innerHTML = `<span class="g">${ATTN_GLYPH[a.kind]}</span><span class="txt">${ATTN_LABEL[a.kind]}</span> <span class="next">jump →</span>`;
+    } else {
+      lead.innerHTML = `<span class="g">↓</span><span class="txt">caught up</span> <span class="next">to latest →</span>`;
+    }
+  }
+  pill.addEventListener('click', () => {
+    const a = nextUnseen();
+    if (a){
+      sc.scrollTo({top:a.el.offsetTop - 16, behavior:'smooth'});
+      // one-shot "arrived" ring on the target, never a blink
+      const card = a.el.querySelector('.task, .terr') || a.el;
+      card.classList.remove('arrived', a.kind);
+      void card.offsetWidth;            // restart the one-shot animation
+      card.classList.add('arrived', a.kind);
+      setTimeout(() => card.classList.remove('arrived', a.kind), 800);
+    } else {
+      sc.scrollTo({top:sc.scrollHeight, behavior:'smooth'});
+    }
+  });
+  sc.addEventListener('scroll', paint);
+  settleToBottom(sc); paint();
+})();
+</script>
+</body>
+</html>

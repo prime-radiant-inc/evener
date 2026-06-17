@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf mockups · #8 Subagent module states</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- base design tokens + transcript component grammar (incl. the .subs module) -->
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ============================================================
+   TOPIC #8 — Subagent module states
+   Built on tokens.css. The base sheet already defines the .subs
+   module (one neutral box, one device) and the sub-r row. This file
+   undoes the app grid for a scrolling gallery and adds only the four
+   alternatives' state treatments.
+
+   The four real failure modes this topic fixes (from live recon):
+     1. a "⟳ running" subagent that stays running forever on a session
+        that is no longer live (no completion signal ever arrives);
+     2. a heavy fan-out overflowing into a run-on line;
+     3. per-row ticking clocks (churn) on rows that are already done;
+     4. a failed child folded into the "N ✓ done" tally instead of
+        surfacing in red.
+   ============================================================ */
+
+/* gallery shell: undo the base app grid, let the page scroll */
+body{overflow:auto}
+.gallery{max-width:880px;margin:0 auto;padding:var(--s6) var(--s5) 96px}
+.page-h{margin-bottom:var(--s5)}
+.page-h h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.page-h p{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);line-height:1.6;max-width:64ch}
+.page-h .principles{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:78ch}
+.page-h .principles b{color:var(--ink-2);font-weight:600}
+
+.alt{margin-top:var(--s6);border-top:1px solid var(--line);padding-top:var(--s5)}
+.alt-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.alt-h .badge{font-size:var(--fs-sm);font-weight:700;color:var(--bg);background:var(--ink-2);border-radius:var(--r-pill);padding:1px 9px;letter-spacing:.02em}
+.alt-h .ttl{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.cap{font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:78ch;margin-bottom:var(--s4)}
+.cap b{color:var(--ink-2);font-weight:600}
+.cap .trade{color:var(--attention)}
+/* simulated transcript viewport so each state reads like the real product */
+.stage{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:var(--s4) var(--s5);max-width:720px}
+.case-l{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase;margin:var(--s5) 0 var(--s1)}
+.case-l:first-child{margin-top:0}
+.stage .agent:first-of-type{margin-top:0}
+.note{font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:78ch;margin:6px 0 0}
+.note b{color:var(--ink-2);font-weight:600}
+.note .ok{color:var(--success)}
+.note .bad{color:var(--error)}
+
+/* ----------------------------------------------------------------
+   SHARED across all four: a single, honest liveness vocabulary.
+   - a spinning ⟳ + the breathing dot mean LIVE, full stop.
+   - a settled child is neutral ✓ (it ran; bad news lives in the text).
+   - a failed-to-RUN child is red ✕ and is never averaged into "done".
+   - a "running" child on a session that is no longer live is NOT a
+     spinner; it is an honest UNKNOWN: neutral "?" + "last seen Ns ago".
+   ---------------------------------------------------------------- */
+.g{font-family:var(--mono);font-size:var(--fs-xs);width:12px;flex:none;text-align:center}
+.g.done{color:var(--done)}
+.g.run{color:var(--accent)}
+.g.err{color:var(--error)}
+.g.unk{color:var(--ink-3)}                 /* terminal-unknown: neutral, NOT alarming, NOT live */
+/* the ONLY live-motion cue in the whole module: a slow breathing dot,
+   shown only next to genuinely-live work. No per-row spinners ticking. */
+.livedot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);animation:breathe 2.6s ease-in-out infinite;flex:none}
+
+/* module header tally — extend the base .subs-h grammar */
+.subs-h .tally .u{color:var(--ink-3)}      /* unknown count, neutral */
+.subs-h .tally .sep{color:var(--ink-4)}
+.subs-h .unk-note{font-size:var(--fs-xs);color:var(--ink-3);margin-left:auto;font-variant-numeric:tabular-nums}
+/* when a child failed, the whole module header earns a thin red edge
+   tick (still ONE box — the tick lives inside it). Failure is never
+   hidden behind the done tally. */
+.subs.has-fail{border-left:2px solid var(--error)}
+/* when the session went dark with work still "running", the module
+   wears a neutral stale state — honest, not a fake spinner. */
+.subs.stale{border-color:var(--hair)}
+.subs.stale .subs-h .t{color:var(--ink-2)}
+
+/* per-row result + frozen duration (shared) */
+.sub-r .res .bad{color:var(--error)}
+.sub-r .res .unk{color:var(--ink-3);font-style:italic}
+.sub-r .dur.frozen{color:var(--ink-3)}     /* settled rows: a stamped, non-ticking number */
+.sub-r .lk{color:var(--ink-3)}
+.sub-r:hover .lk{color:var(--accent)}
+
+/* =====================================================================
+   ALT A — honest-clock demotion + "?" unknown state
+   ===================================================================== */
+/* Rows keep the familiar layout, but the live clock is the one piece of
+   honesty. While the session is live, a running row shows ⟳ + a ticking
+   clock. The instant the session is no longer live, every still-"running"
+   row demotes to a neutral "?" with the LAST KNOWN elapsed frozen and a
+   "last seen Ns ago" — never a spinner that outlives the session. */
+.aA .sub-r .g.run + .nm{color:var(--ink)}
+.aA .runclock{color:var(--accent);font-variant-numeric:tabular-nums}
+.aA .unkrow .nm{color:var(--ink-2)}
+
+/* =====================================================================
+   ALT B — columnar overflow sorted by severity
+   ===================================================================== */
+/* Heavy fan-out becomes a fixed two-column grid sorted worst-first
+   (failed → running → done), so a failure is always above the fold and
+   overflow is an honest "+N more" expander, never a run-on line. */
+.aB .grid{display:grid;grid-template-columns:1fr 1fr;gap:2px var(--s5)}
+.aB .gr{display:flex;align-items:baseline;gap:var(--s2);padding:var(--s1) 0;width:100%;text-align:left;min-width:0}
+.aB .gr .g{margin-top:0}
+.aB .gr .nm{font-family:var(--mono);font-size:11.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:none;max-width:120px}
+.aB .gr .res{font-size:var(--fs-sm);color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.aB .gr .res .bad{color:var(--error)}
+.aB .gr .dur{font-size:var(--fs-xs);color:var(--ink-3);margin-left:auto;flex:none;font-variant-numeric:tabular-nums}
+.aB .gr.runrow .dur{color:var(--accent)}
+.aB .more{grid-column:1 / -1;margin-top:var(--s1);font-size:var(--fs-sm);color:var(--accent);text-align:left}
+.aB .more:hover{text-decoration:underline}
+.aB .more .ct{color:var(--ink-3)}
+.aB .hidden{display:none}
+.aB .grid.open .hidden{display:flex}
+.aB .grid.open .more .lbl::after{content:"collapse"}
+.aB .more .lbl::after{content:"expand"}
+
+/* =====================================================================
+   ALT C — one module clock, done rows frozen
+   ===================================================================== */
+/* Exactly ONE ticking clock in the whole module — the module elapsed in
+   the header (the only thing still happening). Every row carries a
+   FROZEN, stamped duration the moment it settles; only a still-live row
+   shows ⟳ + the breathing dot, and even it shows a stamped "started Ns
+   ago", not a churning per-row counter. Kills the per-row clock churn. */
+.aC .subs-h .modclock{color:var(--accent);font-variant-numeric:tabular-nums;font-size:var(--fs-xs);margin-left:auto;display:inline-flex;align-items:center;gap:6px}
+.aC .sub-r .dur{color:var(--ink-3);font-variant-numeric:tabular-nums}   /* all rows: frozen, neutral */
+.aC .sub-r.live .nm{color:var(--ink)}
+.aC .sub-r.live .startedat{color:var(--ink-3)}      /* "started 0:48 ago" — stamped, not ticking */
+.aC .sub-r .g.run{color:var(--accent)}
+
+/* =====================================================================
+   ALT D — glyph-strip sparkline
+   ===================================================================== */
+/* The whole fan-out collapses to one dense glyph strip — one cell per
+   child, grouped worst-first — so the SHAPE of the fan-out is legible at
+   a glance regardless of count (8 or 80). Failure (red) and live (blue,
+   breathing) read instantly; the strip expands to the full rows. The
+   strip itself IS the overflow device: no run-on line, no truncation. */
+.aD .strip{display:flex;flex-wrap:wrap;gap:5px;margin:var(--s2) 0 var(--s1)}
+.aD .cell{width:15px;height:15px;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9px;border:1px solid transparent;flex:none}
+.aD .cell.done{color:var(--done);border-color:var(--line);background:var(--surface-2)}
+.aD .cell.err{color:#0a0c14;background:var(--error)}
+.aD .cell.run{color:#0a0c14;background:var(--accent);animation:breathe 2.6s ease-in-out infinite}
+.aD .cell.unk{color:var(--ink-3);border-color:var(--hair);background:transparent}
+.aD .stripcap{font-size:var(--fs-xs);color:var(--ink-3);display:flex;align-items:center;gap:var(--s2);font-variant-numeric:tabular-nums}
+.aD .stripcap .ex{margin-left:auto;color:var(--accent)}
+.aD .stripcap .ex:hover{text-decoration:underline}
+.aD .rows{display:none;margin-top:var(--s2)}
+.aD .subs.open .rows{display:block}
+.aD .subs.open .strip,.aD .subs.open .stripcap{display:none}
+.aD .subs .stripcap .ex .lbl::after{content:"expand rows"}
+</style>
+</head>
+<body>
+<div class="gallery">
+
+  <div class="page-h">
+    <h1>#8 — Subagent module states</h1>
+    <p>Four directions for the inline <b>Subagents (N)</b> module under load and at the edges:
+       a healthy small fan-out, a heavy fan-out that overflows, one with a child that
+       <i>failed to run</i>, and the trap case — a "running" subagent on a session that is no
+       longer live, with no completion signal ever arriving.</p>
+    <div class="principles">
+      Held constant across all four: <b>one containment device</b> (the single neutral box — rows
+      are separated by space, never gridlines); <b>every status is glyph-paired</b>
+      (<span style="color:var(--done)">✓</span> done ·
+      <span style="color:var(--accent)">⟳</span> running ·
+      <span style="color:var(--error)">✕</span> failed ·
+      <span style="color:var(--ink-3)">?</span> unknown) so it survives colorblindness;
+      <b>done recedes</b> (neutral — a subagent that ran fine but found bad news is still neutral,
+      with the bad news in its result text); <b>a failed child stands out in red and is never
+      folded into the done tally</b>; and above all, <b>liveness is honest</b> — a spinner or a
+      breathing dot means genuinely live work, full stop. A "running" child on a dead/notLoaded
+      session is shown as terminal <b>unknown</b>, not as a spinner that runs forever.
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ALT A — honest-clock demotion + "?" unknown state
+       ============================================================ -->
+  <section class="alt aA">
+    <div class="alt-h"><span class="badge">A</span><span class="ttl">Honest-clock demotion + “?” unknown state</span></div>
+    <div class="cap">Closest to today's module, with the liveness made honest. While the session is
+      live, a running row shows <b>⟳ + a ticking clock</b>. The moment the session is no longer
+      live, every still-"running" row <b>demotes to a neutral “?”</b>, freezes its last-known
+      elapsed, and labels it <b>“last seen Ns ago”</b> — so a dead subagent can never wear a spinner
+      forever. <span class="trade">Trade-off:</span> the smallest visual change (good for adoption),
+      but it leans on row text to carry the unknown state rather than a distinct layout.</div>
+
+    <div class="stage">
+      <div class="case-l">Healthy small fan-out</div>
+      <div class="agent lead">Tracing the cache and its callers in parallel.</div>
+      <div class="subs">
+        <div class="subs-h"><span class="t">Subagents (2)</span><span class="tally"><span class="r">⟳ 1 running</span> <span class="sep">·</span> <span class="o">✓ 1 done</span></span><span class="el num">1:04</span></div>
+        <button class="sub-r"><span class="g done">✓</span><span class="nm">trace-callers</span><span class="res">found 7 call sites</span><span class="dur frozen num">3.1s</span><span class="lk">view →</span></button>
+        <button class="sub-r"><span class="g run">⟳</span><span class="nm">find-tests</span><span class="res"><span class="live" style="color:var(--accent)">running</span> · reading cache_test.go</span><span class="runclock num">0:48</span><span class="lk">view →</span></button>
+      </div>
+
+      <div class="case-l">Failed child (surfaced in red, not averaged into “done”)</div>
+      <div class="subs has-fail">
+        <div class="subs-h"><span class="t">Subagents (4)</span><span class="tally"><span class="r">⟳ 1 running</span> <span class="sep">·</span> <span class="o">✓ 2 done</span> <span class="sep">·</span> <span class="f">✕ 1 failed</span></span><span class="el num">2:10</span></div>
+        <button class="sub-r"><span class="g err">✕</span><span class="nm">billing/worker</span><span class="res"><span class="bad">crashed — panic: nil map</span></span><span class="dur frozen num">6.0s</span><span class="lk">view →</span></button>
+        <button class="sub-r"><span class="g done">✓</span><span class="nm">auth/login</span><span class="res">ok · 12 callers</span><span class="dur frozen num">4.2s</span><span class="lk">view →</span></button>
+        <button class="sub-r"><span class="g done">✓</span><span class="nm">api/middleware</span><span class="res">ok</span><span class="dur frozen num">5.1s</span><span class="lk">view →</span></button>
+        <button class="sub-r"><span class="g run">⟳</span><span class="nm">search/indexer</span><span class="res"><span class="live" style="color:var(--accent)">running</span> · scanning usages</span><span class="runclock num">0:41</span><span class="lk">view →</span></button>
+      </div>
+      <p class="note"><b class="bad">✕ failed</b> = the subagent or its tool <b>broke</b> (panic, exec error). A subagent that ran fine but reported <i>bad news</i> (a failing test it was asked to check) is still <span class="ok">✓ done</span>, neutral, with the bad news in its text.</p>
+
+      <div class="case-l">Stale / terminal-unknown — session no longer live, no completion signal</div>
+      <div class="subs stale">
+        <div class="subs-h"><span class="t">Subagents (3)</span><span class="tally"><span class="o">✓ 2 done</span> <span class="sep">·</span> <span class="u">? 1 unknown</span></span><span class="unk-note">session ended · last update 6m ago</span></div>
+        <button class="sub-r"><span class="g done">✓</span><span class="nm">trace-callers</span><span class="res">found 7 call sites</span><span class="dur frozen num">3.1s</span><span class="lk">view →</span></button>
+        <button class="sub-r"><span class="g done">✓</span><span class="nm">find-tests</span><span class="res">2 tests cover eviction</span><span class="dur frozen num">5.4s</span><span class="lk">view →</span></button>
+        <button class="sub-r unkrow"><span class="g unk">?</span><span class="nm">search/indexer</span><span class="res"><span class="unk">never reported finishing — last seen 6m ago</span></span><span class="dur frozen num">~0:51</span><span class="lk">view →</span></button>
+      </div>
+      <p class="note">The <span style="color:var(--ink-3)">?</span> row is the whole point: it was "running" when the session went dark and <b>no <code>JOB_FINISHED</code> arrived</b>. Instead of a spinner that ticks forever, it freezes (<code>~0:51</code>, the <code>~</code> admits it's approximate) and says so plainly. The breathing dot and ⟳ are <b>gone</b> — nothing here is live.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ALT B — columnar overflow sorted by severity
+       ============================================================ -->
+  <section class="alt aB">
+    <div class="alt-h"><span class="badge">B</span><span class="ttl">Columnar overflow, sorted by severity</span></div>
+    <div class="cap">Heavy fan-out becomes a tidy <b>two-column grid sorted worst-first</b>
+      (failed → running → done → unknown), so a failure is always at the top and the rest pack
+      densely instead of spilling into a run-on line. Past a cap, the tail folds to an honest
+      <b>“+N more · expand”</b>. <span class="trade">Trade-off:</span> the grid sacrifices the
+      live-spawn order (you can't watch them appear in sequence) for triage-at-a-glance; the
+      two-up layout needs the result text to stay short.</div>
+
+    <div class="stage">
+      <div class="case-l">Healthy small fan-out (grid, but only two rows)</div>
+      <div class="agent lead">Tracing the cache and its callers in parallel.</div>
+      <div class="subs">
+        <div class="subs-h"><span class="t">Subagents (2)</span><span class="tally"><span class="r">⟳ 1 running</span> <span style="color:var(--ink-4)">·</span> <span class="o">✓ 1 done</span></span><span class="el num">1:04</span></div>
+        <div class="grid">
+          <button class="gr runrow"><span class="g run">⟳</span><span class="nm">find-tests</span><span class="res">reading cache_test.go</span><span class="dur num">0:48</span></button>
+          <button class="gr"><span class="g done">✓</span><span class="nm">trace-callers</span><span class="res">7 call sites</span><span class="dur num">3.1s</span></button>
+        </div>
+      </div>
+
+      <div class="case-l">Heavy fan-out (8 children) + a failed child — overflow folds, worst-first</div>
+      <div class="subs has-fail">
+        <div class="subs-h"><span class="t">Subagents (8)</span><span class="tally"><span class="f">✕ 1 failed</span> <span style="color:var(--ink-4)">·</span> <span class="r">⟳ 2 running</span> <span style="color:var(--ink-4)">·</span> <span class="o">✓ 5 done</span></span><span class="el num">2:14</span></div>
+        <div class="grid" id="bGrid">
+          <button class="gr"><span class="g err">✕</span><span class="nm">billing/worker</span><span class="res"><span class="bad">assertion failed</span></span><span class="dur num">6.0s</span></button>
+          <button class="gr runrow"><span class="g run">⟳</span><span class="nm">search/indexer</span><span class="res">scanning usages</span><span class="dur num">0:41</span></button>
+          <button class="gr runrow"><span class="g run">⟳</span><span class="nm">admin/console</span><span class="res">building call graph</span><span class="dur num">0:33</span></button>
+          <button class="gr"><span class="g done">✓</span><span class="nm">auth/login</span><span class="res">ok · 12 callers</span><span class="dur num">4.2s</span></button>
+          <button class="gr"><span class="g done">✓</span><span class="nm">auth/refresh</span><span class="res">ok</span><span class="dur num">3.8s</span></button>
+          <button class="gr"><span class="g done">✓</span><span class="nm">api/middleware</span><span class="res">ok</span><span class="dur num">5.1s</span></button>
+          <button class="gr hidden"><span class="g done">✓</span><span class="nm">gateway/proxy</span><span class="res">ok</span><span class="dur num">4.4s</span></button>
+          <button class="gr hidden"><span class="g done">✓</span><span class="nm">cron/sweeper</span><span class="res">ok · 3 callers</span><span class="dur num">2.9s</span></button>
+          <button class="more" onclick="this.closest('.grid').classList.toggle('open')"><span class="lbl"></span> <span class="ct">· 2 done</span></button>
+        </div>
+      </div>
+      <p class="note">Worst-first ordering means <b class="bad">billing/worker ✕</b> is the first thing you read, and the red header edge confirms it; the five clean "✓ ok" results compress into two columns and the tail collapses, so the height is bounded no matter how wide the fan-out gets.</p>
+
+      <div class="case-l">Stale / terminal-unknown — running children that never reported back</div>
+      <div class="subs stale">
+        <div class="subs-h"><span class="t">Subagents (4)</span><span class="tally"><span class="u">? 1 unknown</span> <span style="color:var(--ink-4)">·</span> <span class="o">✓ 3 done</span></span><span class="unk-note">session ended · last update 6m ago</span></div>
+        <div class="grid">
+          <button class="gr"><span class="g unk">?</span><span class="nm">search/indexer</span><span class="res"><span style="color:var(--ink-3);font-style:italic">unknown — last seen 6m ago</span></span><span class="dur num">~0:51</span></button>
+          <button class="gr"><span class="g done">✓</span><span class="nm">auth/login</span><span class="res">ok · 12 callers</span><span class="dur num">4.2s</span></button>
+          <button class="gr"><span class="g done">✓</span><span class="nm">api/middleware</span><span class="res">ok</span><span class="dur num">5.1s</span></button>
+          <button class="gr"><span class="g done">✓</span><span class="nm">auth/refresh</span><span class="res">ok</span><span class="dur num">3.8s</span></button>
+        </div>
+      </div>
+      <p class="note">Unknown sorts just under failed (it might <i>be</i> a failure we never heard about), so a session that died mid-fan-out still surfaces the open question at the top instead of pretending everything finished.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ALT C — one module clock, done rows frozen
+       ============================================================ -->
+  <section class="alt aC">
+    <div class="alt-h"><span class="badge">C</span><span class="ttl">One module clock, done rows frozen</span></div>
+    <div class="cap">There is <b>exactly one ticking clock</b> in the module — the elapsed in the
+      header, the single thing still happening. Every row carries a <b>frozen, stamped duration</b>
+      the moment it settles, and even a live row shows a stamped <b>“started Ns ago”</b> rather than
+      a churning per-row counter. Only genuinely-live work gets the ⟳ and the one breathing dot.
+      <span class="trade">Trade-off:</span> you lose a live per-row stopwatch (some users like
+      watching a slow child's number climb); you gain a calm module where one number moves, not
+      eight.</div>
+
+    <div class="stage">
+      <div class="case-l">Healthy small fan-out — one clock ticks (the dot), rows are frozen</div>
+      <div class="agent lead">Tracing the cache and its callers in parallel.</div>
+      <div class="subs">
+        <div class="subs-h"><span class="t">Subagents (2)</span><span class="tally"><span class="r">⟳ 1 running</span> <span style="color:var(--ink-4)">·</span> <span class="o">✓ 1 done</span></span><span class="modclock"><span class="livedot"></span><span class="num">1:04</span></span></div>
+        <button class="sub-r live"><span class="g run">⟳</span><span class="nm">find-tests</span><span class="res"><span style="color:var(--accent)">running</span> · reading cache_test.go</span><span class="dur startedat num">started 0:48 ago</span><span class="lk">view →</span></button>
+        <button class="sub-r"><span class="g done">✓</span><span class="nm">trace-callers</span><span class="res">found 7 call sites</span><span class="dur num">3.1s</span><span class="lk">view →</span></button>
+      </div>
+
+      <div class="case-l">Failed child — frozen at its final duration, red, above the done rows</div>
+      <div class="subs has-fail">
+        <div class="subs-h"><span class="t">Subagents (4)</span><span class="tally"><span class="r">⟳ 1 running</span> <span style="color:var(--ink-4)">·</span> <span class="o">✓ 2 done</span> <span style="color:var(--ink-4)">·</span> <span class="f">✕ 1 failed</span></span><span class="modclock"><span class="livedot"></span><span class="num">2:10</span></span></div>
+        <button class="sub-r"><span class="g err">✕</span><span class="nm">billing/worker</span><span class="res"><span style="color:var(--error)">crashed — panic: nil map</span></span><span class="dur num">6.0s</span><span class="lk">view →</span></button>
+        <button class="sub-r live"><span class="g run">⟳</span><span class="nm">search/indexer</span><span class="res"><span style="color:var(--accent)">running</span> · scanning usages</span><span class="dur startedat num">started 0:41 ago</span><span class="lk">view →</span></button>
+        <button class="sub-r"><span class="g done">✓</span><span class="nm">auth/login</span><span class="res">ok · 12 callers</span><span class="dur num">4.2s</span><span class="lk">view →</span></button>
+        <button class="sub-r"><span class="g done">✓</span><span class="nm">api/middleware</span><span class="res">ok</span><span class="dur num">5.1s</span><span class="lk">view →</span></button>
+      </div>
+      <p class="note">The failed row's <code>6.0s</code> is final and frozen; only the module clock (and the dot) move. No row's number churns once it has stopped, which is the whole anti-churn point.</p>
+
+      <div class="case-l">Stale / terminal-unknown — the module clock stops, the dot is gone</div>
+      <div class="subs stale">
+        <div class="subs-h"><span class="t">Subagents (3)</span><span class="tally"><span class="o">✓ 2 done</span> <span style="color:var(--ink-4)">·</span> <span class="u">? 1 unknown</span></span><span class="unk-note">ran 2:31 · ended 6m ago</span></div>
+        <button class="sub-r"><span class="g done">✓</span><span class="nm">trace-callers</span><span class="res">found 7 call sites</span><span class="dur num">3.1s</span><span class="lk">view →</span></button>
+        <button class="sub-r"><span class="g done">✓</span><span class="nm">find-tests</span><span class="res">2 tests cover eviction</span><span class="dur num">5.4s</span><span class="lk">view →</span></button>
+        <button class="sub-r"><span class="g unk">?</span><span class="nm">search/indexer</span><span class="res"><span style="color:var(--ink-3);font-style:italic">never reported finishing</span></span><span class="dur num">~0:51</span><span class="lk">view →</span></button>
+      </div>
+      <p class="note">When the session is no longer live the one moving thing — the module clock + dot — <b>stops and is replaced by a settled span</b> ("ran 2:31 · ended 6m ago"). Nothing in the module animates. The unknown child keeps its frozen <code>~0:51</code> and an honest "?".</p>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ALT D — glyph-strip sparkline
+       ============================================================ -->
+  <section class="alt aD">
+    <div class="alt-h"><span class="badge">D</span><span class="ttl">Glyph-strip sparkline</span></div>
+    <div class="cap">The whole fan-out collapses to a <b>dense strip of cells</b> — one per child,
+      grouped worst-first — so the <b>shape</b> of the fan-out is legible at a glance whether there
+      are 8 children or 80. A red cell or a breathing blue cell jumps out; the strip <i>is</i> the
+      overflow device, so there is never a run-on line or a truncated tail. Click to expand the full
+      rows. <span class="trade">Trade-off:</span> the strip alone doesn't tell you <i>which</i> child
+      failed (you expand for that); strongest as a scannable header on a big fan-out, weaker for a
+      two-child run where rows are already tiny.</div>
+
+    <div class="stage">
+      <div class="case-l">Healthy small fan-out</div>
+      <div class="agent lead">Tracing the cache and its callers in parallel.</div>
+      <div class="subs">
+        <div class="subs-h"><span class="t">Subagents (2)</span><span class="tally"><span class="r">⟳ 1 running</span> <span style="color:var(--ink-4)">·</span> <span class="o">✓ 1 done</span></span><span class="el num">1:04</span></div>
+        <div class="strip">
+          <span class="cell run" title="find-tests · running">⟳</span>
+          <span class="cell done" title="trace-callers · done">✓</span>
+        </div>
+        <div class="stripcap"><span class="livedot"></span> 1 running · 1 done <button class="ex" onclick="this.closest('.subs').classList.add('open')"><span class="lbl"></span> ↓</button></div>
+        <div class="rows">
+          <button class="sub-r"><span class="g run">⟳</span><span class="nm">find-tests</span><span class="res"><span style="color:var(--accent)">running</span> · reading cache_test.go</span><span class="dur num">0:48</span><span class="lk">view →</span></button>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm">trace-callers</span><span class="res">found 7 call sites</span><span class="dur frozen num">3.1s</span><span class="lk">view →</span></button>
+        </div>
+      </div>
+
+      <div class="case-l">Heavy fan-out (12 children) + a failed child — the shape reads instantly</div>
+      <div class="subs has-fail">
+        <div class="subs-h"><span class="t">Subagents (12)</span><span class="tally"><span class="f">✕ 1 failed</span> <span style="color:var(--ink-4)">·</span> <span class="r">⟳ 2 running</span> <span style="color:var(--ink-4)">·</span> <span class="o">✓ 9 done</span></span><span class="el num">2:14</span></div>
+        <div class="strip">
+          <span class="cell err" title="billing/worker · failed">✕</span>
+          <span class="cell run" title="search/indexer · running">⟳</span>
+          <span class="cell run" title="admin/console · running">⟳</span>
+          <span class="cell done" title="auth/login · done">✓</span>
+          <span class="cell done" title="auth/refresh · done">✓</span>
+          <span class="cell done" title="api/middleware · done">✓</span>
+          <span class="cell done" title="gateway/proxy · done">✓</span>
+          <span class="cell done" title="cron/sweeper · done">✓</span>
+          <span class="cell done" title="search/api · done">✓</span>
+          <span class="cell done" title="metrics/collector · done">✓</span>
+          <span class="cell done" title="notify/email · done">✓</span>
+          <span class="cell done" title="audit/log · done">✓</span>
+        </div>
+        <div class="stripcap"><span style="color:var(--error)">1 failed</span> · 2 running · 9 done <button class="ex" onclick="this.closest('.subs').classList.add('open')"><span class="lbl"></span> ↓</button></div>
+        <div class="rows">
+          <button class="sub-r"><span class="g err">✕</span><span class="nm">billing/worker</span><span class="res"><span style="color:var(--error)">assertion failed</span></span><span class="dur frozen num">6.0s</span><span class="lk">view →</span></button>
+          <button class="sub-r"><span class="g run">⟳</span><span class="nm">search/indexer</span><span class="res"><span style="color:var(--accent)">running</span> · scanning usages</span><span class="dur num">0:41</span><span class="lk">view →</span></button>
+          <button class="sub-r"><span class="g run">⟳</span><span class="nm">admin/console</span><span class="res"><span style="color:var(--accent)">running</span> · building call graph</span><span class="dur num">0:33</span><span class="lk">view →</span></button>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm">auth/login</span><span class="res">ok · 12 callers</span><span class="dur frozen num">4.2s</span><span class="lk">view →</span></button>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm">+ 8 more done</span><span class="res" style="color:var(--ink-3)">auth/refresh · api/middleware · gateway/proxy · …</span><span class="lk">view all →</span></button>
+        </div>
+      </div>
+      <p class="note">One red cell in a field of neutral ticks is impossible to miss, and a 12- or 80-wide fan-out occupies the same two rows of cells. The strip carries the <b>shape</b>; expanding gives the <b>detail</b>.</p>
+
+      <div class="case-l">Stale / terminal-unknown — outlined (hollow) cells, no motion</div>
+      <div class="subs stale">
+        <div class="subs-h"><span class="t">Subagents (4)</span><span class="tally"><span class="u">? 1 unknown</span> <span style="color:var(--ink-4)">·</span> <span class="o">✓ 3 done</span></span><span class="unk-note">session ended · 6m ago</span></div>
+        <div class="strip">
+          <span class="cell unk" title="search/indexer · unknown — last seen 6m ago">?</span>
+          <span class="cell done" title="auth/login · done">✓</span>
+          <span class="cell done" title="api/middleware · done">✓</span>
+          <span class="cell done" title="auth/refresh · done">✓</span>
+        </div>
+        <div class="stripcap"><span style="color:var(--ink-3)">1 unknown</span> · 3 done <button class="ex" onclick="this.closest('.subs').classList.add('open')"><span class="lbl"></span> ↓</button></div>
+        <div class="rows">
+          <button class="sub-r"><span class="g unk">?</span><span class="nm">search/indexer</span><span class="res"><span style="color:var(--ink-3);font-style:italic">never reported finishing — last seen 6m ago</span></span><span class="dur frozen num">~0:51</span><span class="lk">view →</span></button>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm">auth/login</span><span class="res">ok · 12 callers</span><span class="dur frozen num">4.2s</span><span class="lk">view →</span></button>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm">api/middleware</span><span class="res">ok</span><span class="dur frozen num">5.1s</span><span class="lk">view →</span></button>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm">auth/refresh</span><span class="res">ok</span><span class="dur frozen num">3.8s</span><span class="lk">view →</span></button>
+        </div>
+      </div>
+      <p class="note">The unknown cell is <b>hollow</b> (outlined, no fill, no animation) — visually distinct from both the filled "live blue" cell and the solid "failed red" cell, so a dead session can never masquerade as a running one. The strip has zero motion when nothing is live.</p>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

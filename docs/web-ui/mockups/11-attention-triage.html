@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf Mockups — #11 Cross-session attention triage</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="./tokens.css" rel="stylesheet">
+<style>
+/* ====================================================================
+   TOPIC #11 — CROSS-SESSION ATTENTION TRIAGE
+   "Needs you" (amber/awaiting) is scattered across per-session dots,
+   project rollups, and per-row meta — there is NO single place that
+   answers "which sessions need me RIGHT NOW across all projects." A
+   blocked agent waiting on a permission/answer wastes wall-clock and is
+   buried behind per-project expansion.
+
+   Four triage surfaces (A/B/C/D), each a REAL rendering of the SAME
+   multi-project workspace where several sessions across different
+   projects need the user. Each alternative shows BOTH the populated
+   state and the empty state (nothing needs you → surface hidden/quiet).
+
+   Amber is reserved STRICTLY for needs-you and is always glyph-paired
+   (◆ awaiting). Blue = live/working, neutral = idle/done.
+   ==================================================================== */
+
+/* tokens.css sets body{overflow:hidden} + .app grid for the live app.
+   This is a gallery page, so re-allow scroll and lay panels out. */
+body{overflow:auto}
+.gallery{max-width:1180px;margin:0 auto;padding:var(--s6) var(--s5)}
+.gallery > header{margin-bottom:var(--s5)}
+.gallery h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.gallery .lede{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);max-width:720px;line-height:1.6}
+.gallery .lede b{color:var(--ink-2);font-weight:600}
+.gallery .lede .amb{color:var(--attention);font-weight:600}
+.gallery .lede code{font-family:var(--mono);font-size:12px;color:var(--ink);border-bottom:1px solid var(--hair)}
+
+/* the four-up grid of specimens */
+.alts{display:grid;grid-template-columns:repeat(2,1fr);gap:var(--s5)}
+@media (max-width:980px){.alts{grid-template-columns:1fr}}
+
+.spec{display:flex;flex-direction:column;gap:var(--s3)}
+.spec-cap{display:flex;flex-direction:column;gap:3px}
+.spec-cap .id{display:flex;align-items:baseline;gap:var(--s2)}
+.spec-cap .id b{font-size:var(--fs-base);font-weight:600;color:var(--ink)}
+.spec-cap .id .idea{font-size:var(--fs-sm);color:var(--ink-2)}
+.spec-cap .trade{font-size:var(--fs-xs);color:var(--ink-3);line-height:1.5;max-width:500px}
+.spec-cap .trade .plus{color:var(--ink-2)}
+
+/* device frame so each alternative reads as a real rendering */
+.frame{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--bg);
+       display:grid;grid-template-columns:230px 1fr;min-height:430px}
+.frame.railed{grid-template-columns:52px 1fr}
+.frame .fsidebar{background:#101117;border-right:1px solid var(--line);padding:var(--s3) var(--s2) var(--s4);overflow:hidden}
+.frame .fws{display:flex;flex-direction:column;min-width:0}
+
+/* shared mini-titlebar (identity only, + space for a header badge in B) */
+.ftb{display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4);height:46px;border-bottom:1px solid var(--line);flex:none}
+.ftb .ttl{font-size:14px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ftb .ov{margin-left:auto;font-size:var(--fs-sm);color:var(--ink-3);padding:5px 9px;border-radius:var(--r)}
+
+/* mini transcript stub so the surface sits in context */
+.fbody{padding:var(--s4);display:flex;flex-direction:column;gap:var(--s2);flex:1}
+.fbody .qrow{display:flex;gap:var(--s3);align-items:baseline}
+.fbody .qrow .you{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);flex:none;width:30px}
+.fbody .qrow .q{font-size:var(--fs-sm);color:var(--ink-2);line-height:1.5}
+.fbody .prose{font-size:var(--fs-base);color:var(--ink);line-height:1.55;margin-top:var(--s1)}
+.fbody .prose code{font-family:var(--mono);font-size:11.5px;color:var(--ink);border-bottom:1px solid var(--hair)}
+
+/* a small "live status" line, reused */
+.statusline{display:inline-flex;align-items:center;gap:var(--s2);margin-top:var(--s2);font-size:var(--fs-sm)}
+.statusline .lbl.live{color:var(--accent)} .statusline .num{color:var(--ink-2)}
+.bdot{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:breathe 2.6s ease-in-out infinite;flex:none}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.45}}
+
+/* ============ shared sidebar primitives (structurally identical across alts) ============ */
+.frame .sbgroup + .sbgroup{margin-top:var(--s4)}
+.tierlbl{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);padding:0 var(--s2) var(--s2);display:flex;align-items:center;gap:var(--s2)}
+.frame .p{display:flex;align-items:center;gap:var(--s2);width:100%;text-align:left;padding:var(--s1) var(--s2);border-radius:var(--r);min-height:28px}
+.frame .p:hover{background:var(--surface)}
+.frame .p .chev{font-size:8px;color:var(--ink-4);width:8px;flex:none}
+.frame .p .name{font-size:var(--fs-sm);font-weight:600;color:var(--ink-2)}
+.frame .p .roll{width:6px;height:6px;border-radius:50%;flex:none}
+.frame .roll.live{background:var(--accent)} .frame .roll.attn{background:var(--attention)}
+.frame .p .age{font-size:var(--fs-xs);color:var(--ink-3);margin-left:auto}
+.frame .p .count{font-size:var(--fs-xs);color:var(--ink-4);margin-left:var(--s2)}
+.frame .kids{padding-left:var(--s3)}
+
+/* a session row inside a project */
+.frame .ses{display:flex;align-items:flex-start;gap:var(--s2);width:100%;text-align:left;padding:4px var(--s2);border-radius:var(--r);min-height:30px;position:relative}
+.frame .ses:hover{background:var(--surface)}
+.frame .ses.sel{background:var(--surface-2)}
+.frame .ses .dot{width:6px;height:6px;border-radius:50%;flex:none;margin-top:5px}
+.frame .dot.live{background:var(--accent)} .frame .dot.idle{background:var(--ink-4)} .frame .dot.attn{background:var(--attention)}
+.frame .ses .sm{min-width:0;flex:1;display:flex;flex-direction:column}
+.frame .ses .st{font-size:var(--fs-sm);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.frame .ses.sel .st{font-weight:600}
+.frame .ses .meta{font-size:var(--fs-xs);color:var(--ink-3);margin-top:1px}
+.frame .ses .meta .live{color:var(--accent)}
+/* the ONLY place amber text appears: a needs-you session's meta, always glyph-paired */
+.frame .ses .meta .attn{color:var(--attention);font-weight:600}
+
+/* ============ the triage glyph + amber chip vocabulary, shared ============ */
+.attn-glyph{color:var(--attention)}                      /* ◆ — the needs-you glyph, colorblind-safe pairing */
+.needbadge{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-xs);font-weight:600;
+           color:var(--attention);border:1px solid var(--attention);border-radius:var(--r-pill);padding:2px 9px;line-height:1}
+.needbadge .n{font-variant-numeric:tabular-nums}
+
+/* ====================================================================
+   A — TOP "NEEDS YOU (N)" TIER
+   A dedicated section pinned ABOVE Active, listing every awaiting
+   session across all projects with the question/permission summarized.
+   Amber-tinted container (the one device); each row glyph-paired.
+   ==================================================================== */
+.a-need{background:var(--attention-soft);border:1px solid rgba(226,176,106,.28);border-radius:var(--r);padding:var(--s2);margin-bottom:var(--s4)}
+.a-need .h{display:flex;align-items:center;gap:var(--s2);padding:2px var(--s1) var(--s2);font-size:var(--fs-xs);font-weight:600;color:var(--attention)}
+.a-need .h .lbl{letter-spacing:.01em}
+.a-need .h .n{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--attention)}
+.a-need .nrow{display:flex;align-items:flex-start;gap:var(--s2);width:100%;text-align:left;padding:var(--s2);border-radius:var(--r)}
+.a-need .nrow:hover{background:rgba(226,176,106,.10)}
+.a-need .nrow .g{color:var(--attention);font-size:11px;flex:none;margin-top:2px}
+.a-need .nrow .nm{min-width:0;flex:1;display:flex;flex-direction:column}
+.a-need .nrow .t{font-size:var(--fs-sm);font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.a-need .nrow .ask{font-size:var(--fs-xs);color:var(--ink-2);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.a-need .nrow .proj{font-size:10px;color:var(--ink-3);font-weight:500;margin-top:2px}
+.a-need .nrow .wait{font-size:10px;color:var(--ink-3);font-variant-numeric:tabular-nums;flex:none;margin-top:2px}
+/* empty state: the whole tier collapses to one quiet, non-amber line */
+.a-empty{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s2) var(--s3);font-size:var(--fs-xs);color:var(--ink-3)}
+.a-empty .g{color:var(--ink-4)}
+
+/* ====================================================================
+   B — HEADER BADGE + CYCLE
+   The surface lives in chrome, not the sidebar: an amber "◆ Needs you
+   (N)" badge in the top bar. Pressing it (or `n`) cycles to the
+   next-oldest awaiting session and opens it. Sidebar stays normal.
+   ==================================================================== */
+.b-badge{display:inline-flex;align-items:center;gap:var(--s2);margin-left:auto;cursor:pointer}
+.b-badge .pill{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-xs);font-weight:600;color:var(--attention);
+               border:1px solid var(--attention);background:var(--attention-soft);border-radius:var(--r-pill);padding:3px 9px;line-height:1}
+.b-badge .pill .n{font-variant-numeric:tabular-nums}
+.b-badge .k{font-family:var(--mono);font-size:9.5px;color:var(--ink-3);border:1px solid var(--line);border-radius:3px;padding:1px 5px}
+/* empty state: badge replaced by the calm "all clear" identity-only treatment */
+.b-clear{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-xs);color:var(--ink-3)}
+.b-clear .g{color:var(--done)}
+/* a small dropdown preview the badge opens, so cycle target is legible */
+.b-pop{margin:var(--s3) var(--s4) 0;border:1px solid rgba(226,176,106,.28);background:var(--attention-soft);border-radius:var(--r);padding:var(--s2)}
+.b-pop .ph{font-size:10px;font-weight:600;color:var(--attention);padding:2px var(--s1) var(--s2);display:flex;align-items:center;gap:6px}
+.b-pop .ph .hint{margin-left:auto;color:var(--ink-3);font-weight:400}
+.b-pop .pr{display:flex;align-items:baseline;gap:var(--s2);padding:5px var(--s1);border-radius:var(--r)}
+.b-pop .pr:hover{background:rgba(226,176,106,.10)}
+.b-pop .pr.cur{background:rgba(226,176,106,.12)}
+.b-pop .pr .g{color:var(--attention);font-size:10px;flex:none}
+.b-pop .pr .t{font-size:var(--fs-sm);color:var(--ink)}
+.b-pop .pr .proj{font-size:10px;color:var(--ink-3);margin-left:auto;font-variant-numeric:tabular-nums}
+
+/* ====================================================================
+   C — SORT-AWAITING-TO-TOP
+   No new container. Within EACH project (and the project order itself),
+   awaiting sessions re-rank to the top, marked with the amber ◆ glyph +
+   amber meta. Triage by reading top-down; structure is unchanged.
+   ==================================================================== */
+.c-firsthint{font-size:10px;color:var(--ink-3);padding:0 var(--s2) var(--s2)}
+.c-firsthint b{color:var(--attention)}
+/* an awaiting session gets an amber left tick (one device, rail not box) */
+.frame .ses.await{padding-left:calc(var(--s2) + 4px)}
+.frame .ses.await::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:2px;background:var(--attention);border-radius:2px}
+
+/* ====================================================================
+   D — COLLAPSED-RAIL ATTENTION DOT
+   When the sidebar is collapsed to an icon rail, attention can't hide.
+   One amber dot + count badge on the rail's triage icon; the rest of
+   the rail stays neutral. Hovering reveals the same A-style flyout.
+   ==================================================================== */
+.d-rail{display:flex;flex-direction:column;align-items:center;gap:var(--s3);padding-top:var(--s1)}
+.d-ricon{width:32px;height:32px;border-radius:var(--r);display:flex;align-items:center;justify-content:center;
+         color:var(--ink-3);font-size:13px;position:relative}
+.d-ricon:hover{background:var(--surface);color:var(--ink-2)}
+.d-ricon.sel{background:var(--surface-2);color:var(--ink)}
+.d-ricon .glyph{font-size:14px}
+/* the triage icon carries the only color on the rail when something awaits */
+.d-ricon.triage{color:var(--attention)}
+.d-ricon .badge{position:absolute;top:-3px;right:-3px;min-width:15px;height:15px;padding:0 3px;border-radius:var(--r-pill);
+                background:var(--attention);color:#0a0c14;font-size:9.5px;font-weight:700;display:flex;align-items:center;justify-content:center;
+                font-variant-numeric:tabular-nums;border:2px solid #101117}
+/* the live (blue) icon uses a plain dot, never amber */
+.d-ricon .ldot{position:absolute;top:-1px;right:-1px;width:7px;height:7px;border-radius:50%;background:var(--accent);border:2px solid #101117}
+.d-sep{width:20px;height:1px;background:var(--line);margin:2px 0}
+/* hover flyout reusing the A vocabulary */
+.d-flyout{position:absolute;left:48px;top:6px;width:250px;background:var(--surface-2);border:1px solid rgba(226,176,106,.30);
+          border-radius:var(--r);padding:var(--s2);box-shadow:0 10px 30px rgba(0,0,0,.5);z-index:6}
+.d-flyout .h{display:flex;align-items:center;gap:var(--s2);padding:2px var(--s1) var(--s2);font-size:var(--fs-xs);font-weight:600;color:var(--attention)}
+.d-flyout .h .n{margin-left:auto;font-variant-numeric:tabular-nums}
+.d-flyout .fr{display:flex;align-items:flex-start;gap:var(--s2);padding:var(--s2);border-radius:var(--r)}
+.d-flyout .fr:hover{background:rgba(226,176,106,.10)}
+.d-flyout .fr .g{color:var(--attention);font-size:11px;flex:none;margin-top:2px}
+.d-flyout .fr .nm{min-width:0;flex:1}
+.d-flyout .fr .t{font-size:var(--fs-sm);font-weight:600;color:var(--ink)}
+.d-flyout .fr .ask{font-size:var(--fs-xs);color:var(--ink-2);margin-top:1px}
+.d-flyout .fr .proj{font-size:10px;color:var(--ink-3);margin-top:2px}
+/* empty: the triage icon goes neutral, no badge, no color */
+.d-ricon.quiet{color:var(--ink-4)}
+
+/* ============ empty-state mini panels (a small "second state" per alt) ============ */
+.empties{margin-top:var(--s6)}
+.empties h2{font-size:var(--fs-base);font-weight:600;color:var(--ink);margin-bottom:var(--s2)}
+.empties .lede{font-size:var(--fs-sm);color:var(--ink-2);max-width:720px;line-height:1.55;margin-bottom:var(--s4)}
+.egrid{display:grid;grid-template-columns:repeat(2,1fr);gap:var(--s4)}
+@media (max-width:980px){.egrid{grid-template-columns:1fr}}
+.ecard{border:1px solid var(--line);border-radius:var(--r);background:var(--bg);overflow:hidden}
+.ecard .ehead{font-size:var(--fs-xs);font-weight:600;color:var(--ink-2);padding:var(--s2) var(--s3);border-bottom:1px solid var(--line);background:#101117;display:flex;align-items:center;gap:var(--s2)}
+.ecard .ehead .id{color:var(--ink-3)}
+.ecard .ebody{padding:var(--s3);min-height:64px}
+.ecard .cap{font-size:var(--fs-xs);color:var(--ink-3);padding:0 var(--s3) var(--s3);line-height:1.5}
+/* a tiny faux top-bar for B/D empties */
+.mini-tb{display:flex;align-items:center;gap:var(--s2);padding:6px var(--s3);border:1px solid var(--line);border-radius:var(--r);background:#101117}
+.mini-tb .ttl{font-size:var(--fs-sm);font-weight:600;color:var(--ink)}
+.mini-rail{display:inline-flex;flex-direction:column;align-items:center;gap:var(--s3);border:1px solid var(--line);border-radius:var(--r);background:#101117;padding:var(--s2)}
+
+footer.note{margin-top:var(--s6);font-size:var(--fs-xs);color:var(--ink-3);line-height:1.6;max-width:780px}
+footer.note b{color:var(--ink-2);font-weight:600}
+footer.note .amb{color:var(--attention);font-weight:600}
+
+/* legend */
+.legend{display:flex;flex-wrap:wrap;gap:var(--s4);margin-top:var(--s4);padding:var(--s3) var(--s4);border:1px dashed var(--hair);border-radius:var(--r)}
+.legend .item{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-xs);color:var(--ink-3)}
+.legend .swatch{width:8px;height:8px;border-radius:50%}
+.legend .swatch.live{background:var(--accent)} .legend .swatch.attn{background:var(--attention)} .legend .swatch.idle{background:var(--ink-4)}
+.legend .gly{font-weight:700}
+.legend .gly.attn{color:var(--attention)} .legend .gly.live{color:var(--accent)} .legend .gly.idle{color:var(--ink-4)}
+</style>
+</head>
+<body>
+<div class="gallery">
+
+  <header>
+    <h1>#11 — Cross-session attention triage</h1>
+    <p class="lede">
+      <b>Which sessions need me right now, across every project?</b> Today the answer is scattered — per-session
+      dots, per-project rollup dots, and per-row <code>needs you</code> meta — so a blocked agent waiting on a
+      <span class="amb">permission or an answer</span> wastes wall-clock buried behind project expansion. Each
+      alternative is a real rendering of the <em>same</em> multi-project workspace where four sessions across three
+      projects are awaiting input, and each shows its <b>empty state</b> too (nothing needs you → the surface goes
+      quiet or hides). <span class="amb">Amber (◆ awaiting)</span> is reserved strictly for needs-you and is always
+      glyph-paired; blue = live, neutral = idle/done.
+    </p>
+    <div class="legend">
+      <span class="item"><span class="swatch attn"></span><span class="gly attn">◆</span> needs you / awaiting (amber)</span>
+      <span class="item"><span class="swatch live"></span><span class="gly live">⟳</span> live / working (blue)</span>
+      <span class="item"><span class="swatch idle"></span><span class="gly idle">·</span> idle / done (neutral)</span>
+    </div>
+  </header>
+
+  <div class="alts">
+
+    <!-- ============================================================ A -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>A</b><span class="idea">Top "Needs you (N)" tier</span></div>
+        <div class="trade">
+          A dedicated section pinned <span class="plus">above Active</span> aggregates every awaiting session
+          across all projects, summarizing the actual ask (permission / question) and how long it's been blocked.
+          <span class="plus">+ One glance answers "what needs me," with enough context to act without opening.</span>
+          − Adds a tier (sidebar height cost); duplicates rows that also live under their project.
+        </div>
+      </div>
+      <div class="frame">
+        <div class="fsidebar">
+          <!-- the triage tier: amber-tinted box (the one device), each row glyph-paired -->
+          <div class="a-need">
+            <div class="h"><span class="attn-glyph">◆</span><span class="lbl">Needs you</span><span class="n num">4</span></div>
+            <button class="nrow">
+              <span class="g">◆</span>
+              <span class="nm"><span class="t">Audit error handling</span><span class="ask">Allow <code>rm -rf ./tmp</code>?</span><span class="proj">kimi-effort</span></span>
+              <span class="wait num">4m</span>
+            </button>
+            <button class="nrow">
+              <span class="g">◆</span>
+              <span class="nm"><span class="t">Migrate billing schema</span><span class="ask">Which tenant do I backfill first?</span><span class="proj">prime-radiant</span></span>
+              <span class="wait num">2m</span>
+            </button>
+            <button class="nrow">
+              <span class="g">◆</span>
+              <span class="nm"><span class="t">Rewrite onboarding copy</span><span class="ask">Approve tone: "playful" vs "plain"?</span><span class="proj">prime-radiant</span></span>
+              <span class="wait num">1m</span>
+            </button>
+            <button class="nrow">
+              <span class="g">◆</span>
+              <span class="nm"><span class="t">Fix flaky CI</span><span class="ask">Push to <code>main</code> or open PR?</span><span class="proj">serf</span></span>
+              <span class="wait num">0:40</span>
+            </button>
+          </div>
+
+          <div class="sbgroup">
+            <div class="tierlbl">Active</div>
+            <button class="p"><span class="chev">▾</span><span class="name">serf</span><span class="roll live"></span><span class="age num">5m</span></button>
+            <div class="kids">
+              <button class="ses sel"><span class="dot live"></span><span class="sm"><span class="st">Refactor auth token cache</span><span class="meta"><span class="live">working</span> · <span class="num">1:12</span></span></span></button>
+            </div>
+            <button class="p"><span class="chev">▾</span><span class="name">prime-radiant</span><span class="roll live"></span><span class="age num">3m</span></button>
+            <div class="kids">
+              <button class="ses"><span class="dot live"></span><span class="sm"><span class="st">Index search corpus</span><span class="meta"><span class="live">working</span> · <span class="num">0:22</span></span></span></button>
+            </div>
+          </div>
+        </div>
+        <div class="fws">
+          <div class="ftb"><span class="ttl">Refactor auth token cache</span><span class="ov">Details&nbsp;⋯</span></div>
+          <div class="fbody">
+            <div class="qrow"><span class="you">You</span><span class="q">Find the root cause and fix it.</span></div>
+            <div class="prose">Root cause: <code>evictExpired()</code> keys off <code>lastUsed</code>. Patching now.</div>
+            <span class="statusline"><span class="bdot"></span><span class="lbl live">working</span><span class="num">· 1:12</span></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ B -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>B</b><span class="idea">Header badge + cycle (<code>n</code>)</span></div>
+        <div class="trade">
+          The triage surface lives in chrome: an amber <span class="plus">◆ Needs you (N)</span> badge in the top
+          bar. Click it or press <code>n</code> to jump to the next-oldest awaiting session, cycling through all of
+          them. <span class="plus">+ Zero sidebar cost; keyboard-driven "work the queue" flow.</span>
+          − Hidden until you look up; the full list is one extra interaction (shown here as the open preview).
+        </div>
+      </div>
+      <div class="frame">
+        <div class="fsidebar">
+          <div class="sbgroup">
+            <div class="tierlbl">Active</div>
+            <button class="p"><span class="chev">▾</span><span class="name">serf</span><span class="roll live"></span><span class="age num">5m</span></button>
+            <div class="kids">
+              <button class="ses sel"><span class="dot live"></span><span class="sm"><span class="st">Refactor auth token cache</span><span class="meta"><span class="live">working</span> · <span class="num">1:12</span></span></span></button>
+              <button class="ses"><span class="dot attn"></span><span class="sm"><span class="st">Fix flaky CI</span><span class="meta"><span class="attn">◆ needs you</span> · <span class="num">0:40</span></span></span></button>
+            </div>
+            <button class="p"><span class="chev">▾</span><span class="name">prime-radiant</span><span class="roll attn"></span><span class="age num">2m</span></button>
+            <div class="kids">
+              <button class="ses"><span class="dot attn"></span><span class="sm"><span class="st">Migrate billing schema</span><span class="meta"><span class="attn">◆ needs you</span> · <span class="num">2m</span></span></span></button>
+              <button class="ses"><span class="dot attn"></span><span class="sm"><span class="st">Rewrite onboarding copy</span><span class="meta"><span class="attn">◆ needs you</span> · <span class="num">1m</span></span></span></button>
+            </div>
+            <button class="p"><span class="chev">▾</span><span class="name">kimi-effort</span><span class="roll attn"></span><span class="age num">4m</span></button>
+            <div class="kids">
+              <button class="ses"><span class="dot attn"></span><span class="sm"><span class="st">Audit error handling</span><span class="meta"><span class="attn">◆ needs you</span> · <span class="num">4m</span></span></span></button>
+            </div>
+          </div>
+        </div>
+        <div class="fws">
+          <div class="ftb">
+            <span class="ttl">Refactor auth token cache</span>
+            <span class="b-badge">
+              <span class="pill"><span class="attn-glyph">◆</span> Needs you <span class="n num">4</span></span>
+              <span class="k">n</span>
+            </span>
+          </div>
+          <!-- the badge's open preview: the cycle queue, current target highlighted -->
+          <div class="b-pop">
+            <div class="ph"><span class="attn-glyph">◆</span> Awaiting input <span class="hint"><code>n</code> → next · oldest first</span></div>
+            <button class="pr cur"><span class="g">◆</span><span class="t">Audit error handling</span><span class="proj">kimi-effort · 4m</span></button>
+            <button class="pr"><span class="g">◆</span><span class="t">Migrate billing schema</span><span class="proj">prime-radiant · 2m</span></button>
+            <button class="pr"><span class="g">◆</span><span class="t">Rewrite onboarding copy</span><span class="proj">prime-radiant · 1m</span></button>
+            <button class="pr"><span class="g">◆</span><span class="t">Fix flaky CI</span><span class="proj">serf · 0:40</span></button>
+          </div>
+          <div class="fbody">
+            <div class="qrow"><span class="you">You</span><span class="q">Find the root cause and fix it.</span></div>
+            <div class="prose">Root cause: <code>evictExpired()</code> keys off <code>lastUsed</code>. Patching now.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ C -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>C</b><span class="idea">Sort-awaiting-to-top</span></div>
+        <div class="trade">
+          No new container. Within each project — and in the project order itself — awaiting sessions re-rank to the
+          top, each marked with the amber <span class="plus">◆ glyph + an amber left tick</span> (one device).
+          Triage by reading top-down. <span class="plus">+ Reuses existing IA; nothing new to learn.</span>
+          − Re-sorting moves rows under you; the answer is still spread across projects, not one count.
+        </div>
+      </div>
+      <div class="frame">
+        <div class="fsidebar">
+          <div class="sbgroup">
+            <div class="tierlbl">Active</div>
+            <div class="c-firsthint"><b>◆</b> awaiting sorted to top, per project</div>
+            <!-- kimi-effort floats up (oldest awaiting) -->
+            <button class="p"><span class="chev">▾</span><span class="name">kimi-effort</span><span class="roll attn"></span><span class="age num">4m</span></button>
+            <div class="kids">
+              <button class="ses await"><span class="dot attn"></span><span class="sm"><span class="st">Audit error handling</span><span class="meta"><span class="attn">◆ needs you</span> · <span class="num">4m</span></span></span></button>
+            </div>
+            <button class="p"><span class="chev">▾</span><span class="name">prime-radiant</span><span class="roll attn"></span><span class="age num">2m</span></button>
+            <div class="kids">
+              <button class="ses await"><span class="dot attn"></span><span class="sm"><span class="st">Migrate billing schema</span><span class="meta"><span class="attn">◆ needs you</span> · <span class="num">2m</span></span></span></button>
+              <button class="ses await"><span class="dot attn"></span><span class="sm"><span class="st">Rewrite onboarding copy</span><span class="meta"><span class="attn">◆ needs you</span> · <span class="num">1m</span></span></span></button>
+              <button class="ses"><span class="dot live"></span><span class="sm"><span class="st">Index search corpus</span><span class="meta"><span class="live">working</span> · <span class="num">0:22</span></span></span></button>
+            </div>
+            <button class="p"><span class="chev">▾</span><span class="name">serf</span><span class="roll attn"></span><span class="age num">5m</span></button>
+            <div class="kids">
+              <button class="ses await"><span class="dot attn"></span><span class="sm"><span class="st">Fix flaky CI</span><span class="meta"><span class="attn">◆ needs you</span> · <span class="num">0:40</span></span></span></button>
+              <button class="ses sel"><span class="dot live"></span><span class="sm"><span class="st">Refactor auth token cache</span><span class="meta"><span class="live">working</span> · <span class="num">1:12</span></span></span></button>
+            </div>
+          </div>
+        </div>
+        <div class="fws">
+          <div class="ftb"><span class="ttl">Refactor auth token cache</span><span class="ov">Details&nbsp;⋯</span></div>
+          <div class="fbody">
+            <div class="qrow"><span class="you">You</span><span class="q">Find the root cause and fix it.</span></div>
+            <div class="prose">Root cause: <code>evictExpired()</code> keys off <code>lastUsed</code>. Patching now.</div>
+            <span class="statusline"><span class="bdot"></span><span class="lbl live">working</span><span class="num">· 1:12</span></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ D -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>D</b><span class="idea">Collapsed-rail attention dot</span></div>
+        <div class="trade">
+          When the sidebar is collapsed to an icon rail, attention still can't hide: an amber dot + count badge sits
+          on the triage icon (the only color on the rail). Hovering reveals the A-style flyout (shown open).
+          <span class="plus">+ Survives the most space-constrained mode; impossible to miss.</span>
+          − Detail needs a hover/click; the rail must reserve a dedicated triage slot.
+        </div>
+      </div>
+      <div class="frame railed">
+        <div class="fsidebar" style="padding:var(--s3) var(--s1) var(--s4);position:relative">
+          <div class="d-rail">
+            <div class="d-ricon" title="New"><span class="glyph">＋</span></div>
+            <div class="d-ricon" title="Search"><span class="glyph">⌕</span></div>
+            <div class="d-sep"></div>
+            <!-- the triage icon: the only amber on the rail, badge = count -->
+            <div class="d-ricon triage sel" title="Needs you (4)">
+              <span class="glyph">◆</span>
+              <span class="badge num">4</span>
+              <!-- hover flyout reuses A's vocabulary -->
+              <div class="d-flyout">
+                <div class="h"><span class="attn-glyph">◆</span> Needs you <span class="n num">4</span></div>
+                <button class="fr"><span class="g">◆</span><span class="nm"><span class="t">Audit error handling</span><span class="ask">Allow <code>rm -rf ./tmp</code>?</span><span class="proj">kimi-effort · 4m</span></span></button>
+                <button class="fr"><span class="g">◆</span><span class="nm"><span class="t">Migrate billing schema</span><span class="ask">Which tenant first?</span><span class="proj">prime-radiant · 2m</span></span></button>
+                <button class="fr"><span class="g">◆</span><span class="nm"><span class="t">Fix flaky CI</span><span class="ask">Push to <code>main</code> or PR?</span><span class="proj">serf · 0:40</span></span></button>
+              </div>
+            </div>
+            <!-- live sessions: neutral icon + a blue (never amber) dot -->
+            <div class="d-ricon" title="serf — working">
+              <span class="glyph">S</span><span class="ldot"></span>
+            </div>
+            <div class="d-ricon" title="prime-radiant — working">
+              <span class="glyph">P</span><span class="ldot"></span>
+            </div>
+          </div>
+        </div>
+        <div class="fws">
+          <div class="ftb"><span class="ttl">Refactor auth token cache</span><span class="ov">Details&nbsp;⋯</span></div>
+          <div class="fbody">
+            <div class="qrow"><span class="you">You</span><span class="q">Find the root cause and fix it.</span></div>
+            <div class="prose">Root cause: <code>evictExpired()</code> keys off <code>lastUsed</code>. Patching now.</div>
+            <span class="statusline"><span class="bdot"></span><span class="lbl live">working</span><span class="num">· 1:12</span></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- ============ EMPTY STATES: nothing needs you → surface hides/quiets ============ -->
+  <div class="empties">
+    <h2>Empty state — nothing needs you</h2>
+    <p class="lede">
+      The triage surface only earns its emphasis when it is rare. When no session is awaiting, amber disappears
+      entirely: the tier collapses to a quiet neutral line (A), the badge becomes a calm "all clear" (B), the sort
+      reverts to plain recency with no amber and no glyph (C), and the rail's triage icon goes neutral with no
+      badge (D). <b>No amber anywhere</b> is the settled state.
+    </p>
+    <div class="egrid">
+
+      <!-- A empty -->
+      <div class="ecard">
+        <div class="ehead"><span class="id">A</span> Top tier — collapsed to a quiet line</div>
+        <div class="ebody" style="background:#101117">
+          <div class="a-empty"><span class="g">✓</span> Nothing needs you</div>
+          <div class="tierlbl" style="padding-top:var(--s1)">Active</div>
+          <button class="p" style="display:flex"><span class="chev">▾</span><span class="name">serf</span><span class="roll live"></span><span class="age num">5m</span></button>
+        </div>
+        <div class="cap">The amber-tinted box is gone; a single neutral ✓ line (or the tier omitted entirely). Active is the top tier again.</div>
+      </div>
+
+      <!-- B empty -->
+      <div class="ecard">
+        <div class="ehead"><span class="id">B</span> Header badge — calm "all clear"</div>
+        <div class="ebody">
+          <div class="mini-tb">
+            <span class="ttl">Refactor auth token cache</span>
+            <span class="b-clear"><span class="g">✓</span> All caught up</span>
+          </div>
+        </div>
+        <div class="cap">No amber pill. Pressing <code>n</code> is a no-op (or surfaces a tiny "nothing awaiting" toast). The top bar reads as identity-only.</div>
+      </div>
+
+      <!-- C empty -->
+      <div class="ecard">
+        <div class="ehead"><span class="id">C</span> Sort — plain recency, no glyph</div>
+        <div class="ebody" style="background:#101117">
+          <div class="tierlbl">Active</div>
+          <button class="p" style="display:flex"><span class="chev">▾</span><span class="name">serf</span><span class="roll live"></span><span class="age num">5m</span></button>
+          <div class="kids">
+            <button class="ses sel" style="display:flex"><span class="dot live"></span><span class="sm"><span class="st">Refactor auth token cache</span><span class="meta"><span class="live">working</span> · <span class="num">1:12</span></span></span></button>
+            <button class="ses" style="display:flex"><span class="dot idle"></span><span class="sm"><span class="st">Index search corpus</span><span class="meta">idle · <span class="num">8m</span></span></span></button>
+          </div>
+        </div>
+        <div class="cap">Re-rank reverts to recency; no ◆, no amber tick. Indistinguishable from the ordinary sidebar — which is correct.</div>
+      </div>
+
+      <!-- D empty -->
+      <div class="ecard">
+        <div class="ehead"><span class="id">D</span> Rail icon — neutral, no badge</div>
+        <div class="ebody">
+          <div class="mini-rail">
+            <div class="d-ricon"><span class="glyph">＋</span></div>
+            <div class="d-ricon"><span class="glyph">⌕</span></div>
+            <div class="d-sep"></div>
+            <div class="d-ricon quiet" title="Nothing needs you"><span class="glyph">◆</span></div>
+            <div class="d-ricon"><span class="glyph">S</span><span class="ldot"></span></div>
+          </div>
+        </div>
+        <div class="cap">The triage glyph dims to a non-text neutral; the count badge is removed. Only the blue live-dot remains as ambient color.</div>
+      </div>
+
+    </div>
+  </div>
+
+  <footer class="note">
+    <b>Recommendation: A (top "Needs you" tier) as the primary surface, with B's <span class="amb">◆ Needs you (N)</span> header badge + <code>n</code> cycle layered on for keyboard triage.</b>
+    A is the only option that directly answers "what needs me right now" in one place, with enough of the actual ask
+    (permission vs. question) and wait-time to act — or even open and answer — without hunting through projects; the
+    amber-tinted box is the single emphasis device and vanishes cleanly when empty. B complements it for power users
+    who'd rather stay heads-down and work the queue from the keyboard, and it's the surface that survives when the
+    sidebar is hidden. C is the lowest-friction retrofit (no new IA) but never collapses the cross-project answer to
+    a single count and shuffles rows under the cursor. D (collapsed rail) is the right behavior <em>for that mode</em>
+    and should ship as A/B's collapsed-state fallback — not as the standalone answer. Across all four, amber stays
+    strictly needs-you, always glyph-paired (◆), and disappears entirely in the empty state.
+  </footer>
+
+</div>
+</body>
+</html>

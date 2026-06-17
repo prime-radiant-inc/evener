@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf mockups · #17 Context pressure &amp; compaction</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- base design tokens + transcript component grammar -->
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* =====================================================================
+   TOPIC #17 — Context pressure & compaction   (deferred from §7)
+   Built on tokens.css. The base sheet is a full-app two-column grid;
+   this file overrides body layout into a scrolling gallery and adds
+   only the four alternatives' gauge + compaction treatments.
+
+   TWO problems, both invisible in the shipped UI:
+     1. The context-pressure readout is a RAW MONO NUMBER ("ctx 23k /
+        272k tokens") with NO threshold semantics — a power user can't
+        tell 23k from 230k at a glance, and the number never changes
+        register as it approaches the wall. Context budget is arguably
+        THE number for a long-session power user.
+     2. serf runs context-strategy=compact: an automatic summarization
+        event fires near the limit and SILENTLY reshapes the transcript,
+        dropping detail the user may be relying on — with NO UI marker.
+        The conversation just changes shape under you.
+
+   Principle 1 governs both: color = "needs your eye"; absence = settled.
+   The gauge stays NEUTRAL until ~80% (it is the expected, settled state)
+   and only turns AMBER near the edge. It must be legible without being a
+   permanent attention magnet. Compaction is a lifecycle EVENT the user
+   should be able to see, locate, and inspect — never a silent rug-pull.
+   ===================================================================== */
+
+/* gallery shell: undo the base app grid, let the page scroll */
+body{overflow:auto}
+.gallery{max-width:880px;margin:0 auto;padding:var(--s6) var(--s5) 96px}
+.page-h{margin-bottom:var(--s5)}
+.page-h h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.page-h p{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);line-height:1.6;max-width:64ch}
+.page-h .principles{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:74ch}
+.page-h .principles b{color:var(--ink-2);font-weight:600}
+
+.alt{margin-top:var(--s6);border-top:1px solid var(--line);padding-top:var(--s5)}
+.alt-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.alt-h .badge{font-size:var(--fs-sm);font-weight:700;color:var(--bg);background:var(--ink-2);border-radius:var(--r-pill);padding:1px 9px;letter-spacing:.02em}
+.alt-h .ttl{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.cap{font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:74ch;margin-bottom:var(--s4)}
+.cap b{color:var(--ink-2);font-weight:600}
+.cap .trade{color:var(--attention)}
+.sub-l{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase;margin:var(--s5) 0 var(--s2)}
+
+/* two states side by side (low pressure | near-limit) */
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:var(--s4)}
+@media (max-width:860px){.pair{grid-template-columns:1fr}}
+.state-l{font-size:var(--fs-xs);color:var(--ink-4);letter-spacing:.04em;margin-bottom:6px}
+
+/* ---------------------------------------------------------------------
+   CHROME MOCK — a faithful slice of the real bottom chrome (livebar +
+   composer) so each gauge is shown where it actually lives, not floating.
+   Lifted from the golden example's .livebar / .composer / .cbar.
+   --------------------------------------------------------------------- */
+.chrome{background:#101117;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.chrome .livebar{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s4);border-top:none;border-bottom:1px solid var(--line);background:#101117;font-size:var(--fs-sm);color:var(--ink-2)}
+.chrome .livebar .d{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:breathe 2.6s ease-in-out infinite}
+.chrome .livebar .el{color:var(--ink);margin-left:2px}
+.chrome .composer{padding:var(--s3) var(--s4) var(--s3)}
+.chrome .input{border:1px solid var(--hair);border-radius:var(--r);background:var(--surface)}
+.chrome .ta{width:100%;background:none;border:none;resize:none;color:var(--ink-3);font-family:var(--sans);font-size:13px;padding:9px 11px;outline:none;min-height:34px;line-height:1.4}
+.chrome .cbar{display:flex;align-items:center;gap:var(--s2);padding:6px 8px;border-top:1px solid var(--line)}
+.chrome .chip{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:var(--r-pill);background:var(--surface-2);font-size:var(--fs-xs);color:var(--ink-2)}
+.chrome .chip .mdot{width:5px;height:5px;border-radius:50%;background:var(--ink-3)}
+.chrome .chip .v{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink)}
+.chrome .c-sp{flex:1}
+.chrome .cbtn{padding:5px 9px;border-radius:var(--r);font-size:var(--fs-sm);color:var(--ink-3)}
+.chrome .send{background:var(--accent);color:#0a0c14;font-weight:600;padding:5px 13px;border-radius:var(--r);font-size:var(--fs-sm)}
+
+/* ---------------------------------------------------------------------
+   THE SHIPPED BASELINE (what we're replacing): raw mono readout.
+   --------------------------------------------------------------------- */
+.baseline{display:flex;align-items:center;gap:var(--s3);background:#101117;border:1px solid var(--line);border-radius:var(--r);padding:9px var(--s4);font-size:var(--fs-sm);color:var(--ink-3)}
+.baseline .raw{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-3)}
+.baseline .note{color:var(--ink-4);margin-left:auto;font-style:italic}
+
+/* =====================================================================
+   SHARED GAUGE VOCABULARY — a small bar gauge that sits in the cbar.
+   Neutral hairline track; a fill that is NEUTRAL until ~80%, AMBER past.
+   The number is sans tabular-nums (a human reads it), the model-id stays
+   mono. Pairs with a glyph so it is colorblind-safe near the edge.
+   ===================================================================== */
+.gauge{display:inline-flex;align-items:center;gap:7px;font-size:var(--fs-xs);color:var(--ink-3);cursor:default}
+.gauge .bar{width:46px;height:5px;border-radius:var(--r-pill);background:var(--line);overflow:hidden;position:relative}
+.gauge .fill{position:absolute;left:0;top:0;bottom:0;border-radius:var(--r-pill);background:var(--ink-3)}   /* settled = neutral */
+.gauge .lab{font-variant-numeric:tabular-nums;color:var(--ink-3)}
+.gauge .lab b{color:var(--ink-2);font-weight:600}
+.gauge .pct{font-variant-numeric:tabular-nums}
+/* near the edge: the WHOLE gauge changes register to amber, once. */
+.gauge.warn{color:var(--attention)}
+.gauge.warn .fill{background:var(--attention)}
+.gauge.warn .lab,.gauge.warn .lab b,.gauge.warn .pct{color:var(--attention)}
+.gauge.warn .bar{background:var(--attention-soft)}
+.gauge .g{font-size:10px}                        /* colorblind-safe glyph, only when warn */
+
+/* =====================================================================
+   ALT A — quiet gauge, coloring only near the edge   (+ compaction line)
+   ===================================================================== */
+/* The gauge is a settled neutral bar/number living quietly in the cbar.
+   It crosses to amber ONLY past ~80%. Compaction, when it fires, is a
+   quiet neutral system one-liner in the transcript (it's a DONE event). */
+.aA .sysl-row{display:flex;gap:var(--s2);align-items:baseline;font-size:var(--fs-sm);color:var(--ink-3);padding:var(--s2) 0;width:100%;text-align:left;line-height:1.5}
+.aA .sysl-row .g{color:var(--done);font-family:var(--mono);font-size:var(--fs-xs);flex:none}
+.aA .sysl-row .txt b{color:var(--ink-2);font-weight:600}
+.aA .sysl-row .delta{color:var(--ink-3)}
+.aA .sysl-row .ex{margin-left:auto;color:var(--accent);font-size:var(--fs-sm);flex:none}
+.aA .sysl-body{display:none;margin:var(--s1) 0 var(--s2) 20px;border-left:1px solid var(--line);padding-left:var(--s3);font-size:var(--fs-sm);color:var(--ink-2);line-height:1.6;max-width:64ch}
+.aA .sysl-row.open + .sysl-body{display:block}
+.aA .sysl-body .meta{font-size:var(--fs-xs);color:var(--ink-3);margin-top:var(--s2);font-variant-numeric:tabular-nums}
+.aA .stage{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:var(--s3) var(--s4);max-width:720px}
+.aA .agent{margin-top:0;font-size:var(--fs-md);line-height:1.62;color:var(--ink)}
+.aA .you{display:flex;gap:var(--s3);align-items:baseline;margin-top:var(--s4)}
+.aA .you .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none;width:30px}
+.aA .you .q{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+
+/* =====================================================================
+   ALT B — compaction system-line + expand   (gauge = capped-pill readout)
+   ===================================================================== */
+/* The gauge reads as one self-explaining chip (used / budget · pct) that
+   colors near the edge. Compaction is a full, expandable system entry
+   with a before/after summary — the user can open it to see exactly what
+   was condensed and read the resulting summary verbatim. */
+.aB .gchip{display:inline-flex;align-items:center;gap:7px;padding:3px 9px;border-radius:var(--r-pill);background:var(--surface-2);font-size:var(--fs-xs);color:var(--ink-3)}
+.aB .gchip .bar{width:38px;height:4px;border-radius:var(--r-pill);background:var(--line);position:relative;overflow:hidden}
+.aB .gchip .fill{position:absolute;inset:0 auto 0 0;background:var(--ink-3);border-radius:var(--r-pill)}
+.aB .gchip .lab{font-variant-numeric:tabular-nums}
+.aB .gchip.warn{color:var(--attention);background:var(--attention-soft)}
+.aB .gchip.warn .fill{background:var(--attention)}
+.aB .stage{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:var(--s3) var(--s4);max-width:720px}
+.aB .agent{margin-top:0;font-size:var(--fs-md);line-height:1.62;color:var(--ink)}
+.aB .you{display:flex;gap:var(--s3);align-items:baseline;margin-top:var(--s4)}
+.aB .you .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none;width:30px}
+.aB .you .q{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+/* the compaction entry — ONE neutral box (the device), a settled event */
+.aB .compact{margin-top:var(--s4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r)}
+.aB .compact-h{display:flex;align-items:baseline;gap:var(--s2);width:100%;text-align:left;padding:var(--s3) var(--s4)}
+.aB .compact-h .g{color:var(--done);font-size:var(--fs-sm);flex:none}
+.aB .compact-h .t{font-size:var(--fs-sm);font-weight:600;color:var(--ink-2)}
+.aB .compact-h .delta{font-size:var(--fs-xs);color:var(--ink-3);font-variant-numeric:tabular-nums}
+.aB .compact-h .chev{margin-left:auto;font-size:8px;color:var(--ink-4);transition:transform .15s}
+.aB .compact.open .compact-h .chev{transform:rotate(90deg)}
+.aB .compact-body{display:none;border-top:1px solid var(--line);padding:var(--s3) var(--s4)}
+.aB .compact.open .compact-body{display:block}
+.aB .compact-body .lead{font-size:var(--fs-xs);color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;margin-bottom:var(--s2)}
+.aB .compact-body .summary{font-size:var(--fs-sm);color:var(--ink-2);line-height:1.62}
+.aB .compact-body .summary code{font-family:var(--mono);font-size:11.5px;color:var(--ink);border-bottom:1px solid var(--hair)}
+.aB .compact-body .stats{display:flex;gap:var(--s4);flex-wrap:wrap;margin-top:var(--s3);font-size:var(--fs-xs);color:var(--ink-3);font-variant-numeric:tabular-nums}
+.aB .compact-body .stats b{color:var(--ink-2);font-weight:600}
+
+/* =====================================================================
+   ALT C — transcript watermark band   (gauge = ring/dial in the cbar)
+   ===================================================================== */
+/* The gauge is a tiny radial dial (settled = neutral arc, amber arc near
+   the edge). Compaction draws a faint full-width WATERMARK band across
+   the transcript at the seam — everything above it is "summarized; detail
+   condensed", everything below is verbatim. A persistent boundary you can
+   scroll to, not a toast that vanishes. */
+.aC .dial{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-xs);color:var(--ink-3)}
+.aC .dial svg{display:block}
+.aC .dial .track{stroke:var(--line);fill:none}
+.aC .dial .arc{stroke:var(--ink-3);fill:none;stroke-linecap:round}
+.aC .dial.warn{color:var(--attention)}
+.aC .dial.warn .arc{stroke:var(--attention)}
+.aC .dial .lab{font-variant-numeric:tabular-nums}
+.aC .stage{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:var(--s3) var(--s4) var(--s4);max-width:720px;position:relative}
+.aC .agent{font-size:var(--fs-md);line-height:1.62;color:var(--ink);margin:0}
+.aC .agent.dimmed{color:var(--ink-3)}
+.aC .you{display:flex;gap:var(--s3);align-items:baseline;margin-top:var(--s4)}
+.aC .you .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none;width:30px}
+.aC .you .q{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+/* the watermark band — a hairline rule with a centered settled label.
+   NO box, NO color: it is a boundary, not an alarm. One containment device. */
+.aC .mark{display:flex;align-items:center;gap:var(--s3);margin:var(--s5) 0 var(--s4);color:var(--ink-3);font-size:var(--fs-xs)}
+.aC .mark::before,.aC .mark::after{content:"";flex:1;height:1px;background:repeating-linear-gradient(90deg,var(--hair) 0 6px,transparent 6px 11px)}
+.aC .mark .lbl{display:inline-flex;align-items:baseline;gap:var(--s2);flex:none;white-space:nowrap}
+.aC .mark .lbl .g{font-size:10px;color:var(--ink-4)}
+.aC .mark .lbl b{color:var(--ink-2);font-weight:600}
+.aC .mark .lbl .delta{color:var(--ink-3);font-variant-numeric:tabular-nums}
+.aC .mark .lbl .vw{color:var(--accent)}
+.aC .mark .lbl .vw:hover{text-decoration:underline}
+/* the "above the seam is condensed" zone gets a faint neutral wash */
+.aC .condensed{position:relative;padding-top:var(--s2)}
+.aC .condensed::before{content:"";position:absolute;inset:0;background:linear-gradient(var(--surface) 0%, transparent 70%);opacity:.5;pointer-events:none;border-radius:var(--r)}
+
+/* =====================================================================
+   ALT D — pre-emptive amber nudge   (gauge = inline pill that grows a CTA)
+   ===================================================================== */
+/* The gauge is normally a quiet inline readout; as it crosses ~80% it
+   turns amber AND grows a docked nudge ABOVE the composer: "Context ~86%
+   — auto-compaction will fire soon. Compact now / Keep going." This is the
+   ONE place amber + an action is justified: it needs the user's eye and
+   offers control BEFORE detail is silently dropped. */
+.aD .gauge{margin:0}
+.aD .stage{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;max-width:720px}
+.aD .stage .pad{padding:var(--s3) var(--s4)}
+.aD .agent{margin-top:0;font-size:var(--fs-md);line-height:1.62;color:var(--ink)}
+/* the docked nudge — amber container + neutral/blue actions (needs-you
+   wins the container; the primary action is the interactive blue) */
+.aD .nudge{display:flex;align-items:center;gap:var(--s3);padding:9px var(--s4);background:var(--attention-soft);border-top:1px solid color-mix(in srgb,var(--attention) 30%,transparent);font-size:var(--fs-sm)}
+.aD .nudge .g{color:var(--attention);font-size:12px;flex:none}
+.aD .nudge .msg{color:var(--ink-2)}
+.aD .nudge .msg b{color:var(--attention);font-weight:600;font-variant-numeric:tabular-nums}
+.aD .nudge .acts{margin-left:auto;display:flex;gap:var(--s2);flex:none}
+.aD .nudge .keep{padding:4px 11px;border-radius:var(--r);font-size:var(--fs-sm);color:var(--ink-3)}
+.aD .nudge .keep:hover{color:var(--ink-2);background:var(--surface-2)}
+.aD .nudge .now{padding:4px 12px;border-radius:var(--r);font-size:var(--fs-sm);background:var(--accent);color:#0a0c14;font-weight:600}
+/* the resulting post-compaction line so the loop closes honestly */
+.aD .doneline{display:flex;gap:var(--s2);align-items:baseline;font-size:var(--fs-sm);color:var(--ink-3);padding:var(--s2) 0}
+.aD .doneline .g{color:var(--done);font-family:var(--mono);font-size:var(--fs-xs)}
+.aD .doneline b{color:var(--ink-2);font-weight:600}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="gallery">
+
+  <div class="page-h">
+    <h1>#17 — Context pressure &amp; compaction</h1>
+    <p>Two invisible problems. The context readout is a <b>raw mono number</b>
+       (the shipped <code style="font-family:var(--mono);font-size:11.5px;color:var(--ink-3)">ctx 23k / 272k tokens</code>) with no
+       threshold semantics; and serf's <code style="font-family:var(--mono);font-size:11.5px;color:var(--ink-3)">context-strategy=compact</code> fires an
+       automatic summarization that <b>silently reshapes the transcript</b>, dropping detail with no UI
+       marker. Four directions, each pairing a pressure gauge with a compaction-lifecycle treatment.</p>
+    <div class="principles">
+      Held constant: <b>color means "needs your eye"</b> — the gauge is the <b>settled, expected
+      state</b>, so it stays <b>neutral until ~80%</b> and only crosses to <b>amber near the edge</b>
+      (paired with a glyph, colorblind-safe). The gauge must be legible without being a permanent
+      attention magnet. Compaction is a <b>lifecycle event you can see, locate, and inspect</b> —
+      never a silent rug-pull. The number is sans tabular-nums (a human reads it); only the model id
+      and token counts stay mono.
+    </div>
+  </div>
+
+  <!-- THE SHIPPED BASELINE -->
+  <div class="sub-l" style="margin-top:var(--s5)">Today (the baseline we're replacing)</div>
+  <div class="baseline">
+    <span class="raw">ctx 23k / 272k tokens</span>
+    <span class="note">no threshold semantics · compaction happens with no marker at all</span>
+  </div>
+
+  <!-- ============================================================
+       ALT A — quiet gauge, coloring only near the edge
+       ============================================================ -->
+  <section class="alt aA">
+    <div class="alt-h"><span class="badge">A</span><span class="ttl">Quiet gauge · coloring only near the edge</span></div>
+    <div class="cap">The number becomes a <b>small settled bar + percentage</b> in the composer bar,
+      next to the model chip. At low pressure it is a quiet neutral hairline you can ignore; only past
+      <b>~80%</b> does the whole gauge shift register to <b>amber + a ⚠ glyph</b>, once. Compaction
+      lands as a <b>quiet neutral system one-liner</b> in the transcript — "Context compacted · 41
+      turns → summary" — a done event that recedes, expandable for the detail.
+      <span class="trade">Trade-off:</span> the most restrained option — the gauge is so calm a user
+      who never looks down may still be surprised by compaction; relies on the amber threshold doing
+      its job. Lowest ink, lowest interruption.</div>
+
+    <div class="sub-l">Gauge — in the composer bar</div>
+    <div class="pair">
+      <div>
+        <div class="state-l">low pressure · 23k / 272k (8%) — settled, neutral</div>
+        <div class="chrome">
+          <div class="livebar"><span class="d"></span>working · <span class="el num">1:12</span></div>
+          <div class="composer"><div class="input">
+            <textarea class="ta" rows="1" readonly>Message the agent…</textarea>
+            <div class="cbar">
+              <span class="chip"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+              <span class="gauge"><span class="bar"><span class="fill" style="width:8%"></span></span><span class="lab"><b>23k</b> / 272k</span><span class="pct">· 8%</span></span>
+              <span class="c-sp"></span>
+              <button class="cbtn">＋</button>
+              <button class="send">Send ↵</button>
+            </div>
+          </div></div>
+        </div>
+      </div>
+      <div>
+        <div class="state-l">near limit · 232k / 272k (85%) — amber, once</div>
+        <div class="chrome">
+          <div class="livebar"><span class="d"></span>working · <span class="el num">7:48</span></div>
+          <div class="composer"><div class="input">
+            <textarea class="ta" rows="1" readonly>Message the agent…</textarea>
+            <div class="cbar">
+              <span class="chip"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+              <span class="gauge warn"><span class="g">⚠</span><span class="bar"><span class="fill" style="width:85%"></span></span><span class="lab"><b>232k</b> / 272k</span><span class="pct">· 85%</span></span>
+              <span class="c-sp"></span>
+              <button class="cbtn">＋</button>
+              <button class="send">Send ↵</button>
+            </div>
+          </div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sub-l">Compaction — a quiet neutral system line (click to expand)</div>
+    <div class="stage">
+      <div class="agent">Patched the eviction comparison and re-ran the suite — all green. Moving on to the caller audit.</div>
+      <button class="sysl-row" onclick="this.classList.toggle('open');this.querySelector('.ex').textContent=this.classList.contains('open')?'collapse':'view'">
+        <span class="g">⊟</span>
+        <span class="txt"><b>Context compacted</b> <span class="delta">· 41 turns condensed to a summary · reclaimed 188k tokens (85% → 22%)</span></span>
+        <span class="ex">view</span>
+      </button>
+      <div class="sysl-body">
+        Earlier turns were summarized to make room. The agent now sees: the cache root-cause
+        (<code style="font-family:var(--mono);font-size:11.5px">evictExpired</code> keyed off
+        <code style="font-family:var(--mono);font-size:11.5px">lastUsed</code>), the patch, the green
+        test run, and the open caller-audit task. Full tool output and intermediate reasoning from
+        those 41 turns are no longer in context.
+        <div class="meta">before 232k · summary 1.9k · after 51k / 272k &nbsp;·&nbsp; original turns remain in this transcript above, just not in the model's window</div>
+      </div>
+      <div class="you"><span class="tag">You</span><span class="q">Good — keep going on the callers.</span></div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ALT B — compaction system-line + expand
+       ============================================================ -->
+  <section class="alt aB">
+    <div class="alt-h"><span class="badge">B</span><span class="ttl">Self-explaining chip · full expandable compaction record</span></div>
+    <div class="cap">The gauge is a <b>single self-explaining pill</b> — bar + "232k / 272k · 85%" —
+      that reads correctly with no legend and colors near the edge. Compaction gets the heaviest
+      treatment: a <b>full, expandable record</b> (one neutral box) showing the before/after token
+      math <i>and the resulting summary verbatim</i>, so a power user can audit exactly what the
+      model still knows. <span class="trade">Trade-off:</span> the richest, most reassuring for
+      power users who distrust silent summarization — but it is the most vertical space and the most
+      to build (the renderer must surface the summary text and per-segment stats).</div>
+
+    <div class="sub-l">Gauge — self-explaining pill</div>
+    <div class="pair">
+      <div>
+        <div class="state-l">low pressure · 8% — settled, neutral</div>
+        <div class="chrome">
+          <div class="livebar"><span class="d"></span>working · <span class="el num">1:12</span></div>
+          <div class="composer"><div class="input">
+            <textarea class="ta" rows="1" readonly>Message the agent…</textarea>
+            <div class="cbar">
+              <span class="chip"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+              <span class="gchip"><span class="bar"><span class="fill" style="width:8%"></span></span><span class="lab">23k / 272k · 8%</span></span>
+              <span class="c-sp"></span>
+              <button class="cbtn">＋</button>
+              <button class="send">Send ↵</button>
+            </div>
+          </div></div>
+        </div>
+      </div>
+      <div>
+        <div class="state-l">near limit · 85% — amber pill</div>
+        <div class="chrome">
+          <div class="livebar"><span class="d"></span>working · <span class="el num">7:48</span></div>
+          <div class="composer"><div class="input">
+            <textarea class="ta" rows="1" readonly>Message the agent…</textarea>
+            <div class="cbar">
+              <span class="chip"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+              <span class="gchip warn"><span style="font-size:10px">⚠</span><span class="bar"><span class="fill" style="width:85%"></span></span><span class="lab">232k / 272k · 85%</span></span>
+              <span class="c-sp"></span>
+              <button class="cbtn">＋</button>
+              <button class="send">Send ↵</button>
+            </div>
+          </div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sub-l">Compaction — the full record (click the header to expand)</div>
+    <div class="stage">
+      <div class="agent">Patched the eviction comparison and re-ran the suite — all green. Moving on to the caller audit.</div>
+      <div class="compact open" id="bcompact">
+        <button class="compact-h" onclick="document.getElementById('bcompact').classList.toggle('open')">
+          <span class="g">⊟</span>
+          <span class="t">Context compacted</span>
+          <span class="delta">· 41 turns → summary · 232k → 51k</span>
+          <span class="chev">▸</span>
+        </button>
+        <div class="compact-body">
+          <div class="lead">Summary the model now sees (verbatim)</div>
+          <div class="summary">User reported the auth token cache evicting valid tokens early. Root cause found:
+            <code>evictExpired()</code> compared against <code>lastUsed</code> instead of
+            <code>expiresAt</code>, so any token idle past one sweep interval was dropped though still
+            valid. Patched the comparison in <code>cache.go</code>; added a regression test for the
+            idle-but-valid boundary; full suite green (312 tests). <b style="color:var(--ink-2)">Open task:</b>
+            audit the 7 callers of <code>TokenCache</code> for the same last-access assumption.</div>
+          <div class="stats">
+            <span>before <b>232k</b> tokens</span>
+            <span>summary <b>1.9k</b> tokens</span>
+            <span>after <b>51k</b> / 272k</span>
+            <span>condensed <b>41</b> turns · <b>118</b> tool calls</span>
+            <span style="color:var(--accent)"><button style="color:var(--accent);font-size:var(--fs-xs)">view condensed turns ↑</button></span>
+          </div>
+        </div>
+      </div>
+      <div class="you"><span class="tag">You</span><span class="q">Good — keep going on the callers.</span></div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ALT C — transcript watermark band
+       ============================================================ -->
+  <section class="alt aC">
+    <div class="alt-h"><span class="badge">C</span><span class="ttl">Radial dial · persistent transcript watermark</span></div>
+    <div class="cap">The gauge is a tiny <b>radial dial</b> — a settled neutral arc that sweeps to
+      amber near the edge — the densest, most glanceable form. Compaction leaves a <b>persistent
+      watermark band</b> drawn across the transcript at the seam: a dashed hairline with a settled
+      "Context compacted here · 41 turns" label, and the condensed region above wears a faint neutral
+      wash. <span class="trade">Trade-off:</span> the watermark is the most spatially honest — you can
+      scroll to the exact boundary and the "this is summarized" zone is visible at a glance — but a
+      long session with several compactions stacks several bands, and the dial trades a little
+      legibility (no raw token number on the face) for compactness.</div>
+
+    <div class="sub-l">Gauge — radial dial</div>
+    <div class="pair">
+      <div>
+        <div class="state-l">low pressure · 8% — settled, neutral arc</div>
+        <div class="chrome">
+          <div class="livebar"><span class="d"></span>working · <span class="el num">1:12</span></div>
+          <div class="composer"><div class="input">
+            <textarea class="ta" rows="1" readonly>Message the agent…</textarea>
+            <div class="cbar">
+              <span class="chip"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+              <span class="dial">
+                <svg width="16" height="16" viewBox="0 0 16 16">
+                  <circle class="track" cx="8" cy="8" r="6" stroke-width="2"></circle>
+                  <circle class="arc" cx="8" cy="8" r="6" stroke-width="2"
+                    stroke-dasharray="37.7" stroke-dashoffset="34.7" transform="rotate(-90 8 8)"></circle>
+                </svg>
+                <span class="lab">8%</span>
+              </span>
+              <span class="c-sp"></span>
+              <button class="cbtn">＋</button>
+              <button class="send">Send ↵</button>
+            </div>
+          </div></div>
+        </div>
+      </div>
+      <div>
+        <div class="state-l">near limit · 85% — amber arc + glyph</div>
+        <div class="chrome">
+          <div class="livebar"><span class="d"></span>working · <span class="el num">7:48</span></div>
+          <div class="composer"><div class="input">
+            <textarea class="ta" rows="1" readonly>Message the agent…</textarea>
+            <div class="cbar">
+              <span class="chip"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+              <span class="dial warn">
+                <svg width="16" height="16" viewBox="0 0 16 16">
+                  <circle class="track" cx="8" cy="8" r="6" stroke-width="2"></circle>
+                  <circle class="arc" cx="8" cy="8" r="6" stroke-width="2"
+                    stroke-dasharray="37.7" stroke-dashoffset="5.7" transform="rotate(-90 8 8)"></circle>
+                </svg>
+                <span style="font-size:10px">⚠</span><span class="lab">85%</span>
+              </span>
+              <span class="c-sp"></span>
+              <button class="cbtn">＋</button>
+              <button class="send">Send ↵</button>
+            </div>
+          </div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sub-l">Compaction — a persistent watermark band in the transcript</div>
+    <div class="stage">
+      <div class="condensed">
+        <div class="you" style="margin-top:0"><span class="tag">You</span><span class="q">The auth token cache evicts valid tokens early — find the root cause and fix it.</span></div>
+        <div class="agent dimmed" style="margin-top:var(--s3)">Root cause: <code style="font-family:var(--mono);font-size:11.5px">evictExpired()</code> keyed off <code style="font-family:var(--mono);font-size:11.5px">lastUsed</code>, not <code style="font-family:var(--mono);font-size:11.5px">expiresAt</code>… <span style="color:var(--ink-4)">(condensed)</span></div>
+      </div>
+      <div class="mark">
+        <span class="lbl"><span class="g">⊟</span><b>Context compacted here</b> <span class="delta">· 41 turns → summary · 232k → 51k</span> <span class="vw"><button style="color:var(--accent);font-size:var(--fs-xs)">view summary</button></span></span>
+      </div>
+      <div class="agent">All 7 callers audited — six were fine; <code style="font-family:var(--mono);font-size:11.5px">refreshLoop</code> made the same last-access assumption. Patching it now.</div>
+    </div>
+    <div class="cap" style="margin-top:6px">Above the band: the original turns, dimmed and marked "(condensed)" — they
+      stay in the transcript for the human, but the model now sees only the summary. Below the band:
+      live, verbatim. The boundary is a place you can scroll to, not a notification that disappears.</div>
+  </section>
+
+  <!-- ============================================================
+       ALT D — pre-emptive amber nudge
+       ============================================================ -->
+  <section class="alt aD">
+    <div class="alt-h"><span class="badge">D</span><span class="ttl">Pre-emptive amber nudge · compact before it's silent</span></div>
+    <div class="cap">The gauge behaves like A's quiet bar — but crossing <b>~80%</b> also docks an
+      <b>amber nudge above the composer</b>: "Context ~86% — auto-compaction will fire soon" with
+      <b>Compact now</b> (blue, interactive) and <b>Keep going</b> (quiet). This is the one place
+      amber + an action earns its keep: it puts the decision in the user's hands <i>before</i> detail
+      is dropped, turning a silent event into a consented one. <span class="trade">Trade-off:</span>
+      the most agency, the most honest about the impending loss — but it is a blocking-ish interruption
+      near the limit, and if shown too eagerly it becomes nag-fatigue (must fire once, near the edge,
+      and stay dismissed).</div>
+
+    <div class="sub-l">Below ~80% — no nudge, quiet gauge only</div>
+    <div class="chrome">
+      <div class="livebar"><span class="d"></span>working · <span class="el num">1:12</span></div>
+      <div class="composer"><div class="input">
+        <textarea class="ta" rows="1" readonly>Message the agent…</textarea>
+        <div class="cbar">
+          <span class="chip"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+          <span class="gauge"><span class="bar"><span class="fill" style="width:8%"></span></span><span class="lab"><b>23k</b> / 272k</span><span class="pct">· 8%</span></span>
+          <span class="c-sp"></span>
+          <button class="cbtn">＋</button>
+          <button class="send">Send ↵</button>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="sub-l">Crossing ~80% — the pre-emptive nudge docks above the composer</div>
+    <div class="chrome">
+      <div class="livebar"><span class="d"></span>working · <span class="el num">7:48</span></div>
+      <div class="nudge">
+        <span class="g">⚠</span>
+        <span class="msg">Context <b>~86%</b> — auto-compaction will summarize earlier turns soon. Compact now to choose the moment, or keep going.</span>
+        <span class="acts">
+          <button class="keep">Keep going</button>
+          <button class="now">Compact now</button>
+        </span>
+      </div>
+      <div class="composer"><div class="input">
+        <textarea class="ta" rows="1" readonly>Message the agent…</textarea>
+        <div class="cbar">
+          <span class="chip"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+          <span class="gauge warn"><span class="g">⚠</span><span class="bar"><span class="fill" style="width:86%"></span></span><span class="lab"><b>234k</b> / 272k</span><span class="pct">· 86%</span></span>
+          <span class="c-sp"></span>
+          <button class="cbtn">＋</button>
+          <button class="send">Send ↵</button>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="sub-l">After compacting — the loop closes with a quiet done line</div>
+    <div class="aA" style="max-width:720px">
+      <div class="doneline"><span class="g">⊟</span><span>Compacted on your request — <b>41 turns → summary</b>, now 51k / 272k (19%). The nudge stays gone until you approach the edge again.</span></div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

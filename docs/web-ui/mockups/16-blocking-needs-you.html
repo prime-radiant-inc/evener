@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf mockups · #16 Blocking needs-you — permission/approval &amp; agent question</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- base design tokens + transcript component grammar -->
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ====================================================================
+   TOPIC #16 — BLOCKING NEEDS-YOU: permission/approval & agent question
+   Built on tokens.css. The base sheet is a full-app two-column grid;
+   this gallery overrides body layout to scroll and lays out specimens.
+
+   THE TWO BLOCKING CASES (the human is the bottleneck — wall-clock dies
+   while the session waits):
+     1. PERMISSION / APPROVAL — "run `rm -rf build/`? Approve / Deny",
+        the EXACT action shown. This entry is BOTH interactive (a control
+        to operate → blue) AND needs-you (it blocks the agent → amber).
+        The color system has no rule for which wins.
+     2. AGENT FREE-TEXT QUESTION — the agent asks something open
+        ("Which database should the migration target?") and waits. Today
+        it renders as ordinary hero prose, indistinguishable from the
+        agent thinking out loud — so it's missed and the session hangs.
+
+   THE RESOLUTION THIS FILE PROPOSES (carried across all four alts):
+     • AMBER OWNS THE CONTAINER. needs-you is the scarce, eye-pulling
+       signal; the whole blocking entry is amber-marked (rail or tint)
+       and glyph-paired (◆ awaiting) so it's colorblind-safe.
+     • BLUE OWNS THE PRIMARY ACTION. the one button you press to unblock
+       (Approve / Send) stays blue — interactive + primary, per the
+       token rule. Deny / secondary stays neutral-outline.
+     • So: amber says "this needs you"; blue says "press here to resolve
+       it." They don't compete — they label different layers. Each alt
+       below tests a different balance of that split.
+     • A blocking entry must NEVER hang off-screen: every alt shows the
+       scrolled-away fallback (a pinned dock / attention pill) so the
+       ask is always reachable.
+   ==================================================================== */
+
+/* gallery shell: undo the base app grid, let the page scroll */
+body{overflow:auto}
+.gallery{max-width:1180px;margin:0 auto;padding:var(--s6) var(--s5) 96px}
+.page-h{margin-bottom:var(--s5)}
+.page-h h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.page-h p{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);line-height:1.6;max-width:74ch}
+.page-h p b{color:var(--ink-2);font-weight:600}
+.page-h .amb{color:var(--attention);font-weight:600}
+.page-h .blu{color:var(--accent);font-weight:600}
+.page-h code{font-family:var(--mono);font-size:12px;color:var(--ink);border-bottom:1px solid var(--hair)}
+.page-h .probs{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);line-height:1.65;max-width:74ch}
+.page-h .probs b{color:var(--ink-2);font-weight:600}
+
+/* the rule + legend, stated once up top */
+.ruling{margin-top:var(--s4);padding:var(--s3) var(--s4);border:1px dashed var(--hair);border-radius:var(--r);max-width:74ch}
+.ruling .r-h{font-size:var(--fs-sm);font-weight:600;color:var(--ink);margin-bottom:var(--s2)}
+.ruling ul{list-style:none;display:flex;flex-direction:column;gap:6px}
+.ruling li{font-size:var(--fs-sm);color:var(--ink-2);line-height:1.5;display:flex;gap:var(--s2)}
+.ruling li .k{flex:none;width:96px;font-weight:600}
+.ruling li .k.amb{color:var(--attention)} .ruling li .k.blu{color:var(--accent)} .ruling li .k.neu{color:var(--ink-3)}
+.legend{display:flex;flex-wrap:wrap;gap:var(--s4);margin-top:var(--s3)}
+.legend .item{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-xs);color:var(--ink-3)}
+.legend .sw{width:9px;height:9px;border-radius:2px}
+.legend .sw.amb{background:var(--attention)} .legend .sw.blu{background:var(--accent)} .legend .sw.neu{background:var(--ink-4)}
+.legend .gly{font-weight:700}
+.legend .gly.amb{color:var(--attention)} .legend .gly.blu{color:var(--accent)}
+
+/* ====================== specimen scaffolding ====================== */
+.alt{margin-top:var(--s6);border-top:1px solid var(--line);padding-top:var(--s5)}
+.alt-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.alt-h .badge{font-size:var(--fs-sm);font-weight:700;color:var(--bg);background:var(--attention);border-radius:var(--r-pill);padding:1px 10px;letter-spacing:.02em}
+.alt-h .ttl{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.cap{font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:80ch;margin-bottom:var(--s4)}
+.cap b{color:var(--ink-2);font-weight:600}
+.cap .amb{color:var(--attention);font-weight:600}
+.cap .blu{color:var(--accent);font-weight:600}
+.cap .trade{color:var(--attention)}
+.cap code{font-family:var(--mono);font-size:11.5px;color:var(--ink);border-bottom:1px solid var(--hair)}
+
+/* two specimens side by side per alt: permission, then question, then the scrolled-away dock */
+.row{display:grid;grid-template-columns:1fr 1fr;gap:var(--s4)}
+@media (max-width:980px){.row{grid-template-columns:1fr}}
+.specwrap{display:flex;flex-direction:column;gap:var(--s2)}
+.spec-lbl{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);letter-spacing:.02em;display:flex;align-items:center;gap:6px}
+.spec-lbl .case{color:var(--ink-2)}
+
+/* a simulated transcript viewport so each block reads like the real product */
+.stage{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:var(--s4) var(--s4);min-height:200px}
+
+/* ---- shared transcript primitives (ported from the golden) ---- */
+.you{display:flex;gap:var(--s3);align-items:baseline}
+.you .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none;width:34px;padding-top:1px}
+.you .q{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+.agent{margin-top:var(--s3);font-size:var(--fs-md);line-height:1.62;color:var(--ink);letter-spacing:-0.004em}
+.agent code{font-family:var(--mono);font-size:12.5px;color:var(--ink);border-bottom:1px solid var(--hair)}
+.toolline{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);display:flex;gap:var(--s2);align-items:baseline}
+.toolline .ok{color:var(--done);font-family:var(--mono);font-size:var(--fs-xs)}
+.toolline .sum b{color:var(--ink-2);font-weight:600}
+
+/* ====================================================================
+   SHARED VOCABULARY — the amber-vs-blue split, reused by all alts
+   ==================================================================== */
+/* the action affordance buttons — shared across alts */
+.btn{font:inherit;border-radius:var(--r);font-size:var(--fs-sm);font-weight:600;padding:6px 14px;line-height:1;cursor:pointer;min-height:30px;display:inline-flex;align-items:center;gap:6px}
+/* PRIMARY = blue: interactive + primary, the token rule. The thing you press to unblock. */
+.btn.primary{background:var(--accent);color:#0a0c14}
+.btn.primary:hover{filter:brightness(1.08)}
+/* SECONDARY / DENY = neutral outline. Not red — denying is a normal choice, not an error. */
+.btn.ghost{background:transparent;color:var(--ink-2);border:1px solid var(--hair)}
+.btn.ghost:hover{background:var(--surface-2);color:var(--ink)}
+/* a destructive-leaning approve (the action itself is rm -rf) gets a quiet danger hint via the deny side */
+.askhead{display:flex;align-items:center;gap:var(--s2);font-size:var(--fs-sm);font-weight:600;color:var(--attention)}
+.askhead .gly{font-size:11px}
+.askhead .wait{margin-left:auto;font-size:var(--fs-xs);font-weight:400;color:var(--ink-3);font-variant-numeric:tabular-nums;display:inline-flex;align-items:center;gap:6px}
+.askhead .wait .bd{width:6px;height:6px;border-radius:50%;background:var(--attention);animation:breathe 2.6s ease-in-out infinite}
+/* the exact action, always machine-text mono so it can't be confused with prose */
+.action{font-family:var(--mono);font-size:12.5px;color:var(--ink);background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r);padding:6px 9px;display:block;word-break:break-all}
+.action .danger{color:var(--error)}   /* the consequential token (rm -rf) reads hot, honestly */
+.reason{font-size:var(--fs-sm);color:var(--ink-2);line-height:1.5}
+.qprose{font-size:var(--fs-md);color:var(--ink);line-height:1.55}  /* the agent's question text — still readable hero, but inside an amber frame */
+.actions{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap}
+.qreply{flex:1;min-width:160px;display:flex;align-items:center;background:var(--surface);border:1px solid var(--hair);border-radius:var(--r)}
+.qreply:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.qreply input{flex:1;background:none;border:none;outline:none;color:var(--ink);font-family:var(--sans);font-size:var(--fs-sm);padding:7px 10px}
+.qreply input::placeholder{color:var(--ink-3)}
+.akey{font-family:var(--mono);font-size:9.5px;color:var(--ink-3);border:1px solid var(--line);border-radius:3px;padding:1px 5px}
+
+/* ====================================================================
+   A — AMBER CONTAINER + BLUE BUTTON  (the split, made literal)
+   A tinted amber box (the one device) with an amber ◆ heading carries
+   "this needs you." Inside, the primary action is blue (Approve / Send);
+   Deny / secondary is a neutral outline. Amber = attention, blue = the
+   control. They label different layers, so neither fights the other.
+   ==================================================================== */
+.a-block{margin-top:var(--s3);background:var(--attention-soft);border:1px solid rgba(226,176,106,.30);border-radius:var(--r);padding:var(--s3) var(--s4)}
+.a-block .askhead{margin-bottom:var(--s2)}
+.a-block .action{margin:var(--s2) 0}
+.a-block .reason{margin-bottom:var(--s3)}
+.a-block .qprose{margin:var(--s1) 0 var(--s3)}
+.a-block .actions{margin-top:var(--s2)}
+
+/* ====================================================================
+   B — ALL-AMBER BLOCKING  (attention wins outright)
+   needs-you is treated as the dominant meaning: the whole block AND its
+   primary button are amber. Blue retreats entirely from blocking states
+   so amber is the single, unmistakable "you are the bottleneck" color.
+   The amber button is filled (solid) for the approve/send; deny stays
+   a neutral outline. Tests: is one loud color clearer than a split?
+   ==================================================================== */
+.b-block{margin-top:var(--s3);border-left:3px solid var(--attention);background:var(--attention-soft);border-radius:0 var(--r) var(--r) 0;padding:var(--s3) var(--s4)}
+.b-block .askhead{margin-bottom:var(--s2)}
+.b-block .action{margin:var(--s2) 0}
+.b-block .reason{margin-bottom:var(--s3)}
+.b-block .qprose{margin:var(--s1) 0 var(--s3)}
+/* the all-amber primary: filled amber, not blue */
+.btn.amber{background:var(--attention);color:#0a0c14}
+.btn.amber:hover{filter:brightness(1.06)}
+.b-block .actions{margin-top:var(--s2)}
+
+/* ====================================================================
+   C — DOCKED APPROVAL / ANSWER BAR ABOVE THE COMPOSER
+   The blocking ask never lives only in scroll flow. The moment the agent
+   blocks, an amber bar docks ABOVE the composer (where hands+eyes already
+   are), summarizing the ask + carrying the same blue primary / neutral
+   deny — OR a reply field for questions. The transcript shows a quiet
+   amber marker that scrolls; the dock is the always-reachable copy.
+   This is the direct answer to "don't let it hang off-screen."
+   ==================================================================== */
+.c-frame{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--bg);display:flex;flex-direction:column;min-height:300px}
+.c-scroll{flex:1;padding:var(--s4) var(--s4);overflow:hidden;position:relative}
+/* the in-flow marker (amber rail, quiet) that you may scroll past */
+.c-marker{margin-top:var(--s3);display:flex;gap:var(--s2);align-items:baseline;padding-left:11px;position:relative}
+.c-marker::before{content:"";position:absolute;left:0;top:4px;bottom:4px;width:2px;background:var(--attention);border-radius:2px}
+.c-marker .g{color:var(--attention);font-size:11px}
+.c-marker .t{font-size:var(--fs-sm);color:var(--ink-2)}
+.c-marker .t b{color:var(--ink);font-weight:600}
+.c-marker .jump{margin-left:6px;color:var(--accent);font-size:var(--fs-xs)}
+/* the DOCK: pinned amber bar above the composer */
+.c-dock{border-top:1px solid rgba(226,176,106,.30);background:linear-gradient(0deg,var(--attention-soft),var(--attention-soft)),#101117;padding:var(--s3) var(--s4);display:flex;align-items:center;gap:var(--s3);flex:none}
+.c-dock .gly{color:var(--attention);font-size:12px;flex:none}
+.c-dock .body{min-width:0;flex:1}
+.c-dock .lbl{font-size:var(--fs-xs);font-weight:600;color:var(--attention);display:flex;align-items:center;gap:6px}
+.c-dock .lbl .wait{color:var(--ink-3);font-weight:400;font-variant-numeric:tabular-nums}
+.c-dock .ask{font-size:var(--fs-sm);color:var(--ink);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.c-dock .ask .mono{font-family:var(--mono);font-size:11.5px}
+.c-dock .ask .danger{color:var(--error)}
+.c-dock .acts{flex:none;display:flex;align-items:center;gap:var(--s2)}
+/* faux composer beneath the dock, to show placement */
+.c-composer{border-top:1px solid var(--line);background:#101117;padding:var(--s3) var(--s4);flex:none}
+.c-ta{border:1px solid var(--hair);border-radius:var(--r);background:var(--surface);color:var(--ink-3);font-size:var(--fs-sm);padding:9px 11px}
+
+/* ====================================================================
+   D — INLINE DIFF / QUICK-REPLY-GATED
+   Make the ask answerable WHERE the consequence is shown. A permission
+   to edit shows the actual diff inline (amber-framed); approving is
+   approving THIS change. A question offers quick-reply chips for the
+   likely answers (blue, since each is a one-press action) plus a free
+   field. Lowest-friction resolve: decide from full context, one click.
+   ==================================================================== */
+.d-block{margin-top:var(--s3);background:var(--attention-soft);border:1px solid rgba(226,176,106,.30);border-radius:var(--r);overflow:hidden}
+.d-block .askhead{padding:var(--s3) var(--s4) var(--s2)}
+.d-block .diff{font-family:var(--mono);font-size:11.5px;line-height:1.55;background:var(--bg);border-top:1px solid rgba(226,176,106,.20);border-bottom:1px solid rgba(226,176,106,.20)}
+.d-block .diff .dl{display:flex;padding:1px var(--s4)}
+.d-block .diff .dl .gut{color:var(--ink-4);width:24px;flex:none;text-align:right;padding-right:var(--s2);user-select:none}
+.d-block .diff .add{background:rgba(138,168,115,.10);color:var(--ink)}      /* desaturated good-news add */
+.d-block .diff .add .gut{color:var(--success)}
+.d-block .diff .del{background:rgba(247,118,142,.07);color:var(--ink-2)}
+.d-block .diff .del .gut{color:var(--error)}
+.d-block .diff .ctx{color:var(--ink-3)}
+.d-block .filemeta{font-family:var(--mono);font-size:11px;color:var(--ink-3);padding:6px var(--s4);background:var(--surface);display:flex;gap:var(--s3);align-items:center}
+.d-block .filemeta .stat .a{color:var(--success)} .d-block .filemeta .stat .d{color:var(--error)}
+.d-block .actions{padding:var(--s3) var(--s4)}
+.d-block .qprose{padding:var(--s1) var(--s4) var(--s2)}
+.d-block .chips{display:flex;flex-wrap:wrap;gap:var(--s2);padding:0 var(--s4)}
+.d-block .chip-r{font:inherit;font-size:var(--fs-sm);color:var(--accent);border:1px solid var(--accent);background:var(--accent-soft);border-radius:var(--r-pill);padding:4px 12px;cursor:pointer}
+.d-block .chip-r:hover{background:rgba(122,162,247,.16)}
+.d-block .chip-free{font:inherit;font-size:var(--fs-sm);color:var(--ink-3);border:1px dashed var(--hair);background:transparent;border-radius:var(--r-pill);padding:4px 12px;cursor:pointer}
+.d-block .chip-free:hover{color:var(--ink-2);border-color:var(--ink-3)}
+.d-block .chips{padding-bottom:var(--s3)}
+
+/* mini caption under each specimen pair, explaining the colour choice in situ */
+.note{font-size:var(--fs-xs);color:var(--ink-3);line-height:1.55;margin-top:var(--s1)}
+.note .amb{color:var(--attention)} .note .blu{color:var(--accent)}
+
+footer.rec{margin-top:var(--s6);border-top:1px solid var(--line);padding-top:var(--s5);font-size:var(--fs-sm);color:var(--ink-2);line-height:1.7;max-width:84ch}
+footer.rec h2{font-size:var(--fs-base);font-weight:600;color:var(--ink);margin-bottom:var(--s2)}
+footer.rec b{color:var(--ink);font-weight:600}
+footer.rec .amb{color:var(--attention);font-weight:600}
+footer.rec .blu{color:var(--accent);font-weight:600}
+footer.rec code{font-family:var(--mono);font-size:11.5px;color:var(--ink);border-bottom:1px solid var(--hair)}
+
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.45}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="gallery">
+
+  <header class="page-h">
+    <h1>#16 — Blocking needs-you: permission/approval &amp; agent question</h1>
+    <p>These are the cases where <b>the human is the bottleneck</b>: the agent has stopped and
+      wall-clock is bleeding until you act. Two shapes — a <span class="amb">permission/approval
+      prompt</span> ("run <code>rm -rf build/</code>? Approve / Deny", with the exact action shown)
+      and an <span class="amb">agent free-text question</span> ("which database should this migration
+      target?"). The hard part is colour: a permission prompt is <b>both</b>
+      <span class="blu">interactive</span> (a control to operate → blue) <b>and</b>
+      <span class="amb">needs-you</span> (it blocks the agent → amber), and the four-colour system has
+      no rule for which wins. And a free-text question, rendered as ordinary hero prose, looks like the
+      agent thinking out loud — so it's missed and the session silently hangs.</p>
+    <p class="probs"><b>What every alt must do:</b> (1) make a blocking entry unmistakably "needs you,"
+      glyph-paired so it's colourblind-safe; (2) show the <b>exact action / the literal question</b>,
+      never a paraphrase; (3) keep the resolve action a single obvious press; (4) <b>never let the ask
+      hang off-screen</b> — each shows its scrolled-away fallback. The four alts differ only in how they
+      balance amber (attention) against blue (the control).</p>
+
+    <div class="ruling">
+      <div class="r-h">The amber-vs-blue resolution carried across all four</div>
+      <ul>
+        <li><span class="k amb">Amber ◆</span> owns the <b>container</b> — the box / rail / dock that says <i>this needs you</i>. needs-you is the scarcer, louder meaning, so it claims the frame.</li>
+        <li><span class="k blu">Blue</span> owns the <b>primary action</b> — the one button you press to unblock (Approve / Send). interactive + primary is exactly the blue token's job.</li>
+        <li><span class="k neu">Neutral</span> owns the <b>secondary</b> — Deny / Later / a plain reply field. Denying is a normal choice, not an error, so it is never red.</li>
+      </ul>
+      <div class="legend">
+        <span class="item"><span class="sw amb"></span><span class="gly amb">◆</span> needs you / blocking (amber — owns the frame)</span>
+        <span class="item"><span class="sw blu"></span> interactive / primary (blue — owns the button)</span>
+        <span class="item"><span class="sw neu"></span> secondary / settled (neutral)</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- =====================================================================
+       ALT A — AMBER CONTAINER + BLUE BUTTON
+       ===================================================================== -->
+  <section class="alt aA">
+    <div class="alt-h"><span class="badge">A</span><span class="ttl">Amber container + blue button</span></div>
+    <p class="cap">The split made literal: an <span class="amb">amber-tinted box</span> with a
+      <span class="amb">◆ awaiting</span> heading carries "this needs you"; inside, the
+      <span class="blu">primary action stays blue</span> (Approve / Send) and Deny is a neutral outline.
+      Amber labels the <b>attention</b>; blue labels the <b>control</b> — different layers, so they
+      don't compete. The question variant puts the agent's literal question in the same amber box with an
+      inline reply field, so it can never be mistaken for the agent thinking aloud.
+      <span class="trade">Tradeoff: two emphasis colours in one element asks the eye to parse a small
+      hierarchy; if amber tint and blue fill are tuned wrong they can read as equally loud.</span></p>
+
+    <div class="row">
+      <!-- permission -->
+      <div class="specwrap">
+        <div class="spec-lbl">◆ <span class="case">Permission / approval — the exact action shown</span></div>
+        <div class="stage">
+          <div class="agent">The build dir has stale artifacts from the old toolchain. I want to wipe it before the clean rebuild.</div>
+          <div class="a-block">
+            <div class="askhead"><span class="gly">◆</span> Approval needed <span class="wait"><span class="bd"></span>waiting 0:18</span></div>
+            <code class="action">rm <span class="danger">-rf</span> build/</code>
+            <div class="reason">Recursively deletes the <code style="font-family:var(--mono)">build/</code> directory and everything under it. Not reversible.</div>
+            <div class="actions">
+              <button class="btn primary">Approve <span class="akey" style="border-color:#0a0c1433;color:#0a0c14aa">↵</span></button>
+              <button class="btn ghost">Deny</button>
+              <button class="btn ghost">Always allow in this session</button>
+            </div>
+          </div>
+        </div>
+        <div class="note">Amber frame = <span class="amb">needs you</span>. Blue <b>Approve</b> = <span class="blu">the control</span>. Deny is neutral (a normal choice, not an error → not red).</div>
+      </div>
+
+      <!-- question -->
+      <div class="specwrap">
+        <div class="spec-lbl">◆ <span class="case">Agent free-text question — framed, not prose</span></div>
+        <div class="stage">
+          <div class="agent">I've written the migration but it can target either store and the schemas differ.</div>
+          <div class="a-block">
+            <div class="askhead"><span class="gly">◆</span> The agent is asking you <span class="wait"><span class="bd"></span>waiting 0:42</span></div>
+            <div class="qprose">Which database should this migration target — the primary Postgres, or the read-replica analytics store?</div>
+            <div class="actions">
+              <span class="qreply"><input placeholder="Type your answer…"></span>
+              <button class="btn primary">Send <span class="akey" style="border-color:#0a0c1433;color:#0a0c14aa">↵</span></button>
+            </div>
+          </div>
+        </div>
+        <div class="note">Same amber frame promotes the question out of hero-prose ambiguity; the answer field + blue <b>Send</b> make "you are expected to type" obvious.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       ALT B — ALL-AMBER BLOCKING
+       ===================================================================== -->
+  <section class="alt aB">
+    <div class="alt-h"><span class="badge">B</span><span class="ttl">All-amber blocking</span></div>
+    <p class="cap">Attention wins outright. needs-you is the dominant meaning, so the
+      <span class="amb">whole block <i>and</i> its primary button are amber</span>; blue retreats from
+      blocking states entirely. The result is one loud, unambiguous colour — there is no second hue to
+      arbitrate. The block uses an amber <b>left rail</b> (the one device) rather than a full tint, so it
+      doesn't out-shout the agent's prose above it. Deny / secondary stays a neutral outline.
+      <span class="trade">Tradeoff: the amber button breaks the global rule that the primary action is
+      always blue — users elsewhere learn "blue = press this," and a lone amber primary can read as a
+      warning to avoid rather than the button to click.</span></p>
+
+    <div class="row">
+      <div class="specwrap">
+        <div class="spec-lbl">◆ <span class="case">Permission / approval — the exact action shown</span></div>
+        <div class="stage">
+          <div class="agent">The build dir has stale artifacts from the old toolchain. I want to wipe it before the clean rebuild.</div>
+          <div class="b-block">
+            <div class="askhead"><span class="gly">◆</span> Approval needed <span class="wait"><span class="bd"></span>waiting 0:18</span></div>
+            <code class="action">rm <span class="danger">-rf</span> build/</code>
+            <div class="reason">Recursively deletes the <code style="font-family:var(--mono)">build/</code> directory and everything under it. Not reversible.</div>
+            <div class="actions">
+              <button class="btn amber">Approve <span class="akey" style="border-color:#0a0c1433;color:#0a0c14aa">↵</span></button>
+              <button class="btn ghost">Deny</button>
+              <button class="btn ghost">Always allow</button>
+            </div>
+          </div>
+        </div>
+        <div class="note">One colour, no arbitration: amber rail <i>and</i> amber primary. Reads as a single "needs-you" gesture — at the cost of breaking blue=primary elsewhere.</div>
+      </div>
+
+      <div class="specwrap">
+        <div class="spec-lbl">◆ <span class="case">Agent free-text question — framed, not prose</span></div>
+        <div class="stage">
+          <div class="agent">I've written the migration but it can target either store and the schemas differ.</div>
+          <div class="b-block">
+            <div class="askhead"><span class="gly">◆</span> The agent is asking you <span class="wait"><span class="bd"></span>waiting 0:42</span></div>
+            <div class="qprose">Which database should this migration target — the primary Postgres, or the read-replica analytics store?</div>
+            <div class="actions">
+              <span class="qreply"><input placeholder="Type your answer…"></span>
+              <button class="btn amber">Send <span class="akey" style="border-color:#0a0c1433;color:#0a0c14aa">↵</span></button>
+            </div>
+          </div>
+        </div>
+        <div class="note">Consistent with the permission block — every blocking control is amber. Simpler rule, but the amber Send fights the muscle-memory of blue Send in the composer just below.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       ALT C — DOCKED APPROVAL / ANSWER BAR ABOVE THE COMPOSER
+       ===================================================================== -->
+  <section class="alt aC">
+    <div class="alt-h"><span class="badge">C</span><span class="ttl">Docked approval / answer bar above the composer</span></div>
+    <p class="cap">The directly-targets-"don't let it hang off-screen" alt. The block still lands in
+      the transcript (a quiet <span class="amb">amber-rail marker</span> you can scroll past), but the
+      moment the agent blocks an <span class="amb">amber bar docks above the composer</span> — where your
+      hands and eyes already are — carrying the summarized ask, the same <span class="blu">blue
+      primary</span> / neutral deny, or a reply field for questions. Wherever you've scrolled, the ask is
+      one glance from the input. It clears the instant you answer.
+      <span class="trade">Tradeoff: the dock is chrome real estate; with several blocked sessions it must
+      collapse to "N awaiting → " and it duplicates the in-flow block (kept in sync, but two surfaces for
+      one state).</span></p>
+
+    <div class="row">
+      <!-- permission, docked -->
+      <div class="specwrap">
+        <div class="spec-lbl">◆ <span class="case">Permission — scrolled away, dock keeps it reachable</span></div>
+        <div class="c-frame">
+          <div class="c-scroll">
+            <div class="agent">The build dir has stale artifacts. I want to wipe it before the clean rebuild, then re-run the toolchain end to end.</div>
+            <div class="c-marker"><span class="g">◆</span><span class="t"><b>Approval needed</b> · <span style="font-family:var(--mono);font-size:11.5px">rm -rf build/</span><span class="jump">jump ↓</span></span></div>
+            <div class="toolline"><span class="ok">✓</span><span class="sum"><b>2 steps</b> · read toolchain.lock · listed build/</span></div>
+            <div class="agent" style="color:var(--ink-3)">…you've since scrolled down reading other output; the in-flow ask is now off-screen above. The dock below stays put.</div>
+          </div>
+          <!-- the pinned dock -->
+          <div class="c-dock">
+            <span class="gly">◆</span>
+            <div class="body">
+              <div class="lbl">Approval needed <span class="wait">· waiting 0:18</span></div>
+              <div class="ask"><span class="mono">rm <span class="danger">-rf</span> build/</span> — recursive, not reversible</div>
+            </div>
+            <div class="acts">
+              <button class="btn primary">Approve</button>
+              <button class="btn ghost">Deny</button>
+            </div>
+          </div>
+          <div class="c-composer"><div class="c-ta">Message the agent…</div></div>
+        </div>
+        <div class="note">In-flow marker scrolls; the <span class="amb">amber dock</span> is pinned above the composer so the action is always one glance away. Same <span class="blu">blue Approve</span> split.</div>
+      </div>
+
+      <!-- question, docked -->
+      <div class="specwrap">
+        <div class="spec-lbl">◆ <span class="case">Question — dock carries an inline answer field</span></div>
+        <div class="c-frame">
+          <div class="c-scroll">
+            <div class="agent">I've written the migration but it can target either store and the schemas differ.</div>
+            <div class="c-marker"><span class="g">◆</span><span class="t"><b>Agent asked you a question</b><span class="jump">jump ↓</span></span></div>
+            <div class="agent" style="color:var(--ink-3)">…the question is plain prose above and easy to scroll past — exactly the case that hangs sessions today. The dock makes the wait impossible to forget.</div>
+          </div>
+          <div class="c-dock">
+            <span class="gly">◆</span>
+            <div class="body">
+              <div class="lbl">The agent is asking you <span class="wait">· waiting 0:42</span></div>
+              <div class="ask">Which database should the migration target?</div>
+            </div>
+            <div class="acts">
+              <span class="qreply" style="min-width:150px"><input placeholder="Answer…"></span>
+              <button class="btn primary">Send</button>
+            </div>
+          </div>
+          <div class="c-composer"><div class="c-ta">Message the agent…</div></div>
+        </div>
+        <div class="note">The question — the case most often missed — gets a dedicated docked answer field. You reply right where you'd type a steer, and the dock clears.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       ALT D — INLINE DIFF / QUICK-REPLY-GATED
+       ===================================================================== -->
+  <section class="alt aD">
+    <div class="alt-h"><span class="badge">D</span><span class="ttl">Inline diff- / quick-reply-gated</span></div>
+    <p class="cap">Answer where the consequence is visible. A permission to <i>edit</i> shows the
+      <span class="amb">actual diff inline</span> (amber-framed, desaturated +/−) so Approve means
+      "approve <i>this</i> change," not an abstract yes. A question offers <span class="blu">quick-reply
+      chips</span> for the likely answers — each a one-press blue action — plus a free field for anything
+      else. Lowest friction: decide from full context without leaving the transcript.
+      <span class="trade">Tradeoff: richest to build and tallest in the flow; the chips need the agent to
+      enumerate plausible answers (a model-side contract), and a long diff still needs the
+      collapse/peek treatment from topic #6 so the approval prompt stays glanceable.</span></p>
+
+    <div class="row">
+      <!-- permission as inline diff -->
+      <div class="specwrap">
+        <div class="spec-lbl">◆ <span class="case">Permission to edit — gated on the real diff</span></div>
+        <div class="stage">
+          <div class="agent">Root cause found: the sweep compares <code>lastUsed</code> instead of <code>expiresAt</code>. Here's the fix — approve to apply.</div>
+          <div class="d-block">
+            <div class="askhead"><span class="gly">◆</span> Approve this edit <span class="wait" style="margin-left:auto;font-weight:400;color:var(--ink-3);font-size:var(--fs-xs)"><span class="bd" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--attention);margin-right:6px"></span>waiting 0:09</span></div>
+            <div class="filemeta"><span>cache/evict.go</span><span class="stat"><span class="a">+2</span> <span class="d">−1</span></span></div>
+            <div class="diff">
+              <div class="dl ctx"><span class="gut">41</span><span>func evictExpired(now time.Time) {</span></div>
+              <div class="dl del"><span class="gut">42</span><span>&nbsp;&nbsp;if e.lastUsed.Before(now) {</span></div>
+              <div class="dl add"><span class="gut">42</span><span>&nbsp;&nbsp;if e.expiresAt.Before(now) {</span></div>
+              <div class="dl add"><span class="gut">43</span><span>&nbsp;&nbsp;&nbsp;&nbsp;metrics.Inc("cache.evict.expired")</span></div>
+              <div class="dl ctx"><span class="gut">44</span><span>&nbsp;&nbsp;&nbsp;&nbsp;delete(e.entries, k)</span></div>
+            </div>
+            <div class="actions">
+              <button class="btn primary">Approve edit <span class="akey" style="border-color:#0a0c1433;color:#0a0c14aa">↵</span></button>
+              <button class="btn ghost">Deny</button>
+              <button class="btn ghost">Edit first…</button>
+            </div>
+          </div>
+        </div>
+        <div class="note">Approve is bound to the visible change — no ambiguity about what you're authorizing. <span class="amb">Amber frame</span> + <span class="blu">blue Approve</span>; the diff itself uses neutral/desaturated +/−.</div>
+      </div>
+
+      <!-- question as quick-reply -->
+      <div class="specwrap">
+        <div class="spec-lbl">◆ <span class="case">Question — quick-reply chips + free field</span></div>
+        <div class="stage">
+          <div class="agent">I've written the migration but it can target either store and the schemas differ.</div>
+          <div class="d-block">
+            <div class="askhead"><span class="gly">◆</span> The agent is asking you <span class="wait" style="margin-left:auto;font-weight:400;color:var(--ink-3);font-size:var(--fs-xs)"><span class="bd" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--attention);margin-right:6px"></span>waiting 0:42</span></div>
+            <div class="qprose">Which database should this migration target?</div>
+            <div class="chips">
+              <button class="chip-r">Primary Postgres</button>
+              <button class="chip-r">Analytics read-replica</button>
+              <button class="chip-free">Something else…</button>
+            </div>
+          </div>
+        </div>
+        <div class="note">The agent enumerates the plausible answers as <span class="blu">one-press blue chips</span> (each a discrete action); the dashed "Something else…" opens the free field. Fastest path to unblock.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       RECOMMENDATION
+       ===================================================================== -->
+  <footer class="rec">
+    <h2>Recommendation</h2>
+    <p><b>Resolve the colour clash with the split, not by picking one hue:
+      <span class="amb">amber owns the container, blue owns the primary action</span></b> — needs-you is
+      the scarce attention signal so it claims the frame, and the one button you press to unblock is
+      interactive+primary, which is exactly blue's job. That is alt <b>A</b>, and it should be the base
+      grammar for every blocking entry.</p>
+    <p><b>Ship A as the inline block, with C's docked bar layered on as the off-screen guarantee.</b>
+      A answers the colour question cleanly and reads correctly in flow; C is the part that keeps the ask
+      from ever hanging off-screen and puts the resolve controls where the hands already are — together
+      they cover "obvious in context" <i>and</i> "impossible to miss." <b>D is the upgrade path:</b>
+      where the permission is an edit, render A's block with the inline diff, and where the question has
+      enumerable answers, offer quick-reply chips — both strictly improve A without changing its colour
+      rules. <b>B (all-amber) is the one to reject:</b> it's the simplest rule but it breaks
+      <code>blue = primary action</code> everywhere else, and a lone amber button reads as a warning to
+      avoid rather than the control to press — losing exactly the affordance a blocked user needs most.</p>
+    <p>Across all four: amber stays strictly needs-you and is always glyph-paired (◆ awaiting); Deny is
+      neutral, never red (denying is a normal choice); the exact action / literal question is always shown
+      verbatim in machine text; and a soft amber breathing dot on the wait timer is the only motion —
+      honest liveness, not a reassuring spinner.</p>
+  </footer>
+
+</div>
+</body>
+</html>

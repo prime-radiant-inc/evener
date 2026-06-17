@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf — Mockup #13: Liveness & motion economy (4 directions)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- shared design tokens + golden component grammar -->
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* =====================================================================
+   MOCKUP #13 — LIVENESS & MOTION ECONOMY
+   Principle 5 (minimal motion): "one gentle alive cue + a soft cursor —
+   nothing more"; no blinking. Principle 7: liveness must be HONEST — a
+   "working" animation must not look identical to a hung agent.
+
+   What's broken in the shipped active turn (see /tmp/serf-ui/crop-liveness):
+     1. MULTIPLE desynced perpetual loops run at once during a turn:
+        the livebar breathing dot (~2.6s) + the streaming cursor blink
+        (~1.3s) + a status-dot pulse — three clocks ticking out of phase,
+        which reads as fidget, not calm. Violates "one loop max".
+     2. The honest "no updates for Ns" line is a PER-SECOND RISING COUNTER
+        ("…no updates for 47s") — it reads as a rising anxiety meter even
+        when nothing is wrong.
+     3. The livebar's ticking elapsed timer (1:12 → 1:13 → …) is a fourth
+        moving number competing for the eye.
+     4. Golden (pinned bottom .livebar strip) and hard-cases (in-flow
+        .liveness line) DISAGREE on where liveness lives.
+
+   Goals: ONE loop visible at a time · honest liveness that distinguishes
+   working from hung · a calm "quiet for ~Nm" instead of a rising counter ·
+   one resolved home for the livebar.
+
+   Because this topic IS motion, the panels use REAL CSS animation so the
+   calm-vs-busy difference is actually visible — and a global reduced-motion
+   block stills everything for the a11y comparison.
+   ===================================================================== */
+
+/* ---- page chrome (gallery, not the app shell) ---- */
+body{overflow:auto}
+.page{max-width:1180px;margin:0 auto;padding:var(--s6) var(--s5) 96px}
+.page-h{margin-bottom:var(--s5)}
+.page-h h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.page-h .sub{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);max-width:780px;line-height:1.6}
+.page-h .probs{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);max-width:780px;line-height:1.6}
+.page-h .probs b{color:var(--ink-2);font-weight:600}
+.rm-note{margin-top:var(--s3);font-size:var(--fs-xs);color:var(--ink-3);max-width:780px;line-height:1.55}
+.rm-note code{font-family:var(--mono);font-size:10.5px;color:var(--ink-2)}
+
+.alts{display:flex;flex-direction:column;gap:var(--s6)}
+.alt-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.alt-h .badge{font-size:var(--fs-sm);font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;flex:none}
+.alt-h .name{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.alt-h .loops{margin-left:auto;font-size:var(--fs-xs);color:var(--ink-3);font-variant-numeric:tabular-nums}
+.alt-h .loops b{color:var(--accent);font-weight:600}
+.alt-cap{font-size:var(--fs-sm);color:var(--ink-2);line-height:1.6;max-width:860px;margin-bottom:var(--s4)}
+.alt-cap .tradeoff{color:var(--ink-3)}
+.alt-cap b{color:var(--ink-2);font-weight:600}
+
+/* a realistic active-turn slice rendered inside a mini app frame so the */
+/* livebar placement reads honestly (frame has a transcript + a footer). */
+.frame{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;position:relative}
+.frame .ft-tag{position:absolute;top:var(--s3);right:var(--s4);font-size:var(--fs-xs);color:var(--ink-4);letter-spacing:.04em;z-index:3}
+.frame-body{padding:var(--s5) var(--s5) 0}
+.slice{max-width:600px}
+
+/* reuse golden .you / .agent / think / active / subagent voices */
+.you{display:flex;gap:var(--s3);align-items:baseline}
+.you .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none;width:34px;padding-top:1px}
+.you .q{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+.agent{margin-top:var(--s4);font-size:var(--fs-md);line-height:1.62;color:var(--ink);letter-spacing:-0.004em}
+.agent.lead{margin-top:var(--s3)}
+.agent code{font-family:var(--mono);font-size:12.5px;color:var(--ink);border-bottom:1px solid var(--hair)}
+.spark{color:var(--ink-3);font-size:10px;flex:none}
+
+/* a quiet collapsed thinking line + an active-tool tick (the turn's phases) */
+.think{margin-top:var(--s4);font-size:var(--fs-sm);color:var(--ink-3);display:flex;gap:var(--s2);align-items:baseline}
+.think .pv{font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.active{margin-top:var(--s4);display:flex;gap:var(--s3);align-items:baseline;padding-left:11px;position:relative}
+.active::before{content:"";position:absolute;left:0;top:3px;height:13px;width:2px;background:var(--accent);border-radius:2px}
+.active .lbl{font-size:var(--fs-base);color:var(--ink)}
+.active .cmd{font-family:var(--mono);font-size:var(--fs-xs);color:var(--accent);margin-left:auto}
+
+/* =====================================================================
+   THE ONE SANCTIONED LOOP — a slow breathing dot (~2.6s).
+   Every alternative reuses THIS and only this for its perpetual cue, so
+   each panel has at most one looping animation visible at a time.
+   ===================================================================== */
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.42}}
+.breath-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none;
+  animation:breathe 2.6s ease-in-out infinite}
+
+/* the shipped blink we are RETIRING — shown only in the "busy/before" foil */
+@keyframes blink{0%,100%{opacity:.9}50%{opacity:.08}}
+@keyframes pulse{0%{transform:scale(1);opacity:1}70%{transform:scale(2.4);opacity:0}100%{opacity:0}}
+
+/* =====================================================================
+   LIVEBAR — pinned footer strip (golden's home). Variants differ inside.
+   ===================================================================== */
+.livebar{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s5);
+  border-top:1px solid var(--line);background:#101117;font-size:var(--fs-sm);color:var(--ink-2)}
+.livebar .feed-w{max-width:600px;margin:0 auto;width:100%;display:flex;align-items:center;gap:var(--s2)}
+.livebar .el{color:var(--ink);font-variant-numeric:tabular-nums}
+.livebar .wait{color:var(--ink-2)}
+.livebar .sep{color:var(--ink-4)}
+.livebar .phase{color:var(--ink-2)}
+
+/* a static (non-blinking) streaming caret — present everywhere except the
+   "before" foil; it FADES once, gently, then rests solid: not a loop. */
+.caret{display:inline-block;width:2px;height:16px;background:var(--accent);margin-left:3px;
+  vertical-align:-3px;border-radius:1px;opacity:.9}
+.caret.settle{animation:caret-in .5s ease both}
+@keyframes caret-in{from{opacity:0}to{opacity:.9}}
+
+/* ===================================================================== */
+/* BEFORE — the shipped active turn: THREE desynced loops at once         */
+/* (foil for contrast — deliberately busy). Counts as the anti-pattern.   */
+/* ===================================================================== */
+.before .caret-blink{display:inline-block;width:2px;height:16px;background:var(--accent);
+  margin-left:3px;vertical-align:-3px;animation:blink 1.3s steps(1) infinite}
+.before .status-pulse{position:relative;width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
+.before .status-pulse::after{content:"";position:absolute;inset:0;border-radius:50%;
+  background:var(--accent);animation:pulse 2.0s ease-out infinite}
+.before .livebar .d{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none;
+  animation:breathe 2.6s ease-in-out infinite}
+.before-tally{font-size:var(--fs-xs);color:var(--error);margin-top:var(--s2);line-height:1.5}
+
+/* =====================================================================
+   A — SINGLE LIVENESS SOURCE (kill the cursor blink)
+   The breathing dot in the livebar is the ONE perpetual loop. The
+   streaming caret is static (a solid bar that fades in once, never
+   blinks). No status-dot pulse anywhere. Elapsed time is shown but does
+   not visibly "tick" as motion (it is just a number that updates on
+   coarse events, not a per-frame animation).
+   ===================================================================== */
+
+/* =====================================================================
+   B — QUANTIZED "QUIET FOR ~Nm"
+   Replace the per-second rising counter with a coarse, rounded bucket
+   ("just now" → "~30s" → "~1m" → "~2m"). The label changes rarely, so
+   there is no frame-by-frame number motion — and the single breathing
+   dot stays the only loop. Buckets shown as a static legend strip.
+   ===================================================================== */
+.bucket-legend{display:flex;flex-wrap:wrap;gap:var(--s2);margin-top:var(--s3)}
+.bk{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:var(--r-pill);
+  background:var(--surface);font-size:var(--fs-xs);color:var(--ink-3);border:1px solid var(--line)}
+.bk .raw{font-family:var(--mono);font-size:10px;color:var(--ink-4)}
+.bk.on{color:var(--ink);border-color:var(--hair)}
+.bk.on .raw{color:var(--ink-3)}
+
+/* =====================================================================
+   C — LAST-EVENT LABEL (not a raw counter)
+   Instead of counting up "no updates for Ns", name the last real thing
+   that happened: "last: edited cache.go". A timestamp tells you WHEN
+   without a rising meter. The label is honest (it only changes when the
+   agent actually does something) and static between events.
+   ===================================================================== */
+.evt{font-style:normal;color:var(--ink-2)}
+.evt .lead-w{color:var(--ink-3)}
+
+/* =====================================================================
+   D — AMBIENT EDGE-SLIVER LIVEBAR
+   Liveness leaves the row of widgets entirely and becomes a thin sliver
+   along one edge of the transcript: a single slow, low-contrast shimmer
+   travels it (~3.4s) — one loop, peripheral, never a number. Everything
+   else (elapsed, phase) is static text in the footer.
+   ===================================================================== */
+.frame.edged .frame-body{position:relative}
+.edge-sliver{position:absolute;left:0;top:0;bottom:0;width:2px;overflow:hidden;background:var(--line)}
+.edge-sliver::after{content:"";position:absolute;left:0;right:0;height:34%;
+  background:linear-gradient(to bottom,transparent,var(--accent),transparent);
+  opacity:.85;animation:slide 3.4s ease-in-out infinite}
+@keyframes slide{0%{top:-34%}100%{top:100%}}
+.edged .frame-body{padding-left:calc(var(--s5) + var(--s2))}
+.edged .livebar .feed-w{color:var(--ink-3)}
+
+/* =====================================================================
+   "NO UPDATES FOR Ns" TREATMENT STUDY — calm band vs concern band
+   The same honest liveness fact, rendered two ways:
+     · CALM band: short silences are EXPECTED (model is thinking / a long
+       tool is running). Neutral text, the sanctioned breathing dot, a
+       coarse "~30s" bucket. No color, no rising number.
+     · CONCERN band: once silence crosses the honest-stall threshold the
+       agent may be hung. NOW it earns attention — amber, a glyph, an
+       actionable affordance — but STILL no perpetual loop is added; the
+       dot stops breathing (honest: a hung agent is not "alive") and goes
+       solid amber. Motion economy: escalation REMOVES the alive cue, it
+       does not pile on a new one.
+   ===================================================================== */
+.study{margin-top:var(--s5)}
+.study-grid{display:grid;grid-template-columns:1fr 1fr;gap:var(--s4)}
+@media (max-width:920px){.study-grid{grid-template-columns:1fr}}
+.band{border:1px solid var(--line);border-radius:var(--r);padding:var(--s4);background:var(--bg)}
+.band .band-h{display:flex;align-items:baseline;gap:var(--s2);margin-bottom:var(--s3)}
+.band .band-h .lab{font-size:var(--fs-sm);font-weight:600;color:var(--ink)}
+.band .band-h .rng{font-size:var(--fs-xs);color:var(--ink-3);margin-left:auto;font-variant-numeric:tabular-nums}
+/* the calm livebar */
+.band .livebar{border:1px solid var(--line);border-radius:var(--r);border-top:1px solid var(--line)}
+/* concern: amber, glyph, solid (NOT breathing) dot, retry affordance */
+.concern .livebar{background:var(--attention-soft);border-color:rgba(226,176,106,.35)}
+.concern .livebar .feed-w{color:var(--attention)}
+.concern .stall-dot{width:6px;height:6px;border-radius:50%;background:var(--attention);flex:none}
+.concern .glyph{color:var(--attention);font-size:11px}
+.concern .act{margin-left:auto;font-size:var(--fs-xs);color:var(--accent);
+  border:1px solid var(--hair);border-radius:var(--r);padding:2px 8px;background:none}
+.concern .act:hover{background:var(--surface)}
+.band-cap{font-size:var(--fs-xs);color:var(--ink-3);line-height:1.55;margin-top:var(--s3)}
+.band-cap b{color:var(--ink-2);font-weight:600}
+
+/* small reusable legend dot for captions */
+.kdot{display:inline-block;width:6px;height:6px;border-radius:50%;vertical-align:1px;margin:0 1px}
+.kdot.blue{background:var(--accent)} .kdot.amber{background:var(--attention)}
+
+/* reduced-motion: still EVERYTHING. The page becomes the a11y reference. */
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+.rm-banner{margin-top:var(--s4);padding:var(--s3) var(--s4);border:1px dashed var(--hair);
+  border-radius:var(--r);font-size:var(--fs-xs);color:var(--ink-3);line-height:1.55;display:none}
+@media (prefers-reduced-motion:reduce){.rm-banner{display:block}}
+.rm-banner b{color:var(--ink-2)}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="page-h">
+    <h1>Mockup #13 — Liveness &amp; motion economy</h1>
+    <p class="sub">During an active turn the UI should run <b>one gentle alive cue at a time</b> and
+      keep its honesty: a "working" signal must never look identical to a hung agent. Four directions
+      for where liveness lives and how it moves, plus a calm-vs-concern study of the
+      "no&nbsp;updates&nbsp;for&nbsp;Ns" line.</p>
+    <p class="probs"><b>Fixes for the shipped active turn:</b> (1) it runs <b>three desynced perpetual
+      loops</b> at once — livebar breathing dot (~2.6s) + a <b>blinking</b> stream cursor (~1.3s) + a
+      status-dot pulse — which reads as fidget; (2) the honest "no updates for Ns" line is a
+      <b>per-second rising counter</b> that reads as an anxiety meter; (3) a <b>ticking elapsed timer</b>
+      is a fourth moving number; (4) golden (pinned strip) and hard-cases (in-flow line) disagree on
+      <b>where liveness lives</b>.
+      <br>Targets: <b>one loop max · honest stall ≠ working · quantized quiet, not a rising counter ·
+      one livebar home.</b></p>
+    <p class="rm-note">This page uses <b>real animation</b> so the calm-vs-busy difference is visible.
+      The <span style="color:var(--ink-2)">loop count</span> on each alternative is the number of
+      perpetual animations playing in its panel — the target is <b>1</b>. Turn on
+      <code>prefers-reduced-motion: reduce</code> (OS "reduce motion") and the whole page stills — that
+      is the a11y reference rendering.</p>
+    <div class="rm-banner"><b>Reduced motion is ON.</b> Every loop on this page is stilled. Liveness now
+      rests on static signals only (a solid dot, a phase label, a last-event name) — which is exactly
+      why those static signals must already carry the meaning. If a panel looks dead now, its liveness
+      was leaning on motion it shouldn't have.</div>
+  </header>
+
+  <div class="alts">
+
+    <!-- ============================================================ -->
+    <!-- BEFORE — the shipped busy active turn (anti-pattern foil)     -->
+    <!-- ============================================================ -->
+    <section class="alt before">
+      <div class="alt-h"><span class="badge">✗</span><span class="name">Before — the shipped active turn</span>
+        <span class="loops">loops: <b style="color:var(--error)">3</b> · target 1</span></div>
+      <p class="alt-cap">The baseline, for contrast. <b>Three perpetual loops play at once</b>: a
+        breathing livebar dot, a <b>blinking</b> stream caret, and a pulsing status dot — all on
+        different clocks. The footer also <b>counts up</b> "no updates for 47s" and <b>ticks</b> the
+        elapsed timer. Five moving things; none of them tell you anything you didn't already know.
+        <span class="tradeoff"> This is what every alternative below is trying to quiet down.</span></p>
+      <div class="frame before">
+        <span class="ft-tag">shipped</span>
+        <div class="frame-body">
+          <div class="slice">
+            <div class="you"><span class="tag">You</span><span class="q">The auth token cache invalidates too aggressively — find the root cause and fix it.</span></div>
+            <div class="agent lead">Root cause: <code>evictExpired()</code> compares against
+              <code>lastUsed</code> instead of <code>expiresAt</code>. Patching the comparison now<span class="caret-blink"></span></div>
+            <div class="active"><span class="lbl">Fixing the eviction comparison</span><span class="cmd">edit cache.go</span></div>
+            <p class="before-tally">▲ blinking caret (1.3s) &nbsp;·&nbsp; ▲ status pulse (2.0s) &nbsp;·&nbsp; ▲ breathing dot (2.6s) &nbsp;·&nbsp; rising "no updates" counter &nbsp;·&nbsp; ticking elapsed</p>
+          </div>
+        </div>
+        <div class="livebar"><div class="feed-w">
+          <span class="status-pulse"></span>working
+          <span class="sep">·</span><span class="el">1:13</span>
+          <span class="sep">·</span><span class="wait" style="color:var(--ink-3)">no updates for 47s</span>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- A — SINGLE LIVENESS SOURCE (kill cursor blink)               -->
+    <!-- ============================================================ -->
+    <section class="alt">
+      <div class="alt-h"><span class="badge">A</span><span class="name">Single liveness source — kill the cursor blink</span>
+        <span class="loops">loops: <b>1</b></span></div>
+      <p class="alt-cap">The pinned livebar's <b>breathing dot is the only perpetual loop</b>. The
+        streaming caret becomes a <b>solid bar</b> that fades in once and rests (no blink); there is no
+        status-dot pulse. Elapsed is shown as a number but isn't an animation. One clock, one cue —
+        the breathing dot says "alive", everything else is still.
+        <span class="tradeoff"> Tradeoff: keeps the elapsed/“no updates” numbers as plain text (so they
+        still update on events) — calm, but A on its own doesn't fix the rising-counter wording; pair
+        with B or C for that.</span></p>
+      <div class="frame">
+        <span class="ft-tag">live · streaming</span>
+        <div class="frame-body">
+          <div class="slice">
+            <div class="you"><span class="tag">You</span><span class="q">The auth token cache invalidates too aggressively — find the root cause and fix it.</span></div>
+            <button class="think"><span class="spark">✦</span><span>Thought for 6s</span><span class="pv">— eviction keys off the wrong timestamp</span></button>
+            <div class="agent lead">Root cause: <code>evictExpired()</code> compares against
+              <code>lastUsed</code> instead of <code>expiresAt</code>. Patching the comparison now<span class="caret settle"></span></div>
+            <div class="active"><span class="lbl">Fixing the eviction comparison</span><span class="cmd">edit cache.go</span></div>
+          </div>
+        </div>
+        <div class="livebar"><div class="feed-w">
+          <span class="breath-dot"></span>working
+          <span class="sep">·</span><span class="el">1:12</span>
+          <span class="sep">·</span><span class="wait">editing cache.go</span>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- B — QUANTIZED "QUIET FOR ~Nm"                                -->
+    <!-- ============================================================ -->
+    <section class="alt">
+      <div class="alt-h"><span class="badge">B</span><span class="name">Quantized "quiet for ~Nm"</span>
+        <span class="loops">loops: <b>1</b></span></div>
+      <p class="alt-cap">Replace the per-second rising counter with a <b>coarse, rounded bucket</b> that
+        changes only at a few thresholds — so the eye sees a stable word, not a meter climbing.
+        Sub-threshold silence reads "just now"; longer reads "~30s", "~1m". The single breathing dot is
+        still the only loop.
+        <span class="tradeoff"> Tradeoff: you lose the exact second (rarely needed mid-turn); the raw
+        value can live in a hover tooltip for the moment you do want it.</span></p>
+      <div class="frame">
+        <span class="ft-tag">live · quiet ~30s</span>
+        <div class="frame-body">
+          <div class="slice">
+            <div class="you"><span class="tag">You</span><span class="q">The auth token cache invalidates too aggressively — find the root cause and fix it.</span></div>
+            <div class="agent lead">Root cause confirmed in <code>evictExpired()</code>. Running the
+              cache tests to reproduce before I patch<span class="caret settle"></span></div>
+            <div class="active"><span class="lbl">Running the cache tests</span><span class="cmd">go test ./cache</span></div>
+          </div>
+          <div class="bucket-legend">
+            <span class="bk">just now <span class="raw">&lt;10s</span></span>
+            <span class="bk on">quiet ~30s <span class="raw">10–45s</span></span>
+            <span class="bk">quiet ~1m <span class="raw">45–90s</span></span>
+            <span class="bk">quiet ~2m <span class="raw">90s–3m</span></span>
+            <span class="bk">stalled? <span class="raw">&gt;3m → concern band</span></span>
+          </div>
+        </div>
+        <div class="livebar"><div class="feed-w">
+          <span class="breath-dot"></span>working
+          <span class="sep">·</span><span class="phase">running tests</span>
+          <span class="sep">·</span><span class="wait" title="exact: 31s">quiet ~30s</span>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- C — LAST-EVENT LABEL (not a raw counter)                     -->
+    <!-- ============================================================ -->
+    <section class="alt">
+      <div class="alt-h"><span class="badge">C</span><span class="name">Last-event label, not a raw counter</span>
+        <span class="loops">loops: <b>1</b></span></div>
+      <p class="alt-cap">Instead of counting up "no updates for Ns", <b>name the last real thing the
+        agent did</b>: "last: edited cache.go · 31s ago". The relative timestamp tells you when without
+        a rising meter, and the event name tells you the turn is making real progress — far more
+        reassuring than a number, and honest because it only changes on actual activity.
+        <span class="tradeoff"> Tradeoff: needs a meaningful event stream to label (tool start/finish,
+        text deltas); during a genuinely silent think it falls back to a phase word ("thinking").</span></p>
+      <div class="frame">
+        <span class="ft-tag">live · last-event</span>
+        <div class="frame-body">
+          <div class="slice">
+            <div class="you"><span class="tag">You</span><span class="q">The auth token cache invalidates too aggressively — find the root cause and fix it.</span></div>
+            <div class="agent lead">Patched the comparison and added a regression test for the
+              idle-but-valid case. Re-running the suite to confirm<span class="caret settle"></span></div>
+            <div class="active"><span class="lbl">Re-running the suite</span><span class="cmd">go test ./...</span></div>
+          </div>
+        </div>
+        <div class="livebar"><div class="feed-w">
+          <span class="breath-dot"></span>working
+          <span class="sep">·</span><span class="evt"><span class="lead-w">last:</span> edited cache.go · 31s ago</span>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- D — AMBIENT EDGE-SLIVER LIVEBAR                              -->
+    <!-- ============================================================ -->
+    <section class="alt">
+      <div class="alt-h"><span class="badge">D</span><span class="name">Ambient edge-sliver livebar</span>
+        <span class="loops">loops: <b>1</b></span></div>
+      <p class="alt-cap">Move the alive cue <b>out of the widget row</b> and onto a thin sliver along the
+        transcript's edge: a single slow, low-contrast shimmer travels it (~3.4s) — peripheral, never a
+        number, never competing with the prose. The footer keeps only static facts (elapsed, phase). It
+        is the calmest because the motion is at the rim of vision, not in the reading column.
+        <span class="tradeoff"> Tradeoff: an ambient edge can be too subtle — easy to miss "is it
+        live?" at a glance, and a traveling gradient is the heaviest single loop here; keep it very
+        low-contrast or it becomes a scanner-bar.</span></p>
+      <div class="frame edged">
+        <span class="ft-tag">live · ambient edge</span>
+        <div class="frame-body">
+          <div class="edge-sliver"></div>
+          <div class="slice">
+            <div class="you"><span class="tag">You</span><span class="q">The auth token cache invalidates too aggressively — find the root cause and fix it.</span></div>
+            <div class="agent lead">Root cause: <code>evictExpired()</code> compares against
+              <code>lastUsed</code> instead of <code>expiresAt</code>. Patching the comparison now<span class="caret"></span></div>
+            <div class="active"><span class="lbl">Fixing the eviction comparison</span><span class="cmd">edit cache.go</span></div>
+          </div>
+        </div>
+        <div class="livebar"><div class="feed-w">
+          working <span class="sep">·</span><span class="el" style="color:var(--ink-3)">1:12</span>
+          <span class="sep">·</span><span class="wait">editing cache.go</span>
+          <span style="margin-left:auto;font-size:var(--fs-xs);color:var(--ink-4)">↤ alive cue lives on the edge</span>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- STUDY — "no updates for Ns": calm band vs concern band       -->
+    <!-- ============================================================ -->
+    <section class="alt study">
+      <div class="alt-h"><span class="badge">↧</span><span class="name">"No updates for Ns" — calm band vs concern band</span></div>
+      <p class="alt-cap">The same honest fact (the agent has gone quiet) rendered for two regimes. The
+        rule that ties them to motion economy: <b>escalation removes the alive cue rather than adding a
+        new one</b>. A short silence is expected, so it stays neutral with the one breathing dot; once
+        silence crosses the honest-stall threshold the dot <b>stops breathing</b> (a hung agent is not
+        "alive") and turns solid amber with an action — no extra loop is ever introduced.</p>
+      <div class="study-grid">
+
+        <!-- CALM -->
+        <div class="band">
+          <div class="band-h"><span class="lab"><span class="kdot blue"></span>Calm band</span>
+            <span class="rng">0 – ~3m quiet</span></div>
+          <div class="livebar"><div class="feed-w" style="max-width:none">
+            <span class="breath-dot"></span>working
+            <span class="sep">·</span><span class="phase">running tests</span>
+            <span class="sep">·</span><span class="wait">quiet ~30s</span>
+          </div></div>
+          <p class="band-cap"><b>Expected silence.</b> The model is thinking or a long tool is running.
+            Neutral text, the one sanctioned <span class="kdot blue"></span>breathing dot, a quantized
+            bucket. <b>No color, no rising number</b> — quiet is not a problem here, so it must not
+            look like one.</p>
+        </div>
+
+        <!-- CONCERN -->
+        <div class="band concern">
+          <div class="band-h"><span class="lab"><span class="kdot amber"></span>Concern band</span>
+            <span class="rng">&gt; ~3m quiet</span></div>
+          <div class="livebar"><div class="feed-w" style="max-width:none">
+            <span class="stall-dot"></span><span class="glyph">!</span>
+            no updates for 3m — agent may be stalled
+            <button class="act">Check ↻</button>
+          </div></div>
+          <p class="band-cap"><b>Now it earns attention.</b> Silence has crossed the honest-stall
+            threshold, so liveness escalates: <span class="kdot amber"></span>amber, a glyph (colorblind-
+            safe), and an <b>actionable</b> Check/retry. Crucially the dot is now <b>solid, not
+            breathing</b> — honest liveness means we stop claiming "alive" once we can't tell. No new
+            loop is added.</p>
+        </div>
+
+      </div>
+    </section>
+
+  </div>
+</div>
+</body>
+</html>

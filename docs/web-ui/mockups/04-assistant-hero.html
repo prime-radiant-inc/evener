@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf mockup #4 — Assistant hero & reading hierarchy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<!-- Baseline grammar + tokens come from the golden stylesheet. -->
+<link rel="stylesheet" href="tokens.css">
+
+<style>
+/* =====================================================================
+   TOPIC #4 — Assistant hero & reading hierarchy
+   ---------------------------------------------------------------------
+   PROBLEM (shipped UI): assistant prose renders at the SAME size as the
+   (boxed/loud) user message, so the SUBORDINATE element reads heavier
+   than the hero — no anchor for the eye. Inline code uses a filled chip
+   that stipples the prose like noise. The golden uses a quiet underline.
+
+   This page strips the file down to the reading surface only (no sidebar,
+   no composer) and shows FOUR ways to make the agent's prose win, each as
+   the same realistic multi-turn slice so the hierarchy is directly
+   comparable. Every alternative uses the quiet inline-code underline.
+   ===================================================================== */
+
+/* ---- page chrome for the comparison gallery (not part of the product) ---- */
+body{overflow:auto}
+.page{max-width:1320px;margin:0 auto;padding:var(--s6) var(--s5) var(--s6)}
+.page-h{margin-bottom:var(--s2)}
+.page-h h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.page-h .sub{font-size:var(--fs-sm);color:var(--ink-3);margin-top:6px;max-width:780px;line-height:1.55}
+.legend{display:flex;flex-wrap:wrap;gap:var(--s4);margin:var(--s4) 0 var(--s5);font-size:var(--fs-xs);color:var(--ink-3)}
+.legend b{color:var(--ink-2);font-weight:600}
+
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s5)}
+@media (max-width:1100px){.grid{grid-template-columns:1fr}}
+
+/* each alternative is a framed "screen" — ONE containment device (the panel),
+   so the transcript inside uses NO boxes (only the subagent module, per grammar). */
+.alt{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;display:flex;flex-direction:column}
+.alt-h{padding:var(--s3) var(--s4);border-bottom:1px solid var(--line);background:#101117}
+.alt-h .label{display:flex;align-items:baseline;gap:var(--s2)}
+.alt-h .tag{font-size:var(--fs-xs);font-weight:700;color:var(--accent);letter-spacing:.02em}
+.alt-h .name{font-size:var(--fs-sm);font-weight:600;color:var(--ink)}
+.alt-h .idea{font-size:var(--fs-xs);color:var(--ink-3);margin-top:5px;line-height:1.5}
+.alt-h .idea .trade{color:var(--ink-2)}
+.alt-screen{flex:1;overflow-y:auto;max-height:560px}
+.alt-screen::-webkit-scrollbar{width:9px}
+.alt-screen::-webkit-scrollbar-thumb{background:var(--hair);border-radius:9px;border:2px solid var(--bg)}
+/* tighten the feed to the panel width; content column still capped for line length */
+.alt .feed{max-width:600px;padding:0 var(--s5)}
+.alt .turn{padding:var(--s5) 0}
+
+/* ---------------------------------------------------------------------
+   SHARED FIX (all alternatives): inline code = quiet underline, never a
+   filled chip. Slightly tighter than body so it sits inside the line.
+   --------------------------------------------------------------------- */
+.agent code{
+  font-family:var(--mono);
+  font-size:.86em;               /* relative, so it tracks each alt's prose size */
+  color:var(--ink);
+  background:none;               /* kill the chip */
+  border:none;
+  border-bottom:1px solid var(--hair);
+  padding:0;
+}
+
+/* a short list inside prose — sans, quiet markers, snug to the prose rhythm */
+.agent ul{list-style:none;margin:var(--s3) 0 0;padding:0}
+.agent ul li{position:relative;padding-left:var(--s4);margin-top:6px;color:var(--ink-2)}
+.agent ul li::before{content:"–";position:absolute;left:2px;color:var(--ink-4)}
+.agent ul li code{color:var(--ink)}
+.agent ul li b{color:var(--ink);font-weight:600}
+
+/* a fenced code block — machine text, ONE device (a quiet rule), recedes */
+.codeblock{
+  margin:var(--s3) 0 0;
+  font-family:var(--mono);font-size:var(--fs-xs);line-height:1.6;
+  color:var(--ink-2);
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+  padding:var(--s2) var(--s3);
+  white-space:pre;overflow-x:auto;
+}
+.codeblock .added{color:var(--success)}
+.codeblock .ctx{color:var(--ink-3)}
+
+/* quiet tool line reused across alts (kept identical so prose comparison is fair) */
+.tools{cursor:default}
+
+/* =====================================================================
+   ALT A — SIZE BUMP + USER MUTED
+   Agent prose jumps to --fs-lg (18px); the user prompt is demoted hard
+   (small + dim). Hierarchy comes from a raw size delta you cannot miss.
+   ===================================================================== */
+.altA .agent{font-size:var(--fs-lg);line-height:1.6}
+.altA .you .tag{color:var(--ink-4)}
+.altA .you .q{font-size:var(--fs-sm);color:var(--ink-3);line-height:1.5}
+.altA .agent ul li,.altA .agent ul li{font-size:var(--fs-md)}  /* list a notch under hero */
+
+/* =====================================================================
+   ALT B — WHITESPACE-LED
+   Type sizes stay close to golden, but the agent prose gets generous
+   air: wide leading, a big top margin that opens a "stage", and the user
+   prompt is inset so the agent block clearly owns the left edge.
+   ===================================================================== */
+.altB .turn{padding:var(--s6) 0}
+.altB .you{padding-left:var(--s4)}                 /* user inset; agent owns the margin */
+.altB .you .q{color:var(--ink-3)}
+.altB .agent{margin-top:var(--s5);font-size:var(--fs-md);line-height:1.78;}
+.altB .agent + .agent{margin-top:var(--s4)}
+.altB .agent ul{margin-top:var(--s4)}
+.altB .agent ul li{margin-top:var(--s2)}
+
+/* =====================================================================
+   ALT C — FIRST-SENTENCE LEDE
+   The opening clause of each agent reply is rendered as a larger, fuller
+   lede (the takeaway); the body sits at golden size below it. Gives a
+   scannable headline per turn without inflating the whole block.
+   ===================================================================== */
+.altC .you .q{color:var(--ink-3)}
+.altC .agent{font-size:var(--fs-base);line-height:1.62;color:var(--ink-2)}  /* body slightly receded */
+.altC .agent .lede{
+  display:block;font-size:var(--fs-md);line-height:1.5;color:var(--ink);
+  font-weight:500;margin-bottom:6px;letter-spacing:-0.006em;
+}
+.altC .agent .lede code{font-size:.84em}
+
+/* =====================================================================
+   ALT D — CONTRAST-ONLY
+   The smallest possible change: every size matches today's golden, but
+   the user prompt drops to --ink-3 while the agent holds full --ink, and
+   inline code is the quiet underline. Tests whether contrast alone (no
+   size change) is enough to restore the reading anchor.
+   ===================================================================== */
+.altD .you .q{color:var(--ink-3)}                 /* user receded by contrast only */
+.altD .agent{font-size:var(--fs-md);color:var(--ink)}  /* same size as golden hero */
+/* (intentionally no size moves — this is the control-by-contrast study) */
+</style>
+</head>
+<body>
+
+<div class="page">
+  <div class="page-h">
+    <h1>#4 · Assistant hero &amp; reading hierarchy</h1>
+    <div class="sub">
+      The agent's prose is the hero — it must win the page by <b>size, space, and contrast</b>, with the
+      user's prompt demoted (the user knows what they said). Today's UI renders agent prose at the same
+      size as the boxed user message, so the subordinate element reads heavier and the eye has no anchor.
+      All four directions also replace the filled inline-code chip with the golden's quiet underline.
+      Same transcript slice in each, so the hierarchy and inline-code treatment are directly comparable.
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><b>Hero</b> = agent prose (full <code style="font-family:var(--mono);border-bottom:1px solid var(--hair)">--ink</code>)</span>
+    <span><b>Demoted</b> = user prompt (dim / smaller / inset)</span>
+    <span><b>Inline code</b> = quiet underline, not a chip</span>
+    <span><b>One device</b> = the panel frame; transcript inside stays boxless</span>
+  </div>
+
+  <div class="grid">
+
+    <!-- ============================== ALT A ============================== -->
+    <section class="alt altA">
+      <div class="alt-h">
+        <div class="label"><span class="tag">A</span><span class="name">Size bump + user muted</span></div>
+        <div class="idea">Agent prose jumps to 18px; the user prompt shrinks and dims. Hierarchy from an unmissable size delta.
+          <span class="trade">Trade-off: the biggest type costs vertical space — fewer turns fit on screen, and long replies feel heavy.</span></div>
+      </div>
+      <div class="alt-screen">
+        <div class="feed">
+
+          <div class="turn">
+            <div class="you"><span class="tag">You</span><span class="q">The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how the callers use it too.</span></div>
+
+            <div class="agent lead">I traced the cache and its seven call sites. The eviction sweep is the culprit: <code>evictExpired()</code> compares each entry against <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than one sweep interval is dropped while it's still valid.</div>
+
+            <div class="agent">The callers are fine — they all read through <code>Get()</code> and never touch expiry directly, so a single fix at the sweep covers every site. The change is small:</div>
+            <ul>
+              <li>swap the comparison field in <code>evictExpired()</code></li>
+              <li>keep the existing sweep interval — <b>timing isn't the bug</b></li>
+              <li>add a regression test for the idle-but-valid case</li>
+            </ul>
+
+            <div class="codeblock"><span class="ctx"> func (c *Cache) evictExpired(now time.Time) {</span>
+<span class="ctx">   for k, e := range c.entries {</span>
+-    if now.Sub(e.lastUsed) &gt; c.ttl {
+<span class="added">+    if now.After(e.expiresAt) {</span>
+       delete(c.entries, k)</div>
+
+            <button class="tools" onclick="this.nextElementSibling.classList.toggle('open')">
+              <span class="ok">✓</span><span class="sum"><b>3 steps</b> · read cache.go · grep callers · ran tests</span><span class="ex">expand</span>
+            </button>
+            <div class="tools-detail">
+              <div class="tline"><span class="ok">✓</span><span class="p">Read the cache implementation</span><span class="cmd">read cache.go</span></div>
+              <div class="tline"><span class="ok">✓</span><span class="p">Find every caller</span><span class="cmd">grep -rn TokenCache</span></div>
+              <div class="tline"><span class="ok">✓</span><span class="p">Run the cache tests</span><span class="cmd">go test ./cache</span></div>
+            </div>
+          </div>
+
+          <div class="turn">
+            <div class="you"><span class="tag">You</span><span class="q">good. ship it once the regression test passes.</span></div>
+            <div class="agent lead">Done — the new test <code>TestEvictKeepsIdleValid</code> fails on the old comparison and passes on the fix, and the full <code>./cache</code> suite is green. The patch is committed.</div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== ALT B ============================== -->
+    <section class="alt altB">
+      <div class="alt-h">
+        <div class="label"><span class="tag">B</span><span class="name">Whitespace-led</span></div>
+        <div class="idea">Sizes stay near golden, but the agent block gets generous air and owns the left margin while the user prompt is inset. Calm, readable, low-ink.
+          <span class="trade">Trade-off: leans on disciplined spacing — short replies can look sparse, and big leading also costs height.</span></div>
+      </div>
+      <div class="alt-screen">
+        <div class="feed">
+
+          <div class="turn">
+            <div class="you"><span class="tag">You</span><span class="q">The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how the callers use it too.</span></div>
+
+            <div class="agent lead">I traced the cache and its seven call sites. The eviction sweep is the culprit: <code>evictExpired()</code> compares each entry against <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than one sweep interval is dropped while it's still valid.</div>
+
+            <div class="agent">The callers are fine — they all read through <code>Get()</code> and never touch expiry directly, so a single fix at the sweep covers every site. The change is small:</div>
+            <ul>
+              <li>swap the comparison field in <code>evictExpired()</code></li>
+              <li>keep the existing sweep interval — <b>timing isn't the bug</b></li>
+              <li>add a regression test for the idle-but-valid case</li>
+            </ul>
+
+            <div class="codeblock"><span class="ctx"> func (c *Cache) evictExpired(now time.Time) {</span>
+<span class="ctx">   for k, e := range c.entries {</span>
+-    if now.Sub(e.lastUsed) &gt; c.ttl {
+<span class="added">+    if now.After(e.expiresAt) {</span>
+       delete(c.entries, k)</div>
+
+            <button class="tools" onclick="this.nextElementSibling.classList.toggle('open')">
+              <span class="ok">✓</span><span class="sum"><b>3 steps</b> · read cache.go · grep callers · ran tests</span><span class="ex">expand</span>
+            </button>
+            <div class="tools-detail">
+              <div class="tline"><span class="ok">✓</span><span class="p">Read the cache implementation</span><span class="cmd">read cache.go</span></div>
+              <div class="tline"><span class="ok">✓</span><span class="p">Find every caller</span><span class="cmd">grep -rn TokenCache</span></div>
+              <div class="tline"><span class="ok">✓</span><span class="p">Run the cache tests</span><span class="cmd">go test ./cache</span></div>
+            </div>
+          </div>
+
+          <div class="turn">
+            <div class="you"><span class="tag">You</span><span class="q">good. ship it once the regression test passes.</span></div>
+            <div class="agent lead">Done — the new test <code>TestEvictKeepsIdleValid</code> fails on the old comparison and passes on the fix, and the full <code>./cache</code> suite is green. The patch is committed.</div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== ALT C ============================== -->
+    <section class="alt altC">
+      <div class="alt-h">
+        <div class="label"><span class="tag">C</span><span class="name">First-sentence lede</span></div>
+        <div class="idea">Each reply opens with a larger, fuller lede (the takeaway); the body recedes below it. A scannable headline per turn without inflating the whole block.
+          <span class="trade">Trade-off: depends on the model front-loading the point — a throat-clearing first sentence becomes an awkwardly loud non-headline.</span></div>
+      </div>
+      <div class="alt-screen">
+        <div class="feed">
+
+          <div class="turn">
+            <div class="you"><span class="tag">You</span><span class="q">The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how the callers use it too.</span></div>
+
+            <div class="agent lead"><span class="lede">Root cause: the eviction sweep compares against the wrong field, so idle-but-valid tokens get dropped.</span><code>evictExpired()</code> checks <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than one sweep interval is evicted while still valid. I confirmed this across all seven call sites.</div>
+
+            <div class="agent"><span class="lede">The callers don't need touching — one fix at the sweep covers every site.</span>They all read through <code>Get()</code> and never touch expiry directly. The change is small:</div>
+            <ul>
+              <li>swap the comparison field in <code>evictExpired()</code></li>
+              <li>keep the existing sweep interval — <b>timing isn't the bug</b></li>
+              <li>add a regression test for the idle-but-valid case</li>
+            </ul>
+
+            <div class="codeblock"><span class="ctx"> func (c *Cache) evictExpired(now time.Time) {</span>
+<span class="ctx">   for k, e := range c.entries {</span>
+-    if now.Sub(e.lastUsed) &gt; c.ttl {
+<span class="added">+    if now.After(e.expiresAt) {</span>
+       delete(c.entries, k)</div>
+
+            <button class="tools" onclick="this.nextElementSibling.classList.toggle('open')">
+              <span class="ok">✓</span><span class="sum"><b>3 steps</b> · read cache.go · grep callers · ran tests</span><span class="ex">expand</span>
+            </button>
+            <div class="tools-detail">
+              <div class="tline"><span class="ok">✓</span><span class="p">Read the cache implementation</span><span class="cmd">read cache.go</span></div>
+              <div class="tline"><span class="ok">✓</span><span class="p">Find every caller</span><span class="cmd">grep -rn TokenCache</span></div>
+              <div class="tline"><span class="ok">✓</span><span class="p">Run the cache tests</span><span class="cmd">go test ./cache</span></div>
+            </div>
+          </div>
+
+          <div class="turn">
+            <div class="you"><span class="tag">You</span><span class="q">good. ship it once the regression test passes.</span></div>
+            <div class="agent lead"><span class="lede">Shipped — both the new regression test and the full suite are green.</span><code>TestEvictKeepsIdleValid</code> fails on the old comparison and passes on the fix; <code>./cache</code> is clean and the patch is committed.</div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== ALT D ============================== -->
+    <section class="alt altD">
+      <div class="alt-h">
+        <div class="label"><span class="tag">D</span><span class="name">Contrast-only</span></div>
+        <div class="idea">The minimal change: every size matches today's golden, but the user prompt drops to dim while the agent holds full contrast (plus the underline inline code). A control study.
+          <span class="trade">Trade-off: subtlest of the four — for fast skimmers contrast alone may not pull the eye the way a size or space delta does.</span></div>
+      </div>
+      <div class="alt-screen">
+        <div class="feed">
+
+          <div class="turn">
+            <div class="you"><span class="tag">You</span><span class="q">The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how the callers use it too.</span></div>
+
+            <div class="agent lead">I traced the cache and its seven call sites. The eviction sweep is the culprit: <code>evictExpired()</code> compares each entry against <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than one sweep interval is dropped while it's still valid.</div>
+
+            <div class="agent">The callers are fine — they all read through <code>Get()</code> and never touch expiry directly, so a single fix at the sweep covers every site. The change is small:</div>
+            <ul>
+              <li>swap the comparison field in <code>evictExpired()</code></li>
+              <li>keep the existing sweep interval — <b>timing isn't the bug</b></li>
+              <li>add a regression test for the idle-but-valid case</li>
+            </ul>
+
+            <div class="codeblock"><span class="ctx"> func (c *Cache) evictExpired(now time.Time) {</span>
+<span class="ctx">   for k, e := range c.entries {</span>
+-    if now.Sub(e.lastUsed) &gt; c.ttl {
+<span class="added">+    if now.After(e.expiresAt) {</span>
+       delete(c.entries, k)</div>
+
+            <button class="tools" onclick="this.nextElementSibling.classList.toggle('open')">
+              <span class="ok">✓</span><span class="sum"><b>3 steps</b> · read cache.go · grep callers · ran tests</span><span class="ex">expand</span>
+            </button>
+            <div class="tools-detail">
+              <div class="tline"><span class="ok">✓</span><span class="p">Read the cache implementation</span><span class="cmd">read cache.go</span></div>
+              <div class="tline"><span class="ok">✓</span><span class="p">Find every caller</span><span class="cmd">grep -rn TokenCache</span></div>
+              <div class="tline"><span class="ok">✓</span><span class="p">Run the cache tests</span><span class="cmd">go test ./cache</span></div>
+            </div>
+          </div>
+
+          <div class="turn">
+            <div class="you"><span class="tag">You</span><span class="q">good. ship it once the regression test passes.</span></div>
+            <div class="agent lead">Done — the new test <code>TestEvictKeepsIdleValid</code> fails on the old comparison and passes on the fix, and the full <code>./cache</code> suite is green. The patch is committed.</div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+</body>
+</html>

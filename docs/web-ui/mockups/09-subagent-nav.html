@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf mockups · #9 Subagent navigation &amp; nesting</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- base design tokens + transcript component grammar -->
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ============================================================
+   TOPIC #9 — Subagent navigation & nesting
+   Built on tokens.css. The base sheet is a full-app two-column
+   grid; this file overrides body layout to a scrolling gallery
+   and adds only the four navigation models.
+
+   The problem (today):
+     - "view →" does a HARD full-page nav to /s/<ref>; the child
+       workspace has NO "back to parent" (only forks get a banner).
+       Getting IN is solved; getting ORIENTED and OUT is not.
+     - NESTED subagents (a subagent that itself fans out) have no
+       treatment — a deep ✕ can hide behind a green parent row.
+
+   Four directions for the in/out model, each rendering: a parent
+   transcript with a subagent module, the act of OPENING a child,
+   and the NESTED worst-state rollup so a deep failure never hides.
+   ============================================================ */
+
+/* gallery shell: undo the base app grid, let the page scroll */
+body{overflow:auto}
+.gallery{max-width:880px;margin:0 auto;padding:var(--s6) var(--s5) 110px}
+.page-h{margin-bottom:var(--s5)}
+.page-h h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.page-h p{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);line-height:1.6;max-width:64ch}
+.page-h .principles{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:72ch}
+.page-h .principles b{color:var(--ink-2);font-weight:600}
+
+.alt{margin-top:var(--s6);border-top:1px solid var(--line);padding-top:var(--s5)}
+.alt-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.alt-h .badge{font-size:var(--fs-sm);font-weight:700;color:var(--bg);background:var(--ink-2);border-radius:var(--r-pill);padding:1px 9px;letter-spacing:.02em}
+.alt-h .ttl{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.cap{font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:74ch;margin-bottom:var(--s4)}
+.cap b{color:var(--ink-2);font-weight:600}
+.cap .trade{color:var(--attention)}
+.case-l{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase;margin:var(--s5) 0 var(--s2)}
+.case-l:first-child{margin-top:0}
+
+/* simulated workspace viewport so each alt reads like the real product */
+.stage{position:relative;background:var(--bg);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.stage .titlebar{display:flex;align-items:center;gap:var(--s3);padding:0 var(--s5);height:46px;border-bottom:1px solid var(--line)}
+.stage .tb-title{font-size:14px;font-weight:600}
+.stage .tb-actions{margin-left:auto}
+.stage .tb-btn{padding:5px 11px;border-radius:var(--r);font-size:var(--fs-sm);color:var(--ink-2)}
+.stage .tb-btn:hover{background:var(--surface);color:var(--ink)}
+.stage .feed{max-width:640px;margin:0 auto;padding:var(--s4) var(--s5) var(--s5)}
+
+/* reuse golden voices */
+.you{display:flex;gap:var(--s3);align-items:baseline}
+.you .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none;width:34px;padding-top:1px}
+.you .q{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+.agent{margin-top:var(--s4);font-size:var(--fs-md);line-height:1.62;color:var(--ink)}
+.agent.lead{margin-top:var(--s3)}
+.agent code{font-family:var(--mono);font-size:12.5px;color:var(--ink);border-bottom:1px solid var(--hair)}
+
+/* ---- the subagent module (shared grammar from the golden) ---- */
+.subs{margin-top:var(--s4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:var(--s3) var(--s4)}
+.subs-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.subs-h .t{font-size:var(--fs-sm);font-weight:600;color:var(--ink)}
+.subs-h .tally{font-size:var(--fs-xs);color:var(--ink-2)}
+.subs-h .tally .r{color:var(--accent)} .subs-h .tally .o{color:var(--done)} .subs-h .tally .f{color:var(--error)}
+.subs-h .el{font-size:var(--fs-xs);color:var(--ink-3);margin-left:auto;font-variant-numeric:tabular-nums}
+.sub-r{display:flex;align-items:baseline;gap:var(--s3);padding:var(--s1) 0;width:100%;text-align:left}
+.sub-r .g{font-family:var(--mono);font-size:var(--fs-xs);width:12px;flex:none}
+.sub-r .g.done{color:var(--done)} .sub-r .g.run{color:var(--accent)} .sub-r .g.err{color:var(--error)} .sub-r .g.attn{color:var(--attention)}
+.sub-r .nm{font-family:var(--mono);font-size:11.5px;color:var(--ink);flex:none}
+.sub-r .res{font-size:var(--fs-sm);color:var(--ink-2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sub-r .res.err{color:var(--error)}
+.sub-r .res .live{color:var(--accent)}
+.sub-r .dur{font-size:var(--fs-xs);color:var(--ink-3);margin-left:auto;font-variant-numeric:tabular-nums;flex:none}
+.sub-r .lk{font-size:var(--fs-xs);color:var(--ink-3);margin-left:var(--s3);flex:none}
+.sub-r:hover .lk{color:var(--accent)}
+.sub-r.sel{color:var(--ink)}
+
+/* worst-state rollup chip on a nested parent row: a deep ✕ surfaces
+   onto the parent even when the parent itself succeeded. ONE glyph,
+   colored by the WORST descendant, never by the parent's own status. */
+.roll-chip{display:inline-flex;align-items:baseline;gap:5px;font-size:var(--fs-xs);color:var(--ink-3);font-variant-numeric:tabular-nums}
+.roll-chip .gx{font-family:var(--mono);font-size:10px}
+.roll-chip .gx.err{color:var(--error)} .roll-chip .gx.run{color:var(--accent)} .roll-chip .gx.attn{color:var(--attention)} .roll-chip .gx.done{color:var(--done)}
+.roll-chip.bad{color:var(--error)}            /* the whole chip reddens when a descendant failed */
+.has-kids .nm::after{content:" ▸";color:var(--ink-4);font-family:var(--sans)}
+
+/* shared: a child workspace's own subagent module sits indented to read as "inside" */
+.depth{margin-left:var(--s4);border-left:1px solid var(--hair);padding-left:var(--s4)}
+
+/* =====================================================================
+   ALT A — parent breadcrumb banner (the minimal, ships-first fix)
+   ===================================================================== */
+/* keeps the hard nav to /s/<ref>; adds a persistent breadcrumb banner
+   pinned to the top of EVERY subagent workspace. Each crumb is a real
+   link back up the chain; the trailing crumb carries the live rollup. */
+.crumbbar{display:flex;align-items:center;gap:var(--s2);padding:8px var(--s5);background:var(--surface);border-bottom:1px solid var(--line);font-size:var(--fs-sm);flex-wrap:wrap}
+.crumbbar .up{color:var(--accent);display:inline-flex;align-items:center;gap:5px}
+.crumbbar .up:hover{text-decoration:underline}
+.crumbbar .crumb{color:var(--accent)}
+.crumbbar .crumb:hover{text-decoration:underline}
+.crumbbar .sep{color:var(--ink-4)}
+.crumbbar .here{color:var(--ink-2);font-family:var(--mono);font-size:11.5px}
+.crumbbar .roll-chip{margin-left:var(--s2)}
+.crumbbar .esc{margin-left:auto;font-size:var(--fs-xs);color:var(--ink-3)}
+.crumbbar .esc .k{font-family:var(--mono);font-size:9.5px;color:var(--ink-3);border:1px solid var(--line);padding:1px 4px;border-radius:3px}
+
+/* =====================================================================
+   ALT B — slide-over (parent stays mounted underneath)
+   ===================================================================== */
+.aB .stage{min-height:340px}
+.aB .scrim{position:absolute;inset:0;background:rgba(8,9,12,.55);opacity:0;pointer-events:none;transition:opacity .16s}
+.aB .stage.open .scrim{opacity:1;pointer-events:auto}
+.aB .panel{position:absolute;top:0;right:0;bottom:0;width:72%;max-width:560px;background:var(--bg-1,#101117);border-left:1px solid var(--line);transform:translateX(100%);transition:transform .18s ease;display:flex;flex-direction:column}
+.aB .stage.open .panel{transform:none}
+.aB .panel-h{display:flex;align-items:center;gap:var(--s2);padding:9px var(--s4);border-bottom:1px solid var(--line)}
+.aB .panel-h .back{color:var(--accent);display:inline-flex;align-items:center;gap:5px;font-size:var(--fs-sm)}
+.aB .panel-h .back:hover{text-decoration:underline}
+.aB .panel-h .nm{font-family:var(--mono);font-size:11.5px;color:var(--ink)}
+.aB .panel-h .x{margin-left:auto;color:var(--ink-3);font-size:15px;line-height:1;padding:2px 6px;border-radius:var(--r)}
+.aB .panel-h .x:hover{background:var(--surface);color:var(--ink)}
+.aB .panel-body{padding:var(--s4) var(--s5);overflow:auto}
+.aB .panel-body .agent{font-size:var(--fs-base)}
+.aB .panel-body .agent:first-child{margin-top:0}
+@media (prefers-reduced-motion:reduce){.aB .panel,.aB .scrim{transition:none}}
+
+/* =====================================================================
+   ALT C — inline accordion (child opens IN PLACE, no nav at all)
+   ===================================================================== */
+.aC .kid{display:none;margin-top:var(--s2);background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:var(--s3) var(--s4)}
+.aC .sub-r.open + .kid{display:block}
+.aC .sub-r .lk .tw{display:inline-block;transition:transform .12s}
+.aC .sub-r.open .lk .tw{transform:rotate(90deg)}
+.aC .kid .agent{font-size:var(--fs-base);margin-top:0}
+.aC .kid .kid-h{font-size:var(--fs-xs);color:var(--ink-3);letter-spacing:.04em;margin-bottom:var(--s2)}
+.aC .kid .agent + .subs{margin-top:var(--s3)}
+@media (prefers-reduced-motion:reduce){.aC .sub-r .lk .tw{transition:none}}
+
+/* =====================================================================
+   ALT D — tabbed session stack + worst-state rollup tree
+   ===================================================================== */
+.aD .tabs{display:flex;align-items:stretch;gap:0;border-bottom:1px solid var(--line);background:var(--surface);overflow-x:auto}
+.aD .tab{display:inline-flex;align-items:center;gap:var(--s2);padding:9px var(--s4);font-size:var(--fs-sm);color:var(--ink-3);border-right:1px solid var(--line);white-space:nowrap;position:relative}
+.aD .tab:hover{color:var(--ink-2)}
+.aD .tab.sel{color:var(--ink);background:var(--bg)}
+.aD .tab.sel::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--accent)}
+.aD .tab .nm{font-family:var(--mono);font-size:11px}
+.aD .tab .gx{font-family:var(--mono);font-size:10px}
+.aD .tab .gx.done{color:var(--done)} .aD .tab .gx.run{color:var(--accent)} .aD .tab .gx.err{color:var(--error)} .aD .tab .gx.attn{color:var(--attention)}
+.aD .tab .x{color:var(--ink-4);font-size:13px;margin-left:2px}
+.aD .tab .x:hover{color:var(--ink-2)}
+.aD .tab.depth-mark{padding-left:var(--s5)}
+.aD .tab.depth-mark::before{content:"↳";position:absolute;left:9px;color:var(--ink-4);font-size:11px}
+.aD .pane{display:none;padding:var(--s4) var(--s5)}
+.aD .pane.sel{display:block}
+.aD .pane .agent:first-child{margin-top:0}
+.aD .pane .agent{font-size:var(--fs-base)}
+
+/* the rollup TREE (D's nesting answer): one indented outline of the whole
+   session forest, each node showing its OWN glyph + a worst-descendant
+   chip. A deep ✕ lights up every ancestor's chip red. */
+.tree{margin-top:var(--s2);font-size:var(--fs-sm)}
+.tree .tnode{display:flex;align-items:baseline;gap:var(--s2);padding:3px 0;width:100%;text-align:left}
+.tree .tnode:hover{color:var(--ink)}
+.tree .tnode .g{font-family:var(--mono);font-size:var(--fs-xs);width:12px;flex:none}
+.tree .tnode .g.done{color:var(--done)} .tree .tnode .g.run{color:var(--accent)} .tree .tnode .g.err{color:var(--error)} .tree .tnode .g.attn{color:var(--attention)}
+.tree .tnode .nm{font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+.tree .tnode .res{font-size:var(--fs-xs);color:var(--ink-3)}
+.tree .tnode .roll-chip{margin-left:auto}
+.tree .d1{padding-left:var(--s4)} .tree .d2{padding-left:var(--s6)}
+.tree .tnode .twig{color:var(--ink-4);font-family:var(--mono);font-size:11px;flex:none}
+</style>
+</head>
+<body>
+<div class="gallery">
+
+  <div class="page-h">
+    <h1>#9 — Subagent navigation &amp; nesting</h1>
+    <p>Four directions for the <i>in / out</i> model: how you open a subagent's transcript and,
+       just as important, how you stay oriented and get back to the parent. Plus the unsolved
+       <b>nesting</b> case — a subagent that itself fans out — where a deep failure must never hide
+       behind a green parent.</p>
+    <div class="principles">
+      Held constant: <b>conversation leads, the subagent module is the one emphasized box</b>;
+      done recedes (neutral), running draws the eye (blue), needs-you (amber) and failure (red)
+      stand out, each paired with a glyph. The <b>worst-state rollup</b> rule: a parent row's
+      status chip is colored by its <i>worst descendant</i>, so a buried <code>✕</code> reddens
+      every ancestor. Getting back out is a first-class affordance, never a guess.
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ALT A — parent breadcrumb banner
+       ============================================================ -->
+  <section class="alt aA">
+    <div class="alt-h"><span class="badge">A</span><span class="ttl">Parent breadcrumb banner</span></div>
+    <div class="cap">Keep the existing hard nav to <code>/s/&lt;ref&gt;</code>, but pin a
+      <b>breadcrumb banner</b> to the top of every subagent workspace. Each crumb is a real link
+      up the chain; the deepest crumb carries the live <b>worst-state rollup</b> so you can see, from
+      a child, that one of <i>its</i> children failed. <span class="trade">Trade-off:</span> the
+      smallest change (ships first, survives a real page reload, deep-linkable), but every hop is a
+      full navigation — you lose the parent's live transcript while you're away.</div>
+
+    <div class="case-l">Parent transcript — the module you click from</div>
+    <div class="stage">
+      <header class="titlebar"><div class="tb-title">Refactor auth token cache</div><div class="tb-actions"><button class="tb-btn">Details&nbsp; ⋯</button></div></header>
+      <div class="feed">
+        <div class="you"><span class="tag">You</span><span class="q">Check every caller package in parallel and report breakages.</span></div>
+        <div class="agent lead">Fanning out a checker per caller package.</div>
+        <div class="subs">
+          <div class="subs-h"><span class="t">Subagents (3)</span><span class="tally"><span class="o">✓ 2 done</span> · <span class="r">⟳ 1 running</span></span><span class="el">1:38</span></div>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm">auth/login</span><span class="res">ok · 12 callers</span><span class="dur">4.2s</span><span class="lk">view →</span></button>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm has-kids">verify-billing</span><span class="res"><span class="roll-chip bad"><span class="gx err">✕</span>1 of its 3 children failed</span></span><span class="dur">9.1s</span><span class="lk">view →</span></button>
+          <button class="sub-r"><span class="g run">⟳</span><span class="nm">gateway/proxy</span><span class="res"><span class="live">running</span> · scanning usages</span><span class="dur">0:41</span><span class="lk">view →</span></button>
+        </div>
+      </div>
+    </div>
+    <div class="cap" style="margin:6px 0 0"><code>verify-billing</code> ran <b>fine</b> (✓), but its rollup chip is red because a
+      grandchild failed — the parent row already tells you the bad news lives below.</div>
+
+    <div class="case-l">After clicking <code>verify-billing → view</code> (the child workspace + breadcrumb)</div>
+    <div class="stage">
+      <div class="crumbbar">
+        <a class="up" href="#">↑ Parent</a>
+        <a class="crumb" href="#">Refactor auth token cache</a>
+        <span class="sep">/</span>
+        <span class="here">verify-billing</span>
+        <span class="roll-chip bad"><span class="gx err">✕</span>1 child failed</span>
+        <span class="esc">Esc <span class="k">to parent</span></span>
+      </div>
+      <div class="feed">
+        <div class="agent lead">Spawned a checker per billing sub-package.</div>
+        <div class="subs">
+          <div class="subs-h"><span class="t">Subagents (3)</span><span class="tally"><span class="o">✓ 2 done</span> · <span class="f">✕ 1 failed</span></span><span class="el">6.0s</span></div>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm">billing/invoice</span><span class="res">ok</span><span class="dur">3.1s</span><span class="lk">view →</span></button>
+          <button class="sub-r"><span class="g err">✕</span><span class="nm">billing/worker</span><span class="res err">assertion failed · TestTokenEvictedAfterIdle</span><span class="dur">6.0s</span><span class="lk">view →</span></button>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm">billing/ledger</span><span class="res">ok</span><span class="dur">2.4s</span><span class="lk">view →</span></button>
+        </div>
+      </div>
+    </div>
+    <div class="cap" style="margin:6px 0 0">The crumb chain (<code>Refactor… / verify-billing</code>) and the <code>Esc → parent</code>
+      hint make "out" obvious. Clicking the failed row navigates one level deeper, growing the chain.</div>
+  </section>
+
+  <!-- ============================================================
+       ALT B — slide-over (parent stays mounted)
+       ============================================================ -->
+  <section class="alt aB">
+    <div class="alt-h"><span class="badge">B</span><span class="ttl">Slide-over (parent stays live)</span></div>
+    <div class="cap">"view →" opens the child in a <b>slide-over panel</b> over the parent — no page nav.
+      The parent transcript stays mounted and <b>keeps streaming</b> behind a scrim; close (Esc, ✕, or
+      click-out) returns you exactly where you were. A nested child opens a second slide-over on top
+      (a shallow stack). <span class="trade">Trade-off:</span> great for a quick peek without losing
+      your place, but the panel is narrower than a full workspace and deep stacks get cramped; needs a
+      deep-link fallback for reload.</div>
+
+    <div class="case-l">Click "view →" to slide the child in over the parent</div>
+    <div class="stage" id="bStage">
+      <header class="titlebar"><div class="tb-title">Refactor auth token cache</div><div class="tb-actions"><button class="tb-btn">Details&nbsp; ⋯</button></div></header>
+      <div class="feed">
+        <div class="you"><span class="tag">You</span><span class="q">Check every caller package in parallel.</span></div>
+        <div class="agent lead">Parent keeps streaming while you peek — watch the live row below.</div>
+        <div class="subs">
+          <div class="subs-h"><span class="t">Subagents (3)</span><span class="tally"><span class="o">✓ 2 done</span> · <span class="r">⟳ 1 running</span></span><span class="el">1:38</span></div>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm">auth/login</span><span class="res">ok · 12 callers</span><span class="dur">4.2s</span><span class="lk">view →</span></button>
+          <button class="sub-r" onclick="document.getElementById('bStage').classList.add('open')"><span class="g done">✓</span><span class="nm has-kids">verify-billing</span><span class="res"><span class="roll-chip bad"><span class="gx err">✕</span>1 of its 3 children failed</span></span><span class="dur">9.1s</span><span class="lk">view →</span></button>
+          <button class="sub-r"><span class="g run">⟳</span><span class="nm">gateway/proxy</span><span class="res"><span class="live">running</span> · scanning usages</span><span class="dur">0:41</span><span class="lk">view →</span></button>
+        </div>
+      </div>
+      <div class="scrim" onclick="document.getElementById('bStage').classList.remove('open')"></div>
+      <aside class="panel">
+        <div class="panel-h">
+          <button class="back" onclick="document.getElementById('bStage').classList.remove('open')">← Parent</button>
+          <span class="nm">verify-billing</span>
+          <span class="roll-chip bad"><span class="gx err">✕</span>1 child failed</span>
+          <button class="x" onclick="document.getElementById('bStage').classList.remove('open')" aria-label="Close">✕</button>
+        </div>
+        <div class="panel-body">
+          <div class="agent">Spawned a checker per billing sub-package. Two passed; <code>billing/worker</code> failed an assertion that assumed the old aggressive eviction.</div>
+          <div class="subs">
+            <div class="subs-h"><span class="t">Subagents (3)</span><span class="tally"><span class="o">✓ 2 done</span> · <span class="f">✕ 1 failed</span></span><span class="el">6.0s</span></div>
+            <button class="sub-r"><span class="g done">✓</span><span class="nm">billing/invoice</span><span class="res">ok</span><span class="dur">3.1s</span><span class="lk">view →</span></button>
+            <button class="sub-r"><span class="g err">✕</span><span class="nm">billing/worker</span><span class="res err">assertion failed</span><span class="dur">6.0s</span><span class="lk">view →</span></button>
+            <button class="sub-r"><span class="g done">✓</span><span class="nm">billing/ledger</span><span class="res">ok</span><span class="dur">2.4s</span><span class="lk">view →</span></button>
+          </div>
+          <div class="cap" style="margin-top:12px">A nested "view →" here would slide a second panel on top of this one (stack depth 2),
+            with "← verify-billing" as its back target.</div>
+        </div>
+      </aside>
+    </div>
+    <div class="cap" style="margin:6px 0 0"><b>Click the <code>verify-billing</code> row above</b> to open the slide-over; the scrim, ✕, or
+      ← Parent closes it. The parent never unmounts.</div>
+  </section>
+
+  <!-- ============================================================
+       ALT C — inline accordion (no nav, expand in place)
+       ============================================================ -->
+  <section class="alt aC">
+    <div class="alt-h"><span class="badge">C</span><span class="ttl">Inline accordion</span></div>
+    <div class="cap">"view →" becomes a <b>disclosure twisty</b>: the child's transcript expands
+      <b>in place</b>, indented inside the parent's module — no navigation, nothing to back out of.
+      A nested subagent nests one more level of indent. Worst-state rollup is intrinsic: a collapsed
+      red descendant still shows its chip on the parent row, and you drill by expanding.
+      <span class="trade">Trade-off:</span> zero orientation cost and the full ancestry is always on
+      screen, but deep or chatty children push the parent's later turns far down; best capped to ~2
+      levels before falling back to slide-over/nav for the deep stuff.</div>
+
+    <div class="case-l">Expand a child inline (click the row's ⊳)</div>
+    <div class="stage">
+      <header class="titlebar"><div class="tb-title">Refactor auth token cache</div><div class="tb-actions"><button class="tb-btn">Details&nbsp; ⋯</button></div></header>
+      <div class="feed">
+        <div class="agent lead">Fanning out a checker per caller package.</div>
+        <div class="subs">
+          <div class="subs-h"><span class="t">Subagents (3)</span><span class="tally"><span class="o">✓ 2 done</span> · <span class="r">⟳ 1 running</span></span><span class="el">1:38</span></div>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm">auth/login</span><span class="res">ok · 12 callers</span><span class="dur">4.2s</span><span class="lk"><span class="tw">⊳</span></span></button>
+
+          <button class="sub-r open" onclick="this.classList.toggle('open')"><span class="g done">✓</span><span class="nm has-kids">verify-billing</span><span class="res"><span class="roll-chip bad"><span class="gx err">✕</span>1 of its 3 children failed</span></span><span class="dur">9.1s</span><span class="lk"><span class="tw">⊳</span></span></button>
+          <div class="kid">
+            <div class="kid-h">verify-billing · transcript</div>
+            <div class="agent">Spawned a checker per billing sub-package. <code>billing/worker</code> failed an assertion.</div>
+            <div class="subs" style="margin-top:12px">
+              <div class="subs-h"><span class="t">Subagents (3)</span><span class="tally"><span class="o">✓ 2 done</span> · <span class="f">✕ 1 failed</span></span><span class="el">6.0s</span></div>
+              <button class="sub-r"><span class="g done">✓</span><span class="nm">billing/invoice</span><span class="res">ok</span><span class="dur">3.1s</span><span class="lk"><span class="tw">⊳</span></span></button>
+              <button class="sub-r open" onclick="this.classList.toggle('open')"><span class="g err">✕</span><span class="nm">billing/worker</span><span class="res err">assertion failed · TestTokenEvictedAfterIdle</span><span class="dur">6.0s</span><span class="lk"><span class="tw">⊳</span></span></button>
+              <div class="kid">
+                <div class="kid-h">billing/worker · failure</div>
+                <div class="agent" style="font-size:var(--fs-base)">The test asserts tokens expire after 30s idle — that assumption is now wrong by design. Two assertions failed; full stderr is one more expand down.</div>
+              </div>
+              <button class="sub-r"><span class="g done">✓</span><span class="nm">billing/ledger</span><span class="res">ok</span><span class="dur">2.4s</span><span class="lk"><span class="tw">⊳</span></span></button>
+            </div>
+          </div>
+
+          <button class="sub-r"><span class="g run">⟳</span><span class="nm">gateway/proxy</span><span class="res"><span class="live">running</span> · scanning usages</span><span class="dur">0:41</span><span class="lk"><span class="tw">⊳</span></span></button>
+        </div>
+      </div>
+    </div>
+    <div class="cap" style="margin:6px 0 0"><b>Click the rows</b> to fold/unfold. Two levels are expanded here so the deep <code>✕</code>
+      sits in full view, three indents under the parent — never hidden, never a page away.</div>
+  </section>
+
+  <!-- ============================================================
+       ALT D — tabbed session stack + worst-state rollup tree
+       ============================================================ -->
+  <section class="alt aD">
+    <div class="alt-h"><span class="badge">D</span><span class="ttl">Tabbed session stack + rollup tree</span></div>
+    <div class="cap">"view →" opens the child as a <b>tab</b> alongside the parent (like editor tabs). The
+      parent tab stays put; nested children add deeper tabs marked with a <code>↳</code>. Each tab's
+      glyph reflects that session's <b>worst-state rollup</b>, so a tab reddens when something deep in
+      it failed — and a dedicated <b>Map</b> tab shows the whole forest as one rollup tree where a
+      buried <code>✕</code> lights every ancestor. <span class="trade">Trade-off:</span> the most
+      powerful for juggling several deep sessions and for "where's the failure?" triage, but the
+      heaviest chrome — overkill for a session with two flat subagents.</div>
+
+    <div class="case-l">Tab bar with the parent, an opened child, and the rollup Map</div>
+    <div class="stage">
+      <header class="titlebar"><div class="tb-title">Refactor auth token cache</div><div class="tb-actions"><button class="tb-btn">Details&nbsp; ⋯</button></div></header>
+      <div class="tabs" id="dTabs">
+        <button class="tab" data-pane="dMap"><span class="nm">Map</span><span class="roll-chip bad" style="margin:0"><span class="gx err">✕</span></span></button>
+        <button class="tab" data-pane="dRoot"><span class="gx run">⟳</span><span class="nm">Refactor auth…</span></button>
+        <button class="tab sel depth-mark" data-pane="dChild"><span class="gx done">✓</span><span class="nm">verify-billing</span><span class="roll-chip bad" style="margin:0;gap:3px"><span class="gx err">✕</span></span><span class="x" onclick="event.stopPropagation()">✕</span></button>
+      </div>
+
+      <div class="pane" id="dMap">
+        <div class="case-l" style="margin-top:0">Session map · worst-state rollup</div>
+        <div class="tree">
+          <button class="tnode"><span class="g run">⟳</span><span class="nm">Refactor auth token cache</span><span class="res">main agent · working 1:38</span><span class="roll-chip bad"><span class="gx err">✕</span>deep failure</span></button>
+          <button class="tnode d1"><span class="twig">├</span><span class="g done">✓</span><span class="nm">auth/login</span><span class="res">ok · 12 callers</span></button>
+          <button class="tnode d1"><span class="twig">├</span><span class="g done">✓</span><span class="nm">verify-billing</span><span class="res">ran fine</span><span class="roll-chip bad"><span class="gx err">✕</span>1 child failed</span></button>
+          <button class="tnode d2"><span class="twig">│ ├</span><span class="g done">✓</span><span class="nm">billing/invoice</span><span class="res">ok</span></button>
+          <button class="tnode d2"><span class="twig">│ ├</span><span class="g err">✕</span><span class="nm">billing/worker</span><span class="res">assertion failed</span></button>
+          <button class="tnode d2"><span class="twig">│ └</span><span class="g done">✓</span><span class="nm">billing/ledger</span><span class="res">ok</span></button>
+          <button class="tnode d1"><span class="twig">└</span><span class="g run">⟳</span><span class="nm">gateway/proxy</span><span class="res">running · scanning usages</span></button>
+        </div>
+        <div class="cap" style="margin-top:12px">The map is the nesting answer: one glance finds the deepest <code>✕</code> and its full
+          path. Clicking any node opens (or focuses) its tab. The root's chip stays red until the buried failure is resolved.</div>
+      </div>
+
+      <div class="pane" id="dRoot">
+        <div class="agent lead">Fanning out a checker per caller package. One subtree has a failure — see the reddened <code>verify-billing</code> tab.</div>
+        <div class="subs">
+          <div class="subs-h"><span class="t">Subagents (3)</span><span class="tally"><span class="o">✓ 2 done</span> · <span class="r">⟳ 1 running</span></span><span class="el">1:38</span></div>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm">auth/login</span><span class="res">ok · 12 callers</span><span class="dur">4.2s</span><span class="lk">open tab →</span></button>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm has-kids">verify-billing</span><span class="res"><span class="roll-chip bad"><span class="gx err">✕</span>1 of its 3 children failed</span></span><span class="dur">9.1s</span><span class="lk">open tab →</span></button>
+          <button class="sub-r"><span class="g run">⟳</span><span class="nm">gateway/proxy</span><span class="res"><span class="live">running</span></span><span class="dur">0:41</span><span class="lk">open tab →</span></button>
+        </div>
+      </div>
+
+      <div class="pane sel" id="dChild">
+        <div class="agent lead">Spawned a checker per billing sub-package. Two passed; <code>billing/worker</code> failed.</div>
+        <div class="subs">
+          <div class="subs-h"><span class="t">Subagents (3)</span><span class="tally"><span class="o">✓ 2 done</span> · <span class="f">✕ 1 failed</span></span><span class="el">6.0s</span></div>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm">billing/invoice</span><span class="res">ok</span><span class="dur">3.1s</span><span class="lk">open tab →</span></button>
+          <button class="sub-r"><span class="g err">✕</span><span class="nm">billing/worker</span><span class="res err">assertion failed · TestTokenEvictedAfterIdle</span><span class="dur">6.0s</span><span class="lk">open tab →</span></button>
+          <button class="sub-r"><span class="g done">✓</span><span class="nm">billing/ledger</span><span class="res">ok</span><span class="dur">2.4s</span><span class="lk">open tab →</span></button>
+        </div>
+      </div>
+    </div>
+    <div class="cap" style="margin:6px 0 0"><b>Click the tabs</b> (Map / Refactor… / verify-billing) to switch sessions. The parent and
+      the Map never close; child tabs carry a ✕ to dismiss. Worst-state colors the tab glyph and the Map chips.</div>
+  </section>
+
+</div>
+
+<script>
+// ALT D — tab switching (the only stateful demo beyond the CSS toggles above).
+(function(){
+  var tabs=document.getElementById('dTabs');
+  if(!tabs) return;
+  tabs.addEventListener('click',function(e){
+    var t=e.target.closest('.tab'); if(!t) return;
+    tabs.querySelectorAll('.tab').forEach(function(x){x.classList.remove('sel')});
+    t.classList.add('sel');
+    var id=t.getAttribute('data-pane');
+    document.querySelectorAll('.aD .pane').forEach(function(p){p.classList.toggle('sel',p.id===id)});
+  });
+})();
+</script>
+</body>
+</html>

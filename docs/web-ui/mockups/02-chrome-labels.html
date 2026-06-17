@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf Mockups — #2 Chrome &amp; Labels</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="./tokens.css" rel="stylesheet">
+<style>
+/* ====================================================================
+   TOPIC #2 — CHROME & LABELS
+   Kill ALL-CAPS-mono tracked labels (the "amateur tell"). Top bar =
+   identity only. Mono only for machine text (paths/counts/ids); every
+   human label is sans. Four label treatments (A/B/C/D), each a REAL
+   rendering of the same chrome so they are comparable side by side.
+   ==================================================================== */
+
+/* tokens.css sets body{overflow:hidden} + .app grid for the live app.
+   This is a gallery page, so re-allow scroll and lay panels out. */
+body{overflow:auto}
+.gallery{max-width:1180px;margin:0 auto;padding:var(--s6) var(--s5) var(--s6)}
+.gallery > header{margin-bottom:var(--s5)}
+.gallery h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.gallery .lede{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);max-width:680px;line-height:1.6}
+.gallery .lede code{font-family:var(--mono);font-size:12px;color:var(--ink);border-bottom:1px solid var(--hair)}
+
+/* the four-up grid of specimens */
+.alts{display:grid;grid-template-columns:repeat(2,1fr);gap:var(--s5)}
+@media (max-width:920px){.alts{grid-template-columns:1fr}}
+
+.spec{display:flex;flex-direction:column;gap:var(--s3)}
+.spec-cap{display:flex;flex-direction:column;gap:3px}
+.spec-cap .id{display:flex;align-items:baseline;gap:var(--s2)}
+.spec-cap .id b{font-size:var(--fs-base);font-weight:600;color:var(--ink)}
+.spec-cap .id .idea{font-size:var(--fs-sm);color:var(--ink-2)}
+.spec-cap .trade{font-size:var(--fs-xs);color:var(--ink-3);line-height:1.5;max-width:480px}
+.spec-cap .trade .plus{color:var(--ink-2)}
+
+/* a "device frame" so each alternative reads as a real rendering */
+.frame{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--bg);
+       display:grid;grid-template-columns:208px 1fr;min-height:300px}
+.frame .fsidebar{background:#101117;border-right:1px solid var(--line);padding:var(--s3) var(--s2) var(--s4)}
+.frame .fws{display:flex;flex-direction:column;min-width:0}
+
+/* shared mini-titlebar (identity only) */
+.ftb{display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4);height:46px;border-bottom:1px solid var(--line);flex:none}
+.ftb .ttl{font-size:14px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ftb .ov{margin-left:auto;font-size:var(--fs-sm);color:var(--ink-3);padding:5px 9px;border-radius:var(--r)}
+.ftb .ov:hover{background:var(--surface);color:var(--ink-2)}
+
+/* mini transcript stub so the status label sits in context */
+.fbody{padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3);flex:1}
+.fbody .qrow{display:flex;gap:var(--s3);align-items:baseline}
+.fbody .qrow .you{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);flex:none;width:30px}
+.fbody .qrow .q{font-size:var(--fs-sm);color:var(--ink-2);line-height:1.5}
+.fbody .prose{font-size:var(--fs-base);color:var(--ink);line-height:1.55}
+.fbody .prose code{font-family:var(--mono);font-size:11.5px;color:var(--ink);border-bottom:1px solid var(--hair)}
+
+/* shared sidebar row primitives (identical structurally across alts) */
+.frame .sbgroup + .sbgroup{margin-top:var(--s4)}
+.frame .p{display:flex;align-items:center;gap:var(--s2);width:100%;text-align:left;padding:var(--s1) var(--s2);border-radius:var(--r);min-height:28px}
+.frame .p:hover{background:var(--surface)}
+.frame .p .chev{font-size:8px;color:var(--ink-4);width:8px;flex:none}
+.frame .p .roll{width:6px;height:6px;border-radius:50%;flex:none}
+.frame .roll.live{background:var(--accent)} .frame .roll.attn{background:var(--attention)}
+.frame .p .age{font-size:var(--fs-xs);color:var(--ink-3);margin-left:auto}
+.frame .p .count{font-size:var(--fs-xs);color:var(--ink-4);margin-left:var(--s2)}
+.frame .kids{padding-left:var(--s3)}
+.frame .ses{display:flex;align-items:baseline;gap:var(--s2);width:100%;text-align:left;padding:3px var(--s2);border-radius:var(--r)}
+.frame .ses:hover{background:var(--surface)}
+.frame .ses.sel{background:var(--surface-2)}
+.frame .ses .dot{width:6px;height:6px;border-radius:50%;flex:none;align-self:center}
+.frame .dot.live{background:var(--accent)} .frame .dot.idle{background:var(--ink-4)}
+.frame .ses .st{font-size:var(--fs-sm);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+.frame .ses.sel .st{font-weight:600}
+
+/* a focused callout: the status label specimen, larger so the treatment is legible */
+.statusline{display:inline-flex;align-items:center;gap:var(--s2);margin-top:var(--s1)}
+.statusline .num{font-variant-numeric:tabular-nums}
+
+/* breathing live dot, reused */
+.bdot{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:breathe 2.6s ease-in-out infinite;flex:none}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.45}}
+
+/* a "before" reference strip showing the retired tell */
+.before{margin-top:var(--s5);border:1px dashed var(--hair);border-radius:var(--r);padding:var(--s4);background:rgba(247,118,142,.04)}
+.before h2{font-size:var(--fs-sm);font-weight:600;color:var(--ink-2)}
+.before .why{font-size:var(--fs-xs);color:var(--ink-3);margin-top:3px;margin-bottom:var(--s3);max-width:680px;line-height:1.5}
+.before .strip{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s4)}
+/* the retired ALL-CAPS-mono tell, recreated for contrast */
+.tell-tier{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--ink-3);letter-spacing:.14em;text-transform:uppercase}
+.tell-proj{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--ink-2);letter-spacing:.08em;text-transform:uppercase}
+.tell-badge{font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+            color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:2px 6px}
+.tell-status{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);display:inline-flex;align-items:center;gap:6px}
+
+/* ---- A — sans sentence-case + hairline divider ---- */
+.a-tier{display:flex;align-items:center;gap:var(--s2);padding:0 var(--s2) var(--s2)}
+.a-tier .lbl{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3)}      /* sentence case, no tracking, no caps */
+.a-tier .rule{flex:1;height:1px;background:var(--line)}                       /* the hairline carries the division */
+.a-proj{font-size:var(--fs-sm);font-weight:600;color:var(--ink-2)}           /* sentence/natural case, sans */
+.a-status .lbl{font-size:var(--fs-sm);color:var(--accent)}                    /* "Working" — plain sans, color = state */
+.a-status .num{font-size:var(--fs-sm);color:var(--ink-2)}
+
+/* ---- B — sans small-caps ---- */
+.b-tier{padding:0 var(--s2) var(--s2)}
+.b-tier .lbl{font-size:var(--fs-sm);font-weight:600;color:var(--ink-3);
+             font-variant:small-caps;letter-spacing:.02em}                    /* small-caps, NOT uppercase+tracking */
+.b-proj{font-size:var(--fs-sm);font-weight:600;color:var(--ink-2);font-variant:small-caps;letter-spacing:.01em}
+.b-status .lbl{font-size:var(--fs-sm);color:var(--accent);font-variant:small-caps;letter-spacing:.02em}
+.b-status .num{font-size:var(--fs-sm);color:var(--ink-2)}
+
+/* ---- C — minimal tracked-uppercase SANS for true dividers only ---- */
+.c-tier{padding:0 var(--s2) var(--s2)}
+.c-tier .lbl{font-size:10px;font-weight:600;color:var(--ink-3);
+             text-transform:uppercase;letter-spacing:.10em}                   /* tracked caps, but SANS + reserved for dividers */
+.c-proj{font-size:var(--fs-sm);font-weight:600;color:var(--ink-2)}           /* project = sentence case (NOT a divider) */
+.c-status .lbl{font-size:var(--fs-sm);color:var(--accent)}                    /* status = sentence case sans (NOT a divider) */
+.c-status .num{font-size:var(--fs-sm);color:var(--ink-2)}
+
+/* ---- D — consolidate meta into Details ⋯ overflow; chrome near-label-free ---- */
+.d-tier{display:flex;align-items:center;gap:var(--s2);padding:0 var(--s2) var(--s2)}
+.d-tier .lbl{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3)}
+.d-tier .rule{flex:1;height:1px;background:var(--line)}
+.d-proj{font-size:var(--fs-sm);font-weight:600;color:var(--ink-2)}
+.d-status .lbl{font-size:var(--fs-sm);color:var(--accent)}
+.d-status .num{font-size:var(--fs-sm);color:var(--ink-2)}
+/* the overflow popover that absorbs model/branch/tokens chrome */
+.d-over{position:relative}
+.d-over .panel{position:absolute;top:32px;right:0;width:216px;background:var(--surface-2);border:1px solid var(--hair);
+               border-radius:var(--r);padding:var(--s2);box-shadow:0 8px 24px rgba(0,0,0,.4);z-index:5}
+.d-over .panel .meta{display:flex;justify-content:space-between;align-items:baseline;padding:5px var(--s2);border-radius:var(--r);font-size:var(--fs-sm)}
+.d-over .panel .meta:hover{background:var(--surface)}
+.d-over .panel .meta .k{color:var(--ink-3)}                                  /* label = sans */
+.d-over .panel .meta .v{font-family:var(--mono);font-size:11.5px;color:var(--ink)} /* value = mono (machine text) */
+.d-over .panel .sep{height:1px;background:var(--line);margin:var(--s1) 0}
+
+footer.note{margin-top:var(--s5);font-size:var(--fs-xs);color:var(--ink-3);line-height:1.6;max-width:760px}
+footer.note b{color:var(--ink-2);font-weight:600}
+</style>
+</head>
+<body>
+<div class="gallery">
+
+  <header>
+    <h1>#2 — Chrome &amp; labels</h1>
+    <p class="lede">
+      The shipped chrome leans on <b style="color:var(--ink-2)">ALL-CAPS monospace tracked labels</b> for tier
+      headers, project names, status badges, and a <code>● WORKING</code> status — the design system's single
+      biggest amateur tell. Each alternative below is a real rendering of the same chrome (top bar, sidebar tier +
+      project headers, live status label) so the four label treatments are directly comparable. Top bar is
+      identity-only; mono is reserved for machine text (paths, counts, ids) — every human label is sans.
+    </p>
+  </header>
+
+  <div class="alts">
+
+    <!-- ============================================================ A -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>A</b><span class="idea">Sans, sentence-case + hairline divider</span></div>
+        <div class="trade">
+          Tier headers become a quiet sentence-case word with a <span class="plus">hairline rule</span> doing the
+          structural separation; projects/sessions read in natural case; status is plain sans where color carries
+          the meaning. <span class="plus">+ Calmest, most "crafted".</span> − Lower-contrast labels lean on the
+          rule to feel like sections.
+        </div>
+      </div>
+      <div class="frame">
+        <div class="fsidebar">
+          <div class="sbgroup">
+            <div class="a-tier"><span class="lbl">Active</span><span class="rule"></span></div>
+            <button class="p"><span class="chev">▾</span><span class="a-proj">serf</span><span class="roll live"></span><span class="age num">5m</span></button>
+            <div class="kids">
+              <button class="ses sel"><span class="dot live"></span><span class="st">Refactor auth token cache</span></button>
+              <button class="ses"><span class="dot idle"></span><span class="st">Fix flaky CI</span></button>
+            </div>
+          </div>
+          <div class="sbgroup">
+            <div class="a-tier"><span class="lbl">Recent</span><span class="rule"></span></div>
+            <button class="p"><span class="chev">▸</span><span class="a-proj">prime-radiant</span><span class="count num">7</span></button>
+          </div>
+        </div>
+        <div class="fws">
+          <div class="ftb">
+            <span class="ttl">Refactor auth token cache</span>
+            <span class="ov">Details&nbsp;⋯</span>
+          </div>
+          <div class="fbody">
+            <div class="qrow"><span class="you">You</span><span class="q">Find the root cause and fix it.</span></div>
+            <div class="prose">Root cause: <code>evictExpired()</code> keys off <code>lastUsed</code>. Patching now.</div>
+            <span class="a-status statusline"><span class="bdot"></span><span class="lbl">Working</span><span class="num">· 1:12</span></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ B -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>B</b><span class="idea">Sans small-caps</span></div>
+        <div class="trade">
+          Tier/project/status labels use real <span class="plus">small-caps</span> (not uppercase + letter-spacing),
+          giving a typographic "header" feel without shouting. <span class="plus">+ Reads as deliberate; keeps
+          some label texture.</span> − Small-caps still echoes the old caps grammar and depends on good font support.
+        </div>
+      </div>
+      <div class="frame">
+        <div class="fsidebar">
+          <div class="sbgroup">
+            <div class="b-tier"><span class="lbl">Active</span></div>
+            <button class="p"><span class="chev">▾</span><span class="b-proj">serf</span><span class="roll live"></span><span class="age num">5m</span></button>
+            <div class="kids">
+              <button class="ses sel"><span class="dot live"></span><span class="st">Refactor auth token cache</span></button>
+              <button class="ses"><span class="dot idle"></span><span class="st">Fix flaky CI</span></button>
+            </div>
+          </div>
+          <div class="sbgroup">
+            <div class="b-tier"><span class="lbl">Recent</span></div>
+            <button class="p"><span class="chev">▸</span><span class="b-proj">prime-radiant</span><span class="count num">7</span></button>
+          </div>
+        </div>
+        <div class="fws">
+          <div class="ftb">
+            <span class="ttl">Refactor auth token cache</span>
+            <span class="ov">Details&nbsp;⋯</span>
+          </div>
+          <div class="fbody">
+            <div class="qrow"><span class="you">You</span><span class="q">Find the root cause and fix it.</span></div>
+            <div class="prose">Root cause: <code>evictExpired()</code> keys off <code>lastUsed</code>. Patching now.</div>
+            <span class="b-status statusline"><span class="bdot"></span><span class="lbl">Working</span><span class="num">· 1:12</span></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ C -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>C</b><span class="idea">Tracked-uppercase sans — for true dividers only</span></div>
+        <div class="trade">
+          Keeps a familiar tracked-uppercase header, but <span class="plus">sans (never mono)</span> and reserved
+          strictly for top-level tier <em>dividers</em>; projects and status drop to sentence-case sans.
+          <span class="plus">+ Strongest section scanning; closest to the old layout.</span> − Retains a whiff of
+          the retired caps tell; must be disciplined about where caps are allowed.
+        </div>
+      </div>
+      <div class="frame">
+        <div class="fsidebar">
+          <div class="sbgroup">
+            <div class="c-tier"><span class="lbl">Active</span></div>
+            <button class="p"><span class="chev">▾</span><span class="c-proj">serf</span><span class="roll live"></span><span class="age num">5m</span></button>
+            <div class="kids">
+              <button class="ses sel"><span class="dot live"></span><span class="st">Refactor auth token cache</span></button>
+              <button class="ses"><span class="dot idle"></span><span class="st">Fix flaky CI</span></button>
+            </div>
+          </div>
+          <div class="sbgroup">
+            <div class="c-tier"><span class="lbl">Recent</span></div>
+            <button class="p"><span class="chev">▸</span><span class="c-proj">prime-radiant</span><span class="count num">7</span></button>
+          </div>
+        </div>
+        <div class="fws">
+          <div class="ftb">
+            <span class="ttl">Refactor auth token cache</span>
+            <span class="ov">Details&nbsp;⋯</span>
+          </div>
+          <div class="fbody">
+            <div class="qrow"><span class="you">You</span><span class="q">Find the root cause and fix it.</span></div>
+            <div class="prose">Root cause: <code>evictExpired()</code> keys off <code>lastUsed</code>. Patching now.</div>
+            <span class="c-status statusline"><span class="bdot"></span><span class="lbl">Working</span><span class="num">· 1:12</span></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ D -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>D</b><span class="idea">Consolidate meta into a Details ⋯ overflow</span></div>
+        <div class="trade">
+          Same sentence-case sans labels as A, but the top bar carries <em>only</em> the title; model / branch /
+          token chrome moves behind a <span class="plus">Details ⋯</span> overflow (shown open), keeping machine
+          values in mono where they belong. <span class="plus">+ Maximally identity-only top bar; least chrome
+          noise.</span> − One more click to glance at model/branch.
+        </div>
+      </div>
+      <div class="frame">
+        <div class="fsidebar">
+          <div class="sbgroup">
+            <div class="d-tier"><span class="lbl">Active</span><span class="rule"></span></div>
+            <button class="p"><span class="chev">▾</span><span class="d-proj">serf</span><span class="roll live"></span><span class="age num">5m</span></button>
+            <div class="kids">
+              <button class="ses sel"><span class="dot live"></span><span class="st">Refactor auth token cache</span></button>
+              <button class="ses"><span class="dot idle"></span><span class="st">Fix flaky CI</span></button>
+            </div>
+          </div>
+          <div class="sbgroup">
+            <div class="d-tier"><span class="lbl">Recent</span><span class="rule"></span></div>
+            <button class="p"><span class="chev">▸</span><span class="d-proj">prime-radiant</span><span class="count num">7</span></button>
+          </div>
+        </div>
+        <div class="fws">
+          <div class="ftb">
+            <span class="ttl">Refactor auth token cache</span>
+            <span class="ov d-over">Details&nbsp;⋯
+              <span class="panel">
+                <span class="meta"><span class="k">Model</span><span class="v">gpt-5.5</span></span>
+                <span class="meta"><span class="k">Branch</span><span class="v">tool-failure</span></span>
+                <span class="sep"></span>
+                <span class="meta"><span class="k">Tokens</span><span class="v">48.2k</span></span>
+                <span class="meta"><span class="k">Session</span><span class="v">01KV8MVQ</span></span>
+              </span>
+            </span>
+          </div>
+          <div class="fbody">
+            <div class="qrow"><span class="you">You</span><span class="q">Find the root cause and fix it.</span></div>
+            <div class="prose">Root cause: <code>evictExpired()</code> keys off <code>lastUsed</code>. Patching now.</div>
+            <span class="d-status statusline"><span class="bdot"></span><span class="lbl">Working</span><span class="num">· 1:12</span></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- reference: the retired tell, so the alternatives' improvement is legible -->
+  <div class="before">
+    <h2>For contrast — the retired tell (do not ship)</h2>
+    <p class="why">
+      ALL-CAPS monospace with heavy tracking, used as the default treatment for tier headers, project names,
+      a bordered status badge, and the live status. Machine font on human labels; everything shouts equally.
+    </p>
+    <div class="strip">
+      <span class="tell-tier">ACTIVE</span>
+      <span class="tell-proj">SERF</span>
+      <span class="tell-badge">LIVE</span>
+      <span class="tell-status"><span class="bdot"></span>● WORKING · 1:12</span>
+    </div>
+  </div>
+
+  <footer class="note">
+    <b>Recommendation: A (sans sentence-case + hairline) as the base, borrowing D's Details ⋯ overflow for the top bar.</b>
+    A is the cleanest break from the caps tell and the calmest read; the hairline does the section work that tracking
+    used to fake. D's overflow is the right home for model/branch/token chrome and keeps the top bar truly
+    identity-only. C is the safe fallback if section scannability suffers in the live sidebar (tracked caps, but
+    sans and dividers-only). B (small-caps) is elegant but still rhymes with the old caps grammar, so it's the
+    weakest fit for the stated goal.
+  </footer>
+
+</div>
+</body>
+</html>

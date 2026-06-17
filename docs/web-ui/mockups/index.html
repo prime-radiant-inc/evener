@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf Web Hub — UX Mockup Gallery</title>
+<link rel="stylesheet" href="./tokens.css">
+<style>
+  body{overflow:auto}
+  .wrap{max-width:1100px;margin:0 auto;padding:var(--s6) var(--s5) 96px}
+  .lede{max-width:760px}
+  h1{font-size:26px;font-weight:700;letter-spacing:-.01em;margin-bottom:var(--s3)}
+  .sub{color:var(--ink-2);font-size:var(--fs-md);line-height:1.6}
+  .meta-note{margin-top:var(--s4);padding:var(--s4);border-left:2px solid var(--attention);
+    background:var(--attention-soft);border-radius:0 var(--r) var(--r) 0;color:var(--ink-2);font-size:var(--fs-base);line-height:1.6}
+  .meta-note b{color:var(--ink)}
+  .legend{display:flex;flex-wrap:wrap;gap:var(--s4);margin-top:var(--s5);font-size:var(--fs-sm);color:var(--ink-3)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:10px;height:10px;border-radius:3px;display:inline-block}
+  .grp{margin-top:var(--s6)}
+  .grp-h{font-size:var(--fs-sm);font-weight:600;color:var(--ink-3);letter-spacing:.04em;
+    padding-bottom:var(--s2);border-bottom:1px solid var(--line);margin-bottom:var(--s4)}
+  .cards{display:grid;grid-template-columns:repeat(2,1fr);gap:var(--s4)}
+  @media(max-width:720px){.cards{grid-template-columns:1fr}}
+  .card{display:block;border:1px solid var(--line);border-radius:var(--r);padding:var(--s4);
+    background:var(--surface);transition:border-color .12s,background .12s}
+  .card:hover{border-color:var(--hair);background:var(--surface-2)}
+  .card .n{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-4)}
+  .card h3{font-size:var(--fs-md);font-weight:600;margin:2px 0 var(--s2);color:var(--ink)}
+  .card p{font-size:var(--fs-sm);color:var(--ink-3);line-height:1.55}
+  .card .open{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--accent)}
+  .tag{display:inline-block;margin-top:var(--s3);font-size:var(--fs-xs);color:var(--ink-3);
+    border:1px solid var(--line);border-radius:var(--r-pill);padding:1px 8px}
+  .tag.fix{color:var(--attention);border-color:color-mix(in srgb,var(--attention) 40%,var(--line))}
+  footer{margin-top:var(--s6);color:var(--ink-4);font-size:var(--fs-xs)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="lede">
+    <h1>Serf Web Hub — UX Mockup Gallery</h1>
+    <p class="sub">21 areas worth improving, each explored as <b>4 alternatives</b> you can react to.
+    Open any card. Every mockup is built on the same correct design tokens (the golden 4-color system),
+    so they're comparable. This is for reaction, not a finished design — tell me which directions to pursue.</p>
+    <div class="meta-note">
+      <b>Why this exists:</b> a 6-lens persona review (scannability, craft, accessibility, calm/motion,
+      edge-case legibility, wayfinding) found that the shipped hub added the new features
+      (live thinking, liveness, subagent module, sidebar tiers, scroll pill) on top of the
+      <b>old visual system</b> — which never adopted the golden grammar, and whose color tokens are
+      conflated (needs-you = error = red; user/idle = green; subagent = purple). Many "improvements"
+      below are therefore <b>adopt-the-golden + variants</b>, marked <span class="tag fix">shipped gap</span>.
+    </div>
+    <div class="legend">
+      <span><span class="sw" style="background:var(--accent)"></span>live / interactive</span>
+      <span><span class="sw" style="background:var(--attention)"></span>needs you</span>
+      <span><span class="sw" style="background:var(--error)"></span>error</span>
+      <span><span class="sw" style="background:var(--done)"></span>done / settled</span>
+    </div>
+  </div>
+
+  <div class="grp">
+    <div class="grp-h">Foundation</div>
+    <div class="cards">
+      <a class="card" href="./01-color-system.html"><span class="n">01</span><h3>Color &amp; status system</h3><p>Fix the conflated palette into the four meanings, each glyph-paired and contrast-safe.</p><span class="tag fix">shipped gap</span><div class="open">Open 4 alternatives →</div></a>
+      <a class="card" href="./02-chrome-labels.html"><span class="n">02</span><h3>Chrome &amp; labels</h3><p>Retire the ALL-CAPS-mono "amateur tell"; make the top bar identity-only.</p><span class="tag fix">shipped gap</span><div class="open">Open 4 alternatives →</div></a>
+    </div>
+  </div>
+
+  <div class="grp">
+    <div class="grp-h">Transcript grammar</div>
+    <div class="cards">
+      <a class="card" href="./03-user-message-steering.html"><span class="n">03</span><h3>User message &amp; steering</h3><p>Demote the loud right-aligned bubble to a quiet "You" tag; handle multiple steers.</p><span class="tag fix">shipped gap</span><div class="open">Open 4 alternatives →</div></a>
+      <a class="card" href="./04-assistant-hero.html"><span class="n">04</span><h3>Assistant hero &amp; hierarchy</h3><p>Make agent prose win; inline code as a quiet underline, not a filled chip.</p><span class="tag fix">shipped gap</span><div class="open">Open 4 alternatives →</div></a>
+      <a class="card" href="./05-thinking-block.html"><span class="n">05</span><h3>Thinking block</h3><p>Reflow-free collapse, duration-ranked lines, calm live streaming.</p><div class="open">Open 4 alternatives →</div></a>
+      <a class="card" href="./06-tools-long-output.html"><span class="n">06</span><h3>Tool calls &amp; long output</h3><p>Cluster summary leads with the consequential step; honest truncation/binary states.</p><div class="open">Open 4 alternatives →</div></a>
+      <a class="card" href="./07-system-churn.html"><span class="n">07</span><h3>System/skill churn</h3><p>Kill divider-weight + "N chars"; quiet lifecycle; silent-success rule.</p><span class="tag fix">shipped gap</span><div class="open">Open 4 alternatives →</div></a>
+    </div>
+  </div>
+
+  <div class="grp">
+    <div class="grp-h">Subagents</div>
+    <div class="cards">
+      <a class="card" href="./08-subagent-module.html"><span class="n">08</span><h3>Subagent module states</h3><p>Honest stale/terminal-unknown, severity-sorted overflow, calmer churn.</p><div class="open">Open 4 alternatives →</div></a>
+      <a class="card" href="./09-subagent-nav.html"><span class="n">09</span><h3>Navigation &amp; nesting</h3><p>A way back out (breadcrumb/slide-over/accordion) + nested worst-state rollup.</p><div class="open">Open 4 alternatives →</div></a>
+    </div>
+  </div>
+
+  <div class="grp">
+    <div class="grp-h">Sidebar &amp; wayfinding</div>
+    <div class="cards">
+      <a class="card" href="./10-sidebar-ia.html"><span class="n">10</span><h3>Sidebar IA</h3><p>Resolve the duplicate LIVE rail; dedup repeats; rollup magnitude; "you are here".</p><span class="tag fix">shipped gap</span><div class="open">Open 4 alternatives →</div></a>
+      <a class="card" href="./11-attention-triage.html"><span class="n">11</span><h3>Cross-session attention</h3><p>One surface for "which sessions need me now" across all projects.</p><div class="open">Open 4 alternatives →</div></a>
+      <a class="card" href="./12-test-runs-finding.html"><span class="n">12</span><h3>Test runs &amp; finding old work</h3><p>Make the bucket + Recent/Older findable: search, dates, outcome glyphs.</p><div class="open">Open 4 alternatives →</div></a>
+    </div>
+  </div>
+
+  <div class="grp">
+    <div class="grp-h">Liveness, motion &amp; scroll</div>
+    <div class="cards">
+      <a class="card" href="./13-liveness-motion.html"><span class="n">13</span><h3>Liveness &amp; motion economy</h3><p>One loop max; calm "no updates for Ns" banding; livebar placement.</p><div class="open">Open 4 alternatives →</div></a>
+      <a class="card" href="./14-pill-findability.html"><span class="n">14</span><h3>New-content pill &amp; findability</h3><p>No-flicker sticky pill; attention-aware; scroll-track error markers.</p><div class="open">Open 4 alternatives →</div></a>
+    </div>
+  </div>
+
+  <div class="grp">
+    <div class="grp-h">Edge &amp; error states</div>
+    <div class="cards">
+      <a class="card" href="./15-connection-errors.html"><span class="n">15</span><h3>Connection &amp; main-agent errors</h3><p>Disconnect vs tool-error; promote turn failure to chrome; retries; sans voice.</p><div class="open">Open 4 alternatives →</div></a>
+      <a class="card" href="./16-blocking-needs-you.html"><span class="n">16</span><h3>Blocking needs-you</h3><p>Permission/approval &amp; agent questions — the amber-vs-blue resolution.</p><div class="open">Open 4 alternatives →</div></a>
+      <a class="card" href="./17-context-compaction.html"><span class="n">17</span><h3>Context pressure &amp; compaction</h3><p>A pressure gauge that colors only near the edge; a compaction marker.</p><div class="open">Open 4 alternatives →</div></a>
+    </div>
+  </div>
+
+  <div class="grp">
+    <div class="grp-h">Rich content blocks</div>
+    <div class="cards">
+      <a class="card" href="./18-plan-todo.html"><span class="n">18</span><h3>Plan / todo list</h3><p>A real checklist (done/current/pending) + a clean empty state.</p><div class="open">Open 4 alternatives →</div></a>
+      <a class="card" href="./19-diff-patch.html"><span class="n">19</span><h3>Diff / patch</h3><p>See what the agent changed; +/− desaturated from the semantic colors.</p><div class="open">Open 4 alternatives →</div></a>
+      <a class="card" href="./20-multi-image.html"><span class="n">20</span><h3>Multi-image gallery</h3><p>N images without dominating the column: strip / contact sheet / primary+more.</p><div class="open">Open 4 alternatives →</div></a>
+      <a class="card" href="./21-cold-start.html"><span class="n">21</span><h3>Empty / cold-start session</h3><p>The send→first-frame gap and the welcome state, made calm and crafted.</p><div class="open">Open 4 alternatives →</div></a>
+    </div>
+  </div>
+
+  <footer>Serf web hub UX exploration · built on the golden design tokens · 2026-06-17. Each page: 4 labeled alternatives (A–D) with a recommendation. React freely — these are seeds.</footer>
+</div>
+</body>
+</html>

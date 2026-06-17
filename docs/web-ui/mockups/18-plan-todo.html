@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf — Mockup #18: Plan / todo list (4 directions)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- shared design tokens + golden component grammar -->
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* =====================================================================
+   MOCKUP #18 (slice) — PLAN / TODO LIST
+   serf has a task_list tool, but the shipped UI renders the plan as an
+   afterthought string ("tasks  no tasks") — an empty-state label that is
+   louder than any real plan would be, and a real plan has no checklist
+   grammar at all (no pending / in-progress / done states).
+
+   This page proposes a real plan checklist with THREE states, each
+   GLYPH-PAIRED so it is colorblind-safe and so "done" can RECEDE:
+       done     ✓  neutral  (--done) — the expected, finished state
+       current  ⟳  blue     (--accent) — the live/active item, draws the eye
+       pending  ○  dim      (--ink-4 glyph, --ink-3 text) — not yet started
+
+   And a clean EMPTY state: no plan ⇒ the control is simply ABSENT. We do
+   NOT render "no tasks" text — absence of a plan is not news.
+
+   Principles honored (design-system §2): color = "needs your eye" (only the
+   ONE current item is blue; done recedes to neutral); emphasis is scarce
+   (one containment device per alt, never stacked); minimal motion (the
+   current item breathes on its glyph only); mono for machine text only
+   (file paths in item detail), sans for the human-readable plan steps.
+   ===================================================================== */
+
+/* ---- page chrome (gallery, not the app shell) ---- */
+body{overflow:auto}
+.page{max-width:1180px;margin:0 auto;padding:var(--s6) var(--s5) 96px}
+.page-h{margin-bottom:var(--s5)}
+.page-h h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.page-h .sub{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);max-width:780px;line-height:1.6}
+.page-h .probs{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);max-width:780px;line-height:1.6}
+.page-h .probs b{color:var(--ink-2);font-weight:600}
+
+/* shared state-legend strip */
+.legend{display:flex;gap:var(--s5);flex-wrap:wrap;margin-top:var(--s4);padding:var(--s3) var(--s4);
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r);max-width:780px}
+.legend .li{display:flex;gap:var(--s2);align-items:baseline;font-size:var(--fs-sm);color:var(--ink-2)}
+.legend .li .lbl{color:var(--ink-3)}
+
+.alts{display:flex;flex-direction:column;gap:var(--s6)}
+.alt-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.alt-h .badge{font-size:var(--fs-sm);font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;flex:none}
+.alt-h .name{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.alt-cap{font-size:var(--fs-sm);color:var(--ink-2);line-height:1.6;max-width:840px;margin-bottom:var(--s4)}
+.alt-cap .tradeoff{color:var(--ink-3)}
+.alt-cap b{color:var(--ink-2);font-weight:600}
+
+/* state-pair: two transcript slices side by side (with plan | empty) */
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:var(--s4)}
+@media (max-width:960px){.pair{grid-template-columns:1fr}}
+.panel{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);
+  padding:var(--s4) var(--s5) var(--s5);position:relative;overflow:hidden;min-height:120px}
+.panel .state-tag{position:absolute;top:var(--s3);right:var(--s4);font-size:var(--fs-xs);
+  color:var(--ink-4);letter-spacing:.04em;z-index:2}
+.slice{max-width:560px}
+.empty-note{font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;margin-top:var(--s4);font-style:italic;max-width:480px}
+.empty-note b{color:var(--ink-2);font-style:normal;font-weight:600}
+
+/* reuse golden voices for the realistic transcript slice (most live in
+   tokens.css; .you/.agent/.cursor are present there — these just scope sizes
+   inside the gallery panels and add nothing new). */
+
+/* =====================================================================
+   SHARED PLAN VOCABULARY — the three glyph-paired states.
+   A plan item is ONE line: glyph · step text · (optional mono detail).
+   done RECEDES (neutral, lighter, struck affordance); current is the only
+   blue (the live item); pending is dim. No per-item box — the grammar is
+   the glyph rail, not nested containers.
+   ===================================================================== */
+.pl-item{display:flex;gap:var(--s3);align-items:baseline;padding:var(--s1) 0;line-height:1.5}
+.pl-item .g{flex:none;width:14px;text-align:center;font-size:12px;
+  font-variant-numeric:tabular-nums}
+.pl-item .step{font-size:var(--fs-base)}
+.pl-item .det{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-3);margin-left:auto;
+  padding-left:var(--s3);flex:none}
+
+/* DONE — neutral, recedes. Glyph ✓ in --done; text muted; no strike (a line
+   through reads as "removed", these are completed not deleted). */
+.pl-item.done .g{color:var(--done)}
+.pl-item.done .step{color:var(--ink-3)}
+
+/* CURRENT — the live item. The ONLY colored line. Glyph ⟳ breathes. */
+.pl-item.cur .g{color:var(--accent);animation:breathe 2.6s ease-in-out infinite}
+.pl-item.cur .step{color:var(--ink);font-weight:500}
+.pl-item.cur .det{color:var(--accent)}
+
+/* PENDING — not started. Glyph ○ dim (non-text ink-4); text tertiary. */
+.pl-item.pend .g{color:var(--ink-4)}
+.pl-item.pend .step{color:var(--ink-3)}
+
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.45}}
+
+/* =====================================================================
+   A — STATE-GLYPH CHECKLIST  (no container; the glyph rail IS the device)
+   A flat checklist sitting in the transcript flow. No box, no rail line —
+   the column of glyphs is the only structure. Cheapest possible emphasis.
+   ===================================================================== */
+.a-plan{margin-top:var(--s4)}
+.a-plan .plan-h{display:flex;gap:var(--s2);align-items:baseline;font-size:var(--fs-sm);
+  color:var(--ink-3);margin-bottom:var(--s2)}
+.a-plan .plan-h .prog{color:var(--ink-2);font-variant-numeric:tabular-nums}
+
+/* =====================================================================
+   B — PROGRESS ROLLUP CHIP  (lives in the liveness bar; expands upward)
+   The plan collapses to a single "Plan 3/7" chip pinned in the livebar.
+   Click ⇒ a popover with the full checklist rises above it. Zero transcript
+   real-estate; the plan is always reachable but never in the reading column.
+   ===================================================================== */
+.b-shell{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;
+  display:flex;flex-direction:column;height:300px;position:relative}
+.b-feed{flex:1;overflow-y:auto;padding:var(--s4) var(--s5)}
+.b-feed::-webkit-scrollbar{width:8px}
+.b-feed::-webkit-scrollbar-thumb{background:var(--hair);border-radius:8px}
+/* livebar inside the shell (golden .livebar lives in tokens.css) */
+.b-shell .livebar{position:relative}
+.plan-chip{display:inline-flex;align-items:center;gap:6px;margin-left:auto;
+  padding:3px 10px;border-radius:var(--r-pill);background:var(--surface-2);
+  border:1px solid var(--hair);color:var(--ink-2);font-size:var(--fs-xs)}
+.plan-chip:hover{background:var(--hair);color:var(--ink)}
+.plan-chip .n{color:var(--accent);font-variant-numeric:tabular-nums}
+.plan-chip .cv{font-size:8px;color:var(--ink-3);transition:transform .15s}
+.b-pop{display:none;position:absolute;right:var(--s5);bottom:46px;width:340px;
+  background:var(--surface);border:1px solid var(--hair);border-radius:var(--r);
+  padding:var(--s3) var(--s4) var(--s4);box-shadow:0 10px 30px rgba(0,0,0,.45);z-index:5}
+.b-pop.open{display:block}
+.b-shell .plan-chip.open .cv{transform:rotate(180deg)}
+.b-pop .pop-h{font-size:var(--fs-xs);color:var(--ink-3);letter-spacing:.04em;
+  margin-bottom:var(--s2);display:flex;align-items:baseline;gap:var(--s2)}
+.b-pop .pop-h .prog{color:var(--ink-2);font-variant-numeric:tabular-nums;margin-left:auto}
+
+/* =====================================================================
+   C — INLINE PLAN BLOCK  (one neutral box, at the declaration point)
+   When the agent declares a plan, it renders as ONE neutral box (the same
+   single device the subagents module uses). Items check off in place as the
+   turn runs. The box stays where the plan was announced.
+   ===================================================================== */
+.c-plan{margin-top:var(--s4);background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r);padding:var(--s3) var(--s4)}
+.c-plan .c-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.c-plan .c-h .t{font-size:var(--fs-sm);font-weight:600;color:var(--ink)}
+.c-plan .c-h .prog{font-size:var(--fs-xs);color:var(--ink-2);font-variant-numeric:tabular-nums;margin-left:auto}
+
+/* =====================================================================
+   D — PINNED COLLAPSIBLE PLAN RAIL  (docked; earns its keep on long turns)
+   For long multi-step turns the plan docks as a rail on the right edge of
+   the workspace, pinned so it never scrolls away. Collapses to a thin spine
+   showing only progress + the current step; expand for the full checklist.
+   ===================================================================== */
+.d-shell{display:grid;grid-template-columns:1fr 220px;border:1px solid var(--line);
+  border-radius:var(--r);overflow:hidden;height:340px}
+.d-feed{overflow-y:auto;padding:var(--s4) var(--s5);border-right:1px solid var(--line)}
+.d-feed::-webkit-scrollbar{width:8px}
+.d-feed::-webkit-scrollbar-thumb{background:var(--hair);border-radius:8px}
+.d-rail{background:#101117;display:flex;flex-direction:column;min-width:0}
+.d-rail .rail-h{display:flex;align-items:baseline;gap:var(--s2);padding:var(--s3) var(--s3) var(--s2);
+  border-bottom:1px solid var(--line)}
+.d-rail .rail-h .t{font-size:var(--fs-xs);color:var(--ink-3);letter-spacing:.04em}
+.d-rail .rail-h .prog{font-size:var(--fs-xs);color:var(--ink-2);font-variant-numeric:tabular-nums;margin-left:auto}
+.d-rail .rail-body{padding:var(--s3);overflow-y:auto;flex:1}
+.d-rail .rail-body::-webkit-scrollbar{width:6px}
+.d-rail .rail-body::-webkit-scrollbar-thumb{background:var(--hair);border-radius:6px}
+.d-rail .pl-item .step{font-size:var(--fs-sm)}
+.d-rail .pl-item .det{display:none} /* rail is narrow: no mono detail column */
+/* collapsed spine variant */
+.d-shell.collapsed{grid-template-columns:1fr 8px}
+.d-shell.collapsed .d-feed{border-right:none}
+.d-spine{display:none;background:#101117;border-left:1px solid var(--line);position:relative}
+.d-shell.collapsed .d-rail{display:none}
+.d-shell.collapsed .d-spine{display:block}
+/* the spine fills proportionally with done(neutral) under the current(blue) tip */
+.d-spine .fill{position:absolute;left:0;right:0;top:0;background:var(--accent);opacity:.55}
+.d-spine .fill.done{background:var(--done);opacity:.4}
+.rail-toggle{margin-top:var(--s2);font-size:var(--fs-xs);color:var(--ink-3)}
+.rail-toggle:hover{color:var(--accent)}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="page-h">
+    <h1>Mockup #18 — Plan / todo list</h1>
+    <p class="sub">serf has a <code style="font-family:var(--mono);font-size:12.5px;color:var(--ink);border-bottom:1px solid var(--hair)">task_list</code>
+      tool, but the shipped UI renders the plan as an afterthought string —
+      <b style="color:var(--ink-2);font-weight:600">"tasks&nbsp;&nbsp;no tasks"</b> — an empty-state label louder than
+      any real plan, with no checklist grammar at all. Four directions for a real
+      <b style="color:var(--ink-2);font-weight:600">pending / in-progress / done</b> checklist and a clean empty state.</p>
+    <p class="probs"><b>Targets:</b> three <b>glyph-paired</b> states so it is colorblind-safe and
+      <b>done recedes</b> (only the one current item is colored); one containment device per direction;
+      and an empty state where <b>no plan ⇒ the control is simply absent</b> — never a "no tasks" string.</p>
+
+    <div class="legend">
+      <span class="li"><span class="pl-item done" style="padding:0"><span class="g">✓</span></span><span><span class="lbl">done</span> — neutral, recedes</span></span>
+      <span class="li"><span class="pl-item cur"  style="padding:0"><span class="g">⟳</span></span><span><span class="lbl">in progress</span> — blue, the live item</span></span>
+      <span class="li"><span class="pl-item pend" style="padding:0"><span class="g">○</span></span><span><span class="lbl">pending</span> — dim, not started</span></span>
+    </div>
+  </header>
+
+  <div class="alts">
+
+    <!-- ============================================================ -->
+    <!-- A — STATE-GLYPH CHECKLIST                                     -->
+    <!-- ============================================================ -->
+    <section class="alt">
+      <div class="alt-h"><span class="badge">A</span><span class="name">State-glyph checklist</span></div>
+      <p class="alt-cap">A flat checklist in the transcript flow. <b>No box, no rail line</b> — the column of
+        glyphs is the only structure (the lightest possible emphasis). Each item is one sans line:
+        glyph · step · optional mono detail. Done lines fall back to neutral and recede; the single
+        <b>current</b> item is the only blue, its <code style="font-family:var(--mono)">⟳</code> breathing.
+        <span class="tradeoff"> Tradeoff: with no container it can blur into surrounding prose on a busy
+        turn, and a long plan adds real vertical height to the reading column.</span></p>
+      <div class="pair">
+        <!-- WITH PLAN (mid-execution) -->
+        <div class="panel">
+          <span class="state-tag">mid-execution · 3/7</span>
+          <div class="slice">
+            <div class="you"><span class="tag">You</span><span class="q">Migrate the billing service off the legacy Stripe client and onto the new SDK, end to end.</span></div>
+            <div class="agent lead">Here's my plan. I'll work through it top to bottom and check items off as I go.</div>
+            <div class="a-plan">
+              <div class="plan-h">Plan <span class="prog num">3/7</span></div>
+              <div class="pl-item done"><span class="g">✓</span><span class="step">Audit current Stripe client usage</span><span class="det">14 call sites</span></div>
+              <div class="pl-item done"><span class="g">✓</span><span class="step">Pin the new SDK version &amp; read its changelog</span><span class="det">go.mod</span></div>
+              <div class="pl-item done"><span class="g">✓</span><span class="step">Map old API surface → new SDK equivalents</span></div>
+              <div class="pl-item cur"><span class="g">⟳</span><span class="step">Port the charge + refund paths</span><span class="det">billing/charge.go</span></div>
+              <div class="pl-item pend"><span class="g">○</span><span class="step">Port the webhook signature verification</span></div>
+              <div class="pl-item pend"><span class="g">○</span><span class="step">Update the integration tests to the new fixtures</span></div>
+              <div class="pl-item pend"><span class="g">○</span><span class="step">Remove the legacy client &amp; its config</span></div>
+            </div>
+            <div class="agent">Charge path is converted; running the charge tests before I touch refunds<span class="cursor"></span></div>
+          </div>
+        </div>
+        <!-- EMPTY (no plan) -->
+        <div class="panel">
+          <span class="state-tag">no plan</span>
+          <div class="slice">
+            <div class="you"><span class="tag">You</span><span class="q">What version of the Stripe SDK are we currently pinned to?</span></div>
+            <div class="agent lead">We're pinned to <code style="font-family:var(--mono)">stripe-go v74.30.0</code> in <code style="font-family:var(--mono)">go.mod</code> — the last release before the v76 client rewrite.</div>
+            <p class="empty-note">No <b>task_list</b> for this turn, so the checklist is <b>absent</b> — nothing is rendered. (No "no tasks" placeholder: absence of a plan isn't news.)</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- B — PROGRESS ROLLUP CHIP                                      -->
+    <!-- ============================================================ -->
+    <section class="alt">
+      <div class="alt-h"><span class="badge">B</span><span class="name">Progress rollup chip (in the liveness bar)</span></div>
+      <p class="alt-cap">The plan collapses to a single <b>"Plan 3/7"</b> chip pinned in the liveness bar.
+        Click it and the full checklist rises in a popover above the bar. Costs <b>zero transcript
+        real-estate</b>; the plan is always reachable but never sits in the reading column. The chip's
+        count is the at-a-glance progress.
+        <span class="tradeoff"> Tradeoff: the plan is out of the reading flow — you have to open it to see
+        the steps, and the popover overlaps content while open. Best when the prose, not the plan, is the
+        story. (Click the chip below.)</span></p>
+      <div class="pair">
+        <!-- WITH PLAN -->
+        <div class="panel" style="padding:0">
+          <span class="state-tag" style="top:var(--s2)">mid-execution · 3/7</span>
+          <div class="b-shell">
+            <div class="b-feed">
+              <div class="you"><span class="tag">You</span><span class="q">Migrate the billing service off the legacy Stripe client and onto the new SDK, end to end.</span></div>
+              <div class="agent lead">Porting the charge and refund paths now — the audit and the API mapping are done. Progress is in the Plan chip below; I'll keep the prose for the consequential findings.</div>
+              <div class="agent">Heads up: the new SDK moves idempotency keys from a header to a request field, so I'm threading that through the charge call rather than the client.</div>
+            </div>
+            <div class="livebar">
+              <span class="d"></span>working · <span class="el num">2:41</span>
+              <button class="plan-chip" onclick="this.classList.toggle('open');document.getElementById('bpop').classList.toggle('open')">
+                Plan <span class="n num">3/7</span> <span class="cv">▴</span>
+              </button>
+            </div>
+            <div class="b-pop" id="bpop">
+              <div class="pop-h">Plan <span class="prog num">3/7 done</span></div>
+              <div class="pl-item done"><span class="g">✓</span><span class="step">Audit current Stripe client usage</span></div>
+              <div class="pl-item done"><span class="g">✓</span><span class="step">Pin the new SDK &amp; read its changelog</span></div>
+              <div class="pl-item done"><span class="g">✓</span><span class="step">Map old API → new SDK equivalents</span></div>
+              <div class="pl-item cur"><span class="g">⟳</span><span class="step">Port the charge + refund paths</span></div>
+              <div class="pl-item pend"><span class="g">○</span><span class="step">Port webhook signature verification</span></div>
+              <div class="pl-item pend"><span class="g">○</span><span class="step">Update integration tests to new fixtures</span></div>
+              <div class="pl-item pend"><span class="g">○</span><span class="step">Remove legacy client &amp; its config</span></div>
+            </div>
+          </div>
+        </div>
+        <!-- EMPTY -->
+        <div class="panel" style="padding:0">
+          <span class="state-tag" style="top:var(--s2)">no plan</span>
+          <div class="b-shell">
+            <div class="b-feed">
+              <div class="you"><span class="tag">You</span><span class="q">What version of the Stripe SDK are we currently pinned to?</span></div>
+              <div class="agent lead">We're pinned to <code style="font-family:var(--mono)">stripe-go v74.30.0</code> in <code style="font-family:var(--mono)">go.mod</code>.</div>
+              <p class="empty-note">No <b>task_list</b> ⇒ <b>no chip</b>. The bar below carries only liveness.</p>
+            </div>
+            <div class="livebar">
+              <span class="d" style="animation:none;background:var(--ink-3)"></span>
+              <span style="color:var(--ink-3)">idle</span>
+              <!-- no task_list ⇒ NO chip. The livebar carries only liveness. -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- C — INLINE PLAN BLOCK                                         -->
+    <!-- ============================================================ -->
+    <section class="alt">
+      <div class="alt-h"><span class="badge">C</span><span class="name">Inline plan block (one neutral box)</span></div>
+      <p class="alt-cap">When the agent declares a plan it renders as <b>one neutral box</b> — the same
+        single containment device the subagents module uses — placed exactly where the plan was announced.
+        Items check off in place as the turn runs. The box anchors the plan to its moment in the
+        conversation, reading like "here is the contract for this turn."
+        <span class="tradeoff"> Tradeoff: the box is a heavier device than A and, being inline, it
+        <b>scrolls away</b> on a long turn — you lose sight of progress unless you scroll back (which is
+        exactly the gap D fills).</span></p>
+      <div class="pair">
+        <!-- WITH PLAN -->
+        <div class="panel">
+          <span class="state-tag">mid-execution · 3/7</span>
+          <div class="slice">
+            <div class="you"><span class="tag">You</span><span class="q">Migrate the billing service off the legacy Stripe client and onto the new SDK, end to end.</span></div>
+            <div class="agent lead">Mapped out the migration — here's the plan for this turn:</div>
+            <div class="c-plan">
+              <div class="c-h"><span class="t">Plan</span><span class="prog num">3 / 7 done</span></div>
+              <div class="pl-item done"><span class="g">✓</span><span class="step">Audit current Stripe client usage</span><span class="det">14 call sites</span></div>
+              <div class="pl-item done"><span class="g">✓</span><span class="step">Pin the new SDK &amp; read its changelog</span><span class="det">go.mod</span></div>
+              <div class="pl-item done"><span class="g">✓</span><span class="step">Map old API surface → new SDK equivalents</span></div>
+              <div class="pl-item cur"><span class="g">⟳</span><span class="step">Port the charge + refund paths</span><span class="det">billing/charge.go</span></div>
+              <div class="pl-item pend"><span class="g">○</span><span class="step">Port webhook signature verification</span></div>
+              <div class="pl-item pend"><span class="g">○</span><span class="step">Update integration tests to new fixtures</span></div>
+              <div class="pl-item pend"><span class="g">○</span><span class="step">Remove legacy client &amp; its config</span></div>
+            </div>
+            <div class="agent">Charge path converted. The refund flow shares the same idempotency change, so I'll do both before running tests<span class="cursor"></span></div>
+          </div>
+        </div>
+        <!-- EMPTY -->
+        <div class="panel">
+          <span class="state-tag">no plan</span>
+          <div class="slice">
+            <div class="you"><span class="tag">You</span><span class="q">What version of the Stripe SDK are we currently pinned to?</span></div>
+            <div class="agent lead">We're pinned to <code style="font-family:var(--mono)">stripe-go v74.30.0</code> in <code style="font-family:var(--mono)">go.mod</code> — the last release before the v76 rewrite.</div>
+            <p class="empty-note">Short answer, no plan declared ⇒ <b>no box</b>. The transcript stays pure prose; nothing reserves space for a plan that doesn't exist.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- D — PINNED COLLAPSIBLE PLAN RAIL                              -->
+    <!-- ============================================================ -->
+    <section class="alt">
+      <div class="alt-h"><span class="badge">D</span><span class="name">Pinned collapsible plan rail (for long turns)</span></div>
+      <p class="alt-cap">For a long multi-step turn the plan docks as a <b>pinned rail</b> on the workspace
+        edge — it never scrolls away, so progress stays visible while you read deep in the transcript.
+        It <b>collapses to a thin spine</b> (a proportional progress fill: neutral for done, a blue tip for
+        the current step) when you want the room back, and expands to the full checklist on demand.
+        <span class="tradeoff"> Tradeoff: it's a piece of persistent chrome that steals horizontal width —
+        it only earns its keep on genuinely long turns; on a short one it's overkill (use A or C).
+        Toggle it below.</span></p>
+      <div class="pair">
+        <!-- WITH PLAN — expanded rail -->
+        <div class="panel" style="padding:0">
+          <span class="state-tag" style="top:var(--s2)">long turn · rail pinned · 3/7</span>
+          <div class="d-shell" id="dshell">
+            <div class="d-feed">
+              <div class="you"><span class="tag">You</span><span class="q">Migrate the billing service off the legacy Stripe client and onto the new SDK, end to end.</span></div>
+              <div class="agent lead">Working through the migration. The charge path is done; on refunds now. The plan and progress live in the pinned rail →, so they stay put no matter how far this turn scrolls.</div>
+              <div class="agent">The new SDK returns a typed <code style="font-family:var(--mono)">*stripe.Refund</code> instead of a map, so I'm updating the caller that read <code style="font-family:var(--mono)">resp["status"]</code> to use the field directly.</div>
+              <div class="agent">Webhook verification is next — the signing-secret env var name changes, I'll flag that in the summary so deploys get updated.</div>
+              <div class="active"><span class="lbl">Porting the refund path</span><span class="cmd">edit billing/refund.go</span></div>
+            </div>
+            <!-- expanded rail -->
+            <div class="d-rail">
+              <div class="rail-h"><span class="t">PLAN</span><span class="prog num">3/7</span></div>
+              <div class="rail-body">
+                <div class="pl-item done"><span class="g">✓</span><span class="step">Audit Stripe usage</span></div>
+                <div class="pl-item done"><span class="g">✓</span><span class="step">Pin new SDK</span></div>
+                <div class="pl-item done"><span class="g">✓</span><span class="step">Map old API → new</span></div>
+                <div class="pl-item cur"><span class="g">⟳</span><span class="step">Port charge + refund</span></div>
+                <div class="pl-item pend"><span class="g">○</span><span class="step">Webhook verification</span></div>
+                <div class="pl-item pend"><span class="g">○</span><span class="step">Integration tests</span></div>
+                <div class="pl-item pend"><span class="g">○</span><span class="step">Remove legacy client</span></div>
+                <button class="rail-toggle" onclick="document.getElementById('dshell').classList.add('collapsed')">collapse →</button>
+              </div>
+            </div>
+            <!-- collapsed spine (shown when .collapsed) -->
+            <div class="d-spine" onclick="document.getElementById('dshell').classList.remove('collapsed')" title="expand plan">
+              <!-- done portion (3/7 ≈ 43%) neutral, then the current tip blue -->
+              <div class="fill done" style="height:43%"></div>
+              <div class="fill" style="top:43%;height:14%"></div>
+            </div>
+          </div>
+        </div>
+        <!-- EMPTY -->
+        <div class="panel" style="padding:0">
+          <span class="state-tag" style="top:var(--s2)">no plan</span>
+          <div class="d-shell" style="grid-template-columns:1fr">
+            <div class="d-feed" style="border-right:none">
+              <div class="you"><span class="tag">You</span><span class="q">What version of the Stripe SDK are we currently pinned to?</span></div>
+              <div class="agent lead">We're pinned to <code style="font-family:var(--mono)">stripe-go v74.30.0</code> in <code style="font-family:var(--mono)">go.mod</code>.</div>
+              <p class="empty-note">No <b>task_list</b> ⇒ <b>no rail</b>. The workspace reclaims the full width — no empty dock.</p>
+              <!-- no task_list ⇒ NO rail. Workspace reclaims the full width. -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- RECOMMENDATION                                                -->
+    <!-- ============================================================ -->
+    <section class="alt">
+      <div class="alt-h"><span class="badge">★</span><span class="name">Recommendation</span></div>
+      <p class="alt-cap"><b>C (inline block) as the default, promoting to D (rail) on long turns.</b>
+        The plan belongs in the conversation at the moment it's declared — C reads as the turn's contract
+        and uses the same single neutral box as the subagents module, so the grammar stays consistent.
+        When a turn grows long enough that C scrolls out of view, the same plan re-docks as D's pinned
+        rail so progress stays glanceable. A is the right fallback for tiny plans where even a box is too
+        much; B's chip is a nice option to layer on later but hides the steps behind a click. All four
+        share the three glyph-paired states and the "no plan ⇒ no control" empty rule.</p>
+    </section>
+
+  </div>
+</div>
+</body>
+</html>

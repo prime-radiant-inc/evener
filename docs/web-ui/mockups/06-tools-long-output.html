@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf mockups · #6 Tool calls &amp; long output</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- base design tokens + transcript component grammar -->
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ============================================================
+   TOPIC #6 — Tool calls & long output
+   Built on tokens.css. This file overrides body layout (the base
+   sheet is a full-app two-column grid; this is a scrolling gallery)
+   and adds only the four alternatives' tool/output treatments.
+   ============================================================ */
+
+/* gallery shell: undo the base app grid, let the page scroll */
+body{overflow:auto}
+.gallery{max-width:840px;margin:0 auto;padding:var(--s6) var(--s5) 96px}
+.page-h{margin-bottom:var(--s5)}
+.page-h h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.page-h p{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);line-height:1.6;max-width:62ch}
+.page-h .principles{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6}
+.page-h .principles b{color:var(--ink-2);font-weight:600}
+
+.alt{margin-top:var(--s6);border-top:1px solid var(--line);padding-top:var(--s5)}
+.alt-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.alt-h .badge{font-size:var(--fs-sm);font-weight:700;color:var(--bg);background:var(--ink-2);border-radius:var(--r-pill);padding:1px 9px;letter-spacing:.02em}
+.alt-h .ttl{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.cap{font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:70ch;margin-bottom:var(--s4)}
+.cap b{color:var(--ink-2);font-weight:600}
+.cap .trade{color:var(--attention)}
+/* simulated transcript viewport so each alt reads like the real product */
+.stage{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:var(--s4) var(--s5);max-width:720px}
+.case-l{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase;margin:var(--s5) 0 var(--s1)}
+.case-l:first-child{margin-top:0}
+
+/* ---- shared: machine-detail chip (mono, demoted) ---- */
+.mchip{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-3);background:var(--surface-2);border-radius:var(--r-pill);padding:1px 7px;letter-spacing:0;white-space:nowrap}
+.mchip.live{color:var(--accent)}
+.mchip.err{color:var(--error)}
+
+/* ---- shared: the ONE containment device for output: a neutral box ---- */
+.out{margin-top:var(--s2);background:#101117;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.out pre{font-family:var(--mono);font-size:11.5px;line-height:1.65;color:var(--ink-2);padding:var(--s3) var(--s4);white-space:pre;margin:0;overflow-x:auto}
+.out pre .er{color:var(--error)}
+.out pre .dim{color:var(--ink-3)}
+.out pre .hl{color:var(--ink)}
+.out .ctl{display:flex;align-items:center;gap:var(--s2);padding:7px var(--s4);border-top:1px solid var(--line);font-size:var(--fs-xs);color:var(--accent);background:#0c0d12}
+.out .ctl .meta{color:var(--ink-3);margin-left:auto;font-variant-numeric:tabular-nums}
+.out .ctl button{color:var(--accent);font-size:var(--fs-xs)}
+.out .ctl button:hover{text-decoration:underline}
+
+/* =====================================================================
+   ALT A — mutating-step-first summary
+   ===================================================================== */
+/* collapsed cluster: the consequential (state-changing) step is the
+   headline; the read-only steps are folded behind a neutral count. */
+.aA .clusterline{margin-top:var(--s4);display:flex;gap:var(--s2);align-items:baseline;width:100%;text-align:left;font-size:var(--fs-base)}
+.aA .clusterline .g{color:var(--done);font-family:var(--mono);font-size:var(--fs-xs)}
+.aA .clusterline .lede{color:var(--ink-2)}
+.aA .clusterline .lede b{color:var(--ink);font-weight:600}     /* the mutating step */
+.aA .clusterline .ctx{color:var(--ink-3)}                       /* "after 3 reads" */
+.aA .clusterline .ex{margin-left:auto;color:var(--accent);font-size:var(--fs-sm)}
+.aA .running{margin-top:var(--s4);display:flex;gap:var(--s3);align-items:baseline;padding-left:11px;position:relative}
+.aA .running::before{content:"";position:absolute;left:0;top:3px;height:13px;width:2px;background:var(--accent);border-radius:2px}
+.aA .running .lbl{font-size:var(--fs-base);color:var(--ink)}
+
+/* =====================================================================
+   ALT B — verb-count badges
+   ===================================================================== */
+.aB .clusterline{margin-top:var(--s4);display:flex;gap:var(--s2);align-items:center;flex-wrap:wrap;width:100%;text-align:left;font-size:var(--fs-base)}
+.aB .clusterline .g{color:var(--done);font-family:var(--mono);font-size:var(--fs-xs)}
+.aB .vb{display:inline-flex;align-items:baseline;gap:5px;font-size:var(--fs-sm);color:var(--ink-3)}
+.aB .vb .v{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-2)}
+.aB .vb .n{font-variant-numeric:tabular-nums;color:var(--ink-3)}
+.aB .vb.mut .v{color:var(--ink);font-weight:600}               /* mutating verb emphasized */
+.aB .vb.mut .n{color:var(--ink-2)}
+.aB .clusterline .sep{color:var(--ink-4)}
+.aB .clusterline .ex{margin-left:auto;color:var(--accent);font-size:var(--fs-sm)}
+.aB .running{margin-top:var(--s4);display:flex;gap:var(--s2);align-items:center;padding-left:11px;position:relative}
+.aB .running::before{content:"";position:absolute;left:0;top:3px;height:13px;width:2px;background:var(--accent);border-radius:2px}
+.aB .running .vb .v{color:var(--accent)}
+.aB .running .lbl{font-size:var(--fs-base);color:var(--ink)}
+
+/* =====================================================================
+   ALT C — head + tail two-stage / error-aware peek
+   ===================================================================== */
+/* output is split into a head pane and a tail pane with an elided seam;
+   stage 1 = both ends visible, stage 2 = expand the middle inline. */
+.aC .seam{display:flex;align-items:center;gap:var(--s2);padding:5px var(--s4);background:#0c0d12;border-top:1px solid var(--line);border-bottom:1px solid var(--line);font-size:var(--fs-xs);color:var(--ink-3)}
+.aC .seam::before,.aC .seam::after{content:"";flex:1;height:1px;background:var(--line)}
+.aC .seam .x{color:var(--accent)}
+.aC .seam .x:hover{text-decoration:underline}
+.aC .mid{display:none}
+.aC .out.open .mid{display:block}
+.aC .out.open .seam{display:none}
+.aC .running{margin-top:var(--s4);display:flex;gap:var(--s3);align-items:baseline;padding-left:11px;position:relative}
+.aC .running::before{content:"";position:absolute;left:0;top:3px;height:13px;width:2px;background:var(--accent);border-radius:2px}
+.aC .running .lbl{font-size:var(--fs-base);color:var(--ink)}
+/* error-aware peek: failing region gets a thin red margin tick, not a 2nd box */
+.aC .out.erraware pre{border-left:2px solid transparent}
+.aC .out.erraware .failzone{display:block;border-left:2px solid var(--error);padding-left:9px;margin-left:-11px}
+.aC .clusterline{margin-top:var(--s4);display:flex;gap:var(--s2);align-items:baseline;font-size:var(--fs-base)}
+.aC .clusterline .g{color:var(--done);font-family:var(--mono);font-size:var(--fs-xs)}
+.aC .clusterline .lede{color:var(--ink-2)}
+.aC .clusterline .lede b{color:var(--ink);font-weight:600}
+.aC .clusterline .ex{margin-left:auto;color:var(--accent);font-size:var(--fs-sm)}
+
+/* =====================================================================
+   ALT D — peek / ride / drop tri-state + virtualized expand
+   ===================================================================== */
+/* a single status word states honestly what happened to the bytes:
+     PEEK  — short output shown whole (small)
+     RIDE  — output rode along whole into context (medium, scroll box)
+     DROP  — bytes were dropped (server-truncated / too big / binary):
+             NO "expand · N more" lie — instead "fetch full" or "download". */
+.aD .statebar{display:flex;align-items:center;gap:var(--s2);padding:6px var(--s4);font-size:var(--fs-xs);background:#0c0d12;border-bottom:1px solid var(--line)}
+.aD .statebar .st{font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;padding:1px 7px;border-radius:var(--r-pill)}
+.aD .st.peek{color:var(--done);border:1px solid var(--line)}
+.aD .st.ride{color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 35%,transparent)}
+.aD .st.drop{color:var(--attention);border:1px solid color-mix(in srgb,var(--attention) 40%,transparent)}
+.aD .statebar .desc{color:var(--ink-3)}
+.aD .statebar .desc b{color:var(--ink-2);font-weight:600}
+.aD .statebar .bytes{margin-left:auto;color:var(--ink-3);font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:10.5px}
+.aD .out.ride pre{max-height:132px;overflow:auto}
+.aD .truncnote{display:flex;align-items:center;gap:var(--s2);padding:8px var(--s4);border-top:1px solid var(--line);background:#0c0d12;font-size:var(--fs-xs);color:var(--ink-3)}
+.aD .truncnote .lost{color:var(--attention);font-variant-numeric:tabular-nums}
+.aD .truncnote .act{margin-left:auto;display:flex;gap:var(--s3)}
+.aD .truncnote .act button{color:var(--accent);font-size:var(--fs-xs)}
+.aD .truncnote .act button:hover{text-decoration:underline}
+.aD .binbody{display:flex;align-items:center;gap:var(--s3);padding:var(--s4)}
+.aD .binbody .glyph{font-size:22px;color:var(--ink-3);font-family:var(--mono)}
+.aD .binbody .meta{font-size:var(--fs-sm);color:var(--ink-2);line-height:1.5}
+.aD .binbody .meta .fn{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink)}
+.aD .binbody .meta .sub{color:var(--ink-3);font-size:var(--fs-xs);margin-top:1px}
+.aD .clusterline{margin-top:var(--s4);display:flex;gap:var(--s2);align-items:baseline;font-size:var(--fs-base)}
+.aD .clusterline .g{color:var(--done);font-family:var(--mono);font-size:var(--fs-xs)}
+.aD .clusterline .lede{color:var(--ink-2)}
+.aD .clusterline .lede b{color:var(--ink);font-weight:600}
+.aD .clusterline .ex{margin-left:auto;color:var(--accent);font-size:var(--fs-sm)}
+.aD .running{margin-top:var(--s4);display:flex;gap:var(--s3);align-items:baseline;padding-left:11px;position:relative}
+.aD .running::before{content:"";position:absolute;left:0;top:3px;height:13px;width:2px;background:var(--accent);border-radius:2px}
+.aD .running .lbl{font-size:var(--fs-base);color:var(--ink)}
+
+/* shared agent prose lede so each stage has conversational context */
+.stage .agent:first-child{margin-top:0}
+</style>
+</head>
+<body>
+<div class="gallery">
+
+  <div class="page-h">
+    <h1>#6 — Tool calls &amp; long output</h1>
+    <p>Four directions for how a tool cluster summarizes itself, how a long log collapses in
+       <i>two</i> stages, and how the UI stays honest when the server truncated the output or it
+       was never text at all. Each alternative renders the same four cases so they compare
+       apples-to-apples.</p>
+    <div class="principles">
+      Held constant across all four: <b>the purpose leads</b> (what the step was for, not the
+      command); <b>machine detail is demoted to a mono chip</b>; <b>one containment device</b>
+      (a neutral box) per output; done recedes (neutral), running draws the eye (blue), failure
+      stands out (red). Never an "expand · N more" affordance over bytes that were actually dropped.
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ALT A — mutating-step-first summary
+       ============================================================ -->
+  <section class="alt aA">
+    <div class="alt-h"><span class="badge">A</span><span class="ttl">Mutating-step-first summary</span></div>
+    <div class="cap">The collapsed cluster headline is the <b>one step that changed something</b>
+      ("Patched the eviction comparison"), with read-only recon folded into a quiet trailing
+      "after 3 reads". You scan a column of clusters and see <b>what the agent did</b>, not how
+      many times it did anything. <span class="trade">Trade-off:</span> needs the renderer to
+      classify each call as mutating vs. read-only, and a pure-recon cluster falls back to a
+      lede-less count.</div>
+
+    <div class="stage">
+      <div class="case-l">Running tool call</div>
+      <div class="agent lead">Root cause found: <code>evictExpired()</code> keys off <code>lastUsed</code> instead of <code>expiresAt</code>. Patching it now.</div>
+      <div class="running"><span class="lbl">Patching the eviction comparison</span><span class="mchip live" style="margin-left:auto">edit cache.go · evictExpired()</span></div>
+
+      <div class="case-l">Collapsed cluster (scrolled past)</div>
+      <button class="clusterline" onclick="this.nextElementSibling.classList.toggle('open');this.querySelector('.ex').textContent=this.nextElementSibling.classList.contains('open')?'collapse':'expand'">
+        <span class="g">✓</span>
+        <span class="lede"><b>Patched the eviction comparison</b> <span class="ctx">· after reading the cache &amp; 7 callers, tests green</span></span>
+        <span class="ex">expand</span>
+      </button>
+      <div class="tools-detail">
+        <div class="tline"><span class="ok">✓</span><span class="p">Read the cache implementation</span><span class="cmd">read cache.go</span></div>
+        <div class="tline"><span class="ok">✓</span><span class="p">Find every caller of the cache</span><span class="cmd">grep -rn TokenCache</span></div>
+        <div class="tline"><span class="ok">✓</span><span class="p">Locate the eviction logic</span><span class="cmd">grep evictExpired</span></div>
+        <div class="tline"><span class="p" style="color:var(--ink)">✎ <b>Patch the eviction comparison</b></span><span class="cmd">edit cache.go</span></div>
+        <div class="tline"><span class="ok">✓</span><span class="p">Run the cache tests</span><span class="cmd">go test ./cache</span></div>
+      </div>
+
+      <div class="case-l">Long log output — two-stage collapse</div>
+      <div class="agent">Here's the verification run:</div>
+      <div class="out" id="aA-out">
+        <pre>=== RUN   TestTokenCache
+--- PASS: TestTokenCache (0.03s)
+=== RUN   TestEvictExpired/idle_but_valid_survives
+--- PASS: TestEvictExpired (0.12s)
+<span class="hl">ok  	primeradiant.com/cache	0.18s</span></pre>
+        <div class="ctl">
+          <button onclick="var o=document.getElementById('aA-out');o.querySelector('pre').style.maxHeight=o.classList.toggle('open')?'520px':'';this.firstChild.textContent=o.classList.contains('open')?'Show less ':'Expand inline ';o.querySelector('pre').style.overflow='auto'">Expand inline </button>
+          <span class="meta">5 of 312 lines · 14.2 KiB · rode whole into context</span>
+        </div>
+      </div>
+      <div class="cap" style="margin:6px 0 0">Stage 1 (shown): head only. Stage 2: <b>once this cluster scrolls
+        offscreen</b> the whole box auto-collapses to a single neutral line — "✓ ran cache tests · 312 lines" —
+        reclaiming the height.</div>
+
+      <div class="case-l">Server-truncated case</div>
+      <div class="out">
+        <pre>npm warn deprecated <span class="dim">…</span>
+added 1043 packages in 19s
+<span class="dim">found 0 vulnerabilities</span></pre>
+        <div class="ctl" style="color:var(--attention)">
+          <span style="color:var(--attention)">⚠ output truncated by the harness</span>
+          <span class="meta" style="color:var(--ink-3)">kept first 3 of ~2,900 lines · 1.9&nbsp;MiB dropped, never captured</span>
+        </div>
+      </div>
+      <div class="cap" style="margin:6px 0 0">No "expand · N more" — the rest was never captured, so the only honest
+        verbs are the amber warning + the real byte count. (D explores giving it a re-fetch action.)</div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ALT B — verb-count badges
+       ============================================================ -->
+  <section class="alt aB">
+    <div class="alt-h"><span class="badge">B</span><span class="ttl">Verb-count badges</span></div>
+    <div class="cap">The cluster is a row of <b>verb · count</b> chips
+      (<code>read 3</code> <code>grep 2</code> <code>edit 1</code>) with the <b>mutating verb
+      emphasized</b>. Densest possible glance — the shape of the work is legible without any prose.
+      <span class="trade">Trade-off:</span> tells you the <i>kinds</i> of actions but not the
+      <i>consequence</i> (A's headline does); risks the "amateur mono-label" tell if the chips get loud.</div>
+
+    <div class="stage">
+      <div class="case-l">Running tool call</div>
+      <div class="agent lead">Root cause found. Patching the eviction comparison now.</div>
+      <div class="running">
+        <span class="vb"><span class="v">edit</span></span>
+        <span class="lbl">Patching the eviction comparison</span>
+        <span class="mchip live" style="margin-left:auto">cache.go · evictExpired()</span>
+      </div>
+
+      <div class="case-l">Collapsed cluster (scrolled past)</div>
+      <button class="clusterline" onclick="this.nextElementSibling.classList.toggle('open');this.querySelector('.ex').textContent=this.nextElementSibling.classList.contains('open')?'collapse':'expand'">
+        <span class="g">✓</span>
+        <span class="vb"><span class="v">read</span><span class="n">3</span></span><span class="sep">·</span>
+        <span class="vb"><span class="v">grep</span><span class="n">2</span></span><span class="sep">·</span>
+        <span class="vb mut"><span class="v">edit</span><span class="n">1</span></span><span class="sep">·</span>
+        <span class="vb"><span class="v">test</span><span class="n">1</span></span>
+        <span class="ex">expand</span>
+      </button>
+      <div class="tools-detail">
+        <div class="tline"><span class="ok">✓</span><span class="p">Read the cache implementation</span><span class="cmd">read cache.go</span></div>
+        <div class="tline"><span class="ok">✓</span><span class="p">Find every caller</span><span class="cmd">grep -rn TokenCache</span></div>
+        <div class="tline"><span class="p" style="color:var(--ink)">✎ <b>Patch the eviction comparison</b></span><span class="cmd">edit cache.go</span></div>
+        <div class="tline"><span class="ok">✓</span><span class="p">Run the cache tests</span><span class="cmd">go test ./cache</span></div>
+      </div>
+
+      <div class="case-l">Long log output — two-stage collapse</div>
+      <div class="agent">Verification run:</div>
+      <div class="out" id="aB-out">
+        <pre>=== RUN   TestTokenCache
+--- PASS: TestTokenCache (0.03s)
+=== RUN   TestEvictExpired/idle_but_valid_survives
+--- PASS: TestEvictExpired (0.12s)
+<span class="hl">ok  	primeradiant.com/cache	0.18s</span></pre>
+        <div class="ctl">
+          <button onclick="var o=document.getElementById('aB-out');var p=o.querySelector('pre');var open=o.classList.toggle('open');p.style.maxHeight=open?'520px':'';p.style.overflow='auto';this.firstChild.textContent=open?'Show head only ':'Expand inline '">Expand inline </button>
+          <span class="meta"><span class="vb" style="display:inline-flex"><span class="v" style="color:var(--ink-3)">read</span></span> · 312 lines · 14.2 KiB</span>
+        </div>
+      </div>
+      <div class="cap" style="margin:6px 0 0">Stage 2: scrolled past, the box folds to one neutral verb chip
+        line — <code>test 1</code> · 312 lines — matching the cluster grammar above.</div>
+
+      <div class="case-l">Binary output case</div>
+      <div class="out">
+        <pre style="color:var(--ink-3)">PNG IHDR 䏿... <span class="dim">(8-bit RGBA, 1200×630)</span></pre>
+        <div class="ctl" style="color:var(--ink-3)">
+          <span><span class="vb" style="display:inline-flex"><span class="v" style="color:var(--ink-3)">read</span></span> returned binary — not shown as text</span>
+          <span class="meta">image/png · 412 KiB · <button style="color:var(--accent)">open ⤢</button></span>
+        </div>
+      </div>
+      <div class="cap" style="margin:6px 0 0">A <code>read</code> that hit a non-text file says so plainly and offers
+        the right verb (open the image), rather than rendering mojibake or faking a line count.</div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ALT C — head+tail / error-aware peek
+       ============================================================ -->
+  <section class="alt aC">
+    <div class="alt-h"><span class="badge">C</span><span class="ttl">Head + tail · error-aware peek</span></div>
+    <div class="cap">Long output shows <b>both ends</b> — the first lines and the last lines, with an
+      elided seam between (logs put the verdict at the bottom). For a <b>failed</b> run the peek
+      is <b>error-aware</b>: it auto-scrolls the failing region into view and marks it with a thin red
+      margin tick (no second box). Stage 2 expands the elided middle inline.
+      <span class="trade">Trade-off:</span> two panes cost a little more vertical space than a pure
+      head; the seam needs a real line count to be honest.</div>
+
+    <div class="stage">
+      <div class="case-l">Running tool call</div>
+      <div class="agent lead">Running the full suite to confirm the fix holds across packages.</div>
+      <div class="running"><span class="lbl">Running the test suite</span><span class="mchip live" style="margin-left:auto">go test ./...</span></div>
+      <div class="out" style="margin-top:9px">
+        <pre>=== RUN   TestTokenCache
+--- PASS: TestTokenCache (0.03s)
+=== RUN   TestEvictExpired
+    cache_test.go:88: seeding 10000 tokens<span class="cursor" style="vertical-align:-2px;height:13px"></span></pre>
+        <div class="ctl"><span class="meta" style="margin-left:0;color:var(--accent)">streaming live</span><span class="meta">38 lines so far</span></div>
+      </div>
+
+      <div class="case-l">Collapsed cluster (scrolled past)</div>
+      <button class="clusterline" onclick="this.nextElementSibling.classList.toggle('open');this.querySelector('.ex').textContent=this.nextElementSibling.classList.contains('open')?'collapse':'expand'">
+        <span class="g">✓</span>
+        <span class="lede"><b>Verified the fix across 7 packages</b> · read cache &amp; callers, ran suite</span>
+        <span class="ex">expand</span>
+      </button>
+      <div class="tools-detail">
+        <div class="tline"><span class="ok">✓</span><span class="p">Read the cache implementation</span><span class="cmd">read cache.go</span></div>
+        <div class="tline"><span class="ok">✓</span><span class="p">Find every caller</span><span class="cmd">grep -rn TokenCache</span></div>
+        <div class="tline"><span class="ok">✓</span><span class="p">Run the full suite</span><span class="cmd">go test ./...</span></div>
+      </div>
+
+      <div class="case-l">Long log output — head + tail, two-stage</div>
+      <div class="agent">The suite passed; the verdict is at the bottom:</div>
+      <div class="out" id="aC-out">
+        <pre>=== RUN   TestTokenCache
+=== RUN   TestTokenCache/stores_and_returns
+=== RUN   TestTokenCache/respects_expiresAt
+--- PASS: TestTokenCache (0.03s)</pre>
+        <div class="seam">elided <button class="x" onclick="var o=document.getElementById('aC-out');o.classList.add('open')">2,418 middle lines</button> · expand ↕</div>
+        <pre class="mid"><span class="dim">… 2,418 lines …</span>
+--- PASS: TestEvictExpired (0.12s)
+--- PASS: TestSweepKeepsValid (0.04s)</pre>
+        <pre>=== RUN   TestSweepKeepsValid
+--- PASS: TestSweepKeepsValid (0.04s)
+<span class="hl">ok  	primeradiant.com/...	2.41s</span></pre>
+        <div class="ctl"><span class="meta" style="margin-left:0">first 4 + last 3 shown</span><span class="meta">2,426 lines · 96 KiB · rode whole into context</span></div>
+      </div>
+
+      <div class="case-l">Error case — error-aware peek (truncated stderr)</div>
+      <div class="agent">One package failed; peek jumps to the assertion:</div>
+      <div class="errblock"><div class="eh" style="display:flex;gap:11px;align-items:baseline"><span class="x" style="color:var(--error);font-family:var(--mono);font-size:11px">✕</span><span class="lbl" style="font-size:13px;color:var(--ink)">Test suite failed in billing/worker</span><span class="cmd mchip err" style="margin-left:auto">go test ./billing/...</span></div></div>
+      <div class="out erraware" id="aC-err" style="margin-top:9px">
+        <pre><span class="dim">… 51 lines before …</span></pre>
+        <pre class="failzone">--- FAIL: TestTokenEvictedAfterIdle (0.01s)
+    worker_test.go:142: expected token evicted after 30s idle
+        got: token still valid (expiresAt 2026-06-16T14:55:02Z)
+<span class="er">FAIL</span>	primeradiant.com/billing/worker	0.044s</pre>
+        <div class="ctl">
+          <button onclick="var o=document.getElementById('aC-err');o.querySelector('pre').textContent='… 51 lines before …';">jump to failure</button>
+          <span class="meta">peeked at the failing assertion · 84 more lines</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ALT D — peek / ride / drop tri-state + virtualized expand
+       ============================================================ -->
+  <section class="alt aD">
+    <div class="alt-h"><span class="badge">D</span><span class="ttl">Peek · Ride · Drop tri-state</span></div>
+    <div class="cap">A single honest <b>status word</b> states what actually happened to the bytes:
+      <code>PEEK</code> (short, shown whole), <code>RIDE</code> (the whole output rode into the agent's
+      context — scroll to read it), or <code>DROP</code> (bytes were truncated/too-big/binary and are
+      <i>gone</i>). DROP never offers a fake "expand"; it offers a real action — re-fetch or download —
+      or admits the data is unrecoverable. <span class="trade">Trade-off:</span> a third concept to learn;
+      pays for itself by ending the "expand reveals nothing" lie.</div>
+
+    <div class="stage">
+      <div class="case-l">Running tool call</div>
+      <div class="agent lead">Fetching the deploy log to see why the rollout stalled.</div>
+      <div class="running"><span class="lbl">Reading the deploy log</span><span class="mchip live" style="margin-left:auto">read /var/log/deploy.log</span></div>
+
+      <div class="case-l">Collapsed cluster (scrolled past)</div>
+      <button class="clusterline" onclick="this.nextElementSibling.classList.toggle('open');this.querySelector('.ex').textContent=this.nextElementSibling.classList.contains('open')?'collapse':'expand'">
+        <span class="g">✓</span>
+        <span class="lede"><b>Inspected the stalled rollout</b> · 1 RIDE · 1 DROP · 2 PEEK</span>
+        <span class="ex">expand</span>
+      </button>
+      <div class="tools-detail">
+        <div class="tline"><span class="ok">✓</span><span class="p">Check pod status <span class="mchip" style="background:none;padding:0;color:var(--done)">PEEK</span></span><span class="cmd">kubectl get pods</span></div>
+        <div class="tline"><span class="ok">✓</span><span class="p">Read the deploy log <span class="mchip" style="background:none;padding:0;color:var(--accent)">RIDE</span></span><span class="cmd">read deploy.log</span></div>
+        <div class="tline"><span class="ok">✓</span><span class="p">Dump the crash core <span class="mchip" style="background:none;padding:0;color:var(--attention)">DROP</span></span><span class="cmd">cat core.dump</span></div>
+        <div class="tline"><span class="ok">✓</span><span class="p">Tail the gateway log <span class="mchip" style="background:none;padding:0;color:var(--done)">PEEK</span></span><span class="cmd">tail gw.log</span></div>
+      </div>
+
+      <div class="case-l">PEEK — short output, shown whole</div>
+      <div class="out">
+        <div class="statebar"><span class="st peek">peek</span><span class="desc"><b>shown whole</b> · small enough to read in place</span><span class="bytes">3 lines · 96 B</span></div>
+        <pre>web-7d9   1/1   Running   0   4m
+web-7d9   0/1   CrashLoop 6   2m
+db-0      1/1   Running   0   9d</pre>
+      </div>
+
+      <div class="case-l">RIDE — whole output rode into context (long log, scroll to read)</div>
+      <div class="out ride">
+        <div class="statebar"><span class="st ride">ride</span><span class="desc"><b>rode whole into context</b> · scroll to read all of it</span><span class="bytes">2,426 lines · 96 KiB</span></div>
+        <pre>=== RUN   TestTokenCache
+--- PASS: TestTokenCache (0.03s)
+=== RUN   TestEvictExpired
+    cache_test.go:88: seeding 10000 tokens
+    cache_test.go:91: advancing clock 45s
+--- PASS: TestEvictExpired (0.12s)
+=== RUN   TestSweepKeepsValid
+--- PASS: TestSweepKeepsValid (0.04s)
+=== RUN   TestRefreshFlow
+--- PASS: TestRefreshFlow (0.07s)
+<span class="hl">ok  	primeradiant.com/...	2.41s</span></pre>
+      </div>
+      <div class="cap" style="margin:6px 0 0">Stage 1 = a fixed scroll window (the box rides whole, you scroll inside it).
+        Stage 2 = scrolled past in the transcript, it folds to "✓ ride · 2,426 lines" — virtualized, re-expands on click.</div>
+
+      <div class="case-l">DROP — server-truncated (the honest case)</div>
+      <div class="out">
+        <div class="statebar"><span class="st drop">drop</span><span class="desc"><b>truncated by the harness</b> · the dropped bytes were never captured</span><span class="bytes">kept 200 of ~2,900 lines</span></div>
+        <pre>web-7d9 starting…
+<span class="dim">[200 lines kept] </span>
+worker booted, awaiting jobs</pre>
+        <div class="truncnote">
+          <span>⚠ <span class="lost">1.9 MiB / ~2,700 lines</span> dropped at the source — not recoverable from this transcript</span>
+          <span class="act"><button>re-run with --tail=all</button></span>
+        </div>
+      </div>
+
+      <div class="case-l">DROP — binary output</div>
+      <div class="out">
+        <div class="statebar"><span class="st drop">drop</span><span class="desc"><b>not text</b> · nothing to render inline</span><span class="bytes">image/png · 412 KiB</span></div>
+        <div class="binbody">
+          <span class="glyph">⬛</span>
+          <div class="meta"><span class="fn">render-630.png</span><div class="sub">1200×630 · 8-bit RGBA · binary, not shown as text</div></div>
+          <span class="act" style="margin-left:auto"><button style="color:var(--accent)">open ⤢</button> &nbsp; <button style="color:var(--accent)">download</button></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

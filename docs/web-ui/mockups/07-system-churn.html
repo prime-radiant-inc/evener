@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf mockups · #7 System/skill churn &amp; silent-success</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- base design tokens + transcript component grammar -->
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ============================================================
+   TOPIC #7 — System/skill churn & silent-success
+   Built on tokens.css. The base sheet is a full-app two-column
+   grid; this file overrides body layout to a scrolling gallery
+   and adds only this topic's lifecycle/silent-success treatments.
+
+   The shipped UI renders use_skill / plugin / hook / prompt
+   events at DIVIDER weight (full-width rules flanking a centered
+   "Skill activated · 56 chars" summary) — louder than the prose
+   it interrupts, and the "N chars" count is meaningless to a
+   human. Silent-success tools (write/touch returning nothing)
+   have no rule at all. design-system §4: lifecycle is a "quiet
+   dim one-liner … never divider-weight; no 'N chars'."
+   ============================================================ */
+
+/* gallery shell: undo the base app grid, let the page scroll */
+body{overflow:auto}
+.gallery{max-width:840px;margin:0 auto;padding:var(--s6) var(--s5) 96px}
+.page-h{margin-bottom:var(--s5)}
+.page-h h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.page-h p{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);line-height:1.6;max-width:64ch}
+.page-h .probs{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);line-height:1.65;max-width:64ch}
+.page-h .probs b{color:var(--ink-2);font-weight:600}
+
+.alt{margin-top:var(--s6);border-top:1px solid var(--line);padding-top:var(--s5)}
+.alt-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.alt-h .badge{font-size:var(--fs-sm);font-weight:700;color:var(--bg);background:var(--ink-2);border-radius:var(--r-pill);padding:1px 9px;letter-spacing:.02em}
+.alt-h .ttl{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.cap{font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:72ch;margin-bottom:var(--s4)}
+.cap b{color:var(--ink-2);font-weight:600}
+.cap .trade{color:var(--attention)}
+/* simulated transcript viewport so each alt reads like the real product */
+.stage{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:var(--s4) var(--s5);max-width:720px}
+
+/* ---- shared transcript primitives (ported from the golden) ---- */
+.you{display:flex;gap:var(--s3);align-items:baseline}
+.you .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none;width:34px;padding-top:1px}
+.you .q{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+.agent{margin-top:var(--s4);font-size:var(--fs-md);line-height:1.62;color:var(--ink);letter-spacing:-0.004em}
+.agent.lead{margin-top:var(--s3)}
+.agent code{font-family:var(--mono);font-size:12.5px;color:var(--ink);border-bottom:1px solid var(--hair)}
+/* a quiet done tool line, for context around the lifecycle run */
+.toolline{margin-top:var(--s4);font-size:var(--fs-sm);color:var(--ink-3);display:flex;gap:var(--s2);align-items:baseline}
+.toolline .ok{color:var(--done);font-family:var(--mono);font-size:var(--fs-xs)}
+.toolline .sum b{color:var(--ink-2);font-weight:600}
+
+/* =====================================================================
+   "BEFORE" — the shipped divider-weight + "N chars" tell
+   A faithful port of cmd/serf-hub assets: .steering.system-message is a
+   full-width divider (1px rules flank a centered summary). steering-verb
+   = "Skill activated", steering-detail = "56 chars". This is LOUDER than
+   the surrounding prose and the count is noise.
+   ===================================================================== */
+.before-wrap{margin-top:var(--s5);background:#15110f;border:1px solid #3a2a22;border-radius:var(--r);padding:var(--s4) var(--s5);max-width:720px}
+.before-tag{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-xs);font-weight:700;color:var(--error);letter-spacing:.04em;text-transform:uppercase;margin-bottom:var(--s3)}
+.before-tag .dot{width:6px;height:6px;border-radius:50%;background:var(--error)}
+/* the shipped divider-weight system row */
+.legacy-sys{display:flex;align-items:center;gap:var(--s4);margin:var(--s5) 0;font-size:var(--fs-sm);color:var(--ink-2)}
+.legacy-sys::before,.legacy-sys::after{content:"";flex:1;height:1px;background:var(--hair)}
+.legacy-sys .verb{font-family:var(--mono);letter-spacing:.02em;color:var(--ink-2)}
+.legacy-sys .det{font-family:var(--mono);color:var(--ink);font-size:var(--fs-xs)}
+.legacy-sys .chars{color:var(--error)}      /* highlight the meaningless tell */
+.before-note{margin-top:var(--s3);font-size:var(--fs-xs);color:var(--ink-3);line-height:1.6}
+.before-note b{color:var(--ink-2);font-weight:600}
+
+/* =====================================================================
+   ALT A — quiet --ink-3 one-liner (each event on its own line)
+   The literal §4 rule: a dim one-line aside, mono glyph + sans label,
+   no rules, no count. Recedes under the prose.
+   ===================================================================== */
+.sysline{margin-top:var(--s3);display:flex;align-items:baseline;gap:var(--s2);font-size:var(--fs-sm);color:var(--ink-3);line-height:1.5}
+.sysline .ic{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-4);width:13px;flex:none}
+.sysline .what{color:var(--ink-3)}
+.sysline .name{font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}  /* machine id, still dim */
+.aA .sysrun{margin-top:var(--s4)}
+.aA .sysrun .sysline{margin-top:2px}
+.aA .sysrun .sysline:first-child{margin-top:0}
+
+/* =====================================================================
+   ALT B — coalesced "N system events" (one collapsible line)
+   A run of adjacent lifecycle events folds to a single quiet line;
+   click to expand the individual one-liners. Lowest footprint.
+   ===================================================================== */
+.coalesce{margin-top:var(--s4);width:100%;text-align:left;display:flex;align-items:baseline;gap:var(--s2);font-size:var(--fs-sm);color:var(--ink-3);line-height:1.5}
+.coalesce:hover{color:var(--ink-2)}
+.coalesce .ic{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-4);width:13px;flex:none}
+.coalesce .n{font-variant-numeric:tabular-nums;color:var(--ink-2)}
+.coalesce .gist{color:var(--ink-3)}
+.coalesce .chev{margin-left:var(--s2);font-size:9px;color:var(--ink-4)}
+.coalesce-body{display:none;margin-top:var(--s2);padding-left:21px;flex-direction:column;gap:2px}
+.coalesce-body.open{display:flex}
+.coalesce.open .chev{transform:rotate(90deg);display:inline-block}
+
+/* =====================================================================
+   ALT C — ✓-only silent success (gives the invisible write a body)
+   The write/touch tool that returns nothing gets ONE quiet line stating
+   what it changed — a neutral ✓ + the file it wrote, no byte/char count.
+   Lifecycle still uses the Alt-A one-liner.
+   ===================================================================== */
+.silent{margin-top:var(--s4);display:flex;align-items:baseline;gap:var(--s2);font-size:var(--fs-sm);color:var(--ink-3);line-height:1.5}
+.silent .ok{color:var(--done);font-family:var(--mono);font-size:var(--fs-xs);width:13px;flex:none}
+.silent .what{color:var(--ink-2)}      /* the consequential bit reads slightly up */
+.silent .path{font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}
+.silent.ghost .ok{color:var(--ink-4)}  /* contrast row: a write that's truly nothing-to-say */
+.silent.ghost .what{color:var(--ink-3)}
+
+/* =====================================================================
+   ALT D — move lifecycle to a Details panel (out of the transcript)
+   The transcript shows ONE collapsed marker ("setup: N"); the events
+   live in a right-docked Details drawer (same surface the top-bar
+   "Details ⋯" overflow opens). Transcript stays pure conversation.
+   ===================================================================== */
+.aD .stage{display:grid;grid-template-columns:1fr 224px;gap:0;padding:0;overflow:hidden}
+.aD .main{padding:var(--s4) var(--s5);min-width:0}
+.aD .marker{margin-top:var(--s4);display:inline-flex;align-items:baseline;gap:var(--s2);font-size:var(--fs-sm);color:var(--ink-3)}
+.aD .marker:hover{color:var(--ink-2)}
+.aD .marker .ic{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-4)}
+.aD .marker .n{color:var(--ink-2);font-variant-numeric:tabular-nums}
+.aD .marker .open{color:var(--accent);font-size:var(--fs-xs);margin-left:4px}
+.aD .drawer{border-left:1px solid var(--line);background:#101117;padding:var(--s4) var(--s4);min-width:0}
+.aD .drawer-h{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;margin-bottom:var(--s3)}
+.aD .draw-r{display:flex;align-items:baseline;gap:var(--s2);padding:3px 0;font-size:var(--fs-xs);color:var(--ink-3);line-height:1.5}
+.aD .draw-r .ic{font-family:var(--mono);font-size:10px;color:var(--ink-4);width:12px;flex:none}
+.aD .draw-r .what{color:var(--ink-2)}
+.aD .draw-r .name{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);display:block}
+.aD .draw-r .tm{margin-left:auto;font-size:10px;color:var(--ink-4);font-variant-numeric:tabular-nums;flex:none}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="gallery">
+
+  <header class="page-h">
+    <h1>Mockup #7 — System / skill churn &amp; silent-success</h1>
+    <p>Lifecycle events — a skill activating, a plugin loading, a hook firing, a system prompt
+      loading — are <b>bookkeeping</b>. They must recede under the conversation, never out-shout it.
+      Four directions for de-emphasizing and coalescing the run, each rendered <b>in context</b> with
+      real agent prose so the trade is judgeable.</p>
+    <p class="probs"><b>Fixes for the shipped UI:</b> (1) system/skill events render at
+      <b>divider weight</b> — full-width rules flanking a centered "Skill activated" summary, louder
+      than the prose they interrupt; (2) each carries a meaningless <b>"N chars"</b> count of the
+      payload; (3) <b>silent-success</b> tools (a <code>write</code> or <code>touch</code> that returns
+      nothing) have no rule — they vanish, so you can't tell the file was written.
+      <br>Targets: <b>quiet one-liners · coalesce the run · honest silent-success · no "N chars" · never divider-weight.</b></p>
+  </header>
+
+  <!-- =====================================================================
+       BEFORE — the shipped tell, reproduced faithfully
+       ===================================================================== -->
+  <div class="before-wrap">
+    <span class="before-tag"><span class="dot"></span>Before · shipped today</span>
+    <div class="you"><span class="tag">You</span><span class="q">Tidy up the changelog and tag a release.</span></div>
+    <div class="agent lead">I'll pull in the release skill to follow the project's tagging
+      convention, then update the changelog.</div>
+
+    <div class="legacy-sys"><span class="verb">Skill activated</span><span class="det">·
+      <span class="chars">56 chars</span></span></div>
+
+    <div class="agent">The release skill is loaded. I'll bump the version and rewrite the unreleased
+      section now.</div>
+
+    <div class="legacy-sys"><span class="verb">Plugin loaded</span><span class="det">·
+      <span class="chars">1.2 KB</span></span></div>
+    <div class="before-note"><b>Why it's wrong:</b> the divider rules give a bookkeeping line more
+      visual weight than the agent's actual finding above it, and <b>"56 chars"</b> measures the
+      payload string — a number no human reading the transcript can use. A run of these chops the
+      prose into ribbons.</div>
+  </div>
+
+  <!-- =====================================================================
+       ALT A — quiet --ink-3 one-liner
+       ===================================================================== -->
+  <section class="alt aA">
+    <div class="alt-h"><span class="badge">A</span><span class="ttl">Quiet dim one-liner</span></div>
+    <p class="cap">The literal §4 rule. Each lifecycle event is a single <b>dim, rule-free line</b>:
+      a faint mono glyph + a sans label + the machine id (still dim), all at <code>--ink-3</code>.
+      No count, no box, no divider. It sits below the prose the way a stage direction sits below a
+      line of dialogue — present, but never read first.
+      <span class="trade">Tradeoff: a long setup run (8–10 events) still produces 8–10 lines; quiet,
+      but it adds vertical length between turns.</span></p>
+    <div class="stage">
+      <div class="you"><span class="tag">You</span><span class="q">Tidy up the changelog and tag a release.</span></div>
+      <div class="agent lead">I'll pull in the release skill to follow the project's tagging
+        convention, then update the changelog and cut the tag.</div>
+
+      <div class="sysrun">
+        <div class="sysline"><span class="ic">✦</span><span class="what">skill activated</span>
+          <span class="name">release-engineering</span></div>
+        <div class="sysline"><span class="ic">⊞</span><span class="what">plugin loaded</span>
+          <span class="name">primeradiant-ops</span></div>
+        <div class="sysline"><span class="ic">⎇</span><span class="what">hook fired</span>
+          <span class="name">pre-commit · lint</span></div>
+        <div class="sysline"><span class="ic">¶</span><span class="what">prompt loaded</span>
+          <span class="name">conventional-commits</span></div>
+      </div>
+
+      <div class="agent">Release skill is active. The current version is <code>1.4.2</code>; I'll
+        bump to <code>1.5.0</code> for the new export flag and rewrite the unreleased section.</div>
+      <div class="toolline"><span class="ok">✓</span><span class="sum"><b>2 steps</b> · read CHANGELOG.md · read version.go</span></div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       ALT B — coalesced "N system events"
+       ===================================================================== -->
+  <section class="alt aB">
+    <div class="alt-h"><span class="badge">B</span><span class="ttl">Coalesced "N system events"</span></div>
+    <p class="cap">A run of adjacent lifecycle events folds into <b>one quiet collapsible line</b> —
+      "4 system events · loaded release skill + 3 more" — that names the most consequential one and
+      hides the rest. Click to expand the individual one-liners (the Alt-A treatment). A 10-event
+      setup costs <b>one line</b> at rest.
+      <span class="trade">Tradeoff: the gist must pick a "headline" event; if the run is heterogeneous
+      the summary can under-describe what loaded until you expand.</span></p>
+    <div class="stage">
+      <div class="you"><span class="tag">You</span><span class="q">Tidy up the changelog and tag a release.</span></div>
+      <div class="agent lead">I'll pull in the release skill to follow the project's tagging
+        convention, then update the changelog and cut the tag.</div>
+
+      <button class="coalesce" onclick="this.classList.toggle('open');document.getElementById('cb').classList.toggle('open')">
+        <span class="ic">✦</span><span><span class="n">4</span> system events</span>
+        <span class="gist">· loaded release skill + 3 more</span>
+        <span class="chev">▸</span>
+      </button>
+      <div class="coalesce-body" id="cb">
+        <div class="sysline"><span class="ic">✦</span><span class="what">skill activated</span>
+          <span class="name">release-engineering</span></div>
+        <div class="sysline"><span class="ic">⊞</span><span class="what">plugin loaded</span>
+          <span class="name">primeradiant-ops</span></div>
+        <div class="sysline"><span class="ic">⎇</span><span class="what">hook fired</span>
+          <span class="name">pre-commit · lint</span></div>
+        <div class="sysline"><span class="ic">¶</span><span class="what">prompt loaded</span>
+          <span class="name">conventional-commits</span></div>
+      </div>
+
+      <div class="agent">Release skill is active. The current version is <code>1.4.2</code>; I'll
+        bump to <code>1.5.0</code> for the new export flag and rewrite the unreleased section.</div>
+      <div class="toolline"><span class="ok">✓</span><span class="sum"><b>2 steps</b> · read CHANGELOG.md · read version.go</span></div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       ALT C — ✓-only silent success
+       ===================================================================== -->
+  <section class="alt aC">
+    <div class="alt-h"><span class="badge">C</span><span class="ttl">✓-only silent success</span></div>
+    <p class="cap">Aims at the <b>silent-success</b> gap: a <code>write</code> or <code>touch</code>
+      that returns nothing currently leaves no trace. Give it <b>one quiet line</b> stating what it
+      changed — a neutral <code>✓</code> + the file path, the consequential part read up to
+      <code>--ink-2</code>, and <b>no byte/char count</b>. The lifecycle run still uses the Alt-A
+      one-liner, so this composes with the others.
+      <span class="trade">Tradeoff: a turn that writes many files (codegen, scaffolding) produces a
+      ✓ line per file; cluster them ("✓ wrote 6 files") past a threshold — but that's topic #6's
+      job, referenced here, not re-solved.</span></p>
+    <div class="stage">
+      <div class="you"><span class="tag">You</span><span class="q">Bump to 1.5.0 and write the release notes.</span></div>
+      <div class="agent lead">Bumping the version and writing the notes file now.</div>
+
+      <div class="sysline"><span class="ic">✦</span><span class="what">skill activated</span>
+        <span class="name">release-engineering</span></div>
+
+      <div class="silent"><span class="ok">✓</span><span class="what">wrote</span>
+        <span class="path">RELEASES/1.5.0.md</span></div>
+      <div class="silent"><span class="ok">✓</span><span class="what">updated</span>
+        <span class="path">version.go</span></div>
+      <div class="silent ghost"><span class="ok">✓</span><span class="what">touched</span>
+        <span class="path">.last-release</span></div>
+
+      <div class="agent">Done — <code>version.go</code> is at <code>1.5.0</code> and the notes are in
+        <code>RELEASES/1.5.0.md</code>. Want me to tag and push?</div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       ALT D — move lifecycle to a Details panel
+       ===================================================================== -->
+  <section class="alt aD">
+    <div class="alt-h"><span class="badge">D</span><span class="ttl">Lifecycle in a Details panel</span></div>
+    <p class="cap">The most aggressive de-emphasis: lifecycle leaves the transcript entirely. The
+      conversation keeps <b>one collapsed marker</b> ("setup: 4 →"); the full event list lives in a
+      right-docked <b>Details drawer</b> — the same surface the top-bar <code>Details ⋯</code> overflow
+      opens. The transcript becomes pure conversation; bookkeeping is one click away when you want it.
+      <span class="trade">Tradeoff: out of sight, out of mind — a skill loading the <i>wrong</i>
+      version, or a hook silently failing, won't catch your eye inline. Best paired with promoting any
+      <i>errored</i> lifecycle event back into the transcript (red), per the error rules.</span></p>
+    <div class="stage">
+      <div class="main">
+        <div class="you"><span class="tag">You</span><span class="q">Tidy up the changelog and tag a release.</span></div>
+        <div class="agent lead">I'll pull in the release skill to follow the project's tagging
+          convention, then update the changelog and cut the tag.</div>
+
+        <button class="marker"><span class="ic">⋯</span><span>setup</span>
+          <span class="n">4</span><span class="open">in Details →</span></button>
+
+        <div class="agent">Release skill is active. The current version is <code>1.4.2</code>; I'll
+          bump to <code>1.5.0</code> for the new export flag and rewrite the unreleased section.</div>
+        <div class="toolline"><span class="ok">✓</span><span class="sum"><b>2 steps</b> · read CHANGELOG.md · read version.go</span></div>
+      </div>
+      <aside class="drawer">
+        <div class="drawer-h">Details · setup</div>
+        <div class="draw-r"><span class="ic">✦</span><span><span class="what">skill activated</span><span class="name">release-engineering</span></span><span class="tm">0:00</span></div>
+        <div class="draw-r"><span class="ic">⊞</span><span><span class="what">plugin loaded</span><span class="name">primeradiant-ops</span></span><span class="tm">0:00</span></div>
+        <div class="draw-r"><span class="ic">⎇</span><span><span class="what">hook fired</span><span class="name">pre-commit · lint</span></span><span class="tm">0:01</span></div>
+        <div class="draw-r"><span class="ic">¶</span><span><span class="what">prompt loaded</span><span class="name">conventional-commits</span></span><span class="tm">0:01</span></div>
+      </aside>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

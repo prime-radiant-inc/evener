@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf mockups — #3 User message + steering</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ============================================================
+   #3 USER MESSAGE + STEERING — topic CSS only.
+   Base tokens, resets, .agent/.tools/.subs/.active live in tokens.css.
+   Core principle #2: NEVER emphasize the user's own messages (incl.
+   mid-turn steers). The agent's prose is the hero; the user's words
+   recede. Steer tick is NEUTRAL (--hair), not amber.
+   ============================================================ */
+
+/* ---- page scaffold (this is a spec sheet, not the live app shell) ---- */
+body{overflow:auto}
+.page{max-width:900px;margin:0 auto;padding:var(--s6) var(--s5) 80px}
+.page-h{margin-bottom:var(--s4)}
+.page-h h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.page-h .sub{margin-top:var(--s2);font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:680px}
+.page-h .sub b{color:var(--ink-2);font-weight:600}
+.page-h .ship{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-2);background:var(--surface);border-left:2px solid var(--error);border-radius:var(--r);padding:var(--s2) var(--s3);max-width:680px}
+.page-h .ship b{color:var(--error)}
+
+.alt{margin-top:var(--s6);border-top:1px solid var(--line);padding-top:var(--s5)}
+.alt-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.alt-h .badge{font-size:var(--fs-sm);font-weight:700;color:var(--bg);background:var(--ink-2);border-radius:var(--r);width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.alt-h .ttl{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.cap{font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:680px;margin-bottom:var(--s4)}
+.cap b{color:var(--ink-2);font-weight:600}
+.cap .plus{color:var(--ink-2)} .cap .minus{color:var(--ink-3)}
+
+/* the transcript demo card — a neutral frame so each slice reads as one sample */
+.demo{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:var(--s5) var(--s5) var(--s5)}
+.demo .feed{max-width:none}
+.label{font-size:var(--fs-xs);color:var(--ink-4);text-transform:uppercase;letter-spacing:.07em;font-weight:600;margin:var(--s4) 0 var(--s2)}
+.label:first-child{margin-top:0}
+
+/* ============================================================
+   A — Golden left "You" tag (the design-system baseline).
+   Initial prompt and steer share one quiet grammar: dim tag,
+   muted text, no box. Steer adds a thin NEUTRAL tick.
+   ============================================================ */
+.a-you{display:flex;gap:var(--s3);align-items:baseline}
+.a-you .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none;width:40px;padding-top:1px}
+.a-you .q{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+.a-steer{margin-top:var(--s4);display:flex;gap:var(--s3);align-items:baseline;padding-left:11px;position:relative}
+.a-steer::before{content:"";position:absolute;left:0;top:4px;height:12px;width:2px;background:var(--hair);border-radius:2px}
+.a-steer .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none}
+.a-steer .txt{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+.a-steer.stacked{margin-top:var(--s2)}            /* tighter when steers cluster */
+.a-steer.stacked::before{background:var(--hair)}
+
+/* ============================================================
+   B — Gutter margin-note. The user's words sit OUTSIDE the
+   reading column, in a quiet right (or left) gutter, so the
+   prose column is never interrupted. Demotion by *position*.
+   ============================================================ */
+.b-wrap{position:relative;padding-left:96px}
+.b-gutter{position:absolute;left:0;width:84px;text-align:right;padding-top:2px}
+.b-gutter .tag{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);letter-spacing:.03em}
+.b-note{position:relative;margin-top:var(--s4)}
+.b-note .g-line{position:absolute;left:-96px;width:84px;text-align:right}
+.b-note .g-line .tag{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3)}
+.b-note .body{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55;padding-left:0}
+.b-steer .g-line .tag{color:var(--ink-3)}
+.b-steer .body{color:var(--ink-3);font-size:var(--fs-sm)}      /* steers quieter still */
+.b-steer + .b-steer{margin-top:var(--s2)}
+
+/* ============================================================
+   C — Hairline rail only, no "You" tag at all. The user's
+   words hang off a faint vertical rail; recognition comes from
+   muted color + the rail, not a loud label. Quietest baseline.
+   ============================================================ */
+.c-you{position:relative;padding-left:var(--s4)}
+.c-you::before{content:"";position:absolute;left:0;top:2px;bottom:2px;width:2px;background:var(--ink-4);border-radius:2px}
+.c-you .q{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+.c-steer{position:relative;padding-left:var(--s4);margin-top:var(--s4)}
+.c-steer::before{content:"";position:absolute;left:0;top:3px;bottom:3px;width:2px;background:var(--hair);border-radius:2px}
+.c-steer .mk{font-size:var(--fs-xs);color:var(--ink-3);font-weight:600;margin-right:var(--s2)}
+.c-steer .txt{font-size:var(--fs-base);color:var(--ink-3);line-height:1.55}
+.c-steer + .c-steer{margin-top:var(--s2)}
+
+/* ============================================================
+   D — Collapse-long-prompt + stacked "You steered ×N".
+   A long prompt clamps to ~2 lines with an inline "more".
+   Multiple mid-turn steers coalesce into ONE quiet, expandable
+   summary row so a flurry of steers can't out-shout the prose.
+   ============================================================ */
+.d-you{display:flex;gap:var(--s3);align-items:baseline}
+.d-you .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none;width:40px;padding-top:1px}
+.d-you .q{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+.d-clamp{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.d-you.open .q{display:block}
+.d-more{color:var(--accent);font-size:var(--fs-sm);background:none;border:none;padding:0;margin-top:2px;cursor:pointer}
+.d-you.open .d-more{display:none}
+
+.d-single{margin-top:var(--s4);display:flex;gap:var(--s3);align-items:baseline;padding-left:11px;position:relative}
+.d-single::before{content:"";position:absolute;left:0;top:4px;height:12px;width:2px;background:var(--hair);border-radius:2px}
+.d-single .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none}
+.d-single .txt{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+
+.d-multi{margin-top:var(--s4);padding-left:11px;position:relative}
+.d-multi::before{content:"";position:absolute;left:0;top:4px;bottom:4px;width:2px;background:var(--hair);border-radius:2px}
+.d-multi-h{display:flex;align-items:baseline;gap:var(--s2);width:100%;text-align:left;background:none;border:none;padding:0;cursor:pointer;color:inherit}
+.d-multi-h .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase}
+.d-multi-h .n{font-size:var(--fs-xs);color:var(--ink-3);font-weight:600}
+.d-multi-h .pv{font-size:var(--fs-base);color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.d-multi-h .chev{font-size:9px;color:var(--ink-4);transition:transform .12s}
+.d-multi.open .d-multi-h .chev{transform:rotate(90deg)}
+.d-multi.open .d-multi-h .pv{display:none}
+.d-list{display:none;margin-top:var(--s2);flex-direction:column;gap:var(--s2)}
+.d-multi.open .d-list{display:flex}
+.d-list .item{font-size:var(--fs-base);color:var(--ink-2);line-height:1.5}
+.d-list .item .idx{font-size:var(--fs-xs);color:var(--ink-4);margin-right:var(--s2);font-variant-numeric:tabular-nums}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="page-h">
+    <h1>#3 &nbsp;User message + steering</h1>
+    <p class="sub">Four ways to render the user's words — initial prompt <b>and</b> mid-turn
+      steer — so they <b>recede</b> beneath the agent's prose. Each slice shows the same realistic
+      turn: prompt → agent prose (the hero) → a mid-turn steer → a multi-steer flurry. Judge whether
+      the prose visibly wins and whether you can still <i>find</i> what you said.</p>
+    <p class="ship"><b>What ships today (the bug):</b> the user's message renders as a loud,
+      right-aligned, green-tinted chat bubble — the single loudest thing on screen. That directly
+      violates core principle #2 (never emphasize the user's own messages). Steering also wrongly
+      borrows the amber "needs-you" tick; amber is reserved for when the agent needs <i>you</i>,
+      not when you spoke.</p>
+  </header>
+
+  <!-- ============================================================ A ============ -->
+  <section class="alt">
+    <div class="alt-h"><span class="badge">A</span><span class="ttl">Golden left “You” tag</span></div>
+    <p class="cap"><b>Idea:</b> the design-system baseline. Prompt and steer share one quiet
+      grammar — a dim uppercase tag + muted text, no box. The steer adds a thin <b>neutral</b> tick
+      (not amber); stacked steers tighten their spacing.
+      <span class="plus">+ One grammar to learn; left-edge anchor makes turns scannable.</span>
+      <span class="minus">− With many steers the repeated “You steered” rows still accumulate vertical noise.</span></p>
+
+    <div class="demo">
+      <div class="feed">
+        <div class="label">Initial prompt</div>
+        <div class="a-you"><span class="tag">You</span><span class="q">The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how callers use it too.</span></div>
+
+        <div class="label">Agent prose — the hero</div>
+        <div class="agent lead">Root cause: <code>evictExpired()</code> compares against <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than the sweep interval is dropped even when still valid. I traced all 7 call sites — none depend on the early-eviction behaviour — and I'm patching the comparison now.</div>
+
+        <div class="label">Mid-turn steer (neutral tick)</div>
+        <div class="a-steer"><span class="tag">You steered</span><span class="txt">also add a regression test for the idle-but-valid case</span></div>
+
+        <div class="agent">Good call — I'll add a test that seeds a token, advances past one sweep interval without touching it, and asserts the token survives.</div>
+
+        <div class="label">Several steers in one turn</div>
+        <div class="a-steer"><span class="tag">You steered</span><span class="txt">put the test in cache_eviction_test.go, not the main cache_test.go</span></div>
+        <div class="a-steer stacked"><span class="tag">You steered</span><span class="txt">and use a 50ms sweep so it stays fast</span></div>
+        <div class="a-steer stacked"><span class="tag">You steered</span><span class="txt">skip the table-driven style, just one focused case</span></div>
+
+        <div class="agent">Understood — single focused test in <code>cache_eviction_test.go</code> with a 50&nbsp;ms sweep. Writing it now<span class="cursor"></span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ B ============ -->
+  <section class="alt">
+    <div class="alt-h"><span class="badge">B</span><span class="ttl">Gutter margin-note</span></div>
+    <p class="cap"><b>Idea:</b> demote by <b>position</b> — the user's words live in a quiet left
+      gutter, outside the reading column, so the prose column is never interrupted. Steers sit in the
+      same gutter, one notch quieter (<code>--ink-3</code>, smaller).
+      <span class="plus">+ The hero column reads as uninterrupted prose; steers feel like annotations.</span>
+      <span class="minus">− Costs horizontal space; gutter cramps on narrow viewports and long prompts wrap awkwardly.</span></p>
+
+    <div class="demo">
+      <div class="feed">
+        <div class="label">Initial prompt</div>
+        <div class="b-wrap">
+          <div class="b-gutter"><span class="tag">You</span></div>
+          <div style="font-size:var(--fs-base);color:var(--ink-2);line-height:1.55">The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how callers use it too.</div>
+
+          <div class="label">Agent prose — the hero</div>
+          <div class="agent lead">Root cause: <code>evictExpired()</code> compares against <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than the sweep interval is dropped even when still valid. I traced all 7 call sites — none depend on the early-eviction behaviour — and I'm patching the comparison now.</div>
+
+          <div class="b-note b-steer">
+            <div class="g-line"><span class="tag">steer</span></div>
+            <div class="body">also add a regression test for the idle-but-valid case</div>
+          </div>
+
+          <div class="agent">Good call — I'll add a test that seeds a token, advances past one sweep interval without touching it, and asserts the token survives.</div>
+
+          <div class="b-note b-steer">
+            <div class="g-line"><span class="tag">steer</span></div>
+            <div class="body">put the test in cache_eviction_test.go, not the main cache_test.go</div>
+          </div>
+          <div class="b-note b-steer">
+            <div class="body">and use a 50ms sweep so it stays fast</div>
+          </div>
+          <div class="b-note b-steer">
+            <div class="body">skip the table-driven style, just one focused case</div>
+          </div>
+
+          <div class="agent">Understood — single focused test in <code>cache_eviction_test.go</code> with a 50&nbsp;ms sweep. Writing it now<span class="cursor"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ C ============ -->
+  <section class="alt">
+    <div class="alt-h"><span class="badge">C</span><span class="ttl">Hairline rail only — no tag</span></div>
+    <p class="cap"><b>Idea:</b> the quietest baseline. No “You” label at all; the user's words hang
+      off a faint vertical rail and are recognised by muted color + the rail. Steers get an even
+      fainter rail and a tiny inline <code>steer</code> marker.
+      <span class="plus">+ Maximum demotion; nothing competes with the prose; almost zero chrome.</span>
+      <span class="minus">− Loses the explicit “You”/“steered” legibility; new users may not parse who's speaking.</span></p>
+
+    <div class="demo">
+      <div class="feed">
+        <div class="label">Initial prompt</div>
+        <div class="c-you"><span class="q">The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how callers use it too.</span></div>
+
+        <div class="label">Agent prose — the hero</div>
+        <div class="agent lead">Root cause: <code>evictExpired()</code> compares against <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than the sweep interval is dropped even when still valid. I traced all 7 call sites — none depend on the early-eviction behaviour — and I'm patching the comparison now.</div>
+
+        <div class="label">Mid-turn steer</div>
+        <div class="c-steer"><span class="mk">steer</span><span class="txt">also add a regression test for the idle-but-valid case</span></div>
+
+        <div class="agent">Good call — I'll add a test that seeds a token, advances past one sweep interval without touching it, and asserts the token survives.</div>
+
+        <div class="label">Several steers in one turn</div>
+        <div class="c-steer"><span class="mk">steer</span><span class="txt">put the test in cache_eviction_test.go, not the main cache_test.go</span></div>
+        <div class="c-steer"><span class="mk">steer</span><span class="txt">and use a 50ms sweep so it stays fast</span></div>
+        <div class="c-steer"><span class="mk">steer</span><span class="txt">skip the table-driven style, just one focused case</span></div>
+
+        <div class="agent">Understood — single focused test in <code>cache_eviction_test.go</code> with a 50&nbsp;ms sweep. Writing it now<span class="cursor"></span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ D ============ -->
+  <section class="alt">
+    <div class="alt-h"><span class="badge">D</span><span class="ttl">Collapse-long-prompt + stacked “You steered ×N”</span></div>
+    <p class="cap"><b>Idea:</b> directly attacks the “a flurry of steers out-shouts the prose” case.
+      A long prompt clamps to ~2 lines with an inline <span style="color:var(--accent)">more</span>;
+      a single steer renders inline (like A), but <b>two or more</b> mid-turn steers <b>coalesce</b>
+      into one quiet expandable <b>“You steered ×N”</b> row. Click to expand.
+      <span class="plus">+ Steer noise stays constant regardless of count; long prompts don't dominate the top of the turn.</span>
+      <span class="minus">− Coalescing hides steer text until expanded; one extra interaction to re-read what you said.</span></p>
+
+    <div class="demo">
+      <div class="feed">
+        <div class="label">Long initial prompt (clamped)</div>
+        <div class="d-you" id="d-prompt">
+          <span class="tag">You</span>
+          <span class="r-main" style="min-width:0;flex:1;display:flex;flex-direction:column">
+            <span class="q d-clamp" id="d-q">The auth token cache invalidates too aggressively — valid tokens get evicted early and users get logged out mid-session. I think it started after the sweep-interval change last week. Find the root cause and fix it, check how all the callers use the cache (especially the refresh path and the middleware), and make sure we're not papering over a deeper TTL bug. Add whatever tests you think are warranted.</span>
+            <button class="d-more" onclick="document.getElementById('d-prompt').classList.add('open')">more</button>
+          </span>
+        </div>
+
+        <div class="label">Agent prose — the hero</div>
+        <div class="agent lead">Root cause: <code>evictExpired()</code> compares against <code>lastUsed</code> instead of <code>expiresAt</code>, so any token idle longer than the sweep interval is dropped even when still valid. I traced all 7 call sites — the refresh path and middleware both read through the cache but neither depends on early eviction — and I'm patching the comparison now.</div>
+
+        <div class="label">Single mid-turn steer — inline</div>
+        <div class="d-single"><span class="tag">You steered</span><span class="txt">also add a regression test for the idle-but-valid case</span></div>
+
+        <div class="agent">Good call — I'll add a test that seeds a token, advances past one sweep interval without touching it, and asserts the token survives.</div>
+
+        <div class="label">Several steers — coalesced (click to expand)</div>
+        <div class="d-multi" id="d-multi">
+          <button class="d-multi-h" onclick="document.getElementById('d-multi').classList.toggle('open')">
+            <span class="tag">You steered</span><span class="n num">×3</span>
+            <span class="pv">put the test in cache_eviction_test.go · use a 50ms sweep · …</span>
+            <span class="chev">▸</span>
+          </button>
+          <div class="d-list">
+            <div class="item"><span class="idx">1</span>put the test in cache_eviction_test.go, not the main cache_test.go</div>
+            <div class="item"><span class="idx">2</span>and use a 50ms sweep so it stays fast</div>
+            <div class="item"><span class="idx">3</span>skip the table-driven style, just one focused case</div>
+          </div>
+        </div>
+
+        <div class="agent">Understood — single focused test in <code>cache_eviction_test.go</code> with a 50&nbsp;ms sweep. Writing it now<span class="cursor"></span></div>
+      </div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

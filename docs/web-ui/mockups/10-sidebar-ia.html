@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf Mockups — #10 Sidebar IA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="./tokens.css" rel="stylesheet">
+<style>
+/* ====================================================================
+   TOPIC #10 — SIDEBAR IA
+   The #1 wayfinding defect. The shipped sidebar has a flat top "LIVE"
+   rail that DUPLICATES the ACTIVE tier (the same sessions are listed
+   twice); repeated-title sessions ("describe this image" ×5) sprawl
+   un-clustered; the project rollup is a single dot that can't say
+   "how many need me"; and there's no persistent "you are here" row.
+
+   Four full sidebars (A/B/C/D) — each a real rendering with the same
+   data set (ACTIVE / RECENT / OLDER / TEST RUNS tiers; live + needs-you
+   + idle sessions; de-weighted folded subagents; a cluster of five
+   repeated-title sessions; one selected row) so the LIVE-rail
+   resolution, dedup, rollup-magnitude, and selection are comparable.
+   ==================================================================== */
+
+/* tokens.css sets body{overflow:hidden} + .app grid for the live app.
+   This is a gallery page, so re-allow scroll and lay panels out. */
+body{overflow:auto}
+.gallery{max-width:1240px;margin:0 auto;padding:var(--s6) var(--s5)}
+.gallery > header{margin-bottom:var(--s5)}
+.gallery h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.gallery .lede{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);max-width:760px;line-height:1.6}
+.gallery .lede code{font-family:var(--mono);font-size:12px;color:var(--ink);border-bottom:1px solid var(--hair)}
+.gallery .lede b{color:var(--ink);font-weight:600}
+
+/* the four-up grid of full sidebars */
+.alts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s5) var(--s5)}
+@media (max-width:1000px){.alts{grid-template-columns:1fr}}
+
+.spec{display:flex;flex-direction:column;gap:var(--s3)}
+.spec-cap{display:flex;flex-direction:column;gap:3px}
+.spec-cap .id{display:flex;align-items:baseline;gap:var(--s2)}
+.spec-cap .id b{font-size:var(--fs-base);font-weight:600;color:var(--ink)}
+.spec-cap .id .idea{font-size:var(--fs-sm);color:var(--ink-2)}
+.spec-cap .trade{font-size:var(--fs-xs);color:var(--ink-3);line-height:1.55;max-width:560px}
+.spec-cap .trade .plus{color:var(--ink-2)}
+
+/* a "device frame" so each sidebar reads as a real rendering inside the chrome */
+.frame{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:#101117;width:280px}
+
+/* ---------- shared sidebar primitives (the golden grammar) ---------- */
+.sb{display:flex;flex-direction:column;height:560px}
+.sb-actions{display:flex;align-items:center;gap:2px;padding:var(--s3);border-bottom:1px solid var(--line);flex:none}
+.sb-act{display:flex;align-items:center;gap:var(--s2);padding:var(--s2);border-radius:var(--r);color:var(--ink-2);font-size:var(--fs-sm)}
+.sb-act:hover{background:var(--surface);color:var(--ink)}
+.sb-act .plus{color:var(--accent);font-weight:700}
+.sb-act .k{font-family:var(--mono);font-size:9.5px;color:var(--ink-3);border:1px solid var(--line);padding:1px 4px;border-radius:3px}
+.sb-spacer{flex:1}
+.sb-scroll{overflow-y:auto;padding:var(--s2) var(--s2) var(--s4);flex:1}
+.sb-scroll::-webkit-scrollbar{width:8px}
+.sb-scroll::-webkit-scrollbar-thumb{background:var(--hair);border-radius:8px;border:2px solid #101117}
+
+.tier{margin-top:var(--s4)}
+.tier:first-child{margin-top:var(--s2)}
+/* tier header = sans, sentence-case (no ALL-CAPS-mono); count rides to the right */
+.tier-h{display:flex;align-items:baseline;gap:var(--s2);padding:0 var(--s2) var(--s2)}
+.tier-h .lbl{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);letter-spacing:.02em;text-transform:none}
+.tier-h .rule{flex:1;height:1px;background:var(--line);align-self:center}
+.tier-h .n{font-size:var(--fs-xs);color:var(--ink-4)}
+
+.proj{display:flex;align-items:center;gap:var(--s2);width:100%;text-align:left;padding:var(--s2);border-radius:var(--r);min-height:30px}
+.proj:hover{background:var(--surface)}
+.proj .chev{font-size:8px;color:var(--ink-4);width:8px;flex:none}
+.proj .name{font-size:var(--fs-sm);font-weight:600;color:var(--ink-2)}
+.proj .age{font-size:var(--fs-xs);color:var(--ink-3);margin-left:auto}
+.proj .count{font-size:var(--fs-xs);color:var(--ink-4);margin-left:var(--s2)}
+.kids{padding-left:var(--s2)}
+
+/* session row — colorblind-safe: each dot is a distinct SHAPE+GLYPH, not color alone */
+.row{display:flex;align-items:flex-start;gap:var(--s2);width:100%;text-align:left;padding:var(--s2);border-radius:var(--r);position:relative;min-height:32px}
+.row:hover{background:var(--surface)}
+.r-main{min-width:0;flex:1;display:flex;flex-direction:column}
+.r-title{font-size:var(--fs-sm);font-weight:500;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.r-meta{font-size:var(--fs-xs);color:var(--ink-3);margin-top:1px}
+.r-meta .live{color:var(--accent)} .r-meta .attn{color:var(--attention)}
+
+/* status marker: a tiny glyph badge — shape + glyph + color (triple-coded) */
+.mk{flex:none;width:13px;height:13px;display:inline-flex;align-items:center;justify-content:center;
+    font-size:9px;font-weight:700;line-height:1;margin-top:3px}
+/* live = filled blue disc with a ⟳ — round */
+.mk.live{color:var(--accent)}
+.mk.live::before{content:"";position:absolute;width:7px;height:7px;border-radius:50%;background:var(--accent);
+                 animation:breathe 2.6s ease-in-out infinite}
+.mk.live{position:relative}
+/* needs-you = amber diamond with ! — diamond shape distinguishes it for colorblind eyes */
+.mk.attn{color:var(--attention);position:relative}
+.mk.attn::before{content:"";position:absolute;width:8px;height:8px;background:var(--attention);
+                 transform:rotate(45deg);border-radius:1px}
+.mk.attn .x{position:relative;color:#0e0f13;font-size:7px;line-height:1}
+/* idle/done = hollow neutral square — recedes, distinct outline shape */
+.mk.idle{color:var(--ink-4)}
+.mk.idle::before{content:"";position:absolute;width:6px;height:6px;border:1px solid var(--ink-4);border-radius:1px}
+.mk.idle{position:relative}
+
+/* selected row — persistent "you are here": surface-2 fill + a blue left edge */
+.row.sel{background:var(--surface-2)}
+.row.sel::after{content:"";position:absolute;left:0;top:5px;bottom:5px;width:2px;background:var(--accent);border-radius:2px}
+.row.sel .r-title{font-weight:600}
+
+/* subagents — de-weighted: dim, single-line, indented, terminal-state glyph, fold past ~3 */
+.sub{display:flex;align-items:center;gap:var(--s2);width:100%;text-align:left;padding:2px var(--s2) 2px 26px;position:relative;border-radius:var(--r);min-height:24px}
+.sub:hover{background:var(--surface)}
+.sub::before{content:"";position:absolute;left:15px;top:0;bottom:0;width:1px;background:var(--hair)}
+.sub .g{font-family:var(--mono);font-size:10px;width:11px;flex:none}
+.g.done{color:var(--done)} .g.run{color:var(--accent)} .g.err{color:var(--error)}
+.sub .s-title{font-size:var(--fs-xs);color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+.sub.fold .s-title{font-style:italic;color:var(--ink-4)}
+
+/* ===== shared CLUSTER device (variants override the header) ===== */
+.cluster{margin:1px 0}
+/* cluster header reads as ONE session group, not five rows */
+.clu-h{display:flex;align-items:center;gap:var(--s2);width:100%;text-align:left;padding:var(--s2);border-radius:var(--r);min-height:32px}
+.clu-h:hover{background:var(--surface)}
+.clu-h .chev{font-size:8px;color:var(--ink-4);width:8px;flex:none}
+.clu-title{font-size:var(--fs-sm);font-weight:500;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.clu-x{font-size:var(--fs-xs);color:var(--ink-3);font-variant-numeric:tabular-nums}
+.clu-h .count{margin-left:auto;font-size:var(--fs-xs);color:var(--ink-4)}
+.clu-kids{padding-left:var(--s4)}
+.clu-kids .row{min-height:28px;padding:3px var(--s2)}
+.clu-kids .r-title{font-size:var(--fs-xs);color:var(--ink-2);font-weight:400}
+
+/* ====== A: rollup magnitude as a count badge on the project header ====== */
+/* a small pill that states "how many need me" instead of a single dot */
+.rbadge{margin-left:auto;display:inline-flex;align-items:center;gap:5px}
+.rb{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-weight:600;line-height:1;
+    padding:2px 5px;border-radius:var(--r-pill);font-variant-numeric:tabular-nums}
+.rb.live{color:var(--accent);background:var(--accent-soft)}
+.rb.attn{color:var(--attention);background:var(--attention-soft)}
+.rb .gl{font-family:var(--mono);font-size:9px}
+.proj .age.tight{margin-left:var(--s2)}
+
+/* ====== B: LIVE as a filter chip rail (one shared filter bar, no duplicate list) ====== */
+.filt{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s2) 0;flex-wrap:wrap}
+.fchip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:var(--r-pill);
+       font-size:var(--fs-xs);color:var(--ink-3);background:var(--surface);border:1px solid transparent;cursor:pointer}
+.fchip:hover{color:var(--ink-2)}
+.fchip .c{font-variant-numeric:tabular-nums;font-weight:600}
+.fchip.on{border-color:var(--hair);color:var(--ink)}
+.fchip.live.on{color:var(--accent);background:var(--accent-soft);border-color:rgba(122,162,247,.3)}
+.fchip.attn.on{color:var(--attention);background:var(--attention-soft);border-color:rgba(226,176,106,.3)}
+.fchip .dotg{width:6px;height:6px;border-radius:50%}
+.fchip.live .dotg{background:var(--accent)} .fchip.attn .dotg{background:var(--attention)}
+
+/* ====== D: needs-you pulled to a top attention tier, sorted to top ====== */
+/* (reuses .row/.mk; the dedicated tier just changes label color) */
+.tier-h.attn-h .lbl{color:var(--attention)}
+.tier-h.attn-h .rule{background:rgba(226,176,106,.25)}
+
+/* ---------- the BEFORE mini (the shipped, broken sidebar) ---------- */
+.before{margin-top:var(--s5);border:1px dashed var(--hair);border-radius:var(--r);padding:var(--s4);background:rgba(247,118,142,.04)}
+.before h2{font-size:var(--fs-sm);font-weight:600;color:var(--ink-2)}
+.before .why{font-size:var(--fs-xs);color:var(--ink-3);margin-top:3px;margin-bottom:var(--s3);max-width:740px;line-height:1.55}
+.before .why b{color:var(--ink-2)}
+.before-wrap{display:flex;gap:var(--s5);align-items:flex-start;flex-wrap:wrap}
+.before .frame{width:230px}
+.before .sb{height:auto}
+.b-annot{font-size:var(--fs-xs);color:var(--ink-3);line-height:1.7;max-width:380px;flex:1;min-width:240px}
+.b-annot li{margin-left:var(--s4);margin-bottom:var(--s2)}
+.b-annot li b{color:var(--error);font-weight:600}
+/* the retired flat LIVE rail + the duplicate ACTIVE listing */
+.dupe{outline:1px solid rgba(247,118,142,.35);outline-offset:1px;border-radius:var(--r)}
+.live-rail-h{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--accent);
+             letter-spacing:.14em;text-transform:uppercase;padding:0 var(--s2) var(--s2)}
+.b-row{display:flex;align-items:center;gap:var(--s2);padding:var(--s2);border-radius:var(--r);min-height:30px}
+.b-row .bdot{width:6px;height:6px;border-radius:50%;flex:none}
+.bdot.live{background:var(--accent)} .bdot.idle{background:var(--ink-4)}
+.b-row .bt{font-size:var(--fs-sm);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+footer.note{margin-top:var(--s5);font-size:var(--fs-xs);color:var(--ink-3);line-height:1.65;max-width:840px}
+footer.note b{color:var(--ink-2);font-weight:600}
+
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.45}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="gallery">
+
+  <header>
+    <h1>#10 — Sidebar IA</h1>
+    <p class="lede">
+      The #1 wayfinding defect. The shipped sidebar tops the list with a flat <b>LIVE</b> rail that
+      <b>duplicates the ACTIVE tier</b> — the same live sessions appear twice, so the eye double-counts and the
+      project structure is buried. Repeated-title sessions (<code>describe this image</code> ×5) sprawl as
+      identical rows; the project rollup is a <b>single dot</b> that can't say "how many need me"; and there is no
+      persistent "you are here" row. Each alternative is a full sidebar over the <b>same data</b> (Active / Recent /
+      Older / Test runs; live + needs-you + idle sessions; de-weighted folded subagents; a five-deep cluster of
+      repeated titles; one selected row) so the four fixes are directly comparable. Every status marker is
+      <b>shape + glyph + color</b> (round live · diamond needs-you · square idle) so it survives colorblindness.
+    </p>
+  </header>
+
+  <div class="alts">
+
+    <!-- ============================================================ A -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>A</b><span class="idea">Delete the LIVE rail — Active <em>is</em> the live home</span></div>
+        <div class="trade">
+          The flat LIVE rail is removed entirely; the <span class="plus">Active</span> tier is the single home for
+          everything live or needs-you, ranked project-first. Each project header carries a
+          <span class="plus">magnitude rollup</span> (e.g. <span class="plus">2 ⟳ · 1 !</span>) instead of one
+          ambiguous dot, so "how many need me" is legible without expanding. Repeated titles fold into one cluster.
+          <span class="plus">+ Zero duplication; the simplest mental model; one place to look.</span>
+          − Users habituated to a top "what's live" glance must learn that Active already is that glance.
+        </div>
+      </div>
+      <div class="frame">
+        <div class="sb">
+          <div class="sb-actions">
+            <button class="sb-act"><span class="plus">＋</span> New</button>
+            <button class="sb-act">Search <span class="k">⌘K</span></button>
+            <span class="sb-spacer"></span>
+            <button class="sb-act">Settings</button>
+          </div>
+          <div class="sb-scroll">
+
+            <div class="tier">
+              <div class="tier-h"><span class="lbl">Active</span><span class="rule"></span></div>
+
+              <button class="proj"><span class="chev">▾</span><span class="name">serf</span>
+                <span class="rbadge">
+                  <span class="rb live"><span class="gl">⟳</span>2</span>
+                  <span class="rb attn"><span class="gl">!</span>1</span>
+                </span>
+              </button>
+              <div class="kids">
+                <button class="row sel"><span class="mk live"></span><span class="r-main"><span class="r-title">Refactor auth token cache</span><span class="r-meta"><span class="live">working</span> · <span class="num">1:12</span></span></span></button>
+                <button class="sub"><span class="g done">✓</span><span class="s-title">trace-callers · 7 call sites</span></button>
+                <button class="sub"><span class="g run">⟳</span><span class="s-title">find-tests · running</span></button>
+                <button class="sub fold"><span class="g done">✓</span><span class="s-title">+2 subagents</span></button>
+                <button class="row"><span class="mk attn"><span class="x">!</span></span><span class="r-main"><span class="r-title">Audit error handling</span><span class="r-meta"><span class="attn">needs you</span> · <span class="num">1m</span></span></span></button>
+                <button class="row"><span class="mk live"></span><span class="r-main"><span class="r-title">Add token counters</span><span class="r-meta"><span class="live">working</span> · <span class="num">22s</span></span></span></button>
+                <button class="row"><span class="mk idle"></span><span class="r-main"><span class="r-title">Fix flaky CI</span><span class="r-meta">idle · <span class="num">3h</span></span></span></button>
+              </div>
+
+              <button class="proj"><span class="chev">▾</span><span class="name">prime-radiant</span>
+                <span class="rbadge"><span class="rb attn"><span class="gl">!</span>1</span></span>
+              </button>
+              <div class="kids">
+                <button class="row"><span class="mk attn"><span class="x">!</span></span><span class="r-main"><span class="r-title">Migrate billing schema</span><span class="r-meta"><span class="attn">approval needed</span> · <span class="num">4m</span></span></span></button>
+                <button class="row"><span class="mk idle"></span><span class="r-main"><span class="r-title">Draft release notes</span><span class="r-meta">idle · <span class="num">2h</span></span></span></button>
+              </div>
+            </div>
+
+            <div class="tier">
+              <div class="tier-h"><span class="lbl">Recent</span><span class="rule"></span><span class="n num">9</span></div>
+              <button class="proj"><span class="chev">▾</span><span class="name">serf-docs</span><span class="age num">5h</span><span class="count num">9</span></button>
+              <div class="clu-kids" style="padding-left:var(--s2)">
+                <div class="cluster">
+                  <button class="clu-h"><span class="chev">▸</span><span class="clu-title">describe this image</span><span class="clu-x">&nbsp;×5</span><span class="count num">all idle</span></button>
+                </div>
+                <button class="row"><span class="mk idle"></span><span class="r-main"><span class="r-title">Write a 3-line haiku</span><span class="r-meta">idle · <span class="num">6h</span></span></span></button>
+              </div>
+            </div>
+
+            <div class="tier">
+              <div class="tier-h"><span class="lbl">Older</span><span class="rule"></span><span class="n num">3</span></div>
+              <button class="proj"><span class="chev">▸</span><span class="name">kimi-effort</span><span class="age num">11d</span><span class="count num">3</span></button>
+            </div>
+
+            <div class="tier">
+              <div class="tier-h"><span class="lbl">Test runs</span><span class="rule"></span><span class="n num">26</span></div>
+              <button class="proj"><span class="chev">▸</span><span class="name" style="color:var(--ink-3)">serf-e2e-*</span><span class="count num">26</span></button>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ B -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>B</b><span class="idea">LIVE becomes a count/filter chip, not a duplicate list</span></div>
+        <div class="trade">
+          The LIVE rail's job — "show me only what's moving" — is kept, but as a
+          <span class="plus">filter chip bar</span> at the top (<span class="plus">Live 3</span> ·
+          <span class="plus">Needs you 2</span>) that <em>narrows the one tree</em> rather than re-listing it.
+          Tapping a chip filters in place; nothing is duplicated. The rollup count lives on the chip itself.
+          <span class="plus">+ Preserves the fast "live-only" glance + gives a global needs-you count.</span>
+          − Filter state is a mode; users must notice the list is filtered (the active chip + a result count carry it).
+        </div>
+      </div>
+      <div class="frame">
+        <div class="sb">
+          <div class="sb-actions">
+            <button class="sb-act"><span class="plus">＋</span> New</button>
+            <button class="sb-act">Search <span class="k">⌘K</span></button>
+            <span class="sb-spacer"></span>
+            <button class="sb-act">Settings</button>
+          </div>
+          <div class="filt">
+            <button class="fchip on">All</button>
+            <button class="fchip live"><span class="dotg"></span>Live <span class="c">3</span></button>
+            <button class="fchip attn"><span class="dotg"></span>Needs you <span class="c">2</span></button>
+          </div>
+          <div class="sb-scroll">
+
+            <div class="tier" style="margin-top:var(--s3)">
+              <div class="tier-h"><span class="lbl">Active</span><span class="rule"></span></div>
+              <button class="proj"><span class="chev">▾</span><span class="name">serf</span><span class="age num">5m</span><span class="count num">4</span></button>
+              <div class="kids">
+                <button class="row sel"><span class="mk live"></span><span class="r-main"><span class="r-title">Refactor auth token cache</span><span class="r-meta"><span class="live">working</span> · <span class="num">1:12</span></span></span></button>
+                <button class="sub"><span class="g done">✓</span><span class="s-title">trace-callers · 7 call sites</span></button>
+                <button class="sub fold"><span class="g run">⟳</span><span class="s-title">+3 subagents</span></button>
+                <button class="row"><span class="mk attn"><span class="x">!</span></span><span class="r-main"><span class="r-title">Audit error handling</span><span class="r-meta"><span class="attn">needs you</span> · <span class="num">1m</span></span></span></button>
+                <button class="row"><span class="mk live"></span><span class="r-main"><span class="r-title">Add token counters</span><span class="r-meta"><span class="live">working</span> · <span class="num">22s</span></span></span></button>
+                <button class="row"><span class="mk idle"></span><span class="r-main"><span class="r-title">Fix flaky CI</span><span class="r-meta">idle · <span class="num">3h</span></span></span></button>
+              </div>
+              <button class="proj"><span class="chev">▾</span><span class="name">prime-radiant</span><span class="age num">4m</span><span class="count num">2</span></button>
+              <div class="kids">
+                <button class="row"><span class="mk attn"><span class="x">!</span></span><span class="r-main"><span class="r-title">Migrate billing schema</span><span class="r-meta"><span class="attn">approval needed</span> · <span class="num">4m</span></span></span></button>
+                <button class="row"><span class="mk idle"></span><span class="r-main"><span class="r-title">Draft release notes</span><span class="r-meta">idle · <span class="num">2h</span></span></span></button>
+              </div>
+            </div>
+
+            <div class="tier">
+              <div class="tier-h"><span class="lbl">Recent</span><span class="rule"></span><span class="n num">9</span></div>
+              <button class="proj"><span class="chev">▾</span><span class="name">serf-docs</span><span class="age num">5h</span><span class="count num">9</span></button>
+              <div class="clu-kids" style="padding-left:var(--s2)">
+                <div class="cluster">
+                  <button class="clu-h"><span class="chev">▸</span><span class="clu-title">describe this image</span><span class="clu-x">&nbsp;×5</span><span class="count num">all idle</span></button>
+                </div>
+                <button class="row"><span class="mk idle"></span><span class="r-main"><span class="r-title">Write a 3-line haiku</span><span class="r-meta">idle · <span class="num">6h</span></span></span></button>
+              </div>
+            </div>
+
+            <div class="tier">
+              <div class="tier-h"><span class="lbl">Older</span><span class="rule"></span><span class="n num">3</span></div>
+              <button class="proj"><span class="chev">▸</span><span class="name">kimi-effort</span><span class="age num">11d</span><span class="count num">3</span></button>
+            </div>
+
+            <div class="tier">
+              <div class="tier-h"><span class="lbl">Test runs</span><span class="rule"></span><span class="n num">26</span></div>
+              <button class="proj"><span class="chev">▸</span><span class="name" style="color:var(--ink-3)">serf-e2e-*</span><span class="count num">26</span></button>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ C -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>C</b><span class="idea">Cluster repeated-title sessions into one disclosure group</span></div>
+        <div class="trade">
+          Centers the dedup fix: any run of same-named sessions collapses to <em>one</em> group row
+          (<span class="plus">describe this image ×5</span>) with a worst-state rollup marker; expanding reveals the
+          individual runs (here, dated peeks). Live/needs-you sessions stay un-clustered so signal isn't hidden.
+          LIVE rail is dropped (Active is home); rollup is a magnitude badge like A.
+          <span class="plus">+ Kills the most visible sprawl; one line stands in for five identical rows.</span>
+          − A cluster can hide a single member that later needs you — its rollup marker must surface that.
+        </div>
+      </div>
+      <div class="frame">
+        <div class="sb">
+          <div class="sb-actions">
+            <button class="sb-act"><span class="plus">＋</span> New</button>
+            <button class="sb-act">Search <span class="k">⌘K</span></button>
+            <span class="sb-spacer"></span>
+            <button class="sb-act">Settings</button>
+          </div>
+          <div class="sb-scroll">
+
+            <div class="tier">
+              <div class="tier-h"><span class="lbl">Active</span><span class="rule"></span></div>
+              <button class="proj"><span class="chev">▾</span><span class="name">serf</span>
+                <span class="rbadge"><span class="rb live"><span class="gl">⟳</span>2</span><span class="rb attn"><span class="gl">!</span>1</span></span>
+              </button>
+              <div class="kids">
+                <button class="row sel"><span class="mk live"></span><span class="r-main"><span class="r-title">Refactor auth token cache</span><span class="r-meta"><span class="live">working</span> · <span class="num">1:12</span></span></span></button>
+                <button class="sub"><span class="g done">✓</span><span class="s-title">trace-callers · 7 call sites</span></button>
+                <button class="sub fold"><span class="g run">⟳</span><span class="s-title">+3 subagents</span></button>
+                <button class="row"><span class="mk attn"><span class="x">!</span></span><span class="r-main"><span class="r-title">Audit error handling</span><span class="r-meta"><span class="attn">needs you</span> · <span class="num">1m</span></span></span></button>
+                <button class="row"><span class="mk live"></span><span class="r-main"><span class="r-title">Add token counters</span><span class="r-meta"><span class="live">working</span> · <span class="num">22s</span></span></span></button>
+              </div>
+            </div>
+
+            <div class="tier">
+              <div class="tier-h"><span class="lbl">Recent</span><span class="rule"></span><span class="n num">9</span></div>
+              <button class="proj"><span class="chev">▾</span><span class="name">serf-docs</span><span class="age num">5h</span><span class="count num">9</span></button>
+              <div class="kids">
+                <!-- the cluster, EXPANDED, so the dedup device is fully visible -->
+                <div class="cluster">
+                  <button class="clu-h"><span class="chev">▾</span><span class="clu-title">describe this image</span><span class="clu-x">&nbsp;×5</span><span class="count num">all idle</span></button>
+                  <div class="clu-kids">
+                    <button class="row"><span class="mk idle"></span><span class="r-main"><span class="r-title">run · today 09:14</span></span></button>
+                    <button class="row"><span class="mk idle"></span><span class="r-main"><span class="r-title">run · today 08:52</span></span></button>
+                    <button class="row"><span class="mk idle"></span><span class="r-main"><span class="r-title">run · yesterday</span></span></button>
+                    <button class="sub fold" style="padding-left:var(--s4)"><span class="g done">✓</span><span class="s-title">+2 older runs</span></button>
+                  </div>
+                </div>
+                <button class="row"><span class="mk idle"></span><span class="r-main"><span class="r-title">Write a 3-line haiku</span><span class="r-meta">idle · <span class="num">6h</span></span></span></button>
+                <button class="row"><span class="mk idle"></span><span class="r-main"><span class="r-title">Database design notes</span><span class="r-meta">idle · <span class="num">7h</span></span></span></button>
+              </div>
+            </div>
+
+            <div class="tier">
+              <div class="tier-h"><span class="lbl">Older</span><span class="rule"></span><span class="n num">3</span></div>
+              <button class="proj"><span class="chev">▸</span><span class="name">kimi-effort</span><span class="age num">11d</span><span class="count num">3</span></button>
+            </div>
+
+            <div class="tier">
+              <div class="tier-h"><span class="lbl">Test runs</span><span class="rule"></span><span class="n num">26</span></div>
+              <button class="proj"><span class="chev">▸</span><span class="name" style="color:var(--ink-3)">serf-e2e-*</span><span class="count num">26</span></button>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ D -->
+    <section class="spec">
+      <div class="spec-cap">
+        <div class="id"><b>D</b><span class="idea">Needs-you tier on top + dot-count rollup + strong <code>.sel</code></span></div>
+        <div class="trade">
+          Replaces the duplicate LIVE rail with a purposeful top tier that aggregates only
+          <span class="plus">Needs you (2)</span> across all projects — the one thing worth a top-of-list glance —
+          then the normal Active tree below with dot+count rollups. The selected row gets the strongest "you are
+          here" treatment (fill + blue edge + weight). <span class="plus">+ The top rail finally <em>earns</em> its
+          place: it surfaces blocked work, not a duplicate of live.</span> − A session can appear in both the
+          Needs-you tier and its project; the rollup must make that read as "shown here for triage", not a dupe.
+        </div>
+      </div>
+      <div class="frame">
+        <div class="sb">
+          <div class="sb-actions">
+            <button class="sb-act"><span class="plus">＋</span> New</button>
+            <button class="sb-act">Search <span class="k">⌘K</span></button>
+            <span class="sb-spacer"></span>
+            <button class="sb-act">Settings</button>
+          </div>
+          <div class="sb-scroll">
+
+            <div class="tier">
+              <div class="tier-h attn-h"><span class="lbl">Needs you</span><span class="rule"></span><span class="n num">2</span></div>
+              <button class="row"><span class="mk attn"><span class="x">!</span></span><span class="r-main"><span class="r-title">Audit error handling</span><span class="r-meta"><span class="attn">question</span> · serf · <span class="num">1m</span></span></span></button>
+              <button class="row"><span class="mk attn"><span class="x">!</span></span><span class="r-main"><span class="r-title">Migrate billing schema</span><span class="r-meta"><span class="attn">approval</span> · prime-radiant · <span class="num">4m</span></span></span></button>
+            </div>
+
+            <div class="tier">
+              <div class="tier-h"><span class="lbl">Active</span><span class="rule"></span></div>
+              <button class="proj"><span class="chev">▾</span><span class="name">serf</span>
+                <span class="rbadge"><span class="rb live"><span class="gl">⟳</span>2</span><span class="rb attn"><span class="gl">!</span>1</span></span>
+              </button>
+              <div class="kids">
+                <button class="row sel"><span class="mk live"></span><span class="r-main"><span class="r-title">Refactor auth token cache</span><span class="r-meta"><span class="live">working</span> · <span class="num">1:12</span></span></span></button>
+                <button class="sub"><span class="g done">✓</span><span class="s-title">trace-callers · 7 call sites</span></button>
+                <button class="sub fold"><span class="g run">⟳</span><span class="s-title">+3 subagents</span></button>
+                <button class="row"><span class="mk attn"><span class="x">!</span></span><span class="r-main"><span class="r-title">Audit error handling</span><span class="r-meta"><span class="attn">needs you</span> · <span class="num">1m</span></span></span></button>
+                <button class="row"><span class="mk live"></span><span class="r-main"><span class="r-title">Add token counters</span><span class="r-meta"><span class="live">working</span> · <span class="num">22s</span></span></span></button>
+                <button class="row"><span class="mk idle"></span><span class="r-main"><span class="r-title">Fix flaky CI</span><span class="r-meta">idle · <span class="num">3h</span></span></span></button>
+              </div>
+              <button class="proj"><span class="chev">▸</span><span class="name">prime-radiant</span>
+                <span class="rbadge"><span class="rb attn"><span class="gl">!</span>1</span></span>
+              </button>
+            </div>
+
+            <div class="tier">
+              <div class="tier-h"><span class="lbl">Recent</span><span class="rule"></span><span class="n num">9</span></div>
+              <button class="proj"><span class="chev">▾</span><span class="name">serf-docs</span><span class="age num">5h</span><span class="count num">9</span></button>
+              <div class="clu-kids" style="padding-left:var(--s2)">
+                <div class="cluster">
+                  <button class="clu-h"><span class="chev">▸</span><span class="clu-title">describe this image</span><span class="clu-x">&nbsp;×5</span><span class="count num">all idle</span></button>
+                </div>
+              </div>
+            </div>
+
+            <div class="tier">
+              <div class="tier-h"><span class="lbl">Test runs</span><span class="rule"></span><span class="n num">26</span></div>
+              <button class="proj"><span class="chev">▸</span><span class="name" style="color:var(--ink-3)">serf-e2e-*</span><span class="count num">26</span></button>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- ============ the BEFORE mini: the shipped, broken sidebar ============ -->
+  <div class="before">
+    <h2>Before — the shipped sidebar (do not ship)</h2>
+    <p class="why">
+      The recreated defect from the live screenshot: a flat <b>LIVE</b> rail at the very top
+      <b>re-lists the same live sessions</b> that appear again under their project in <b>ACTIVE</b> — the rows in the
+      outlined zones are duplicates. There is no rollup magnitude, no clustering of the repeated runs, and no
+      persistent selected row.
+    </p>
+    <div class="before-wrap">
+      <div class="frame">
+        <div class="sb">
+          <div class="sb-actions">
+            <button class="sb-act"><span class="plus">＋</span> new</button>
+            <button class="sb-act">search</button>
+            <span class="sb-spacer"></span>
+            <button class="sb-act">⚙</button>
+          </div>
+          <div class="sb-scroll">
+            <!-- flat LIVE rail (the duplicate) -->
+            <div class="tier" style="margin-top:var(--s1)">
+              <div class="live-rail-h">LIVE</div>
+              <div class="dupe">
+                <div class="b-row"><span class="bdot live"></span><span class="bt">Refactor auth token cache</span></div>
+                <div class="b-row"><span class="bdot live"></span><span class="bt">Add token counters</span></div>
+              </div>
+            </div>
+            <!-- ACTIVE tier: same sessions listed AGAIN -->
+            <div class="tier">
+              <div class="live-rail-h" style="color:var(--ink-3);letter-spacing:.12em">ACTIVE</div>
+              <button class="proj"><span class="chev">▾</span><span class="name" style="font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em">SERF</span><span class="age num">5m</span></button>
+              <div class="kids dupe">
+                <div class="b-row"><span class="bdot live"></span><span class="bt">Refactor auth token cache</span></div>
+                <div class="b-row"><span class="bdot live"></span><span class="bt">Add token counters</span></div>
+                <div class="b-row"><span class="bdot idle"></span><span class="bt">Fix flaky CI</span></div>
+              </div>
+            </div>
+            <!-- repeated-title sprawl, un-clustered -->
+            <div class="tier">
+              <div class="b-row"><span class="bdot idle"></span><span class="bt">describe this image in one sentence</span></div>
+              <div class="b-row"><span class="bdot idle"></span><span class="bt">describe this image in one sentence</span></div>
+              <div class="b-row"><span class="bdot idle"></span><span class="bt">describe this image in one sentence</span></div>
+              <div class="b-row"><span class="bdot idle"></span><span class="bt">describe this image in one sentence</span></div>
+              <div class="b-row"><span class="bdot idle"></span><span class="bt">describe this image in one sentence</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <ul class="b-annot">
+        <li><b>Duplication:</b> LIVE rail re-lists the two live SERF sessions that already show under ACTIVE → the same rows counted twice.</li>
+        <li><b>No dedup:</b> five identical "describe this image" rows sprawl with no grouping.</li>
+        <li><b>Flat rollup:</b> the project header has one dot — it can't say <em>how many</em> are live or need you.</li>
+        <li><b>No "you are here":</b> nothing marks the open session, so re-finding it after a scroll is guesswork.</li>
+        <li><b>Amateur tell:</b> ALL-CAPS-mono <code>LIVE</code> / <code>SERF</code> labels (retired by the design system).</li>
+      </ul>
+    </div>
+  </div>
+
+  <footer class="note">
+    <b>Recommendation: A as the spine (delete the LIVE rail; Active is the live home; magnitude rollup badges),
+    composed with C's repeated-title clustering and D's top "Needs you" triage tier.</b>
+    The LIVE rail's duplication is the root defect — A removes it outright, which is the cleanest model and the one
+    that scales as projects grow. A's count rollup (<span style="color:var(--ink-2)">2 ⟳ · 1 !</span>) answers
+    "how many need me" that the single dot couldn't. C's cluster is the right answer to the repeated-title sprawl and
+    drops straight into A's tree. D's "Needs you" tier is the one rail that <em>earns</em> a top-of-list spot —
+    aggregating blocked work across projects (this is also topic #11) — without re-listing live sessions. B's filter
+    chips are a strong power-user affordance and can layer on later, but a hidden filter <em>mode</em> is a worse
+    default than always-visible structure, so it's an enhancement, not the base. All four carry the same
+    triple-coded markers (round / diamond / square) and the persistent <code>.sel</code> row.
+  </footer>
+
+</div>
+</body>
+</html>

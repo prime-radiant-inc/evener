@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf mockups · #18 Multi-image</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- base design tokens + transcript component grammar -->
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ============================================================
+   TOPIC #18 (multi-image sub-list) — N-image layouts
+   Built on tokens.css. The hard-case example handles ONE inline
+   image (a neutral card with caption + provenance + lightbox).
+   N images — a generated set, several screenshots — has no layout
+   and would stack as N full cards dominating the 720px column.
+   Four directions for collapsing the set into one quiet block.
+   ============================================================ */
+
+/* gallery shell: undo the base app grid, let the page scroll */
+body{overflow:auto}
+.gallery{max-width:840px;margin:0 auto;padding:var(--s6) var(--s5) 96px}
+.page-h{margin-bottom:var(--s5)}
+.page-h h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.page-h p{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);line-height:1.6;max-width:62ch}
+.page-h .principles{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6}
+.page-h .principles b{color:var(--ink-2);font-weight:600}
+
+.alt{margin-top:var(--s6);border-top:1px solid var(--line);padding-top:var(--s5)}
+.alt-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.alt-h .badge{font-size:var(--fs-sm);font-weight:700;color:var(--bg);background:var(--ink-2);border-radius:var(--r-pill);padding:1px 9px;letter-spacing:.02em}
+.alt-h .ttl{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.cap{font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:70ch;margin-bottom:var(--s4)}
+.cap b{color:var(--ink-2);font-weight:600}
+.cap .trade{color:var(--attention)}
+/* simulated transcript viewport so each alt reads like the real product */
+.stage{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:var(--s4) var(--s5);max-width:720px}
+.stage .agent:first-child{margin-top:0}
+
+/* ---- shared: placeholder image "art" (no external files) ----
+   Each thumb is a CSS-gradient rectangle that carries its own dims
+   label, so the page renders fully offline. The gradients only
+   distinguish one shot from another — they are not the design. */
+.ph{position:relative;display:block;background:var(--surface-2);overflow:hidden;border:none}
+.ph .dims{position:absolute;right:5px;bottom:4px;font-family:var(--mono);font-size:9.5px;color:rgba(232,233,238,.82);background:rgba(14,15,19,.62);padding:0 4px;border-radius:3px;letter-spacing:0}
+.ph .kind{position:absolute;left:6px;top:5px;font-size:9px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:rgba(232,233,238,.78)}
+/* a few distinct fills — purely so thumbnails look different */
+.art1{background:linear-gradient(135deg,#1b2740,#2b3a63 60%,#37507f)}
+.art2{background:linear-gradient(135deg,#2a1f33,#46314f 55%,#5d4068)}
+.art3{background:linear-gradient(135deg,#13302b,#1f4a40 60%,#2c6657)}
+.art4{background:linear-gradient(135deg,#332518,#503a22 55%,#6b4f2c)}
+.art5{background:linear-gradient(135deg,#101826,#1c2740 65%,#243352)}
+.art6{background:linear-gradient(135deg,#241327,#3a2142 60%,#4e2c58)}
+/* a faux "screenshot" frame look for variety */
+.shot{box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
+.shot::after{content:"";position:absolute;inset:0;background:
+   repeating-linear-gradient(0deg,transparent 0 13px,rgba(255,255,255,.025) 13px 14px),
+   linear-gradient(180deg,rgba(255,255,255,.06),transparent 22px);pointer-events:none}
+
+/* ---- shared: caption line (filename · dims · provenance) ---- */
+.imeta{display:flex;align-items:baseline;gap:var(--s2);font-size:var(--fs-xs);color:var(--ink-3);line-height:1.5}
+.imeta .fn{font-family:var(--mono);font-size:10.5px;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.imeta .sep{color:var(--ink-4)}
+.imeta .dim{font-variant-numeric:tabular-nums}
+/* provenance tag — quiet, neutral by default. it states ORIGIN, not status,
+   so it never spends a status color. */
+.prov{display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--ink-3)}
+.prov .pdot{width:5px;height:5px;border-radius:50%;background:var(--ink-4);flex:none}
+.prov.user .pdot{background:var(--ink-3)}
+.prov.tool .pdot{background:var(--ink-3)}
+.prov.gen  .pdot{background:var(--ink-3)}
+
+/* =====================================================================
+   ALT A — horizontal thumbnail strip + "N images" → lightbox
+   ===================================================================== */
+.aA .strip{margin-top:var(--s3);background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:var(--s3)}
+.aA .strip-h{display:flex;align-items:baseline;gap:var(--s2);margin-bottom:var(--s2);font-size:var(--fs-sm);color:var(--ink-2)}
+.aA .strip-h b{color:var(--ink);font-weight:600}
+.aA .strip-h .ctx{color:var(--ink-3)}
+.aA .thumbs{display:flex;gap:var(--s2);overflow-x:auto;padding-bottom:2px}
+.aA .thumbs .ph{flex:none;width:104px;height:66px;border-radius:4px;cursor:pointer;transition:outline-color .1s}
+.aA .thumbs .ph:hover{outline:2px solid var(--accent);outline-offset:1px}
+.aA .thumbs .ph .dims{font-size:9px}
+.aA .strip-f{margin-top:var(--s2);font-size:var(--fs-xs);color:var(--ink-3)}
+
+/* =====================================================================
+   ALT B — contact-sheet grid (2×N) in one neutral card
+   ===================================================================== */
+.aB .sheet{margin-top:var(--s3);background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:var(--s3)}
+.aB .sheet-h{font-size:var(--fs-sm);color:var(--ink-2);margin-bottom:var(--s3)}
+.aB .sheet-h b{color:var(--ink);font-weight:600}
+.aB .grid{display:grid;grid-template-columns:1fr 1fr;gap:var(--s3)}
+.aB .cell{display:flex;flex-direction:column;gap:6px;cursor:pointer}
+.aB .cell .ph{width:100%;aspect-ratio:16/10;border-radius:4px}
+.aB .cell:hover .ph{outline:2px solid var(--accent);outline-offset:1px}
+
+/* =====================================================================
+   ALT C — primary image inline + "+N more" chip
+   ===================================================================== */
+.aC .primary{margin-top:var(--s3);display:inline-block;max-width:460px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;cursor:pointer;vertical-align:top}
+.aC .primary .ph{width:460px;max-width:100%;aspect-ratio:16/9}
+.aC .primary:hover{border-color:var(--hair)}
+.aC .primary .cap-row{display:flex;align-items:center;gap:var(--s2);padding:7px var(--s3);border-top:1px solid var(--line)}
+.aC .primary .cap-row .imeta{flex:1;min-width:0}
+.aC .morechip{display:inline-flex;align-items:center;gap:6px;flex:none;font-size:var(--fs-xs);color:var(--accent);background:var(--surface-2);border-radius:var(--r-pill);padding:3px 10px;white-space:nowrap}
+.aC .morechip .mini{display:inline-flex;gap:-3px}
+.aC .morechip .mini i{display:inline-block;width:14px;height:10px;border-radius:2px;margin-left:-4px;box-shadow:0 0 0 1px var(--surface)}
+.aC .morechip .mini i:first-child{margin-left:0}
+
+/* =====================================================================
+   ALT D — provenance-grouped (user-pasted / tool-read / generated)
+   ===================================================================== */
+.aD .grouped{margin-top:var(--s3);background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:var(--s3) var(--s4) var(--s4)}
+.aD .pgroup + .pgroup{margin-top:var(--s4)}
+.aD .pg-h{display:flex;align-items:baseline;gap:var(--s2);margin-bottom:var(--s2);font-size:var(--fs-xs);font-weight:600;color:var(--ink-2);letter-spacing:.02em}
+.aD .pg-h .pdot{width:6px;height:6px;border-radius:50%;background:var(--ink-4);flex:none;align-self:center}
+.aD .pg-h .n{font-variant-numeric:tabular-nums;color:var(--ink-3);font-weight:500}
+.aD .pg-h .hint{margin-left:auto;font-weight:400;color:var(--ink-4);font-size:10px}
+.aD .pg-row{display:flex;gap:var(--s3)}
+.aD .pg-row .ph{flex:none;width:88px;height:56px;border-radius:4px;cursor:pointer}
+.aD .pg-row .ph:hover{outline:2px solid var(--accent);outline-offset:1px}
+
+/* =====================================================================
+   shared lightbox — the deep view for every alternative
+   (blue focus ring + Esc/←/→; one containment device: the dialog)
+   ===================================================================== */
+.lb{position:fixed;inset:0;z-index:50;display:none;background:rgba(8,9,12,.86);backdrop-filter:blur(2px)}
+.lb.open{display:flex;flex-direction:column}
+.lb-bar{display:flex;align-items:center;gap:var(--s3);padding:var(--s3) var(--s5);flex:none}
+.lb-bar .imeta{flex:1;min-width:0}
+.lb-bar .imeta .fn{font-size:var(--fs-sm);color:var(--ink)}
+.lb-bar .pos{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-3);font-variant-numeric:tabular-nums}
+.lb-bar .x{font-size:18px;color:var(--ink-2);line-height:1;padding:4px 8px;border-radius:var(--r)}
+.lb-bar .x:hover{background:var(--surface);color:var(--ink)}
+.lb-stage{flex:1;display:flex;align-items:center;justify-content:center;gap:var(--s3);padding:0 var(--s4) var(--s5);min-height:0}
+.lb-nav{font-size:22px;color:var(--ink-2);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-pill);width:40px;height:40px;flex:none;display:flex;align-items:center;justify-content:center}
+.lb-nav:hover{background:var(--surface-2);color:var(--ink)}
+.lb-img{max-width:min(900px,86vw);width:760px;aspect-ratio:16/9;border-radius:var(--r);border:1px solid var(--line)}
+.lb-img .dims{font-size:11px}
+.lb-img .kind{font-size:10px}
+@media (prefers-reduced-motion:reduce){.lb{backdrop-filter:none}}
+</style>
+</head>
+<body>
+<div class="gallery">
+
+  <div class="page-h">
+    <h1>#18 — Multi-image (the N-image sub-list)</h1>
+    <p>The hard-case example nails <i>one</i> inline image: a neutral card with a caption
+       (<code>filename · dims</code>), its provenance, and a lightbox. But a generated <b>set</b> —
+       four mockups, six screenshots — has no layout, so it stacks as N full-width cards that
+       dominate the 720px reading column and bury the agent's prose. These four directions all
+       collapse the set into <b>one quiet block</b> that opens to the same lightbox.</p>
+    <div class="principles">
+      Held constant: <b>one containment device</b> (a single neutral card, never a card-of-cards);
+      <b>conversation still leads</b> — the block is subordinate to prose; the caption stays
+      <code>filename · dims · provenance</code>; <b>provenance marks origin, not status</b>, so it
+      spends <i>no</i> color (user-pasted / tool-read / generated are all neutral dots); the only
+      blue is the interactive affordance (a thumbnail to open, a "+N more"); deep view is the lightbox.
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ALT A — thumbnail strip + "N images" → lightbox w/ prev-next
+       ============================================================ -->
+  <section class="alt aA">
+    <div class="alt-h"><span class="badge">A</span><span class="ttl">Horizontal thumbnail strip → lightbox</span></div>
+    <div class="cap">The set folds to a <b>single-row strip of small thumbnails</b> headed by
+      "<b>4 images</b>", scrollable when there are many. Any thumb opens the <b>lightbox with
+      prev/next</b> (try it — arrows, Esc, click). Densest footprint of the four; the agent's prose
+      stays the loud layer right above it. <span class="trade">Trade-off:</span> 104px thumbs are too
+      small to <i>read</i> a screenshot in place — you must open the lightbox to actually see content.</div>
+
+    <div class="stage">
+      <div class="agent lead">I generated four candidate hero layouts. They share the type scale but
+        differ in how the nav and the primary action sit relative to the fold:</div>
+
+      <div class="strip">
+        <div class="strip-h"><b>4 images</b> <span class="ctx">· generated · 1536×1024 each</span></div>
+        <div class="thumbs">
+          <button class="ph art1" onclick="LB.open('A',0)"><span class="dims">1536×1024</span></button>
+          <button class="ph art2" onclick="LB.open('A',1)"><span class="dims">1536×1024</span></button>
+          <button class="ph art3" onclick="LB.open('A',2)"><span class="dims">1536×1024</span></button>
+          <button class="ph art4" onclick="LB.open('A',3)"><span class="dims">1536×1024</span></button>
+        </div>
+        <div class="strip-f">hero-a.png · hero-b.png · hero-c.png · hero-d.png &nbsp;·&nbsp; click a frame to open</div>
+      </div>
+
+      <div class="agent">Layout C keeps the CTA above the fold on a laptop without crowding the nav —
+        I'd start there.</div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ALT B — contact-sheet grid (2×N) in one neutral card
+       ============================================================ -->
+  <section class="alt aB">
+    <div class="alt-h"><span class="badge">B</span><span class="ttl">Contact-sheet grid (2×N), each captioned</span></div>
+    <div class="cap">A <b>2-column grid</b> inside one neutral card, each cell large enough to compare
+      at a glance and carrying its own <code>filename · dims · provenance</code> caption. Best when the
+      images <b>are the deliverable</b> and the user needs to evaluate them side-by-side without opening
+      each one. <span class="trade">Trade-off:</span> the tallest of the four — at 6+ images it eats real
+      column height, so it works against "conversation leads" for large sets (cap rows, then "show all N").</div>
+
+    <div class="stage">
+      <div class="agent lead">Here are the four candidates side-by-side so you can compare the fold line:</div>
+
+      <div class="sheet">
+        <div class="sheet-h"><b>Generated set</b> · 4 images</div>
+        <div class="grid">
+          <button class="cell" onclick="LB.open('B',0)">
+            <span class="ph art1"><span class="kind">Hero A</span><span class="dims">1536×1024</span></span>
+            <span class="imeta"><span class="fn">hero-a.png</span><span class="sep">·</span><span class="dim">1536×1024</span><span class="sep">·</span><span class="prov gen"><span class="pdot"></span>generated</span></span>
+          </button>
+          <button class="cell" onclick="LB.open('B',1)">
+            <span class="ph art2"><span class="kind">Hero B</span><span class="dims">1536×1024</span></span>
+            <span class="imeta"><span class="fn">hero-b.png</span><span class="sep">·</span><span class="dim">1536×1024</span><span class="sep">·</span><span class="prov gen"><span class="pdot"></span>generated</span></span>
+          </button>
+          <button class="cell" onclick="LB.open('B',2)">
+            <span class="ph art3"><span class="kind">Hero C</span><span class="dims">1536×1024</span></span>
+            <span class="imeta"><span class="fn">hero-c.png</span><span class="sep">·</span><span class="dim">1536×1024</span><span class="sep">·</span><span class="prov gen"><span class="pdot"></span>generated</span></span>
+          </button>
+          <button class="cell" onclick="LB.open('B',3)">
+            <span class="ph art4"><span class="kind">Hero D</span><span class="dims">1536×1024</span></span>
+            <span class="imeta"><span class="fn">hero-d.png</span><span class="sep">·</span><span class="dim">1536×1024</span><span class="sep">·</span><span class="prov gen"><span class="pdot"></span>generated</span></span>
+          </button>
+        </div>
+      </div>
+
+      <div class="agent">C and D are the strongest; A wastes vertical space on the logo.</div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ALT C — primary image inline + "+N more" chip
+       ============================================================ -->
+  <section class="alt aC">
+    <div class="alt-h"><span class="badge">C</span><span class="ttl">Primary inline + "+N more" chip</span></div>
+    <div class="cap">Show <b>one image at readable inline size</b> — exactly the hard-case treatment —
+      then collapse the rest behind a <b>"+3 more"</b> chip (with tiny stacked previews) that opens the
+      lightbox onto image 2. Keeps the single-image grammar intact and degrades gracefully: 1 image is
+      just the card, N images is the card + a chip. <span class="trade">Trade-off:</span> privileges one
+      image as "primary" — wrong framing when the set is a peer comparison (that's B's job).</div>
+
+    <div class="stage">
+      <div class="agent lead">Here's the first candidate full-size; the other three are variations
+        on the same grid:</div>
+
+      <div class="primary" onclick="LB.open('C',0)">
+        <span class="ph art5 shot"><span class="kind">Screenshot</span><span class="dims">2880×1620</span></span>
+        <div class="cap-row">
+          <span class="imeta"><span class="fn">dashboard-default.png</span><span class="sep">·</span><span class="dim">2880×1620</span><span class="sep">·</span><span class="prov tool"><span class="pdot"></span>tool-read</span></span>
+          <button class="morechip" onclick="event.stopPropagation();LB.open('C',1)">
+            <span class="mini"><i class="art2"></i><i class="art3"></i><i class="art4"></i></span>
+            +3 more
+          </button>
+        </div>
+      </div>
+
+      <div class="agent">The empty-state and error variants differ only in the center panel — open
+        the chip to step through them.</div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ALT D — provenance-grouped (user-pasted / tool-read / generated)
+       ============================================================ -->
+  <section class="alt aD">
+    <div class="alt-h"><span class="badge">D</span><span class="ttl">Provenance-grouped</span></div>
+    <div class="cap">One card, images <b>grouped by origin</b> — what <i>you</i> pasted, what a tool
+      <i>read</i> off disk, what the agent <i>generated</i> — each group a labeled sub-row of thumbs.
+      Answers "where did this picture come from?" at a glance, which matters when a turn mixes a
+      user screenshot, a file the agent opened, and a fresh render. <span class="trade">Trade-off:</span>
+      only earns its keep when provenance is genuinely <b>mixed</b>; a homogeneous set (all generated)
+      collapses to a single group and is just a worse strip (A).</div>
+
+    <div class="stage">
+      <div class="agent lead">I compared the screenshot you sent against the live page and rendered a
+        corrected mock:</div>
+
+      <div class="grouped">
+        <div class="pgroup">
+          <div class="pg-h"><span class="pdot"></span>You pasted <span class="n">1</span><span class="hint">from your message</span></div>
+          <div class="pg-row">
+            <button class="ph art6 shot" onclick="LB.open('D',0)"><span class="dims">1290×2796</span></button>
+          </div>
+          <div class="imeta" style="margin-top:6px"><span class="fn">IMG_4821.png</span><span class="sep">·</span><span class="dim">1290×2796</span><span class="sep">·</span><span class="prov user"><span class="pdot"></span>user-pasted</span></div>
+        </div>
+
+        <div class="pgroup">
+          <div class="pg-h"><span class="pdot"></span>Read by a tool <span class="n">2</span><span class="hint">read_file</span></div>
+          <div class="pg-row">
+            <button class="ph art5 shot" onclick="LB.open('D',1)"><span class="dims">2880×1620</span></button>
+            <button class="ph art1 shot" onclick="LB.open('D',2)"><span class="dims">1440×900</span></button>
+          </div>
+          <div class="imeta" style="margin-top:6px"><span class="fn">assets/landing-live.png, assets/nav.png</span><span class="sep">·</span><span class="prov tool"><span class="pdot"></span>tool-read</span></div>
+        </div>
+
+        <div class="pgroup">
+          <div class="pg-h"><span class="pdot"></span>Generated <span class="n">1</span><span class="hint">this turn</span></div>
+          <div class="pg-row">
+            <button class="ph art3" onclick="LB.open('D',3)"><span class="dims">1536×1024</span></button>
+          </div>
+          <div class="imeta" style="margin-top:6px"><span class="fn">landing-corrected.png</span><span class="sep">·</span><span class="dim">1536×1024</span><span class="sep">·</span><span class="prov gen"><span class="pdot"></span>generated</span></div>
+        </div>
+      </div>
+
+      <div class="agent">The corrected mock fixes the nav alignment you flagged in IMG_4821.</div>
+    </div>
+  </section>
+
+</div>
+
+<!-- ============================================================
+     shared lightbox dialog (used by all four alternatives)
+     ============================================================ -->
+<div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="Image viewer">
+  <div class="lb-bar">
+    <span class="imeta"><span class="fn" id="lb-fn">filename.png</span><span class="sep">·</span><span class="dim" id="lb-dim">0×0</span><span class="sep">·</span><span class="prov" id="lb-prov"><span class="pdot"></span><span id="lb-prov-t">generated</span></span></span>
+    <span class="pos" id="lb-pos">1 / 4</span>
+    <button class="x" id="lb-x" aria-label="Close (Esc)">✕</button>
+  </div>
+  <div class="lb-stage">
+    <button class="lb-nav" id="lb-prev" aria-label="Previous (←)">‹</button>
+    <span class="ph lb-img" id="lb-art"><span class="kind" id="lb-kind"></span><span class="dims" id="lb-dims">0×0</span></span>
+    <button class="lb-nav" id="lb-next" aria-label="Next (→)">›</button>
+  </div>
+</div>
+
+<script>
+/* Each alternative names a set; the lightbox steps within whichever set
+   was opened. art class drives the placeholder fill so the lightbox shows
+   the "same" image the thumb did. Captions stay filename · dims · provenance. */
+const SETS={
+  A:[
+    {fn:'hero-a.png',dim:'1536×1024',art:'art1',kind:'Hero A',prov:'generated'},
+    {fn:'hero-b.png',dim:'1536×1024',art:'art2',kind:'Hero B',prov:'generated'},
+    {fn:'hero-c.png',dim:'1536×1024',art:'art3',kind:'Hero C',prov:'generated'},
+    {fn:'hero-d.png',dim:'1536×1024',art:'art4',kind:'Hero D',prov:'generated'},
+  ],
+  B:[
+    {fn:'hero-a.png',dim:'1536×1024',art:'art1',kind:'Hero A',prov:'generated'},
+    {fn:'hero-b.png',dim:'1536×1024',art:'art2',kind:'Hero B',prov:'generated'},
+    {fn:'hero-c.png',dim:'1536×1024',art:'art3',kind:'Hero C',prov:'generated'},
+    {fn:'hero-d.png',dim:'1536×1024',art:'art4',kind:'Hero D',prov:'generated'},
+  ],
+  C:[
+    {fn:'dashboard-default.png',dim:'2880×1620',art:'art5',kind:'Default',prov:'tool-read'},
+    {fn:'dashboard-empty.png',  dim:'2880×1620',art:'art2',kind:'Empty',  prov:'tool-read'},
+    {fn:'dashboard-loading.png',dim:'2880×1620',art:'art3',kind:'Loading',prov:'tool-read'},
+    {fn:'dashboard-error.png',  dim:'2880×1620',art:'art4',kind:'Error',  prov:'tool-read'},
+  ],
+  D:[
+    {fn:'IMG_4821.png',          dim:'1290×2796',art:'art6',kind:'Pasted',  prov:'user-pasted'},
+    {fn:'assets/landing-live.png',dim:'2880×1620',art:'art5',kind:'Live',   prov:'tool-read'},
+    {fn:'assets/nav.png',        dim:'1440×900', art:'art1',kind:'Nav',     prov:'tool-read'},
+    {fn:'landing-corrected.png', dim:'1536×1024',art:'art3',kind:'Render',  prov:'generated'},
+  ],
+};
+const ARTS=['art1','art2','art3','art4','art5','art6'];
+const LB=(()=>{
+  const el=document.getElementById('lb');
+  const art=document.getElementById('lb-art');
+  let set='A',i=0;
+  function render(){
+    const m=SETS[set][i];
+    art.classList.remove(...ARTS); art.classList.add(m.art);
+    document.getElementById('lb-fn').textContent=m.fn;
+    document.getElementById('lb-dim').textContent=m.dim;
+    document.getElementById('lb-dims').textContent=m.dim;
+    document.getElementById('lb-kind').textContent=m.kind;
+    document.getElementById('lb-prov-t').textContent=m.prov;
+    document.getElementById('lb-pos').textContent=(i+1)+' / '+SETS[set].length;
+  }
+  function open(s,idx){set=s;i=idx;render();el.classList.add('open');document.getElementById('lb-x').focus();}
+  function close(){el.classList.remove('open');}
+  function step(d){i=(i+d+SETS[set].length)%SETS[set].length;render();}
+  document.getElementById('lb-x').onclick=close;
+  document.getElementById('lb-prev').onclick=()=>step(-1);
+  document.getElementById('lb-next').onclick=()=>step(1);
+  el.onclick=e=>{if(e.target===el)close();};
+  document.addEventListener('keydown',e=>{
+    if(!el.classList.contains('open'))return;
+    if(e.key==='Escape')close();
+    else if(e.key==='ArrowLeft')step(-1);
+    else if(e.key==='ArrowRight')step(1);
+  });
+  return {open};
+})();
+</script>
+</body>
+</html>

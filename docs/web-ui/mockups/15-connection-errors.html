@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf mockups · #15 Connection &amp; main-agent errors</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- base design tokens + transcript component grammar -->
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ============================================================
+   TOPIC #15 — Connection & main-agent errors
+   Built on tokens.css. The base sheet defines the transcript
+   grammar (.you/.agent/.livebar/.composer); this file undoes the
+   app grid for a scrolling gallery and adds only this topic's
+   error treatments.
+
+   Three failures the shipped UI conflates into one red row:
+     1. TRANSPORT — the daemon/appwire connection dropped. Serf
+        lost the agent. (Today: "[error] stream failed: appwire
+        unavailable" — a red row INSIDE the transcript, identical
+        to a failed tool. The user can't tell "Serf lost the
+        agent" from "the agent's tool failed".)
+     2. TURN — the provider/model errored mid-turn. The turn ITSELF
+        failed. (Today: no chrome-level promotion; it reads like
+        any other red line, with no clear Retry.)
+     3. TRANSIENT — a retry / rate-limit / backoff. NOT a failure;
+        the system is recovering. (Today: rendered red, or a silent
+        gap — a false stall or false failure.)
+
+   Design grammar in play (design-system §2, §4, §7):
+     · red = BROKE, full stop. A retry that's recovering is NOT red.
+     · transport errors belong in the CHROME (top bar / liveness
+       bar), not the scroll flow — Serf, not the agent, is what
+       failed.
+     · the human-readable summary is the PRIMARY line; the raw
+       "[error] …" / stack / request-id is mono detail on expand.
+     · one containment device per element.
+   ============================================================ */
+
+/* gallery shell: undo the base app grid, let the page scroll */
+body{overflow:auto}
+.gallery{max-width:900px;margin:0 auto;padding:var(--s6) var(--s5) 96px}
+.page-h{margin-bottom:var(--s5)}
+.page-h h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.page-h p{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);line-height:1.6;max-width:66ch}
+.page-h .probs{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);line-height:1.65;max-width:80ch}
+.page-h .probs b{color:var(--ink-2);font-weight:600}
+.page-h .key{display:flex;flex-wrap:wrap;gap:var(--s2) var(--s4);margin-top:var(--s3)}
+.page-h .key span{font-size:var(--fs-xs);color:var(--ink-3);display:inline-flex;align-items:center;gap:6px}
+.page-h .key i{width:9px;height:9px;border-radius:2px;flex:none;font-style:normal}
+.k-err{background:var(--error)} .k-attn{background:var(--attention)} .k-live{background:var(--accent)} .k-done{background:var(--done)}
+
+.alt{margin-top:var(--s6);border-top:1px solid var(--line);padding-top:var(--s5)}
+.alt-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.alt-h .badge{font-size:var(--fs-sm);font-weight:700;color:var(--bg);background:var(--ink-2);border-radius:var(--r-pill);padding:1px 9px;letter-spacing:.02em}
+.alt-h .ttl{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.cap{font-size:var(--fs-sm);color:var(--ink-3);line-height:1.6;max-width:84ch;margin-bottom:var(--s4)}
+.cap b{color:var(--ink-2);font-weight:600}
+.cap .trade{color:var(--attention)}
+.case-l{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase;margin:var(--s5) 0 var(--s2)}
+
+/* each alt renders inside a faithful mini-app frame: top bar (chrome),
+   transcript, liveness bar, composer — so chrome-level promotion is
+   judgeable against the in-flow alternatives. ONE device: the frame border. */
+.frame{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--bg);max-width:760px;display:flex;flex-direction:column}
+.f-top{display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4);height:42px;border-bottom:1px solid var(--line);flex:none}
+.f-top .ttl{font-size:var(--fs-sm);font-weight:600;color:var(--ink)}
+.f-top .ov{margin-left:auto;font-size:var(--fs-xs);color:var(--ink-3)}
+.f-body{padding:var(--s4) var(--s5);min-height:60px}
+.f-body .you:first-child,.f-body .agent:first-child{margin-top:0}
+.f-live{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s4);border-top:1px solid var(--line);background:#101117;font-size:var(--fs-sm);color:var(--ink-2);flex:none}
+.f-live .d{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:breathe 2.6s ease-in-out infinite;flex:none}
+.f-live .el{color:var(--ink);font-variant-numeric:tabular-nums}
+.f-comp{border-top:1px solid var(--line);padding:var(--s2) var(--s3);background:#101117;flex:none;display:flex;align-items:center;gap:var(--s2)}
+.f-comp .ta{flex:1;font-size:var(--fs-sm);color:var(--ink-3)}
+.f-comp .send{background:var(--accent);color:#0a0c14;font-weight:600;padding:5px 13px;border-radius:var(--r);font-size:var(--fs-xs)}
+.f-comp .send.dim{background:var(--surface-2);color:var(--ink-3);font-weight:500}
+
+/* shared transcript primitives (from the golden / tokens) */
+.you{display:flex;gap:var(--s3);align-items:baseline}
+.you .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none;width:34px;padding-top:1px}
+.you .q{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+.agent{margin-top:var(--s4);font-size:var(--fs-md);line-height:1.62;color:var(--ink)}
+.agent.lead{margin-top:var(--s3)}
+.agent code{font-family:var(--mono);font-size:12.5px;color:var(--ink);border-bottom:1px solid var(--hair)}
+.toolline{margin-top:var(--s4);font-size:var(--fs-sm);color:var(--ink-3);display:flex;gap:var(--s2);align-items:baseline}
+.toolline .ok{color:var(--done);font-family:var(--mono);font-size:var(--fs-xs)}
+.toolline .sum b{color:var(--ink-2);font-weight:600}
+
+/* =====================================================================
+   "BEFORE" — the shipped tell, reproduced faithfully (the live crop)
+   A transport drop ("appwire unavailable") renders as a RED ROW inside
+   the transcript, byte-identical to a failed tool. There is no Retry,
+   no chrome promotion, and a transient retry would render the same way.
+   ===================================================================== */
+.before-wrap{margin-top:var(--s5);background:#15110f;border:1px solid #3a2a22;border-radius:var(--r);padding:var(--s4) var(--s5);max-width:760px}
+.before-tag{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-xs);font-weight:700;color:var(--error);letter-spacing:.04em;text-transform:uppercase;margin-bottom:var(--s3)}
+.before-tag .dot{width:6px;height:6px;border-radius:50%;background:var(--error)}
+/* the shipped red log-row, with its rail, as in crop-liveness.png */
+.legacy-err{margin-top:var(--s4);padding-left:11px;position:relative;font-family:var(--mono);font-size:var(--fs-sm);color:var(--error)}
+.legacy-err::before{content:"";position:absolute;left:0;top:3px;bottom:3px;width:2px;background:var(--error);border-radius:2px}
+.before-note{margin-top:var(--s4);font-size:var(--fs-xs);color:var(--ink-3);line-height:1.6}
+.before-note b{color:var(--ink-2);font-weight:600}
+
+/* =====================================================================
+   ALT A — chrome reconnect banner + queued send
+   Transport failure leaves the scroll flow entirely: a full-width banner
+   docks under the top bar (amber while reconnecting, red only if it gives
+   up). The composer flips to a queue: what you type is held and flushed
+   on reconnect. Turn failures get an inline red end-cap with Retry.
+   ===================================================================== */
+.cbanner{display:flex;align-items:center;gap:var(--s3);padding:var(--s2) var(--s4);font-size:var(--fs-sm);border-bottom:1px solid;flex:none}
+.cbanner .ic{font-family:var(--mono);font-size:var(--fs-xs);flex:none}
+.cbanner .msg{color:var(--ink)}
+.cbanner .sub{color:var(--ink-3);font-size:var(--fs-xs)}
+.cbanner .act{margin-left:auto;display:flex;gap:var(--s2)}
+.cbanner .btn{font-size:var(--fs-xs);padding:3px 9px;border-radius:var(--r)}
+/* reconnecting = AMBER (recovering, not broken) */
+.cbanner.reconnecting{background:var(--attention-soft);border-color:rgba(226,176,106,.28)}
+.cbanner.reconnecting .ic{color:var(--attention)}
+.cbanner.reconnecting .btn{color:var(--ink-2)} .cbanner.reconnecting .btn:hover{background:rgba(226,176,106,.14)}
+/* gave-up = RED (it broke) */
+.cbanner.lost{background:rgba(247,118,142,.08);border-color:rgba(247,118,142,.28)}
+.cbanner.lost .ic{color:var(--error)}
+.cbanner.lost .btn.retry{color:var(--bg);background:var(--accent);font-weight:600}
+/* the breathing dot doubles as the reconnect spinner here */
+.cbanner .d{width:7px;height:7px;border-radius:50%;background:var(--attention);animation:breathe 2.6s ease-in-out infinite;flex:none}
+.queued-note{display:flex;align-items:center;gap:var(--s2);font-size:var(--fs-xs);color:var(--attention);margin-right:var(--s2)}
+.queued-note .q{font-style:italic;color:var(--ink-3);font-family:var(--sans)}
+
+/* turn-level red end-cap with Retry (shared idea, anchors Alt A & is the focus of Alt C) */
+.turn-end{margin-top:var(--s4);padding-left:11px;position:relative}
+.turn-end::before{content:"";position:absolute;left:0;top:3px;bottom:3px;width:2px;background:var(--error);border-radius:2px}
+.turn-end .head{display:flex;align-items:baseline;gap:var(--s2)}
+.turn-end .x{color:var(--error);font-family:var(--mono);font-size:var(--fs-xs);flex:none}
+.turn-end .summary{font-size:var(--fs-base);color:var(--ink);font-weight:500}
+.turn-end .where{font-size:var(--fs-xs);color:var(--ink-3);margin-left:var(--s2)}
+.turn-end .actions{margin-top:var(--s2);display:flex;align-items:center;gap:var(--s3)}
+.turn-end .retry{font-size:var(--fs-sm);color:var(--bg);background:var(--accent);font-weight:600;padding:4px 12px;border-radius:var(--r)}
+.turn-end .ghost{font-size:var(--fs-sm);color:var(--ink-3)} .turn-end .ghost:hover{color:var(--ink-2)}
+.turn-end .detail{display:none;margin-top:var(--s3);background:#101117;border:1px solid var(--line);border-radius:var(--r);padding:var(--s2) var(--s3)}
+.turn-end.open .detail{display:block}
+.turn-end .detail pre{font-family:var(--mono);font-size:11px;color:var(--ink-3);white-space:pre-wrap;line-height:1.6;margin:0}
+.turn-end .detail .er{color:var(--error)}
+
+/* =====================================================================
+   ALT B — liveness-bar takeover
+   The pinned liveness strip (already always-reachable, never scrolls off)
+   is the home for connection state. It is the most honest place: liveness
+   is exactly the question "is Serf still attached to the agent?". On a
+   drop it goes amber "Reconnecting…"; on give-up red "Connection lost".
+   Transient provider retries also surface here, neutral.
+   ===================================================================== */
+.f-live.reconnecting{background:rgba(226,176,106,.08);color:var(--ink);border-top-color:rgba(226,176,106,.28)}
+.f-live.reconnecting .d{background:var(--attention)}
+.f-live.lost{background:rgba(247,118,142,.08);color:var(--ink);border-top-color:rgba(247,118,142,.28)}
+.f-live.lost .d{background:var(--error);animation:none}
+.f-live .state{font-weight:500}
+.f-live .state.attn{color:var(--attention)} .f-live .state.err{color:var(--error)}
+.f-live .retry{margin-left:auto;font-size:var(--fs-xs);color:var(--bg);background:var(--accent);font-weight:600;padding:3px 10px;border-radius:var(--r)}
+.f-live .ghost{margin-left:auto;font-size:var(--fs-xs);color:var(--ink-3)}
+/* transient: neutral, the recovering case lives in liveness, NOT the transcript */
+.f-live.retrying .d{background:var(--accent)}
+.f-live.retrying .state{color:var(--ink-2);font-weight:400}
+
+/* =====================================================================
+   ALT C — turn-level red end-cap + Retry (transcript-native turn failure)
+   The provider/model error is genuinely part of the turn, so it stays in
+   the flow — but as a deliberate END-CAP that closes the failed turn with
+   a human summary, a Retry, and collapsed raw detail. Distinct from a
+   failed TOOL (which is a rail mid-turn): this caps the whole turn.
+   ===================================================================== */
+/* uses the shared .turn-end above. The contrast row here is a failed TOOL,
+   to prove the two read differently. */
+.toolerr{margin-top:var(--s4);padding-left:11px;position:relative}
+.toolerr::before{content:"";position:absolute;left:0;top:3px;height:14px;width:2px;background:var(--error);border-radius:2px}
+.toolerr .head{display:flex;gap:var(--s2);align-items:baseline}
+.toolerr .x{color:var(--error);font-family:var(--mono);font-size:var(--fs-xs)}
+.toolerr .lbl{font-size:var(--fs-base);color:var(--ink)}
+.toolerr .cmd{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-3);margin-left:auto}
+
+/* transient retry chip — neutral/amber, inline, NOT red. (Alt C's transient case) */
+.retrychip{margin-top:var(--s4);display:inline-flex;align-items:center;gap:var(--s2);font-size:var(--fs-sm);color:var(--ink-3)}
+.retrychip .d{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:breathe 2.6s ease-in-out infinite;flex:none}
+.retrychip b{color:var(--ink-2);font-weight:600}
+.retrychip .n{font-variant-numeric:tabular-nums;color:var(--ink-2)}
+
+/* =====================================================================
+   ALT D — error taxonomy card + collapsed retry counter
+   ONE card classifies WHAT broke: transport (Serf↔daemon), provider
+   (model/API), harness (tool runner), or cancelled (you interrupted).
+   The taxonomy makes the transport-vs-turn distinction the headline, not
+   a guess. A run of transient retries collapses to ONE counter line that
+   only turns red if the retries are EXHAUSTED.
+   ===================================================================== */
+.taxcard{margin-top:var(--s4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;max-width:560px}
+.taxcard.broke{border-color:rgba(247,118,142,.3)}
+.taxcard .tc-head{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s3);border-bottom:1px solid var(--line)}
+.taxcard .tc-kind{font-size:var(--fs-xs);font-weight:700;letter-spacing:.04em;text-transform:uppercase;display:inline-flex;align-items:center;gap:6px}
+.taxcard .tc-kind .g{font-family:var(--mono);font-size:var(--fs-xs)}
+.tc-kind.transport{color:var(--error)} .tc-kind.provider{color:var(--error)} .tc-kind.harness{color:var(--error)}
+.tc-kind.cancelled{color:var(--ink-3)}  /* cancelled is NOT an error — neutral */
+.taxcard .tc-scope{margin-left:auto;font-size:var(--fs-xs);color:var(--ink-3)}
+.taxcard .tc-body{padding:var(--s3)}
+.taxcard .tc-summary{font-size:var(--fs-base);color:var(--ink);font-weight:500;line-height:1.5}
+.taxcard .tc-hint{margin-top:6px;font-size:var(--fs-xs);color:var(--ink-3);line-height:1.55}
+.taxcard .tc-actions{margin-top:var(--s3);display:flex;align-items:center;gap:var(--s3)}
+.taxcard .tc-retry{font-size:var(--fs-sm);color:var(--bg);background:var(--accent);font-weight:600;padding:4px 12px;border-radius:var(--r)}
+.taxcard .tc-more{font-size:var(--fs-sm);color:var(--ink-3);margin-left:auto} .taxcard .tc-more:hover{color:var(--ink-2)}
+.taxcard .tc-detail{display:none;border-top:1px solid var(--line);padding:var(--s2) var(--s3);background:#101117}
+.taxcard.open .tc-detail{display:block}
+.taxcard .tc-detail pre{font-family:var(--mono);font-size:11px;color:var(--ink-3);white-space:pre-wrap;line-height:1.6;margin:0}
+.taxcard .tc-detail .er{color:var(--error)} .taxcard .tc-detail .id{color:var(--ink-2)}
+/* collapsed retry counter — neutral until exhausted */
+.retrycount{margin-top:var(--s4);display:inline-flex;align-items:center;gap:var(--s2);font-size:var(--fs-sm);color:var(--ink-3)}
+.retrycount .d{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:breathe 2.6s ease-in-out infinite;flex:none}
+.retrycount .n{font-variant-numeric:tabular-nums;color:var(--ink-2)}
+.retrycount .chev{font-size:9px;color:var(--ink-4);margin-left:2px}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="gallery">
+
+  <header class="page-h">
+    <h1>Mockup #15 — Connection &amp; main-agent errors</h1>
+    <p>Three things break in different ways, and the shipped UI shows them <b>identically</b>:
+      a red row in the transcript. This page separates them so a glance answers the only question
+      that matters — <b>did Serf lose the agent, did the turn fail, or is the system just
+      recovering?</b></p>
+    <p class="probs"><b>What's wrong today</b> (see <code>crop-liveness.png</code>): a transport
+      drop renders as <code>[error] stream failed: appwire unavailable</code> — a <b>red row inside
+      the transcript</b>, byte-identical to a failed tool, so you can't tell "Serf lost the agent"
+      from "the agent's tool failed". A <b>turn failure</b> (provider/model error) gets no
+      chrome-level promotion and no obvious Retry. And a <b>transient retry / rate-limit</b> renders
+      red — or as a silent gap — a <b>false stall or false failure</b>.
+      <br>Targets: <b>transport → chrome (not a row) · turn failure → promoted + Retry · transient →
+      neutral/amber, never red · human summary primary, raw <code>[error]</code> on expand.</b></p>
+    <div class="key">
+      <span><i class="k-err"></i>red = broke (transport lost / turn failed / tool failed)</span>
+      <span><i class="k-attn"></i>amber = recovering / needs you (reconnecting, retrying)</span>
+      <span><i class="k-live"></i>blue = live / the action to take (Retry)</span>
+      <span><i class="k-done"></i>neutral = settled / a non-failure (cancelled)</span>
+    </div>
+  </header>
+
+  <!-- =====================================================================
+       BEFORE — the shipped tell (the crop), reproduced faithfully
+       ===================================================================== -->
+  <div class="before-wrap">
+    <span class="before-tag"><span class="dot"></span>Before · shipped today</span>
+    <div class="you"><span class="tag">You</span><span class="q">Run the migration across all 240 shards.</span></div>
+    <div class="agent lead">Starting the migration — applying the schema change shard by shard.</div>
+    <div class="legacy-err">[error] stream failed: appwire unavailable</div>
+    <div class="before-note"><b>Why it's wrong:</b> this is a <b>transport</b> failure — Serf's
+      connection to the daemon dropped — but it's drawn exactly like a failed tool: a red mono row in
+      the flow. There is <b>no Retry</b>, <b>no reconnect state</b>, and nothing tells you the agent
+      may still be running on the daemon. A transient retry that's about to recover would render the
+      same red row, manufacturing a failure that isn't one.</div>
+  </div>
+
+  <!-- =====================================================================
+       ALT A — chrome reconnect banner + queued send
+       ===================================================================== -->
+  <section class="alt aA">
+    <div class="alt-h"><span class="badge">A</span><span class="ttl">Chrome reconnect banner + queued send</span></div>
+    <p class="cap">Transport failure <b>leaves the transcript entirely</b> and docks as a full-width
+      banner under the top bar — <b>amber while reconnecting</b> (recovering, not broken), red only if
+      it gives up. The composer flips to a <b>queue</b>: what you type is held and flushed on
+      reconnect, so you're never typing into a dead socket. A <b>turn</b> failure is separate — an
+      inline red end-cap with Retry. Connection is chrome; the turn is content.
+      <span class="trade">Tradeoff: a persistent banner steals vertical space and can feel alarming if
+      reconnects are frequent; needs a quick-settle so a 1-second blip doesn't flash the whole
+      banner.</span></p>
+
+    <div class="case-l">1 · Daemon disconnect — reconnecting (amber chrome, agent untouched)</div>
+    <div class="frame">
+      <div class="f-top"><span class="ttl">Run the migration across all 240 shards</span><span class="ov">Details ⋯</span></div>
+      <div class="cbanner reconnecting">
+        <span class="d"></span>
+        <span class="msg">Reconnecting to daemon…</span>
+        <span class="sub">the agent keeps running on the daemon · lost for 4s</span>
+        <span class="act"><button class="btn">Reconnect now</button></span>
+      </div>
+      <div class="f-body">
+        <div class="you"><span class="tag">You</span><span class="q">Run the migration across all 240 shards.</span></div>
+        <div class="agent lead">Starting the migration — applying the schema change shard by shard.</div>
+        <div class="toolline"><span class="ok">✓</span><span class="sum"><b>migrate</b> · shards 1–38 done</span></div>
+      </div>
+      <div class="f-comp">
+        <span class="queued-note"><span>1 queued</span><span class="q">"pause after shard 100"</span></span>
+        <span class="ta">Held until reconnect…</span>
+        <button class="send dim">Queue ↵</button>
+      </div>
+    </div>
+
+    <div class="case-l">2 · Main-agent turn failure — promoted with Retry (red end-cap)</div>
+    <div class="frame">
+      <div class="f-top"><span class="ttl">Run the migration across all 240 shards</span><span class="ov">Details ⋯</span></div>
+      <div class="f-body">
+        <div class="agent">Shards 1–112 migrated cleanly. Continuing with shard 113…</div>
+        <div class="turn-end open">
+          <div class="head"><span class="x">✕</span><span class="summary">The turn failed — the model returned a server error.</span><span class="where">provider · gpt-5.5</span></div>
+          <div class="actions"><button class="retry">Retry turn</button><button class="ghost" onclick="this.closest('.turn-end').classList.toggle('open')">Hide details</button></div>
+          <div class="detail"><pre><span class="er">[error]</span> openai: 500 internal_server_error
+request-id: req_8fa1c…  ·  after 4 retries  ·  model gpt-5.5</pre></div>
+        </div>
+      </div>
+      <div class="f-live"><span class="d" style="background:var(--ink-4);animation:none"></span><span class="state err">turn failed</span><span class="el">· idle</span></div>
+      <div class="f-comp"><span class="ta">Message the agent…</span><button class="send">Send ↵</button></div>
+    </div>
+
+    <div class="case-l">3 · Transient retry — neutral, in the liveness bar (no false failure)</div>
+    <div class="frame">
+      <div class="f-top"><span class="ttl">Run the migration across all 240 shards</span><span class="ov">Details ⋯</span></div>
+      <div class="f-body">
+        <div class="agent">Migrating shards in batches of 40 to stay under the rate limit.</div>
+        <div class="toolline"><span class="ok">✓</span><span class="sum"><b>migrate</b> · shards 1–80 done</span></div>
+      </div>
+      <div class="f-live"><span class="d"></span>working · <span class="el">1:48</span> · <span class="state attn">rate-limited, retrying in 3s (2/10)</span></div>
+      <div class="f-comp"><span class="ta">Message the agent…</span><button class="send">Send ↵</button></div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       ALT B — liveness-bar takeover
+       ===================================================================== -->
+  <section class="alt aB">
+    <div class="alt-h"><span class="badge">B</span><span class="ttl">Liveness-bar takeover</span></div>
+    <p class="cap">The pinned liveness strip is <b>already</b> the always-reachable home for "is the
+      agent alive?" — and connection state is exactly that question for Serf↔daemon. So put all
+      connection state there: amber <b>"Reconnecting…"</b> on a drop, red <b>"Connection lost"</b> with
+      a Retry if it gives up, and a neutral <b>"retrying"</b> for transient provider backoff. Nothing
+      touches the transcript; the scroll stays pure conversation. Turn failures still get the inline
+      end-cap (they're content).
+      <span class="trade">Tradeoff: the liveness bar is at the <i>bottom</i>; a user reading scrolled-up
+      history may not notice the connection died. Pair with a one-shot toast or a top-bar dot for
+      off-screen cases.</span></p>
+
+    <div class="case-l">1 · Daemon disconnect — reconnecting (amber liveness)</div>
+    <div class="frame">
+      <div class="f-top"><span class="ttl">Run the migration across all 240 shards</span><span class="ov">Details ⋯</span></div>
+      <div class="f-body">
+        <div class="you"><span class="tag">You</span><span class="q">Run the migration across all 240 shards.</span></div>
+        <div class="agent lead">Starting the migration — applying the schema change shard by shard.</div>
+        <div class="toolline"><span class="ok">✓</span><span class="sum"><b>migrate</b> · shards 1–38 done</span></div>
+      </div>
+      <div class="f-live reconnecting"><span class="d"></span><span class="state attn">Reconnecting to daemon…</span><span class="el" style="margin-left:6px">lost 4s ago</span><button class="ghost">the agent is still running →</button></div>
+      <div class="f-comp"><span class="ta">Messages will queue until reconnect…</span><button class="send dim">Queue ↵</button></div>
+    </div>
+
+    <div class="case-l">2 · Connection lost — gave up (red liveness, Retry in the chrome)</div>
+    <div class="frame">
+      <div class="f-top"><span class="ttl">Run the migration across all 240 shards</span><span class="ov">Details ⋯</span></div>
+      <div class="f-body">
+        <div class="agent">Shards 1–38 migrated. Working on the next batch…</div>
+        <div class="toolline"><span class="ok">✓</span><span class="sum"><b>migrate</b> · shards 1–38 done</span></div>
+      </div>
+      <div class="f-live lost"><span class="d"></span><span class="state err">Connection lost</span><span class="el" style="margin-left:6px">retried 6×, gave up</span><button class="retry">Reconnect</button></div>
+      <div class="f-comp"><span class="ta">Reconnect to send…</span><button class="send dim">Send ↵</button></div>
+    </div>
+
+    <div class="case-l">3 · Transient provider retry — neutral liveness (it's just working)</div>
+    <div class="frame">
+      <div class="f-top"><span class="ttl">Run the migration across all 240 shards</span><span class="ov">Details ⋯</span></div>
+      <div class="f-body">
+        <div class="agent">Migrating shards in batches of 40 to stay under the rate limit.</div>
+        <div class="toolline"><span class="ok">✓</span><span class="sum"><b>migrate</b> · shards 1–80 done</span></div>
+      </div>
+      <div class="f-live retrying"><span class="d"></span><span class="state">working · provider busy, retrying (2/10)</span><span class="el" style="margin-left:auto">1:48</span></div>
+      <div class="f-comp"><span class="ta">Message the agent…</span><button class="send">Send ↵</button></div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       ALT C — turn-level red end-cap + Retry
+       ===================================================================== -->
+  <section class="alt aC">
+    <div class="alt-h"><span class="badge">C</span><span class="ttl">Turn-level red end-cap + Retry</span></div>
+    <p class="cap">A provider/model error genuinely belongs to the <b>turn</b>, so keep it in the flow —
+      but render it as an explicit <b>end-cap</b> that closes the failed turn: a sans human summary as
+      the primary line, a blue <b>Retry turn</b>, and the raw <code>[error]</code> / request-id folded
+      into mono detail on expand. It reads differently from a failed <b>tool</b> (a red rail
+      mid-turn): the end-cap caps the whole turn. Transport still goes to the chrome; transient retries
+      are a neutral inline chip, never red.
+      <span class="trade">Tradeoff: a turn that fails <i>after</i> useful partial work risks burying
+      that work above the end-cap; the summary should name what completed ("112 of 240 shards done")
+      so Retry resumes, not restarts.</span></p>
+
+    <div class="case-l">1 · Failed TOOL vs failed TURN — the two must read differently</div>
+    <div class="frame">
+      <div class="f-top"><span class="ttl">Run the migration across all 240 shards</span><span class="ov">Details ⋯</span></div>
+      <div class="f-body">
+        <div class="agent">Probing shard 113 before migrating it.</div>
+        <!-- failed TOOL: a rail mid-turn, the agent recovers and continues -->
+        <div class="toolerr"><div class="head"><span class="x">✕</span><span class="lbl">Couldn't reach shard 113 — connection refused</span><span class="cmd">psql shard-113</span></div></div>
+        <div class="agent">Shard 113's host is down. Skipping it and continuing with 114–240; I'll flag 113 at the end.</div>
+        <div class="toolline"><span class="ok">✓</span><span class="sum"><b>migrate</b> · shards 114–240 done</span></div>
+        <!-- failed TURN: the whole turn dies, end-cap closes it -->
+        <div class="turn-end">
+          <div class="head"><span class="x">✕</span><span class="summary">The turn failed — the model stream ended unexpectedly.</span><span class="where">provider · context length exceeded</span></div>
+          <div class="actions"><button class="retry">Retry turn</button><button class="ghost" onclick="this.closest('.turn-end').classList.toggle('open')">Show raw error</button></div>
+          <div class="detail"><pre><span class="er">[error]</span> stream closed: max_tokens exceeded (input 198k / 200k)
+request-id: req_2c90b…  ·  model gpt-5.5  ·  239 of 240 shards completed before failure</pre></div>
+        </div>
+      </div>
+      <div class="f-live"><span class="d" style="background:var(--ink-4);animation:none"></span><span class="state err">turn failed</span><span class="el">· idle</span></div>
+      <div class="f-comp"><span class="ta">Message the agent…</span><button class="send">Send ↵</button></div>
+    </div>
+
+    <div class="case-l">2 · Daemon disconnect stays in the chrome (NOT an end-cap)</div>
+    <div class="frame">
+      <div class="f-top"><span class="ttl">Run the migration across all 240 shards</span><span class="ov">Details ⋯</span></div>
+      <div class="f-body">
+        <div class="agent">Migrating the remaining shards…</div>
+        <div class="toolline"><span class="ok">✓</span><span class="sum"><b>migrate</b> · shards 1–38 done</span></div>
+      </div>
+      <div class="f-live reconnecting"><span class="d"></span><span class="state attn">Reconnecting to daemon…</span><span class="el" style="margin-left:6px">agent still running · lost 4s ago</span></div>
+      <div class="f-comp"><span class="ta">Messages will queue…</span><button class="send dim">Queue ↵</button></div>
+    </div>
+
+    <div class="case-l">3 · Transient retry — a neutral inline chip (never red, never a gap)</div>
+    <div class="frame">
+      <div class="f-top"><span class="ttl">Run the migration across all 240 shards</span><span class="ov">Details ⋯</span></div>
+      <div class="f-body">
+        <div class="agent">Migrating shards in batches of 40 to stay under the rate limit.</div>
+        <div class="retrychip"><span class="d"></span>Provider was busy — <b>retrying</b> automatically <span class="n">(2/10)</span>, next in 3s</div>
+        <div class="toolline"><span class="ok">✓</span><span class="sum"><b>migrate</b> · shards 1–80 done</span></div>
+      </div>
+      <div class="f-live"><span class="d"></span>working · <span class="el">1:48</span></div>
+      <div class="f-comp"><span class="ta">Message the agent…</span><button class="send">Send ↵</button></div>
+    </div>
+  </section>
+
+  <!-- =====================================================================
+       ALT D — error taxonomy card + collapsed retry counter
+       ===================================================================== -->
+  <section class="alt aD">
+    <div class="alt-h"><span class="badge">D</span><span class="ttl">Error taxonomy card + collapsed retry counter</span></div>
+    <p class="cap">One card whose <b>headline is the classification</b>: TRANSPORT (Serf↔daemon),
+      PROVIDER (model/API), HARNESS (tool runner), or CANCELLED (you interrupted — neutral, not an
+      error). Naming the kind makes the transport-vs-turn distinction explicit instead of leaving the
+      user to infer it from a red row. Each kind carries the right action (Reconnect vs Retry turn) and
+      folds its raw <code>[error]</code> + request-id on expand. A run of transient retries collapses
+      to <b>one counter line</b> that only turns red when retries are <b>exhausted</b>.
+      <span class="trade">Tradeoff: a card is the heaviest device here — more chrome than a transport
+      drop sometimes warrants; reserve the full card for genuine breakage and keep transient retries as
+      the one-line counter.</span></p>
+
+    <div class="case-l">1 · TRANSPORT card — daemon dropped (Reconnect; agent may still run)</div>
+    <div class="frame">
+      <div class="f-top"><span class="ttl">Run the migration across all 240 shards</span><span class="ov">Details ⋯</span></div>
+      <div class="f-body">
+        <div class="agent">Starting the migration — applying the schema change shard by shard.</div>
+        <div class="taxcard broke">
+          <div class="tc-head"><span class="tc-kind transport"><span class="g">⊘</span>Transport</span><span class="tc-scope">Serf ↔ daemon</span></div>
+          <div class="tc-body">
+            <div class="tc-summary">Serf lost its connection to the daemon.</div>
+            <div class="tc-hint">The agent may still be running there — reconnecting won't restart it.</div>
+            <div class="tc-actions"><button class="tc-retry">Reconnect</button><button class="tc-more" onclick="this.closest('.taxcard').classList.toggle('open')">Show raw error</button></div>
+          </div>
+          <div class="tc-detail"><pre><span class="er">[error]</span> stream failed: appwire unavailable
+<span class="id">conn-id:</span> ws_4b2f…  ·  last frame 4s ago  ·  retry 1/6</pre></div>
+        </div>
+      </div>
+      <div class="f-live reconnecting"><span class="d"></span><span class="state attn">Reconnecting…</span></div>
+      <div class="f-comp"><span class="ta">Messages will queue…</span><button class="send dim">Queue ↵</button></div>
+    </div>
+
+    <div class="case-l">2 · PROVIDER card — the turn failed (Retry turn)</div>
+    <div class="frame">
+      <div class="f-top"><span class="ttl">Run the migration across all 240 shards</span><span class="ov">Details ⋯</span></div>
+      <div class="f-body">
+        <div class="agent">Shards 1–112 migrated cleanly. Continuing with shard 113…</div>
+        <div class="taxcard broke">
+          <div class="tc-head"><span class="tc-kind provider"><span class="g">✕</span>Provider</span><span class="tc-scope">model · gpt-5.5</span></div>
+          <div class="tc-body">
+            <div class="tc-summary">The turn failed — the model returned a server error.</div>
+            <div class="tc-hint">112 of 240 shards completed before the failure; Retry resumes from shard 113.</div>
+            <div class="tc-actions"><button class="tc-retry">Retry turn</button><button class="tc-more" onclick="this.closest('.taxcard').classList.toggle('open')">Show raw error</button></div>
+          </div>
+          <div class="tc-detail"><pre><span class="er">[error]</span> openai: 500 internal_server_error
+<span class="id">request-id:</span> req_8fa1c…  ·  after 4 retries  ·  model gpt-5.5</pre></div>
+        </div>
+      </div>
+      <div class="f-live"><span class="d" style="background:var(--ink-4);animation:none"></span><span class="state err">turn failed</span><span class="el">· idle</span></div>
+      <div class="f-comp"><span class="ta">Message the agent…</span><button class="send">Send ↵</button></div>
+    </div>
+
+    <div class="case-l">3 · CANCELLED card is neutral — interrupting is not an error</div>
+    <div class="frame">
+      <div class="f-top"><span class="ttl">Run the migration across all 240 shards</span><span class="ov">Details ⋯</span></div>
+      <div class="f-body">
+        <div class="agent">Migrating shard 41…</div>
+        <div class="taxcard">
+          <div class="tc-head"><span class="tc-kind cancelled"><span class="g">■</span>Cancelled</span><span class="tc-scope">you interrupted</span></div>
+          <div class="tc-body">
+            <div class="tc-summary" style="color:var(--ink-2);font-weight:400">You stopped the turn after shard 40.</div>
+            <div class="tc-actions"><button class="tc-retry">Resume</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="f-live"><span class="d" style="background:var(--ink-4);animation:none"></span><span class="el">stopped · idle</span></div>
+      <div class="f-comp"><span class="ta">Message the agent…</span><button class="send">Send ↵</button></div>
+    </div>
+
+    <div class="case-l">4 · Collapsed retry counter — neutral while recovering, red only if EXHAUSTED</div>
+    <div class="frame">
+      <div class="f-top"><span class="ttl">Run the migration across all 240 shards</span><span class="ov">Details ⋯</span></div>
+      <div class="f-body">
+        <div class="agent">Migrating shards in batches of 40 to stay under the rate limit.</div>
+        <!-- recovering: neutral -->
+        <button class="retrycount"><span class="d"></span>Provider busy — retried <span class="n">2×</span>, recovering<span class="chev">▸</span></button>
+        <div class="toolline"><span class="ok">✓</span><span class="sum"><b>migrate</b> · shards 1–80 done</span></div>
+        <!-- exhausted: NOW it's red, and only now -->
+        <div class="taxcard broke" style="margin-top:var(--s4)">
+          <div class="tc-head"><span class="tc-kind provider"><span class="g">✕</span>Provider</span><span class="tc-scope">rate limit · 10/10 retries</span></div>
+          <div class="tc-body">
+            <div class="tc-summary">Out of retries — the provider stayed rate-limited.</div>
+            <div class="tc-hint">All 10 automatic retries were exhausted over 2m. Retry waits for the limit to reset.</div>
+            <div class="tc-actions"><button class="tc-retry">Retry turn</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="f-live"><span class="d" style="background:var(--ink-4);animation:none"></span><span class="state err">retries exhausted</span><span class="el">· idle</span></div>
+      <div class="f-comp"><span class="ta">Message the agent…</span><button class="send">Send ↵</button></div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

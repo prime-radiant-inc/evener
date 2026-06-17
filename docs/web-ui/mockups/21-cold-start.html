@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serf — Mockup #21: Cold start (4 directions)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- shared design tokens + golden component grammar -->
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* =====================================================================
+   MOCKUP #21 — COLD START  (TARGETS.md topic #18, cold-start sub-list)
+   The empty/welcome state and the gap between SEND and the first agent
+   frame are the product's FIRST IMPRESSION (design-system §1) and one of
+   the deferred "empty/just-started session" rules (§7).
+   Problems this page fixes:
+     1. the welcome pane is a near-empty VOID ("Welcome to serf-hub" + a
+        couple of buttons) — sparse, uncrafted, gives no sense of what to do;
+     2. after the first SEND there is NO DEFINED STATE: an empty transcript
+        + a quiet composer reads as "is it working, or is it broken?";
+     3. nothing tells the user the agent is honestly starting vs hung.
+   Goals: a calm, crafted first impression · a cold-start gap that reads
+     "loading," never "broken" · liveness that is HONEST (§2.7) — never a
+     reassuring animation indistinguishable from a hung agent.
+   Each direction renders BOTH states: the never-used empty session AND
+   the just-sent-first-message cold-start gap.
+   ===================================================================== */
+
+/* ---- page chrome (gallery, not the app shell) ---- */
+body{overflow:auto}
+.page{max-width:1180px;margin:0 auto;padding:var(--s6) var(--s5) 96px}
+.page-h{margin-bottom:var(--s5)}
+.page-h h1{font-size:var(--fs-lg);font-weight:600;letter-spacing:-0.01em}
+.page-h .sub{margin-top:var(--s2);font-size:var(--fs-base);color:var(--ink-2);max-width:780px;line-height:1.6}
+.page-h .probs{margin-top:var(--s3);font-size:var(--fs-sm);color:var(--ink-3);max-width:780px;line-height:1.6}
+.page-h .probs b{color:var(--ink-2);font-weight:600}
+
+.alts{display:flex;flex-direction:column;gap:var(--s6)}
+.alt-h{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s2)}
+.alt-h .badge{font-size:var(--fs-sm);font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;flex:none}
+.alt-h .name{font-size:var(--fs-md);font-weight:600;color:var(--ink)}
+.alt-cap{font-size:var(--fs-sm);color:var(--ink-2);line-height:1.6;max-width:860px;margin-bottom:var(--s4)}
+.alt-cap .tradeoff{color:var(--ink-3)}
+.alt-cap b{color:var(--ink-2);font-weight:600}
+
+/* state-pair: two app slices side by side (empty session | cold-start gap) */
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:var(--s4)}
+@media (max-width:980px){.pair{grid-template-columns:1fr}}
+
+/* a faithful mini app shell (no sidebar — workspace only) so each state
+   reads as the real product, not a fragment */
+.shell{background:var(--bg);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;
+  display:flex;flex-direction:column;height:520px;position:relative}
+.shell .state-tag{position:absolute;top:9px;right:var(--s4);font-size:var(--fs-xs);color:var(--ink-4);
+  letter-spacing:.04em;z-index:3}
+/* the topbar = identity only (design-system §6) */
+.bar{display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4);height:42px;
+  border-bottom:1px solid var(--line);flex:none}
+.bar .ttl{font-size:var(--fs-base);font-weight:600;color:var(--ink)}
+.bar .ttl.new{color:var(--ink-3);font-weight:500}
+.body{flex:1;overflow:hidden;position:relative;display:flex;flex-direction:column}
+.feed-s{flex:1;overflow-y:auto;padding:var(--s4) var(--s5)}
+.feed-c{max-width:560px;margin:0 auto;height:100%}
+/* compact composer for the slice */
+.comp{border-top:1px solid var(--line);padding:var(--s2) var(--s4) var(--s3);flex:none;background:#101117}
+.comp .input{border:1px solid var(--hair);border-radius:var(--r);background:var(--surface)}
+.comp .ta{min-height:38px;padding:9px 11px;font-size:13px}
+.comp .cbar{display:flex;align-items:center;gap:var(--s2);padding:6px 8px;border-top:1px solid var(--line)}
+.comp .send{padding:5px 13px}
+.comp .c-sp{flex:1}
+/* the live strip, scoped/compact for the slice */
+.live-s{display:flex;align-items:center;gap:var(--s2);padding:var(--s2) var(--s4);
+  border-top:1px solid var(--line);background:#101117;font-size:var(--fs-sm);color:var(--ink-2);flex:none}
+.live-s .d{width:6px;height:6px;border-radius:50%;background:var(--accent);
+  animation:breathe 2.6s ease-in-out infinite;flex:none}
+.live-s .el{color:var(--ink);font-variant-numeric:tabular-nums}
+.live-s .wait{color:var(--ink-3)}
+
+/* reuse golden voices */
+.you{display:flex;gap:var(--s3);align-items:baseline}
+.you .tag{font-size:var(--fs-xs);font-weight:700;color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;flex:none;width:34px;padding-top:1px}
+.you .q{font-size:var(--fs-base);color:var(--ink-2);line-height:1.55}
+.agent{margin-top:var(--s4);font-size:var(--fs-md);line-height:1.62;color:var(--ink);letter-spacing:-0.004em}
+
+/* =====================================================================
+   A — OPTIMISTIC ECHO
+   The user's first message is committed to the transcript the INSTANT
+   they send — quiet golden "You" tag, never emphasized (§2.2). A calm
+   liveness line stands where the first agent frame will land, so the
+   send visibly "took" even before the model responds.
+   ===================================================================== */
+/* a calm, honest "starting" line — neutral, single breathe dot. NOT prose. */
+.echo-start{margin-top:var(--s4);display:flex;align-items:center;gap:var(--s2);
+  font-size:var(--fs-sm);color:var(--ink-3)}
+.echo-start .d{width:6px;height:6px;border-radius:50%;background:var(--accent);
+  animation:breathe 2.6s ease-in-out infinite;flex:none}
+
+/* =====================================================================
+   B — SKELETON TURN
+   A faint placeholder turn shape: ghost lines sized like real agent
+   prose, so the gap reads "this layout is loading," not "broken/empty."
+   No color, no spinner — quiet neutral bars with a slow shimmer.
+   ===================================================================== */
+.skel{margin-top:var(--s4)}
+.skel-line{height:11px;border-radius:3px;margin-bottom:10px;
+  background:linear-gradient(90deg,var(--surface) 0%,var(--surface-2) 50%,var(--surface) 100%);
+  background-size:220% 100%;animation:shimmer 2.2s ease-in-out infinite}
+.skel-line.w1{width:96%} .skel-line.w2{width:88%} .skel-line.w3{width:62%}
+.skel-cap{margin-top:var(--s2);font-size:var(--fs-sm);color:var(--ink-3);
+  display:flex;align-items:center;gap:var(--s2)}
+.skel-cap .d{width:6px;height:6px;border-radius:50%;background:var(--accent);
+  animation:breathe 2.6s ease-in-out infinite;flex:none}
+@keyframes shimmer{0%{background-position:120% 0}100%{background-position:-120% 0}}
+
+/* =====================================================================
+   C — ONBOARDING AFFORDANCES  (empty state only — vanishes once work starts)
+   Instead of a void, the empty transcript offers a small crafted welcome:
+   a one-line orientation, example prompts that prefill the composer, and
+   the model picker surfaced. The cold-start side shows the affordances
+   dissolving the instant the first turn begins (no leftover clutter).
+   ===================================================================== */
+.onb{height:100%;display:flex;flex-direction:column;justify-content:center;gap:var(--s5);
+  padding-bottom:var(--s5)}
+.onb .hello{font-size:var(--fs-lg);font-weight:600;color:var(--ink);letter-spacing:-0.01em}
+.onb .lede{margin-top:6px;font-size:var(--fs-base);color:var(--ink-2);line-height:1.6;max-width:440px}
+.onb .grp-h{font-size:var(--fs-xs);font-weight:600;color:var(--ink-3);letter-spacing:.06em;
+  text-transform:uppercase;margin-bottom:var(--s2)}
+.ex-list{display:flex;flex-direction:column;gap:6px}
+.ex{display:flex;align-items:flex-start;gap:var(--s2);width:100%;text-align:left;
+  padding:9px 11px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface);
+  color:var(--ink-2);font-size:var(--fs-sm);line-height:1.45;transition:border-color .12s,background .12s}
+.ex:hover{border-color:var(--hair);background:var(--surface-2);color:var(--ink)}
+.ex .arr{color:var(--ink-4);flex:none;margin-top:1px}
+.ex:hover .arr{color:var(--accent)}
+.onb-foot{display:flex;align-items:center;gap:var(--s2);font-size:var(--fs-xs);color:var(--ink-3)}
+.onb-foot .chip{cursor:pointer}
+/* the dissolving affordances on the cold-start side */
+.onb.fade{justify-content:flex-start;height:auto;animation:dissolve .5s ease both}
+@keyframes dissolve{from{opacity:.5;transform:translateY(-4px)}to{opacity:0;transform:translateY(-10px)}}
+
+/* =====================================================================
+   D — NARRATED COLD-START LIVENESS
+   The livebar narrates the HONEST staged start: "Connecting to agent…"
+   then "Thinking…" — each stage driven by a real signal, NOT a timer.
+   The neutral→blue dot and the stage label are the only motion. This
+   directly answers "is it working?" without a reassurance-loop lie.
+   ===================================================================== */
+.narr{margin-top:var(--s4);display:flex;flex-direction:column;gap:var(--s2)}
+.narr-row{display:flex;align-items:center;gap:var(--s2);font-size:var(--fs-sm)}
+.narr-row .g{font-family:var(--mono);font-size:11px;width:13px;flex:none;text-align:center}
+.narr-row.done .g{color:var(--done)} .narr-row.now .g{color:var(--accent)}
+.narr-row.next .g{color:var(--ink-4)}
+.narr-row.done .t{color:var(--ink-3)}
+.narr-row.now .t{color:var(--ink)}
+.narr-row.next .t{color:var(--ink-4)}
+.narr-row.now .t .dots{color:var(--ink-3)}
+.narr-row .when{margin-left:auto;font-size:var(--fs-xs);color:var(--ink-4);font-variant-numeric:tabular-nums}
+/* the narrating livebar: the stage label lives IN the pinned strip */
+.live-s .stage{color:var(--ink)}
+.live-s .stage .dots{color:var(--ink-3)}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="page-h">
+    <h1>Mockup #21 — Cold start</h1>
+    <p class="sub">The empty session and the gap between <b>Send</b> and the first agent frame are the
+      product's <b>first impression</b> — and today they are a void. Four directions for a calm,
+      crafted welcome and a cold-start gap that reads <b>"loading," never "broken."</b></p>
+    <p class="probs"><b>Fixes for the shipped welcome:</b> (1) the empty pane is a near-empty
+      <b>void</b> ("Welcome to serf-hub" + two buttons) — sparse and uncrafted; (2) after the first
+      Send there is <b>no defined state</b> — empty transcript + quiet composer reads as "is it working
+      or broken?"; (3) nothing distinguishes an honestly-starting agent from a hung one.
+      <br>Targets: <b>crafted empty state · cold-start gap that reads "loading" · honest liveness
+      (no reassurance-loop lie).</b> Each direction shows the <b>empty session</b> (left) and the
+      <b>just-sent first message</b> (right).</p>
+  </header>
+
+  <div class="alts">
+
+    <!-- ============================================================ -->
+    <!-- A — OPTIMISTIC ECHO                                          -->
+    <!-- ============================================================ -->
+    <section class="alt">
+      <div class="alt-h"><span class="badge">A</span><span class="name">Optimistic echo</span></div>
+      <p class="alt-cap">On Send, the user's message is committed to the transcript <b>immediately</b>
+        as a quiet <code style="font-family:var(--sans);font-weight:700;color:var(--ink-3)">You</code>
+        tag — never emphasized, since the user knows what they typed. A calm <b>"starting…"</b> liveness
+        line stands where the first agent frame will land, so the send visibly "took" the instant they
+        hit return.
+        <span class="tradeoff"> Tradeoff: it's optimistic — if the send actually fails, the echoed
+        message must be reconciled (mark it failed + offer retry); the UI promises before the daemon
+        confirms.</span></p>
+      <div class="pair">
+        <!-- EMPTY SESSION -->
+        <div class="shell">
+          <span class="state-tag">never-used session</span>
+          <div class="bar"><span class="ttl new">New session</span></div>
+          <div class="body">
+            <div class="feed-s"><div class="feed-c" style="display:flex;align-items:center;justify-content:center">
+              <div style="text-align:center;max-width:300px">
+                <div style="font-size:var(--fs-md);font-weight:600;color:var(--ink)">Ready when you are</div>
+                <div style="margin-top:6px;font-size:var(--fs-sm);color:var(--ink-3);line-height:1.55">
+                  Describe a task and the agent gets to work. You'll watch it think, run tools, and
+                  spawn subagents in real time.</div>
+              </div>
+            </div></div>
+            <div class="comp">
+              <div class="input">
+                <textarea class="ta" placeholder="Message the agent…"></textarea>
+                <div class="cbar">
+                  <span class="chip" style="background:var(--surface-2)"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+                  <span class="c-sp"></span>
+                  <button class="send">Send ↵</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- COLD-START GAP -->
+        <div class="shell">
+          <span class="state-tag">just sent · awaiting first frame</span>
+          <div class="bar"><span class="ttl">Refactor auth token cache</span></div>
+          <div class="body">
+            <div class="feed-s"><div class="feed-c">
+              <div class="you"><span class="tag">You</span><span class="q">The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how callers use it too.</span></div>
+              <div class="echo-start"><span class="d"></span>Starting…</div>
+            </div></div>
+            <div class="live-s"><span class="d"></span>starting · <span class="el">0:01</span></div>
+            <div class="comp">
+              <div class="input">
+                <textarea class="ta" placeholder="Message the agent…"></textarea>
+                <div class="cbar">
+                  <span class="chip" style="background:var(--surface-2)"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+                  <span class="c-sp"></span>
+                  <button class="cbtn intr">■ Interrupt</button>
+                  <button class="send">Send ↵</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- B — SKELETON TURN                                            -->
+    <!-- ============================================================ -->
+    <section class="alt">
+      <div class="alt-h"><span class="badge">B</span><span class="name">Skeleton turn</span></div>
+      <p class="alt-cap">The cold-start gap shows a <b>faint placeholder turn</b> — ghost lines sized
+        like real agent prose, with a slow neutral shimmer. The shape says "this layout is filling in,"
+        so the gap reads <b>loading, not broken or empty</b>. No spinner, no color; the skeleton swaps
+        out the instant real tokens arrive.
+        <span class="tradeoff"> Tradeoff: a skeleton implies structure that may not match what arrives
+        (the agent might think first, not write prose); overused, skeletons feel generic. Keep it to one
+        modest block, not a full fake page.</span></p>
+      <div class="pair">
+        <!-- EMPTY SESSION -->
+        <div class="shell">
+          <span class="state-tag">never-used session</span>
+          <div class="bar"><span class="ttl new">New session</span></div>
+          <div class="body">
+            <div class="feed-s"><div class="feed-c" style="display:flex;align-items:center;justify-content:center">
+              <div style="text-align:center;max-width:300px">
+                <div style="font-size:var(--fs-md);font-weight:600;color:var(--ink)">Ready when you are</div>
+                <div style="margin-top:6px;font-size:var(--fs-sm);color:var(--ink-3);line-height:1.55">
+                  Describe a task to begin. The transcript fills in here as the agent works.</div>
+              </div>
+            </div></div>
+            <div class="comp">
+              <div class="input">
+                <textarea class="ta" placeholder="Message the agent…"></textarea>
+                <div class="cbar">
+                  <span class="chip" style="background:var(--surface-2)"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+                  <span class="c-sp"></span>
+                  <button class="send">Send ↵</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- COLD-START GAP -->
+        <div class="shell">
+          <span class="state-tag">just sent · awaiting first frame</span>
+          <div class="bar"><span class="ttl">Refactor auth token cache</span></div>
+          <div class="body">
+            <div class="feed-s"><div class="feed-c">
+              <div class="you"><span class="tag">You</span><span class="q">The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how callers use it too.</span></div>
+              <div class="skel" aria-hidden="true">
+                <div class="skel-line w1"></div>
+                <div class="skel-line w2"></div>
+                <div class="skel-line w3"></div>
+              </div>
+              <div class="skel-cap"><span class="d"></span>Agent is starting…</div>
+            </div></div>
+            <div class="live-s"><span class="d"></span>starting · <span class="el">0:02</span></div>
+            <div class="comp">
+              <div class="input">
+                <textarea class="ta" placeholder="Message the agent…"></textarea>
+                <div class="cbar">
+                  <span class="chip" style="background:var(--surface-2)"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+                  <span class="c-sp"></span>
+                  <button class="cbtn intr">■ Interrupt</button>
+                  <button class="send">Send ↵</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- C — ONBOARDING AFFORDANCES                                   -->
+    <!-- ============================================================ -->
+    <section class="alt">
+      <div class="alt-h"><span class="badge">C</span><span class="name">Onboarding affordances</span></div>
+      <p class="alt-cap">The empty transcript is a small <b>crafted welcome</b> instead of a void: a
+        one-line orientation, two or three <b>example prompts</b> that prefill the composer on click,
+        and the model picker surfaced. It answers "what can I do here?" The cold-start side shows the
+        affordances <b>dissolving</b> the instant the first turn begins — they never linger as clutter.
+        <span class="tradeoff"> Tradeoff: scaffolding earns its place only on a truly empty session;
+        it must vanish on first send and stay gone for repeat users, or it becomes noise. It also
+        invites curation of "good" example prompts.</span></p>
+      <div class="pair">
+        <!-- EMPTY SESSION -->
+        <div class="shell">
+          <span class="state-tag">never-used session</span>
+          <div class="bar"><span class="ttl new">New session</span></div>
+          <div class="body">
+            <div class="feed-s"><div class="feed-c"><div class="onb">
+              <div>
+                <div class="hello">What should the agent work on?</div>
+                <div class="lede">It can read and edit this repo, run commands, and spawn subagents —
+                  you'll watch every step live.</div>
+              </div>
+              <div>
+                <div class="grp-h">Try</div>
+                <div class="ex-list">
+                  <button class="ex"><span class="arr">→</span><span>Find and fix the root cause of a flaky test</span></button>
+                  <button class="ex"><span class="arr">→</span><span>Audit error handling across the auth package</span></button>
+                  <button class="ex"><span class="arr">→</span><span>Explain how requests flow from router to handler</span></button>
+                </div>
+              </div>
+              <div class="onb-foot">
+                <span>Running on</span>
+                <span class="chip" style="background:var(--surface-2)"><span class="mdot"></span><span class="v">gpt-5.5</span> ▾</span>
+              </div>
+            </div></div></div>
+            <div class="comp">
+              <div class="input">
+                <textarea class="ta" placeholder="Message the agent…"></textarea>
+                <div class="cbar">
+                  <span class="chip" style="background:var(--surface-2)"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+                  <span class="c-sp"></span>
+                  <button class="send">Send ↵</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- COLD-START GAP (affordances dissolving) -->
+        <div class="shell">
+          <span class="state-tag">just sent · affordances dissolve</span>
+          <div class="bar"><span class="ttl">Audit error handling</span></div>
+          <div class="body">
+            <div class="feed-s"><div class="feed-c">
+              <div class="you"><span class="tag">You</span><span class="q">Audit error handling across the auth package</span></div>
+              <div class="echo-start"><span class="d"></span>Starting…</div>
+              <div class="onb fade" style="margin-top:var(--s5);pointer-events:none">
+                <div class="grp-h">Try</div>
+                <div class="ex-list">
+                  <button class="ex"><span class="arr">→</span><span>Find and fix the root cause of a flaky test</span></button>
+                  <button class="ex"><span class="arr">→</span><span>Explain how requests flow from router to handler</span></button>
+                </div>
+              </div>
+            </div></div>
+            <div class="live-s"><span class="d"></span>starting · <span class="el">0:01</span></div>
+            <div class="comp">
+              <div class="input">
+                <textarea class="ta" placeholder="Message the agent…"></textarea>
+                <div class="cbar">
+                  <span class="chip" style="background:var(--surface-2)"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+                  <span class="c-sp"></span>
+                  <button class="cbtn intr">■ Interrupt</button>
+                  <button class="send">Send ↵</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- D — NARRATED COLD-START LIVENESS                             -->
+    <!-- ============================================================ -->
+    <section class="alt">
+      <div class="alt-h"><span class="badge">D</span><span class="name">Narrated cold-start liveness</span></div>
+      <p class="alt-cap">The cold start is narrated as <b>honest stages</b>, each driven by a real
+        signal: <b>Connecting to agent…</b> (daemon handshake) → <b>Thinking…</b> (first model tokens).
+        Completed stages settle to neutral with a check; the current stage is the only blue, moving
+        thing. This answers "is it working?" precisely — and because each stage waits on a real event,
+        a stall <b>shows</b> (the stage simply doesn't advance) rather than being masked by a spinner.
+        <span class="tradeoff"> Tradeoff: requires the daemon to emit those lifecycle signals; honest
+        staging means if connection is slow the user sees it sit on "Connecting…" — which is the point
+        (§2.7), but is less reassuring than a fib.</span></p>
+      <div class="pair">
+        <!-- EMPTY SESSION -->
+        <div class="shell">
+          <span class="state-tag">never-used session</span>
+          <div class="bar"><span class="ttl new">New session</span></div>
+          <div class="body">
+            <div class="feed-s"><div class="feed-c" style="display:flex;align-items:center;justify-content:center">
+              <div style="text-align:center;max-width:300px">
+                <div style="font-size:var(--fs-md);font-weight:600;color:var(--ink)">Ready when you are</div>
+                <div style="margin-top:6px;font-size:var(--fs-sm);color:var(--ink-3);line-height:1.55">
+                  Send a task and the strip below narrates each step as the agent comes alive.</div>
+              </div>
+            </div></div>
+            <div class="comp">
+              <div class="input">
+                <textarea class="ta" placeholder="Message the agent…"></textarea>
+                <div class="cbar">
+                  <span class="chip" style="background:var(--surface-2)"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+                  <span class="c-sp"></span>
+                  <button class="send">Send ↵</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- COLD-START GAP (narrated) -->
+        <div class="shell">
+          <span class="state-tag">just sent · narrated start</span>
+          <div class="bar"><span class="ttl">Refactor auth token cache</span></div>
+          <div class="body">
+            <div class="feed-s"><div class="feed-c">
+              <div class="you"><span class="tag">You</span><span class="q">The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how callers use it too.</span></div>
+              <div class="narr">
+                <div class="narr-row done"><span class="g">✓</span><span class="t">Message queued</span><span class="when">0:00</span></div>
+                <div class="narr-row done"><span class="g">✓</span><span class="t">Connected to agent</span><span class="when">0:01</span></div>
+                <div class="narr-row now"><span class="g">⟳</span><span class="t">Thinking<span class="dots">…</span></span><span class="when">0:02</span></div>
+                <div class="narr-row next"><span class="g">·</span><span class="t">First reply</span></div>
+              </div>
+            </div></div>
+            <!-- the SAME narration lives in the pinned strip, so it's reachable when scrolled -->
+            <div class="live-s"><span class="d"></span><span class="stage">Thinking<span class="dots">…</span></span> · <span class="el">0:02</span></div>
+            <div class="comp">
+              <div class="input">
+                <textarea class="ta" placeholder="Message the agent…"></textarea>
+                <div class="cbar">
+                  <span class="chip" style="background:var(--surface-2)"><span class="mdot"></span><span class="v">gpt-5.5</span></span>
+                  <span class="c-sp"></span>
+                  <button class="cbtn intr">■ Interrupt</button>
+                  <button class="send">Send ↵</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+</body>
+</html>
