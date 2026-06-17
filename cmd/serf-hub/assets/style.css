@@ -1446,10 +1446,32 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
 .user-image-name { display: block; padding: var(--space-2) var(--space-3); font-size: var(--text-xs); color: var(--text-muted); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; text-align: left; }
 .user-message-text { white-space: pre-wrap; word-wrap: break-word; }
 
-/* Image lightbox: full-screen overlay shown when a user-image card is clicked. */
+/* Multi-image contact sheet (mockup #20 Alt B): a set of user-pasted images
+   lays out as a grid inside ONE neutral card — never a card-of-cards. Each cell
+   is a thumbnail + a per-cell caption (filename · dims). Opening any cell pages
+   the shared lightbox across the whole message's set. */
+.user-image-sheet { margin-bottom: var(--space-3); padding: var(--space-3); background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-xl); }
+.user-image-sheet-head { font-size: var(--text-xs); color: var(--text-muted); margin-bottom: var(--space-3); }
+.user-image-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+.user-image-cell { display: flex; flex-direction: column; gap: var(--space-2); padding: 0; background: transparent; border: none; cursor: pointer; text-align: left; min-width: 0; }
+.user-image-cell .user-image-thumb { width: 100%; max-width: none; max-height: 220px; aspect-ratio: 16 / 10; object-fit: cover; border-radius: var(--radius-md); border: 1px solid var(--rule); }
+.user-image-cell:hover .user-image-thumb { border-color: var(--state-processing); }
+.user-image-caption { display: flex; align-items: baseline; gap: var(--space-2); font-size: var(--text-xs); color: var(--text-muted); min-width: 0; }
+.user-image-filename { font-family: var(--font-mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.user-image-cap-sep { color: var(--text-dim); }
+.user-image-dims { font-variant-numeric: tabular-nums; flex: none; }
+
+/* Image lightbox: full-screen overlay shown when a user-image card is clicked.
+   With a set it pages one image at a time via prev/next + ←/→ (Esc closes). */
 .image-lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: var(--space-4); z-index: var(--z-drawer); cursor: zoom-out; padding: var(--space-7); }
 .image-lightbox img { max-width: 90vw; max-height: 85vh; object-fit: contain; border-radius: var(--radius-lg); box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
 .image-lightbox-caption { color: #fff; font-family: var(--font-mono); font-size: var(--text-sm); opacity: 0.75; }
+.image-lightbox-caption[hidden] { display: none; }
+.image-lightbox-nav { position: fixed; top: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: var(--radius-pill); border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.4); color: #fff; font-size: var(--text-xl); line-height: 1; cursor: pointer; }
+.image-lightbox-nav:hover { background: rgba(255,255,255,0.12); }
+.image-lightbox-prev { left: var(--space-5); }
+.image-lightbox-next { right: var(--space-5); }
+.image-lightbox-pos { position: fixed; top: var(--space-5); right: var(--space-5); color: #fff; font-family: var(--font-mono); font-size: var(--text-xs); opacity: 0.75; font-variant-numeric: tabular-nums; }
 .assistant-message {
   margin-bottom: var(--space-5);
   max-width: 680px;

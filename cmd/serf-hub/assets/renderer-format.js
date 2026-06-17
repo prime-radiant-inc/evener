@@ -139,32 +139,84 @@
     return "before " + text.slice(0, 40).replace(/\s+/g, " ").trim();
   }
 
-  // openImageLightbox shows a full-size image overlay. Click backdrop or press
-  // Esc to dismiss. One overlay at a time.
-  function openImageLightbox(src, name) {
+  // openImageLightboxSet shows a full-size image overlay over a SET of images
+  // and lets the reader page through it one at a time: Esc closes, ←/→ (and
+  // the on-screen prev/next buttons) navigate, wrapping around. A single
+  // shared overlay instance is reused — a fresh open replaces any prior one.
+  // `items` is [{src, name, dims?}]; `startIndex` selects the first shown.
+  function openImageLightboxSet(items, startIndex) {
+    const set = (items || []).filter((it) => it && it.src);
+    if (set.length === 0) return;
+    let i = Math.max(0, Math.min(startIndex || 0, set.length - 1));
+    const multi = set.length > 1;
+
     const existing = document.getElementById("image-lightbox");
     if (existing) existing.remove();
     const overlay = document.createElement("div");
     overlay.id = "image-lightbox";
     overlay.className = "image-lightbox";
+
     const img = document.createElement("img");
-    img.src = src;
-    if (name) img.alt = name;
     overlay.appendChild(img);
-    if (name) {
-      const cap = document.createElement("div");
-      cap.className = "image-lightbox-caption";
-      cap.textContent = name;
-      overlay.appendChild(cap);
+
+    const caption = document.createElement("div");
+    caption.className = "image-lightbox-caption";
+    overlay.appendChild(caption);
+
+    // Prev/next controls + position indicator only earn their place for a set.
+    let pos = null, prevBtn = null, nextBtn = null;
+    if (multi) {
+      prevBtn = document.createElement("button");
+      prevBtn.type = "button";
+      prevBtn.className = "image-lightbox-nav image-lightbox-prev";
+      prevBtn.setAttribute("aria-label", "Previous (←)");
+      prevBtn.textContent = "‹";
+      nextBtn = document.createElement("button");
+      nextBtn.type = "button";
+      nextBtn.className = "image-lightbox-nav image-lightbox-next";
+      nextBtn.setAttribute("aria-label", "Next (→)");
+      nextBtn.textContent = "›";
+      pos = document.createElement("div");
+      pos.className = "image-lightbox-pos";
+      overlay.append(prevBtn, nextBtn, pos);
     }
+
+    function render() {
+      const m = set[i];
+      img.src = m.src;
+      img.alt = m.name || "";
+      const bits = [];
+      if (m.name) bits.push(m.name);
+      if (m.dims) bits.push(m.dims);
+      caption.textContent = bits.join(" · ");
+      caption.hidden = bits.length === 0;
+      if (pos) pos.textContent = (i + 1) + " / " + set.length;
+    }
+    function step(d) { i = (i + d + set.length) % set.length; render(); }
+
     const close = () => {
       overlay.remove();
       document.removeEventListener("keydown", onKey);
     };
-    const onKey = (e) => { if (e.key === "Escape") close(); };
-    overlay.addEventListener("click", close);
+    const onKey = (e) => {
+      if (e.key === "Escape") { close(); return; }
+      if (!multi) return;
+      if (e.key === "ArrowLeft") { e.preventDefault(); step(-1); }
+      else if (e.key === "ArrowRight") { e.preventDefault(); step(1); }
+    };
+    // Click the backdrop (not a nav button or the image) to dismiss.
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    if (prevBtn) prevBtn.addEventListener("click", (e) => { e.stopPropagation(); step(-1); });
+    if (nextBtn) nextBtn.addEventListener("click", (e) => { e.stopPropagation(); step(1); });
     document.addEventListener("keydown", onKey);
     document.body.appendChild(overlay);
+    render();
+  }
+
+  // openImageLightbox shows a full-size overlay for ONE image — the
+  // single-image path. Backed by openImageLightboxSet with a one-item set.
+  function openImageLightbox(src, name) {
+    openImageLightboxSet([{ src, name }], 0);
   }
 
   // Client-side cache of task id → description, keyed by integer id. Seeded
@@ -549,6 +601,7 @@
     sessionPartialPath,
     autoLabel,
     openImageLightbox,
+    openImageLightboxSet,
     taskDescriptions,
     taskDetails,
     rememberTask,

@@ -13,7 +13,7 @@
     partialFetch,
     sessionPartialPath,
     autoLabel,
-    openImageLightbox,
+    openImageLightboxSet,
     taskDescriptions,
     taskDetails,
     rememberTask,
@@ -1136,45 +1136,25 @@
       const pill = document.createElement("div");
       pill.className = "pill";
       // Thumbnails first so they sit above the prompt text inside the pill.
-      // Each attachment renders as a card with the image thumbnail, filename,
-      // and a click handler that opens it in a lightbox at full size.
+      // ONE image keeps the single neutral card; MULTIPLE images lay out as a
+      // contact-sheet grid inside ONE neutral card (mockup #20 Alt B) — never
+      // a card-of-cards. Either way, opening any thumbnail pages through the
+      // whole message's set in the shared lightbox (←/→, Esc).
       if (Array.isArray(images) && images.length > 0) {
-        const gallery = document.createElement("div");
-        gallery.className = "user-message-images";
+        const resolved = [];
         for (const img of images) {
-          if (!img) continue;
-          // Live USER_INPUT: bytes inline as base64 in img.data.
-          // Transcript USER_INPUT: bytes referenced by sha; fetch lazily from
-          // /s/<id>/images/<sha> so live payloads stay small.
-          let src = "";
-          if (img.data) {
-            src = "data:" + (img.media_type || "image/png") + ";base64," + img.data;
-          } else if (img.sha) {
-            src = "/s/" + encodeURIComponent(this.sessionId) + "/images/" + encodeURIComponent(img.sha);
-          } else if (img.url) {
-            src = img.url;
-          } else {
-            continue;
-          }
-          const card = document.createElement("button");
-          card.type = "button";
-          card.className = "user-image-card";
-          card.title = "click to enlarge";
-          const thumb = document.createElement("img");
-          thumb.className = "user-image-thumb";
-          thumb.src = src;
-          if (img.name) thumb.alt = img.name;
-          card.appendChild(thumb);
-          if (img.name) {
-            const name = document.createElement("span");
-            name.className = "user-image-name";
-            name.textContent = img.name;
-            card.appendChild(name);
-          }
-          card.onclick = (e) => { e.stopPropagation(); openImageLightbox(src, img.name || ""); };
-          gallery.appendChild(card);
+          const src = this.imageSrc(img);
+          if (!src) continue;
+          resolved.push({ src, name: (img && img.name) || "" });
         }
-        if (gallery.children.length > 0) pill.appendChild(gallery);
+        if (resolved.length === 1) {
+          const gallery = document.createElement("div");
+          gallery.className = "user-message-images";
+          gallery.appendChild(this.buildSingleImageCard(resolved, 0));
+          pill.appendChild(gallery);
+        } else if (resolved.length > 1) {
+          pill.appendChild(this.buildImageSheet(resolved));
+        }
       }
       if (text) {
         const t = document.createElement("div");
@@ -1194,6 +1174,101 @@
       wrap.appendChild(tag); wrap.appendChild(pill); wrap.appendChild(actions);
       this.conversation.appendChild(wrap);
       return wrap;
+    },
+
+    // imageSrc resolves a user-message image descriptor to a renderable URL.
+    //   Live USER_INPUT: bytes inline as base64 in img.data.
+    //   Transcript USER_INPUT: bytes referenced by sha; fetched lazily from
+    //     /s/<id>/images/<sha> so live payloads stay small.
+    //   url: an already-resolvable URL.
+    // Returns "" when the descriptor carries no usable source.
+    imageSrc(img) {
+      if (!img) return "";
+      if (img.data) return "data:" + (img.media_type || "image/png") + ";base64," + img.data;
+      if (img.sha) return "/s/" + encodeURIComponent(this.sessionId) + "/images/" + encodeURIComponent(img.sha);
+      if (img.url) return img.url;
+      return "";
+    },
+
+    // captionFilename attaches the filename (mono) to a caption row and, once
+    // the thumbnail's natural dimensions are known, appends "· WxH" using the
+    // REAL decoded pixel size. Dims are omitted until the image loads (and in
+    // jsdom, which never decodes) — we never fabricate a size.
+    captionFilename(caption, thumb, name) {
+      const fn = document.createElement("span");
+      fn.className = "user-image-filename";
+      fn.textContent = name || "image";
+      caption.appendChild(fn);
+      const stampDims = () => {
+        if (!thumb.naturalWidth || !thumb.naturalHeight) return;
+        if (caption.querySelector(".user-image-dims")) return;
+        const sep = document.createElement("span");
+        sep.className = "user-image-cap-sep";
+        sep.textContent = "·";
+        const dims = document.createElement("span");
+        dims.className = "user-image-dims";
+        dims.textContent = thumb.naturalWidth + "×" + thumb.naturalHeight;
+        caption.append(sep, dims);
+      };
+      if (thumb.complete) stampDims();
+      thumb.addEventListener("load", stampDims);
+    },
+
+    // buildSingleImageCard renders the one-image neutral card (today's path).
+    // `resolved` is the message's full image set; `idx` is this card's index,
+    // so opening it pages the shared lightbox across the set.
+    buildSingleImageCard(resolved, idx) {
+      const m = resolved[idx];
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "user-image-card";
+      card.title = "click to enlarge";
+      const thumb = document.createElement("img");
+      thumb.className = "user-image-thumb";
+      thumb.src = m.src;
+      if (m.name) thumb.alt = m.name;
+      card.appendChild(thumb);
+      if (m.name) {
+        const name = document.createElement("span");
+        name.className = "user-image-name";
+        name.textContent = m.name;
+        card.appendChild(name);
+      }
+      card.onclick = (e) => { e.stopPropagation(); openImageLightboxSet(resolved, idx); };
+      return card;
+    },
+
+    // buildImageSheet lays a multi-image set as a contact-sheet grid inside ONE
+    // neutral card (mockup #20 Alt B). Each cell is a thumbnail + a per-cell
+    // caption (filename · dims). Opening any cell pages the shared lightbox
+    // across the whole set. Provenance grouping (Alt D) is omitted — there is
+    // no backend signal for image origin.
+    buildImageSheet(resolved) {
+      const sheet = document.createElement("div");
+      sheet.className = "user-image-sheet";
+      const head = document.createElement("div");
+      head.className = "user-image-sheet-head";
+      head.textContent = resolved.length + " images";
+      const grid = document.createElement("div");
+      grid.className = "user-image-grid";
+      resolved.forEach((m, idx) => {
+        const cell = document.createElement("button");
+        cell.type = "button";
+        cell.className = "user-image-cell";
+        cell.title = "click to enlarge";
+        const thumb = document.createElement("img");
+        thumb.className = "user-image-thumb";
+        thumb.src = m.src;
+        if (m.name) thumb.alt = m.name;
+        const caption = document.createElement("span");
+        caption.className = "user-image-caption";
+        this.captionFilename(caption, thumb, m.name);
+        cell.append(thumb, caption);
+        cell.onclick = (e) => { e.stopPropagation(); openImageLightboxSet(resolved, idx); };
+        grid.appendChild(cell);
+      });
+      sheet.append(head, grid);
+      return sheet;
     },
 
     appendLocalUserMessage(text, images, turnId, previousUserCount) {
