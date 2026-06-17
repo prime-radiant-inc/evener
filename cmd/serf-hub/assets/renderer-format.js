@@ -369,6 +369,30 @@
     parent.appendChild(details);
   }
 
+  // planStateClass maps a task status to the three-state plan grammar used by
+  // the inline checklist block (mockup #18 alt C): done (neutral, recedes),
+  // current (the live in_progress item, blue + breathing), pending (open, dim).
+  // cancelled folds into a struck/dim neutral so it recedes like done.
+  function planStateClass(status) {
+    switch (status) {
+      case "done": return "done";
+      case "in_progress": return "current";
+      case "cancelled": return "cancelled";
+      default: return "pending";
+    }
+  }
+
+  // planGlyphForStatus returns the glyph-paired status marker for a plan item.
+  // Glyph and color are dual-channel so the state reads even without color.
+  function planGlyphForStatus(status) {
+    switch (status) {
+      case "done": return "✓";
+      case "in_progress": return "⟳";
+      case "cancelled": return "✕";
+      default: return "○";
+    }
+  }
+
   function taskListIconKind(args) {
     if (!args) return "open";
     if (args.action === "append") return "open";
@@ -562,6 +586,8 @@
     appendTaskDetailDisclosure,
     appendTaskListDetails,
     taskListIconKind,
+    planStateClass,
+    planGlyphForStatus,
     formatTaskListAction,
     formatStatusClause,
     parseToolState,

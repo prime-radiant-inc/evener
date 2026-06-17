@@ -32,9 +32,10 @@
     trimmed.split("\n").forEach(line => {
       const span = document.createElement("span");
       let kind = "ctx";
-      if (line.startsWith("+") && !line.startsWith("+++")) { span.className = "add"; kind = "add"; }
-      else if (line.startsWith("-") && !line.startsWith("---")) { span.className = "del"; kind = "del"; }
-      else if (line.startsWith("@@")) { span.className = "hunk"; kind = "hunk"; }
+      if (line.startsWith("+") && !line.startsWith("+++")) kind = "add";
+      else if (line.startsWith("-") && !line.startsWith("---")) kind = "del";
+      else if (line.startsWith("@@")) kind = "hunk";
+      span.className = kind;
       span.dataset.lineKind = kind;
       span.textContent = line;
       el.appendChild(span);
@@ -453,17 +454,23 @@
     },
   };
 
-  // Diff renderers for edit/write/apply_patch.
+  // Diff renderers for edit/write/apply_patch. diffResult is the collapsed
+  // headline (mockup #19 alt A): "+N −N", the change's shape at a glance.
+  // Count whole diff lines so the +++/--- file headers never inflate the stat.
   function diffResult(data, out) {
-    const adds = (out.match(/^\+/gm) || []).filter(l => !l.startsWith("+++")).length;
-    const dels = (out.match(/^-/gm) || []).filter(l => !l.startsWith("---")).length;
+    const lines = String(out || "").split("\n");
+    const adds = lines.filter(l => l.startsWith("+") && !l.startsWith("+++")).length;
+    const dels = lines.filter(l => l.startsWith("-") && !l.startsWith("---")).length;
     if (adds === 0 && dels === 0) return "ok";
     return "+" + adds + " -" + dels;
   }
 
+  // Diffs collapse by default (mockup #19 alt A): the row shows the +N −N stat
+  // and the full unified diff is one caret-click away. expand:false drives the
+  // shared tool-call collapse/expand machinery in renderer.js.
   function diffRenderer(friendly) {
     return {
-      mode: "card", friendly, expand: true, mutating: true,
+      mode: "card", friendly, expand: false, mutating: true,
       target: (a) => a.file_path || a.path || "",
       result: diffResult,
       body: (args, conversation) => {
@@ -494,7 +501,7 @@
 
   function editRenderer() {
     return {
-      mode: "card", friendly: "edit", expand: true, mutating: true,
+      mode: "card", friendly: "edit", expand: false, mutating: true,
       target: (a) => a.file_path || a.path || "",
       result: (data, out, state) => diffResult(data, editDiffText(state && state.args, out)),
       body: (args, conversation) => {
@@ -513,7 +520,7 @@
 
   function patchRenderer() {
     return {
-      mode: "card", friendly: "patch", expand: true, mutating: true,
+      mode: "card", friendly: "patch", expand: false, mutating: true,
       target: (a) => patchTargets(a.patch).join(", "),
       result: (data, out, state) => diffResult(data, state && state.args && state.args.patch || out || ""),
       body: (args, conversation) => {
