@@ -871,6 +871,46 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 	}
 }
 
+// A context-compaction announcement must carry the structured before/after
+// numbers (not only prose) so the web can render an honest, inspectable
+// before→after expand (mockup #17 Alt A) instead of re-parsing the text.
+func TestAppEventProjectorContextCompactionCarriesStructuredNumbers(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(events.SessionEvent{Kind: events.EventContextCompaction, SessionID: "th_1", Data: events.ContextCompactionData{
+		Layer:           "L4",
+		TurnsBefore:     42,
+		TurnsAfter:      8,
+		EstTokensBefore: 120000,
+		EstTokensAfter:  23000,
+	}})
+
+	if len(out) != 1 || out[0].Method != appwire.NotifyTurnCompleted {
+		t.Fatalf("notifications=%+v", out)
+	}
+	turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
+	if len(turn.Items) != 1 {
+		t.Fatalf("turn=%+v", turn)
+	}
+	item := turn.Items[0]
+	if len(item.Raw) == 0 {
+		t.Fatalf("compaction item should carry structured numbers in Raw, got none: %+v", item)
+	}
+	var got struct {
+		Compaction *events.ContextCompactionData `json:"compaction"`
+	}
+	if err := json.Unmarshal(item.Raw, &got); err != nil {
+		t.Fatalf("Raw is not valid JSON: %v (%s)", err, item.Raw)
+	}
+	if got.Compaction == nil {
+		t.Fatalf("Raw should carry a compaction object, got %s", item.Raw)
+	}
+	if got.Compaction.Layer != "L4" ||
+		got.Compaction.TurnsBefore != 42 || got.Compaction.TurnsAfter != 8 ||
+		got.Compaction.EstTokensBefore != 120000 || got.Compaction.EstTokensAfter != 23000 {
+		t.Fatalf("Raw compaction numbers wrong: %+v", got.Compaction)
+	}
+}
+
 func TestAppEventProjectorDoesNotDisplayHookStart(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	out := projector.Project(events.SessionEvent{Kind: events.EventHookStart, SessionID: "th_1", Data: events.HookStartData{
