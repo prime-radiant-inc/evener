@@ -815,6 +815,23 @@ func TestWeb_AppShell_RendersSidebarAndWorkspaceMounts(t *testing.T) {
 	}
 }
 
+func TestWeb_AppShellHasSidePaneRegion(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`id="side-panes"`, `id="pane-splitter"`, `panes.js`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("app shell missing %q", want)
+		}
+	}
+}
+
 // newCodexSidebarServer builds a WebServer fed by a single fake codex source
 // thread in the given state, project (cwd basename), and id. Returns the server
 // and a cleanup func.

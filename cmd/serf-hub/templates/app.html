@@ -31,6 +31,8 @@
         hx-trigger="load"
         hx-swap="innerHTML">
   </main>
+  <div id="pane-splitter" class="pane-splitter" role="separator" aria-orientation="vertical" hidden></div>
+  <aside id="side-panes" class="side-panes" aria-label="Side panes" hidden></aside>
   <dialog id="search-dialog" class="search-dialog" aria-label="search and commands">
     <div class="search-dialog-inner">
       <header class="search-dialog-header">
@@ -58,6 +60,7 @@
   <script src="/assets/launchconfig.js"></script>
   <script src="/assets/focus-trap.js"></script>
   <script src="/assets/sidebar.js"></script>
+  <script src="/assets/panes.js" defer></script>
   <script src="/assets/notifications.js"></script>
   <script src="/assets/theme.js"></script>
   <script src="/assets/search.js"></script>
