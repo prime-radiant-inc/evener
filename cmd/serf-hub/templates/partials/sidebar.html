@@ -122,7 +122,7 @@
            hx-target="#workspace"
            hx-swap="innerHTML"
            hx-push-url="/s/{{.ID}}">
-          <span class="subagent-glyph" data-state="{{.State}}" aria-hidden="true">{{if eq .State "active"}}⟳{{else if or (eq .State "awaiting") (eq .State "warning")}}✕{{else}}✓{{end}}</span>
+          <span class="subagent-glyph" data-state="{{.State}}" aria-hidden="true">{{if eq .State "active"}}⟳{{else if eq .State "awaiting"}}◆{{else if eq .State "warning"}}✕{{else}}✓{{end}}</span>
           <span class="subagent-title">{{.Title}}</span>
         </a>
         {{else if eq .Kind "fork"}}
