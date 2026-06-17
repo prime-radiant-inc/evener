@@ -210,12 +210,15 @@
   // container (session-tier.archived or sidebar-tier[data-tier=archived-projects])
   // send archived:false to unarchive; all others send archived:true.
   function isInsideArchivedContainer(el) {
-    // Walk ancestors looking for either the session archived-tier or the
-    // archived-projects section tier.
+    // Walk ancestors looking for either the session archived-tier
+    // (.session-tier.archived) or the archived-projects section tier
+    // ([data-tier=archived-projects]). Both classes are required on the
+    // session tier so an unrelated .archived class elsewhere can't flip
+    // the direction.
     var node = el;
     while (node) {
       if (node.classList) {
-        if (node.classList.contains("archived") && node.tagName && node.tagName.toLowerCase() === "details") return true;
+        if (node.classList.contains("session-tier") && node.classList.contains("archived")) return true;
         if (node.getAttribute && node.getAttribute("data-tier") === "archived-projects") return true;
       }
       node = node.parentElement;

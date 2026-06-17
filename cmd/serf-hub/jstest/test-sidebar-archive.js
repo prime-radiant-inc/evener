@@ -198,28 +198,28 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms || 30));
     pass(!archivedProjects.open, "archived-projects details should be collapsed by default");
   }
 
-  // ---- Test 7: archive-btn click does not navigate (stopPropagation) ----
+  // ---- Test 7: archive-btn click does not activate the sibling nav row ----
   {
     const { window, fetchCalls } = buildDom();
     window.eval(sidebarSrc);
     await wait(30);
 
-    // The session row is an <a>; the archive-btn is a sibling <button>.
-    // Clicking the button should not bubble a navigation click to the row's
-    // parent that would fire navigation. We verify the click was consumed
-    // (the button itself fired) without propagating into the row's click zone.
+    // Navigation lives on the <a class="sb-row"> (htmx hx-get). The archive-btn
+    // is its sibling inside .sb-row-wrap, NOT an ancestor of it, so a click on
+    // the button must never fire the row's own click. The handler also calls
+    // preventDefault()/stopPropagation() as belt-and-suspenders. This asserts
+    // the navigation element stays untouched.
     const btn = window.document.querySelector('[data-archive-id="01ABC"]');
-    let bubbledToNav = false;
     const row = window.document.querySelector('a[href="/s/01ABC"]');
-    if (row) {
-      row.addEventListener("click", function () { bubbledToNav = true; });
-    }
+    pass(row !== null, "session nav row should exist");
+    let rowActivated = false;
+    row.addEventListener("click", function () { rowActivated = true; });
+
     btn.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     await wait(100);
-    // The row's click listener is on the <a>, which is a sibling, not an
-    // ancestor of the button — so bubbling won't reach it. The important
-    // thing is that fetch was called (we handled it) rather than defaulted.
-    pass(fetchCalls.length >= 1, "stopPropagation test: fetch still called");
+
+    pass(!rowActivated, "archive-btn click must not activate the session nav row");
+    pass(fetchCalls.length >= 1, "archive-btn click should still issue the POST");
   }
 
   if (failures.length === 0) {
