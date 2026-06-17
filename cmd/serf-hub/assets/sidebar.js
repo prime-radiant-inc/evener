@@ -1,12 +1,18 @@
-// Sidebar project collapse/expand. Each project's collapsed state persists
-// under localStorage["serf-hub.sidebar.expanded.<key>"] as an explicit
-// "true"/"false". With no stored value a project falls back to its tier
-// default: active-tier projects (data-default-expanded) start expanded, all
-// others start collapsed — so live work is visible without burying the user
-// under every past project. An explicit user toggle always wins over the
-// default. The chevron glyph is the only click target on the header — count,
-// age, and rollup dot remain passive so they don't accidentally toggle when
-// users glance at the row.
+// Sidebar JS: project collapse, archive/unarchive controls, subagent fold,
+// cluster fold, mobile drawer, and rail mode.
+//
+// Project collapse: each project's state persists under
+// localStorage["serf-hub.sidebar.expanded.<key>"] as an explicit "true"/"false".
+// The collapse machinery (applyCollapseState, isCollapsed, setCollapsed) is kept
+// for localStorage-restore fidelity. Note: the current sidebar template no longer
+// emits .project-chevron or data-default-expanded, so projects default collapsed
+// (defaultExpanded always returns false). The infrastructure remains so that any
+// future template that re-introduces chevrons continues to work without changes here.
+//
+// Archive controls: .archive-btn[data-archive-kind][data-archive-id] triggers a
+// POST /api/archive with {kind, id, archived} then refreshes the sidebar tree via
+// the existing htmx sidebar:refresh path. Items inside an archived container
+// (.session-tier.archived or [data-tier=archived-projects]) send archived:false.
 (function () {
   "use strict";
 
@@ -197,6 +203,46 @@
   }
 
   document.addEventListener("click", onChevronClick);
+
+  // Archive/unarchive control — delegate clicks on .archive-btn, read
+  // data-archive-kind and data-archive-id, POST to /api/archive, then
+  // trigger the existing sidebar refresh path. Items already in an archived
+  // container (session-tier.archived or sidebar-tier[data-tier=archived-projects])
+  // send archived:false to unarchive; all others send archived:true.
+  function isInsideArchivedContainer(el) {
+    // Walk ancestors looking for either the session archived-tier or the
+    // archived-projects section tier.
+    var node = el;
+    while (node) {
+      if (node.classList) {
+        if (node.classList.contains("archived") && node.tagName && node.tagName.toLowerCase() === "details") return true;
+        if (node.getAttribute && node.getAttribute("data-tier") === "archived-projects") return true;
+      }
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function onArchiveBtnClick(e) {
+    var btn = e.target.closest(".archive-btn");
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var kind = btn.getAttribute("data-archive-kind");
+    var id = btn.getAttribute("data-archive-id");
+    if (!kind || !id) return;
+    var archived = !isInsideArchivedContainer(btn);
+    window.fetch("/api/archive", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: kind, id: id, archived: archived }),
+    }).then(function () {
+      scheduleSidebarRefresh();
+    }).catch(function () {
+      scheduleSidebarRefresh();
+    });
+  }
+  document.addEventListener("click", onArchiveBtnClick);
 
   // "+N subagents" fold toggle — reveals/hides the overflow subagent rows
   // (those past the first 3) within a project. The toggle flips
