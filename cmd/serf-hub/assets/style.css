@@ -1863,6 +1863,23 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
 .diagnostic-title { color: var(--text); font-weight: 500; }
 .diagnostic-message { color: var(--text); word-break: break-word; }
 .diagnostic-hint { margin-top: var(--space-2); color: var(--text-muted); word-break: break-word; }
+/* Raw error on expand (mockup #15 Alt A): the human summary stays sans/primary;
+   the original machine error folds into a quiet mono disclosure. */
+.diagnostic-detail { margin-top: var(--space-2); }
+.diagnostic-detail-summary { cursor: pointer; color: var(--text-muted); font-size: var(--text-xs); width: max-content; }
+.diagnostic-detail-summary:hover { color: var(--text); }
+.diagnostic-detail-pre {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-relaxed);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 .banner {
   margin: 0 0 var(--space-4) calc(var(--tool-indent) - var(--space-3));
@@ -3218,21 +3235,42 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
   to   { opacity: 0; transform: translateY(-8px); }
 }
 
-/* Pass 8 — Connection lost banner (paired with toast in appwire.js) */
+/* Transport reconnect banner (mockup #15 Alt A): docked workspace chrome for a
+   daemon/appwire drop. AMBER while reconnecting (recovering, not broken), RED
+   once a reconnect attempt fails ("Connection lost"). Glyph-paired so it reads
+   without color. Owned by the renderer (SerfRenderer.showConnectionBanner). */
 .connection-banner {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   z-index: var(--z-toast);
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-4);
-  background: color-mix(in srgb, var(--error) 12%, var(--bg-raised));
-  border-bottom: 1px solid var(--error);
   color: var(--text);
-  font-family: var(--font-mono);
   font-size: var(--text-xs);
-  text-align: center;
+  border-bottom: 1px solid var(--rule);
+  background: var(--bg-raised);
 }
+.connection-banner .connection-banner-glyph { font-family: var(--font-mono); flex: none; }
+.connection-banner .connection-banner-msg { font-weight: 600; }
+.connection-banner .connection-banner-sub { color: var(--text-muted); }
+/* reconnecting = AMBER (recovering, not broken) */
+.connection-banner.reconnecting {
+  background: color-mix(in srgb, var(--state-awaiting) 12%, var(--bg-raised));
+  border-bottom-color: color-mix(in srgb, var(--state-awaiting) 40%, transparent);
+}
+.connection-banner.reconnecting .connection-banner-glyph,
+.connection-banner.reconnecting .connection-banner-msg { color: var(--state-awaiting); }
+/* lost = RED (a reconnect attempt failed) */
+.connection-banner.lost {
+  background: color-mix(in srgb, var(--error) 12%, var(--bg-raised));
+  border-bottom-color: var(--error);
+}
+.connection-banner.lost .connection-banner-glyph,
+.connection-banner.lost .connection-banner-msg { color: var(--error); }
 /* When the connection banner is visible the fixed-height shell containers
    must shrink so the bottom 32 px is not clipped behind the banner. The
    banner itself is position:fixed so we also push the flex shell down by 32px

@@ -101,11 +101,11 @@ async function testConnectionLossClearsAndReconnects() {
   await wait(30);
   assert(window.SerfRenderer.liveStream === null, "connection loss should clear the AppWire stream sentinel");
   assert(window.SerfRenderer.state === "closed", "connection loss should mark renderer closed");
-  const diagnostic = window.document.querySelector(".diagnostic");
-  assert(diagnostic, "connection loss should render a hub diagnostic");
-  assert(diagnostic.dataset.source === "hub", "diagnostic should be hub-sourced");
-  assert(diagnostic.textContent.includes("Local daemon unavailable: closed"), "diagnostic should include connection loss reason");
-  assert(diagnostic.textContent.includes("Reconnect & retry"), "diagnostic should offer reconnect retry action");
+  // Transport drop belongs in the chrome (mockup #15 Alt A), NOT the transcript.
+  const dropBanner = window.document.querySelector(".connection-banner");
+  assert(dropBanner, "connection loss should dock a chrome reconnect banner");
+  assert(dropBanner.classList.contains("reconnecting"), "the chrome banner is amber 'reconnecting' while recovering");
+  assert(window.document.querySelector(".diagnostic") === null, "connection loss must NOT pollute the transcript with a diagnostic");
   assert(unsubscribes === 1, "connection loss should unsubscribe live notifications");
   await wait(300);
   assert(readThreadCalls >= 2, "connection loss should schedule a new thread/read");
