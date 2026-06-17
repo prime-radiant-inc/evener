@@ -298,7 +298,7 @@ func splitProviderModel(raw string) (string, string) {
 
 func (s *WebServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 	metas, live := s.navigationTreeInputs(r.Context())
-	tree := hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{})
+	tree := hubcore.BuildTree(metas, live, s.archiveDecisions())
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.sidebarTmpl.ExecuteTemplate(w, "sidebar", tree); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -16,13 +16,26 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
+// archiveDecisions returns the current set of user-explicit archive decisions.
+// It is nil-safe: a nil or unconfigured Archive store returns an empty map.
+func (s *WebServer) archiveDecisions() map[hubcore.ArchiveKey]bool {
+	if s.cfg.Archive == nil {
+		return map[hubcore.ArchiveKey]bool{}
+	}
+	decisions, err := s.cfg.Archive.Decisions()
+	if err != nil {
+		return map[hubcore.ArchiveKey]bool{}
+	}
+	return decisions
+}
+
 func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
 		return
 	}
 	metas, live := s.navigationTreeInputs(r.Context())
-	tree := hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{})
+	tree := hubcore.BuildTree(metas, live, s.archiveDecisions())
 	resp := hubapi.TreeResponse{
 		GeneratedAt: time.Now().UTC(),
 		Sources:     s.apiTreeSources(),
