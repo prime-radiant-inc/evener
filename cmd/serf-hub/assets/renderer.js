@@ -1937,7 +1937,15 @@
     applyJobRefTarget(row, data) {
       if (!row || !data || !data.transcriptRef) return;
       row.dataset.transcriptRef = data.transcriptRef;
-      row.onclick = () => { window.location.href = "/s/" + encodeURIComponent(data.transcriptRef); };
+      row.onclick = () => { this.navigateTo("/s/" + encodeURIComponent(data.transcriptRef)); };
+    },
+
+    // navigateTo performs a hard navigation to a workspace route. Centralized so
+    // the subagent-nav affordances (a row's "view →", the Esc-to-parent
+    // accelerator) share one seam — overridable in tests where jsdom has no
+    // real navigation.
+    navigateTo(href) {
+      window.location.href = href;
     },
 
     // Severity rank for worst-first ordering (mockup #8 alt B). A failure sorts
@@ -2013,6 +2021,42 @@
         } else {
           more.hidden = true;
         }
+      }
+      // Bubble this session's worst direct-child state up onto its own parent
+      // breadcrumb, so a deep failure surfaces on the way back out (mockup #9).
+      this.updateBreadcrumbRollup();
+    },
+
+    // updateBreadcrumbRollup colors a worst-state chip on this subagent's
+    // breadcrumb from its OWN direct children (the subagent modules in this
+    // transcript). It bubbles a failure (or an unanswered "unknown") up one
+    // level so a deep ✕ never hides behind a green parent: every hop up the
+    // chain re-derives the chip from that level's children. There is no daemon
+    // signal carrying a parent's grandchildren into the live stream, so the
+    // rollup is composed honestly from the worst state we can actually observe
+    // here — this session's direct children.
+    updateBreadcrumbRollup() {
+      const chip = document.querySelector("[data-subagent-rollup]");
+      if (!chip) return;
+      let failed = 0, unknown = 0;
+      for (const row of this.conversation.querySelectorAll(".sub-r")) {
+        const kind = row.dataset.statusKind || "running";
+        if (kind === "failed") failed++;
+        else if (kind === "unknown") unknown++;
+      }
+      if (!failed && !unknown) {
+        chip.hidden = true;
+        chip.textContent = "";
+        chip.classList.remove("bad");
+        return;
+      }
+      chip.hidden = false;
+      if (failed) {
+        chip.classList.add("bad");
+        chip.textContent = "✕ " + failed + (failed === 1 ? " child failed" : " children failed");
+      } else {
+        chip.classList.remove("bad");
+        chip.textContent = "? " + unknown + (unknown === 1 ? " child unknown" : " children unknown");
       }
     },
 
@@ -2800,6 +2844,7 @@
     },
 
     bindKeyboard() {
+      this.bindSubagentEscapeToParent();
       const ta = document.querySelector(".message-input");
       if (!ta) return;
       ta.addEventListener("keydown", (e) => {
@@ -2830,6 +2875,32 @@
             window.SerfSearch.openWith("/");
           }
         }
+      });
+    },
+
+    // bindSubagentEscapeToParent makes "Esc → parent" real on a subagent's
+    // workspace (mockup #9): Escape navigates up to the parent. It defers to any
+    // open overlay (a panel/dialog/picker's own Escape handler closes that
+    // first) and ignores Escape while typing, so it only fires as a last-resort
+    // "get me out of this subagent" accelerator. Bound once per process.
+    bindSubagentEscapeToParent() {
+      if (this.__escToParentBound) return;
+      this.__escToParentBound = true;
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape" || e.metaKey || e.ctrlKey || e.altKey) return;
+        // Defer to any open overlay — its own handler owns this Escape press.
+        if (document.getElementById("panel-scrim")) return;
+        if (document.getElementById("details-panel")) return;
+        if (document.getElementById("tasks-panel")) return;
+        const dlg = document.getElementById("search-dialog");
+        if (dlg && dlg.open) return;
+        // Don't steal Escape from text entry.
+        const ae = document.activeElement;
+        if (ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT" || ae.isContentEditable)) return;
+        const crumb = document.querySelector(".subagent-parent-up[href]");
+        if (!crumb) return;
+        e.preventDefault();
+        this.navigateTo(crumb.getAttribute("href"));
       });
     },
   };

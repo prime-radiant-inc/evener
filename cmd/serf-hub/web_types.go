@@ -189,6 +189,13 @@ type WorkspaceData struct {
 	ForkLabel      string
 	ForkOfTitle    string
 	DivergenceTurn int
+	// Subagent lineage for the breadcrumb banner (mockup #9). Non-empty only
+	// when this session is a subagent with a known parent. ParentRouteID is the
+	// /s/<id> route to the parent's workspace; ParentTitle is its display name.
+	// The banner gives a subagent a way back to its parent — without it,
+	// "view →" was a one-way hard nav with no back-out.
+	ParentRouteID string
+	ParentTitle   string
 }
 
 // sendRequest is the JSON body accepted by POST /s/<id>/send. Items carries

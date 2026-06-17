@@ -685,6 +685,38 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .fork-original-banner { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); margin-bottom: var(--space-2); padding: 0; }
 .fork-original-target { color: var(--text); }
 
+/* Subagent parent breadcrumb (mockup #9): a way back up to the parent from a
+   subagent's workspace. Each crumb is a real link; "here" is the current
+   subagent; the Esc hint advertises the keyboard accelerator. */
+.subagent-parent-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+}
+.subagent-parent-up,
+.subagent-parent-crumb { color: var(--accent); text-decoration: none; }
+.subagent-parent-up:hover,
+.subagent-parent-crumb:hover { text-decoration: underline; }
+.subagent-parent-sep { color: var(--text-dim); }
+.subagent-parent-here { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); }
+/* Worst-descendant rollup chip on the breadcrumb: a deep ✕ (or an unanswered
+   "unknown") surfaces here so it never hides behind a green parent. */
+.subagent-parent-rollup { font-size: var(--text-xs); color: var(--text-dim); }
+.subagent-parent-rollup[hidden] { display: none; }
+.subagent-parent-rollup.bad { color: var(--error); }
+.subagent-parent-esc { margin-left: auto; font-size: var(--text-xs); color: var(--text-dim); }
+.subagent-parent-key {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  border: 1px solid var(--rule);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
 /* Rail-toggle button — lives in .sidebar-header. Default state is
    "collapse"; rail mode flips the glyph to "expand". */
 .sidebar-rail-toggle {
