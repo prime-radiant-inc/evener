@@ -38,30 +38,10 @@ type WebServer struct {
 }
 
 // sidebarTemplateFuncs supplies small helpers the sidebar template needs:
-// integer math to fold subagent rows ("+N subagents"), and a "dict" builder
-// so a reusable project sub-template can receive both the TreeProject and its
-// tier's expand hint in one call.
+// integer math to fold subagent rows ("+N subagents").
 var sidebarTemplateFuncs = template.FuncMap{
-	"add":  func(a, b int) int { return a + b },
-	"sub":  func(a, b int) int { return a - b },
-	"dict": templateDict,
-}
-
-// templateDict builds a map from alternating key/value args for passing
-// multiple values into a sub-template ({{template "x" (dict "P" . "Expanded" $e)}}).
-func templateDict(pairs ...any) (map[string]any, error) {
-	if len(pairs)%2 != 0 {
-		return nil, fmt.Errorf("dict: odd number of arguments (%d)", len(pairs))
-	}
-	m := make(map[string]any, len(pairs)/2)
-	for i := 0; i < len(pairs); i += 2 {
-		key, ok := pairs[i].(string)
-		if !ok {
-			return nil, fmt.Errorf("dict: key %d is not a string", i)
-		}
-		m[key] = pairs[i+1]
-	}
-	return m, nil
+	"add": func(a, b int) int { return a + b },
+	"sub": func(a, b int) int { return a - b },
 }
 
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
@@ -157,6 +137,7 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/search", s.handleApiSearch)
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
 	mux.HandleFunc("/api/tree", s.handleAPITree)
+	mux.HandleFunc("/api/archive", s.handleAPIArchive)
 	mux.HandleFunc("/api/spawn-schema", s.handleAPISpawnSchema)
 	mux.HandleFunc("/api/sessions/", s.handleAPISession)
 
@@ -298,7 +279,7 @@ func splitProviderModel(raw string) (string, string) {
 
 func (s *WebServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 	metas, live := s.navigationTreeInputs(r.Context())
-	tree := hubcore.BuildTree(metas, live)
+	tree := hubcore.BuildTree(metas, live, s.archiveDecisions())
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.sidebarTmpl.ExecuteTemplate(w, "sidebar", tree); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

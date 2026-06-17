@@ -42,6 +42,8 @@ type WebConfig struct {
 	CodexLaunches       []codexlaunch.CodexLaunchConfig
 	CodexLauncher       *codexlaunch.CodexLauncher
 
+	Archive *ArchiveStore // archive decision store; nil when not configured (tree uses empty decisions)
+
 	RelayHooks RelayLifecycleHooks // test-only relay lifecycle seams; nil in production
 }
 

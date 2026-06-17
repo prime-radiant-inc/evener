@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent/schema"
@@ -15,85 +14,69 @@ import (
 //
 //   - NeedsYou is the cross-project triage tier the sidebar renders at the top:
 //     every awaiting session, oldest-blocked first, hidden when empty.
-//   - Projects is the tier-grouped project tree (the sidebar's single live home;
-//     the flat Live rail it once duplicated has been retired from the sidebar).
+//   - Projects is the flat, recency-ordered list of active projects (those with
+//     at least one non-archived session and not manually archived). Each
+//     project's sessions are split into Current / Recent / Archived tiers.
+//   - ArchivedProjects is the collapsed group at the bottom: projects that are
+//     manually archived or whose every session is archived.
 //   - Live is the flat live list still consumed by the /api/tree JSON endpoint;
 //     the sidebar no longer renders it.
 type Tree struct {
-	NeedsYou []TreeNode
-	Live     []TreeNode
-	Projects []TreeProject
+	NeedsYou         []TreeNode
+	Live             []TreeNode
+	Projects         []TreeProject
+	ArchivedProjects []TreeProject
 }
 
-// TreeProject groups sessions by working-directory basename.
+// TreeProject groups sessions by working-directory basename. Its sessions are
+// split into activity tiers (Current / Recent / Archived) computed from each
+// session's last activity and archive decision.
 type TreeProject struct {
-	Name        string
-	WorkingDir  string // absolute path of the project's working directory; used to prefill the spawn form
-	Sessions    []TreeNode
-	RollupState string // highest-attention state across this project's live sessions; "" if none
+	Name       string
+	WorkingDir string // absolute path of the project's working directory; used to prefill the spawn form
+	// Sessions split by activity tier:
+	//   - Current  – last activity ≤ 24h, not archived.
+	//   - Recent   – last activity 24h–2wk, not archived.
+	//   - Archived – effective-archived (auto >2wk, or manual decision).
+	Current  []TreeNode
+	Recent   []TreeNode
+	Archived []TreeNode
+	// IsArchived is true when the project lives in the bottom Archived-projects
+	// group: manually archived, or no non-archived (Current/Recent) sessions.
+	IsArchived bool
+	// MostRecentStart is the newest session start (max CreatedAt) across the
+	// project's top-level sessions; active projects are ordered by it, desc.
+	MostRecentStart time.Time
+	RollupState     string // highest-attention state across this project's live sessions; "" if none
 	// Magnitude rollup: how many of the project's live sessions are working
 	// (RollupLive) vs. awaiting input (RollupAttn). The header renders these as
 	// "⟳N · ◆M" so "how many need me" is legible without expanding — the single
 	// rollup dot couldn't say that. Idle/ended sessions count toward neither.
 	RollupLive int
 	RollupAttn int
-	Tier       string // sidebar tier: "active" | "recent" | "older" | "test"
-	// MostRecent is the project's newest top-level session activity, used to
-	// rank projects within a tier (most-recent first).
-	MostRecent time.Time
-	Age        string // pre-formatted relative age of MostRecent ("now", "2m", "3h", "5d")
+	Age        string // pre-formatted relative age of MostRecentStart ("now", "2m", "3h", "5d")
 }
 
-// Sidebar tiers. Projects are grouped into one of these bands so live work
-// floats to the top and the disposable serf-e2e-* test sprawl is corralled
-// into one collapsed bucket instead of drowning real projects.
 const (
-	TierActive = "active" // has a live/needs-you session; auto-expanded
-	TierRecent = "recent" // touched within recentWindow; collapsed
-	TierOlder  = "older"  // touched longer ago; collapsed
-	TierTest   = "test"   // disposable serf-e2e-* single-session runs; collapsed
+	currentWindow = 24 * time.Hour
+	archiveWindow = 14 * 24 * time.Hour
 )
 
-// recentWindow is the age boundary between the RECENT and OLDER tiers.
-const recentWindow = 24 * time.Hour
-
-// e2eProjectPrefix marks throwaway end-to-end test sessions whose project
-// folders (serf-e2e-<rand>) otherwise bury real projects in the sidebar.
-const e2eProjectPrefix = "serf-e2e-"
-
-// isTestProject reports whether a project name is a disposable e2e test run.
-func isTestProject(name string) bool {
-	return strings.HasPrefix(name, e2eProjectPrefix)
-}
-
-// tierFor classifies a project into a sidebar tier. Test runs are bucketed
-// regardless of recency; otherwise a non-empty rollup (a live/needs-you
-// session) means ACTIVE, recency within recentWindow means RECENT, else OLDER.
-func tierFor(name, rollupState string, mostRecent time.Time, now time.Time) string {
-	if isTestProject(name) {
-		return TierTest
+// classifySession returns a session's sidebar tier from its last activity and
+// archive decision. A user decision (archive/unarchive) overrides the auto rule;
+// otherwise inactivity older than archiveWindow auto-archives.
+func classifySession(decision *bool, lastActivity, now time.Time) string {
+	archived := now.Sub(lastActivity) > archiveWindow
+	if decision != nil {
+		archived = *decision
 	}
-	if rollupState != "" && rollupState != "ended" {
-		return TierActive
+	if archived {
+		return "archived"
 	}
-	if !mostRecent.IsZero() && now.Sub(mostRecent) <= recentWindow {
-		return TierRecent
+	if now.Sub(lastActivity) <= currentWindow {
+		return "current"
 	}
-	return TierOlder
-}
-
-// tierRank orders tiers top-to-bottom in the sidebar.
-func tierRank(tier string) int {
-	switch tier {
-	case TierActive:
-		return 0
-	case TierRecent:
-		return 1
-	case TierOlder:
-		return 2
-	default: // TierTest
-		return 3
-	}
+	return "recent"
 }
 
 // TreeNode represents a row in the sidebar.
@@ -116,111 +99,6 @@ type TreeNode struct {
 	UpdatedAt    time.Time
 	Age          string // pre-formatted "now", "2m", "3h", "5d"
 	Children     []TreeNode
-}
-
-// TierGroup is a labeled band of projects for the sidebar. Tiers render
-// top-to-bottom in TierGroups order.
-type TierGroup struct {
-	Tier     string // "active" | "recent" | "older" | "test"
-	Label    string // display label, e.g. "active", "test runs"
-	Expanded bool   // tier auto-expands its projects (only the active tier)
-	Projects []TreeProject
-}
-
-// DateGroup is a date-bucketed slice of a tier's projects (mockup #12 rec B):
-// Today / Yesterday / Older, newest bucket first. Used to give the otherwise
-// flat Test runs pile a recency spine so "the one I ran this morning" is
-// reachable by structure.
-type DateGroup struct {
-	Label    string
-	Projects []TreeProject
-}
-
-// DateGroupsAt buckets the group's projects into Today / Yesterday / Older by
-// each project's MostRecent activity, relative to now. Buckets preserve the
-// group's existing (recency-sorted) project order and empty buckets are
-// omitted so the sidebar never shows a blank date sub-header.
-func (g TierGroup) DateGroupsAt(now time.Time) []DateGroup {
-	today := dayStart(now)
-	yesterday := today.AddDate(0, 0, -1)
-
-	var todayP, ydayP, olderP []TreeProject
-	for _, p := range g.Projects {
-		switch {
-		case !p.MostRecent.Before(today):
-			todayP = append(todayP, p)
-		case !p.MostRecent.Before(yesterday):
-			ydayP = append(ydayP, p)
-		default:
-			olderP = append(olderP, p)
-		}
-	}
-	out := make([]DateGroup, 0, 3)
-	if len(todayP) > 0 {
-		out = append(out, DateGroup{Label: "Today", Projects: todayP})
-	}
-	if len(ydayP) > 0 {
-		out = append(out, DateGroup{Label: "Yesterday", Projects: ydayP})
-	}
-	if len(olderP) > 0 {
-		out = append(out, DateGroup{Label: "Older", Projects: olderP})
-	}
-	return out
-}
-
-// DateGroups buckets by date relative to the current wall clock.
-func (g TierGroup) DateGroups() []DateGroup { return g.DateGroupsAt(time.Now()) }
-
-// dayStart returns midnight at the start of t's local day.
-func dayStart(t time.Time) time.Time {
-	y, m, d := t.Date()
-	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
-}
-
-// tierLabel returns the sidebar header text for a tier.
-func tierLabel(tier string) string {
-	// Sentence-case sans labels (design-system §2 / mockup #2): the old UI
-	// relied on CSS text-transform:uppercase to shout these; chrome labels are
-	// now quiet sentence-case, so the display strings carry the capitalization.
-	switch tier {
-	case TierActive:
-		return "Active"
-	case TierRecent:
-		return "Recent"
-	case TierOlder:
-		return "Older"
-	default: // TierTest
-		return "Test runs"
-	}
-}
-
-// TierGroups buckets the tree's projects into ordered, labeled tier groups,
-// preserving the within-tier ordering BuildTree already established. Empty
-// tiers are omitted so the sidebar never shows a blank band.
-func (t Tree) TierGroups() []TierGroup {
-	order := []string{TierActive, TierRecent, TierOlder, TierTest}
-	byTier := make(map[string][]TreeProject, len(order))
-	for _, p := range t.Projects {
-		tier := p.Tier
-		if tier == "" {
-			tier = TierOlder
-		}
-		byTier[tier] = append(byTier[tier], p)
-	}
-	groups := make([]TierGroup, 0, len(order))
-	for _, tier := range order {
-		projects := byTier[tier]
-		if len(projects) == 0 {
-			continue
-		}
-		groups = append(groups, TierGroup{
-			Tier:     tier,
-			Label:    tierLabel(tier),
-			Expanded: tier == TierActive,
-			Projects: projects,
-		})
-	}
-	return groups
 }
 
 // AttentionRank maps a state string to a sort key.
@@ -352,10 +230,16 @@ func nodeKind(m schema.SessionMeta) string {
 	return "session"
 }
 
-// BuildTree assembles the sidebar Tree from all session metas and the
-// currently-live set.
-func BuildTree(metas []schema.SessionMeta, live []LiveEntry) Tree {
-	now := time.Now()
+// BuildTree assembles the sidebar Tree from all session metas, the
+// currently-live set, and the user's explicit archive decisions, using the
+// current wall clock for tier classification.
+func BuildTree(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool) Tree {
+	return BuildTreeAt(metas, live, decisions, time.Now())
+}
+
+// BuildTreeAt is BuildTree with an injected clock so tier classification
+// (Current/Recent/Archived, by last-activity age) is deterministic in tests.
+func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time) Tree {
 	metas = append([]schema.SessionMeta(nil), metas...)
 	sort.SliceStable(metas, func(i, j int) bool {
 		return sessionMetaLess(metas[i], metas[j])
@@ -521,10 +405,10 @@ func BuildTree(metas []schema.SessionMeta, live []LiveEntry) Tree {
 			sessions = append(sessions, node)
 		}
 
-		// Rollup: highest-attention state (for the tier classification + dot
-		// fallback) plus the magnitude counts the header renders. Counts run
-		// over the project's own top-level sessions so subagents don't inflate
-		// the "how many need me" answer.
+		// Rollup: highest-attention state (for the dot fallback) plus the
+		// magnitude counts the header renders. Counts run over the project's own
+		// top-level sessions so subagents don't inflate the "how many need me"
+		// answer.
 		rollup := ""
 		rollupLive, rollupAttn := 0, 0
 		for _, s := range sessions {
@@ -539,38 +423,68 @@ func BuildTree(metas []schema.SessionMeta, live []LiveEntry) Tree {
 			}
 		}
 
-		// MostRecent: newest top-level session activity in the project, used to
-		// rank projects within a tier. Top-level sessions are already sorted
-		// most-recent first, so the first one carries the project's recency.
-		var mostRecent time.Time
-		if len(sessions) > 0 {
-			mostRecent = sessions[0].UpdatedAt
+		// MostRecentStart: the project's newest session START (max CreatedAt),
+		// used to order active projects newest-first.
+		var mostRecentStart time.Time
+		for _, s := range sessions {
+			if s.CreatedAt.After(mostRecentStart) {
+				mostRecentStart = s.CreatedAt
+			}
 		}
 
+		// Split the project's (clustered) rows into activity tiers. A session's
+		// tier is its effective-archived classification: a user decision overrides
+		// the auto rule, otherwise inactivity > 2 weeks auto-archives.
+		var current, recent, archived []TreeNode
+		for _, row := range clusterRepeatedTitles(sessions) {
+			switch classifySession(decisionFor(decisions, row.ID), row.UpdatedAt, now) {
+			case "current":
+				current = append(current, row)
+			case "recent":
+				recent = append(recent, row)
+			default:
+				archived = append(archived, row)
+			}
+		}
+
+		// Project placement: a project is archived when manually archived or when
+		// it has no non-archived (Current/Recent) sessions.
+		isArchived := decisions[ArchiveKey{Kind: "project", ID: pname}] ||
+			(len(current) == 0 && len(recent) == 0)
+
 		treeProjects = append(treeProjects, TreeProject{
-			Name:        pname,
-			WorkingDir:  projects[pname].workingDir,
-			Sessions:    clusterRepeatedTitles(sessions),
-			RollupState: rollup,
-			RollupLive:  rollupLive,
-			RollupAttn:  rollupAttn,
-			Tier:        tierFor(pname, rollup, mostRecent, now),
-			MostRecent:  mostRecent,
-			Age:         AgeString(mostRecent),
+			Name:            pname,
+			WorkingDir:      projects[pname].workingDir,
+			Current:         current,
+			Recent:          recent,
+			Archived:        archived,
+			IsArchived:      isArchived,
+			MostRecentStart: mostRecentStart,
+			RollupState:     rollup,
+			RollupLive:      rollupLive,
+			RollupAttn:      rollupAttn,
+			Age:             AgeString(mostRecentStart),
 		})
 	}
 
-	// Order projects by tier (active → recent → older → test), then
-	// most-recent activity first within each tier. SliceStable keeps the
-	// insertion order (already recency-sorted via sessionMetaLess) as the
-	// tiebreak when timestamps are equal.
-	sort.SliceStable(treeProjects, func(i, j int) bool {
-		ti, tj := tierRank(treeProjects[i].Tier), tierRank(treeProjects[j].Tier)
-		if ti != tj {
-			return ti < tj
+	// Split active projects from archived ones; order each newest-first by the
+	// project's most-recent session start. SliceStable keeps the insertion order
+	// (already recency-sorted via sessionMetaLess) as the tiebreak when starts
+	// are equal.
+	activeProjects := make([]TreeProject, 0, len(treeProjects))
+	archivedProjects := make([]TreeProject, 0)
+	for _, p := range treeProjects {
+		if p.IsArchived {
+			archivedProjects = append(archivedProjects, p)
+		} else {
+			activeProjects = append(activeProjects, p)
 		}
-		return treeProjects[i].MostRecent.After(treeProjects[j].MostRecent)
-	})
+	}
+	byStartDesc := func(ps []TreeProject) func(i, j int) bool {
+		return func(i, j int) bool { return ps[i].MostRecentStart.After(ps[j].MostRecentStart) }
+	}
+	sort.SliceStable(activeProjects, byStartDesc(activeProjects))
+	sort.SliceStable(archivedProjects, byStartDesc(archivedProjects))
 
 	// Build the Live slice: every live session, flat, sorted by attention rank
 	// desc, then the Hub session ordering contract. The sidebar no longer
@@ -670,10 +584,24 @@ func BuildTree(metas []schema.SessionMeta, live []LiveEntry) Tree {
 	})
 
 	return Tree{
-		NeedsYou: needsYou,
-		Live:     liveNodes,
-		Projects: treeProjects,
+		NeedsYou:         needsYou,
+		Live:             liveNodes,
+		Projects:         activeProjects,
+		ArchivedProjects: archivedProjects,
 	}
+}
+
+// decisionFor returns the explicit archive decision for a session ID as a
+// *bool (nil when there is no decision), the shape classifySession wants. An
+// empty ID (e.g. a synthesized cluster row) never has a decision.
+func decisionFor(decisions map[ArchiveKey]bool, id string) *bool {
+	if id == "" {
+		return nil
+	}
+	if v, ok := decisions[ArchiveKey{Kind: "session", ID: id}]; ok {
+		return &v
+	}
+	return nil
 }
 
 // clusterRepeatedTitles folds same-titled idle/ended sessions into a single
