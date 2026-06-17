@@ -519,6 +519,84 @@ func TestAdapter_Stream_TranslatesToolUseAndThinkingBlocks(t *testing.T) {
 	}
 }
 
+// When extended thinking streams multiple separate thinking blocks, the
+// incremental reasoning deltas must be separated by a blank line so the live
+// "thinking" view stays readable (mirrors the OpenAI summary-part behavior).
+// The request must also enable extended thinking when reasoning effort is set.
+func TestAdapter_Stream_EmitsReasoningDeltas_SectionBreakBetweenBlocks(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		write := func(event string, data string) {
+			_, _ = io.WriteString(w, "event: "+event+"\n")
+			_, _ = io.WriteString(w, "data: "+data+"\n\n")
+			if f != nil {
+				f.Flush()
+			}
+		}
+
+		// First thinking block.
+		write("content_block_start", `{"index":0,"content_block":{"type":"thinking"}}`)
+		write("content_block_delta", `{"index":0,"delta":{"type":"thinking_delta","thinking":"Let me "}}`)
+		write("content_block_delta", `{"index":0,"delta":{"type":"thinking_delta","thinking":"think."}}`)
+		write("content_block_stop", `{"index":0}`)
+		// Second, separate thinking block.
+		write("content_block_start", `{"index":1,"content_block":{"type":"thinking"}}`)
+		write("content_block_delta", `{"index":1,"delta":{"type":"thinking_delta","thinking":"Then verify."}}`)
+		write("content_block_stop", `{"index":1}`)
+		// Answer text.
+		write("content_block_start", `{"index":2,"content_block":{"type":"text"}}`)
+		write("content_block_delta", `{"index":2,"delta":{"type":"text_delta","text":"Answer"}}`)
+		write("content_block_stop", `{"index":2}`)
+
+		write("message_delta", `{"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}`)
+		write("message_stop", `{}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	effort := "high"
+	stream, err := a.Stream(ctx, llm.Request{Model: "claude-test", ReasoningEffort: &effort, Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var reasoning strings.Builder
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventReasoningDelta {
+			reasoning.WriteString(ev.ReasoningDelta)
+		}
+	}
+	// The two separate thinking blocks are joined by a blank line.
+	if got := reasoning.String(); got != "Let me think.\n\nThen verify." {
+		t.Fatalf("reasoning stream = %q, want %q", got, "Let me think.\n\nThen verify.")
+	}
+
+	// Extended thinking must be requested when reasoning effort is set, or the
+	// API streams no thinking at all.
+	th, _ := gotBody["thinking"].(map[string]any)
+	if th == nil || th["type"] != "enabled" {
+		t.Fatalf("request thinking = %#v, want {type: enabled, budget_tokens: N}", gotBody["thinking"])
+	}
+	if llm.IntFromAny(th["budget_tokens"]) <= 0 {
+		t.Fatalf("request thinking budget_tokens = %#v, want > 0", th["budget_tokens"])
+	}
+}
+
 func TestAdapter_Complete_ImageInput_URL_Data_AndFilePath(t *testing.T) {
 	var gotBody map[string]any
 
