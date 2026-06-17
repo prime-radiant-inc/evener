@@ -71,8 +71,32 @@
     persist();
   }
 
-  // persist() is defined in Task 4; declare a no-op here so Task 3 stands alone.
-  function persist() { if (window.SerfPanes && window.SerfPanes._persist) window.SerfPanes._persist(); }
+  var STORE_KEY = "serf-hub.panes";
 
-  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, MAX_SIDE_PANES: MAX_SIDE_PANES };
+  function persist() {
+    var r = region();
+    if (!r) return;
+    var data = Array.prototype.map.call(r.querySelectorAll(".pane"), function (p) {
+      var f = p.querySelector(".pane-frame");
+      var t = p.querySelector(".pane-title");
+      return { href: f.getAttribute("src"), title: t ? t.textContent : "" };
+    });
+    try { window.localStorage.setItem(STORE_KEY, JSON.stringify(data)); } catch (e) { /* ignore */ }
+  }
+
+  function restore() {
+    var raw;
+    try { raw = window.localStorage.getItem(STORE_KEY); } catch (e) { return; }
+    if (!raw) return;
+    var data;
+    try { data = JSON.parse(raw); } catch (e) { return; }
+    if (!Array.isArray(data)) return;
+    data.forEach(function (p) { if (p && p.href) open(p.href, p.title); });
+  }
+
+  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, MAX_SIDE_PANES: MAX_SIDE_PANES, _persist: persist };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", restore);
+  } else { restore(); }
 })();

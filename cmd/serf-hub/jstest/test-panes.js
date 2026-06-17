@@ -37,5 +37,17 @@ P.openHrefs().slice().forEach(h => P.close(h));
 if (frames().length !== 0) throw new Error("panes not closed");
 if (!document.getElementById("side-panes").hidden) throw new Error("region should hide when empty");
 
+// persistence: opening writes localStorage; a fresh load restores
+P.open("/s/keep-1", "Keep 1");
+const stored = JSON.parse(dom.window.localStorage.getItem("serf-hub.panes") || "[]");
+if (!stored.some(p => p.href === "/s/keep-1")) throw new Error("open not persisted");
+
+// simulate reload: clear DOM panes, call restore()
+document.querySelectorAll("#side-panes .pane").forEach(n => n.remove());
+document.getElementById("side-panes").hidden = true;
+P.restore();
+if (!P.openHrefs().includes("/s/keep-1")) throw new Error("restore did not reopen pane");
+console.log("test-panes persistence: ok");
+
 console.log("test-panes: ok");
 process.exit(0);
