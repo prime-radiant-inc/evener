@@ -95,12 +95,52 @@
   function updateExpandableSummary(summary, details, hiddenLineCount) {
     summary.textContent = details.open
       ? "hide " + hiddenLineCount + (hiddenLineCount === 1 ? " line" : " lines")
-      : "show " + hiddenLineCount + " more " + (hiddenLineCount === 1 ? "line" : "lines");
+      : "expand · " + hiddenLineCount + " more " + (hiddenLineCount === 1 ? "line" : "lines");
   }
 
+  // looksBinary flags output that is not human-readable text (NUL bytes or a
+  // high ratio of replacement chars) so we can say so plainly (mockup #6 alt D
+  // DROP case) instead of rendering mojibake or faking a line count.
+  function looksBinary(text) {
+    const s = String(text || "");
+    if (!s) return false;
+    const sample = s.slice(0, 1000);
+    let bad = 0;
+    for (let i = 0; i < sample.length; i++) {
+      const code = sample.charCodeAt(i);
+      if (code === 0 || code === 0xFFFD) bad++; // NUL or U+FFFD replacement char
+    }
+    return sample.length > 0 && bad / sample.length > 0.1;
+  }
+
+  // dropNote renders an honest "bytes were dropped at the source" line — the
+  // server-dropped (DROP) state from mockup #6 alt D. Unlike the
+  // client-collapsed "expand · N more" affordance (which reveals bytes that
+  // ARE present), this admits the data is gone and is NOT a fake expand.
+  function dropNote(label) {
+    const note = document.createElement("div");
+    note.className = "tool-output-dropped";
+    note.textContent = "⚠ " + label;
+    return note;
+  }
+
+  // setExpandableOutput shows the first 5 lines whole and folds the rest behind
+  // a client-collapsed "expand · N more" affordance (honest: those bytes rode
+  // into context and are present). When opts.dropped is set the output was
+  // truncated/binary at the source, so instead of (or alongside) the present
+  // tail we append an honest drop note rather than pretending an expand will
+  // reveal the missing bytes.
   function setExpandableOutput(body, text, opts) {
     if (!body || !body.pre || !body.wrap) return;
     opts = opts || {};
+    if (body.dropEl) { body.dropEl.remove(); body.dropEl = null; }
+    if (opts.binary || looksBinary(text)) {
+      if (body.moreWrap) { body.moreWrap.remove(); body.moreWrap = null; }
+      body.pre.style.display = "none";
+      body.dropEl = dropNote(opts.droppedLabel || "binary output — not shown as text");
+      body.wrap.appendChild(body.dropEl);
+      return;
+    }
     const lines = splitOutputLines(text);
     body.pre.textContent = lines.slice(0, 5).join("\n");
     body.pre.style.display = lines.length ? "" : "none";
@@ -108,20 +148,25 @@
       body.moreWrap.remove();
       body.moreWrap = null;
     }
-    if (lines.length <= 5) return;
-    const moreWrap = document.createElement("details");
-    moreWrap.className = "tool-output-more " + (opts.moreClass || "");
-    const morePre = document.createElement("pre");
-    morePre.className = (opts.outputClassName || body.pre.className || "") + " tool-output-rest";
-    morePre.textContent = lines.slice(5).join("\n");
-    const summary = document.createElement("summary");
-    const hiddenLineCount = lines.length - 5;
-    moreWrap.addEventListener("toggle", () => updateExpandableSummary(summary, moreWrap, hiddenLineCount));
-    updateExpandableSummary(summary, moreWrap, hiddenLineCount);
-    moreWrap.appendChild(morePre);
-    moreWrap.appendChild(summary);
-    body.wrap.appendChild(moreWrap);
-    body.moreWrap = moreWrap;
+    if (lines.length > 5) {
+      const moreWrap = document.createElement("details");
+      moreWrap.className = "tool-output-more " + (opts.moreClass || "");
+      const morePre = document.createElement("pre");
+      morePre.className = (opts.outputClassName || body.pre.className || "") + " tool-output-rest";
+      morePre.textContent = lines.slice(5).join("\n");
+      const summary = document.createElement("summary");
+      const hiddenLineCount = lines.length - 5;
+      moreWrap.addEventListener("toggle", () => updateExpandableSummary(summary, moreWrap, hiddenLineCount));
+      updateExpandableSummary(summary, moreWrap, hiddenLineCount);
+      moreWrap.appendChild(morePre);
+      moreWrap.appendChild(summary);
+      body.wrap.appendChild(moreWrap);
+      body.moreWrap = moreWrap;
+    }
+    if (opts.dropped) {
+      body.dropEl = dropNote(opts.droppedLabel || "output truncated at the source — the dropped bytes were never captured");
+      body.wrap.appendChild(body.dropEl);
+    }
   }
 
   function setExpandableDiff(body, text, opts) {
@@ -251,7 +296,15 @@
       if (!state.body) return;
       const st = parseToolJSON(out);
       const text = data.error || jobReadOutputText(st, out);
-      setExpandableOutput(state.body, clip(text, 8000), { moreClass: "job-output-more", outputClassName: "job-output" });
+      // Server-dropped (mockup #6 alt D DROP): the daemon truncated the output,
+      // so the tail shown here is NOT all of it. Say so honestly instead of
+      // implying an "expand" would reveal the rest.
+      const opts = { moreClass: "job-output-more", outputClassName: "job-output" };
+      if (st && st.truncated) {
+        opts.dropped = true;
+        opts.droppedLabel = "truncated at the source — kept " + clip(formatBytes(st.total_bytes) || "part", 40) + ", the rest was never captured";
+      }
+      setExpandableOutput(state.body, clip(text, 8000), opts);
       if (!String(text || "").trim()) state.body.wrap.style.display = "none";
     },
     // Reading a subagent's output is a completion signal even when no
@@ -410,7 +463,7 @@
 
   function diffRenderer(friendly) {
     return {
-      mode: "card", friendly, expand: true,
+      mode: "card", friendly, expand: true, mutating: true,
       target: (a) => a.file_path || a.path || "",
       result: diffResult,
       body: (args, conversation) => {
@@ -441,7 +494,7 @@
 
   function editRenderer() {
     return {
-      mode: "card", friendly: "edit", expand: true,
+      mode: "card", friendly: "edit", expand: true, mutating: true,
       target: (a) => a.file_path || a.path || "",
       result: (data, out, state) => diffResult(data, editDiffText(state && state.args, out)),
       body: (args, conversation) => {
@@ -460,7 +513,7 @@
 
   function patchRenderer() {
     return {
-      mode: "card", friendly: "patch", expand: true,
+      mode: "card", friendly: "patch", expand: true, mutating: true,
       target: (a) => patchTargets(a.patch).join(", "),
       result: (data, out, state) => diffResult(data, state && state.args && state.args.patch || out || ""),
       body: (args, conversation) => {

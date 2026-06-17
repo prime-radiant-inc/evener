@@ -1313,6 +1313,20 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
 .tool-call { margin: 0 0 var(--space-3) 0; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); display: flex; column-gap: var(--space-3); row-gap: var(--space-2); flex-wrap: wrap; align-items: baseline; }
 .tool-call-cluster { margin-bottom: var(--space-5); }
 .tool-call-cluster .tool-call:last-child { margin-bottom: 0; }
+/* Collapsed cluster summary (mockup #6 alt A): while the cluster is live the
+   summary line is hidden and the rows show. Once it is behind us (.done) the
+   summary leads with the consequential step and the rows fold away until the
+   summary is clicked open. */
+.tool-cluster-summary { display: none; }
+.tool-call-cluster.done > .tool-cluster-summary {
+  display: flex; align-items: baseline; gap: var(--space-3);
+  width: 100%; max-width: 680px; margin: 0;
+  padding: 0; background: none; border: none; cursor: pointer;
+  text-align: left; font-family: var(--font-sans); font-size: var(--text-sm);
+  color: var(--text-muted); line-height: var(--leading-snug);
+}
+.tool-call-cluster.done > .tool-cluster-summary:hover { color: var(--text); }
+.tool-call-cluster.done:not(.open) > .tool-cluster-body { display: none; }
 .tool-call .tool-status {
   display: inline-block;
   width: 12px;
@@ -1413,9 +1427,15 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
 .read-tool-body .cheap-tool-output { margin-top: 0; }
 .output-preview-body { display: flex; flex-direction: column; }
 .tool-output-more { margin-top: 0; display: flex; flex-direction: column; }
-.tool-output-more summary { cursor: pointer; color: var(--text-muted); padding: 0; user-select: none; order: 2; }
-.tool-output-more summary:hover { color: var(--text); }
+/* Client-collapsed "expand · N more" — the bytes ARE present (they rode into
+   context), so this is an honest, interactive (blue) affordance, distinct from
+   the server-dropped note below (mockup #6 alt D). */
+.tool-output-more summary { cursor: pointer; color: var(--accent); padding: 0; user-select: none; order: 2; font-family: var(--font-sans); font-size: var(--text-sm); }
+.tool-output-more summary:hover { text-decoration: underline; }
 .tool-output-rest { margin-top: 0; order: 1; }
+/* Server-dropped note — the bytes were truncated/binary at the source and are
+   gone. Amber (needs-your-eye), NEVER a fake expand. */
+.tool-output-dropped { margin: var(--space-2) 0 0; font-family: var(--font-sans); font-size: var(--text-xs); color: var(--state-warning); line-height: var(--leading-snug); }
 .task-list-body {
   list-style: none;
   margin: 0 0 var(--space-4) var(--tool-indent);

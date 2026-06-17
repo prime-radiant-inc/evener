@@ -898,6 +898,7 @@
       data = data || {};
       const text = String(data.text || "");
       if (!text.trim()) return;
+      this.endCheapCluster();
       this.closeSubagentModule();
       const title = systemMessageDisplayTitle(data.title || "System");
       const el = document.createElement("details");
@@ -960,7 +961,7 @@
     appendSystemLine(text) {
       text = String(text || "").trim();
       if (!text) return;
-      this.cheapToolCluster = null;
+      this.endCheapCluster();
       this.closeSubagentModule();
       const line = document.createElement("div");
       line.className = "system-line";
@@ -969,7 +970,7 @@
     },
 
     appendUserMessage(text, entryIdx, images) {
-      this.cheapToolCluster = null;
+      this.endCheapCluster();
       this.closeSubagentModule();
       const wrap = document.createElement("div");
       wrap.className = "user-message";
@@ -1218,7 +1219,7 @@
     },
 
     beginAssistantMessage() {
-      this.cheapToolCluster = null;
+      this.endCheapCluster();
       this.closeSubagentModule();
       const id = "msg-" + Math.random().toString(36).slice(2, 9);
       this.currentMessageId = id;
@@ -1232,7 +1233,7 @@
     // no begin/delta/end. Used by COMMUNICATE events.
     appendAssistantBlock(text) {
       if (!String(text || "").trim()) return;
-      this.cheapToolCluster = null;
+      this.endCheapCluster();
       this.closeSubagentModule();
       const el = document.createElement("div");
       el.className = "assistant-message";
@@ -1308,7 +1309,7 @@
     // emits a single reasoning item per turn.
     beginReasoning() {
       if (this.reasoningEl) return;
-      this.cheapToolCluster = null;
+      this.endCheapCluster();
       this.closeSubagentModule();
       const el = document.createElement("button");
       el.type = "button";
@@ -1432,13 +1433,25 @@
       let parent;
       if (mode === "cheap") {
         if (!this.cheapToolCluster) {
-          this.cheapToolCluster = document.createElement("div");
-          this.cheapToolCluster.className = "tool-call-cluster";
-          this.conversation.appendChild(this.cheapToolCluster);
+          const cluster = document.createElement("div");
+          cluster.className = "tool-call-cluster";
+          // Collapsed summary line (mockup #6 alt A): hidden while the cluster
+          // is live; revealed and filled in by endCheapCluster once the cluster
+          // is behind us. The rows live in a body wrapper it can fold.
+          const summary = document.createElement("button");
+          summary.type = "button";
+          summary.className = "tool-cluster-summary";
+          summary.addEventListener("click", () => cluster.classList.toggle("open"));
+          const body = document.createElement("div");
+          body.className = "tool-cluster-body";
+          cluster.append(summary, body);
+          cluster.clusterCalls = [];
+          this.cheapToolCluster = cluster;
+          this.conversation.appendChild(cluster);
         }
-        parent = this.cheapToolCluster;
+        parent = this.cheapToolCluster.querySelector(".tool-cluster-body");
       } else {
-        this.cheapToolCluster = null;
+        this.endCheapCluster();
         parent = this.conversation;
       }
 
@@ -1473,7 +1486,7 @@
       parent.appendChild(el);
 
       const startedAt = toolEventTime(data) || new Date();
-      const state = { el, statusEl: status, resultEl: result, metaEl: meta, outputBuf: "", tool, args, renderer, body: null, ids: [], startedAt, durationMs: toolDuration(data) };
+      const state = { el, statusEl: status, resultEl: result, metaEl: meta, outputBuf: "", tool, args, renderer, body: null, caretEl: null, ids: [], startedAt, durationMs: toolDuration(data) };
       this.renderToolMeta(state, null);
       if (renderer.body) {
         state.body = renderer.body(args, el, data);
@@ -1488,6 +1501,17 @@
         caret.dataset.expandToggle = "";
         caret.textContent = defaultExpanded ? "▾" : "▸";
         el.insertBefore(caret, el.firstChild);
+        state.caretEl = caret;
+      }
+      // Cluster bookkeeping for the collapsed summary (mockup #6 alt A): record
+      // each call's verb, target, and whether it mutated state so the summary
+      // can lead with the consequential step.
+      if (mode === "cheap" && this.cheapToolCluster && this.cheapToolCluster.clusterCalls) {
+        this.cheapToolCluster.clusterCalls.push({
+          verb: renderer.friendly || tool,
+          target: target.textContent,
+          mutating: renderer.mutating === true,
+        });
       }
       this.rememberToolAlias(state, callId);
       this.rememberToolAlias(state, data.item_id);
@@ -1521,6 +1545,14 @@
       if (duration != null) m.durationMs = duration;
       this.renderToolMeta(m, endedAt);
       if (m.renderer.bodyEnd) m.renderer.bodyEnd(m, data, out);
+      // Silent success / no "expand reveals nothing" (mockup #6 alt D, #7 alt C):
+      // a tool that returned no displayable body keeps just its "✓ verb target"
+      // line — drop the caret so it never promises an expand over empty content.
+      if (m.caretEl && this.toolBodyIsEmpty(m)) {
+        m.caretEl.remove();
+        m.caretEl = null;
+        if (m.el) m.el.removeAttribute("data-expanded");
+      }
       // A spawning tool (delegate) drops its own tool card and contributes a row
       // to the aggregated subagents module instead.
       if (m.renderer.subagentSpawn) {
@@ -1539,6 +1571,57 @@
       for (const id of m.ids || []) {
         this.activeTools.delete(id);
       }
+    },
+
+    // toolBodyIsEmpty reports whether a finished tool-call rendered any
+    // displayable body content. A renderer signals "nothing to show" by hiding
+    // its body wrapper (display:none) or leaving it textless; either way the
+    // caret would be a lie, so we treat the row as a silent-success line.
+    toolBodyIsEmpty(m) {
+      if (!m || !m.el) return true;
+      const bodies = m.el.querySelectorAll(".tool-body, .diff-body, .output-preview-body");
+      for (const b of bodies) {
+        if (b.style && b.style.display === "none") continue;
+        if (b.textContent && b.textContent.trim()) return false;
+        if (b.querySelector("img, svg, .tool-output-dropped")) return false;
+      }
+      return true;
+    },
+
+    // endCheapCluster finalizes the active recon cluster once it is behind us
+    // (a non-cheap entry follows), folding it to a single "✓ N steps · targets"
+    // summary that leads with the consequential (mutating) step (mockup #6 alt
+    // A). Below 2 steps it stays a plain row list — a single read needs no
+    // summary.
+    endCheapCluster() {
+      const cluster = this.cheapToolCluster;
+      this.cheapToolCluster = null;
+      if (!cluster) return;
+      const calls = cluster.clusterCalls || [];
+      const summary = cluster.querySelector(".tool-cluster-summary");
+      if (calls.length < 2 || !summary) return;
+      const mutators = calls.filter(c => c.mutating);
+      const targets = [];
+      const seen = new Set();
+      for (const c of calls) {
+        const t = String(c.target || "").trim();
+        if (t && !seen.has(t)) { seen.add(t); targets.push(t); }
+      }
+      let lede;
+      if (mutators.length) {
+        // Consequential step leads; recon recedes to a trailing count.
+        const recon = calls.length - mutators.length;
+        lede = mutators.map(c => c.verb + " " + c.target).join(", ");
+        if (recon > 0) lede += " · after " + recon + (recon === 1 ? " read" : " reads");
+      } else {
+        // Pure recon: a step count plus the touched targets (mockup #6 alt A's
+        // lede-less fallback).
+        const shown = targets.slice(0, 3).join(", ");
+        const extra = targets.length > 3 ? " + " + (targets.length - 3) + " more" : "";
+        lede = calls.length + " steps" + (shown ? " · " + shown + extra : "");
+      }
+      summary.textContent = "✓ " + lede;
+      cluster.classList.add("done");
     },
 
     toolStateFor(data) {
@@ -1638,7 +1721,7 @@
       // A new module is a transcript entry: end any open cheap-tool cluster so
       // later cheap reads start a fresh cluster below the module (preserving
       // chronological order).
-      this.cheapToolCluster = null;
+      this.endCheapCluster();
       const mod = document.createElement("div");
       mod.className = "subs";
       mod.dataset.expanded = "false";
@@ -1907,7 +1990,7 @@
     },
 
     appendBanner(kind, text, diagnostic) {
-      this.cheapToolCluster = null;
+      this.endCheapCluster();
       this.closeSubagentModule();
       if ((kind === "error" || kind === "warning") && window.SerfDiagnostics && window.SerfDiagnostics.render) {
         const payload = Object.assign({}, diagnostic || {}, {
@@ -2024,7 +2107,7 @@
     //   - loop / read-only / all-done / unknown: keep the current
     //     full-width steering divider with click-to-expand body.
     appendSteeringMessage(text) {
-      this.cheapToolCluster = null;
+      this.endCheapCluster();
       this.closeSubagentModule();
       const summary = classifySteering(text);
 
