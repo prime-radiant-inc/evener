@@ -339,6 +339,7 @@ type ThreadItem struct {
 	Output               string          `json:"output,omitempty"`
 	Error                string          `json:"error,omitempty"`
 	Status               string          `json:"status,omitempty"`
+	AwaitReply           bool            `json:"awaitReply,omitempty"`
 	StartedAt            *int64          `json:"startedAt,omitempty"`
 	CompletedAt          *int64          `json:"completedAt,omitempty"`
 	Raw                  json.RawMessage `json:"raw,omitempty"`

@@ -263,11 +263,12 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			return nil
 		}
 		item := appwire.ThreadItem{
-			Type:   "agentMessage",
-			ID:     p.nextItemID("assistant"),
-			TurnID: p.activeTurnID,
-			Text:   text,
-			Status: appwire.TurnStatusCompleted,
+			Type:       "agentMessage",
+			ID:         p.nextItemID("assistant"),
+			TurnID:     p.activeTurnID,
+			Text:       text,
+			Status:     appwire.TurnStatusCompleted,
+			AwaitReply: data.AwaitReply,
 		}
 		p.recordAssistantMessage(p.activeTurnID, text)
 		return []AppNotification{p.notification(appwire.NotifyItemCompleted, map[string]any{
