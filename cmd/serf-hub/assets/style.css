@@ -459,7 +459,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 /* Mono utility — for one-off mono spans that don't have a dedicated class. */
 .mono { font-family: var(--font-mono); }
 #sidebar { width: 260px; flex-shrink: 0; height: 100vh; border-right: 1px solid var(--rule); overflow-y: auto; }
-#workspace { flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+#workspace { position: relative; flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 .sidebar-loading { padding: var(--space-6); color: var(--text-muted); font-size: var(--text-sm); }
 .workspace-empty { padding: var(--space-9); color: var(--text-muted); text-align: center; }
 
@@ -930,6 +930,41 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
   container-name: conversation;
   --tool-indent: 36px;
 }
+
+/* ── New-content pill ──────────────────────────────────────────────────────
+   Floating "↓ N new" affordance shown when the transcript appends content
+   while the reader is scrolled up. Anchored to the bottom of #workspace (above
+   the composer), it does not scroll with the transcript. Goes amber + "↓ needs
+   you" when the new content needs the user (.needs-you). */
+.new-content-pill {
+  position: absolute;
+  left: 50%;
+  bottom: var(--space-6);
+  transform: translateX(-50%);
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.new-content-pill:hover { background: color-mix(in srgb, var(--accent) 14%, var(--bg-raised)); }
+.new-content-pill.needs-you {
+  border-color: var(--state-warning);
+  color: var(--state-warning);
+}
+.new-content-pill.needs-you:hover { background: color-mix(in srgb, var(--state-warning) 14%, var(--bg-raised)); }
+.new-content-pill[hidden] { display: none; }
+/* ─────────────────────────────────────────────────────────────────────── */
+
 .workspace-input { padding: var(--space-4) var(--space-6) var(--space-4); border-top: 1px solid var(--rule); }
 .task-status-row {
   display: flex;
