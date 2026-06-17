@@ -2152,6 +2152,53 @@ func TestStream_PassesReasoningEffortAsThinkingConfig(t *testing.T) {
 	}
 }
 
+// TestStream_RequestsIncludeThoughts verifies the adapter asks Gemini for thought
+// summaries when reasoning is enabled. Without thinkingConfig.includeThoughts the
+// model thinks internally but streams no thought parts, so the live-thinking
+// backend never receives any reasoning to render.
+func TestStream_RequestsIncludeThoughts(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, "data: "+`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`+"\n\n")
+		if f != nil {
+			f.Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	effort := "high"
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:           "gemini-2.5-flash",
+		Messages:        []llm.Message{llm.User("think")},
+		ReasoningEffort: &effort,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close() //nolint:errcheck
+	for range stream.Events() {
+	}
+
+	genCfg, ok := gotBody["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatal("no generationConfig")
+	}
+	tc, ok := genCfg["thinkingConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("no thinkingConfig in generationConfig: %v", genCfg)
+	}
+	if inc, _ := tc["includeThoughts"].(bool); !inc {
+		t.Fatalf("includeThoughts = %v, want true", tc["includeThoughts"])
+	}
+}
+
 func TestStream_ParsesThoughtParts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
