@@ -7,44 +7,35 @@
     <a class="sidebar-action settings-link" href="/settings" hx-get="/_partials/settings/general" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/settings">settings</a>
   </div>
 
-  {{if .Live}}
-  <section class="sidebar-section sidebar-live-section">
-    <header class="sidebar-section-header">
-      <span>Live</span>
-      <span class="count">{{len .Live}}</span>
+  {{/* Needs-you triage tier (mockup #11): every awaiting session across all
+       projects, oldest-blocked first. Hidden entirely when nothing awaits — the
+       amber emphasis only earns its place when it is rare. */}}
+  {{if .NeedsYou}}
+  <section class="sidebar-tier needs-you-tier" data-tier="needs-you">
+    <header class="sidebar-section-header tier-header needs-you-header">
+      <span class="needs-you-glyph" aria-hidden="true">◆</span>
+      <span>Needs you</span>
+      <span class="count">{{len .NeedsYou}}</span>
     </header>
-    {{range .Live}}
-    <a class="sb-row{{if eq .Kind "subagent"}} sub{{else if eq .Kind "fork"}} fork{{end}}"
-       data-state="{{.State}}"
+    {{range .NeedsYou}}
+    <a class="sb-row needs-you-row"
+       data-state="awaiting"
        href="/s/{{.ID}}"
        hx-get="/_partials/s/{{.ID}}/workspace"
        hx-target="#workspace"
        hx-swap="innerHTML"
        hx-push-url="/s/{{.ID}}">
-      <div class="dot-col">
-        {{if eq .Kind "fork"}}<span class="fork-glyph" data-state="{{.State}}">⎇</span>{{else}}<span class="status-dot{{if eq .Kind "subagent"}} subagent{{end}}" data-state="{{.State}}"></span>{{end}}
-      </div>
+      <div class="dot-col"><span class="status-dot" data-state="awaiting"></span></div>
       <div class="text-col">
         <div class="title">{{.Title}}</div>
-        <div class="meta"><span>{{.Project}}</span><span>{{.Age}}</span></div>
+        <div class="meta">{{if .Project}}<span>{{.Project}}</span>{{end}}<span>{{.Age}}</span></div>
       </div>
     </a>
     {{end}}
   </section>
-  {{else}}
-  <section class="sidebar-section sidebar-live-section">
-    <header class="sidebar-section-header">
-      <span>Live</span>
-    </header>
-    <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
-    <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
-    <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
-    <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
-    <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
-  </section>
   {{end}}
 
-  {{if and (not .Live) (not .Projects)}}
+  {{if not .Projects}}
   <div class="empty-state empty-state-sidebar">
     <p class="empty-state-title">No sessions yet</p>
     <p class="empty-state-body">Spawn a session to get started.</p>
@@ -61,14 +52,46 @@
       {{if eq .Tier "test"}}<span class="count">{{len .Projects}}</span>{{end}}
     </header>
     {{$expanded := .Expanded}}
-    {{range .Projects}}
+    {{if eq .Tier "test"}}
+    {{/* Test runs are date sub-grouped (mockup #12 rec B): a recency spine —
+         Today / Yesterday / Older — so a specific past run is reachable by
+         structure rather than being a flat, undated pile. */}}
+    {{range .DateGroups}}
+    <div class="test-date-group">
+      <header class="test-date-header"><span>{{.Label}}</span><span class="count">{{len .Projects}}</span></header>
+      {{range .Projects}}{{template "sidebarProject" (dict "P" . "Expanded" $expanded)}}{{end}}
+    </div>
+    {{end}}
+    {{else}}
+    {{range .Projects}}{{template "sidebarProject" (dict "P" . "Expanded" $expanded)}}{{end}}
+    {{end}}
+  </section>
+  {{end}}
+</nav>
+{{end}}
+
+{{/* sidebarProject renders one project section. Context: .P (TreeProject) +
+     .Expanded (bool tier auto-expand hint). Shared by every tier and by the
+     date-grouped Test runs bucket so the row grammar lives in one place. */}}
+{{define "sidebarProject"}}
+{{$expanded := .Expanded}}
+{{with .P}}
     <section class="sidebar-section project-section{{if not $expanded}} collapsed{{end}}" data-project-key="{{.Name}}"{{if $expanded}} data-default-expanded="true"{{end}}>
       <header class="project-header">
         <button type="button" class="btn btn-icon project-chevron" aria-label="expand project" aria-expanded="{{if $expanded}}true{{else}}false{{end}}">{{if $expanded}}▾{{else}}▸{{end}}</button>
         <span class="project-name">{{.Name}}</span>
         <span class="project-age">{{.Age}}</span>
         <span class="count project-count">{{len .Sessions}}</span>
-        {{if .RollupState}}<span class="project-rollup-dot" data-state="{{.RollupState}}"></span>{{end}}
+        {{/* Magnitude rollup (mockup #10): "⟳N · ◆M" says how many are working
+             vs. need you. Falls back to the single state dot only when neither
+             count applies (e.g. an idle-only live project). */}}
+        {{if or (gt .RollupLive 0) (gt .RollupAttn 0)}}
+        <span class="project-rollup" aria-hidden="true">
+          {{if gt .RollupLive 0}}<span class="rollup-badge rollup-live"><span class="rollup-glyph">⟳</span>{{.RollupLive}}</span>{{end}}
+          {{if and (gt .RollupLive 0) (gt .RollupAttn 0)}}<span class="rollup-sep">·</span>{{end}}
+          {{if gt .RollupAttn 0}}<span class="rollup-badge rollup-attn"><span class="rollup-glyph">◆</span>{{.RollupAttn}}</span>{{end}}
+        </span>
+        {{else if .RollupState}}<span class="project-rollup-dot" data-state="{{.RollupState}}"></span>{{end}}
         {{if .WorkingDir}}
         <a class="btn btn-icon project-gear-btn"
            title="project settings for {{.Name}}"
@@ -93,6 +116,36 @@
       <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
       {{end}}
       {{range .Sessions}}
+      {{if eq .Kind "cluster"}}
+      {{/* Repeated-title cluster (mockup #10/#C): a run of N same-titled idle
+           sessions folded into one disclosure group. The member runs hide until
+           the cluster's chevron expands them. */}}
+      <div class="session-cluster" data-cluster-key="{{.Project}}:{{.Title}}">
+        <button type="button" class="sb-row cluster-header" aria-expanded="false">
+          <div class="dot-col"><span class="cluster-chevron" aria-hidden="true">▸</span></div>
+          <div class="text-col">
+            <div class="title">{{.Title}}<span class="cluster-count">×{{.ClusterCount}}</span></div>
+            <div class="meta"><span>all idle</span></div>
+          </div>
+        </button>
+        <div class="cluster-members">
+          {{range .Children}}
+          <a class="sb-row cluster-member"
+             data-state="{{.State}}"
+             href="/s/{{.ID}}"
+             hx-get="/_partials/s/{{.ID}}/workspace"
+             hx-target="#workspace"
+             hx-swap="innerHTML"
+             hx-push-url="/s/{{.ID}}">
+            <div class="dot-col"><span class="status-dot" data-state="{{.State}}"></span></div>
+            <div class="text-col">
+              <div class="title">run<span class="cluster-member-age">{{.Age}}</span></div>
+            </div>
+          </a>
+          {{end}}
+        </div>
+      </div>
+      {{else}}
       <a class="sb-row"
          data-state="{{.State}}"
          href="/s/{{.ID}}"
@@ -145,10 +198,8 @@
       <button type="button" class="subagent-toggle" aria-expanded="false">+{{sub $subagentCount 3}} subagents</button>
       {{end}}
       {{end}}
+      {{end}}
       </div>
     </section>
-    {{end}}
-  </section>
-  {{end}}
-</nav>
+{{end}}
 {{end}}

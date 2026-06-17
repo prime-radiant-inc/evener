@@ -960,6 +960,172 @@ func TestWeb_Sidebar_RendersTieredProjects(t *testing.T) {
 	}
 }
 
+// renderSidebar renders the sidebar partial for a built tree and returns the
+// whitespace-flattened HTML, the shape most sidebar assertions want.
+func renderSidebar(t *testing.T, tree hubcore.Tree) string {
+	t.Helper()
+	tmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "sidebar", tree); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	return buf.String()
+}
+
+func TestWeb_Sidebar_DropsDuplicateLiveRail(t *testing.T) {
+	// mockup #10 rec A: the flat top "Live" rail (which duplicated the active
+	// tier — the #1 wayfinding defect) is removed. The active tier is the single
+	// live home. The live session must appear exactly once: under its project.
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01LIVE", Name: "Refactor auth cache", UpdatedAt: now, OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	live := []hubcore.LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
+	}
+	body := renderSidebar(t, hubcore.BuildTree(metas, live))
+
+	if strings.Contains(body, "sidebar-live-section") {
+		t.Errorf("the flat Live rail must be gone; body=\n%s", body)
+	}
+	if strings.Contains(body, `data-tier="live"`) {
+		t.Errorf("no live tier should render; body=\n%s", body)
+	}
+	if n := strings.Count(body, `href="/s/01LIVE"`); n != 1 {
+		t.Errorf("live session should appear exactly once (under its project), got %d:\n%s", n, body)
+	}
+}
+
+func TestWeb_Sidebar_NeedsYouTier(t *testing.T) {
+	// mockup #11 rec A: a top "Needs you (N)" tier aggregates awaiting sessions
+	// across projects, oldest-blocked first.
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01ASKNEW", Name: "Newer ask", UpdatedAt: now.Add(-time.Minute), OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01ASKOLD", Name: "Older ask", UpdatedAt: now.Add(-9 * time.Minute), OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/prime-radiant"}},
+	}
+	live := []hubcore.LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ASKNEW", Status: appwire.ThreadStatusAwaiting},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01ASKOLD", Status: appwire.ThreadStatusAwaiting},
+	}
+	body := renderSidebar(t, hubcore.BuildTree(metas, live))
+
+	if !strings.Contains(body, `data-tier="needs-you"`) {
+		t.Errorf("needs-you tier missing; body=\n%s", body)
+	}
+	if !strings.Contains(body, `>Needs you<`) {
+		t.Errorf("needs-you label missing; body=\n%s", body)
+	}
+	// Oldest-blocked first: 01ASKOLD must render before 01ASKNEW.
+	oldIdx := strings.Index(body, "/s/01ASKOLD")
+	newIdx := strings.Index(body, "/s/01ASKNEW")
+	if oldIdx < 0 || newIdx < 0 || oldIdx > newIdx {
+		t.Errorf("needs-you should list oldest-blocked first (01ASKOLD before 01ASKNEW); body=\n%s", body)
+	}
+}
+
+func TestWeb_Sidebar_NeedsYouTierHiddenWhenEmpty(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01WORK", Name: "Working", UpdatedAt: now, OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	live := []hubcore.LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01WORK", Status: appwire.ThreadStatusActive},
+	}
+	body := renderSidebar(t, hubcore.BuildTree(metas, live))
+	if strings.Contains(body, `data-tier="needs-you"`) {
+		t.Errorf("needs-you tier should be hidden when nothing awaits; body=\n%s", body)
+	}
+}
+
+func TestWeb_Sidebar_MagnitudeRollupBadges(t *testing.T) {
+	// mockup #10 rec A: the header shows "⟳N · ◆M" magnitude, not one dot.
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01W1", Name: "work 1", UpdatedAt: now, OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01W2", Name: "work 2", UpdatedAt: now.Add(-time.Minute), OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01ASK", Name: "blocked", UpdatedAt: now.Add(-2 * time.Minute), OriginalPrompt: "x",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	live := []hubcore.LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01W1", Status: appwire.ThreadStatusActive},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01W2", Status: appwire.ThreadStatusActive},
+		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting},
+	}
+	flat := strings.Join(strings.Fields(renderSidebar(t, hubcore.BuildTree(metas, live))), " ")
+	if !strings.Contains(flat, `<span class="rollup-badge rollup-live"><span class="rollup-glyph">⟳</span>2</span>`) {
+		t.Errorf("missing ⟳2 live magnitude badge; body=\n%s", flat)
+	}
+	if !strings.Contains(flat, `<span class="rollup-badge rollup-attn"><span class="rollup-glyph">◆</span>1</span>`) {
+		t.Errorf("missing ◆1 needs-you magnitude badge; body=\n%s", flat)
+	}
+}
+
+func TestWeb_Sidebar_RendersRepeatedTitleCluster(t *testing.T) {
+	// mockup #10/#C: a run of >=3 same-titled idle sessions folds to one cluster.
+	now := time.Now()
+	metas := []schema.SessionMeta{}
+	for i := 0; i < 5; i++ {
+		metas = append(metas, schema.SessionMeta{
+			ID:        "01IMG" + string(rune('A'+i)),
+			Name:      "describe this image",
+			UpdatedAt: now.Add(-time.Duration(i+1) * time.Hour),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf-docs"},
+		})
+	}
+	body := renderSidebar(t, hubcore.BuildTree(metas, nil))
+	if !strings.Contains(body, "session-cluster") {
+		t.Errorf("cluster container missing; body=\n%s", body)
+	}
+	if !strings.Contains(body, "×5") {
+		t.Errorf("cluster count ×5 missing; body=\n%s", body)
+	}
+	// All five member runs are present (inside the fold).
+	for i := 0; i < 5; i++ {
+		id := "/s/01IMG" + string(rune('A'+i))
+		if !strings.Contains(body, id) {
+			t.Errorf("cluster member %s missing; body=\n%s", id, body)
+		}
+	}
+	// The cluster header is not a navigable session link (no /s/ on it).
+	if strings.Contains(body, `class="sb-row cluster-header"`) && strings.Contains(body, `cluster-header" data-state`) {
+		t.Errorf("cluster header should not carry a session state/link")
+	}
+}
+
+func TestWeb_Sidebar_TestRunsDateSubGrouping(t *testing.T) {
+	// mockup #12 rec B: the Test runs bucket renders Today / Older date
+	// sub-headers so a specific past run is reachable by structure.
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01TODAY", UpdatedAt: now.Add(-1 * time.Hour), OriginalPrompt: "probe",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-today"}},
+		{ID: "01OLD", UpdatedAt: now.Add(-6 * 24 * time.Hour), OriginalPrompt: "probe",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-old"}},
+	}
+	body := renderSidebar(t, hubcore.BuildTree(metas, nil))
+	for _, want := range []string{
+		`class="test-date-group"`,
+		`class="test-date-header"`,
+		`>Today<`,
+		`>Older<`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("test-runs date sub-grouping missing %q; body=\n%s", want, body)
+		}
+	}
+	// Both e2e projects must still render (one per date bucket).
+	if !strings.Contains(body, `data-project-key="serf-e2e-today"`) || !strings.Contains(body, `data-project-key="serf-e2e-old"`) {
+		t.Errorf("both e2e projects should render under their date buckets; body=\n%s", body)
+	}
+}
+
 func TestWeb_Sidebar_FoldsExcessSubagents(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
@@ -4417,8 +4583,12 @@ func TestWeb_Sidebar_RollupState_AwaitingHasPriority(t *testing.T) {
 		t.Fatalf("status: %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `class="project-rollup-dot" data-state="awaiting"`) {
-		t.Errorf("rollup dot should have data-state=\"awaiting\"; body=\n%s", body)
+	// One awaiting + one idle session → the magnitude rollup (mockup #10)
+	// surfaces the needs-you count "◆1" on the header (idle counts toward
+	// neither), replacing the single ambiguous dot.
+	flat := strings.Join(strings.Fields(body), " ")
+	if !strings.Contains(flat, `<span class="rollup-badge rollup-attn"><span class="rollup-glyph">◆</span>1</span>`) {
+		t.Errorf("project header should show the ◆1 needs-you magnitude badge; body=\n%s", body)
 	}
 }
 

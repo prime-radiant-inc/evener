@@ -890,6 +890,154 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
   .subagent-row .subagent-title { display: none; }
 }
 
+/* ============================================================
+   Colorblind-safe status dots (mockup #10)
+   The session dot is shape-coded as well as color-coded so it
+   survives colorblindness: awaiting = amber DIAMOND, active =
+   blue DISC, idle/ended = neutral SQUARE. Shape + color is the
+   double channel; renderer.js's [data-pulse] still drives the
+   live breathing on the same element.
+   ============================================================ */
+.status-dot[data-state="awaiting"] {
+  border-radius: 1px;
+  transform: rotate(45deg); /* diamond */
+}
+.status-dot[data-state="warning"] {
+  border-radius: 1px;
+  transform: rotate(45deg); /* diamond — also needs your eye */
+}
+.status-dot[data-state="active"] { border-radius: var(--radius-full); } /* disc */
+.status-dot[data-state="idle"],
+.status-dot[data-state="ended"] { border-radius: 1px; }                 /* square */
+
+/* ============================================================
+   Needs-you triage tier (mockup #11 rec A)
+   A top tier aggregating every awaiting session across projects,
+   oldest-blocked first. Amber is reserved strictly for needs-you
+   and is always glyph-paired (◆). Hidden entirely when empty.
+   ============================================================ */
+.needs-you-header { color: var(--state-awaiting); }
+.needs-you-header .needs-you-glyph { color: var(--state-awaiting); font-size: var(--text-xs); }
+.needs-you-header .count { color: var(--state-awaiting); }
+/* The tier rows reuse the awaiting state-accent (amber left border + tint)
+   already defined on .sb-row[data-state="awaiting"]; no extra fill needed. */
+
+/* ============================================================
+   Magnitude rollup badges (mockup #10 rec A)
+   "⟳N · ◆M" on the project header answers "how many need me"
+   that the single dot couldn't. Live = blue, needs-you = amber;
+   each badge is glyph-paired so color is never the only channel.
+   ============================================================ */
+.project-rollup {
+  margin-left: var(--space-2);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+.rollup-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: var(--radius-pill);
+}
+.rollup-badge .rollup-glyph { font-family: var(--font-mono); font-size: 9px; }
+.project-rollup .rollup-sep { color: var(--text-dim); font-size: var(--text-2xs); }
+.rollup-live {
+  color: var(--state-processing);
+  background: color-mix(in srgb, var(--state-processing) 14%, transparent);
+}
+.rollup-attn {
+  color: var(--state-awaiting);
+  background: color-mix(in srgb, var(--state-awaiting) 14%, transparent);
+}
+
+/* ============================================================
+   Repeated-title cluster (mockup #10 rec C)
+   A run of N same-titled idle sessions folds into one disclosure
+   group so "describe this image ×5" is one line, not five. The
+   member runs hide until the cluster chevron expands them.
+   ============================================================ */
+.session-cluster { display: block; }
+.cluster-header {
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  width: 100%;
+  font: inherit;
+  cursor: pointer;
+}
+.cluster-header .cluster-chevron {
+  display: inline-block;
+  width: 8px;
+  color: var(--text-dim);
+  font-size: var(--text-2xs);
+  user-select: none;
+}
+.cluster-header .cluster-count {
+  margin-left: var(--space-2);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+}
+.cluster-members { display: none; }
+.session-cluster[data-cluster-expanded] .cluster-members { display: block; }
+.session-cluster[data-cluster-expanded] .cluster-chevron { transform: none; }
+.cluster-member .title { color: var(--text-muted); font-size: var(--text-sm); }
+.cluster-member .cluster-member-age {
+  margin-left: var(--space-2);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-2xs);
+  color: var(--text-dim);
+}
+
+/* ============================================================
+   Test runs date sub-grouping (mockup #12 rec B)
+   The Test runs bucket gains a recency spine — Today / Yesterday /
+   Older quiet sub-headers — so a specific past run is reachable by
+   structure instead of being a flat, undated pile. Sentence-case
+   sans labels; the count is the only mono.
+   ============================================================ */
+.test-date-group { margin-bottom: var(--space-2); }
+.test-date-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-5) var(--space-1);
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.test-date-header .count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+/* Rail mode + container-collapse hide the needs-you label, rollup badges,
+   cluster text, and date sub-headers along with the rest of the text-bearing
+   sidebar chrome. */
+body.app[data-sidebar-rail] .needs-you-header span,
+body.app[data-sidebar-rail] .rollup-badge,
+body.app[data-sidebar-rail] .cluster-header .text-col,
+body.app[data-sidebar-rail] .test-date-header { display: none; }
+@container sidebar (max-width: 80px) {
+  .needs-you-header span,
+  .rollup-badge,
+  .cluster-header .text-col,
+  .test-date-header { display: none; }
+}
+
 /* Workspace pane */
 .workspace-header { padding: var(--space-4) var(--space-6) var(--space-4); border-bottom: 1px solid var(--rule); }
 .workspace-title-row { display: flex; align-items: center; gap: var(--space-4); }
