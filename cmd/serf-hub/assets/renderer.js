@@ -13,7 +13,7 @@
     partialFetch,
     sessionPartialPath,
     autoLabel,
-    openImageLightbox,
+    openImageLightboxSet,
     taskDescriptions,
     taskDetails,
     rememberTask,
@@ -182,6 +182,10 @@
         const buffered = this.eventBuffer || [];
         this.eventBuffer = null;
         for (const [kind, ev] of buffered) this.handle(kind, ev);
+        // Cold start (mockup #21 Alt C): a session that hydrated with no
+        // transcript content is a crafted welcome, not a void. Shown only
+        // once nothing has rendered, so resumed/active sessions never see it.
+        this.maybeShowWelcome();
       });
       this.startTaskBadgePoller();
     },
@@ -782,6 +786,11 @@
           // A new turn supersedes any prior blocking question.
           this.clearAgentQuestion();
           this.setActiveTurnId(data.turnId || "");
+          // TURN_STARTED is a real signal but not yet a first frame: the
+          // cold-start skeleton stands until model output arrives. If a turn
+          // begins with no echo (e.g. a second tab), the welcome dissolves now.
+          this.dissolveWelcome();
+          this.showColdStartSkeleton();
           break;
         case "TURN_COMPLETED":
           this.finalizeReasoning();
@@ -846,7 +855,8 @@
           this.clearAgentQuestion();
           this.lastUserText = data.text || "";
           this.lastSubmittedTurn = this.retryPayload(data.text || "", data.images || []);
-          if (this.promoteLocalUserMessage(data)) break;
+          this.dissolveWelcome();
+          if (this.promoteLocalUserMessage(data)) { this.showColdStartSkeleton(); break; }
           this.userTurnIndex++;
           if (typeof data.turn === "number" && data.turn > 0) {
             this.entryIndex = data.turn;
@@ -855,6 +865,7 @@
           }
           const userWrap = this.appendUserMessage(data.text || "", this.entryIndex, data.images || []);
           if (data.turnId) userWrap.dataset.turnId = String(data.turnId);
+          this.showColdStartSkeleton();
           break;
         case "ASSISTANT_TEXT_START":
           this.finalizeReasoning();
@@ -1138,45 +1149,25 @@
       const pill = document.createElement("div");
       pill.className = "pill";
       // Thumbnails first so they sit above the prompt text inside the pill.
-      // Each attachment renders as a card with the image thumbnail, filename,
-      // and a click handler that opens it in a lightbox at full size.
+      // ONE image keeps the single neutral card; MULTIPLE images lay out as a
+      // contact-sheet grid inside ONE neutral card (mockup #20 Alt B) — never
+      // a card-of-cards. Either way, opening any thumbnail pages through the
+      // whole message's set in the shared lightbox (←/→, Esc).
       if (Array.isArray(images) && images.length > 0) {
-        const gallery = document.createElement("div");
-        gallery.className = "user-message-images";
+        const resolved = [];
         for (const img of images) {
-          if (!img) continue;
-          // Live USER_INPUT: bytes inline as base64 in img.data.
-          // Transcript USER_INPUT: bytes referenced by sha; fetch lazily from
-          // /s/<id>/images/<sha> so live payloads stay small.
-          let src = "";
-          if (img.data) {
-            src = "data:" + (img.media_type || "image/png") + ";base64," + img.data;
-          } else if (img.sha) {
-            src = "/s/" + encodeURIComponent(this.sessionId) + "/images/" + encodeURIComponent(img.sha);
-          } else if (img.url) {
-            src = img.url;
-          } else {
-            continue;
-          }
-          const card = document.createElement("button");
-          card.type = "button";
-          card.className = "user-image-card";
-          card.title = "click to enlarge";
-          const thumb = document.createElement("img");
-          thumb.className = "user-image-thumb";
-          thumb.src = src;
-          if (img.name) thumb.alt = img.name;
-          card.appendChild(thumb);
-          if (img.name) {
-            const name = document.createElement("span");
-            name.className = "user-image-name";
-            name.textContent = img.name;
-            card.appendChild(name);
-          }
-          card.onclick = (e) => { e.stopPropagation(); openImageLightbox(src, img.name || ""); };
-          gallery.appendChild(card);
+          const src = this.imageSrc(img);
+          if (!src) continue;
+          resolved.push({ src, name: (img && img.name) || "" });
         }
-        if (gallery.children.length > 0) pill.appendChild(gallery);
+        if (resolved.length === 1) {
+          const gallery = document.createElement("div");
+          gallery.className = "user-message-images";
+          gallery.appendChild(this.buildSingleImageCard(resolved, 0));
+          pill.appendChild(gallery);
+        } else if (resolved.length > 1) {
+          pill.appendChild(this.buildImageSheet(resolved));
+        }
       }
       if (text) {
         const t = document.createElement("div");
@@ -1198,16 +1189,236 @@
       return wrap;
     },
 
+    // imageSrc resolves a user-message image descriptor to a renderable URL.
+    //   Live USER_INPUT: bytes inline as base64 in img.data.
+    //   Transcript USER_INPUT: bytes referenced by sha; fetched lazily from
+    //     /s/<id>/images/<sha> so live payloads stay small.
+    //   url: an already-resolvable URL.
+    // Returns "" when the descriptor carries no usable source.
+    imageSrc(img) {
+      if (!img) return "";
+      if (img.data) return "data:" + (img.media_type || "image/png") + ";base64," + img.data;
+      if (img.sha) return "/s/" + encodeURIComponent(this.sessionId) + "/images/" + encodeURIComponent(img.sha);
+      if (img.url) return img.url;
+      return "";
+    },
+
+    // captionFilename attaches the filename (mono) to a caption row and, once
+    // the thumbnail's natural dimensions are known, appends "· WxH" using the
+    // REAL decoded pixel size. Dims are omitted until the image loads (and in
+    // jsdom, which never decodes) — we never fabricate a size.
+    captionFilename(caption, thumb, name) {
+      const fn = document.createElement("span");
+      fn.className = "user-image-filename";
+      fn.textContent = name || "image";
+      caption.appendChild(fn);
+      const stampDims = () => {
+        if (!thumb.naturalWidth || !thumb.naturalHeight) return;
+        if (caption.querySelector(".user-image-dims")) return;
+        const sep = document.createElement("span");
+        sep.className = "user-image-cap-sep";
+        sep.textContent = "·";
+        const dims = document.createElement("span");
+        dims.className = "user-image-dims";
+        dims.textContent = thumb.naturalWidth + "×" + thumb.naturalHeight;
+        caption.append(sep, dims);
+      };
+      if (thumb.complete) stampDims();
+      thumb.addEventListener("load", stampDims);
+    },
+
+    // buildSingleImageCard renders the one-image neutral card (today's path).
+    // `resolved` is the message's full image set; `idx` is this card's index,
+    // so opening it pages the shared lightbox across the set.
+    buildSingleImageCard(resolved, idx) {
+      const m = resolved[idx];
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "user-image-card";
+      card.title = "click to enlarge";
+      const thumb = document.createElement("img");
+      thumb.className = "user-image-thumb";
+      thumb.src = m.src;
+      if (m.name) thumb.alt = m.name;
+      card.appendChild(thumb);
+      if (m.name) {
+        const name = document.createElement("span");
+        name.className = "user-image-name";
+        name.textContent = m.name;
+        card.appendChild(name);
+      }
+      card.onclick = (e) => { e.stopPropagation(); openImageLightboxSet(resolved, idx); };
+      return card;
+    },
+
+    // buildImageSheet lays a multi-image set as a contact-sheet grid inside ONE
+    // neutral card (mockup #20 Alt B). Each cell is a thumbnail + a per-cell
+    // caption (filename · dims). Opening any cell pages the shared lightbox
+    // across the whole set. Provenance grouping (Alt D) is omitted — there is
+    // no backend signal for image origin.
+    buildImageSheet(resolved) {
+      const sheet = document.createElement("div");
+      sheet.className = "user-image-sheet";
+      const head = document.createElement("div");
+      head.className = "user-image-sheet-head";
+      head.textContent = resolved.length + " images";
+      const grid = document.createElement("div");
+      grid.className = "user-image-grid";
+      resolved.forEach((m, idx) => {
+        const cell = document.createElement("button");
+        cell.type = "button";
+        cell.className = "user-image-cell";
+        cell.title = "click to enlarge";
+        const thumb = document.createElement("img");
+        thumb.className = "user-image-thumb";
+        thumb.src = m.src;
+        if (m.name) thumb.alt = m.name;
+        const caption = document.createElement("span");
+        caption.className = "user-image-caption";
+        this.captionFilename(caption, thumb, m.name);
+        cell.append(thumb, caption);
+        cell.onclick = (e) => { e.stopPropagation(); openImageLightboxSet(resolved, idx); };
+        grid.appendChild(cell);
+      });
+      sheet.append(head, grid);
+      return sheet;
+    },
+
+    // conversationHasContent reports whether anything substantive has rendered
+    // into the transcript. The cold-start welcome and skeleton are scaffolding,
+    // not content, so they don't count.
+    conversationHasContent() {
+      if (!this.conversation) return false;
+      for (const child of this.conversation.children) {
+        if (child.classList.contains("cold-start-welcome")) continue;
+        if (child.classList.contains("cold-start-skeleton")) continue;
+        return true;
+      }
+      return false;
+    },
+
+    // maybeShowWelcome renders the crafted empty-session welcome (mockup #21
+    // Alt C) when a hydrated session has no transcript content: a one-line
+    // orientation plus a few example prompts that prefill the composer on
+    // click. It dissolves on first send and never lingers for active sessions.
+    maybeShowWelcome() {
+      if (!this.conversation) return;
+      if (this.conversationHasContent()) return;
+      if (this.conversation.querySelector(".cold-start-welcome")) return;
+
+      const pane = document.createElement("div");
+      pane.className = "cold-start-welcome";
+
+      const intro = document.createElement("div");
+      intro.className = "cold-start-intro";
+      intro.textContent = "Describe a task and the agent gets to work — you'll watch it think, run tools, and spawn subagents in real time.";
+      pane.appendChild(intro);
+
+      const tryLabel = document.createElement("div");
+      tryLabel.className = "cold-start-try";
+      tryLabel.textContent = "Try";
+      pane.appendChild(tryLabel);
+
+      const list = document.createElement("div");
+      list.className = "cold-start-examples";
+      // Example-prompt copy is UI text we author (not a fabricated signal).
+      const examples = [
+        "Find and fix the root cause of a flaky test",
+        "Audit error handling across this package",
+        "Explain how a request flows from router to handler",
+      ];
+      for (const prompt of examples) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "cold-start-example";
+        btn.dataset.prompt = prompt;
+        const arr = document.createElement("span");
+        arr.className = "cold-start-example-arrow";
+        arr.textContent = "→";
+        const txt = document.createElement("span");
+        txt.textContent = prompt;
+        btn.append(arr, txt);
+        btn.addEventListener("click", () => this.prefillComposer(prompt));
+        list.appendChild(btn);
+      }
+      pane.appendChild(list);
+      this.conversation.appendChild(pane);
+    },
+
+    // prefillComposer drops example-prompt text into the composer and focuses
+    // it, so the user can edit before sending.
+    prefillComposer(text) {
+      const ta = document.querySelector("form[data-input-form] .message-input")
+        || document.querySelector(".message-input");
+      if (!ta) return;
+      ta.value = text;
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+      ta.focus();
+    },
+
+    // dissolveWelcome removes the welcome pane the instant a turn begins, so it
+    // never lingers as clutter behind the live transcript.
+    dissolveWelcome() {
+      if (!this.conversation) return;
+      const pane = this.conversation.querySelector(".cold-start-welcome");
+      if (pane) pane.remove();
+    },
+
+    // showColdStartSkeleton fills the send→first-frame gap (mockup #21 Alt A+B)
+    // with a faint skeleton placeholder turn and a calm neutral "starting…"
+    // line carrying the single sanctioned breathing dot — so the gap reads
+    // "loading," never "broken." Shown only in the real gap: when the last
+    // transcript entry is the just-sent user message and no model output has
+    // landed yet. Idempotent. No invented stage narration — only real signals
+    // (the user's send / TURN_STARTED) drive it; ASSISTANT_TEXT_START clears it.
+    showColdStartSkeleton() {
+      if (!this.conversation) return;
+      if (this.conversation.querySelector(".cold-start-skeleton")) return;
+      const last = this.conversation.lastElementChild;
+      if (!last || !last.classList.contains("user-message")) return;
+
+      const skel = document.createElement("div");
+      skel.className = "cold-start-skeleton";
+      skel.setAttribute("data-loading", "");
+      const ghost = document.createElement("div");
+      ghost.className = "cold-start-skeleton-lines";
+      ghost.setAttribute("aria-hidden", "true");
+      for (const w of ["skeleton-line-80", "skeleton-line-70", "skeleton-line-60"]) {
+        const line = document.createElement("span");
+        line.className = "skeleton skeleton-line " + w;
+        ghost.appendChild(line);
+      }
+      const starting = document.createElement("div");
+      starting.className = "cold-start-starting";
+      const dot = document.createElement("span");
+      dot.className = "cold-start-dot";
+      starting.append(dot, document.createTextNode("starting…"));
+      skel.append(ghost, starting);
+      this.conversation.appendChild(skel);
+    },
+
+    // removeColdStartSkeleton tears the cold-start placeholder down the instant
+    // the first real model frame arrives (text, reasoning, or a tool call).
+    removeColdStartSkeleton() {
+      if (!this.conversation) return;
+      const skel = this.conversation.querySelector(".cold-start-skeleton");
+      if (skel) skel.remove();
+    },
+
     appendLocalUserMessage(text, images, turnId, previousUserCount) {
       if (this.userMessageCount() > previousUserCount) return;
       this.lastUserText = text || "";
       this.lastSubmittedTurn = this.retryPayload(text || "", images || []);
       this.userTurnIndex++;
       this.entryIndex++;
+      // Cold start (mockup #21): the welcome dissolves on first send and a
+      // faint skeleton + calm "starting…" stands where the first frame lands.
+      this.dissolveWelcome();
       const wrap = this.appendUserMessage(text || "", this.entryIndex, images || []);
       wrap.dataset.localEcho = "true";
       wrap.dataset.localImageCount = String(Array.isArray(images) ? images.length : 0);
       if (turnId) wrap.dataset.turnId = String(turnId);
+      this.showColdStartSkeleton();
       this.scrollToBottom();
     },
 
@@ -1372,6 +1583,7 @@
     },
 
     beginAssistantMessage() {
+      this.removeColdStartSkeleton();
       this.endCheapCluster();
       this.closeSubagentModule();
       const id = "msg-" + Math.random().toString(36).slice(2, 9);
@@ -1386,6 +1598,7 @@
     // no begin/delta/end. Used by COMMUNICATE events.
     appendAssistantBlock(text) {
       if (!String(text || "").trim()) return null;
+      this.removeColdStartSkeleton();
       this.endCheapCluster();
       this.closeSubagentModule();
       const el = document.createElement("div");
@@ -1494,6 +1707,7 @@
     // emits a single reasoning item per turn.
     beginReasoning() {
       if (this.reasoningEl) return;
+      this.removeColdStartSkeleton();
       this.endCheapCluster();
       this.closeSubagentModule();
       const el = document.createElement("button");
@@ -1646,6 +1860,7 @@
         this.rememberToolAlias(existing, data.item_id);
         return;
       }
+      this.removeColdStartSkeleton();
       const tool = data.tool_name || "?";
       const renderer = toolRendererFor(tool);
       const args = parseArgs(data.arguments_json);
