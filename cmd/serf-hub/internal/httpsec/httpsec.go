@@ -32,7 +32,7 @@ func CSPMiddleware(next http.Handler) http.Handler {
 				"connect-src 'self'; "+
 				"base-uri 'self'; "+
 				"form-action 'self'; "+
-				"frame-ancestors 'none'")
+				"frame-ancestors 'self'")
 		next.ServeHTTP(w, r)
 	})
 }

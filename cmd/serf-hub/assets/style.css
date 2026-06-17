@@ -476,6 +476,23 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .mono { font-family: var(--font-mono); }
 #sidebar { width: 260px; flex-shrink: 0; height: 100vh; border-right: 1px solid var(--rule); overflow-y: auto; }
 #workspace { position: relative; flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+/* Multi-pane: side panes sit as flex columns to the right of #workspace. */
+.side-panes { display: flex; flex-direction: row; min-width: 0; height: 100vh; width: var(--side-panes-w, 420px); }
+.side-panes[hidden] { display: none; }
+.pane { display: flex; flex-direction: column; min-width: 240px; flex: 1;
+  border-left: 1px solid var(--rule); height: 100vh; overflow: hidden; }
+.pane-header { display: flex; align-items: center; gap: var(--space-2);
+  padding: 0 var(--space-3); height: 38px; flex-shrink: 0; border-bottom: 1px solid var(--rule);
+  font-size: var(--text-sm); color: var(--text-muted); }
+.pane-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pane-close { background: none; border: none; color: var(--text-muted); cursor: pointer;
+  font-size: var(--text-md); line-height: 1; padding: var(--space-1) var(--space-2); }
+.pane-close:hover { color: var(--text); }
+.pane-frame { flex: 1; width: 100%; border: 0; min-height: 0; }
+.pane-splitter { width: 5px; flex-shrink: 0; cursor: col-resize; background: var(--rule); opacity: .4; }
+.pane-splitter:hover { opacity: 1; }
+.pane-splitter[hidden] { display: none; }
+@media (max-width: 767px) { .side-panes, .pane-splitter { display: none !important; } }
 .sidebar-loading { padding: var(--space-6); color: var(--text-muted); font-size: var(--text-sm); }
 .workspace-empty { padding: var(--space-9); color: var(--text-muted); text-align: center; }
 
@@ -2049,6 +2066,22 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 }
 .sub-r:hover .lk { color: var(--accent); }
 .sub-r:hover { color: var(--text); }
+/* Open-beside button: quiet, hover-revealed, sits after "view →". */
+.sub-r .open-beside-btn {
+  opacity: 0;
+  transition: opacity var(--motion-fast), color var(--motion-fast);
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: var(--text-xs);
+  padding: 0 var(--space-1);
+  margin-left: var(--space-2);
+  cursor: pointer;
+  flex: none;
+  line-height: 1;
+}
+.sub-r:hover .open-beside-btn { opacity: 1; color: var(--text-muted); }
+.sub-r .open-beside-btn:hover { color: var(--accent); }
 .subs-more {
   margin-top: var(--space-2);
   font-size: var(--text-xs);
