@@ -433,6 +433,64 @@ func TestTreeProject_AgeIsFormatted(t *testing.T) {
 	}
 }
 
+func TestTestRunsDateGroups_BucketsByRecency(t *testing.T) {
+	// mockup #12 rec B: the Test runs bucket sub-groups its runs by date
+	// (Today / Yesterday / Older) so "the one I ran this morning" is reachable
+	// by structure, no typing.
+	now := time.Date(2026, 6, 17, 15, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "01TODAY", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "probe",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-today"}},
+		{ID: "01YDAY", UpdatedAt: now.Add(-26 * time.Hour), OriginalPrompt: "probe",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-yesterday"}},
+		{ID: "01OLD", UpdatedAt: now.Add(-5 * 24 * time.Hour), OriginalPrompt: "probe",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-old"}},
+	}
+	tree := BuildTree(metas, nil)
+	var test *TierGroup
+	for i := range tree.TierGroups() {
+		g := tree.TierGroups()[i]
+		if g.Tier == TierTest {
+			test = &g
+			break
+		}
+	}
+	if test == nil {
+		t.Fatal("no test tier")
+	}
+	groups := test.DateGroupsAt(now)
+	if len(groups) != 3 {
+		t.Fatalf("date groups = %d, want 3 (Today/Yesterday/Older)", len(groups))
+	}
+	wantLabels := []string{"Today", "Yesterday", "Older"}
+	for i, g := range groups {
+		if g.Label != wantLabels[i] {
+			t.Errorf("group[%d] label = %q, want %q", i, g.Label, wantLabels[i])
+		}
+		if len(g.Projects) != 1 {
+			t.Errorf("group[%d] %q has %d projects, want 1", i, g.Label, len(g.Projects))
+		}
+	}
+}
+
+func TestTestRunsDateGroups_OmitsEmptyBuckets(t *testing.T) {
+	now := time.Date(2026, 6, 17, 15, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "01OLD", UpdatedAt: now.Add(-9 * 24 * time.Hour), OriginalPrompt: "probe",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-old"}},
+	}
+	tree := BuildTree(metas, nil)
+	for _, g := range tree.TierGroups() {
+		if g.Tier != TierTest {
+			continue
+		}
+		dg := g.DateGroupsAt(now)
+		if len(dg) != 1 || dg[0].Label != "Older" {
+			t.Fatalf("date groups = %v, want a single Older bucket", dg)
+		}
+	}
+}
+
 func TestBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
 	// mockup #10 spine: a project header carries a *magnitude* rollup
 	// (how many are live vs. how many need you), not a single ambiguous dot.

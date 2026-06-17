@@ -967,15 +967,43 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
   color: var(--text-dim);
 }
 
-/* Rail mode + container-collapse hide the needs-you label, rollup badges, and
-   cluster text along with the rest of the text-bearing sidebar chrome. */
+/* ============================================================
+   Test runs date sub-grouping (mockup #12 rec B)
+   The Test runs bucket gains a recency spine — Today / Yesterday /
+   Older quiet sub-headers — so a specific past run is reachable by
+   structure instead of being a flat, undated pile. Sentence-case
+   sans labels; the count is the only mono.
+   ============================================================ */
+.test-date-group { margin-bottom: var(--space-2); }
+.test-date-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-5) var(--space-1);
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.test-date-header .count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+/* Rail mode + container-collapse hide the needs-you label, rollup badges,
+   cluster text, and date sub-headers along with the rest of the text-bearing
+   sidebar chrome. */
 body.app[data-sidebar-rail] .needs-you-header span,
 body.app[data-sidebar-rail] .rollup-badge,
-body.app[data-sidebar-rail] .cluster-header .text-col { display: none; }
+body.app[data-sidebar-rail] .cluster-header .text-col,
+body.app[data-sidebar-rail] .test-date-header { display: none; }
 @container sidebar (max-width: 80px) {
   .needs-you-header span,
   .rollup-badge,
-  .cluster-header .text-col { display: none; }
+  .cluster-header .text-col,
+  .test-date-header { display: none; }
 }
 
 /* Workspace pane */

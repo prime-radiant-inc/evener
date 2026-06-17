@@ -127,6 +127,56 @@ type TierGroup struct {
 	Projects []TreeProject
 }
 
+// DateGroup is a date-bucketed slice of a tier's projects (mockup #12 rec B):
+// Today / Yesterday / Older, newest bucket first. Used to give the otherwise
+// flat Test runs pile a recency spine so "the one I ran this morning" is
+// reachable by structure.
+type DateGroup struct {
+	Label    string
+	Projects []TreeProject
+}
+
+// DateGroupsAt buckets the group's projects into Today / Yesterday / Older by
+// each project's MostRecent activity, relative to now. Buckets preserve the
+// group's existing (recency-sorted) project order and empty buckets are
+// omitted so the sidebar never shows a blank date sub-header.
+func (g TierGroup) DateGroupsAt(now time.Time) []DateGroup {
+	today := dayStart(now)
+	yesterday := today.AddDate(0, 0, -1)
+
+	var todayP, ydayP, olderP []TreeProject
+	for _, p := range g.Projects {
+		switch {
+		case !p.MostRecent.Before(today):
+			todayP = append(todayP, p)
+		case !p.MostRecent.Before(yesterday):
+			ydayP = append(ydayP, p)
+		default:
+			olderP = append(olderP, p)
+		}
+	}
+	out := make([]DateGroup, 0, 3)
+	if len(todayP) > 0 {
+		out = append(out, DateGroup{Label: "Today", Projects: todayP})
+	}
+	if len(ydayP) > 0 {
+		out = append(out, DateGroup{Label: "Yesterday", Projects: ydayP})
+	}
+	if len(olderP) > 0 {
+		out = append(out, DateGroup{Label: "Older", Projects: olderP})
+	}
+	return out
+}
+
+// DateGroups buckets by date relative to the current wall clock.
+func (g TierGroup) DateGroups() []DateGroup { return g.DateGroupsAt(time.Now()) }
+
+// dayStart returns midnight at the start of t's local day.
+func dayStart(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
+}
+
 // tierLabel returns the sidebar header text for a tier.
 func tierLabel(tier string) string {
 	// Sentence-case sans labels (design-system §2 / mockup #2): the old UI

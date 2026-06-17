@@ -52,7 +52,30 @@
       {{if eq .Tier "test"}}<span class="count">{{len .Projects}}</span>{{end}}
     </header>
     {{$expanded := .Expanded}}
-    {{range .Projects}}
+    {{if eq .Tier "test"}}
+    {{/* Test runs are date sub-grouped (mockup #12 rec B): a recency spine —
+         Today / Yesterday / Older — so a specific past run is reachable by
+         structure rather than being a flat, undated pile. */}}
+    {{range .DateGroups}}
+    <div class="test-date-group">
+      <header class="test-date-header"><span>{{.Label}}</span><span class="count">{{len .Projects}}</span></header>
+      {{range .Projects}}{{template "sidebarProject" (dict "P" . "Expanded" $expanded)}}{{end}}
+    </div>
+    {{end}}
+    {{else}}
+    {{range .Projects}}{{template "sidebarProject" (dict "P" . "Expanded" $expanded)}}{{end}}
+    {{end}}
+  </section>
+  {{end}}
+</nav>
+{{end}}
+
+{{/* sidebarProject renders one project section. Context: .P (TreeProject) +
+     .Expanded (bool tier auto-expand hint). Shared by every tier and by the
+     date-grouped Test runs bucket so the row grammar lives in one place. */}}
+{{define "sidebarProject"}}
+{{$expanded := .Expanded}}
+{{with .P}}
     <section class="sidebar-section project-section{{if not $expanded}} collapsed{{end}}" data-project-key="{{.Name}}"{{if $expanded}} data-default-expanded="true"{{end}}>
       <header class="project-header">
         <button type="button" class="btn btn-icon project-chevron" aria-label="expand project" aria-expanded="{{if $expanded}}true{{else}}false{{end}}">{{if $expanded}}▾{{else}}▸{{end}}</button>
@@ -178,8 +201,5 @@
       {{end}}
       </div>
     </section>
-    {{end}}
-  </section>
-  {{end}}
-</nav>
+{{end}}
 {{end}}

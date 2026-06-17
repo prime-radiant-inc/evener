@@ -1099,6 +1099,33 @@ func TestWeb_Sidebar_RendersRepeatedTitleCluster(t *testing.T) {
 	}
 }
 
+func TestWeb_Sidebar_TestRunsDateSubGrouping(t *testing.T) {
+	// mockup #12 rec B: the Test runs bucket renders Today / Older date
+	// sub-headers so a specific past run is reachable by structure.
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01TODAY", UpdatedAt: now.Add(-1 * time.Hour), OriginalPrompt: "probe",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-today"}},
+		{ID: "01OLD", UpdatedAt: now.Add(-6 * 24 * time.Hour), OriginalPrompt: "probe",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-old"}},
+	}
+	body := renderSidebar(t, hubcore.BuildTree(metas, nil))
+	for _, want := range []string{
+		`class="test-date-group"`,
+		`class="test-date-header"`,
+		`>Today<`,
+		`>Older<`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("test-runs date sub-grouping missing %q; body=\n%s", want, body)
+		}
+	}
+	// Both e2e projects must still render (one per date bucket).
+	if !strings.Contains(body, `data-project-key="serf-e2e-today"`) || !strings.Contains(body, `data-project-key="serf-e2e-old"`) {
+		t.Errorf("both e2e projects should render under their date buckets; body=\n%s", body)
+	}
+}
+
 func TestWeb_Sidebar_FoldsExcessSubagents(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
