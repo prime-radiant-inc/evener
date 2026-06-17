@@ -226,6 +226,32 @@
   }
   document.addEventListener("click", onSubagentToggle);
 
+  // Repeated-title cluster fold toggle (mockup #10/#C) — the cluster header
+  // flips data-cluster-expanded on its .session-cluster (CSS reveals the member
+  // runs), swaps the chevron glyph, and updates aria-expanded. Not persisted:
+  // clusters are recomputed each render and the parent project's collapse state
+  // already governs visibility across re-renders.
+  function onClusterToggle(e) {
+    var header = e.target.closest(".cluster-header");
+    if (!header) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var cluster = header.closest(".session-cluster");
+    if (!cluster) return;
+    var expanded = cluster.hasAttribute("data-cluster-expanded");
+    var chevron = header.querySelector(".cluster-chevron");
+    if (expanded) {
+      cluster.removeAttribute("data-cluster-expanded");
+      header.setAttribute("aria-expanded", "false");
+      if (chevron) chevron.textContent = "▸";
+    } else {
+      cluster.setAttribute("data-cluster-expanded", "");
+      header.setAttribute("aria-expanded", "true");
+      if (chevron) chevron.textContent = "▾";
+    }
+  }
+  document.addEventListener("click", onClusterToggle);
+
   // Mobile hamburger: toggle a body[data-sidebar-open] flag that the
   // mobile media query reads to slide the sidebar in. Tapping a sidebar
   // link also closes (via htmx:beforeRequest) so navigating to a session
