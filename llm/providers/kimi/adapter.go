@@ -46,6 +46,13 @@ type InstanceParams struct {
 
 // NewForInstance constructs a kimi adapter from explicit parameters.
 // Empty BaseURL falls back to the kimi default. The kimi quirks preset is always applied.
+//
+// Unlike its sibling adapters (glm/minimax/openrouter), which alias an exported
+// forwarder type, kimi needs a concrete unexported struct to attach
+// CountInputTokens. Returning *adapter keeps the shared construction pattern;
+// callers use it through the llm.ProviderAdapter interface it registers under.
+//
+//nolint:revive // unexported-return: see comment above.
 func NewForInstance(params InstanceParams) *adapter {
 	base := strings.TrimSpace(params.BaseURL)
 	if base == "" {
@@ -64,7 +71,7 @@ func NewForInstance(params InstanceParams) *adapter {
 }
 
 func (a *adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.InputTokenCount, error) {
-	if a == nil || a.OpenAICompat == nil || a.OpenAICompat.Adapter == nil {
+	if a == nil || a.OpenAICompat == nil || a.Adapter == nil {
 		return llm.InputTokenCount{}, llm.ErrInputTokenCountUnsupported
 	}
 	if a.Client == nil {

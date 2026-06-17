@@ -6,23 +6,34 @@ import (
 	"encoding/json"
 	"errors"
 	"image"
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
 	"math"
 	"os"
 	"strings"
+
+	// Registered for their image.DecodeConfig side effects: media token
+	// estimation decodes inline image bytes to read width/height.
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 )
 
 const fallbackMediaTokens = 256
 
+// TokenCountSource identifies how an InputTokenCount was produced.
 type TokenCountSource string
 
 const (
+	// TokenCountSourceLocalEstimate marks counts computed by the local,
+	// deterministic estimator rather than the provider.
 	TokenCountSourceLocalEstimate TokenCountSource = "local_estimate"
-	TokenCountSourceProvider      TokenCountSource = "provider"
+	// TokenCountSourceProvider marks counts returned by the provider's exact
+	// token-counting endpoint.
+	TokenCountSourceProvider TokenCountSource = "provider"
 )
 
+// ErrInputTokenCountUnsupported is returned by an InputTokenCounter when the
+// provider has no exact token-counting support, signaling callers to fall back
+// to the local estimate.
 var ErrInputTokenCountUnsupported = errors.New("input token count unsupported")
 
 // InputTokenCount reports input tokens for a request. Exact=false means the
@@ -139,11 +150,6 @@ func estimateMessagesInputTokens(provider, model string, messages []Message) int
 		chars += c
 		tokens += t
 	}
-	return tokens + chars/4
-}
-
-func estimateMessageInputTokens(provider, model string, m Message) int {
-	chars, tokens := estimateMessageInputParts(provider, model, m)
 	return tokens + chars/4
 }
 
