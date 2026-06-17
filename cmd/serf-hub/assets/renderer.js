@@ -2375,6 +2375,25 @@
       if (!row || !data || !data.transcriptRef) return;
       row.dataset.transcriptRef = data.transcriptRef;
       row.onclick = () => { this.navigateTo("/s/" + encodeURIComponent(data.transcriptRef)); };
+      // "Open beside" — opens the subagent in a side pane instead of navigating away.
+      // Hidden (not added) when SerfPanes is unavailable, e.g. this renderer is
+      // itself inside a pane iframe, so panes cannot nest.
+      if (window.SerfPanes && !row.querySelector(".open-beside-btn")) {
+        var beside = document.createElement("button");
+        beside.type = "button";
+        beside.className = "open-beside-btn";
+        beside.setAttribute("aria-label", "open subagent beside");
+        beside.title = "open beside";
+        beside.textContent = "⇲";
+        beside.addEventListener("click", function (e) {
+          e.preventDefault();
+          e.stopPropagation(); // do not trigger the row's navigateTo
+          var ref = row.dataset.transcriptRef;
+          var label = (row.querySelector(".nm") || {}).textContent || ref;
+          window.SerfPanes.open("/s/" + encodeURIComponent(ref), label);
+        });
+        row.appendChild(beside);
+      }
     },
 
     // navigateTo performs a hard navigation to a workspace route. Centralized so

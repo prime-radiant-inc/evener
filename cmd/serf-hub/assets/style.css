@@ -2066,6 +2066,22 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 }
 .sub-r:hover .lk { color: var(--accent); }
 .sub-r:hover { color: var(--text); }
+/* Open-beside button: quiet, hover-revealed, sits after "view →". */
+.sub-r .open-beside-btn {
+  opacity: 0;
+  transition: opacity var(--motion-fast), color var(--motion-fast);
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: var(--text-xs);
+  padding: 0 var(--space-1);
+  margin-left: var(--space-2);
+  cursor: pointer;
+  flex: none;
+  line-height: 1;
+}
+.sub-r:hover .open-beside-btn { opacity: 1; color: var(--text-muted); }
+.sub-r .open-beside-btn:hover { color: var(--accent); }
 .subs-more {
   margin-top: var(--space-2);
   font-size: var(--text-xs);
