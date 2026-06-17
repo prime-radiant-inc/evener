@@ -242,6 +242,127 @@ await scenario("CSS defines the subagents module section with the four-color gly
   if (!/\.g\.run\b/.test(styleSrc)) return { ok: false, detail: "missing running glyph color" };
   if (!/\.g\.done\b/.test(styleSrc)) return { ok: false, detail: "missing done glyph color" };
   if (!/\.g\.err\b/.test(styleSrc)) return { ok: false, detail: "missing error glyph color" };
+  if (!/\.g\.unk\b/.test(styleSrc)) return { ok: false, detail: "missing unknown glyph color (mockup #8 honest-clock demotion)" };
+  return { ok: true };
+});
+
+// ============================================================
+// Mockup #8 — honest-clock demotion + "?" unknown state.
+// A subagent left "⟳ running" on a session that is no longer live (no
+// completion signal ever arrives) must NOT keep a spinner forever. When the
+// thread goes terminal (ended/closed/notLoaded) — or idle with no active turn
+// — every still-running row demotes to a neutral terminal "?" UNKNOWN state,
+// freezing its last-known elapsed and labelling it "last seen Ns ago".
+// ============================================================
+
+await scenario("a dangling running subagent demotes to '?' unknown when the session ends", [
+  ["SESSION_START", { session_id: "01TEST", status: "active" }],
+  ...spawnDelegate("d1", "job_A", "trace callers", "local:child-A"),
+  ...spawnDelegate("d2", "job_B", "search indexer", "local:child-B"),
+  // job_A reports done via a read; job_B never reports back.
+  ["TOOL_CALL_START", { call_id: "jr1", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_A" }) }],
+  ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: JSON.stringify({
+    job_id: "job_A", type: "delegate", status: "completed", content: "found 7 call sites", total_bytes: 18,
+  }) }],
+  // The session goes dark with job_B still "running" and no JOB_FINISHED.
+  ["THREAD_STATUS_CHANGED", { status: "closed" }],
+], ({ conv }) => {
+  const dangling = conv.querySelector('.subs .sub-r[data-job-id="job_B"]');
+  if (!dangling) return { ok: false, detail: "missing dangling row" };
+  const glyph = dangling.querySelector(".g");
+  if (!glyph || glyph.classList.contains("run")) return { ok: false, detail: "dangling row must NOT keep the running spinner after the session ends" };
+  if (!glyph.classList.contains("unk")) return { ok: false, detail: "dangling row should demote to unknown (.g.unk), classes=" + glyph.className };
+  if (glyph.textContent !== "?") return { ok: false, detail: "unknown glyph should be '?', was " + glyph.textContent };
+  if (dangling.dataset.statusKind !== "unknown") return { ok: false, detail: "row statusKind should be unknown, was " + dangling.dataset.statusKind };
+  // the settled job_A keeps its done state (not demoted)
+  const settled = conv.querySelector('.subs .sub-r[data-job-id="job_A"] .g');
+  if (!settled || !settled.classList.contains("done")) return { ok: false, detail: "settled done row must not be demoted" };
+  // result text is honest about never reporting back, and the frozen duration
+  // is marked approximate (the ~ prefix).
+  const res = dangling.querySelector(".res");
+  if (!res || !/never reported|last seen|unknown/i.test(res.textContent)) return { ok: false, detail: "unknown row should explain it never reported back: " + (res && res.textContent) };
+  const dur = dangling.querySelector(".dur");
+  if (dur && dur.textContent && !dur.textContent.startsWith("~")) return { ok: false, detail: "frozen unknown duration should be approximate (~): " + dur.textContent };
+  return { ok: true };
+});
+
+await scenario("module header tally surfaces the '? N unknown' count after demotion", [
+  ["SESSION_START", { session_id: "01TEST", status: "active" }],
+  ...spawnDelegate("d1", "job_A", "done one", "local:child-A"),
+  ...spawnDelegate("d2", "job_B", "stuck one", "local:child-B"),
+  ["JOB_FINISHED", { jobId: "job_A", jobType: "delegate", status: "completed", outputBytes: 10, transcriptRef: "local:child-A" }],
+  ["THREAD_STATUS_CHANGED", { status: "ended" }],
+], ({ conv }) => {
+  const tally = conv.querySelector(".subs .subs-h .tally");
+  if (!tally) return { ok: false, detail: "missing tally" };
+  if (!/unknown/.test(tally.textContent)) return { ok: false, detail: "tally should report unknown after demotion: " + tally.textContent };
+  if (/running/.test(tally.textContent)) return { ok: false, detail: "tally must not still claim running after the session ended: " + tally.textContent };
+  const u = tally.querySelector(".u");
+  if (!u) return { ok: false, detail: "tally should carry a dedicated .u unknown marker" };
+  // the module wears a neutral stale flag (honest, not a fake spinner)
+  const mod = conv.querySelector(".subs");
+  if (mod.dataset.stale !== "true") return { ok: false, detail: "module should flag data-stale when it has demoted-unknown rows" };
+  return { ok: true };
+});
+
+await scenario("idle with no active turn demotes dangling running rows", [
+  ["SESSION_START", { session_id: "01TEST", status: "active" }],
+  ["TURN_STARTED", { turnId: "turn_1" }],
+  ...spawnDelegate("d1", "job_A", "background worker", "local:child-A"),
+  // Parent turn completes; no completion signal for job_A ever arrives.
+  ["TURN_COMPLETED", { turnId: "turn_1" }],
+], ({ conv }) => {
+  const row = conv.querySelector('.subs .sub-r[data-job-id="job_A"] .g');
+  if (!row) return { ok: false, detail: "missing row" };
+  if (row.classList.contains("run")) return { ok: false, detail: "row should demote once the parent turn ends idle with no completion signal" };
+  if (!row.classList.contains("unk")) return { ok: false, detail: "row should be unknown, classes=" + row.className };
+  return { ok: true };
+});
+
+await scenario("a still-active session does NOT demote a legitimately running subagent", [
+  ["SESSION_START", { session_id: "01TEST", status: "active" }],
+  ["TURN_STARTED", { turnId: "turn_1" }],
+  ...spawnDelegate("d1", "job_A", "live worker", "local:child-A"),
+  // session stays active; the subagent is genuinely live.
+  ["THREAD_STATUS_CHANGED", { status: "active" }],
+], ({ conv }) => {
+  const row = conv.querySelector('.subs .sub-r[data-job-id="job_A"] .g');
+  if (!row) return { ok: false, detail: "missing row" };
+  if (!row.classList.contains("run")) return { ok: false, detail: "a genuinely-live subagent must keep its running spinner while the session is active, classes=" + row.className };
+  return { ok: true };
+});
+
+await scenario("overflow sorts worst-first: failed and unknown above the fold, done last", [
+  ["SESSION_START", { session_id: "01TEST", status: "active" }],
+  ...spawnDelegate("d1", "job_1", "done one", "local:c1"),
+  ...spawnDelegate("d2", "job_2", "done two", "local:c2"),
+  ...spawnDelegate("d3", "job_3", "done three", "local:c3"),
+  ...spawnDelegate("d4", "job_4", "done four", "local:c4"),
+  ...spawnDelegate("d5", "job_5", "done five", "local:c5"),
+  ...spawnDelegate("d6", "job_6", "done six", "local:c6"),
+  ...spawnDelegate("d7", "job_7", "failed one", "local:c7"),
+  ...spawnDelegate("d8", "job_8", "running one", "local:c8"),
+  // settle the six "done" jobs and fail job_7; job_8 stays running.
+  ["JOB_FINISHED", { jobId: "job_1", status: "completed", outputBytes: 1, transcriptRef: "local:c1" }],
+  ["JOB_FINISHED", { jobId: "job_2", status: "completed", outputBytes: 1, transcriptRef: "local:c2" }],
+  ["JOB_FINISHED", { jobId: "job_3", status: "completed", outputBytes: 1, transcriptRef: "local:c3" }],
+  ["JOB_FINISHED", { jobId: "job_4", status: "completed", outputBytes: 1, transcriptRef: "local:c4" }],
+  ["JOB_FINISHED", { jobId: "job_5", status: "completed", outputBytes: 1, transcriptRef: "local:c5" }],
+  ["JOB_FINISHED", { jobId: "job_6", status: "completed", outputBytes: 1, transcriptRef: "local:c6" }],
+  ["JOB_FINISHED", { jobId: "job_7", status: "failed", reason: "boom", transcriptRef: "local:c7" }],
+], ({ conv }) => {
+  const mod = conv.querySelector(".subs");
+  if (!mod) return { ok: false, detail: "missing module" };
+  // The first (visible, above-the-fold) rows must include the failure and the
+  // running one — never buried under six done rows.
+  const visible = Array.from(mod.querySelectorAll(".sub-r")).filter(r => !r.hidden);
+  const visibleKinds = visible.map(r => r.dataset.statusKind);
+  if (visibleKinds[0] !== "failed") return { ok: false, detail: "first row should be the failure, got order: " + visibleKinds.join(",") };
+  if (!visibleKinds.includes("running")) return { ok: false, detail: "running row should be above the fold, got: " + visibleKinds.join(",") };
+  // done rows sort last
+  const firstDoneIdx = visibleKinds.indexOf("done");
+  const lastNonDoneIdx = Math.max(visibleKinds.lastIndexOf("failed"), visibleKinds.lastIndexOf("running"), visibleKinds.lastIndexOf("unknown"));
+  if (firstDoneIdx !== -1 && firstDoneIdx < lastNonDoneIdx) return { ok: false, detail: "done rows must sort after failed/running/unknown: " + visibleKinds.join(",") };
   return { ok: true };
 });
 

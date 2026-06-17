@@ -1489,6 +1489,11 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
 .subs[data-has-failure="true"] {
   border-left: 3px solid var(--error);
 }
+/* Stale: the session went dark with work still "running", now demoted to an
+   honest neutral "?" unknown. A muted edge, NOT a fake spinner. */
+.subs[data-stale="true"] {
+  border-color: var(--text-dim);
+}
 .subs-h {
   display: flex;
   align-items: baseline;
@@ -1504,6 +1509,7 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
 .subs-h .tally .r { color: var(--state-processing); }
 .subs-h .tally .o { color: var(--text-muted); }
 .subs-h .tally .f { color: var(--error); }
+.subs-h .tally .u { color: var(--text-dim); }
 .subs-rows { display: flex; flex-direction: column; }
 .sub-r {
   display: flex;
@@ -1520,6 +1526,8 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
 .sub-r .g.run  { color: var(--state-processing); }
 .sub-r .g.done { color: var(--text-muted); }
 .sub-r .g.err  { color: var(--error); }
+/* Terminal-unknown: neutral, NOT alarming, NOT live (mockup #8). */
+.sub-r .g.unk  { color: var(--text-dim); }
 .sub-r .nm {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
@@ -1540,6 +1548,7 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
   min-width: 0;
 }
 .sub-r .res .live { color: var(--state-processing); }
+.sub-r .res .unk { color: var(--text-dim); font-style: italic; }
 .sub-r.res-error .res { color: var(--error); }
 .sub-r .dur {
   font-size: var(--text-xs);
