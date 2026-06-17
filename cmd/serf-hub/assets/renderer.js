@@ -101,7 +101,8 @@
 
       this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
       this.activeTools = new Map();      // callId -> {el, outputBuf}
-      this.activeJobs = new Map();       // appwire jobId -> job reference el
+      this.activeJobs = new Map();       // appwire jobId -> subagent row el
+      this.subagentModule = null;        // current "Subagents (N)" module (per fan-out)
       this.suppressedToolCalls = new Set();
       this.pendingTaskCalls = new Map(); // callId -> args (for system-line rendering on END)
       this.lastCurrentTaskId = null;     // dedupe state for "now on X" system-line
@@ -620,6 +621,7 @@
       this.userTurnIndex = 0;
       this.entryIndex = 0;
       this.cheapToolCluster = null;
+      this.subagentModule = null;
     },
 
     refreshTranscriptStatusVisibility() {
@@ -697,6 +699,7 @@
             this.activeMessages.clear();
             this.activeTools.clear();
             this.activeJobs.clear();
+            this.subagentModule = null;
             this.suppressedToolCalls.clear();
             this.pendingTaskCalls.clear();
             taskDescriptions.clear();
@@ -863,6 +866,7 @@
       data = data || {};
       const text = String(data.text || "");
       if (!text.trim()) return;
+      this.closeSubagentModule();
       const title = systemMessageDisplayTitle(data.title || "System");
       const el = document.createElement("details");
       el.className = "steering system-message";
@@ -887,6 +891,7 @@
       text = String(text || "").trim();
       if (!text) return;
       this.cheapToolCluster = null;
+      this.closeSubagentModule();
       const line = document.createElement("div");
       line.className = "system-line";
       line.textContent = text;
@@ -895,6 +900,7 @@
 
     appendUserMessage(text, entryIdx, images) {
       this.cheapToolCluster = null;
+      this.closeSubagentModule();
       const wrap = document.createElement("div");
       wrap.className = "user-message";
       wrap.dataset.entryIdx = String(entryIdx || "");
@@ -1137,6 +1143,7 @@
 
     beginAssistantMessage() {
       this.cheapToolCluster = null;
+      this.closeSubagentModule();
       const id = "msg-" + Math.random().toString(36).slice(2, 9);
       this.currentMessageId = id;
       const el = document.createElement("div");
@@ -1150,6 +1157,7 @@
     appendAssistantBlock(text) {
       if (!String(text || "").trim()) return;
       this.cheapToolCluster = null;
+      this.closeSubagentModule();
       const el = document.createElement("div");
       el.className = "assistant-message";
       try { el.innerHTML = window.marked.parse(text); }
@@ -1221,6 +1229,7 @@
     beginReasoning() {
       if (this.reasoningEl) return;
       this.cheapToolCluster = null;
+      this.closeSubagentModule();
       const el = document.createElement("button");
       el.type = "button";
       el.className = "think open";
@@ -1424,12 +1433,20 @@
       if (duration != null) m.durationMs = duration;
       this.renderToolMeta(m, endedAt);
       if (m.renderer.bodyEnd) m.renderer.bodyEnd(m, data, out);
-      if (m.renderer.replace) {
-        const replacement = m.renderer.replace.call(this, m, data);
-        if (replacement && m.el.parentNode) m.el.parentNode.replaceChild(replacement, m.el);
-        if (replacement && replacement.classList && replacement.classList.contains("subagent-reference") && replacement.dataset.jobId) {
-          this.activeJobs.set(replacement.dataset.jobId, replacement);
+      // A spawning tool (delegate) drops its own tool card and contributes a row
+      // to the aggregated subagents module instead.
+      if (m.renderer.subagentSpawn) {
+        const info = m.renderer.subagentSpawn.call(this, m, data, out);
+        if (info && info.jobId) {
+          if (m.el && m.el.parentNode) m.el.parentNode.removeChild(m.el);
+          this.upsertJobRef(info);
         }
+      }
+      // A reconciling tool (job_read_output / job_list / job_send_message)
+      // flips any matching subagent rows from a non-JOB_FINISHED signal.
+      if (m.renderer.subagentReconcile) {
+        const infos = m.renderer.subagentReconcile.call(this, m, data, out);
+        for (const info of infos || []) this.reconcileSubagent(info);
       }
       for (const id of m.ids || []) {
         this.activeTools.delete(id);
@@ -1487,116 +1504,323 @@
       state.metaEl.textContent = parts.join(" · ");
     },
 
-    makeJobRef(data) {
-      data = normalizedJobRefData(data);
-      const jobId = data.jobId || ("job-" + Math.random().toString(36).slice(2, 9));
-      const ref = document.createElement("div");
-      ref.className = "subagent-reference";
-      ref.dataset.jobId = jobId;
-      if (data.transcriptRef) ref.dataset.transcriptRef = data.transcriptRef;
-      const verb = document.createElement("span");
-      verb.className = "verb"; verb.textContent = data.jobType || "job";
-      const target = document.createElement("span");
-      target.className = "target";
-      target.textContent = data.label ? clip(data.label, 80) : jobId;
-      const dot = document.createElement("span");
-      dot.className = "status-indicator";
-      dot.style.color = "var(--state-processing)";
-      dot.textContent = "●";
-      ref.appendChild(verb);
-      ref.appendChild(target);
-      ref.appendChild(dot);
-      this.applyJobRefTarget(ref, data);
-      return ref;
+    // ===================== Subagents module =====================
+    // Spawned subagents aggregate into ONE inline "Subagents (N)" module per
+    // fan-out cluster (the box is the single containment device). Each row:
+    // status glyph · name · last-action/result · duration · an always-visible
+    // (dim) "view →" link into the subagent's transcript. The header tallies
+    // running / done / failed; a failed child surfaces in red at the module
+    // level — never folded into a "N done" count.
+    //
+    // The current module stays open across consecutive spawns and closes when
+    // any other conversation entry is appended (closeSubagentModule, mirroring
+    // cheapToolCluster), so the next fan-out gets its own module.
+
+    // Threshold past which extra rows collapse behind "+N more · expand".
+    SUBAGENT_VISIBLE_ROWS: 6,
+
+    // classifyJobStatus maps a raw status to one of: running / done / failed.
+    // A subagent that RAN FINE but found bad news is "done" (neutral) — only a
+    // subagent or tool that itself failed-to-run is "failed" (red).
+    classifyJobStatus(status) {
+      const s = String(status || "").trim().toLowerCase();
+      if (s === "failed" || s === "errored" || s === "error") return "failed";
+      if (s === "completed" || s === "done" || s === "cancelled" || s === "stopped" || s === "succeeded") return "done";
+      return "running";
     },
 
-    applyJobRefTarget(ref, data) {
-      data = normalizedJobRefData(data);
-      if (!ref || !data.transcriptRef) return;
-      ref.dataset.transcriptRef = data.transcriptRef;
-      ref.style.cursor = "pointer";
-      ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(data.transcriptRef); };
+    subagentGlyph(kind) {
+      if (kind === "done") return "✓";
+      if (kind === "failed") return "✕";
+      return "⟳";
     },
 
-    findJobRef(jobId) {
+    // Status kinds (running/done/failed) map to short glyph CSS classes
+    // (run/done/err) — the four-color, colorblind-safe glyph treatment.
+    subagentGlyphClass(kind) {
+      if (kind === "done") return "done";
+      if (kind === "failed") return "err";
+      return "run";
+    },
+
+    ensureSubagentModule() {
+      if (this.subagentModule && this.subagentModule.parentNode === this.conversation) {
+        return this.subagentModule;
+      }
+      // A new module is a transcript entry: end any open cheap-tool cluster so
+      // later cheap reads start a fresh cluster below the module (preserving
+      // chronological order).
+      this.cheapToolCluster = null;
+      const mod = document.createElement("div");
+      mod.className = "subs";
+      mod.dataset.expanded = "false";
+      mod.dataset.hasFailure = "false";
+
+      const header = document.createElement("div");
+      header.className = "subs-h";
+      const title = document.createElement("span");
+      title.className = "t";
+      const tally = document.createElement("span");
+      tally.className = "tally";
+      header.appendChild(title);
+      header.appendChild(tally);
+
+      const rows = document.createElement("div");
+      rows.className = "subs-rows";
+
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "subs-more";
+      more.hidden = true;
+      more.addEventListener("click", () => {
+        mod.dataset.expanded = mod.dataset.expanded === "true" ? "false" : "true";
+        this.refreshSubagentModule(mod);
+      });
+
+      mod.appendChild(header);
+      mod.appendChild(rows);
+      mod.appendChild(more);
+      this.conversation.appendChild(mod);
+      this.subagentModule = mod;
+      return mod;
+    },
+
+    // closeSubagentModule ends the current fan-out so the next spawned
+    // subagent starts a fresh module. Called wherever a non-subagent entry is
+    // appended (alongside cheapToolCluster = null).
+    closeSubagentModule() {
+      this.subagentModule = null;
+    },
+
+    makeSubagentRow() {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "sub-r";
+      const glyph = document.createElement("span");
+      glyph.className = "g run";
+      glyph.textContent = "⟳";
+      const name = document.createElement("span");
+      name.className = "nm";
+      const res = document.createElement("span");
+      res.className = "res";
+      const dur = document.createElement("span");
+      dur.className = "dur num";
+      const link = document.createElement("span");
+      link.className = "lk";
+      link.textContent = "view →";
+      row.appendChild(glyph);
+      row.appendChild(name);
+      row.appendChild(res);
+      row.appendChild(dur);
+      row.appendChild(link);
+      row.dataset.startedAt = String(Date.now());
+      row.dataset.statusKind = "running";
+      return row;
+    },
+
+    // findSubagentRow locates a row by jobId. It prefers the current module but
+    // falls back to a transcript-wide scan, because a reconciliation signal
+    // (job_read_output etc.) can arrive after the module was closed by an
+    // intervening entry — and we still want that stale "running" row to flip.
+    findSubagentRow(jobId) {
       if (!jobId || !this.conversation) return null;
-      for (const ref of this.conversation.querySelectorAll(".subagent-reference")) {
-        if (ref.dataset.jobId === jobId) return ref;
+      for (const row of this.conversation.querySelectorAll(".sub-r")) {
+        if (row.dataset.jobId === jobId) return row;
       }
       return null;
     },
 
-    updateJobRef(ref, data) {
-      data = normalizedJobRefData(data);
-      if (!ref || !data.jobId) return ref;
-      ref.dataset.jobId = data.jobId;
-      const verb = ref.querySelector(".verb");
-      if (verb && data.jobType) verb.textContent = data.jobType;
-      const target = ref.querySelector(".target");
-      if (target && data.label) target.textContent = clip(data.label, 80);
-      this.applyJobRefTarget(ref, data);
-      return ref;
-    },
-
-    updateJobRefDetails(ref, data) {
-      data = normalizedJobRefData(data);
-      if (!ref) return;
-      for (const el of ref.querySelectorAll(".result")) el.remove();
-      if (data.status) {
-        const status = document.createElement("span"); status.className = "result";
-        status.textContent = data.status;
-        ref.appendChild(status);
-      }
-      if (data.outputBytes != null) {
-        const bytes = document.createElement("span"); bytes.className = "result";
-        bytes.textContent = data.outputBytes + " bytes";
-        ref.appendChild(bytes);
-      }
-    },
-
+    // upsertJobRef creates or updates a subagent row from a payload. Creating
+    // one ensures the current module exists; the module header and overflow are
+    // refreshed afterward. Returns the row element.
     upsertJobRef(data) {
-      data = normalizedJobRefData(data);
-      let ref = data.jobId ? (this.activeJobs.get(data.jobId) || this.findJobRef(data.jobId)) : null;
-      if (!ref) {
-        ref = this.makeJobRef(data);
-        this.conversation.appendChild(ref);
-      } else {
-        this.updateJobRef(ref, data);
+      const norm = normalizedJobRefData(data);
+      // Preserve caller extras the normalizer drops (resultText, lastAction).
+      const merged = Object.assign({}, norm, {
+        resultText: (data && data.resultText) || "",
+        lastAction: (data && data.lastAction) || "",
+      });
+      let row = this.findSubagentRow(merged.jobId);
+      if (!row) {
+        this.ensureSubagentModule();
+        row = this.makeSubagentRow();
+        this.subagentModule.querySelector(".subs-rows").appendChild(row);
       }
-      if (data.jobId) this.activeJobs.set(data.jobId, ref);
-      if (data.status || data.outputBytes != null) this.updateJobRefDetails(ref, data);
-      return ref;
+      this.updateSubagentRow(row, merged);
+      const mod = row.closest(".subs");
+      if (mod) this.refreshSubagentModule(mod);
+      if (merged.jobId) this.activeJobs.set(merged.jobId, row);
+      return row;
+    },
+
+    // updateSubagentRow applies an already-shaped payload (no re-normalization,
+    // so resultText/lastAction survive) to a row's glyph, name, result, etc.
+    updateSubagentRow(row, data) {
+      if (!row) return;
+      data = data || {};
+      if (data.jobId) row.dataset.jobId = data.jobId;
+      if (data.jobType && !row.dataset.jobType) row.dataset.jobType = data.jobType;
+      const name = row.querySelector(".nm");
+      if (name) {
+        const label = data.label || row.dataset.jobType || data.jobType || data.jobId || "subagent";
+        if (label && (!name.textContent || data.label)) name.textContent = clip(label, 80);
+      }
+      const kind = this.classifyJobStatus(data.status || row.dataset.status || "running");
+      if (data.status) row.dataset.status = data.status;
+      row.dataset.statusKind = kind;
+      const glyph = row.querySelector(".g");
+      if (glyph) {
+        glyph.className = "g " + this.subagentGlyphClass(kind);
+        glyph.textContent = this.subagentGlyph(kind);
+      }
+      this.renderSubagentResult(row, data, kind);
+      this.renderSubagentDuration(row, kind);
+      this.applyJobRefTarget(row, data);
+    },
+
+    renderSubagentResult(row, data, kind) {
+      const res = row.querySelector(".res");
+      if (!res) return;
+      if (data.lastAction) row.dataset.lastAction = data.lastAction;
+      let text = String(data.resultText || "").trim();
+      if (!text && kind === "running") {
+        res.innerHTML = "";
+        const live = document.createElement("span");
+        live.className = "live";
+        live.textContent = "running";
+        res.appendChild(live);
+        const action = data.lastAction || row.dataset.lastAction || "";
+        if (action) res.append(" · " + clip(action, 60));
+        row.classList.remove("res-error");
+        return;
+      }
+      if (!text) {
+        if (kind === "failed") text = data.reason || "failed";
+        else text = data.outputBytes != null ? formatBytes(data.outputBytes) : "done";
+      }
+      res.textContent = clip(text, 120);
+      row.classList.toggle("res-error", kind === "failed");
+    },
+
+    renderSubagentDuration(row, kind) {
+      const dur = row.querySelector(".dur");
+      if (!dur) return;
+      const started = Number(row.dataset.startedAt || 0);
+      if (!started) return;
+      if (kind === "running") {
+        const elapsed = Date.now() - started;
+        dur.textContent = elapsed >= 1000 ? formatToolDuration(elapsed) : "";
+        return;
+      }
+      if (!row.dataset.endedAt) row.dataset.endedAt = String(Date.now());
+      dur.textContent = formatToolDuration(Number(row.dataset.endedAt) - started);
+    },
+
+    applyJobRefTarget(row, data) {
+      if (!row || !data || !data.transcriptRef) return;
+      row.dataset.transcriptRef = data.transcriptRef;
+      row.onclick = () => { window.location.href = "/s/" + encodeURIComponent(data.transcriptRef); };
+    },
+
+    refreshSubagentModule(mod) {
+      if (!mod) return;
+      const rows = Array.from(mod.querySelectorAll(".sub-r"));
+      let running = 0, done = 0, failed = 0;
+      for (const row of rows) {
+        const kind = row.dataset.statusKind || "running";
+        if (kind === "failed") failed++;
+        else if (kind === "done") done++;
+        else running++;
+      }
+      const title = mod.querySelector(".t");
+      if (title) title.textContent = "Subagents (" + rows.length + ")";
+      const tally = mod.querySelector(".tally");
+      if (tally) {
+        tally.innerHTML = "";
+        const parts = [];
+        if (running) parts.push(["r", "⟳ " + running + " running"]);
+        if (done) parts.push(["o", "✓ " + done + " done"]);
+        if (failed) parts.push(["f", "✕ " + failed + " failed"]);
+        parts.forEach(([cls, text], i) => {
+          if (i > 0) tally.append(" · ");
+          const span = document.createElement("span");
+          span.className = cls;
+          span.textContent = text;
+          tally.appendChild(span);
+        });
+      }
+      // Box-level failure flag so CSS can mark the module without averaging it
+      // into a tally count.
+      mod.dataset.hasFailure = failed > 0 ? "true" : "false";
+
+      // Overflow: hide rows past the visible threshold unless expanded.
+      const expanded = mod.dataset.expanded === "true";
+      const limit = this.SUBAGENT_VISIBLE_ROWS;
+      const hiddenCount = Math.max(0, rows.length - limit);
+      rows.forEach((row, i) => {
+        row.hidden = !expanded && hiddenCount > 0 && i >= limit;
+      });
+      const more = mod.querySelector(".subs-more");
+      if (more) {
+        if (hiddenCount > 0) {
+          more.hidden = false;
+          more.textContent = expanded ? "collapse" : ("+" + hiddenCount + " more · expand");
+        } else {
+          more.hidden = true;
+        }
+      }
+    },
+
+    // reconcileSubagent flips a (possibly stale-running) subagent row from a
+    // signal other than JOB_FINISHED — a successful job_read_output / job_list /
+    // job_send_message that names the job and its status. This is the fix for
+    // the subagent that showed "● running" forever because JOB_FINISHED never
+    // arrived. It only updates an EXISTING row (never spawns one from a read).
+    reconcileSubagent(info) {
+      info = info || {};
+      const jobId = info.jobId || info.job_id || "";
+      if (!jobId) return;
+      const row = this.findSubagentRow(jobId);
+      if (!row) return;
+      this.updateSubagentRow(row, {
+        jobId,
+        jobType: info.jobType || info.type || row.dataset.jobType || "",
+        status: info.status || "",
+        reason: info.reason || "",
+        outputBytes: info.outputBytes != null ? info.outputBytes : info.output_bytes,
+        transcriptRef: info.transcriptRef || info.transcript_ref || "",
+        resultText: info.resultText || "",
+        lastAction: info.lastAction || "",
+      });
+      if (this.classifyJobStatus(info.status) !== "running") this.activeJobs.delete(jobId);
+      const mod = row.closest(".subs");
+      if (mod) this.refreshSubagentModule(mod);
     },
 
     beginJobRef(data) {
-      this.cheapToolCluster = null;
       this.upsertJobRef(data);
     },
 
     finalizeJobRef(data) {
-      this.cheapToolCluster = null;
       data = normalizedJobRefData(data);
       const jobId = data.jobId || "";
-      const ref = this.upsertJobRef(data);
-      this.activeJobs.delete(jobId);
-      const dot = ref.querySelector(".status-indicator");
-      if (dot) {
-        const s = data.status || "completed";
-        if (s === "completed" || s === "cancelled" || s === "stopped" || s === "done") {
-          dot.style.color = "var(--state-idle)";
-        } else if (s === "failed" || s === "errored") {
-          dot.style.color = "var(--state-awaiting)";
-        } else {
-          dot.style.color = "var(--state-processing)";
-        }
-        dot.textContent = "●";
+      const status = data.status || "completed";
+      // A standalone JOB_FINISHED (no preceding spawn row) still creates a row
+      // so the completion is visible; otherwise reconcile the existing row.
+      if (this.findSubagentRow(jobId)) {
+        this.reconcileSubagent({
+          jobId, jobType: data.jobType, status, reason: data.reason,
+          outputBytes: data.outputBytes, transcriptRef: data.transcriptRef,
+        });
+      } else {
+        this.upsertJobRef(Object.assign({}, data, { status }));
       }
-      this.updateJobRefDetails(ref, data);
-      this.applyJobRefTarget(ref, data);
+      this.activeJobs.delete(jobId);
     },
 
     appendBanner(kind, text, diagnostic) {
       this.cheapToolCluster = null;
+      this.closeSubagentModule();
       if ((kind === "error" || kind === "warning") && window.SerfDiagnostics && window.SerfDiagnostics.render) {
         const payload = Object.assign({}, diagnostic || {}, {
           severity: kind,
@@ -1713,6 +1937,7 @@
     //     full-width steering divider with click-to-expand body.
     appendSteeringMessage(text) {
       this.cheapToolCluster = null;
+      this.closeSubagentModule();
       const summary = classifySteering(text);
 
       if (summary.kind === "current-task") {

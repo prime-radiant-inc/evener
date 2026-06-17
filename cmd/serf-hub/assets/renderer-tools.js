@@ -254,6 +254,23 @@
       setExpandableOutput(state.body, clip(text, 8000), { moreClass: "job-output-more", outputClassName: "job-output" });
       if (!String(text || "").trim()) state.body.wrap.style.display = "none";
     },
+    // Reading a subagent's output is a completion signal even when no
+    // JOB_FINISHED arrives: flip the matching row to the job's reported status
+    // and surface a short result preview from its content.
+    subagentReconcile: (state, data, out) => {
+      if (data.error) return [];
+      const st = parseToolJSON(out);
+      if (!st || !st.job_id) return [];
+      const content = String(jobReadOutputText(st, out) || "").replace(/\s+/g, " ").trim();
+      return [{
+        job_id: st.job_id,
+        type: st.type,
+        status: st.status || "",
+        transcript_ref: st.transcript_ref,
+        outputBytes: st.total_bytes,
+        resultText: content ? clip(content, 120) : "",
+      }];
+    },
   };
 
   const jobSendMessageRenderer = {
@@ -280,6 +297,20 @@
       else if (st && st.structured_result !== undefined) text = JSON.stringify(st.structured_result, null, 2);
       setExpandableOutput(state.body, clip(text, 8000), { moreClass: "job-message-output-more", outputClassName: "job-message-output" });
       if (!String(text || "").trim()) state.body.wrap.style.display = "none";
+    },
+    // Messaging a subagent reports its current status (e.g. "completed" after a
+    // resume), which reconciles a stale-running row.
+    subagentReconcile: (state, data, out) => {
+      if (data.error) return [];
+      const st = parseToolJSON(out);
+      if (!st || !st.job_id) return [];
+      const reply = typeof st.output === "string" ? st.output.replace(/\s+/g, " ").trim() : "";
+      return [{
+        job_id: st.job_id,
+        status: st.status || "",
+        transcript_ref: st.transcript_ref,
+        resultText: reply ? clip(reply, 120) : "",
+      }];
     },
   };
 
@@ -308,6 +339,22 @@
       }
       setExpandableOutput(state.body, clip(text, 8000), { moreClass: "job-list-output-more", outputClassName: "job-list-output" });
       if (!String(text || "").trim()) state.body.wrap.style.display = "none";
+    },
+    // Listing jobs reports each job's current status, reconciling several
+    // stale-running subagent rows at once.
+    subagentReconcile: (state, data, out) => {
+      if (data.error) return [];
+      const st = parseToolJSON(out);
+      if (!st || !Array.isArray(st.jobs)) return [];
+      return st.jobs
+        .filter(job => job && job.job_id)
+        .map(job => ({
+          job_id: job.job_id,
+          type: job.type,
+          status: job.status || "",
+          transcript_ref: job.transcript_ref,
+          outputBytes: job.output_bytes,
+        }));
     },
   };
 
@@ -504,16 +551,18 @@
       if (st && st.status) return st.status;
       return "done";
     },
-    replace(state, data) {
+    // delegate drops its own tool card; the spawned subagent shows up as a row
+    // in the aggregated "Subagents (N)" module instead.
+    subagentSpawn(state, data) {
       const st = parseToolJSON(data.output || state.outputBuf || "") || parseToolState(data.tool_state);
       if (!st || !st.job_id) return null;
-      return this.upsertJobRef({
+      return {
         jobId: st.job_id,
         jobType: st.type || "delegate",
         status: st.status || "running",
         transcriptRef: st.transcript_ref || "",
-        label: st.task || state.args.task || "",
-      });
+        label: st.task || (state.args && state.args.task) || "",
+      };
     },
   };
 

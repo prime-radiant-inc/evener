@@ -153,7 +153,7 @@ await scenario("job_read_output renders status, truncation, and content preview"
   return { ok: true };
 });
 
-await scenario("delegate output replaces tool row with clickable job card", [
+await scenario("delegate output drops its tool row and adds a clickable subagents-module row", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "d1", tool_name: "delegate", arguments_json: JSON.stringify({ task: "Write focused tests" }) }],
   ["TOOL_CALL_END", { call_id: "d1", tool_name: "delegate", output: JSON.stringify({
@@ -163,16 +163,17 @@ await scenario("delegate output replaces tool row with clickable job card", [
     transcript_ref: "local:delegate-child",
   }) }],
 ], ({ conv }) => {
-  if (conv.querySelector(".tool-call.delegate")) return { ok: false, detail: "delegate tool row was not replaced" };
-  const ref = conv.querySelector(".subagent-reference");
-  if (!ref) return { ok: false, detail: "missing delegate reference card" };
+  if (conv.querySelector(".tool-call.delegate")) return { ok: false, detail: "delegate tool row was not removed" };
+  if (conv.querySelector(".subagent-reference")) return { ok: false, detail: "standalone subagent-reference should no longer be used" };
+  const ref = conv.querySelector(".subs .sub-r");
+  if (!ref) return { ok: false, detail: "missing subagents-module row" };
   if (ref.dataset.jobId !== "job_DELEGATE") return { ok: false, detail: "missing job id dataset" };
   if (ref.dataset.transcriptRef !== "local:delegate-child") return { ok: false, detail: "missing transcript ref dataset" };
   const text = ref.textContent;
-  for (const want of ["delegate", "Write focused tests", "running"]) {
-    if (!text.includes(want)) return { ok: false, detail: "delegate card missing " + want + ": " + text };
+  for (const want of ["Write focused tests", "running"]) {
+    if (!text.includes(want)) return { ok: false, detail: "subagent row missing " + want + ": " + text };
   }
-  if (ref.style.cursor !== "pointer") return { ok: false, detail: "delegate card should be clickable" };
+  if (ref.tagName !== "BUTTON") return { ok: false, detail: "subagent row should be a clickable button" };
   return { ok: true };
 });
 
@@ -217,23 +218,25 @@ await scenario("job control tools render structured summaries", [
   return { ok: true };
 });
 
-await scenario("orphan JOB_FINISHED preserves job payload", [
+await scenario("orphan JOB_FINISHED creates a completed subagents-module row", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["JOB_FINISHED", { jobId: "job_ORPHAN", jobType: "delegate", status: "completed", outputBytes: 77, transcriptRef: "local:child" }],
 ], ({ conv }) => {
-  const ref = conv.querySelector(".subagent-reference");
-  if (!ref) return { ok: false, detail: "missing fallback job reference" };
+  if (conv.querySelector(".subagent-reference")) return { ok: false, detail: "standalone subagent-reference should no longer be used" };
+  const ref = conv.querySelector(".subs .sub-r");
+  if (!ref) return { ok: false, detail: "missing fallback subagent row" };
   if (ref.dataset.jobId !== "job_ORPHAN") return { ok: false, detail: "missing job id dataset" };
   if (ref.dataset.transcriptRef !== "local:child") return { ok: false, detail: "missing transcript ref dataset" };
+  if (ref.querySelector(".g").classList.contains("run")) return { ok: false, detail: "orphan completion should not be running" };
   const text = ref.textContent;
-  for (const want of ["delegate", "job_ORPHAN", "completed", "77 bytes"]) {
-    if (!text.includes(want)) return { ok: false, detail: "fallback card missing " + want + ": " + text };
+  for (const want of ["delegate", "77 bytes"]) {
+    if (!text.includes(want)) return { ok: false, detail: "fallback row missing " + want + ": " + text };
   }
-  if (ref.style.cursor !== "pointer") return { ok: false, detail: "fallback card should be clickable" };
+  if (ref.tagName !== "BUTTON") return { ok: false, detail: "fallback row should be clickable" };
   return { ok: true };
 });
 
-await scenario("orphan JOB_FINISHED separates surrounding cheap tool clusters", [
+await scenario("a subagents module separates surrounding cheap tool clusters", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "r1", tool_name: "read_file", arguments_json: JSON.stringify({ file_path: "a.go" }) }],
   ["TOOL_CALL_END", { call_id: "r1", output: "alpha\n", tool_name: "read_file" }],
@@ -243,13 +246,13 @@ await scenario("orphan JOB_FINISHED separates surrounding cheap tool clusters", 
 ], ({ conv }) => {
   const children = Array.from(conv.children);
   const firstCluster = children.find(el => el.classList.contains("tool-call-cluster"));
-  const ref = children.find(el => el.classList.contains("subagent-reference"));
+  const mod = children.find(el => el.classList.contains("subs"));
   const clusters = children.filter(el => el.classList.contains("tool-call-cluster"));
   if (clusters.length !== 2) return { ok: false, detail: "expected two cheap clusters, got " + clusters.length };
   if (!firstCluster || !firstCluster.querySelector(".tool-call.read_file")) return { ok: false, detail: "first cheap cluster missing read_file" };
-  if (!ref) return { ok: false, detail: "missing orphan job reference" };
+  if (!mod) return { ok: false, detail: "missing subagents module" };
   if (!clusters[1].querySelector(".tool-call.grep")) return { ok: false, detail: "second cheap cluster missing grep" };
-  if (children.indexOf(firstCluster) > children.indexOf(ref) || children.indexOf(ref) > children.indexOf(clusters[1])) {
+  if (children.indexOf(firstCluster) > children.indexOf(mod) || children.indexOf(mod) > children.indexOf(clusters[1])) {
     return { ok: false, detail: "wrong order: " + children.map(el => el.className).join(" | ") };
   }
   return { ok: true };
