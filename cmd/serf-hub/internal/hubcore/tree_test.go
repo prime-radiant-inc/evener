@@ -714,3 +714,30 @@ func TestBuildTree_OrdersProjectsByRecencyWithinResult(t *testing.T) {
 		t.Fatalf("project order = %v, want %v", got, want)
 	}
 }
+
+func TestClassifySession(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	yes, no := true, false
+	cases := []struct {
+		name     string
+		decision *bool
+		age      time.Duration
+		want     string
+	}{
+		{"fresh -> current", nil, 1 * time.Hour, "current"},
+		{"yesterday -> recent", nil, 36 * time.Hour, "recent"},
+		{"3 weeks -> archived (auto)", nil, 21 * 24 * time.Hour, "archived"},
+		{"manual archive overrides fresh", &yes, 1 * time.Hour, "archived"},
+		{"manual unarchive overrides old", &no, 30 * 24 * time.Hour, "recent"},
+		{"boundary 24h -> current", nil, 24 * time.Hour, "current"},
+		{"boundary 14d -> recent", nil, 14 * 24 * time.Hour, "recent"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := classifySession(c.decision, now.Add(-c.age), now)
+			if got != c.want {
+				t.Fatalf("classifySession=%q want %q", got, c.want)
+			}
+		})
+	}
+}

@@ -57,6 +57,28 @@ const (
 // recentWindow is the age boundary between the RECENT and OLDER tiers.
 const recentWindow = 24 * time.Hour
 
+const (
+	currentWindow = 24 * time.Hour
+	archiveWindow = 14 * 24 * time.Hour
+)
+
+// classifySession returns a session's sidebar tier from its last activity and
+// archive decision. A user decision (archive/unarchive) overrides the auto rule;
+// otherwise inactivity older than archiveWindow auto-archives.
+func classifySession(decision *bool, lastActivity, now time.Time) string {
+	archived := now.Sub(lastActivity) > archiveWindow
+	if decision != nil {
+		archived = *decision
+	}
+	if archived {
+		return "archived"
+	}
+	if now.Sub(lastActivity) <= currentWindow {
+		return "current"
+	}
+	return "recent"
+}
+
 // e2eProjectPrefix marks throwaway end-to-end test sessions whose project
 // folders (serf-e2e-<rand>) otherwise bury real projects in the sidebar.
 const e2eProjectPrefix = "serf-e2e-"
