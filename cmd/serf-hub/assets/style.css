@@ -1148,6 +1148,12 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
   color: var(--state-awaiting);
 }
 .new-content-pill.needs-you:hover { background: color-mix(in srgb, var(--state-awaiting) 14%, var(--bg-raised)); }
+/* Error: a failed tool is below (or above) the fold — red, glyph-paired "✕". */
+.new-content-pill.error {
+  border-color: var(--error);
+  color: var(--error);
+}
+.new-content-pill.error:hover { background: color-mix(in srgb, var(--error) 14%, var(--bg-raised)); }
 .new-content-pill[hidden] { display: none; }
 /* ─────────────────────────────────────────────────────────────────────── */
 
@@ -1468,8 +1474,11 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
 .think.think-tier-short { color: var(--text-dim); }
 .think.think-tier-short .pv { color: var(--text-dim); }
 
-/* Honest liveness: shown only when an actively working session has gone quiet.
-   Calm, not alarmist — it states the gap instead of faking a "working" pulse. */
+/* Honest liveness (mockup #13): shown only when an actively working session has
+   gone quiet. Two bands. The calm-quiet band (data-level="quiet") is NEUTRAL —
+   a coarse "quiet ~Nm" bucket with a recessive dot — because a short silence is
+   expected, not a stall. The concern band (data-level="concern") escalates to
+   amber with a glyph once silence crosses the stall threshold. */
 .liveness {
   display: flex;
   align-items: center;
@@ -1485,7 +1494,16 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
   width: 6px;
   height: 6px;
   border-radius: var(--radius-full);
-  background: var(--state-warning);
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+/* Concern: amber, glyph-paired (the "!" carries the meaning for colorblind
+   readers, the color reinforces it). The dot turns solid amber too. */
+.liveness[data-level="concern"] { color: var(--state-awaiting); }
+.liveness[data-level="concern"]::before { background: var(--state-awaiting); }
+.liveness .liveness-glyph {
+  font-weight: 700;
+  color: var(--state-awaiting);
   flex-shrink: 0;
 }
 
