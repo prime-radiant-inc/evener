@@ -22,7 +22,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metas, live := s.navigationTreeInputs(r.Context())
-	tree := hubcore.BuildTree(metas, live)
+	tree := hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{})
 	resp := hubapi.TreeResponse{
 		GeneratedAt: time.Now().UTC(),
 		Sources:     s.apiTreeSources(),
@@ -35,7 +35,8 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	}
 	seenProjectRefs := map[string]bool{}
 	projectIndexes := map[string]int{}
-	for _, p := range tree.Projects {
+	allProjects := append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...)
+	for _, p := range allProjects {
 		key := projectKey(p.Name)
 		ap := hubapi.TreeProject{
 			Key:         key,
@@ -43,7 +44,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 			WorkingDir:  p.WorkingDir,
 			RollupState: p.RollupState,
 		}
-		for _, n := range p.Sessions {
+		for _, n := range projectSessions(p) {
 			ap.Sessions = append(ap.Sessions, s.apiTreeNode("project", key, n, treeNodeCanActLive(n) && s.isLive(n.ID)))
 			seenProjectRefs[n.ID] = true
 		}
@@ -320,6 +321,16 @@ func (s *WebServer) isLive(sessionID string) bool {
 
 func treeNodeCanActLive(n hubcore.TreeNode) bool {
 	return hubcore.NormalizeState(n.State) != "ended"
+}
+
+// projectSessions flattens a project's tier-split sessions (Current, Recent,
+// Archived) into one list for the /api/tree JSON endpoint, which is tier-blind.
+func projectSessions(p hubcore.TreeProject) []hubcore.TreeNode {
+	out := make([]hubcore.TreeNode, 0, len(p.Current)+len(p.Recent)+len(p.Archived))
+	out = append(out, p.Current...)
+	out = append(out, p.Recent...)
+	out = append(out, p.Archived...)
+	return out
 }
 
 func (s *WebServer) apiTreeNode(scope, projectKey string, n hubcore.TreeNode, live bool) hubapi.TreeNode {

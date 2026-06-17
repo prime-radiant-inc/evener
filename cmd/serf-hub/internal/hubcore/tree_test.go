@@ -35,7 +35,7 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01SUB1", Status: appwire.ThreadStatusActive},
 	}
 
-	tree := BuildTree(metas, live)
+	tree := buildTree(metas, live)
 
 	// One project
 	if len(tree.Projects) != 1 {
@@ -48,18 +48,19 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 
 	// Top-level sessions: 01ACTIVE then 01OTHER (by recency).
 	// 01OLDORIG is NOT top-level — it's the snapshotted original under 01ACTIVE.
-	if len(proj.Sessions) != 2 {
-		t.Fatalf("sessions: %d", len(proj.Sessions))
+	sessions := allSessions(proj)
+	if len(sessions) != 2 {
+		t.Fatalf("sessions: %d", len(sessions))
 	}
-	if proj.Sessions[0].ID != "01ACTIVE" {
-		t.Errorf("[0]: %q", proj.Sessions[0].ID)
+	if sessions[0].ID != "01ACTIVE" {
+		t.Errorf("[0]: %q", sessions[0].ID)
 	}
-	if proj.Sessions[1].ID != "01OTHER" {
-		t.Errorf("[1]: %q", proj.Sessions[1].ID)
+	if sessions[1].ID != "01OTHER" {
+		t.Errorf("[1]: %q", sessions[1].ID)
 	}
 
 	// Children of 01ACTIVE: subagent first, then the snapshotted original (fork).
-	children := proj.Sessions[0].Children
+	children := sessions[0].Children
 	if len(children) != 2 {
 		t.Fatalf("children: %d", len(children))
 	}
@@ -75,8 +76,8 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 	}
 
 	// 01OTHER has no children
-	if len(proj.Sessions[1].Children) != 0 {
-		t.Errorf("01OTHER should have no children, got %d", len(proj.Sessions[1].Children))
+	if len(sessions[1].Children) != 0 {
+		t.Errorf("01OTHER should have no children, got %d", len(sessions[1].Children))
 	}
 
 	// Live: 2 entries, both active.
@@ -91,32 +92,32 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 }
 
 func TestBuildTree_UsesGeneratedNameForSessionTitle(t *testing.T) {
-	tree := BuildTree([]schema.SessionMeta{{
+	tree := buildTree([]schema.SessionMeta{{
 		ID:             "01NAMED",
 		Name:           "Launch Config Cheap Model",
 		OriginalPrompt: "unrelated original prompt",
 		UpdatedAt:      time.Now(),
 	}}, nil)
-	if len(tree.Projects) != 1 || len(tree.Projects[0].Sessions) != 1 {
+	if len(tree.Projects) != 1 || len(allSessions(tree.Projects[0])) != 1 {
 		t.Fatalf("unexpected tree shape: %#v", tree)
 	}
-	if got := tree.Projects[0].Sessions[0].Title; got != "Launch Config Cheap Model" {
+	if got := allSessions(tree.Projects[0])[0].Title; got != "Launch Config Cheap Model" {
 		t.Fatalf("session title = %q, want generated name", got)
 	}
 }
 
 func TestBuildTree_UsesGeneratedNameForForkBaseTitle(t *testing.T) {
-	tree := BuildTree([]schema.SessionMeta{{
+	tree := buildTree([]schema.SessionMeta{{
 		ID:             "01FORK",
 		Name:           "Generated Base",
 		OriginalPrompt: "original base",
 		ForkLabel:      "before TDD",
 		UpdatedAt:      time.Now(),
 	}}, nil)
-	if len(tree.Projects) != 1 || len(tree.Projects[0].Sessions) != 1 {
+	if len(tree.Projects) != 1 || len(allSessions(tree.Projects[0])) != 1 {
 		t.Fatalf("unexpected tree shape: %#v", tree)
 	}
-	if got := tree.Projects[0].Sessions[0].Title; got != "Generated Base · before TDD" {
+	if got := allSessions(tree.Projects[0])[0].Title; got != "Generated Base · before TDD" {
 		t.Fatalf("fork title = %q, want generated name plus label", got)
 	}
 }
@@ -139,7 +140,7 @@ func TestBuildTree_AttentionSortsLive(t *testing.T) {
 		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01PROC", Status: appwire.ThreadStatusActive},
 	}
 
-	tree := BuildTree(metas, live)
+	tree := buildTree(metas, live)
 
 	if len(tree.Live) != 3 {
 		t.Fatalf("live count: %d", len(tree.Live))
@@ -175,12 +176,15 @@ func TestBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *testing.T)
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
 	}
 
-	tree := BuildTree(metas, nil)
+	// Classify against a clock right after the sessions so all four land in the
+	// same (Current) tier; the test is about within-project ordering, not tiering.
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, updated.Add(time.Hour))
 	if len(tree.Projects) != 1 {
 		t.Fatalf("projects=%d", len(tree.Projects))
 	}
-	got := make([]string, 0, len(tree.Projects[0].Sessions))
-	for _, node := range tree.Projects[0].Sessions {
+	sessions := allSessions(tree.Projects[0])
+	got := make([]string, 0, len(sessions))
+	for _, node := range sessions {
 		got = append(got, node.ID)
 	}
 	want := []string{"01NEW", "02OLD", "04TITLEA", "03TITLEB"}
@@ -198,7 +202,7 @@ func TestBuildTree_OrdersLiveRowsWithoutMetasByStartedAtAndID(t *testing.T) {
 		{Entry: rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "03TIEB", Status: appwire.ThreadStatusIdle},
 	}
 
-	tree := BuildTree(nil, live)
+	tree := buildTree(nil, live)
 	got := make([]string, 0, len(tree.Live))
 	for _, node := range tree.Live {
 		got = append(got, node.ID)
@@ -222,7 +226,7 @@ func TestBuildTree_OrdersMixedLiveRowsByMergedMetadata(t *testing.T) {
 		{Entry: rendezvous.Entry{PID: 2, StartedAt: base}, SessionID: "02FRESH", Status: appwire.ThreadStatusIdle},
 	}
 
-	tree := BuildTree(metas, live)
+	tree := buildTree(metas, live)
 	got := make([]string, 0, len(tree.Live))
 	for _, node := range tree.Live {
 		got = append(got, node.ID)
@@ -242,7 +246,7 @@ func TestBuildTree_NoProjectFallback(t *testing.T) {
 	}
 	live := []LiveEntry{}
 
-	tree := BuildTree(metas, live)
+	tree := buildTree(metas, live)
 
 	if len(tree.Projects) != 1 {
 		t.Fatalf("projects: %d", len(tree.Projects))
@@ -250,15 +254,16 @@ func TestBuildTree_NoProjectFallback(t *testing.T) {
 	if tree.Projects[0].Name != "(no project)" {
 		t.Errorf("project name: %q", tree.Projects[0].Name)
 	}
-	if len(tree.Projects[0].Sessions) != 1 {
-		t.Fatalf("sessions: %d", len(tree.Projects[0].Sessions))
+	sessions := allSessions(tree.Projects[0])
+	if len(sessions) != 1 {
+		t.Fatalf("sessions: %d", len(sessions))
 	}
-	if tree.Projects[0].Sessions[0].ID != "01NOPROJ" {
-		t.Errorf("session id: %q", tree.Projects[0].Sessions[0].ID)
+	if sessions[0].ID != "01NOPROJ" {
+		t.Errorf("session id: %q", sessions[0].ID)
 	}
 	// Not live => state = "ended"
-	if tree.Projects[0].Sessions[0].State != "ended" {
-		t.Errorf("state: %q", tree.Projects[0].Sessions[0].State)
+	if sessions[0].State != "ended" {
+		t.Errorf("state: %q", sessions[0].State)
 	}
 	// No live sessions => RollupState = ""
 	if tree.Projects[0].RollupState != "" {
@@ -270,7 +275,25 @@ func TestBuildTree_NoProjectFallback(t *testing.T) {
 	}
 }
 
-// projectByName finds the TreeProject with the given name, or fails.
+// buildTree is the test convenience wrapper around BuildTree for the cases that
+// don't exercise archive decisions: it passes an empty decision map.
+func buildTree(metas []schema.SessionMeta, live []LiveEntry) Tree {
+	return BuildTree(metas, live, map[ArchiveKey]bool{})
+}
+
+// allSessions returns a project's top-level session rows across all tiers,
+// Current then Recent then Archived — the flat list most session-shape
+// assertions want now that sessions are tier-split.
+func allSessions(p TreeProject) []TreeNode {
+	out := make([]TreeNode, 0, len(p.Current)+len(p.Recent)+len(p.Archived))
+	out = append(out, p.Current...)
+	out = append(out, p.Recent...)
+	out = append(out, p.Archived...)
+	return out
+}
+
+// projectByName finds the TreeProject with the given name in the active list, or
+// fails.
 func projectByName(t *testing.T, tree Tree, name string) TreeProject {
 	t.Helper()
 	for _, p := range tree.Projects {
@@ -278,216 +301,122 @@ func projectByName(t *testing.T, tree Tree, name string) TreeProject {
 			return p
 		}
 	}
-	t.Fatalf("project %q not found in %v", name, projectNames(tree))
+	t.Fatalf("project %q not found in %v", name, projectNames(tree.Projects))
 	return TreeProject{}
 }
 
-func projectNames(tree Tree) []string {
-	names := make([]string, 0, len(tree.Projects))
-	for _, p := range tree.Projects {
+func projectNames(ps []TreeProject) []string {
+	names := make([]string, 0, len(ps))
+	for _, p := range ps {
 		names = append(names, p.Name)
 	}
 	return names
 }
 
-func TestBuildTree_TiersProjectsByRecencyAndLiveness(t *testing.T) {
-	now := time.Now()
+func TestBuildTreeSessionTiersAndProjectOrder(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	mk := func(id, proj string, createdAgo, updatedAgo time.Duration) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-createdAgo), UpdatedAt: now.Add(-updatedAgo),
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/" + proj}}
+	}
 	metas := []schema.SessionMeta{
-		// A live project — has an awaiting live session => ACTIVE tier.
-		{ID: "01LIVE", UpdatedAt: now.Add(-time.Minute), OriginalPrompt: "live work",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
-		// Touched 3h ago, not live => RECENT tier.
-		{ID: "01RECENT", UpdatedAt: now.Add(-3 * time.Hour), OriginalPrompt: "recent work",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/bravo"}},
-		// Touched 5 days ago, not live => OLDER tier.
-		{ID: "01OLD", UpdatedAt: now.Add(-5 * 24 * time.Hour), OriginalPrompt: "old work",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/charlie"}},
+		mk("a-cur", "alpha", 2*time.Hour, 1*time.Hour),         // alpha: current
+		mk("a-old", "alpha", 40*24*time.Hour, 30*24*time.Hour), // alpha: auto-archived
+		mk("b-rec", "beta", 50*time.Hour, 48*time.Hour),        // beta: recent only
 	}
-	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusAwaiting},
-	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
 
-	tree := BuildTree(metas, live)
-
-	if got := projectByName(t, tree, "alpha").Tier; got != TierActive {
-		t.Errorf("alpha tier = %q, want %q", got, TierActive)
+	// alpha has a current session and a >14d session -> alpha is an active project
+	// with one Current and one Archived session.
+	var alpha *TreeProject
+	for i := range tree.Projects {
+		if tree.Projects[i].Name == "alpha" {
+			alpha = &tree.Projects[i]
+		}
 	}
-	if got := projectByName(t, tree, "bravo").Tier; got != TierRecent {
-		t.Errorf("bravo tier = %q, want %q", got, TierRecent)
+	if alpha == nil {
+		t.Fatalf("alpha should be an active project")
 	}
-	if got := projectByName(t, tree, "charlie").Tier; got != TierOlder {
-		t.Errorf("charlie tier = %q, want %q", got, TierOlder)
+	if len(alpha.Current) != 1 || len(alpha.Archived) != 1 || len(alpha.Recent) != 0 {
+		t.Fatalf("alpha tiers: current=%d recent=%d archived=%d", len(alpha.Current), len(alpha.Recent), len(alpha.Archived))
+	}
+	// Projects ordered by most-recent session START desc: alpha's newest start is 2h ago,
+	// beta's is 50h ago -> alpha first.
+	if len(tree.Projects) < 2 || tree.Projects[0].Name != "alpha" {
+		t.Fatalf("project order wrong: %+v", projectNames(tree.Projects))
 	}
 }
 
-func TestBuildTree_BucketsE2eTestRunsIntoTestTier(t *testing.T) {
-	now := time.Now()
-	metas := []schema.SessionMeta{
-		// A real, freshly-touched project — should NOT be in the test tier
-		// even though it sorts most-recent.
-		{ID: "01REAL", UpdatedAt: now, OriginalPrompt: "real work",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+func TestBuildTreeArchivedProjectPlacement(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	mk := func(id, proj string, updatedAgo time.Duration) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-updatedAgo), UpdatedAt: now.Add(-updatedAgo),
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/" + proj}}
 	}
-	// Many serf-e2e-* throwaway projects, each a single session, some very recent.
-	for i := 0; i < 25; i++ {
-		metas = append(metas, schema.SessionMeta{
-			ID:             "01E2E" + string(rune('A'+i)),
-			UpdatedAt:      now.Add(-time.Duration(i) * time.Minute),
-			OriginalPrompt: "e2e probe",
-			EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-" + string(rune('a'+i))},
-		})
+	// gamma: every session auto-archived -> gamma goes to ArchivedProjects.
+	metas := []schema.SessionMeta{mk("g1", "gamma", 30*24*time.Hour)}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	if len(tree.Projects) != 0 {
+		t.Fatalf("gamma should not be active, got %v", projectNames(tree.Projects))
 	}
-
-	tree := BuildTree(metas, nil)
-
-	// Every serf-e2e-* project lands in the test tier.
-	testCount := 0
-	for _, p := range tree.Projects {
-		if strings.HasPrefix(p.Name, "serf-e2e-") {
-			if p.Tier != TierTest {
-				t.Errorf("project %q tier = %q, want %q", p.Name, p.Tier, TierTest)
-			}
-			testCount++
-		}
+	if len(tree.ArchivedProjects) != 1 || tree.ArchivedProjects[0].Name != "gamma" {
+		t.Fatalf("gamma should be an archived project")
 	}
-	if testCount != 25 {
-		t.Errorf("expected 25 serf-e2e projects, got %d", testCount)
+	if !tree.ArchivedProjects[0].IsArchived {
+		t.Fatalf("gamma should be flagged IsArchived")
 	}
 
-	// The real project is NOT in the test tier.
-	if got := projectByName(t, tree, "serf").Tier; got != TierActive && got != TierRecent {
-		t.Errorf("real project tier = %q, want active or recent (not test)", got)
+	// manual project archive forces delta to ArchivedProjects even though it's fresh.
+	metas2 := []schema.SessionMeta{mk("d1", "delta", 1*time.Hour)}
+	tree2 := BuildTreeAt(metas2, nil, map[ArchiveKey]bool{{Kind: "project", ID: "delta"}: true}, now)
+	if len(tree2.Projects) != 0 || len(tree2.ArchivedProjects) != 1 {
+		t.Fatalf("delta manual-archived should be in ArchivedProjects")
 	}
 }
 
-func TestBuildTree_RecentEvenWhenE2eSortsFirst(t *testing.T) {
-	// A serf-e2e run touched *now* must not push the real project below it:
-	// the real project must still be reachable (active/recent), and the e2e
-	// run must be bucketed into the test tier regardless of recency.
-	now := time.Now()
+func TestBuildTreeManualSessionArchiveAndUnarchive(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	mk := func(id string, updatedAgo time.Duration) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-updatedAgo), UpdatedAt: now.Add(-updatedAgo),
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}}
+	}
 	metas := []schema.SessionMeta{
-		{ID: "01REAL", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "real",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "01E2E", UpdatedAt: now, OriginalPrompt: "probe",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-zzz"}},
+		mk("fresh", 1*time.Hour),     // current by age
+		mk("stale", 30*24*time.Hour), // auto-archived by age
 	}
-	tree := BuildTree(metas, nil)
-	if got := projectByName(t, tree, "serf-e2e-zzz").Tier; got != TierTest {
-		t.Errorf("e2e tier = %q, want %q", got, TierTest)
+	// Manual archive overrides the fresh session; manual unarchive rescues the stale one.
+	decisions := map[ArchiveKey]bool{
+		{Kind: "session", ID: "fresh"}: true,
+		{Kind: "session", ID: "stale"}: false,
 	}
-	if got := projectByName(t, tree, "serf").Tier; got != TierRecent {
-		t.Errorf("real tier = %q, want %q", got, TierRecent)
+	proj := projectByName(t, BuildTreeAt(metas, nil, decisions, now), "serf")
+	if len(proj.Archived) != 1 || proj.Archived[0].ID != "fresh" {
+		t.Fatalf("manual-archived fresh session should be Archived; archived=%v", proj.Archived)
+	}
+	// An unarchived stale session is visible (Recent), not Current — it is old.
+	if len(proj.Recent) != 1 || proj.Recent[0].ID != "stale" {
+		t.Fatalf("manual-unarchived stale session should be Recent; recent=%v", proj.Recent)
 	}
 }
 
-func TestTierGroups_OmitsEmptyAndAutoExpandsActive(t *testing.T) {
-	now := time.Now()
+func TestBuildTreeE2eProjectsClassifyByRecency(t *testing.T) {
+	// The serf-e2e-* prefix bucket is gone: a fresh e2e project flows through the
+	// normal model (active, ordered by recency), and a stale one auto-archives.
+	now := time.Unix(1_700_000_000, 0)
+	mk := func(id, proj string, updatedAgo time.Duration) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-updatedAgo), UpdatedAt: now.Add(-updatedAgo),
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/" + proj}}
+	}
 	metas := []schema.SessionMeta{
-		{ID: "01LIVE", UpdatedAt: now, OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
-		{ID: "01OLD", UpdatedAt: now.Add(-9 * 24 * time.Hour), OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/charlie"}},
-		{ID: "01E2E", UpdatedAt: now, OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-a"}},
+		mk("e-fresh", "serf-e2e-fresh", 1*time.Hour),
+		mk("e-stale", "serf-e2e-stale", 30*24*time.Hour),
 	}
-	live := []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusActive}}
-
-	groups := BuildTree(metas, live).TierGroups()
-
-	// active, older, test — recent is omitted (no project qualifies).
-	gotTiers := make([]string, 0, len(groups))
-	for _, g := range groups {
-		gotTiers = append(gotTiers, g.Tier)
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	if got := projectNames(tree.Projects); len(got) != 1 || got[0] != "serf-e2e-fresh" {
+		t.Fatalf("fresh e2e project should be active, got %v", got)
 	}
-	want := []string{TierActive, TierOlder, TierTest}
-	if strings.Join(gotTiers, ",") != strings.Join(want, ",") {
-		t.Fatalf("tier groups = %v, want %v", gotTiers, want)
-	}
-
-	// Only the active tier auto-expands.
-	for _, g := range groups {
-		if g.Tier == TierActive && !g.Expanded {
-			t.Errorf("active tier should be expanded")
-		}
-		if g.Tier != TierActive && g.Expanded {
-			t.Errorf("%q tier should not be expanded", g.Tier)
-		}
-	}
-
-	// Test tier label is "Test runs" (sentence-case sans, mockup #2).
-	for _, g := range groups {
-		if g.Tier == TierTest && g.Label != "Test runs" {
-			t.Errorf("test tier label = %q, want %q", g.Label, "Test runs")
-		}
-	}
-}
-
-func TestTreeProject_AgeIsFormatted(t *testing.T) {
-	now := time.Now()
-	tree := BuildTree([]schema.SessionMeta{
-		{ID: "01A", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
-	}, nil)
-	if got := projectByName(t, tree, "alpha").Age; got != "2h" {
-		t.Errorf("age = %q, want 2h", got)
-	}
-}
-
-func TestTestRunsDateGroups_BucketsByRecency(t *testing.T) {
-	// mockup #12 rec B: the Test runs bucket sub-groups its runs by date
-	// (Today / Yesterday / Older) so "the one I ran this morning" is reachable
-	// by structure, no typing.
-	now := time.Date(2026, 6, 17, 15, 0, 0, 0, time.UTC)
-	metas := []schema.SessionMeta{
-		{ID: "01TODAY", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "probe",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-today"}},
-		{ID: "01YDAY", UpdatedAt: now.Add(-26 * time.Hour), OriginalPrompt: "probe",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-yesterday"}},
-		{ID: "01OLD", UpdatedAt: now.Add(-5 * 24 * time.Hour), OriginalPrompt: "probe",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-old"}},
-	}
-	tree := BuildTree(metas, nil)
-	var test *TierGroup
-	for i := range tree.TierGroups() {
-		g := tree.TierGroups()[i]
-		if g.Tier == TierTest {
-			test = &g
-			break
-		}
-	}
-	if test == nil {
-		t.Fatal("no test tier")
-	}
-	groups := test.DateGroupsAt(now)
-	if len(groups) != 3 {
-		t.Fatalf("date groups = %d, want 3 (Today/Yesterday/Older)", len(groups))
-	}
-	wantLabels := []string{"Today", "Yesterday", "Older"}
-	for i, g := range groups {
-		if g.Label != wantLabels[i] {
-			t.Errorf("group[%d] label = %q, want %q", i, g.Label, wantLabels[i])
-		}
-		if len(g.Projects) != 1 {
-			t.Errorf("group[%d] %q has %d projects, want 1", i, g.Label, len(g.Projects))
-		}
-	}
-}
-
-func TestTestRunsDateGroups_OmitsEmptyBuckets(t *testing.T) {
-	now := time.Date(2026, 6, 17, 15, 0, 0, 0, time.UTC)
-	metas := []schema.SessionMeta{
-		{ID: "01OLD", UpdatedAt: now.Add(-9 * 24 * time.Hour), OriginalPrompt: "probe",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-old"}},
-	}
-	tree := BuildTree(metas, nil)
-	for _, g := range tree.TierGroups() {
-		if g.Tier != TierTest {
-			continue
-		}
-		dg := g.DateGroupsAt(now)
-		if len(dg) != 1 || dg[0].Label != "Older" {
-			t.Fatalf("date groups = %v, want a single Older bucket", dg)
-		}
+	if got := projectNames(tree.ArchivedProjects); len(got) != 1 || got[0] != "serf-e2e-stale" {
+		t.Fatalf("stale e2e project should be archived, got %v", got)
 	}
 }
 
@@ -511,7 +440,7 @@ func TestBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
 		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting},
 		{Entry: rendezvous.Entry{PID: 4}, SessionID: "01ZZZ", Status: appwire.ThreadStatusIdle},
 	}
-	proj := projectByName(t, BuildTree(metas, live), "serf")
+	proj := projectByName(t, buildTree(metas, live), "serf")
 	// 2 working (active) sessions, 1 awaiting (needs-you). Idle does not count
 	// toward either magnitude — it's the settled state.
 	if proj.RollupLive != 2 {
@@ -539,7 +468,7 @@ func TestBuildTree_NeedsYouAggregatesAwaitingAcrossProjects(t *testing.T) {
 		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01A_OLD", Status: appwire.ThreadStatusAwaiting},
 		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
 	}
-	tree := BuildTree(metas, live)
+	tree := buildTree(metas, live)
 	if len(tree.NeedsYou) != 2 {
 		t.Fatalf("NeedsYou count = %d, want 2 (only awaiting sessions)", len(tree.NeedsYou))
 	}
@@ -568,7 +497,7 @@ func TestBuildTree_NeedsYouEmptyWhenNothingAwaits(t *testing.T) {
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
 	}
-	if got := len(BuildTree(metas, live).NeedsYou); got != 0 {
+	if got := len(buildTree(metas, live).NeedsYou); got != 0 {
 		t.Errorf("NeedsYou should be empty when nothing awaits, got %d", got)
 	}
 }
@@ -592,9 +521,9 @@ func TestBuildTree_ClustersRepeatedIdleTitles(t *testing.T) {
 		ID: "01HAIKU", Name: "write a haiku", UpdatedAt: now.Add(-30 * time.Minute),
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-docs"}})
 
-	proj := projectByName(t, BuildTree(metas, nil), "serf-docs")
+	proj := projectByName(t, buildTree(metas, nil), "serf-docs")
 	var clusters, singles int
-	for _, s := range proj.Sessions {
+	for _, s := range allSessions(proj) {
 		if s.Kind == "cluster" {
 			clusters++
 			if s.ClusterCount != 5 {
@@ -634,14 +563,15 @@ func TestBuildTree_DoesNotClusterLiveRepeatedTitles(t *testing.T) {
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01DUPA", Status: appwire.ThreadStatusActive},
 	}
-	proj := projectByName(t, BuildTree(metas, live), "serf-docs")
-	for _, s := range proj.Sessions {
+	proj := projectByName(t, buildTree(metas, live), "serf-docs")
+	sessions := allSessions(proj)
+	for _, s := range sessions {
 		if s.Kind == "cluster" {
 			t.Fatalf("repeated titles must NOT cluster when a member is live: got cluster %q", s.Title)
 		}
 	}
-	if len(proj.Sessions) != 4 {
-		t.Errorf("expected 4 un-clustered sessions, got %d", len(proj.Sessions))
+	if len(sessions) != 4 {
+		t.Errorf("expected 4 un-clustered sessions, got %d", len(sessions))
 	}
 }
 
@@ -661,11 +591,12 @@ func TestBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 9}, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive},
 	}
-	proj := projectByName(t, BuildTree(metas, live), "serf")
-	if len(proj.Sessions) != 1 || len(proj.Sessions[0].Children) != 1 {
-		t.Fatalf("unexpected shape: %#v", proj.Sessions)
+	proj := projectByName(t, buildTree(metas, live), "serf")
+	sessions := allSessions(proj)
+	if len(sessions) != 1 || len(sessions[0].Children) != 1 {
+		t.Fatalf("unexpected shape: %#v", sessions)
 	}
-	if got := proj.Sessions[0].Children[0].State; got != "ended" {
+	if got := sessions[0].Children[0].State; got != "ended" {
 		t.Errorf("stale subagent state = %q, want ended (parent is dead)", got)
 	}
 }
@@ -683,33 +614,30 @@ func TestBuildTree_KeepsSubagentStateWhenParentLive(t *testing.T) {
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVEP", Status: appwire.ThreadStatusActive},
 		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01RUNSUB", Status: appwire.ThreadStatusActive},
 	}
-	proj := projectByName(t, BuildTree(metas, live), "serf")
-	if got := proj.Sessions[0].Children[0].State; got != "active" {
+	proj := projectByName(t, buildTree(metas, live), "serf")
+	if got := allSessions(proj)[0].Children[0].State; got != "active" {
 		t.Errorf("live subagent state = %q, want active (parent is live)", got)
 	}
 }
 
-func TestBuildTree_OrdersProjectsByRecencyWithinResult(t *testing.T) {
-	// Projects should be emitted in tier order (active, recent, older, test),
-	// and within a tier most-recent first.
-	now := time.Now()
-	metas := []schema.SessionMeta{
-		// older
-		{ID: "01OLD", UpdatedAt: now.Add(-10 * 24 * time.Hour), OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/old-proj"}},
-		// recent, touched 2h ago
-		{ID: "01R2", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/recent-older"}},
-		// recent, touched 10m ago (more recent than recent-older)
-		{ID: "01R1", UpdatedAt: now.Add(-10 * time.Minute), OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/recent-newer"}},
-		// e2e test
-		{ID: "01E", UpdatedAt: now, OriginalPrompt: "x",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-a"}},
+func TestBuildTree_OrdersProjectsByMostRecentStart(t *testing.T) {
+	// Active projects are emitted newest-first by their most-recent session START
+	// (max CreatedAt across the project's sessions).
+	now := time.Unix(1_700_000_000, 0)
+	mk := func(id, proj string, startedAgo time.Duration) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, CreatedAt: now.Add(-startedAgo), UpdatedAt: now.Add(-startedAgo),
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/" + proj}}
 	}
-	tree := BuildTree(metas, nil)
-	got := projectNames(tree)
-	want := []string{"recent-newer", "recent-older", "old-proj", "serf-e2e-a"}
+	metas := []schema.SessionMeta{
+		mk("01R2", "started-older", 2*time.Hour),
+		mk("01R1", "started-newer", 10*time.Minute),
+		// started-older also has an even-newer session, which should lift it above
+		// started-newer because most-recent START wins.
+		mk("01R3", "started-older", 1*time.Minute),
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	got := projectNames(tree.Projects)
+	want := []string{"started-older", "started-newer"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("project order = %v, want %v", got, want)
 	}

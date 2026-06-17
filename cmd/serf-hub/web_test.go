@@ -891,8 +891,12 @@ func TestWeb_Sidebar_RendersTreeWithLiveAndProjects(t *testing.T) {
 		t.Fatalf("status: %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `project-section collapsed`) {
-		t.Errorf("project section should default collapsed: %q", body)
+	if !strings.Contains(body, `data-project-key="serf-hub"`) {
+		t.Errorf("project section missing: %q", body)
+	}
+	// A freshly-touched session lands in the project's Current tier.
+	if !strings.Contains(body, `data-tier="current"`) {
+		t.Errorf("fresh session should render in the Current tier: %q", body)
 	}
 	if !strings.Contains(body, "fix bug") {
 		t.Errorf("missing title")
@@ -905,23 +909,26 @@ func TestWeb_Sidebar_RendersTreeWithLiveAndProjects(t *testing.T) {
 	}
 }
 
-func TestWeb_Sidebar_RendersTieredProjects(t *testing.T) {
+func TestWeb_Sidebar_RendersProjectsWithSessionTiers(t *testing.T) {
+	// Sidebar IA v2: projects are flat (recency-ordered) and each project's
+	// sessions are split into Current / Recent / (collapsed) Archived tiers.
 	now := time.Now()
 	metas := []schema.SessionMeta{
-		// Live/active project — ACTIVE tier, auto-expanded.
+		// Live session, touched now -> Current tier.
 		{ID: "01LIVE", UpdatedAt: now, OriginalPrompt: "ship the feature",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/live-proj"}},
-		// Touched 8 days ago — OLDER tier, collapsed.
-		{ID: "01OLD", UpdatedAt: now.Add(-8 * 24 * time.Hour), OriginalPrompt: "ancient work",
+		// Touched 8 days ago -> Recent tier of the same project.
+		{ID: "01REC", UpdatedAt: now.Add(-8 * 24 * time.Hour), OriginalPrompt: "earlier work",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/live-proj"}},
+		// Touched 30 days ago in another project, no recent sessions -> the whole
+		// project is archived and renders in the Archived projects group.
+		{ID: "01OLD", UpdatedAt: now.Add(-30 * 24 * time.Hour), OriginalPrompt: "ancient work",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/old-proj"}},
-		// Disposable e2e run — TEST RUNS tier.
-		{ID: "01E2E", UpdatedAt: now, OriginalPrompt: "e2e probe",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-abc"}},
 	}
 	live := []hubcore.LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusAwaiting},
 	}
-	tree := hubcore.BuildTree(metas, live)
+	tree := hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{})
 
 	tmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
 	var buf bytes.Buffer
@@ -931,32 +938,26 @@ func TestWeb_Sidebar_RendersTieredProjects(t *testing.T) {
 	body := buf.String()
 
 	for _, want := range []string{
-		`data-tier="active"`,
-		`data-tier="older"`,
-		`data-tier="test"`,
-		`>Test runs<`,                  // test-tier label (sentence-case sans, mockup #2)
-		`data-default-expanded="true"`, // active-tier projects start expanded
-		`class="project-age"`,          // relative age on the project header
+		`data-project-key="live-proj"`,
+		`data-tier="current"`,                           // the live session's tier
+		`data-tier="recent"`,                            // the 8-day-old session's tier
+		`<div class="session-tier-label">Current</div>`, // tier label
 		`<span class="project-name">live-proj</span>`,
+		`data-tier="archived-projects"`, // the Archived projects group
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("sidebar missing %q:\n%s", want, body)
 		}
 	}
 
-	// The OLDER-tier project must NOT carry the auto-expand hint and must
-	// render collapsed by default.
+	// The fully-archived project renders inside the Archived projects group.
 	if !strings.Contains(body, `data-project-key="old-proj"`) {
 		t.Fatalf("old-proj missing:\n%s", body)
 	}
-	// Past-only / non-live projects omit the rollup dot.
-	if idx := strings.Index(body, `data-project-key="old-proj"`); idx >= 0 {
-		seg := body[idx:]
-		if end := strings.Index(seg, "</header>"); end > 0 {
-			if strings.Contains(seg[:end], "project-rollup-dot") {
-				t.Errorf("older non-live project should omit rollup dot")
-			}
-		}
+	apIdx := strings.Index(body, `data-tier="archived-projects"`)
+	oldIdx := strings.Index(body, `data-project-key="old-proj"`)
+	if apIdx < 0 || oldIdx < apIdx {
+		t.Errorf("old-proj should render inside the Archived projects group:\n%s", body)
 	}
 }
 
@@ -984,7 +985,7 @@ func TestWeb_Sidebar_DropsDuplicateLiveRail(t *testing.T) {
 	live := []hubcore.LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
 	}
-	body := renderSidebar(t, hubcore.BuildTree(metas, live))
+	body := renderSidebar(t, hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{}))
 
 	if strings.Contains(body, "sidebar-live-section") {
 		t.Errorf("the flat Live rail must be gone; body=\n%s", body)
@@ -1011,7 +1012,7 @@ func TestWeb_Sidebar_NeedsYouTier(t *testing.T) {
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ASKNEW", Status: appwire.ThreadStatusAwaiting},
 		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01ASKOLD", Status: appwire.ThreadStatusAwaiting},
 	}
-	body := renderSidebar(t, hubcore.BuildTree(metas, live))
+	body := renderSidebar(t, hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{}))
 
 	if !strings.Contains(body, `data-tier="needs-you"`) {
 		t.Errorf("needs-you tier missing; body=\n%s", body)
@@ -1036,7 +1037,7 @@ func TestWeb_Sidebar_NeedsYouTierHiddenWhenEmpty(t *testing.T) {
 	live := []hubcore.LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01WORK", Status: appwire.ThreadStatusActive},
 	}
-	body := renderSidebar(t, hubcore.BuildTree(metas, live))
+	body := renderSidebar(t, hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{}))
 	if strings.Contains(body, `data-tier="needs-you"`) {
 		t.Errorf("needs-you tier should be hidden when nothing awaits; body=\n%s", body)
 	}
@@ -1058,7 +1059,7 @@ func TestWeb_Sidebar_MagnitudeRollupBadges(t *testing.T) {
 		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01W2", Status: appwire.ThreadStatusActive},
 		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting},
 	}
-	flat := strings.Join(strings.Fields(renderSidebar(t, hubcore.BuildTree(metas, live))), " ")
+	flat := strings.Join(strings.Fields(renderSidebar(t, hubcore.BuildTree(metas, live, map[hubcore.ArchiveKey]bool{}))), " ")
 	if !strings.Contains(flat, `<span class="rollup-badge rollup-live"><span class="rollup-glyph">⟳</span>2</span>`) {
 		t.Errorf("missing ⟳2 live magnitude badge; body=\n%s", flat)
 	}
@@ -1079,7 +1080,7 @@ func TestWeb_Sidebar_RendersRepeatedTitleCluster(t *testing.T) {
 			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf-docs"},
 		})
 	}
-	body := renderSidebar(t, hubcore.BuildTree(metas, nil))
+	body := renderSidebar(t, hubcore.BuildTree(metas, nil, map[hubcore.ArchiveKey]bool{}))
 	if !strings.Contains(body, "session-cluster") {
 		t.Errorf("cluster container missing; body=\n%s", body)
 	}
@@ -1099,30 +1100,34 @@ func TestWeb_Sidebar_RendersRepeatedTitleCluster(t *testing.T) {
 	}
 }
 
-func TestWeb_Sidebar_TestRunsDateSubGrouping(t *testing.T) {
-	// mockup #12 rec B: the Test runs bucket renders Today / Older date
-	// sub-headers so a specific past run is reachable by structure.
+func TestWeb_Sidebar_ArchivedSessionsInCollapsedDisclosure(t *testing.T) {
+	// Sidebar IA v2: a project's archived sessions (auto >2wk inactive) render in
+	// a collapsed <details> disclosure under the project, while its current
+	// session stays visible — so stale work recedes without disappearing.
 	now := time.Now()
 	metas := []schema.SessionMeta{
-		{ID: "01TODAY", UpdatedAt: now.Add(-1 * time.Hour), OriginalPrompt: "probe",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-today"}},
-		{ID: "01OLD", UpdatedAt: now.Add(-6 * 24 * time.Hour), OriginalPrompt: "probe",
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/serf-e2e-old"}},
+		{ID: "01CUR", UpdatedAt: now.Add(-1 * time.Hour), OriginalPrompt: "current work",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01ARC", UpdatedAt: now.Add(-20 * 24 * time.Hour), OriginalPrompt: "stale work",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
 	}
-	body := renderSidebar(t, hubcore.BuildTree(metas, nil))
-	for _, want := range []string{
-		`class="test-date-group"`,
-		`class="test-date-header"`,
-		`>Today<`,
-		`>Older<`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("test-runs date sub-grouping missing %q; body=\n%s", want, body)
-		}
+	body := renderSidebar(t, hubcore.BuildTree(metas, nil, map[hubcore.ArchiveKey]bool{}))
+	// The archived tier is a collapsed disclosure (a <details> without `open`).
+	archIdx := strings.Index(body, `<details class="session-tier archived"`)
+	if archIdx < 0 {
+		t.Fatalf("archived session disclosure missing; body=\n%s", body)
 	}
-	// Both e2e projects must still render (one per date bucket).
-	if !strings.Contains(body, `data-project-key="serf-e2e-today"`) || !strings.Contains(body, `data-project-key="serf-e2e-old"`) {
-		t.Errorf("both e2e projects should render under their date buckets; body=\n%s", body)
+	seg := body[archIdx:]
+	end := strings.Index(seg, ">")
+	if end >= 0 && strings.Contains(seg[:end], " open") {
+		t.Errorf("archived session disclosure should be collapsed by default; body=\n%s", body)
+	}
+	// Both sessions render; the current one is not buried in the disclosure.
+	if !strings.Contains(body, "/s/01CUR") || !strings.Contains(body, "/s/01ARC") {
+		t.Errorf("both current and archived sessions should render; body=\n%s", body)
+	}
+	if !strings.Contains(body, `data-tier="current"`) {
+		t.Errorf("current session should render in the Current tier; body=\n%s", body)
 	}
 }
 
@@ -1144,7 +1149,7 @@ func TestWeb_Sidebar_FoldsExcessSubagents(t *testing.T) {
 			EnvInfo:         schema.EnvironmentInfo{WorkingDir: "/projects/p"},
 		})
 	}
-	tree := hubcore.BuildTree(metas, nil)
+	tree := hubcore.BuildTree(metas, nil, map[hubcore.ArchiveKey]bool{})
 
 	tmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
 	var buf bytes.Buffer
@@ -4024,7 +4029,7 @@ func TestWeb_Sidebar_LiveRowDataState(t *testing.T) {
 }
 
 // TestWeb_Sidebar_ProjectHeader_HasChevronAndName verifies that the project
-// header renders with the compact collapsed ▸ <name> shape.
+// header renders with the project name and the project-level archive control.
 func TestWeb_Sidebar_ProjectHeader_HasChevronAndName(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
@@ -4057,7 +4062,12 @@ func TestWeb_Sidebar_ProjectHeader_HasChevronAndName(t *testing.T) {
 		t.Fatalf("status: %d", rec.Code)
 	}
 	body := rec.Body.String()
-	wants := []string{`class="project-header"`, "project-chevron", "▸", "project-name"}
+	wants := []string{
+		`class="project-header"`,
+		`class="project-name"`,
+		`data-archive-kind="project"`, // the project-level archive control
+		`data-archive-id="widgets"`,
+	}
 	for _, w := range wants {
 		if !strings.Contains(body, w) {
 			t.Errorf("project-header missing %q: %q", w, body)

@@ -35,7 +35,7 @@
   </section>
   {{end}}
 
-  {{if not .Projects}}
+  {{if and (not .Projects) (not .ArchivedProjects)}}
   <div class="empty-state empty-state-sidebar">
     <p class="empty-state-title">No sessions yet</p>
     <p class="empty-state-body">Spawn a session to get started.</p>
@@ -45,43 +45,31 @@
   </div>
   {{end}}
 
-  {{range .TierGroups}}
-  <section class="sidebar-tier" data-tier="{{.Tier}}">
-    <header class="sidebar-section-header tier-header">
-      <span>{{.Label}}</span>
-      {{if eq .Tier "test"}}<span class="count">{{len .Projects}}</span>{{end}}
-    </header>
-    {{$expanded := .Expanded}}
-    {{if eq .Tier "test"}}
-    {{/* Test runs are date sub-grouped (mockup #12 rec B): a recency spine —
-         Today / Yesterday / Older — so a specific past run is reachable by
-         structure rather than being a flat, undated pile. */}}
-    {{range .DateGroups}}
-    <div class="test-date-group">
-      <header class="test-date-header"><span>{{.Label}}</span><span class="count">{{len .Projects}}</span></header>
-      {{range .Projects}}{{template "sidebarProject" (dict "P" . "Expanded" $expanded)}}{{end}}
-    </div>
-    {{end}}
-    {{else}}
-    {{range .Projects}}{{template "sidebarProject" (dict "P" . "Expanded" $expanded)}}{{end}}
-    {{end}}
+  {{/* Active projects: flat list, newest-first by most-recent session start.
+       Each project's sessions are split into Current / Recent / Archived tiers. */}}
+  {{range .Projects}}{{template "sidebarProject" .}}{{end}}
+
+  {{/* Archived projects: collapsed group at the bottom — manually archived, or
+       no non-archived sessions. */}}
+  {{if .ArchivedProjects}}
+  <section class="sidebar-tier archived-projects" data-tier="archived-projects">
+    <details>
+      <summary class="sidebar-section-header tier-header">Archived projects <span class="count">{{len .ArchivedProjects}}</span></summary>
+      {{range .ArchivedProjects}}{{template "sidebarProject" .}}{{end}}
+    </details>
   </section>
   {{end}}
 </nav>
 {{end}}
 
-{{/* sidebarProject renders one project section. Context: .P (TreeProject) +
-     .Expanded (bool tier auto-expand hint). Shared by every tier and by the
-     date-grouped Test runs bucket so the row grammar lives in one place. */}}
+{{/* sidebarProject renders one project section (context: a TreeProject): a
+     header with the project name + working-dir actions + magnitude rollup + an
+     archive control, then the project's sessions split into Current / Recent /
+     (collapsed) Archived disclosures. */}}
 {{define "sidebarProject"}}
-{{$expanded := .Expanded}}
-{{with .P}}
-    <section class="sidebar-section project-section{{if not $expanded}} collapsed{{end}}" data-project-key="{{.Name}}"{{if $expanded}} data-default-expanded="true"{{end}}>
+    <section class="sidebar-section project-section" data-project-key="{{.Name}}">
       <header class="project-header">
-        <button type="button" class="btn btn-icon project-chevron" aria-label="expand project" aria-expanded="{{if $expanded}}true{{else}}false{{end}}">{{if $expanded}}▾{{else}}▸{{end}}</button>
         <span class="project-name">{{.Name}}</span>
-        <span class="project-age">{{.Age}}</span>
-        <span class="count project-count">{{len .Sessions}}</span>
         {{/* Magnitude rollup (mockup #10): "⟳N · ◆M" says how many are working
              vs. need you. Falls back to the single state dot only when neither
              count applies (e.g. an idle-only live project). */}}
@@ -108,14 +96,38 @@
            hx-swap="innerHTML"
            hx-push-url="/new?dir={{.WorkingDir | urlquery}}">＋</a>
         {{end}}
+        <button type="button" class="btn btn-icon archive-btn"
+          data-archive-kind="project" data-archive-id="{{.Name}}"
+          title="{{if .IsArchived}}unarchive{{else}}archive{{end}} project {{.Name}}"
+          aria-label="{{if .IsArchived}}unarchive{{else}}archive{{end}} project">⋯</button>
       </header>
       <div class="project-children">
-      {{if not .Sessions}}
-      <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
-      <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
-      <div class="skeleton-row" aria-hidden="true"><span class="skeleton dot"></span><span class="skeleton title"></span><span class="skeleton meta"></span></div>
+      {{if .Current}}
+      <div class="session-tier" data-tier="current">
+        <div class="session-tier-label">Current</div>
+        {{range .Current}}{{template "sidebarSession" .}}{{end}}
+      </div>
       {{end}}
-      {{range .Sessions}}
+      {{if .Recent}}
+      <div class="session-tier" data-tier="recent">
+        <div class="session-tier-label">Recent</div>
+        {{range .Recent}}{{template "sidebarSession" .}}{{end}}
+      </div>
+      {{end}}
+      {{if .Archived}}
+      <details class="session-tier archived" data-tier="archived">
+        <summary class="session-tier-label">Archived <span class="count">{{len .Archived}}</span></summary>
+        {{range .Archived}}{{template "sidebarSession" .}}{{end}}
+      </details>
+      {{end}}
+      </div>
+    </section>
+{{end}}
+
+{{/* sidebarSession renders one top-level session row (context: a TreeNode):
+     a repeated-title cluster fold, or a normal session row plus its subagent
+     and fork children. Carries an archive control on the row. */}}
+{{define "sidebarSession"}}
       {{if eq .Kind "cluster"}}
       {{/* Repeated-title cluster (mockup #10/#C): a run of N same-titled idle
            sessions folded into one disclosure group. The member runs hide until
@@ -146,6 +158,7 @@
         </div>
       </div>
       {{else}}
+      <div class="sb-row-wrap">
       <a class="sb-row"
          data-state="{{.State}}"
          href="/s/{{.ID}}"
@@ -159,6 +172,10 @@
           <div class="meta">{{if .Branch}}<span>{{.Branch}}</span>{{end}}<span>{{.Age}}</span></div>
         </div>
       </a>
+      <button type="button" class="btn btn-icon archive-btn"
+        data-archive-kind="session" data-archive-id="{{.ID}}"
+        title="archive session" aria-label="archive session">⋯</button>
+      </div>
       {{/* Subagents are de-weighted: dim, single-line, indented, terminal-state
            glyph. Past 3 they fold behind a "+N subagents" toggle so a busy
            parent doesn't flood the sidebar. Forks stay full rows. */}}
@@ -198,8 +215,4 @@
       <button type="button" class="subagent-toggle" aria-expanded="false">+{{sub $subagentCount 3}} subagents</button>
       {{end}}
       {{end}}
-      {{end}}
-      </div>
-    </section>
-{{end}}
 {{end}}
