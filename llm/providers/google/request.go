@@ -40,6 +40,10 @@ func (a *Adapter) buildRequestBody(req llm.Request, system string, contents []ma
 		if budget > 0 {
 			genCfg["thinkingConfig"] = map[string]any{
 				"thinkingBudget": budget,
+				// includeThoughts asks Gemini to return thought summaries; without it
+				// the model thinks internally but streams no thought parts, so the
+				// live-thinking backend has nothing to render.
+				"includeThoughts": true,
 			}
 		}
 	}
