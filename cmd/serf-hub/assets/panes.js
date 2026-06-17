@@ -72,6 +72,39 @@
   }
 
   var STORE_KEY = "serf-hub.panes";
+  var WIDTH_KEY = "serf-hub.panes.width";
+
+  function setSidePanesWidth(px) {
+    var w = Math.max(280, Math.min(900, Math.round(px)));
+    var r = region();
+    if (r) r.style.setProperty("--pane-w", w + "px");
+    try { window.localStorage.setItem(WIDTH_KEY, String(w)); } catch (e) { /* ignore */ }
+    return w;
+  }
+
+  function restoreWidth() {
+    var v; try { v = parseInt(window.localStorage.getItem(WIDTH_KEY), 10); } catch (e) { return; }
+    if (v) setSidePanesWidth(v);
+  }
+
+  // Drag handler (verified manually; logic delegates to setSidePanesWidth).
+  function bindSplitter() {
+    var s = splitter(); if (!s || s.__bound) return; s.__bound = true;
+    s.addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      function move(ev) {
+        // splitter sits between #workspace and #side-panes; panes grow as the
+        // pointer moves left. Width = distance from pointer to right viewport edge.
+        setSidePanesWidth(window.innerWidth - ev.clientX);
+      }
+      function up() {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", up);
+      }
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", up);
+    });
+  }
 
   function persist() {
     var r = region();
@@ -94,9 +127,10 @@
     data.forEach(function (p) { if (p && p.href) open(p.href, p.title); });
   }
 
-  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, MAX_SIDE_PANES: MAX_SIDE_PANES, _persist: persist };
+  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, setSidePanesWidth: setSidePanesWidth, MAX_SIDE_PANES: MAX_SIDE_PANES, _persist: persist };
 
+  function onLoad() { restore(); bindSplitter(); restoreWidth(); }
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", restore);
-  } else { restore(); }
+    document.addEventListener("DOMContentLoaded", onLoad);
+  } else { onLoad(); }
 })();

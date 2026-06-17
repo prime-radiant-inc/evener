@@ -49,5 +49,13 @@ P.restore();
 if (!P.openHrefs().includes("/s/keep-1")) throw new Error("restore did not reopen pane");
 console.log("test-panes persistence: ok");
 
+P.setSidePanesWidth(10000);
+if (parseInt(dom.window.localStorage.getItem("serf-hub.panes.width"), 10) !== 900)
+  throw new Error("width not clamped to max");
+P.setSidePanesWidth(10);
+if (parseInt(dom.window.localStorage.getItem("serf-hub.panes.width"), 10) !== 280)
+  throw new Error("width not clamped to min");
+console.log("test-panes width: ok");
+
 console.log("test-panes: ok");
 process.exit(0);
