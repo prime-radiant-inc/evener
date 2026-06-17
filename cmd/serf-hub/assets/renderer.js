@@ -133,6 +133,11 @@
       this.queueState = { depth: 0, preview: [] };
       this.lastFrameAt = Date.now();     // wall-clock of the last frame, for honest liveness
       this.livenessStale = false;
+      // New-content pill: counts transcript entries that rendered while the
+      // reader was scrolled up, so the floating "↓ N new" affordance can tell
+      // them content arrived off-screen. Reset to zero on every session.
+      this.newContentCount = 0;
+      this.newContentNeedsYou = false;
 
       this.conversation.innerHTML = "";
 
@@ -143,6 +148,7 @@
       }
 
       this.bindInputForm();
+      this.bindScrollAffordance();
       this.syncTurnActionControls();
       this.bindKeyboard();
       this.ensureLivenessEl();
@@ -205,6 +211,14 @@
       if (!state) return;
       this.state = state;
       if (this.conversation) this.conversation.dataset.state = state;
+      // A turn that ends by asking the user (awaiting) often flips state in a
+      // separate frame from the one that rendered the question. If the
+      // new-content pill is already showing off-screen content, upgrade it to
+      // the attention "↓ needs you" treatment.
+      if (state === "awaiting" && this.newContentCount > 0) {
+        this.newContentNeedsYou = true;
+        this.renderNewContentPill();
+      }
       const ended = state === "ended" || state === "closed";
       if (!this.turnAcceptsActions(state)) this.setActiveTurnId("");
       this.syncTurnActionControls();
@@ -667,6 +681,10 @@
       // Measure before the DOM mutation: only stick to the bottom if the reader
       // is already there, so streaming frames don't yank them off history.
       const stick = this.isNearBottom();
+      // Count rendered transcript entries before the switch so we can tell
+      // whether this frame actually appended visible content (suppressed/no-op
+      // events leave the count unchanged) — the trigger for the new-content pill.
+      const entriesBefore = this.conversation ? this.conversation.children.length : 0;
       let data = {};
       try { data = JSON.parse(ev.data); } catch (e) {}
       switch (kind) {
@@ -859,7 +877,14 @@
           // to avoid duplicates.
           break;
       }
-      if (stick) this.scrollToBottom();
+      if (stick) {
+        this.scrollToBottom();
+      } else {
+        // Reader is up in history: if this frame rendered new entries, surface
+        // the floating "↓ N new" affordance instead of yanking the viewport.
+        const added = this.conversation ? this.conversation.children.length - entriesBefore : 0;
+        if (added > 0) this.noteNewContent(added);
+      }
     },
 
     appendSystemMessage(data) {
@@ -2063,6 +2088,9 @@
 
     scrollToBottom() {
       this.conversation.scrollTop = this.conversation.scrollHeight;
+      // Once parked at the bottom there is no unseen content, so the
+      // new-content pill (and its counter) must reset.
+      this.clearNewContentPill();
     },
 
     // isNearBottom reports whether the transcript is scrolled to (or within a
@@ -2071,6 +2099,80 @@
       const el = this.conversation;
       if (!el) return true;
       return (el.scrollHeight - el.scrollTop - el.clientHeight) < 50;
+    },
+
+    // bindScrollAffordance wires the floating "↓ N new" pill. The pill lives in
+    // the conversation's positioned parent (not inside the scroll area), so it
+    // stays anchored near the bottom of the transcript while content scrolls
+    // underneath. A scroll listener on the conversation clears it the moment the
+    // reader returns to the bottom on their own.
+    bindScrollAffordance() {
+      const el = this.conversation;
+      if (!el) return;
+      const host = el.parentNode;
+      if (host && !host.querySelector("[data-new-content-pill]")) {
+        const pill = document.createElement("button");
+        pill.type = "button";
+        pill.className = "new-content-pill";
+        pill.setAttribute("data-new-content-pill", "");
+        pill.hidden = true;
+        pill.addEventListener("click", () => {
+          this.scrollToBottom();
+          this.clearNewContentPill();
+        });
+        host.appendChild(pill);
+      }
+      // Avoid stacking listeners when init runs again on a re-entered element.
+      if (!el.__serfScrollPillBound) {
+        el.__serfScrollPillBound = true;
+        el.addEventListener("scroll", () => {
+          if (this.isNearBottom()) this.clearNewContentPill();
+        });
+      }
+      this.clearNewContentPill();
+    },
+
+    newContentPillEl() {
+      const el = this.conversation;
+      if (!el || !el.parentNode) return null;
+      return el.parentNode.querySelector("[data-new-content-pill]");
+    },
+
+    // noteNewContent records that `added` new transcript entries rendered while
+    // the reader was scrolled up, and repaints the pill. The pill goes
+    // attention-aware ("↓ needs you", amber) when the thread is in the awaiting
+    // state — the daemon-advertised signal that the agent is waiting on the user.
+    noteNewContent(added) {
+      this.newContentCount += added;
+      if (this.state === "awaiting") this.newContentNeedsYou = true;
+      this.renderNewContentPill();
+    },
+
+    renderNewContentPill() {
+      const pill = this.newContentPillEl();
+      if (!pill) return;
+      if (this.newContentCount <= 0) {
+        this.clearNewContentPill();
+        return;
+      }
+      if (this.newContentNeedsYou) {
+        pill.textContent = "↓ needs you";
+        pill.classList.add("needs-you");
+      } else {
+        pill.textContent = "↓ " + this.newContentCount + " new";
+        pill.classList.remove("needs-you");
+      }
+      pill.hidden = false;
+    },
+
+    clearNewContentPill() {
+      this.newContentCount = 0;
+      this.newContentNeedsYou = false;
+      const pill = this.newContentPillEl();
+      if (!pill) return;
+      pill.hidden = true;
+      pill.classList.remove("needs-you");
+      pill.textContent = "";
     },
 
     bindInputForm() {
