@@ -147,6 +147,11 @@
       this.newContentPaintedCount = 0;
       this.newContentNeedsYou = false;
       this.newContentJumpTarget = null;
+      // Blocking "needs-you" question (mockup #16): the agentMessage element
+      // for an unanswered communicate.await_reply, or null when none is
+      // pending. Drives both the in-flow amber frame (Alt A) and the docked
+      // bar above the composer (Alt C).
+      this.agentQuestionEl = null;
 
       this.conversation.innerHTML = "";
 
@@ -228,6 +233,9 @@
         this.newContentNeedsYou = true;
         this.renderNewContentPill();
       }
+      // The awaiting flip is the daemon's "agent is blocked on you" signal;
+      // (re)evaluate the docked needs-you bar whenever the state changes.
+      this.renderNeedsYouDock();
       const ended = state === "ended" || state === "closed";
       if (!this.turnAcceptsActions(state)) this.setActiveTurnId("");
       this.syncTurnActionControls();
@@ -711,6 +719,8 @@
           }
           break;
         case "TURN_STARTED":
+          // A new turn supersedes any prior blocking question.
+          this.clearAgentQuestion();
           this.setActiveTurnId(data.turnId || "");
           break;
         case "TURN_COMPLETED":
@@ -739,6 +749,7 @@
             this.lastCurrentTaskId = null;
             this.userTurnIndex = 0;
             this.entryIndex = 0;
+            this.clearAgentQuestion();
             // Drop any pending image attachments and let the composer-
             // attachments helper repaint the (now empty) chip container.
             this.composerPasteState = { items: [] };
@@ -770,6 +781,9 @@
           this.renderQueuePreview();
           break;
         case "USER_INPUT":
+          // A user message answers any pending blocking question; tear down the
+          // live "awaiting your answer" affordances (the in-flow frame stays).
+          this.clearAgentQuestion();
           this.lastUserText = data.text || "";
           this.lastSubmittedTurn = this.retryPayload(data.text || "", data.images || []);
           if (this.promoteLocalUserMessage(data)) break;
@@ -1244,7 +1258,7 @@
     // appendAssistantBlock renders a complete assistant message in one shot —
     // no begin/delta/end. Used by COMMUNICATE events.
     appendAssistantBlock(text) {
-      if (!String(text || "").trim()) return;
+      if (!String(text || "").trim()) return null;
       this.endCheapCluster();
       this.closeSubagentModule();
       const el = document.createElement("div");
@@ -1252,6 +1266,7 @@
       try { el.innerHTML = window.marked.parse(text); }
       catch (e) { el.textContent = text; }
       this.conversation.appendChild(el);
+      return el;
     },
 
     lastElementIsAssistantText(text) {
@@ -1299,8 +1314,10 @@
       const id = this.currentMessageId;
       const m = this.activeMessages.get(id);
       const finalText = (data && data.text) || (m && m.textBuf) || "";
+      const awaitReply = !!(data && data.awaitReply);
       if (!m) {
-        this.appendAssistantBlock(finalText);
+        const el = this.appendAssistantBlock(finalText);
+        if (awaitReply && el) this.markAgentQuestion(el);
         return;
       }
       this.activeMessages.delete(id);
@@ -1310,6 +1327,35 @@
         return;
       }
       this.renderAssistantMessage(m, finalText);
+      if (awaitReply) this.markAgentQuestion(m.el);
+    },
+
+    // markAgentQuestion frames an agent message as the blocking "needs-you"
+    // question (mockup #16 Alt A): an amber ◆ header above the literal question
+    // text, the one containment device that pulls the eye. The composer is the
+    // reply affordance — clicking the frame focuses it. The framed element is
+    // recorded as the live question target so the docked bar (Alt C) can scroll
+    // to it. Idempotent: re-framing the same element only refreshes the dock.
+    markAgentQuestion(el) {
+      if (!el) return;
+      if (!el.classList.contains("agent-question")) {
+        el.classList.add("agent-question");
+        const head = document.createElement("div");
+        head.className = "agent-question-head";
+        head.setAttribute("data-agent-question-head", "");
+        const glyph = document.createElement("span");
+        glyph.className = "agent-question-glyph";
+        glyph.textContent = "◆";
+        const label = document.createElement("span");
+        label.className = "agent-question-label";
+        label.textContent = "Needs you";
+        head.appendChild(glyph);
+        head.appendChild(label);
+        el.insertBefore(head, el.firstChild);
+        el.addEventListener("click", () => this.focusComposer());
+      }
+      this.agentQuestionEl = el;
+      this.renderNeedsYouDock();
     },
 
     // Live thinking: the quietest transcript entry (design-system §2.5).
@@ -2486,7 +2532,10 @@
       if (errAbove) return { kind: "error", dir: "up", el: errAbove };
       // Needs-you is a session-level signal; its home is the latest content at
       // the tail, which is always below the reader while they're scrolled up.
-      if (this.newContentNeedsYou || this.state === "awaiting") {
+      // The docked bar above the composer (mockup #16 Alt C) is the
+      // authoritative blocking indicator — when it owns the signal, the pill
+      // defers so there is never a duplicate amber "needs you" affordance.
+      if ((this.newContentNeedsYou || this.state === "awaiting") && !this.needsYouDockActive()) {
         return { kind: "needs-you", dir: "down", el: null };
       }
       return null;
@@ -2519,9 +2568,16 @@
           // flips (↓→↑) when they pass an error and the label tracks what's
           // still off-screen — without churning the debounced count.
           else if (this.newContentCount > 0) this.renderNewContentPill();
+          // The dock tracks whether the question scrolled out of view, so it
+          // appears the moment the ask leaves the viewport and clears when the
+          // reader returns to it.
+          this.renderNeedsYouDock();
         });
       }
       this.clearNewContentPill();
+      // Materialize the dock up front so its presence is independent of the
+      // first scroll event.
+      this.needsYouDockEl();
     },
 
     newContentPillEl() {
@@ -2622,6 +2678,88 @@
       pill.hidden = true;
       pill.classList.remove("needs-you", "error");
       pill.textContent = "";
+    },
+
+    // ── Blocking needs-you dock (mockup #16 Alt C) ───────────────────────────
+    // The amber bar that docks above the composer so a blocking agent question
+    // can never hang off-screen. It is the authoritative needs-you indicator;
+    // the new-content pill defers to it (no duplicate amber signal). Created
+    // once, just before the composer form, and shown only while an unanswered
+    // question is off-screen OR the session is awaiting.
+    needsYouDockEl() {
+      const form = document.querySelector("form[data-input-form]");
+      if (!form || !form.parentNode) return null;
+      let dock = form.parentNode.querySelector("[data-needs-you-dock]");
+      if (!dock) {
+        dock = document.createElement("button");
+        dock.type = "button";
+        dock.className = "needs-you-dock";
+        dock.setAttribute("data-needs-you-dock", "");
+        dock.hidden = true;
+        dock.addEventListener("click", () => this.jumpToAgentQuestion());
+        form.parentNode.insertBefore(dock, form);
+      }
+      return dock;
+    },
+
+    // needsYouDockActive reports whether the dock should claim the needs-you
+    // signal: there is an unanswered question that is off-screen, or the session
+    // is in the awaiting state. While active, the pill must not also paint
+    // "needs you" (the dock is authoritative).
+    needsYouDockActive() {
+      const q = this.agentQuestionEl;
+      if (q && this.conversation && this.conversation.contains(q) &&
+          (this.isAnchorBelow(q) || this.isAnchorAbove(q))) {
+        return true;
+      }
+      return this.state === "awaiting" && !!q && this.conversation && this.conversation.contains(q);
+    },
+
+    renderNeedsYouDock() {
+      const dock = this.needsYouDockEl();
+      if (!dock) return;
+      if (!this.needsYouDockActive()) {
+        dock.hidden = true;
+        dock.textContent = "";
+        // The dock just released the needs-you signal; let the pill repaint so
+        // it can reclaim "needs you" if content is still off-screen.
+        if (this.newContentCount > 0) this.renderNewContentPill();
+        return;
+      }
+      dock.hidden = false;
+      dock.textContent = "◆ The agent is waiting on your answer — jump to it";
+      // Authoritative signal: drop any duplicate needs-you treatment on the pill.
+      const pill = this.newContentPillEl();
+      if (pill && pill.classList.contains("needs-you")) this.renderNewContentPill();
+    },
+
+    // jumpToAgentQuestion scrolls the transcript to the blocking question and
+    // focuses the composer so the reply is one keystroke away.
+    jumpToAgentQuestion() {
+      const sc = this.conversation;
+      const q = this.agentQuestionEl;
+      if (sc && q && sc.contains(q)) {
+        const top = Math.max(0, q.offsetTop - 16);
+        if (typeof sc.scrollTo === "function") sc.scrollTo({ top, behavior: "smooth" });
+        else sc.scrollTop = top;
+      }
+      this.focusComposer();
+      this.renderNeedsYouDock();
+    },
+
+    focusComposer() {
+      const ta = document.querySelector("form[data-input-form] .message-input");
+      if (ta) ta.focus();
+    },
+
+    // clearAgentQuestion drops the blocking-question state once it has been
+    // answered (the user sent a message) or superseded (a new turn started).
+    // The in-flow amber frame stays as a record of the resolved exchange; only
+    // the live "awaiting your answer" affordances are torn down.
+    clearAgentQuestion() {
+      if (!this.agentQuestionEl) return;
+      this.agentQuestionEl = null;
+      this.renderNeedsYouDock();
     },
 
     bindInputForm() {

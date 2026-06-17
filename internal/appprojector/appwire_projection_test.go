@@ -490,6 +490,38 @@ func TestAppEventProjectorProjectsCommunicateAsAssistantMessage(t *testing.T) {
 	}
 }
 
+func TestAppEventProjectorProjectsCommunicateAwaitReplyFlag(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventCommunicate,
+		SessionID: "th_1",
+		Data:      events.CommunicateData{Message: "which file?", AwaitReply: true},
+	})
+
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if !item.AwaitReply {
+		t.Fatalf("communicate item with AwaitReply=true should carry AwaitReply: %+v", item)
+	}
+}
+
+func TestAppEventProjectorOmitsAwaitReplyForOrdinaryMessage(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventCommunicate,
+		SessionID: "th_1",
+		Data:      events.CommunicateData{Message: "done", AwaitReply: false},
+	})
+
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.AwaitReply {
+		t.Fatalf("ordinary communicate item should not carry AwaitReply: %+v", item)
+	}
+}
+
 func TestAppEventProjectorSuppressesCommunicateToolEvents(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})

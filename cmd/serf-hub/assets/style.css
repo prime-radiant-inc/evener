@@ -1157,6 +1157,57 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
 .new-content-pill[hidden] { display: none; }
 /* ─────────────────────────────────────────────────────────────────────── */
 
+/* ── Blocking needs-you: the agent question (mockup #16) ───────────────────
+   When the agent calls communicate with await_reply=true it is the bottleneck —
+   wall-clock bleeds until you answer. Amber owns the container (the scarce
+   "this needs you" signal); the question text stays the readable hero so it
+   can't be mistaken for the agent thinking aloud. Glyph-paired (◆) for
+   colourblind safety. The composer is the reply affordance — clicking the
+   frame focuses it. (Alt A: amber-framed container + glyph header.) */
+.assistant-message.agent-question {
+  border: 1px solid color-mix(in srgb, var(--state-awaiting) 30%, transparent);
+  background: color-mix(in srgb, var(--state-awaiting) 5%, transparent);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  cursor: pointer;
+}
+.agent-question-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--state-awaiting);
+}
+.agent-question-glyph { color: var(--state-awaiting); }
+
+/* The docked needs-you bar (Alt C): the always-reachable copy. The moment a
+   blocking question is off-screen (or the session is awaiting) an amber bar
+   docks above the composer — where the hands and eyes already are — so the ask
+   can never hang below the fold. It is the authoritative blocking indicator;
+   the new-content pill defers to it. Clicking scrolls to the question and
+   focuses the composer. No motion (honest, not a spinner). */
+.needs-you-dock {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid color-mix(in srgb, var(--state-awaiting) 30%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--state-awaiting) 12%, var(--bg-raised));
+  color: var(--state-awaiting);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.2;
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-3);
+  cursor: pointer;
+}
+.needs-you-dock:hover { background: color-mix(in srgb, var(--state-awaiting) 18%, var(--bg-raised)); }
+.needs-you-dock[hidden] { display: none; }
+/* ─────────────────────────────────────────────────────────────────────── */
+
 .workspace-input { padding: var(--space-4) var(--space-6) var(--space-4); border-top: 1px solid var(--rule); }
 .task-status-row {
   display: flex;

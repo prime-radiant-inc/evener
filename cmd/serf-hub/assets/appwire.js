@@ -526,6 +526,16 @@
     return String(item.text || "").replace(/\s+/g, " ").trim();
   }
 
+  // agentMessageEndPayload carries the agent's final text plus the per-item
+  // awaitReply flag (the projected communicate.await_reply signal). awaitReply
+  // marks the message as a blocking "needs-you" question so the renderer can
+  // frame it (mockup #16 Alt A) instead of treating it as ordinary prose.
+  function agentMessageEndPayload(item) {
+    const payload = { text: item.text || "" };
+    if (item.awaitReply) payload.awaitReply = true;
+    return payload;
+  }
+
   function eventsFromItem(item, turnStatus) {
     if (!item) return [];
     const type = internalItemType(item.type);
@@ -547,7 +557,7 @@
     if (type === "agentMessage") {
       if (!item.text) return [];
       if (terminalStatus(turnStatus) || terminalStatus(item.status) || (!runningStatus(turnStatus) && !runningStatus(item.status))) {
-        return [["ASSISTANT_TEXT_START", {}], ["ASSISTANT_TEXT_END", { text: item.text }]];
+        return [["ASSISTANT_TEXT_START", {}], ["ASSISTANT_TEXT_END", agentMessageEndPayload(item)]];
       }
       return [["ASSISTANT_TEXT_START", {}], ["ASSISTANT_TEXT_DELTA", { delta: item.text }]];
     }
@@ -610,7 +620,7 @@
     if (!state) return eventsFromItem(item, "completed");
     if (state.completed) return [];
     const type = internalItemType(item.type);
-    if (type === "agentMessage") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
+    if (type === "agentMessage") return [["ASSISTANT_TEXT_END", agentMessageEndPayload(item)]];
     if (type === "commandExecution") {
       const callID = firstNonEmpty(item.callId, item.id);
       const itemID = item.id || "";
@@ -781,7 +791,7 @@
         error: item.error || "",
         tool_state: item.raw || "",
       }, toolTimingPayload(item))]];
-      if (type === "agentMessage") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
+      if (type === "agentMessage") return [["ASSISTANT_TEXT_END", agentMessageEndPayload(item)]];
       return eventsFromItem(item);
     }
     if (method === "item/agentMessage/delta") {
