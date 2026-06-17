@@ -950,8 +950,7 @@ func TestWeb_Sidebar_RendersTieredProjects(t *testing.T) {
 		t.Fatalf("old-proj missing:\n%s", body)
 	}
 	// Past-only / non-live projects omit the rollup dot.
-	if strings.Contains(body, `data-project-key="old-proj"`) {
-		idx := strings.Index(body, `data-project-key="old-proj"`)
+	if idx := strings.Index(body, `data-project-key="old-proj"`); idx >= 0 {
 		seg := body[idx:]
 		if end := strings.Index(seg, "</header>"); end > 0 {
 			if strings.Contains(seg[:end], "project-rollup-dot") {
