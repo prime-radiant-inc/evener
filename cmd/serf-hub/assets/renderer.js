@@ -29,6 +29,7 @@
     parseToolState,
     parseToolJSON,
     formatBytes,
+    formatTokenCount,
     compactParts,
     toolLooksGood,
     toolEventTime,
@@ -158,7 +159,9 @@
       if (window.SerfAppwire && this.sessionId) {
         this.connectAppwire();
       } else {
-        this.appendBanner("error", "stream failed: appwire unavailable", { source: "hub", title: "Hub stream error" });
+        // No live stream available: a transport-class failure. Keep it in the
+        // chrome (red "Connection lost"), never the conversation.
+        this.showConnectionBanner("lost");
       }
 
       this.bindInputForm();
@@ -374,7 +377,8 @@
         this.connectAppwire();
         return;
       }
-      this.appendBanner("error", "stream failed: appwire unavailable", { source: "hub", title: "Hub stream error" });
+      // Transport-class failure: surface in the chrome, not the conversation.
+      this.showConnectionBanner("lost");
     },
 
     connectAppwire() {
@@ -584,15 +588,16 @@
         deliverNotification(method, params);
       });
       if (typeof window.SerfAppwire.onConnectionLost === "function") {
-        this.appwireConnectionLostUnsubscribe = window.SerfAppwire.onConnectionLost((err) => {
+        this.appwireConnectionLostUnsubscribe = window.SerfAppwire.onConnectionLost(() => {
           this.clearAppwireStream();
           this.statusUpdateSeq++;
           this.updateThreadState("closed");
-          const detail = err && err.message ? err.message : "connection lost";
-          this.appendBanner("error", "Local daemon unavailable: " + detail, {
-            source: "hub",
-            title: "Hub stream error",
-          });
+          // Transport failure is Serf's fault, not the agent's: it must NOT
+          // pollute the conversation. Surface it as a chrome reconnect banner
+          // (mockup #15 Alt A) — amber while recovering — and disable send
+          // (we disable rather than fake a queue). The reconnect schedule
+          // clears or escalates the banner depending on the outcome.
+          this.showConnectionBanner("reconnecting");
           this.scheduleAppwireReconnect();
         });
       }
@@ -611,6 +616,9 @@
             this.handleData(kind, data);
           }
           this.appwireHydrated = true;
+          // The stream is live again: a reconnect succeeded, so retire any
+          // chrome reconnect banner and re-enable the composer.
+          this.clearConnectionBanner();
           while (pendingNotifications.length > 0) {
             const [method, params] = pendingNotifications.shift();
             if (notificationCoveredByHydration(method, params)) continue;
@@ -620,8 +628,12 @@
         })
         .catch((err) => {
           if (this.sessionId !== sessionId || this.conversation !== conversation) return;
-          this.appendBanner("error", "stream failed: " + err.message, { source: "hub", title: "Hub stream error" });
+          // A connect attempt failed. This is transport, not the agent — keep
+          // it out of the transcript and escalate the chrome banner to red
+          // "Connection lost", then keep retrying in the background.
           this.clearAppwireStream();
+          this.showConnectionBanner("lost");
+          this.scheduleAppwireReconnect();
         });
     },
 
@@ -643,6 +655,52 @@
         this.appwireReconnectTimer = null;
         this.ensureLiveStream();
       }, 250);
+    },
+
+    // ── Transport reconnect banner (mockup #15 Alt A, case 1) ────────────────
+    // A daemon/appwire drop is Serf losing the agent — Serf's fault, not the
+    // agent's — so it must live in the workspace chrome (a docked bar under the
+    // top bar), never in the conversation. AMBER "Reconnecting…" while the
+    // socket is down (recovering, not broken); RED "Connection lost" once a
+    // reconnect attempt fails. Cleared on a successful reconnect. Each state is
+    // glyph-paired so it reads without color (colorblind-safe). Send is disabled
+    // while disconnected (via updateThreadState("closed")) — we disable rather
+    // than fake a queue, since the composer has no real buffer-and-replay path.
+    connectionBannerEl() {
+      let banner = document.getElementById("connection-banner");
+      if (!banner) {
+        banner = document.createElement("div");
+        banner.id = "connection-banner";
+        banner.className = "connection-banner";
+        banner.setAttribute("role", "status");
+        const top = document.querySelector(".workspace-header") || document.body.firstChild;
+        if (top && top.parentNode) top.parentNode.insertBefore(banner, top);
+        else document.body.insertBefore(banner, document.body.firstChild);
+        document.body.classList.add("has-connection-banner");
+      }
+      return banner;
+    },
+
+    showConnectionBanner(level) {
+      const banner = this.connectionBannerEl();
+      banner.classList.remove("reconnecting", "lost");
+      if (level === "lost") {
+        banner.classList.add("lost");
+        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">⚠</span>' +
+          '<span class="connection-banner-msg">Connection lost</span>' +
+          '<span class="connection-banner-sub">retrying… — the agent keeps running on the daemon</span>';
+      } else {
+        banner.classList.add("reconnecting");
+        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">⟳</span>' +
+          '<span class="connection-banner-msg">Reconnecting…</span>' +
+          '<span class="connection-banner-sub">the agent keeps running on the daemon</span>';
+      }
+    },
+
+    clearConnectionBanner() {
+      const banner = document.getElementById("connection-banner");
+      if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
+      document.body.classList.remove("has-connection-banner");
     },
 
     resetTranscriptReplay() {
@@ -874,6 +932,10 @@
           this.appendBanner("error", data.error || data.message || "", data);
           break;
         case "SYSTEM_MESSAGE":
+          if (data && data.raw && data.raw.compaction) {
+            this.appendContextCompaction(data.raw.compaction);
+            break;
+          }
           if (!shouldRenderSystemMessage(data)) break;
           this.appendSystemMessage(data);
           break;
@@ -913,6 +975,69 @@
         const added = this.conversation ? this.conversation.children.length - entriesBefore : 0;
         if (added > 0) this.noteNewContent(added);
       }
+    },
+
+    // appendContextCompaction renders the context-compaction lifecycle event
+    // (mockup #17 Alt A): a quiet neutral system one-liner that EXPANDS to show
+    // the real before/after math (tokens before→after, turns before→after,
+    // layer). It is a DONE event — never a silent rug-pull — and shows only the
+    // real numbers carried in the projection (no invented "auto-compaction"
+    // language). `c` is the structured compaction payload from raw.compaction.
+    appendContextCompaction(c) {
+      c = c || {};
+      this.endCheapCluster();
+      this.closeSubagentModule();
+
+      const turnsBefore = Number(c.turns_before || c.turnsBefore || 0);
+      const turnsAfter = Number(c.turns_after || c.turnsAfter || 0);
+      const tokBefore = Number(c.est_tokens_before || c.estTokensBefore || 0);
+      const tokAfter = Number(c.est_tokens_after || c.estTokensAfter || 0);
+      const layer = String(c.layer || "");
+
+      const el = document.createElement("details");
+      el.className = "system-line context-compaction-line";
+
+      const summary = document.createElement("summary");
+      const glyph = document.createElement("span");
+      glyph.className = "context-compaction-glyph";
+      glyph.textContent = "⊟";
+      const label = document.createElement("span");
+      label.className = "context-compaction-label";
+      label.textContent = "Context compacted";
+      summary.append(glyph, label);
+      // Quiet inline delta on the summary, only from real numbers.
+      const deltaBits = [];
+      if (turnsBefore || turnsAfter) deltaBits.push(turnsBefore + " turns → summary");
+      if (tokBefore && tokAfter) {
+        deltaBits.push(formatTokenCount(tokBefore) + " → " + formatTokenCount(tokAfter));
+      }
+      if (deltaBits.length) {
+        const delta = document.createElement("span");
+        delta.className = "context-compaction-delta";
+        delta.textContent = " · " + deltaBits.join(" · ");
+        summary.append(delta);
+      }
+
+      const body = document.createElement("div");
+      body.className = "context-compaction-body";
+      const rows = [];
+      if (tokBefore || tokAfter) {
+        rows.push("Estimated tokens: " + formatTokenCount(tokBefore) + " → " + formatTokenCount(tokAfter));
+      }
+      if (turnsBefore || turnsAfter) {
+        rows.push("Turns: " + turnsBefore + " → " + turnsAfter);
+      }
+      if (layer) rows.push("Layer: " + layer);
+      rows.push("Earlier turns were summarized to make room. They remain in this transcript above, but are no longer in the model's context window.");
+      for (const row of rows) {
+        const line = document.createElement("div");
+        line.className = "context-compaction-stat";
+        line.textContent = row;
+        body.appendChild(line);
+      }
+
+      el.append(summary, body);
+      this.conversation.appendChild(el);
     },
 
     // appendSystemMessage renders a lifecycle event (skill activated, plugin

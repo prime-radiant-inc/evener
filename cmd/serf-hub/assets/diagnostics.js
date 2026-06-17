@@ -244,6 +244,26 @@
       el.appendChild(hint);
     }
 
+    // Raw error on expand (mockup #15 Alt A): the human-readable summary is the
+    // primary line; the original "[error] …" / request-id / stack folds into a
+    // mono disclosure so a power user can read exactly what the provider said
+    // without the raw text shouting in the transcript. Shown only when the raw
+    // text carries more than the cleaned summary already conveys.
+    const raw = String((input && (input.raw || input.error)) || "").trim();
+    if (raw && raw !== diagnostic.message) {
+      const detail = document.createElement("details");
+      detail.className = "diagnostic-detail";
+      const summary = document.createElement("summary");
+      summary.className = "diagnostic-detail-summary";
+      summary.textContent = "Show raw error";
+      const pre = document.createElement("pre");
+      pre.className = "diagnostic-detail-pre";
+      pre.textContent = raw;
+      detail.appendChild(summary);
+      detail.appendChild(pre);
+      el.appendChild(detail);
+    }
+
     // Render action buttons (e.g. "Retry turn") when the caller supplies them.
     const resolvedActions = actions || (input && Array.isArray(input.actions) ? input.actions : null);
     if (resolvedActions && resolvedActions.length > 0) {

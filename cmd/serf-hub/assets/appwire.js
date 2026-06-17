@@ -552,7 +552,12 @@
       if (!item.text) return [];
       const hookLine = hookSystemLineText(item);
       if (hookLine) return [["SYSTEM_LINE", { text: hookLine }]];
-      return [["SYSTEM_MESSAGE", { title: item.description || "System", text: item.text || "" }]];
+      const payload = { title: item.description || "System", text: item.text || "" };
+      // Carry the structured detail (e.g. compaction before/after numbers under
+      // raw.compaction) so the renderer can draw an honest, inspectable expand
+      // from real numbers rather than re-parsing the prose (mockup #17 Alt A).
+      if (item.raw != null && item.raw !== "") payload.raw = item.raw;
+      return [["SYSTEM_MESSAGE", payload]];
     }
     if (type === "agentMessage") {
       if (!item.text) return [];
@@ -875,44 +880,12 @@
     setPendingRegistry,
   };
 
-  // Wire toast + persistent banner. The banner is required because a 3s
-  // toast does not cover the case where the user notices the UI is stale
-  // 30s later (Known Issues — Pass 8).
-  let connectionLostToastHandle = null;
-  function ensureConnectionBanner() {
-    let banner = document.getElementById("connection-banner");
-    if (banner) return banner;
-    banner = document.createElement("div");
-    banner.id = "connection-banner";
-    banner.className = "connection-banner";
-    banner.setAttribute("role", "status");
-    banner.textContent = "Connection lost — reconnecting…";
-    document.body.insertBefore(banner, document.body.firstChild);
-    document.body.classList.add("has-connection-banner");
-    return banner;
-  }
-  function clearConnectionBanner() {
-    const banner = document.getElementById("connection-banner");
-    if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
-    document.body.classList.remove("has-connection-banner");
-  }
-  function showConnectionLost() {
-    if (connectionLostToastHandle) return; // already showing
-    if (window.SerfToast) connectionLostToastHandle = window.SerfToast.show("Connection lost — reconnecting…", "error", { timeout: 0 });
-  }
-  function clearConnectionLost() {
-    if (connectionLostToastHandle) {
-      if (window.SerfToast) window.SerfToast.dismiss(connectionLostToastHandle);
-      connectionLostToastHandle = null;
-    }
-  }
-  onConnectionLost(() => {
-    showConnectionLost();
-    ensureConnectionBanner();
-  });
-  onConnectionRestored(() => {
-    clearConnectionLost();
-    if (window.SerfToast) window.SerfToast.show("Connection restored", "success");
-    clearConnectionBanner();
-  });
+  // The transport-drop affordance lives in the workspace chrome, owned by the
+  // renderer (SerfRenderer.showConnectionBanner): an amber "Reconnecting…"
+  // banner that escalates to red "Connection lost" and clears on reconnect,
+  // wired to the renderer's reconnect lifecycle. It replaces the old global
+  // toast + flat red banner so a transport failure reads as recovering (amber),
+  // not broken (red), until it genuinely gives up — and never lands in the
+  // conversation. onConnectionLost / onConnectionRestored remain exported for
+  // any subscriber that wants the raw lifecycle.
 })();

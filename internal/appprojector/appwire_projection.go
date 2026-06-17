@@ -2,6 +2,7 @@ package appprojector
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -438,7 +439,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		return p.systemAnnouncement("skill", "Skill activated", "Activated skill: "+data.Name)
 	case events.EventContextCompaction:
 		data := eventData[events.ContextCompactionData](event.Data)
-		return p.systemAnnouncement("context_compaction", "Context compaction", contextCompactionAnnouncement(data))
+		return p.systemAnnouncementWithRaw("context_compaction", "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))
 	case events.EventPluginLoaded:
 		data := eventData[events.PluginLoadedData](event.Data)
 		return p.systemAnnouncement("plugin", "Plugin loaded", pluginLoadedAnnouncement(data))
@@ -552,6 +553,15 @@ func startedTurn(id string, startedAt time.Time) appwire.Turn {
 }
 
 func (p *AppEventProjector) systemAnnouncement(prefix, description, text string) []AppNotification {
+	return p.systemAnnouncementWithRaw(prefix, description, text, nil)
+}
+
+// systemAnnouncementWithRaw renders a lifecycle system one-liner like
+// systemAnnouncement, additionally attaching structured detail to the item's
+// Raw field. The web can then surface that detail (e.g. a compaction
+// before→after expand, mockup #17 Alt A) from real numbers instead of
+// re-parsing the prose text.
+func (p *AppEventProjector) systemAnnouncementWithRaw(prefix, description, text string, raw json.RawMessage) []AppNotification {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil
@@ -568,6 +578,7 @@ func (p *AppEventProjector) systemAnnouncement(prefix, description, text string)
 		Description: strings.TrimSpace(description),
 		Text:        text,
 		Status:      appwire.TurnStatusCompleted,
+		Raw:         raw,
 	}
 	if p.activeTurnID == "" {
 		return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{
@@ -647,6 +658,22 @@ func turnLimitAnnouncement(data events.TurnLimitData) string {
 		return "Turn limit reached"
 	}
 	return strings.Join(lines, "\n")
+}
+
+// contextCompactionRaw marshals the structured compaction numbers under a
+// "compaction" key on the system item's Raw field. The web reads these to draw
+// an honest before→after expand (mockup #17 Alt A) from real numbers. Returns
+// nil when there is nothing to carry so the item stays clean.
+func contextCompactionRaw(data events.ContextCompactionData) json.RawMessage {
+	if data.Layer == "" && data.TurnsBefore == 0 && data.TurnsAfter == 0 &&
+		data.EstTokensBefore == 0 && data.EstTokensAfter == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(map[string]any{"compaction": data})
+	if err != nil {
+		return nil
+	}
+	return raw
 }
 
 func contextCompactionAnnouncement(data events.ContextCompactionData) string {

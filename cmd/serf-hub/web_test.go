@@ -5403,3 +5403,46 @@ func TestModelDescriptorsToAPIModels_OneMillionContext(t *testing.T) {
 		t.Errorf("base context_window = %v, want the smaller base window", base["context_window"])
 	}
 }
+
+// The context gauge must stay NEUTRAL until ~80% used, then turn AMBER with a
+// glyph (mockup #17 Alt A). The threshold lives in the input_status template
+// using the real ContextPercent; below 80% no warn class / glyph appears, at or
+// above 80% the .context-fill carries .context-warn and a ⚠ glyph renders.
+func TestInputStatusGaugeAmberThreshold(t *testing.T) {
+	tmpl := template.Must(template.ParseFS(templatesFS, "templates/partials/input_strip.html"))
+	render := func(percent int) string {
+		data := map[string]any{
+			"ContextWindow":  272000,
+			"ContextPercent": percent,
+			"ContextNumbers": "23k / 272k tokens",
+			"State":          "active",
+			"StateLabel":     "Active",
+			"TurnCount":      3,
+		}
+		var buf bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&buf, "input_status", data); err != nil {
+			t.Fatalf("render percent=%d: %v", percent, err)
+		}
+		return buf.String()
+	}
+
+	for _, percent := range []int{0, 8, 50, 79} {
+		out := render(percent)
+		if strings.Contains(out, "context-warn") {
+			t.Errorf("percent=%d: gauge must stay neutral (no context-warn), got:\n%s", percent, out)
+		}
+		if strings.Contains(out, "⚠") {
+			t.Errorf("percent=%d: gauge must not show ⚠ glyph below threshold", percent)
+		}
+	}
+
+	for _, percent := range []int{80, 85, 100} {
+		out := render(percent)
+		if !strings.Contains(out, "context-warn") {
+			t.Errorf("percent=%d: gauge must turn amber (.context-warn), got:\n%s", percent, out)
+		}
+		if !strings.Contains(out, "⚠") {
+			t.Errorf("percent=%d: gauge must show a ⚠ glyph near the limit", percent)
+		}
+	}
+}
