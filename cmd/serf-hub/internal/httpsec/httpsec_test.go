@@ -38,7 +38,7 @@ func TestCSPMiddleware_SetsStrictDefault(t *testing.T) {
 		// blob: (composer-attachments reencodeToPng pipeline; kata 1pgw), and
 		// https: (URL-backed AppWire replay images).
 		"img-src 'self' data: blob: https:",
-		"frame-ancestors 'none'",
+		"frame-ancestors 'self'",
 	} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("CSP missing %q; got: %s", want, csp)
