@@ -930,6 +930,12 @@
       wrap.className = "user-message";
       wrap.dataset.entryIdx = String(entryIdx || "");
       wrap.dataset.userTurn = String(this.userTurnIndex || "");
+      // Quiet "You" tag anchors the demoted user prompt (design-system #2:
+      // never emphasize the user's own message). It is a sibling of the pill
+      // so .pill.textContent stays the clean prompt text.
+      const tag = document.createElement("span");
+      tag.className = "user-message-tag";
+      tag.textContent = "You";
       const pill = document.createElement("div");
       pill.className = "pill";
       // Thumbnails first so they sit above the prompt text inside the pill.
@@ -988,7 +994,7 @@
       edit.className = "action edit"; edit.textContent = "✎ edit";
       edit.onclick = () => this.startEdit(wrap, pill, text);
       actions.appendChild(copy); actions.appendChild(edit);
-      wrap.appendChild(pill); wrap.appendChild(actions);
+      wrap.appendChild(tag); wrap.appendChild(pill); wrap.appendChild(actions);
       this.conversation.appendChild(wrap);
       return wrap;
     },

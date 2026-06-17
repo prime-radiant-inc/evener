@@ -414,10 +414,10 @@ func TestTierGroups_OmitsEmptyAndAutoExpandsActive(t *testing.T) {
 		}
 	}
 
-	// Test tier label is "test runs".
+	// Test tier label is "Test runs" (sentence-case sans, mockup #2).
 	for _, g := range groups {
-		if g.Tier == TierTest && g.Label != "test runs" {
-			t.Errorf("test tier label = %q, want %q", g.Label, "test runs")
+		if g.Tier == TierTest && g.Label != "Test runs" {
+			t.Errorf("test tier label = %q, want %q", g.Label, "Test runs")
 		}
 	}
 }

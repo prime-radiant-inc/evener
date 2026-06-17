@@ -113,15 +113,18 @@ type TierGroup struct {
 
 // tierLabel returns the sidebar header text for a tier.
 func tierLabel(tier string) string {
+	// Sentence-case sans labels (design-system §2 / mockup #2): the old UI
+	// relied on CSS text-transform:uppercase to shout these; chrome labels are
+	// now quiet sentence-case, so the display strings carry the capitalization.
 	switch tier {
 	case TierActive:
-		return "active"
+		return "Active"
 	case TierRecent:
-		return "recent"
+		return "Recent"
 	case TierOlder:
-		return "older"
+		return "Older"
 	default: // TierTest
-		return "test runs"
+		return "Test runs"
 	}
 }
 

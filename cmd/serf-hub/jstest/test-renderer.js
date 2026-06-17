@@ -74,6 +74,12 @@ pass(users.length === 1, "expected 1 user message, got " + users.length);
 pass(users[0] && users[0].textContent.includes("Hi! How are you?"), "user message text wrong");
 const userThumb = users[0] && users[0].querySelector(".user-image-thumb");
 pass(userThumb && userThumb.getAttribute("src") === "data:image/png;base64,aW1n", "user data-url image did not render");
+// Demoted user message carries the quiet "You" tag (mockup #3), and the tag
+// lives OUTSIDE the pill so .pill text stays the clean prompt.
+const userTag = users[0] && users[0].querySelector(".user-message-tag");
+pass(userTag && userTag.textContent === "You", "user message should carry a 'You' tag");
+const userPill = users[0] && users[0].querySelector(".pill");
+pass(userPill && !userPill.textContent.includes("You"), "the 'You' tag must not be inside the pill text");
 
 // 2. Zero steering dividers (current-task should be suppressed).
 const steerings = conv.querySelectorAll(".steering");
