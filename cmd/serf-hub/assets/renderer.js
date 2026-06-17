@@ -36,6 +36,8 @@
     formatToolClock,
     formatToolDuration,
     clip,
+    reasoningGist,
+    reasoningTier,
   } = window.SerfRendererInternal;
 
   // Tool-output renderers live in renderer-tools.js (loaded after format).
@@ -1254,16 +1256,20 @@
       this.renderAssistantMessage(m, finalText);
     },
 
-    // Live thinking: a quiet, collapsible block that streams the model's
-    // reasoning summary while it works, then collapses to "Thought for Ns".
-    // One per turn; the projector emits a single reasoning item per turn.
+    // Live thinking: the quietest transcript entry (design-system §2.5).
+    // Reserved-slot collapse (mockup #5 alt A): while streaming the block sits
+    // in a fixed-height slot showing a one-line teleprompter tail of the newest
+    // reasoning, so the prose below never reflows token-by-token. It collapses
+    // to "Thought for Ns" plus a duration-ranked noun-phrase gist (alt D).
+    // Click to expand the full reasoning body. One per turn; the projector
+    // emits a single reasoning item per turn.
     beginReasoning() {
       if (this.reasoningEl) return;
       this.cheapToolCluster = null;
       this.closeSubagentModule();
       const el = document.createElement("button");
       el.type = "button";
-      el.className = "think open";
+      el.className = "think streaming";
       const label = document.createElement("span");
       label.className = "think-label";
       label.textContent = "✦ Thinking…";
@@ -1287,12 +1293,16 @@
       const body = this.reasoningEl.querySelector(".think-body");
       const pv = this.reasoningEl.querySelector(".pv");
       if (body) body.textContent = this.reasoningBuf;
-      if (pv) pv.textContent = "— " + clip(this.reasoningBuf.replace(/\s+/g, " ").trim(), 80);
+      // Teleprompter tail: the trailing fragment of the live reasoning. The
+      // slot is one line tall and the tail reveals right-to-left (CSS), so its
+      // height never changes as tokens arrive.
+      if (pv) pv.textContent = clip(this.reasoningBuf.replace(/\s+/g, " ").trim(), 200);
     },
 
     // finalizeReasoning collapses the in-progress thought to a one-line summary
     // (or drops it if nothing streamed). Called when the assistant starts its
-    // answer or the turn completes.
+    // answer or the turn completes. The collapsed line carries a duration tier
+    // and a noun-phrase gist so a stack of thoughts is scannable by effort.
     finalizeReasoning() {
       const el = this.reasoningEl;
       if (!el) return;
@@ -1301,10 +1311,14 @@
         if (el.parentNode) el.parentNode.removeChild(el);
         return;
       }
-      el.classList.remove("open");
+      el.classList.remove("streaming");
       const secs = Math.max(1, Math.round((Date.now() - (this.reasoningStartedAt || Date.now())) / 1000));
+      el.classList.add("think-tier-" + reasoningTier(secs));
       const label = el.querySelector(".think-label");
       if (label) label.innerHTML = "✦ Thought for <span class=\"num\">" + secs + "s</span>";
+      const pv = el.querySelector(".pv");
+      const gist = reasoningGist(this.reasoningBuf);
+      if (pv) pv.textContent = gist ? "— " + gist : "";
     },
 
     // ensureLivenessEl keeps a single liveness line just below the transcript

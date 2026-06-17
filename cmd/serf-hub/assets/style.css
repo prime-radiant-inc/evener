@@ -1218,9 +1218,13 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
 .assistant-message code { background: none; padding: 0; border-bottom: 1px solid var(--text-dim); font-family: var(--font-mono); font-size: 0.86em; color: var(--text); }
 .assistant-message pre { background: var(--bg-raised); padding: var(--space-4) var(--space-5); border-radius: var(--radius-lg); overflow-x: auto; font-family: var(--font-mono); font-size: var(--text-sm); }
 
-/* Thinking — the quietest transcript entry. A reset <button> that streams the
-   model's reasoning summary live while open, then collapses to "Thought for
-   Ns" with a one-line preview. Click to toggle. */
+/* Thinking — the quietest transcript entry (design-system §2.5, §4). A reset
+   <button> that, while streaming, occupies a fixed-height reserved slot showing
+   a one-line teleprompter tail of the live reasoning (mockup #5 alt A) so the
+   prose below never reflows token-by-token. It collapses to "Thought for Ns"
+   plus a duration-ranked noun-phrase gist (alt D). Click to expand the full
+   reasoning. Both the streaming and the collapsed states are one line tall, so
+   collapse is reflow-free. */
 .think {
   display: flex;
   flex-wrap: wrap;
@@ -1249,6 +1253,18 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Streaming teleprompter tail: clamp to one line and reveal right-to-left so
+   the newest words stay visible while the slot height is fixed. */
+.think.streaming .pv {
+  direction: rtl;
+  text-align: left;
+  text-overflow: clip;
+}
+.think.streaming .pv::after { content: ""; }
+/* One gentle "alive" cue on the spark while thinking; honored against
+   prefers-reduced-motion below. No blinking. */
+.think.streaming .think-label { animation: think-breathe var(--pulse-cycle) infinite; }
+@keyframes think-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 .think-body {
   display: none;
   flex-basis: 100%;
@@ -1262,6 +1278,15 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
 }
 .think.open .think-body { display: block; }
 .think.open .pv { display: none; }
+
+/* Duration-weighted prominence (mockup #5 alt D): a long, hard think earns a
+   touch more presence; a quick one recedes to a whisper. Even the "long" tier
+   stays quieter than the prose — color never climbs past --text on the body. */
+.think.think-tier-long { color: var(--text); }
+.think.think-tier-long .pv { color: var(--text-muted); }
+.think.think-tier-med { color: var(--text-muted); }
+.think.think-tier-short { color: var(--text-dim); }
+.think.think-tier-short .pv { color: var(--text-dim); }
 
 /* Honest liveness: shown only when an actively working session has gone quiet.
    Calm, not alarmist — it states the gap instead of faking a "working" pulse. */
