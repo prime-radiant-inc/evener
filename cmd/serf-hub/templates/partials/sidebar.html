@@ -63,12 +63,18 @@
 {{end}}
 
 {{/* sidebarProject renders one project section (context: a TreeProject): a
-     header with the project name + working-dir actions + magnitude rollup + an
-     archive control, then the project's sessions split into Current / Recent /
-     (collapsed) Archived disclosures. */}}
+     header with a disclosure chevron + project name + working-dir actions +
+     magnitude rollup + an archive control, then the project's children. A
+     project's children render inline only when it auto-expands (a live or
+     awaiting session); otherwise the section is .collapsed with an EMPTY
+     .project-children that sidebar.js lazy-loads from /_partials/sidebar/project
+     on first expand. data-default-expanded carries the auto-open hint to JS. */}}
 {{define "sidebarProject"}}
-    <section class="sidebar-section project-section" data-project-key="{{.Name}}">
+    <section class="sidebar-section project-section{{if not .Expanded}} collapsed{{end}}"
+             data-project-key="{{.Name}}" data-default-expanded="{{.Expanded}}">
       <header class="project-header">
+        <button type="button" class="project-chevron" aria-label="toggle project"
+                aria-expanded="{{if .Expanded}}true{{else}}false{{end}}">{{if .Expanded}}▾{{else}}▸{{end}}</button>
         <span class="project-name">{{.Name}}</span>
         {{/* Magnitude rollup (mockup #10): "⟳N · ◆M" says how many are working
              vs. need you. Falls back to the single state dot only when neither
@@ -101,27 +107,40 @@
           title="{{if .IsArchived}}unarchive{{else}}archive{{end}} project {{.Name}}"
           aria-label="{{if .IsArchived}}unarchive{{else}}archive{{end}} project">⋯</button>
       </header>
-      <div class="project-children">
+      {{/* Children render inline only for auto-expanded (live) projects. A
+           collapsed project ships an empty container that sidebar.js fills via
+           the lazy /_partials/sidebar/project endpoint on first expand. */}}
+      <div class="project-children">{{if .Expanded}}{{template "sidebarProjectChildren" .}}{{end}}</div>
+    </section>
+{{end}}
+
+{{/* sidebarProjectChildren renders just a project's three activity tiers
+     (context: a TreeProject). Shared by the inline render above and the lazy
+     /_partials/sidebar/project endpoint so the expanded markup is identical
+     either way. A quiet "+N older" note appears per tier when the server capped
+     it (More* > 0). */}}
+{{define "sidebarProjectChildren"}}
       {{if .Current}}
       <div class="session-tier" data-tier="current">
         <div class="session-tier-label">Current</div>
         {{range .Current}}{{template "sidebarSession" .}}{{end}}
+        {{if gt .MoreCurrent 0}}<div class="tier-overflow">+{{.MoreCurrent}} older</div>{{end}}
       </div>
       {{end}}
       {{if .Recent}}
       <div class="session-tier" data-tier="recent">
         <div class="session-tier-label">Recent</div>
         {{range .Recent}}{{template "sidebarSession" .}}{{end}}
+        {{if gt .MoreRecent 0}}<div class="tier-overflow">+{{.MoreRecent}} older</div>{{end}}
       </div>
       {{end}}
       {{if .Archived}}
       <details class="session-tier archived" data-tier="archived">
         <summary class="session-tier-label">Archived <span class="count">{{len .Archived}}</span></summary>
         {{range .Archived}}{{template "sidebarSession" .}}{{end}}
+        {{if gt .MoreArchived 0}}<div class="tier-overflow">+{{.MoreArchived}} older</div>{{end}}
       </details>
       {{end}}
-      </div>
-    </section>
 {{end}}
 
 {{/* sidebarSession renders one top-level session row (context: a TreeNode):

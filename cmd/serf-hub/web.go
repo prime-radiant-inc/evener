@@ -189,6 +189,8 @@ func (s *WebServer) handleInternalPartial(w http.ResponseWriter, r *http.Request
 	}
 
 	switch {
+	case r.URL.Path == "/_partials/sidebar/project":
+		s.handleSidebarProject(w, r)
 	case r.URL.Path == "/_partials/sidebar":
 		s.handleSidebar(w, r)
 	case r.URL.Path == "/_partials/workspace/empty":
@@ -282,6 +284,29 @@ func (s *WebServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 	tree := hubcore.BuildTree(metas, live, s.archiveDecisions())
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.sidebarTmpl.ExecuteTemplate(w, "sidebar", tree); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// handleSidebarProject is the lazy-load endpoint for a single project's
+// children. The default sidebar payload omits collapsed projects' session rows;
+// sidebar.js fetches this fragment on first expand. It rebuilds just the named
+// project (?key=<project name>) and renders the shared sidebarProjectChildren
+// fragment. Auth + HX gating are inherited from handleInternalPartial.
+func (s *WebServer) handleSidebarProject(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		http.NotFound(w, r)
+		return
+	}
+	metas, live := s.navigationTreeInputs(r.Context())
+	project, ok := hubcore.BuildProjectTree(metas, live, s.archiveDecisions(), key)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.sidebarTmpl.ExecuteTemplate(w, "sidebarProjectChildren", project); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }

@@ -472,10 +472,11 @@ func TestWeb_SidebarIncludesConfiguredCodexSourceThreads(t *testing.T) {
 			"modelProvider": "openai",
 			"createdAt":     100,
 			"updatedAt":     200,
-			"status":        map[string]any{"type": "idle"},
-			"cwd":           "/work/codex",
-			"cliVersion":    "codex-test",
-			"source":        "appServer",
+			// Active so the project auto-expands and renders its rows inline.
+			"status":     map[string]any{"type": "active"},
+			"cwd":        "/work/codex",
+			"cliVersion": "codex-test",
+			"source":     "appServer",
 		}}}, nil
 	})
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
@@ -814,6 +815,121 @@ func TestWeb_AppShell_RendersSidebarAndWorkspaceMounts(t *testing.T) {
 	}
 }
 
+// newCodexSidebarServer builds a WebServer fed by a single fake codex source
+// thread in the given state, project (cwd basename), and id. Returns the server
+// and a cleanup func.
+func newCodexSidebarServer(t *testing.T, id, cwd, status string) (*WebServer, func()) {
+	t.Helper()
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
+		return map[string]any{"data": []map[string]any{{
+			"id":            id,
+			"sessionId":     id,
+			"preview":       "Idle codex task",
+			"modelProvider": "openai",
+			"createdAt":     100,
+			"updatedAt":     200,
+			"status":        map[string]any{"type": status},
+			"cwd":           cwd,
+			"cliVersion":    "codex-test",
+			"source":        "appServer",
+		}}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Past:    hubcore.NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	return web, codexHTTP.Close
+}
+
+func TestWeb_SidebarCollapsedProjectEmitsNoSessionRows(t *testing.T) {
+	// An idle project is not live, so it starts collapsed and its session rows
+	// are NOT in the default sidebar payload — the scale fix.
+	web, cleanup := newCodexSidebarServer(t, "th_idle", "/work/idleproj", "idle")
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	// The project header is present...
+	if !strings.Contains(body, `data-project-key="idleproj"`) {
+		t.Fatalf("sidebar missing collapsed project header:\n%s", body)
+	}
+	// ...but the session link is NOT rendered inline (collapsed → empty children).
+	if strings.Contains(body, `href="/s/codex:th_idle"`) {
+		t.Fatalf("collapsed project should not emit its session rows inline:\n%s", body)
+	}
+	// The chevron disclosure must be present so the user can expand.
+	if !strings.Contains(body, "project-chevron") {
+		t.Fatalf("collapsed project missing chevron disclosure:\n%s", body)
+	}
+}
+
+func TestWeb_SidebarProjectPartialRendersChildren(t *testing.T) {
+	web, cleanup := newCodexSidebarServer(t, "th_idle", "/work/idleproj", "idle")
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar/project?key="+url.QueryEscape("idleproj"), nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	// The lazy endpoint returns the project's children fragment, including the
+	// session row that the collapsed sidebar omitted.
+	if !strings.Contains(body, `href="/s/codex:th_idle"`) {
+		t.Fatalf("project partial missing session row:\n%s", body)
+	}
+	// It is a fragment of tiers, not a whole project section.
+	if strings.Contains(body, `data-project-key=`) {
+		t.Fatalf("project partial should be a children fragment, not a full section:\n%s", body)
+	}
+}
+
+func TestWeb_SidebarProjectPartialUnknownKey404(t *testing.T) {
+	web, cleanup := newCodexSidebarServer(t, "th_idle", "/work/idleproj", "idle")
+	defer cleanup()
+
+	for _, key := range []string{"", "does-not-exist"} {
+		req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar/project?key="+url.QueryEscape(key), nil)
+		req.Host = "127.0.0.1:9180"
+		req.Header.Set("HX-Request", "true")
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("key=%q status=%d body=%q", key, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestWeb_SidebarProjectPartialRequiresHXRequest(t *testing.T) {
+	web, cleanup := newCodexSidebarServer(t, "th_idle", "/work/idleproj", "idle")
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar/project?key=idleproj", nil)
+	req.Host = "127.0.0.1:9180"
+	// No HX-Request header → direct nav is rejected.
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("direct nav status=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestWeb_InternalPartialsRequireHXRequest(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
 	for _, path := range []string{
@@ -878,8 +994,11 @@ func TestWeb_Sidebar_RendersTreeWithLiveAndProjects(t *testing.T) {
 
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  hubcore.NewRoster(t.TempDir(), nil),
-		Past:    idx,
+		// Live entry so the project auto-expands and renders its tiers inline.
+		Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+			Entry: rendezvous.Entry{PID: 1}, SessionID: "01PAST", Status: appwire.ThreadStatusActive,
+		}),
+		Past: idx,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
 	req.Host = "127.0.0.1:9180"
@@ -968,6 +1087,25 @@ func renderSidebar(t *testing.T, tree hubcore.Tree) string {
 	tmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
 	var buf bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&buf, "sidebar", tree); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	return buf.String()
+}
+
+// renderProjectChildren renders the sidebarProjectChildren fragment for the
+// project named in metas — the markup the lazy expand endpoint serves and that
+// renders inline when a project is expanded. Tests of the expanded children
+// (tiers, clusters, archived disclosure, subagent folds) use this so they
+// don't depend on a project happening to auto-expand.
+func renderProjectChildren(t *testing.T, metas []schema.SessionMeta, live []hubcore.LiveEntry, name string) string {
+	t.Helper()
+	project, ok := hubcore.BuildProjectTree(metas, live, map[hubcore.ArchiveKey]bool{}, name)
+	if !ok {
+		t.Fatalf("project %q not found", name)
+	}
+	tmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "sidebarProjectChildren", project); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	return buf.String()
@@ -1080,7 +1218,8 @@ func TestWeb_Sidebar_RendersRepeatedTitleCluster(t *testing.T) {
 			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf-docs"},
 		})
 	}
-	body := renderSidebar(t, hubcore.BuildTree(metas, nil, map[hubcore.ArchiveKey]bool{}))
+	// All-idle sessions cluster inside the (expanded) project's children.
+	body := renderProjectChildren(t, metas, nil, "serf-docs")
 	if !strings.Contains(body, "session-cluster") {
 		t.Errorf("cluster container missing; body=\n%s", body)
 	}
@@ -1111,7 +1250,8 @@ func TestWeb_Sidebar_ArchivedSessionsInCollapsedDisclosure(t *testing.T) {
 		{ID: "01ARC", UpdatedAt: now.Add(-20 * 24 * time.Hour), OriginalPrompt: "stale work",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
 	}
-	body := renderSidebar(t, hubcore.BuildTree(metas, nil, map[hubcore.ArchiveKey]bool{}))
+	// Assert on the project's (expanded) children fragment.
+	body := renderProjectChildren(t, metas, nil, "serf")
 	// The archived tier is a collapsed disclosure (a <details> without `open`).
 	archIdx := strings.Index(body, `<details class="session-tier archived"`)
 	if archIdx < 0 {
@@ -1149,14 +1289,8 @@ func TestWeb_Sidebar_FoldsExcessSubagents(t *testing.T) {
 			EnvInfo:         schema.EnvironmentInfo{WorkingDir: "/projects/p"},
 		})
 	}
-	tree := hubcore.BuildTree(metas, nil, map[hubcore.ArchiveKey]bool{})
-
-	tmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
-	var buf bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&buf, "sidebar", tree); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	body := buf.String()
+	// Subagent fold lives in the (expanded) project's children.
+	body := renderProjectChildren(t, metas, nil, "p")
 
 	if got := strings.Count(body, "subagent-overflow"); got != 2 {
 		t.Errorf("expected 2 overflow subagents, got %d:\n%s", got, body)

@@ -1082,6 +1082,15 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
   color: var(--text-dim);
 }
 
+/* "+N older" note when a tier is capped server-side. A quiet, non-interactive
+   summary that recedes — the dropped rows are old, the user rarely wants them. */
+.tier-overflow {
+  padding: var(--space-1) var(--space-5) var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+}
+
 /* Collapsed archived-sessions disclosure: <details class="session-tier archived">.
    The <summary> is .session-tier-label, so it gets a pointer and a
    disclosure affordance (::before chevron) to signal interactability.
