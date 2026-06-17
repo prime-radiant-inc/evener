@@ -104,16 +104,22 @@ Each commit passed the pre-commit gate (lint/build/test); TDD throughout.
 | `c6f7eb19` | appwire maps reasoning notifications → `REASONING_START`/`REASONING_DELTA` client events |
 | `278f7cc1` | Render live thinking as a quiet collapsible `.think` block (renderer + `style.css`) |
 | `84ce6219` | Honest liveness: "no updates for Ns" + drop the reassuring pulse on a silent active turn |
+| `ae8351ce` | Codex parity: forward reasoning + map reasoning items so live thinking works for Codex too |
 
-**Serf-harness backend for live thinking is complete**, and the renderer is now modular
-(`renderer.js` 3630 → ~2170 lines). The no-bundler modules share `window.SerfRendererInternal`
-and load in dependency order (`renderer-format` → `renderer-tools` → `renderer-panels` →
-`renderer`) in both `templates/app.html` and `jstest/load-renderer.js`. `renderer.js` retains the
-stateful `SerfRenderer` core + bootstrap (this is where the thinking block lands). Remaining:
+**The locked scope (thinking + liveness + elapsed, both harnesses) is complete** — see the commit
+table above; items 4–6 below are all done. The renderer is now modular (`renderer.js` 3630 →
+~2170 lines): the no-bundler modules share `window.SerfRendererInternal` and load in dependency
+order (`renderer-format` → `renderer-tools` → `renderer-panels` → `renderer`) in both
+`templates/app.html` and `jstest/load-renderer.js`; `renderer.js` retains the stateful
+`SerfRenderer` core + bootstrap. Detail on each delivered increment:
 
-4. **Codex-adapter parity:** `cmd/serf-hub/internal/appsource/codex_source.go` `mapNotification`
-   (~L703) forward `item/reasoning/summaryTextDelta` (+ `summaryPartAdded`, `item/started` type
-   `reasoning`); `codex_mapping.go` `mapCodexTurn` set `StartedAt` from Codex `started_at`.
+4. ~~**Codex-adapter parity:**~~ **DONE** (`ae8351ce`). `codex_source.go` `mapNotification`
+   normalizes `item/reasoning/summaryTextDelta` (threadId + source-qualified ref, mirroring
+   agentMessage) so the web routes it; `codex_mapping.go` `mapCodexItem` maps a `reasoning` item to
+   type `reasoning` (was falling through to `commandExecution` — a thought rendered as a tool
+   call); `mapCodexTurn` already carries `StartedAt`. `summaryPartAdded` skipped (no consumer on
+   either path yet). Tests: `TestMapCodexItemReasoningPreservesType`,
+   `TestMapCodexNotificationNormalizesReasoningDelta`.
 5. ~~**Web render (the visible payoff):**~~ **DONE** (`c6f7eb19`, `278f7cc1`). `appwire.js`
    `eventsFromNotification` maps `item/started` (type `reasoning`) → `REASONING_START` and
    `item/reasoning/summaryTextDelta` → `REASONING_DELTA` (mirrors the agentMessage path,
