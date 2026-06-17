@@ -1617,7 +1617,32 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
 .steering .steering-verb { color: var(--text-muted); font-family: var(--font-sans); }
 .steering .steering-detail { color: var(--text); }
 .steering .steering-body { margin: var(--space-4) 0 0; padding: var(--space-4) var(--space-4); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
-.system-message .steering-verb { color: var(--text-muted); }
+
+/* Lifecycle events are bookkeeping (design-system §4): a quiet dim one-liner,
+   NEVER divider-weight, and with no meaningless "N chars" count (mockup #7
+   alt A). Override the steering divider rules and tighten the spacing so a
+   skill/plugin/prompt marker recedes under the prose it sits beside. */
+.system-message { margin: var(--space-3) 0; font-size: var(--text-sm); }
+.system-message > summary { gap: var(--space-3); }
+.system-message > summary::after { content: none; }
+.system-message > summary::before { content: "▸"; flex: none; width: auto; height: auto; background: none; font-size: 9px; color: var(--text-dim); }
+.system-message[open] > summary::before { content: "▾"; }
+.system-message .steering-verb { color: var(--text-muted); font-style: italic; }
+
+/* Coalesced lifecycle run (mockup #7 alt B): 3+ adjacent events fold to one
+   quiet collapsible line. Below the threshold the toggle is hidden and the
+   blocks render inline. */
+.system-run { margin: 0; }
+.system-run-toggle { display: none; }
+.system-run.coalesced > .system-run-toggle {
+  display: flex; align-items: baseline; gap: var(--space-3);
+  width: 100%; max-width: 680px; margin: var(--space-3) 0;
+  padding: 0; background: none; border: none; cursor: pointer;
+  text-align: left; font-family: inherit; font-size: var(--text-sm);
+  font-style: italic; color: var(--text-muted); line-height: var(--leading-snug);
+}
+.system-run.coalesced > .system-run-toggle:hover { color: var(--text); }
+.system-run.coalesced:not(.open) > .system-run-body { display: none; }
 
 /* Fork dialog */
 .fork-dialog { margin-bottom: var(--space-6); padding: var(--space-4) var(--space-5); background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-xl); max-width: 480px; margin-left: auto; }

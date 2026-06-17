@@ -889,6 +889,11 @@
       }
     },
 
+    // appendSystemMessage renders a lifecycle event (skill activated, plugin
+    // loaded, tools, prompt) as a quiet, dim one-liner — never divider-weight,
+    // and without the meaningless "N chars" payload count (mockup #7 alt A).
+    // The full payload stays available behind the disclosure. Adjacent events
+    // coalesce into one collapsed line once a run reaches 3 (alt B).
     appendSystemMessage(data) {
       data = data || {};
       const text = String(data.text || "");
@@ -897,21 +902,59 @@
       const title = systemMessageDisplayTitle(data.title || "System");
       const el = document.createElement("details");
       el.className = "steering system-message";
+      el.dataset.systemTitle = title;
 
       const summary = document.createElement("summary");
       const verb = document.createElement("span");
       verb.className = "steering-verb";
       verb.textContent = title;
-      const detail = document.createElement("span");
-      detail.className = "steering-detail";
-      detail.textContent = text.length > 1000 ? Math.round(text.length / 100) / 10 + " KB" : text.length + " chars";
-      summary.append(verb, detail);
+      summary.append(verb);
 
       const body = document.createElement("div");
       body.className = "steering-body";
       body.textContent = text;
       el.append(summary, body);
-      this.conversation.appendChild(el);
+
+      const run = this.ensureSystemRun();
+      run.querySelector(".system-run-body").appendChild(el);
+      this.coalesceSystemRun(run);
+    },
+
+    // ensureSystemRun returns the open lifecycle run if the last transcript
+    // entry is one (adjacency), else starts a new one. Self-resetting: any
+    // other entry type appended in between makes the last child not a run, so
+    // the next lifecycle event opens a fresh run (mockup #7 alt B).
+    ensureSystemRun() {
+      const last = this.conversation.lastElementChild;
+      if (last && last.classList.contains("system-run")) return last;
+      const run = document.createElement("div");
+      run.className = "system-run";
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "system-run-toggle";
+      toggle.addEventListener("click", () => run.classList.toggle("open"));
+      const inner = document.createElement("div");
+      inner.className = "system-run-body";
+      run.append(toggle, inner);
+      this.conversation.appendChild(run);
+      return run;
+    },
+
+    // coalesceSystemRun folds a run of 3+ adjacent lifecycle events into one
+    // quiet line ("N system events · <first> + N more"); the individual blocks
+    // hide until the run is expanded.
+    coalesceSystemRun(run) {
+      const blocks = run.querySelectorAll(".system-run-body > .system-message");
+      const n = blocks.length;
+      const toggle = run.querySelector(".system-run-toggle");
+      if (n < 3) {
+        run.classList.remove("coalesced");
+        return;
+      }
+      run.classList.add("coalesced");
+      const first = blocks[0] && blocks[0].dataset.systemTitle || "system event";
+      const more = n - 1;
+      toggle.textContent = "✦ " + n + " system events · " + first + (more > 0 ? " + " + more + " more" : "");
     },
 
     appendSystemLine(text) {
