@@ -224,6 +224,11 @@
       const ended = state === "ended" || state === "closed";
       if (!this.turnAcceptsActions(state)) this.setActiveTurnId("");
       this.syncTurnActionControls();
+      // Honest liveness (mockup #8 alt A): if the session is no longer live,
+      // every still-"running" subagent row that never reported a completion
+      // demotes to a neutral terminal "?" unknown — a spinner must never
+      // outlive the work it claims to track.
+      this.finalizeDanglingSubagents(state);
       // Prefer source-advertised send/queue capabilities when AppWire has
       // supplied them. Some sources accept Send while active and do not expose
       // Queue, so state alone is not enough to decide composer mode.
@@ -1690,27 +1695,35 @@
     // Threshold past which extra rows collapse behind "+N more · expand".
     SUBAGENT_VISIBLE_ROWS: 6,
 
-    // classifyJobStatus maps a raw status to one of: running / done / failed.
-    // A subagent that RAN FINE but found bad news is "done" (neutral) — only a
-    // subagent or tool that itself failed-to-run is "failed" (red).
+    // classifyJobStatus maps a raw status to one of: running / done / failed /
+    // unknown. A subagent that RAN FINE but found bad news is "done" (neutral) —
+    // only a subagent or tool that itself failed-to-run is "failed" (red). The
+    // "unknown" kind is never a raw wire status; it is the honest terminal
+    // demotion a still-"running" row earns when the session goes dark without a
+    // completion signal (mockup #8 alt A).
     classifyJobStatus(status) {
       const s = String(status || "").trim().toLowerCase();
       if (s === "failed" || s === "errored" || s === "error") return "failed";
       if (s === "completed" || s === "done" || s === "cancelled" || s === "stopped" || s === "succeeded") return "done";
+      if (s === "unknown") return "unknown";
       return "running";
     },
 
     subagentGlyph(kind) {
       if (kind === "done") return "✓";
       if (kind === "failed") return "✕";
+      if (kind === "unknown") return "?";
       return "⟳";
     },
 
-    // Status kinds (running/done/failed) map to short glyph CSS classes
-    // (run/done/err) — the four-color, colorblind-safe glyph treatment.
+    // Status kinds (running/done/failed/unknown) map to short glyph CSS classes
+    // (run/done/err/unk) — the four-color, colorblind-safe glyph treatment.
+    // "unknown" is neutral (not alarming, not live): a terminal "?" with the
+    // breathing/spinner motion gone.
     subagentGlyphClass(kind) {
       if (kind === "done") return "done";
       if (kind === "failed") return "err";
+      if (kind === "unknown") return "unk";
       return "run";
     },
 
@@ -1786,6 +1799,9 @@
       row.appendChild(link);
       row.dataset.startedAt = String(Date.now());
       row.dataset.statusKind = "running";
+      // Spawn order, preserved so worst-first sorting stays stable within a
+      // severity band (mockup #8 alt B sorts by severity, not by recency).
+      row.dataset.spawnIndex = String(this.subagentSpawnSeq = (this.subagentSpawnSeq || 0) + 1);
       return row;
     },
 
@@ -1839,6 +1855,9 @@
       const kind = this.classifyJobStatus(data.status || row.dataset.status || "running");
       if (data.status) row.dataset.status = data.status;
       row.dataset.statusKind = kind;
+      // Stamp the last time we got a real signal for this row, so a later
+      // honest-clock demotion can say "last seen Ns ago" (mockup #8 alt A).
+      row.dataset.lastSeenAt = String(Date.now());
       const glyph = row.querySelector(".g");
       if (glyph) {
         glyph.className = "g " + this.subagentGlyphClass(kind);
@@ -1865,6 +1884,19 @@
         row.classList.remove("res-error");
         return;
       }
+      // A demoted-unknown row is honest about why: it was running when the
+      // session went dark and never reported finishing. Neutral, italic, with
+      // "last seen Ns ago" — never a fake spinner outliving the session.
+      if (kind === "unknown" && !text) {
+        res.innerHTML = "";
+        const unk = document.createElement("span");
+        unk.className = "unk";
+        const ago = this.lastSeenAgo(row);
+        unk.textContent = "never reported finishing" + (ago ? " — last seen " + ago : "");
+        res.appendChild(unk);
+        row.classList.remove("res-error");
+        return;
+      }
       if (!text) {
         if (kind === "failed") text = data.reason || "failed";
         else text = data.outputBytes != null ? formatBytes(data.outputBytes) : "done";
@@ -1884,23 +1916,69 @@
         return;
       }
       if (!row.dataset.endedAt) row.dataset.endedAt = String(Date.now());
-      dur.textContent = formatToolDuration(Number(row.dataset.endedAt) - started);
+      const span = formatToolDuration(Number(row.dataset.endedAt) - started);
+      // Unknown freezes its LAST-KNOWN elapsed marked approximate (the ~ admits
+      // we never saw it finish) — mockup #8 alt A's "~0:51".
+      dur.textContent = kind === "unknown" && span ? "~" + span : span;
+    },
+
+    // lastSeenAgo returns a short "Ns ago" / "Nm ago" relative to the last
+    // signal we recorded for a row (its lastSeenAt stamp). Empty when unknown.
+    lastSeenAgo(row) {
+      const seen = Number(row && row.dataset && row.dataset.lastSeenAt || 0);
+      if (!seen) return "";
+      const secs = Math.max(0, Math.round((Date.now() - seen) / 1000));
+      if (secs < 60) return secs + "s ago";
+      const mins = Math.round(secs / 60);
+      if (mins < 60) return mins + "m ago";
+      return Math.round(mins / 60) + "h ago";
     },
 
     applyJobRefTarget(row, data) {
       if (!row || !data || !data.transcriptRef) return;
       row.dataset.transcriptRef = data.transcriptRef;
-      row.onclick = () => { window.location.href = "/s/" + encodeURIComponent(data.transcriptRef); };
+      row.onclick = () => { this.navigateTo("/s/" + encodeURIComponent(data.transcriptRef)); };
     },
+
+    // navigateTo performs a hard navigation to a workspace route. Centralized so
+    // the subagent-nav affordances (a row's "view →", the Esc-to-parent
+    // accelerator) share one seam — overridable in tests where jsdom has no
+    // real navigation.
+    navigateTo(href) {
+      window.location.href = href;
+    },
+
+    // Severity rank for worst-first ordering (mockup #8 alt B). A failure sorts
+    // to the very top; an unknown sits just under it (it might BE a failure we
+    // never heard about); a genuinely-live row next; clean "done" recedes last.
+    SUBAGENT_SEVERITY: { failed: 0, unknown: 1, running: 2, done: 3 },
 
     refreshSubagentModule(mod) {
       if (!mod) return;
+      // Sort worst-first so a failure (or an unknown that might be one) is
+      // always above the fold and the clean "done" results recede — never a
+      // failure buried under a wall of green. Stable within a band by spawn
+      // order.
+      const rowsContainer = mod.querySelector(".subs-rows");
       const rows = Array.from(mod.querySelectorAll(".sub-r"));
-      let running = 0, done = 0, failed = 0;
+      if (rowsContainer && rows.length > 1) {
+        const rank = (r) => {
+          const v = this.SUBAGENT_SEVERITY[r.dataset.statusKind || "running"];
+          return v == null ? 2 : v;
+        };
+        const sorted = rows.slice().sort((a, b) => {
+          const d = rank(a) - rank(b);
+          if (d !== 0) return d;
+          return Number(a.dataset.spawnIndex || 0) - Number(b.dataset.spawnIndex || 0);
+        });
+        for (const row of sorted) rowsContainer.appendChild(row);
+      }
+      let running = 0, done = 0, failed = 0, unknown = 0;
       for (const row of rows) {
         const kind = row.dataset.statusKind || "running";
         if (kind === "failed") failed++;
         else if (kind === "done") done++;
+        else if (kind === "unknown") unknown++;
         else running++;
       }
       const title = mod.querySelector(".t");
@@ -1909,9 +1987,10 @@
       if (tally) {
         tally.innerHTML = "";
         const parts = [];
+        if (failed) parts.push(["f", "✕ " + failed + " failed"]);
+        if (unknown) parts.push(["u", "? " + unknown + " unknown"]);
         if (running) parts.push(["r", "⟳ " + running + " running"]);
         if (done) parts.push(["o", "✓ " + done + " done"]);
-        if (failed) parts.push(["f", "✕ " + failed + " failed"]);
         parts.forEach(([cls, text], i) => {
           if (i > 0) tally.append(" · ");
           const span = document.createElement("span");
@@ -1923,12 +2002,15 @@
       // Box-level failure flag so CSS can mark the module without averaging it
       // into a tally count.
       mod.dataset.hasFailure = failed > 0 ? "true" : "false";
+      // Stale flag: the module went dark with work still unaccounted for (honest
+      // neutral treatment, not a fake spinner).
+      mod.dataset.stale = unknown > 0 ? "true" : "false";
 
       // Overflow: hide rows past the visible threshold unless expanded.
       const expanded = mod.dataset.expanded === "true";
       const limit = this.SUBAGENT_VISIBLE_ROWS;
       const hiddenCount = Math.max(0, rows.length - limit);
-      rows.forEach((row, i) => {
+      Array.from(rowsContainer ? rowsContainer.querySelectorAll(".sub-r") : rows).forEach((row, i) => {
         row.hidden = !expanded && hiddenCount > 0 && i >= limit;
       });
       const more = mod.querySelector(".subs-more");
@@ -1939,6 +2021,42 @@
         } else {
           more.hidden = true;
         }
+      }
+      // Bubble this session's worst direct-child state up onto its own parent
+      // breadcrumb, so a deep failure surfaces on the way back out (mockup #9).
+      this.updateBreadcrumbRollup();
+    },
+
+    // updateBreadcrumbRollup colors a worst-state chip on this subagent's
+    // breadcrumb from its OWN direct children (the subagent modules in this
+    // transcript). It bubbles a failure (or an unanswered "unknown") up one
+    // level so a deep ✕ never hides behind a green parent: every hop up the
+    // chain re-derives the chip from that level's children. There is no daemon
+    // signal carrying a parent's grandchildren into the live stream, so the
+    // rollup is composed honestly from the worst state we can actually observe
+    // here — this session's direct children.
+    updateBreadcrumbRollup() {
+      const chip = document.querySelector("[data-subagent-rollup]");
+      if (!chip) return;
+      let failed = 0, unknown = 0;
+      for (const row of this.conversation.querySelectorAll(".sub-r")) {
+        const kind = row.dataset.statusKind || "running";
+        if (kind === "failed") failed++;
+        else if (kind === "unknown") unknown++;
+      }
+      if (!failed && !unknown) {
+        chip.hidden = true;
+        chip.textContent = "";
+        chip.classList.remove("bad");
+        return;
+      }
+      chip.hidden = false;
+      if (failed) {
+        chip.classList.add("bad");
+        chip.textContent = "✕ " + failed + (failed === 1 ? " child failed" : " children failed");
+      } else {
+        chip.classList.remove("bad");
+        chip.textContent = "? " + unknown + (unknown === 1 ? " child unknown" : " children unknown");
       }
     },
 
@@ -1966,6 +2084,50 @@
       if (this.classifyJobStatus(info.status) !== "running") this.activeJobs.delete(jobId);
       const mod = row.closest(".subs");
       if (mod) this.refreshSubagentModule(mod);
+    },
+
+    // subagentSessionIsLive reports whether the parent session is still live
+    // enough that a "running" subagent row can be trusted. Terminal states
+    // (ended/closed/notLoaded) are never live; idle is live ONLY while a turn is
+    // active. awaiting/warning/systemError keep the session live (the user can
+    // still resume), so they do not demote dangling rows.
+    subagentSessionIsLive(state) {
+      if (state === "ended" || state === "closed" || state === "notLoaded") return false;
+      if (state === "idle") return !!this.activeTurnId;
+      return true;
+    },
+
+    // finalizeDanglingSubagents demotes every still-"running" subagent row to a
+    // neutral terminal "?" unknown once the parent session is no longer live and
+    // no completion signal ever arrived (mockup #8 alt A). This is the honest
+    // fix for the spinner that ticked forever on a dead session: it freezes the
+    // last-known elapsed (marked ~approximate) and says "never reported
+    // finishing — last seen Ns ago". A genuinely-live session demotes nothing.
+    finalizeDanglingSubagents(state) {
+      if (this.subagentSessionIsLive(state)) return;
+      if (!this.conversation) return;
+      const touched = new Set();
+      for (const row of this.conversation.querySelectorAll(".sub-r")) {
+        if ((row.dataset.statusKind || "running") !== "running") continue;
+        // Freeze the elapsed at the last signal we saw, not at "now" — the work
+        // stopped being observable then, so that is the honest endpoint.
+        const seen = Number(row.dataset.lastSeenAt || 0) || Number(row.dataset.startedAt || 0);
+        if (seen && !row.dataset.endedAt) row.dataset.endedAt = String(seen);
+        row.dataset.status = "unknown";
+        row.dataset.statusKind = "unknown";
+        const glyph = row.querySelector(".g");
+        if (glyph) {
+          glyph.className = "g " + this.subagentGlyphClass("unknown");
+          glyph.textContent = this.subagentGlyph("unknown");
+        }
+        this.renderSubagentResult(row, {}, "unknown");
+        this.renderSubagentDuration(row, "unknown");
+        const jobId = row.dataset.jobId;
+        if (jobId) this.activeJobs.delete(jobId);
+        const mod = row.closest(".subs");
+        if (mod) touched.add(mod);
+      }
+      for (const mod of touched) this.refreshSubagentModule(mod);
     },
 
     beginJobRef(data) {
@@ -2682,6 +2844,7 @@
     },
 
     bindKeyboard() {
+      this.bindSubagentEscapeToParent();
       const ta = document.querySelector(".message-input");
       if (!ta) return;
       ta.addEventListener("keydown", (e) => {
@@ -2712,6 +2875,32 @@
             window.SerfSearch.openWith("/");
           }
         }
+      });
+    },
+
+    // bindSubagentEscapeToParent makes "Esc → parent" real on a subagent's
+    // workspace (mockup #9): Escape navigates up to the parent. It defers to any
+    // open overlay (a panel/dialog/picker's own Escape handler closes that
+    // first) and ignores Escape while typing, so it only fires as a last-resort
+    // "get me out of this subagent" accelerator. Bound once per process.
+    bindSubagentEscapeToParent() {
+      if (this.__escToParentBound) return;
+      this.__escToParentBound = true;
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape" || e.metaKey || e.ctrlKey || e.altKey) return;
+        // Defer to any open overlay — its own handler owns this Escape press.
+        if (document.getElementById("panel-scrim")) return;
+        if (document.getElementById("details-panel")) return;
+        if (document.getElementById("tasks-panel")) return;
+        const dlg = document.getElementById("search-dialog");
+        if (dlg && dlg.open) return;
+        // Don't steal Escape from text entry.
+        const ae = document.activeElement;
+        if (ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT" || ae.isContentEditable)) return;
+        const crumb = document.querySelector(".subagent-parent-up[href]");
+        if (!crumb) return;
+        e.preventDefault();
+        this.navigateTo(crumb.getAttribute("href"));
       });
     },
   };

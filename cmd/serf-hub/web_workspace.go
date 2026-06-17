@@ -290,6 +290,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 						data.WorkingDir = pe.Meta.EnvInfo.WorkingDir
 					}
 					s.fillForkLineage(&data, pe.Meta)
+					s.fillSubagentLineage(&data, pe.Meta)
 				}
 			}
 			if state == "ended" && s.cfg.Past != nil {
@@ -317,6 +318,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				Capabilities: s.apiSessionCapabilities(id, false),
 			}
 			s.fillForkLineage(&data, pe.Meta)
+			s.fillSubagentLineage(&data, pe.Meta)
 			return data
 		}
 	}
@@ -369,6 +371,28 @@ func (s *WebServer) fillForkLineage(data *WorkspaceData, m schema.SessionMeta) {
 			return
 		}
 	}
+}
+
+// fillSubagentLineage populates the WorkspaceData parent-breadcrumb fields for a
+// subagent's workspace (mockup #9). Without this, opening a subagent via
+// "view →" was a one-way hard nav to /s/<ref> with no way back. The crumb links
+// to the parent's workspace; ParentTitle is the parent's display name (best-
+// effort from the past index, falling back to a short id).
+func (s *WebServer) fillSubagentLineage(data *WorkspaceData, m schema.SessionMeta) {
+	if !m.IsSubagent || m.ParentSessionID == "" {
+		return
+	}
+	data.ParentRouteID = canonicalRouteID(m.ParentSessionID)
+	title := ""
+	if s.cfg.Past != nil {
+		if pe, ok := s.cfg.Past.Find(m.ParentSessionID); ok {
+			title = schema.SessionDisplayName(pe.Meta)
+		}
+	}
+	if title == "" {
+		title = hubcore.ShortID(m.ParentSessionID)
+	}
+	data.ParentTitle = title
 }
 
 func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id string) {

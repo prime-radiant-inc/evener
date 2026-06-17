@@ -4004,6 +4004,74 @@ func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 	}
 }
 
+// TestWeb_Workspace_SubagentParentBreadcrumb verifies that a subagent's
+// workspace renders a breadcrumb banner linking back up to its parent — the
+// fix for "view → hard-navigates to /s/<ref> with no back-out" (mockup #9).
+// The parent crumb is a real link to the parent's workspace.
+func TestWeb_Workspace_SubagentParentBreadcrumb(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Parent session.
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: "01PARENT", UpdatedAt: time.Now().Add(-time.Hour),
+		OriginalPrompt: "Refactor auth token cache",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Subagent — IsSubagent + ParentSessionID points at the parent.
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: "01CHILD", UpdatedAt: time.Now(),
+		OriginalPrompt:  "verify-billing",
+		ParentSessionID: "01PARENT",
+		IsSubagent:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01CHILD/workspace", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	wants := []string{
+		"subagent-parent-banner",    // the breadcrumb container
+		`href="/s/01PARENT"`,        // a real link up to the parent workspace
+		"Refactor auth token cache", // the parent's title as the crumb label
+		"verify-billing",            // the current (subagent) crumb
+	}
+	for _, w := range wants {
+		if !strings.Contains(body, w) {
+			t.Errorf("subagent breadcrumb missing %q: %q", w, body)
+		}
+	}
+	// A non-subagent session must NOT get the breadcrumb.
+	req2 := httptest.NewRequest(http.MethodGet, "/_partials/s/01PARENT/workspace", nil)
+	req2.Host = "127.0.0.1:9180"
+	req2.Header.Set("HX-Request", "true")
+	rec2 := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec2, req2)
+	if strings.Contains(rec2.Body.String(), "subagent-parent-banner") {
+		t.Errorf("non-subagent session must not render the subagent breadcrumb")
+	}
+}
+
 func TestWeb_SessionAction_InterruptForwards(t *testing.T) {
 	var called bool
 	dir := t.TempDir()
