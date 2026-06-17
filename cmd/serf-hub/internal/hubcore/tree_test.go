@@ -433,6 +433,204 @@ func TestTreeProject_AgeIsFormatted(t *testing.T) {
 	}
 }
 
+func TestBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
+	// mockup #10 spine: a project header carries a *magnitude* rollup
+	// (how many are live vs. how many need you), not a single ambiguous dot.
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01WORK1", UpdatedAt: now, OriginalPrompt: "work a",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01WORK2", UpdatedAt: now.Add(-time.Minute), OriginalPrompt: "work b",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01ASK", UpdatedAt: now.Add(-2 * time.Minute), OriginalPrompt: "blocked",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01ZZZ", UpdatedAt: now.Add(-3 * time.Minute), OriginalPrompt: "idle one",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01WORK1", Status: appwire.ThreadStatusActive},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01WORK2", Status: appwire.ThreadStatusActive},
+		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting},
+		{Entry: rendezvous.Entry{PID: 4}, SessionID: "01ZZZ", Status: appwire.ThreadStatusIdle},
+	}
+	proj := projectByName(t, BuildTree(metas, live), "serf")
+	// 2 working (active) sessions, 1 awaiting (needs-you). Idle does not count
+	// toward either magnitude — it's the settled state.
+	if proj.RollupLive != 2 {
+		t.Errorf("RollupLive = %d, want 2", proj.RollupLive)
+	}
+	if proj.RollupAttn != 1 {
+		t.Errorf("RollupAttn = %d, want 1", proj.RollupAttn)
+	}
+}
+
+func TestBuildTree_NeedsYouAggregatesAwaitingAcrossProjects(t *testing.T) {
+	// mockup #11 rec: a single "Needs you" tier that aggregates every awaiting
+	// session across all projects, oldest-first, hidden when nothing awaits.
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01A_NEW", UpdatedAt: now.Add(-time.Minute), OriginalPrompt: "newer ask",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01A_OLD", UpdatedAt: now.Add(-5 * time.Minute), OriginalPrompt: "older ask",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/prime-radiant"}},
+		{ID: "01LIVE", UpdatedAt: now, OriginalPrompt: "just working",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A_NEW", Status: appwire.ThreadStatusAwaiting},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01A_OLD", Status: appwire.ThreadStatusAwaiting},
+		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
+	}
+	tree := BuildTree(metas, live)
+	if len(tree.NeedsYou) != 2 {
+		t.Fatalf("NeedsYou count = %d, want 2 (only awaiting sessions)", len(tree.NeedsYou))
+	}
+	// Oldest-blocked first so the triage queue works top-down.
+	if tree.NeedsYou[0].ID != "01A_OLD" {
+		t.Errorf("NeedsYou[0] = %q, want 01A_OLD (oldest awaiting first)", tree.NeedsYou[0].ID)
+	}
+	// Each needs-you node carries its project for the cross-project meta line.
+	if tree.NeedsYou[0].Project != "prime-radiant" {
+		t.Errorf("NeedsYou[0].Project = %q, want prime-radiant", tree.NeedsYou[0].Project)
+	}
+	// A working (non-awaiting) session never appears in the triage tier.
+	for _, n := range tree.NeedsYou {
+		if n.ID == "01LIVE" {
+			t.Errorf("working session leaked into NeedsYou: %q", n.ID)
+		}
+	}
+}
+
+func TestBuildTree_NeedsYouEmptyWhenNothingAwaits(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01LIVE", UpdatedAt: now, OriginalPrompt: "working",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
+	}
+	if got := len(BuildTree(metas, live).NeedsYou); got != 0 {
+		t.Errorf("NeedsYou should be empty when nothing awaits, got %d", got)
+	}
+}
+
+func TestBuildTree_ClustersRepeatedIdleTitles(t *testing.T) {
+	// mockup #10/#C rec: a run of same-titled idle sessions collapses to one
+	// cluster row; live/needs-you sessions stay un-clustered so signal isn't
+	// hidden behind a fold.
+	now := time.Now()
+	metas := []schema.SessionMeta{}
+	for i := 0; i < 5; i++ {
+		metas = append(metas, schema.SessionMeta{
+			ID:        "01IMG" + string(rune('A'+i)),
+			Name:      "describe this image",
+			UpdatedAt: now.Add(-time.Duration(i) * time.Hour),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf-docs"},
+		})
+	}
+	// A distinct singleton in the same project must not be swept into a cluster.
+	metas = append(metas, schema.SessionMeta{
+		ID: "01HAIKU", Name: "write a haiku", UpdatedAt: now.Add(-30 * time.Minute),
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-docs"}})
+
+	proj := projectByName(t, BuildTree(metas, nil), "serf-docs")
+	var clusters, singles int
+	for _, s := range proj.Sessions {
+		if s.Kind == "cluster" {
+			clusters++
+			if s.ClusterCount != 5 {
+				t.Errorf("cluster count = %d, want 5", s.ClusterCount)
+			}
+			if len(s.Children) != 5 {
+				t.Errorf("cluster should hold its 5 members as children, got %d", len(s.Children))
+			}
+			if !strings.Contains(s.Title, "describe this image") {
+				t.Errorf("cluster title = %q, want the shared title", s.Title)
+			}
+		} else {
+			singles++
+		}
+	}
+	if clusters != 1 {
+		t.Errorf("clusters = %d, want 1", clusters)
+	}
+	if singles != 1 {
+		t.Errorf("singleton sessions = %d, want 1 (the haiku)", singles)
+	}
+}
+
+func TestBuildTree_DoesNotClusterLiveRepeatedTitles(t *testing.T) {
+	// A live/needs-you member must keep all repeated-title sessions un-clustered
+	// so live signal is never hidden behind a fold.
+	now := time.Now()
+	metas := []schema.SessionMeta{}
+	for i := 0; i < 4; i++ {
+		metas = append(metas, schema.SessionMeta{
+			ID:        "01DUP" + string(rune('A'+i)),
+			Name:      "describe this image",
+			UpdatedAt: now.Add(-time.Duration(i) * time.Minute),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf-docs"},
+		})
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01DUPA", Status: appwire.ThreadStatusActive},
+	}
+	proj := projectByName(t, BuildTree(metas, live), "serf-docs")
+	for _, s := range proj.Sessions {
+		if s.Kind == "cluster" {
+			t.Fatalf("repeated titles must NOT cluster when a member is live: got cluster %q", s.Title)
+		}
+	}
+	if len(proj.Sessions) != 4 {
+		t.Errorf("expected 4 un-clustered sessions, got %d", len(proj.Sessions))
+	}
+}
+
+func TestBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
+	// A subagent that still reports "active" in the live map but whose parent
+	// session has ended must not keep spinning ⟳ forever — its state is clamped
+	// to "ended" so the dead session's children read as terminal.
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01DEADP", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "parent",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01STALESUB", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "sub",
+			IsSubagent: true, ParentSessionID: "01DEADP",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	// Parent is NOT live (ended); the subagent lingers as "active" in the map.
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 9}, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive},
+	}
+	proj := projectByName(t, BuildTree(metas, live), "serf")
+	if len(proj.Sessions) != 1 || len(proj.Sessions[0].Children) != 1 {
+		t.Fatalf("unexpected shape: %#v", proj.Sessions)
+	}
+	if got := proj.Sessions[0].Children[0].State; got != "ended" {
+		t.Errorf("stale subagent state = %q, want ended (parent is dead)", got)
+	}
+}
+
+func TestBuildTree_KeepsSubagentStateWhenParentLive(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01LIVEP", UpdatedAt: now, OriginalPrompt: "parent",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01RUNSUB", UpdatedAt: now, OriginalPrompt: "sub",
+			IsSubagent: true, ParentSessionID: "01LIVEP",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVEP", Status: appwire.ThreadStatusActive},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01RUNSUB", Status: appwire.ThreadStatusActive},
+	}
+	proj := projectByName(t, BuildTree(metas, live), "serf")
+	if got := proj.Sessions[0].Children[0].State; got != "active" {
+		t.Errorf("live subagent state = %q, want active (parent is live)", got)
+	}
+}
+
 func TestBuildTree_OrdersProjectsByRecencyWithinResult(t *testing.T) {
 	// Projects should be emitted in tier order (active, recent, older, test),
 	// and within a tier most-recent first.

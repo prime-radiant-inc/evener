@@ -11,9 +11,16 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
-// Tree is the sidebar data model: a flat live-triage section and a
-// project-grouped section for all sessions.
+// Tree is the navigation data model.
+//
+//   - NeedsYou is the cross-project triage tier the sidebar renders at the top:
+//     every awaiting session, oldest-blocked first, hidden when empty.
+//   - Projects is the tier-grouped project tree (the sidebar's single live home;
+//     the flat Live rail it once duplicated has been retired from the sidebar).
+//   - Live is the flat live list still consumed by the /api/tree JSON endpoint;
+//     the sidebar no longer renders it.
 type Tree struct {
+	NeedsYou []TreeNode
 	Live     []TreeNode
 	Projects []TreeProject
 }
@@ -24,7 +31,13 @@ type TreeProject struct {
 	WorkingDir  string // absolute path of the project's working directory; used to prefill the spawn form
 	Sessions    []TreeNode
 	RollupState string // highest-attention state across this project's live sessions; "" if none
-	Tier        string // sidebar tier: "active" | "recent" | "older" | "test"
+	// Magnitude rollup: how many of the project's live sessions are working
+	// (RollupLive) vs. awaiting input (RollupAttn). The header renders these as
+	// "⟳N · ◆M" so "how many need me" is legible without expanding — the single
+	// rollup dot couldn't say that. Idle/ended sessions count toward neither.
+	RollupLive int
+	RollupAttn int
+	Tier       string // sidebar tier: "active" | "recent" | "older" | "test"
 	// MostRecent is the project's newest top-level session activity, used to
 	// rank projects within a tier (most-recent first).
 	MostRecent time.Time
@@ -89,17 +102,20 @@ func tierRank(tier string) int {
 //   - "session"  – top-level session
 //   - "subagent" - created by delegate (purple dot, indented)
 //   - "fork"     – branched session (⎇ glyph, same indent as session, dim)
+//   - "cluster"  – a fold of N same-titled idle sessions (mockup #10/#C); the
+//     individual runs are the cluster's Children and ClusterCount is N.
 type TreeNode struct {
-	ID        string
-	Title     string
-	Project   string
-	Branch    string // git branch at session start; empty when unknown
-	State     string // "awaiting" | "active" | "warning" | "idle" | "ended"
-	Kind      string // "session" | "subagent" | "fork"
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Age       string // pre-formatted "now", "2m", "3h", "5d"
-	Children  []TreeNode
+	ID           string
+	Title        string
+	Project      string
+	Branch       string // git branch at session start; empty when unknown
+	State        string // "awaiting" | "active" | "warning" | "idle" | "ended"
+	Kind         string // "session" | "subagent" | "fork" | "cluster"
+	ClusterCount int    // for Kind=="cluster": number of folded same-titled runs
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	Age          string // pre-formatted "now", "2m", "3h", "5d"
+	Children     []TreeNode
 }
 
 // TierGroup is a labeled band of projects for the sidebar. Tiers render
@@ -417,12 +433,22 @@ func BuildTree(metas []schema.SessionMeta, live []LiveEntry) Tree {
 				return sessionMetaLess(forks[i], forks[j])
 			})
 
+			// A subagent cannot legitimately be live once its parent session
+			// has ended: the worker process died with the parent, but a stale
+			// "active"/"awaiting" entry can linger in the live map and would
+			// otherwise spin ⟳ forever. Clamp the child to "ended" when the
+			// parent is not live.
+			parentDead := node.State == "ended"
 			for _, c := range subagents {
+				childState := stateFor(c.ID)
+				if parentDead {
+					childState = "ended"
+				}
 				node.Children = append(node.Children, TreeNode{
 					ID:        c.ID,
 					Title:     nodeTitle(c, "subagent"),
 					Project:   pname,
-					State:     stateFor(c.ID),
+					State:     childState,
 					Kind:      "subagent",
 					CreatedAt: OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
 					UpdatedAt: OrderUpdatedAt(c.UpdatedAt, c.CreatedAt),
@@ -445,24 +471,21 @@ func BuildTree(metas []schema.SessionMeta, live []LiveEntry) Tree {
 			sessions = append(sessions, node)
 		}
 
-		// RollupState: highest-attention state across live sessions in this project.
+		// Rollup: highest-attention state (for the tier classification + dot
+		// fallback) plus the magnitude counts the header renders. Counts run
+		// over the project's own top-level sessions so subagents don't inflate
+		// the "how many need me" answer.
 		rollup := ""
-		for _, le := range live {
-			// Check if this live entry belongs to this project.
-			// We need to find the meta for this session.
-			var meta *schema.SessionMeta
-			for i := range metas {
-				if metas[i].ID == le.SessionID && projectName(metas[i]) == pname {
-					meta = &metas[i]
-					break
-				}
+		rollupLive, rollupAttn := 0, 0
+		for _, s := range sessions {
+			if rollupRank(s.State) > rollupRank(rollup) {
+				rollup = s.State
 			}
-			if meta == nil {
-				continue
-			}
-			state := stateFor(le.SessionID)
-			if rollupRank(state) > rollupRank(rollup) {
-				rollup = state
+			switch s.State {
+			case "awaiting", "warning":
+				rollupAttn++
+			case "active":
+				rollupLive++
 			}
 		}
 
@@ -477,8 +500,10 @@ func BuildTree(metas []schema.SessionMeta, live []LiveEntry) Tree {
 		treeProjects = append(treeProjects, TreeProject{
 			Name:        pname,
 			WorkingDir:  projects[pname].workingDir,
-			Sessions:    sessions,
+			Sessions:    clusterRepeatedTitles(sessions),
 			RollupState: rollup,
+			RollupLive:  rollupLive,
+			RollupAttn:  rollupAttn,
 			Tier:        tierFor(pname, rollup, mostRecent, now),
 			MostRecent:  mostRecent,
 			Age:         AgeString(mostRecent),
@@ -497,8 +522,10 @@ func BuildTree(metas []schema.SessionMeta, live []LiveEntry) Tree {
 		return treeProjects[i].MostRecent.After(treeProjects[j].MostRecent)
 	})
 
-	// Build the Live slice: every live session, flat, Kind="session",
-	// sorted by attention rank desc, then the Hub session ordering contract.
+	// Build the Live slice: every live session, flat, sorted by attention rank
+	// desc, then the Hub session ordering contract. The sidebar no longer
+	// renders this rail (it duplicated the active tier), but the /api/tree JSON
+	// endpoint still consumes it.
 	liveNodes := make([]TreeNode, 0, len(live))
 	for _, le := range live {
 		if le.SessionID == "" {
@@ -542,10 +569,133 @@ func BuildTree(metas []schema.SessionMeta, live []LiveEntry) Tree {
 		return treeNodeLess(liveNodes[i], liveNodes[j], metaMap, liveMap)
 	})
 
+	// Build the NeedsYou triage tier: every top-level live session awaiting the
+	// user, flat across all projects, oldest-blocked first so the queue works
+	// top-down. Subagents and working/idle sessions are excluded — this tier is
+	// strictly "what needs me right now." When nothing awaits it is empty and
+	// the sidebar hides it entirely.
+	needsYou := make([]TreeNode, 0, len(live))
+	for _, le := range live {
+		if le.SessionID == "" {
+			continue
+		}
+		if stateFor(le.SessionID) != "awaiting" {
+			continue
+		}
+		var meta *schema.SessionMeta
+		for i := range metas {
+			if metas[i].ID == le.SessionID {
+				meta = &metas[i]
+				break
+			}
+		}
+		// Only top-level sessions surface in triage — a subagent's parent is
+		// the actionable unit.
+		if meta != nil && meta.IsSubagent {
+			continue
+		}
+		node := TreeNode{
+			ID:    le.SessionID,
+			State: "awaiting",
+			Kind:  "session",
+		}
+		if meta != nil {
+			node.Title = nodeTitle(*meta, nodeKind(*meta))
+			node.Project = projectName(*meta)
+			node.Branch = meta.EnvInfo.GitBranch
+			node.CreatedAt = OrderCreatedAt(meta.CreatedAt, meta.UpdatedAt)
+			node.UpdatedAt = OrderUpdatedAt(meta.UpdatedAt, meta.CreatedAt)
+			node.Age = AgeString(node.UpdatedAt)
+		} else {
+			node.Title = ShortID(le.SessionID)
+			node.CreatedAt = le.StartedAt
+			node.UpdatedAt = le.StartedAt
+			node.Age = AgeString(le.StartedAt)
+		}
+		needsYou = append(needsYou, node)
+	}
+	// Oldest blocked first — the session that has waited longest is most urgent.
+	sort.SliceStable(needsYou, func(i, j int) bool {
+		return needsYou[i].UpdatedAt.Before(needsYou[j].UpdatedAt)
+	})
+
 	return Tree{
+		NeedsYou: needsYou,
 		Live:     liveNodes,
 		Projects: treeProjects,
 	}
+}
+
+// clusterRepeatedTitles folds same-titled idle/ended sessions into a single
+// "cluster" node so a project that ran the same one-shot prompt N times
+// ("describe this image ×5") collapses to one row. A cluster's members become
+// its Children and ClusterCount is N. A title only folds when EVERY session
+// bearing it is clusterable: if any same-titled session is live / needs-you /
+// has children, none of them cluster, because hiding live signal behind a fold
+// defeats the sidebar. A title needs at least clusterMin members to fold.
+//
+// The cluster row takes the slot of the title's first (most-recent) appearance;
+// the input recency order is otherwise preserved.
+func clusterRepeatedTitles(sessions []TreeNode) []TreeNode {
+	const clusterMin = 3
+
+	// Tally per-title clusterable counts and whether the title is foldable
+	// (no non-clusterable member shares it).
+	clusterableByTitle := make(map[string]int)
+	foldable := make(map[string]bool)
+	for _, s := range sessions {
+		if clusterable(s) {
+			if _, seen := foldable[s.Title]; !seen {
+				foldable[s.Title] = true
+			}
+			clusterableByTitle[s.Title]++
+		} else {
+			foldable[s.Title] = false
+		}
+	}
+
+	out := make([]TreeNode, 0, len(sessions))
+	emitted := make(map[string]bool)
+	for _, s := range sessions {
+		title := s.Title
+		if !clusterable(s) || !foldable[title] || clusterableByTitle[title] < clusterMin {
+			out = append(out, s)
+			continue
+		}
+		if emitted[title] {
+			continue // members other than the first are folded into the cluster
+		}
+		emitted[title] = true
+		members := make([]TreeNode, 0, clusterableByTitle[title])
+		for _, m := range sessions {
+			if m.Title == title && clusterable(m) {
+				members = append(members, m)
+			}
+		}
+		out = append(out, TreeNode{
+			Title:        title,
+			Project:      s.Project,
+			State:        "ended",
+			Kind:         "cluster",
+			ClusterCount: len(members),
+			UpdatedAt:    s.UpdatedAt, // first (most-recent) member carries recency
+			Age:          s.Age,
+			Children:     members,
+		})
+	}
+	return out
+}
+
+// clusterable reports whether a session row may be folded into a repeated-title
+// cluster: it must be a plain idle/ended session with no children of its own.
+func clusterable(n TreeNode) bool {
+	if n.Kind != "session" {
+		return false
+	}
+	if len(n.Children) > 0 {
+		return false
+	}
+	return n.State == "idle" || n.State == "ended"
 }
 
 func treeNodeLess(a, b TreeNode, metaMap map[string]schema.SessionMeta, liveMap map[string]LiveEntry) bool {
