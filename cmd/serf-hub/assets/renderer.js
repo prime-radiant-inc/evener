@@ -45,6 +45,12 @@
   const { toggleTasksPanel, currentTaskSummary, updateTasksBadge } =
     window.SerfRendererInternal;
 
+  // Liveness: how long an active session can go without a frame before we drop
+  // the reassuring pulse and say "no updates for Ns". Reasoning now streams as
+  // frames, so a real gap means a genuinely silent phase — not normal thinking.
+  const LIVENESS_STALE_MS = 20000;
+  const LIVENESS_TICK_MS = 3000;
+
   const SerfRenderer = {
     init(conversationEl) {
       if (!conversationEl) return;
@@ -71,6 +77,10 @@
       if (this.appwireReconnectTimer) {
         clearTimeout(this.appwireReconnectTimer);
         this.appwireReconnectTimer = null;
+      }
+      if (this.livenessTimer) {
+        clearInterval(this.livenessTimer);
+        this.livenessTimer = null;
       }
 
       this.conversation = conversationEl;
@@ -120,6 +130,8 @@
       // truth instead of mirroring local POSTs. depth is the authoritative
       // count, preview is the head-first list.
       this.queueState = { depth: 0, preview: [] };
+      this.lastFrameAt = Date.now();     // wall-clock of the last frame, for honest liveness
+      this.livenessStale = false;
 
       this.conversation.innerHTML = "";
 
@@ -132,6 +144,8 @@
       this.bindInputForm();
       this.syncTurnActionControls();
       this.bindKeyboard();
+      this.ensureLivenessEl();
+      this.startLivenessTimer();
       // Cold-load hydration: fetch the task list ONCE before processing any
       // events so the first transition (system-line) renders with task
       // descriptions instead of a #N → title flash a few seconds later.
@@ -639,6 +653,8 @@
     },
 
     handle(kind, ev) {
+      // Every frame from the daemon (incl. reasoning) resets the liveness clock.
+      this.lastFrameAt = Date.now();
       // Buffer events until the cold-load /tasks fetch resolves, so the
       // first batch of system-lines renders with task descriptions and
       // never shows the #N → title flash on resume.
@@ -1246,6 +1262,58 @@
       const secs = Math.max(1, Math.round((Date.now() - (this.reasoningStartedAt || Date.now())) / 1000));
       const label = el.querySelector(".think-label");
       if (label) label.innerHTML = "✦ Thought for <span class=\"num\">" + secs + "s</span>";
+    },
+
+    // ensureLivenessEl keeps a single liveness line just below the transcript
+    // (a sibling of #conversation, so transcript appends never disturb it).
+    ensureLivenessEl() {
+      if (!this.conversation || !this.conversation.parentNode) { this.livenessEl = null; return; }
+      let el = this.conversation.parentNode.querySelector(".liveness");
+      if (!el) {
+        el = document.createElement("div");
+        el.className = "liveness";
+        el.hidden = true;
+        this.conversation.parentNode.insertBefore(el, this.conversation.nextSibling);
+      }
+      this.livenessEl = el;
+    },
+
+    startLivenessTimer() {
+      if (this.livenessTimer) clearInterval(this.livenessTimer);
+      this.livenessTimer = setInterval(() => this.refreshLiveness(), LIVENESS_TICK_MS);
+    },
+
+    // refreshLiveness surfaces an honest "no updates for Ns" while an actively
+    // working session has gone quiet, and drops the reassuring status-dot pulse
+    // so a hung agent never looks identical to a busy one.
+    refreshLiveness() {
+      const el = this.livenessEl;
+      if (!el) return;
+      const gap = this.lastFrameAt ? (Date.now() - this.lastFrameAt) : 0;
+      const stale = this.state === "active" && gap > LIVENESS_STALE_MS;
+      if (stale) {
+        el.textContent = "still working · no updates for " + this.formatLivenessGap(gap);
+        el.hidden = false;
+      } else {
+        el.hidden = true;
+        el.textContent = "";
+      }
+      if (stale !== this.livenessStale) {
+        this.livenessStale = stale;
+        if (this.conversation) {
+          if (stale) this.conversation.dataset.stale = "true";
+          else this.conversation.removeAttribute("data-stale");
+        }
+        applyStatusDotPulse(document);
+      }
+    },
+
+    formatLivenessGap(ms) {
+      const secs = Math.round(ms / 1000);
+      if (secs < 60) return secs + "s";
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      return m + "m" + (s ? " " + s + "s" : "");
     },
 
     beginToolCall(data) {
@@ -2169,10 +2237,12 @@
   // after any DOM change that may have introduced status dots.
   function applyStatusDotPulse(root) {
     const scope = root || document;
+    // A session that's gone silent must not keep breathing as if all is well.
+    const stale = !!document.querySelector('.conversation[data-stale="true"]');
     const dots = scope.querySelectorAll(".status-dot[data-state]");
     dots.forEach(dot => {
       const state = dot.getAttribute("data-state");
-      const shouldPulse = state === "active" || state === "awaiting" || state === "errored";
+      const shouldPulse = !stale && (state === "active" || state === "awaiting" || state === "errored");
       if (shouldPulse) {
         dot.setAttribute("data-pulse", "");
       } else {
