@@ -1038,6 +1038,187 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
   .test-date-header { display: none; }
 }
 
+/* ============================================================
+   Session tiers: Current / Recent / (collapsed) Archived
+   Labels read like the other quiet section labels (small, dim,
+   consistent with .sidebar-section-header / .project-header
+   treatment). Archived content recedes — neutral, never amber
+   or red (settled/put-away, not needs-you/error).
+   ============================================================ */
+
+/* Tier wrapper — thin top spacing between Current / Recent bands. */
+.session-tier { margin-top: var(--space-2); }
+.session-tier:first-child { margin-top: 0; }
+
+/* Label: quiet dim, small, matches .sidebar-section-header density.
+   Not uppercase — these are content sub-heads inside a project, not
+   top-level machine labels; they follow .project-header weight/case. */
+.session-tier-label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-5) var(--space-1);
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  color: var(--text-dim);
+  list-style: none; /* reset for <summary> */
+  cursor: default;
+}
+/* Count inside the label (e.g. "Archived 3") — mono, same dim. */
+.session-tier-label .count {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+/* Collapsed archived-sessions disclosure: <details class="session-tier archived">.
+   The <summary> is .session-tier-label, so it gets a pointer and a
+   disclosure affordance (::before chevron) to signal interactability.
+   Archived sessions recede — dim neutral, never colored. */
+details.session-tier.archived > summary.session-tier-label {
+  cursor: pointer;
+}
+details.session-tier.archived > summary.session-tier-label::before {
+  content: "▸";
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-dim);
+  width: 8px;
+  flex-shrink: 0;
+  transition: transform var(--motion-fast);
+}
+details.session-tier.archived[open] > summary.session-tier-label::before {
+  transform: rotate(90deg);
+}
+/* Suppress browser default disclosure triangle. */
+details.session-tier.archived > summary.session-tier-label::-webkit-details-marker { display: none; }
+
+/* Archived sessions inside the disclosure: dim titles so they recede
+   below live Current/Recent content. State dots still carry their
+   shape/color (correct — state is informative), but the title text
+   stays muted. */
+details.session-tier.archived .sb-row .title { color: var(--text-muted); }
+
+/* ============================================================
+   Archived-projects group: <section class="archived-projects">
+   wrapping a <details>. The <summary> is the tier-header, so it
+   shares .sidebar-section-header / .tier-header treatment and adds
+   a disclosure affordance. Entire section recedes (neutral/dim).
+   ============================================================ */
+
+.archived-projects > details > summary.tier-header {
+  cursor: pointer;
+  list-style: none;
+}
+.archived-projects > details > summary.tier-header::before {
+  content: "▸";
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  width: 10px;
+  flex-shrink: 0;
+  margin-right: var(--space-1);
+  transition: transform var(--motion-fast);
+}
+.archived-projects > details[open] > summary.tier-header::before {
+  transform: rotate(90deg);
+}
+.archived-projects > details > summary.tier-header::-webkit-details-marker { display: none; }
+
+/* Archived-projects content: project names muted to match the
+   "settled/put-away" recede convention (same as recent/older tiers). */
+.archived-projects .project-name { color: var(--text-muted); }
+
+/* ============================================================
+   Archive control: .sb-row-wrap + .archive-btn
+   The .sb-row-wrap positions the archive button flush-right on
+   the session row. The button is invisible by default, reveals on
+   row-wrap or project-header hover, then brightens on its own hover.
+   Matches the .project-new-btn / .project-gear-btn pattern exactly.
+   ============================================================ */
+
+/* .sb-row-wrap: relative container so the button can overlay the row. */
+.sb-row-wrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+/* The session link fills the full width; the archive button overlays
+   right-aligned on hover so it never bumps the layout. */
+.sb-row-wrap > .sb-row {
+  flex: 1;
+  min-width: 0;
+}
+/* The archive button: hidden by default; revealed on row hover;
+   brightens on its own hover. Uses absolute positioning so it
+   sits on top of the right side of the row without shifting layout. */
+.sb-row-wrap > .archive-btn {
+  position: absolute;
+  right: var(--space-2);
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity var(--motion-fast), color var(--motion-fast);
+  /* Suppress .btn base styles that add borders/backgrounds at rest. */
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+  /* Keep tap target but shrink visual footprint on the row. */
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-sm);
+  line-height: 1;
+  min-height: 0;
+  z-index: 1;
+}
+.sb-row-wrap:hover > .archive-btn,
+.sb-row-wrap:focus-within > .archive-btn {
+  opacity: 1;
+  color: var(--text-muted);
+}
+.sb-row-wrap > .archive-btn:hover {
+  opacity: 1;
+  color: var(--text);
+  background: transparent;
+  border-color: transparent;
+}
+/* Archive button on the project header: same reveal pattern,
+   already handled by the .project-header:hover gate; just strip
+   the base button chrome so it renders inline like .project-gear-btn. */
+.project-header > .archive-btn.btn-icon {
+  color: var(--text-dim);
+  opacity: 0;
+  transition: opacity var(--motion-fast), color var(--motion-fast);
+  background: transparent;
+  border: none;
+  min-width: 0;
+  padding: 0 var(--space-1);
+  font-size: var(--text-sm);
+  min-height: 0;
+}
+.project-header:hover > .archive-btn.btn-icon,
+.project-header:focus-within > .archive-btn.btn-icon {
+  opacity: 1;
+  color: var(--text-muted);
+}
+.project-header > .archive-btn.btn-icon:hover {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text);
+}
+
+/* Rail mode + container-collapse: hide tier labels and archive buttons
+   along with the rest of the text-bearing sidebar chrome. */
+body.app[data-sidebar-rail] .session-tier-label,
+body.app[data-sidebar-rail] .archive-btn { display: none; }
+@container sidebar (max-width: 80px) {
+  .session-tier-label,
+  .archive-btn { display: none; }
+}
+
 /* Workspace pane */
 .workspace-header { padding: var(--space-4) var(--space-6) var(--space-4); border-bottom: 1px solid var(--rule); }
 .workspace-title-row { display: flex; align-items: center; gap: var(--space-4); }
