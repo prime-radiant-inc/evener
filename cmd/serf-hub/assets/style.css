@@ -1907,6 +1907,62 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
 .system-line-pointer { display: inline-block; text-decoration: none; cursor: pointer; }
 .system-line-pointer:hover { color: var(--text); }
 
+/* Inline plan checklist (mockup #18 alt C): the full task set rendered as ONE
+   neutral box at the moment the plan is declared/updated. Same containment
+   device as the subagents module (.subs): bg-raised + a hairline rule. Three
+   glyph-paired states — ✓ done (neutral, recedes), ⟳ current (blue, the live
+   item), ○ pending (dim). Empty plan ⇒ the block is never emitted. */
+.plan-block {
+  margin: var(--space-3) 0 var(--space-4) var(--tool-indent);
+  max-width: min(720px, 100%);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+}
+.plan-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+.plan-title { font-size: var(--text-sm); font-weight: 600; color: var(--text); }
+.plan-progress {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.plan-item {
+  display: flex;
+  gap: var(--space-3);
+  align-items: baseline;
+  padding: var(--space-1) 0;
+  line-height: var(--leading-snug);
+  font-size: var(--text-base);
+}
+.plan-glyph {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+/* done — neutral, recedes. No strike (these are completed, not removed). */
+.plan-item.done .plan-glyph { color: var(--state-idle); }
+.plan-item.done .plan-step { color: var(--text-muted); }
+/* current — the live in_progress item. The only colored line; its glyph reuses
+   the single sanctioned perpetual loop (think-breathe at --pulse-cycle). */
+.plan-item.current .plan-glyph { color: var(--accent); animation: think-breathe var(--pulse-cycle) infinite; }
+.plan-item.current .plan-step { color: var(--text); font-weight: 500; }
+/* pending — not started. Dim glyph + tertiary text. */
+.plan-item.pending .plan-glyph { color: var(--text-dim); }
+.plan-item.pending .plan-step { color: var(--text-muted); }
+/* cancelled — recedes like done, struck to read as dropped. */
+.plan-item.cancelled .plan-glyph { color: var(--text-dim); }
+.plan-item.cancelled .plan-step { color: var(--text-dim); text-decoration: line-through; }
+
 /* Context compaction (mockup #17 Alt A): a quiet neutral lifecycle one-liner
    that expands to the real before/after math. Settled = neutral (it is a DONE
    event), glyph-paired (⊟), never color/alarm. */

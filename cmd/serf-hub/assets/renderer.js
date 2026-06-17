@@ -25,6 +25,8 @@
     appendTaskDetailDisclosure,
     appendTaskListDetails,
     taskListIconKind,
+    planStateClass,
+    planGlyphForStatus,
     formatTaskListAction,
     parseToolState,
     parseToolJSON,
@@ -2585,7 +2587,53 @@
         appendTaskListDetails(line, args);
         this.conversation.appendChild(line);
       }
+      this.appendPlanBlock();
       this.refreshTaskBadgeSoon();
+    },
+
+    // appendPlanBlock renders the inline plan checklist (mockup #18 alt C): the
+    // full current task set as ONE neutral box at the point the plan was
+    // declared/updated, with the three glyph-paired states (✓ done · ⟳ current
+    // · ○ pending) and a progress count. Empty plan ⇒ render NOTHING (no plan,
+    // no control). The task set is read from the shared description/status cache
+    // (taskDetails), which append/update calls and /tasks fetches keep current,
+    // so the block always shows real statuses ordered by task id.
+    appendPlanBlock() {
+      const tasks = Array.from(taskDetails.values())
+        .filter(t => t && t.id != null)
+        .sort((a, b) => Number(a.id) - Number(b.id));
+      if (!tasks.length) return;
+
+      const done = tasks.filter(t => t.status === "done" || t.status === "cancelled").length;
+      const block = document.createElement("div");
+      block.className = "plan-block";
+
+      const header = document.createElement("div");
+      header.className = "plan-header";
+      const title = document.createElement("span");
+      title.className = "plan-title";
+      title.textContent = "Plan";
+      const prog = document.createElement("span");
+      prog.className = "plan-progress";
+      prog.textContent = done + " / " + tasks.length;
+      header.appendChild(title);
+      header.appendChild(prog);
+      block.appendChild(header);
+
+      for (const t of tasks) {
+        const item = document.createElement("div");
+        item.className = "plan-item " + planStateClass(t.status);
+        const glyph = document.createElement("span");
+        glyph.className = "plan-glyph";
+        glyph.textContent = planGlyphForStatus(t.status);
+        const step = document.createElement("span");
+        step.className = "plan-step";
+        step.textContent = t.description || t.title || ("#" + t.id);
+        item.appendChild(glyph);
+        item.appendChild(step);
+        block.appendChild(item);
+      }
+      this.conversation.appendChild(block);
     },
 
     // lastSystemLineMentions returns true if the most-recent system-line in
