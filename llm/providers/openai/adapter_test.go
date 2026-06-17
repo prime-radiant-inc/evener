@@ -884,6 +884,66 @@ func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 	}
 }
 
+func TestAdapter_Stream_EmitsReasoningSummaryDeltas(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		write := func(event, data string) {
+			_, _ = io.WriteString(w, "event: "+event+"\ndata: "+data+"\n\n")
+			if f != nil {
+				f.Flush()
+			}
+		}
+		// Detailed reasoning streams as summary parts of text deltas, then the
+		// answer text, then completion.
+		write("response.reasoning_summary_part.added", `{"type":"response.reasoning_summary_part.added","summary_index":0}`)
+		write("response.reasoning_summary_text.delta", `{"type":"response.reasoning_summary_text.delta","delta":"Let me "}`)
+		write("response.reasoning_summary_text.delta", `{"type":"response.reasoning_summary_text.delta","delta":"think."}`)
+		write("response.reasoning_summary_part.added", `{"type":"response.reasoning_summary_part.added","summary_index":1}`)
+		write("response.reasoning_summary_text.delta", `{"type":"response.reasoning_summary_text.delta","delta":"Then verify."}`)
+		write("response.output_text.delta", `{"type":"response.output_text.delta","delta":"Answer"}`)
+		write("response.completed", `{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.5","output":[{"type":"message","content":[{"type":"output_text","text":"Answer"}]}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	effort := "high"
+	stream, err := a.Stream(ctx, llm.Request{Model: "gpt-5.5", ReasoningEffort: &effort, Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var reasoning strings.Builder
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventReasoningDelta {
+			reasoning.WriteString(ev.ReasoningDelta)
+		}
+	}
+	// The two summary parts are separated by a blank line.
+	if got := reasoning.String(); got != "Let me think.\n\nThen verify." {
+		t.Fatalf("reasoning stream = %q", got)
+	}
+	// Detailed reasoning summaries must be requested, or the API streams none.
+	r, _ := gotBody["reasoning"].(map[string]any)
+	if r == nil || r["summary"] != "detailed" {
+		t.Fatalf("request reasoning = %#v, want summary=detailed", gotBody["reasoning"])
+	}
+}
+
 // TestStream_ResponsesContentThenMidStreamFailure_SurfacesCause covers the case
 // where the responses stream sends content and then fails mid-read (not a clean
 // empty stream and not a context cancellation). The adapter must surface a

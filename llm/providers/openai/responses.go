@@ -97,7 +97,7 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		body["metadata"] = req.Metadata
 	}
 	if req.ReasoningEffort != nil {
-		body["reasoning"] = map[string]any{"effort": *req.ReasoningEffort}
+		body["reasoning"] = map[string]any{"effort": *req.ReasoningEffort, "summary": "detailed"}
 	}
 	include := append([]string{}, req.Include...)
 	if req.ReasoningEffort != nil {
@@ -217,6 +217,7 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 
 	textID := "text_1"
 	textStarted := false
+	reasoningStarted := false
 	finished := false
 	// sentContent tracks whether any meaningful content event was emitted.
 	// If the stream closes without content, we emit errEmptyResponsesStream.
@@ -304,6 +305,20 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 				s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: textID})
 			}
 			s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: textID, Delta: delta})
+		case "response.reasoning_summary_text.delta":
+			delta, _ := payload["delta"].(string)
+			if delta == "" {
+				return nil
+			}
+			sentContent = true
+			s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: delta})
+		case "response.reasoning_summary_part.added":
+			// Detailed reasoning arrives as multiple summary parts; separate
+			// them with a blank line so the rendered thought stays readable.
+			if reasoningStarted {
+				s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: "\n\n"})
+			}
+			reasoningStarted = true
 		case "response.function_call_arguments.delta":
 			delta, _ := payload["delta"].(string)
 			if delta == "" {
