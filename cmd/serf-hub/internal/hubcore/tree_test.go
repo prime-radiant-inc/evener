@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -640,6 +641,167 @@ func TestBuildTree_OrdersProjectsByMostRecentStart(t *testing.T) {
 	want := []string{"started-older", "started-newer"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("project order = %v, want %v", got, want)
+	}
+}
+
+func TestBuildTree_ExpandedOnlyForLiveProjects(t *testing.T) {
+	// A project auto-expands only when it has a live (working) or awaiting
+	// (needs-you) session — RollupLive > 0 || RollupAttn > 0. Idle-only and
+	// archived projects stay collapsed.
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01LIVE", UpdatedAt: now, OriginalPrompt: "working",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/live-proj"}},
+		{ID: "01IDLE", UpdatedAt: now, OriginalPrompt: "idle",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/idle-proj"}},
+		{ID: "01OLD", UpdatedAt: now.Add(-30 * 24 * time.Hour), OriginalPrompt: "stale",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/archived-proj"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01LIVE", Status: appwire.ThreadStatusActive},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01IDLE", Status: appwire.ThreadStatusIdle},
+	}
+	tree := buildTree(metas, live)
+
+	liveProj := projectByName(t, tree, "live-proj")
+	if !liveProj.Expanded {
+		t.Errorf("live-proj should be Expanded (RollupLive=%d RollupAttn=%d)", liveProj.RollupLive, liveProj.RollupAttn)
+	}
+	idleProj := projectByName(t, tree, "idle-proj")
+	if idleProj.Expanded {
+		t.Errorf("idle-proj should NOT be Expanded (RollupLive=%d RollupAttn=%d)", idleProj.RollupLive, idleProj.RollupAttn)
+	}
+	var archivedProj *TreeProject
+	for i := range tree.ArchivedProjects {
+		if tree.ArchivedProjects[i].Name == "archived-proj" {
+			archivedProj = &tree.ArchivedProjects[i]
+		}
+	}
+	if archivedProj == nil {
+		t.Fatalf("archived-proj should be an archived project")
+	}
+	if archivedProj.Expanded {
+		t.Errorf("archived-proj should NOT be Expanded")
+	}
+}
+
+func TestBuildTree_ExpandedForAwaitingProject(t *testing.T) {
+	// An awaiting (needs-you) session counts toward RollupAttn, which auto-expands.
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01ASK", UpdatedAt: now, OriginalPrompt: "blocked",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/asking"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting},
+	}
+	proj := projectByName(t, buildTree(metas, live), "asking")
+	if !proj.Expanded {
+		t.Errorf("awaiting project should be Expanded (RollupAttn=%d)", proj.RollupAttn)
+	}
+}
+
+func TestBuildTree_CapsSessionsPerTierWithOverflowCounts(t *testing.T) {
+	// Each tier is capped at maxSidebarSessionsPerTier; the overflow count is
+	// recorded so the sidebar can show a "+N older" note instead of every row.
+	now := time.Unix(1_700_000_000, 0)
+	total := maxSidebarSessionsPerTier + 7
+	metas := make([]schema.SessionMeta, 0, total)
+	for i := 0; i < total; i++ {
+		// Spread updated times so they don't cluster-fold (distinct titles too).
+		metas = append(metas, schema.SessionMeta{
+			ID:             fmt.Sprintf("01CUR%03d", i),
+			OriginalPrompt: fmt.Sprintf("current task %d", i),
+			CreatedAt:      now.Add(-time.Duration(i) * time.Minute),
+			UpdatedAt:      now.Add(-time.Duration(i) * time.Minute),
+			EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/projects/big"},
+		})
+	}
+	proj := projectByName(t, BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now), "big")
+	if len(proj.Current) != maxSidebarSessionsPerTier {
+		t.Errorf("Current capped len = %d, want %d", len(proj.Current), maxSidebarSessionsPerTier)
+	}
+	if proj.MoreCurrent != 7 {
+		t.Errorf("MoreCurrent = %d, want 7", proj.MoreCurrent)
+	}
+	// The kept rows are the most-recent N: the very first (newest) survives.
+	if proj.Current[0].ID != "01CUR000" {
+		t.Errorf("Current[0] = %q, want most-recent 01CUR000", proj.Current[0].ID)
+	}
+}
+
+func TestBuildTree_NoOverflowWhenUnderCap(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := []schema.SessionMeta{
+		{ID: "01A", OriginalPrompt: "a", CreatedAt: now, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/small"}},
+	}
+	proj := projectByName(t, BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now), "small")
+	if proj.MoreCurrent != 0 || proj.MoreRecent != 0 || proj.MoreArchived != 0 {
+		t.Errorf("under-cap project should have zero overflow: more=%d/%d/%d",
+			proj.MoreCurrent, proj.MoreRecent, proj.MoreArchived)
+	}
+}
+
+func TestBuildProjectTree_ReturnsSingleProjectTiers(t *testing.T) {
+	// The lazy-load helper rebuilds one named project's tiers from the full meta
+	// set, ignoring sessions from other projects.
+	now := time.Unix(1_700_000_000, 0)
+	mk := func(id, proj string, updatedAgo time.Duration) schema.SessionMeta {
+		return schema.SessionMeta{ID: id, OriginalPrompt: id,
+			CreatedAt: now.Add(-updatedAgo), UpdatedAt: now.Add(-updatedAgo),
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/" + proj}}
+	}
+	metas := []schema.SessionMeta{
+		mk("wanted-cur", "wanted", 1*time.Hour),
+		mk("wanted-rec", "wanted", 48*time.Hour),
+		mk("other-cur", "other", 1*time.Hour),
+	}
+	proj, ok := BuildProjectTreeAt(metas, nil, map[ArchiveKey]bool{}, now, "wanted")
+	if !ok {
+		t.Fatalf("BuildProjectTreeAt should find project 'wanted'")
+	}
+	if proj.Name != "wanted" {
+		t.Fatalf("got project %q, want 'wanted'", proj.Name)
+	}
+	if len(proj.Current) != 1 || proj.Current[0].ID != "wanted-cur" {
+		t.Errorf("wanted Current = %v, want [wanted-cur]", proj.Current)
+	}
+	if len(proj.Recent) != 1 || proj.Recent[0].ID != "wanted-rec" {
+		t.Errorf("wanted Recent = %v, want [wanted-rec]", proj.Recent)
+	}
+	// No leakage from "other".
+	for _, n := range append(append([]TreeNode{}, proj.Current...), proj.Recent...) {
+		if n.Project == "other" {
+			t.Errorf("project tree leaked a session from 'other': %+v", n)
+		}
+	}
+}
+
+func TestBuildProjectTree_FindsArchivedProject(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := []schema.SessionMeta{
+		{ID: "g1", OriginalPrompt: "g1", CreatedAt: now.Add(-30 * 24 * time.Hour),
+			UpdatedAt: now.Add(-30 * 24 * time.Hour),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/gamma"}},
+	}
+	proj, ok := BuildProjectTreeAt(metas, nil, map[ArchiveKey]bool{}, now, "gamma")
+	if !ok {
+		t.Fatalf("BuildProjectTreeAt should find archived project 'gamma'")
+	}
+	if len(proj.Archived) != 1 || proj.Archived[0].ID != "g1" {
+		t.Errorf("gamma Archived = %v, want [g1]", proj.Archived)
+	}
+}
+
+func TestBuildProjectTree_UnknownProjectReturnsFalse(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := []schema.SessionMeta{
+		{ID: "a", OriginalPrompt: "a", CreatedAt: now, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/known"}},
+	}
+	if _, ok := BuildProjectTreeAt(metas, nil, map[ArchiveKey]bool{}, now, "nope"); ok {
+		t.Errorf("BuildProjectTreeAt should return ok=false for unknown project")
 	}
 }
 

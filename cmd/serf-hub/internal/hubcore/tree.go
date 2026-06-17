@@ -54,13 +54,38 @@ type TreeProject struct {
 	// rollup dot couldn't say that. Idle/ended sessions count toward neither.
 	RollupLive int
 	RollupAttn int
-	Age        string // pre-formatted relative age of MostRecentStart ("now", "2m", "3h", "5d")
+	// Expanded is the sidebar's auto-open rule: a project's children render
+	// inline (and its disclosure starts open) only when it has a live session —
+	// RollupLive > 0 || RollupAttn > 0. Everything else starts collapsed and
+	// lazy-loads its children on first expand, which keeps the default payload
+	// small when hundreds of idle/archived projects exist.
+	Expanded bool
+	// More* hold the per-tier overflow beyond maxSidebarSessionsPerTier. The
+	// kept rows are the most-recent N; the sidebar shows "+N older" for the rest.
+	MoreCurrent  int
+	MoreRecent   int
+	MoreArchived int
+	Age          string // pre-formatted relative age of MostRecentStart ("now", "2m", "3h", "5d")
 }
 
 const (
 	currentWindow = 24 * time.Hour
 	archiveWindow = 14 * 24 * time.Hour
+	// maxSidebarSessionsPerTier caps how many session rows each tier
+	// (Current/Recent/Archived) emits in the sidebar. A project with hundreds
+	// of one-shot runs would otherwise bloat the partial; the kept rows are the
+	// most-recent N and the overflow is summarised as a quiet "+N older" note.
+	maxSidebarSessionsPerTier = 50
 )
+
+// capTier keeps the first n rows (the input is already most-recent first) and
+// returns the kept slice plus the overflow count.
+func capTier(rows []TreeNode, n int) ([]TreeNode, int) {
+	if len(rows) <= n {
+		return rows, 0
+	}
+	return rows[:n], len(rows) - n
+}
 
 // classifySession returns a session's sidebar tier from its last activity and
 // archive decision. A user decision (archive/unarchive) overrides the auto rule;
@@ -452,6 +477,12 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		isArchived := decisions[ArchiveKey{Kind: "project", ID: pname}] ||
 			(len(current) == 0 && len(recent) == 0)
 
+		// Cap each tier so a project with hundreds of runs can't bloat the
+		// sidebar payload; the kept rows are the most-recent N (already ordered).
+		current, moreCurrent := capTier(current, maxSidebarSessionsPerTier)
+		recent, moreRecent := capTier(recent, maxSidebarSessionsPerTier)
+		archived, moreArchived := capTier(archived, maxSidebarSessionsPerTier)
+
 		treeProjects = append(treeProjects, TreeProject{
 			Name:            pname,
 			WorkingDir:      projects[pname].workingDir,
@@ -463,7 +494,12 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 			RollupState:     rollup,
 			RollupLive:      rollupLive,
 			RollupAttn:      rollupAttn,
-			Age:             AgeString(mostRecentStart),
+			// Auto-open only live projects (a working or awaiting session).
+			Expanded:     rollupLive > 0 || rollupAttn > 0,
+			MoreCurrent:  moreCurrent,
+			MoreRecent:   moreRecent,
+			MoreArchived: moreArchived,
+			Age:          AgeString(mostRecentStart),
 		})
 	}
 
@@ -589,6 +625,40 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 		Projects:         activeProjects,
 		ArchivedProjects: archivedProjects,
 	}
+}
+
+// BuildProjectTree builds the single TreeProject named by name, for the lazy
+// sidebar expand endpoint, using the current wall clock.
+func BuildProjectTree(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, name string) (TreeProject, bool) {
+	return BuildProjectTreeAt(metas, live, decisions, time.Now(), name)
+}
+
+// BuildProjectTreeAt is BuildProjectTree with an injected clock. It filters the
+// metas to the requested project, runs the normal tree build on that subset, and
+// returns the resulting TreeProject (searching both the active and archived
+// lists). ok is false when no project of that name exists.
+func BuildProjectTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time, name string) (TreeProject, bool) {
+	subset := make([]schema.SessionMeta, 0, len(metas))
+	for _, m := range metas {
+		if projectName(m) == name {
+			subset = append(subset, m)
+		}
+	}
+	if len(subset) == 0 {
+		return TreeProject{}, false
+	}
+	tree := BuildTreeAt(subset, live, decisions, now)
+	for _, p := range tree.Projects {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	for _, p := range tree.ArchivedProjects {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return TreeProject{}, false
 }
 
 // decisionFor returns the explicit archive decision for a session ID as a
