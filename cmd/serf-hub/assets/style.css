@@ -1367,19 +1367,100 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
   color: var(--text);
 }
 .search-body li { padding: var(--space-1) 0; }
-.subagent-reference {
-  margin: 0 0 var(--space-4) calc(var(--tool-indent) - var(--space-4));
+/* ============================================================
+   SUBAGENTS MODULE  (self-contained — see docs/web-ui design-system §4)
+   ONE aggregated "Subagents (N)" box per fan-out cluster. The box is the
+   single containment device (no inner gridlines); rows are separated by
+   spacing. Status uses the four-color system, each paired with a glyph so it
+   is colorblind-safe: running=blue (--state-processing), done=neutral
+   (--text-muted, recedes), failed=red (--state-awaiting). A child failure
+   surfaces at the module level — it is never folded into a "N done" count.
+   ============================================================ */
+.subs {
+  margin: 0 0 var(--space-5) var(--tool-indent);
+  max-width: min(720px, 100%);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-5);
+}
+.subs[data-has-failure="true"] {
+  border-left: 3px solid var(--state-awaiting);
+}
+.subs-h {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+}
+.subs-h .t { font-size: var(--text-sm); font-weight: 600; color: var(--text); }
+.subs-h .tally {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.subs-h .tally .r { color: var(--state-processing); }
+.subs-h .tally .o { color: var(--text-muted); }
+.subs-h .tally .f { color: var(--state-awaiting); }
+.subs-rows { display: flex; flex-direction: column; }
+.sub-r {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  padding: var(--space-1) 0;
+  width: 100%;
+  text-align: left;
   font-size: var(--text-sm);
   color: var(--text-muted);
-  cursor: pointer;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  column-gap: var(--space-2);
-  row-gap: 1px;
 }
-.subagent-reference .verb { color: var(--state-subagent); font-family: var(--font-mono); }
-.subagent-reference:hover { color: var(--text); }
+.sub-r[hidden] { display: none; }
+.sub-r .g { font-family: var(--font-mono); font-size: var(--text-xs); width: 12px; flex: none; }
+.sub-r .g.run  { color: var(--state-processing); }
+.sub-r .g.done { color: var(--text-muted); }
+.sub-r .g.err  { color: var(--state-awaiting); }
+.sub-r .nm {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+  flex: none;
+}
+.sub-r .res {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.sub-r .res .live { color: var(--state-processing); }
+.sub-r.res-error .res { color: var(--state-awaiting); }
+.sub-r .dur {
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  margin-left: auto;
+  flex: none;
+}
+.sub-r .lk {
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  margin-left: var(--space-4);
+  flex: none;
+}
+.sub-r:hover .lk { color: var(--accent); }
+.sub-r:hover { color: var(--text); }
+.subs-more {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--accent);
+  text-align: left;
+}
+.subs-more[hidden] { display: none; }
+.subs-more:hover { filter: brightness(1.12); }
 .diagnostic {
   --diagnostic-accent: var(--state-warning);
   margin: 0 0 var(--space-5) var(--tool-indent);
