@@ -103,6 +103,7 @@ Each commit passed the pre-commit gate (lint/build/test); TDD throughout.
 | `4b9561b1` | Split `renderer.js`: extract `renderer-panels.js` (tasks/details panels + chrome) |
 | `c6f7eb19` | appwire maps reasoning notifications → `REASONING_START`/`REASONING_DELTA` client events |
 | `278f7cc1` | Render live thinking as a quiet collapsible `.think` block (renderer + `style.css`) |
+| `84ce6219` | Honest liveness: "no updates for Ns" + drop the reassuring pulse on a silent active turn |
 
 **Serf-harness backend for live thinking is complete**, and the renderer is now modular
 (`renderer.js` 3630 → ~2170 lines). The no-bundler modules share `window.SerfRendererInternal`
@@ -121,9 +122,11 @@ stateful `SerfRenderer` core + bootstrap (this is where the thinking block lands
    `ASSISTANT_TEXT_START` / `TURN_COMPLETED`; empty thoughts removed). Styles in `style.css`
    (`.think`/`.think-body`/`.pv`). Tests: `test-appwire-lifecycle-notifications.js`,
    `test-renderer-thinking.js`. Visually smoke-tested with the real assets.
-6. **Client liveness timer:** `renderer.js` track `lastFrameAt` on every notification; honest
-   "no updates for Ns" past ~20–30s while active. (Reasoning frames now flow, so the timer is
-   honest during the think phase.)
+6. ~~**Client liveness timer:**~~ **DONE** (`84ce6219`). `renderer.js` stamps `lastFrameAt` on
+   every frame (`handle()`) and a timer surfaces a quiet "still working · no updates for Ns" line
+   (sibling below `#conversation`) once an *active* turn's gap passes 20s, and drops the reassuring
+   status-dot pulse (`applyStatusDotPulse` honors `.conversation[data-stale]`). Reasoning frames
+   now flow, so the clock is honest during the think phase. Test: `test-renderer-liveness.js`.
 
 Tests: JS harness `cmd/serf-hub/jstest/` (`run-all.sh`; mirror
 `test-appwire-lifecycle-notifications.js` / `test-renderer.js`). Web changes need a rebuild —
