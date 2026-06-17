@@ -498,6 +498,30 @@
     return s.length > n ? s.slice(0, n) + "…" : s;
   }
 
+  // reasoningGist distills a collapsed thought into a short noun-phrase gist
+  // (mockup #5 alt D). The model usually states its conclusion in the last
+  // sentence, so we prefer the final clause; we strip leading conversational
+  // filler ("so", "okay", "let me") and clip to a single quiet line.
+  function reasoningGist(text, n) {
+    const flat = String(text || "").replace(/\s+/g, " ").trim();
+    if (!flat) return "";
+    n = n || 64;
+    const sentences = flat.split(/(?<=[.!?])\s+/).filter(Boolean);
+    let gist = sentences.length ? sentences[sentences.length - 1] : flat;
+    gist = gist.replace(/^(so|okay|ok|now|well|alright|hmm|let me|let's|i'll|i should|i need to|i think)[ ,]+/i, "");
+    gist = gist.replace(/[.!?]+$/, "");
+    return clip(gist.trim(), n);
+  }
+
+  // reasoningTier ranks a collapsed thought by think effort so a stack is
+  // scannable by where the model spent its time (mockup #5 alt D). Even the
+  // "long" tier must stay quieter than the prose — the CSS enforces that.
+  function reasoningTier(secs) {
+    if (secs >= 15) return "long";
+    if (secs >= 5) return "med";
+    return "short";
+  }
+
   window.SerfRendererInternal = Object.assign(window.SerfRendererInternal || {}, {
     itemDataToBase64,
     imagePlaceholderForCount,
@@ -540,5 +564,7 @@
     formatToolClock,
     formatToolDuration,
     clip,
+    reasoningGist,
+    reasoningTier,
   });
 })();

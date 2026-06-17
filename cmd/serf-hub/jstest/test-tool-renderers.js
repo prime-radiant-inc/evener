@@ -489,6 +489,72 @@ await scenario("markdown communicate after assistant text is not duplicated", [
   return { ok: true };
 });
 
+// Cheap-cluster summary (mockup #6 alt A): once a recon cluster is behind us
+// (a non-cheap entry follows), it folds to one quiet "✓ N steps · <targets>"
+// line that leads with the consequential step, hiding the individual rows.
+await scenario("cheap cluster collapses to a mutating-step-first summary once done", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "r1", tool_name: "read_file", arguments_json: JSON.stringify({ file_path: "cache.go" }) }],
+  ["TOOL_CALL_END", { call_id: "r1", output: "package cache\n", tool_name: "read_file" }],
+  ["TOOL_CALL_START", { call_id: "g1", tool_name: "grep", arguments_json: JSON.stringify({ pattern: "TokenCache", path: "." }) }],
+  ["TOOL_CALL_END", { call_id: "g1", output: "cache.go:1:TokenCache\n", tool_name: "grep" }],
+  // A non-cheap entry (assistant prose) ends the cluster: it is now behind us.
+  ["ASSISTANT_TEXT_START", {}],
+  ["ASSISTANT_TEXT_DELTA", { delta: "Found the cause." }],
+], ({ conv }) => {
+  const cluster = conv.querySelector(".tool-call-cluster");
+  if (!cluster) return { ok: false, detail: "no cheap cluster" };
+  if (!cluster.classList.contains("done")) return { ok: false, detail: "finished cluster should be marked done" };
+  const summary = cluster.querySelector(".tool-cluster-summary");
+  if (!summary) return { ok: false, detail: "no cluster summary line" };
+  if (!/2 steps/.test(summary.textContent)) return { ok: false, detail: "summary should count steps: " + summary.textContent };
+  if (!/cache\.go/.test(summary.textContent)) return { ok: false, detail: "summary should name a target: " + summary.textContent };
+  // The rows are hidden behind the summary until expanded.
+  const body = cluster.querySelector(".tool-cluster-body");
+  if (!body) return { ok: false, detail: "no cluster body" };
+  if (cluster.querySelectorAll(".tool-cluster-body .tool-call").length !== 2) return { ok: false, detail: "body should hold both rows" };
+  // Clicking the summary expands the rows.
+  summary.click();
+  if (!cluster.classList.contains("open")) return { ok: false, detail: "summary click should open the cluster" };
+  return { ok: true };
+});
+
+// Honest long output (mockup #6 alt D): when bytes are present (client-
+// collapsed) the affordance reads "expand · N more" (interactive blue); when
+// the daemon dropped bytes at the source the body carries an honest drop note,
+// never a fake expand.
+await scenario("client-collapsed long output offers an honest 'expand · N more'", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "s1", tool_name: "shell", arguments_json: JSON.stringify({ command: "seq 12" }) }],
+  ["TOOL_CALL_END", { call_id: "s1", output: "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n", tool_name: "shell" }],
+], ({ conv }) => {
+  const card = conv.querySelector(".tool-call.shell");
+  if (!card) return { ok: false, detail: "no shell card" };
+  const more = card.querySelector(".tool-output-more summary");
+  if (!more) return { ok: false, detail: "no expand affordance for long output" };
+  if (!/expand · 7 more lines/.test(more.textContent)) return { ok: false, detail: "wrong expand label: " + more.textContent };
+  if (card.querySelector(".tool-output-dropped")) return { ok: false, detail: "present bytes must not show a drop note" };
+  return { ok: true };
+});
+
+await scenario("server-truncated job output shows an honest drop note, not a fake expand", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "jr1", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_A" }) }],
+  ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: JSON.stringify({
+    job_id: "job_A", type: "shell", status: "completed",
+    content: "kept line one\nkept line two\nkept line three",
+    total_bytes: 128, truncated: true,
+  }) }],
+], ({ conv }) => {
+  const card = conv.querySelector(".tool-call.job_read_output");
+  if (!card) return { ok: false, detail: "no job_read_output card" };
+  const drop = card.querySelector(".tool-output-dropped");
+  if (!drop) return { ok: false, detail: "truncated output should carry a drop note" };
+  if (!/truncated at the source/.test(drop.textContent)) return { ok: false, detail: "drop note wrong: " + drop.textContent };
+  if (!/128 bytes/.test(drop.textContent)) return { ok: false, detail: "drop note should state kept bytes: " + drop.textContent };
+  return { ok: true };
+});
+
 // relativizePath: tool-call target shows cwd-relative path when data-cwd is set.
 await (async function () {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>
