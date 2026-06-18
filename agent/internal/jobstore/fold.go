@@ -67,6 +67,88 @@ func isJobRecordEventKind(kind EventKind) bool {
 	}
 }
 
+func FoldDelegates(events []Event) map[string]*DelegateRecord {
+	sorted := append([]Event(nil), events...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+
+	delegates := make(map[string]*DelegateRecord)
+	jobToDelegate := make(map[string]string)
+	for _, e := range sorted {
+		switch e.Kind {
+		case EventDelegateCreated:
+			if e.DelegateID == "" || e.Delegate == nil {
+				continue
+			}
+			d := delegates[e.DelegateID]
+			if d == nil {
+				d = &DelegateRecord{DelegateID: e.DelegateID, Status: DelegateIdle}
+				delegates[e.DelegateID] = d
+			}
+			d.ChildSessionID = e.Delegate.ChildSessionID
+			d.TranscriptRef = e.Delegate.TranscriptRef
+			d.OwnerSessionID = e.Delegate.OwnerSessionID
+			d.VisibleSessionID = e.Delegate.VisibleSessionID
+			d.ParentDelegateID = e.Delegate.ParentDelegateID
+			d.AgentType = e.Delegate.AgentType
+			d.Generation = e.Delegate.Generation
+			d.Resumable = e.Delegate.Resumable
+			d.NotResumableWhy = e.Delegate.NotResumableWhy
+		case EventJobStarted:
+			if e.DelegateID == "" {
+				continue
+			}
+			d := delegates[e.DelegateID]
+			if d == nil {
+				d = &DelegateRecord{DelegateID: e.DelegateID}
+				delegates[e.DelegateID] = d
+			}
+			jobToDelegate[e.JobID] = e.DelegateID
+			d.CurrentJobID = e.JobID
+			d.LatestJobID = e.JobID
+			d.Status = DelegateRunning
+			d.StopGateClosed = false
+		case EventJobFinished:
+			delegateID := jobToDelegate[e.JobID]
+			if delegateID == "" {
+				continue
+			}
+			d := delegates[delegateID]
+			if d == nil {
+				continue
+			}
+			if d.CurrentJobID == e.JobID {
+				d.CurrentJobID = ""
+			}
+			if e.Status == StatusStopped || e.Status == StatusCancelled {
+				d.Status = DelegateStopped
+			} else if d.Resumable {
+				d.Status = DelegateIdle
+			} else {
+				d.Status = DelegateNotResumable
+			}
+		case EventDelegateStopGateClosed:
+			if e.DelegateID == "" || e.Delegate == nil {
+				continue
+			}
+			d := delegates[e.DelegateID]
+			if d == nil {
+				d = &DelegateRecord{DelegateID: e.DelegateID}
+				delegates[e.DelegateID] = d
+			}
+			d.Generation = e.Delegate.Generation
+			d.StopGateClosed = true
+			d.StopGateClosedJobID = e.Delegate.StopJobID
+			if d.CurrentJobID == e.Delegate.StopJobID {
+				d.CurrentJobID = ""
+			}
+			if d.Status == "" || d.Status == DelegateRunning {
+				d.Status = DelegateStopped
+			}
+		}
+	}
+	return delegates
+}
+
 // FoldWatchSends reconstructs pending watch-send frames from durable events.
 func FoldWatchSends(events []Event) WatchSendRecord {
 	sorted := append([]Event(nil), events...)
@@ -132,6 +214,7 @@ func applyEvent(r *JobRecord, e Event) {
 		r.OwnerSessionID = e.OwnerSessionID
 		r.VisibleToSession = e.VisibleToSession
 		r.ParentJobID = e.ParentJobID
+		r.DelegateID = e.DelegateID
 		r.OriginTurnID = e.OriginTurnID
 		r.OriginToolCallID = e.OriginToolCallID
 		r.DelegateRestore = e.DelegateRestore

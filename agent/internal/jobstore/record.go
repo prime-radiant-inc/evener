@@ -45,6 +45,17 @@ const (
 	NotifyDelivered NotifyState = "delivered"
 )
 
+// DelegateStatus identifies the lifecycle state of a durable delegate handle.
+type DelegateStatus string
+
+const (
+	DelegateRunning      DelegateStatus = "running"
+	DelegateDriving      DelegateStatus = "driving"
+	DelegateIdle         DelegateStatus = "idle"
+	DelegateStopped      DelegateStatus = "stopped"
+	DelegateNotResumable DelegateStatus = "not_resumable"
+)
+
 // DelegateRestoreDescriptor carries the durable state needed to restore a delegate job.
 type DelegateRestoreDescriptor struct {
 	Version             int      `json:"version"`
@@ -73,6 +84,25 @@ type DelegateRestoreDescriptor struct {
 	ResultSchema        any      `json:"result_schema,omitempty"`
 	ExplicitToolGrants  []string `json:"explicit_tool_grants,omitempty"`
 	DelegationAllowance int      `json:"delegation_allowance,omitempty"`
+}
+
+// DelegateRecord is the folded durable state for a delegate handle.
+type DelegateRecord struct {
+	DelegateID          string         `json:"delegate_id"`
+	ChildSessionID      string         `json:"child_session_id"`
+	TranscriptRef       string         `json:"transcript_ref"`
+	OwnerSessionID      string         `json:"owner_session_id,omitempty"`
+	VisibleSessionID    string         `json:"visible_session_id,omitempty"`
+	ParentDelegateID    string         `json:"parent_delegate_id,omitempty"`
+	AgentType           string         `json:"agent_type,omitempty"`
+	Status              DelegateStatus `json:"status"`
+	Resumable           bool           `json:"resumable"`
+	NotResumableWhy     string         `json:"not_resumable_reason,omitempty"`
+	CurrentJobID        string         `json:"current_job_id,omitempty"`
+	LatestJobID         string         `json:"latest_job_id,omitempty"`
+	Generation          string         `json:"generation,omitempty"`
+	StopGateClosed      bool           `json:"stop_gate_closed,omitempty"`
+	StopGateClosedJobID string         `json:"stop_gate_closed_job_id,omitempty"`
 }
 
 // WatchSendKey identifies the coalescing slot for a durable watch-send frame.
@@ -118,6 +148,7 @@ type JobRecord struct {
 	OwnerSessionID   string                     `json:"owner_session_id"`
 	VisibleToSession string                     `json:"visible_to_session_id"`
 	ParentJobID      string                     `json:"parent_job_id,omitempty"`
+	DelegateID       string                     `json:"delegate_id,omitempty"`
 	OriginTurnID     string                     `json:"origin_turn_id,omitempty"`
 	OriginToolCallID string                     `json:"origin_tool_call_id,omitempty"`
 	DelegateRestore  *DelegateRestoreDescriptor `json:"delegate_restore,omitempty"`
@@ -144,6 +175,14 @@ type JobRecord struct {
 
 func NewJobID() string {
 	return "job_" + ulid.Make().String()
+}
+
+func NewDelegateID() string {
+	return "dlg_" + ulid.Make().String()
+}
+
+func NewDelegateGeneration() string {
+	return "dg_" + ulid.Make().String()
 }
 
 func NewWatchGeneration() string {

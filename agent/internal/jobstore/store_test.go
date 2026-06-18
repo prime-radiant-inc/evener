@@ -28,6 +28,41 @@ func TestStoreAppendThenLoad(t *testing.T) {
 	}
 }
 
+func TestStoreLoadDelegates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s := openStore(t, path)
+	start := time.Unix(1, 0).UTC()
+	appendEvent(t, s, Event{
+		Kind:       EventDelegateCreated,
+		DelegateID: "dlg_A",
+		Delegate: &DelegateEvent{
+			ChildSessionID: "child_A",
+			TranscriptRef:  "local:child_A",
+			Generation:     "dg_1",
+			Resumable:      true,
+		},
+	})
+	appendEvent(t, s, Event{
+		Kind:       EventJobStarted,
+		JobID:      "job_A",
+		Type:       JobDelegate,
+		DelegateID: "dlg_A",
+		StartedAt:  &start,
+	})
+
+	delegates, err := s.LoadDelegates()
+	if err != nil {
+		t.Fatalf("load delegates: %v", err)
+	}
+	d := delegates["dlg_A"]
+	if d == nil {
+		t.Fatal("delegate dlg_A missing")
+	}
+	if d.CurrentJobID != "job_A" || d.LatestJobID != "job_A" || d.Status != DelegateRunning {
+		t.Fatalf("delegate = %+v, want running job_A", d)
+	}
+}
+
 func TestStoreAssignsMonotonicSeq(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.jsonl")
 	s := openStore(t, path)

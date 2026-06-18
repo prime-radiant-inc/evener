@@ -1,6 +1,7 @@
 package jobstore
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 	"time"
@@ -104,6 +105,24 @@ func TestEventJSONRoundTripDelegateRestoreDescriptorAndStructuredReason(t *testi
 	}
 }
 
+func TestDelegateEventJSONRoundTrip(t *testing.T) {
+	raw := []byte(`{"kind":"delegate_created","delegate_id":"dlg_A","delegate":{"child_session_id":"child_A","transcript_ref":"local:child_A","generation":"dg_1","resumable":true}}`)
+	var e Event
+	if err := json.Unmarshal(raw, &e); err != nil {
+		t.Fatalf("unmarshal delegate event: %v", err)
+	}
+	if e.Kind != EventDelegateCreated || e.DelegateID != "dlg_A" || e.Delegate == nil || e.Delegate.ChildSessionID != "child_A" {
+		t.Fatalf("event = %+v, want delegate-created payload", e)
+	}
+	out, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal delegate event: %v", err)
+	}
+	if !bytes.Contains(out, []byte(`"delegate_id":"dlg_A"`)) || !bytes.Contains(out, []byte(`"child_session_id":"child_A"`)) {
+		t.Fatalf("encoded delegate event = %s", out)
+	}
+}
+
 func TestEventKindsAreStable(t *testing.T) {
 	want := map[EventKind]string{
 		EventJobStarted:               "job_started",
@@ -117,6 +136,8 @@ func TestEventKindsAreStable(t *testing.T) {
 		EventWatchSendDropped:         "watch_send_dropped",
 		EventWatchSendEvicted:         "watch_send_evicted",
 		EventWatchReadGrant:           "watch_read_grant",
+		EventDelegateCreated:          "delegate_created",
+		EventDelegateStopGateClosed:   "delegate_stop_gate_closed",
 	}
 	for k, s := range want {
 		if string(k) != s {

@@ -106,6 +106,20 @@ func (s *Store) LoadOrdered() ([]*JobRecord, error) {
 	return FoldOrdered(events), nil
 }
 
+// LoadDelegates reads every event and folds durable delegate state.
+func (s *Store) LoadDelegates() (map[string]*DelegateRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return nil, err
+	}
+	events, err := s.readAllLocked()
+	if err != nil {
+		return nil, err
+	}
+	return FoldDelegates(events), nil
+}
+
 // LoadWatchSends reads every event and folds durable pending watch-send state.
 func (s *Store) LoadWatchSends() (WatchSendRecord, error) {
 	s.mu.Lock()

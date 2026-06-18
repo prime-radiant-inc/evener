@@ -121,6 +121,91 @@ func TestFoldDelegateDescriptorSchemaAndStructuredReason(t *testing.T) {
 	}
 }
 
+func TestFoldDelegatesLinksJobsAndProjectsCurrentLatest(t *testing.T) {
+	start1 := time.Unix(1, 0).UTC()
+	end1 := time.Unix(2, 0).UTC()
+	start2 := time.Unix(3, 0).UTC()
+	events := []Event{
+		ev(EventDelegateCreated, 1, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{
+				ChildSessionID:   "child_A",
+				TranscriptRef:    "local:child_A",
+				OwnerSessionID:   "owner",
+				VisibleSessionID: "owner",
+				AgentType:        "default",
+				Generation:       "dg_1",
+				Resumable:        true,
+			}
+		}),
+		ev(EventJobStarted, 2, "job_1", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.OwnerSessionID = "owner"
+			e.VisibleToSession = "owner"
+			e.TranscriptRef = "local:child_A"
+			e.StartedAt = &start1
+		}),
+		ev(EventJobFinished, 3, "job_1", func(e *Event) {
+			e.Status = StatusCompleted
+			e.EndedAt = &end1
+		}),
+		ev(EventJobStarted, 4, "job_2", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.OwnerSessionID = "owner"
+			e.VisibleToSession = "owner"
+			e.TranscriptRef = "local:child_A"
+			e.StartedAt = &start2
+		}),
+	}
+
+	delegates := FoldDelegates(events)
+	d := delegates["dlg_A"]
+	if d == nil {
+		t.Fatal("delegate dlg_A missing")
+	}
+	if d.CurrentJobID != "job_2" || d.LatestJobID != "job_2" || d.Status != DelegateRunning {
+		t.Fatalf("delegate projection = %+v, want current/latest job_2 running", d)
+	}
+	if d.ChildSessionID != "child_A" || d.TranscriptRef != "local:child_A" || !d.Resumable {
+		t.Fatalf("delegate identity = %+v, want durable child metadata", d)
+	}
+}
+
+func TestFoldDelegatesClosesStopGateForCurrentJob(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	end := time.Unix(2, 0).UTC()
+	events := []Event{
+		ev(EventDelegateCreated, 1, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{ChildSessionID: "child_A", TranscriptRef: "local:child_A", Generation: "dg_1", Resumable: true}
+		}),
+		ev(EventJobStarted, 2, "job_1", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.StartedAt = &start
+		}),
+		ev(EventJobFinished, 3, "job_1", func(e *Event) {
+			e.Status = StatusCancelled
+			e.Reason = "stopped_by_parent"
+			e.EndedAt = &end
+		}),
+		ev(EventDelegateStopGateClosed, 4, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{Generation: "dg_2", StopJobID: "job_1"}
+		}),
+	}
+
+	d := FoldDelegates(events)["dlg_A"]
+	if d == nil {
+		t.Fatal("delegate dlg_A missing")
+	}
+	if !d.StopGateClosed || d.Generation != "dg_2" || d.CurrentJobID != "" || d.LatestJobID != "job_1" {
+		t.Fatalf("delegate after stop = %+v, want closed gate with latest job_1 and no current job", d)
+	}
+}
+
 func TestDelegateRestoreDescriptorSurvivesStoreReopenAndFold(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.jsonl")
 	store, err := Open(path)

@@ -17,6 +17,8 @@ const (
 	EventWatchSendDropped         EventKind = "watch_send_dropped"
 	EventWatchSendEvicted         EventKind = "watch_send_evicted"
 	EventWatchReadGrant           EventKind = "watch_read_grant"
+	EventDelegateCreated          EventKind = "delegate_created"
+	EventDelegateStopGateClosed   EventKind = "delegate_stop_gate_closed"
 )
 
 // Event is one line in the append-only jobs.jsonl log. It carries a flat union
@@ -38,6 +40,7 @@ type Event struct {
 	OwnerSessionID   string                     `json:"owner_session_id,omitempty"`
 	VisibleToSession string                     `json:"visible_to_session_id,omitempty"`
 	ParentJobID      string                     `json:"parent_job_id,omitempty"`
+	DelegateID       string                     `json:"delegate_id,omitempty"`
 	OriginTurnID     string                     `json:"origin_turn_id,omitempty"`
 	OriginToolCallID string                     `json:"origin_tool_call_id,omitempty"`
 	StartedAt        *time.Time                 `json:"started_at,omitempty"`
@@ -69,4 +72,20 @@ type Event struct {
 
 	// watch_read_grant payload; the watched job id rides JobID.
 	ObserverSessionID string `json:"observer_session_id,omitempty"`
+
+	// delegate_* payload
+	Delegate *DelegateEvent `json:"delegate,omitempty"`
+}
+
+type DelegateEvent struct {
+	ChildSessionID   string `json:"child_session_id,omitempty"`
+	TranscriptRef    string `json:"transcript_ref,omitempty"`
+	OwnerSessionID   string `json:"owner_session_id,omitempty"`
+	VisibleSessionID string `json:"visible_session_id,omitempty"`
+	ParentDelegateID string `json:"parent_delegate_id,omitempty"`
+	AgentType        string `json:"agent_type,omitempty"`
+	Generation       string `json:"generation,omitempty"`
+	Resumable        bool   `json:"resumable,omitempty"`
+	NotResumableWhy  string `json:"not_resumable_reason,omitempty"`
+	StopJobID        string `json:"stop_job_id,omitempty"`
 }
