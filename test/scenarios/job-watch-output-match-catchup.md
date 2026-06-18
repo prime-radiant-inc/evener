@@ -33,8 +33,9 @@ Phase 5.2.
    > 2. Call job_read_output for that job_id once (no block) and
    >    confirm the output already contains LEVEL_TOKEN_A and
    >    LEVEL_TOKEN_B. Report what you saw.
-   > 3. Call job_watch with target that job_id and output_match
-   >    "LEVEL_TOKEN_[ABC]" (no send). Report the full JSON.
+   > 3. Call job_watch with operation "create", target that job_id,
+   >    and output_match "LEVEL_TOKEN_[ABC]" (no send). Report the
+   >    full JSON.
    > 4. Say WATCH_ATTACHED and end your turn. Do not poll.
 3. Watch the transcript. Two separate watch notifications should
    arrive: the attach-scan fire right after turn 1 ends, then the
@@ -49,12 +50,15 @@ Phase 5.2.
    >    `sh -c 'echo CATCHUP_TOKEN_OK'`. Capture the job_id, then call
    >    job_read_output for it with max_wait_ms 5000, and confirm
    >    status is completed.
-   > 2. Call job_watch with target that job_id and output_match
-   >    "CATCHUP_TOKEN_OK". Report the full JSON verbatim.
-   > 3. Call job_watch with target that job_id and output_match
-   >    "CATCHUP_TOKEN_MISSING". Report the full JSON verbatim.
-   > 4. Call job_watch with target that job_id and events
-   >    ["job.notification"]. Report the result or error verbatim.
+   > 2. Call job_watch with operation "create", target that job_id,
+   >    and output_match "CATCHUP_TOKEN_OK". Report the full JSON
+   >    verbatim.
+   > 3. Call job_watch with operation "create", target that job_id,
+   >    and output_match "CATCHUP_TOKEN_MISSING". Report the full JSON
+   >    verbatim.
+   > 4. Call job_watch with operation "create", target that job_id,
+   >    and events ["job.notification"]. Report the result or error
+   >    verbatim.
    > 5. End your turn.
 
 ## Expected

@@ -192,8 +192,8 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
 ## Job control (CLI)
 
 - `subagent-cancel-runaway.md` — `job_stop` stops a long-running delegate
-  job, then `job_send_message` targets the same delegate job to resume the
-  preserved child conversation and complete a shorter follow-up.
+  job, then `delegate_send(on_idle="start")` targets the delegate_id to
+  continue the preserved child conversation and complete a shorter follow-up.
 - `subagent-list-and-output.md` — `job_list` enumerates a delegate job and
   `job_read_output` peeks the result twice without consuming or hiding it.
 - `job-notification-wake.md` — the proactive completion wake

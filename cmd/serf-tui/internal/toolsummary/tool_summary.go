@@ -160,6 +160,10 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 		desc = str("target")
 		return desc, detail
 
+	case "delegate_send":
+		desc = str("to")
+		return desc, detail
+
 	case "job_read_output", "job_stop":
 		desc = str("job_id")
 		return desc, detail

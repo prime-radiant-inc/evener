@@ -2,7 +2,7 @@
 
 **What this covers**: the watch-send deadlock incident (session
 `01KTWN9KEHZ041D77B3GKK572M`; watch-mailbox spec §1) and its fix.
-`job_watch(target="caller", events=["assistant.message"], send={to:"caller"})`
+`job_watch(operation="create", target="caller", events=["assistant.message"], send={to:"caller"})`
 used to fire while the session emitted events under `responseSideEffectsMu`
 and re-lock the same mutex — wedging the session on its next assistant
 message or tool call. Under the watch-mailbox design that config can no
@@ -32,19 +32,22 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
 
    > Follow these steps exactly, in order. Steps 1 and 2 are expected to
    > return tool errors — report each error verbatim and continue.
-   > 1. Call `job_watch` with exactly: target "caller", events
-   >    ["assistant.message"], send {to: "caller"} — and NO other
+   > 1. Call `job_watch` with exactly: operation "create", target
+   >    "caller", events ["assistant.message"], send {to: "caller"}
+   >    — and NO other
    >    parameters (no every, no include_excerpt).
    >    Report the full response or error verbatim.
-   > 2. Call `job_watch` with exactly: target "caller", events
-   >    ["assistant.message"], and NO send. Report verbatim.
-   > 3. Call `delegate` (max_wait_ms unset — returns job_id immediately)
+   > 2. Call `job_watch` with exactly: operation "create", target
+   >    "caller", events ["assistant.message"], and NO send. Report
+   >    verbatim.
+   > 3. Call `delegate` (max_wait_ms unset — returns immediately)
    >    with this task: "Call communicate with exactly OBSERVER_READY
-   >    and finish. If you are ever resumed with a message containing
+   >    and finish. If you are ever started with a message containing
    >    'Watch frame', call communicate with exactly FRAME_SEEN and
-   >    finish." Capture the returned job_id.
-   > 4. Call `job_watch` with exactly: target "caller", events
-   >    ["assistant.message", "assistant.tool"], send {to: that job_id}
+   >    finish." Capture the returned delegate_id.
+   > 4. Call `job_watch` with exactly: operation "create", target
+   >    "caller", events ["assistant.message", "assistant.tool"],
+   >    send {to: that delegate_id}
    >    — and NO other parameters (in particular do NOT pass `every`;
    >    it requires a single event kind). Report the full JSON.
    > 5. Run three separate foreground shell commands, one at a time:
@@ -67,8 +70,8 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
   <!-- pin: spec §6.1 — the exact rejection sentence lands with the
        create-time guards; assert the invalid_request code plus
        loop-naming, and record the shipped wording for future runs. -->
-- Step 4 is ACCEPTED: result has `watching: true` and echoes the
-  observer job_id as the send target (sidecar configs stay allowed,
+- Step 4 is ACCEPTED: result has `watching: true`, a `watch_id`, and
+  echoes the observer delegate_id as the send target (sidecar configs stay allowed,
   spec §6.1).
 - The turn completes — this is the headline. The session reaches `idle`
   within the bound, and the transcript contains, AFTER the step-4 watch
@@ -85,15 +88,15 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
   even after the user turn ends.
 - Secondary (should-hold, not the headline): the step-4 watch fired on
   the parent's own assistant/tool events and delivered through the
-  drain rail — the observer session eventually shows a resumed job
+  drain rail — the observer session eventually shows a started follow-up job
   whose input contains `Watch frame` (check `job_list` from a follow-up
   parent turn, or read the observer transcript via its transcript_ref).
 
 ## Cleanup
 
-- Follow-up prompt: call `job_watch` with target "caller" and clear
-  true (send.to omitted clears both remaining keys for the target).
-- `job_stop` any observer resume still running; shut the session down
+- Follow-up prompt: call `job_watch(operation="clear",
+  watch_id=<step-4 watch_id>)`.
+- `job_stop` any observer follow-up still running; shut the session down
   (`POST /s/$SID/shutdown`); `rm -rf "$tmpdir"`.
 
 ## Sharp edges
@@ -113,8 +116,8 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
   goroutine parked in `sync.(*Mutex).Lock` beneath an event-emission
   frame. Do this BEFORE shutdown, which would destroy the evidence.
 - The observer-frame secondary assertion lags the parent turn (delegate
-  resume + model latency); give it ~3 minutes before calling it absent.
+  follow-up start + model latency); give it ~3 minutes before calling it absent.
 - Watch frames exclude watch-origin events, so the observer's own
-  resume does not re-trigger the step-4 watch into a cross-session loop;
+  follow-up start does not re-trigger the step-4 watch into a cross-session loop;
   if you observe observer resumes feeding new frames with no parent
   activity between them, file that as a feedback-suppression bug.

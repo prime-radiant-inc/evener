@@ -329,14 +329,14 @@
 
   const jobSendMessageRenderer = {
     mode: "card", friendly: "message",
-    target: (a) => clip(a.target || "", 26),
+    target: (a) => clip(a.to || a.target || "", 26),
     result: (data, out) => {
       const st = parseToolJSON(out);
       if (!st) return out ? formatBytes(out.length) : "";
       return compactParts([
         st.action,
         st.status,
-        st.job_id,
+        st.job_id || st.started_job_id || st.current_job_id || st.latest_job_id,
         st.delivered === true ? "delivered" : "",
         st.reason,
       ]);
@@ -357,10 +357,11 @@
     subagentReconcile: (state, data, out) => {
       if (data.error) return [];
       const st = parseToolJSON(out);
-      if (!st || !st.job_id) return [];
+      const jobID = st && (st.job_id || st.current_job_id || st.latest_job_id || st.started_job_id);
+      if (!jobID) return [];
       const reply = typeof st.output === "string" ? st.output.replace(/\s+/g, " ").trim() : "";
       return [{
-        job_id: st.job_id,
+        job_id: jobID,
         status: st.status || "",
         transcript_ref: st.transcript_ref,
         resultText: reply ? clip(reply, 120) : "",
@@ -651,6 +652,7 @@
     "web_fetch": webFetchRenderer,
     "web_search": webSearchRenderer,
     "delegate": delegateRenderer,
+    "delegate_send": jobSendMessageRenderer,
     "job_send_message": jobSendMessageRenderer,
     "job_read_output": jobReadOutputRenderer,
     "job_list": jobListRenderer,

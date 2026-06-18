@@ -179,6 +179,14 @@ await scenario("delegate output drops its tool row and adds a clickable subagent
 
 await scenario("job control tools render structured summaries", [
   ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "ds1", tool_name: "delegate_send", arguments_json: JSON.stringify({ to: "dlg_01", message: "continue" }) }],
+  ["TOOL_CALL_END", { call_id: "ds1", tool_name: "delegate_send", output: JSON.stringify({
+    delegate_id: "dlg_01",
+    started_job_id: "job_STARTED",
+    current_job_id: "job_STARTED",
+    status: "running",
+    action: "started",
+  }) }],
   ["TOOL_CALL_START", { call_id: "js1", tool_name: "job_send_message", arguments_json: JSON.stringify({ target: "job_A", message: "continue" }) }],
   ["TOOL_CALL_END", { call_id: "js1", tool_name: "job_send_message", output: JSON.stringify({
     target: "job_A",
@@ -199,6 +207,14 @@ await scenario("job control tools render structured summaries", [
   ["TOOL_CALL_START", { call_id: "jstop1", tool_name: "job_stop", arguments_json: JSON.stringify({ job_id: "job_1" }) }],
   ["TOOL_CALL_END", { call_id: "jstop1", tool_name: "job_stop", output: JSON.stringify({ job_id: "job_1", status: "stopped", reason: "user" }) }],
 ], ({ conv }) => {
+  const delegateSend = conv.querySelector(".tool-call.delegate_send .result-detail");
+  if (!delegateSend || !delegateSend.textContent.includes("started") || !delegateSend.textContent.includes("running") || !delegateSend.textContent.includes("job_STARTED")) {
+    return { ok: false, detail: "delegate_send summary missing structured fields: " + (delegateSend && delegateSend.textContent) };
+  }
+  const delegateSendHeader = conv.querySelector(".tool-call.delegate_send .target");
+  if (!delegateSendHeader || !delegateSendHeader.textContent.includes("dlg_01")) {
+    return { ok: false, detail: "delegate_send target missing delegate id: " + (delegateSendHeader && delegateSendHeader.textContent) };
+  }
   const send = conv.querySelector(".tool-call.job_send_message .result-detail");
   if (!send || !send.textContent.includes("resumed") || !send.textContent.includes("completed") || !send.textContent.includes("job_B")) {
     return { ok: false, detail: "job_send_message summary missing structured fields: " + (send && send.textContent) };

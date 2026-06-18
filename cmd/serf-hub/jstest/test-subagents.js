@@ -8,7 +8,7 @@
 // averaged into a "N done" count.
 //
 // The stale-"running" fix: a subagent's completion reconciles from a SUCCESSFUL
-// job_read_output / job_list / job_send_message for that job id, not only from a
+// job_read_output / job_list / delegate_send for that job id, not only from a
 // JOB_FINISHED event (which often never arrives).
 const fs = require("fs");
 const { JSDOM } = require("jsdom");

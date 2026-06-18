@@ -166,6 +166,16 @@ func TestSummarizeTool_Delegate(t *testing.T) {
 	}
 }
 
+func TestSummarizeTool_DelegateSend(t *testing.T) {
+	desc, detail := SummarizeTool("delegate_send", `{"to":"dlg_01ABCD","message":"continue"}`)
+	if desc != "dlg_01ABCD" {
+		t.Errorf("got %q", desc)
+	}
+	if detail != "" {
+		t.Errorf("delegate_send should have no detail, got %q", detail)
+	}
+}
+
 func TestSummarizeTool_Communicate(t *testing.T) {
 	desc, _ := SummarizeTool("communicate", `{"message":"Building..."}`)
 	if !strings.Contains(desc, "Building") {

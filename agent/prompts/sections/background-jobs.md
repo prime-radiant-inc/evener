@@ -30,7 +30,7 @@ a one-line acknowledgment is enough; you do not have to route it through
 notification, list jobs to re-orient before re-running anything.
 
 Observer sidecars: start a delegate as the observer, then
-`job_watch(target=<job>, ..., send={to: <observer job_id>})`. Each trigger
+`job_watch(operation="create", target=<job>, ..., send={to: <observer delegate_id>})`. Each trigger
 pushes the observer a bounded frame; the observer can read the watched job
 directly with `job_read_output` and report to you with
 `delegate_send(to="caller")`. Frames coalesce while the observer is
