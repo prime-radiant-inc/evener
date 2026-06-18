@@ -1,6 +1,7 @@
 package fspaths
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,14 +147,14 @@ func TestResolveInRoot_RejectsDotDotTraversal(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ResolveInRoot(root, "../"+filepath.Base(outside)); err != ErrPathEscapesRoot {
+	if _, err := ResolveInRoot(root, "../"+filepath.Base(outside)); !errors.Is(err, ErrPathEscapesRoot) {
 		t.Fatalf("expected ErrPathEscapesRoot, got %v", err)
 	}
 }
 
 func TestResolveInRoot_RejectsAbsoluteOutside(t *testing.T) {
 	root := t.TempDir()
-	if _, err := ResolveInRoot(root, "/etc/passwd"); err != ErrPathEscapesRoot {
+	if _, err := ResolveInRoot(root, "/etc/passwd"); !errors.Is(err, ErrPathEscapesRoot) {
 		t.Fatalf("expected ErrPathEscapesRoot, got %v", err)
 	}
 }
@@ -168,7 +169,7 @@ func TestResolveInRoot_RejectsSymlinkEscape(t *testing.T) {
 	if err := os.Symlink(outside, link); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
-	if _, err := ResolveInRoot(root, "escape"); err != ErrPathEscapesRoot {
+	if _, err := ResolveInRoot(root, "escape"); !errors.Is(err, ErrPathEscapesRoot) {
 		t.Fatalf("expected ErrPathEscapesRoot for symlink escape, got %v", err)
 	}
 }
@@ -181,7 +182,7 @@ func TestResolveInRoot_MissingFileNotEscape(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
-	if err == ErrPathEscapesRoot {
+	if errors.Is(err, ErrPathEscapesRoot) {
 		t.Fatal("missing in-root file should not be an escape error")
 	}
 }
