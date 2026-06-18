@@ -397,19 +397,33 @@ func (s *WebServer) fillSubagentLineage(data *WorkspaceData, m schema.SessionMet
 	data.ParentTitle = title
 }
 
-// fillObserverLink populates WorkspaceData.ObserverRouteIDs from the worker
-// meta's ObservedBy set, filtered to observers whose session is still LIVE. The
+// fillObserverLink populates WorkspaceData.ObserverRouteIDs with this worker's
+// observer subagents, filtered to observers whose session is still LIVE. The
 // renderer auto-opens each as a side pane beside the worker. Ended observers are
 // dropped server-side so we never auto-open a dead session (they remain manually
-// openable via the ⇲ button). Local sources only: ObservedBy is stamped only on
-// local worker metas, so remote/codex workspaces never reach here with one.
+// openable via the ⇲ button).
+//
+// Two sources union (deduped): the forward SessionMeta.ObservedBy stamp (set on
+// fresh local watches) and the durable grant-history index built from every
+// local session's jobs.jsonl watch-read-grants during the past-index rebuild
+// (PastIndex.ObserversOf). The stamp is empty on existing data, so the grant
+// history is what makes auto-open work on the sessions already on disk. Local
+// sources only: both sources derive from local meta/jobstore state, so remote/
+// codex workspaces never reach here with an observer.
 func (s *WebServer) fillObserverLink(data *WorkspaceData, m schema.SessionMeta) {
-	if len(m.ObservedBy) == 0 || s.cfg.Roster == nil {
+	if s.cfg.Roster == nil {
+		return
+	}
+	var historical []string
+	if s.cfg.Past != nil {
+		historical = s.cfg.Past.ObserversOf(m.ID)
+	}
+	if len(m.ObservedBy) == 0 && len(historical) == 0 {
 		return
 	}
 	var live []string
-	seen := make(map[string]bool, len(m.ObservedBy))
-	for _, observerID := range m.ObservedBy {
+	seen := make(map[string]bool, len(m.ObservedBy)+len(historical))
+	for _, observerID := range append(append([]string(nil), m.ObservedBy...), historical...) {
 		if observerID == "" || seen[observerID] {
 			continue
 		}

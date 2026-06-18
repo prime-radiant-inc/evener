@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
 )
 
@@ -31,6 +32,13 @@ type PastIndex struct {
 	all  []PastEntry // sorted by the Hub session ordering contract
 	byID map[string]PastEntry
 	fts  bool
+	// observers maps a worker session id to the session ids of observer
+	// subagents granted read on its work, folded from every local session's
+	// durable jobs.jsonl watch-read-grants during Rebuild. This is the historical
+	// on-disk source for observer auto-open — it does not depend on the forward
+	// SessionMeta.ObservedBy stamp (empty on existing data). Like the metas, it is
+	// rebuilt once per cycle, so it is at most one rebuild interval stale.
+	observers map[string][]string
 }
 
 // NewPastIndex returns a PastIndex configured to glob projectGlob.
@@ -71,6 +79,7 @@ func (i *PastIndex) Rebuild() error {
 	}
 	var all []PastEntry
 	byID := make(map[string]PastEntry)
+	observers := make(map[string][]string)
 	for _, project := range matches {
 		metas, err := schema.ListSessionMetas(project)
 		if err != nil {
@@ -81,13 +90,16 @@ func (i *PastIndex) Rebuild() error {
 			all = append(all, pe)
 			byID[m.ID] = pe
 		}
+		foldProjectObserverGrants(observers, project)
 	}
 	sort.SliceStable(all, func(a, b int) bool {
 		return sessionMetaLess(all[a].Meta, all[b].Meta)
 	})
+	dedupObserverLists(observers)
 	i.mu.Lock()
 	i.all = all
 	i.byID = byID
+	i.observers = observers
 	i.fts = false
 	i.mu.Unlock()
 	if i.dbPath != "" {
@@ -329,6 +341,65 @@ func (i *PastIndex) AllMetas() []schema.SessionMeta {
 		out = append(out, e.Meta)
 	}
 	return out
+}
+
+// ObserversOf returns the session ids of observer subagents granted read on the
+// given worker session, reconstructed from durable jobs.jsonl watch-read-grants
+// at the last Rebuild. The result is at most one rebuild interval stale. It is
+// the historical, on-disk observer source that does not rely on the forward
+// SessionMeta.ObservedBy stamp. Caller must not mutate the returned slice.
+func (i *PastIndex) ObserversOf(workerSessionID string) []string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.observers[workerSessionID]
+}
+
+// foldProjectObserverGrants folds every local session's worker→observers grants
+// under a project into the accumulating index. It scans the project's sessions/
+// dir for per-session jobstore directories (each holding a jobs.jsonl) rather
+// than keying off the meta list: the WATCHING session that minted a grant need
+// not itself appear in the past index, but its log is the durable source of the
+// link. Best-effort — a session with no log or an unreadable log contributes
+// nothing rather than failing the rebuild. Lists may carry duplicates across
+// sessions until dedupObserverLists.
+func foldProjectObserverGrants(into map[string][]string, project string) {
+	entries, err := os.ReadDir(filepath.Join(project, "sessions"))
+	if err != nil {
+		return // no sessions dir (or unreadable): nothing to fold
+	}
+	for _, e := range entries {
+		// A session's jobstore is a directory <id>/ holding jobs.jsonl; the
+		// session .meta.json files in the same sessions/ dir are skipped here.
+		if !e.IsDir() {
+			continue
+		}
+		perWorker, err := agent.LoadSessionObserverGrants(project, e.Name())
+		if err != nil {
+			continue
+		}
+		for worker, obs := range perWorker {
+			into[worker] = append(into[worker], obs...)
+		}
+	}
+}
+
+// dedupObserverLists collapses duplicate observer ids per worker (the same
+// (worker, observer) pair can be granted in more than one watching session's
+// log) and sorts each list for a stable order.
+func dedupObserverLists(observers map[string][]string) {
+	for worker, obs := range observers {
+		seen := make(map[string]bool, len(obs))
+		deduped := obs[:0]
+		for _, id := range obs {
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			deduped = append(deduped, id)
+		}
+		sort.Strings(deduped)
+		observers[worker] = deduped
+	}
 }
 
 // Find returns the entry for a given session_id.
