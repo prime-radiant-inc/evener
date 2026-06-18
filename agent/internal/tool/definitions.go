@@ -111,7 +111,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 		Name: "delegate",
 		Description: "Start a NEW delegate conversation to do independent agentic work; returns a `job_id` " +
 			"immediately by default (you are notified when it finishes). `delegate` never resumes an existing " +
-			"delegate: follow up on one with `job_send_message`. Optional: `agent_type` picks a role from the " +
+			"delegate: follow up on one with `delegate_send`. Optional: `agent_type` picks a role from the " +
 			"enum (described in your agents section); `model` and `reasoning_effort` override the defaults; " +
 			"`result_schema` requests a validated structured result; `max_wait_ms` waits inline up to that many ms " +
 			"(a timeout leaves the job running). `delegation_allowance` lets the delegate itself delegate, up to one " +
@@ -139,30 +139,30 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 	}
 }
 
-// DefJobSendMessage defines the job_send_message tool, the single follow-up
-// surface for delegate jobs and observer/sidecar commentary.
-func DefJobSendMessage() llm.ToolDefinition {
+// DefDelegateSend defines the delegate_send tool, the single follow-up surface
+// for durable delegates and contextual caller commentary.
+func DefDelegateSend() llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name: "job_send_message",
-		Description: "Send a follow-up message to a delegate by `job_id` — or, from an observer, commentary to `caller`. " +
-			"A delegate steered while it is mid-turn returns on delivery (`action:\"sent\"`, same `job_id`); a finished " +
-			"delegate — or a running one that is idle between turns — is resumed in the same conversation as a new job " +
-			"(`action:\"resumed\"`, new `job_id`, returns immediately by default). Set `on_finished=\"fail\"` only when you " +
-			"require a currently live target: the call then fails with `target_terminal` instead of resuming.",
+		Name: "delegate_send",
+		Description: "Send a message to a durable delegate by delegate_id, or from a delegate/watch-delivered context " +
+			"to the contextual caller route. `to` accepts `dlg_...` or `caller`; it rejects job/turn handles, transcript " +
+			"refs, and legacy runtime aliases. If the delegate is running or being driven, the message is steered and " +
+			"returns on delivery. If the delegate is idle, set `on_idle=\"start\"` to start the next job; the default " +
+			"`on_idle=\"fail\"` rejects idle delegates instead of starting work.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"target":  map[string]any{"type": "string", "description": "A delegate job_id or `caller`."},
+				"to":      map[string]any{"type": "string", "description": "A delegate_id (`dlg_...`) or `caller` when available."},
 				"message": map[string]any{"type": "string"},
-				"on_finished": map[string]any{
+				"on_idle": map[string]any{
 					"type":        "string",
-					"enum":        []string{"resume", "fail"},
-					"description": "Default resume: a finished delegate is resumed as a new job. fail: require a live target (target_terminal if finished).",
+					"enum":        []string{"start", "fail"},
+					"description": "Default fail: reject an idle delegate. start: start the delegate's next job.",
 				},
-				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/resume without waiting. >0: for a resumed job, wait inline up to this many ms for its result; steers and alias sends return on delivery regardless."},
+				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a started job, wait inline up to this many ms for its result; steers and caller sends return on delivery regardless."},
 			},
-			"required": []string{"target", "message"},
+			"required": []string{"to", "message"},
 		},
 	}
 }

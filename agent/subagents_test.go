@@ -587,7 +587,7 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 }
 
 // TestSubagentCannotCallRootOnlyControlTools asserts depth>0 subagents keep
-// job_send_message for aliases while root-only controls stay unavailable.
+// delegate_send for caller-route messages while root-only controls stay unavailable.
 func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if len(rootOnlyJobPresenceTools) != 2 || rootOnlyJobPresenceTools[0] != "delegate" || rootOnlyJobPresenceTools[1] != "job_watch" {
 		t.Fatalf("rootOnlyJobPresenceTools = %v, want exactly [delegate job_watch]", rootOnlyJobPresenceTools)
@@ -598,8 +598,8 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if !isRootOnlyJobPresenceTool("job_watch") {
 		t.Fatal("job_watch must be a root-only job-presence tool")
 	}
-	if isRootOnlyJobPresenceTool("job_send_message") {
-		t.Fatal("job_send_message must not be a root-only job-presence tool")
+	if isRootOnlyJobPresenceTool("delegate_send") {
+		t.Fatal("delegate_send must not be a root-only job-presence tool")
 	}
 	if !isRootOnlySubagentTool("delegate") {
 		t.Fatal("delegate must be a root-only subagent tool")
@@ -625,8 +625,8 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if child.reg.Get("job_watch") != nil {
 		t.Fatal("depth>0 child must not have job_watch registered")
 	}
-	if child.reg.Get("job_send_message") == nil {
-		t.Fatal("depth>0 child must keep job_send_message registered")
+	if child.reg.Get("delegate_send") == nil {
+		t.Fatal("depth>0 child must keep delegate_send registered")
 	}
 	for _, name := range []string{"shell", "job_read_output", "job_list", "job_stop"} {
 		if child.reg.Get(name) == nil {
@@ -636,8 +636,8 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if hasCachedCallableToolDefinition(child, "job_watch") {
 		t.Fatal("depth>0 child must not advertise job_watch")
 	}
-	if !hasCachedCallableToolDefinition(child, "job_send_message") {
-		t.Fatal("depth>0 child must advertise job_send_message")
+	if !hasCachedCallableToolDefinition(child, "delegate_send") {
+		t.Fatal("depth>0 child must advertise delegate_send")
 	}
 	for _, name := range []string{"shell", "job_read_output", "job_list", "job_stop"} {
 		if !hasCachedCallableToolDefinition(child, name) {

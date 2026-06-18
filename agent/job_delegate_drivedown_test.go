@@ -1124,7 +1124,7 @@ func (a *driveBlockingSecondTurnAdapter) Requests() []llm.Request {
 	return append([]llm.Request{}, a.requests...)
 }
 
-// TestSendMessageMidDriveSteersNoSecondTurn proves the A7 fix: a job_send_message
+// TestSendMessageMidDriveSteersNoSecondTurn proves the A7 fix: a delegate_send
 // arriving while a coordinator's drive turn is in flight (sub.driving==true,
 // sub.running==false) STEERS into that single in-flight turn instead of launching
 // a SECOND concurrent ProcessInputKind on the same child session (a data race on
@@ -1134,11 +1134,11 @@ func (a *driveBlockingSecondTurnAdapter) Requests() []llm.Request {
 //
 // RED at HEAD: sendDelegateMessage reads only sub.running, so a driving-but-not-
 // running coordinator falls into resumeOrFindRunningDelegate, which launches a
-// fresh delegate turn → Action=="resumed", a second ProcessInputKind runs
+// fresh delegate turn -> Action=="started", a second ProcessInputKind runs
 // concurrently with the drive turn (-race reports a DATA RACE), and the adapter's
 // third call records secondTurnStarted.
 //
-// GREEN after the fix: the send is steered into the drive turn → Action=="sent",
+// GREEN after the fix: the send is steered into the drive turn -> Action=="steered",
 // no second turn, no race. Run under -race.
 func TestSendMessageMidDriveSteersNoSecondTurn(t *testing.T) {
 	release := make(chan struct{})
@@ -1189,7 +1189,7 @@ func TestSendMessageMidDriveSteersNoSecondTurn(t *testing.T) {
 
 	// WHILE the drive turn is blocked in flight, send a message to the coordinator.
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:        coord.JobID,
+		Target:        coord.DelegateID,
 		Message:       "steer me",
 		Background:    true,
 		BackgroundSet: true,
@@ -1198,12 +1198,12 @@ func TestSendMessageMidDriveSteersNoSecondTurn(t *testing.T) {
 		t.Fatalf("sendDelegateMessage during drive turn: %v", res.Err)
 	}
 
-	// The send must steer into the single in-flight drive turn (Action=="sent"),
-	// NOT launch a fresh resumed ProcessInput (Action=="resumed") that runs a
+	// The send must steer into the single in-flight drive turn (Action=="steered"),
+	// NOT start a fresh ProcessInput (Action=="started") that runs a
 	// SECOND concurrent ProcessInputKind on the same child session.
-	if res.Action != "sent" {
-		t.Fatalf("mid-drive send Action=%q, want \"sent\" (steered into the in-flight drive turn); "+
-			"a \"resumed\" Action means a SECOND concurrent ProcessInputKind launched on the driving child", res.Action)
+	if res.Action != "steered" {
+		t.Fatalf("mid-drive send Action=%q, want \"steered\" (steered into the in-flight drive turn); "+
+			"a \"started\" Action means a SECOND concurrent ProcessInputKind launched on the driving child", res.Action)
 	}
 
 	// A second concurrent turn must NEVER start on the child. At HEAD the resumed
@@ -1241,7 +1241,7 @@ func TestSendMessageMidDriveSteersNoSecondTurn(t *testing.T) {
 // silently losing the watch delivery.
 //
 // GREEN after the fix: a driving child's FromWatch send steers via trySteer
-// (Delivered / Action=="sent", classifyWatchSendDelivery != watchSendHardFailure)
+// (Delivered / Action=="steered", classifyWatchSendDelivery != watchSendHardFailure)
 // — or, if trySteer ever declined, returns watchSendBusy so the frame stays pending
 // for A6 re-delivery — never a hard failure.
 func TestWatchResumeMidDriveSteersNotDropped(t *testing.T) {
@@ -1302,7 +1302,7 @@ func TestWatchResumeMidDriveSteersNotDropped(t *testing.T) {
 	// WHILE the drive turn is blocked in flight, deliver a WATCH-RESUME send to the
 	// coordinator (FromWatch==true — the live-drain shape).
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:        coord.JobID,
+		Target:        coord.DelegateID,
 		Message:       "watch steer me",
 		Background:    true,
 		BackgroundSet: true,
@@ -1318,10 +1318,10 @@ func TestWatchResumeMidDriveSteersNotDropped(t *testing.T) {
 	}
 
 	// Steering into a live (drive) turn always succeeds, so the frame settles as
-	// delivered (Action=="sent", classifyWatchSendDelivery==watchSendDelivered);
+	// delivered (Action=="steered", classifyWatchSendDelivery==watchSendDelivered);
 	// deliverPendingWatchSend then settleWatchSendDelivered-s the pending frame.
-	if res.Action != "sent" {
-		t.Fatalf("mid-drive FromWatch send Action=%q, want \"sent\" (steered into the in-flight drive turn)", res.Action)
+	if res.Action != "steered" {
+		t.Fatalf("mid-drive FromWatch send Action=%q, want \"steered\" (steered into the in-flight drive turn)", res.Action)
 	}
 	if classifyWatchSendDelivery(res) != watchSendDelivered {
 		t.Fatalf("mid-drive FromWatch send classified as %d, want watchSendDelivered (%d) — the steered frame "+

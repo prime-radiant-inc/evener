@@ -122,13 +122,13 @@ func TestOpenRouterAnthropicProfile_OneMillionBetaHeader(t *testing.T) {
 	}
 }
 
-func TestJobControlCapabilityIncludesDelegateAndSendMessage(t *testing.T) {
+func TestJobControlCapabilityIncludesDelegateAndSend(t *testing.T) {
 	defs := toolDefinitionsForCapabilities([]toolCapability{capabilityJobControl}, nil)
 	have := map[string]bool{}
 	for _, d := range defs {
 		have[d.Name] = true
 	}
-	for _, name := range []string{"delegate", "job_watch", "job_send_message", "job_read_output", "job_list", "job_stop"} {
+	for _, name := range []string{"delegate", "job_watch", "delegate_send", "job_read_output", "job_list", "job_stop"} {
 		if !have[name] {
 			t.Errorf("capabilityJobControl missing %q", name)
 		}
@@ -150,7 +150,7 @@ func TestStandardProfilesAdvertiseJobControlWithoutLegacyAgentControl(t *testing
 				have[d.Name] = true
 			}
 
-			for _, name := range []string{"delegate", "job_watch", "job_send_message", "job_read_output", "job_list", "job_stop"} {
+			for _, name := range []string{"delegate", "job_watch", "delegate_send", "job_read_output", "job_list", "job_stop"} {
 				if !have[name] {
 					t.Errorf("profile missing job-control tool %q", name)
 				}

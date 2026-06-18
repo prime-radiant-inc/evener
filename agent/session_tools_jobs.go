@@ -88,11 +88,11 @@ func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 		return err
 	}
 	if err := reg.Register(tool.RegisteredTool{
-		Tool:  llm.Tool{Definition: tool.DefJobSendMessage()},
+		Tool:  llm.Tool{Definition: tool.DefDelegateSend()},
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
-			return jobSendMessageTool(ctx, s, args, jobToolResultMaxChars(reg, "job_send_message"))
+			return delegateSendTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate_send"))
 		},
 	}); err != nil {
 		return err
@@ -118,12 +118,11 @@ func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	})
 }
 
-func jobSendMessageTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
+func delegateSendTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
 	a := sendMessageArgs{
-		Target:     stringArg(args, "target"),
+		Target:     stringArg(args, "to"),
 		Message:    stringArg(args, "message"),
 		OnIdle:     stringArg(args, "on_idle"),
-		OnFinished: stringArg(args, "on_finished"),
 		Background: true, // default: no wait, return immediately
 	}
 	// max_wait_ms: 0/absent = no wait; positive = wait inline up to N;
@@ -149,7 +148,7 @@ func jobSendMessageTool(ctx context.Context, s *Session, args map[string]any, ma
 		return "", res.Err
 	}
 	res.WaitIgnoredReason = liveSteerWaitIgnoredReason(a.BlockTimeoutMS, res.Status, res.Action)
-	return marshalSendMessageResult(res, maxChars)
+	return marshalDelegateSendResult(res, maxChars)
 }
 
 // liveSteerWaitIgnoredReason returns a note when a caller passed a positive
@@ -157,8 +156,8 @@ func jobSendMessageTool(ctx context.Context, s *Session, args map[string]any, ma
 // delivery and cannot honor the wait. It returns "" when the wait was honored (a
 // resumed job) or not requested, so the field stays omitted in the common case.
 func liveSteerWaitIgnoredReason(blockTimeoutMS int, status jobstore.Status, action string) string {
-	if blockTimeoutMS > 0 && status == jobstore.StatusRunning && (action == "sent" || action == "busy") {
-		return "live steer returns on delivery; max_wait_ms applies only to resumed jobs"
+	if blockTimeoutMS > 0 && status == jobstore.StatusRunning && action == "steered" {
+		return "live steer returns on delivery; max_wait_ms applies only to started jobs"
 	}
 	return ""
 }
@@ -999,33 +998,24 @@ func classifyStopOutcome(previous jobstore.Status, rec *jobstore.JobRecord) stri
 	return "completed_during_stop"
 }
 
-type jobSendMessageDelegateResult struct {
-	Target                 string  `json:"target"`
+type delegateSendResult struct {
 	DelegateID             string  `json:"delegate_id,omitempty"`
 	StartedJobID           string  `json:"started_job_id,omitempty"`
-	JobID                  string  `json:"job_id"`
+	CurrentJobID           string  `json:"current_job_id,omitempty"`
 	LatestJobID            string  `json:"latest_job_id,omitempty"`
-	Type                   string  `json:"type"`
-	Status                 string  `json:"status"`
+	Type                   string  `json:"type,omitempty"`
+	Status                 string  `json:"status,omitempty"`
 	Reason                 *string `json:"reason,omitempty"`
 	RunningInBackground    bool    `json:"running_in_background"`
 	TimedOut               bool    `json:"timed_out,omitempty"`
 	Action                 string  `json:"action"`
-	ResumedFromJobID       string  `json:"resumed_from_job_id,omitempty"`
-	TranscriptRef          string  `json:"transcript_ref"`
+	TranscriptRef          string  `json:"transcript_ref,omitempty"`
 	Output                 *string `json:"output,omitempty"`
 	Truncated              *bool   `json:"truncated,omitempty"`
 	StructuredResult       any     `json:"structured_result,omitempty"`
 	StructuredResultValid  *bool   `json:"structured_result_valid,omitempty"`
 	StructuredResultReason string  `json:"structured_result_reason,omitempty"`
 	WaitIgnoredReason      string  `json:"wait_ignored_reason,omitempty"`
-}
-
-type jobSendMessageAliasResult struct {
-	Target      string `json:"target"`
-	Delivered   bool   `json:"delivered"`
-	Action      string `json:"action"`
-	MessageType string `json:"message_type"`
 }
 
 type jobWatchToolResult struct {
@@ -1068,22 +1058,21 @@ type delegateToolResult struct {
 	StructuredResultReason string  `json:"structured_result_reason,omitempty"`
 }
 
-func marshalSendMessageResult(res sendMessageResult, maxChars int) (any, error) {
+func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error) {
 	_ = maxChars
 	if res.MessageType == "runtime" {
-		alias := jobSendMessageAliasResult{
-			Target:      res.Target,
-			Delivered:   res.Delivered,
-			Action:      res.Action,
-			MessageType: res.MessageType,
+		out := delegateSendResult{
+			Type:                res.MessageType,
+			Status:              deliveredStatus(res.Delivered),
+			RunningInBackground: false,
+			Action:              res.Action,
 		}
-		return tool.StateResult{Output: formatSendMessageAlias(alias), State: alias}, nil
+		return tool.StateResult{Output: formatDelegateSend(out), State: out}, nil
 	}
-	out := jobSendMessageDelegateResult{
-		Target:              res.Target,
+	out := delegateSendResult{
 		DelegateID:          res.DelegateID,
 		StartedJobID:        res.StartedJobID,
-		JobID:               res.JobID,
+		CurrentJobID:        res.JobID,
 		LatestJobID:         res.LatestJobID,
 		Type:                res.Type,
 		Status:              string(res.Status),
@@ -1091,7 +1080,6 @@ func marshalSendMessageResult(res sendMessageResult, maxChars int) (any, error) 
 		RunningInBackground: res.RunningInBackground,
 		TimedOut:            res.TimedOut,
 		Action:              res.Action,
-		ResumedFromJobID:    res.ResumedFromJobID,
 		TranscriptRef:       res.TranscriptRef,
 		WaitIgnoredReason:   res.WaitIgnoredReason,
 	}
@@ -1105,22 +1093,20 @@ func marshalSendMessageResult(res sendMessageResult, maxChars int) (any, error) 
 		out.StructuredResultValid = &valid
 		out.StructuredResultReason = res.StructuredResultReason
 	}
-	return tool.StateResult{Output: formatSendMessageDelegate(out), State: out}, nil
+	return tool.StateResult{Output: formatDelegateSend(out), State: out}, nil
 }
 
-// formatSendMessageAlias renders a runtime-alias send result as a one-line footer.
-func formatSendMessageAlias(a jobSendMessageAliasResult) string {
-	delivered := "delivered"
-	if !a.Delivered {
-		delivered = "not delivered"
+func deliveredStatus(delivered bool) string {
+	if delivered {
+		return "delivered"
 	}
-	return fmt.Sprintf("[message to %s · %s · %s]", a.Target, a.Action, delivered)
+	return "not_delivered"
 }
 
-// formatSendMessageDelegate renders a delegate send/steer/resume result: any reply
-// output, a bracketed footer, and the structured_result (JSON, genuinely
-// structured) when present.
-func formatSendMessageDelegate(out jobSendMessageDelegateResult) string {
+// formatDelegateSend renders a delegate send/steer/start result: any reply output,
+// a bracketed footer, and the structured_result (JSON, genuinely structured) when
+// present.
+func formatDelegateSend(out delegateSendResult) string {
 	var b strings.Builder
 	if out.Output != nil && *out.Output != "" {
 		b.WriteString(*out.Output)
@@ -1128,9 +1114,12 @@ func formatSendMessageDelegate(out jobSendMessageDelegateResult) string {
 			b.WriteByte('\n')
 		}
 	}
-	foot := []string{"message to " + out.Target, out.Action}
-	if out.JobID != "" {
-		foot = append(foot, "job "+out.JobID)
+	foot := []string{out.Action}
+	if out.DelegateID != "" {
+		foot = append([]string{"delegate_id " + out.DelegateID}, foot...)
+	}
+	if out.StartedJobID != "" {
+		foot = append(foot, "started_job_id "+out.StartedJobID)
 	}
 	if out.Status != "" {
 		foot = append(foot, out.Status)
@@ -1853,7 +1842,7 @@ func enforceJobToolJSONLimits(reg *tool.Registry) {
 		return
 	}
 	overrides := map[string]schema.ToolOutputLimit{}
-	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate", "job_watch", "job_send_message"} {
+	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate", "job_watch", "delegate_send"} {
 		registered := reg.Get(name)
 		if registered == nil || registered.Limit.MaxChars >= jobToolResultMinJSONChars {
 			continue
