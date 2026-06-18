@@ -1380,7 +1380,7 @@ func TestWeb_Sidebar_FoldsExcessSubagents(t *testing.T) {
 	if !strings.Contains(body, "+2 subagents") {
 		t.Errorf("expected '+2 subagents' toggle:\n%s", body)
 	}
-	if got := strings.Count(body, "subagent-row"); got != 5 {
+	if got := strings.Count(body, `class="sb-row sub subagent-row"`); got != 5 {
 		t.Errorf("expected 5 subagent rows total, got %d", got)
 	}
 }

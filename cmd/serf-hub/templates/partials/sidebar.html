@@ -204,7 +204,9 @@
       {{range .Children}}
         {{if eq .Kind "subagent"}}
         {{$subagentIdx = add $subagentIdx 1}}
-        <a class="sb-row sub subagent-row{{if gt $subagentIdx 3}} subagent-overflow{{end}}"
+        <div class="subagent-row-wrap{{if gt $subagentIdx 3}} subagent-overflow{{end}}"
+             data-ref="{{.ID}}" data-title="{{.Title}}">
+        <a class="sb-row sub subagent-row"
            data-state="{{.State}}"
            href="/s/{{.ID}}"
            hx-get="/_partials/s/{{.ID}}/workspace"
@@ -214,6 +216,8 @@
           <span class="subagent-glyph" data-state="{{.State}}" aria-hidden="true">{{if eq .State "active"}}⟳{{else if eq .State "awaiting"}}◆{{else if eq .State "warning"}}✕{{else}}✓{{end}}</span>
           <span class="subagent-title">{{.Title}}</span>
         </a>
+        <span role="button" tabindex="0" class="open-beside-btn" aria-label="open subagent beside" title="open beside">⇲</span>
+        </div>
         {{else if eq .Kind "fork"}}
         <a class="sb-row fork"
            data-state="{{.State}}"
