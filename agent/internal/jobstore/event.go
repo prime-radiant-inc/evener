@@ -19,6 +19,8 @@ const (
 	EventWatchReadGrant           EventKind = "watch_read_grant"
 	EventDelegateCreated          EventKind = "delegate_created"
 	EventDelegateStopGateClosed   EventKind = "delegate_stop_gate_closed"
+	EventWatchRegistered          EventKind = "watch_registered"
+	EventWatchCleared             EventKind = "watch_cleared"
 )
 
 // Event is one line in the append-only jobs.jsonl log. It carries a flat union
@@ -29,7 +31,8 @@ type Event struct {
 	Seq  int64     `json:"seq"`
 	TS   time.Time `json:"ts"`
 
-	JobID string `json:"job_id"`
+	JobID   string `json:"job_id"`
+	WatchID string `json:"watch_id,omitempty"`
 
 	// job_started payload
 	Type             JobType                    `json:"type,omitempty"`
@@ -75,6 +78,9 @@ type Event struct {
 
 	// delegate_* payload
 	Delegate *DelegateEvent `json:"delegate,omitempty"`
+
+	// watch_registered/watch_cleared payload
+	Watch *WatchEvent `json:"watch,omitempty"`
 }
 
 type DelegateEvent struct {
@@ -88,4 +94,17 @@ type DelegateEvent struct {
 	Resumable        bool   `json:"resumable,omitempty"`
 	NotResumableWhy  string `json:"not_resumable_reason,omitempty"`
 	StopJobID        string `json:"stop_job_id,omitempty"`
+}
+
+type WatchEvent struct {
+	Generation       string               `json:"generation,omitempty"`
+	OwnerSessionID   string               `json:"owner_session_id,omitempty"`
+	VisibleSessionID string               `json:"visible_session_id,omitempty"`
+	Target           string               `json:"target,omitempty"`
+	SendTo           string               `json:"send_to,omitempty"`
+	ConfigHash       string               `json:"config_hash,omitempty"`
+	Condition        string               `json:"condition,omitempty"`
+	Config           *WatchConfigSnapshot `json:"config,omitempty"`
+	Deliveries       int                  `json:"deliveries,omitempty"`
+	EndReason        string               `json:"end_reason,omitempty"`
 }

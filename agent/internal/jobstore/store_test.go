@@ -63,6 +63,40 @@ func TestStoreLoadDelegates(t *testing.T) {
 	}
 }
 
+func TestStoreLoadWatches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s := openStore(t, path)
+	appendEvent(t, s, Event{
+		Kind:    EventWatchRegistered,
+		WatchID: "watch_A",
+		Watch: &WatchEvent{
+			Generation:       "wg_1",
+			OwnerSessionID:   "owner",
+			VisibleSessionID: "owner",
+			Target:           "job_A",
+			SendTo:           "dlg_obs",
+			ConfigHash:       "hash_A",
+		},
+	})
+	appendEvent(t, s, Event{
+		Kind:    EventWatchCleared,
+		WatchID: "watch_A",
+		Watch:   &WatchEvent{Generation: "wg_1", EndReason: "cleared"},
+	})
+
+	watches, err := s.LoadWatches()
+	if err != nil {
+		t.Fatalf("load watches: %v", err)
+	}
+	w := watches["watch_A"]
+	if w == nil {
+		t.Fatal("watch watch_A missing")
+	}
+	if w.Active || w.EndReason != "cleared" || w.Target != "job_A" || w.SendTo != "dlg_obs" {
+		t.Fatalf("watch = %+v, want cleared watch_A", w)
+	}
+}
+
 func TestStoreAssignsMonotonicSeq(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.jsonl")
 	s := openStore(t, path)

@@ -261,6 +261,66 @@ func TestFoldDelegatesIgnoresFinishedNonCurrentJob(t *testing.T) {
 	}
 }
 
+func TestFoldWatchesUpsertsByConfigHashAndClearsByID(t *testing.T) {
+	events := []Event{
+		ev(EventWatchRegistered, 1, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{
+				Generation:       "wg_1",
+				OwnerSessionID:   "owner",
+				VisibleSessionID: "owner",
+				Target:           "job_1",
+				SendTo:           "dlg_obs",
+				ConfigHash:       "hash_A",
+				Condition:        "events: [assistant.message]",
+			}
+		}),
+		ev(EventWatchRegistered, 2, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{
+				Generation:       "wg_1",
+				OwnerSessionID:   "owner",
+				VisibleSessionID: "owner",
+				Target:           "job_1",
+				SendTo:           "dlg_obs",
+				ConfigHash:       "hash_A",
+				Condition:        "events: [assistant.message]",
+			}
+		}),
+		ev(EventWatchCleared, 3, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{Generation: "wg_1", EndReason: "cleared"}
+		}),
+	}
+
+	watches := FoldWatches(events)
+	w := watches["watch_A"]
+	if w == nil {
+		t.Fatal("watch_A missing")
+	}
+	if w.Active || w.EndReason != "cleared" || w.Target != "job_1" || w.SendTo != "dlg_obs" {
+		t.Fatalf("watch = %+v, want inactive cleared registry row", w)
+	}
+}
+
+func TestFoldWatchesRejectsStaleClearGeneration(t *testing.T) {
+	events := []Event{
+		ev(EventWatchRegistered, 1, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{Generation: "wg_2", OwnerSessionID: "owner", VisibleSessionID: "owner", Target: "job_1", ConfigHash: "hash_2"}
+		}),
+		ev(EventWatchCleared, 2, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{Generation: "wg_1", EndReason: "cleared"}
+		}),
+	}
+
+	w := FoldWatches(events)["watch_A"]
+	if w == nil || !w.Active || w.Generation != "wg_2" {
+		t.Fatalf("watch = %+v, want stale clear ignored", w)
+	}
+}
+
 func TestDelegateRestoreDescriptorSurvivesStoreReopenAndFold(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.jsonl")
 	store, err := Open(path)

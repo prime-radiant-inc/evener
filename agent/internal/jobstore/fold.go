@@ -150,6 +150,41 @@ func FoldDelegates(events []Event) map[string]*DelegateRecord {
 	return delegates
 }
 
+func FoldWatches(events []Event) map[string]*WatchRecord {
+	sorted := append([]Event(nil), events...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+
+	watches := make(map[string]*WatchRecord)
+	for _, e := range sorted {
+		if e.WatchID == "" || e.Watch == nil {
+			continue
+		}
+		switch e.Kind {
+		case EventWatchRegistered:
+			watches[e.WatchID] = &WatchRecord{
+				WatchID:          e.WatchID,
+				Generation:       e.Watch.Generation,
+				OwnerSessionID:   e.Watch.OwnerSessionID,
+				VisibleSessionID: e.Watch.VisibleSessionID,
+				Target:           e.Watch.Target,
+				SendTo:           e.Watch.SendTo,
+				ConfigHash:       e.Watch.ConfigHash,
+				Condition:        e.Watch.Condition,
+				Deliveries:       e.Watch.Deliveries,
+				Active:           true,
+			}
+		case EventWatchCleared:
+			w := watches[e.WatchID]
+			if w == nil || w.Generation != e.Watch.Generation {
+				continue
+			}
+			w.Active = false
+			w.EndReason = e.Watch.EndReason
+		}
+	}
+	return watches
+}
+
 // FoldWatchSends reconstructs pending watch-send frames from durable events.
 func FoldWatchSends(events []Event) WatchSendRecord {
 	sorted := append([]Event(nil), events...)

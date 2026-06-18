@@ -105,6 +105,31 @@ type DelegateRecord struct {
 	StopGateClosedJobID string         `json:"stop_gate_closed_job_id,omitempty"`
 }
 
+type WatchRecord struct {
+	WatchID          string `json:"watch_id"`
+	Generation       string `json:"generation"`
+	OwnerSessionID   string `json:"owner_session_id"`
+	VisibleSessionID string `json:"visible_session_id"`
+	Target           string `json:"target"`
+	SendTo           string `json:"send_to,omitempty"`
+	ConfigHash       string `json:"config_hash"`
+	Condition        string `json:"condition,omitempty"`
+	Deliveries       int    `json:"deliveries,omitempty"`
+	Active           bool   `json:"active"`
+	EndReason        string `json:"end_reason,omitempty"`
+}
+
+type WatchConfigSnapshot struct {
+	Target             string   `json:"target"`
+	OutputMatch        string   `json:"output_match,omitempty"`
+	ProgressIntervalMS int      `json:"progress_interval_ms,omitempty"`
+	Events             []string `json:"events,omitempty"`
+	Every              int      `json:"every,omitempty"`
+	SendTo             string   `json:"send_to,omitempty"`
+	SendMessage        string   `json:"send_message,omitempty"`
+	IncludeExcerpt     bool     `json:"include_excerpt,omitempty"`
+}
+
 // WatchSendKey identifies the coalescing slot for a durable watch-send frame.
 type WatchSendKey struct {
 	VisibleSessionID        string `json:"visible_session_id"`
@@ -183,6 +208,10 @@ func NewDelegateID() string {
 
 func NewDelegateGeneration() string {
 	return "dg_" + ulid.Make().String()
+}
+
+func NewWatchID() string {
+	return "watch_" + ulid.Make().String()
 }
 
 func NewWatchGeneration() string {

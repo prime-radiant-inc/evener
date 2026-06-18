@@ -120,6 +120,20 @@ func (s *Store) LoadDelegates() (map[string]*DelegateRecord, error) {
 	return FoldDelegates(events), nil
 }
 
+// LoadWatches reads every event and folds durable watch registry state.
+func (s *Store) LoadWatches() (map[string]*WatchRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return nil, err
+	}
+	events, err := s.readAllLocked()
+	if err != nil {
+		return nil, err
+	}
+	return FoldWatches(events), nil
+}
+
 // LoadWatchSends reads every event and folds durable pending watch-send state.
 func (s *Store) LoadWatchSends() (WatchSendRecord, error) {
 	s.mu.Lock()

@@ -123,6 +123,24 @@ func TestDelegateEventJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWatchRegistryEventJSONRoundTrip(t *testing.T) {
+	raw := []byte(`{"kind":"watch_registered","watch_id":"watch_A","watch":{"generation":"wg_1","owner_session_id":"owner","visible_session_id":"owner","target":"job_1","send_to":"dlg_obs","config_hash":"hash_A"}}`)
+	var e Event
+	if err := json.Unmarshal(raw, &e); err != nil {
+		t.Fatalf("unmarshal watch event: %v", err)
+	}
+	if e.Kind != EventWatchRegistered || e.WatchID != "watch_A" || e.Watch == nil || e.Watch.SendTo != "dlg_obs" {
+		t.Fatalf("event = %+v, want watch registry payload", e)
+	}
+	out, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal watch event: %v", err)
+	}
+	if !bytes.Contains(out, []byte(`"watch_id":"watch_A"`)) || !bytes.Contains(out, []byte(`"send_to":"dlg_obs"`)) {
+		t.Fatalf("encoded watch event = %s", out)
+	}
+}
+
 func TestEventKindsAreStable(t *testing.T) {
 	want := map[EventKind]string{
 		EventJobStarted:               "job_started",
@@ -138,6 +156,8 @@ func TestEventKindsAreStable(t *testing.T) {
 		EventWatchReadGrant:           "watch_read_grant",
 		EventDelegateCreated:          "delegate_created",
 		EventDelegateStopGateClosed:   "delegate_stop_gate_closed",
+		EventWatchRegistered:          "watch_registered",
+		EventWatchCleared:             "watch_cleared",
 	}
 	for k, s := range want {
 		if string(k) != s {
