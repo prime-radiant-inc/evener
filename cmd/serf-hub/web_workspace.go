@@ -398,10 +398,11 @@ func (s *WebServer) fillSubagentLineage(data *WorkspaceData, m schema.SessionMet
 }
 
 // fillObserverLink populates WorkspaceData.ObserverRouteIDs with this worker's
-// observer subagents, filtered to observers whose session is still LIVE. The
-// renderer auto-opens each as a side pane beside the worker. Ended observers are
-// dropped server-side so we never auto-open a dead session (they remain manually
-// openable via the ⇲ button).
+// observer subagents — live OR ended. The renderer auto-opens each as a side
+// pane beside the worker (observers auto-open by design). Ended observers are
+// included on purpose so the relationship surfaces on sessions already on disk;
+// a worker with many past observers is bounded on the client by the side-pane
+// cap + closed-pane suppression (a dismissed observer pane stays shut).
 //
 // Two sources union (deduped): the forward SessionMeta.ObservedBy stamp (set on
 // fresh local watches) and the durable grant-history index built from every
@@ -411,9 +412,6 @@ func (s *WebServer) fillSubagentLineage(data *WorkspaceData, m schema.SessionMet
 // sources only: both sources derive from local meta/jobstore state, so remote/
 // codex workspaces never reach here with an observer.
 func (s *WebServer) fillObserverLink(data *WorkspaceData, m schema.SessionMeta) {
-	if s.cfg.Roster == nil {
-		return
-	}
 	var historical []string
 	if s.cfg.Past != nil {
 		historical = s.cfg.Past.ObserversOf(m.ID)
@@ -421,19 +419,16 @@ func (s *WebServer) fillObserverLink(data *WorkspaceData, m schema.SessionMeta) 
 	if len(m.ObservedBy) == 0 && len(historical) == 0 {
 		return
 	}
-	var live []string
+	var observers []string
 	seen := make(map[string]bool, len(m.ObservedBy)+len(historical))
 	for _, observerID := range append(append([]string(nil), m.ObservedBy...), historical...) {
 		if observerID == "" || seen[observerID] {
 			continue
 		}
 		seen[observerID] = true
-		if _, ok := s.cfg.Roster.Find(observerID); !ok {
-			continue // ended observer: not in the live roster
-		}
-		live = append(live, canonicalRouteID(observerID))
+		observers = append(observers, canonicalRouteID(observerID))
 	}
-	data.ObserverRouteIDs = live
+	data.ObserverRouteIDs = observers
 }
 
 func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id string) {

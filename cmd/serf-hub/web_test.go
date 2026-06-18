@@ -5740,13 +5740,15 @@ func TestWeb_WorkspaceData_CarriesLiveObserver(t *testing.T) {
 	}
 }
 
-// An observer that is no longer live (absent from the roster) is filtered out
-// server-side so the renderer never auto-opens a pane for an ended observer.
-func TestWeb_WorkspaceData_FiltersEndedObserver(t *testing.T) {
-	web := observerWorkspaceFixture(t, []string{"OBSERVER"}) // OBSERVER not in roster
+// An observer that has ended (absent from the live roster) is STILL surfaced so
+// the renderer auto-opens its pane beside the worker (observers auto-open, live
+// or ended). The flood of a worker with many past observers is bounded by the
+// side-pane cap + closed-pane suppression on the client.
+func TestWeb_WorkspaceData_IncludesEndedObserver(t *testing.T) {
+	web := observerWorkspaceFixture(t, []string{"OBSERVER"}) // OBSERVER not in roster (ended)
 	wd := web.workspaceData("WORKER")
-	if len(wd.ObserverRouteIDs) != 0 {
-		t.Fatalf("ended observer must be filtered; got %v", wd.ObserverRouteIDs)
+	if len(wd.ObserverRouteIDs) != 1 || wd.ObserverRouteIDs[0] != "OBSERVER" {
+		t.Fatalf("ended observer must still be surfaced; got %v", wd.ObserverRouteIDs)
 	}
 }
 
@@ -5841,11 +5843,11 @@ func TestWeb_WorkspaceData_CarriesObserverFromGrantHistory(t *testing.T) {
 
 // A grant-history observer that is no longer live is filtered out, same as a
 // stamped one — auto-open stays live-only regardless of source.
-func TestWeb_WorkspaceData_FiltersEndedGrantHistoryObserver(t *testing.T) {
-	web := observerGrantWorkspaceFixture(t, "OBSERVER", "local:WORKER") // OBSERVER not live
+func TestWeb_WorkspaceData_IncludesEndedGrantHistoryObserver(t *testing.T) {
+	web := observerGrantWorkspaceFixture(t, "OBSERVER", "local:WORKER") // OBSERVER not live (ended)
 	wd := web.workspaceData("WORKER")
-	if len(wd.ObserverRouteIDs) != 0 {
-		t.Fatalf("ended grant-history observer must be filtered; got %v", wd.ObserverRouteIDs)
+	if len(wd.ObserverRouteIDs) != 1 || wd.ObserverRouteIDs[0] != "OBSERVER" {
+		t.Fatalf("ended grant-history observer must still be surfaced; got %v", wd.ObserverRouteIDs)
 	}
 }
 
