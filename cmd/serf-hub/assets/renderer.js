@@ -1177,10 +1177,12 @@
       }
       const actions = document.createElement("div");
       actions.className = "user-message-actions";
-      const copy = document.createElement("span");
+      const copy = document.createElement("button");
+      copy.type = "button";
       copy.className = "action copy"; copy.textContent = "copy";
       copy.onclick = () => navigator.clipboard.writeText(text);
-      const edit = document.createElement("span");
+      const edit = document.createElement("button");
+      edit.type = "button";
       edit.className = "action edit"; edit.textContent = "✎ edit";
       edit.onclick = () => this.startEdit(wrap, pill, text);
       actions.appendChild(copy); actions.appendChild(edit);
