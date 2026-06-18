@@ -1001,6 +1001,9 @@ func jobResultBody(raw string) (string, bool) {
 	}
 	jobID := r.JobID
 	if jobID == "" {
+		jobID = r.effectiveJobID()
+	}
+	if jobID == "" {
 		jobID = "(none)"
 	}
 	// Status line first, with the ref prominent and before the output body.
@@ -1041,26 +1044,36 @@ func jobResultBody(raw string) (string, bool) {
 // any key outside this set is rendered via the general JSON
 // pretty-print so the extra evidence stays visible.
 var jobResultKnownKeys = map[string]bool{
-	"target":                  true,
-	"job_id":                  true,
-	"type":                    true,
-	"status":                  true,
-	"reason":                  true,
-	"running_in_background":   true,
-	"timed_out":               true,
-	"action":                  true,
-	"resumed_from_job_id":     true,
-	"transcript_ref":          true,
-	"output":                  true,
-	"truncated":               true,
-	"exit_code":               true,
-	"structured_result":       true,
-	"structured_result_valid": true,
-	"delivered":               true,
-	"message_type":            true,
+	"delegate_id":              true,
+	"started_job_id":           true,
+	"current_job_id":           true,
+	"latest_job_id":            true,
+	"target":                   true,
+	"job_id":                   true,
+	"type":                     true,
+	"status":                   true,
+	"reason":                   true,
+	"running_in_background":    true,
+	"timed_out":                true,
+	"action":                   true,
+	"resumed_from_job_id":      true,
+	"transcript_ref":           true,
+	"output":                   true,
+	"truncated":                true,
+	"exit_code":                true,
+	"structured_result":        true,
+	"structured_result_valid":  true,
+	"structured_result_reason": true,
+	"delivered":                true,
+	"message_type":             true,
+	"wait_ignored_reason":      true,
 }
 
 var jobResultMetadataKeys = []string{
+	"delegate_id",
+	"started_job_id",
+	"current_job_id",
+	"latest_job_id",
 	"target",
 	"type",
 	"action",
@@ -1070,8 +1083,10 @@ var jobResultMetadataKeys = []string{
 	"truncated",
 	"exit_code",
 	"structured_result_valid",
+	"structured_result_reason",
 	"delivered",
 	"message_type",
+	"wait_ignored_reason",
 }
 
 func jobResultMetadata(raw string) string {
@@ -1388,6 +1403,9 @@ func toolInputSummary(name string, args json.RawMessage) string {
 
 	case "job_send_message":
 		return joinSummary(get("target"), quoteIfSet(truncRunes(get("message"), 80)))
+
+	case "delegate_send":
+		return joinSummary(get("to"), quoteIfSet(truncRunes(get("message"), 80)))
 
 	case "use_skill":
 		return get("skill_name")

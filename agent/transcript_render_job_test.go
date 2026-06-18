@@ -128,6 +128,44 @@ func TestRenderMarkdown_JobSendMessageResult(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdown_DelegateSendResult(t *testing.T) {
+	childRef := "local:01DELEGATESEND000000"
+	body, err := json.Marshal(map[string]any{
+		"delegate_id":           "dlg_01J",
+		"started_job_id":        "job_new",
+		"current_job_id":        "job_new",
+		"latest_job_id":         "job_new",
+		"type":                  "delegate",
+		"status":                "completed",
+		"running_in_background": false,
+		"timed_out":             false,
+		"action":                "started",
+		"transcript_ref":        childRef,
+		"output":                "done",
+		"truncated":             false,
+	})
+	if err != nil {
+		t.Fatalf("marshal delegate_send result: %v", err)
+	}
+
+	out := renderToolCardForResult("delegate_send", "call_send", string(body))
+
+	for _, want := range []string{
+		"job_id=job_new",
+		"status=completed",
+		"transcript_ref=" + childRef,
+		"delegate_id=dlg_01J",
+		"started_job_id=job_new",
+		"current_job_id=job_new",
+		"action=started",
+		"done",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("delegate_send render missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // TestRenderMarkdown_JobResultHugeOutputBounded verifies a job result with a
 // very long output is still bounded, and the ref stays visible before the
 // truncated output.
@@ -344,6 +382,24 @@ func TestDecodeJobResult(t *testing.T) {
 			t.Errorf("subset %+v disagrees with full decode %+v", info, full)
 		}
 	})
+
+	t.Run("delegate_send ids decode to concrete job pivot", func(t *testing.T) {
+		body := `{"delegate_id":"dlg_decode","started_job_id":"job_started","current_job_id":"job_current","latest_job_id":"job_current","type":"delegate","status":"running","transcript_ref":"local:01D"}`
+		r, ok := decodeJobResult(body)
+		if !ok {
+			t.Fatalf("expected decode to succeed for delegate_send body")
+		}
+		if r.effectiveJobID() != "job_current" {
+			t.Fatalf("effectiveJobID = %q, want job_current", r.effectiveJobID())
+		}
+		info, ok := extractJobResult(body)
+		if !ok {
+			t.Fatalf("extractJobResult should succeed")
+		}
+		if info.jobID != "job_current" || info.transcriptRef != "local:01D" {
+			t.Fatalf("extractJobResult = %+v, want job_current/local:01D", info)
+		}
+	})
 }
 
 func TestRenderOutline_JobLifecycleBrackets(t *testing.T) {
@@ -362,6 +418,22 @@ func TestRenderOutline_JobLifecycleBrackets(t *testing.T) {
 	}
 	if strings.Contains(out, "success=") {
 		t.Fatalf("outline job bracket must not include legacy success field:\n%s", out)
+	}
+}
+
+func TestRenderOutline_DelegateSendLifecycleBrackets(t *testing.T) {
+	childRef := "local:01OUTLINEDELEGATESEND"
+	body := `{"delegate_id":"dlg_outline","started_job_id":"job_started","current_job_id":"job_started","latest_job_id":"job_started","type":"delegate","status":"running","running_in_background":true,"timed_out":false,"action":"started","transcript_ref":"` + childRef + `","truncated":false}`
+	entries := []transcript.Entry{
+		toolCallEntry(call("call_send", "delegate_send", `{}`)),
+		toolResultEntry(result("call_send", "delegate_send", body, false)),
+	}
+
+	out, _, _ := renderOutline(entries, 0, len(entries)-1)
+
+	want := "delegate_send[status=running child=" + childRef + "]"
+	if !strings.Contains(out, want) {
+		t.Fatalf("outline missing delegate_send lifecycle bracket %q:\n%s", want, out)
 	}
 }
 

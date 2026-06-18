@@ -110,6 +110,19 @@ func TestSubagentPromptStatesAllowance(t *testing.T) {
 	}
 }
 
+func TestSubagentPromptUsesDelegateSendForFollowup(t *testing.T) {
+	prompt := renderSubagentPromptWithAllowance(t, 2)
+	if !strings.Contains(prompt, "delegate_send") {
+		t.Fatalf("delegating subagent prompt should mention delegate_send:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "delegate_id") {
+		t.Fatalf("delegating subagent prompt should describe delegate_id follow-up:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "job_send_message") {
+		t.Fatalf("delegating subagent prompt must not advertise removed job_send_message:\n%s", prompt)
+	}
+}
+
 func TestAvailableAgentsSection_NoAgents(t *testing.T) {
 	result := renderAvailableAgentsSectionForTest(t, nil)
 	if result != "" {
