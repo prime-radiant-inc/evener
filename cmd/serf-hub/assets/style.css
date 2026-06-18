@@ -3893,3 +3893,71 @@ body.doc-page {
   font-family: var(--font-mono);
   font-size: 0.86em;
 }
+
+/* ── Pane compact mode ───────────────────────────────────────────────────────
+   Applied to <body> when the renderer detects it is running inside a pane
+   iframe (window.self !== window.top). All rules are scoped under .pane-compact
+   so the full (un-framed) view is completely unchanged.
+
+   Goals: tighter vertical rhythm, slightly smaller type for the transcript,
+   trimmed header chrome, and tool clusters collapsed by default.
+   Colors come from existing tokens — no new colors introduced. */
+
+/* Trim and condense the workspace header in a pane: it dominates the narrow
+   pane width and repeats information already visible in the pane header bar. */
+.pane-compact .workspace-header {
+  padding: var(--space-2) var(--space-4);
+}
+/* Hide the secondary meta row (model, cwd, turn count) — it's too much at
+   pane width; the title row alone orients the reader. */
+.pane-compact .workspace-meta {
+  display: none;
+}
+/* Tighten the conversation transcript vertical rhythm. */
+.pane-compact .conversation {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+}
+/* Reduce bottom spacing on transcript entries. */
+.pane-compact .assistant-message {
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+}
+.pane-compact .user-message {
+  margin-bottom: var(--space-3);
+  padding-top: var(--space-4);
+}
+.pane-compact .system-line {
+  margin: var(--space-2) 0 var(--space-2) var(--space-5);
+  padding: var(--space-1) 0;
+}
+/* Tighten tool-call entry bottom margin. */
+.pane-compact .tool-call {
+  margin-bottom: var(--space-2);
+}
+/* Tool clusters: in compact mode, show the summary and hide the body even
+   while the cluster is still live (data-compact attr set by the renderer when
+   pane-compact is active at cluster-creation time). Once the user clicks the
+   summary, the .open class reveals the body as normal. */
+.pane-compact .tool-call-cluster[data-compact] > .tool-cluster-summary {
+  display: flex;
+}
+.pane-compact .tool-call-cluster[data-compact]:not(.open) > .tool-cluster-body {
+  display: none;
+}
+/* Tighten the subagents module. */
+.pane-compact .subs {
+  margin-bottom: var(--space-3);
+}
+/* Tighten think/reasoning block. */
+.pane-compact .think {
+  margin-bottom: var(--space-3);
+}
+/* Respect prefers-reduced-motion — no new animations are introduced, but
+   ensure any pane-compact transitions (if added later) honour the setting. */
+@media (prefers-reduced-motion: reduce) {
+  .pane-compact * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
