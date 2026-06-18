@@ -96,6 +96,40 @@ func TestCreateDelegateForegroundCompletesWithStructuredResult(t *testing.T) {
 	}
 }
 
+func TestDelegateResultIncludesDurableDelegateAndStartedJobIDs(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
+	}})
+	s := newDelegateTestSession(t, c)
+
+	res := s.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+	if !strings.HasPrefix(res.DelegateID, "dlg_") {
+		t.Fatalf("DelegateID = %q, want dlg_ prefix", res.DelegateID)
+	}
+	if res.StartedJobID != res.JobID || res.LatestJobID != res.JobID {
+		t.Fatalf("result ids = %+v, want started/latest equal concrete job", res)
+	}
+	rec := loadShellRecord(t, s.jobManager, res.JobID)
+	if rec.DelegateID != res.DelegateID {
+		t.Fatalf("record DelegateID = %q, want %q", rec.DelegateID, res.DelegateID)
+	}
+	delegates, err := s.jobManager.store.LoadDelegates()
+	if err != nil {
+		t.Fatalf("LoadDelegates: %v", err)
+	}
+	if delegates[res.DelegateID] == nil || delegates[res.DelegateID].LatestJobID != res.JobID {
+		t.Fatalf("delegates = %+v, want latest job linked", delegates)
+	}
+}
+
 func TestCreateDelegateEmptyResultSchemaIsNoSchema(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -1479,6 +1513,37 @@ func TestSendDelegateMessageTerminalDelegateResumeCreatesNewJob(t *testing.T) {
 	jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
 	if len(jobs) != 2 {
 		t.Fatalf("delegate jobs = %+v, want two durable jobs", jobs)
+	}
+}
+
+func TestDelegateResumeKeepsDelegateIDAndUpdatesLatestJob(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("first") },
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("second") },
+	}})
+	s := newDelegateTestSession(t, c)
+	first := s.createDelegate(context.Background(), delegateArgs{Task: "first", Background: false, BlockTimeoutMS: 5000})
+	if first.Err != nil {
+		t.Fatalf("first delegate: %v", first.Err)
+	}
+	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         first.DelegateID,
+		Message:        "second",
+		OnIdle:         "start",
+		Background:     false,
+		BackgroundSet:  true,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage: %v", res.Err)
+	}
+	if res.DelegateID != first.DelegateID || res.StartedJobID == first.JobID || res.LatestJobID != res.StartedJobID {
+		t.Fatalf("resume result = %+v, want same delegate and new latest job", res)
+	}
+	rec := loadShellRecord(t, s.jobManager, res.StartedJobID)
+	if rec.DelegateID != first.DelegateID {
+		t.Fatalf("resumed job DelegateID = %q, want %q", rec.DelegateID, first.DelegateID)
 	}
 }
 

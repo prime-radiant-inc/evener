@@ -96,6 +96,49 @@ func TestJobReadOutputReportsStatus(t *testing.T) {
 	}
 }
 
+func TestJobListIncludesDelegatesRecoverySurface(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
+	}})
+	s := newDelegateTestSession(t, c)
+	res := s.createDelegate(context.Background(), delegateArgs{Task: "finish", Background: false, BlockTimeoutMS: 5000})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+
+	call := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "list",
+		Name:      "job_list",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if call.IsError {
+		t.Fatalf("job_list returned error: %s", call.Output)
+	}
+	var out struct {
+		Delegates []struct {
+			DelegateID   string `json:"delegate_id"`
+			CurrentJobID string `json:"current_job_id"`
+			LatestJobID  string `json:"latest_job_id"`
+			Status       string `json:"status"`
+			Resumable    bool   `json:"resumable"`
+		} `json:"delegates"`
+		Jobs []struct {
+			JobID      string `json:"job_id"`
+			DelegateID string `json:"delegate_id"`
+		} `json:"jobs"`
+	}
+	if err := json.Unmarshal(toolResultJSON(call), &out); err != nil {
+		t.Fatalf("unmarshal job_list: %v", err)
+	}
+	if len(out.Delegates) != 1 || out.Delegates[0].DelegateID != res.DelegateID || out.Delegates[0].LatestJobID != res.JobID {
+		t.Fatalf("delegates = %+v, want delegate recovery row", out.Delegates)
+	}
+	if len(out.Jobs) == 0 || out.Jobs[0].DelegateID != res.DelegateID {
+		t.Fatalf("jobs = %+v, want job annotated with delegate_id", out.Jobs)
+	}
+}
+
 // TestJobReadOutputUnknownIDPointsToJobList pins the not-found recovery hint:
 // when a job_id resolves to nothing (a guessed id, or a foreground command whose
 // output rode inline and kept no durable job), the error must redirect the model

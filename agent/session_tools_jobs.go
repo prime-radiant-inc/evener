@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -121,6 +122,7 @@ func jobSendMessageTool(ctx context.Context, s *Session, args map[string]any, ma
 	a := sendMessageArgs{
 		Target:     stringArg(args, "target"),
 		Message:    stringArg(args, "message"),
+		OnIdle:     stringArg(args, "on_idle"),
 		OnFinished: stringArg(args, "on_finished"),
 		Background: true, // default: no wait, return immediately
 	}
@@ -663,12 +665,26 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 			jobs = append(jobs, projectJobRecord(s, rec))
 		}
 	}
+	delegateRecords, err := jm.store.LoadDelegates()
+	if err != nil {
+		return "", err
+	}
+	delegates := make([]delegateListEntry, 0, len(delegateRecords))
+	delegateIDs := make([]string, 0, len(delegateRecords))
+	for delegateID := range delegateRecords {
+		delegateIDs = append(delegateIDs, delegateID)
+	}
+	sort.Strings(delegateIDs)
+	for _, delegateID := range delegateIDs {
+		delegates = append(delegates, projectDelegateRecord(delegateRecords[delegateID]))
+	}
 	s.mu.Lock()
 	allowance := s.delegationAllowance
 	s.mu.Unlock()
 	result := jobListResult{
 		Jobs:          jobs,
 		Count:         len(jobs),
+		Delegates:     delegates,
 		Watches:       jm.liveWatchSummaries(),
 		RecentWatches: jm.recentWatchSummaries(),
 	}
@@ -855,14 +871,26 @@ type jobOutputMatch struct {
 }
 
 type jobListResult struct {
-	Jobs  []jobListEntry `json:"jobs"`
-	Count int            `json:"count"`
+	Jobs      []jobListEntry      `json:"jobs"`
+	Count     int                 `json:"count"`
+	Delegates []delegateListEntry `json:"delegates,omitempty"`
 	// Watches/RecentWatches/DelegationAllowance are supervision signal kept only
 	// when they carry information: no active watches, no recent watch history, and
 	// a no-op delegation allowance (≤ 1, which can only grant 0) are all omitted.
 	Watches             []watchListEntry   `json:"watches,omitempty"`
 	RecentWatches       []recentWatchEntry `json:"recent_watches,omitempty"`
 	DelegationAllowance int                `json:"delegation_allowance,omitempty"`
+}
+
+type delegateListEntry struct {
+	DelegateID       string `json:"delegate_id"`
+	Status           string `json:"status"`
+	CurrentJobID     string `json:"current_job_id,omitempty"`
+	LatestJobID      string `json:"latest_job_id,omitempty"`
+	TranscriptRef    string `json:"transcript_ref,omitempty"`
+	Resumable        bool   `json:"resumable"`
+	NotResumableWhy  string `json:"not_resumable_reason,omitempty"`
+	ParentDelegateID string `json:"parent_delegate_id,omitempty"`
 }
 
 // watchListEntry is one active watch in job_list's result (spec §4 F2),
@@ -893,6 +921,7 @@ type recentWatchEntry struct {
 
 type jobListEntry struct {
 	JobID          string  `json:"job_id"`
+	DelegateID     string  `json:"delegate_id,omitempty"`
 	Type           string  `json:"type"`
 	Status         string  `json:"status"`
 	Reason         *string `json:"reason,omitempty"`
@@ -972,7 +1001,10 @@ func classifyStopOutcome(previous jobstore.Status, rec *jobstore.JobRecord) stri
 
 type jobSendMessageDelegateResult struct {
 	Target                 string  `json:"target"`
+	DelegateID             string  `json:"delegate_id,omitempty"`
+	StartedJobID           string  `json:"started_job_id,omitempty"`
 	JobID                  string  `json:"job_id"`
+	LatestJobID            string  `json:"latest_job_id,omitempty"`
 	Type                   string  `json:"type"`
 	Status                 string  `json:"status"`
 	Reason                 *string `json:"reason,omitempty"`
@@ -1019,7 +1051,10 @@ type jobWatchToolSendArgs struct {
 }
 
 type delegateToolResult struct {
+	DelegateID             string  `json:"delegate_id,omitempty"`
+	StartedJobID           string  `json:"started_job_id,omitempty"`
 	JobID                  string  `json:"job_id"`
+	LatestJobID            string  `json:"latest_job_id,omitempty"`
 	Type                   string  `json:"type"`
 	Status                 string  `json:"status"`
 	Reason                 *string `json:"reason,omitempty"`
@@ -1046,7 +1081,10 @@ func marshalSendMessageResult(res sendMessageResult, maxChars int) (any, error) 
 	}
 	out := jobSendMessageDelegateResult{
 		Target:              res.Target,
+		DelegateID:          res.DelegateID,
+		StartedJobID:        res.StartedJobID,
 		JobID:               res.JobID,
+		LatestJobID:         res.LatestJobID,
 		Type:                res.Type,
 		Status:              string(res.Status),
 		Reason:              stringPtrOrNil(res.Reason),
@@ -1176,7 +1214,10 @@ func formatJobWatch(out jobWatchToolResult) string {
 
 func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
 	out := delegateToolResult{
+		DelegateID:          res.DelegateID,
+		StartedJobID:        res.StartedJobID,
 		JobID:               res.JobID,
+		LatestJobID:         res.LatestJobID,
 		Type:                res.Type,
 		Status:              string(res.Status),
 		Reason:              stringPtrOrNil(res.Reason),
@@ -1732,6 +1773,7 @@ func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {
 	}
 	return jobListEntry{
 		JobID:              rec.JobID,
+		DelegateID:         rec.DelegateID,
 		Type:               string(rec.Type),
 		Status:             string(rec.Status),
 		Reason:             stringPtrOrNil(rec.Reason),
@@ -1748,6 +1790,22 @@ func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {
 		ExitCode:           rec.ExitCode,
 		TotalBytes:         rec.OutputBytes,
 		Command:            stringPtrOrNil(rec.Command),
+	}
+}
+
+func projectDelegateRecord(rec *jobstore.DelegateRecord) delegateListEntry {
+	if rec == nil {
+		return delegateListEntry{}
+	}
+	return delegateListEntry{
+		DelegateID:       rec.DelegateID,
+		Status:           string(rec.Status),
+		CurrentJobID:     rec.CurrentJobID,
+		LatestJobID:      rec.LatestJobID,
+		TranscriptRef:    rec.TranscriptRef,
+		Resumable:        rec.Resumable,
+		NotResumableWhy:  rec.NotResumableWhy,
+		ParentDelegateID: rec.ParentDelegateID,
 	}
 }
 
