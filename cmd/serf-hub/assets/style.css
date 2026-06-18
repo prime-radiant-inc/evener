@@ -1653,7 +1653,10 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 }
 .user-message-actions { position: absolute; right: 0; top: var(--space-2); display: none; gap: var(--space-4); font-size: var(--text-xs); color: var(--text-muted); }
 .user-message:hover .user-message-actions { display: flex; }
-.user-message-actions .action { cursor: pointer; }
+/* The copy/edit actions are real <button>s for keyboard reach; strip the global
+   button chrome so they stay quiet inline text, not boxed controls. */
+.user-message-actions .action { background: none; border: none; padding: 0; font: inherit; color: var(--text-muted); cursor: pointer; }
+.user-message-actions .action:hover { color: var(--text); }
 .user-message-actions .edit { color: var(--text); }
 .user-message-images { display: flex; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-3); }
 .user-message-images:empty { display: none; }

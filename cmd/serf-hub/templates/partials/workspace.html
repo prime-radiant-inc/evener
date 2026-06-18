@@ -17,7 +17,7 @@
     <button type="button" class="header-hamburger" data-sidebar-toggle title="open sidebar" aria-label="open sidebar">☰</button>
     <div class="workspace-title">
       <span id="workspace-session-title" class="title">{{.Title}}</span>
-      <button class="btn btn-icon title-action" type="button" data-copy-id="{{.ID}}" title="copy session ID">⧉</button>
+      <button class="btn btn-icon title-action" type="button" data-copy-id="{{.ID}}" title="copy session ID" aria-label="copy session ID">⧉</button>
     </div>
     <div class="workspace-actions">
       <button type="button" class="btn btn-ghost panel-toggle" data-details-trigger title="session details">
@@ -77,7 +77,7 @@
   </div>
   <div class="input-controls">
     <div class="controls-left">
-      <button type="button" class="btn btn-secondary" data-attach-trigger title="attach image">＋</button>
+      <button type="button" class="btn btn-secondary" data-attach-trigger title="attach image" aria-label="attach image">＋</button>
       {{if .Capabilities.ChangeModel}}
       <button type="button" class="btn btn-chip model-chip" data-model-trigger{{if .Model}} title="{{.Model}}"{{end}}>
         <span class="val" data-model-display>{{if .Model}}{{.Model}}{{else}}—{{end}}</span>

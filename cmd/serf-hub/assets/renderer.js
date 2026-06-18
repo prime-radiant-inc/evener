@@ -41,6 +41,7 @@
     clip,
     reasoningGist,
     reasoningTier,
+    bindDisclosureToggle,
   } = window.SerfRendererInternal;
 
   // Tool-output renderers live in renderer-tools.js (loaded after format).
@@ -1097,7 +1098,7 @@
       const toggle = document.createElement("button");
       toggle.type = "button";
       toggle.className = "system-run-toggle";
-      toggle.addEventListener("click", () => run.classList.toggle("open"));
+      bindDisclosureToggle(toggle, run);
       const inner = document.createElement("div");
       inner.className = "system-run-body";
       run.append(toggle, inner);
@@ -1177,10 +1178,12 @@
       }
       const actions = document.createElement("div");
       actions.className = "user-message-actions";
-      const copy = document.createElement("span");
+      const copy = document.createElement("button");
+      copy.type = "button";
       copy.className = "action copy"; copy.textContent = "copy";
       copy.onclick = () => navigator.clipboard.writeText(text);
-      const edit = document.createElement("span");
+      const edit = document.createElement("button");
+      edit.type = "button";
       edit.className = "action edit"; edit.textContent = "✎ edit";
       edit.onclick = () => this.startEdit(wrap, pill, text);
       actions.appendChild(copy); actions.appendChild(edit);
@@ -1723,7 +1726,7 @@
       el.appendChild(label);
       el.appendChild(pv);
       el.appendChild(body);
-      el.addEventListener("click", () => el.classList.toggle("open"));
+      bindDisclosureToggle(el, el);
       this.conversation.appendChild(el);
       this.reasoningEl = el;
       this.reasoningBuf = "";
@@ -1877,7 +1880,7 @@
           const summary = document.createElement("button");
           summary.type = "button";
           summary.className = "tool-cluster-summary";
-          summary.addEventListener("click", () => cluster.classList.toggle("open"));
+          bindDisclosureToggle(summary, cluster);
           const body = document.createElement("div");
           body.className = "tool-cluster-body";
           cluster.append(summary, body);
