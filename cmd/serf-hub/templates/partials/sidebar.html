@@ -105,7 +105,7 @@
         <button type="button" class="btn btn-icon archive-btn"
           data-archive-kind="project" data-archive-id="{{.Name}}"
           title="{{if .IsArchived}}unarchive{{else}}archive{{end}} project {{.Name}}"
-          aria-label="{{if .IsArchived}}unarchive{{else}}archive{{end}} project">⋯</button>
+          aria-label="{{if .IsArchived}}unarchive{{else}}archive{{end}} project"><svg class="archive-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2.2" y="3" width="11.6" height="3" rx="0.6"></rect><path d="M3.3 6.2v6.3c0 .28.22.5.5.5h8.4c.28 0 .5-.22.5-.5V6.2"></path><path d="M6.4 9h3.2"></path></svg></button>
       </header>
       {{/* Children render inline only for auto-expanded (live) projects. A
            collapsed project ships an empty container that sidebar.js fills via
@@ -193,7 +193,7 @@
       </a>
       <button type="button" class="btn btn-icon archive-btn"
         data-archive-kind="session" data-archive-id="{{.ID}}"
-        title="archive session" aria-label="archive session">⋯</button>
+        title="archive session" aria-label="archive session"><svg class="archive-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2.2" y="3" width="11.6" height="3" rx="0.6"></rect><path d="M3.3 6.2v6.3c0 .28.22.5.5.5h8.4c.28 0 .5-.22.5-.5V6.2"></path><path d="M6.4 9h3.2"></path></svg></button>
       </div>
       {{/* Subagents are de-weighted: dim, single-line, indented, terminal-state
            glyph. Past 3 they fold behind a "+N subagents" toggle so a busy

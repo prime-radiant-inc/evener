@@ -1170,6 +1170,9 @@ details.session-tier.archived .sb-row .title { color: var(--text-muted); }
    along with the rest of the text-bearing sidebar chrome. */
 body.app[data-sidebar-rail] .session-tier-label,
 body.app[data-sidebar-rail] .archive-btn { display: none; }
+/* Archive control icon (a box, not the ⋯ menu glyph): block so it centers in
+   the icon button without baseline gap; inherits the button's color. */
+.archive-btn .archive-icon { display: block; }
 @container sidebar (max-width: 80px) {
   .session-tier-label,
   .archive-btn { display: none; }

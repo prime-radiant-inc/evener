@@ -930,6 +930,32 @@ func TestWeb_SidebarCollapsedProjectEmitsNoSessionRows(t *testing.T) {
 	}
 }
 
+func TestWeb_SidebarArchiveButtonUsesIconNotMenuGlyph(t *testing.T) {
+	// The ⋯ glyph reads as an overflow menu, not "archive". The archive control
+	// must render a clear archive icon instead.
+	web, cleanup := newCodexSidebarServer(t, "th_idle", "/work/idleproj", "idle")
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "archive-btn") {
+		t.Fatalf("sidebar missing archive control:\n%s", body)
+	}
+	if strings.Contains(body, "⋯") {
+		t.Fatalf("archive control still uses the ⋯ menu glyph; expected an archive icon:\n%s", body)
+	}
+	if !strings.Contains(body, `class="archive-icon"`) {
+		t.Fatalf("archive control missing the archive icon:\n%s", body)
+	}
+}
+
 func TestWeb_SidebarProjectPartialRendersChildren(t *testing.T) {
 	web, cleanup := newCodexSidebarServer(t, "th_idle", "/work/idleproj", "idle")
 	defer cleanup()
