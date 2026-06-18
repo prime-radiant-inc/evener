@@ -418,6 +418,39 @@ Live manual e2e:
 - Verify there are exactly two `PYTHON_QUOTE` injections for two external trigger
   inputs and zero extra observer jobs from injected/acknowledgement traffic.
 
+## Definition of Done
+
+The design is implemented only when all of these are true:
+
+- Event-watch frames for `communicate` include `watch_id`, `delivery_id`,
+  trigger metadata, and a bounded `event:` block containing the communicated
+  `message`, `await_reply`, and `truncated` flag.
+- Every event emitted from a watch-delivered observer turn, and every event
+  emitted from downstream work caused by that turn, carries the watch origin
+  chain or equivalent internal metadata.
+- `delegate_send(to="caller")` from a watch-delivered observer stores the
+  current watch origin on the caller steering entry before the caller is driven.
+- Events emitted while processing that caller steering entry inherit the same
+  origin, including assistant text, tool calls, `communicate`, job lifecycle
+  events, warnings, and errors.
+- `job_watch` suppresses same-watch echoes before notification enqueue,
+  watch-send recording, pending-frame replacement, and delivery accounting.
+- Suppression keys include watch generation, so clearing and recreating a watch
+  does not let stale pending deliveries affect the replacement watch.
+- Existing invalid direct-feedback watch configurations remain rejected; origin
+  suppression does not legalize self-delivery shapes.
+- Unit tests cover propagation through watch delivery, observer
+  `delegate_send(to="caller")`, caller steering, detached job completion, and
+  same-generation versus new-generation suppression.
+- The Monty Python scenario passes against real Kimi with transcript inspection:
+  two external trigger messages produce exactly two `PYTHON_QUOTE` injections,
+  non-trigger messages produce none, and observer-injected or parent
+  acknowledgement traffic does not create extra observer jobs.
+- The snide observer scenario still passes: observer commentary stays in the
+  observer thread and does not inject into the caller.
+- The implementation leaves no new public observer primitive and no
+  user-configurable loop-escape knob in v1.
+
 ## Implementation Sequence
 
 1. Add event-origin types and attach current input origin in `Session.emit`.
