@@ -5644,3 +5644,80 @@ func TestInputStatusGaugeAmberThreshold(t *testing.T) {
 		}
 	}
 }
+
+// observerWorkspaceFixture writes a worker meta whose ObservedBy lists the given
+// observers, builds a hub over it, and returns a WebServer with the named live
+// roster sessions. It is the shared setup for the observer-link flow tests.
+func observerWorkspaceFixture(t *testing.T, observedBy []string, liveSessionIDs ...string) *WebServer {
+	t.Helper()
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "p")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: "WORKER", UpdatedAt: time.Now(), OriginalPrompt: "do work",
+		IsSubagent: true, ParentSessionID: "PARENT", ObservedBy: observedBy,
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/p"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	entries := make([]hubcore.LiveEntry, 0, len(liveSessionIDs))
+	for i, id := range liveSessionIDs {
+		entries = append(entries, hubcore.LiveEntry{
+			Entry: rendezvous.Entry{PID: i + 1}, SessionID: id, Status: appwire.ThreadStatusActive,
+		})
+	}
+	return NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRosterWithEntries(entries...),
+		Past:    idx,
+	})
+}
+
+// A worker whose meta carries a LIVE observer surfaces that observer's route id
+// in WorkspaceData.ObserverRouteIDs (the data-observers source for auto-open).
+func TestWeb_WorkspaceData_CarriesLiveObserver(t *testing.T) {
+	web := observerWorkspaceFixture(t, []string{"OBSERVER"}, "OBSERVER")
+	wd := web.workspaceData("WORKER")
+	if len(wd.ObserverRouteIDs) != 1 || wd.ObserverRouteIDs[0] != "OBSERVER" {
+		t.Fatalf("ObserverRouteIDs = %v, want [OBSERVER]", wd.ObserverRouteIDs)
+	}
+}
+
+// An observer that is no longer live (absent from the roster) is filtered out
+// server-side so the renderer never auto-opens a pane for an ended observer.
+func TestWeb_WorkspaceData_FiltersEndedObserver(t *testing.T) {
+	web := observerWorkspaceFixture(t, []string{"OBSERVER"}) // OBSERVER not in roster
+	wd := web.workspaceData("WORKER")
+	if len(wd.ObserverRouteIDs) != 0 {
+		t.Fatalf("ended observer must be filtered; got %v", wd.ObserverRouteIDs)
+	}
+}
+
+// An ordinary worker with no ObservedBy carries no observer route ids.
+func TestWeb_WorkspaceData_NoObserversWhenUnwatched(t *testing.T) {
+	web := observerWorkspaceFixture(t, nil)
+	wd := web.workspaceData("WORKER")
+	if len(wd.ObserverRouteIDs) != 0 {
+		t.Fatalf("un-watched worker must have no observers; got %v", wd.ObserverRouteIDs)
+	}
+}
+
+// The workspace template renders ObserverRouteIDs as a space-separated
+// data-observers attribute on #conversation (the JS↔server contract).
+func TestWeb_WorkspaceTemplate_RendersDataObservers(t *testing.T) {
+	web := observerWorkspaceFixture(t, []string{"OBSERVER", "OBS2"}, "OBSERVER", "OBS2")
+	var buf bytes.Buffer
+	if err := web.workspaceTmpl.ExecuteTemplate(&buf, "workspace", web.workspaceData("WORKER")); err != nil {
+		t.Fatalf("render workspace: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `data-observers="OBSERVER OBS2"`) {
+		t.Fatalf("workspace must render data-observers; got:\n%s", out)
+	}
+}

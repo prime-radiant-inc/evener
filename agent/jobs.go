@@ -37,6 +37,10 @@ type jobManager struct {
 	mu            sync.Mutex
 	watchNotifyMu sync.Mutex
 	dir           string
+	// stateDir is the project state dir (parent of sessions/), where session
+	// .meta.json files live. Empty for the temp/test fallback where no project
+	// state dir is configured; observer-link stamping is skipped in that case.
+	stateDir      string
 	sessionID     string
 	transcriptRef string
 	store         *jobstore.Store
@@ -247,6 +251,7 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 	}
 	jm := &jobManager{
 		dir:           dir,
+		stateDir:      stateDir,
 		sessionID:     sessionID,
 		transcriptRef: encodeRef("", sessionID),
 		store:         store,

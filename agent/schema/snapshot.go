@@ -58,6 +58,13 @@ type SessionMeta struct {
 	// PinnedNote is the agent's self-compaction note_to_self, persisted so it
 	// survives daemon restart and serf resume (mirrors Goal).
 	PinnedNote string `json:"pinned_note,omitempty"`
+	// ObservedBy is the set of session ids of observer subagents watching this
+	// session's work. It is stamped onto the watched worker's meta when a parent
+	// session's job_watch mints a read grant for an observer delegate (the only
+	// place that knows the observer↔worker pair). The hub reads it to auto-open
+	// a live observer's session beside this one. Append-only and deduped, like
+	// the watch read grants it mirrors; never revoked.
+	ObservedBy []string `json:"observed_by,omitempty"`
 }
 
 // GoalSnapshot is the wire form of a goal.Goal persisted inside SessionMeta.

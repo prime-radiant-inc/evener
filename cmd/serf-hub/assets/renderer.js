@@ -189,6 +189,26 @@
         this.maybeShowWelcome();
       });
       this.startTaskBadgePoller();
+      this.autoOpenObservers(conversationEl);
+    },
+
+    // autoOpenObservers opens a side pane for each LIVE observer subagent of the
+    // session being viewed. The server renders data-observers (filtered to live
+    // observers) on #conversation; here we open each one beside the worker so
+    // "watch this run live" pairs the worker and its observer automatically.
+    // Guards: skip when window.SerfPanes is absent (we are inside a pane iframe,
+    // and panes must not nest — same guard as the manual ⇲ button), and skip any
+    // href the user has explicitly dismissed (panes.js suppression memory), so
+    // auto-open never fights a user's close. SerfPanes.open dedups by href and
+    // enforces the pane cap, so re-init and over-cap opens are safe no-ops.
+    autoOpenObservers(conversationEl) {
+      if (!window.SerfPanes || !conversationEl) return;
+      var refs = (conversationEl.dataset.observers || "").split(/\s+/).filter(Boolean);
+      for (var i = 0; i < refs.length; i++) {
+        var href = "/s/" + encodeURIComponent(refs[i]);
+        if (window.SerfPanes.isSuppressed && window.SerfPanes.isSuppressed(href)) continue;
+        window.SerfPanes.open(href, refs[i]);
+      }
     },
 
     refreshCapabilitiesForStatus(status, seq) {

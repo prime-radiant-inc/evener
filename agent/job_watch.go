@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/schema"
 )
 
 // WatchEventKindNames is the canonical, stable list of model-facing event-kind
@@ -1957,6 +1958,63 @@ func (jm *jobManager) watchReadGrantObserver(observerJobID string) (childSession
 	return "", false, nil
 }
 
+// watchedWorkerSessionID resolves a concrete watched job to the worker child
+// session id its transcript ref names, mirroring watchReadGrantObserver. ok is
+// false when the job has no local worker session to stamp: not found, not a
+// delegate, a cross-project (proj:) transcript ref the hub cannot read meta for,
+// or an undecodable ref. There is no error return: this feeds a best-effort
+// stamp (the read grant is the load-bearing capability; the observer-link stamp
+// is a hub convenience), so every "cannot resolve" reason collapses to ok=false.
+func (jm *jobManager) watchedWorkerSessionID(watchedJobID string) (workerSessionID string, ok bool) {
+	rec, err := findJobRecord(jm, watchedJobID)
+	if err != nil || rec.Type != jobstore.JobDelegate {
+		return "", false
+	}
+	bucketHash, childID, err := decodeRef(rec.TranscriptRef)
+	if err != nil || bucketHash != "" {
+		// Undecodable, or a cross-project worker whose meta the hub cannot read.
+		return "", false
+	}
+	return childID, true
+}
+
+// stampObservedBy records that observerSessionID observes the worker session, on
+// the worker's SessionMeta. It is append-only and deduped, mirroring the durable
+// read grant it accompanies. Best-effort: the watch's load-bearing artifact is
+// the read grant; an unwritable or absent worker meta only costs the hub its
+// auto-open convenience, so any error is returned for the caller to swallow
+// rather than failing watch installation. Skipped when no project state dir is
+// configured (temp/test fallback) or the worker meta cannot be loaded (e.g. the
+// worker session has not persisted one yet; inventing one here would race the
+// worker's own writes).
+func (jm *jobManager) stampObservedBy(workerSessionID, observerSessionID string) error {
+	if jm.stateDir == "" || workerSessionID == "" || observerSessionID == "" {
+		return nil
+	}
+	meta, err := schema.LoadSessionMeta(jm.stateDir, workerSessionID)
+	if err != nil {
+		return err
+	}
+	for _, id := range meta.ObservedBy {
+		if id == observerSessionID {
+			return nil
+		}
+	}
+	meta.ObservedBy = append(meta.ObservedBy, observerSessionID)
+	return schema.SaveSessionMeta(jm.stateDir, meta)
+}
+
+// recordObserverLink resolves the watched job to its worker session and stamps
+// the observer link on the worker's meta. Best-effort and never fails the watch:
+// an unresolvable worker or a write error only deprives the hub of auto-open.
+func (jm *jobManager) recordObserverLink(watchedJobID, observerSessionID string) {
+	workerSessionID, ok := jm.watchedWorkerSessionID(watchedJobID)
+	if !ok {
+		return
+	}
+	_ = jm.stampObservedBy(workerSessionID, observerSessionID)
+}
+
 // grantedJobRead is the read-only view the parent returns for a watch-granted
 // cross-session read (spec §5.1): a snapshot of the watched job's record
 // (clone, never a live pointer) plus closures over the parent jobManager's
@@ -2033,6 +2091,9 @@ func (jm *jobManager) mintWatchCreateReadGrant(cfg *watchConfig) error {
 	if err != nil {
 		return fmt.Errorf("watch read grant for send.to %q: %w", cfg.send.To, err)
 	}
+	// Surface the observer link to the hub by stamping the watched worker's
+	// meta. Best-effort: the read grant above is the load-bearing capability.
+	jm.recordObserverLink(cfg.target, observerSessionID)
 	// Seed the per-fire dedup: cfg is not yet installed, so no lock is needed.
 	cfg.grantsMinted = map[watchGrantKey]bool{
 		{sendTo: cfg.send.To, watchedJobID: cfg.target}: true,
@@ -2075,6 +2136,8 @@ func (jm *jobManager) mintWatchSendReadGrant(cfg *watchConfig, resolvedSendTo, w
 		})
 		return
 	}
+	// Surface the observer link to the hub (best-effort; see mintWatchCreateReadGrant).
+	jm.recordObserverLink(watchedIdentity, observerSessionID)
 	jm.mu.Lock()
 	if cfg.grantsMinted == nil {
 		cfg.grantsMinted = make(map[watchGrantKey]bool)
