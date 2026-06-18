@@ -3,6 +3,10 @@
 (function () {
   "use strict";
   var MAX_SIDE_PANES = 3;
+  // Minimum width per pane. When multiple panes are open the side-region must
+  // grow to honor each pane's readable minimum rather than compressing panes
+  // to a fraction of a fixed 420px default.
+  var PANE_MIN = 300;
 
   function region() { return document.getElementById("side-panes"); }
   function splitter() { return document.getElementById("pane-splitter"); }
@@ -60,6 +64,7 @@
     pane.appendChild(head); pane.appendChild(frame);
     r.appendChild(pane);
     showRegion(true);
+    applyPaneMinWidth();
     persist();
     return pane;
   }
@@ -68,6 +73,7 @@
     var pane = paneFor(href);
     if (pane) pane.remove();
     if (region() && region().querySelectorAll(".pane").length === 0) showRegion(false);
+    applyPaneMinWidth();
     persist();
   }
 
@@ -83,9 +89,27 @@
     return w;
   }
 
+  // applyPaneMinWidth ensures the side-region is wide enough that every open
+  // pane has at least PANE_MIN pixels. When paneCount × PANE_MIN exceeds the
+  // stored/current width, the region grows to the needed size. This is called
+  // after open() and close() so the region tracks the pane count.
+  function applyPaneMinWidth() {
+    var r = region();
+    if (!r) return;
+    var paneCount = r.querySelectorAll(".pane").length;
+    if (paneCount === 0) return;
+    var needed = paneCount * PANE_MIN;
+    var stored;
+    try { stored = parseInt(window.localStorage.getItem(WIDTH_KEY), 10); } catch (e) { stored = 0; }
+    var current = stored || 420; // default matches CSS --side-panes-w default
+    setSidePanesWidth(Math.max(current, needed));
+  }
+
   function restoreWidth() {
     var v; try { v = parseInt(window.localStorage.getItem(WIDTH_KEY), 10); } catch (e) { return; }
     if (v) setSidePanesWidth(v);
+    // After restoring saved width, honour the per-pane minimum for the restored pane count.
+    applyPaneMinWidth();
   }
 
   // Drag handler (verified manually; logic delegates to setSidePanesWidth).
@@ -128,7 +152,7 @@
     data.forEach(function (p) { if (p && p.href) open(p.href, p.title); });
   }
 
-  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, setSidePanesWidth: setSidePanesWidth, MAX_SIDE_PANES: MAX_SIDE_PANES, _persist: persist };
+  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, setSidePanesWidth: setSidePanesWidth, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
 
   function onLoad() { restore(); bindSplitter(); restoreWidth(); }
   if (document.readyState === "loading") {

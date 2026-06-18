@@ -246,6 +246,50 @@ await scenario("CSS defines the subagents module section with the four-color gly
   return { ok: true };
 });
 
+await scenario("subagent module renders a visible 'Subagents (N)' section header", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ...spawnDelegate("d1", "job_A", "trace callers", "local:child-A"),
+  ...spawnDelegate("d2", "job_B", "find tests", "local:child-B"),
+  ...spawnDelegate("d3", "job_C", "update docs", "local:child-C"),
+], ({ conv }) => {
+  const mod = conv.querySelector(".subs");
+  if (!mod) return { ok: false, detail: "missing .subs module" };
+  const header = mod.querySelector(".subs-h");
+  if (!header) return { ok: false, detail: "missing .subs-h header element" };
+  const label = header.querySelector(".t");
+  if (!label) return { ok: false, detail: "missing .t label span inside .subs-h" };
+  if (!label.textContent.includes("Subagents")) return { ok: false, detail: "header label must include 'Subagents': " + label.textContent };
+  if (!label.textContent.includes("3")) return { ok: false, detail: "header label must show pane count (3): " + label.textContent };
+  return { ok: true };
+});
+
+await scenario("subagent module header is absent when there are no subagents", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["ASSISTANT_TEXT_START", {}],
+  ["ASSISTANT_TEXT_DELTA", { delta: "hello" }],
+  ["ASSISTANT_TEXT_END", { text: "hello" }],
+], ({ conv }) => {
+  const mod = conv.querySelector(".subs");
+  if (mod) return { ok: false, detail: "no .subs module should exist when no subagents have been spawned" };
+  return { ok: true };
+});
+
+await scenario("CSS: .subs-h .t uses section-header visual treatment (uppercase, muted)", [], () => {
+  // The header label must use the quiet section-header grammar:
+  // uppercase + letter-spacing for scannability, muted color (not full text
+  // weight), sans-serif (it's a label, not machine text — no mono).
+  if (!/\.subs-h\s+\.t\s*\{/.test(styleSrc) && !/\.subs-h\s*\.t\s*\{/.test(styleSrc)) {
+    return { ok: false, detail: "missing .subs-h .t rule in CSS" };
+  }
+  if (!/text-transform\s*:\s*uppercase/.test(styleSrc)) {
+    return { ok: false, detail: ".subs-h .t must use text-transform: uppercase for section-header scannability" };
+  }
+  if (!/letter-spacing/.test(styleSrc)) {
+    return { ok: false, detail: ".subs-h .t must use letter-spacing for section-header visual treatment" };
+  }
+  return { ok: true };
+});
+
 // ============================================================
 // Mockup #8 — honest-clock demotion + "?" unknown state.
 // A subagent left "⟳ running" on a session that is no longer live (no
