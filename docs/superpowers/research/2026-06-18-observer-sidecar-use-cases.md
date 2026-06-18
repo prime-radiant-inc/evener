@@ -4,6 +4,9 @@ Date: 2026-06-18
 Branch: `wip/job-control-handle-split-impl`
 Status: research only; no API decision is approved here.
 
+Follow-up design draft:
+`docs/superpowers/specs/2026-06-18-observer-watch-origin-loop-design.md`
+
 This note records the observer/sidecar use-case inventory gathered from four
 independent systems-design lenses, plus one follow-up use case that was missing
 from the first pass: memory/context injection. The goal is to preserve the raw
