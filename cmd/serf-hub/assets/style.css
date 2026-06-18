@@ -800,11 +800,35 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 }
 .subagent-row:hover .subagent-title { color: var(--text); }
 
+/* Subagent row wrapper: pairs the <a> row with the open-beside ⇲ control.
+   Mirrors the .sb-row-wrap pattern used for session rows + archive buttons.
+   The wrapper is display:flex so the open-beside btn sits inline after the row. */
+.subagent-row-wrap {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+.subagent-row-wrap > .subagent-row {
+  flex: 1;
+  min-width: 0;
+}
+/* ⇲ open-beside on subagent rows: hidden until the row wrapper is hovered. */
+.subagent-row-wrap > .open-beside-btn {
+  position: absolute;
+  right: var(--space-2);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 0 var(--space-1);
+  margin-left: 0;
+}
+.subagent-row-wrap:hover > .open-beside-btn,
+.subagent-row-wrap:focus-within > .open-beside-btn { opacity: 1; color: var(--text-muted); }
+
 /* Overflow subagents (past 3) hide until the parent's "+N subagents"
    toggle expands them. JS flips data-subagents-expanded on the children
    container. */
 .subagent-overflow { display: none; }
-.project-children[data-subagents-expanded] .subagent-overflow { display: grid; }
+.project-children[data-subagents-expanded] .subagent-overflow { display: flex; }
 
 /* "+N subagents" fold toggle — dim, indented to match subagent rows. */
 .subagent-toggle {
@@ -830,11 +854,13 @@ body.app[data-sidebar-rail] .tier-header,
 body.app[data-sidebar-rail] .project-age,
 body.app[data-sidebar-rail] .subagent-toggle { display: none; }
 body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
+body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: none; }
 @container sidebar (max-width: 80px) {
   .tier-header span,
   .project-age,
   .subagent-toggle,
   .subagent-row .subagent-title { display: none; }
+  .subagent-row-wrap > .open-beside-btn { display: none; }
 }
 
 /* ============================================================

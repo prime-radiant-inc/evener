@@ -312,6 +312,39 @@
   }
   document.addEventListener("click", onSubagentToggle);
 
+  // Open-beside control on sidebar subagent rows — delegate clicks on
+  // .subagent-row-wrap .open-beside-btn → window.SerfPanes.open("/s/<ref>", title).
+  // Guards:
+  //   • preventDefault + stopPropagation so the sibling <a> row does not navigate.
+  //   • window.SerfPanes presence: absent when this sidebar runs inside a pane
+  //     iframe where panes must not nest.
+  function onSidebarOpenBeside(e) {
+    var btn = e.target.closest(".open-beside-btn");
+    if (!btn) return;
+    var wrap = btn.closest(".subagent-row-wrap");
+    if (!wrap) return; // only handle subagent-row-wrap open-beside here
+    e.preventDefault();
+    e.stopPropagation();
+    if (!window.SerfPanes) return;
+    var ref = wrap.getAttribute("data-ref") || "";
+    var title = wrap.getAttribute("data-title") || ref;
+    if (!ref) return;
+    window.SerfPanes.open("/s/" + encodeURIComponent(ref), title);
+  }
+  document.addEventListener("click", onSidebarOpenBeside);
+
+  // Keyboard: Enter/Space on .subagent-row-wrap .open-beside-btn.
+  function onSidebarOpenBesideKeydown(e) {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    var btn = e.target.closest(".open-beside-btn");
+    if (!btn) return;
+    if (!btn.closest(".subagent-row-wrap")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    btn.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  }
+  document.addEventListener("keydown", onSidebarOpenBesideKeydown);
+
   // Repeated-title cluster fold toggle (mockup #10/#C) — the cluster header
   // flips data-cluster-expanded on its .session-cluster (CSS reveals the member
   // runs), swaps the chevron glyph, and updates aria-expanded. Not persisted:
