@@ -4307,7 +4307,7 @@ func TestWatchOriginatedSendToRunningDelegateSteersAndMarksLifecycleFromWatch(t 
 	if _, err := sess.jobManager.configureWatch(watchArgs{
 		Target: "caller",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
+		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure watch: %v", err)
 	}

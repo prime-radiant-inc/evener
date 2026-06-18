@@ -33,7 +33,7 @@ func TestMintWatchCreateReadGrantStampsObservedBy(t *testing.T) {
 	const workerSessionID = "WORKER"
 	var signals atomic.Int32
 	workerJobID := seedRunningDelegate(t, jm, encodeRef("", workerSessionID), &signals)
-	seedWatchSendDelegateTarget(t, jm, "job_obs")
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	observerSessionID := "child_job_obs"
 
 	// The worker's meta must exist for the stamp to land on it (the worker is a
@@ -45,7 +45,7 @@ func TestMintWatchCreateReadGrantStampsObservedBy(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      workerJobID,
 		OutputMatch: "(?i)ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configureWatch: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestMintWatchCreateReadGrantObservedByDedups(t *testing.T) {
 	stateDir := stateDirForJM(jm)
 	var signals atomic.Int32
 	workerJobID := seedRunningDelegate(t, jm, encodeRef("", "WORKER"), &signals)
-	seedWatchSendDelegateTarget(t, jm, "job_obs")
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: "WORKER", IsSubagent: true}); err != nil {
 		t.Fatalf("seed worker meta: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestMintWatchCreateReadGrantObservedByDedups(t *testing.T) {
 		if _, err := jm.configureWatch(watchArgs{
 			Target:      workerJobID,
 			OutputMatch: "(?i)ready",
-			Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+			Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
 		}); err != nil {
 			t.Fatalf("configureWatch #%d: %v", i, err)
 		}
@@ -142,7 +142,7 @@ func TestWatchSendBuildsObserverFrame(t *testing.T) {
 		ID:   "watch",
 		Name: "job_watch",
 		Arguments: json.RawMessage(fmt.Sprintf(
-			`{"target":%q,"output_match":"(?i)ready","send":{"to":"job_obs","message":"observe"}}`,
+			`{"operation":"create","target":%q,"output_match":"(?i)ready","send":{"to":"dlg_obs","message":"observe"}}`,
 			shellOut.JobID,
 		)),
 	})
@@ -155,14 +155,77 @@ func TestWatchSendBuildsObserverFrame(t *testing.T) {
 	if len(sends) != 1 {
 		t.Fatalf("expected one watch send, got %#v", sends)
 	}
-	if sends[0].Target != "job_obs" {
-		t.Fatalf("watch send target = %q, want job_obs", sends[0].Target)
+	if sends[0].Target != "dlg_obs" {
+		t.Fatalf("watch send target = %q, want dlg_obs", sends[0].Target)
 	}
-	if !sends[0].FromWatch || !sends[0].Background || !sends[0].BackgroundSet {
+	if !sends[0].FromWatch || !sends[0].Background || !sends[0].BackgroundSet || sends[0].OnIdle != "start" {
 		t.Fatalf("watch send args = %+v, want background watch delivery", sends[0])
 	}
 	if !strings.Contains(sends[0].Message, "observe") || !strings.Contains(sends[0].Message, "server READY") {
 		t.Fatalf("watch send message = %q, want configured message and trigger context", sends[0].Message)
+	}
+}
+
+func TestJobWatchSendsToObserverDelegateIDAcrossResume(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return communicateWithDefaultOutput("observer ready") },
+		func(llm.Request) llm.Response { return communicateWithDefaultOutput("observer saw ready") },
+	}})
+	s := newDelegateTestSession(t, c)
+	observer := s.createDelegate(context.Background(), delegateArgs{Task: "observe", Background: false, BlockTimeoutMS: 5000})
+	if observer.Err != nil {
+		t.Fatalf("observer delegate: %v", observer.Err)
+	}
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	watchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:   "watch",
+		Name: "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(
+			`{"operation":"create","target":%q,"output_match":"READY","send":{"to":%q,"message":"observe","include_excerpt":true}}`,
+			shellOut.JobID,
+			observer.DelegateID,
+		)),
+	})
+	if watchRes.IsError {
+		t.Fatalf("job_watch returned error: %s", watchRes.Output)
+	}
+
+	feedJob(s.jobManager, shellOut.JobID, []byte("server READY\n"))
+	if err := drainWatchSendsVia(t, s.jobManager, s.sendDelegateMessage); err != nil {
+		t.Fatalf("drain watch sends: %v", err)
+	}
+
+	delegates, err := s.jobManager.store.LoadDelegates()
+	if err != nil {
+		t.Fatalf("LoadDelegates: %v", err)
+	}
+	got := delegates[observer.DelegateID]
+	if got == nil || got.LatestJobID == observer.JobID {
+		t.Fatalf("observer delegate = %+v, want resumed under same delegate_id", got)
+	}
+	grants, err := s.jobManager.store.LoadGrants()
+	if err != nil {
+		t.Fatalf("LoadGrants: %v", err)
+	}
+	if !grants[got.ChildSessionID][shellOut.JobID] {
+		t.Fatalf("grants = %+v, want observer child session grant to watched job", grants)
 	}
 }
 

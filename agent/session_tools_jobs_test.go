@@ -890,11 +890,11 @@ func TestJobListEnumeratesActiveWatches(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
 		t.Fatalf("configure output_match watch: %v", err)
 	}
-	seedWatchSendDelegateTarget(t, jm, "job_obs")
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	if _, err := jm.configureWatch(watchArgs{
 		Target: rec.JobID,
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "job_obs", Message: "fyi"},
+		Send:   &watchSendArgs{To: "dlg_obs", Message: "fyi"},
 	}); err != nil {
 		t.Fatalf("configure event watch with send: %v", err)
 	}
@@ -921,12 +921,12 @@ func TestJobListEnumeratesActiveWatches(t *testing.T) {
 		t.Fatalf("notify watch created_at = %q, not RFC3339Nano: %v", notify.CreatedAt, err)
 	}
 
-	sidecar := findJobListToolWatch(out.Watches, rec.JobID, "job_obs")
+	sidecar := findJobListToolWatch(out.Watches, rec.JobID, "dlg_obs")
 	if sidecar == nil {
 		t.Fatalf("job_list watches = %+v, want sidecar event watch", out.Watches)
 	}
-	if sidecar.SendTo != "job_obs" {
-		t.Fatalf("sidecar watch send_to = %q, want job_obs", sidecar.SendTo)
+	if sidecar.SendTo != "dlg_obs" {
+		t.Fatalf("sidecar watch send_to = %q, want dlg_obs", sidecar.SendTo)
 	}
 	if sidecar.Condition != "events: [job.notification]" {
 		t.Fatalf("sidecar watch condition = %q, want %q", sidecar.Condition, "events: [job.notification]")
@@ -949,12 +949,12 @@ func TestJobListWatchConditionSummaryFormats(t *testing.T) {
 	}
 
 	// every-Nth event watch with a send (legal: not a self-delivery back to caller).
-	seedWatchSendDelegateTarget(t, jm, "job_obs")
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	if _, err := jm.configureWatch(watchArgs{
 		Target: rec.JobID,
 		Events: []string{"assistant.message"},
 		Every:  5,
-		Send:   &watchSendArgs{To: "job_obs"},
+		Send:   &watchSendArgs{To: "dlg_obs"},
 	}); err != nil {
 		t.Fatalf("configure every-N event watch: %v", err)
 	}
@@ -969,7 +969,7 @@ func TestJobListWatchConditionSummaryFormats(t *testing.T) {
 		t.Fatalf("progress condition = %q, want %q", progress.Condition, "progress_interval_ms: 2000")
 	}
 
-	every := findJobListToolWatch(out.Watches, rec.JobID, "job_obs")
+	every := findJobListToolWatch(out.Watches, rec.JobID, "dlg_obs")
 	if every == nil {
 		t.Fatalf("watches = %+v, want every-N watch", out.Watches)
 	}
@@ -1005,7 +1005,7 @@ func TestJobListExcludesTerminalFlushWatches(t *testing.T) {
 
 	// A config that lives ONLY in terminalFlush (with a pending send) must not be
 	// enumerated: F2 reads jm.watches exclusively.
-	flushCfg := &watchConfig{target: "job_GONE", send: &watchSendArgs{To: "job_obs"}}
+	flushCfg := &watchConfig{target: "job_GONE", send: &watchSendArgs{To: "dlg_obs"}}
 	jm.mu.Lock()
 	if jm.terminalFlush == nil {
 		jm.terminalFlush = make(map[*watchConfig]bool)
@@ -1014,7 +1014,7 @@ func TestJobListExcludesTerminalFlushWatches(t *testing.T) {
 	jm.mu.Unlock()
 
 	out := runJobListTool(t, s)
-	if findJobListToolWatch(out.Watches, "job_GONE", "job_obs") != nil {
+	if findJobListToolWatch(out.Watches, "job_GONE", "dlg_obs") != nil {
 		t.Fatalf("terminal-flush watch leaked into job_list watches: %+v", out.Watches)
 	}
 	if len(out.Watches) != 0 {

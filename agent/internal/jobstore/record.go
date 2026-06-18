@@ -133,6 +133,7 @@ type WatchConfigSnapshot struct {
 // WatchSendKey identifies the coalescing slot for a durable watch-send frame.
 type WatchSendKey struct {
 	VisibleSessionID        string `json:"visible_session_id"`
+	WatchID                 string `json:"watch_id,omitempty"`
 	WatchTarget             string `json:"watch_target"`
 	ResolvedWatchedIdentity string `json:"resolved_watched_identity"`
 	ResolvedSendTo          string `json:"resolved_send_to"`

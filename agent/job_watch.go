@@ -226,6 +226,7 @@ type watchSendDelivery struct {
 
 type restoredWatchConfigKey struct {
 	visibleSessionID string
+	watchID          string
 	target           string
 	sendTo           string
 	generation       string
@@ -721,21 +722,24 @@ func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error 
 	case "main", "*":
 		return watchTargetNotFoundError(target)
 	}
-
-	recs, err := jm.listWithError(listFilter{IncludeNested: true})
+	if strings.HasPrefix(target, "job_") {
+		return errors.New("invalid_request: job_id is a job/turn handle; watch sends target delegate_id")
+	}
+	if !strings.HasPrefix(target, "dlg_") {
+		return watchTargetNotFoundError(target)
+	}
+	delegates, err := jm.store.LoadDelegates()
 	if err != nil {
 		return err
 	}
-	for _, rec := range recs {
-		if rec.JobID != target {
-			continue
-		}
-		if rec.Type != jobstore.JobDelegate {
-			return fmt.Errorf("target_not_messageable: job %q has type %q", target, rec.Type)
-		}
-		return nil
+	d := delegates[target]
+	if d == nil {
+		return fmt.Errorf("target_not_found: delegate %q not found", target)
 	}
-	return watchTargetNotFoundError(target)
+	if d.OwnerSessionID != jm.sessionID && d.VisibleSessionID != jm.sessionID {
+		return fmt.Errorf("not_controllable: delegate %q is not owned by this session", target)
+	}
+	return nil
 }
 
 func (jm *jobManager) validateWatchedSendTarget(a watchArgs) error {
@@ -962,6 +966,7 @@ func (jm *jobManager) restoreWatchSendPending() error {
 		key := state.Key
 		cfgKey := restoredWatchConfigKey{
 			visibleSessionID: key.VisibleSessionID,
+			watchID:          key.WatchID,
 			target:           key.WatchTarget,
 			sendTo:           key.ResolvedSendTo,
 			generation:       key.WatchGeneration,
@@ -969,6 +974,8 @@ func (jm *jobManager) restoreWatchSendPending() error {
 		cfg := cfgs[cfgKey]
 		if cfg == nil {
 			cfg = &watchConfig{
+				id:         key.WatchID,
+				watchID:    key.WatchID,
 				target:     key.WatchTarget,
 				send:       &watchSendArgs{To: key.ResolvedSendTo},
 				generation: key.WatchGeneration,
@@ -1019,6 +1026,9 @@ func watchSendKeyLess(a, b jobstore.WatchSendKey) bool {
 	}
 	if a.ResolvedSendTo != b.ResolvedSendTo {
 		return a.ResolvedSendTo < b.ResolvedSendTo
+	}
+	if a.WatchID != b.WatchID {
+		return a.WatchID < b.WatchID
 	}
 	return a.WatchGeneration < b.WatchGeneration
 }
@@ -2095,6 +2105,7 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 	return jobstore.WatchSendState{
 		Key: jobstore.WatchSendKey{
 			VisibleSessionID:        d.visibleSessionID,
+			WatchID:                 d.cfg.watchID,
 			WatchTarget:             d.watchTarget,
 			ResolvedWatchedIdentity: d.watchedIdentity,
 			ResolvedSendTo:          resolvedSendTo,
@@ -2123,33 +2134,22 @@ func (jm *jobManager) appendWatchReadGrant(observerSessionID, watchedJobID strin
 	})
 }
 
-// watchReadGrantObserver resolves a concrete watch-send target job to the
-// child session id its read grant keys on, mirroring sendDelegateMessage's
-// resolution: job record → transcript_ref → session id. ok=false with nil err
-// means the target is not a grantable observer — no such job, or not a
-// delegate — which has no child session to grant to and which the delivery
-// rail already reports when the send itself fails; err is a real resolution
-// failure (store unreadable, or a delegate whose transcript ref cannot name a
-// session).
-func (jm *jobManager) watchReadGrantObserver(observerJobID string) (childSessionID string, ok bool, err error) {
-	recs, err := jm.listWithError(listFilter{IncludeNested: true})
+// watchReadGrantObserver resolves a delegate watch-send target to the child
+// session id its read grant keys on. ok=false with nil err means the target is
+// not a grantable observer; delivery itself reports that route failure.
+func (jm *jobManager) watchReadGrantObserver(sendTo string) (childSessionID string, ok bool, err error) {
+	if !strings.HasPrefix(sendTo, "dlg_") {
+		return "", false, nil
+	}
+	delegates, err := jm.store.LoadDelegates()
 	if err != nil {
 		return "", false, err
 	}
-	for _, rec := range recs {
-		if rec.JobID != observerJobID {
-			continue
-		}
-		if rec.Type != jobstore.JobDelegate {
-			return "", false, nil
-		}
-		_, childID, err := decodeRef(rec.TranscriptRef)
-		if err != nil {
-			return "", false, fmt.Errorf("resolve observer session for job %q: %w", observerJobID, err)
-		}
-		return childID, true, nil
+	d := delegates[sendTo]
+	if d == nil || d.ChildSessionID == "" {
+		return "", false, nil
 	}
-	return "", false, nil
+	return d.ChildSessionID, true, nil
 }
 
 // watchedWorkerSessionID resolves a concrete watched job to the worker child
@@ -2364,6 +2364,7 @@ func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchCon
 	res := send(ctx, sendMessageArgs{
 		Target:        state.Key.ResolvedSendTo,
 		Message:       state.Frame,
+		OnIdle:        "start",
 		Background:    true,
 		BackgroundSet: true,
 		FromWatch:     true,
@@ -3248,6 +3249,23 @@ func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliv
 	if s == nil || s.jobManager == nil {
 		return watchSendBusy, ""
 	}
+	if strings.HasPrefix(target, "dlg_") {
+		delegates, err := s.jobManager.store.LoadDelegates()
+		if err != nil {
+			return watchSendBusy, ""
+		}
+		d := delegates[target]
+		if d == nil {
+			return watchSendHardFailure, fmt.Sprintf("target_not_found: delegate %q not found", target)
+		}
+		if d.OwnerSessionID != "" && d.OwnerSessionID != s.id && d.VisibleSessionID != s.id {
+			return watchSendHardFailure, fmt.Sprintf("not_controllable: delegate %q is not owned by this session", target)
+		}
+		if d.Status == jobstore.DelegateNotResumable || !d.Resumable {
+			return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate %q is %s", target, d.Status)
+		}
+		return watchSendBusy, ""
+	}
 	rec, err := findJobRecord(s.jobManager, target)
 	if err != nil {
 		return watchSendHardFailure, "target_not_found: " + err.Error()
@@ -3371,13 +3389,7 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 	b.WriteString("\ntrigger: ")
 	b.WriteString(limitWatchText(trigger, watchTriggerMaxChars))
 
-	if isWatchSessionTarget(jobID) {
-		// A session identity (caller or a session id resolved per-fire from a
-		// wildcard watch) has no readable job output; it carries the owning
-		// session's transcript ref instead of an excerpt.
-		b.WriteString("\ntranscript_ref: ")
-		b.WriteString(limitWatchText(jm.transcriptRef, watchTriggerMaxChars))
-	} else if cfg.send.IncludeExcerpt {
+	if !isWatchSessionTarget(jobID) && cfg.send.IncludeExcerpt {
 		b.WriteString("\n")
 		excerpt, _, truncated, err := jm.readOutput(jobID, watchExcerptTailBytes)
 		b.WriteString("excerpt:\n")
