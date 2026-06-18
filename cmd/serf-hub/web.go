@@ -120,6 +120,9 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/new", s.handleIndex)
 	mux.HandleFunc("/_partials/", s.handleInternalPartial)
 
+	// Document panes — read-only file/markdown viewer framed by a side pane.
+	mux.HandleFunc("/doc/file", s.handleDocFile)
+
 	// Settings
 	mux.HandleFunc("/settings", s.handleSettings)
 	mux.HandleFunc("/settings/", s.handleSettings)

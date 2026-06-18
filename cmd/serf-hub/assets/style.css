@@ -2070,7 +2070,10 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .sub-r:hover .lk { color: var(--accent); }
 .sub-r:hover { color: var(--text); }
 /* Open-beside button: quiet, hover-revealed, sits after "view →". */
-.sub-r .open-beside-btn {
+/* The quiet, hover-revealed ⇲ "open beside" control. Shared across subagent
+   rows, image cards, and file-referencing tool cards: a transparent glyph that
+   stays invisible until the host card is hovered, then dims in. */
+.open-beside-btn {
   opacity: 0;
   transition: opacity var(--motion-fast), color var(--motion-fast);
   background: transparent;
@@ -2083,8 +2086,23 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   flex: none;
   line-height: 1;
 }
-.sub-r:hover .open-beside-btn { opacity: 1; color: var(--text-muted); }
-.sub-r .open-beside-btn:hover { color: var(--accent); }
+.open-beside-btn:hover { color: var(--accent); }
+.sub-r:hover .open-beside-btn,
+.tool-call:hover .open-beside-btn,
+.image-beside-wrap:hover .open-beside-btn,
+.open-beside-btn:focus-visible { opacity: 1; color: var(--text-muted); }
+
+/* Image cards are <button>s, so the ⇲ sits as a sibling inside a relative
+   wrapper and floats over the card's top-right corner. */
+.image-beside-wrap { position: relative; display: inline-flex; }
+.image-beside-wrap > .open-beside-btn {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  margin-left: 0;
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+}
 .subs-more {
   margin-top: var(--space-2);
   font-size: var(--text-xs);
@@ -3824,3 +3842,54 @@ body.has-connection-banner #workspace { height: calc(100vh - 32px); }
   }
 }
 
+
+/* ── Document panes (/doc/file) ──────────────────────────────────────────────
+   A document pane loads a standalone read-only viewer in an iframe: no sidebar,
+   no composer — just the file body styled to the grammar. The page sets
+   body.doc-page so these rules don't leak into the main app shell. */
+body.doc-page {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+.doc-page .doc-body {
+  padding: var(--space-4) var(--space-5);
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.doc-page .doc-head {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--rule);
+}
+.doc-page .doc-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text);
+  margin: 0;
+}
+.doc-page .doc-binary {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  padding: var(--space-5);
+  text-align: center;
+}
+.doc-page .doc-markdown { color: var(--text); line-height: 1.6; }
+.doc-page .doc-markdown pre {
+  background: var(--bg-raised);
+  padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius-lg);
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.doc-page .doc-markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+}
