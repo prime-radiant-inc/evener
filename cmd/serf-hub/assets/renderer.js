@@ -1271,7 +1271,75 @@
         card.appendChild(name);
       }
       card.onclick = (e) => { e.stopPropagation(); openImageLightboxSet(resolved, idx); };
-      return card;
+      return this.attachImageOpenBeside(card, m);
+    },
+
+    // FILE_OPEN_BESIDE_TOOLS lists the tools whose args reference a single repo
+    // file we can open in a read-only document pane via /doc/file. Multi-target
+    // tools (apply_patch) and directory/pattern tools (grep, ls) are excluded.
+    fileOpenBesideArg(tool, args) {
+      if (!args) return "";
+      switch (tool) {
+        case "read_file":
+        case "edit_file":
+        case "write_file":
+          return args.file_path || args.path || "";
+        default:
+          return "";
+      }
+    },
+
+    // cwdRelative returns p expressed relative to the session cwd, or "" when p
+    // is not inside the cwd. The /doc/file route only serves files contained by
+    // the session cwd, so an out-of-cwd path earns no affordance.
+    cwdRelative(p) {
+      if (!p || !this.cwd) return "";
+      const prefix = this.cwd.endsWith("/") ? this.cwd : this.cwd + "/";
+      if (p === this.cwd) return "";
+      if (p.indexOf(prefix) === 0) return p.slice(prefix.length);
+      return "";
+    },
+
+    // attachFileOpenBeside adds the ⇲ "open beside" control to a file-
+    // referencing tool card. The control opens /doc/file for the referenced
+    // file (path relativized against the session cwd) in a side pane. Skipped
+    // when the tool doesn't reference a single in-cwd file.
+    attachFileOpenBeside(el, tool, args) {
+      if (!el || el.querySelector(".open-beside-btn")) return;
+      const abs = this.fileOpenBesideArg(tool, args);
+      const rel = this.cwdRelative(abs);
+      if (!rel) return;
+      const sessionId = this.sessionId;
+      const href = "/doc/file?session=" + encodeURIComponent(sessionId) +
+        "&path=" + encodeURIComponent(rel);
+      const title = rel.split("/").pop() || rel;
+      const beside = this.makeOpenBesideButton("open file beside", function () {
+        return { href: href, title: title };
+      });
+      if (beside) el.appendChild(beside);
+    },
+
+    // attachImageOpenBeside wraps an image card so a ⇲ "open beside" control can
+    // sit beside it. The control is a SIBLING of the card, not a child: the
+    // card is a <button>, and nesting an interactive control inside a button is
+    // invalid. It returns the element to insert into the DOM — a positioned
+    // wrapper when the affordance applies, or the bare card otherwise.
+    //
+    // The affordance only applies when the image has a stable same-origin URL
+    // (a sha-addressed /s/<id>/images/<sha> path). data: URLs are skipped: they
+    // have no stable URL and a data: iframe src is blocked by the same-origin
+    // CSP, so an "open beside" pane would render blank.
+    attachImageOpenBeside(card, m) {
+      if (!m || typeof m.src !== "string" || m.src.charAt(0) !== "/") return card;
+      var beside = this.makeOpenBesideButton("open image beside", function () {
+        return { href: m.src, title: m.name || "image" };
+      });
+      if (!beside) return card;
+      var wrap = document.createElement("div");
+      wrap.className = "image-beside-wrap";
+      wrap.appendChild(card);
+      wrap.appendChild(beside);
+      return wrap;
     },
 
     // buildImageSheet lays a multi-image set as a contact-sheet grid inside ONE
@@ -1301,7 +1369,7 @@
         this.captionFilename(caption, thumb, m.name);
         cell.append(thumb, caption);
         cell.onclick = (e) => { e.stopPropagation(); openImageLightboxSet(resolved, idx); };
-        grid.appendChild(cell);
+        grid.appendChild(this.attachImageOpenBeside(cell, m));
       });
       sheet.append(head, grid);
       return sheet;
@@ -1943,6 +2011,7 @@
         el.appendChild(intentEl);
       }
       parent.appendChild(el);
+      this.attachFileOpenBeside(el, tool, args);
 
       const startedAt = toolEventTime(data) || new Date();
       const state = { el, statusEl: status, resultEl: result, metaEl: meta, outputBuf: "", tool, args, renderer, body: null, caretEl: null, ids: [], startedAt, durationMs: toolDuration(data) };
@@ -2394,33 +2463,46 @@
       return Math.round(mins / 60) + "h ago";
     },
 
+    // makeOpenBesideButton builds the quiet, hover-revealed ⇲ control shared by
+    // every "open beside" affordance (subagent rows, image cards, file-
+    // referencing tool cards). `ariaLabel` names the specific action; `resolve`
+    // returns {href, title} at click time so callers can defer the URL/label
+    // until the row's data is final. Returns null when SerfPanes is absent
+    // (e.g. this renderer is itself inside a pane iframe — panes must not nest).
+    makeOpenBesideButton(ariaLabel, resolve) {
+      if (!window.SerfPanes) return null;
+      var beside = document.createElement("span");
+      beside.className = "open-beside-btn";
+      beside.setAttribute("role", "button");
+      beside.setAttribute("tabindex", "0");
+      beside.setAttribute("aria-label", ariaLabel);
+      beside.title = "open beside";
+      beside.textContent = "⇲";
+      function openBeside(e) {
+        e.preventDefault();
+        e.stopPropagation(); // do not trigger the host card's own click
+        var spec = resolve();
+        if (spec && spec.href) window.SerfPanes.open(spec.href, spec.title);
+      }
+      beside.addEventListener("click", openBeside);
+      beside.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") openBeside(e);
+      });
+      return beside;
+    },
+
     applyJobRefTarget(row, data) {
       if (!row || !data || !data.transcriptRef) return;
       row.dataset.transcriptRef = data.transcriptRef;
       row.onclick = () => { this.navigateTo("/s/" + encodeURIComponent(data.transcriptRef)); };
       // "Open beside" — opens the subagent in a side pane instead of navigating away.
-      // Hidden (not added) when SerfPanes is unavailable, e.g. this renderer is
-      // itself inside a pane iframe, so panes cannot nest.
-      if (window.SerfPanes && !row.querySelector(".open-beside-btn")) {
-        var beside = document.createElement("span");
-        beside.className = "open-beside-btn";
-        beside.setAttribute("role", "button");
-        beside.setAttribute("tabindex", "0");
-        beside.setAttribute("aria-label", "open subagent beside");
-        beside.title = "open beside";
-        beside.textContent = "⇲";
-        function openBeside(e) {
-          e.preventDefault();
-          e.stopPropagation(); // do not trigger the row's navigateTo
+      if (!row.querySelector(".open-beside-btn")) {
+        var beside = this.makeOpenBesideButton("open subagent beside", function () {
           var ref = row.dataset.transcriptRef;
           var label = (row.querySelector(".nm") || {}).textContent || ref;
-          window.SerfPanes.open("/s/" + encodeURIComponent(ref), label);
-        }
-        beside.addEventListener("click", openBeside);
-        beside.addEventListener("keydown", function (e) {
-          if (e.key === "Enter" || e.key === " ") openBeside(e);
+          return { href: "/s/" + encodeURIComponent(ref), title: label };
         });
-        row.appendChild(beside);
+        if (beside) row.appendChild(beside);
       }
     },
 

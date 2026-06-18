@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
@@ -51,7 +53,7 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// A path that escapes the cwd, or that doesn't resolve, is refused.
 		// 403 for an escape attempt; 404 for a missing file.
-		if err == fspaths.ErrPathEscapesRoot {
+		if errors.Is(err, fspaths.ErrPathEscapesRoot) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -136,26 +138,12 @@ func looksBinaryBytes(data []byte) bool {
 func formatDocBytes(n int) string {
 	switch {
 	case n >= 1<<20:
-		return itoaApprox(n>>20) + " MiB"
+		return strconv.Itoa(n>>20) + " MiB"
 	case n >= 1<<10:
-		return itoaApprox(n>>10) + " KiB"
+		return strconv.Itoa(n>>10) + " KiB"
 	default:
-		return itoaApprox(n) + " B"
+		return strconv.Itoa(n) + " B"
 	}
-}
-
-func itoaApprox(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
 }
 
 // writeDocPage emits a minimal standalone HTML page for a document pane: no
@@ -173,11 +161,12 @@ func writeDocPage(w http.ResponseWriter, title, bodyHTML string) {
 }
 
 // writeDocMarkdownPage renders markdown client-side with marked. The raw
-// source is carried HTML-escaped inside a non-executed
-// <script type="text/plain"> block: the browser decodes the entities back to
-// the original markdown when read via textContent, and an escaped "</script>"
-// can never break out of the block. The page reads it back and hands it to
-// marked.parse for rendering into the target div.
+// source is carried HTML-escaped inside a hidden <div>: reading it back via
+// textContent decodes the entities to the original markdown, and because the
+// content is fully escaped no markup in the file can inject into the page
+// before marked runs. (A <script> block would be wrong here — script content
+// is raw text the browser never entity-decodes, so an escaped sequence would
+// survive literally and corrupt the markdown.)
 func writeDocMarkdownPage(w http.ResponseWriter, title, md string) {
 	_, _ = w.Write([]byte(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">` +
 		`<title>` + htmlEscape(title) + `</title>` +
@@ -187,7 +176,7 @@ func writeDocMarkdownPage(w http.ResponseWriter, title, md string) {
 		`</head><body class="doc-page"><main class="doc-body">` +
 		`<header class="doc-head">` + htmlEscape(title) + `</header>` +
 		`<div class="doc-markdown markdown"></div>` +
-		`<script type="text/plain" id="doc-src">` + htmlEscape(md) + `</script>` +
+		`<div id="doc-src" hidden>` + htmlEscape(md) + `</div>` +
 		`<script>(function(){var raw=document.getElementById("doc-src").textContent;` +
 		`var target=document.querySelector(".doc-markdown");` +
 		`if(window.marked&&window.marked.parse){target.innerHTML=window.marked.parse(raw);}` +
