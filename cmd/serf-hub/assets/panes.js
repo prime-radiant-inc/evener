@@ -169,6 +169,25 @@
     });
   }
 
+  // refreshURL encodes the current open pane hrefs as repeated pane= query
+  // params on the current URL path, preserving any non-pane query params.
+  // This is how open/close make the layout shareable via URL.
+  // We always use window.location.pathname so this survives the renderer's
+  // own history.replaceState calls (it writes /s/<id>; we read it back).
+  function refreshURL() {
+    try {
+      var sp = new window.URLSearchParams(window.location.search);
+      sp.delete("pane");
+      var hrefs = openHrefs();
+      for (var i = 0; i < hrefs.length; i++) {
+        sp.append("pane", hrefs[i]);
+      }
+      var qs = sp.toString();
+      var url = window.location.pathname + (qs ? "?" + qs : "");
+      window.history.replaceState(null, "", url);
+    } catch (e) { /* ignore in environments without history API */ }
+  }
+
   function persist() {
     var r = region();
     if (!r) return;
@@ -178,9 +197,31 @@
       return { href: f.getAttribute("src"), title: t ? t.textContent : "" };
     });
     try { window.localStorage.setItem(STORE_KEY, JSON.stringify(data)); } catch (e) { /* ignore */ }
+    refreshURL();
   }
 
   function restore() {
+    // URL pane= params are the source of truth when present (shared link).
+    // Fall back to localStorage when no pane= params exist in the URL.
+    var urlPanes = [];
+    try {
+      var sp = new window.URLSearchParams(window.location.search);
+      urlPanes = sp.getAll("pane");
+    } catch (e) { /* ignore */ }
+
+    if (urlPanes.length > 0) {
+      // URL-specified panes: open each, bypassing suppression (an explicit
+      // share link is a deliberate request so local dismissals are overridden).
+      urlPanes.forEach(function (href) {
+        if (!href) return;
+        // Clear any local suppression so the pane can open.
+        unsuppress(href);
+        open(href, href);
+      });
+      return;
+    }
+
+    // No URL panes — fall back to localStorage.
     var raw;
     try { raw = window.localStorage.getItem(STORE_KEY); } catch (e) { return; }
     if (!raw) return;
