@@ -3582,21 +3582,6 @@ func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *te
 			},
 		},
 		{
-			name: "replace",
-			setup: func(t *testing.T, jm *jobManager) (watchSendDelivery, func() error) {
-				t.Helper()
-				rec, delivery := setupConcretePendingWatchSend(t, jm)
-				return delivery, func() error {
-					_, err := jm.configureWatch(watchArgs{
-						Target:      rec.JobID,
-						OutputMatch: "blocked",
-						Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
-					})
-					return err
-				}
-			},
-		},
-		{
 			name: "prune",
 			setup: func(t *testing.T, jm *jobManager) (watchSendDelivery, func() error) {
 				t.Helper()
@@ -3638,14 +3623,26 @@ func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *te
 			dropStarted := make(chan struct{})
 			releaseDrop := make(chan struct{})
 			realAppend := jm.appendEvent
+			realAppendEvents := jm.appendEvents
 			blocked := false
-			jm.appendEvent = func(e jobstore.Event) error {
-				if e.Kind == jobstore.EventWatchSendDropped && !blocked {
+			blockOnDropped := func(events []jobstore.Event) {
+				for _, event := range events {
+					if event.Kind != jobstore.EventWatchSendDropped || blocked {
+						continue
+					}
 					blocked = true
 					close(dropStarted)
 					<-releaseDrop
+					return
 				}
+			}
+			jm.appendEvent = func(e jobstore.Event) error {
+				blockOnDropped([]jobstore.Event{e})
 				return realAppend(e)
+			}
+			jm.appendEvents = func(events []jobstore.Event) error {
+				blockOnDropped(events)
+				return realAppendEvents(events)
 			}
 
 			errCh := make(chan error, 1)
@@ -3687,12 +3684,15 @@ func TestWatchSendAppendFailureDuringClearKeepsPendingInMemory(t *testing.T) {
 	if cfg == nil || len(cfg.pending) != 1 {
 		t.Fatalf("pending before clear = %+v, want one", cfg)
 	}
-	realAppend := jm.appendEvent
-	jm.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventWatchSendDropped {
+	realAppendEvents := jm.appendEvents
+	jm.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind != jobstore.EventWatchSendDropped {
+				continue
+			}
 			return errors.New("append dropped failed")
 		}
-		return realAppend(e)
+		return realAppendEvents(events)
 	}
 
 	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err == nil {
@@ -3712,7 +3712,7 @@ func TestWatchSendAppendFailureDuringClearKeepsPendingInMemory(t *testing.T) {
 		t.Fatalf("folded pending after failed clear append = %d, want 1", len(pending))
 	}
 
-	jm.appendEvent = realAppend
+	jm.appendEvents = realAppendEvents
 	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
 		t.Fatalf("retry clear: %v", err)
 	}
@@ -3724,7 +3724,7 @@ func TestWatchSendAppendFailureDuringClearKeepsPendingInMemory(t *testing.T) {
 	}
 }
 
-func TestWatchSendPartialDroppedAppendReconcilesSuccessfulPrefix(t *testing.T) {
+func TestWatchSendDroppedBatchFailureKeepsAllPendingReachable(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	if _, err := jm.configureWatch(watchArgs{
@@ -3743,39 +3743,37 @@ func TestWatchSendPartialDroppedAppendReconcilesSuccessfulPrefix(t *testing.T) {
 	if cfg == nil || len(cfg.pending) != 2 {
 		t.Fatalf("pending before clear = %+v, want two", cfg)
 	}
-	realAppend := jm.appendEvent
-	var dropped int
-	jm.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventWatchSendDropped {
-			dropped++
-			if dropped == 2 {
+	realAppendEvents := jm.appendEvents
+	jm.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventWatchSendDropped {
 				return errors.New("append dropped failed")
 			}
 		}
-		return realAppend(e)
+		return realAppendEvents(events)
 	}
 
 	if _, err := jm.configureWatch(watchArgs{Target: "*", Clear: true}); err == nil {
-		t.Fatal("clear succeeded, want partial append failure")
+		t.Fatal("clear succeeded, want dropped batch append failure")
 	}
-	if got := len(cfg.pending); got != 1 {
-		t.Fatalf("in-memory pending after partial dropped append = %d, want 1", got)
+	if got := len(cfg.pending); got != 2 {
+		t.Fatalf("in-memory pending after failed dropped batch append = %d, want 2", got)
 	}
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
-		t.Fatalf("folded pending after partial dropped append = %d, want 1", len(pending))
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 2 {
+		t.Fatalf("folded pending after failed dropped batch append = %d, want 2", len(pending))
 	}
 	jm.mu.Lock()
 	reachable := jm.watches[key] == cfg
 	rejecting := cfg.rejectingDelivery
 	jm.mu.Unlock()
 	if !reachable {
-		t.Fatal("watch config with remaining pending was detached after partial dropped append")
+		t.Fatal("watch config with pending was detached after failed dropped batch append")
 	}
 	if rejecting {
-		t.Fatal("watch config stayed rejecting after failed dropped append")
+		t.Fatal("watch config stayed rejecting after failed dropped batch append")
 	}
 
-	jm.appendEvent = realAppend
+	jm.appendEvents = realAppendEvents
 	if _, err := jm.configureWatch(watchArgs{Target: "*", Clear: true}); err != nil {
 		t.Fatalf("retry clear: %v", err)
 	}
@@ -3803,12 +3801,15 @@ func TestWatchSendAppendFailureDuringReplaceLeavesOldWatchReachable(t *testing.T
 	if oldCfg == nil || len(oldCfg.pending) != 1 {
 		t.Fatalf("pending before replace = %+v, want one", oldCfg)
 	}
-	realAppend := jm.appendEvent
-	jm.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventWatchSendDropped {
+	realAppendEvents := jm.appendEvents
+	jm.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind != jobstore.EventWatchSendDropped {
+				continue
+			}
 			return errors.New("append dropped failed")
 		}
-		return realAppend(e)
+		return realAppendEvents(events)
 	}
 
 	if _, err := jm.configureWatch(watchArgs{
@@ -3832,7 +3833,7 @@ func TestWatchSendAppendFailureDuringReplaceLeavesOldWatchReachable(t *testing.T
 		t.Fatalf("folded pending after failed replace append = %d, want 1", len(pending))
 	}
 
-	jm.appendEvent = realAppend
+	jm.appendEvents = realAppendEvents
 	res, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "blocked",
@@ -3846,6 +3847,76 @@ func TestWatchSendAppendFailureDuringReplaceLeavesOldWatchReachable(t *testing.T
 	}
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("folded pending after retry replace = %d, want 0", len(pending))
+	}
+}
+
+func TestWatchRegistryAppendFailureDuringReplaceRollsBackOldConfig(t *testing.T) {
+	jm := newTestJM(t)
+	seedCommonWatchSendTargets(t, jm)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	feedJob(jm, rec.JobID, []byte("ready\n"))
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "job_obs"}
+	jm.mu.Lock()
+	oldCfg := jm.watches[key]
+	jm.mu.Unlock()
+	if oldCfg == nil || len(oldCfg.pending) != 1 {
+		t.Fatalf("pending before replace = %+v, want one", oldCfg)
+	}
+
+	realAppendEvents := jm.appendEvents
+	jm.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventWatchRegistered {
+				return errors.New("append registry batch failed")
+			}
+		}
+		return realAppendEvents(events)
+	}
+
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "blocked",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err == nil {
+		t.Fatal("replace succeeded, want registry append failure")
+	}
+
+	jm.mu.Lock()
+	stillReachable := jm.watches[key] == oldCfg
+	rejecting := oldCfg.rejectingDelivery
+	pendingCount := len(oldCfg.pending)
+	jm.mu.Unlock()
+	if !stillReachable {
+		t.Fatal("old watch config was replaced after failed registry append")
+	}
+	if rejecting {
+		t.Fatal("old watch config stayed rejecting after failed registry append")
+	}
+	if pendingCount != 1 {
+		t.Fatalf("old pending after failed registry append = %d, want 1", pendingCount)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("folded pending after failed registry append = %d, want 1", len(pending))
+	}
+
+	jm.appendEvents = realAppendEvents
+	res, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "blocked",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	})
+	if err != nil {
+		t.Fatalf("retry replace: %v", err)
+	}
+	if !res.ReplacedExisting {
+		t.Fatal("retry replace did not report replaced_existing")
 	}
 }
 
@@ -6350,6 +6421,78 @@ func TestWatchHistoryRecordsReplacement(t *testing.T) {
 	newID := active[0].ID
 	if current := watches[newID]; current == nil || !current.Active {
 		t.Fatalf("durable current watch %s = %+v, want active", newID, current)
+	}
+}
+
+func TestWatchIdempotentReconfigureWithDetachedPendingDoesNotRegisterNewWatch(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	seedCommonWatchSendTargets(t, jm)
+	rec, _ := jm.createShell(createShellOpts{Command: "sleep 30"})
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+
+	args := watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}
+	res, err := jm.configureWatch(args)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	firstID := res.WatchID
+
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "job_obs"}
+	jm.mu.Lock()
+	existing := jm.watches[key]
+	if existing == nil {
+		jm.mu.Unlock()
+		t.Fatal("installed watch not found")
+	}
+	pendingKey := jobstore.WatchSendKey{
+		VisibleSessionID:        jm.sessionID,
+		WatchTarget:             rec.JobID,
+		ResolvedWatchedIdentity: rec.JobID,
+		ResolvedSendTo:          "job_obs",
+		WatchGeneration:         jobstore.NewWatchGeneration(),
+	}
+	detached := &watchConfig{
+		target:     rec.JobID,
+		send:       &watchSendArgs{To: "job_obs", Message: "observe"},
+		generation: pendingKey.WatchGeneration,
+		pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{
+			pendingKey: {
+				Key:           pendingKey,
+				DeliveryID:    "watch_delivery_detached",
+				UpdateSeq:     1,
+				Message:       "observe",
+				TriggerReason: "output_match: ready",
+			},
+		},
+		pendingOrder: []jobstore.WatchSendKey{pendingKey},
+	}
+	if jm.terminalFlush == nil {
+		jm.terminalFlush = make(map[*watchConfig]bool)
+	}
+	jm.terminalFlush[detached] = true
+	jm.mu.Unlock()
+
+	again, err := jm.configureWatch(args)
+	if err != nil {
+		t.Fatalf("idempotent reconfigure: %v", err)
+	}
+	if again.WatchID != firstID {
+		t.Fatalf("idempotent reconfigure changed watch id: %s -> %s", firstID, again.WatchID)
+	}
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		t.Fatalf("LoadWatches: %v", err)
+	}
+	if len(watches) != 1 {
+		t.Fatalf("durable watches = %+v, want exactly one active watch", watches)
+	}
+	if current := watches[firstID]; current == nil || !current.Active {
+		t.Fatalf("durable watch %s = %+v, want active", firstID, current)
 	}
 }
 

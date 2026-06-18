@@ -59,6 +59,7 @@ type jobManager struct {
 	lastFedOffset map[string]int64
 	closing       bool
 	appendEvent   func(jobstore.Event) error
+	appendEvents  func([]jobstore.Event) error
 	emit          func(events.EventKind, events.EventData)
 	forward       func(jobstore.Event) error
 	parentJobID   string
@@ -258,6 +259,7 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 		watches:       make(map[watchKey]*watchConfig),
 		lastFedOffset: make(map[string]int64),
 		appendEvent:   store.Append,
+		appendEvents:  store.AppendBatch,
 		enqueue:       enqueue,
 		now:           time.Now,
 	}

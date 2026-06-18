@@ -74,6 +74,42 @@ func (s *Store) Append(e Event) error {
 	return nil
 }
 
+// AppendBatch assigns contiguous Seq values to events, writes them as one
+// all-or-nothing append, and fsyncs once. If any marshal, write, or sync fails,
+// the file is truncated back to the pre-batch offset and the store seq is left
+// unchanged.
+func (s *Store) AppendBatch(events []Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return err
+	}
+	startOffset, err := s.f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return fmt.Errorf("jobstore: seek append start: %w", err)
+	}
+	nextSeq := s.seq
+	for _, e := range events {
+		nextSeq++
+		e.Seq = nextSeq
+		b, err := json.Marshal(e)
+		if err != nil {
+			return s.appendFailureLocked("marshal event", err, startOffset)
+		}
+		if err := s.writeLineLocked(append(b, '\n')); err != nil {
+			return s.appendFailureLocked("write event", err, startOffset)
+		}
+	}
+	if err := s.f.Sync(); err != nil {
+		return s.appendFailureLocked("sync event", err, startOffset)
+	}
+	s.seq = nextSeq
+	return nil
+}
+
 // Load reads every event and folds them to the current records.
 func (s *Store) Load() (map[string]*JobRecord, error) {
 	s.mu.Lock()

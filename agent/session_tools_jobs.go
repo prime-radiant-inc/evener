@@ -1209,6 +1209,9 @@ func marshalWatchInspectResult(res jobWatchInspectToolResult, maxChars int) (any
 // watch's target, trigger condition, and disposition.
 func formatJobWatch(out jobWatchToolResult) string {
 	if !out.Watching {
+		if out.Target == "" && out.WatchID != "" {
+			return fmt.Sprintf("[watch %s cleared]", out.WatchID)
+		}
 		return fmt.Sprintf("[watch on %s cleared]", out.Target)
 	}
 	parts := []string{"watching " + out.Target}

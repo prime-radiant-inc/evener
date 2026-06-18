@@ -1431,6 +1431,53 @@ func TestJobWatchCreateReturnsIDAndClearUsesIDOnly(t *testing.T) {
 	if w := watches[created.WatchID]; w == nil || w.Active || w.EndReason != "cleared" {
 		t.Fatalf("durable watch %s = %+v, want inactive cleared", created.WatchID, w)
 	}
+
+	staleClearRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "clear-again",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"clear","watch_id":%q}`, created.WatchID)),
+	})
+	if staleClearRes.IsError {
+		t.Fatalf("stale job_watch clear returned error: %s", staleClearRes.Output)
+	}
+	if !strings.Contains(staleClearRes.Output, created.WatchID) || strings.Contains(staleClearRes.Output, "watch on  cleared") {
+		t.Fatalf("stale clear output = %q, want watch_id and no empty target footer", staleClearRes.Output)
+	}
+}
+
+func TestJobWatchRejectsRemovedPublicShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args string
+		want string
+	}{
+		{name: "missing operation", args: `{"target":"caller","events":["job.notification"]}`, want: "missing properties: 'operation'"},
+		{name: "unsupported operation", args: `{"operation":"pause","target":"caller","events":["job.notification"]}`, want: "value must be one of"},
+		{name: "create without target", args: `{"operation":"create","events":["job.notification"]}`, want: "target is required"},
+		{name: "inspect without watch id", args: `{"operation":"inspect"}`, want: "watch_id is required"},
+		{name: "clear without watch id", args: `{"operation":"clear"}`, want: "watch_id is required"},
+		{name: "target wildcard", args: `{"operation":"create","target":"*","events":["job.notification"]}`, want: "wildcard watch target is not supported"},
+		{name: "send to job id", args: `{"operation":"create","target":"caller","events":["job.notification"],"send":{"to":"job_observer","message":"observe"}}`, want: "job_id is a job/turn handle"},
+		{name: "send to watched", args: `{"operation":"create","target":"caller","events":["job.notification"],"send":{"to":"watched","message":"observe"}}`, want: "watched is not a v1 delivery target"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSession(t)
+			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+				ID:        "watch",
+				Name:      "job_watch",
+				Arguments: json.RawMessage(tc.args),
+			})
+			if !res.IsError {
+				t.Fatalf("job_watch succeeded, want error containing %q: %s", tc.want, res.Output)
+			}
+			if !strings.Contains(res.Output, tc.want) {
+				t.Fatalf("job_watch error = %q, want %q", res.Output, tc.want)
+			}
+			if s.jobManager.watchCount() != 0 {
+				t.Fatalf("watch count = %d, want 0", s.jobManager.watchCount())
+			}
+		})
+	}
 }
 
 func TestJobWatchDuplicateCreateReturnsSameIDAndChangedConfigReturnsNewID(t *testing.T) {
