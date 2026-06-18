@@ -108,3 +108,90 @@ func TestSanitizeDirPrefix_Empty(t *testing.T) {
 		t.Fatalf("expected empty, got %q", got)
 	}
 }
+
+func TestResolveInRoot_AllowsFileInsideRoot(t *testing.T) {
+	root := t.TempDir()
+	f := filepath.Join(root, "ok.txt")
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveInRoot(root, "ok.txt")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want, _ := filepath.EvalSymlinks(f)
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestResolveInRoot_AllowsNestedFile(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(sub, "deep.txt")
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveInRoot(root, "a/b/deep.txt"); err != nil {
+		t.Fatalf("nested file should resolve: %v", err)
+	}
+}
+
+func TestResolveInRoot_RejectsDotDotTraversal(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(filepath.Dir(root), "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveInRoot(root, "../"+filepath.Base(outside)); err != ErrPathEscapesRoot {
+		t.Fatalf("expected ErrPathEscapesRoot, got %v", err)
+	}
+}
+
+func TestResolveInRoot_RejectsAbsoluteOutside(t *testing.T) {
+	root := t.TempDir()
+	if _, err := ResolveInRoot(root, "/etc/passwd"); err != ErrPathEscapesRoot {
+		t.Fatalf("expected ErrPathEscapesRoot, got %v", err)
+	}
+}
+
+func TestResolveInRoot_RejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(filepath.Dir(root), "outside.txt")
+	if err := os.WriteFile(outside, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "escape")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if _, err := ResolveInRoot(root, "escape"); err != ErrPathEscapesRoot {
+		t.Fatalf("expected ErrPathEscapesRoot for symlink escape, got %v", err)
+	}
+}
+
+func TestResolveInRoot_MissingFileNotEscape(t *testing.T) {
+	root := t.TempDir()
+	// A path inside the root that doesn't exist returns a non-escape error so
+	// the caller renders 404, not 403.
+	_, err := ResolveInRoot(root, "nope.txt")
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	if err == ErrPathEscapesRoot {
+		t.Fatal("missing in-root file should not be an escape error")
+	}
+}
+
+func TestResolveInRoot_RejectsEmpty(t *testing.T) {
+	root := t.TempDir()
+	if _, err := ResolveInRoot(root, ""); err == nil {
+		t.Fatal("expected error for empty path")
+	}
+	if _, err := ResolveInRoot("", "x"); err == nil {
+		t.Fatal("expected error for empty root")
+	}
+}
