@@ -608,7 +608,21 @@
     return "short";
   }
 
+  // bindDisclosureToggle wires a collapse/expand <button> to a target element's
+  // ".open" class and keeps aria-expanded in sync, so assistive tech announces
+  // the collapsed/expanded state (the thinking block, tool clusters, and
+  // coalesced system runs all use this). The target's ".open" class is the
+  // single source of truth; the button reads back from it after each toggle.
+  function bindDisclosureToggle(button, target) {
+    button.setAttribute("aria-expanded", target.classList.contains("open") ? "true" : "false");
+    button.addEventListener("click", () => {
+      target.classList.toggle("open");
+      button.setAttribute("aria-expanded", target.classList.contains("open") ? "true" : "false");
+    });
+  }
+
   window.SerfRendererInternal = Object.assign(window.SerfRendererInternal || {}, {
+    bindDisclosureToggle,
     itemDataToBase64,
     imagePlaceholderForCount,
     normalizedJobRefData,
