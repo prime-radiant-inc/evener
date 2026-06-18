@@ -88,6 +88,27 @@ func TestFoldAppliesOutputPathFromStarted(t *testing.T) {
 	}
 }
 
+func TestFoldAppliesDelegateIDFromStarted(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.OwnerSessionID = "S1"
+			e.VisibleToSession = "S1"
+			e.StartedAt = &start
+		}),
+	}
+
+	r := Fold(events)["job_A"]
+	if r == nil {
+		t.Fatal("job_A missing")
+	}
+	if r.DelegateID != "dlg_A" {
+		t.Fatalf("delegate_id = %q, want dlg_A", r.DelegateID)
+	}
+}
+
 func TestFoldDelegateDescriptorSchemaAndStructuredReason(t *testing.T) {
 	valid := false
 	events := []Event{
@@ -201,8 +222,42 @@ func TestFoldDelegatesClosesStopGateForCurrentJob(t *testing.T) {
 	if d == nil {
 		t.Fatal("delegate dlg_A missing")
 	}
-	if !d.StopGateClosed || d.Generation != "dg_2" || d.CurrentJobID != "" || d.LatestJobID != "job_1" {
-		t.Fatalf("delegate after stop = %+v, want closed gate with latest job_1 and no current job", d)
+	if !d.StopGateClosed || d.Generation != "dg_2" || d.CurrentJobID != "" || d.LatestJobID != "job_1" || d.Status != DelegateStopped {
+		t.Fatalf("delegate after stop = %+v, want closed gate with latest job_1 stopped and no current job", d)
+	}
+}
+
+func TestFoldDelegatesIgnoresFinishedNonCurrentJob(t *testing.T) {
+	start1 := time.Unix(1, 0).UTC()
+	start2 := time.Unix(2, 0).UTC()
+	end1 := time.Unix(3, 0).UTC()
+	events := []Event{
+		ev(EventDelegateCreated, 1, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{ChildSessionID: "child_A", TranscriptRef: "local:child_A", Generation: "dg_1", Resumable: true}
+		}),
+		ev(EventJobStarted, 2, "job_1", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.StartedAt = &start1
+		}),
+		ev(EventJobStarted, 3, "job_2", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.StartedAt = &start2
+		}),
+		ev(EventJobFinished, 4, "job_1", func(e *Event) {
+			e.Status = StatusCompleted
+			e.EndedAt = &end1
+		}),
+	}
+
+	d := FoldDelegates(events)["dlg_A"]
+	if d == nil {
+		t.Fatal("delegate dlg_A missing")
+	}
+	if d.CurrentJobID != "job_2" || d.LatestJobID != "job_2" || d.Status != DelegateRunning {
+		t.Fatalf("delegate after stale finish = %+v, want current/latest job_2 running", d)
 	}
 }
 

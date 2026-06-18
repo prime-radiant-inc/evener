@@ -116,9 +116,10 @@ func FoldDelegates(events []Event) map[string]*DelegateRecord {
 			if d == nil {
 				continue
 			}
-			if d.CurrentJobID == e.JobID {
-				d.CurrentJobID = ""
+			if d.CurrentJobID != e.JobID {
+				continue
 			}
+			d.CurrentJobID = ""
 			if e.Status == StatusStopped || e.Status == StatusCancelled {
 				d.Status = DelegateStopped
 			} else if d.Resumable {
