@@ -284,8 +284,10 @@ func TestWeb_WorkspaceRendersBottomStopForActiveSession(t *testing.T) {
 	if strings.Contains(body, `class="btn btn-danger stop-btn" data-action-trigger="interrupt" title="stop the in-flight turn" disabled`) {
 		t.Fatalf("bottom Stop should be enabled for active session:\n%s", body)
 	}
-	if !strings.Contains(body, `data-running-indicator`) {
-		t.Fatalf("workspace missing bottom running indicator:\n%s", body)
+	// The live state is shown by the single status badge ("Working" for an active
+	// session) — the duplicate running-indicator was removed.
+	if !strings.Contains(body, `class="status-badge"`) || !strings.Contains(body, "Working") {
+		t.Fatalf("workspace missing the active status badge:\n%s", body)
 	}
 }
 
@@ -5625,6 +5627,29 @@ func TestModelDescriptorsToAPIModels_OneMillionContext(t *testing.T) {
 	}
 	if base["context_window"] == 1_000_000 {
 		t.Errorf("base context_window = %v, want the smaller base window", base["context_window"])
+	}
+}
+
+// The footer status row must show ONE live indicator. The legacy
+// running-indicator ("running") duplicated the status badge ("Working" for an
+// active session), so it was removed — an active session shows the StateLabel
+// badge only, not a second "running" pill.
+func TestInputStatus_NoDuplicateRunningIndicator(t *testing.T) {
+	tmpl := template.Must(template.ParseFS(templatesFS, "templates/partials/input_strip.html"))
+	data := map[string]any{
+		"ContextWindow": 272000, "ContextPercent": 10, "ContextNumbers": "23k / 272k tokens",
+		"State": "active", "StateLabel": "Working", "TurnCount": 2,
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "input_status", data); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `class="status-badge"`) || !strings.Contains(out, "Working") {
+		t.Fatalf("active status row should show the StateLabel badge:\n%s", out)
+	}
+	if strings.Contains(out, "data-running-indicator") || strings.Contains(out, "running") {
+		t.Fatalf("active status row still renders the legacy running-indicator (duplicates the badge):\n%s", out)
 	}
 }
 

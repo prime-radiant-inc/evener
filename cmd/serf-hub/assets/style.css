@@ -1478,8 +1478,6 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .controls-left,
 .controls-right { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .controls-center { flex: 1; display: flex; align-items: center; justify-content: flex-start; min-height: 1px; }
-.running-indicator { display: inline-flex; align-items: center; gap: var(--space-3); color: var(--text); font-size: var(--text-sm); white-space: nowrap; }
-.running-dot { width: 7px; height: 7px; border-radius: var(--radius-pill); background: var(--state-processing); box-shadow: 0 0 0 var(--space-2) rgba(122,162,247,0.12); }
 
 .input-status {
   display: flex;
