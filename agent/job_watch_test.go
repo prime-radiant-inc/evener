@@ -1743,7 +1743,7 @@ func TestWatchSendRestoreKeepsConcreteTerminalResumableDelegatePending(t *testin
 	defer restored.Close()
 
 	if sub := restored.subagents.get(childID); sub != nil {
-		t.Fatalf("restore reconstructed child runtime = %+v, want none before explicit job_send_message", sub)
+		t.Fatalf("restore reconstructed child runtime = %+v, want none before explicit delegate_send", sub)
 	}
 	if requests := adapter.Requests(); len(requests) != requestsBeforeRestore {
 		t.Fatalf("adapter requests after restore = %d, want unchanged %d", len(requests), requestsBeforeRestore)
@@ -1846,7 +1846,7 @@ func TestWatchSendRestoreKeepsConcreteDelegateProductionSendPending(t *testing.T
 		t.Fatalf("pending after production restore retry = %+v, want retained watch send", pending)
 	}
 	if sub := restored.subagents.get(childID); sub != nil {
-		t.Fatalf("restore reconstructed child runtime = %+v, want none before explicit job_send_message", sub)
+		t.Fatalf("restore reconstructed child runtime = %+v, want none before explicit delegate_send", sub)
 	}
 	if requests := adapter.Requests(); len(requests) != requestsBeforeRestore {
 		t.Fatalf("adapter requests after restore = %d, want unchanged %d", len(requests), requestsBeforeRestore)
@@ -1912,7 +1912,7 @@ func TestWatchSendRestoreDoesNotAutoResumeRuntimeLostDelegate(t *testing.T) {
 	defer restored.Close()
 
 	if sub := restored.subagents.get(childID); sub != nil {
-		t.Fatalf("restore reconstructed child runtime = %+v, want none before explicit job_send_message", sub)
+		t.Fatalf("restore reconstructed child runtime = %+v, want none before explicit delegate_send", sub)
 	}
 	if jobs := restored.jobManager.list(listFilter{Type: jobstore.JobDelegate}); len(jobs) != beforeJobs {
 		t.Fatalf("delegate jobs after restore = %+v, want %d existing runtime_lost job only", jobs, beforeJobs)
@@ -6255,8 +6255,9 @@ func TestJobWatchDeepDescendantGivesDelegateGuidance(t *testing.T) {
 	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
 
 	_, err = jobWatchTool(root, map[string]any{
-		"target": workerRec.JobID,
-		"events": []any{"job.notification"},
+		"operation": "create",
+		"target":    workerRec.JobID,
+		"events":    []any{"job.notification"},
 	}, 20000)
 	if err == nil {
 		t.Fatal("job_watch on a deep descendant succeeded, want delegate-the-watching guidance")
@@ -6272,8 +6273,9 @@ func TestJobWatchDeepDescendantGivesDelegateGuidance(t *testing.T) {
 	// A genuinely unknown job_id keeps the bare target_not_found (the guidance is
 	// precise — it does not over-broaden to every miss).
 	_, err = jobWatchTool(root, map[string]any{
-		"target": "job_does_not_exist_anywhere",
-		"events": []any{"job.notification"},
+		"operation": "create",
+		"target":    "job_does_not_exist_anywhere",
+		"events":    []any{"job.notification"},
 	}, 20000)
 	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
 		t.Fatalf("unknown job_id error = %v, want bare target_not_found", err)
@@ -6337,6 +6339,17 @@ func TestWatchHistoryRecordsReplacement(t *testing.T) {
 	hist := jm.recentWatchSummaries()
 	if len(hist) != 1 || hist[0].ID != firstID || hist[0].EndReason != "replaced" {
 		t.Fatalf("recent_watches = %+v, want one replaced entry with id %s", hist, firstID)
+	}
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		t.Fatalf("LoadWatches: %v", err)
+	}
+	if old := watches[firstID]; old == nil || old.Active || old.EndReason != "replaced" {
+		t.Fatalf("durable old watch %s = %+v, want inactive replaced", firstID, old)
+	}
+	newID := active[0].ID
+	if current := watches[newID]; current == nil || !current.Active {
+		t.Fatalf("durable current watch %s = %+v, want active", newID, current)
 	}
 }
 

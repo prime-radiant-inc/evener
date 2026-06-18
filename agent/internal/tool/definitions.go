@@ -175,19 +175,20 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 	if kinds == "" {
 		kinds = "none available this session"
 	}
-	desc := "Add a standing trigger on a running job or a visible session (`target`: a `job_id`, `caller` for this " +
-		"session, or `*` for all visible). For a one-time \"did it print X yet\", use `job_read_output` with a positive max_wait_ms and grep " +
+	desc := "Create, inspect, list, or clear standing triggers on a running job or this caller session. " +
+		"For a one-time \"did it print X yet\", use `job_read_output` with a positive max_wait_ms and grep " +
 		"instead — watches are for recurring conditions, and completion needs no watch at all (terminal notifications are " +
-		"automatic). Triggers, set only what you need: `output_match` (RE2 over the job's output; if the retained output " +
+		"automatic). For `operation=\"create\"`, set `target` to a `job_id` or `caller`; set only the triggers you need: " +
+		"`output_match` (RE2 over the job's output; if the retained output " +
 		"already contains a match the watch fires immediately, then again on new matches — a finished job gets a one-shot " +
 		"catch-up scan), `progress_interval_ms` (periodic), `events` (kinds this session: " + kinds + "; `every` fires on " +
 		"each Nth occurrence — 1 is the default; above 1 requires `events` to contain exactly one kind). Delivery: omit `send` to be notified " +
-		"yourself; set `send.to` to an observer delegate's `job_id` (or `watched`) to push bounded trigger frames there — " +
-		"this also grants that observer read access to the watched job. Frames coalesce latest-wins while the target is " +
+		"yourself; set `send.to` to an observer `delegate_id` to push bounded trigger frames there — " +
+		"this also grants that observer read access to the observed job. Frames coalesce latest-wins while the target is " +
 		"busy. `include_excerpt` attaches an output excerpt (concrete job targets only). ONE active watch per " +
 		"(target, send.to): a different configuration for the same key replaces the existing watch " +
 		"(`replaced_existing:true`) — use a distinct `send.to` for an additional watch on the same target. " +
-		"`clear=true` removes the watch for (target, send.to)."
+		"`operation=\"clear\"` removes a watch by `watch_id`."
 	return llm.ToolDefinition{
 		Name:        "job_watch",
 		Description: desc,
@@ -195,7 +196,9 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"target":               map[string]any{"type": "string", "description": "job_id, or a visible session: caller, or * for all visible."},
+				"operation":            map[string]any{"type": "string", "description": "create, list, inspect, or clear.", "enum": []string{"create", "list", "inspect", "clear"}},
+				"watch_id":             map[string]any{"type": "string", "description": "watch_id returned by job_watch create/list; required for inspect and clear."},
+				"target":               map[string]any{"type": "string", "description": "job_id, or caller for this session."},
 				"output_match":         map[string]any{"type": "string", "description": "RE2 regex over the job's output. Case-sensitive unless (?i). Invalid regex errors at creation."},
 				"progress_interval_ms": map[string]any{"type": "integer", "description": "Periodic trigger interval in ms (min 1000, max 3600000; handler clamps later). Omit for none."},
 				"events": map[string]any{
@@ -212,14 +215,13 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 					"additionalProperties": false,
 					"description":          "Deliver to another target instead of notifying the caller.",
 					"properties": map[string]any{
-						"to":              map[string]any{"type": "string", "description": "job_id, `caller`, or contextual `watched` for the concrete watched target. `watched` resolves only when the trigger has a concrete job identity; session-only events are skipped for `watched`."},
+						"to":              map[string]any{"type": "string", "description": "delegate_id, or `caller`."},
 						"message":         map[string]any{"type": "string"},
 						"include_excerpt": map[string]any{"type": "boolean"},
 					},
 				},
-				"clear": map[string]any{"type": "boolean", "description": "Remove the matching watch. The only unwatch operation."},
 			},
-			"required": []string{"target"},
+			"required": []string{"operation"},
 		},
 	}
 }

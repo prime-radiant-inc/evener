@@ -250,18 +250,35 @@ func TestDefJobWatchParamsAndKinds(t *testing.T) {
 		t.Fatalf("name = %q, want job_watch", def.Name)
 	}
 	props := def.Parameters["properties"].(map[string]any)
-	for _, p := range []string{"target", "output_match", "progress_interval_ms", "events", "every", "send", "clear"} {
+	for _, p := range []string{"operation", "watch_id", "target", "output_match", "progress_interval_ms", "events", "every", "send"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefJobWatch missing param %q", p)
 		}
 	}
 	req := def.Parameters["required"].([]string)
-	if len(req) != 1 || req[0] != "target" {
-		t.Errorf("required = %#v, want [target]", req)
+	if len(req) != 1 || req[0] != "operation" {
+		t.Errorf("required = %#v, want [operation]", req)
 	}
 	// The available event kinds are interpolated into the description.
 	if !strings.Contains(def.Description, "assistant.message") || !strings.Contains(def.Description, "job.notification") {
 		t.Errorf("description must enumerate the available event kinds:\n%s", def.Description)
+	}
+}
+
+func TestDefJobWatchRequiresOperationAndWatchIDForClear(t *testing.T) {
+	def := DefJobWatch([]string{"assistant.message"})
+	props := def.Parameters["properties"].(map[string]any)
+	if _, ok := props["operation"]; !ok {
+		t.Fatalf("DefJobWatch missing operation")
+	}
+	if _, ok := props["watch_id"]; !ok {
+		t.Fatalf("DefJobWatch missing watch_id")
+	}
+	if _, ok := props["clear"]; ok {
+		t.Fatalf("DefJobWatch must not expose clear")
+	}
+	if strings.Contains(def.Description, "`*`") || strings.Contains(def.Description, "watched") {
+		t.Fatalf("DefJobWatch description must not expose target wildcard or watched alias: %q", def.Description)
 	}
 }
 
@@ -273,13 +290,15 @@ func TestDefJobWatchDescriptionIncludesCoalesceContract(t *testing.T) {
 	props := def.Parameters["properties"].(map[string]any)
 	sendProps := props["send"].(map[string]any)["properties"].(map[string]any)
 	toDesc := sendProps["to"].(map[string]any)["description"].(string)
-	for _, want := range []string{"caller", "watched", "concrete watched"} {
+	for _, want := range []string{"caller", "delegate_id"} {
 		if !strings.Contains(toDesc, want) {
 			t.Fatalf("send.to description = %q, want %q", toDesc, want)
 		}
 	}
-	if strings.Contains(toDesc, "main") {
-		t.Fatalf("send.to description must not mention main: %q", toDesc)
+	for _, banned := range []string{"main", "watched"} {
+		if strings.Contains(toDesc, banned) {
+			t.Fatalf("send.to description must not mention %q: %q", banned, toDesc)
+		}
 	}
 }
 

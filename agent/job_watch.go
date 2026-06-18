@@ -3,6 +3,9 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -99,6 +102,8 @@ type watchConfig struct {
 	// id is a stable per-session handle for this watch, assigned at install and
 	// preserved across idempotent re-configure; a replacement gets a fresh id.
 	id                 string
+	watchID            string
+	configHash         string
 	target             string
 	outputMatch        string
 	outputMatcher      *jobstore.OutputMatcher
@@ -152,6 +157,8 @@ type watchGrantKey struct {
 }
 
 type watchArgs struct {
+	Operation          string
+	WatchID            string
 	Target             string
 	OutputMatch        string
 	ProgressIntervalMS int
@@ -176,6 +183,7 @@ const (
 )
 
 type watchResult struct {
+	WatchID            string
 	Target             string
 	Watching           bool
 	OutputMatch        string
@@ -469,7 +477,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	existing := jm.watches[key]
 	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
 	if existing != nil {
-		equal := watchConfigsEqual(existing, cfg)
+		equal := existing.configHash == cfg.configHash
 		if equal && len(detachedCfgs) == 0 {
 			result := watchResultFromConfig(existing, false)
 			jm.mu.Unlock()
@@ -478,9 +486,10 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		var targets []watchConfigTerminalSnapshot
 		if !equal {
 			targets = append(targets, watchConfigTerminalSnapshot{
-				key:      key,
-				cfg:      existing,
-				terminal: watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now()),
+				key:       key,
+				cfg:       existing,
+				terminal:  watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now()),
+				endReason: "replaced",
 			})
 		}
 		markWatchConfigSnapshotsRejectingLocked(targets)
@@ -512,9 +521,19 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 			jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
 			return result, nil
 		}
+		if err := jm.appendWatchRegisteredEvent(cfg); err != nil {
+			jm.mu.Unlock()
+			return watchResult{}, err
+		}
+		if err := jm.appendWatchClearedEvents(targets); err != nil {
+			jm.mu.Unlock()
+			jm.removeWatchSendTerminalSnapshots(applied)
+			jm.rollbackWatchConfigSnapshotsRejecting(targets)
+			jm.rollbackWatchConfigsRejecting(detachedCfgs)
+			return watchResult{}, err
+		}
 		jm.recordWatchEndedLocked(key, existing, "replaced")
 		closeWatchConfig(existing)
-		cfg.id = jm.nextWatchIDLocked()
 		stop := cfg.initProgressStop()
 		jm.watches[key] = cfg
 		result := watchResultFromConfig(cfg, true)
@@ -548,7 +567,10 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
 		jm.mu.Lock()
 	}
-	cfg.id = jm.nextWatchIDLocked()
+	if err := jm.appendWatchRegisteredEvent(cfg); err != nil {
+		jm.mu.Unlock()
+		return watchResult{}, err
+	}
 	stop := cfg.initProgressStop()
 	jm.watches[key] = cfg
 	result := watchResultFromConfig(cfg, false)
@@ -807,7 +829,11 @@ func isWatchSessionTarget(target string) bool {
 
 func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 	eventKinds, wildcardEvents := resolveEventKinds(a.Events)
+	watchID := jobstore.NewWatchID()
 	cfg := &watchConfig{
+		id:                 watchID,
+		watchID:            watchID,
+		configHash:         normalizedWatchConfigHash(a),
 		target:             a.Target,
 		outputMatch:        a.OutputMatch,
 		progressIntervalMS: a.ProgressIntervalMS,
@@ -831,6 +857,27 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 		cfg.outputMatcher = jobstore.NewOutputMatcher(re)
 	}
 	return cfg, nil
+}
+
+func normalizedWatchConfigHash(a watchArgs) string {
+	snapshot := jobstore.WatchConfigSnapshot{
+		Target:             a.Target,
+		OutputMatch:        a.OutputMatch,
+		ProgressIntervalMS: a.ProgressIntervalMS,
+		Events:             canonicalWatchEvents(a.Events),
+		Every:              a.Every,
+	}
+	if a.Send != nil {
+		snapshot.SendTo = a.Send.To
+		snapshot.SendMessage = a.Send.Message
+		snapshot.IncludeExcerpt = a.Send.IncludeExcerpt
+	}
+	b, err := json.Marshal(snapshot)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func resolveEventKinds(names []string) (map[events.EventKind]bool, bool) {
@@ -869,7 +916,7 @@ func validateWatchDeliveryLoop(cfg *watchConfig) error {
 	if !selfGenerated {
 		return nil
 	}
-	return errors.New("invalid_request: watching assistant.message/assistant.tool/communicate with delivery back to the caller is a feedback loop (each delivery causes the next event); watch these kinds only with send.to set to an observer job")
+	return errors.New("invalid_request: watching assistant.message/assistant.tool/communicate with delivery back to the caller is a feedback loop (each delivery causes the next event); watch these kinds only with send.to set to an observer delegate")
 }
 
 func canonicalWatchEvents(events []string) []string {
@@ -1030,11 +1077,55 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 		jm.rollbackWatchConfigsRejecting(detachedCfgs)
 		return watchResult{}, err
 	}
+	if err := jm.appendWatchClearedEvents(targets); err != nil {
+		jm.removeWatchSendTerminalSnapshots(applied)
+		jm.rollbackWatchConfigSnapshotsRejecting(targets)
+		jm.rollbackWatchConfigsRejecting(detachedCfgs)
+		return watchResult{}, err
+	}
 	jm.detachWatchConfigSnapshots(targets)
 	jm.removeWatchSendTerminalSnapshots(applied)
 	jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
 
 	return watchResult{
+		Target:   key.Target,
+		Watching: false,
+	}, nil
+}
+
+func (jm *jobManager) clearWatchByID(watchID string) (watchResult, error) {
+	jm.mu.Lock()
+	key, cfg, ok := jm.watchConfigByIDLocked(watchID)
+	if !ok {
+		jm.mu.Unlock()
+		return watchResult{WatchID: watchID, Watching: false}, nil
+	}
+	targets := []watchConfigTerminalSnapshot{{
+		key:       key,
+		cfg:       cfg,
+		terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()),
+		endReason: "cleared",
+	}}
+	markWatchConfigSnapshotsRejectingLocked(targets)
+	jm.mu.Unlock()
+
+	dropped := terminalSnapshots(targets)
+	applied, err := jm.appendWatchSendTerminalSnapshots(dropped)
+	if err != nil {
+		jm.removeWatchSendTerminalSnapshots(applied)
+		jm.rollbackWatchConfigSnapshotsRejecting(targets)
+		return watchResult{}, err
+	}
+	if err := jm.appendWatchClearedEvents(targets); err != nil {
+		jm.removeWatchSendTerminalSnapshots(applied)
+		jm.rollbackWatchConfigSnapshotsRejecting(targets)
+		return watchResult{}, err
+	}
+	jm.detachWatchConfigSnapshots(targets)
+	jm.removeWatchSendTerminalSnapshots(applied)
+
+	return watchResult{
+		WatchID:  watchID,
 		Target:   key.Target,
 		Watching: false,
 	}, nil
@@ -1102,6 +1193,11 @@ func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
 		return
 	}
+	if err := jm.appendWatchClearedEvents(targets); err != nil {
+		jm.removeWatchSendTerminalSnapshots(applied)
+		jm.rollbackWatchConfigSnapshotsRejecting(targets)
+		return
+	}
 	jm.detachWatchConfigSnapshots(targets)
 	jm.removeWatchSendTerminalSnapshots(applied)
 
@@ -1154,6 +1250,15 @@ func watchConfigHasPendingMatchingKey(cfg *watchConfig, key watchKey) bool {
 	return false
 }
 
+func (jm *jobManager) watchConfigByIDLocked(watchID string) (watchKey, *watchConfig, bool) {
+	for key, cfg := range jm.watches {
+		if cfg != nil && cfg.watchID == watchID {
+			return key, cfg, true
+		}
+	}
+	return watchKey{}, nil, false
+}
+
 func (jm *jobManager) pruneWatchedTargetWatchesLocked(jobID, reason string, now time.Time) []watchConfigTerminalSnapshot {
 	var targets []watchConfigTerminalSnapshot
 	for key, cfg := range jm.watches {
@@ -1185,46 +1290,9 @@ func closeWatchConfig(cfg *watchConfig) {
 	cfg.progressStop = nil
 }
 
-func watchConfigsEqual(a, b *watchConfig) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	if a.target != b.target ||
-		a.outputMatch != b.outputMatch ||
-		a.progressIntervalMS != b.progressIntervalMS ||
-		a.triggerKind != b.triggerKind ||
-		a.triggerEvery != b.triggerEvery {
-		return false
-	}
-	if !watchEventsEqual(a.events, b.events) {
-		return false
-	}
-	return watchSendArgsEqual(a.send, b.send)
-}
-
-func watchEventsEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func watchSendArgsEqual(a, b *watchSendArgs) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return a.To == b.To &&
-		a.Message == b.Message &&
-		a.IncludeExcerpt == b.IncludeExcerpt
-}
-
 func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult {
 	return watchResult{
+		WatchID:            cfg.watchID,
 		Target:             cfg.target,
 		Watching:           true,
 		OutputMatch:        cfg.outputMatch,
@@ -1233,6 +1301,74 @@ func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult 
 		Send:               cloneWatchSendArgs(cfg.send),
 		ReplacedExisting:   replacedExisting,
 	}
+}
+
+func watchSendTo(cfg *watchConfig) string {
+	if cfg == nil || cfg.send == nil {
+		return ""
+	}
+	return cfg.send.To
+}
+
+func watchConfigSnapshot(cfg *watchConfig) *jobstore.WatchConfigSnapshot {
+	if cfg == nil {
+		return nil
+	}
+	snapshot := &jobstore.WatchConfigSnapshot{
+		Target:             cfg.target,
+		OutputMatch:        cfg.outputMatch,
+		ProgressIntervalMS: cfg.progressIntervalMS,
+		Events:             append([]string(nil), cfg.events...),
+		Every:              cfg.triggerEvery,
+	}
+	if cfg.send != nil {
+		snapshot.SendTo = cfg.send.To
+		snapshot.SendMessage = cfg.send.Message
+		snapshot.IncludeExcerpt = cfg.send.IncludeExcerpt
+	}
+	return snapshot
+}
+
+func (jm *jobManager) appendWatchRegisteredEvent(cfg *watchConfig) error {
+	return jm.appendEvent(jobstore.Event{
+		Kind:    jobstore.EventWatchRegistered,
+		TS:      jm.now(),
+		WatchID: cfg.watchID,
+		Watch: &jobstore.WatchEvent{
+			Generation:       cfg.generation,
+			OwnerSessionID:   jm.sessionID,
+			VisibleSessionID: jm.sessionID,
+			Target:           cfg.target,
+			SendTo:           watchSendTo(cfg),
+			ConfigHash:       cfg.configHash,
+			Condition:        watchConditionSummary(cfg),
+			Config:           watchConfigSnapshot(cfg),
+		},
+	})
+}
+
+func (jm *jobManager) appendWatchClearedEvent(cfg *watchConfig, endReason string) error {
+	return jm.appendEvent(jobstore.Event{
+		Kind:    jobstore.EventWatchCleared,
+		TS:      jm.now(),
+		WatchID: cfg.watchID,
+		Watch: &jobstore.WatchEvent{
+			Generation: cfg.generation,
+			EndReason:  endReason,
+		},
+	})
+}
+
+func (jm *jobManager) appendWatchClearedEvents(targets []watchConfigTerminalSnapshot) error {
+	for _, target := range targets {
+		if target.cfg == nil || target.endReason == "" {
+			continue
+		}
+		if err := jm.appendWatchClearedEvent(target.cfg, target.endReason); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // liveWatchSummaries snapshots the session's active watch configs (jm.watches
@@ -1252,12 +1388,6 @@ type watchHistoryEntry struct {
 	deliveries int
 	endReason  string
 	endedAt    time.Time
-}
-
-// nextWatchIDLocked mints a stable per-session watch id. Caller holds jm.mu.
-func (jm *jobManager) nextWatchIDLocked() string {
-	jm.watchSeq++
-	return fmt.Sprintf("watch_%d", jm.watchSeq)
 }
 
 // recordWatchEndedLocked appends a watch's final state to the bounded history ring
@@ -1299,6 +1429,73 @@ func (jm *jobManager) recentWatchSummaries() []recentWatchEntry {
 		})
 	}
 	return out
+}
+
+func (jm *jobManager) watchListToolResult() jobWatchListToolResult {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	watches := make([]jobWatchInspectToolResult, 0, len(jm.watches))
+	for key, cfg := range jm.watches {
+		watches = append(watches, inspectResultFromWatchConfig(key, cfg))
+	}
+	sort.SliceStable(watches, func(i, j int) bool {
+		if watches[i].Target != watches[j].Target {
+			return watches[i].Target < watches[j].Target
+		}
+		if watches[i].SendTo != watches[j].SendTo {
+			return watches[i].SendTo < watches[j].SendTo
+		}
+		return watches[i].WatchID < watches[j].WatchID
+	})
+	recent := make([]jobWatchInspectToolResult, 0, len(jm.watchHistory))
+	for i := len(jm.watchHistory) - 1; i >= 0; i-- {
+		recent = append(recent, inspectResultFromWatchHistory(jm.watchHistory[i]))
+	}
+	return jobWatchListToolResult{Watches: watches, RecentWatches: recent, Count: len(watches)}
+}
+
+func (jm *jobManager) inspectWatchByID(watchID string) jobWatchInspectToolResult {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for key, cfg := range jm.watches {
+		if cfg != nil && cfg.watchID == watchID {
+			return inspectResultFromWatchConfig(key, cfg)
+		}
+	}
+	for i := len(jm.watchHistory) - 1; i >= 0; i-- {
+		if jm.watchHistory[i].id == watchID {
+			return inspectResultFromWatchHistory(jm.watchHistory[i])
+		}
+	}
+	return jobWatchInspectToolResult{WatchID: watchID, Watching: false}
+}
+
+func inspectResultFromWatchConfig(key watchKey, cfg *watchConfig) jobWatchInspectToolResult {
+	if cfg == nil {
+		return jobWatchInspectToolResult{Watching: false}
+	}
+	return jobWatchInspectToolResult{
+		WatchID:    cfg.watchID,
+		Target:     cfg.target,
+		Watching:   true,
+		Condition:  watchConditionSummary(cfg),
+		SendTo:     key.SendTo,
+		Deliveries: cfg.deliveries,
+		CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
+	}
+}
+
+func inspectResultFromWatchHistory(h watchHistoryEntry) jobWatchInspectToolResult {
+	return jobWatchInspectToolResult{
+		WatchID:    h.id,
+		Target:     h.target,
+		Watching:   false,
+		Condition:  h.condition,
+		SendTo:     h.sendTo,
+		Deliveries: h.deliveries,
+		EndReason:  h.endReason,
+		EndedAt:    h.endedAt.Format(time.RFC3339Nano),
+	}
 }
 
 func (jm *jobManager) liveWatchSummaries() []watchListEntry {

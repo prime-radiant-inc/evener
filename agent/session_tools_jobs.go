@@ -171,7 +171,19 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	if err != nil {
 		return "", err
 	}
-	res, err := jm.configureWatch(a)
+	var res watchResult
+	switch a.Operation {
+	case "create":
+		res, err = jm.configureWatch(a)
+	case "clear":
+		res, err = jm.clearWatchByID(a.WatchID)
+	case "list":
+		return marshalWatchListResult(jm.watchListToolResult(), maxChars)
+	case "inspect":
+		return marshalWatchInspectResult(jm.inspectWatchByID(a.WatchID), maxChars)
+	default:
+		return "", fmt.Errorf("invalid_request: unsupported operation %q", a.Operation)
+	}
 	if err != nil {
 		// Watches resolve own jobs only (spec §3/§8): a target_not_found for a
 		// target that is actually a known descendant in the live subtree is
@@ -1019,6 +1031,7 @@ type delegateSendResult struct {
 }
 
 type jobWatchToolResult struct {
+	WatchID            string                `json:"watch_id,omitempty"`
 	Target             string                `json:"target"`
 	Watching           bool                  `json:"watching"`
 	OutputMatch        string                `json:"output_match,omitempty"`
@@ -1032,6 +1045,24 @@ type jobWatchToolResult struct {
 	Fired            bool   `json:"fired"`
 	TerminalCatchup  bool   `json:"terminal_catchup,omitempty"`
 	Status           string `json:"status,omitempty"`
+}
+
+type jobWatchListToolResult struct {
+	Watches       []jobWatchInspectToolResult `json:"watches"`
+	RecentWatches []jobWatchInspectToolResult `json:"recent_watches,omitempty"`
+	Count         int                         `json:"count"`
+}
+
+type jobWatchInspectToolResult struct {
+	WatchID    string `json:"watch_id"`
+	Target     string `json:"target,omitempty"`
+	Watching   bool   `json:"watching"`
+	Condition  string `json:"condition,omitempty"`
+	SendTo     string `json:"send_to,omitempty"`
+	Deliveries int    `json:"deliveries,omitempty"`
+	CreatedAt  string `json:"created_at,omitempty"`
+	EndReason  string `json:"end_reason,omitempty"`
+	EndedAt    string `json:"ended_at,omitempty"`
 }
 
 type jobWatchToolSendArgs struct {
@@ -1143,6 +1174,7 @@ func formatDelegateSend(out delegateSendResult) string {
 func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 	_ = maxChars
 	out := jobWatchToolResult{
+		WatchID:            res.WatchID,
 		Target:             res.Target,
 		Watching:           res.Watching,
 		OutputMatch:        res.OutputMatch,
@@ -1161,6 +1193,16 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 		}
 	}
 	return tool.StateResult{Output: formatJobWatch(out), State: out}, nil
+}
+
+func marshalWatchListResult(res jobWatchListToolResult, maxChars int) (any, error) {
+	_ = maxChars
+	return tool.StateResult{Output: formatJobWatchList(res), State: res}, nil
+}
+
+func marshalWatchInspectResult(res jobWatchInspectToolResult, maxChars int) (any, error) {
+	_ = maxChars
+	return tool.StateResult{Output: formatJobWatchInspect(res), State: res}, nil
 }
 
 // formatJobWatch renders a job_watch result as a one-line footer summarizing the
@@ -1199,6 +1241,48 @@ func formatJobWatch(out jobWatchToolResult) string {
 		parts = append(parts, out.Status)
 	}
 	return "[" + strings.Join(parts, " · ") + "]"
+}
+
+func formatJobWatchList(out jobWatchListToolResult) string {
+	if len(out.Watches) == 0 && len(out.RecentWatches) == 0 {
+		return "no watches"
+	}
+	var b strings.Builder
+	for _, w := range out.Watches {
+		fmt.Fprintf(&b, "%s  watching  %s", w.WatchID, w.Target)
+		if w.Condition != "" {
+			fmt.Fprintf(&b, "  %s", w.Condition)
+		}
+		if w.SendTo != "" {
+			fmt.Fprintf(&b, "  send.to=%s", w.SendTo)
+		}
+		b.WriteByte('\n')
+	}
+	for _, w := range out.RecentWatches {
+		fmt.Fprintf(&b, "%s  %s  %s", w.WatchID, w.EndReason, w.Target)
+		if w.Condition != "" {
+			fmt.Fprintf(&b, "  %s", w.Condition)
+		}
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatJobWatchInspect(out jobWatchInspectToolResult) string {
+	if out.Watching {
+		parts := []string{"watching " + out.Target}
+		if out.Condition != "" {
+			parts = append(parts, out.Condition)
+		}
+		if out.SendTo != "" {
+			parts = append(parts, "send.to="+out.SendTo)
+		}
+		return out.WatchID + "  " + strings.Join(parts, "  ")
+	}
+	if out.EndReason != "" {
+		return fmt.Sprintf("%s  %s  %s", out.WatchID, out.EndReason, out.Target)
+	}
+	return out.WatchID + "  not found"
 }
 
 func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
@@ -1363,10 +1447,15 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 }
 
 func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
+	operation := strings.TrimSpace(stringArg(args, "operation"))
+	if operation == "" {
+		return watchArgs{}, errors.New("invalid_request: operation is required")
+	}
 	a := watchArgs{
+		Operation:   operation,
+		WatchID:     strings.TrimSpace(stringArg(args, "watch_id")),
 		Target:      strings.TrimSpace(stringArg(args, "target")),
 		OutputMatch: stringArg(args, "output_match"),
-		Clear:       shellBoolArg(args, "clear"),
 	}
 	if n, ok := shellIntArg(args, "progress_interval_ms"); ok {
 		a.ProgressIntervalMS = n
@@ -1384,6 +1473,31 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 		return watchArgs{}, err
 	}
 	a.Send = send
+	switch a.Operation {
+	case "create":
+		if a.Target == "" {
+			return watchArgs{}, errors.New("invalid_request: target is required")
+		}
+	case "list":
+		if a.Target != "" || a.WatchID != "" {
+			return watchArgs{}, errors.New("invalid_request: list requires no target or watch_id")
+		}
+	case "inspect", "clear":
+		if a.WatchID == "" {
+			return watchArgs{}, errors.New("invalid_request: watch_id is required")
+		}
+	default:
+		return watchArgs{}, fmt.Errorf("invalid_request: unsupported operation %q", a.Operation)
+	}
+	if a.Target == "*" {
+		return watchArgs{}, errors.New("invalid_request: wildcard watch target is not supported in v1")
+	}
+	if a.Send != nil && strings.HasPrefix(a.Send.To, "job_") {
+		return watchArgs{}, errors.New("invalid_request: job_id is a job/turn handle; watch sends target delegate_id")
+	}
+	if a.Send != nil && a.Send.To == runtimeMessageAliasWatched {
+		return watchArgs{}, errors.New("invalid_request: watched is not a v1 delivery target")
+	}
 	return a, nil
 }
 

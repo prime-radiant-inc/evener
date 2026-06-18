@@ -1337,7 +1337,7 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"output_match":"(?i)ready"}`, shellOut.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":"(?i)ready"}`, shellOut.JobID)),
 	})
 	if res.IsError {
 		t.Fatalf("job_watch returned error: %s", res.Output)
@@ -1353,6 +1353,222 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 	}
 	if s.jobManager.watchCount() != 1 {
 		t.Fatalf("watch count = %d, want 1", s.jobManager.watchCount())
+	}
+}
+
+func TestJobWatchCreateReturnsIDAndClearUsesIDOnly(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	if shellOut.JobID == "" {
+		t.Fatal("background shell returned no job_id")
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	createRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":"ready"}`, shellOut.JobID)),
+	})
+	if createRes.IsError {
+		t.Fatalf("job_watch create returned error: %s", createRes.Output)
+	}
+	var created struct {
+		WatchID  string `json:"watch_id"`
+		Watching bool   `json:"watching"`
+	}
+	if err := json.Unmarshal(toolResultJSON(createRes), &created); err != nil {
+		t.Fatalf("unmarshal create watch output: %v (output: %s)", err, createRes.Output)
+	}
+	if !strings.HasPrefix(created.WatchID, "watch_") {
+		t.Fatalf("watch_id = %q, want watch_ prefix", created.WatchID)
+	}
+	if !created.Watching {
+		t.Fatalf("create result = %+v, want watching=true", created)
+	}
+
+	clearRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "clear",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"clear","watch_id":%q}`, created.WatchID)),
+	})
+	if clearRes.IsError {
+		t.Fatalf("job_watch clear returned error: %s", clearRes.Output)
+	}
+	var cleared struct {
+		WatchID  string `json:"watch_id"`
+		Watching bool   `json:"watching"`
+	}
+	if err := json.Unmarshal(toolResultJSON(clearRes), &cleared); err != nil {
+		t.Fatalf("unmarshal clear watch output: %v (output: %s)", err, clearRes.Output)
+	}
+	if cleared.WatchID != created.WatchID {
+		t.Fatalf("cleared watch_id = %q, want %q", cleared.WatchID, created.WatchID)
+	}
+	if cleared.Watching {
+		t.Fatalf("clear result = %+v, want watching=false", cleared)
+	}
+	watches, err := s.jobManager.store.LoadWatches()
+	if err != nil {
+		t.Fatalf("LoadWatches: %v", err)
+	}
+	if w := watches[created.WatchID]; w == nil || w.Active || w.EndReason != "cleared" {
+		t.Fatalf("durable watch %s = %+v, want inactive cleared", created.WatchID, w)
+	}
+}
+
+func TestJobWatchDuplicateCreateReturnsSameIDAndChangedConfigReturnsNewID(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	if shellOut.JobID == "" {
+		t.Fatal("background shell returned no job_id")
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	createWatch := func(outputMatch string) string {
+		t.Helper()
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "watch-" + outputMatch,
+			Name:      "job_watch",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":%q}`, shellOut.JobID, outputMatch)),
+		})
+		if res.IsError {
+			t.Fatalf("job_watch create %q returned error: %s", outputMatch, res.Output)
+		}
+		var out struct {
+			WatchID string `json:"watch_id"`
+		}
+		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+			t.Fatalf("unmarshal watch output: %v (output: %s)", err, res.Output)
+		}
+		if !strings.HasPrefix(out.WatchID, "watch_") {
+			t.Fatalf("watch_id = %q, want watch_ prefix", out.WatchID)
+		}
+		return out.WatchID
+	}
+
+	firstID := createWatch("ready")
+	duplicateID := createWatch("ready")
+	if duplicateID != firstID {
+		t.Fatalf("duplicate create watch_id = %q, want %q", duplicateID, firstID)
+	}
+
+	changedID := createWatch("done")
+	if changedID == firstID {
+		t.Fatalf("changed config reused watch_id %q", changedID)
+	}
+}
+
+func TestJobWatchListAndInspectReturnWatchIDs(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	createRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":"ready"}`, shellOut.JobID)),
+	})
+	if createRes.IsError {
+		t.Fatalf("job_watch create returned error: %s", createRes.Output)
+	}
+	var created struct {
+		WatchID string `json:"watch_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(createRes), &created); err != nil {
+		t.Fatalf("unmarshal create watch output: %v (output: %s)", err, createRes.Output)
+	}
+
+	listRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "list",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(`{"operation":"list"}`),
+	})
+	if listRes.IsError {
+		t.Fatalf("job_watch list returned error: %s", listRes.Output)
+	}
+	var listed struct {
+		Watches []struct {
+			WatchID  string `json:"watch_id"`
+			Target   string `json:"target"`
+			Watching bool   `json:"watching"`
+		} `json:"watches"`
+	}
+	if err := json.Unmarshal(toolResultJSON(listRes), &listed); err != nil {
+		t.Fatalf("unmarshal list watch output: %v (output: %s)", err, listRes.Output)
+	}
+	if len(listed.Watches) != 1 || listed.Watches[0].WatchID != created.WatchID || listed.Watches[0].Target != shellOut.JobID || !listed.Watches[0].Watching {
+		t.Fatalf("list result = %+v, want active watch %s", listed, created.WatchID)
+	}
+
+	inspectRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "inspect",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"inspect","watch_id":%q}`, created.WatchID)),
+	})
+	if inspectRes.IsError {
+		t.Fatalf("job_watch inspect returned error: %s", inspectRes.Output)
+	}
+	var inspected struct {
+		WatchID  string `json:"watch_id"`
+		Target   string `json:"target"`
+		Watching bool   `json:"watching"`
+	}
+	if err := json.Unmarshal(toolResultJSON(inspectRes), &inspected); err != nil {
+		t.Fatalf("unmarshal inspect watch output: %v (output: %s)", err, inspectRes.Output)
+	}
+	if inspected.WatchID != created.WatchID || inspected.Target != shellOut.JobID || !inspected.Watching {
+		t.Fatalf("inspect result = %+v, want active watch %s", inspected, created.WatchID)
 	}
 }
 
@@ -1383,6 +1599,7 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	})
 
 	watchArgs, err := json.Marshal(map[string]any{
+		"operation":    "create",
 		"target":       shellOut.JobID,
 		"output_match": token,
 		"send": map[string]any{
@@ -1445,7 +1662,7 @@ func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 	watchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"output_match":"already-done"}`, watchedJobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":"already-done"}`, watchedJobID)),
 	})
 	if watchRes.IsError {
 		t.Fatalf("terminal output_match catch-up must not error: %s", watchRes.Output)
@@ -1468,7 +1685,7 @@ func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 	noMatchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch2",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"output_match":"never-printed"}`, watchedJobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":"never-printed"}`, watchedJobID)),
 	})
 	if noMatchRes.IsError {
 		t.Fatalf("non-matching terminal catch-up must not error: %s", noMatchRes.Output)
@@ -1488,7 +1705,7 @@ func TestJobWatchNoConditionErrors(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"target":"caller"}`),
+		Arguments: json.RawMessage(`{"operation":"create","target":"caller"}`),
 	})
 	if !res.IsError {
 		t.Fatalf("job_watch succeeded, want error: %s", res.Output)
@@ -1504,7 +1721,7 @@ func TestJobWatchToolMainAliasTargetFailsTargetNotFound(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"target":"main"}`),
+		Arguments: json.RawMessage(`{"operation":"create","target":"main"}`),
 	})
 
 	if !res.IsError {
@@ -1524,7 +1741,7 @@ func TestJobWatchToolWatchedTargetWithoutContextFailsTargetNotFound(t *testing.T
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"target":"watched"}`),
+		Arguments: json.RawMessage(`{"operation":"create","target":"watched"}`),
 	})
 
 	if !res.IsError {
@@ -1544,7 +1761,7 @@ func TestJobWatchToolSendToMainAliasFailsTargetNotFound(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"target":"caller","events":["assistant.message"],"send":{"to":"main","message":"observe"}}`),
+		Arguments: json.RawMessage(`{"operation":"create","target":"caller","events":["assistant.message"],"send":{"to":"main","message":"observe"}}`),
 	})
 
 	if !res.IsError {
@@ -1605,7 +1822,7 @@ func TestJobWatchSendToRequired(t *testing.T) {
 			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 				ID:        "watch",
 				Name:      "job_watch",
-				Arguments: json.RawMessage(fmt.Sprintf(`{"target":"caller","events":["assistant.message"],"send":%s}`, tc.send)),
+				Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":"caller","events":["assistant.message"],"send":%s}`, tc.send)),
 			})
 			if !res.IsError {
 				t.Fatalf("job_watch succeeded, want send.to error: %s", res.Output)
@@ -1628,7 +1845,7 @@ func TestJobWatchEmptySendPlaceholderIsOmitted(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"target":"caller","events":["job.notification"],"send":{"to":"","message":"","include_excerpt":false}}`),
+		Arguments: json.RawMessage(`{"operation":"create","target":"caller","events":["job.notification"],"send":{"to":"","message":"","include_excerpt":false}}`),
 	})
 	if res.IsError {
 		t.Fatalf("job_watch returned error for empty send placeholder: %s", res.Output)
@@ -2750,7 +2967,7 @@ func TestJobToolsDefinitions(t *testing.T) {
 	required(t, tooldefs.DefJobStop(), "job_stop", []string{"job_id"})
 	required(t, tooldefs.DefJobList(), "job_list", nil)
 	required(t, tooldefs.DefDelegate([]string{"reviewer"}), "delegate", []string{"task"})
-	required(t, tooldefs.DefJobWatch(WatchEventKindNames), "job_watch", []string{"target"})
+	required(t, tooldefs.DefJobWatch(WatchEventKindNames), "job_watch", []string{"operation"})
 	required(t, tooldefs.DefDelegateSend(), "delegate_send", []string{"to", "message"})
 
 	readProps := tooldefs.DefJobReadOutput().Parameters["properties"].(map[string]any)
@@ -2796,10 +3013,13 @@ func TestJobToolsDefinitions(t *testing.T) {
 		}
 	}
 	watchProps := tooldefs.DefJobWatch(WatchEventKindNames).Parameters["properties"].(map[string]any)
-	for _, param := range []string{"target", "output_match", "progress_interval_ms", "events", "every", "send", "clear"} {
+	for _, param := range []string{"operation", "watch_id", "target", "output_match", "progress_interval_ms", "events", "every", "send"} {
 		if _, ok := watchProps[param]; !ok {
 			t.Fatalf("job_watch missing param %q", param)
 		}
+	}
+	if _, ok := watchProps["clear"]; ok {
+		t.Fatalf("job_watch exposes removed clear param")
 	}
 }
 

@@ -47,10 +47,9 @@ type jobManager struct {
 	running       map[string]*runningJob
 	watches       map[watchKey]*watchConfig
 	terminalFlush map[*watchConfig]bool
-	// watchSeq mints stable watch ids; watchHistory is a bounded, latest-trimmed
-	// ring of watches that have left the active set, surfaced by job_list so a
-	// fired-then-removed watch stays legible. Both guarded by jm.mu.
-	watchSeq     int
+	// watchHistory is a bounded, latest-trimmed ring of watches that have left
+	// the active set, surfaced by job_list so a fired-then-removed watch stays
+	// legible. Guarded by jm.mu.
 	watchHistory []watchHistoryEntry
 	// lastFedOffset records the highest stream end offset fed to the output
 	// matcher per job. The per-job output pump is single-goroutine, so this is
