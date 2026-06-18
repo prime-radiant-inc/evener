@@ -196,6 +196,14 @@ type WorkspaceData struct {
 	// "view →" was a one-way hard nav with no back-out.
 	ParentRouteID string
 	ParentTitle   string
+	// ObserverRouteIDs are the /s/<id> route ids of this worker's LIVE observer
+	// subagents (sessions running a job_watch sidecar on this one). The agent
+	// stamps them on the worker's meta at watch-install time (SessionMeta.
+	// ObservedBy); workspaceData filters that to the live set. The template
+	// renders them as data-observers on #conversation so the renderer can
+	// auto-open each observer beside this worker. Local sources only — remote/
+	// codex threads have no jobstore and so never carry observers.
+	ObserverRouteIDs []string
 }
 
 // sendRequest is the JSON body accepted by POST /s/<id>/send. Items carries

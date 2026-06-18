@@ -39,6 +39,9 @@
     if (!href) return null;
     var r = region();
     if (!r) return null;
+    // An explicit open of a previously-dismissed href clears its suppression:
+    // the user asked for it back, so auto-open may bring it back too.
+    unsuppress(href);
     var existing = paneFor(href);
     if (existing) { existing.querySelector(".pane-frame").focus(); return existing; }
     if (r.querySelectorAll(".pane").length >= MAX_SIDE_PANES) return null;
@@ -73,12 +76,47 @@
     var pane = paneFor(href);
     if (pane) pane.remove();
     if (region() && region().querySelectorAll(".pane").length === 0) showRegion(false);
+    // Remember the user's dismissal so auto-open does not re-open this href on
+    // the next init/navigation. A later explicit open() clears the suppression.
+    suppress(href);
     applyPaneMinWidth();
     persist();
   }
 
   var STORE_KEY = "serf-hub.panes";
   var WIDTH_KEY = "serf-hub.panes.width";
+  var CLOSED_KEY = "serf-hub.panes.closed";
+
+  // Suppression memory: hrefs the user explicitly closed. Auto-open consults
+  // isSuppressed() and skips these so a dismissed pane stays dismissed across
+  // re-init and reload. Persisted as a JSON array of hrefs.
+  function readClosed() {
+    var raw;
+    try { raw = window.localStorage.getItem(CLOSED_KEY); } catch (e) { return []; }
+    if (!raw) return [];
+    try { var a = JSON.parse(raw); return Array.isArray(a) ? a : []; } catch (e) { return []; }
+  }
+
+  function writeClosed(list) {
+    try { window.localStorage.setItem(CLOSED_KEY, JSON.stringify(list)); } catch (e) { /* ignore */ }
+  }
+
+  function isSuppressed(href) {
+    return readClosed().indexOf(href) !== -1;
+  }
+
+  function suppress(href) {
+    if (!href) return;
+    var list = readClosed();
+    if (list.indexOf(href) === -1) { list.push(href); writeClosed(list); }
+  }
+
+  function unsuppress(href) {
+    if (!href) return;
+    var list = readClosed();
+    var i = list.indexOf(href);
+    if (i !== -1) { list.splice(i, 1); writeClosed(list); }
+  }
 
   function setSidePanesWidth(px) {
     var maxW = Math.min(1200, window.innerWidth - 360);
@@ -152,7 +190,7 @@
     data.forEach(function (p) { if (p && p.href) open(p.href, p.title); });
   }
 
-  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, setSidePanesWidth: setSidePanesWidth, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
+  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, isSuppressed: isSuppressed, setSidePanesWidth: setSidePanesWidth, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
 
   function onLoad() { restore(); bindSplitter(); restoreWidth(); }
   if (document.readyState === "loading") {

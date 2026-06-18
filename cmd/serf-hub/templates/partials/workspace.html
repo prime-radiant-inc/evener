@@ -40,7 +40,8 @@
      data-active-turn-id="{{.ActiveTurnID}}"
      data-state="{{.State}}"
      data-cwd="{{.WorkingDir}}"
-     data-home="{{.HomeDir}}">
+     data-home="{{.HomeDir}}"
+     {{if .ObserverRouteIDs}}data-observers="{{range $i, $id := .ObserverRouteIDs}}{{if $i}} {{end}}{{$id}}{{end}}"{{end}}>
   <div class="empty-state empty-state-conversation" data-empty-placeholder>
     <p class="empty-state-title">No messages yet</p>
     <p class="empty-state-body">Type below to start the conversation.</p>

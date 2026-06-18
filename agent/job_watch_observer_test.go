@@ -4,12 +4,113 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
+
+// stateDirForJM derives the project state dir from a jobManager's per-session
+// jobs dir (<stateDir>/sessions/<id>), the location of session .meta.json files.
+func stateDirForJM(jm *jobManager) string {
+	return filepath.Dir(filepath.Dir(jm.dir))
+}
+
+// TestMintWatchCreateReadGrantStampsObservedBy proves that installing a sidecar
+// watch (concrete worker target, delivered to a concrete observer delegate)
+// stamps the observer's session id onto the watched WORKER's SessionMeta, so the
+// hub can later auto-open the observer beside the worker.
+func TestMintWatchCreateReadGrantStampsObservedBy(t *testing.T) {
+	jm := newTestJM(t)
+	stateDir := stateDirForJM(jm)
+
+	// The watched worker is a running delegate whose transcript ref resolves to
+	// its child session id; the observer is a delegate send target.
+	const workerSessionID = "WORKER"
+	var signals atomic.Int32
+	workerJobID := seedRunningDelegate(t, jm, encodeRef("", workerSessionID), &signals)
+	seedWatchSendDelegateTarget(t, jm, "job_obs")
+	observerSessionID := "child_job_obs"
+
+	// The worker's meta must exist for the stamp to land on it (the worker is a
+	// real child session with its own meta on disk).
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: workerSessionID, IsSubagent: true}); err != nil {
+		t.Fatalf("seed worker meta: %v", err)
+	}
+
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      workerJobID,
+		OutputMatch: "(?i)ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configureWatch: %v", err)
+	}
+
+	got, err := schema.LoadSessionMeta(stateDir, workerSessionID)
+	if err != nil {
+		t.Fatalf("load worker meta: %v", err)
+	}
+	if len(got.ObservedBy) != 1 || got.ObservedBy[0] != observerSessionID {
+		t.Fatalf("worker meta ObservedBy = %v, want [%s]", got.ObservedBy, observerSessionID)
+	}
+}
+
+// TestMintWatchCreateReadGrantObservedByDedups proves repeated watch installs of
+// the same (worker, observer) pair do not duplicate the observer id on the
+// worker's meta — the set is append-only and deduped, mirroring the grant log.
+func TestMintWatchCreateReadGrantObservedByDedups(t *testing.T) {
+	jm := newTestJM(t)
+	stateDir := stateDirForJM(jm)
+	var signals atomic.Int32
+	workerJobID := seedRunningDelegate(t, jm, encodeRef("", "WORKER"), &signals)
+	seedWatchSendDelegateTarget(t, jm, "job_obs")
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: "WORKER", IsSubagent: true}); err != nil {
+		t.Fatalf("seed worker meta: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if _, err := jm.configureWatch(watchArgs{
+			Target:      workerJobID,
+			OutputMatch: "(?i)ready",
+			Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+		}); err != nil {
+			t.Fatalf("configureWatch #%d: %v", i, err)
+		}
+	}
+
+	got, err := schema.LoadSessionMeta(stateDir, "WORKER")
+	if err != nil {
+		t.Fatalf("load worker meta: %v", err)
+	}
+	if len(got.ObservedBy) != 1 {
+		t.Fatalf("ObservedBy must dedup; got %v", got.ObservedBy)
+	}
+}
+
+// TestOrdinaryWorkerHasNoObservedBy proves a delegate worker that is not the
+// target of any watch never gains an ObservedBy entry — the stamp is confined to
+// the watch-install seam.
+func TestOrdinaryWorkerHasNoObservedBy(t *testing.T) {
+	jm := newTestJM(t)
+	stateDir := stateDirForJM(jm)
+	var signals atomic.Int32
+	_ = seedRunningDelegate(t, jm, encodeRef("", "WORKER"), &signals)
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: "WORKER", IsSubagent: true}); err != nil {
+		t.Fatalf("seed worker meta: %v", err)
+	}
+
+	got, err := schema.LoadSessionMeta(stateDir, "WORKER")
+	if err != nil {
+		t.Fatalf("load worker meta: %v", err)
+	}
+	if len(got.ObservedBy) != 0 {
+		t.Fatalf("un-watched worker meta ObservedBy = %v, want empty", got.ObservedBy)
+	}
+}
 
 func TestWatchSendBuildsObserverFrame(t *testing.T) {
 	s := newTestSession(t)

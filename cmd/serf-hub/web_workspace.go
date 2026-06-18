@@ -291,6 +291,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 					}
 					s.fillForkLineage(&data, pe.Meta)
 					s.fillSubagentLineage(&data, pe.Meta)
+					s.fillObserverLink(&data, pe.Meta)
 				}
 			}
 			if state == "ended" && s.cfg.Past != nil {
@@ -319,6 +320,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 			}
 			s.fillForkLineage(&data, pe.Meta)
 			s.fillSubagentLineage(&data, pe.Meta)
+			s.fillObserverLink(&data, pe.Meta)
 			return data
 		}
 	}
@@ -393,6 +395,31 @@ func (s *WebServer) fillSubagentLineage(data *WorkspaceData, m schema.SessionMet
 		title = hubcore.ShortID(m.ParentSessionID)
 	}
 	data.ParentTitle = title
+}
+
+// fillObserverLink populates WorkspaceData.ObserverRouteIDs from the worker
+// meta's ObservedBy set, filtered to observers whose session is still LIVE. The
+// renderer auto-opens each as a side pane beside the worker. Ended observers are
+// dropped server-side so we never auto-open a dead session (they remain manually
+// openable via the ⇲ button). Local sources only: ObservedBy is stamped only on
+// local worker metas, so remote/codex workspaces never reach here with one.
+func (s *WebServer) fillObserverLink(data *WorkspaceData, m schema.SessionMeta) {
+	if len(m.ObservedBy) == 0 || s.cfg.Roster == nil {
+		return
+	}
+	var live []string
+	seen := make(map[string]bool, len(m.ObservedBy))
+	for _, observerID := range m.ObservedBy {
+		if observerID == "" || seen[observerID] {
+			continue
+		}
+		seen[observerID] = true
+		if _, ok := s.cfg.Roster.Find(observerID); !ok {
+			continue // ended observer: not in the live roster
+		}
+		live = append(live, canonicalRouteID(observerID))
+	}
+	data.ObserverRouteIDs = live
 }
 
 func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id string) {
