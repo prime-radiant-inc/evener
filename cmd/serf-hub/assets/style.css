@@ -651,14 +651,14 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .subagent-parent-here { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); }
 /* Worst-descendant rollup chip on the breadcrumb: a deep ✕ (or an unanswered
    "unknown") surfaces here so it never hides behind a green parent. */
-.subagent-parent-rollup { font-size: var(--text-xs); color: var(--text-dim); }
+.subagent-parent-rollup { font-size: var(--text-xs); color: var(--text-muted); }
 .subagent-parent-rollup[hidden] { display: none; }
 .subagent-parent-rollup.bad { color: var(--error); }
-.subagent-parent-esc { margin-left: auto; font-size: var(--text-xs); color: var(--text-dim); }
+.subagent-parent-esc { margin-left: auto; font-size: var(--text-xs); color: var(--text-muted); }
 .subagent-parent-key {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-  color: var(--text-dim);
+  color: var(--text-muted);
   border: 1px solid var(--rule);
   padding: 1px 4px;
   border-radius: 3px;
@@ -943,7 +943,7 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
   font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
   font-size: var(--text-2xs);
-  color: var(--text-dim);
+  color: var(--text-muted);
 }
 
 /* ============================================================
@@ -962,13 +962,13 @@ body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
   font-family: var(--font-sans);
   font-size: var(--text-2xs);
   font-weight: 600;
-  color: var(--text-dim);
+  color: var(--text-muted);
 }
 .test-date-header .count {
   margin-left: auto;
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  color: var(--text-dim);
+  color: var(--text-muted);
 }
 
 /* Rail mode + container-collapse hide the needs-you label, rollup badges,
@@ -1008,15 +1008,15 @@ body.app[data-sidebar-rail] .test-date-header { display: none; }
   font-family: var(--font-sans);
   font-size: var(--text-2xs);
   font-weight: 600;
-  color: var(--text-dim);
+  color: var(--text-muted);
   list-style: none; /* reset for <summary> */
   cursor: default;
 }
-/* Count inside the label (e.g. "Archived 3") — mono, same dim. */
+/* Count inside the label (e.g. "Archived 3") — mono, same muted ink. */
 .session-tier-label .count {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  color: var(--text-dim);
+  color: var(--text-muted);
 }
 
 /* "+N older" note when a tier is capped server-side. A quiet, non-interactive
@@ -1689,12 +1689,16 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 
 /* Duration-weighted prominence (mockup #5 alt D): a long, hard think earns a
    touch more presence; a quick one recedes to a whisper. Even the "long" tier
-   stays quieter than the prose — color never climbs past --text on the body. */
+   stays quieter than the prose — color never climbs past --text on the body.
+   The short tier reads as readable words, so it bottoms out at --text-muted
+   (AA), not --text-dim (the non-text hairline ink, sub-AA). The recede of a
+   quick thought is carried by the always-quiet .think treatment and its short
+   gist, not by dropping text below readable contrast. */
 .think.think-tier-long { color: var(--text); }
 .think.think-tier-long .pv { color: var(--text-muted); }
 .think.think-tier-med { color: var(--text-muted); }
-.think.think-tier-short { color: var(--text-dim); }
-.think.think-tier-short .pv { color: var(--text-dim); }
+.think.think-tier-short { color: var(--text-muted); }
+.think.think-tier-short .pv { color: var(--text-muted); }
 
 /* Honest liveness (mockup #13): shown only when an actively working session has
    gone quiet. Two bands. The calm-quiet band (data-level="quiet") is NEUTRAL —
@@ -1829,7 +1833,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
    tints only reinforce it. Context recedes; hunk headers stay quiet. */
 .diff-body .add { color: var(--diff-add-ink); }
 .diff-body .del { color: var(--diff-del-ink); }
-.diff-body .hunk { color: var(--text-dim); }
+.diff-body .hunk { color: var(--text-muted); }
 .diff-body .ctx { color: var(--text-muted); }
 /* Per-line background bars — data-line-kind set by renderDiffLines(). */
 .diff-body span[data-line-kind] { display: block; }
@@ -1934,7 +1938,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .subs-h .tally .r { color: var(--state-processing); }
 .subs-h .tally .o { color: var(--text-muted); }
 .subs-h .tally .f { color: var(--error); }
-.subs-h .tally .u { color: var(--text-dim); }
+.subs-h .tally .u { color: var(--text-muted); }
 .subs-rows { display: flex; flex-direction: column; }
 .sub-r {
   display: flex;
@@ -1973,7 +1977,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   min-width: 0;
 }
 .sub-r .res .live { color: var(--state-processing); }
-.sub-r .res .unk { color: var(--text-dim); font-style: italic; }
+.sub-r .res .unk { color: var(--text-muted); font-style: italic; }
 .sub-r.res-error .res { color: var(--error); }
 .sub-r .dur {
   font-size: var(--text-xs);
@@ -2160,9 +2164,11 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 /* pending — not started. Dim glyph + tertiary text. */
 .plan-item.pending .plan-glyph { color: var(--text-dim); }
 .plan-item.pending .plan-step { color: var(--text-muted); }
-/* cancelled — recedes like done, struck to read as dropped. */
+/* cancelled — recedes like done, struck to read as dropped. The step label is
+   readable text, so it stays at --text-muted (AA); line-through carries the
+   "dropped" meaning without sub-AA color. The glyph stays --text-dim (non-text). */
 .plan-item.cancelled .plan-glyph { color: var(--text-dim); }
-.plan-item.cancelled .plan-step { color: var(--text-dim); text-decoration: line-through; }
+.plan-item.cancelled .plan-step { color: var(--text-muted); text-decoration: line-through; }
 
 /* Context compaction (mockup #17 Alt A): a quiet neutral lifecycle one-liner
    that expands to the real before/after math. Settled = neutral (it is a DONE
