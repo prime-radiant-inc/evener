@@ -63,6 +63,14 @@
   const LIVENESS_TICK_MS = 3000;
 
   const SerfRenderer = {
+    // isInPane returns true when the renderer is running inside a framed pane
+    // (a side-pane iframe). Uses the standard same-origin cross-frame check;
+    // wrapped in try/catch so a cross-origin parent doesn't throw on access.
+    // Defined as a method so tests can stub it without touching window.top.
+    isInPane() {
+      try { return window.self !== window.top; } catch (e) { return true; }
+    },
+
     init(conversationEl) {
       if (!conversationEl) return;
       // Idempotent: if we've already initialized this exact element for this
@@ -70,6 +78,12 @@
       // node (htmx swapped innerHTML), so the marker won't be there.
       if (conversationEl.__serfInitialized) return;
       conversationEl.__serfInitialized = true;
+
+      // Compact mode: when running inside a pane iframe, mark <body> with
+      // pane-compact so CSS can apply denser layout without any query param.
+      if (this.isInPane()) {
+        document.body.classList.add("pane-compact");
+      }
 
       // Close any previous live stream handle so switching sessions doesn't leak
       // connections or replay duplicate events.
@@ -1962,6 +1976,12 @@
         if (!this.cheapToolCluster) {
           const cluster = document.createElement("div");
           cluster.className = "tool-call-cluster";
+          // In compact (pane) mode, mark the cluster so CSS can hide the body
+          // even while it is still live — collapsing cheap-tool clusters to
+          // their summary by default in the dense pane layout.
+          if (document.body.classList.contains("pane-compact")) {
+            cluster.dataset.compact = "";
+          }
           // Collapsed summary line (mockup #6 alt A): hidden while the cluster
           // is live; revealed and filled in by endCheapCluster once the cluster
           // is behind us. The rows live in a body wrapper it can fold.
