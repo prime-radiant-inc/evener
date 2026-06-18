@@ -232,6 +232,39 @@ func TestConfigureWatchSendToMissingDelegateFailsTargetNotFound(t *testing.T) {
 	}
 }
 
+func TestConfigureWatchSendToOtherSessionDelegateFailsNotControllable(t *testing.T) {
+	jm := newTestJM(t)
+	now := jm.now()
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: "dlg_other",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "child_other",
+			TranscriptRef:    encodeRef("", "child_other"),
+			OwnerSessionID:   "OTHER",
+			VisibleSessionID: "OTHER",
+			Generation:       "dg_other",
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("seed other delegate: %v", err)
+	}
+
+	_, err := jm.configureWatch(watchArgs{
+		Target: "caller",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "dlg_other", Message: "observe"},
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "not_controllable") {
+		t.Fatalf("error = %v, want not_controllable", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0", jm.watchCount())
+	}
+}
+
 func TestConfigureWatchRejectsUnknownEventKinds(t *testing.T) {
 	jm := newTestJM(t)
 
@@ -1729,7 +1762,7 @@ func TestWatchSendRestoreKeepsConcreteTerminalResumableDelegatePending(t *testin
 	rec = loadShellRecord(t, s.jobManager, rec.JobID)
 	childID := rec.DelegateRestore.ChildSessionID
 	now := time.Unix(1000, 0).UTC()
-	for _, event := range restoredWatchSendPendingEvents(s.ID(), rec.JobID, rec.JobID, now) {
+	for _, event := range restoredWatchSendPendingEvents(s.ID(), rec.JobID, rec.DelegateID, now) {
 		if err := s.jobManager.appendEvent(event); err != nil {
 			t.Fatalf("append %s: %v", event.Kind, err)
 		}
@@ -1898,7 +1931,7 @@ func TestWatchSendRestoreDoesNotAutoResumeRuntimeLostDelegate(t *testing.T) {
 	rec = loadShellRecord(t, s.jobManager, rec.JobID)
 	childID := rec.DelegateRestore.ChildSessionID
 	now := time.Unix(3000, 0).UTC()
-	for _, event := range restoredWatchSendPendingEvents(s.ID(), rec.JobID, rec.JobID, now) {
+	for _, event := range restoredWatchSendPendingEvents(s.ID(), rec.JobID, rec.DelegateID, now) {
 		if err := s.jobManager.appendEvent(event); err != nil {
 			t.Fatalf("append %s: %v", event.Kind, err)
 		}
@@ -1955,7 +1988,7 @@ func TestWatchSendRestoreDropsDynamicallyNonResumableRuntimeLostDelegate(t *test
 	replaceStoredDelegateRecord(t, s, rec)
 	childID := rec.DelegateRestore.ChildSessionID
 	now := time.Unix(3100, 0).UTC()
-	for _, event := range restoredWatchSendPendingEvents(s.ID(), rec.JobID, rec.JobID, now) {
+	for _, event := range restoredWatchSendPendingEvents(s.ID(), rec.JobID, rec.DelegateID, now) {
 		if err := s.jobManager.appendEvent(event); err != nil {
 			t.Fatalf("append %s: %v", event.Kind, err)
 		}
@@ -2026,7 +2059,7 @@ func TestWatchSendRestoreDropsDynamicallyNonResumableTerminalDelegate(t *testing
 			childID := rec.DelegateRestore.ChildSessionID
 			removeChildSessionMeta(t, s, rec)
 			now := time.Unix(3200, 0).UTC()
-			for _, event := range restoredWatchSendPendingEvents(s.ID(), rec.JobID, rec.JobID, now) {
+			for _, event := range restoredWatchSendPendingEvents(s.ID(), rec.JobID, rec.DelegateID, now) {
 				if err := s.jobManager.appendEvent(event); err != nil {
 					t.Fatalf("append %s: %v", event.Kind, err)
 				}
@@ -2073,6 +2106,7 @@ func TestWatchSendRestoreDropsDynamicallyNonResumableTerminalDelegate(t *testing
 func TestWatchSendRestoreDropsTerminalResumableDelegateMissingRestoreDescriptor(t *testing.T) {
 	stateDir := t.TempDir()
 	sessionID := "S1"
+	delegateID := "dlg_restore_delegate"
 	jobID := "job_restore_delegate"
 	now := time.Unix(3300, 0).UTC()
 	resumable := true
@@ -2081,7 +2115,26 @@ func TestWatchSendRestoreDropsTerminalResumableDelegateMissingRestoreDescriptor(
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
-	for _, event := range restoredWatchSendDelegateEvents(sessionID, jobID, now, &resumable, jobID) {
+	events := []jobstore.Event{{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: delegateID,
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "child_" + jobID,
+			TranscriptRef:    encodeRef("", "child_"+jobID),
+			OwnerSessionID:   sessionID,
+			VisibleSessionID: sessionID,
+			Generation:       "dg_restore_delegate",
+			Resumable:        true,
+		},
+	}}
+	for _, event := range restoredWatchSendDelegateEvents(sessionID, jobID, now, &resumable, delegateID) {
+		if event.Kind == jobstore.EventJobStarted {
+			event.DelegateID = delegateID
+		}
+		events = append(events, event)
+	}
+	for _, event := range events {
 		if err := jm.appendEvent(event); err != nil {
 			t.Fatalf("append %s: %v", event.Kind, err)
 		}
@@ -2121,6 +2174,22 @@ func TestWatchSendRestoreDropsTerminalResumableDelegateMissingRestoreDescriptor(
 }
 
 func TestWatchSendRestoreDropsHardFailureTargetsOnce(t *testing.T) {
+	delegateCreated := func(delegateID, ownerSessionID, visibleSessionID string, resumable bool) []jobstore.Event {
+		return []jobstore.Event{{
+			Kind:       jobstore.EventDelegateCreated,
+			TS:         time.Unix(1000, 0).UTC(),
+			DelegateID: delegateID,
+			Delegate: &jobstore.DelegateEvent{
+				ChildSessionID:   "child_" + delegateID,
+				TranscriptRef:    encodeRef("", "child_"+delegateID),
+				OwnerSessionID:   ownerSessionID,
+				VisibleSessionID: visibleSessionID,
+				Generation:       "dg_" + delegateID,
+				Resumable:        resumable,
+			},
+		}}
+	}
+
 	for _, tc := range []struct {
 		name     string
 		sendTo   string
@@ -2128,33 +2197,40 @@ func TestWatchSendRestoreDropsHardFailureTargetsOnce(t *testing.T) {
 		wantText string
 	}{
 		{
-			name:     "unknown",
-			sendTo:   "job_missing",
-			events:   func(string, time.Time) []jobstore.Event { return nil },
-			wantText: "target_not_found",
-		},
-		{
-			name:   "non_messageable",
-			sendTo: "job_shell",
+			name:   "job_id",
+			sendTo: "job_old_delegate",
 			events: func(sessionID string, now time.Time) []jobstore.Event {
 				return []jobstore.Event{{
 					Kind:             jobstore.EventJobStarted,
 					TS:               now,
-					JobID:            "job_shell",
-					Type:             jobstore.JobShell,
+					JobID:            "job_old_delegate",
+					Type:             jobstore.JobDelegate,
 					OwnerSessionID:   sessionID,
 					VisibleToSession: sessionID,
 					StartedAt:        &now,
 				}}
 			},
-			wantText: "target_not_messageable",
+			wantText: "job_id is a job/turn handle",
 		},
 		{
-			name:   "non_resumable",
-			sendTo: "job_not_resumable",
-			events: func(sessionID string, now time.Time) []jobstore.Event {
-				resumable := false
-				return restoredWatchSendDelegateEvents(sessionID, "job_not_resumable", now, &resumable, "job_not_resumable")[:3]
+			name:     "missing_delegate",
+			sendTo:   "dlg_missing",
+			events:   func(string, time.Time) []jobstore.Event { return nil },
+			wantText: "target_not_found",
+		},
+		{
+			name:   "other_session_delegate",
+			sendTo: "dlg_other",
+			events: func(string, time.Time) []jobstore.Event {
+				return delegateCreated("dlg_other", "OTHER", "OTHER", true)
+			},
+			wantText: "not_controllable",
+		},
+		{
+			name:   "non_resumable_delegate",
+			sendTo: "dlg_not_resumable",
+			events: func(sessionID string, _ time.Time) []jobstore.Event {
+				return delegateCreated("dlg_not_resumable", sessionID, sessionID, false)
 			},
 			wantText: "target_not_resumable",
 		},
@@ -4660,6 +4736,9 @@ func TestWatchSendExcerptIncludesFrameMetadata(t *testing.T) {
 	if !strings.Contains(frame, "Watch frame") || !strings.Contains(frame, "trigger:") || !strings.Contains(frame, "job_id:") {
 		t.Fatalf("excerpt delivery must include frame metadata; got %q", frame)
 	}
+	if strings.Contains(frame, "transcript_ref") || strings.Contains(frame, "local:") {
+		t.Fatalf("excerpt delivery must not leak transcript refs; got %q", frame)
+	}
 }
 
 func TestWatchSendMessageIncludesFrameMetadata(t *testing.T) {
@@ -4727,8 +4806,8 @@ func TestWatchJobTargetFrameOmitsTranscriptRef(t *testing.T) {
 		send: &watchSendArgs{Message: "job frame"},
 	}, "job_target", "output_match: ready", "dlv")
 
-	if strings.Contains(frame, "transcript_ref") {
-		t.Fatalf("job-target frame must not carry transcript_ref; got %q", frame)
+	if strings.Contains(frame, "transcript_ref") || strings.Contains(frame, "local:") {
+		t.Fatalf("job-target frame must not carry transcript refs; got %q", frame)
 	}
 }
 

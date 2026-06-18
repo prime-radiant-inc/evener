@@ -736,8 +736,25 @@ func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error 
 	if d == nil {
 		return fmt.Errorf("target_not_found: delegate %q not found", target)
 	}
-	if d.OwnerSessionID != jm.sessionID && d.VisibleSessionID != jm.sessionID {
+	if d.OwnerSessionID != "" && d.OwnerSessionID != jm.sessionID {
 		return fmt.Errorf("not_controllable: delegate %q is not owned by this session", target)
+	}
+	jobID := d.CurrentJobID
+	if jobID == "" {
+		jobID = d.LatestJobID
+	}
+	if jobID == "" {
+		return fmt.Errorf("target_not_resumable: delegate %q has no job history", target)
+	}
+	rec, err := findJobRecord(jm, jobID)
+	if err != nil {
+		return fmt.Errorf("target_not_found: %w", err)
+	}
+	if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
+		return fmt.Errorf("not_controllable: delegate job %q is owned by descendant session %q; you may only message your own direct delegates", target, rec.OwnerSessionID)
+	}
+	if rec.Type != jobstore.JobDelegate {
+		return fmt.Errorf("target_not_messageable: job %q has type %q", target, rec.Type)
 	}
 	return nil
 }
@@ -3249,6 +3266,9 @@ func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliv
 	if s == nil || s.jobManager == nil {
 		return watchSendBusy, ""
 	}
+	if strings.HasPrefix(target, "job_") {
+		return watchSendHardFailure, "invalid_request: job_id is a job/turn handle; watch sends target delegate_id"
+	}
 	if strings.HasPrefix(target, "dlg_") {
 		delegates, err := s.jobManager.store.LoadDelegates()
 		if err != nil {
@@ -3258,11 +3278,38 @@ func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliv
 		if d == nil {
 			return watchSendHardFailure, fmt.Sprintf("target_not_found: delegate %q not found", target)
 		}
-		if d.OwnerSessionID != "" && d.OwnerSessionID != s.id && d.VisibleSessionID != s.id {
+		if d.OwnerSessionID != "" && d.OwnerSessionID != s.id {
 			return watchSendHardFailure, fmt.Sprintf("not_controllable: delegate %q is not owned by this session", target)
+		}
+		jobID := d.CurrentJobID
+		if jobID == "" {
+			jobID = d.LatestJobID
+		}
+		if jobID == "" {
+			return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate %q has no job history", target)
+		}
+		rec, err := findJobRecord(s.jobManager, jobID)
+		if err != nil {
+			return watchSendHardFailure, "target_not_found: " + err.Error()
+		}
+		if rec.OwnerSessionID != "" && rec.OwnerSessionID != s.id {
+			return watchSendHardFailure, fmt.Sprintf("not_controllable: delegate job %q is owned by descendant session %q; you may only message your own direct delegates", target, rec.OwnerSessionID)
+		}
+		if rec.Type != jobstore.JobDelegate {
+			return watchSendHardFailure, fmt.Sprintf("target_not_messageable: job %q has type %q", target, rec.Type)
 		}
 		if d.Status == jobstore.DelegateNotResumable || !d.Resumable {
 			return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate %q is %s", target, d.Status)
+		}
+		if rec.Status == jobstore.StatusRunning {
+			return watchSendBusy, ""
+		}
+		if !rec.Status.IsTerminal() {
+			return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate job %q is %s", target, rec.Status)
+		}
+		assessment := s.assessDelegateResumability(rec, delegateResumabilityProjection)
+		if !assessment.Resumable {
+			return watchSendHardFailure, "target_not_resumable:" + assessment.Reason
 		}
 		return watchSendBusy, ""
 	}
