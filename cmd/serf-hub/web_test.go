@@ -289,6 +289,43 @@ func TestWeb_WorkspaceRendersBottomStopForActiveSession(t *testing.T) {
 	}
 }
 
+// Icon-only controls must carry an aria-label. A bare title= attribute is not a
+// reliable accessible name for screen readers, so glyph-only buttons (the copy
+// session-id "⧉" and the attach "＋") need an explicit aria-label.
+func TestWeb_WorkspaceIconButtonsHaveAriaLabels(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: hubcore.NewPastIndex("")})
+	web.sources.Add(&scriptedAppSource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:            "th_active",
+			SessionID:     "th_active",
+			Source:        "codex",
+			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+			ModelProvider: "gpt-5",
+			Serf: appwire.SerfThread{
+				Ref:          "codex:th_active",
+				Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Interrupt: true, Queue: true},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+url.PathEscape("codex:th_active")+"/workspace", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-copy-id=`) || !strings.Contains(body, `aria-label="copy session ID"`) {
+		t.Fatalf("copy session-id button missing aria-label:\n%s", body)
+	}
+	if !strings.Contains(body, `data-attach-trigger`) || !strings.Contains(body, `aria-label="attach image"`) {
+		t.Fatalf("attach button missing aria-label:\n%s", body)
+	}
+}
+
 func TestAPI_CodexSessionDetailReadsConfiguredSource(t *testing.T) {
 	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
