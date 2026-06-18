@@ -1547,6 +1547,49 @@ func TestDelegateResumeKeepsDelegateIDAndUpdatesLatestJob(t *testing.T) {
 	}
 }
 
+func TestDelegateIDResumeFinalizesObservedTerminalRunningJob(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("resumed") },
+	}})
+	parent := newDelegateTestSession(t, c)
+	child := newDelegateTestSession(t, c)
+	sub := completedDelegateSubagent(child, "already done")
+	parent.subagents.track(sub)
+
+	delegateID := jobstore.NewDelegateID()
+	jobID := jobstore.NewJobID()
+	run, err := parent.attachDelegateJobWithRestoreAndDelegate(parent.jobManager, child.ID(), "already terminal", sub, jobID, nil, false, nil, nil, delegateJobLink{
+		delegateID: delegateID,
+		generation: jobstore.NewDelegateGeneration(),
+		create:     true,
+	})
+	if err != nil {
+		t.Fatalf("attachDelegateJobWithRestoreAndDelegate: %v", err)
+	}
+	if run.rec.Status != jobstore.StatusRunning {
+		t.Fatalf("seed job status = %s, want running", run.rec.Status)
+	}
+
+	res := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         delegateID,
+		Message:        "resume after observed terminal",
+		Background:     false,
+		BackgroundSet:  true,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage: %v", res.Err)
+	}
+	if res.DelegateID != delegateID || res.StartedJobID == "" || res.StartedJobID == jobID {
+		t.Fatalf("resume result = %+v, want same delegate and new concrete job", res)
+	}
+	rec := loadShellRecord(t, parent.jobManager, res.StartedJobID)
+	if rec.DelegateID != delegateID {
+		t.Fatalf("resumed job DelegateID = %q, want %q", rec.DelegateID, delegateID)
+	}
+}
+
 // TestSendDelegateMessageOwnDirectDelegatesAtDepth: a depth-1 coordinator may
 // message its OWN direct worker delegate by job_id (spec §3:
 // "own direct delegates at every level"). Today the depth>0 guard rejects every

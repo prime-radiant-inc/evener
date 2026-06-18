@@ -344,7 +344,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		if err := s.finalizeDelegate(rec.JobID, childID, sub); err != nil {
 			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: finalize observed-terminal delegate job %q: %w", target, err))
 		}
-		rec, err = findJobRecord(jm, target)
+		rec, err = findJobRecord(jm, rec.JobID)
 		if err != nil {
 			return sendMessageFailed(target, fmt.Errorf("target_not_found: %w", err))
 		}
