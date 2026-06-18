@@ -248,6 +248,9 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	if jobID == "" {
 		return "", errors.New("invalid_request: job_id is required")
 	}
+	if strings.HasPrefix(jobID, "dlg_") {
+		return "", errors.New("invalid_request: delegate_id is a conversation handle; read output from job_id")
+	}
 	jm, resolvedRec, err := s.nestedOrLocalJobManager(jobID)
 	// readSession is the session whose store the snapshot is served from: the
 	// caller for own/depth-1 reads, the resolved OWNER for a depth >= 2
@@ -784,6 +787,9 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 	jobID := strings.TrimSpace(stringArg(args, "job_id"))
 	if jobID == "" {
 		return "", errors.New("invalid_request: job_id is required")
+	}
+	if strings.HasPrefix(jobID, "dlg_") {
+		return "", errors.New("invalid_request: delegate_id is a conversation handle; stop a concrete job_id")
 	}
 	// max_wait_ms: 0/absent = request stop and return; positive = wait up to N;
 	// negative = invalid_request. Zero reads as unset (strict-provider safe).
@@ -1480,6 +1486,9 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	case "create":
 		if a.Target == "" {
 			return watchArgs{}, errors.New("invalid_request: target is required")
+		}
+		if strings.HasPrefix(a.Target, "dlg_") {
+			return watchArgs{}, errors.New("invalid_request: delegate_id is not watchable; watch current_job_id")
 		}
 	case "list":
 		if a.Target != "" || a.WatchID != "" {

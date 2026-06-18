@@ -139,6 +139,43 @@ func TestJobListIncludesDelegatesRecoverySurface(t *testing.T) {
 	}
 }
 
+func TestJobToolsRejectDelegateIDWithActionableGuidance(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
+	}})
+	s := newDelegateTestSession(t, c)
+	res := s.createDelegate(context.Background(), delegateArgs{Task: "finish", Background: false, BlockTimeoutMS: 5000})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		tool string
+		args string
+		want string
+	}{
+		{"read", "job_read_output", fmt.Sprintf(`{"job_id":%q}`, res.DelegateID), "delegate_id is a conversation handle; read output from job_id"},
+		{"stop", "job_stop", fmt.Sprintf(`{"job_id":%q}`, res.DelegateID), "delegate_id is a conversation handle; stop a concrete job_id"},
+		{"watch", "job_watch", fmt.Sprintf(`{"operation":"create","target":%q,"events":["assistant.message"]}`, res.DelegateID), "delegate_id is not watchable; watch current_job_id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+				ID:        tc.name,
+				Name:      tc.tool,
+				Arguments: json.RawMessage(tc.args),
+			})
+			if !call.IsError {
+				t.Fatalf("%s succeeded, want error: %s", tc.tool, call.Output)
+			}
+			if !strings.Contains(call.Output, tc.want) {
+				t.Fatalf("%s error = %q, want %q", tc.tool, call.Output, tc.want)
+			}
+		})
+	}
+}
+
 // TestJobReadOutputUnknownIDPointsToJobList pins the not-found recovery hint:
 // when a job_id resolves to nothing (a guessed id, or a foreground command whose
 // output rode inline and kept no durable job), the error must redirect the model
