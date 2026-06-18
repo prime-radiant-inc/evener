@@ -36,8 +36,23 @@ pass(!/--state-subagent:\s*#bb9af7/.test(css), "--state-subagent purple #bb9af7 
 pass(tokenVal("success") != null, "--success token defined for genuine good-news highlights");
 
 // --text-dim must not be used as body text. It is a hairline/non-text token.
-// Assert known body-text call sites moved off --text-dim.
+// Assert known body-text call sites moved off --text-dim (Pass 7 contrast pass).
 pass(!/\.project-name\s*\{[^}]*color:\s*var\(--text-dim\)/s.test(css), "project-name body text must not use --text-dim");
+pass(!/\.session-tier-label\s*\{[^}]*color:\s*var\(--text-dim\)/s.test(css), "session-tier-label text must not use --text-dim");
+pass(!/\.test-date-header\s*\{[^}]*color:\s*var\(--text-dim\)/s.test(css), "test-date-header text must not use --text-dim");
+pass(!/\.think\.think-tier-short\s*\{[^}]*color:\s*var\(--text-dim\)/s.test(css), "short-think tier text must not use --text-dim (readable words need AA)");
+pass(!/\.plan-item\.cancelled \.plan-step\s*\{[^}]*color:\s*var\(--text-dim\)/s.test(css), "cancelled plan-step text must not use --text-dim (line-through carries the meaning)");
+
+// Radius scale consolidated to two (design-system §3): the retired
+// sm/lg/xl/full names must be gone; only --radius-md + --radius-pill remain.
+// Match real token forms only (var(...) reference or `name:` definition), not prose.
+pass(!/(var\(\s*--radius-(sm|lg|xl|full)\b|--radius-(sm|lg|xl|full)\s*:)/.test(css), "retired radius tokens (sm/lg/xl/full) must be gone");
+pass(/--radius-md:\s*5px/.test(css), "--radius-md is the golden 5px rectangle radius");
+pass(/--radius-pill:\s*999px/.test(css), "--radius-pill is a true 999px pill");
+
+// The retired paper-grain --noise texture must not ship (design-system §3).
+pass(!/--noise\b/.test(css), "retired paper-grain --noise token must be gone");
+pass(!/feTurbulence|fractalNoise/.test(css), "retired paper-grain noise SVG must be gone");
 
 // Error call sites must use --error (red), not amber --state-awaiting.
 pass(/\.tool-call \.tool-status-bad\s*\{[^}]*var\(--error\)/s.test(css), "tool-status-bad must use red --error");
