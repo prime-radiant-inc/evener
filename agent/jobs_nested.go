@@ -325,9 +325,6 @@ func (s *Session) stopNestedOrLocal(jobID string) (*jobstore.JobRecord, error) {
 		if err != nil {
 			return rec, err
 		}
-		if err := owner.closeDelegateStopGate(jobID); err != nil {
-			return rec, err
-		}
 		return rec, nil
 	}
 	if forwarded != nil && forwarded.ParentJobID != "" && forwarded.OwnerSessionID != s.id {
@@ -348,9 +345,6 @@ func (s *Session) stopNestedOrLocal(jobID string) (*jobstore.JobRecord, error) {
 	}
 	rec, err := local.stop(jobID)
 	if err != nil {
-		return rec, err
-	}
-	if err := local.closeDelegateStopGate(jobID); err != nil {
 		return rec, err
 	}
 	return rec, nil
@@ -490,9 +484,6 @@ func (s *Session) stopDelegateSubtree(childSession *Session) ([]*jobstore.JobRec
 		if err != nil {
 			stopErr = errors.Join(stopErr, err)
 			continue
-		}
-		if err := jm.closeDelegateStopGate(jobID); err != nil {
-			stopErr = errors.Join(stopErr, err)
 		}
 		if rec != nil {
 			stopped = append(stopped, rec)

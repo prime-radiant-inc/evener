@@ -136,6 +136,12 @@ func FoldDelegates(events []Event) map[string]*DelegateRecord {
 				d = &DelegateRecord{DelegateID: e.DelegateID}
 				delegates[e.DelegateID] = d
 			}
+			if d.CurrentJobID != "" && d.CurrentJobID != e.Delegate.StopJobID {
+				continue
+			}
+			if d.CurrentJobID == "" && d.LatestJobID != "" && d.LatestJobID != e.Delegate.StopJobID {
+				continue
+			}
 			d.Generation = e.Delegate.Generation
 			d.StopGateClosed = true
 			d.StopGateClosedJobID = e.Delegate.StopJobID

@@ -227,6 +227,49 @@ func TestFoldDelegatesClosesStopGateForCurrentJob(t *testing.T) {
 	}
 }
 
+func TestFoldDelegatesIgnoresStaleStopGateAfterNewerStart(t *testing.T) {
+	start1 := time.Unix(1, 0).UTC()
+	end1 := time.Unix(2, 0).UTC()
+	start2 := time.Unix(3, 0).UTC()
+	events := []Event{
+		ev(EventDelegateCreated, 1, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{ChildSessionID: "child_A", TranscriptRef: "local:child_A", Generation: "dg_1", Resumable: true}
+		}),
+		ev(EventJobStarted, 2, "job_1", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.StartedAt = &start1
+		}),
+		ev(EventJobFinished, 3, "job_1", func(e *Event) {
+			e.Status = StatusCancelled
+			e.Reason = "stopped_by_parent"
+			e.EndedAt = &end1
+		}),
+		ev(EventDelegateCreated, 4, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{ChildSessionID: "child_A", TranscriptRef: "local:child_A", Generation: "dg_3", Resumable: true}
+		}),
+		ev(EventJobStarted, 5, "job_2", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.StartedAt = &start2
+		}),
+		ev(EventDelegateStopGateClosed, 6, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{Generation: "dg_stale", StopJobID: "job_1"}
+		}),
+	}
+
+	d := FoldDelegates(events)["dlg_A"]
+	if d == nil {
+		t.Fatal("delegate dlg_A missing")
+	}
+	if d.StopGateClosed || d.Generation != "dg_3" || d.CurrentJobID != "job_2" || d.Status != DelegateRunning {
+		t.Fatalf("delegate after stale gate = %+v, want job_2 running with generation dg_3", d)
+	}
+}
+
 func TestFoldDelegatesIgnoresFinishedNonCurrentJob(t *testing.T) {
 	start1 := time.Unix(1, 0).UTC()
 	start2 := time.Unix(2, 0).UTC()

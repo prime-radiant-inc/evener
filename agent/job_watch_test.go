@@ -4521,6 +4521,17 @@ func loadJobStoreEvents(t *testing.T, jm *jobManager) []jobstore.Event {
 	return events
 }
 
+func countDelegateStartedEvents(t *testing.T, jm *jobManager, delegateID string) int {
+	t.Helper()
+	var count int
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventJobStarted && event.DelegateID == delegateID {
+			count++
+		}
+	}
+	return count
+}
+
 func runtimeWatchSendPending(t *testing.T, jm *jobManager) map[jobstore.WatchSendKey]*jobstore.WatchSendState {
 	t.Helper()
 	out := make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
@@ -5320,6 +5331,7 @@ func TestStoppedDelegateDropsPreStopPendingWatchSend(t *testing.T) {
 		t.Fatalf("stop delegate: %v", err)
 	}
 	waitForShellDone(t, sess.jobManager, second.JobID)
+	startedBeforeDrain := countDelegateStartedEvents(t, sess.jobManager, first.DelegateID)
 
 	if err := drainWatchSendsVia(t, sess.jobManager, sess.sendDelegateMessage); err != nil {
 		t.Fatalf("drain watch sends: %v", err)
@@ -5328,12 +5340,8 @@ func TestStoppedDelegateDropsPreStopPendingWatchSend(t *testing.T) {
 		t.Fatalf("pending sends = %+v, want pre-stop delivery suppressed", pending)
 	}
 
-	var started int
 	var droppedReason string
 	for _, event := range loadJobStoreEvents(t, sess.jobManager) {
-		if event.Kind == jobstore.EventJobStarted && event.DelegateID == first.DelegateID {
-			started++
-		}
 		if event.Kind == jobstore.EventWatchSendDelivered {
 			t.Fatalf("pre-stop pending send was delivered: %+v", event)
 		}
@@ -5341,8 +5349,8 @@ func TestStoppedDelegateDropsPreStopPendingWatchSend(t *testing.T) {
 			droppedReason = event.WatchSend.DiagnosticReason
 		}
 	}
-	if started != 2 {
-		t.Fatalf("delegate start count = %d, want first + explicit resume only", started)
+	if started := countDelegateStartedEvents(t, sess.jobManager, first.DelegateID); started != startedBeforeDrain {
+		t.Fatalf("delegate start count after stale drain = %d, want unchanged %d", started, startedBeforeDrain)
 	}
 	if !strings.Contains(droppedReason, "delegate stopped before delivery") {
 		t.Fatalf("dropped reason = %q, want stop-gate diagnostic", droppedReason)
@@ -5401,6 +5409,10 @@ func TestDelegateSendExplicitStartDoesNotReenablePreStopPendingWatchSend(t *test
 		t.Fatalf("stop delegate: %v", err)
 	}
 	waitForShellDone(t, sess.jobManager, second.JobID)
+	feedJob(sess.jobManager, source.JobID, []byte("server ready after stop before restart\n"))
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 1 {
+		t.Fatalf("pending after stopped observation = %+v, want one latest send", pending)
+	}
 
 	restarted := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  first.DelegateID,
@@ -5429,8 +5441,8 @@ func TestDelegateSendExplicitStartDoesNotReenablePreStopPendingWatchSend(t *test
 		t.Fatalf("subagent %s not found after restart", childID)
 	}
 	for _, entry := range sub.sess.SteeringQueueSnapshot() {
-		if strings.Contains(entry.Text, "before stop") {
-			t.Fatalf("pre-stop watch send reached restarted delegate: %+v", entry)
+		if strings.Contains(entry.Text, "before restart") {
+			t.Fatalf("stale watch send reached restarted delegate: %+v", entry)
 		}
 	}
 
@@ -5444,6 +5456,73 @@ func TestDelegateSendExplicitStartDoesNotReenablePreStopPendingWatchSend(t *test
 	queue := sub.sess.SteeringQueueSnapshot()
 	if len(queue) != 1 || !strings.Contains(queue[0].Text, "after restart") {
 		t.Fatalf("queue after fresh drain = %+v, want only post-restart frame", queue)
+	}
+}
+
+func TestDelegateStopGateFailureDoesNotSignalDelegate(t *testing.T) {
+	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  first.DelegateID,
+		Message: "resume and block",
+		OnIdle:  "start",
+	})
+	if second.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
+	}
+	select {
+	case <-adapter.secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resumed delegate did not start")
+	}
+	realAppend := sess.jobManager.appendEvent
+	t.Cleanup(func() {
+		sess.jobManager.appendEvent = realAppend
+		_, _ = sess.jobManager.stop(second.JobID)
+		waitForShellDone(t, sess.jobManager, second.JobID)
+	})
+
+	gateErr := errors.New("gate append failed")
+	sess.jobManager.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventDelegateStopGateClosed {
+			return gateErr
+		}
+		return realAppend(e)
+	}
+	if _, err := sess.stopNestedOrLocal(second.JobID); !errors.Is(err, gateErr) {
+		t.Fatalf("stop error = %v, want gate append failure", err)
+	}
+
+	sess.jobManager.mu.Lock()
+	run := sess.jobManager.running[second.JobID]
+	var done <-chan struct{}
+	var stopStatus jobstore.Status
+	if run != nil {
+		done = run.done
+		stopStatus = run.stopStatus
+	}
+	sess.jobManager.mu.Unlock()
+	if run == nil {
+		t.Fatalf("running delegate %s missing after failed gate append", second.JobID)
+	}
+	if stopStatus != "" {
+		t.Fatalf("stop status after failed gate append = %q, want unset", stopStatus)
+	}
+	select {
+	case <-done:
+		t.Fatal("delegate was signalled despite failed gate append")
+	default:
 	}
 }
 

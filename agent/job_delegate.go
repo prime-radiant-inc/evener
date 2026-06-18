@@ -1268,7 +1268,7 @@ func (s *Session) attachDelegateJobFromWatch(jm *jobManager, childID, task strin
 }
 
 func (s *Session) attachDelegateJobFromWatchWithDelegate(jm *jobManager, childID, task string, sub *subagent, delegateID string, resultSchema any, restore *jobstore.DelegateRestoreDescriptor, fromWatch bool) (*runningJob, error) {
-	link := delegateJobLink{delegateID: delegateID}
+	link := delegateJobLink{delegateID: delegateID, generation: jobstore.NewDelegateGeneration()}
 	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobstore.NewJobID(), resultSchema, fromWatch, nil, restore, link)
 }
 
@@ -1362,7 +1362,7 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 		treeSlot.release()
 		return nil, errJobManagerClosing
 	}
-	if link.create && link.delegateID != "" {
+	if link.delegateID != "" && link.generation != "" {
 		created := jobstore.Event{
 			Kind:       jobstore.EventDelegateCreated,
 			TS:         startedAt,
@@ -1376,6 +1376,16 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 				Generation:       link.generation,
 				Resumable:        true,
 			},
+		}
+		if !link.create {
+			created.Delegate = &jobstore.DelegateEvent{
+				ChildSessionID:   childID,
+				TranscriptRef:    transcriptRef,
+				OwnerSessionID:   s.id,
+				VisibleSessionID: s.id,
+				Generation:       link.generation,
+				Resumable:        true,
+			}
 		}
 		if err := jm.appendEvent(created); err != nil {
 			jm.mu.Unlock()

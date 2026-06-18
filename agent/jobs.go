@@ -836,10 +836,14 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
 	if run != nil {
+		rec := cloneJobRecord(run.rec)
+		if err := jm.appendDelegateStopGateForRecord(rec); err != nil {
+			jm.mu.Unlock()
+			return nil, err
+		}
 		run.stopStatus = jobstore.StatusCancelled
 		run.stopReason = "stopped_by_parent"
 		signal := run.signal
-		rec := cloneJobRecord(run.rec)
 		rec.Status = run.stopStatus
 		rec.Reason = run.stopReason
 		jm.mu.Unlock()
@@ -861,26 +865,19 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 	return cloneJobRecord(rec), nil
 }
 
-func (jm *jobManager) closeDelegateStopGate(jobID string) error {
-	delegates, err := jm.store.LoadDelegates()
-	if err != nil {
-		return err
+func (jm *jobManager) appendDelegateStopGateForRecord(rec *jobstore.JobRecord) error {
+	if rec == nil || rec.Type != jobstore.JobDelegate || rec.DelegateID == "" {
+		return nil
 	}
-	for delegateID, delegate := range delegates {
-		if delegate == nil || delegate.CurrentJobID != jobID {
-			continue
-		}
-		return jm.appendEvent(jobstore.Event{
-			Kind:       jobstore.EventDelegateStopGateClosed,
-			TS:         jm.now(),
-			DelegateID: delegateID,
-			Delegate: &jobstore.DelegateEvent{
-				Generation: jobstore.NewDelegateGeneration(),
-				StopJobID:  jobID,
-			},
-		})
-	}
-	return nil
+	return jm.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateStopGateClosed,
+		TS:         jm.now(),
+		DelegateID: rec.DelegateID,
+		Delegate: &jobstore.DelegateEvent{
+			Generation: jobstore.NewDelegateGeneration(),
+			StopJobID:  rec.JobID,
+		},
+	})
 }
 
 func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason string, exitCode *int) error {
