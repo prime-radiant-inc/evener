@@ -143,17 +143,18 @@ type WatchSendKey struct {
 // WatchSendState is the durable payload for a pending or terminal watch-send
 // delivery state.
 type WatchSendState struct {
-	Key              WatchSendKey `json:"key"`
-	DeliveryID       string       `json:"delivery_id"`
-	UpdateSeq        uint64       `json:"update_seq,omitempty"`
-	Message          string       `json:"message,omitempty"`
-	Frame            string       `json:"frame,omitempty"`
-	TriggerIdentity  string       `json:"trigger_identity,omitempty"`
-	TriggerReason    string       `json:"trigger_reason,omitempty"`
-	CoalescedCount   int          `json:"coalesced_count,omitempty"`
-	DiagnosticReason string       `json:"diagnostic_reason,omitempty"`
-	CreatedAt        time.Time    `json:"created_at,omitempty"`
-	UpdatedAt        time.Time    `json:"updated_at,omitempty"`
+	Key                WatchSendKey `json:"key"`
+	DeliveryID         string       `json:"delivery_id"`
+	UpdateSeq          uint64       `json:"update_seq,omitempty"`
+	Message            string       `json:"message,omitempty"`
+	Frame              string       `json:"frame,omitempty"`
+	TriggerIdentity    string       `json:"trigger_identity,omitempty"`
+	TriggerReason      string       `json:"trigger_reason,omitempty"`
+	CoalescedCount     int          `json:"coalesced_count,omitempty"`
+	DelegateGeneration string       `json:"delegate_generation,omitempty"`
+	DiagnosticReason   string       `json:"diagnostic_reason,omitempty"`
+	CreatedAt          time.Time    `json:"created_at,omitempty"`
+	UpdatedAt          time.Time    `json:"updated_at,omitempty"`
 }
 
 // WatchSendRecord is the folded durable state for pending watch-send frames.

@@ -234,6 +234,10 @@ func TestConfigureWatchSendToMissingDelegateFailsTargetNotFound(t *testing.T) {
 
 func TestConfigureWatchSendToOtherSessionDelegateFailsNotControllable(t *testing.T) {
 	jm := newTestJM(t)
+	watched, err := jm.createShell(createShellOpts{Command: "watched"})
+	if err != nil {
+		t.Fatalf("create watched job: %v", err)
+	}
 	now := jm.now()
 	if err := jm.appendEvent(jobstore.Event{
 		Kind:       jobstore.EventDelegateCreated,
@@ -243,18 +247,31 @@ func TestConfigureWatchSendToOtherSessionDelegateFailsNotControllable(t *testing
 			ChildSessionID:   "child_other",
 			TranscriptRef:    encodeRef("", "child_other"),
 			OwnerSessionID:   "OTHER",
-			VisibleSessionID: "OTHER",
+			VisibleSessionID: jm.sessionID,
 			Generation:       "dg_other",
 			Resumable:        true,
 		},
 	}); err != nil {
 		t.Fatalf("seed other delegate: %v", err)
 	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               now,
+		JobID:            "job_other_delegate",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_other",
+		OwnerSessionID:   "OTHER",
+		VisibleToSession: jm.sessionID,
+		TranscriptRef:    encodeRef("", "child_other"),
+		StartedAt:        &now,
+	}); err != nil {
+		t.Fatalf("seed other delegate job: %v", err)
+	}
 
-	_, err := jm.configureWatch(watchArgs{
-		Target: "caller",
-		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "dlg_other", Message: "observe"},
+	_, err = jm.configureWatch(watchArgs{
+		Target:      watched.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "dlg_other", Message: "observe"},
 	})
 
 	if err == nil || !strings.Contains(err.Error(), "not_controllable") {
@@ -262,6 +279,9 @@ func TestConfigureWatchSendToOtherSessionDelegateFailsNotControllable(t *testing
 	}
 	if jm.watchCount() != 0 {
 		t.Fatalf("watch count = %d, want 0", jm.watchCount())
+	}
+	if grants := loadGrantTable(t, jm); len(grants) != 0 {
+		t.Fatalf("grants after failed create = %+v, want none", grants)
 	}
 }
 
@@ -1473,6 +1493,12 @@ func TestWatchSendToResumedRunningDelegateSteersActiveRun(t *testing.T) {
 	feedJob(sess.jobManager, source.JobID, []byte("server ready\n"))
 	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 1 {
 		t.Fatalf("pending after observation = %+v, want one recorded send", pending)
+	} else {
+		for _, state := range pending {
+			if state.DelegateGeneration == "" {
+				t.Fatalf("pending send missing delegate generation: %+v", state)
+			}
+		}
 	}
 	_, childID, err := decodeRef(first.TranscriptRef)
 	if err != nil {
@@ -2189,6 +2215,22 @@ func TestWatchSendRestoreDropsHardFailureTargetsOnce(t *testing.T) {
 			},
 		}}
 	}
+	delegateWithJob := func(delegateID, jobID, ownerSessionID, visibleSessionID string, resumable bool, now time.Time) []jobstore.Event {
+		events := delegateCreated(delegateID, ownerSessionID, visibleSessionID, resumable)
+		started := now.Add(time.Millisecond)
+		events = append(events, jobstore.Event{
+			Kind:             jobstore.EventJobStarted,
+			TS:               started,
+			JobID:            jobID,
+			Type:             jobstore.JobDelegate,
+			DelegateID:       delegateID,
+			OwnerSessionID:   ownerSessionID,
+			VisibleToSession: visibleSessionID,
+			TranscriptRef:    encodeRef("", "child_"+delegateID),
+			StartedAt:        &started,
+		})
+		return events
+	}
 
 	for _, tc := range []struct {
 		name     string
@@ -2219,10 +2261,10 @@ func TestWatchSendRestoreDropsHardFailureTargetsOnce(t *testing.T) {
 			wantText: "target_not_found",
 		},
 		{
-			name:   "other_session_delegate",
+			name:   "visible_other_session_delegate",
 			sendTo: "dlg_other",
-			events: func(string, time.Time) []jobstore.Event {
-				return delegateCreated("dlg_other", "OTHER", "OTHER", true)
+			events: func(sessionID string, now time.Time) []jobstore.Event {
+				return delegateWithJob("dlg_other", "job_other_delegate", "OTHER", sessionID, true, now)
 			},
 			wantText: "not_controllable",
 		},
@@ -5224,6 +5266,185 @@ func TestDrainDeliversDelegateTargetedSends(t *testing.T) {
 
 	_, _ = sess.jobManager.stop(second.JobID)
 	waitForShellDone(t, sess.jobManager, second.JobID)
+}
+
+func TestStoppedDelegateDropsPreStopPendingWatchSend(t *testing.T) {
+	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  first.DelegateID,
+		Message: "resume and block",
+		OnIdle:  "start",
+	})
+	if second.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
+	}
+	select {
+	case <-adapter.secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resumed delegate did not start")
+	}
+	t.Cleanup(func() {
+		delegates, _ := sess.jobManager.store.LoadDelegates()
+		if d := delegates[first.DelegateID]; d != nil && d.CurrentJobID != "" {
+			_, _ = sess.jobManager.stop(d.CurrentJobID)
+			waitForShellDone(t, sess.jobManager, d.CurrentJobID)
+		}
+	})
+
+	source, _ := sess.jobManager.createShell(createShellOpts{Command: "x"})
+	if _, err := sess.jobManager.configureWatch(watchArgs{
+		Target:      source.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: first.DelegateID, Message: "observe before stop"},
+	}); err != nil {
+		t.Fatalf("configure watch: %v", err)
+	}
+	feedJob(sess.jobManager, source.JobID, []byte("server ready\n"))
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 1 {
+		t.Fatalf("pending after observation = %+v, want one recorded send", pending)
+	}
+
+	if _, err := sess.stopNestedOrLocal(second.JobID); err != nil {
+		t.Fatalf("stop delegate: %v", err)
+	}
+	waitForShellDone(t, sess.jobManager, second.JobID)
+
+	if err := drainWatchSendsVia(t, sess.jobManager, sess.sendDelegateMessage); err != nil {
+		t.Fatalf("drain watch sends: %v", err)
+	}
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("pending sends = %+v, want pre-stop delivery suppressed", pending)
+	}
+
+	var started int
+	var droppedReason string
+	for _, event := range loadJobStoreEvents(t, sess.jobManager) {
+		if event.Kind == jobstore.EventJobStarted && event.DelegateID == first.DelegateID {
+			started++
+		}
+		if event.Kind == jobstore.EventWatchSendDelivered {
+			t.Fatalf("pre-stop pending send was delivered: %+v", event)
+		}
+		if event.Kind == jobstore.EventWatchSendDropped && event.WatchSend != nil {
+			droppedReason = event.WatchSend.DiagnosticReason
+		}
+	}
+	if started != 2 {
+		t.Fatalf("delegate start count = %d, want first + explicit resume only", started)
+	}
+	if !strings.Contains(droppedReason, "delegate stopped before delivery") {
+		t.Fatalf("dropped reason = %q, want stop-gate diagnostic", droppedReason)
+	}
+}
+
+func TestDelegateSendExplicitStartDoesNotReenablePreStopPendingWatchSend(t *testing.T) {
+	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  first.DelegateID,
+		Message: "resume and block",
+		OnIdle:  "start",
+	})
+	if second.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
+	}
+	select {
+	case <-adapter.secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resumed delegate did not start")
+	}
+	t.Cleanup(func() {
+		delegates, _ := sess.jobManager.store.LoadDelegates()
+		if d := delegates[first.DelegateID]; d != nil && d.CurrentJobID != "" {
+			_, _ = sess.jobManager.stop(d.CurrentJobID)
+			waitForShellDone(t, sess.jobManager, d.CurrentJobID)
+		}
+	})
+
+	source, _ := sess.jobManager.createShell(createShellOpts{Command: "x"})
+	if _, err := sess.jobManager.configureWatch(watchArgs{
+		Target:      source.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: first.DelegateID, Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure watch: %v", err)
+	}
+	feedJob(sess.jobManager, source.JobID, []byte("server ready before stop\n"))
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 1 {
+		t.Fatalf("pending before stop = %+v, want one recorded send", pending)
+	}
+
+	if _, err := sess.stopNestedOrLocal(second.JobID); err != nil {
+		t.Fatalf("stop delegate: %v", err)
+	}
+	waitForShellDone(t, sess.jobManager, second.JobID)
+
+	restarted := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  first.DelegateID,
+		Message: "explicit restart",
+		OnIdle:  "start",
+	})
+	if restarted.Err != nil {
+		t.Fatalf("explicit restart: %v", restarted.Err)
+	}
+	if restarted.StartedJobID == "" || restarted.StartedJobID == second.JobID {
+		t.Fatalf("restart result = %+v, want later concrete job", restarted)
+	}
+
+	if err := drainWatchSendsVia(t, sess.jobManager, sess.sendDelegateMessage); err != nil {
+		t.Fatalf("drain stale watch send: %v", err)
+	}
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("pending after stale drain = %+v, want none", pending)
+	}
+	_, childID, err := decodeRef(first.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	sub := sess.subagents.get(childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("subagent %s not found after restart", childID)
+	}
+	for _, entry := range sub.sess.SteeringQueueSnapshot() {
+		if strings.Contains(entry.Text, "before stop") {
+			t.Fatalf("pre-stop watch send reached restarted delegate: %+v", entry)
+		}
+	}
+
+	feedJob(sess.jobManager, source.JobID, []byte("server ready after restart\n"))
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 1 {
+		t.Fatalf("pending after restart observation = %+v, want one fresh send", pending)
+	}
+	if err := drainWatchSendsVia(t, sess.jobManager, sess.sendDelegateMessage); err != nil {
+		t.Fatalf("drain fresh watch send: %v", err)
+	}
+	queue := sub.sess.SteeringQueueSnapshot()
+	if len(queue) != 1 || !strings.Contains(queue[0].Text, "after restart") {
+		t.Fatalf("queue after fresh drain = %+v, want only post-restart frame", queue)
+	}
 }
 
 // TestDrainResumesTerminalResumableTarget proves spec §4.2's explicit behavior

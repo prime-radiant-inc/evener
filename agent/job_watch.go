@@ -2071,6 +2071,15 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 		jm.mintWatchSendReadGrant(d.cfg, target, d.watchedIdentity)
 	}
 	state = jm.watchSendState(d, target)
+	if strings.HasPrefix(target, "dlg_") {
+		delegates, derr := jm.store.LoadDelegates()
+		if derr != nil {
+			return jobstore.WatchSendState{}, nil, false, derr
+		}
+		if delegate := delegates[target]; delegate != nil {
+			state.DelegateGeneration = delegate.Generation
+		}
+	}
 	persisted, perr := jm.persistPendingWatchSend(state, d)
 	if perr != nil {
 		if d.allowAfterTerminalExpiry && !persisted {
@@ -2378,6 +2387,14 @@ func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchCon
 	if send == nil {
 		return jm.dropWatchSend(state, cfg, "delivery unavailable")
 	}
+	if stale, reason, err := jm.staleDelegateWatchSend(state); err != nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(state.Key.ResolvedWatchedIdentity, "watch send gate check failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+		})
+		return err
+	} else if stale {
+		return jm.dropWatchSend(state, cfg, reason)
+	}
 	res := send(ctx, sendMessageArgs{
 		Target:        state.Key.ResolvedSendTo,
 		Message:       state.Frame,
@@ -2409,6 +2426,28 @@ func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchCon
 	default:
 		return nil
 	}
+}
+
+func (jm *jobManager) staleDelegateWatchSend(state jobstore.WatchSendState) (bool, string, error) {
+	target := state.Key.ResolvedSendTo
+	if !strings.HasPrefix(target, "dlg_") {
+		return false, "", nil
+	}
+	delegates, err := jm.store.LoadDelegates()
+	if err != nil {
+		return false, "", err
+	}
+	delegate := delegates[target]
+	if delegate == nil {
+		return false, "", nil
+	}
+	if state.DelegateGeneration == "" {
+		return true, "delegate generation missing before delivery", nil
+	}
+	if delegate.StopGateClosed || delegate.Generation != state.DelegateGeneration {
+		return true, "delegate stopped before delivery", nil
+	}
+	return false, "", nil
 }
 
 func classifyWatchSendDelivery(res sendMessageResult) watchSendDeliveryClass {
