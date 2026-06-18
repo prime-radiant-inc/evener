@@ -218,11 +218,11 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   bounded frames to an observer delegate; the observer writes snide
   notes in its own transcript with `communicate`, proving observation
   without caller injection or self-delivery loops.
-- `job-watch-actually-monty-python-injection.md` — a caller-event
-  observer filters `communicate` frames for the whole word `actually`
-  and injects exactly `PYTHON_QUOTE ... quote=Ni!` back to the caller
-  via `delegate_send(to="caller")`, with a non-trigger turn proving it
-  does not loop or over-fire.
+- `job-watch-actually-monty-python-injection.md` — negative/aspirational
+  card for a caller-event observer that should inject `quote=Ni!` when
+  the caller says `actually`; current event frames omit the
+  communicated text, so the card records the API gap and the loop risk
+  from watched parent acknowledgements.
 
 ## Regression sweep (older surfaces)
 

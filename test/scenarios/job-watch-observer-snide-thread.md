@@ -64,15 +64,19 @@ composition" plus the caller-event rail.
   event coalescing is latest-wins while the observer is busy.
 - Each `SNIDE_NOTE` is emitted through the observer's own `communicate`
   call. The observer transcript has no `delegate_send` tool call.
-- The parent transcript does not receive a caller-steering entry
-  containing `SNIDE_NOTE`. Terminal job notifications may include
-  observer output excerpts; those are notifications about the observer
-  job, not commentary injected into the caller's conversational rail.
+- The observer does not inject into the caller: its transcript has no
+  `delegate_send` tool call. The parent transcript may still contain
+  `SNIDE_NOTE` inside observer terminal job notifications or in a
+  model acknowledgement of those notifications; those are job-output
+  echoes, not caller-rail steering.
 - The parent's `jobs.jsonl` shows `watch_send_pending` followed by
   `watch_send_delivered` for the deliveries, and no
   `watch_send_dropped`.
 - The parent session returns to `idle` after observer notifications
-  drain; no event loop continues firing after the bounded actions end.
+  drain. If a human or model later answers those notifications with
+  `communicate`, that is another watched caller event and may create
+  another bounded observer note; clear the watch before continuing a
+  free-form conversation.
 
 ## Cleanup
 

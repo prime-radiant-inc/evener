@@ -1,11 +1,16 @@
-# job-watch-actually-monty-python-injection: observer filters caller text and injects Ni! on actually
+# job-watch-actually-monty-python-injection: caller event frames cannot yet support content-triggered injection
 
-**What this covers**: a caller-event observer that filters visible
-caller `communicate` events and uses the contextual caller route only
-when the frame text contains the whole word `actually`. The injection
-message is deliberately short and deterministic: `quote=Ni!`. Contract
-anchor: `docs/job-control.md` "Observer and sidecar composition",
-`delegate_send(to="caller")`, and caller-event watch frames.
+**What this covers**: the desired "inject `Ni!` whenever the caller
+says the whole word `actually`" observer, and the current API gap that
+prevents it. A caller-event observer can receive
+`events:["communicate"]` frames, but as of the live Kimi run on
+2026-06-18 those frames carry only `trigger: event: COMMUNICATE`; they
+do not carry the communicated text. That means the observer cannot
+filter on `actually`, and a model that acknowledges each ignored
+observer notification with `communicate` can create a bounded-but-noisy
+watch loop. Contract anchor: `docs/job-control.md` "Observer and
+sidecar composition", `delegate_send(to="caller")`, and caller-event
+watch frames.
 
 ## Pre-state
 
@@ -38,23 +43,23 @@ anchor: `docs/job-control.md` "Observer and sidecar composition",
    >    events ["communicate"], send {to: the observer delegate_id,
    >    message: "Filter this caller message."}. Capture the
    >    `watch_id` and report the full JSON.
-   > 3. Reply in plain assistant text exactly WATCH_READY and end your
-   >    turn. Do not call `communicate` after creating the watch in
-   >    this setup turn.
-3. Turn 2 -- trigger once:
+   > 3. End your turn without calling `communicate` after the watch is
+   >    created. If the harness forces a final user-facing
+   >    `communicate`, record that as a setup-time ignored frame rather
+   >    than a test trigger.
+3. Turn 2 -- desired trigger:
 
    > Call communicate with exactly "actually alpha marker" and do
    > nothing else.
 
-   Wait for the observer follow-up job notification to wake the parent
-   and drain the caller steering queue.
-4. Turn 3 -- non-trigger:
+   Wait for the observer follow-up job notification to wake the parent.
+4. Turn 3 -- desired non-trigger:
 
    > Call communicate with exactly "plain alpha marker" and do nothing
    > else.
 
    Wait for the observer follow-up job notification.
-5. Turn 4 -- trigger again with different casing:
+5. Turn 4 -- desired trigger again with different casing:
 
    > Call communicate with exactly "Actually beta marker" and do
    > nothing else.
@@ -63,7 +68,7 @@ anchor: `docs/job-control.md` "Observer and sidecar composition",
 6. Read the parent transcript, the observer transcript, and the
    parent's durable `jobs.jsonl`.
 
-## Expected
+## Current Expected
 
 - Turn 1's `job_watch` result has `watching: true`, a `watch_id`,
   target `"caller"`, events `["communicate"]`, and `send.to` equal to
@@ -71,23 +76,39 @@ anchor: `docs/job-control.md` "Observer and sidecar composition",
 - The observer first turn completes with `PYTHON_READY`, so each later
   watched `communicate` event starts or steers that durable observer
   conversation.
-- The observer transcript shows three follow-up decisions:
-  `PYTHON_INJECTED` for the lowercase trigger, `PYTHON_IGNORED` for
-  the plain message, and `PYTHON_INJECTED` for the capitalized trigger.
-  Each decision carries the frame's `delivery_id`.
-- The parent transcript receives exactly two caller-steering entries
-  containing `PYTHON_QUOTE delivery=<delivery_id> quote=Ni!`: one for
-  Turn 2 and one for Turn 4. There is no `PYTHON_QUOTE` after Turn 3.
-- The injection does not loop. The injected message does not contain
-  the trigger word, and the watch is scoped to `communicate` events, so
-  the total number of quote injections equals the number of trigger
-  communicate messages.
-- Falsification: the observer cannot tell whether the frame contained
-  `actually`, injects after the plain message, misses the capitalized
-  trigger, injects more than twice, or sends a longer/different quote
-  than `Ni!`.
+- Each delivered frame visible in the observer transcript has
+  `delivery_id:` and `trigger: event: COMMUNICATE`, but it does NOT
+  contain the caller's communicated text such as `actually alpha
+  marker`, `plain alpha marker`, or `Actually beta marker`.
+- Because the frame lacks the message body, the observer should not
+  emit `PYTHON_QUOTE`. A cautious observer emits
+  `PYTHON_IGNORED delivery=<delivery_id>` for each frame it cannot
+  classify. This is the current failure evidence, not the desired
+  product behavior.
+- If the parent model acknowledges observer notifications with
+  `communicate`, those acknowledgements are themselves watched
+  `communicate` events. The run may produce additional
+  `PYTHON_IGNORED` jobs until the watch is cleared or the parent stops
+  using `communicate`.
 - The parent's `jobs.jsonl` shows each watch delivery settle with
   `watch_send_delivered` and no `watch_send_dropped`.
+
+## Desired Future Expected
+
+- Caller event frames include enough content, or `job_watch` provides a
+  content predicate, so the observer can distinguish `actually alpha
+  marker` and `Actually beta marker` from `plain alpha marker` without
+  reading the parent's raw transcript.
+- The observer transcript shows `PYTHON_INJECTED` for the two trigger
+  turns and `PYTHON_IGNORED` for the plain turn, each with the frame's
+  `delivery_id`.
+- The parent transcript receives exactly two caller-steering entries
+  containing `PYTHON_QUOTE delivery=<delivery_id> quote=Ni!`, and none
+  for the plain turn or setup chatter.
+- The injection does not loop: injected messages and parent
+  acknowledgements either are not watched, or the watch/filter design
+  prevents non-trigger acknowledgements from recursively creating more
+  observer jobs.
 
 ## Cleanup
 
@@ -97,8 +118,11 @@ anchor: `docs/job-control.md` "Observer and sidecar composition",
 ## Sharp edges
 
 - This card intentionally watches `communicate` only. Watching all
-  assistant messages is a broader product question because any model
-  acknowledgement could itself contain the trigger word.
+  assistant messages is a broader product question, and current
+  communicate frames already lack the message body needed for this
+  filter.
+- Creating a watch and then ending the setup turn is delicate because
+  a final `communicate` after watch creation is itself a watched event.
 - Delivery to an idle parent rides the caller steering queue; the
   observer follow-up job's terminal notification is what wakes the
   parent and drains that queue. Do not assert the injection before the
