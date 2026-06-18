@@ -182,19 +182,22 @@ events:
 4. When the caller processes that steering entry, the session sets its current
    active provenance to include the steering entry's provenance for the duration
    of the driven turn.
-5. If steering is drained mid-turn between tool rounds, Serf unions each drained
+5. At the start of each new top-level input turn, active provenance is replaced
+   with that input's provenance set; for an ordinary external `USER_INPUT`, that
+   set is empty. Provenance is unioned only within the currently driven turn.
+6. If steering is drained mid-turn between tool rounds, Serf unions each drained
    steering entry's provenance into the turn's active provenance immediately and
    leaves it active until the turn ends. This intentionally over-suppresses the
    rest of that turn if necessary; it fails safe toward no loop.
-6. If multiple steering messages are drained together, the active provenance is
+7. If multiple steering messages are drained together, the active provenance is
    the union of their provenance sets. A scalar "current input provenance" is not
    sufficient.
-7. Every event emitted during that driven turn carries the active provenance:
+8. Every event emitted during that driven turn carries the active provenance:
    `STEERING_INJECTED`, assistant text events, tool-call events, `COMMUNICATE`,
    job lifecycle events, warnings, errors, and nested watch deliveries.
-8. Jobs created during that turn store the provenance on their runtime/job record
+9. Jobs created during that turn store the provenance on their runtime/job record
    so detached completion events carry it after the turn ends.
-9. Job notifications created from watch-delivered observer jobs store provenance
+10. Job notifications created from watch-delivered observer jobs store provenance
    in both the in-memory notification carrier and the durable pending
    notification record, so notification-driven parent acknowledgements inherit
    it after restart.
@@ -293,6 +296,10 @@ event:
   truncated: false
 ```
 
+`provenance: external` is display shorthand for an empty watch provenance set:
+the event was caused by a human/external input rather than by prior watch
+delivery.
+
 For watch-caused events delivered to a different watch, include a compact
 provenance summary:
 
@@ -365,6 +372,8 @@ Minimum implementation sites:
   provenance when the tool loop drains steering between rounds.
 - Steering queue entries: store provenance.
 - Job records / running jobs: store provenance for detached lifecycle events.
+- Watch-to-observer send arguments and observer session seed input: store
+  provenance when a watch starts or steers the observer.
 - In-memory job notifications and durable pending notification records
   (`EventJobNotificationPending`): store provenance so notification
   acknowledgements inherit it.
@@ -497,6 +506,9 @@ Unit tests:
 - Events emitted during a steering-driven turn carry the steering provenance.
 - Mid-turn steering between tool rounds unions steering provenance into the
   active turn provenance and leaves it active until the turn ends.
+- A fresh external `USER_INPUT` replaces active provenance with an empty set, so
+  watch-caused provenance from the prior turn cannot suppress legitimate later
+  triggers.
 - Multiple drained steering entries union their provenance sets.
 - In-memory and durable job notifications carry provenance, and notification
   acknowledgement turns adopt it.
@@ -546,6 +558,9 @@ The design is implemented only when all of these are true:
   lifecycle events, warnings, and errors.
 - Steering drained mid-turn unions provenance into the active turn before any
   downstream model reaction can emit events.
+- Each new top-level input replaces active provenance with that input's set; an
+  external human/user input starts empty and can legitimately retrigger the
+  watch.
 - Observer terminal notifications and notification acknowledgement turns carry
   the same provenance.
 - `job_watch` suppresses same-watch echoes before notification enqueue,
