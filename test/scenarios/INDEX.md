@@ -214,6 +214,15 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   notification turn for its workers' completions, while the root's
   rail shows only the coordinator's terminal (owner-scoped, asserted
   on the coordinator's own transcript).
+- `job-watch-observer-snide-thread.md` — a caller-event watch sends
+  bounded frames to an observer delegate; the observer writes snide
+  notes in its own transcript with `communicate`, proving observation
+  without caller injection or self-delivery loops.
+- `job-watch-actually-monty-python-injection.md` — a caller-event
+  observer filters `communicate` frames for the whole word `actually`
+  and injects exactly `PYTHON_QUOTE ... quote=Ni!` back to the caller
+  via `delegate_send(to="caller")`, with a non-trigger turn proving it
+  does not loop or over-fire.
 
 ## Regression sweep (older surfaces)
 
