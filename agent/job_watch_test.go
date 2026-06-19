@@ -5028,6 +5028,97 @@ func TestLegacyWatchSendWithoutDelegateGenerationDeliversWhenDelegateStillCurren
 	}
 }
 
+func TestLegacyWatchSendWithoutDelegateGenerationIgnoresPriorStopWithSameTimestamp(t *testing.T) {
+	jm := newTestJM(t)
+	fixed := time.Unix(1700, 0).UTC()
+	jm.now = func() time.Time { return fixed }
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
+	delegates, err := jm.store.LoadDelegates()
+	if err != nil {
+		t.Fatalf("load delegates: %v", err)
+	}
+	oldGeneration := delegates["dlg_obs"].Generation
+	if oldGeneration == "" {
+		t.Fatal("seeded delegate generation is empty")
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateStopGateClosed,
+		TS:         fixed,
+		DelegateID: "dlg_obs",
+		Delegate: &jobstore.DelegateEvent{
+			Generation: oldGeneration,
+			StopJobID:  "job_obs",
+		},
+	}); err != nil {
+		t.Fatalf("append stop gate: %v", err)
+	}
+	newGeneration := jobstore.NewDelegateGeneration()
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         fixed,
+		DelegateID: "dlg_obs",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "child_job_obs",
+			TranscriptRef:    encodeRef("", "child_job_obs"),
+			OwnerSessionID:   jm.sessionID,
+			VisibleSessionID: jm.sessionID,
+			Generation:       newGeneration,
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append restart delegate: %v", err)
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               fixed,
+		JobID:            "job_obs_restart",
+		Type:             jobstore.JobDelegate,
+		Status:           jobstore.StatusRunning,
+		OwnerSessionID:   jm.sessionID,
+		VisibleToSession: jm.sessionID,
+		DelegateID:       "dlg_obs",
+		TranscriptRef:    encodeRef("", "child_job_obs"),
+		StartedAt:        &fixed,
+	}); err != nil {
+		t.Fatalf("append restart job: %v", err)
+	}
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: ready")
+	state, cfg, ok, err := jm.recordWatchSend(delivery)
+	if err != nil {
+		t.Fatalf("recordWatchSend: %v", err)
+	}
+	if !ok {
+		t.Fatal("recordWatchSend returned ok=false")
+	}
+	state.DelegateGeneration = ""
+	jm.mu.Lock()
+	if pending := cfg.pending[state.Key]; pending != nil {
+		pending.DelegateGeneration = ""
+	}
+	jm.mu.Unlock()
+
+	var sent []sendMessageArgs
+	err = jm.deliverPendingWatchSend(context.Background(), cfg, state, false, func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	})
+	if err != nil {
+		t.Fatalf("deliver legacy watch send: %v", err)
+	}
+	if len(sent) != 1 || sent[0].Target != "dlg_obs" {
+		t.Fatalf("delivered sends = %+v, want one send to dlg_obs", sent)
+	}
+}
+
 func TestClearWatchByIDClearsDurableActiveWatchWithoutLiveConfig(t *testing.T) {
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})

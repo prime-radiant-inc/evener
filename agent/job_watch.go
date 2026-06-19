@@ -2623,27 +2623,42 @@ func (jm *jobManager) delegateStoppedAfterWatchSendPending(delegateID string, st
 	if err != nil {
 		return false, err
 	}
-	pendingAt := state.CreatedAt
-	if pendingAt.IsZero() {
-		for _, event := range events {
-			if event.Kind == jobstore.EventWatchSendPending && watchSendEventMatchesState(event.WatchSend, state) {
-				pendingAt = event.TS
-				break
-			}
-		}
-	}
-	if pendingAt.IsZero() {
+	pendingSeq := watchSendPendingCreationSeq(events, state)
+	if pendingSeq == 0 {
 		return false, nil
 	}
 	for _, event := range events {
 		if event.Kind != jobstore.EventDelegateStopGateClosed || event.DelegateID != delegateID {
 			continue
 		}
-		if !event.TS.Before(pendingAt) {
+		if event.Seq > pendingSeq {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func watchSendPendingCreationSeq(events []jobstore.Event, state jobstore.WatchSendState) int64 {
+	if !state.CreatedAt.IsZero() {
+		for _, event := range events {
+			if event.Kind == jobstore.EventWatchSendPending && watchSendEventMatchesCreatedAt(event.WatchSend, state) {
+				return event.Seq
+			}
+		}
+	}
+	for _, event := range events {
+		if event.Kind == jobstore.EventWatchSendPending && watchSendEventMatchesState(event.WatchSend, state) {
+			return event.Seq
+		}
+	}
+	return 0
+}
+
+func watchSendEventMatchesCreatedAt(eventState *jobstore.WatchSendState, state jobstore.WatchSendState) bool {
+	return eventState != nil &&
+		eventState.Key == state.Key &&
+		!eventState.CreatedAt.IsZero() &&
+		eventState.CreatedAt.Equal(state.CreatedAt)
 }
 
 func watchSendEventMatchesState(eventState *jobstore.WatchSendState, state jobstore.WatchSendState) bool {
