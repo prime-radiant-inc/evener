@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
@@ -61,7 +62,7 @@ type Session struct {
 	//   sessionEndEmitted, profile (swapped here; read via currentProfile()),
 	//   the mutable cfg knobs (ReasoningEffort, command timeouts,
 	//   MaxToolRoundsPerInput), cachedSystemPrompt, cachedToolDefs, the
-	//   comm communicate-result, steeringQueue, followups, inputQueue,
+	//   comm communicate-result, steeringQueue, activeProvenance, followups, inputQueue,
 	//   loopDetectionCount, the task* reminder counters, depth, the goalInTurn
 	//   flag and kickFunc callback, and the naming name-state. It does NOT guard
 	//   reg — the tool.Registry self-synchronizes.
@@ -87,6 +88,12 @@ type Session struct {
 
 	steeringQueue []steeringMessage
 	followups     []string
+
+	// activeProvenance is the causal provenance carried by the input currently
+	// being processed. It is stamped onto every event the turn emits, reset to
+	// empty on each new external top-level input, and unioned with consumed
+	// steering messages' provenance. The zero value means "no watch origin".
+	activeProvenance provenance.Causal
 
 	// inputQueue holds messages submitted via Enqueue while a turn is in
 	// flight. Kata 111a: text typed during a running turn returns to the

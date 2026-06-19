@@ -144,7 +144,7 @@ func newToolDeps(s *Session) *toolDeps {
 	return &toolDeps{
 		emit:            s.emit,
 		steer:           s.Steer,
-		drainSteering:   s.drainSteering,
+		drainSteering:   s.drainSteeringForTurn,
 		prependSteering: s.prependSteering,
 		abort:           s.abortIfClosing,
 		resultToolName:  s.resultToolName,

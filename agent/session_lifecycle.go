@@ -740,6 +740,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 // limit is already reached; otherwise it increments the turn counter, drains any
 // pending steering, and returns proceed=true.
 func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment) (proceed bool) {
+	// A new external top-level input starts a fresh causal context: reset active
+	// provenance so this turn's emitted events do not inherit a prior watch origin.
+	s.replaceActiveProvenance(nil)
 	s.repairOrphanedToolResults("before accepting new input")
 
 	s.mu.Lock()
@@ -786,7 +789,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	s.mu.Unlock()
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
-	for _, msg := range s.drainSteering() {
+	for _, msg := range s.drainSteeringForTurn() {
 		s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	}
@@ -809,6 +812,9 @@ const goalContinuationMarker = "Continuing toward the goal."
 // no-progress breaker, not the session's user-input ceiling; SESSION_END.Turns
 // reads the separate modelResponses counter, so skipping s.turns++ is safe).
 func (s *Session) acceptContinuationInput(ctx context.Context, input string) {
+	// A goal continuation is a fresh top-level input: reset active provenance so
+	// the continuation turn's events do not inherit a prior watch origin.
+	s.replaceActiveProvenance(nil)
 	s.repairOrphanedToolResults("before accepting goal continuation")
 
 	// Surface only a compact marker to the UI, not the full rendered continuation
@@ -823,7 +829,7 @@ func (s *Session) acceptContinuationInput(ctx context.Context, input string) {
 	s.appendTurn(schema.TurnSteering, llm.User(input))
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
-	for _, msg := range s.drainSteering() {
+	for _, msg := range s.drainSteeringForTurn() {
 		s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	}
@@ -862,6 +868,11 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 
 	s.repairOrphanedToolResults("before accepting notification")
 
+	// A notification turn is a fresh top-level input boundary: reset active
+	// provenance to empty. Notification provenance adoption (carrying the
+	// triggering watch's origin) is deferred to a later task.
+	s.replaceActiveProvenance(nil)
+
 	reminder := s.formatJobNotificationReminder(jobNotifs)
 	if err := s.appendTurnDurably(schema.TurnSteering, llm.User(reminder)); err != nil {
 		s.requeueJobNotifications(jobNotifications(jobNotifs))
@@ -887,7 +898,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	}
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
-	for _, msg := range s.drainSteering() {
+	for _, msg := range s.drainSteeringForTurn() {
 		s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	}
