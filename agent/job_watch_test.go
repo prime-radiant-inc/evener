@@ -4795,7 +4795,7 @@ func TestWatchSendFrameIsBounded(t *testing.T) {
 			Message:        strings.Repeat("m", watchMessageMaxChars+100),
 			IncludeExcerpt: true,
 		},
-	}, rec.JobID, strings.Repeat("trigger", watchTriggerMaxChars), "delivery_test")
+	}, rec.JobID, strings.Repeat("trigger", watchTriggerMaxChars), "delivery_test", events.SessionEvent{}, nil)
 
 	if len([]rune(frame)) > watchFrameMaxChars {
 		t.Fatalf("frame length = %d, want <= %d", len([]rune(frame)), watchFrameMaxChars)
@@ -4817,7 +4817,7 @@ func TestWatchSendExcerptIncludesFrameMetadata(t *testing.T) {
 			Message:        "saw ready",
 			IncludeExcerpt: true,
 		},
-	}, rec.JobID, "output_match: ready excerpt", "delivery_test")
+	}, rec.JobID, "output_match: ready excerpt", "delivery_test", events.SessionEvent{}, nil)
 
 	if !strings.Contains(frame, "saw ready") || !strings.Contains(frame, "ready excerpt") {
 		t.Fatalf("excerpt delivery must include message and excerpt; got %q", frame)
@@ -4838,7 +4838,7 @@ func TestWatchSendMessageIncludesFrameMetadata(t *testing.T) {
 
 	frame := jm.buildWatchFrame(&watchConfig{
 		send: &watchSendArgs{Message: "plain message"},
-	}, "job_target", "output_match: ready", "delivery_message_only")
+	}, "job_target", "output_match: ready", "delivery_message_only", events.SessionEvent{}, nil)
 
 	if !strings.Contains(frame, "plain message") {
 		t.Fatalf("message delivery must include message; got %q", frame)
@@ -4878,7 +4878,7 @@ func TestWatchSessionTargetFrameOmitsExcerpt(t *testing.T) {
 
 	frame := jm.buildWatchFrame(&watchConfig{
 		send: &watchSendArgs{Message: "session frame", IncludeExcerpt: true},
-	}, "caller", "output_match: ready", "dlv")
+	}, "caller", "output_match: ready", "dlv", events.SessionEvent{}, nil)
 
 	if strings.Contains(frame, "excerpt:") {
 		t.Fatalf("session-target frame must not carry an excerpt; got %q", frame)
@@ -4896,7 +4896,7 @@ func TestWatchJobTargetFrameOmitsTranscriptRef(t *testing.T) {
 
 	frame := jm.buildWatchFrame(&watchConfig{
 		send: &watchSendArgs{Message: "job frame"},
-	}, "job_target", "output_match: ready", "dlv")
+	}, "job_target", "output_match: ready", "dlv", events.SessionEvent{}, nil)
 
 	if strings.Contains(frame, "transcript_ref") || strings.Contains(frame, "local:") {
 		t.Fatalf("job-target frame must not carry transcript refs; got %q", frame)
@@ -7052,5 +7052,80 @@ func TestJobWatchDoesNotSuppressDifferentGeneration(t *testing.T) {
 
 	if cfg.deliveries == 0 && len(cfg.pending) == 0 {
 		t.Fatal("old generation provenance must not suppress new generation")
+	}
+}
+
+func TestBuildWatchFrameIncludesCommunicateEventContent(t *testing.T) {
+	jm := newTestJM(t)
+	cfg := &watchConfig{watchID: "watch_A", generation: "wg_1", send: &watchSendArgs{Message: "Filter this caller message."}}
+	ev := events.New(events.CommunicateData{Message: "actually alpha marker", AwaitReply: false})
+	ev.SessionID = "session_1"
+
+	frame := jm.buildWatchFrame(cfg, runtimeMessageAliasCaller, "event: COMMUNICATE", "wd_1", ev, nil)
+
+	for _, want := range []string{
+		"Watch frame",
+		"watch_id: watch_A",
+		"delivery_id: wd_1",
+		"job_id: caller",
+		"trigger: event: COMMUNICATE",
+		"provenance: external",
+		"event:",
+		"  kind: communicate",
+		"  message: actually alpha marker",
+		"  await_reply: false",
+		"  truncated: false",
+	} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("frame missing %q:\n%s", want, frame)
+		}
+	}
+}
+
+func TestBuildWatchFrameIncludesCompactProvenanceSummary(t *testing.T) {
+	jm := newTestJM(t)
+	cfg := &watchConfig{watchID: "watch_B", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
+	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_A", "session_1", "caller")
+	ev := events.New(events.CommunicateData{Message: "observer caused text", AwaitReply: false})
+	ev.SessionID = "session_1"
+	ev.Provenance = p
+
+	frame := jm.buildWatchFrame(cfg, runtimeMessageAliasCaller, "event: COMMUNICATE", "wd_B", ev, p)
+
+	for _, want := range []string{
+		"provenance:",
+		"  watch_keys:",
+		"    - watch_id: watch_A",
+		"      watch_generation: wg_1",
+		"  latest_delivery_id: wd_A",
+	} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("frame missing %q:\n%s", want, frame)
+		}
+	}
+}
+
+// TestBuildWatchFrameIndentsMultiLineCommunicateMessage guards that a communicate
+// event whose Message contains a newline is rendered with a continuation indent so
+// every line stays scoped under the event block. Without the indent, an embedded
+// fake field (e.g. "await_reply: true") would land at column 0 and could shadow
+// the real await_reply field for an observer that parses the frame by line prefix.
+func TestBuildWatchFrameIndentsMultiLineCommunicateMessage(t *testing.T) {
+	jm := newTestJM(t)
+	cfg := &watchConfig{watchID: "watch_C", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
+	// The message contains a newline followed by a fake field that must NOT appear
+	// at column 0 — it must be indented under the message value.
+	ev := events.New(events.CommunicateData{Message: "real line\nawait_reply: true", AwaitReply: false})
+	ev.SessionID = "session_1"
+
+	frame := jm.buildWatchFrame(cfg, runtimeMessageAliasCaller, "event: COMMUNICATE", "wd_C", ev, nil)
+
+	// The injected text must appear continuation-indented, not at column 0.
+	if !strings.Contains(frame, "  message: real line\n  await_reply: true") {
+		t.Fatalf("frame does not contain continuation-indented message:\n%s", frame)
+	}
+	// The REAL await_reply field must be present and correctly false.
+	if !strings.Contains(frame, "  await_reply: false") {
+		t.Fatalf("frame missing real await_reply: false field:\n%s", frame)
 	}
 }

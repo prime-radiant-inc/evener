@@ -2107,7 +2107,22 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 		return d
 	}
 	d.message = limitWatchText(strings.TrimSpace(d.send.Message), watchMessageMaxChars)
-	d.frame = jm.buildWatchFrame(&watchConfig{send: d.send}, d.watchedIdentity, d.trigger, d.deliveryID)
+	watchID := ""
+	generation := ""
+	if d.cfg != nil {
+		watchID = d.cfg.watchID
+		generation = d.cfg.generation
+	}
+	d.frame = jm.buildWatchFrame(&watchConfig{
+		watchID:    watchID,
+		generation: generation,
+		send:       d.send,
+	}, d.watchedIdentity, d.trigger, d.deliveryID, events.SessionEvent{
+		Kind:       d.eventKind,
+		SessionID:  jm.sessionID,
+		Data:       d.eventData,
+		Provenance: provenance.Clone(d.provenance),
+	}, d.provenance)
 	return d
 }
 
@@ -3514,7 +3529,7 @@ func resolveWatchSendTarget(target, watchedJobID string) (string, error) {
 	return watchedJobID, nil
 }
 
-func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger string, deliveryID string) string {
+func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger string, deliveryID string, ev events.SessionEvent, p *provenance.Causal) string {
 	if cfg == nil || cfg.send == nil {
 		return ""
 	}
@@ -3526,17 +3541,25 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 		b.WriteString("\n\n")
 	}
 	b.WriteString("Watch frame\n")
+	if cfg.watchID != "" {
+		b.WriteString("watch_id: ")
+		b.WriteString(limitWatchText(cfg.watchID, watchTriggerMaxChars))
+		b.WriteString("\n")
+	}
+	if deliveryID != "" {
+		b.WriteString("delivery_id: ")
+		b.WriteString(limitWatchText(deliveryID, watchTriggerMaxChars))
+		b.WriteString("\n")
+	}
 	b.WriteString("job_id: ")
 	b.WriteString(limitWatchText(jobID, watchTriggerMaxChars))
-	if deliveryID != "" {
-		b.WriteString("\ndelivery_id: ")
-		b.WriteString(limitWatchText(deliveryID, watchTriggerMaxChars))
-	}
 	b.WriteString("\ntrigger: ")
 	b.WriteString(limitWatchText(trigger, watchTriggerMaxChars))
+	b.WriteString("\n")
+	writeWatchFrameProvenance(&b, p)
+	writeWatchFrameEvent(&b, ev)
 
 	if !isWatchSessionTarget(jobID) && cfg.send.IncludeExcerpt {
-		b.WriteString("\n")
 		excerpt, _, truncated, err := jm.readOutput(jobID, watchExcerptTailBytes)
 		b.WriteString("excerpt:\n")
 		if err != nil {
@@ -3551,6 +3574,63 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 	}
 
 	return limitWatchText(b.String(), watchFrameMaxChars)
+}
+
+func writeWatchFrameProvenance(b *strings.Builder, p *provenance.Causal) {
+	if p == nil || len(p.WatchKeys) == 0 {
+		b.WriteString("provenance: external\n")
+		return
+	}
+	b.WriteString("provenance:\n")
+	b.WriteString("  watch_keys:\n")
+	for _, key := range p.WatchKeys {
+		b.WriteString("    - watch_id: ")
+		b.WriteString(limitWatchText(key.WatchID, watchTriggerMaxChars))
+		b.WriteString("\n      watch_generation: ")
+		b.WriteString(limitWatchText(key.WatchGeneration, watchTriggerMaxChars))
+		b.WriteString("\n")
+	}
+	if latest := provenance.LatestDeliveryID(p); latest != "" {
+		b.WriteString("  latest_delivery_id: ")
+		b.WriteString(limitWatchText(latest, watchTriggerMaxChars))
+		b.WriteString("\n")
+	}
+}
+
+func writeWatchFrameEvent(b *strings.Builder, ev events.SessionEvent) {
+	switch data := ev.Data.(type) {
+	case events.CommunicateData:
+		writeCommunicateWatchEvent(b, data)
+	case *events.CommunicateData:
+		if data != nil {
+			writeCommunicateWatchEvent(b, *data)
+		}
+	}
+}
+
+func writeCommunicateWatchEvent(b *strings.Builder, data events.CommunicateData) {
+	// maxMessageChars caps the event-payload excerpt; tighter than the frame's own
+	// message cap because this is context, not the primary message.
+	const maxMessageChars = 1000
+	message := limitWatchText(data.Message, maxMessageChars)
+	truncated := message != data.Message
+	b.WriteString("event:\n")
+	b.WriteString("  kind: communicate\n")
+	b.WriteString("  message: ")
+	b.WriteString(strings.ReplaceAll(message, "\n", "\n  "))
+	b.WriteString("\n")
+	b.WriteString("  await_reply: ")
+	if data.AwaitReply {
+		b.WriteString("true\n")
+	} else {
+		b.WriteString("false\n")
+	}
+	b.WriteString("  truncated: ")
+	if truncated {
+		b.WriteString("true\n")
+	} else {
+		b.WriteString("false\n")
+	}
 }
 
 func limitWatchText(s string, maxChars int) string {
