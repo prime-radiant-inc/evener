@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -56,6 +57,11 @@ func renderAvailableAgentsSectionWithAllowance(t *testing.T, agents map[string]p
 // subagent template, selected because depth > 0).
 func renderSubagentPromptWithAllowance(t *testing.T, allowance int) string {
 	t.Helper()
+	return renderSubagentPromptWithAllowanceAndTools(t, allowance, nil)
+}
+
+func renderSubagentPromptWithAllowanceAndTools(t *testing.T, allowance int, allowedTools []string) string {
+	t.Helper()
 
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
@@ -67,6 +73,7 @@ func renderSubagentPromptWithAllowance(t *testing.T, allowance int) string {
 	cfg.spawn.depth = 1
 	cfg.spawn.parentSessionID = "parent-session"
 	cfg.spawn.delegationAllowance = allowance
+	cfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
 
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
@@ -120,6 +127,60 @@ func TestSubagentPromptUsesDelegateSendForFollowup(t *testing.T) {
 	}
 	if strings.Contains(prompt, "job_send_message") {
 		t.Fatalf("delegating subagent prompt must not advertise removed job_send_message:\n%s", prompt)
+	}
+}
+
+func TestSubagentPromptSuppressesDelegationWhenToolsUnavailable(t *testing.T) {
+	prompt := renderSubagentPromptWithAllowanceAndTools(t, 1, []string{"communicate", "read_file"})
+	if strings.Contains(prompt, "## Delegation") {
+		t.Fatalf("subagent prompt must not contain delegation guidance when delegate tools are unavailable:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "## Background jobs") {
+		t.Fatalf("subagent prompt must not contain background-job guidance when job_watch is unavailable:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "## Delegated task limits") {
+		t.Fatalf("subagent prompt should fall back to delegated-task limits when delegation tools are unavailable:\n%s", prompt)
+	}
+}
+
+func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
+	client := llm.NewClient()
+	var childPrompt string
+	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			for _, msg := range req.Messages {
+				if msg.Role == llm.RoleSystem {
+					childPrompt = msg.Text()
+					break
+				}
+			}
+			return communicateWithDefaultOutput("done")
+		},
+	}})
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		MaxSubagentDepth: 3,
+		NoProjectPrompts: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:                "coordinate follow-up work",
+		Background:          false,
+		BlockTimeoutMS:      5000,
+		DelegationAllowance: 1,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+	if !strings.Contains(childPrompt, "You may delegate scoped subwork") {
+		t.Fatalf("delegating untyped child prompt missing delegating role guidance:\n%s", childPrompt)
+	}
+	if strings.Contains(childPrompt, "Do NOT try to spawn further subagents") {
+		t.Fatalf("delegating untyped child prompt used leaf role guidance:\n%s", childPrompt)
 	}
 }
 

@@ -743,6 +743,31 @@ func TestJobListIncludeDescendantsHidesChildDelegateHandles(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("append child delegate job: %v", err)
 	}
+	legacyStarted := now.Add(2 * time.Millisecond)
+	if err := childJM.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         legacyStarted,
+		DelegateID: "dlg_child_legacy",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID: "LEGACY_GRANDCHILD",
+			TranscriptRef:  encodeRef("", "LEGACY_GRANDCHILD"),
+			Generation:     "dg_child_legacy",
+			Resumable:      true,
+		},
+	}); err != nil {
+		t.Fatalf("append legacy child delegate: %v", err)
+	}
+	if err := childJM.appendEvent(jobstore.Event{
+		Kind:          jobstore.EventJobStarted,
+		TS:            legacyStarted,
+		JobID:         "job_child_legacy_delegate",
+		Type:          jobstore.JobDelegate,
+		DelegateID:    "dlg_child_legacy",
+		TranscriptRef: encodeRef("", "LEGACY_GRANDCHILD"),
+		StartedAt:     &legacyStarted,
+	}); err != nil {
+		t.Fatalf("append legacy child delegate job: %v", err)
+	}
 
 	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil)}
 	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
@@ -763,8 +788,18 @@ func TestJobListIncludeDescendantsHidesChildDelegateHandles(t *testing.T) {
 	if row.DelegateID != "" {
 		t.Fatalf("child delegate row exposes delegate_id %q; want no parent-visible control handle", row.DelegateID)
 	}
+	legacyRow := findDescendantRow(parsed.Jobs, "job_child_legacy_delegate")
+	if legacyRow == nil {
+		t.Fatalf("include_descendants jobs = %+v, want legacy child delegate job", parsed.Jobs)
+	}
+	if legacyRow.DelegateID != "" {
+		t.Fatalf("legacy child delegate row exposes delegate_id %q; want no parent-visible control handle", legacyRow.DelegateID)
+	}
 	rendered := out.(tooldefs.StateResult).Output
-	if strings.Contains(rendered, "delegate_id dlg_child") || strings.Contains(rendered, "delegate dlg_child") {
+	if strings.Contains(rendered, "delegate_id dlg_child") ||
+		strings.Contains(rendered, "delegate dlg_child") ||
+		strings.Contains(rendered, "delegate_id dlg_child_legacy") ||
+		strings.Contains(rendered, "delegate dlg_child_legacy") {
 		t.Fatalf("include_descendants output exposes child delegate handle:\n%s", rendered)
 	}
 }

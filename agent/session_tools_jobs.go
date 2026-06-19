@@ -1925,7 +1925,11 @@ func projectJobRecordForViewer(viewer *Session, assessor *Session, rec *jobstore
 	if viewer != nil {
 		viewerID = viewer.id
 	}
-	if !delegateControlOwnedBySession(rec.OwnerSessionID, viewerID) {
+	effectiveOwnerID := rec.OwnerSessionID
+	if effectiveOwnerID == "" && assessor != nil {
+		effectiveOwnerID = assessor.id
+	}
+	if !delegateControlOwnedBySession(effectiveOwnerID, viewerID) {
 		delegateID = ""
 	}
 	if assessor == nil {

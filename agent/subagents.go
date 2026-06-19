@@ -51,6 +51,15 @@ Do NOT try to spawn further subagents.
 
 Your job is to complete the task and report your findings.`
 
+const defaultDelegatingSubagentInstructions = `You are a general-purpose subagent. Do the work yourself using the tools
+available in this session.
+
+You may delegate scoped subwork when it reduces context, parallelizes independent
+work, or gives you a focused verifier. You remain responsible for inspecting the
+delegate's result before relying on it.
+
+Your job is to complete the task and report your findings.`
+
 var rootOnlyJobPresenceTools = []string{"delegate", "job_watch"}
 
 type subagent struct {
@@ -384,6 +393,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	if grantedAllowance, ok := ctx.Value(ctxDelegationAllowance).(int); ok {
 		subCfg.spawn.delegationAllowance = grantedAllowance
 	}
+	childCanDelegate := subCfg.spawn.delegationAllowance > 0
 	if schema, ok := ctx.Value(ctxCommunicateOutputSchema).(map[string]any); ok && len(schema) > 0 {
 		subCfg.spawn.communicateOutputSchema = schema
 	}
@@ -404,6 +414,9 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" {
 		agentName = agent.Name
 		rolePrompt = agent.SystemPrompt
+	} else if agent == nil && childCanDelegate {
+		agentName = "subagent"
+		rolePrompt = defaultDelegatingSubagentInstructions
 	} else if subagentAgent, ok := s.pluginAgents["subagent"]; ok {
 		agentName = "subagent"
 		rolePrompt = subagentAgent.SystemPrompt
@@ -413,7 +426,8 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	}
 	subCfg.AgentName = agentName // ensure subagent gets its own tasks, not parent's
 
-	if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" && agent.PluginName != "builtin" {
+	if (agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" && agent.PluginName != "builtin") ||
+		(agent == nil && childCanDelegate) {
 		subCfg.spawn.rolePromptOverride = rolePrompt
 	}
 	var activatedSkillNames []string

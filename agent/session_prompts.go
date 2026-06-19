@@ -104,9 +104,9 @@ func (s *Session) buildPromptData() promptData {
 	data.CustomTools = toolEntriesFromDefinitions(customToolDefs)
 
 	// Delegation capability: a grantable allowance (> 0) unlocks the delegation
-	// and background-jobs prompt surface in the subagent template.
+	// and background-jobs prompt surface only when those tools are callable.
 	data.DelegationAllowance = s.delegationAllowance
-	data.CanDelegate = s.delegationAllowance > 0
+	data.CanDelegate = s.canPromptDelegation()
 
 	// Available subagent types
 	data.AvailableAgents = s.availableAgentEntries()
@@ -121,6 +121,13 @@ func (s *Session) buildPromptData() promptData {
 	}
 
 	return data
+}
+
+func (s *Session) canPromptDelegation() bool {
+	return s.delegationAllowance > 0 &&
+		s.reg != nil &&
+		s.reg.Get("delegate") != nil &&
+		s.reg.Get("job_watch") != nil
 }
 
 // renderSystemPrompt renders the system prompt using the template resolver.
