@@ -283,7 +283,7 @@
     mode: "card", friendly: "job output",
     target: (a) => a.job_id || "",
     result: (data, out) => {
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       if (!st) return out ? formatBytes(out.length) : "";
       return compactParts([
         st.status,
@@ -295,7 +295,7 @@
     body: (args, conversation) => outputPreviewBody("job-output-body", "job-output", conversation),
     bodyEnd: (state, data, out) => {
       if (!state.body) return;
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       const text = data.error || jobReadOutputText(st, out);
       // Server-dropped (mockup #6 alt D DROP): the daemon truncated the output,
       // so the tail shown here is NOT all of it. Say so honestly instead of
@@ -313,7 +313,7 @@
     // and surface a short result preview from its content.
     subagentReconcile: (state, data, out) => {
       if (data.error) return [];
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       if (!st || !st.job_id) return [];
       const content = String(jobReadOutputText(st, out) || "").replace(/\s+/g, " ").trim();
       return [{
@@ -373,7 +373,7 @@
     mode: "card", friendly: "jobs",
     target: (a) => Array.isArray(a.status) ? a.status.join(",") : (a.status || ""),
     result: (data, out) => {
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       if (!st) return out ? formatBytes(out.length) : "";
       const count = typeof st.count === "number" ? st.count : (Array.isArray(st.jobs) ? st.jobs.length : 0);
       return count + " " + (count === 1 ? "job" : "jobs");
@@ -381,7 +381,7 @@
     body: (args, conversation) => outputPreviewBody("job-list-body", "job-list-output", conversation),
     bodyEnd: (state, data, out) => {
       if (!state.body) return;
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       let text = data.error || out || "";
       if (st && Array.isArray(st.jobs)) {
         text = st.jobs.map(job => compactParts([
@@ -399,7 +399,7 @@
     // stale-running subagent rows at once.
     subagentReconcile: (state, data, out) => {
       if (data.error) return [];
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       if (!st || !Array.isArray(st.jobs)) return [];
       return st.jobs
         .filter(job => job && job.job_id)
@@ -417,7 +417,7 @@
     mode: "cheap", friendly: "stop",
     target: (a) => clip(a.job_id || "", 26),
     result: (data, out) => {
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       if (!st) return out ? formatBytes(out.length) : "";
       return compactParts([st.status, st.reason]);
     },

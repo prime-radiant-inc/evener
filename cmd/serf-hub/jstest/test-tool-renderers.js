@@ -133,7 +133,7 @@ await scenario("tool intent renders below header and above results", [
 await scenario("job_read_output renders status, truncation, and content preview", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "jr1", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_A" }) }],
-  ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: JSON.stringify({
+  ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: "job_A completed, 128 bytes, truncated", tool_state: JSON.stringify({
     job_id: "job_A",
     type: "shell",
     status: "completed",
@@ -198,7 +198,7 @@ await scenario("job control tools render structured summaries", [
     output: "final delegate note",
   }) }],
   ["TOOL_CALL_START", { call_id: "jl1", tool_name: "job_list", arguments_json: JSON.stringify({ status: ["running"] }) }],
-  ["TOOL_CALL_END", { call_id: "jl1", tool_name: "job_list", output: JSON.stringify({
+  ["TOOL_CALL_END", { call_id: "jl1", tool_name: "job_list", output: "2 jobs\njob_1 running\njob_2 completed", tool_state: JSON.stringify({
     count: 2,
     jobs: [
       { job_id: "job_1", type: "delegate", status: "running", description: "write tests" },
@@ -206,7 +206,7 @@ await scenario("job control tools render structured summaries", [
     ],
   }) }],
   ["TOOL_CALL_START", { call_id: "jstop1", tool_name: "job_stop", arguments_json: JSON.stringify({ job_id: "job_1" }) }],
-  ["TOOL_CALL_END", { call_id: "jstop1", tool_name: "job_stop", output: JSON.stringify({ job_id: "job_1", status: "stopped", reason: "user" }) }],
+  ["TOOL_CALL_END", { call_id: "jstop1", tool_name: "job_stop", output: "stopped job_1", tool_state: JSON.stringify({ job_id: "job_1", status: "stopped", reason: "user" }) }],
 ], ({ conv }) => {
   const delegateSend = conv.querySelector(".tool-call.delegate_send .result-detail");
   if (!delegateSend || !delegateSend.textContent.includes("started") || !delegateSend.textContent.includes("running") || !delegateSend.textContent.includes("job_STARTED")) {
@@ -565,7 +565,7 @@ await scenario("client-collapsed long output offers an honest 'expand · N more'
 await scenario("server-truncated job output shows an honest drop note, not a fake expand", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "jr1", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_A" }) }],
-  ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: JSON.stringify({
+  ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: "job_A completed, output truncated", tool_state: JSON.stringify({
     job_id: "job_A", type: "shell", status: "completed",
     content: "kept line one\nkept line two\nkept line three",
     total_bytes: 128, truncated: true,

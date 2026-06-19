@@ -107,7 +107,7 @@ await scenario("a successful job_read_output flips a stale running subagent to d
   ...spawnDelegate("d1", "job_A", "trace callers", "local:child-A"),
   // No JOB_FINISHED ever arrives — only the agent reading the job's output.
   ["TOOL_CALL_START", { call_id: "jr1", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_A" }) }],
-  ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: JSON.stringify({
+  ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: "job_A completed, 18 bytes", tool_state: JSON.stringify({
     job_id: "job_A", type: "delegate", status: "completed", content: "found 7 call sites", total_bytes: 18,
   }) }],
 ], ({ conv }) => {
@@ -156,7 +156,7 @@ await scenario("a subagent that ran fine but found bad news stays neutral (done)
   ...spawnDelegate("d1", "job_A", "check tests", "local:child-A"),
   // status completed (it ran fine); the bad news lives in the content.
   ["TOOL_CALL_START", { call_id: "jr1", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_A" }) }],
-  ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: JSON.stringify({
+  ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: "job_A completed, 14 bytes", tool_state: JSON.stringify({
     job_id: "job_A", type: "delegate", status: "completed", content: "3 tests FAILED", total_bytes: 14,
   }) }],
 ], ({ conv }) => {
@@ -175,7 +175,7 @@ await scenario("job_list reconciles several subagents at once", [
   ...spawnDelegate("d1", "job_1", "worker one", "local:c1"),
   ...spawnDelegate("d2", "job_2", "worker two", "local:c2"),
   ["TOOL_CALL_START", { call_id: "jl1", tool_name: "job_list", arguments_json: JSON.stringify({}) }],
-  ["TOOL_CALL_END", { call_id: "jl1", tool_name: "job_list", output: JSON.stringify({
+  ["TOOL_CALL_END", { call_id: "jl1", tool_name: "job_list", output: "2 jobs", tool_state: JSON.stringify({
     count: 2,
     jobs: [
       { job_id: "job_1", type: "delegate", status: "completed", output_bytes: 30 },
@@ -305,7 +305,7 @@ await scenario("a dangling running subagent demotes to '?' unknown when the sess
   ...spawnDelegate("d2", "job_B", "search indexer", "local:child-B"),
   // job_A reports done via a read; job_B never reports back.
   ["TOOL_CALL_START", { call_id: "jr1", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_A" }) }],
-  ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: JSON.stringify({
+  ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: "job_A completed, 18 bytes", tool_state: JSON.stringify({
     job_id: "job_A", type: "delegate", status: "completed", content: "found 7 call sites", total_bytes: 18,
   }) }],
   // The session goes dark with job_B still "running" and no JOB_FINISHED.
