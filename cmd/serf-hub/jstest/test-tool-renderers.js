@@ -264,6 +264,34 @@ await scenario("job control tools render structured summaries", [
   return { ok: true };
 });
 
+await scenario("job_list renders delegate and watch state sections", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "jl1", tool_name: "job_list", arguments_json: JSON.stringify({}) }],
+  ["TOOL_CALL_END", { call_id: "jl1", tool_name: "job_list", output: "0 jobs with delegate and watch sections", tool_state: JSON.stringify({
+    count: 0,
+    jobs: [],
+    delegates: [
+      { delegate_id: "dlg_obs", status: "idle", latest_job_id: "job_done", transcript_ref: "local:child", resumable: true },
+    ],
+    watches: [
+      { id: "watch_live", target: "job_target", condition: "events: [job.notification]", send_to: "dlg_obs", deliveries: 0 },
+    ],
+    recent_watches: [
+      { id: "watch_old", target: "job_target", condition: "output_match: ready", end_reason: "cleared", deliveries: 1 },
+    ],
+  }) }],
+], ({ conv }) => {
+  const list = conv.querySelector(".tool-call.job_list .result-detail");
+  if (!list || !list.textContent.includes("0 jobs")) return { ok: false, detail: "job_list count missing: " + (list && list.textContent) };
+  const output = conv.querySelector(".tool-call.job_list .job-list-output");
+  if (!output) return { ok: false, detail: "job_list body missing" };
+  const text = output.textContent;
+  for (const want of ["delegate dlg_obs", "latest_job_id job_done", "watch watch_live", "send_to dlg_obs", "recent watch watch_old", "cleared"]) {
+    if (!text.includes(want)) return { ok: false, detail: "job_list body missing " + want + ": " + text };
+  }
+  return { ok: true };
+});
+
 await scenario("orphan JOB_FINISHED creates a completed subagents-module row", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["JOB_FINISHED", { jobId: "job_ORPHAN", jobType: "delegate", status: "completed", outputBytes: 77, transcriptRef: "local:child" }],

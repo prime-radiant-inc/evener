@@ -279,6 +279,62 @@
     return out || "";
   }
 
+  function jobListBodyText(st, out) {
+    if (!st) return out || "";
+    const lines = [];
+    if (Array.isArray(st.jobs)) lines.push(...st.jobs.map(jobListJobLine).filter(Boolean));
+    if (Array.isArray(st.delegates)) lines.push(...st.delegates.map(jobListDelegateLine).filter(Boolean));
+    if (Array.isArray(st.watches)) lines.push(...st.watches.map(jobListWatchLine).filter(Boolean));
+    if (Array.isArray(st.recent_watches)) lines.push(...st.recent_watches.map(jobListRecentWatchLine).filter(Boolean));
+    return lines.length ? lines.join("\n") : (out || "");
+  }
+
+  function jobListJobLine(job) {
+    if (!job || !job.job_id) return "";
+    const label = job.description || job.command || "";
+    const detail = compactParts([
+      job.delegate_id ? "delegate_id " + job.delegate_id : "",
+      formatBytes(job.total_bytes),
+    ]);
+    const base = compactParts([job.job_id, job.type, job.status, label]);
+    return detail ? base + " [" + detail + "]" : base;
+  }
+
+  function jobListDelegateLine(delegate) {
+    if (!delegate || !delegate.delegate_id) return "";
+    const detail = compactParts([
+      delegate.current_job_id ? "current_job_id " + delegate.current_job_id : "",
+      delegate.latest_job_id && delegate.latest_job_id !== delegate.current_job_id ? "latest_job_id " + delegate.latest_job_id : "",
+      delegate.transcript_ref ? "transcript_ref " + delegate.transcript_ref : "",
+      delegate.resumable ? "resumable" : delegate.not_resumable_reason,
+      delegate.parent_delegate_id ? "parent_delegate_id " + delegate.parent_delegate_id : "",
+    ]);
+    const base = compactParts(["delegate " + delegate.delegate_id, delegate.status]);
+    return detail ? base + " [" + detail + "]" : base;
+  }
+
+  function jobListWatchLine(watch) {
+    if (!watch || !watch.id) return "";
+    return compactParts([
+      "watch " + watch.id,
+      watch.target ? "-> " + watch.target : "",
+      watch.condition ? "(" + watch.condition + ")" : "",
+      watch.send_to ? "send_to " + watch.send_to : "",
+      typeof watch.deliveries === "number" ? watch.deliveries + " delivered" : "",
+    ]);
+  }
+
+  function jobListRecentWatchLine(watch) {
+    if (!watch || !watch.id) return "";
+    return compactParts([
+      "recent watch " + watch.id,
+      watch.target ? "-> " + watch.target : "",
+      watch.condition ? "(" + watch.condition + ")" : "",
+      watch.end_reason,
+      typeof watch.deliveries === "number" ? watch.deliveries + " delivered" : "",
+    ]);
+  }
+
   const jobReadOutputRenderer = {
     mode: "card", friendly: "job output",
     target: (a) => a.job_id || "",
@@ -382,16 +438,7 @@
     bodyEnd: (state, data, out) => {
       if (!state.body) return;
       const st = parseToolJSON(out) || parseToolState(data.tool_state);
-      let text = data.error || out || "";
-      if (st && Array.isArray(st.jobs)) {
-        text = st.jobs.map(job => compactParts([
-          job.job_id,
-          job.type,
-          job.status,
-          job.description,
-          formatBytes(job.total_bytes),
-        ])).join("\n");
-      }
+      const text = data.error || jobListBodyText(st, out);
       setExpandableOutput(state.body, clip(text, 8000), { moreClass: "job-list-output-more", outputClassName: "job-list-output" });
       if (!String(text || "").trim()) state.body.wrap.style.display = "none";
     },
