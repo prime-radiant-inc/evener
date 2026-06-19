@@ -29,7 +29,7 @@ the smaller API correct enough that observers are just ordinary composition:
 
 ## Non-Negotiables
 
-- `go test ./agent` must pass before this branch is described as healthy.
+- `go test ./agent/...` must pass before this branch is described as healthy.
 - `go test ./...` from the workspace root is not sufficient, because the root
   module does not enumerate the nested `agent` module in the way this branch
   needs to be verified.
@@ -66,7 +66,7 @@ After remediation:
 
 ## Current Failures To Remediate
 
-### 1. `go test ./agent` is red
+### 1. `go test ./agent/...` is red
 
 The explicit agent module suite fails. The observed failure cluster is:
 
@@ -247,7 +247,7 @@ Required live checks:
 
 ### Phase 1: Make the suite honest
 
-1. Run `go test ./agent -count=1` and save the exact failing test list.
+1. Run `go test ./agent/... -count=1` and save the exact failing test list.
 2. Classify each failure:
    - stale test expecting old API;
    - runtime regression against the new API;
@@ -258,11 +258,11 @@ Required live checks:
    - job/turn handles must not be used with `delegate_send`;
    - add explicit negative tests for omitted `on_idle` and `job_id` misuse.
 4. For runtime regressions, fix behavior rather than weakening assertions.
-5. Re-run `go test ./agent -count=1`.
+5. Re-run `go test ./agent/... -count=1`.
 
 Exit criteria:
 
-- `go test ./agent -count=1` passes.
+- `go test ./agent/... -count=1` passes.
 - The changed tests still assert meaningful behavior, not just error strings.
 - New negative tests pin the handle-split contract.
 

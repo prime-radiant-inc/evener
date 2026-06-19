@@ -373,6 +373,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// here (spec §2/C11). terminateGoalOnError no-ops on a genuine user
 			// interrupt, leaving the goal active to resume after the next turn.
 			s.terminateGoalOnError(processCtx, err)
+			s.finishProcessingAtBoundary(processCtx, SessionIdle)
 			return strings.Join(outputs, "\n"), err
 		}
 		fu := s.popFollowUp()

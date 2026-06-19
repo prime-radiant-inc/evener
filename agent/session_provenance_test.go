@@ -2,12 +2,15 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/llm"
 )
 
 func testProvenance(watchID, generation string) *provenance.Causal {
@@ -57,6 +60,31 @@ func TestFinishProcessingAtBoundaryCapturesCompletedProvenance(t *testing.T) {
 	got := s.completedCausalProvenance()
 	if !provenance.ContainsWatch(got, "watch_A", "wg_1") || !provenance.ContainsWatch(got, "watch_B", "wg_1") {
 		t.Fatalf("completed provenance = %+v, want watch_A and watch_B", got)
+	}
+}
+
+func TestProcessInputErrorClearsActiveProvenance(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeErrAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) (llm.Response, error){
+			func(llm.Request) (llm.Response, error) {
+				return llm.Response{}, errors.New("llm failed")
+			},
+		},
+	})
+	s, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	_, err = s.processInputWithProvenance(context.Background(), "trigger failure", nil, testProvenance("watch_A", "wg_1"))
+	if err == nil {
+		t.Fatal("processInputWithProvenance succeeded, want LLM error")
+	}
+	if provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") {
+		t.Fatalf("active provenance after failed turn = %+v, want cleared", s.activeCausalProvenance())
 	}
 }
 
