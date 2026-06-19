@@ -4974,6 +4974,39 @@ func TestWatchSendStateUsesDelegateGenerationAtFireTime(t *testing.T) {
 	}
 }
 
+func TestClearWatchByIDClearsDurableActiveWatchWithoutLiveConfig(t *testing.T) {
+	jm := newTestJM(t)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.mu.Lock()
+	for key, cfg := range jm.watches {
+		if cfg.watchID == res.WatchID {
+			closeWatchConfig(cfg)
+			delete(jm.watches, key)
+		}
+	}
+	jm.mu.Unlock()
+
+	if _, err := jm.clearWatchByID(res.WatchID); err != nil {
+		t.Fatalf("clear by watch_id: %v", err)
+	}
+
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		t.Fatalf("load watches: %v", err)
+	}
+	w := watches[res.WatchID]
+	if w == nil {
+		t.Fatalf("watch %q missing from durable registry", res.WatchID)
+	}
+	if w.Active || w.EndReason != "cleared" {
+		t.Fatalf("watch = %+v, want durable cleared row", w)
+	}
+}
+
 func TestWatchSendFailureNotifiesCaller(t *testing.T) {
 	jm := newTestJM(t)
 	sendErr := errors.New("target_not_messageable: job_obs")

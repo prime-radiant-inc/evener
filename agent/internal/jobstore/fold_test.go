@@ -412,6 +412,32 @@ func TestFoldWatchesRejectsStaleClearGeneration(t *testing.T) {
 	}
 }
 
+func TestFoldWatchesRejectsInvalidRegistrationAndEmptyClearGeneration(t *testing.T) {
+	events := []Event{
+		ev(EventWatchRegistered, 1, "", func(e *Event) {
+			e.WatchID = "watch_missing_target"
+			e.Watch = &WatchEvent{Generation: "wg_1", OwnerSessionID: "owner", VisibleSessionID: "owner", ConfigHash: "hash_1"}
+		}),
+		ev(EventWatchRegistered, 2, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{Generation: "wg_1", OwnerSessionID: "owner", VisibleSessionID: "owner", Target: "job_1", ConfigHash: "hash_1"}
+		}),
+		ev(EventWatchCleared, 3, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{EndReason: "cleared"}
+		}),
+	}
+
+	watches := FoldWatches(events)
+	if watches["watch_missing_target"] != nil {
+		t.Fatalf("invalid registration folded into active registry: %+v", watches["watch_missing_target"])
+	}
+	w := watches["watch_A"]
+	if w == nil || !w.Active {
+		t.Fatalf("watch_A = %+v, want active because empty clear generation is ignored", w)
+	}
+}
+
 func TestFoldWatchesPreservesFirstClearReason(t *testing.T) {
 	events := []Event{
 		ev(EventWatchRegistered, 1, "", func(e *Event) {

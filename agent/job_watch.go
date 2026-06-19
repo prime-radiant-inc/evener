@@ -1160,11 +1160,20 @@ func (jm *jobManager) clearWatchByID(watchID string) (watchResult, error) {
 	markWatchConfigsRejectingLocked(detachedCfgs)
 	if !ok {
 		jm.mu.Unlock()
-		if len(detachedCfgs) == 0 {
+		clearEvent, err := jm.durableWatchClearEvent(watchID, "cleared")
+		if err != nil {
+			jm.rollbackWatchConfigsRejecting(detachedCfgs)
+			return watchResult{}, err
+		}
+		if len(detachedCfgs) == 0 && clearEvent == nil {
 			return watchResult{WatchID: watchID, Watching: false}, nil
 		}
 		dropped := detached
-		if err := jm.appendWatchTeardownBatch(dropped, nil); err != nil {
+		events := watchSendTerminalEvents(dropped)
+		if clearEvent != nil {
+			events = append(events, *clearEvent)
+		}
+		if err := jm.appendWatchRegistryEvents(events); err != nil {
 			jm.rollbackWatchConfigsRejecting(detachedCfgs)
 			return watchResult{}, err
 		}
@@ -1195,6 +1204,26 @@ func (jm *jobManager) clearWatchByID(watchID string) (watchResult, error) {
 		WatchID:  watchID,
 		Target:   key.Target,
 		Watching: false,
+	}, nil
+}
+
+func (jm *jobManager) durableWatchClearEvent(watchID, endReason string) (*jobstore.Event, error) {
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		return nil, err
+	}
+	w := watches[watchID]
+	if w == nil || !w.Active || w.Generation == "" {
+		return nil, nil
+	}
+	return &jobstore.Event{
+		Kind:    jobstore.EventWatchCleared,
+		TS:      jm.now(),
+		WatchID: watchID,
+		Watch: &jobstore.WatchEvent{
+			Generation: w.Generation,
+			EndReason:  endReason,
+		},
 	}, nil
 }
 
@@ -1975,15 +2004,13 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobstore.Event, []
 	return registryEvents, expired, root.Provenance
 }
 
-func (jm *jobManager) completeExpiredJobWatches(jobID string, expired []expiredJobWatch, rootProvenance *provenance.Causal) ([]jobNotification, []watchSendDelivery) {
+func (jm *jobManager) completeExpiredJobWatchesLocked(jobID string, expired []expiredJobWatch, rootProvenance *provenance.Causal) ([]jobNotification, []watchSendDelivery) {
 	if len(expired) == 0 {
 		return nil, nil
 	}
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
 	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: provenance.Clone(rootProvenance)}
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
 	for _, e := range expired {
 		if jm.watches[e.key] != e.cfg {
 			continue

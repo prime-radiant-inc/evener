@@ -195,6 +195,10 @@ func FoldWatches(events []Event) map[string]*WatchRecord {
 		}
 		switch e.Kind {
 		case EventWatchRegistered:
+			if e.Watch.Generation == "" || e.Watch.OwnerSessionID == "" ||
+				e.Watch.VisibleSessionID == "" || e.Watch.Target == "" || e.Watch.ConfigHash == "" {
+				continue
+			}
 			watches[e.WatchID] = &WatchRecord{
 				WatchID:          e.WatchID,
 				Generation:       e.Watch.Generation,
@@ -208,6 +212,9 @@ func FoldWatches(events []Event) map[string]*WatchRecord {
 				Active:           true,
 			}
 		case EventWatchCleared:
+			if e.Watch.Generation == "" {
+				continue
+			}
 			w := watches[e.WatchID]
 			if w == nil || w.Generation != e.Watch.Generation || !w.Active {
 				continue
