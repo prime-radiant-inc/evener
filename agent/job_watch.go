@@ -2603,12 +2603,60 @@ func (jm *jobManager) staleDelegateWatchSend(state jobstore.WatchSendState) (boo
 		if delegate.StopGateClosed {
 			return true, "delegate stopped before delivery", nil
 		}
+		stopped, err := jm.delegateStoppedAfterWatchSendPending(target, state)
+		if err != nil {
+			return false, "", err
+		}
+		if stopped {
+			return true, "delegate stopped before delivery", nil
+		}
 		return false, "", nil
 	}
 	if delegate.StopGateClosed || delegate.Generation != state.DelegateGeneration {
 		return true, "delegate stopped before delivery", nil
 	}
 	return false, "", nil
+}
+
+func (jm *jobManager) delegateStoppedAfterWatchSendPending(delegateID string, state jobstore.WatchSendState) (bool, error) {
+	events, err := jm.store.LoadEvents()
+	if err != nil {
+		return false, err
+	}
+	pendingAt := state.CreatedAt
+	if pendingAt.IsZero() {
+		for _, event := range events {
+			if event.Kind == jobstore.EventWatchSendPending && watchSendEventMatchesState(event.WatchSend, state) {
+				pendingAt = event.TS
+				break
+			}
+		}
+	}
+	if pendingAt.IsZero() {
+		return false, nil
+	}
+	for _, event := range events {
+		if event.Kind != jobstore.EventDelegateStopGateClosed || event.DelegateID != delegateID {
+			continue
+		}
+		if !event.TS.Before(pendingAt) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func watchSendEventMatchesState(eventState *jobstore.WatchSendState, state jobstore.WatchSendState) bool {
+	if eventState == nil || eventState.Key != state.Key {
+		return false
+	}
+	if state.DeliveryID != "" && eventState.DeliveryID != state.DeliveryID {
+		return false
+	}
+	if state.UpdateSeq != 0 && eventState.UpdateSeq != state.UpdateSeq {
+		return false
+	}
+	return true
 }
 
 func classifyWatchSendDelivery(res sendMessageResult) watchSendDeliveryClass {

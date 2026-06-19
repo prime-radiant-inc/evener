@@ -199,6 +199,16 @@ func (s *Store) LoadGrants() (map[string]map[string]bool, error) {
 	return FoldGrants(events), nil
 }
 
+// LoadEvents reads every durable event in append order.
+func (s *Store) LoadEvents() ([]Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return nil, err
+	}
+	return s.readAllLocked()
+}
+
 // readAll is the locked-public test/helper variant of readAllLocked.
 func (s *Store) readAll() ([]Event, error) {
 	s.mu.Lock()

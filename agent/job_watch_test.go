@@ -5794,6 +5794,7 @@ func TestDelegateSendExplicitStartDoesNotReenablePreStopPendingWatchSend(t *test
 	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 1 {
 		t.Fatalf("pending after stopped observation = %+v, want one latest send", pending)
 	}
+	blankRuntimePendingDelegateGenerationForTest(t, sess.jobManager)
 
 	restarted := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  first.DelegateID,
@@ -5837,6 +5838,22 @@ func TestDelegateSendExplicitStartDoesNotReenablePreStopPendingWatchSend(t *test
 	queue := sub.sess.SteeringQueueSnapshot()
 	if len(queue) != 1 || !strings.Contains(queue[0].Text, "after restart") {
 		t.Fatalf("queue after fresh drain = %+v, want only post-restart frame", queue)
+	}
+}
+
+func blankRuntimePendingDelegateGenerationForTest(t *testing.T, jm *jobManager) {
+	t.Helper()
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, cfg := range jm.watches {
+		for _, state := range cfg.pending {
+			state.DelegateGeneration = ""
+		}
+	}
+	for cfg := range jm.terminalFlush {
+		for _, state := range cfg.pending {
+			state.DelegateGeneration = ""
+		}
 	}
 }
 
