@@ -316,6 +316,85 @@ func TestJobListDelegatesFollowReturnedJobs(t *testing.T) {
 	}
 }
 
+func TestJobListDelegatesDoNotExposeFilteredCurrentJob(t *testing.T) {
+	s := newTestSession(t)
+	now := time.Unix(300, 0).UTC()
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: "dlg_history",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "HISTORY",
+			TranscriptRef:    encodeRef("", "HISTORY"),
+			OwnerSessionID:   s.id,
+			VisibleSessionID: s.id,
+			Generation:       "dg_history",
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append delegate: %v", err)
+	}
+	oldStart := now.Add(time.Second)
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               oldStart,
+		JobID:            "job_old",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_history",
+		OwnerSessionID:   s.id,
+		VisibleToSession: s.id,
+		TranscriptRef:    encodeRef("", "HISTORY"),
+		StartedAt:        &oldStart,
+	}); err != nil {
+		t.Fatalf("append old delegate job: %v", err)
+	}
+	oldEnd := oldStart.Add(time.Second)
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:     jobstore.EventJobFinished,
+		TS:       oldEnd,
+		JobID:    "job_old",
+		Status:   jobstore.StatusCompleted,
+		EndedAt:  &oldEnd,
+		Reason:   "done",
+		ExitCode: intPtr(0),
+	}); err != nil {
+		t.Fatalf("finish old delegate job: %v", err)
+	}
+	newStart := oldEnd.Add(time.Second)
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               newStart,
+		JobID:            "job_new",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_history",
+		OwnerSessionID:   s.id,
+		VisibleToSession: s.id,
+		TranscriptRef:    encodeRef("", "HISTORY"),
+		StartedAt:        &newStart,
+	}); err != nil {
+		t.Fatalf("append new delegate job: %v", err)
+	}
+
+	out, err := jobListTool(s, map[string]any{"status": []any{"completed"}}, 1<<20)
+	if err != nil {
+		t.Fatalf("jobListTool(status=completed): %v", err)
+	}
+	var parsed jobListResult
+	if err := json.Unmarshal(handlerJSON(t, out), &parsed); err != nil {
+		t.Fatalf("unmarshal job_list: %v", err)
+	}
+	if len(parsed.Jobs) != 1 || parsed.Jobs[0].JobID != "job_old" {
+		t.Fatalf("jobs = %+v, want only completed historical job", parsed.Jobs)
+	}
+	if len(parsed.Delegates) != 0 {
+		t.Fatalf("delegates = %+v, want no current/latest leak for filtered running job", parsed.Delegates)
+	}
+	rendered := out.(tooldefs.StateResult).Output
+	if strings.Contains(rendered, "job_new") || strings.Contains(rendered, "current_job_id") || strings.Contains(rendered, "latest_job_id") {
+		t.Fatalf("job_list(status=completed) leaked hidden current job:\n%s", rendered)
+	}
+}
+
 func TestJobToolsRejectDelegateIDWithActionableGuidance(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{

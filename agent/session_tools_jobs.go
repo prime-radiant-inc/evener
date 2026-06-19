@@ -707,8 +707,10 @@ func jobListDelegatesForJobs(s *Session, records map[string]*jobstore.DelegateRe
 	if len(records) == 0 || len(jobs) == 0 {
 		return nil
 	}
+	jobIDs := make(map[string]bool, len(jobs))
 	delegateIDs := make(map[string]bool)
 	for _, job := range jobs {
+		jobIDs[job.JobID] = true
 		if job.DelegateID != "" {
 			delegateIDs[job.DelegateID] = true
 		}
@@ -727,7 +729,17 @@ func jobListDelegatesForJobs(s *Session, records map[string]*jobstore.DelegateRe
 		if record == nil || !delegateControlOwnedBySession(record.OwnerSessionID, s.id) {
 			continue
 		}
-		delegates = append(delegates, projectDelegateRecord(record))
+		if !jobIDs[record.CurrentJobID] && !jobIDs[record.LatestJobID] {
+			continue
+		}
+		delegate := projectDelegateRecord(record)
+		if !jobIDs[delegate.CurrentJobID] {
+			delegate.CurrentJobID = ""
+		}
+		if !jobIDs[delegate.LatestJobID] {
+			delegate.LatestJobID = ""
+		}
+		delegates = append(delegates, delegate)
 	}
 	return delegates
 }
