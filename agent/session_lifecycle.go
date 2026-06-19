@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -868,10 +869,15 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 
 	s.repairOrphanedToolResults("before accepting notification")
 
-	// A notification turn is a fresh top-level input boundary: reset active
-	// provenance to empty. Notification provenance adoption (carrying the
-	// triggering watch's origin) is deferred to a later task.
-	s.replaceActiveProvenance(nil)
+	// A notification turn adopts the union of the provenance carried by the
+	// notifications it delivers, so events the turn emits (and any watch it
+	// retriggers) stamp the origin watch's lineage and a same-watch loop is
+	// suppressed.
+	var notificationProvenance *provenance.Causal
+	for _, n := range jobNotifs {
+		notificationProvenance = provenance.Union(notificationProvenance, n.notification.Provenance)
+	}
+	s.replaceActiveProvenance(notificationProvenance)
 
 	reminder := s.formatJobNotificationReminder(jobNotifs)
 	if err := s.appendTurnDurably(schema.TurnSteering, llm.User(reminder)); err != nil {

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 )
 
 type deliverableJobNotification struct {
@@ -27,6 +28,10 @@ const (
 )
 
 func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
+	p := rec.NotificationProvenance
+	if p == nil {
+		p = rec.Provenance
+	}
 	return jobNotification{
 		JobID:         rec.JobID,
 		JobType:       string(rec.Type),
@@ -35,6 +40,7 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 		TranscriptRef: rec.TranscriptRef,
 		OutputBytes:   rec.OutputBytes,
 		ExitCode:      rec.ExitCode,
+		Provenance:    provenance.Clone(p),
 	}
 }
 

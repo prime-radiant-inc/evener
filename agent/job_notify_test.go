@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -83,6 +84,48 @@ func appendPendingJobNotificationRecord(t *testing.T, jm *jobManager, sessionID 
 		TS:          ended,
 		JobID:       "job_X",
 		TerminalGen: "GEN1",
+	}); err != nil {
+		t.Fatalf("append pending: %v", err)
+	}
+}
+
+// appendPendingJobNotificationRecordWithProvenance persists a terminal job
+// record (started → finished → notification-pending) for jobID whose pending
+// event carries prov. Folded, prov lands on the record's NotificationProvenance,
+// so a delivery rebuilt via jobNotificationFromRecord carries it.
+func appendPendingJobNotificationRecordWithProvenance(t *testing.T, jm *jobManager, sessionID, jobID string, prov *provenance.Causal) {
+	t.Helper()
+	started := time.Unix(1000, 0).UTC()
+	ended := time.Unix(1001, 0).UTC()
+	gen := "GEN_" + jobID
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               started,
+		JobID:            jobID,
+		Type:             jobstore.JobDelegate,
+		OwnerSessionID:   sessionID,
+		VisibleToSession: sessionID,
+		StartedAt:        &started,
+	}); err != nil {
+		t.Fatalf("append started: %v", err)
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          ended,
+		JobID:       jobID,
+		Status:      jobstore.StatusCompleted,
+		Reason:      "exit_zero",
+		EndedAt:     &ended,
+		TerminalGen: gen,
+	}); err != nil {
+		t.Fatalf("append finished: %v", err)
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:        jobstore.EventJobNotificationPending,
+		TS:          ended,
+		JobID:       jobID,
+		TerminalGen: gen,
+		Provenance:  prov,
 	}); err != nil {
 		t.Fatalf("append pending: %v", err)
 	}
@@ -755,6 +798,37 @@ func TestTerminalNotificationWatchBranchesUnaffectedByExcerpt(t *testing.T) {
 	eventBlock := formatJobNotificationBlock(watchNotification("", "output_match: ready"), notificationExcerpt{text: "should-not-appear", complete: true})
 	if strings.Contains(eventBlock, "excerpt:") || strings.Contains(eventBlock, "should-not-appear") {
 		t.Fatalf("no-job watch event block must not carry an excerpt:\n%s", eventBlock)
+	}
+}
+
+func TestJobNotificationFromRecordUsesNotificationProvenance(t *testing.T) {
+	jobProv := provenance.WithWatch(nil, "watch_job", "wg_1", "wd_job", "session_1", "caller")
+	notificationProv := provenance.WithWatch(nil, "watch_note", "wg_1", "wd_note", "session_1", "caller")
+	n := jobNotificationFromRecord(&jobstore.JobRecord{
+		JobID:                  "job_A",
+		Type:                   jobstore.JobDelegate,
+		Status:                 jobstore.StatusCompleted,
+		Provenance:             jobProv,
+		NotificationProvenance: notificationProv,
+	})
+	if !provenance.ContainsWatch(n.Provenance, "watch_note", "wg_1") {
+		t.Fatalf("notification provenance = %+v, want notification provenance", n.Provenance)
+	}
+	if provenance.ContainsWatch(n.Provenance, "watch_job", "wg_1") {
+		t.Fatalf("notification provenance = %+v, should prefer notification provenance over job provenance", n.Provenance)
+	}
+}
+
+func TestJobNotificationFromRecordFallsBackToJobProvenance(t *testing.T) {
+	jobProv := provenance.WithWatch(nil, "watch_job", "wg_1", "wd_job", "session_1", "caller")
+	n := jobNotificationFromRecord(&jobstore.JobRecord{
+		JobID:      "job_A",
+		Type:       jobstore.JobDelegate,
+		Status:     jobstore.StatusCompleted,
+		Provenance: jobProv,
+	})
+	if !provenance.ContainsWatch(n.Provenance, "watch_job", "wg_1") {
+		t.Fatalf("notification provenance = %+v, want job provenance fallback", n.Provenance)
 	}
 }
 

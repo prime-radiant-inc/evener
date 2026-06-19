@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -1743,7 +1744,7 @@ func TestNestedTerminalForwardFailureRetriesSameGeneration(t *testing.T) {
 		t.Fatalf("new child jobManager: %v", err)
 	}
 	finishedEvents := 0
-	childJM.emit = func(kind events.EventKind, _ events.EventData) {
+	childJM.emit = func(kind events.EventKind, _ events.EventData, _ *provenance.Causal) {
 		if kind == events.EventJobFinished {
 			finishedEvents++
 		}

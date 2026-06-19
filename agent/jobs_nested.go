@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 )
 
 func (s *Session) ownerJobManagerFor(jobID string) (*jobManager, *jobstore.JobRecord) {
@@ -646,6 +647,7 @@ func (jm *jobManager) recoverForwardedPendingNotifications() error {
 			TS:          jm.recoveredEventTime(rec),
 			JobID:       rec.JobID,
 			TerminalGen: rec.TerminalGen,
+			Provenance:  provenance.Clone(rec.Provenance),
 		}); err != nil {
 			return err
 		}

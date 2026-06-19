@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
 )
 
@@ -80,6 +81,36 @@ func TestCommunicateInboxDrainUnionsProvenance(t *testing.T) {
 	}
 	if !provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") {
 		t.Fatalf("communicate inbox drain did not union provenance: %+v", s.activeCausalProvenance())
+	}
+}
+
+func TestAcceptNotificationInputAdoptsNotificationProvenance(t *testing.T) {
+	s := newTestSession(t)
+	s.events = make(chan events.SessionEvent, 4)
+	// The notification turn rebuilds the delivered notification from the durable
+	// record (filterDeliverableJobNotifications), so the adopted provenance is the
+	// record's notification provenance. Persist a terminal record whose pending
+	// event carries watch_A/wg_1 and enqueue the wake token for it.
+	appendPendingJobNotificationRecordWithProvenance(t, s.jobManager, s.ID(), "job_A", testProvenance("watch_A", "wg_1"))
+	s.enqueueJobNotification(jobNotification{
+		JobID:      "job_A",
+		JobType:    string(jobstore.JobDelegate),
+		Status:     string(jobstore.StatusCompleted),
+		Provenance: testProvenance("watch_A", "wg_1"),
+	})
+
+	if !s.acceptNotificationInput(context.Background()) {
+		t.Fatal("notification input should proceed")
+	}
+	if !provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") {
+		t.Fatalf("active provenance = %+v, want notification provenance", s.activeCausalProvenance())
+	}
+	ev := <-s.events
+	if ev.Kind != events.EventSteeringInjected {
+		t.Fatalf("first event = %s, want STEERING_INJECTED", ev.Kind)
+	}
+	if !provenance.ContainsWatch(ev.Provenance, "watch_A", "wg_1") {
+		t.Fatalf("steering event provenance = %+v, want watch_A/wg_1", ev.Provenance)
 	}
 }
 

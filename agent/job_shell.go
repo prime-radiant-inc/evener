@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 )
 
 const (
@@ -418,6 +419,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 			ParentJobID:      parentJobID,
 			StartedAt:        startedAt,
 			OutputPath:       outputPath,
+			Provenance:       jm.currentCausalProvenance(),
 		},
 		output: output,
 		signal: func() {},
@@ -484,6 +486,7 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		ParentJobID:      rec.ParentJobID,
 		StartedAt:        &startedAt,
 		OutputPath:       rec.OutputPath,
+		Provenance:       provenance.Clone(rec.Provenance),
 	}
 	if err := jm.appendEvent(started); err != nil {
 		jm.mu.Unlock()

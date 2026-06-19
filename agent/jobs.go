@@ -19,6 +19,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 )
 
 var errJobManagerClosing = errors.New("job manager is closing")
@@ -60,10 +61,14 @@ type jobManager struct {
 	closing       bool
 	appendEvent   func(jobstore.Event) error
 	appendEvents  func([]jobstore.Event) error
-	emit          func(events.EventKind, events.EventData)
+	emit          func(events.EventKind, events.EventData, *provenance.Causal)
 	forward       func(jobstore.Event) error
 	parentJobID   string
 	enqueue       func(jobNotification)
+	// currentProvenance reports the owning session's active causal provenance at
+	// call time. A job records this at creation so its detached lifecycle events
+	// and terminal notification carry the origin of whatever input launched it.
+	currentProvenance func() *provenance.Causal
 	// wake kicks the owning session's drain loop (wired to Session.notify).
 	// nil for test/restore-only managers. Observation paths call kick() after
 	// persisting watch-send intent; they never deliver (spec §3).
@@ -81,6 +86,16 @@ func (jm *jobManager) currentParentJobID() string {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	return jm.parentJobID
+}
+
+// currentCausalProvenance snapshots the owning session's active provenance for
+// recording on a newly created job. nil when no provenance source is wired
+// (test/restore-only managers) or the active set is empty.
+func (jm *jobManager) currentCausalProvenance() *provenance.Causal {
+	if jm == nil || jm.currentProvenance == nil {
+		return nil
+	}
+	return provenance.Clone(jm.currentProvenance())
 }
 
 type runningJob struct {
@@ -201,6 +216,10 @@ type jobNotification struct {
 	JobID, JobType, Status, Reason, TranscriptRef string
 	OutputBytes                                   int64
 	ExitCode                                      *int
+	// Provenance is the causal origin carried with this notification: the
+	// triggering watch's lineage so the notification turn it drives stamps the
+	// same origin and a same-watch retrigger is suppressed.
+	Provenance *provenance.Causal
 	// WatchSend marks this entry as a watch-send wake token: render-by-key
 	// against the owning jobManager's CURRENT pending state at accept time
 	// (spec §4.3). The frame text is deliberately NOT carried here.
@@ -431,6 +450,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 	jobID := jobstore.NewJobID()
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
 	parentJobID := jm.currentParentJobID()
+	jobProvenance := jm.currentCausalProvenance()
 	rec := &jobstore.JobRecord{
 		JobID:            jobID,
 		Type:             jobstore.JobShell,
@@ -443,6 +463,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		StartedAt:        startedAt,
 		LastActivity:     &startedAt,
 		OutputPath:       outputPath,
+		Provenance:       provenance.Clone(jobProvenance),
 	}
 	output, err := jobstore.OpenOutput(outputPath, maxJobOutputRetentionBytes)
 	if err != nil {
@@ -475,6 +496,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		ParentJobID:      rec.ParentJobID,
 		StartedAt:        &startedAt,
 		OutputPath:       rec.OutputPath,
+		Provenance:       provenance.Clone(jobProvenance),
 	}
 	if err := jm.appendEvent(started); err != nil {
 		jm.mu.Unlock()
@@ -590,7 +612,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 		JobType:   string(e.Type),
 		Status:    string(jobstore.StatusRunning),
 		FromWatch: fromWatch,
-	})
+	}, e.Provenance)
 }
 
 func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
@@ -614,7 +636,7 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		OutputBytes:   e.OutputBytes,
 		TranscriptRef: transcriptRef,
 		FromWatch:     fromWatch,
-	})
+	}, e.Provenance)
 }
 
 // errJobNotFound is the shared not-found error for a job lookup by id. It points
@@ -790,6 +812,7 @@ func (jm *jobManager) reconcileLostJobs() error {
 			TS:          finished.TS,
 			JobID:       finished.JobID,
 			TerminalGen: finished.TerminalGen,
+			Provenance:  provenance.Clone(rec.Provenance),
 		}
 		if err := jm.appendEvent(pending); err != nil {
 			return err
@@ -803,6 +826,7 @@ func (jm *jobManager) reconcileLostJobs() error {
 				TranscriptRef: rec.TranscriptRef,
 				OutputBytes:   finished.OutputBytes,
 				ExitCode:      finished.ExitCode,
+				Provenance:    provenance.Clone(rec.Provenance),
 			})
 		}
 	}
@@ -1186,6 +1210,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 			TS:          terminal.endedAt,
 			JobID:       run.rec.JobID,
 			TerminalGen: terminal.generation,
+			Provenance:  provenance.Clone(run.rec.Provenance),
 		}
 		if err := jm.appendEvent(pending); err != nil {
 			return err
@@ -1228,6 +1253,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 			TranscriptRef: run.rec.TranscriptRef,
 			OutputBytes:   terminal.outputBytes,
 			ExitCode:      terminal.exitCode,
+			Provenance:    provenance.Clone(run.rec.Provenance),
 		})
 	}
 	run.closeDone()
@@ -1293,6 +1319,7 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 			TS:          jm.now(),
 			JobID:       rec.JobID,
 			TerminalGen: rec.TerminalGen,
+			Provenance:  provenance.Clone(rec.Provenance),
 		}
 		if rec.NotifyState == jobstore.NotifyNotArmed {
 			if err := jm.appendEvent(pending); err != nil {
@@ -1308,6 +1335,7 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 				TranscriptRef: rec.TranscriptRef,
 				OutputBytes:   rec.OutputBytes,
 				ExitCode:      rec.ExitCode,
+				Provenance:    provenance.Clone(rec.Provenance),
 			})
 		}
 	}
