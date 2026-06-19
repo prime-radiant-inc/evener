@@ -20,14 +20,14 @@ network firewall, or authenticated reverse proxy.
 From the repo root:
 
 ```bash
-make install-home
+make install
 ```
 
 This builds `serf`, `serf-hub`, `serf-tui`, and `serf-doctor`, installs the
 binaries under `~/.local/share/serf/bin`, and symlinks them into
 `~/.local/bin`. Hub, TUI, and doctor workflows resolve sibling binaries through
 the symlink targets, so the installed commands find each other without extra
-flags.
+flags. `make install-home` is an alias for the same layout.
 
 For a system-style install under `/usr/local`:
 

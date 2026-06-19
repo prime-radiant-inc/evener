@@ -29,12 +29,12 @@ make build-hub
 Home install:
 
 ```bash
-make install-home
+make install
 ```
 
 This builds `serf`, `serf-hub`, `serf-tui`, and `serf-doctor`, installs the
 binaries under `~/.local/share/serf/bin`, and symlinks them into
-`~/.local/bin`.
+`~/.local/bin`. `make install-home` is an alias for the same layout.
 
 System-style install:
 

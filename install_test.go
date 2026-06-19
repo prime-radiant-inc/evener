@@ -40,7 +40,7 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 		"XDG_CACHE_HOME":  cacheHome,
 	})
 
-	runCommand(t, repoRoot, env, "make", "install-home")
+	runCommand(t, repoRoot, env, "make", "install")
 
 	binDir := filepath.Join(home, ".local", "bin")
 	shareBinDir := filepath.Join(home, ".local", "share", "serf", "bin")
