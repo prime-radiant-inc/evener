@@ -237,6 +237,7 @@ func replayTurnToAgentTurn(turn hubcore.ReplayTurn) (schema.Turn, map[string]str
 					Name:       part.ToolResult.Name,
 					Content:    part.ToolResult.Content,
 					IsError:    part.ToolResult.IsError,
+					ToolState:  part.ToolResult.ToolState,
 				},
 			})
 		}

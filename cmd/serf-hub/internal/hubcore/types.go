@@ -49,10 +49,11 @@ type ReplayToolCall struct {
 }
 
 type ReplayToolResult struct {
-	ToolCallID string `json:"tool_call_id"`
-	Name       string `json:"name,omitempty"`
-	Content    any    `json:"content,omitempty"`
-	IsError    bool   `json:"is_error,omitempty"`
+	ToolCallID string          `json:"tool_call_id"`
+	Name       string          `json:"name,omitempty"`
+	Content    any             `json:"content,omitempty"`
+	IsError    bool            `json:"is_error,omitempty"`
+	ToolState  json.RawMessage `json:"tool_state,omitempty"`
 }
 
 // Per-request limits for image attachments. Match the browser-side cap so

@@ -180,12 +180,13 @@ await scenario("delegate output drops its tool row and adds a clickable subagent
 await scenario("job control tools render structured summaries", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "ds1", tool_name: "delegate_send", arguments_json: JSON.stringify({ to: "dlg_01", message: "continue" }) }],
-  ["TOOL_CALL_END", { call_id: "ds1", tool_name: "delegate_send", output: JSON.stringify({
+  ["TOOL_CALL_END", { call_id: "ds1", tool_name: "delegate_send", output: "started delegate turn", tool_state: JSON.stringify({
     delegate_id: "dlg_01",
     started_job_id: "job_STARTED",
     current_job_id: "job_STARTED",
     status: "running",
     action: "started",
+    output: "delegate reply",
   }) }],
   ["TOOL_CALL_START", { call_id: "js1", tool_name: "job_send_message", arguments_json: JSON.stringify({ target: "job_A", message: "continue" }) }],
   ["TOOL_CALL_END", { call_id: "js1", tool_name: "job_send_message", output: JSON.stringify({
@@ -214,6 +215,10 @@ await scenario("job control tools render structured summaries", [
   const delegateSendHeader = conv.querySelector(".tool-call.delegate_send .target");
   if (!delegateSendHeader || !delegateSendHeader.textContent.includes("dlg_01")) {
     return { ok: false, detail: "delegate_send target missing delegate id: " + (delegateSendHeader && delegateSendHeader.textContent) };
+  }
+  const delegateSendOutput = conv.querySelector(".tool-call.delegate_send .job-message-output");
+  if (!delegateSendOutput || !delegateSendOutput.textContent.includes("delegate reply")) {
+    return { ok: false, detail: "delegate_send output missing tool_state body" };
   }
   const send = conv.querySelector(".tool-call.job_send_message .result-detail");
   if (!send || !send.textContent.includes("resumed") || !send.textContent.includes("completed") || !send.textContent.includes("job_B")) {

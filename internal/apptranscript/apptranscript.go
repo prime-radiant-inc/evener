@@ -299,6 +299,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				ToolName: name,
 				CallID:   part.ToolResult.ToolCallID,
 				Status:   appwire.TurnStatusCompleted,
+				Raw:      part.ToolResult.ToolState,
 			}
 			if part.ToolResult.IsError {
 				item.Error = StringifyToolContent(part.ToolResult.Content)

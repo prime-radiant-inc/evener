@@ -115,6 +115,28 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 	}
 }
 
+func TestAppItemsFromReplayTurnCarriesToolStateRaw(t *testing.T) {
+	items := appItemsFromReplayTurn("turn_1", 1, hubcore.ReplayTurn{
+		Kind: "TOOL_RESULTS",
+		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{
+			Kind: "tool_result",
+			ToolResult: &hubcore.ReplayToolResult{
+				ToolCallID: "call_delegate_send",
+				Name:       "delegate_send",
+				Content:    "started delegate turn",
+				ToolState:  []byte(`{"job_id":"job_1","status":"running"}`),
+			},
+		}}},
+	}, map[string]string{})
+
+	if len(items) != 1 || items[0].ToolName != "delegate_send" || items[0].Output != "started delegate turn" {
+		t.Fatalf("tool result items=%+v", items)
+	}
+	if string(items[0].Raw) != `{"job_id":"job_1","status":"running"}` {
+		t.Fatalf("tool result Raw = %s, want replay tool_state", items[0].Raw)
+	}
+}
+
 func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
 	items := appItemsFromReplayTurn("turn_1", 1, hubcore.ReplayTurn{
 		Kind: "ASSISTANT",

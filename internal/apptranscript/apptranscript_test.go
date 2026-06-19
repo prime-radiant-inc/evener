@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -142,11 +143,15 @@ func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 			ToolResult: &llm.ToolResultData{
 				ToolCallID: "call_read",
 				Content:    "ok",
+				ToolState:  json.RawMessage(`{"job_id":"job_1"}`),
 			},
 		}}},
 	}, toolNames, nil)
 
 	if len(done) != 1 || done[0].ToolName != "read_file" || done[0].Output != "ok" {
 		t.Fatalf("tool result=%+v", done)
+	}
+	if string(done[0].Raw) != `{"job_id":"job_1"}` {
+		t.Fatalf("tool result Raw = %s, want tool_state", done[0].Raw)
 	}
 }

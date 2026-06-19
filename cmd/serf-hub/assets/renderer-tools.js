@@ -331,7 +331,7 @@
     mode: "card", friendly: "message",
     target: (a) => clip(a.to || a.target || "", 26),
     result: (data, out) => {
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       if (!st) return out ? formatBytes(out.length) : "";
       return compactParts([
         st.action,
@@ -344,7 +344,7 @@
     body: (args, conversation) => outputPreviewBody("job-message-body", "job-message-output", conversation),
     bodyEnd: (state, data, out) => {
       if (!state.body) return;
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       let text = "";
       if (data.error) text = data.error;
       else if (st && typeof st.output === "string") text = st.output;
@@ -356,7 +356,7 @@
     // resume), which reconciles a stale-running row.
     subagentReconcile: (state, data, out) => {
       if (data.error) return [];
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       const jobID = st && (st.job_id || st.current_job_id || st.latest_job_id || st.started_job_id);
       if (!jobID) return [];
       const reply = typeof st.output === "string" ? st.output.replace(/\s+/g, " ").trim() : "";
