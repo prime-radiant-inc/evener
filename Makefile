@@ -53,15 +53,27 @@ install-system: install
 
 test-install:
 	tmpdir=$$(mktemp -d); \
-	trap 'rm -rf "$$tmpdir"' EXIT; \
-	$(MAKE) install-home PREFIX="$$tmpdir/prefix"; \
+	trap 'chmod -R u+w "$$tmpdir" 2>/dev/null || true; rm -rf "$$tmpdir"' EXIT; \
+	home="$$tmpdir/home"; \
+	gomodcache=$$(go env GOMODCACHE); \
+	gocache=$$(go env GOCACHE); \
+	gopath=$$(go env GOPATH); \
+	mkdir -p "$$home"; \
+	env HOME="$$home" XDG_CONFIG_HOME="$$home/.config" XDG_STATE_HOME="$$home/.local/state" XDG_CACHE_HOME="$$home/.cache" GOMODCACHE="$$gomodcache" GOCACHE="$$gocache" GOPATH="$$gopath" $(MAKE) install-home; \
 	for bin in $(SERF_INSTALL_BINS); do \
-		test -x "$$tmpdir/prefix/share/serf/bin/$$bin"; \
-		test -L "$$tmpdir/prefix/bin/$$bin"; \
+		test -x "$$home/.local/share/serf/bin/$$bin"; \
+		test -L "$$home/.local/bin/$$bin"; \
+		test "$$(readlink "$$home/.local/bin/$$bin")" = "$$home/.local/share/serf/bin/$$bin"; \
 	done; \
-	"$$tmpdir/prefix/bin/serf" --version >/dev/null; \
-	"$$tmpdir/prefix/bin/serf-hub" --help >/dev/null 2>&1; \
-	"$$tmpdir/prefix/bin/serf-tui" --help >/dev/null 2>&1
+	test ! -e "$$home/.config/serf"; \
+	test ! -e "$$home/.serf"; \
+	env HOME="$$home" XDG_CONFIG_HOME="$$home/.config" XDG_STATE_HOME="$$home/.local/state" XDG_CACHE_HOME="$$home/.cache" "$$home/.local/bin/serf" --version >/dev/null; \
+	env HOME="$$home" XDG_CONFIG_HOME="$$home/.config" XDG_STATE_HOME="$$home/.local/state" XDG_CACHE_HOME="$$home/.cache" "$$home/.local/bin/serf-hub" --help >/dev/null 2>&1; \
+	env HOME="$$home" XDG_CONFIG_HOME="$$home/.config" XDG_STATE_HOME="$$home/.local/state" XDG_CACHE_HOME="$$home/.cache" "$$home/.local/bin/serf-tui" --help >/dev/null 2>&1; \
+	env HOME="$$home" XDG_CONFIG_HOME="$$home/.config" XDG_STATE_HOME="$$home/.local/state" XDG_CACHE_HOME="$$home/.cache" "$$home/.local/bin/serf" --list-sessions >/dev/null; \
+	test -d "$$home/.config/serf/skills"; \
+	test -d "$$home/.config/serf/plugins"; \
+	test ! -e "$$home/.serf"
 
 # Every Go module in the workspace: the app (.) plus the three published
 # libraries. Under go.work, `./...` resolves per-module, so the gates must loop
