@@ -85,6 +85,9 @@ func TestNonRetryableModelErrorClearsActiveProvenanceBeforeClose(t *testing.T) {
 	if provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") {
 		t.Fatalf("active provenance after closed failed turn = %+v, want cleared", s.activeCausalProvenance())
 	}
+	if !provenance.ContainsWatch(s.completedCausalProvenance(), "watch_A", "wg_1") {
+		t.Fatalf("completed provenance after closed failed turn = %+v, want watch_A/wg_1", s.completedCausalProvenance())
+	}
 }
 
 func newProvenanceErrorSession(t *testing.T, modelErr error) *Session {
