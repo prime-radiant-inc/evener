@@ -184,11 +184,12 @@ func (tc *ToolCallData) Parse() error {
 
 // ToolResultData describes the result of a tool call, linked back to it by ToolCallID.
 type ToolResultData struct {
-	ToolCallID string `json:"tool_call_id"`
-	Name       string `json:"name,omitempty"`
-	Content    any    `json:"content"`
-	IsError    bool   `json:"is_error"`
-	DurationMS int64  `json:"duration_ms,omitempty"`
+	ToolCallID string          `json:"tool_call_id"`
+	Name       string          `json:"name,omitempty"`
+	Content    any             `json:"content"`
+	IsError    bool            `json:"is_error"`
+	DurationMS int64           `json:"duration_ms,omitempty"`
+	ToolState  json.RawMessage `json:"tool_state,omitempty"`
 
 	ImageData      []byte `json:"image_data,omitempty"`
 	ImageMediaType string `json:"image_media_type,omitempty"`

@@ -130,6 +130,16 @@ func extractJobResult(body string) (jobRefInfo, bool) {
 	}, true
 }
 
+func toolResultStateOrContent(result *llm.ToolResultData) string {
+	if result == nil {
+		return ""
+	}
+	if len(result.ToolState) > 0 {
+		return string(result.ToolState)
+	}
+	return fmt.Sprint(result.Content)
+}
+
 // renderOutline builds the per-session outline content and its honest elision
 // counts. start and end are inclusive bounds over the entry-list index
 // (entries[i] → absolute turn number i), matching the numbers range accepts.
@@ -253,7 +263,7 @@ func jobLifecycleBrackets(calls []*llm.ToolCallData, idx *resultIndex) []string 
 		if !ok {
 			continue
 		}
-		info, ok := extractJobResult(fmt.Sprint(paired.result.Content))
+		info, ok := extractJobResult(toolResultStateOrContent(paired.result))
 		if !ok {
 			continue
 		}

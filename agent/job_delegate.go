@@ -1387,6 +1387,7 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 		treeSlot.release()
 		return nil, errJobManagerClosing
 	}
+	var startEvents []jobstore.Event
 	if link.delegateID != "" && link.generation != "" {
 		created := jobstore.Event{
 			Kind:       jobstore.EventDelegateCreated,
@@ -1412,13 +1413,7 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 				Resumable:        true,
 			}
 		}
-		if err := jm.appendEvent(created); err != nil {
-			jm.mu.Unlock()
-			_ = output.Close()
-			_ = os.Remove(outputPath)
-			treeSlot.release()
-			return nil, err
-		}
+		startEvents = append(startEvents, created)
 	}
 	started := jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
@@ -1436,7 +1431,8 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 		DelegateRestore:  run.rec.DelegateRestore,
 		Provenance:       provenance.Clone(run.rec.Provenance),
 	}
-	if err := jm.appendEvent(started); err != nil {
+	startEvents = append(startEvents, started)
+	if err := jm.appendJobEvents(startEvents); err != nil {
 		jm.mu.Unlock()
 		_ = output.Close()
 		_ = os.Remove(outputPath)

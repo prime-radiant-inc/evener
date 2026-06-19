@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/llm"
 )
 
 // renderToolCardForResult builds a one-round transcript (assistant call + paired
@@ -16,6 +19,16 @@ func renderToolCardForResult(toolName, callID string, content any) string {
 	entries := []transcript.Entry{
 		toolCallEntry(call(callID, toolName, `{}`)),
 		toolResultEntry(result(callID, toolName, content, false)),
+	}
+	return renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+}
+
+func renderToolCardForStateResult(toolName, callID string, content any, toolState []byte) string {
+	res := result(callID, toolName, content, false)
+	res.ToolState = toolState
+	entries := []transcript.Entry{
+		toolCallEntry(call(callID, toolName, `{}`)),
+		toolResultEntry(res),
 	}
 	return renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
 }
@@ -163,6 +176,72 @@ func TestRenderMarkdown_DelegateSendResult(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("delegate_send render missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestRenderMarkdown_DelegateSendStateResult(t *testing.T) {
+	c := llm.NewClient()
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("first complete") },
+	}}
+	c.Register(adapter)
+	s := newDelegateTestSession(t, c)
+	first := s.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	adapter.mu.Lock()
+	adapter.steps = append(adapter.steps, func(req llm.Request) llm.Response {
+		return communicateWithDefaultOutput("second complete")
+	})
+	adapter.mu.Unlock()
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "send",
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again","on_idle":"start","max_wait_ms":5000}`, first.DelegateID)),
+	})
+	if res.IsError {
+		t.Fatalf("delegate_send returned error: %s", res.Output)
+	}
+	if len(res.ToolState) == 0 {
+		t.Fatalf("delegate_send missing tool_state; output=%s", res.Output)
+	}
+	if _, ok := decodeJobResult(res.Output); ok {
+		t.Fatalf("delegate_send output unexpectedly decodes as lifecycle JSON; regression requires tool_state: %s", res.Output)
+	}
+
+	out := renderToolCardForStateResult("delegate_send", "send", res.Output, res.ToolState)
+	for _, want := range []string{
+		"job_id=",
+		"status=completed",
+		"transcript_ref=" + first.TranscriptRef,
+		"delegate_id=" + first.DelegateID,
+		"action=started",
+		"second complete",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("delegate_send state render missing %q:\n%s", want, out)
+		}
+	}
+
+	entries := []transcript.Entry{
+		toolCallEntry(call("send", "delegate_send", `{}`)),
+		toolResultEntry(&llm.ToolResultData{
+			ToolCallID: "send",
+			Name:       "delegate_send",
+			Content:    res.Output,
+			ToolState:  res.ToolState,
+		}),
+	}
+	outline, _, _ := renderOutline(entries, 0, len(entries)-1)
+	want := "delegate_send[status=completed child=" + first.TranscriptRef + "]"
+	if !strings.Contains(outline, want) {
+		t.Fatalf("outline missing delegate_send lifecycle bracket %q:\n%s", want, outline)
 	}
 }
 

@@ -88,6 +88,21 @@ func (jm *jobManager) currentParentJobID() string {
 	return jm.parentJobID
 }
 
+func (jm *jobManager) appendJobEvents(events []jobstore.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	if len(events) == 1 || jm.appendEvents == nil {
+		for _, event := range events {
+			if err := jm.appendEvent(event); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return jm.appendEvents(events)
+}
+
 // currentCausalProvenance snapshots the owning session's active provenance for
 // recording on a newly created job. nil when no provenance source is wired
 // (test/restore-only managers) or the active set is empty.

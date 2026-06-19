@@ -260,15 +260,20 @@ func TestCreateDelegateStartupDoesNotLeaveUnreturnedRunningJob(t *testing.T) {
 
 	var sawDelegateStart atomic.Bool
 	origAppend := sess.jobManager.appendEvent
+	origAppendEvents := sess.jobManager.appendEvents
 	sess.jobManager.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventJobStarted && e.Type == jobstore.JobDelegate {
-			sawDelegateStart.Store(true)
-			return origAppend(e)
-		}
 		if sawDelegateStart.Load() && e.Kind == jobstore.EventJobSessionAssigned {
 			return errors.New("redundant assignment append must not be required")
 		}
 		return origAppend(e)
+	}
+	sess.jobManager.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventJobStarted && event.Type == jobstore.JobDelegate {
+				sawDelegateStart.Store(true)
+			}
+		}
+		return origAppendEvents(events)
 	}
 
 	res := sess.createDelegate(context.Background(), delegateArgs{
@@ -294,8 +299,46 @@ func TestCreateDelegateStartupDoesNotLeaveUnreturnedRunningJob(t *testing.T) {
 	}
 
 	sess.jobManager.appendEvent = origAppend
+	sess.jobManager.appendEvents = origAppendEvents
 	_, _ = sess.jobManager.stop(res.JobID)
 	waitForShellDone(t, sess.jobManager, res.JobID)
+}
+
+func TestCreateDelegateStartupBatchFailureDoesNotLeavePhantomDelegate(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess := newDelegateTestSession(t, c)
+
+	appendErr := errors.New("delegate startup batch failed")
+	origAppendEvents := sess.jobManager.appendEvents
+	sess.jobManager.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventJobStarted && event.Type == jobstore.JobDelegate {
+				return appendErr
+			}
+		}
+		return origAppendEvents(events)
+	}
+	defer func() { sess.jobManager.appendEvents = origAppendEvents }()
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "fail before durable start",
+		Background: true,
+	})
+	if !errors.Is(res.Err, appendErr) {
+		t.Fatalf("createDelegate err = %v, want %v", res.Err, appendErr)
+	}
+	delegates, err := sess.jobManager.store.LoadDelegates()
+	if err != nil {
+		t.Fatalf("LoadDelegates: %v", err)
+	}
+	if len(delegates) != 0 {
+		t.Fatalf("delegates = %+v, want none after failed startup batch", delegates)
+	}
+	jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
+	if len(jobs) != 0 {
+		t.Fatalf("delegate jobs = %+v, want none after failed startup batch", jobs)
+	}
 }
 
 func TestCreateDelegateDescriptorDurableBeforeFirstModelRequest(t *testing.T) {
@@ -354,13 +397,17 @@ func TestCreateDelegateDescriptorDurableBeforeFirstModelRequest(t *testing.T) {
 		},
 	}
 
-	origAppend := sess.jobManager.appendEvent
-	sess.jobManager.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventJobStarted && e.Type == jobstore.JobDelegate {
-			time.Sleep(250 * time.Millisecond)
+	origAppendEvents := sess.jobManager.appendEvents
+	sess.jobManager.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventJobStarted && event.Type == jobstore.JobDelegate {
+				time.Sleep(250 * time.Millisecond)
+				break
+			}
 		}
-		return origAppend(e)
+		return origAppendEvents(events)
 	}
+	t.Cleanup(func() { sess.jobManager.appendEvents = origAppendEvents })
 
 	resultSchema := map[string]any{
 		"type": "object",
@@ -2180,14 +2227,17 @@ func TestSendDelegateMessageTerminalResumeWaitsForDelegateJobAttachment(t *testi
 	attachStarted := make(chan struct{})
 	releaseAttach := make(chan struct{})
 	var attachOnce sync.Once
-	origAppend := sess.jobManager.appendEvent
-	defer func() { sess.jobManager.appendEvent = origAppend }()
-	sess.jobManager.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventJobStarted && e.Type == jobstore.JobDelegate && e.Task == "run again" {
-			attachOnce.Do(func() { close(attachStarted) })
-			<-releaseAttach
+	origAppendEvents := sess.jobManager.appendEvents
+	defer func() { sess.jobManager.appendEvents = origAppendEvents }()
+	sess.jobManager.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventJobStarted && event.Type == jobstore.JobDelegate && event.Task == "run again" {
+				attachOnce.Do(func() { close(attachStarted) })
+				<-releaseAttach
+				break
+			}
 		}
-		return origAppend(e)
+		return origAppendEvents(events)
 	}
 
 	firstResumeDone := make(chan sendMessageResult, 1)

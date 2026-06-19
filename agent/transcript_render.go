@@ -859,7 +859,7 @@ func writeToolCard(b *strings.Builder, callOwnerSeq int, tc *llm.ToolCallData, i
 
 	if hasResult {
 		full := wantFullResult(opt, callOwnerSeq, paired.ownerSeq)
-		writeToolResultBody(b, tc.Name, paired.result.Content, full)
+		writeToolResultBody(b, tc.Name, paired.result, full)
 	}
 }
 
@@ -963,11 +963,14 @@ const (
 // All three forms share the same adaptive fence and head+tail truncation as
 // writeResultBody, so the output stays bounded and inner ``` fences cannot break
 // the card.
-func writeToolResultBody(b *strings.Builder, toolName string, content any, full bool) {
-	raw := fmt.Sprint(content)
+func writeToolResultBody(b *strings.Builder, toolName string, result *llm.ToolResultData, full bool) {
+	raw := ""
+	if result != nil {
+		raw = fmt.Sprint(result.Content)
+	}
 
 	if jobLifecycleTools[toolName] {
-		if body, ok := jobResultBody(raw); ok {
+		if body, ok := jobResultBody(toolResultStateOrContent(result)); ok {
 			writeFencedBody(b, body, full)
 			return
 		}

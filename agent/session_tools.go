@@ -467,6 +467,7 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 				Content:        res.Output,
 				IsError:        res.IsError,
 				DurationMS:     res.DurationMS,
+				ToolState:      res.ToolState,
 				ImageData:      res.ImageData,
 				ImageMediaType: res.ImageMediaType,
 			},
