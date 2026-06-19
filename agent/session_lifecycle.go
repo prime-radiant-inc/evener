@@ -247,7 +247,7 @@ const (
 // through to completion and returns the accumulated assistant output. It is a
 // thin delegate to ProcessInputKind with kind EntryUserInput.
 func (s *Session) ProcessInput(ctx context.Context, input string, images []ImageAttachment) (string, error) {
-	return s.ProcessInputKind(ctx, input, images, EntryUserInput)
+	return s.processInputKindWithProvenance(ctx, input, images, EntryUserInput, nil)
 }
 
 // ProcessInputKind processes a single input of the given EntryKind through to
@@ -259,6 +259,14 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 // partial output with the error. It emits EventSessionEnd for the input and
 // returns an error when the session is closed or a turn fails.
 func (s *Session) ProcessInputKind(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
+	return s.processInputKindWithProvenance(ctx, input, images, kind, nil)
+}
+
+func (s *Session) processInputWithProvenance(ctx context.Context, input string, images []ImageAttachment, p *provenance.Causal) (string, error) {
+	return s.processInputKindWithProvenance(ctx, input, images, EntryUserInput, p)
+}
+
+func (s *Session) processInputKindWithProvenance(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (string, error) {
 	// Reset so SESSION_END can fire at the end of this input's processing.
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
@@ -283,6 +291,7 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 	next := input
 	nextImages := images
 	nextKind := kind
+	nextProvenance := provenance.Clone(inputProvenance)
 	processCtx := ctx
 	// A goal continuation decided at the gate is deferred across an interleaved
 	// notification turn and then run INLINE (via continue), so the goal advances
@@ -300,11 +309,12 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 		// no-progress streak and iteration count) or a user/follow-up turn (which
 		// does not — /par #4).
 		ranKind := nextKind
-		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind)
+		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind, nextProvenance)
 		// Follow-up turns (after the first) carry no attachments and are
 		// user-driven, not continuations.
 		nextImages = nil
 		nextKind = EntryUserInput
+		nextProvenance = nil
 		if strings.TrimSpace(out) != "" {
 			outputs = append(outputs, out)
 		}
@@ -472,7 +482,7 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 	}
 }
 
-func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (out string, progressed bool, err error) {
+func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
 	// Flush meta.json on every exit from this function — normal return, error
 	// return, ctx cancellation, retry-budget exhaustion, or panic. Without
 	// this, in-memory modelResponses bumps that happen between happy-path
@@ -520,7 +530,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if !s.acceptNotificationInput(ctx) {
 			return "", false, nil
 		}
-	} else if !s.acceptUserInput(ctx, input, images) {
+	} else if !s.acceptUserInput(ctx, input, images, inputProvenance) {
 		return "", false, nil
 	}
 
@@ -740,10 +750,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 // MaxTurns, returning proceed=false (the caller returns "", nil) when the turn
 // limit is already reached; otherwise it increments the turn counter, drains any
 // pending steering, and returns proceed=true.
-func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment) (proceed bool) {
-	// A new external top-level input starts a fresh causal context: reset active
-	// provenance so this turn's emitted events do not inherit a prior watch origin.
-	s.replaceActiveProvenance(nil)
+func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal) (proceed bool) {
+	// A new top-level input starts a fresh causal context: replace active
+	// provenance with the input's provenance, or empty provenance for ordinary
+	// external user input.
+	s.replaceActiveProvenance(inputProvenance)
 	s.repairOrphanedToolResults("before accepting new input")
 
 	s.mu.Lock()

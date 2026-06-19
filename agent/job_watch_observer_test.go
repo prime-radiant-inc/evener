@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
@@ -352,6 +353,73 @@ func TestObserverInjectionDoesNotRetriggerSameWatch(t *testing.T) {
 	// call watchSendSnapshot again. A value of 2 would mean suppression regressed.
 	if cfg.nextUpdateSeq != 1 {
 		t.Fatalf("nextUpdateSeq = %d after suppressed ack, want 1 (only the original external trigger)", cfg.nextUpdateSeq)
+	}
+}
+
+func TestIdleWatchSendObserverCallerSendCarriesProvenance(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return communicateWithDefaultOutput("observer ready") },
+		func(llm.Request) llm.Response {
+			args, _ := json.Marshal(map[string]any{
+				"to":      runtimeMessageAliasCaller,
+				"message": "observer says Ni",
+			})
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "send_caller",
+				Name:      "delegate_send",
+				Arguments: args,
+				Type:      "function",
+			})
+		},
+		func(llm.Request) llm.Response { return communicateWithDefaultOutput("observer reported") },
+	}})
+	parent := newDelegateTestSession(t, c)
+	observer := parent.createDelegate(context.Background(), delegateArgs{Task: "observe", Background: false, BlockTimeoutMS: 5000})
+	if observer.Err != nil {
+		t.Fatalf("observer delegate: %v", observer.Err)
+	}
+	if _, err := parent.jobManager.configureWatch(watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: observer.DelegateID, Message: "Filter this caller message."},
+	}); err != nil {
+		t.Fatalf("configure observer watch: %v", err)
+	}
+	cfg := onlyWatchConfigForTest(t, parent.jobManager)
+
+	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "actually alpha marker", AwaitReply: false})
+	if cfg.nextUpdateSeq != 1 {
+		t.Fatalf("external communicate fired %d watch sends, want 1", cfg.nextUpdateSeq)
+	}
+	if err := drainWatchSendsVia(t, parent.jobManager, parent.sendDelegateMessage); err != nil {
+		t.Fatalf("drain watch sends: %v", err)
+	}
+
+	delegates, err := parent.jobManager.store.LoadDelegates()
+	if err != nil {
+		t.Fatalf("LoadDelegates: %v", err)
+	}
+	delegateRec := delegates[observer.DelegateID]
+	if delegateRec == nil || delegateRec.ChildSessionID == "" {
+		t.Fatalf("observer delegate record = %+v, want child session", delegateRec)
+	}
+	result := waitForRuntimeSubagent(t, parent, delegateRec.ChildSessionID)
+	if result.Status != SubagentCompleted {
+		t.Fatalf("observer resumed status = %s, want completed: %+v", result.Status, result)
+	}
+
+	drained := parent.drainSteeringForTurn()
+	if len(drained) != 1 {
+		t.Fatalf("parent steering messages = %d, want observer caller send", len(drained))
+	}
+	if !provenance.ContainsWatch(drained[0].Provenance, cfg.watchID, cfg.generation) {
+		t.Fatalf("observer caller steering provenance = %+v, want %s/%s", drained[0].Provenance, cfg.watchID, cfg.generation)
+	}
+
+	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "acknowledged observer", AwaitReply: false})
+	if cfg.nextUpdateSeq != 1 {
+		t.Fatalf("nextUpdateSeq = %d after observer ack, want 1 (same-watch echo suppressed)", cfg.nextUpdateSeq)
 	}
 }
 

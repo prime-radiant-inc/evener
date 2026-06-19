@@ -94,10 +94,11 @@ func DefShell() llm.ToolDefinition {
 }
 
 // DefDelegate defines the delegate tool, which starts a NEW delegate
-// conversation (independent agentic work) and returns a job_id. agentTypes
-// constrains the agent_type enum to the session's available roles; pass nil to
-// omit the enum (free-form). reasoning_effort uses the delegate contract's
-// portable low/medium/high enum; the handler resolves provider-specific details.
+// conversation (independent agentic work) and returns a durable delegate_id plus
+// concrete job IDs. agentTypes constrains the agent_type enum to the session's
+// available roles; pass nil to omit the enum (free-form). reasoning_effort uses
+// the delegate contract's portable low/medium/high enum; the handler resolves
+// provider-specific details.
 func DefDelegate(agentTypes []string) llm.ToolDefinition {
 	strictFalse := false
 	agentTypeSchema := map[string]any{
@@ -109,9 +110,9 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 	}
 	return llm.ToolDefinition{
 		Name: "delegate",
-		Description: "Start a NEW delegate conversation to do independent agentic work; returns a `job_id` " +
-			"immediately by default (you are notified when it finishes). `delegate` never resumes an existing " +
-			"delegate: follow up on one with `delegate_send`. Optional: `agent_type` picks a role from the " +
+		Description: "Start a NEW delegate conversation to do independent agentic work; returns a durable `delegate_id` " +
+			"for follow-up plus concrete `job_id`s for individual turns. `delegate` never resumes an existing " +
+			"delegate: follow up on one with `delegate_send(to=<delegate_id>)`. Optional: `agent_type` picks a role from the " +
 			"enum (described in your agents section); `model` and `reasoning_effort` override the defaults; " +
 			"`result_schema` requests a validated structured result; `max_wait_ms` waits inline up to that many ms " +
 			"(a timeout leaves the job running). `delegation_allowance` lets the delegate itself delegate, up to one " +
@@ -126,7 +127,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 				"agent_type":           agentTypeSchema,
 				"model":                map[string]any{"type": "string", "description": "Model override (default: parent model)."},
 				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
-				"max_wait_ms":          map[string]any{"type": "integer", "description": "0 (default): return the job_id immediately; you are notified on completion. >0: wait inline up to this many ms; a timeout leaves the job running."},
+				"max_wait_ms":          map[string]any{"type": "integer", "description": "0 (default): return the delegate_id and started job_id immediately; you are notified on completion. >0: wait inline up to this many ms; a timeout leaves the job running."},
 				"delegation_allowance": map[string]any{"type": "integer", "description": "0 (default): a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type actually has the `delegate` tool: the built-in `subagent` role is a non-delegating leaf, so a >0 allowance on it is a silent no-op. For a multi-level tree, omit agent_type (the default role can delegate)."},
 				"result_schema": map[string]any{
 					"type":                 "object",

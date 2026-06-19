@@ -171,6 +171,19 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 	if len(effortEnum) != 3 || effortEnum[0] != "low" || effortEnum[1] != "medium" || effortEnum[2] != "high" {
 		t.Errorf("reasoning_effort enum = %v, want [low medium high]", effortEnum)
 	}
+
+	maxWaitDesc := props["max_wait_ms"].(map[string]any)["description"].(string)
+	for _, text := range []string{def.Description, maxWaitDesc} {
+		if !strings.Contains(text, "delegate_id") {
+			t.Fatalf("delegate schema text must mention delegate_id: %q", text)
+		}
+		if !strings.Contains(text, "job_id") {
+			t.Fatalf("delegate schema text must still mention concrete job_id: %q", text)
+		}
+	}
+	if !strings.Contains(def.Description, "delegate_send(to=<delegate_id>)") {
+		t.Fatalf("delegate description must show delegate_send follow-up target:\n%s", def.Description)
+	}
 }
 
 // TestDefDelegateHasDelegationAllowance pins spec §1/§8: delegate exposes a

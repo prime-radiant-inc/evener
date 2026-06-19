@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/skill"
 	taskpkg "primeradiant.com/serf/agent/task"
@@ -612,7 +613,7 @@ func (s *Session) trackAndLaunchPreparedSubagent(prepared *preparedSubagentRun) 
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 
-	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, false)
+	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, s.activeCausalProvenance())
 	return nil
 }
 
@@ -659,7 +660,7 @@ func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, er
 	resetSubagentForRunLocked(sub, runCancel, resumeTime)
 	sub.mu.Unlock()
 
-	s.launchSubagentRun(runCtx, sub, runCancel, input, false)
+	s.launchSubagentRun(runCtx, sub, runCancel, input, s.activeCausalProvenance())
 	return true, nil
 }
 
@@ -768,12 +769,12 @@ func resetSubagentForRunLockedFromWatch(sub *subagent, cancel context.CancelFunc
 	sub.closeTimedOut = false
 }
 
-func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCancel context.CancelFunc, input string, fromWatch bool) {
+func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCancel context.CancelFunc, input string, inputProvenance *provenance.Causal) {
 	// Resume runs should also be independent of the caller's wait context.
 	go func() {
 		defer s.sendersWG.Done()
 		defer runCancel()
-		sub.run(runCtx, input)
+		sub.run(runCtx, input, inputProvenance)
 	}()
 }
 
@@ -820,8 +821,8 @@ func communicateNudge(toolName string) string {
 		"it cannot see anything else you did. Report your results now."
 }
 
-func (a *subagent) run(ctx context.Context, input string) {
-	res, err := a.sess.ProcessInput(ctx, input, nil)
+func (a *subagent) run(ctx context.Context, input string, inputProvenance *provenance.Causal) {
+	res, err := a.sess.processInputWithProvenance(ctx, input, nil, inputProvenance)
 
 	// A requested cancel suppresses both the communicate-nudge and the
 	// SubagentStop blocking-continuation: neither should run another turn on the
@@ -840,10 +841,10 @@ func (a *subagent) run(ctx context.Context, input string) {
 		!a.sess.Communicated() &&
 		(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
 	if shouldNudge {
-		res, err = a.sess.ProcessInput(ctx, communicateNudge(a.sess.resultToolName()), nil)
+		res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, inputProvenance)
 	}
 	if !cancelRequested {
-		res, err = a.runSubagentStopHook(ctx, res, err)
+		res, err = a.runSubagentStopHook(ctx, res, err, inputProvenance)
 	}
 
 	a.sess.mu.Lock()
@@ -874,7 +875,7 @@ func (a *subagent) run(ctx context.Context, input string) {
 	}
 }
 
-func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err error) (string, error) {
+func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err error, inputProvenance *provenance.Causal) (string, error) {
 	if a.sess == nil || a.sess.hookRunner == nil {
 		return res, err
 	}
@@ -898,7 +899,7 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	if reason == "" {
 		reason = "SubagentStop hook blocked completion. Continue and address the hook feedback before stopping."
 	}
-	return a.sess.ProcessInput(ctx, reason, nil)
+	return a.sess.processInputWithProvenance(ctx, reason, nil, inputProvenance)
 }
 
 func (a *subagent) resultSnapshotLocked() subagentResult {

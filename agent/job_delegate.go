@@ -441,7 +441,11 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return s.sendRunningDelegateMessage(target, message, active, args.FromWatch, args.Provenance)
 	}
 
-	run, finalizeErr, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef, delegateID, delegateResultSchema(rec), rec.DelegateRestore, args.FromWatch, args.Provenance)
+	messageProvenance := provenance.Clone(args.Provenance)
+	if messageProvenance == nil {
+		messageProvenance = s.activeCausalProvenance()
+	}
+	run, finalizeErr, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef, delegateID, delegateResultSchema(rec), rec.DelegateRestore, args.FromWatch, messageProvenance)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: resume delegate session %q: %w", childID, err))
 	}
@@ -1063,7 +1067,7 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 		<-done
 		finalizeErr <- s.finalizeDelegate(run.rec.JobID, childID, sub)
 	}()
-	s.launchSubagentRun(runCtx, sub, runCancel, message, fromWatch)
+	s.launchSubagentRun(runCtx, sub, runCancel, message, watchProvenance)
 	return run, finalizeErr, nil, nil
 }
 

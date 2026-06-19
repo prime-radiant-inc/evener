@@ -384,7 +384,7 @@ func TestCancelAgent_GenuineFailureRacingCancelStaysFailed(t *testing.T) {
 		cancelRequested: true, // a cancel is racing this run's genuine failure
 	}
 
-	sub.run(context.Background(), "do work")
+	sub.run(context.Background(), "do work", nil)
 
 	sub.mu.Lock()
 	status := sub.status
