@@ -334,7 +334,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	// may message its own direct worker delegate by delegate_id, but the scope is the
 	// session's own delegates — a forwarded copy of a deeper descendant's delegate
 	// (owned by another session) is not directly controllable.
-	if rec.OwnerSessionID != "" && rec.OwnerSessionID != s.id {
+	if !delegateControlOwnedBySession(rec.OwnerSessionID, s.id) {
 		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is owned by descendant session %q; you may only message your own direct delegates", target, rec.OwnerSessionID))
 	}
 	if rec.Type != jobstore.JobDelegate {
@@ -1025,6 +1025,13 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 		Action:              "steered",
 		TranscriptRef:       rec.TranscriptRef,
 	}
+}
+
+// delegateControlOwnedBySession is the shared control-surface predicate for
+// delegate_send and job_list. Empty owner metadata is local to the current store;
+// a non-empty mismatch is a descendant-owned forwarded copy.
+func delegateControlOwnedBySession(ownerSessionID, sessionID string) bool {
+	return ownerSessionID == "" || ownerSessionID == sessionID
 }
 
 func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message string, sub *subagent, transcriptRef, delegateID string, resultSchema any, restore *jobstore.DelegateRestoreDescriptor, fromWatch bool, watchProvenance *provenance.Causal) (*runningJob, <-chan error, *jobstore.JobRecord, error) {

@@ -178,6 +178,31 @@ func TestJobListHidesDescendantDelegateHandles(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("append owned delegate job: %v", err)
 	}
+	legacyStart := now.Add(1500 * time.Millisecond)
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         legacyStart,
+		DelegateID: "dlg_legacy",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID: "LEGACY",
+			TranscriptRef:  encodeRef("", "LEGACY"),
+			Generation:     "dg_legacy",
+			Resumable:      true,
+		},
+	}); err != nil {
+		t.Fatalf("append legacy delegate: %v", err)
+	}
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:          jobstore.EventJobStarted,
+		TS:            legacyStart,
+		JobID:         "job_legacy",
+		Type:          jobstore.JobDelegate,
+		DelegateID:    "dlg_legacy",
+		TranscriptRef: encodeRef("", "LEGACY"),
+		StartedAt:     &legacyStart,
+	}); err != nil {
+		t.Fatalf("append legacy delegate job: %v", err)
+	}
 	descStart := now.Add(2 * time.Second)
 	if err := s.jobManager.appendEvent(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
@@ -201,12 +226,19 @@ func TestJobListHidesDescendantDelegateHandles(t *testing.T) {
 	if err := json.Unmarshal(handlerJSON(t, out), &parsed); err != nil {
 		t.Fatalf("unmarshal job_list: %v", err)
 	}
-	if len(parsed.Delegates) != 1 || parsed.Delegates[0].DelegateID != "dlg_owned" {
-		t.Fatalf("delegates = %+v, want only owned delegate", parsed.Delegates)
+	delegates := make(map[string]bool)
+	for _, delegate := range parsed.Delegates {
+		delegates[delegate.DelegateID] = true
+	}
+	if !delegates["dlg_owned"] || !delegates["dlg_legacy"] || delegates["dlg_descendant"] {
+		t.Fatalf("delegates = %+v, want owned and legacy only", parsed.Delegates)
 	}
 	for _, job := range parsed.Jobs {
 		if job.JobID == "job_descendant" && job.DelegateID != "" {
 			t.Fatalf("descendant job row exposes delegate_id %q; want no control handle", job.DelegateID)
+		}
+		if job.JobID == "job_legacy" && job.DelegateID != "dlg_legacy" {
+			t.Fatalf("legacy job row delegate_id = %q, want dlg_legacy", job.DelegateID)
 		}
 	}
 	rendered := out.(tooldefs.StateResult).Output
@@ -651,6 +683,7 @@ func TestJobListDefaultListingOmitsDepth(t *testing.T) {
 // projection (which must key on the owner session, not the root caller).
 type jobListDescendantEntry struct {
 	JobID              string  `json:"job_id"`
+	DelegateID         string  `json:"delegate_id"`
 	Status             string  `json:"status"`
 	OwnerSessionID     string  `json:"owner_session_id"`
 	Depth              int     `json:"depth"`
@@ -670,6 +703,70 @@ func findDescendantRow(rows []jobListDescendantEntry, jobID string) *jobListDesc
 		}
 	}
 	return nil
+}
+
+func TestJobListIncludeDescendantsHidesChildDelegateHandles(t *testing.T) {
+	rootJM := newWalkJobManager(t, "ROOT")
+	childJM := newWalkJobManager(t, "CHILD")
+	t.Cleanup(func() {
+		_ = rootJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	now := time.Unix(150, 0).UTC()
+	if err := childJM.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: "dlg_child",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "GRANDCHILD",
+			TranscriptRef:    encodeRef("", "GRANDCHILD"),
+			OwnerSessionID:   "CHILD",
+			VisibleSessionID: "CHILD",
+			Generation:       "dg_child",
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append child delegate: %v", err)
+	}
+	started := now.Add(time.Millisecond)
+	if err := childJM.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               started,
+		JobID:            "job_child_delegate",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_child",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: "CHILD",
+		TranscriptRef:    encodeRef("", "GRANDCHILD"),
+		StartedAt:        &started,
+	}); err != nil {
+		t.Fatalf("append child delegate job: %v", err)
+	}
+
+	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root.subagents.track(&subagent{id: "CHILD", sess: child, status: SubagentRunning})
+
+	out, err := jobListTool(root, decodeJobListArgs(t, `{"include_descendants":true}`), 1<<20)
+	if err != nil {
+		t.Fatalf("jobListTool(include_descendants): %v", err)
+	}
+	var parsed jobListDescendantOutput
+	if err := json.Unmarshal(handlerJSON(t, out), &parsed); err != nil {
+		t.Fatalf("unmarshal job_list output: %v (output: %s)", err, out)
+	}
+	row := findDescendantRow(parsed.Jobs, "job_child_delegate")
+	if row == nil {
+		t.Fatalf("include_descendants jobs = %+v, want child delegate job", parsed.Jobs)
+	}
+	if row.DelegateID != "" {
+		t.Fatalf("child delegate row exposes delegate_id %q; want no parent-visible control handle", row.DelegateID)
+	}
+	rendered := out.(tooldefs.StateResult).Output
+	if strings.Contains(rendered, "delegate_id dlg_child") || strings.Contains(rendered, "delegate dlg_child") {
+		t.Fatalf("include_descendants output exposes child delegate handle:\n%s", rendered)
+	}
 }
 
 // newWalkJobManager builds an isolated jobManager for a single tree level.

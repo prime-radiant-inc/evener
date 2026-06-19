@@ -691,7 +691,7 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	sort.Strings(delegateIDs)
 	for _, delegateID := range delegateIDs {
 		delegateRecord := delegateRecords[delegateID]
-		if delegateRecord == nil || delegateRecord.OwnerSessionID != s.id {
+		if delegateRecord == nil || !delegateControlOwnedBySession(delegateRecord.OwnerSessionID, s.id) {
 			continue
 		}
 		delegates = append(delegates, projectDelegateRecord(delegateRecord))
@@ -1925,7 +1925,7 @@ func projectJobRecordForViewer(viewer *Session, assessor *Session, rec *jobstore
 	if viewer != nil {
 		viewerID = viewer.id
 	}
-	if rec.OwnerSessionID != viewerID {
+	if !delegateControlOwnedBySession(rec.OwnerSessionID, viewerID) {
 		delegateID = ""
 	}
 	if assessor == nil {
