@@ -128,7 +128,7 @@ func buildWatchReport(paths Paths, events []jobstore.Event, opts WatchOpts) Watc
 		}
 	}
 
-	report := WatchReport{SessionID: paths.SessionID, JobsPath: paths.JobsPath}
+	report := WatchReport{SessionID: paths.SessionID, JobsPath: paths.JobsPath, Watches: []WatchView{}}
 	for _, wID := range orderedWatchIDs(registry, terminals) {
 		if opts.WatchID != "" && wID != opts.WatchID {
 			continue
