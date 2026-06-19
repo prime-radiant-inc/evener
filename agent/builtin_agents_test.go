@@ -40,6 +40,44 @@ func TestBuiltinAgents_LoadsCoreRoles(t *testing.T) {
 	}
 }
 
+func TestBuiltinAgents_LoadsDoctor(t *testing.T) {
+	agents, err := builtinAgents()
+	if err != nil {
+		t.Fatalf("builtinAgents: %v", err)
+	}
+	doc, ok := agents["doctor"]
+	if !ok {
+		t.Fatal("expected built-in 'doctor' agent")
+	}
+	if doc.PluginName != "builtin" {
+		t.Errorf("doctor PluginName = %q, want builtin", doc.PluginName)
+	}
+	if doc.Description == "" || doc.SystemPrompt == "" {
+		t.Error("doctor should have a non-empty description and system prompt")
+	}
+	hasSkill := false
+	for _, s := range doc.Skills {
+		if s == "doctoring-serf" {
+			hasSkill = true
+		}
+	}
+	if !hasSkill {
+		t.Errorf("doctor should auto-inject the doctoring-serf skill, got skills: %v", doc.Skills)
+	}
+	// The doctor needs shell (to run serf-doctor) and edit tools (gated Heal/Extend).
+	wantTools := map[string]bool{"shell": false, "write_file": false}
+	for _, tool := range doc.Tools {
+		if _, ok := wantTools[tool]; ok {
+			wantTools[tool] = true
+		}
+	}
+	for tool, found := range wantTools {
+		if !found {
+			t.Errorf("doctor should carry the %q tool, got: %v", tool, doc.Tools)
+		}
+	}
+}
+
 func TestWorkflowPlugin_LoadWorkflowRoles(t *testing.T) {
 	agents := coordinatorWorkflowPublicAgentsForTest(t)
 	want := []string{"coordinator", "planner", "implementer", "reviewer", "verifier", "worker", "test-engineer"}
