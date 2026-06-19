@@ -494,7 +494,7 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 	}
 	if err := jm.forwardLocked(started); err != nil {
 		_ = run.output.Close()
-		if terminalErr := jm.appendStartForwardFailure(rec.JobID, run.output); terminalErr != nil {
+		if terminalErr := jm.appendStartForwardFailure(rec.JobID, run.output, rec.Provenance); terminalErr != nil {
 			run.forwardDisabled = true
 			jm.mu.Unlock()
 			return errors.Join(errDelayedShellStartForwardTerminalFailed, err, terminalErr)

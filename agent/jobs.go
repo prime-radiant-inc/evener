@@ -505,7 +505,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 	}
 	if err := jm.forwardLocked(started); err != nil {
 		_ = output.Close()
-		if terminalErr := jm.appendStartForwardFailure(rec.JobID, output); terminalErr != nil {
+		if terminalErr := jm.appendStartForwardFailure(rec.JobID, output, rec.Provenance); terminalErr != nil {
 			run.forwardDisabled = true
 			jm.running[jobID] = run
 			jm.mu.Unlock()
@@ -808,6 +808,7 @@ func (jm *jobManager) reconcileLostJobs() error {
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		finished.Provenance = provenance.Clone(rec.Provenance)
 		if err := jm.appendEvent(finished); err != nil {
 			return err
 		}
@@ -919,9 +920,15 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 // EventJobNotificationPending or enqueue an owner notification — the model
 // already received the complete result inline (spec §6.4d).
 func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, reason string, exitCode *int) error {
-	terminal, err := jm.writeFinishJob(run, status, reason, exitCode)
-	if err != nil {
-		return err
+	jm.mu.Lock()
+	terminal := run.terminal
+	jm.mu.Unlock()
+	if terminal == nil {
+		var err error
+		terminal, err = jm.writeFinishJob(run, status, reason, exitCode)
+		if err != nil {
+			return err
+		}
 	}
 
 	jm.mu.Lock()
@@ -929,18 +936,23 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 		jm.mu.Unlock()
 		return nil
 	}
-	watchNotifications, watchDeliveries, watchRegistryEvents := jm.expireJobWatchesLocked(run.rec.JobID)
-	delete(jm.running, run.rec.JobID)
+	watchNotifications, watchDeliveries, watchRegistryEvents, expiredWatches := jm.expireJobWatchesLocked(run.rec.JobID)
 	jm.mu.Unlock()
 
 	if err := jm.appendWatchRegistryEvents(watchRegistryEvents); err != nil {
 		return err
 	}
+	jm.detachExpiredJobWatches(expiredWatches)
 	jm.enqueueWatchNotifications(watchNotifications)
 	jm.recordWatchSendsAndKick(watchDeliveries)
 	// No EventJobNotificationPending, no jm.enqueue call: kept within-bound
 	// jobs completed before the tool returned (spec §6.4d).
 
+	jm.mu.Lock()
+	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
+		delete(jm.running, run.rec.JobID)
+	}
+	jm.mu.Unlock()
 	run.stopWatchdog()
 	_ = run.output.Close()
 	run.closeDone()
@@ -1038,6 +1050,7 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 		StructuredResultValid:  structuredValid,
 		StructuredResultReason: structuredReason,
 		TerminalGen:            terminal.generation,
+		Provenance:             provenance.Clone(run.rec.Provenance),
 	}
 	terminal.finished = finished
 	if err := jm.appendEvent(finished); err != nil {
@@ -1117,7 +1130,7 @@ func (jm *jobManager) runAfterDurableFinish(run *runningJob, terminal *terminalJ
 	jm.mu.Unlock()
 }
 
-func (jm *jobManager) appendStartForwardFailure(jobID string, output *jobstore.OutputStore) error {
+func (jm *jobManager) appendStartForwardFailure(jobID string, output *jobstore.OutputStore, p *provenance.Causal) error {
 	var outputBytes int64
 	if output != nil {
 		if _, total, _, err := output.Tail(0); err == nil {
@@ -1134,6 +1147,7 @@ func (jm *jobManager) appendStartForwardFailure(jobID string, output *jobstore.O
 		EndedAt:     &endedAt,
 		OutputBytes: outputBytes,
 		TerminalGen: jobstore.NewTerminalGeneration(),
+		Provenance:  provenance.Clone(p),
 	})
 }
 
@@ -1202,8 +1216,9 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	var watchNotifications []jobNotification
 	var watchDeliveries []watchSendDelivery
 	var watchRegistryEvents []jobstore.Event
+	var expiredWatches []expiredJobWatch
 	if !pendingAppended {
-		watchNotifications, watchDeliveries, watchRegistryEvents = jm.expireJobWatchesLocked(run.rec.JobID)
+		watchNotifications, watchDeliveries, watchRegistryEvents, expiredWatches = jm.expireJobWatchesLocked(run.rec.JobID)
 	}
 	jm.mu.Unlock()
 
@@ -1211,6 +1226,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		if err := jm.appendWatchRegistryEvents(watchRegistryEvents); err != nil {
 			return err
 		}
+		jm.detachExpiredJobWatches(expiredWatches)
 		jm.enqueueWatchNotifications(watchNotifications)
 		jm.recordWatchSendsAndKick(watchDeliveries)
 	}

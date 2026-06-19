@@ -7106,6 +7106,148 @@ func TestWatchHistoryRecordsTerminalAutoRemoval(t *testing.T) {
 	}
 }
 
+func TestTerminalWatchAutoRemovalAppendFailureKeepsWatchReachable(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID}
+	jm.mu.Lock()
+	cfg := jm.watches[key]
+	jm.mu.Unlock()
+	if cfg == nil {
+		t.Fatal("watch config missing before terminal finalize")
+	}
+
+	realAppendEvents := jm.appendEvents
+	appendErr := errors.New("append watch clear failed")
+	jm.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventWatchCleared {
+				return appendErr
+			}
+		}
+		if realAppendEvents != nil {
+			return realAppendEvents(events)
+		}
+		for _, event := range events {
+			if err := jm.appendEvent(event); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	code := 0
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); !errors.Is(err, appendErr) {
+		t.Fatalf("finalize error = %v, want append failure", err)
+	}
+	jm.mu.Lock()
+	stillReachable := jm.watches[key] == cfg
+	jm.mu.Unlock()
+	if !stillReachable {
+		t.Fatal("watch config was detached before clear event became durable")
+	}
+	if jm.watchCount() != 1 {
+		t.Fatalf("watch count after failed clear append = %d, want 1", jm.watchCount())
+	}
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		t.Fatalf("LoadWatches: %v", err)
+	}
+	if w := watches[res.WatchID]; w == nil || !w.Active {
+		t.Fatalf("durable watch %s = %+v, want still active after failed clear append", res.WatchID, w)
+	}
+	if hist := jm.recentWatchSummaries(); len(hist) != 0 {
+		t.Fatalf("recent_watches after failed clear append = %+v, want empty", hist)
+	}
+
+	jm.appendEvents = realAppendEvents
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("retry finalize: %v", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count after retry = %d, want 0", jm.watchCount())
+	}
+}
+
+func TestKeptSyncTerminalWatchAppendFailureKeepsRetryState(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	jm.mu.Lock()
+	run := jm.running[rec.JobID]
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID}
+	cfg := jm.watches[key]
+	jm.mu.Unlock()
+	if run == nil || cfg == nil {
+		t.Fatalf("setup run=%v cfg=%v, want both present", run != nil, cfg != nil)
+	}
+
+	realAppendEvent := jm.appendEvent
+	finishedAppends := 0
+	jm.appendEvent = func(event jobstore.Event) error {
+		if event.Kind == jobstore.EventJobFinished {
+			finishedAppends++
+		}
+		return realAppendEvent(event)
+	}
+	realAppendEvents := jm.appendEvents
+	appendErr := errors.New("append watch clear failed")
+	jm.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventWatchCleared {
+				return appendErr
+			}
+		}
+		if realAppendEvents != nil {
+			return realAppendEvents(events)
+		}
+		for _, event := range events {
+			if err := jm.appendEvent(event); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	code := 0
+	if err := jm.finalizeKeptSync(run, jobstore.StatusCompleted, "exit_zero", &code); !errors.Is(err, appendErr) {
+		t.Fatalf("finalizeKeptSync error = %v, want append failure", err)
+	}
+	jm.mu.Lock()
+	stillRunning := jm.running[rec.JobID] == run
+	stillWatching := jm.watches[key] == cfg
+	jm.mu.Unlock()
+	if !stillRunning {
+		t.Fatal("kept-sync run was removed before watch clear became durable")
+	}
+	if !stillWatching {
+		t.Fatal("watch config was detached before watch clear became durable")
+	}
+
+	jm.appendEvents = realAppendEvents
+	if err := jm.finalizeKeptSync(run, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("retry finalizeKeptSync: %v", err)
+	}
+	if finishedAppends != 1 {
+		t.Fatalf("job_finished appends = %d, want one durable terminal across retry", finishedAppends)
+	}
+	jm.mu.Lock()
+	_, running := jm.running[rec.JobID]
+	_, watching := jm.watches[key]
+	jm.mu.Unlock()
+	if running || watching {
+		t.Fatalf("retry left running=%v watching=%v, want both removed", running, watching)
+	}
+}
+
 func TestWatchHistoryRecordsClear(t *testing.T) {
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}

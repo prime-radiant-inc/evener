@@ -1929,10 +1929,17 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 	return result, nil
 }
 
-func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, []watchSendDelivery, []jobstore.Event) {
+type expiredJobWatch struct {
+	key       watchKey
+	cfg       *watchConfig
+	endReason string
+}
+
+func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, []watchSendDelivery, []jobstore.Event, []expiredJobWatch) {
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
 	var registryEvents []jobstore.Event
+	var expired []expiredJobWatch
 
 	// The terminal job's record is still in jm.running here (the caller deletes it
 	// after this returns), so its provenance is readable under the held lock
@@ -1975,13 +1982,27 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, [
 		} else if len(cfg.pending) != 0 {
 			jm.rememberDetachedPendingLocked(cfg)
 		}
-		jm.recordWatchEndedLocked(key, cfg, "auto_removed_terminal")
 		registryEvents = append(registryEvents, watchClearedEvent(jm, cfg, "auto_removed_terminal"))
-		closeWatchConfig(cfg)
-		delete(jm.watches, key)
+		expired = append(expired, expiredJobWatch{key: key, cfg: cfg, endReason: "auto_removed_terminal"})
 	}
 
-	return notifications, deliveries, registryEvents
+	return notifications, deliveries, registryEvents, expired
+}
+
+func (jm *jobManager) detachExpiredJobWatches(expired []expiredJobWatch) {
+	if len(expired) == 0 {
+		return
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, e := range expired {
+		if jm.watches[e.key] != e.cfg {
+			continue
+		}
+		jm.recordWatchEndedLocked(e.key, e.cfg, e.endReason)
+		closeWatchConfig(e.cfg)
+		delete(jm.watches, e.key)
+	}
 }
 
 func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-chan struct{}) {

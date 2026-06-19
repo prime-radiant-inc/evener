@@ -355,6 +355,35 @@ func TestObserverInjectionDoesNotRetriggerSameWatch(t *testing.T) {
 	}
 }
 
+func TestRunningDelegateSendFallsBackToActiveProvenance(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	sub := &subagent{id: child.ID(), sess: child, running: true, done: make(chan struct{})}
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "running observer", sub)
+	if err != nil {
+		t.Fatalf("attach delegate: %v", err)
+	}
+
+	activeProv := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", parent.ID(), "caller")
+	parent.replaceActiveProvenance(activeProv)
+	res := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  run.rec.DelegateID,
+		Message: "steer running observer",
+	})
+	if res.Err != nil || res.Action != "steered" {
+		t.Fatalf("send running delegate = %+v, want steered", res)
+	}
+
+	drained := child.drainSteeringForTurn()
+	if len(drained) != 1 {
+		t.Fatalf("drained steering = %d, want 1", len(drained))
+	}
+	if !provenance.ContainsWatch(drained[0].Provenance, "watch_A", "wg_1") {
+		t.Fatalf("steering provenance = %+v, want watch_A/wg_1", drained[0].Provenance)
+	}
+}
+
 // TestObserverNotificationAcknowledgementDoesNotRetriggerSameWatch proves that
 // when the parent acknowledges an observer's terminal notification (whose pending
 // event carried the watch's provenance), the resulting communicate event is
@@ -400,6 +429,50 @@ func TestObserverNotificationAcknowledgementDoesNotRetriggerSameWatch(t *testing
 	// call watchSendSnapshot. A value of 1 would mean suppression regressed.
 	if cfg.nextUpdateSeq != 0 {
 		t.Fatalf("nextUpdateSeq = %d after suppressed ack, want 0 (notification ack must not retrigger watch)", cfg.nextUpdateSeq)
+	}
+}
+
+func TestWatchDrivenDelegateJobNotificationDoesNotRetriggerSameWatch(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	seedWatchSendDelegateTarget(t, parent.jobManager, "dlg_observer")
+	installWatchBelowValidation(t, parent.jobManager, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "dlg_observer", Message: "observe"},
+	})
+	cfg := onlyWatchConfigForTest(t, parent.jobManager)
+	watchProv := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", parent.ID(), "caller")
+
+	sub := completedDelegateSubagent(child, "NOTIFY_DONE")
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJobFromWatchWithDelegate(
+		parent.jobManager,
+		child.ID(),
+		"Classify this job notification.",
+		sub,
+		"dlg_observer",
+		nil,
+		nil,
+		true,
+		watchProv,
+	)
+	if err != nil {
+		t.Fatalf("attach watch-driven delegate: %v", err)
+	}
+	if !provenance.ContainsWatch(run.rec.Provenance, cfg.watchID, cfg.generation) {
+		t.Fatalf("run provenance = %+v, want %s/%s", run.rec.Provenance, cfg.watchID, cfg.generation)
+	}
+
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("finalize watch-driven delegate: %v", err)
+	}
+
+	if cfg.nextUpdateSeq != 0 {
+		t.Fatalf("nextUpdateSeq = %d after watch-driven delegate completion, want 0 (own notification must be suppressed)", cfg.nextUpdateSeq)
+	}
+	if len(cfg.pending) != 0 {
+		t.Fatalf("pending sends = %d after watch-driven delegate completion, want 0", len(cfg.pending))
 	}
 }
 

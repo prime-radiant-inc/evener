@@ -185,7 +185,7 @@ func FoldWatches(events []Event) map[string]*WatchRecord {
 			}
 		case EventWatchCleared:
 			w := watches[e.WatchID]
-			if w == nil || w.Generation != e.Watch.Generation {
+			if w == nil || w.Generation != e.Watch.Generation || !w.Active {
 				continue
 			}
 			w.Active = false

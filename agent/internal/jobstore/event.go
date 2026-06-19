@@ -86,7 +86,7 @@ type Event struct {
 	// watch_registered/watch_cleared payload
 	Watch *WatchEvent `json:"watch,omitempty"`
 
-	// causal provenance carried by job_started and job_notification_pending events
+	// causal provenance carried by job_started, job_finished, and job_notification_pending events
 	Provenance *provenance.Causal `json:"provenance,omitempty"`
 }
 

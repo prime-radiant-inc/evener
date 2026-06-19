@@ -138,6 +138,12 @@ func TestJobListIncludesDelegatesRecoverySurface(t *testing.T) {
 	if len(out.Jobs) == 0 || out.Jobs[0].DelegateID != res.DelegateID {
 		t.Fatalf("jobs = %+v, want job annotated with delegate_id", out.Jobs)
 	}
+	if !strings.Contains(call.Output, "delegate_id "+res.DelegateID) {
+		t.Fatalf("job_list output must show delegate_id %q:\n%s", res.DelegateID, call.Output)
+	}
+	if !strings.Contains(call.Output, "delegate "+res.DelegateID) {
+		t.Fatalf("job_list output must show delegate recovery row for %q:\n%s", res.DelegateID, call.Output)
+	}
 }
 
 func TestJobToolsRejectDelegateIDWithActionableGuidance(t *testing.T) {

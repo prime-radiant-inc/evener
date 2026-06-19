@@ -977,7 +977,11 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 		sub.mu.Unlock()
 		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but runtime job is not live", target))
 	}
-	delivered := sub.sess.trySteerWithProvenance(message, p)
+	steerProvenance := provenance.Clone(p)
+	if steerProvenance == nil {
+		steerProvenance = s.activeCausalProvenance()
+	}
+	delivered := sub.sess.trySteerWithProvenance(message, steerProvenance)
 	if !delivered {
 		sub.mu.Unlock()
 		if fromWatch {
@@ -1442,7 +1446,7 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 	if err := jm.forwardLocked(started); err != nil {
 		_ = output.Close()
 		treeSlot.release()
-		if terminalErr := jm.appendStartForwardFailure(run.rec.JobID, output); terminalErr != nil {
+		if terminalErr := jm.appendStartForwardFailure(run.rec.JobID, output, run.rec.Provenance); terminalErr != nil {
 			// Double-fault: the start forward failed AND the durable
 			// forward_failed terminal could not be appended. Unlike the shell
 			// path, there is no delegate analog to finalizeShellUntilDurable to

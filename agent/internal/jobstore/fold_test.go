@@ -366,6 +366,28 @@ func TestFoldWatchesRejectsStaleClearGeneration(t *testing.T) {
 	}
 }
 
+func TestFoldWatchesPreservesFirstClearReason(t *testing.T) {
+	events := []Event{
+		ev(EventWatchRegistered, 1, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{Generation: "wg_1", OwnerSessionID: "owner", VisibleSessionID: "owner", Target: "job_1", ConfigHash: "hash_1"}
+		}),
+		ev(EventWatchCleared, 2, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{Generation: "wg_1", EndReason: "auto_removed_terminal"}
+		}),
+		ev(EventWatchCleared, 3, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{Generation: "wg_1", EndReason: "cleared"}
+		}),
+	}
+
+	w := FoldWatches(events)["watch_A"]
+	if w == nil || w.Active || w.EndReason != "auto_removed_terminal" {
+		t.Fatalf("watch = %+v, want first clear reason preserved", w)
+	}
+}
+
 func TestDelegateRestoreDescriptorSurvivesStoreReopenAndFold(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.jsonl")
 	store, err := Open(path)

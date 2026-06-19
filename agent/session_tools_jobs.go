@@ -742,6 +742,9 @@ func formatJobList(out jobListResult) string {
 		if j.ExitCode != nil {
 			detail = append(detail, fmt.Sprintf("exit %d", *j.ExitCode))
 		}
+		if j.DelegateID != "" {
+			detail = append(detail, "delegate_id "+j.DelegateID)
+		}
 		detail = append(detail, fmt.Sprintf("%d bytes", j.TotalBytes))
 		// Surface resumability only when a job actually is resumable; resumable=false
 		// for an ordinary shell job is noise (keeps rows lean).
@@ -756,6 +759,30 @@ func formatJobList(out jobListResult) string {
 	fmt.Fprintf(&b, "\n%d job(s).", out.Count)
 	if out.DelegationAllowance > 0 {
 		fmt.Fprintf(&b, " delegation_allowance: %d.", out.DelegationAllowance)
+	}
+	for _, d := range out.Delegates {
+		var detail []string
+		if d.CurrentJobID != "" {
+			detail = append(detail, "current_job_id "+d.CurrentJobID)
+		}
+		if d.LatestJobID != "" && d.LatestJobID != d.CurrentJobID {
+			detail = append(detail, "latest_job_id "+d.LatestJobID)
+		}
+		if d.TranscriptRef != "" {
+			detail = append(detail, "transcript_ref "+d.TranscriptRef)
+		}
+		if d.Resumable {
+			detail = append(detail, "resumable")
+		} else if d.NotResumableWhy != "" {
+			detail = append(detail, d.NotResumableWhy)
+		}
+		if d.ParentDelegateID != "" {
+			detail = append(detail, "parent_delegate_id "+d.ParentDelegateID)
+		}
+		fmt.Fprintf(&b, "\ndelegate %s  %s", d.DelegateID, d.Status)
+		if len(detail) != 0 {
+			fmt.Fprintf(&b, "  [%s]", strings.Join(detail, " · "))
+		}
 	}
 	for _, w := range out.Watches {
 		fmt.Fprintf(&b, "\nwatch %s → %s (%s)", w.ID, w.Target, w.Condition)
