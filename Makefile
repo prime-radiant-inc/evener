@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-all build-linux build-namingcheck test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean
+.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -19,7 +19,11 @@ build-hub:
 build-tui:
 	go build -o serf-tui ./cmd/serf-tui/
 
-build-all: build build-hub build-tui
+# serf-doctor: the read-only forensic inspector (data plane of the doctoring system).
+build-doctor:
+	go build -o serf-doctor ./cmd/serf-doctor/
+
+build-all: build build-hub build-tui build-doctor
 
 build-llmcall:
 	go build -o llmcall ./cmd/llmcall/
