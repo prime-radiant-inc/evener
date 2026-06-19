@@ -1819,6 +1819,97 @@ func TestNestedTerminalForwardFailureRetriesSameGeneration(t *testing.T) {
 	}
 }
 
+func TestKeptSyncNestedTerminalForwardFailureRetriesSameGeneration(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	finishedEvents := 0
+	childJM.emit = func(kind events.EventKind, _ events.EventData, _ *provenance.Causal) {
+		if kind == events.EventJobFinished {
+			finishedEvents++
+		}
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+	rec, err := childJM.createShell(createShellOpts{Command: "true", Description: "nested"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	callbackCalls := 0
+	childJM.mu.Lock()
+	run := childJM.running[rec.JobID]
+	if run == nil {
+		childJM.mu.Unlock()
+		t.Fatalf("running child job %q not found", rec.JobID)
+	}
+	run.afterDurableFinish = func() { callbackCalls++ }
+	childJM.mu.Unlock()
+
+	forwardErr := errors.New("forward terminal failed")
+	childJM.forward = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobFinished {
+			return forwardErr
+		}
+		return parentJM.forwardEvent(e)
+	}
+	code := 0
+	if err := childJM.finalizeKeptSync(run, jobstore.StatusCompleted, "exit_zero", &code); !errors.Is(err, forwardErr) {
+		t.Fatalf("finalizeKeptSync error = %v, want forward terminal failure", err)
+	}
+	childRecords, err := childJM.store.Load()
+	if err != nil {
+		t.Fatalf("load child store: %v", err)
+	}
+	childRec := childRecords[rec.JobID]
+	if childRec == nil || childRec.TerminalGen == "" {
+		t.Fatalf("child record after failed forward = %+v, want terminal generation", childRec)
+	}
+	if callbackCalls != 0 {
+		t.Fatalf("afterDurableFinish calls after failed forward = %d, want 0", callbackCalls)
+	}
+	if finishedEvents != 0 {
+		t.Fatalf("finished events after failed forward = %d, want 0", finishedEvents)
+	}
+
+	childJM.forward = parentJM.forwardEvent
+	if err := childJM.finalizeKeptSync(run, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("retry finalizeKeptSync: %v", err)
+	}
+	if callbackCalls != 1 {
+		t.Fatalf("afterDurableFinish calls after retry = %d, want 1", callbackCalls)
+	}
+	if finishedEvents != 1 {
+		t.Fatalf("finished events after retry = %d, want 1", finishedEvents)
+	}
+	parentRecords, err := parentJM.store.Load()
+	if err != nil {
+		t.Fatalf("load parent store: %v", err)
+	}
+	parentRec := parentRecords[rec.JobID]
+	if parentRec == nil || parentRec.Status != jobstore.StatusCompleted {
+		t.Fatalf("parent record after retry = %+v, want completed forwarded record", parentRec)
+	}
+	if parentRec.TerminalGen != childRec.TerminalGen {
+		t.Fatalf("parent TerminalGen = %q, want original child generation %q", parentRec.TerminalGen, childRec.TerminalGen)
+	}
+	childJM.mu.Lock()
+	_, running := childJM.running[rec.JobID]
+	childJM.mu.Unlock()
+	if running {
+		t.Fatal("kept-sync retry left child job running")
+	}
+}
+
 func TestNestedTerminalForwardRecoveryReplaysStoredTerminal(t *testing.T) {
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {

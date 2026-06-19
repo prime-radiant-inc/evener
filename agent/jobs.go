@@ -934,6 +934,11 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 			return err
 		}
 	}
+	if err := jm.forwardFinishedJob(run, terminal); err != nil {
+		return err
+	}
+	jm.emitFinishedJob(run, terminal)
+	jm.runAfterDurableFinish(run, terminal, run.afterDurableFinish)
 
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run || run.terminal != terminal {

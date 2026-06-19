@@ -572,7 +572,8 @@ Observer sidecars are v1. No separate `observe` or observer-comment tool is requ
 
 Practical observer guidance for agents:
 
-- Use an observer agent type that actually has the tools the observer needs. An observer that must call `job_read_output`, `delegate_send(to="caller")`, or install nested watches needs a tool surface such as `agent_type="default"`; a limited leaf role is only suitable for observers that comment in their own transcript with `communicate`.
+- Use an observer agent type that actually has the tools the observer needs. `agent_type="default"` is enough for an observer that needs `job_read_output` or `delegate_send(to="caller")`; a limited leaf role is only suitable for observers that comment in their own transcript with `communicate`.
+- Installing nested watches is a delegation-depth capability, not just an agent-type choice. An observer that must create its own delegates or watches needs non-zero `delegation_allowance`, and its parent must have enough remaining depth to grant that allowance.
 - Prefer the idle-observer pattern: start the delegate, have its first turn finish with a short ready marker, then let `job_watch` frames start later turns in that same delegate conversation. Delivering frames into an already-running observer is supported, but it is harder for the model to reason about and easier to confuse with ordinary steering.
 - Keep observer instructions narrow and frame-driven. Tell the observer what frame fields to read (`watch_id`, `delivery_id`, `job_id`, `event`, and optional excerpt), what action to take, and when to stop.
 - Use the returned `delegate_id` as `send.to`. A delegate `job_id` is a turn handle, not a conversation handle, and should not be used for watch delivery.

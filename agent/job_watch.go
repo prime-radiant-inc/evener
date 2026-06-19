@@ -456,7 +456,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		return watchResult{}, errors.New("invalid_request: output_match requires a concrete job target")
 	}
 	if a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
-		return watchResult{}, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry transcript_ref")
+		return watchResult{}, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry bounded event payloads, not output excerpts")
 	}
 	cfg, err := jm.validateWatchConfig(a)
 	if err != nil {
