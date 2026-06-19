@@ -38,12 +38,13 @@ Run 1 — idle wake, both delivery flavors on one fire:
    > 1. Run the shell tool with background true and command:
    >    `sh -c 'sleep 25; echo WAKE_TOKEN_GO; sleep 240'`. Capture the
    >    job_id.
-   > 2. Call job_watch with target that job_id and output_match
-   >    "WAKE_TOKEN_GO" (no send). Report the full JSON.
-   > 3. Call job_watch with target that job_id, output_match
-   >    "WAKE_TOKEN_GO", and send {to: "caller", message:
-   >    "CALLER_FRAME_MARK", include_frame: true}. Report the full
-   >    JSON including replaced_existing.
+   > 2. Call job_watch with operation "create", target that job_id,
+   >    and output_match "WAKE_TOKEN_GO" (no send). Report the full
+   >    JSON.
+   > 3. Call job_watch with operation "create", target that job_id,
+   >    output_match "WAKE_TOKEN_GO", and send {to: "caller", message:
+   >    "CALLER_FRAME_MARK"}. Report the full JSON including
+   >    replaced_existing.
    > 4. Say WATCHES_ARMED and end your turn. Do not poll; you will be
    >    woken.
 3. Poll `/api/sessions/local:$SID_A` and confirm `state` is `idle`
@@ -64,9 +65,9 @@ Run 2 — busy session, three fires, one rendered frame:
    > 1. Run the shell tool with background true and command:
    >    `sh -c 'sleep 10; echo TICK_MARK_1; sleep 6; echo TICK_MARK_2; sleep 6; echo TICK_MARK_3; sleep 240'`.
    >    Capture the job_id.
-   > 2. Call job_watch with target that job_id, output_match
-   >    "TICK_MARK_[0-9]", and send {to: "caller", message:
-   >    "TICK_FRAME", include_frame: true}.
+   > 2. Call job_watch with operation "create", target that job_id,
+   >    output_match "TICK_MARK_[0-9]", and send {to: "caller",
+   >    message: "TICK_FRAME"}.
    > 3. Then write a five-paragraph essay about software engineering,
    >    following the AGENTS.md pacing rules exactly, so this turn
    >    stays busy for at least 40 more seconds.

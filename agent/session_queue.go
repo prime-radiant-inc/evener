@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/diagnostic"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/llm"
 )
 
@@ -40,10 +41,13 @@ func WithQueuedInputDrainOnInterruptHandler(ctx context.Context, rootCtx context
 // steeringMessage is one entry on the steering queue. Text carries the
 // system-reminder body; Images optionally carries attachments that flow
 // alongside the text as additional ContentImage parts when the steering
-// turn is appended to history (kata t5j6).
+// turn is appended to history (kata t5j6). Provenance carries the causal
+// watch origin (nil for human/system-authored steering) so consuming the
+// message folds its watch keys into the turn's active provenance.
 type steeringMessage struct {
-	Text   string
-	Images []ImageAttachment
+	Text       string
+	Images     []ImageAttachment
+	Provenance *provenance.Causal
 }
 
 func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjectedData {
@@ -63,6 +67,12 @@ func (s *Session) trySteer(msg string) bool {
 	return s.trySteerWithImages(msg, nil)
 }
 
+// SteerWithProvenance queues a text-only steering message carrying the causal
+// watch provenance that produced it (nil for human/system-authored steering).
+func (s *Session) SteerWithProvenance(msg string, p *provenance.Causal) {
+	_ = s.trySteerWithProvenance(msg, p)
+}
+
 // SteerWithImages queues a steering message that carries optional image
 // attachments alongside the text. The combined message is appended to
 // session history as a TurnSteering with text + ContentImage parts when
@@ -72,6 +82,14 @@ func (s *Session) SteerWithImages(msg string, images []ImageAttachment) {
 }
 
 func (s *Session) trySteerWithImages(msg string, images []ImageAttachment) bool {
+	return s.trySteerWithImagesAndProvenance(msg, images, nil)
+}
+
+func (s *Session) trySteerWithProvenance(msg string, p *provenance.Causal) bool {
+	return s.trySteerWithImagesAndProvenance(msg, nil, p)
+}
+
+func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAttachment, p *provenance.Causal) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closingOrClosedLocked() {
@@ -80,7 +98,7 @@ func (s *Session) trySteerWithImages(msg string, images []ImageAttachment) bool 
 	if strings.TrimSpace(msg) == "" && len(images) == 0 {
 		return false
 	}
-	entry := steeringMessage{Text: msg}
+	entry := steeringMessage{Text: msg, Provenance: provenance.Clone(p)}
 	if len(images) > 0 {
 		entry.Images = append([]ImageAttachment(nil), images...)
 	}
@@ -129,9 +147,12 @@ func (s *Session) FollowUp(msg string) {
 
 // queuedInput is one entry on the per-session input queue. Text and Images
 // are forwarded together when the entry is drained as a fresh user turn.
+// Provenance carries the causal watch origin (nil for human-typed input) so a
+// DrainAsSteer collapse can fold it into the steering message it injects.
 type queuedInput struct {
-	Text   string
-	Images []ImageAttachment
+	Text       string
+	Images     []ImageAttachment
+	Provenance *provenance.Causal
 }
 
 // Enqueue appends a text-only user message to the per-session input queue
@@ -221,17 +242,19 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 	s.emit(events.EventQueueChanged, data)
 	texts := make([]string, 0, len(entries))
 	var drainedImages []ImageAttachment
+	var combinedProvenance *provenance.Causal
 	for _, entry := range entries {
 		if strings.TrimSpace(entry.Text) != "" {
 			texts = append(texts, entry.Text)
 		}
 		drainedImages = append(drainedImages, entry.Images...)
+		combinedProvenance = provenance.Union(combinedProvenance, entry.Provenance)
 	}
 	combined := strings.Join(texts, "\n\n")
 	if len(drainedImages) == 0 {
-		s.Steer(combined)
+		s.trySteerWithProvenance(combined, combinedProvenance)
 	} else {
-		s.SteerWithImages(combined, drainedImages)
+		s.trySteerWithImagesAndProvenance(combined, drainedImages, combinedProvenance)
 	}
 	return nil
 }

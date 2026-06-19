@@ -258,6 +258,17 @@ func TestJobSendMessageRenderer(t *testing.T) {
 	}
 }
 
+func TestDelegateSendRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("delegate_send")
+	args := toolArgsFromJSON(`{"to":"dlg_01ABCD"}`)
+	if r.Verb(args) != "message" {
+		t.Errorf("delegate_send verb = %q", r.Verb(args))
+	}
+	if r.Target(args) != "dlg_01ABCD" {
+		t.Errorf("delegate_send target = %q", r.Target(args))
+	}
+}
+
 func TestJobReadOutputRenderer(t *testing.T) {
 	r, _ := lookupToolRenderer("job_read_output")
 	if r.Verb(toolArgsFromJSON(`{"job_id":"job_01ABCD"}`)) != "read" {

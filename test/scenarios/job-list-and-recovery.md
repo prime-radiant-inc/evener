@@ -115,7 +115,8 @@ Turn 2:
        ({target, condition, send_to, deliveries, created_at}) lands
        with Phase 2. On pre-F2 builds the field is absent; once it
        ships, extend turn 1 with a job_watch install and assert the
-       row appears here and disappears after clear=true. -->
+       row appears here and disappears after job_watch(operation="clear",
+       watch_id=<watch_id>). -->
 - Paging surface: the result reports `count` and the jobs array;
   there is no cursor paging.
   <!-- pin: ergonomics §2 P1 deletes job_list.cursor/next_cursor in

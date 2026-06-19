@@ -1,149 +1,97 @@
-# job-send-message-surface: live steer, resume with context, on_finished=fail, and the foreground-timeout resume
+# delegate-send-surface: job handles are rejected, running delegates steer, and idle delegates start only when explicit
 
-**What this covers**: the four `job_send_message` outcomes against
-delegate targets (`docs/job-control.md` lines 347-446). (a) A RUNNING
-delegate target gets the message injected mid-run — same `job_id`,
-`action:"sent"`, and the guidance visibly incorporated (line 373);
-(b) a FINISHED delegate resumes in the SAME conversation as a new job
-— new `job_id`, `resumed_from_job_id`, same `transcript_ref`, with the
-prior conversation's context demonstrably retained (line 374);
-(c) `on_finished="fail"` against a finished target fails synchronously
-with `target_terminal` and creates nothing (line 375); (d) a
-a `max_wait_ms`-bounded resume that times out returns the
-foreground-timeout shape with the job left running (line 382).
-Resume-after-STOP is subagent-cancel-runaway.md; the observer
-`caller`-alias send is job-watch-sidecar-observer.md.
+**What this covers**: the core `delegate_send` outcomes against the
+handle-split API. (a) A concrete `job_id` is a turn handle and is
+rejected with guidance to use the delegate's `delegate_id`; (b) a
+RUNNING delegate receives a live steer through `delegate_send`, with
+`action:"steered"` and no new job; (c) an IDLE delegate rejects
+`delegate_send` by default with `target_idle`; (d)
+`delegate_send(on_idle:"start")` starts the delegate's next job in the
+same conversation and returns `started_job_id`/`current_job_id`.
 
 ## Pre-state
 
 - Fresh binaries from the branch under test; hub on `127.0.0.1:9180`
   (`docs/agentic-testing.md` setup checklist); credentialed model.
-- `tmpdir=$(mktemp -d -t serf-e2e-jsend-XXXXX)`.
+- `tmpdir=$(mktemp -d -t serf-e2e-dsend-XXXXX)`.
 
 ## Steps
 
 1. Spawn a session via `/api/spawn` with `working_dir=$tmpdir`.
    Capture `SID`.
-2. Turn 1 — arm (a), steer a running delegate:
+2. Turn 1 — job-handle rejection and live steer:
 
    > Do these steps in order.
    > 1. Call delegate (background default) with this exact task:
-   >    "FIRST run the shell command `sleep 15`. Then write a six-line
-   >    poem about rivers, ONE line at a time, running the shell
-   >    command `sleep 8` between lines. Then communicate the full
-   >    poem and finish." Capture the job_id (call it JA) and its
-   >    transcript_ref.
-   > 2. Immediately call job_send_message with target JA and this
-   >    message: "Mid-task instruction: your final communicate must
-   >    also contain the exact token STEER_MARK_88." Report the full
-   >    result JSON verbatim.
-   > 3. Say STEER_SENT and end your turn. When JA's completion
+   >    "FIRST run the shell command `sleep 15`. Then communicate
+   >    exactly RUNNING_DONE. If you receive a steering message
+   >    containing STEER_MARK_88, include STEER_MARK_88 in your final
+   >    communicate." Capture the `delegate_id`, `job_id` (JA), and
+   >    `transcript_ref`.
+   > 2. Immediately call delegate_send with `to` set to JA and message
+   >    "wrong handle probe". Report the error verbatim.
+   > 3. Immediately call delegate_send with `to` set to the captured
+   >    delegate_id and message "Mid-task instruction: include
+   >    STEER_MARK_88." Report the full result JSON verbatim.
+   > 4. Say STEER_SENT and end your turn. When JA's completion
    >    notification arrives, call job_read_output for JA and report
    >    the full JSON.
-3. Turn 2 — arm (b), resume a finished delegate (new user prompt):
+3. Turn 2 — idle default failure and explicit start:
 
    > Do these steps in order.
-   > 1. Call delegate (background default) with this exact task:
+   > 1. Call delegate with max_wait_ms 120000 and this exact task:
    >    "Remember the codeword AZURE_FALCON for later turns of this
    >    conversation. Communicate exactly READY_TO_RESUME and finish."
-   >    Capture the job_id (JB) and transcript_ref. End your turn and
-   >    wait for its completion notification.
-   > 2. (After the notification) Call job_send_message with target JB
-   >    and this message: "Reply via communicate with exactly the
-   >    codeword you were told earlier, and nothing else." Report the
-   >    full result JSON verbatim, end your turn, and when the resumed
-   >    job completes, call job_read_output for the NEW job_id and
+   >    Capture the returned `delegate_id`, `job_id` (JB), and
+   >    `transcript_ref`.
+   > 2. Call delegate_send with `to` set to that delegate_id and
+   >    message "Reply with the codeword." Do not set on_idle. Report
+   >    the error verbatim.
+   > 3. Call delegate_send with `to` set to that delegate_id,
+   >    `on_idle` "start", `max_wait_ms` 120000, and message "Reply via
+   >    communicate with exactly the codeword you were told earlier,
+   >    and nothing else." Report the full result JSON verbatim.
+   > 4. Call job_read_output for the returned `current_job_id` and
    >    report the full JSON.
-4. Turn 3 — arms (c) and (d) (new user prompt):
-
-   > Do these steps in order. Step 1 is expected to return a tool
-   > error — report it verbatim and continue.
-   > 1. Call job_send_message with target JB, on_finished "fail", and
-   >    message "live-only nudge". Report the result or error
-   >    verbatim.
-   > 2. Call job_list with no filters and report the count and
-   >    job_ids.
-   > 3. Call job_send_message with target JB, max_wait_ms 2000, and
-   >    this message: "Run the shell command `sleep 20`, then
-   >    communicate exactly SLOW_RESUME_DONE."
-   >    Report the full result JSON verbatim.
-   > 4. Call job_list with status ["running"] and report whether the
-   >    new job from step 3 is running. End your turn.
-5. Read the parent transcript, the child transcript (by JB's
-   transcript_ref via `read_session_transcript` or on disk), and
+4. Read the parent transcript, the child transcript (by JB's
+   `transcript_ref` via `read_session_transcript` or on disk), and
    `find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`.
 
 ## Expected
 
-- Arm (a): the send-to-a-running-delegate race has TWO legal outcomes;
-  the invariant is DELIVERY, not which path carried it.
-  - Live steer (the outcome this card biases toward via the initial
-    sleep): `action` `"sent"`, `job_id` == JA (NO new job), `status`
-    `"running"`; the eventual JA read's `output` contains
-    `STEER_MARK_88`, and the child transcript carries the instruction
-    as a STEERING entry BEFORE the child's final communicate.
-  - Legal race outcome (delegate finished first — the contract's
-    default `on_finished="resume"`): `action` `"resumed"` with a NEW
-    `job_id`, `resumed_from_job_id` == JA, same `transcript_ref`; the
-    resumed job's read contains `STEER_MARK_88`. Record which outcome
-    occurred in the result block.
-  - Falsification (either path): the token absent from both the result
-    content and the child transcript (message dropped), or a tool
-    error.
-- Arm (b): the resume result has `action` `"resumed"`, a NEW `job_id`
-  != JB, `resumed_from_job_id` == JB, `running_in_background` `true`
-  (default), and `transcript_ref` EQUAL to JB's — same conversation,
-  new job (vocabulary table, line 74). The resumed job's read contains
-  `AZURE_FALCON`, a fact present only in the prior turn's context —
-  retention proven, not assumed. `jobs.jsonl` records the resumed job
-  as a fresh `job_started` (same store, new job_id). Falsification:
-  the codeword missing or the resumed job answering from a blank
-  context ("what codeword?"), or a different transcript_ref (a NEW
-  conversation was started — `delegate` semantics leaked into
-  follow-up).
-- Arm (c): step 1 fails synchronously with an error containing
-  `target_terminal` (line 375); the step-2 listing shows NO job
-  created by it (count unchanged from the end of turn 2, no new
-  `job_started` in `jobs.jsonl` between the error and step 3).
-  Falsification: a resumed job exists despite `on_finished="fail"` —
-  the live-only guard raced into a resume.
-- Arm (d): the step-3 result returns at ~2s with `action` `"resumed"`,
-  a new `job_id`, `status` `"running"`, `reason`
-  `"foreground_timeout"`, `timed_out` `true`,
-  `running_in_background` `true`, and bounded `output`-so-far — the
-  foreground-timeout result shape (line 382 + the delegate timeout
-  shape, lines 329-343). The step-4 listing confirms the job still
-  `running` (timeout never stops work). Its later completion delivers
-  the normal terminal notification carrying `SLOW_RESUME_DONE` output.
-  Falsification: the call blocks ~20s for completion (timeout
-  ignored), or the job is terminal/cancelled right after the timeout.
+- Job-handle rejection: the step-2 error contains `job_id is a
+  job/turn handle` and, when Serf can resolve it, the corresponding
+  `delegate_id`. No new `job_started` appears for that rejected call.
+- Live steer: the step-3 result has `action` `"steered"`,
+  `current_job_id` or `latest_job_id` equal to JA, `status`
+  `"running"`, and the captured `delegate_id`. The eventual JA read's
+  `output` contains `STEER_MARK_88`, and the child transcript carries
+  the instruction as a STEERING entry before the child's final
+  communicate. Falsification: the token is absent from both result
+  content and child transcript, or a new job is created for the live
+  steer.
+- Idle default: the turn-2 step-2 call fails synchronously with
+  `target_idle` and creates no new job. This proves idle delegates do
+  not restart by default.
+- Explicit start: the turn-2 step-3 result has `action` `"started"`, a
+  NEW `started_job_id`/`current_job_id` different from JB, the same
+  `delegate_id`, and the same `transcript_ref` as JB. The result or
+  follow-up `job_read_output` contains `AZURE_FALCON`, a fact present
+  only in the prior turn's context — retention proven, not assumed.
+  Falsification: the codeword is missing, the transcript ref changes,
+  or the call starts from a blank conversation.
 
 ## Cleanup
 
-- Wait for the arm-(d) job to finish (~25s) or `job_stop` it; all
-  other jobs are terminal. Shut down the session
+- All delegate jobs should be terminal by the end of the card. If JA is
+  still running after the bound, `job_stop` it. Shut down the session
   (`POST /s/$SID/shutdown`); `rm -rf "$tmpdir"`.
 
 ## Sharp edges
 
-- Arm (a)'s steer must land while JA is still mid-poem — the paced
-  sleeps give a ~48s window, and the parent's step-2 call follows the
-  delegate return within one tool round. If JA finished first, the
-  call resumes instead of steering (the documented race, line 380:
-  state observed at delivery wins); rerun rather than reinterpret an
-  `action:"resumed"` result as arm (a).
-- Arms (b)-(d) hit the same delegate session sequentially; each step
-  waits for the prior resume to be terminal or
-  `delegate_session_busy` fires (line 379). The waits in the prompts
-  are load-bearing.
-- Arm (c) targets JB even though a NEWER terminal job now exists in
-  that session; on_finished=fail checks the TARGET's terminal state,
-  so the error is stable regardless of which job in the session is
-  newest.
-- `max_wait_ms` 2000 is above the 1000 minimum clamp (the normative
-  bounds at lines 187-192 govern the resumed-delegate foreground wait
-  via line 382); values below 1000 clamp up and would still beat the
-  20s sleep.
-- The arm-(d) timing assertion (~2s vs ~20s) brackets via the
-  api_call timestamps around the tool round when wall-clocking is
-  coarse.
+- The live steer must land while JA is still in its initial sleep; the
+  parent step-3 call follows the delegate call immediately, so the
+  expected path is stable under normal hub latency.
+- A `max_wait_ms` on a live steer cannot wait for the next delegate
+  reply; live steers return on delivery. Use the terminal notification
+  and `job_read_output` to inspect the eventual result.

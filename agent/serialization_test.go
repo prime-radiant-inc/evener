@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
@@ -244,8 +245,8 @@ func TestSessionConfig_SpawnFieldsDropOnPersist(t *testing.T) {
 		spawn: spawnConfig{
 			parentSessionID:      "01PARENT",
 			parentToolCallID:     "call_abc",
-			parentSteer:          func(string) {},
-			parentSteerDelivered: func(string) bool { return true },
+			parentSteer:          func(string, *provenance.Causal) {},
+			parentSteerDelivered: func(string, *provenance.Causal) bool { return true },
 			subagentTask:         "do the thing",
 			depth:                3,
 			sharedTaskStore:      task.NewTaskStore("", "01PARENT"),

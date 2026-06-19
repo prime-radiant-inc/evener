@@ -19,6 +19,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 )
 
 var errJobManagerClosing = errors.New("job manager is closing")
@@ -47,10 +48,9 @@ type jobManager struct {
 	running       map[string]*runningJob
 	watches       map[watchKey]*watchConfig
 	terminalFlush map[*watchConfig]bool
-	// watchSeq mints stable watch ids; watchHistory is a bounded, latest-trimmed
-	// ring of watches that have left the active set, surfaced by job_list so a
-	// fired-then-removed watch stays legible. Both guarded by jm.mu.
-	watchSeq     int
+	// watchHistory is a bounded, latest-trimmed ring of watches that have left
+	// the active set, surfaced by job_list so a fired-then-removed watch stays
+	// legible. Guarded by jm.mu.
 	watchHistory []watchHistoryEntry
 	// lastFedOffset records the highest stream end offset fed to the output
 	// matcher per job. The per-job output pump is single-goroutine, so this is
@@ -60,10 +60,15 @@ type jobManager struct {
 	lastFedOffset map[string]int64
 	closing       bool
 	appendEvent   func(jobstore.Event) error
-	emit          func(events.EventKind, events.EventData)
+	appendEvents  func([]jobstore.Event) error
+	emit          func(events.EventKind, events.EventData, *provenance.Causal)
 	forward       func(jobstore.Event) error
 	parentJobID   string
 	enqueue       func(jobNotification)
+	// currentProvenance reports the owning session's active causal provenance at
+	// call time. A job records this at creation so its detached lifecycle events
+	// and terminal notification carry the origin of whatever input launched it.
+	currentProvenance func() *provenance.Causal
 	// wake kicks the owning session's drain loop (wired to Session.notify).
 	// nil for test/restore-only managers. Observation paths call kick() after
 	// persisting watch-send intent; they never deliver (spec §3).
@@ -81,6 +86,31 @@ func (jm *jobManager) currentParentJobID() string {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	return jm.parentJobID
+}
+
+func (jm *jobManager) appendJobEvents(events []jobstore.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	if len(events) == 1 || jm.appendEvents == nil {
+		for _, event := range events {
+			if err := jm.appendEvent(event); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return jm.appendEvents(events)
+}
+
+// currentCausalProvenance snapshots the owning session's active provenance for
+// recording on a newly created job. nil when no provenance source is wired
+// (test/restore-only managers) or the active set is empty.
+func (jm *jobManager) currentCausalProvenance() *provenance.Causal {
+	if jm == nil || jm.currentProvenance == nil {
+		return nil
+	}
+	return provenance.Clone(jm.currentProvenance())
 }
 
 type runningJob struct {
@@ -201,6 +231,10 @@ type jobNotification struct {
 	JobID, JobType, Status, Reason, TranscriptRef string
 	OutputBytes                                   int64
 	ExitCode                                      *int
+	// Provenance is the causal origin carried with this notification: the
+	// triggering watch's lineage so the notification turn it drives stamps the
+	// same origin and a same-watch retrigger is suppressed.
+	Provenance *provenance.Causal
 	// WatchSend marks this entry as a watch-send wake token: render-by-key
 	// against the owning jobManager's CURRENT pending state at accept time
 	// (spec §4.3). The frame text is deliberately NOT carried here.
@@ -259,10 +293,15 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 		watches:       make(map[watchKey]*watchConfig),
 		lastFedOffset: make(map[string]int64),
 		appendEvent:   store.Append,
+		appendEvents:  store.AppendBatch,
 		enqueue:       enqueue,
 		now:           time.Now,
 	}
 	if err := jm.restoreWatchSendPending(); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	if err := jm.clearUnrestoredActiveWatches(); err != nil {
 		_ = store.Close()
 		return nil, err
 	}
@@ -282,9 +321,10 @@ func (jm *jobManager) closeRuntimeState() error {
 	targets := make([]watchConfigTerminalSnapshot, 0, len(jm.watches))
 	for key, cfg := range jm.watches {
 		targets = append(targets, watchConfigTerminalSnapshot{
-			key:      key,
-			cfg:      cfg,
-			terminal: watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()),
+			key:       key,
+			cfg:       cfg,
+			terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()),
+			endReason: "job_manager_closed",
 		})
 	}
 	markWatchConfigSnapshotsRejectingLocked(targets)
@@ -305,14 +345,13 @@ func (jm *jobManager) closeRuntimeState() error {
 	jm.mu.Unlock()
 	jm.watchNotifyMu.Unlock()
 
-	applied, err := jm.appendWatchSendTerminalSnapshots(dropped)
+	err := jm.appendWatchTeardownBatch(dropped, targets)
 	if err != nil {
-		jm.removeWatchSendTerminalSnapshots(applied)
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
 		jm.closeWatchConfigSnapshots(targets)
 	} else {
 		jm.detachWatchConfigSnapshots(targets)
-		jm.removeWatchSendTerminalSnapshots(applied)
+		jm.removeWatchSendTerminalSnapshots(dropped)
 	}
 	watchCleanupErr := err
 	jm.mu.Lock()
@@ -430,6 +469,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 	jobID := jobstore.NewJobID()
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
 	parentJobID := jm.currentParentJobID()
+	jobProvenance := jm.currentCausalProvenance()
 	rec := &jobstore.JobRecord{
 		JobID:            jobID,
 		Type:             jobstore.JobShell,
@@ -442,6 +482,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		StartedAt:        startedAt,
 		LastActivity:     &startedAt,
 		OutputPath:       outputPath,
+		Provenance:       provenance.Clone(jobProvenance),
 	}
 	output, err := jobstore.OpenOutput(outputPath, maxJobOutputRetentionBytes)
 	if err != nil {
@@ -474,6 +515,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		ParentJobID:      rec.ParentJobID,
 		StartedAt:        &startedAt,
 		OutputPath:       rec.OutputPath,
+		Provenance:       provenance.Clone(jobProvenance),
 	}
 	if err := jm.appendEvent(started); err != nil {
 		jm.mu.Unlock()
@@ -482,7 +524,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 	}
 	if err := jm.forwardLocked(started); err != nil {
 		_ = output.Close()
-		if terminalErr := jm.appendStartForwardFailure(rec.JobID, output); terminalErr != nil {
+		if terminalErr := jm.appendStartForwardFailure(rec.JobID, output, rec.Provenance); terminalErr != nil {
 			run.forwardDisabled = true
 			jm.running[jobID] = run
 			jm.mu.Unlock()
@@ -589,7 +631,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 		JobType:   string(e.Type),
 		Status:    string(jobstore.StatusRunning),
 		FromWatch: fromWatch,
-	})
+	}, e.Provenance)
 }
 
 func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
@@ -613,7 +655,7 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		OutputBytes:   e.OutputBytes,
 		TranscriptRef: transcriptRef,
 		FromWatch:     fromWatch,
-	})
+	}, e.Provenance)
 }
 
 // errJobNotFound is the shared not-found error for a job lookup by id. It points
@@ -714,6 +756,10 @@ func (jm *jobManager) outputDropped(jobID string) (int64, error) {
 }
 
 func (jm *jobManager) appendJobOutput(jobID string, output *jobstore.OutputStore, b []byte) (int, error) {
+	return jm.appendJobOutputWithProvenance(jobID, output, b, nil)
+}
+
+func (jm *jobManager) appendJobOutputWithProvenance(jobID string, output *jobstore.OutputStore, b []byte, p *provenance.Causal) (int, error) {
 	if output == nil {
 		return 0, nil
 	}
@@ -721,7 +767,7 @@ func (jm *jobManager) appendJobOutput(jobID string, output *jobstore.OutputStore
 	if err == nil && n > 0 {
 		// Len is the post-append lifetime byte count, the offset space the output
 		// matcher scans in; pass it as the chunk's end offset.
-		jm.feedJobOutput(jobID, b[:n], output.Len())
+		jm.feedJobOutputWithProvenance(jobID, b[:n], output.Len(), p)
 	}
 	return n, err
 }
@@ -758,6 +804,10 @@ func (jm *jobManager) reconcileLostJobs() error {
 	if err != nil {
 		return err
 	}
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		return err
+	}
 
 	jm.mu.Lock()
 	live := make(map[string]bool, len(jm.running))
@@ -781,16 +831,17 @@ func (jm *jobManager) reconcileLostJobs() error {
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if err := jm.appendEvent(finished); err != nil {
-			return err
-		}
+		finished.Provenance = provenance.Clone(rec.Provenance)
 		pending := jobstore.Event{
 			Kind:        jobstore.EventJobNotificationPending,
 			TS:          finished.TS,
 			JobID:       finished.JobID,
 			TerminalGen: finished.TerminalGen,
+			Provenance:  provenance.Clone(rec.Provenance),
 		}
-		if err := jm.appendEvent(pending); err != nil {
+		events := []jobstore.Event{finished, pending}
+		events = append(events, recoveredTerminalWatchClearEvents(watches, finished.JobID, finished.TS)...)
+		if err := jm.appendJobEvents(events); err != nil {
 			return err
 		}
 		if jm.enqueue != nil {
@@ -802,10 +853,55 @@ func (jm *jobManager) reconcileLostJobs() error {
 				TranscriptRef: rec.TranscriptRef,
 				OutputBytes:   finished.OutputBytes,
 				ExitCode:      finished.ExitCode,
+				Provenance:    provenance.Clone(rec.Provenance),
 			})
 		}
 	}
 	return nil
+}
+
+func recoveredTerminalWatchClearEvents(watches map[string]*jobstore.WatchRecord, jobID string, ts time.Time) []jobstore.Event {
+	return watchClearEventsForRecords(watches, ts, "auto_removed_terminal", func(watch *jobstore.WatchRecord) bool {
+		return watch.Target == jobID
+	})
+}
+
+func (jm *jobManager) clearUnrestoredActiveWatches() error {
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		return err
+	}
+	return jm.appendJobEvents(watchClearEventsForRecords(watches, jm.now(), "runtime_lost", func(*jobstore.WatchRecord) bool {
+		return true
+	}))
+}
+
+func watchClearEventsForRecords(watches map[string]*jobstore.WatchRecord, ts time.Time, endReason string, include func(*jobstore.WatchRecord) bool) []jobstore.Event {
+	if len(watches) == 0 {
+		return nil
+	}
+	var watchIDs []string
+	for watchID, watch := range watches {
+		if watch == nil || !watch.Active || watch.Generation == "" || !include(watch) {
+			continue
+		}
+		watchIDs = append(watchIDs, watchID)
+	}
+	sort.Strings(watchIDs)
+	events := make([]jobstore.Event, 0, len(watchIDs))
+	for _, watchID := range watchIDs {
+		watch := watches[watchID]
+		events = append(events, jobstore.Event{
+			Kind:    jobstore.EventWatchCleared,
+			TS:      ts,
+			WatchID: watchID,
+			Watch: &jobstore.WatchEvent{
+				Generation: watch.Generation,
+				EndReason:  endReason,
+			},
+		})
+	}
+	return events
 }
 
 func (jm *jobManager) outputPathForJob(rec *jobstore.JobRecord, jobID string) string {
@@ -835,10 +931,18 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
 	if run != nil {
+		rec := cloneJobRecord(run.rec)
+		if run.finalize != nil || run.terminal != nil || run.rec.Status.IsTerminal() {
+			jm.mu.Unlock()
+			return rec, nil
+		}
+		if err := jm.appendDelegateStopGateForRecord(rec); err != nil {
+			jm.mu.Unlock()
+			return nil, err
+		}
 		run.stopStatus = jobstore.StatusCancelled
 		run.stopReason = "stopped_by_parent"
 		signal := run.signal
-		rec := cloneJobRecord(run.rec)
 		rec.Status = run.stopStatus
 		rec.Reason = run.stopReason
 		jm.mu.Unlock()
@@ -860,6 +964,21 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 	return cloneJobRecord(rec), nil
 }
 
+func (jm *jobManager) appendDelegateStopGateForRecord(rec *jobstore.JobRecord) error {
+	if rec == nil || rec.Type != jobstore.JobDelegate || rec.DelegateID == "" {
+		return nil
+	}
+	return jm.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateStopGateClosed,
+		TS:         jm.now(),
+		DelegateID: rec.DelegateID,
+		Delegate: &jobstore.DelegateEvent{
+			Generation: jobstore.NewDelegateGeneration(),
+			StopJobID:  rec.JobID,
+		},
+	})
+}
+
 func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason string, exitCode *int) error {
 	return jm.finalizeWithRun(jobID, func(run *runningJob) (jobstore.Status, string, *int, error) {
 		return status, reason, exitCode, nil
@@ -871,25 +990,44 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 // EventJobNotificationPending or enqueue an owner notification — the model
 // already received the complete result inline (spec §6.4d).
 func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, reason string, exitCode *int) error {
-	terminal, err := jm.writeFinishJob(run, status, reason, exitCode)
-	if err != nil {
+	jm.mu.Lock()
+	terminal := run.terminal
+	jm.mu.Unlock()
+	if terminal == nil {
+		var err error
+		terminal, err = jm.writeFinishJob(run, status, reason, exitCode)
+		if err != nil {
+			return err
+		}
+	}
+	if err := jm.forwardFinishedJob(run, terminal); err != nil {
 		return err
 	}
+	jm.emitFinishedJob(run, terminal)
+	jm.runAfterDurableFinish(run, terminal, run.afterDurableFinish)
 
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run || run.terminal != terminal {
 		jm.mu.Unlock()
 		return nil
 	}
-	watchNotifications, watchDeliveries := jm.expireJobWatchesLocked(run.rec.JobID)
-	delete(jm.running, run.rec.JobID)
+	watchRegistryEvents, expiredWatches, watchRootProvenance := jm.expireJobWatchesLocked(run.rec.JobID)
+	if err := jm.appendWatchRegistryEvents(watchRegistryEvents); err != nil {
+		jm.mu.Unlock()
+		return err
+	}
+	watchNotifications, watchDeliveries := jm.completeExpiredJobWatchesLocked(run.rec.JobID, expiredWatches, watchRootProvenance)
 	jm.mu.Unlock()
-
 	jm.enqueueWatchNotifications(watchNotifications)
 	jm.recordWatchSendsAndKick(watchDeliveries)
 	// No EventJobNotificationPending, no jm.enqueue call: kept within-bound
 	// jobs completed before the tool returned (spec §6.4d).
 
+	jm.mu.Lock()
+	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
+		delete(jm.running, run.rec.JobID)
+	}
+	jm.mu.Unlock()
 	run.stopWatchdog()
 	_ = run.output.Close()
 	run.closeDone()
@@ -987,6 +1125,7 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 		StructuredResultValid:  structuredValid,
 		StructuredResultReason: structuredReason,
 		TerminalGen:            terminal.generation,
+		Provenance:             provenance.Clone(run.rec.Provenance),
 	}
 	terminal.finished = finished
 	if err := jm.appendEvent(finished); err != nil {
@@ -1066,7 +1205,7 @@ func (jm *jobManager) runAfterDurableFinish(run *runningJob, terminal *terminalJ
 	jm.mu.Unlock()
 }
 
-func (jm *jobManager) appendStartForwardFailure(jobID string, output *jobstore.OutputStore) error {
+func (jm *jobManager) appendStartForwardFailure(jobID string, output *jobstore.OutputStore, p *provenance.Causal) error {
 	var outputBytes int64
 	if output != nil {
 		if _, total, _, err := output.Tail(0); err == nil {
@@ -1083,6 +1222,7 @@ func (jm *jobManager) appendStartForwardFailure(jobID string, output *jobstore.O
 		EndedAt:     &endedAt,
 		OutputBytes: outputBytes,
 		TerminalGen: jobstore.NewTerminalGeneration(),
+		Provenance:  provenance.Clone(p),
 	})
 }
 
@@ -1150,14 +1290,24 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	pendingAppended := terminal.notificationPendingAppended
 	var watchNotifications []jobNotification
 	var watchDeliveries []watchSendDelivery
+	var watchRegistryEvents []jobstore.Event
+	var expiredWatches []expiredJobWatch
+	var watchRootProvenance *provenance.Causal
 	if !pendingAppended {
-		watchNotifications, watchDeliveries = jm.expireJobWatchesLocked(run.rec.JobID)
+		watchRegistryEvents, expiredWatches, watchRootProvenance = jm.expireJobWatchesLocked(run.rec.JobID)
 	}
-	jm.mu.Unlock()
 
 	if !pendingAppended {
+		if err := jm.appendWatchRegistryEvents(watchRegistryEvents); err != nil {
+			jm.mu.Unlock()
+			return err
+		}
+		watchNotifications, watchDeliveries = jm.completeExpiredJobWatchesLocked(run.rec.JobID, expiredWatches, watchRootProvenance)
+		jm.mu.Unlock()
 		jm.enqueueWatchNotifications(watchNotifications)
 		jm.recordWatchSendsAndKick(watchDeliveries)
+	} else {
+		jm.mu.Unlock()
 	}
 
 	if !pendingAppended {
@@ -1166,6 +1316,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 			TS:          terminal.endedAt,
 			JobID:       run.rec.JobID,
 			TerminalGen: terminal.generation,
+			Provenance:  provenance.Clone(run.rec.Provenance),
 		}
 		if err := jm.appendEvent(pending); err != nil {
 			return err
@@ -1208,6 +1359,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 			TranscriptRef: run.rec.TranscriptRef,
 			OutputBytes:   terminal.outputBytes,
 			ExitCode:      terminal.exitCode,
+			Provenance:    provenance.Clone(run.rec.Provenance),
 		})
 	}
 	run.closeDone()
@@ -1273,6 +1425,7 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 			TS:          jm.now(),
 			JobID:       rec.JobID,
 			TerminalGen: rec.TerminalGen,
+			Provenance:  provenance.Clone(rec.Provenance),
 		}
 		if rec.NotifyState == jobstore.NotifyNotArmed {
 			if err := jm.appendEvent(pending); err != nil {
@@ -1288,6 +1441,7 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 				TranscriptRef: rec.TranscriptRef,
 				OutputBytes:   rec.OutputBytes,
 				ExitCode:      rec.ExitCode,
+				Provenance:    provenance.Clone(rec.Provenance),
 			})
 		}
 	}

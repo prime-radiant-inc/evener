@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 )
 
 func (s *Session) ownerJobManagerFor(jobID string) (*jobManager, *jobstore.JobRecord) {
@@ -91,7 +92,7 @@ func (s *Session) walkDescendantJobs(filter listFilter) ([]jobListEntry, error) 
 		if projectSession == nil {
 			projectSession = s
 		}
-		entry := projectJobRecord(projectSession, row.rec)
+		entry := projectJobRecordForViewer(s, projectSession, row.rec)
 		entry.Depth = row.depth
 		jobs = append(jobs, entry)
 	}
@@ -321,7 +322,11 @@ func (s *Session) stopNestedOrLocal(jobID string) (*jobstore.JobRecord, error) {
 	if owner != nil {
 		// Spec 5.8's not_controllable path is reserved for future cross-process
 		// owners; a live in-process owner routes directly to its job manager.
-		return owner.stop(jobID)
+		rec, err := owner.stop(jobID)
+		if err != nil {
+			return rec, err
+		}
+		return rec, nil
 	}
 	if forwarded != nil && forwarded.ParentJobID != "" && forwarded.OwnerSessionID != s.id {
 		if forwarded.Status.IsTerminal() {
@@ -339,7 +344,11 @@ func (s *Session) stopNestedOrLocal(jobID string) (*jobstore.JobRecord, error) {
 	if guidance := s.notControllableDescendantError(jobID); guidance != nil {
 		return nil, guidance
 	}
-	return local.stop(jobID)
+	rec, err := local.stop(jobID)
+	if err != nil {
+		return rec, err
+	}
+	return rec, nil
 }
 
 // notControllableDescendantError returns the spec §2 non-direct-descendant
@@ -585,12 +594,14 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 			OwnerSessionID:   rec.OwnerSessionID,
 			VisibleToSession: rec.VisibleToSession,
 			ParentJobID:      rec.ParentJobID,
+			DelegateID:       rec.DelegateID,
 			OriginTurnID:     rec.OriginTurnID,
 			OriginToolCallID: rec.OriginToolCallID,
 			DelegateRestore:  rec.DelegateRestore,
 			StartedAt:        &startedAt,
 			OutputPath:       rec.OutputPath,
 			TranscriptRef:    rec.TranscriptRef,
+			Provenance:       provenance.Clone(rec.Provenance),
 		}); err != nil {
 			return err
 		}
@@ -608,6 +619,7 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 			StructuredResultValid:  rec.StructuredResultValid,
 			StructuredResultReason: rec.StructuredResultReason,
 			TerminalGen:            rec.TerminalGen,
+			Provenance:             provenance.Clone(rec.Provenance),
 		}); err != nil {
 			return err
 		}
@@ -637,6 +649,7 @@ func (jm *jobManager) recoverForwardedPendingNotifications() error {
 			TS:          jm.recoveredEventTime(rec),
 			JobID:       rec.JobID,
 			TerminalGen: rec.TerminalGen,
+			Provenance:  provenance.Clone(recordNotificationProvenance(rec)),
 		}); err != nil {
 			return err
 		}

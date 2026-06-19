@@ -5,9 +5,10 @@ cannot delegate further. Pass `delegation_allowance` to `delegate` to let a
 delegate delegate in turn — each grant must be strictly smaller than your own
 allowance, so the chain always shortens and allowance 0 is a leaf.
 
-Use `delegate` to assign scoped work. Use the job-control tools, including
-`job_read_output`, `job_list`, `job_stop`, and `job_send_message`, to inspect,
-stop, or continue work by `job_id`.
+Use `delegate` to assign scoped work. It returns a durable `delegate_id` for
+follow-up and concrete `job_id`s for individual turns. Use `delegate_send` with
+the `delegate_id` to continue delegate work; use `job_read_output`, `job_list`,
+and `job_stop` with concrete `job_id`s to inspect or stop specific turns.
 
 Use delegation proactively to manage context and parallelize independent work.
 For broad, ambiguous, or multi-part tasks, decompose the work into bounded

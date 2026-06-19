@@ -668,11 +668,111 @@ func TestShutdown_InvokesCallback(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status: got %d, want %d (202)", rec.Code, http.StatusAccepted)
 	}
+	if got := rec.Result().Header.Get("Content-Length"); got != "0" {
+		t.Fatalf("Content-Length = %q, want 0", got)
+	}
 	select {
 	case <-called:
 	case <-time.After(time.Second):
 		t.Fatal("shutdown callback was not invoked within 1s")
 	}
+}
+
+func TestShutdown_WritesResponseBeforeCallback(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	called := make(chan struct{}, 1)
+	srv.SetShutdownFunc(func() {
+		called <- struct{}{}
+	})
+
+	rec := &blockingHeaderRecorder{
+		header:        http.Header{},
+		headerStarted: make(chan struct{}, 1),
+		releaseHeader: make(chan struct{}),
+		flushStarted:  make(chan struct{}, 1),
+		releaseFlush:  make(chan struct{}),
+	}
+	req := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+	done := make(chan struct{})
+	go func() {
+		srv.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	select {
+	case <-rec.headerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown response was not started")
+	}
+	select {
+	case <-called:
+		t.Fatal("shutdown callback ran before the response write completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(rec.releaseHeader)
+	select {
+	case <-rec.flushStarted:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown response was not flushed")
+	}
+	select {
+	case <-called:
+		t.Fatal("shutdown callback ran before the response flush completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(rec.releaseFlush)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown handler did not complete")
+	}
+	if rec.status != http.StatusAccepted {
+		t.Fatalf("status: got %d, want %d (202)", rec.status, http.StatusAccepted)
+	}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown callback was not invoked after response completed")
+	}
+}
+
+type blockingHeaderRecorder struct {
+	header        http.Header
+	headerStarted chan struct{}
+	releaseHeader chan struct{}
+	flushStarted  chan struct{}
+	releaseFlush  chan struct{}
+	status        int
+}
+
+func (r *blockingHeaderRecorder) Header() http.Header {
+	return r.header
+}
+
+func (r *blockingHeaderRecorder) Write(p []byte) (int, error) {
+	if r.status == 0 {
+		r.WriteHeader(http.StatusOK)
+	}
+	return len(p), nil
+}
+
+func (r *blockingHeaderRecorder) WriteHeader(status int) {
+	r.status = status
+	select {
+	case r.headerStarted <- struct{}{}:
+	default:
+	}
+	<-r.releaseHeader
+}
+
+func (r *blockingHeaderRecorder) Flush() {
+	select {
+	case r.flushStarted <- struct{}{}:
+	default:
+	}
+	<-r.releaseFlush
 }
 
 func TestShutdown_503WhenUnregistered(t *testing.T) {

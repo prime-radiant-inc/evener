@@ -224,9 +224,9 @@ processing-finish boundary (`finishProcessingAtBoundary`, `agent/session_state.g
 in the notification-accept path (`acceptNotificationInput`), and after restore /
 history-repair (`agent/history_repair.go:126`). Caller-targeted sends ride the
 notification queue as wake tokens keyed by watch ID; the accept path deduplicates them
-against current pending state and settles delivery in that turn; delegate-targeted sends are steered (running) or resumed
-(terminal-resumable) directly by the drain, the same path a model-initiated
-`job_send_message` takes.
+against current pending state and settles delivery in that turn; delegate-targeted sends are steered (running) or started
+(idle/resumable) directly by the drain, the same path a model-initiated
+`delegate_send` takes.
 
 **The wake path.** `jm.wake` (wired to `Session.notify` at construction,
 `agent/session_init.go:128`) → `Session.notify` (`agent/session.go:288`) → the server's

@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/llm"
 )
 
@@ -30,6 +31,46 @@ func newTestSession(t *testing.T) *Session {
 	}
 	t.Cleanup(func() { sess.Close() })
 	return sess
+}
+
+func TestSubagentFollowUpProvenanceUnionsLaunchActiveAndCompleted(t *testing.T) {
+	child := &Session{state: SessionProcessing}
+	child.replaceActiveProvenance(testProvenance("watch_completed", "wg_1"))
+	child.finishProcessingAtBoundary(context.Background(), SessionIdle)
+	child.unionActiveProvenance(testProvenance("watch_active", "wg_1"))
+
+	sub := &subagent{sess: child}
+	got := sub.followUpProvenance(testProvenance("watch_launch", "wg_1"))
+
+	for _, watchID := range []string{"watch_launch", "watch_completed", "watch_active"} {
+		if !provenance.ContainsWatch(got, watchID, "wg_1") {
+			t.Fatalf("follow-up provenance = %+v, want %s/wg_1", got, watchID)
+		}
+	}
+}
+
+func TestSubagentRunSnapshotsFinalProvenance(t *testing.T) {
+	child := newTestSession(t)
+	sub := &subagent{
+		id:      child.ID(),
+		sess:    child,
+		done:    make(chan struct{}),
+		running: true,
+		status:  SubagentRunning,
+	}
+
+	sub.run(context.Background(), "do the task", testProvenance("watch_launch", "wg_1"))
+
+	sub.mu.Lock()
+	got := provenance.Clone(sub.runProvenance)
+	running := sub.running
+	sub.mu.Unlock()
+	if running {
+		t.Fatal("subagent run should be terminal after run returns")
+	}
+	if !provenance.ContainsWatch(got, "watch_launch", "wg_1") {
+		t.Fatalf("run provenance = %+v, want watch_launch/wg_1", got)
+	}
 }
 
 func spawnRuntimeAgent(t *testing.T, sess *Session, task, model string, maxTurns int, agentType, reasoningEffort string, grantTools []string) string {
@@ -384,7 +425,7 @@ func TestCancelAgent_GenuineFailureRacingCancelStaysFailed(t *testing.T) {
 		cancelRequested: true, // a cancel is racing this run's genuine failure
 	}
 
-	sub.run(context.Background(), "do work")
+	sub.run(context.Background(), "do work", nil)
 
 	sub.mu.Lock()
 	status := sub.status
@@ -587,7 +628,7 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 }
 
 // TestSubagentCannotCallRootOnlyControlTools asserts depth>0 subagents keep
-// job_send_message for aliases while root-only controls stay unavailable.
+// delegate_send for caller-route messages while root-only controls stay unavailable.
 func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if len(rootOnlyJobPresenceTools) != 2 || rootOnlyJobPresenceTools[0] != "delegate" || rootOnlyJobPresenceTools[1] != "job_watch" {
 		t.Fatalf("rootOnlyJobPresenceTools = %v, want exactly [delegate job_watch]", rootOnlyJobPresenceTools)
@@ -598,8 +639,8 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if !isRootOnlyJobPresenceTool("job_watch") {
 		t.Fatal("job_watch must be a root-only job-presence tool")
 	}
-	if isRootOnlyJobPresenceTool("job_send_message") {
-		t.Fatal("job_send_message must not be a root-only job-presence tool")
+	if isRootOnlyJobPresenceTool("delegate_send") {
+		t.Fatal("delegate_send must not be a root-only job-presence tool")
 	}
 	if !isRootOnlySubagentTool("delegate") {
 		t.Fatal("delegate must be a root-only subagent tool")
@@ -625,8 +666,8 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if child.reg.Get("job_watch") != nil {
 		t.Fatal("depth>0 child must not have job_watch registered")
 	}
-	if child.reg.Get("job_send_message") == nil {
-		t.Fatal("depth>0 child must keep job_send_message registered")
+	if child.reg.Get("delegate_send") == nil {
+		t.Fatal("depth>0 child must keep delegate_send registered")
 	}
 	for _, name := range []string{"shell", "job_read_output", "job_list", "job_stop"} {
 		if child.reg.Get(name) == nil {
@@ -636,8 +677,8 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if hasCachedCallableToolDefinition(child, "job_watch") {
 		t.Fatal("depth>0 child must not advertise job_watch")
 	}
-	if !hasCachedCallableToolDefinition(child, "job_send_message") {
-		t.Fatal("depth>0 child must advertise job_send_message")
+	if !hasCachedCallableToolDefinition(child, "delegate_send") {
+		t.Fatal("depth>0 child must advertise delegate_send")
 	}
 	for _, name := range []string{"shell", "job_read_output", "job_list", "job_stop"} {
 		if !hasCachedCallableToolDefinition(child, name) {

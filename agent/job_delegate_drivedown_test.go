@@ -566,6 +566,100 @@ func TestDrainDoesNotReRouteChildCallerPendings(t *testing.T) {
 	}
 }
 
+func TestParentDrainDeliversChildWatchSendThroughChildSession(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	now := time.Unix(4100, 0).UTC()
+	started := now.Add(time.Millisecond)
+	if err := childJM.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: "dlg_worker",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "WORKER",
+			TranscriptRef:    encodeRef("", "WORKER"),
+			OwnerSessionID:   "CHILD",
+			VisibleSessionID: "CHILD",
+			Generation:       "dg_worker",
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append worker delegate: %v", err)
+	}
+	if err := childJM.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               started,
+		JobID:            "job_worker",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_worker",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: "CHILD",
+		TranscriptRef:    encodeRef("", "WORKER"),
+		StartedAt:        &started,
+	}); err != nil {
+		t.Fatalf("append worker job: %v", err)
+	}
+	pending := restoredWatchSendPendingEvents("CHILD", "job_child_watched", "dlg_worker", now)
+	pending[0].WatchSend.DelegateGeneration = "dg_worker"
+	for _, event := range pending {
+		if err := childJM.appendEvent(event); err != nil {
+			t.Fatalf("append child pending: %v", err)
+		}
+	}
+	if err := childJM.restoreWatchSendPending(); err != nil {
+		t.Fatalf("restore child pending: %v", err)
+	}
+
+	worker := &Session{id: "WORKER"}
+	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil)}
+	child.subagents.track(&subagent{
+		id:      "WORKER",
+		sess:    worker,
+		status:  SubagentRunning,
+		driving: true,
+	})
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+	parent.subagents.track(&subagent{
+		id:     "CHILD",
+		sess:   child,
+		status: SubagentRunning,
+	})
+
+	if err := parent.drainPendingWatchSends(context.Background()); err != nil {
+		t.Fatalf("drainPendingWatchSends: %v", err)
+	}
+	if got := len(worker.steeringQueue); got != 1 {
+		t.Fatalf("worker steering queue length = %d, want child-owned watch send delivered once", got)
+	}
+	if !strings.Contains(worker.steeringQueue[0].Text, "delivery_id: delivery_restore_pending") {
+		t.Fatalf("worker steering text = %q, want restored watch-send frame", worker.steeringQueue[0].Text)
+	}
+	events := loadJobStoreEvents(t, childJM)
+	var delivered, dropped int
+	for _, event := range events {
+		switch event.Kind {
+		case jobstore.EventWatchSendDelivered:
+			delivered++
+		case jobstore.EventWatchSendDropped:
+			dropped++
+		}
+	}
+	if delivered != 1 || dropped != 0 {
+		t.Fatalf("child watch-send terminal events: delivered=%d dropped=%d, want delivered=1 dropped=0", delivered, dropped)
+	}
+}
+
 // appendDelegateRecordForChild appends a delegate job record (start + terminal)
 // to jm's store, owned by jm's session and pointing at childSessionID via its
 // transcript ref — the shape the parent's store holds for a delegate it created.
@@ -709,6 +803,20 @@ func appendForwardedChildTerminalPending(t *testing.T, jm *jobManager, jobID, ch
 	}); err != nil {
 		t.Fatalf("append forwarded pending %q: %v", jobID, err)
 	}
+}
+
+func appendForwardedChildCallerWatchSendPending(t *testing.T, jm *jobManager, childSessionID, watchedJobID string) jobstore.WatchSendState {
+	t.Helper()
+	var state jobstore.WatchSendState
+	for _, event := range restoredWatchSendPendingEvents(childSessionID, watchedJobID, runtimeMessageAliasCaller, jm.now()) {
+		if event.WatchSend != nil {
+			state = *event.WatchSend
+		}
+		if err := jm.appendEvent(event); err != nil {
+			t.Fatalf("append forwarded caller watch-send pending %q: %v", watchedJobID, err)
+		}
+	}
+	return state
 }
 
 func childPendingNotifyState(t *testing.T, jm *jobManager, jobID string) jobstore.NotifyState {
@@ -959,6 +1067,65 @@ func TestFallbackRenderNonResumableChildSurvivesDeliveryFilter(t *testing.T) {
 	}
 }
 
+func TestFallbackRenderNonResumableChildCallerWatchSend(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	t.Cleanup(func() { _ = parentJM.store.Close() })
+
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+
+	state := appendForwardedChildCallerWatchSendPending(t, parentJM, "GONE", "job_gone_watch")
+	if pending := loadWatchSendRecord(t, parentJM).Pending; len(pending) != 1 {
+		t.Fatalf("seeded watch-send pending = %+v, want one pending", pending)
+	}
+	if err := parentJM.restoreWatchSendPending(); err != nil {
+		t.Fatalf("restore watch-send pending: %v", err)
+	}
+	if !parentJM.hasPendingWatchSends() {
+		t.Fatal("restored watch-send pending did not enter runtime pending state")
+	}
+
+	parent.driveChildrenWithUndeliveredAttention()
+
+	if pending := loadWatchSendRecord(t, parentJM).Pending; len(pending) != 0 {
+		t.Fatalf("watch-send pending after unreachable fallback = %+v, want settled/dropped", pending)
+	}
+	if parentJM.hasPendingWatchSends() {
+		t.Fatal("watch-send fallback dropped durable pending but left runtime pending state")
+	}
+	var dropped *jobstore.WatchSendState
+	for _, event := range loadJobStoreEvents(t, parentJM) {
+		if event.Kind == jobstore.EventWatchSendDropped &&
+			event.WatchSend != nil &&
+			event.WatchSend.Key == state.Key {
+			dropped = event.WatchSend
+		}
+	}
+	if dropped == nil {
+		t.Fatalf("watch-send fallback did not append a dropped tombstone for key %+v", state.Key)
+	}
+	if !strings.HasPrefix(dropped.DiagnosticReason, "child unreachable:") {
+		t.Fatalf("drop reason = %q, want child unreachable prefix", dropped.DiagnosticReason)
+	}
+
+	deliverable, _, _ := parent.filterDeliverableJobNotifications(parent.drainJobNotifications())
+	var rendered *deliverableJobNotification
+	for i := range deliverable {
+		n := deliverable[i].notification
+		if n.Status == jobNotificationEventWatch && n.JobID == "job_gone_watch" {
+			rendered = &deliverable[i]
+		}
+	}
+	if rendered == nil {
+		t.Fatalf("the unreachable child's caller watch-send was not rendered to the parent; deliverable=%+v", deliverable)
+	}
+	if !strings.HasPrefix(rendered.notification.Reason, "child unreachable:") {
+		t.Fatalf("rendered reason = %q, want child unreachable prefix", rendered.notification.Reason)
+	}
+}
+
 // TestSelfDeliverySettlesParentForwardedPending proves that a child settling its
 // OWN delegate notification also settles the parent's FORWARDED COPY (spec §3).
 // When a child completes/delivers a job within its own running turn,
@@ -1124,7 +1291,7 @@ func (a *driveBlockingSecondTurnAdapter) Requests() []llm.Request {
 	return append([]llm.Request{}, a.requests...)
 }
 
-// TestSendMessageMidDriveSteersNoSecondTurn proves the A7 fix: a job_send_message
+// TestSendMessageMidDriveSteersNoSecondTurn proves the A7 fix: a delegate_send
 // arriving while a coordinator's drive turn is in flight (sub.driving==true,
 // sub.running==false) STEERS into that single in-flight turn instead of launching
 // a SECOND concurrent ProcessInputKind on the same child session (a data race on
@@ -1134,11 +1301,11 @@ func (a *driveBlockingSecondTurnAdapter) Requests() []llm.Request {
 //
 // RED at HEAD: sendDelegateMessage reads only sub.running, so a driving-but-not-
 // running coordinator falls into resumeOrFindRunningDelegate, which launches a
-// fresh delegate turn → Action=="resumed", a second ProcessInputKind runs
+// fresh delegate turn -> Action=="started", a second ProcessInputKind runs
 // concurrently with the drive turn (-race reports a DATA RACE), and the adapter's
 // third call records secondTurnStarted.
 //
-// GREEN after the fix: the send is steered into the drive turn → Action=="sent",
+// GREEN after the fix: the send is steered into the drive turn -> Action=="steered",
 // no second turn, no race. Run under -race.
 func TestSendMessageMidDriveSteersNoSecondTurn(t *testing.T) {
 	release := make(chan struct{})
@@ -1189,7 +1356,7 @@ func TestSendMessageMidDriveSteersNoSecondTurn(t *testing.T) {
 
 	// WHILE the drive turn is blocked in flight, send a message to the coordinator.
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:        coord.JobID,
+		Target:        coord.DelegateID,
 		Message:       "steer me",
 		Background:    true,
 		BackgroundSet: true,
@@ -1198,12 +1365,12 @@ func TestSendMessageMidDriveSteersNoSecondTurn(t *testing.T) {
 		t.Fatalf("sendDelegateMessage during drive turn: %v", res.Err)
 	}
 
-	// The send must steer into the single in-flight drive turn (Action=="sent"),
-	// NOT launch a fresh resumed ProcessInput (Action=="resumed") that runs a
+	// The send must steer into the single in-flight drive turn (Action=="steered"),
+	// NOT start a fresh ProcessInput (Action=="started") that runs a
 	// SECOND concurrent ProcessInputKind on the same child session.
-	if res.Action != "sent" {
-		t.Fatalf("mid-drive send Action=%q, want \"sent\" (steered into the in-flight drive turn); "+
-			"a \"resumed\" Action means a SECOND concurrent ProcessInputKind launched on the driving child", res.Action)
+	if res.Action != "steered" {
+		t.Fatalf("mid-drive send Action=%q, want \"steered\" (steered into the in-flight drive turn); "+
+			"a \"started\" Action means a SECOND concurrent ProcessInputKind launched on the driving child", res.Action)
 	}
 
 	// A second concurrent turn must NEVER start on the child. At HEAD the resumed
@@ -1241,7 +1408,7 @@ func TestSendMessageMidDriveSteersNoSecondTurn(t *testing.T) {
 // silently losing the watch delivery.
 //
 // GREEN after the fix: a driving child's FromWatch send steers via trySteer
-// (Delivered / Action=="sent", classifyWatchSendDelivery != watchSendHardFailure)
+// (Delivered / Action=="steered", classifyWatchSendDelivery != watchSendHardFailure)
 // — or, if trySteer ever declined, returns watchSendBusy so the frame stays pending
 // for A6 re-delivery — never a hard failure.
 func TestWatchResumeMidDriveSteersNotDropped(t *testing.T) {
@@ -1302,7 +1469,7 @@ func TestWatchResumeMidDriveSteersNotDropped(t *testing.T) {
 	// WHILE the drive turn is blocked in flight, deliver a WATCH-RESUME send to the
 	// coordinator (FromWatch==true — the live-drain shape).
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:        coord.JobID,
+		Target:        coord.DelegateID,
 		Message:       "watch steer me",
 		Background:    true,
 		BackgroundSet: true,
@@ -1318,10 +1485,10 @@ func TestWatchResumeMidDriveSteersNotDropped(t *testing.T) {
 	}
 
 	// Steering into a live (drive) turn always succeeds, so the frame settles as
-	// delivered (Action=="sent", classifyWatchSendDelivery==watchSendDelivered);
+	// delivered (Action=="steered", classifyWatchSendDelivery==watchSendDelivered);
 	// deliverPendingWatchSend then settleWatchSendDelivered-s the pending frame.
-	if res.Action != "sent" {
-		t.Fatalf("mid-drive FromWatch send Action=%q, want \"sent\" (steered into the in-flight drive turn)", res.Action)
+	if res.Action != "steered" {
+		t.Fatalf("mid-drive FromWatch send Action=%q, want \"steered\" (steered into the in-flight drive turn)", res.Action)
 	}
 	if classifyWatchSendDelivery(res) != watchSendDelivered {
 		t.Fatalf("mid-drive FromWatch send classified as %d, want watchSendDelivered (%d) — the steered frame "+

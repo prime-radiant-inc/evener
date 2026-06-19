@@ -859,7 +859,7 @@ func writeToolCard(b *strings.Builder, callOwnerSeq int, tc *llm.ToolCallData, i
 
 	if hasResult {
 		full := wantFullResult(opt, callOwnerSeq, paired.ownerSeq)
-		writeToolResultBody(b, tc.Name, paired.result.Content, full)
+		writeToolResultBody(b, tc.Name, paired.result, full)
 	}
 }
 
@@ -911,7 +911,7 @@ func writeUnpairedResults(b *strings.Builder, idx *resultIndex) {
 	for _, id := range ids {
 		pr := idx.byCallID[id]
 		fmt.Fprintf(b, "- [call not shown] `%s`\n", pr.result.Name)
-		writeResultBody(b, pr.result.Content, false)
+		writeToolResultBody(b, pr.result.Name, pr.result, false)
 	}
 }
 
@@ -963,11 +963,14 @@ const (
 // All three forms share the same adaptive fence and head+tail truncation as
 // writeResultBody, so the output stays bounded and inner ``` fences cannot break
 // the card.
-func writeToolResultBody(b *strings.Builder, toolName string, content any, full bool) {
-	raw := fmt.Sprint(content)
+func writeToolResultBody(b *strings.Builder, toolName string, result *llm.ToolResultData, full bool) {
+	raw := ""
+	if result != nil {
+		raw = fmt.Sprint(result.Content)
+	}
 
 	if jobLifecycleTools[toolName] {
-		if body, ok := jobResultBody(raw); ok {
+		if body, ok := jobResultBody(toolResultStateOrContent(result)); ok {
 			writeFencedBody(b, body, full)
 			return
 		}
@@ -1000,6 +1003,9 @@ func jobResultBody(raw string) (string, bool) {
 		ref = "(none)"
 	}
 	jobID := r.JobID
+	if jobID == "" {
+		jobID = r.effectiveJobID()
+	}
 	if jobID == "" {
 		jobID = "(none)"
 	}
@@ -1041,26 +1047,36 @@ func jobResultBody(raw string) (string, bool) {
 // any key outside this set is rendered via the general JSON
 // pretty-print so the extra evidence stays visible.
 var jobResultKnownKeys = map[string]bool{
-	"target":                  true,
-	"job_id":                  true,
-	"type":                    true,
-	"status":                  true,
-	"reason":                  true,
-	"running_in_background":   true,
-	"timed_out":               true,
-	"action":                  true,
-	"resumed_from_job_id":     true,
-	"transcript_ref":          true,
-	"output":                  true,
-	"truncated":               true,
-	"exit_code":               true,
-	"structured_result":       true,
-	"structured_result_valid": true,
-	"delivered":               true,
-	"message_type":            true,
+	"delegate_id":              true,
+	"started_job_id":           true,
+	"current_job_id":           true,
+	"latest_job_id":            true,
+	"target":                   true,
+	"job_id":                   true,
+	"type":                     true,
+	"status":                   true,
+	"reason":                   true,
+	"running_in_background":    true,
+	"timed_out":                true,
+	"action":                   true,
+	"resumed_from_job_id":      true,
+	"transcript_ref":           true,
+	"output":                   true,
+	"truncated":                true,
+	"exit_code":                true,
+	"structured_result":        true,
+	"structured_result_valid":  true,
+	"structured_result_reason": true,
+	"delivered":                true,
+	"message_type":             true,
+	"wait_ignored_reason":      true,
 }
 
 var jobResultMetadataKeys = []string{
+	"delegate_id",
+	"started_job_id",
+	"current_job_id",
+	"latest_job_id",
 	"target",
 	"type",
 	"action",
@@ -1070,8 +1086,10 @@ var jobResultMetadataKeys = []string{
 	"truncated",
 	"exit_code",
 	"structured_result_valid",
+	"structured_result_reason",
 	"delivered",
 	"message_type",
+	"wait_ignored_reason",
 }
 
 func jobResultMetadata(raw string) string {
@@ -1388,6 +1406,9 @@ func toolInputSummary(name string, args json.RawMessage) string {
 
 	case "job_send_message":
 		return joinSummary(get("target"), quoteIfSet(truncRunes(get("message"), 80)))
+
+	case "delegate_send":
+		return joinSummary(get("to"), quoteIfSet(truncRunes(get("message"), 80)))
 
 	case "use_skill":
 		return get("skill_name")

@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -93,6 +94,341 @@ func TestJobReadOutputReportsStatus(t *testing.T) {
 	}
 	if ro.DroppedBytes != 0 {
 		t.Fatalf("dropped_bytes = %d, want 0", ro.DroppedBytes)
+	}
+}
+
+func TestJobListIncludesDelegatesRecoverySurface(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
+	}})
+	s := newDelegateTestSession(t, c)
+	res := s.createDelegate(context.Background(), delegateArgs{Task: "finish", Background: false, BlockTimeoutMS: 5000})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+
+	call := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "list",
+		Name:      "job_list",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if call.IsError {
+		t.Fatalf("job_list returned error: %s", call.Output)
+	}
+	var out struct {
+		Delegates []struct {
+			DelegateID   string `json:"delegate_id"`
+			CurrentJobID string `json:"current_job_id"`
+			LatestJobID  string `json:"latest_job_id"`
+			Status       string `json:"status"`
+			Resumable    bool   `json:"resumable"`
+		} `json:"delegates"`
+		Jobs []struct {
+			JobID      string `json:"job_id"`
+			DelegateID string `json:"delegate_id"`
+		} `json:"jobs"`
+	}
+	if err := json.Unmarshal(toolResultJSON(call), &out); err != nil {
+		t.Fatalf("unmarshal job_list: %v", err)
+	}
+	if len(out.Delegates) != 1 || out.Delegates[0].DelegateID != res.DelegateID || out.Delegates[0].LatestJobID != res.JobID {
+		t.Fatalf("delegates = %+v, want delegate recovery row", out.Delegates)
+	}
+	if len(out.Jobs) == 0 || out.Jobs[0].DelegateID != res.DelegateID {
+		t.Fatalf("jobs = %+v, want job annotated with delegate_id", out.Jobs)
+	}
+	if !strings.Contains(call.Output, "delegate_id "+res.DelegateID) {
+		t.Fatalf("job_list output must show delegate_id %q:\n%s", res.DelegateID, call.Output)
+	}
+	if !strings.Contains(call.Output, "delegate "+res.DelegateID) {
+		t.Fatalf("job_list output must show delegate recovery row for %q:\n%s", res.DelegateID, call.Output)
+	}
+}
+
+func TestJobListHidesDescendantDelegateHandles(t *testing.T) {
+	s := newTestSession(t)
+	now := time.Unix(100, 0).UTC()
+	ownedStart := now.Add(time.Second)
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: "dlg_owned",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "OWNED",
+			TranscriptRef:    encodeRef("", "OWNED"),
+			OwnerSessionID:   s.id,
+			VisibleSessionID: s.id,
+			Generation:       "dg_owned",
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append owned delegate: %v", err)
+	}
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               ownedStart,
+		JobID:            "job_owned",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_owned",
+		OwnerSessionID:   s.id,
+		VisibleToSession: s.id,
+		TranscriptRef:    encodeRef("", "OWNED"),
+		StartedAt:        &ownedStart,
+	}); err != nil {
+		t.Fatalf("append owned delegate job: %v", err)
+	}
+	legacyStart := now.Add(1500 * time.Millisecond)
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         legacyStart,
+		DelegateID: "dlg_legacy",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID: "LEGACY",
+			TranscriptRef:  encodeRef("", "LEGACY"),
+			Generation:     "dg_legacy",
+			Resumable:      true,
+		},
+	}); err != nil {
+		t.Fatalf("append legacy delegate: %v", err)
+	}
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:          jobstore.EventJobStarted,
+		TS:            legacyStart,
+		JobID:         "job_legacy",
+		Type:          jobstore.JobDelegate,
+		DelegateID:    "dlg_legacy",
+		TranscriptRef: encodeRef("", "LEGACY"),
+		StartedAt:     &legacyStart,
+	}); err != nil {
+		t.Fatalf("append legacy delegate job: %v", err)
+	}
+	descStart := now.Add(2 * time.Second)
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               descStart,
+		JobID:            "job_descendant",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_descendant",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: s.id,
+		TranscriptRef:    encodeRef("", "DESCENDANT"),
+		StartedAt:        &descStart,
+	}); err != nil {
+		t.Fatalf("append descendant delegate job: %v", err)
+	}
+
+	out, err := jobListTool(s, map[string]any{}, 1<<20)
+	if err != nil {
+		t.Fatalf("jobListTool: %v", err)
+	}
+	var parsed jobListResult
+	if err := json.Unmarshal(handlerJSON(t, out), &parsed); err != nil {
+		t.Fatalf("unmarshal job_list: %v", err)
+	}
+	delegates := make(map[string]bool)
+	for _, delegate := range parsed.Delegates {
+		delegates[delegate.DelegateID] = true
+	}
+	if !delegates["dlg_owned"] || !delegates["dlg_legacy"] || delegates["dlg_descendant"] {
+		t.Fatalf("delegates = %+v, want owned and legacy only", parsed.Delegates)
+	}
+	for _, job := range parsed.Jobs {
+		if job.JobID == "job_descendant" && job.DelegateID != "" {
+			t.Fatalf("descendant job row exposes delegate_id %q; want no control handle", job.DelegateID)
+		}
+		if job.JobID == "job_legacy" && job.DelegateID != "dlg_legacy" {
+			t.Fatalf("legacy job row delegate_id = %q, want dlg_legacy", job.DelegateID)
+		}
+	}
+	rendered := out.(tooldefs.StateResult).Output
+	if strings.Contains(rendered, "delegate dlg_descendant") || strings.Contains(rendered, "delegate_id dlg_descendant") {
+		t.Fatalf("job_list output exposes descendant delegate handle:\n%s", rendered)
+	}
+}
+
+func TestJobListDelegatesFollowReturnedJobs(t *testing.T) {
+	s := newTestSession(t)
+	now := time.Unix(200, 0).UTC()
+	appendDelegateJob := func(delegateID, jobID string, started time.Time) {
+		t.Helper()
+		if err := s.jobManager.appendEvent(jobstore.Event{
+			Kind:       jobstore.EventDelegateCreated,
+			TS:         started.Add(-time.Millisecond),
+			DelegateID: delegateID,
+			Delegate: &jobstore.DelegateEvent{
+				ChildSessionID:   strings.ToUpper(delegateID),
+				TranscriptRef:    encodeRef("", strings.ToUpper(delegateID)),
+				OwnerSessionID:   s.id,
+				VisibleSessionID: s.id,
+				Generation:       "dg_" + delegateID,
+				Resumable:        true,
+			},
+		}); err != nil {
+			t.Fatalf("append delegate %s: %v", delegateID, err)
+		}
+		if err := s.jobManager.appendEvent(jobstore.Event{
+			Kind:             jobstore.EventJobStarted,
+			TS:               started,
+			JobID:            jobID,
+			Type:             jobstore.JobDelegate,
+			DelegateID:       delegateID,
+			OwnerSessionID:   s.id,
+			VisibleToSession: s.id,
+			TranscriptRef:    encodeRef("", strings.ToUpper(delegateID)),
+			StartedAt:        &started,
+		}); err != nil {
+			t.Fatalf("append delegate job %s: %v", jobID, err)
+		}
+	}
+	appendDelegateJob("dlg_old", "job_old", now)
+	appendDelegateJob("dlg_new", "job_new", now.Add(time.Second))
+
+	out, err := jobListTool(s, map[string]any{"limit": 1}, 1<<20)
+	if err != nil {
+		t.Fatalf("jobListTool(limit=1): %v", err)
+	}
+	var parsed jobListResult
+	if err := json.Unmarshal(handlerJSON(t, out), &parsed); err != nil {
+		t.Fatalf("unmarshal job_list: %v", err)
+	}
+	if len(parsed.Jobs) != 1 || parsed.Jobs[0].JobID != "job_new" || parsed.Jobs[0].DelegateID != "dlg_new" {
+		t.Fatalf("jobs = %+v, want newest delegate job only", parsed.Jobs)
+	}
+	if len(parsed.Delegates) != 1 || parsed.Delegates[0].DelegateID != "dlg_new" {
+		t.Fatalf("delegates = %+v, want only delegate for returned job", parsed.Delegates)
+	}
+	rendered := out.(tooldefs.StateResult).Output
+	if strings.Contains(rendered, "dlg_old") {
+		t.Fatalf("job_list(limit=1) leaked delegate outside returned jobs:\n%s", rendered)
+	}
+
+	filtered, err := jobListTool(s, map[string]any{"type": []any{"shell"}}, 1<<20)
+	if err != nil {
+		t.Fatalf("jobListTool(type=shell): %v", err)
+	}
+	var filteredParsed jobListResult
+	if err := json.Unmarshal(handlerJSON(t, filtered), &filteredParsed); err != nil {
+		t.Fatalf("unmarshal filtered job_list: %v", err)
+	}
+	if len(filteredParsed.Jobs) != 0 || len(filteredParsed.Delegates) != 0 {
+		t.Fatalf("filtered job_list = jobs %+v delegates %+v, want no delegate side channel", filteredParsed.Jobs, filteredParsed.Delegates)
+	}
+}
+
+func TestJobListDelegatesDoNotExposeFilteredCurrentJob(t *testing.T) {
+	s := newTestSession(t)
+	now := time.Unix(300, 0).UTC()
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: "dlg_history",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "HISTORY",
+			TranscriptRef:    encodeRef("", "HISTORY"),
+			OwnerSessionID:   s.id,
+			VisibleSessionID: s.id,
+			Generation:       "dg_history",
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append delegate: %v", err)
+	}
+	oldStart := now.Add(time.Second)
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               oldStart,
+		JobID:            "job_old",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_history",
+		OwnerSessionID:   s.id,
+		VisibleToSession: s.id,
+		TranscriptRef:    encodeRef("", "HISTORY"),
+		StartedAt:        &oldStart,
+	}); err != nil {
+		t.Fatalf("append old delegate job: %v", err)
+	}
+	oldEnd := oldStart.Add(time.Second)
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:     jobstore.EventJobFinished,
+		TS:       oldEnd,
+		JobID:    "job_old",
+		Status:   jobstore.StatusCompleted,
+		EndedAt:  &oldEnd,
+		Reason:   "done",
+		ExitCode: intPtr(0),
+	}); err != nil {
+		t.Fatalf("finish old delegate job: %v", err)
+	}
+	newStart := oldEnd.Add(time.Second)
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               newStart,
+		JobID:            "job_new",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_history",
+		OwnerSessionID:   s.id,
+		VisibleToSession: s.id,
+		TranscriptRef:    encodeRef("", "HISTORY"),
+		StartedAt:        &newStart,
+	}); err != nil {
+		t.Fatalf("append new delegate job: %v", err)
+	}
+
+	out, err := jobListTool(s, map[string]any{"status": []any{"completed"}}, 1<<20)
+	if err != nil {
+		t.Fatalf("jobListTool(status=completed): %v", err)
+	}
+	var parsed jobListResult
+	if err := json.Unmarshal(handlerJSON(t, out), &parsed); err != nil {
+		t.Fatalf("unmarshal job_list: %v", err)
+	}
+	if len(parsed.Jobs) != 1 || parsed.Jobs[0].JobID != "job_old" {
+		t.Fatalf("jobs = %+v, want only completed historical job", parsed.Jobs)
+	}
+	if len(parsed.Delegates) != 0 {
+		t.Fatalf("delegates = %+v, want no current/latest leak for filtered running job", parsed.Delegates)
+	}
+	rendered := out.(tooldefs.StateResult).Output
+	if strings.Contains(rendered, "job_new") || strings.Contains(rendered, "current_job_id") || strings.Contains(rendered, "latest_job_id") {
+		t.Fatalf("job_list(status=completed) leaked hidden current job:\n%s", rendered)
+	}
+}
+
+func TestJobToolsRejectDelegateIDWithActionableGuidance(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
+	}})
+	s := newDelegateTestSession(t, c)
+	res := s.createDelegate(context.Background(), delegateArgs{Task: "finish", Background: false, BlockTimeoutMS: 5000})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		tool string
+		args string
+		want string
+	}{
+		{"read", "job_read_output", fmt.Sprintf(`{"job_id":%q}`, res.DelegateID), "delegate_id is a conversation handle; read output from job_id"},
+		{"stop", "job_stop", fmt.Sprintf(`{"job_id":%q}`, res.DelegateID), "delegate_id is a conversation handle; stop a concrete job_id"},
+		{"watch", "job_watch", fmt.Sprintf(`{"operation":"create","target":%q,"events":["assistant.message"]}`, res.DelegateID), "delegate_id is not watchable; watch current_job_id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+				ID:        tc.name,
+				Name:      tc.tool,
+				Arguments: json.RawMessage(tc.args),
+			})
+			if !call.IsError {
+				t.Fatalf("%s succeeded, want error: %s", tc.tool, call.Output)
+			}
+			if !strings.Contains(call.Output, tc.want) {
+				t.Fatalf("%s error = %q, want %q", tc.tool, call.Output, tc.want)
+			}
+		})
 	}
 }
 
@@ -495,6 +831,7 @@ func TestJobListDefaultListingOmitsDepth(t *testing.T) {
 // projection (which must key on the owner session, not the root caller).
 type jobListDescendantEntry struct {
 	JobID              string  `json:"job_id"`
+	DelegateID         string  `json:"delegate_id"`
 	Status             string  `json:"status"`
 	OwnerSessionID     string  `json:"owner_session_id"`
 	Depth              int     `json:"depth"`
@@ -514,6 +851,105 @@ func findDescendantRow(rows []jobListDescendantEntry, jobID string) *jobListDesc
 		}
 	}
 	return nil
+}
+
+func TestJobListIncludeDescendantsHidesChildDelegateHandles(t *testing.T) {
+	rootJM := newWalkJobManager(t, "ROOT")
+	childJM := newWalkJobManager(t, "CHILD")
+	t.Cleanup(func() {
+		_ = rootJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	now := time.Unix(150, 0).UTC()
+	if err := childJM.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: "dlg_child",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "GRANDCHILD",
+			TranscriptRef:    encodeRef("", "GRANDCHILD"),
+			OwnerSessionID:   "CHILD",
+			VisibleSessionID: "CHILD",
+			Generation:       "dg_child",
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append child delegate: %v", err)
+	}
+	started := now.Add(time.Millisecond)
+	if err := childJM.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               started,
+		JobID:            "job_child_delegate",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_child",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: "CHILD",
+		TranscriptRef:    encodeRef("", "GRANDCHILD"),
+		StartedAt:        &started,
+	}); err != nil {
+		t.Fatalf("append child delegate job: %v", err)
+	}
+	legacyStarted := now.Add(2 * time.Millisecond)
+	if err := childJM.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         legacyStarted,
+		DelegateID: "dlg_child_legacy",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID: "LEGACY_GRANDCHILD",
+			TranscriptRef:  encodeRef("", "LEGACY_GRANDCHILD"),
+			Generation:     "dg_child_legacy",
+			Resumable:      true,
+		},
+	}); err != nil {
+		t.Fatalf("append legacy child delegate: %v", err)
+	}
+	if err := childJM.appendEvent(jobstore.Event{
+		Kind:          jobstore.EventJobStarted,
+		TS:            legacyStarted,
+		JobID:         "job_child_legacy_delegate",
+		Type:          jobstore.JobDelegate,
+		DelegateID:    "dlg_child_legacy",
+		TranscriptRef: encodeRef("", "LEGACY_GRANDCHILD"),
+		StartedAt:     &legacyStarted,
+	}); err != nil {
+		t.Fatalf("append legacy child delegate job: %v", err)
+	}
+
+	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root.subagents.track(&subagent{id: "CHILD", sess: child, status: SubagentRunning})
+
+	out, err := jobListTool(root, decodeJobListArgs(t, `{"include_descendants":true}`), 1<<20)
+	if err != nil {
+		t.Fatalf("jobListTool(include_descendants): %v", err)
+	}
+	var parsed jobListDescendantOutput
+	if err := json.Unmarshal(handlerJSON(t, out), &parsed); err != nil {
+		t.Fatalf("unmarshal job_list output: %v (output: %s)", err, out)
+	}
+	row := findDescendantRow(parsed.Jobs, "job_child_delegate")
+	if row == nil {
+		t.Fatalf("include_descendants jobs = %+v, want child delegate job", parsed.Jobs)
+	}
+	if row.DelegateID != "" {
+		t.Fatalf("child delegate row exposes delegate_id %q; want no parent-visible control handle", row.DelegateID)
+	}
+	legacyRow := findDescendantRow(parsed.Jobs, "job_child_legacy_delegate")
+	if legacyRow == nil {
+		t.Fatalf("include_descendants jobs = %+v, want legacy child delegate job", parsed.Jobs)
+	}
+	if legacyRow.DelegateID != "" {
+		t.Fatalf("legacy child delegate row exposes delegate_id %q; want no parent-visible control handle", legacyRow.DelegateID)
+	}
+	rendered := out.(tooldefs.StateResult).Output
+	if strings.Contains(rendered, "delegate_id dlg_child") ||
+		strings.Contains(rendered, "delegate dlg_child") ||
+		strings.Contains(rendered, "delegate_id dlg_child_legacy") ||
+		strings.Contains(rendered, "delegate dlg_child_legacy") {
+		t.Fatalf("include_descendants output exposes child delegate handle:\n%s", rendered)
+	}
 }
 
 // newWalkJobManager builds an isolated jobManager for a single tree level.
@@ -847,11 +1283,11 @@ func TestJobListEnumeratesActiveWatches(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
 		t.Fatalf("configure output_match watch: %v", err)
 	}
-	seedWatchSendDelegateTarget(t, jm, "job_obs")
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	if _, err := jm.configureWatch(watchArgs{
 		Target: rec.JobID,
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "job_obs", Message: "fyi"},
+		Send:   &watchSendArgs{To: "dlg_obs", Message: "fyi"},
 	}); err != nil {
 		t.Fatalf("configure event watch with send: %v", err)
 	}
@@ -878,12 +1314,12 @@ func TestJobListEnumeratesActiveWatches(t *testing.T) {
 		t.Fatalf("notify watch created_at = %q, not RFC3339Nano: %v", notify.CreatedAt, err)
 	}
 
-	sidecar := findJobListToolWatch(out.Watches, rec.JobID, "job_obs")
+	sidecar := findJobListToolWatch(out.Watches, rec.JobID, "dlg_obs")
 	if sidecar == nil {
 		t.Fatalf("job_list watches = %+v, want sidecar event watch", out.Watches)
 	}
-	if sidecar.SendTo != "job_obs" {
-		t.Fatalf("sidecar watch send_to = %q, want job_obs", sidecar.SendTo)
+	if sidecar.SendTo != "dlg_obs" {
+		t.Fatalf("sidecar watch send_to = %q, want dlg_obs", sidecar.SendTo)
 	}
 	if sidecar.Condition != "events: [job.notification]" {
 		t.Fatalf("sidecar watch condition = %q, want %q", sidecar.Condition, "events: [job.notification]")
@@ -906,12 +1342,12 @@ func TestJobListWatchConditionSummaryFormats(t *testing.T) {
 	}
 
 	// every-Nth event watch with a send (legal: not a self-delivery back to caller).
-	seedWatchSendDelegateTarget(t, jm, "job_obs")
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	if _, err := jm.configureWatch(watchArgs{
 		Target: rec.JobID,
 		Events: []string{"assistant.message"},
 		Every:  5,
-		Send:   &watchSendArgs{To: "job_obs"},
+		Send:   &watchSendArgs{To: "dlg_obs"},
 	}); err != nil {
 		t.Fatalf("configure every-N event watch: %v", err)
 	}
@@ -926,7 +1362,7 @@ func TestJobListWatchConditionSummaryFormats(t *testing.T) {
 		t.Fatalf("progress condition = %q, want %q", progress.Condition, "progress_interval_ms: 2000")
 	}
 
-	every := findJobListToolWatch(out.Watches, rec.JobID, "job_obs")
+	every := findJobListToolWatch(out.Watches, rec.JobID, "dlg_obs")
 	if every == nil {
 		t.Fatalf("watches = %+v, want every-N watch", out.Watches)
 	}
@@ -943,7 +1379,7 @@ func TestJobListWatchReflectsDeliveries(t *testing.T) {
 	// A no-send caller event watch counts one delivery per fired event.
 	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
 	for i := 0; i < 3; i++ {
-		jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+		onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
 	}
 
 	out := runJobListTool(t, s)
@@ -962,7 +1398,7 @@ func TestJobListExcludesTerminalFlushWatches(t *testing.T) {
 
 	// A config that lives ONLY in terminalFlush (with a pending send) must not be
 	// enumerated: F2 reads jm.watches exclusively.
-	flushCfg := &watchConfig{target: "job_GONE", send: &watchSendArgs{To: "job_obs"}}
+	flushCfg := &watchConfig{target: "job_GONE", send: &watchSendArgs{To: "dlg_obs"}}
 	jm.mu.Lock()
 	if jm.terminalFlush == nil {
 		jm.terminalFlush = make(map[*watchConfig]bool)
@@ -971,7 +1407,7 @@ func TestJobListExcludesTerminalFlushWatches(t *testing.T) {
 	jm.mu.Unlock()
 
 	out := runJobListTool(t, s)
-	if findJobListToolWatch(out.Watches, "job_GONE", "job_obs") != nil {
+	if findJobListToolWatch(out.Watches, "job_GONE", "dlg_obs") != nil {
 		t.Fatalf("terminal-flush watch leaked into job_list watches: %+v", out.Watches)
 	}
 	if len(out.Watches) != 0 {
@@ -1294,7 +1730,7 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"output_match":"(?i)ready"}`, shellOut.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":"(?i)ready"}`, shellOut.JobID)),
 	})
 	if res.IsError {
 		t.Fatalf("job_watch returned error: %s", res.Output)
@@ -1310,6 +1746,269 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 	}
 	if s.jobManager.watchCount() != 1 {
 		t.Fatalf("watch count = %d, want 1", s.jobManager.watchCount())
+	}
+}
+
+func TestJobWatchCreateReturnsIDAndClearUsesIDOnly(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	if shellOut.JobID == "" {
+		t.Fatal("background shell returned no job_id")
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	createRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":"ready"}`, shellOut.JobID)),
+	})
+	if createRes.IsError {
+		t.Fatalf("job_watch create returned error: %s", createRes.Output)
+	}
+	var created struct {
+		WatchID  string `json:"watch_id"`
+		Watching bool   `json:"watching"`
+	}
+	if err := json.Unmarshal(toolResultJSON(createRes), &created); err != nil {
+		t.Fatalf("unmarshal create watch output: %v (output: %s)", err, createRes.Output)
+	}
+	if !strings.HasPrefix(created.WatchID, "watch_") {
+		t.Fatalf("watch_id = %q, want watch_ prefix", created.WatchID)
+	}
+	if !created.Watching {
+		t.Fatalf("create result = %+v, want watching=true", created)
+	}
+
+	clearRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "clear",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"clear","watch_id":%q}`, created.WatchID)),
+	})
+	if clearRes.IsError {
+		t.Fatalf("job_watch clear returned error: %s", clearRes.Output)
+	}
+	var cleared struct {
+		WatchID  string `json:"watch_id"`
+		Watching bool   `json:"watching"`
+	}
+	if err := json.Unmarshal(toolResultJSON(clearRes), &cleared); err != nil {
+		t.Fatalf("unmarshal clear watch output: %v (output: %s)", err, clearRes.Output)
+	}
+	if cleared.WatchID != created.WatchID {
+		t.Fatalf("cleared watch_id = %q, want %q", cleared.WatchID, created.WatchID)
+	}
+	if cleared.Watching {
+		t.Fatalf("clear result = %+v, want watching=false", cleared)
+	}
+	watches, err := s.jobManager.store.LoadWatches()
+	if err != nil {
+		t.Fatalf("LoadWatches: %v", err)
+	}
+	if w := watches[created.WatchID]; w == nil || w.Active || w.EndReason != "cleared" {
+		t.Fatalf("durable watch %s = %+v, want inactive cleared", created.WatchID, w)
+	}
+
+	staleClearRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "clear-again",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"clear","watch_id":%q}`, created.WatchID)),
+	})
+	if staleClearRes.IsError {
+		t.Fatalf("stale job_watch clear returned error: %s", staleClearRes.Output)
+	}
+	if !strings.Contains(staleClearRes.Output, created.WatchID) || strings.Contains(staleClearRes.Output, "watch on  cleared") {
+		t.Fatalf("stale clear output = %q, want watch_id and no empty target footer", staleClearRes.Output)
+	}
+}
+
+func TestJobWatchRejectsRemovedPublicShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args string
+		want string
+	}{
+		{name: "missing operation", args: `{"target":"caller","events":["job.notification"]}`, want: "missing properties: 'operation'"},
+		{name: "unsupported operation", args: `{"operation":"pause","target":"caller","events":["job.notification"]}`, want: "value must be one of"},
+		{name: "create without target", args: `{"operation":"create","events":["job.notification"]}`, want: "target is required"},
+		{name: "inspect without watch id", args: `{"operation":"inspect"}`, want: "watch_id is required"},
+		{name: "clear without watch id", args: `{"operation":"clear"}`, want: "watch_id is required"},
+		{name: "target wildcard", args: `{"operation":"create","target":"*","events":["job.notification"]}`, want: "wildcard watch target is not supported"},
+		{name: "send to job id", args: `{"operation":"create","target":"caller","events":["job.notification"],"send":{"to":"job_observer","message":"observe"}}`, want: "job_id is a job/turn handle"},
+		{name: "send to watched", args: `{"operation":"create","target":"caller","events":["job.notification"],"send":{"to":"watched","message":"observe"}}`, want: "watched is not a v1 delivery target"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSession(t)
+			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+				ID:        "watch",
+				Name:      "job_watch",
+				Arguments: json.RawMessage(tc.args),
+			})
+			if !res.IsError {
+				t.Fatalf("job_watch succeeded, want error containing %q: %s", tc.want, res.Output)
+			}
+			if !strings.Contains(res.Output, tc.want) {
+				t.Fatalf("job_watch error = %q, want %q", res.Output, tc.want)
+			}
+			if s.jobManager.watchCount() != 0 {
+				t.Fatalf("watch count = %d, want 0", s.jobManager.watchCount())
+			}
+		})
+	}
+}
+
+func TestJobWatchDuplicateCreateReturnsSameIDAndChangedConfigReturnsNewID(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	if shellOut.JobID == "" {
+		t.Fatal("background shell returned no job_id")
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	createWatch := func(outputMatch string) string {
+		t.Helper()
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "watch-" + outputMatch,
+			Name:      "job_watch",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":%q}`, shellOut.JobID, outputMatch)),
+		})
+		if res.IsError {
+			t.Fatalf("job_watch create %q returned error: %s", outputMatch, res.Output)
+		}
+		var out struct {
+			WatchID string `json:"watch_id"`
+		}
+		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+			t.Fatalf("unmarshal watch output: %v (output: %s)", err, res.Output)
+		}
+		if !strings.HasPrefix(out.WatchID, "watch_") {
+			t.Fatalf("watch_id = %q, want watch_ prefix", out.WatchID)
+		}
+		return out.WatchID
+	}
+
+	firstID := createWatch("ready")
+	duplicateID := createWatch("ready")
+	if duplicateID != firstID {
+		t.Fatalf("duplicate create watch_id = %q, want %q", duplicateID, firstID)
+	}
+
+	changedID := createWatch("done")
+	if changedID == firstID {
+		t.Fatalf("changed config reused watch_id %q", changedID)
+	}
+}
+
+func TestJobWatchListAndInspectReturnWatchIDs(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	createRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":"ready"}`, shellOut.JobID)),
+	})
+	if createRes.IsError {
+		t.Fatalf("job_watch create returned error: %s", createRes.Output)
+	}
+	var created struct {
+		WatchID string `json:"watch_id"`
+	}
+	if err := json.Unmarshal(toolResultJSON(createRes), &created); err != nil {
+		t.Fatalf("unmarshal create watch output: %v (output: %s)", err, createRes.Output)
+	}
+
+	listRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "list",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(`{"operation":"list"}`),
+	})
+	if listRes.IsError {
+		t.Fatalf("job_watch list returned error: %s", listRes.Output)
+	}
+	var listed struct {
+		Watches []struct {
+			WatchID  string `json:"watch_id"`
+			Target   string `json:"target"`
+			Watching bool   `json:"watching"`
+		} `json:"watches"`
+	}
+	if err := json.Unmarshal(toolResultJSON(listRes), &listed); err != nil {
+		t.Fatalf("unmarshal list watch output: %v (output: %s)", err, listRes.Output)
+	}
+	if len(listed.Watches) != 1 || listed.Watches[0].WatchID != created.WatchID || listed.Watches[0].Target != shellOut.JobID || !listed.Watches[0].Watching {
+		t.Fatalf("list result = %+v, want active watch %s", listed, created.WatchID)
+	}
+
+	inspectRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "inspect",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"inspect","watch_id":%q}`, created.WatchID)),
+	})
+	if inspectRes.IsError {
+		t.Fatalf("job_watch inspect returned error: %s", inspectRes.Output)
+	}
+	var inspected struct {
+		WatchID  string `json:"watch_id"`
+		Target   string `json:"target"`
+		Watching bool   `json:"watching"`
+	}
+	if err := json.Unmarshal(toolResultJSON(inspectRes), &inspected); err != nil {
+		t.Fatalf("unmarshal inspect watch output: %v (output: %s)", err, inspectRes.Output)
+	}
+	if inspected.WatchID != created.WatchID || inspected.Target != shellOut.JobID || !inspected.Watching {
+		t.Fatalf("inspect result = %+v, want active watch %s", inspected, created.WatchID)
 	}
 }
 
@@ -1340,6 +2039,7 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	})
 
 	watchArgs, err := json.Marshal(map[string]any{
+		"operation":    "create",
 		"target":       shellOut.JobID,
 		"output_match": token,
 		"send": map[string]any{
@@ -1402,7 +2102,7 @@ func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 	watchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"output_match":"already-done"}`, watchedJobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":"already-done"}`, watchedJobID)),
 	})
 	if watchRes.IsError {
 		t.Fatalf("terminal output_match catch-up must not error: %s", watchRes.Output)
@@ -1425,7 +2125,7 @@ func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 	noMatchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch2",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"output_match":"never-printed"}`, watchedJobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":"never-printed"}`, watchedJobID)),
 	})
 	if noMatchRes.IsError {
 		t.Fatalf("non-matching terminal catch-up must not error: %s", noMatchRes.Output)
@@ -1445,7 +2145,7 @@ func TestJobWatchNoConditionErrors(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"target":"caller"}`),
+		Arguments: json.RawMessage(`{"operation":"create","target":"caller"}`),
 	})
 	if !res.IsError {
 		t.Fatalf("job_watch succeeded, want error: %s", res.Output)
@@ -1461,7 +2161,7 @@ func TestJobWatchToolMainAliasTargetFailsTargetNotFound(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"target":"main"}`),
+		Arguments: json.RawMessage(`{"operation":"create","target":"main"}`),
 	})
 
 	if !res.IsError {
@@ -1481,7 +2181,7 @@ func TestJobWatchToolWatchedTargetWithoutContextFailsTargetNotFound(t *testing.T
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"target":"watched"}`),
+		Arguments: json.RawMessage(`{"operation":"create","target":"watched"}`),
 	})
 
 	if !res.IsError {
@@ -1501,7 +2201,7 @@ func TestJobWatchToolSendToMainAliasFailsTargetNotFound(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"target":"caller","events":["assistant.message"],"send":{"to":"main","message":"observe"}}`),
+		Arguments: json.RawMessage(`{"operation":"create","target":"caller","events":["assistant.message"],"send":{"to":"main","message":"observe"}}`),
 	})
 
 	if !res.IsError {
@@ -1515,22 +2215,22 @@ func TestJobWatchToolSendToMainAliasFailsTargetNotFound(t *testing.T) {
 	}
 }
 
-func TestJobSendMessageToolMainAliasFailsTargetNotFoundWithoutSideEffects(t *testing.T) {
+func TestDelegateSendToolMainAliasFailsInvalidRequestWithoutSideEffects(t *testing.T) {
 	s := newTestSession(t)
 	called := false
-	s.cfg.spawn.parentSteer = func(string) { called = true }
+	s.cfg.spawn.parentSteer = func(string, *provenance.Causal) { called = true }
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send",
-		Name:      "job_send_message",
-		Arguments: json.RawMessage(`{"target":"main","message":"hello"}`),
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(`{"to":"main","message":"hello"}`),
 	})
 
 	if !res.IsError {
-		t.Fatalf("job_send_message succeeded, want error: %s", res.Output)
+		t.Fatalf("delegate_send succeeded, want error: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "target_not_found") {
-		t.Fatalf("job_send_message error = %q, want target_not_found", res.Output)
+	if !strings.Contains(res.Output, "invalid_request") {
+		t.Fatalf("delegate_send error = %q, want invalid_request", res.Output)
 	}
 	if called {
 		t.Fatal("main alias called parentSteer")
@@ -1562,7 +2262,7 @@ func TestJobWatchSendToRequired(t *testing.T) {
 			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 				ID:        "watch",
 				Name:      "job_watch",
-				Arguments: json.RawMessage(fmt.Sprintf(`{"target":"caller","events":["assistant.message"],"send":%s}`, tc.send)),
+				Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":"caller","events":["assistant.message"],"send":%s}`, tc.send)),
 			})
 			if !res.IsError {
 				t.Fatalf("job_watch succeeded, want send.to error: %s", res.Output)
@@ -1585,7 +2285,7 @@ func TestJobWatchEmptySendPlaceholderIsOmitted(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"target":"caller","events":["job.notification"],"send":{"to":"","message":"","include_excerpt":false}}`),
+		Arguments: json.RawMessage(`{"operation":"create","target":"caller","events":["job.notification"],"send":{"to":"","message":"","include_excerpt":false}}`),
 	})
 	if res.IsError {
 		t.Fatalf("job_watch returned error for empty send placeholder: %s", res.Output)
@@ -2250,7 +2950,7 @@ func TestJobReadOutputBlockGrepReturnsImmediatelyOnTerminalJobWithMatch(t *testi
 	}
 }
 
-func TestJobSendMessageForegroundResumeReturnsTerminalResult(t *testing.T) {
+func TestDelegateSendForegroundStartReturnsTerminalResult(t *testing.T) {
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -2279,45 +2979,150 @@ func TestJobSendMessageForegroundResumeReturnsTerminalResult(t *testing.T) {
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send",
-		Name:      "job_send_message",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"run again","max_wait_ms":5000}`, first.JobID)),
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again","on_idle":"start","max_wait_ms":5000}`, first.DelegateID)),
 	})
 	if res.IsError {
-		t.Fatalf("job_send_message returned error: %s", res.Output)
+		t.Fatalf("delegate_send returned error: %s", res.Output)
 	}
 	var out struct {
-		Target              string `json:"target"`
-		JobID               string `json:"job_id"`
+		DelegateID          string `json:"delegate_id"`
+		StartedJobID        string `json:"started_job_id"`
+		CurrentJobID        string `json:"current_job_id"`
+		LatestJobID         string `json:"latest_job_id"`
 		Type                string `json:"type"`
 		Status              string `json:"status"`
 		RunningInBackground bool   `json:"running_in_background"`
 		TimedOut            bool   `json:"timed_out"`
 		Action              string `json:"action"`
-		ResumedFromJobID    string `json:"resumed_from_job_id"`
 		TranscriptRef       string `json:"transcript_ref"`
 		Output              string `json:"output"`
 		Truncated           bool   `json:"truncated"`
 	}
 	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-		t.Fatalf("unmarshal job_send_message output: %v (output: %s)", err, res.Output)
+		t.Fatalf("unmarshal delegate_send output: %v (output: %s)", err, res.Output)
 	}
-	if out.Target != first.JobID ||
-		out.JobID == "" ||
-		out.JobID == first.JobID ||
+	if out.DelegateID != first.DelegateID ||
+		out.StartedJobID == "" ||
+		out.StartedJobID == first.JobID ||
+		out.CurrentJobID != out.StartedJobID ||
+		out.LatestJobID != out.StartedJobID ||
 		out.Type != string(jobstore.JobDelegate) ||
 		out.Status != string(jobstore.StatusCompleted) ||
 		out.RunningInBackground ||
 		out.TimedOut ||
-		out.Action != "resumed" ||
-		out.ResumedFromJobID != first.JobID ||
+		out.Action != "started" ||
 		out.TranscriptRef != first.TranscriptRef ||
 		!strings.Contains(out.Output, "second complete") ||
 		out.Truncated {
-		t.Fatalf("job_send_message output = %+v, want foreground terminal resumed result", out)
+		t.Fatalf("delegate_send output = %+v, want foreground terminal started result", out)
 	}
-	rec := loadShellRecord(t, s.jobManager, out.JobID)
+	rec := loadShellRecord(t, s.jobManager, out.CurrentJobID)
 	if rec.Status != jobstore.StatusCompleted || rec.TranscriptRef != first.TranscriptRef {
-		t.Fatalf("resumed record = %+v, want completed with same transcript ref", rec)
+		t.Fatalf("started record = %+v, want completed with same transcript ref", rec)
+	}
+}
+
+func TestDelegateSendRejectsJobIDTargetWithGuidance(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("first complete")
+			},
+		},
+	})
+	s := newDelegateTestSession(t, c)
+
+	first := s.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "send",
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again"}`, first.JobID)),
+	})
+	if !res.IsError {
+		t.Fatalf("delegate_send succeeded, want error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "job_id is a job/turn handle") || !strings.Contains(res.Output, first.DelegateID) {
+		t.Fatalf("delegate_send error = %q, want job_id guidance with delegate_id %q", res.Output, first.DelegateID)
+	}
+}
+
+func TestDelegateSendIdleDefaultFailsAndOnIdleStartResumes(t *testing.T) {
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("first complete")
+			},
+		},
+	}
+	c.Register(adapter)
+	s := newDelegateTestSession(t, c)
+
+	first := s.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	adapter.mu.Lock()
+	adapter.steps = append(adapter.steps, func(req llm.Request) llm.Response {
+		return communicateWithDefaultOutput("second complete")
+	})
+	adapter.mu.Unlock()
+
+	idle := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "send-idle",
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again"}`, first.DelegateID)),
+	})
+	if !idle.IsError {
+		t.Fatalf("delegate_send idle default succeeded, want error: %s", idle.Output)
+	}
+	if !strings.Contains(idle.Output, "target_idle") {
+		t.Fatalf("delegate_send idle error = %q, want target_idle", idle.Output)
+	}
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "send-start",
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again","on_idle":"start","max_wait_ms":5000}`, first.DelegateID)),
+	})
+	if res.IsError {
+		t.Fatalf("delegate_send returned error: %s", res.Output)
+	}
+	var out struct {
+		DelegateID   string `json:"delegate_id"`
+		StartedJobID string `json:"started_job_id"`
+		CurrentJobID string `json:"current_job_id"`
+		LatestJobID  string `json:"latest_job_id"`
+		Action       string `json:"action"`
+		Output       string `json:"output"`
+	}
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal delegate_send output: %v (output: %s)", err, res.Output)
+	}
+	if out.DelegateID != first.DelegateID ||
+		out.StartedJobID == "" ||
+		out.StartedJobID == first.JobID ||
+		out.CurrentJobID != out.StartedJobID ||
+		out.LatestJobID != out.StartedJobID ||
+		out.Action != "started" ||
+		!strings.Contains(out.Output, "second") {
+		t.Fatalf("delegate_send output = %+v, want started resumed delegate result", out)
 	}
 }
 
@@ -2367,19 +3172,20 @@ func TestJobSendMessageRestoreRuntimeLostStructuredInvalidResult(t *testing.T) {
 
 	res := restored.reg.ExecuteCall(context.Background(), restored.env, llm.ToolCallData{
 		ID:        "send",
-		Name:      "job_send_message",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"resume without structured output","max_wait_ms":5000}`, first.JobID)),
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"resume without structured output","on_idle":"start","max_wait_ms":5000}`, first.DelegateID)),
 	})
 	if res.IsError {
-		t.Fatalf("job_send_message returned error: %s", res.Output)
+		t.Fatalf("delegate_send returned error: %s", res.Output)
 	}
 	var out struct {
-		Target                 string         `json:"target"`
-		JobID                  string         `json:"job_id"`
+		DelegateID             string         `json:"delegate_id"`
+		StartedJobID           string         `json:"started_job_id"`
+		CurrentJobID           string         `json:"current_job_id"`
+		LatestJobID            string         `json:"latest_job_id"`
 		Type                   string         `json:"type"`
 		Status                 string         `json:"status"`
 		Action                 string         `json:"action"`
-		ResumedFromJobID       string         `json:"resumed_from_job_id"`
 		TranscriptRef          string         `json:"transcript_ref"`
 		Output                 string         `json:"output"`
 		StructuredResult       map[string]any `json:"structured_result"`
@@ -2388,20 +3194,21 @@ func TestJobSendMessageRestoreRuntimeLostStructuredInvalidResult(t *testing.T) {
 		RunningInBackground    bool           `json:"running_in_background"`
 	}
 	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-		t.Fatalf("unmarshal job_send_message output: %v (output: %s)", err, res.Output)
+		t.Fatalf("unmarshal delegate_send output: %v (output: %s)", err, res.Output)
 	}
-	if out.Target != first.JobID ||
-		out.JobID == "" ||
-		out.JobID == first.JobID ||
+	if out.DelegateID != first.DelegateID ||
+		out.StartedJobID == "" ||
+		out.StartedJobID == first.JobID ||
+		out.CurrentJobID != out.StartedJobID ||
+		out.LatestJobID != out.StartedJobID ||
 		out.Type != string(jobstore.JobDelegate) ||
-		out.Action != "resumed" ||
-		out.ResumedFromJobID != first.JobID ||
+		out.Action != "started" ||
 		out.TranscriptRef != first.TranscriptRef ||
 		out.RunningInBackground {
-		t.Fatalf("job_send_message output = %+v, want foreground restored resume", out)
+		t.Fatalf("delegate_send output = %+v, want foreground restored start", out)
 	}
 	if out.Status != string(jobstore.StatusFailed) || !strings.Contains(out.Output, "model returned bare text") {
-		t.Fatalf("job_send_message output = %+v, want failed missing-structured resumed turn", out)
+		t.Fatalf("delegate_send output = %+v, want failed missing-structured started turn", out)
 	}
 	if out.StructuredResult != nil {
 		t.Fatalf("structured_result = %+v, want omitted", out.StructuredResult)
@@ -2412,7 +3219,7 @@ func TestJobSendMessageRestoreRuntimeLostStructuredInvalidResult(t *testing.T) {
 	if out.StructuredResultReason != "schema_result_missing" {
 		t.Fatalf("structured_result_reason = %q, want schema_result_missing", out.StructuredResultReason)
 	}
-	newRec := loadShellRecord(t, restored.jobManager, out.JobID)
+	newRec := loadShellRecord(t, restored.jobManager, out.CurrentJobID)
 	if newRec.DelegateRestore == nil || newRec.DelegateRestore.ResultSchema == nil || newRec.TranscriptRef != first.TranscriptRef {
 		t.Fatalf("resumed record = %+v, want inherited schema and transcript ref", newRec)
 	}
@@ -2458,7 +3265,7 @@ func TestMarshalDelegateResultsBoundLargeOutput(t *testing.T) {
 	}
 }
 
-func TestJobSendMessageNegativeBlockTimeoutDoesNotResume(t *testing.T) {
+func TestDelegateSendNegativeBlockTimeoutDoesNotStart(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -2491,14 +3298,14 @@ func TestJobSendMessageNegativeBlockTimeoutDoesNotResume(t *testing.T) {
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send",
-		Name:      "job_send_message",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"run again","max_wait_ms":-1}`, first.JobID)),
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again","max_wait_ms":-1}`, first.DelegateID)),
 	})
 	if !res.IsError {
-		t.Fatalf("job_send_message succeeded, want error: %s", res.Output)
+		t.Fatalf("delegate_send succeeded, want error: %s", res.Output)
 	}
 	if !strings.Contains(res.Output, "max_wait_ms must be non-negative") {
-		t.Fatalf("job_send_message error = %q, want non-negative max_wait_ms error", res.Output)
+		t.Fatalf("delegate_send error = %q, want non-negative max_wait_ms error", res.Output)
 	}
 	after := s.jobManager.list(listFilter{Type: jobstore.JobDelegate})
 	if len(after) != len(before) {
@@ -2506,7 +3313,7 @@ func TestJobSendMessageNegativeBlockTimeoutDoesNotResume(t *testing.T) {
 	}
 }
 
-func TestJobSendMessageToShellJobNotMessageable(t *testing.T) {
+func TestDelegateSendToShellJobIDRejectsJobHandle(t *testing.T) {
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -2533,43 +3340,39 @@ func TestJobSendMessageToShellJobNotMessageable(t *testing.T) {
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send",
-		Name:      "job_send_message",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"hi"}`, shellOut.JobID)),
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"hi"}`, shellOut.JobID)),
 	})
 	if !res.IsError {
-		t.Fatalf("job_send_message succeeded, want error: %s", res.Output)
+		t.Fatalf("delegate_send succeeded, want error: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "target_not_messageable") {
-		t.Fatalf("job_send_message error = %q, want target_not_messageable", res.Output)
+	if !strings.Contains(res.Output, "job_id is a job/turn handle") {
+		t.Fatalf("delegate_send error = %q, want job_id handle rejection", res.Output)
 	}
 }
 
-func TestJobSendMessageAliasTargetReturnsRuntimeShape(t *testing.T) {
+func TestDelegateSendCallerTargetReturnsRuntimeShape(t *testing.T) {
 	s := newTestSession(t)
+	s.cfg.spawn.parentSteer = s.SteerWithProvenance
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send",
-		Name:      "job_send_message",
-		Arguments: json.RawMessage(`{"target":"caller","message":"runtime advisory"}`),
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(`{"to":"caller","message":"runtime advisory"}`),
 	})
 	if res.IsError {
-		t.Fatalf("job_send_message returned error: %s", res.Output)
+		t.Fatalf("delegate_send returned error: %s", res.Output)
 	}
 	var out struct {
-		Target      string `json:"target"`
-		Delivered   bool   `json:"delivered"`
-		Action      string `json:"action"`
-		MessageType string `json:"message_type"`
-		JobID       string `json:"job_id"`
+		Type   string `json:"type"`
+		Status string `json:"status"`
+		Action string `json:"action"`
 	}
 	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-		t.Fatalf("unmarshal job_send_message output: %v (output: %s)", err, res.Output)
+		t.Fatalf("unmarshal delegate_send output: %v (output: %s)", err, res.Output)
 	}
-	if out.Target != "caller" || !out.Delivered || out.Action != "sent" || out.MessageType != "runtime" {
-		t.Fatalf("job_send_message output = %+v, want runtime sent shape", out)
-	}
-	if out.JobID != "" {
-		t.Fatalf("job_send_message alias output included job_id %q", out.JobID)
+	if out.Type != "runtime" || out.Status != "delivered" || out.Action != "delivered" {
+		t.Fatalf("delegate_send output = %+v, want runtime delivered shape", out)
 	}
 	queue := s.SteeringQueueSnapshot()
 	if len(queue) != 1 || queue[0].Text != "runtime advisory" {
@@ -2604,8 +3407,8 @@ func TestJobToolsDefinitions(t *testing.T) {
 	required(t, tooldefs.DefJobStop(), "job_stop", []string{"job_id"})
 	required(t, tooldefs.DefJobList(), "job_list", nil)
 	required(t, tooldefs.DefDelegate([]string{"reviewer"}), "delegate", []string{"task"})
-	required(t, tooldefs.DefJobWatch(WatchEventKindNames), "job_watch", []string{"target"})
-	required(t, tooldefs.DefJobSendMessage(), "job_send_message", []string{"target", "message"})
+	required(t, tooldefs.DefJobWatch(WatchEventKindNames), "job_watch", []string{"operation"})
+	required(t, tooldefs.DefDelegateSend(), "delegate_send", []string{"to", "message"})
 
 	readProps := tooldefs.DefJobReadOutput().Parameters["properties"].(map[string]any)
 	for _, param := range []string{"tail_lines", "grep", "max_wait_ms"} {
@@ -2643,17 +3446,20 @@ func TestJobToolsDefinitions(t *testing.T) {
 			t.Fatalf("delegate missing param %q", param)
 		}
 	}
-	sendProps := tooldefs.DefJobSendMessage().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"target", "message", "on_finished", "max_wait_ms"} {
+	sendProps := tooldefs.DefDelegateSend().Parameters["properties"].(map[string]any)
+	for _, param := range []string{"to", "message", "on_idle", "max_wait_ms"} {
 		if _, ok := sendProps[param]; !ok {
-			t.Fatalf("job_send_message missing param %q", param)
+			t.Fatalf("delegate_send missing param %q", param)
 		}
 	}
 	watchProps := tooldefs.DefJobWatch(WatchEventKindNames).Parameters["properties"].(map[string]any)
-	for _, param := range []string{"target", "output_match", "progress_interval_ms", "events", "every", "send", "clear"} {
+	for _, param := range []string{"operation", "watch_id", "target", "output_match", "progress_interval_ms", "events", "every", "send"} {
 		if _, ok := watchProps[param]; !ok {
 			t.Fatalf("job_watch missing param %q", param)
 		}
+	}
+	if _, ok := watchProps["clear"]; ok {
+		t.Fatalf("job_watch exposes removed clear param")
 	}
 }
 
@@ -2796,16 +3602,16 @@ func TestJobReadOutputProjectionTooLargeDoesNotMutateDurableStructuredResult(t *
 func TestJobToolOutputLimitsHaveJSONMinimum(t *testing.T) {
 	s := newShellToolTestSession(t, SessionConfig{
 		ToolOutputLimits: map[string]schema.ToolOutputLimit{
-			"job_read_output":  {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"job_list":         {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"job_stop":         {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"delegate":         {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"job_watch":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"job_send_message": {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_read_output": {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_list":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_stop":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"delegate":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_watch":       {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"delegate_send":   {MaxChars: 1, Strategy: schema.TruncHeadTail},
 		},
 	})
 
-	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate", "job_watch", "job_send_message"} {
+	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate", "job_watch", "delegate_send"} {
 		rt := s.reg.Get(name)
 		if rt == nil {
 			t.Fatalf("%s not registered", name)
@@ -3188,9 +3994,9 @@ func TestDelegateMaxWaitMSDecodeTable(t *testing.T) {
 	}
 }
 
-// TestJobSendMessageMaxWaitMSDecodeTable pins spec §2 job_send_message decode:
+// TestDelegateSendMaxWaitMSDecodeTable pins spec §2 delegate_send decode:
 // negative max_wait_ms is rejected. The old combo rejection is gone (spec §3).
-func TestJobSendMessageMaxWaitMSDecodeTable(t *testing.T) {
+func TestDelegateSendMaxWaitMSDecodeTable(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -3215,20 +4021,20 @@ func TestJobSendMessageMaxWaitMSDecodeTable(t *testing.T) {
 	// Negative max_wait_ms → invalid_request.
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send",
-		Name:      "job_send_message",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"m","max_wait_ms":-5}`, first.JobID)),
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"m","max_wait_ms":-5}`, first.DelegateID)),
 	})
 	if !res.IsError {
-		t.Fatalf("job_send_message with max_wait_ms=-5 should return error, got success: %s", res.Output)
+		t.Fatalf("delegate_send with max_wait_ms=-5 should return error, got success: %s", res.Output)
 	}
 	if !strings.Contains(res.Output, "max_wait_ms must be non-negative") {
-		t.Fatalf("job_send_message error = %q, want max_wait_ms must be non-negative", res.Output)
+		t.Fatalf("delegate_send error = %q, want max_wait_ms must be non-negative", res.Output)
 	}
 }
 
-// TestDelegateAndSendMessageAcceptZeroMaxWaitMS pins spec §2: max_wait_ms=0 is
+// TestDelegateAndDelegateSendAcceptZeroMaxWaitMS pins spec §2: max_wait_ms=0 is
 // accepted (strict-provider safe — zero reads as unset on all five tools).
-func TestDelegateAndSendMessageAcceptZeroMaxWaitMS(t *testing.T) {
+func TestDelegateAndDelegateSendAcceptZeroMaxWaitMS(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -3250,29 +4056,35 @@ func TestDelegateAndSendMessageAcceptZeroMaxWaitMS(t *testing.T) {
 		t.Fatalf("delegate with max_wait_ms=0 (unset) failed unexpectedly: %s", res.Output)
 	}
 	var spawned struct {
+		DelegateID          string `json:"delegate_id"`
 		JobID               string `json:"job_id"`
 		RunningInBackground bool   `json:"running_in_background"`
 	}
-	if err := json.Unmarshal(toolResultJSON(res), &spawned); err != nil || spawned.JobID == "" {
+	if err := json.Unmarshal(toolResultJSON(res), &spawned); err != nil || spawned.JobID == "" || spawned.DelegateID == "" {
 		t.Fatalf("delegate result missing job_id: %s", res.Output)
 	}
 	if !spawned.RunningInBackground {
 		t.Fatalf("delegate with max_wait_ms=0 should be running_in_background, got: %s", res.Output)
 	}
 	waitForShellDone(t, s.jobManager, spawned.JobID)
+	adapter.mu.Lock()
+	adapter.steps = append(adapter.steps, func(req llm.Request) llm.Response {
+		return communicateWithDefaultOutput("done again")
+	})
+	adapter.mu.Unlock()
 
 	res2 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send0",
-		Name:      "job_send_message",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"m","max_wait_ms":0,"on_finished":"resume"}`, spawned.JobID)),
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"m","max_wait_ms":0,"on_idle":"start"}`, spawned.DelegateID)),
 	})
 	if res2.IsError {
-		t.Fatalf("job_send_message with max_wait_ms=0 (unset) failed unexpectedly: %s", res2.Output)
+		t.Fatalf("delegate_send with max_wait_ms=0 (unset) failed unexpectedly: %s", res2.Output)
 	}
 }
 
 // TestMaxWaitMSDecoders covers spec §2's decode table for delegate,
-// job_send_message, job_read_output, and job_stop: negative max_wait_ms must
+// delegate_send, job_read_output, and job_stop: negative max_wait_ms must
 // return invalid_request; 0/absent must succeed with unset behavior.
 func TestMaxWaitMSDecoders(t *testing.T) {
 	const wantNegErr = "invalid_request: max_wait_ms must be non-negative"
@@ -3326,7 +4138,7 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 		waitForShellDone(t, s.jobManager, out.JobID)
 	})
 
-	t.Run("job_send_message_negative", func(t *testing.T) {
+	t.Run("delegate_send_negative", func(t *testing.T) {
 		adapter := &fakeAdapter{
 			name: "openai",
 			steps: []func(req llm.Request) llm.Response{
@@ -3345,14 +4157,14 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 		waitForShellDone(t, s.jobManager, first.JobID)
 		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 			ID:        "send",
-			Name:      "job_send_message",
-			Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"m","max_wait_ms":-1}`, first.JobID)),
+			Name:      "delegate_send",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"m","max_wait_ms":-1}`, first.DelegateID)),
 		})
 		if !res.IsError {
-			t.Fatalf("job_send_message with max_wait_ms=-1: want error, got success: %s", res.Output)
+			t.Fatalf("delegate_send with max_wait_ms=-1: want error, got success: %s", res.Output)
 		}
 		if !strings.Contains(res.Output, wantNegErr) {
-			t.Fatalf("job_send_message error = %q, want %q", res.Output, wantNegErr)
+			t.Fatalf("delegate_send error = %q, want %q", res.Output, wantNegErr)
 		}
 	})
 
@@ -3702,7 +4514,7 @@ func TestJobListReportsDelegationAllowance(t *testing.T) {
 }
 
 func TestLiveSteerWaitIgnoredReason(t *testing.T) {
-	const want = "live steer returns on delivery; max_wait_ms applies only to resumed jobs"
+	const want = "live steer returns on delivery; max_wait_ms applies only to started jobs"
 	cases := []struct {
 		name    string
 		ms      int
@@ -3710,11 +4522,10 @@ func TestLiveSteerWaitIgnoredReason(t *testing.T) {
 		action  string
 		wantStr string
 	}{
-		{"live steer with wait flagged", 5000, jobstore.StatusRunning, "sent", want},
-		{"live busy with wait flagged", 5000, jobstore.StatusRunning, "busy", want},
-		{"no wait requested not flagged", 0, jobstore.StatusRunning, "sent", ""},
-		{"resumed running not flagged", 5000, jobstore.StatusRunning, "resumed", ""},
-		{"resumed terminal not flagged", 5000, jobstore.StatusCompleted, "resumed", ""},
+		{"live steer with wait flagged", 5000, jobstore.StatusRunning, "steered", want},
+		{"no wait requested not flagged", 0, jobstore.StatusRunning, "steered", ""},
+		{"started running not flagged", 5000, jobstore.StatusRunning, "started", ""},
+		{"started terminal not flagged", 5000, jobstore.StatusCompleted, "started", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3726,20 +4537,21 @@ func TestLiveSteerWaitIgnoredReason(t *testing.T) {
 	}
 }
 
-func TestMarshalSendMessageResultCarriesWaitIgnoredReason(t *testing.T) {
-	const reason = "live steer returns on delivery; max_wait_ms applies only to resumed jobs"
+func TestMarshalDelegateSendResultCarriesWaitIgnoredReason(t *testing.T) {
+	const reason = "live steer returns on delivery; max_wait_ms applies only to started jobs"
 	res := sendMessageResult{
-		Target:              "job_x",
+		Target:              "dlg_x",
+		DelegateID:          "dlg_x",
 		JobID:               "job_x",
 		Type:                string(jobstore.JobDelegate),
 		Status:              jobstore.StatusRunning,
 		RunningInBackground: true,
-		Action:              "sent",
+		Action:              "steered",
 		WaitIgnoredReason:   reason,
 	}
-	out, err := marshalSendMessageResult(res, 1<<20)
+	out, err := marshalDelegateSendResult(res, 1<<20)
 	if err != nil {
-		t.Fatalf("marshalSendMessageResult: %v", err)
+		t.Fatalf("marshalDelegateSendResult: %v", err)
 	}
 	var got struct {
 		WaitIgnoredReason string `json:"wait_ignored_reason"`
@@ -3752,9 +4564,9 @@ func TestMarshalSendMessageResultCarriesWaitIgnoredReason(t *testing.T) {
 	}
 
 	res.WaitIgnoredReason = ""
-	out2, err := marshalSendMessageResult(res, 1<<20)
+	out2, err := marshalDelegateSendResult(res, 1<<20)
 	if err != nil {
-		t.Fatalf("marshalSendMessageResult (empty): %v", err)
+		t.Fatalf("marshalDelegateSendResult (empty): %v", err)
 	}
 	if strings.Contains(string(handlerJSON(t, out2)), "wait_ignored_reason") {
 		t.Fatalf("wait_ignored_reason must be omitted when empty, got %s", out2)

@@ -8,6 +8,7 @@ package events
 import (
 	"time"
 
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/llm"
 )
 
@@ -90,10 +91,11 @@ const (
 // sealed EventData set, so only this package's payload types can ride the
 // stream and Kind is always consistent with the payload (see New).
 type SessionEvent struct {
-	Kind      EventKind `json:"kind"`
-	Timestamp time.Time `json:"timestamp"`
-	SessionID string    `json:"session_id"`
-	Data      EventData `json:"data,omitempty"`
+	Kind       EventKind          `json:"kind"`
+	Timestamp  time.Time          `json:"timestamp"`
+	SessionID  string             `json:"session_id"`
+	Data       EventData          `json:"data,omitempty"`
+	Provenance *provenance.Causal `json:"provenance,omitempty"`
 }
 
 // ToStreamEvent maps this agent-level event to an llm.StreamEvent.

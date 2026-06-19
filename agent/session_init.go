@@ -144,7 +144,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	jm.forward = cfg.spawn.forwardJobEvent
 	jm.parentJobID = cfg.spawn.parentJobID
 	jm.wake = s.notify
-	jm.emit = s.emit
+	jm.emit = s.emitWithProvenance
+	jm.currentProvenance = s.activeCausalProvenance
 	s.jobManager = jm
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, true)
@@ -376,7 +377,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	jm.parentJobID = cfg.spawn.parentJobID
 	jm.enqueue = s.enqueueJobNotificationAndNotify
 	jm.wake = s.notify
-	jm.emit = s.emit
+	jm.emit = s.emitWithProvenance
+	jm.currentProvenance = s.activeCausalProvenance
 	s.jobManager = jm
 	if !restoreCfg.deferRestoreSideEffects {
 		if err := jm.reconcileLostJobs(); err != nil {

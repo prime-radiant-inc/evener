@@ -123,11 +123,17 @@ func TestAgentTypeRosterKeyedOnAllowance(t *testing.T) {
 			names = append(names, e.Name)
 		}
 
+		if len(names) != 0 {
+			t.Fatalf("availableAgentEntries: allowance=0 should advertise no agents; got %v", names)
+		}
 		if slices.Contains(names, "coordinator") {
 			t.Errorf("availableAgentEntries: delegate-listing type %q should be absent at allowance=0; got %v", "coordinator", names)
 		}
 
 		typeNames := sess.delegateAgentTypeNames()
+		if len(typeNames) != 0 {
+			t.Fatalf("delegateAgentTypeNames: allowance=0 should advertise no agent types; got %v", typeNames)
+		}
 		if slices.Contains(typeNames, "coordinator") {
 			t.Errorf("delegateAgentTypeNames: delegate-listing type %q should be absent at allowance=0; got %v", "coordinator", typeNames)
 		}

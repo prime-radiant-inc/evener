@@ -1,6 +1,10 @@
 package jobstore
 
-import "sort"
+import (
+	"sort"
+
+	"primeradiant.com/serf/agent/provenance"
+)
 
 // Fold reconstructs the current JobRecord for each job by applying events in
 // seq order. The first job_finished for a job fixes its terminal_generation and
@@ -67,6 +71,167 @@ func isJobRecordEventKind(kind EventKind) bool {
 	}
 }
 
+func FoldDelegates(events []Event) map[string]*DelegateRecord {
+	sorted := append([]Event(nil), events...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+
+	delegates := make(map[string]*DelegateRecord)
+	jobToDelegate := make(map[string]string)
+	for _, e := range sorted {
+		switch e.Kind {
+		case EventDelegateCreated:
+			if e.DelegateID == "" || e.Delegate == nil {
+				continue
+			}
+			d := delegates[e.DelegateID]
+			if d == nil {
+				d = &DelegateRecord{DelegateID: e.DelegateID, Status: DelegateIdle}
+				delegates[e.DelegateID] = d
+			}
+			d.ChildSessionID = e.Delegate.ChildSessionID
+			d.TranscriptRef = e.Delegate.TranscriptRef
+			d.OwnerSessionID = e.Delegate.OwnerSessionID
+			d.VisibleSessionID = e.Delegate.VisibleSessionID
+			d.ParentDelegateID = e.Delegate.ParentDelegateID
+			d.AgentType = e.Delegate.AgentType
+			d.Generation = e.Delegate.Generation
+			d.Resumable = e.Delegate.Resumable
+			d.NotResumableWhy = e.Delegate.NotResumableWhy
+		case EventJobStarted:
+			if e.DelegateID == "" {
+				continue
+			}
+			d := delegates[e.DelegateID]
+			if d == nil {
+				d = &DelegateRecord{DelegateID: e.DelegateID}
+				delegates[e.DelegateID] = d
+			}
+			jobToDelegate[e.JobID] = e.DelegateID
+			if e.OwnerSessionID != "" {
+				d.OwnerSessionID = e.OwnerSessionID
+			}
+			if e.VisibleToSession != "" {
+				d.VisibleSessionID = e.VisibleToSession
+			}
+			d.CurrentJobID = e.JobID
+			d.LatestJobID = e.JobID
+			d.Status = DelegateRunning
+			d.StopGateClosed = false
+		case EventJobSessionAssigned:
+			delegateID := jobToDelegate[e.JobID]
+			if delegateID == "" {
+				continue
+			}
+			d := delegates[delegateID]
+			if d == nil {
+				continue
+			}
+			if e.TranscriptRef != "" {
+				d.TranscriptRef = e.TranscriptRef
+			}
+			if e.Resumable != nil {
+				d.Resumable = *e.Resumable
+				d.NotResumableWhy = e.NotResumableWhy
+				switch d.Status {
+				case "", DelegateIdle, DelegateNotResumable:
+					if d.Resumable {
+						d.Status = DelegateIdle
+					} else {
+						d.Status = DelegateNotResumable
+					}
+				}
+			}
+		case EventJobFinished:
+			delegateID := jobToDelegate[e.JobID]
+			if delegateID == "" {
+				continue
+			}
+			d := delegates[delegateID]
+			if d == nil {
+				continue
+			}
+			if d.CurrentJobID != e.JobID {
+				continue
+			}
+			d.CurrentJobID = ""
+			if e.Status == StatusStopped || e.Status == StatusCancelled {
+				d.Status = DelegateStopped
+			} else if d.Resumable {
+				d.Status = DelegateIdle
+			} else {
+				d.Status = DelegateNotResumable
+			}
+		case EventDelegateStopGateClosed:
+			if e.DelegateID == "" || e.Delegate == nil {
+				continue
+			}
+			d := delegates[e.DelegateID]
+			if d == nil {
+				d = &DelegateRecord{DelegateID: e.DelegateID}
+				delegates[e.DelegateID] = d
+			}
+			if d.CurrentJobID != "" && d.CurrentJobID != e.Delegate.StopJobID {
+				continue
+			}
+			if d.CurrentJobID == "" && d.LatestJobID != "" && d.LatestJobID != e.Delegate.StopJobID {
+				continue
+			}
+			d.Generation = e.Delegate.Generation
+			d.StopGateClosed = true
+			d.StopGateClosedJobID = e.Delegate.StopJobID
+			if d.CurrentJobID == e.Delegate.StopJobID {
+				d.CurrentJobID = ""
+			}
+			if d.Status == "" || d.Status == DelegateRunning {
+				d.Status = DelegateStopped
+			}
+		}
+	}
+	return delegates
+}
+
+func FoldWatches(events []Event) map[string]*WatchRecord {
+	sorted := append([]Event(nil), events...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+
+	watches := make(map[string]*WatchRecord)
+	for _, e := range sorted {
+		if e.WatchID == "" || e.Watch == nil {
+			continue
+		}
+		switch e.Kind {
+		case EventWatchRegistered:
+			if e.Watch.Generation == "" || e.Watch.OwnerSessionID == "" ||
+				e.Watch.VisibleSessionID == "" || e.Watch.Target == "" || e.Watch.ConfigHash == "" {
+				continue
+			}
+			watches[e.WatchID] = &WatchRecord{
+				WatchID:          e.WatchID,
+				Generation:       e.Watch.Generation,
+				OwnerSessionID:   e.Watch.OwnerSessionID,
+				VisibleSessionID: e.Watch.VisibleSessionID,
+				Target:           e.Watch.Target,
+				SendTo:           e.Watch.SendTo,
+				ConfigHash:       e.Watch.ConfigHash,
+				Condition:        e.Watch.Condition,
+				Deliveries:       e.Watch.Deliveries,
+				Active:           true,
+			}
+		case EventWatchCleared:
+			if e.Watch.Generation == "" {
+				continue
+			}
+			w := watches[e.WatchID]
+			if w == nil || w.Generation != e.Watch.Generation || !w.Active {
+				continue
+			}
+			w.Active = false
+			w.EndReason = e.Watch.EndReason
+		}
+	}
+	return watches
+}
+
 // FoldWatchSends reconstructs pending watch-send frames from durable events.
 func FoldWatchSends(events []Event) WatchSendRecord {
 	sorted := append([]Event(nil), events...)
@@ -88,6 +253,7 @@ func FoldWatchSends(events []Event) WatchSendRecord {
 				continue
 			}
 			state := *e.WatchSend
+			state.Provenance = provenance.Clone(e.WatchSend.Provenance)
 			rec.Pending[key] = &state
 		case EventWatchSendDelivered, EventWatchSendDropped, EventWatchSendEvicted:
 			if settled, ok := terminalSeq[key]; !ok || e.WatchSend.UpdateSeq > settled {
@@ -132,9 +298,11 @@ func applyEvent(r *JobRecord, e Event) {
 		r.OwnerSessionID = e.OwnerSessionID
 		r.VisibleToSession = e.VisibleToSession
 		r.ParentJobID = e.ParentJobID
+		r.DelegateID = e.DelegateID
 		r.OriginTurnID = e.OriginTurnID
 		r.OriginToolCallID = e.OriginToolCallID
 		r.DelegateRestore = e.DelegateRestore
+		r.Provenance = provenance.Clone(e.Provenance)
 		r.OutputPath = e.OutputPath
 		r.TranscriptRef = e.TranscriptRef
 		if e.StartedAt != nil {
@@ -162,6 +330,9 @@ func applyEvent(r *JobRecord, e Event) {
 		if e.StructuredResultValid != nil && !*e.StructuredResultValid {
 			r.StructuredResultReason = e.StructuredResultReason
 		}
+		if e.Provenance != nil {
+			r.Provenance = provenance.Clone(e.Provenance)
+		}
 		r.TerminalGen = e.TerminalGen
 	case EventJobMessageSent:
 		// No record-field mutation; message events are diagnostic/history.
@@ -171,6 +342,9 @@ func applyEvent(r *JobRecord, e Event) {
 		}
 		if r.NotifyState == NotifyNotArmed {
 			r.NotifyState = NotifyPending
+		}
+		if e.Provenance != nil {
+			r.NotificationProvenance = provenance.Clone(e.Provenance)
 		}
 	case EventJobNotificationDelivered:
 		if !notificationMatchesTerminalGeneration(r, e) {

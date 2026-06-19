@@ -273,17 +273,73 @@
   };
 
   function jobReadOutputText(st, out) {
-    if (st && typeof st.content === "string") return st.content;
     if (st && Array.isArray(st.matches)) return st.matches.map(m => m && m.line || "").filter(Boolean).join("\n");
+    if (st && typeof st.output === "string") return st.output;
     if (st && st.structured_result !== undefined) return JSON.stringify(st.structured_result, null, 2);
     return out || "";
+  }
+
+  function jobListBodyText(st, out) {
+    if (!st) return out || "";
+    const lines = [];
+    if (Array.isArray(st.jobs)) lines.push(...st.jobs.map(jobListJobLine).filter(Boolean));
+    if (Array.isArray(st.delegates)) lines.push(...st.delegates.map(jobListDelegateLine).filter(Boolean));
+    if (Array.isArray(st.watches)) lines.push(...st.watches.map(jobListWatchLine).filter(Boolean));
+    if (Array.isArray(st.recent_watches)) lines.push(...st.recent_watches.map(jobListRecentWatchLine).filter(Boolean));
+    return lines.length ? lines.join("\n") : (out || "");
+  }
+
+  function jobListJobLine(job) {
+    if (!job || !job.job_id) return "";
+    const label = job.description || job.command || "";
+    const detail = compactParts([
+      job.delegate_id ? "delegate_id " + job.delegate_id : "",
+      formatBytes(job.total_bytes),
+    ]);
+    const base = compactParts([job.job_id, job.type, job.status, label]);
+    return detail ? base + " [" + detail + "]" : base;
+  }
+
+  function jobListDelegateLine(delegate) {
+    if (!delegate || !delegate.delegate_id) return "";
+    const detail = compactParts([
+      delegate.current_job_id ? "current_job_id " + delegate.current_job_id : "",
+      delegate.latest_job_id && delegate.latest_job_id !== delegate.current_job_id ? "latest_job_id " + delegate.latest_job_id : "",
+      delegate.transcript_ref ? "transcript_ref " + delegate.transcript_ref : "",
+      delegate.resumable ? "resumable" : delegate.not_resumable_reason,
+      delegate.parent_delegate_id ? "parent_delegate_id " + delegate.parent_delegate_id : "",
+    ]);
+    const base = compactParts(["delegate " + delegate.delegate_id, delegate.status]);
+    return detail ? base + " [" + detail + "]" : base;
+  }
+
+  function jobListWatchLine(watch) {
+    if (!watch || !watch.id) return "";
+    return compactParts([
+      "watch " + watch.id,
+      watch.target ? "-> " + watch.target : "",
+      watch.condition ? "(" + watch.condition + ")" : "",
+      watch.send_to ? "send_to " + watch.send_to : "",
+      typeof watch.deliveries === "number" ? watch.deliveries + " delivered" : "",
+    ]);
+  }
+
+  function jobListRecentWatchLine(watch) {
+    if (!watch || !watch.id) return "";
+    return compactParts([
+      "recent watch " + watch.id,
+      watch.target ? "-> " + watch.target : "",
+      watch.condition ? "(" + watch.condition + ")" : "",
+      watch.end_reason,
+      typeof watch.deliveries === "number" ? watch.deliveries + " delivered" : "",
+    ]);
   }
 
   const jobReadOutputRenderer = {
     mode: "card", friendly: "job output",
     target: (a) => a.job_id || "",
     result: (data, out) => {
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       if (!st) return out ? formatBytes(out.length) : "";
       return compactParts([
         st.status,
@@ -295,7 +351,7 @@
     body: (args, conversation) => outputPreviewBody("job-output-body", "job-output", conversation),
     bodyEnd: (state, data, out) => {
       if (!state.body) return;
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       const text = data.error || jobReadOutputText(st, out);
       // Server-dropped (mockup #6 alt D DROP): the daemon truncated the output,
       // so the tail shown here is NOT all of it. Say so honestly instead of
@@ -310,10 +366,10 @@
     },
     // Reading a subagent's output is a completion signal even when no
     // JOB_FINISHED arrives: flip the matching row to the job's reported status
-    // and surface a short result preview from its content.
+    // and surface a short result preview from its output.
     subagentReconcile: (state, data, out) => {
       if (data.error) return [];
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       if (!st || !st.job_id) return [];
       const content = String(jobReadOutputText(st, out) || "").replace(/\s+/g, " ").trim();
       return [{
@@ -329,14 +385,14 @@
 
   const jobSendMessageRenderer = {
     mode: "card", friendly: "message",
-    target: (a) => clip(a.target || "", 26),
+    target: (a) => clip(a.to || a.target || "", 26),
     result: (data, out) => {
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       if (!st) return out ? formatBytes(out.length) : "";
       return compactParts([
         st.action,
         st.status,
-        st.job_id,
+        st.job_id || st.started_job_id || st.current_job_id || st.latest_job_id,
         st.delivered === true ? "delivered" : "",
         st.reason,
       ]);
@@ -344,7 +400,7 @@
     body: (args, conversation) => outputPreviewBody("job-message-body", "job-message-output", conversation),
     bodyEnd: (state, data, out) => {
       if (!state.body) return;
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       let text = "";
       if (data.error) text = data.error;
       else if (st && typeof st.output === "string") text = st.output;
@@ -356,11 +412,12 @@
     // resume), which reconciles a stale-running row.
     subagentReconcile: (state, data, out) => {
       if (data.error) return [];
-      const st = parseToolJSON(out);
-      if (!st || !st.job_id) return [];
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
+      const jobID = st && (st.job_id || st.current_job_id || st.latest_job_id || st.started_job_id);
+      if (!jobID) return [];
       const reply = typeof st.output === "string" ? st.output.replace(/\s+/g, " ").trim() : "";
       return [{
-        job_id: st.job_id,
+        job_id: jobID,
         status: st.status || "",
         transcript_ref: st.transcript_ref,
         resultText: reply ? clip(reply, 120) : "",
@@ -372,7 +429,7 @@
     mode: "card", friendly: "jobs",
     target: (a) => Array.isArray(a.status) ? a.status.join(",") : (a.status || ""),
     result: (data, out) => {
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       if (!st) return out ? formatBytes(out.length) : "";
       const count = typeof st.count === "number" ? st.count : (Array.isArray(st.jobs) ? st.jobs.length : 0);
       return count + " " + (count === 1 ? "job" : "jobs");
@@ -380,17 +437,8 @@
     body: (args, conversation) => outputPreviewBody("job-list-body", "job-list-output", conversation),
     bodyEnd: (state, data, out) => {
       if (!state.body) return;
-      const st = parseToolJSON(out);
-      let text = data.error || out || "";
-      if (st && Array.isArray(st.jobs)) {
-        text = st.jobs.map(job => compactParts([
-          job.job_id,
-          job.type,
-          job.status,
-          job.description,
-          formatBytes(job.output_bytes),
-        ])).join("\n");
-      }
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
+      const text = data.error || jobListBodyText(st, out);
       setExpandableOutput(state.body, clip(text, 8000), { moreClass: "job-list-output-more", outputClassName: "job-list-output" });
       if (!String(text || "").trim()) state.body.wrap.style.display = "none";
     },
@@ -398,7 +446,7 @@
     // stale-running subagent rows at once.
     subagentReconcile: (state, data, out) => {
       if (data.error) return [];
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       if (!st || !Array.isArray(st.jobs)) return [];
       return st.jobs
         .filter(job => job && job.job_id)
@@ -407,7 +455,7 @@
           type: job.type,
           status: job.status || "",
           transcript_ref: job.transcript_ref,
-          outputBytes: job.output_bytes,
+          outputBytes: job.total_bytes,
         }));
     },
   };
@@ -416,7 +464,7 @@
     mode: "cheap", friendly: "stop",
     target: (a) => clip(a.job_id || "", 26),
     result: (data, out) => {
-      const st = parseToolJSON(out);
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       if (!st) return out ? formatBytes(out.length) : "";
       return compactParts([st.status, st.reason]);
     },
@@ -651,6 +699,7 @@
     "web_fetch": webFetchRenderer,
     "web_search": webSearchRenderer,
     "delegate": delegateRenderer,
+    "delegate_send": jobSendMessageRenderer,
     "job_send_message": jobSendMessageRenderer,
     "job_read_output": jobReadOutputRenderer,
     "job_list": jobListRenderer,

@@ -459,7 +459,7 @@ func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure watch: %v", err)
 	}
@@ -467,7 +467,7 @@ func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
 		VisibleSessionID:        jm.sessionID,
 		WatchTarget:             rec.JobID,
 		ResolvedWatchedIdentity: rec.JobID,
-		ResolvedSendTo:          "job_obs",
+		ResolvedSendTo:          "dlg_obs",
 	}
 	jm.mu.Lock()
 	var cfg *watchConfig
@@ -496,12 +496,14 @@ func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
 	}
 
 	cleanupErr := errors.New("drop watch send failed")
-	realAppend := jm.appendEvent
-	jm.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventWatchSendDropped {
-			return cleanupErr
+	realAppendEvents := jm.appendEvents
+	jm.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventWatchSendDropped {
+				return cleanupErr
+			}
 		}
-		return realAppend(e)
+		return realAppendEvents(events)
 	}
 
 	if err := jm.close(); !errors.Is(err, cleanupErr) {

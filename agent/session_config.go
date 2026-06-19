@@ -4,6 +4,7 @@ import (
 	"primeradiant.com/serf/agent/internal/contextmgr"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
@@ -201,12 +202,15 @@ type spawnConfig struct {
 	// parent manager. The forwarding behavior is installed by later phases.
 	forwardJobEvent func(jobstore.Event) error
 
-	// parentSteer routes runtime alias messages from a live sub-agent to its caller.
-	parentSteer func(string)
+	// parentSteer routes runtime alias messages from a live sub-agent to its
+	// caller, carrying the message's causal watch provenance so the caller's
+	// injection is attributable to the watch delivery that produced it.
+	parentSteer func(string, *provenance.Causal)
 
 	// parentSteerDelivered reports whether a runtime alias message was accepted
-	// by the caller. It is used where durable watch-send state depends on delivery.
-	parentSteerDelivered func(string) bool
+	// by the caller. It is used where durable watch-send state depends on
+	// delivery, and carries the message's causal watch provenance.
+	parentSteerDelivered func(string, *provenance.Causal) bool
 
 	// parentGrantedJobRead resolves watch-granted cross-session reads against
 	// the parent's job store (spec §5.1 read grants): given the child's

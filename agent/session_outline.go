@@ -43,8 +43,12 @@ type jobRefInfo struct {
 }
 
 // jobResult is the common transcript-ref-bearing result shape returned by
-// delegate and by job_send_message when it resumes or messages a delegate job.
+// delegate, delegate_send, and legacy job_send_message results.
 type jobResult struct {
+	DelegateID            string `json:"delegate_id"`
+	StartedJobID          string `json:"started_job_id"`
+	CurrentJobID          string `json:"current_job_id"`
+	LatestJobID           string `json:"latest_job_id"`
 	JobID                 string `json:"job_id"`
 	Type                  string `json:"type"`
 	Status                string `json:"status"`
@@ -60,19 +64,29 @@ type jobResult struct {
 	StructuredResultValid *bool  `json:"structured_result_valid"`
 }
 
+func (r jobResult) effectiveJobID() string {
+	for _, id := range []string{r.JobID, r.CurrentJobID, r.StartedJobID, r.LatestJobID} {
+		if id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
 // jobLifecycleTools are the tool names whose results carry jobResult bodies
 // with transcript refs. Their outline lines are special-cased to surface the
 // child ref.
 var jobLifecycleTools = map[string]bool{
 	"delegate":         true,
+	"delegate_send":    true,
 	"job_send_message": true,
 }
 
 // decodeJobResult is the single decode path for a job lifecycle tool result
 // body. It reports false when the body is empty, does not parse as JSON, or is a
-// job_send_message alias result without a job_id/transcript_ref, so callers can
-// fall back to ordinary rendering. The outline (extractJobResult) projects this
-// to its status/ref subset; the markdown renderer uses the full struct (output).
+// runtime send result without a concrete job/transcript_ref, so callers can fall
+// back to ordinary rendering. The outline (extractJobResult) projects this to
+// its status/ref subset; the markdown renderer uses the full struct (output).
 func decodeJobResult(body string) (jobResult, bool) {
 	body = strings.TrimSpace(body)
 	if body == "" {
@@ -84,7 +98,7 @@ func decodeJobResult(body string) (jobResult, bool) {
 	if err := decodeSingleJSON(dec, &r); err != nil {
 		return jobResult{}, false
 	}
-	if r.JobID == "" && r.TranscriptRef == "" {
+	if r.effectiveJobID() == "" && r.TranscriptRef == "" {
 		return jobResult{}, false
 	}
 	return r, true
@@ -110,10 +124,20 @@ func extractJobResult(body string) (jobRefInfo, bool) {
 		return jobRefInfo{}, false
 	}
 	return jobRefInfo{
-		jobID:         r.JobID,
+		jobID:         r.effectiveJobID(),
 		status:        r.Status,
 		transcriptRef: r.TranscriptRef,
 	}, true
+}
+
+func toolResultStateOrContent(result *llm.ToolResultData) string {
+	if result == nil {
+		return ""
+	}
+	if len(result.ToolState) > 0 {
+		return string(result.ToolState)
+	}
+	return fmt.Sprint(result.Content)
 }
 
 // renderOutline builds the per-session outline content and its honest elision
@@ -239,7 +263,7 @@ func jobLifecycleBrackets(calls []*llm.ToolCallData, idx *resultIndex) []string 
 		if !ok {
 			continue
 		}
-		info, ok := extractJobResult(fmt.Sprint(paired.result.Content))
+		info, ok := extractJobResult(toolResultStateOrContent(paired.result))
 		if !ok {
 			continue
 		}

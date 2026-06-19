@@ -28,6 +28,117 @@ func TestStoreAppendThenLoad(t *testing.T) {
 	}
 }
 
+func TestStoreLoadDelegates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s := openStore(t, path)
+	start := time.Unix(1, 0).UTC()
+	appendEvent(t, s, Event{
+		Kind:       EventDelegateCreated,
+		DelegateID: "dlg_A",
+		Delegate: &DelegateEvent{
+			ChildSessionID: "child_A",
+			TranscriptRef:  "local:child_A",
+			Generation:     "dg_1",
+			Resumable:      true,
+		},
+	})
+	appendEvent(t, s, Event{
+		Kind:       EventJobStarted,
+		JobID:      "job_A",
+		Type:       JobDelegate,
+		DelegateID: "dlg_A",
+		StartedAt:  &start,
+	})
+
+	delegates, err := s.LoadDelegates()
+	if err != nil {
+		t.Fatalf("load delegates: %v", err)
+	}
+	d := delegates["dlg_A"]
+	if d == nil {
+		t.Fatal("delegate dlg_A missing")
+	}
+	if d.CurrentJobID != "job_A" || d.LatestJobID != "job_A" || d.Status != DelegateRunning {
+		t.Fatalf("delegate = %+v, want running job_A", d)
+	}
+}
+
+func TestStoreLoadWatches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s := openStore(t, path)
+	appendEvent(t, s, Event{
+		Kind:    EventWatchRegistered,
+		WatchID: "watch_A",
+		Watch: &WatchEvent{
+			Generation:       "wg_1",
+			OwnerSessionID:   "owner",
+			VisibleSessionID: "owner",
+			Target:           "job_A",
+			SendTo:           "dlg_obs",
+			ConfigHash:       "hash_A",
+		},
+	})
+	appendEvent(t, s, Event{
+		Kind:    EventWatchCleared,
+		WatchID: "watch_A",
+		Watch:   &WatchEvent{Generation: "wg_1", EndReason: "cleared"},
+	})
+
+	watches, err := s.LoadWatches()
+	if err != nil {
+		t.Fatalf("load watches: %v", err)
+	}
+	w := watches["watch_A"]
+	if w == nil {
+		t.Fatal("watch watch_A missing")
+	}
+	if w.Active || w.EndReason != "cleared" || w.Target != "job_A" || w.SendTo != "dlg_obs" {
+		t.Fatalf("watch = %+v, want cleared watch_A", w)
+	}
+}
+
+func TestStoreAppendBatchAssignsContiguousSeq(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s := openStore(t, path)
+	appendEvent(t, s, Event{Kind: EventJobStarted, JobID: "job_A"})
+
+	if err := s.AppendBatch([]Event{
+		{Kind: EventWatchRegistered, WatchID: "watch_A", Watch: &WatchEvent{Generation: "wg_1"}},
+		{Kind: EventWatchCleared, WatchID: "watch_A", Watch: &WatchEvent{Generation: "wg_1", EndReason: "cleared"}},
+	}); err != nil {
+		t.Fatalf("AppendBatch: %v", err)
+	}
+
+	raw := readAllEvents(t, s)
+	if len(raw) != 3 {
+		t.Fatalf("events = %+v, want 3", raw)
+	}
+	if raw[1].Seq != 2 || raw[2].Seq != 3 {
+		t.Fatalf("batch seqs = %d,%d, want 2,3", raw[1].Seq, raw[2].Seq)
+	}
+}
+
+func TestStoreAppendBatchRollsBackWholeBatchOnMarshalFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s := openStore(t, path)
+	appendEvent(t, s, Event{Kind: EventJobStarted, JobID: "job_A"})
+
+	err := s.AppendBatch([]Event{
+		{Kind: EventWatchRegistered, WatchID: "watch_A", Watch: &WatchEvent{Generation: "wg_1"}},
+		{Kind: EventJobFinished, JobID: "job_bad", StructuredResult: make(chan int)},
+	})
+	if err == nil {
+		t.Fatal("AppendBatch succeeded, want marshal failure")
+	}
+	if s.seq != 1 {
+		t.Fatalf("seq after failed batch = %d, want 1", s.seq)
+	}
+	raw := readAllEvents(t, s)
+	if len(raw) != 1 || raw[0].Seq != 1 || raw[0].JobID != "job_A" {
+		t.Fatalf("failed batch changed store: %+v", raw)
+	}
+}
+
 func TestStoreAssignsMonotonicSeq(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.jsonl")
 	s := openStore(t, path)

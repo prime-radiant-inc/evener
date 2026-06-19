@@ -177,8 +177,9 @@ func TestCounterReservesOnSpawnResumeDrive(t *testing.T) {
 		waitForTreeCount(t, sess.treeCounter, 0)
 
 		res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-			Target:         first.JobID,
+			Target:         first.DelegateID,
 			Message:        "resume and block",
+			OnIdle:         "start",
 			Background:     true,
 			BackgroundSet:  true,
 			BlockTimeoutMS: 1000,

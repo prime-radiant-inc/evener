@@ -1096,6 +1096,7 @@ func TestToolInputSummary(t *testing.T) {
 		{"delegate shows task/type/max_wait_ms", "delegate", `{"task":"do thing","agent_type":"explorer","max_wait_ms":5000}`, "max_wait_ms=5000", "background"},
 		{"delegate omits max_wait_ms when zero", "delegate", `{"task":"do thing","agent_type":"explorer","max_wait_ms":0}`, "explorer", "max_wait_ms"},
 		{"job_send_message shows id/message", "job_send_message", `{"target":"job_01J","message":"continue"}`, "job_01J", ""},
+		{"delegate_send shows delegate/message", "delegate_send", `{"to":"dlg_01J","message":"continue"}`, "dlg_01J", ""},
 		{"use_skill shows skill", "use_skill", `{"skill_name":"brainstorming"}`, "brainstorming", ""},
 	}
 	for _, tc := range tests {

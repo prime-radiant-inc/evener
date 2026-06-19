@@ -158,7 +158,7 @@ number `range`/`expand_turn` take):
 58 · Assistant · exec_command · "run tests" · ok · 18 lines [truncated]
 ```
 
-A delegate lifecycle turn (`delegate`/`job_send_message`) replaces the size note with one
+A delegate lifecycle turn (`delegate`/`delegate_send`) replaces the size note with one
 **audit-pivot bracket per lifecycle call**, so the parent-to-child handle is right in the map:
 
 ```

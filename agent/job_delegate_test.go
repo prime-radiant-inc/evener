@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
@@ -93,6 +94,40 @@ func TestCreateDelegateForegroundCompletesWithStructuredResult(t *testing.T) {
 	}
 	if jobs[0].JobID != res.JobID || jobs[0].Status != jobstore.StatusCompleted {
 		t.Fatalf("job record = %+v, want completed job %s", jobs[0], res.JobID)
+	}
+}
+
+func TestDelegateResultIncludesDurableDelegateAndStartedJobIDs(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
+	}})
+	s := newDelegateTestSession(t, c)
+
+	res := s.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+	if !strings.HasPrefix(res.DelegateID, "dlg_") {
+		t.Fatalf("DelegateID = %q, want dlg_ prefix", res.DelegateID)
+	}
+	if res.StartedJobID != res.JobID || res.LatestJobID != res.JobID {
+		t.Fatalf("result ids = %+v, want started/latest equal concrete job", res)
+	}
+	rec := loadShellRecord(t, s.jobManager, res.JobID)
+	if rec.DelegateID != res.DelegateID {
+		t.Fatalf("record DelegateID = %q, want %q", rec.DelegateID, res.DelegateID)
+	}
+	delegates, err := s.jobManager.store.LoadDelegates()
+	if err != nil {
+		t.Fatalf("LoadDelegates: %v", err)
+	}
+	if delegates[res.DelegateID] == nil || delegates[res.DelegateID].LatestJobID != res.JobID {
+		t.Fatalf("delegates = %+v, want latest job linked", delegates)
 	}
 }
 
@@ -225,15 +260,20 @@ func TestCreateDelegateStartupDoesNotLeaveUnreturnedRunningJob(t *testing.T) {
 
 	var sawDelegateStart atomic.Bool
 	origAppend := sess.jobManager.appendEvent
+	origAppendEvents := sess.jobManager.appendEvents
 	sess.jobManager.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventJobStarted && e.Type == jobstore.JobDelegate {
-			sawDelegateStart.Store(true)
-			return origAppend(e)
-		}
 		if sawDelegateStart.Load() && e.Kind == jobstore.EventJobSessionAssigned {
 			return errors.New("redundant assignment append must not be required")
 		}
 		return origAppend(e)
+	}
+	sess.jobManager.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventJobStarted && event.Type == jobstore.JobDelegate {
+				sawDelegateStart.Store(true)
+			}
+		}
+		return origAppendEvents(events)
 	}
 
 	res := sess.createDelegate(context.Background(), delegateArgs{
@@ -259,8 +299,46 @@ func TestCreateDelegateStartupDoesNotLeaveUnreturnedRunningJob(t *testing.T) {
 	}
 
 	sess.jobManager.appendEvent = origAppend
+	sess.jobManager.appendEvents = origAppendEvents
 	_, _ = sess.jobManager.stop(res.JobID)
 	waitForShellDone(t, sess.jobManager, res.JobID)
+}
+
+func TestCreateDelegateStartupBatchFailureDoesNotLeavePhantomDelegate(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess := newDelegateTestSession(t, c)
+
+	appendErr := errors.New("delegate startup batch failed")
+	origAppendEvents := sess.jobManager.appendEvents
+	sess.jobManager.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventJobStarted && event.Type == jobstore.JobDelegate {
+				return appendErr
+			}
+		}
+		return origAppendEvents(events)
+	}
+	defer func() { sess.jobManager.appendEvents = origAppendEvents }()
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "fail before durable start",
+		Background: true,
+	})
+	if !errors.Is(res.Err, appendErr) {
+		t.Fatalf("createDelegate err = %v, want %v", res.Err, appendErr)
+	}
+	delegates, err := sess.jobManager.store.LoadDelegates()
+	if err != nil {
+		t.Fatalf("LoadDelegates: %v", err)
+	}
+	if len(delegates) != 0 {
+		t.Fatalf("delegates = %+v, want none after failed startup batch", delegates)
+	}
+	jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
+	if len(jobs) != 0 {
+		t.Fatalf("delegate jobs = %+v, want none after failed startup batch", jobs)
+	}
 }
 
 func TestCreateDelegateDescriptorDurableBeforeFirstModelRequest(t *testing.T) {
@@ -319,13 +397,17 @@ func TestCreateDelegateDescriptorDurableBeforeFirstModelRequest(t *testing.T) {
 		},
 	}
 
-	origAppend := sess.jobManager.appendEvent
-	sess.jobManager.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventJobStarted && e.Type == jobstore.JobDelegate {
-			time.Sleep(250 * time.Millisecond)
+	origAppendEvents := sess.jobManager.appendEvents
+	sess.jobManager.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventJobStarted && event.Type == jobstore.JobDelegate {
+				time.Sleep(250 * time.Millisecond)
+				break
+			}
 		}
-		return origAppend(e)
+		return origAppendEvents(events)
 	}
+	t.Cleanup(func() { sess.jobManager.appendEvents = origAppendEvents })
 
 	resultSchema := map[string]any{
 		"type": "object",
@@ -859,8 +941,9 @@ func TestCreateDelegateMarksChildConsumedAfterDurableFinish(t *testing.T) {
 	}
 
 	resume := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:        res.JobID,
+		Target:        res.DelegateID,
 		Message:       "resume after consumption",
+		OnIdle:        "start",
 		Background:    false,
 		BackgroundSet: true,
 	})
@@ -1437,20 +1520,21 @@ func TestSendDelegateMessageTerminalDelegateResumeCreatesNewJob(t *testing.T) {
 	adapter.mu.Unlock()
 
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  first.JobID,
+		Target:  first.DelegateID,
 		Message: "run again",
+		OnIdle:  "start",
 	})
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
-	if res.Action != "resumed" ||
+	if res.Action != "started" ||
 		res.JobID == "" ||
 		res.JobID == first.JobID ||
 		res.ResumedFromJobID != first.JobID ||
 		res.TranscriptRef != first.TranscriptRef ||
 		res.Status != jobstore.StatusRunning ||
 		!res.RunningInBackground {
-		t.Fatalf("result = %+v, want resumed new running delegate job from %s", res, first.JobID)
+		t.Fatalf("result = %+v, want started new running delegate job from %s", res, first.JobID)
 	}
 
 	waitForShellDone(t, sess.jobManager, res.JobID)
@@ -1479,6 +1563,135 @@ func TestSendDelegateMessageTerminalDelegateResumeCreatesNewJob(t *testing.T) {
 	jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
 	if len(jobs) != 2 {
 		t.Fatalf("delegate jobs = %+v, want two durable jobs", jobs)
+	}
+}
+
+func TestDelegateResumeKeepsDelegateIDAndUpdatesLatestJob(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("first") },
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("second") },
+	}})
+	s := newDelegateTestSession(t, c)
+	first := s.createDelegate(context.Background(), delegateArgs{Task: "first", Background: false, BlockTimeoutMS: 5000})
+	if first.Err != nil {
+		t.Fatalf("first delegate: %v", first.Err)
+	}
+	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         first.DelegateID,
+		Message:        "second",
+		OnIdle:         "start",
+		Background:     false,
+		BackgroundSet:  true,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage: %v", res.Err)
+	}
+	if res.DelegateID != first.DelegateID || res.StartedJobID == first.JobID || res.LatestJobID != res.StartedJobID {
+		t.Fatalf("resume result = %+v, want same delegate and new latest job", res)
+	}
+	rec := loadShellRecord(t, s.jobManager, res.StartedJobID)
+	if rec.DelegateID != first.DelegateID {
+		t.Fatalf("resumed job DelegateID = %q, want %q", rec.DelegateID, first.DelegateID)
+	}
+}
+
+func TestDelegateIDResumeFinalizesObservedTerminalRunningJob(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("resumed") },
+	}})
+	parent := newDelegateTestSession(t, c)
+	child := newDelegateTestSession(t, c)
+	sub := completedDelegateSubagent(child, "already done")
+	parent.subagents.track(sub)
+
+	delegateID := jobstore.NewDelegateID()
+	jobID := jobstore.NewJobID()
+	run, err := parent.attachDelegateJobWithRestoreAndDelegate(parent.jobManager, child.ID(), "already terminal", sub, jobID, nil, false, nil, nil, delegateJobLink{
+		delegateID: delegateID,
+		generation: jobstore.NewDelegateGeneration(),
+		create:     true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("attachDelegateJobWithRestoreAndDelegate: %v", err)
+	}
+	if run.rec.Status != jobstore.StatusRunning {
+		t.Fatalf("seed job status = %s, want running", run.rec.Status)
+	}
+
+	res := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         delegateID,
+		Message:        "resume after observed terminal",
+		OnIdle:         "start",
+		Background:     false,
+		BackgroundSet:  true,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage: %v", res.Err)
+	}
+	if res.DelegateID != delegateID || res.StartedJobID == "" || res.StartedJobID == jobID {
+		t.Fatalf("resume result = %+v, want same delegate and new concrete job", res)
+	}
+	rec := loadShellRecord(t, parent.jobManager, res.StartedJobID)
+	if rec.DelegateID != delegateID {
+		t.Fatalf("resumed job DelegateID = %q, want %q", rec.DelegateID, delegateID)
+	}
+}
+
+func TestDelegateSendJobIDDoesNotRevealDescendantDelegateID(t *testing.T) {
+	parent := newTestSession(t)
+	started := time.Unix(400, 0).UTC()
+	if err := parent.jobManager.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               started,
+		JobID:            "job_child_delegate",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_child_hidden",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: parent.id,
+		TranscriptRef:    encodeRef("", "CHILD"),
+		StartedAt:        &started,
+	}); err != nil {
+		t.Fatalf("append child-owned delegate job: %v", err)
+	}
+
+	listOut, err := jobListTool(parent, decodeJobListArgs(t, `{"include_nested":true}`), 1<<20)
+	if err != nil {
+		t.Fatalf("jobListTool(include_nested): %v", err)
+	}
+	var listed jobListResult
+	if err := json.Unmarshal(handlerJSON(t, listOut), &listed); err != nil {
+		t.Fatalf("unmarshal job_list: %v", err)
+	}
+	var row *jobListEntry
+	for i := range listed.Jobs {
+		if listed.Jobs[i].JobID == "job_child_delegate" {
+			row = &listed.Jobs[i]
+			break
+		}
+	}
+	if row == nil {
+		t.Fatalf("job_list rows = %+v, want child delegate job", listed.Jobs)
+	}
+	if row.DelegateID != "" || strings.Contains(listOut.(tool.StateResult).Output, "dlg_child_hidden") {
+		t.Fatalf("job_list exposed descendant delegate handle: row=%+v output=%s", row, listOut.(tool.StateResult).Output)
+	}
+
+	res := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  "job_child_delegate",
+		Message: "hello",
+	})
+	if res.Err == nil {
+		t.Fatal("sendDelegateMessage succeeded, want rejection")
+	}
+	if strings.Contains(res.Err.Error(), "dlg_child_hidden") {
+		t.Fatalf("delegate_send error exposed descendant delegate_id: %v", res.Err)
+	}
+	if !strings.Contains(res.Err.Error(), "not_controllable") {
+		t.Fatalf("delegate_send error = %v, want not_controllable without delegate_id", res.Err)
 	}
 }
 
@@ -1524,14 +1737,15 @@ func TestSendDelegateMessageOwnDirectDelegatesAtDepth(t *testing.T) {
 	coordinator.mu.Unlock()
 
 	res := coordinator.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  worker.JobID,
+		Target:  worker.DelegateID,
 		Message: "worker, run again",
+		OnIdle:  "start",
 	})
 	if res.Err != nil {
 		t.Fatalf("depth-1 coordinator messaging its own direct worker delegate: %v", res.Err)
 	}
-	if res.Action != "resumed" || res.ResumedFromJobID != worker.JobID || res.JobID == "" || res.JobID == worker.JobID {
-		t.Fatalf("result = %+v, want resumed new running delegate job from worker %s", res, worker.JobID)
+	if res.Action != "started" || res.ResumedFromJobID != worker.JobID || res.JobID == "" || res.JobID == worker.JobID {
+		t.Fatalf("result = %+v, want started new running delegate job from worker %s", res, worker.JobID)
 	}
 
 	waitForShellDone(t, coordinator.jobManager, res.JobID)
@@ -1637,14 +1851,15 @@ func TestSendDelegateMessageResumedJobCopiesCompleteDelegateDescriptor(t *testin
 	resultSchema["required"] = []string{"mutated"}
 
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  first.JobID,
+		Target:  first.DelegateID,
 		Message: "run again",
+		OnIdle:  "start",
 	})
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
-	if res.Action != "resumed" || res.JobID == "" || res.JobID == first.JobID {
-		t.Fatalf("resume result = %+v, want new resumed job", res)
+	if res.Action != "started" || res.JobID == "" || res.JobID == first.JobID {
+		t.Fatalf("resume result = %+v, want new started job", res)
 	}
 	waitForShellDone(t, sess.jobManager, res.JobID)
 	rec := loadShellRecord(t, sess.jobManager, res.JobID)
@@ -1711,8 +1926,9 @@ func TestSendDelegateMessageTerminalDelegateForegroundResumeTimeoutLeavesChildRu
 	}
 
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:         first.JobID,
+		Target:         first.DelegateID,
 		Message:        "run again",
+		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 1000,
@@ -1720,7 +1936,7 @@ func TestSendDelegateMessageTerminalDelegateForegroundResumeTimeoutLeavesChildRu
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
-	if res.Action != "resumed" ||
+	if res.Action != "started" ||
 		res.JobID == "" ||
 		res.JobID == first.JobID ||
 		res.ResumedFromJobID != first.JobID ||
@@ -1729,7 +1945,7 @@ func TestSendDelegateMessageTerminalDelegateForegroundResumeTimeoutLeavesChildRu
 		!res.RunningInBackground ||
 		!res.TimedOut ||
 		res.TranscriptRef != first.TranscriptRef {
-		t.Fatalf("result = %+v, want resumed foreground timeout running in background", res)
+		t.Fatalf("result = %+v, want started foreground timeout running in background", res)
 	}
 	select {
 	case <-adapter.secondStarted:
@@ -1756,7 +1972,7 @@ func TestSendDelegateMessageTerminalDelegateForegroundResumeTimeoutLeavesChildRu
 	waitForShellDone(t, sess.jobManager, res.JobID)
 }
 
-func TestSendDelegateMessageTerminalDelegateFailOnFinished(t *testing.T) {
+func TestSendDelegateMessageTerminalDelegateDefaultIdleFails(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -1778,19 +1994,18 @@ func TestSendDelegateMessageTerminalDelegateFailOnFinished(t *testing.T) {
 	}
 
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:     first.JobID,
-		Message:    "must be live",
-		OnFinished: "fail",
+		Target:  first.DelegateID,
+		Message: "must be live",
 	})
-	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_terminal") {
-		t.Fatalf("error = %v, want target_terminal", res.Err)
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_idle") {
+		t.Fatalf("error = %v, want target_idle", res.Err)
 	}
 	if jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate}); len(jobs) != 1 {
 		t.Fatalf("delegate jobs = %+v, want no new job", jobs)
 	}
 }
 
-func TestSendDelegateMessageObservedTerminalRunningRecordFailReturnsTargetTerminal(t *testing.T) {
+func TestSendDelegateMessageObservedTerminalRunningRecordDefaultIdleFails(t *testing.T) {
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	sub := &subagent{
@@ -1815,12 +2030,11 @@ func TestSendDelegateMessageObservedTerminalRunningRecordFailReturnsTargetTermin
 
 	before := parent.jobManager.list(listFilter{Type: jobstore.JobDelegate})
 	res := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:     run.rec.JobID,
-		Message:    "must still be live",
-		OnFinished: "fail",
+		Target:  run.rec.DelegateID,
+		Message: "must still be live",
 	})
-	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_terminal") {
-		t.Fatalf("error = %v, want target_terminal", res.Err)
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_idle") {
+		t.Fatalf("error = %v, want target_idle", res.Err)
 	}
 	if strings.Contains(res.Err.Error(), "not_controllable") {
 		t.Fatalf("error = %v, must not report not_controllable", res.Err)
@@ -1854,7 +2068,7 @@ func TestWatchOriginatedRunningSendDoesNotMarkNonLiveDelegateFromWatch(t *testin
 		waitForShellDone(t, parent.jobManager, run.rec.JobID)
 	})
 
-	res := parent.sendRunningDelegateMessage(run.rec.JobID, "watch-originated steer", run.rec, true)
+	res := parent.sendRunningDelegateMessage(run.rec.JobID, "watch-originated steer", run.rec, true, nil)
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "not_controllable") {
 		t.Fatalf("error = %v, want not_controllable", res.Err)
 	}
@@ -1893,11 +2107,11 @@ func TestWatchOriginatedRunningSendRejectedByClosingChildStaysBusy(t *testing.T)
 	child.state = SessionClosed
 	child.mu.Unlock()
 
-	res := parent.sendRunningDelegateMessage(run.rec.JobID, "watch-originated steer", run.rec, true)
+	res := parent.sendRunningDelegateMessage(run.rec.JobID, "watch-originated steer", run.rec, true, nil)
 	if res.Err != nil {
 		t.Fatalf("sendRunningDelegateMessage returned error: %v", res.Err)
 	}
-	if res.Action != "busy" || !res.WatchSendDeliveryClassSet || res.WatchSendDeliveryClass != watchSendBusy {
+	if res.Action != "steered" || !res.WatchSendDeliveryClassSet || res.WatchSendDeliveryClass != watchSendBusy {
 		t.Fatalf("result = %+v, want retryable watch busy", res)
 	}
 	if run.fromWatch.Load() || sub.runFromWatch {
@@ -1936,15 +2150,16 @@ drain:
 	}
 
 	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:    first.JobID,
+		Target:    first.DelegateID,
 		Message:   "watch-originated resume",
+		OnIdle:    "start",
 		FromWatch: true,
 	})
 	if second.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
 	}
-	if second.Action != "resumed" || second.JobID == "" || second.JobID == first.JobID {
-		t.Fatalf("second result = %+v, want resumed new running delegate job", second)
+	if second.Action != "started" || second.JobID == "" || second.JobID == first.JobID {
+		t.Fatalf("second result = %+v, want started new running delegate job", second)
 	}
 
 	var start events.JobStartedData
@@ -1989,14 +2204,15 @@ func TestSendDelegateMessageTerminalDelegateResumeSteersActiveRun(t *testing.T) 
 	}
 
 	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  first.JobID,
+		Target:  first.DelegateID,
 		Message: "run again",
+		OnIdle:  "start",
 	})
 	if second.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
 	}
-	if second.Action != "resumed" || second.JobID == "" || second.JobID == first.JobID {
-		t.Fatalf("second result = %+v, want resumed new running delegate job", second)
+	if second.Action != "started" || second.JobID == "" || second.JobID == first.JobID {
+		t.Fatalf("second result = %+v, want started new running delegate job", second)
 	}
 	select {
 	case <-adapter.secondStarted:
@@ -2006,7 +2222,7 @@ func TestSendDelegateMessageTerminalDelegateResumeSteersActiveRun(t *testing.T) 
 
 	before := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  first.JobID,
+		Target:  first.DelegateID,
 		Message: "steer current run",
 	})
 	if res.Err != nil {
@@ -2015,13 +2231,13 @@ func TestSendDelegateMessageTerminalDelegateResumeSteersActiveRun(t *testing.T) 
 		}
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
-	if res.Action != "sent" ||
+	if res.Action != "steered" ||
 		res.JobID != second.JobID ||
 		res.JobID == first.JobID ||
 		res.Status != jobstore.StatusRunning ||
 		!res.RunningInBackground ||
 		res.TranscriptRef != first.TranscriptRef {
-		t.Fatalf("result = %+v, want sent to active resumed delegate job %s", res, second.JobID)
+		t.Fatalf("result = %+v, want steered to active started delegate job %s", res, second.JobID)
 	}
 	after := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
 	if len(after) != len(before) {
@@ -2065,21 +2281,25 @@ func TestSendDelegateMessageTerminalResumeWaitsForDelegateJobAttachment(t *testi
 	attachStarted := make(chan struct{})
 	releaseAttach := make(chan struct{})
 	var attachOnce sync.Once
-	origAppend := sess.jobManager.appendEvent
-	defer func() { sess.jobManager.appendEvent = origAppend }()
-	sess.jobManager.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventJobStarted && e.Type == jobstore.JobDelegate && e.Task == "run again" {
-			attachOnce.Do(func() { close(attachStarted) })
-			<-releaseAttach
+	origAppendEvents := sess.jobManager.appendEvents
+	defer func() { sess.jobManager.appendEvents = origAppendEvents }()
+	sess.jobManager.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventJobStarted && event.Type == jobstore.JobDelegate && event.Task == "run again" {
+				attachOnce.Do(func() { close(attachStarted) })
+				<-releaseAttach
+				break
+			}
 		}
-		return origAppend(e)
+		return origAppendEvents(events)
 	}
 
 	firstResumeDone := make(chan sendMessageResult, 1)
 	go func() {
 		firstResumeDone <- sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-			Target:  first.JobID,
+			Target:  first.DelegateID,
 			Message: "run again",
+			OnIdle:  "start",
 		})
 	}()
 	select {
@@ -2091,8 +2311,9 @@ func TestSendDelegateMessageTerminalResumeWaitsForDelegateJobAttachment(t *testi
 	secondResumeDone := make(chan sendMessageResult, 1)
 	go func() {
 		secondResumeDone <- sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-			Target:  first.JobID,
+			Target:  first.DelegateID,
 			Message: "steer while attaching",
+			OnIdle:  "start",
 		})
 	}()
 	select {
@@ -2111,8 +2332,8 @@ func TestSendDelegateMessageTerminalResumeWaitsForDelegateJobAttachment(t *testi
 	if firstResume.Err != nil {
 		t.Fatalf("first terminal resume returned error: %v", firstResume.Err)
 	}
-	if firstResume.Action != "resumed" || firstResume.JobID == "" || firstResume.JobID == first.JobID {
-		t.Fatalf("first terminal resume = %+v, want resumed new delegate job", firstResume)
+	if firstResume.Action != "started" || firstResume.JobID == "" || firstResume.JobID == first.JobID {
+		t.Fatalf("first terminal resume = %+v, want started new delegate job", firstResume)
 	}
 
 	var secondResume sendMessageResult
@@ -2124,10 +2345,10 @@ func TestSendDelegateMessageTerminalResumeWaitsForDelegateJobAttachment(t *testi
 	if secondResume.Err != nil {
 		t.Fatalf("second terminal resume returned error: %v", secondResume.Err)
 	}
-	if secondResume.Action != "sent" ||
+	if secondResume.Action != "steered" ||
 		secondResume.JobID != firstResume.JobID ||
 		secondResume.TranscriptRef != first.TranscriptRef {
-		t.Fatalf("second terminal resume = %+v, want sent to active resumed job %s", secondResume, firstResume.JobID)
+		t.Fatalf("second terminal resume = %+v, want steered to active started job %s", secondResume, firstResume.JobID)
 	}
 
 	_, childID, err := decodeRef(first.TranscriptRef)
@@ -2170,14 +2391,15 @@ func TestSendDelegateMessageTerminalTargetFailDoesNotSteerLaterRun(t *testing.T)
 	}
 
 	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  first.JobID,
+		Target:  first.DelegateID,
 		Message: "run again",
+		OnIdle:  "start",
 	})
 	if second.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
 	}
-	if second.Action != "resumed" || second.JobID == "" || second.JobID == first.JobID {
-		t.Fatalf("second result = %+v, want resumed new running delegate job", second)
+	if second.Action != "started" || second.JobID == "" || second.JobID == first.JobID {
+		t.Fatalf("second result = %+v, want started new running delegate job", second)
 	}
 	select {
 	case <-adapter.secondStarted:
@@ -2187,12 +2409,11 @@ func TestSendDelegateMessageTerminalTargetFailDoesNotSteerLaterRun(t *testing.T)
 
 	before := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:     first.JobID,
-		Message:    "must not steer running job",
-		OnFinished: "fail",
+		Target:  first.JobID,
+		Message: "must not steer running job",
 	})
-	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_terminal") {
-		t.Fatalf("error = %v, want target_terminal", res.Err)
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "job_id is a job/turn handle") {
+		t.Fatalf("error = %v, want job_id handle rejection", res.Err)
 	}
 	after := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
 	if len(after) != len(before) {
@@ -2426,8 +2647,9 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 			beforeJobs := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate}))
 
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
-				Target:  rec.JobID,
+				Target:  rec.DelegateID,
 				Message: "resume",
+				OnIdle:  "start",
 			})
 
 			if res.Err == nil || res.Err.Error() != tc.want {
@@ -2532,8 +2754,9 @@ func TestSendDelegateMessageRuntimeLostRestoreUsesDescriptorPreflightProfile(t *
 	}
 
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:         rec.JobID,
+		Target:         rec.DelegateID,
 		Message:        "resume using descriptor",
+		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -2582,7 +2805,7 @@ func TestRestoreRuntimeLostDelegateNoAutoResumeNoModel(t *testing.T) {
 		t.Fatalf("delegate jobs after restore = %+v, want %d existing job only", jobs, beforeJobs)
 	}
 	if sub := restored.subagents.get(childID); sub != nil {
-		t.Fatalf("restored child runtime = %+v, want none before job_send_message", sub)
+		t.Fatalf("restored child runtime = %+v, want none before delegate_send", sub)
 	}
 }
 
@@ -2645,8 +2868,9 @@ func TestJobSendMessageReconstructsRestoredDelegateRuntimeFromDescriptor(t *test
 	}
 
 	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:         rec.JobID,
+		Target:         rec.DelegateID,
 		Message:        "new input after restore",
+		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -2758,15 +2982,16 @@ func TestRuntimeLostDelegateResumeAfterRestoreCreatesNewJobFromRetainedState(t *
 	}
 	t.Cleanup(func() { restored.Close() })
 	if sub := restored.subagents.get(childID); sub != nil {
-		t.Fatalf("restored child runtime = %+v, want none before job_send_message", sub)
+		t.Fatalf("restored child runtime = %+v, want none before delegate_send", sub)
 	}
 	if requests := adapter.Requests(); len(requests) != 1 {
 		t.Fatalf("adapter requests before send = %+v, want only initial delegate request", requests)
 	}
 
 	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:         first.JobID,
+		Target:         first.DelegateID,
 		Message:        resumedInput,
+		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -2775,14 +3000,14 @@ func TestRuntimeLostDelegateResumeAfterRestoreCreatesNewJobFromRetainedState(t *
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
 	if res.JobID == "" || res.JobID == first.JobID ||
-		res.Action != "resumed" ||
+		res.Action != "started" ||
 		res.ResumedFromJobID != first.JobID ||
 		res.Status != jobstore.StatusCompleted ||
 		res.TranscriptRef != first.TranscriptRef ||
 		!strings.Contains(res.Output, resumedOutput) ||
 		!res.StructuredResultValidSet ||
 		!res.StructuredResultValid {
-		t.Fatalf("resume result = %+v, want new completed resumed job", res)
+		t.Fatalf("resume result = %+v, want new completed started job", res)
 	}
 	oldAfter := loadShellRecord(t, restored.jobManager, first.JobID)
 	if oldAfter.Status != jobstore.StatusStopped || oldAfter.Reason != "runtime_lost" {
@@ -2881,12 +3106,13 @@ func TestRuntimeLostDelegateResumeRelinksNestedJobsToNewJob(t *testing.T) {
 	}
 	t.Cleanup(func() { restored.Close() })
 	if sub := restored.subagents.get(childID); sub != nil {
-		t.Fatalf("restored child runtime = %+v, want none before job_send_message", sub)
+		t.Fatalf("restored child runtime = %+v, want none before delegate_send", sub)
 	}
 
 	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:         first.JobID,
+		Target:         first.DelegateID,
 		Message:        "resume and start a nested shell",
+		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -2894,8 +3120,8 @@ func TestRuntimeLostDelegateResumeRelinksNestedJobsToNewJob(t *testing.T) {
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
-	if res.JobID == "" || res.JobID == first.JobID || res.Action != "resumed" || res.ResumedFromJobID != first.JobID {
-		t.Fatalf("resume result = %+v, want new resumed job from old runtime-lost job", res)
+	if res.JobID == "" || res.JobID == first.JobID || res.Action != "started" || res.ResumedFromJobID != first.JobID {
+		t.Fatalf("resume result = %+v, want new started job from old runtime-lost job", res)
 	}
 	oldAfter := loadShellRecord(t, restored.jobManager, first.JobID)
 	if oldAfter.Status != jobstore.StatusStopped || oldAfter.Reason != "runtime_lost" {
@@ -3024,8 +3250,9 @@ func TestJobSendMessageReconstructsDelegateFrozenSkills(t *testing.T) {
 	t.Cleanup(func() { restored.Close() })
 
 	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:         rec.JobID,
+		Target:         rec.DelegateID,
 		Message:        "continue with the checklist",
+		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -3087,8 +3314,9 @@ func TestJobSendMessageReconstructsDelegateFrozenSkillBodiesFromDescriptor(t *te
 	t.Cleanup(func() { restored.Close() })
 
 	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:         rec.JobID,
+		Target:         rec.DelegateID,
 		Message:        "continue with the descriptor checklist",
+		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -3128,8 +3356,9 @@ func TestFailedPreflightDoesNotReconstructDelegateRuntime(t *testing.T) {
 	beforeJobs := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate}))
 
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  rec.JobID,
+		Target:  rec.DelegateID,
 		Message: "resume",
+		OnIdle:  "start",
 	})
 
 	if res.Err == nil || res.Err.Error() != "target_not_resumable:missing_child_session_meta" {
@@ -3182,8 +3411,9 @@ func TestReconstructDelegateRuntimeMissingRequiredToolsFailsBeforeTracking(t *te
 			beforeJobs := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate}))
 
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
-				Target:  rec.JobID,
+				Target:  rec.DelegateID,
 				Message: "resume",
+				OnIdle:  "start",
 			})
 
 			if res.Err == nil {
@@ -3230,8 +3460,9 @@ func TestReconstructDelegateMissingToolsDoesNotRunChildRestoreWatchRetry(t *test
 	}
 
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  rec.JobID,
+		Target:  rec.DelegateID,
 		Message: "resume",
+		OnIdle:  "start",
 	})
 
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "missing_frozen_tool") {
@@ -3288,8 +3519,9 @@ func TestReconstructDelegateChildRegistryMismatchDoesNotRunRestoreSideEffects(t 
 	beforeChildEvents := len(loadSessionJobStoreEvents(t, s.stateDir, childID))
 
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  rec.JobID,
+		Target:  rec.DelegateID,
 		Message: "resume",
+		OnIdle:  "start",
 	})
 
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "parent_only_tool") {
@@ -3355,8 +3587,9 @@ func TestReconstructDelegateChildRegistryMismatchDoesNotReconcileChildJobs(t *te
 	beforeChildEvents := loadSessionJobStoreEvents(t, s.stateDir, childID)
 
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  rec.JobID,
+		Target:  rec.DelegateID,
 		Message: "resume",
+		OnIdle:  "start",
 	})
 
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "parent_only_tool") {
@@ -3492,8 +3725,9 @@ func TestDelegateReconstructionRacingParentCloseDoesNotTrackOrRunSideEffects(t *
 	done := make(chan sendMessageResult, 1)
 	go func() {
 		done <- s.sendDelegateMessage(context.Background(), sendMessageArgs{
-			Target:  rec.JobID,
+			Target:  rec.DelegateID,
 			Message: "resume while parent closes",
+			OnIdle:  "start",
 		})
 	}()
 	select {
@@ -3569,8 +3803,9 @@ func TestParentCloseWaitsForInFlightDelegateReconstructionClaim(t *testing.T) {
 	sendDone := make(chan sendMessageResult, 1)
 	go func() {
 		sendDone <- s.sendDelegateMessage(context.Background(), sendMessageArgs{
-			Target:  rec.JobID,
+			Target:  rec.DelegateID,
 			Message: "resume while close waits for reconstruction claim",
+			OnIdle:  "start",
 		})
 	}()
 	select {
@@ -3641,8 +3876,9 @@ func TestDelegateReconstructionParentCloseBeforeDeferredSideEffectsDoesNotRunThe
 	}
 
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  rec.JobID,
+		Target:  rec.DelegateID,
 		Message: "resume while parent closes before side effects",
+		OnIdle:  "start",
 	})
 
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "session is closed") {
@@ -4025,8 +4261,9 @@ func TestTerminalDelegateRestoreRequiresStrictPreflightBeforeReconstruction(t *t
 			beforeJobs := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate}))
 
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
-				Target:  rec.JobID,
+				Target:  rec.DelegateID,
 				Message: "resume",
+				OnIdle:  "start",
 			})
 
 			if res.Err == nil || res.Err.Error() != "target_not_resumable:corrupt_child_transcript" {
@@ -4078,8 +4315,9 @@ func TestTerminalDelegateRestoreUsesStrictPreflightHistory(t *testing.T) {
 	defer func() { delegateRestoreResumeHistory = original }()
 
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:         rec.JobID,
+		Target:         rec.DelegateID,
 		Message:        "resume valid terminal delegate",
+		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
@@ -4121,18 +4359,18 @@ func TestSendDelegateMessageRunningDelegateTargetSteersWithoutNewJob(t *testing.
 	before := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
 
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:  first.JobID,
+		Target:  first.DelegateID,
 		Message: "please adjust course",
 	})
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
-	if res.Action != "sent" ||
+	if res.Action != "steered" ||
 		res.JobID != first.JobID ||
 		res.Status != jobstore.StatusRunning ||
 		!res.RunningInBackground ||
 		res.TranscriptRef != first.TranscriptRef {
-		t.Fatalf("result = %+v, want sent to running delegate job", res)
+		t.Fatalf("result = %+v, want steered to running delegate job", res)
 	}
 	after := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
 	if len(after) != len(before) {
@@ -4182,21 +4420,21 @@ func TestWatchOriginatedSendToRunningDelegateSteersAndMarksLifecycleFromWatch(t 
 	if _, err := sess.jobManager.configureWatch(watchArgs{
 		Target: "caller",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
+		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure watch: %v", err)
 	}
 
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:    first.JobID,
+		Target:    first.DelegateID,
 		Message:   "watch-originated steer",
 		FromWatch: true,
 	})
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
-	if res.Action != "sent" || res.JobID != first.JobID || res.Status != jobstore.StatusRunning || !res.RunningInBackground {
-		t.Fatalf("result = %+v, want sent to running delegate job %s", res, first.JobID)
+	if res.Action != "steered" || res.JobID != first.JobID || res.Status != jobstore.StatusRunning || !res.RunningInBackground {
+		t.Fatalf("result = %+v, want steered to running delegate job %s", res, first.JobID)
 	}
 	_, childID, err := decodeRef(first.TranscriptRef)
 	if err != nil {
@@ -4232,8 +4470,12 @@ gotEnd:
 	if !end.FromWatch {
 		t.Fatalf("watch-originated send did not mark existing job finished FromWatch; event = %+v", end)
 	}
-	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 0 {
-		t.Fatalf("watch-originated running delegate completion recorded watch sends = %d, want 0: %+v", len(pending), pending)
+	// FromWatch on the payload no longer suppresses watch fires; suppression is now
+	// per-watch causal provenance. This JobFinished does not carry THIS watch's
+	// (watch_id, generation) key — the completion was caused by stop(), not by a
+	// delivery of this watch — so the unrelated caller watch correctly fires once.
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 1 {
+		t.Fatalf("unrelated caller watch should fire on watch-originated completion; pending = %d: %+v", len(pending), pending)
 	}
 }
 
@@ -4265,7 +4507,7 @@ func TestSendDelegateMessageRunningTargetHoldsRunLockThroughSteer(t *testing.T) 
 
 	done := make(chan sendMessageResult, 1)
 	go func() {
-		done <- parent.sendRunningDelegateMessage(rec.JobID, "atomic steer", rec, false)
+		done <- parent.sendRunningDelegateMessage(rec.JobID, "atomic steer", rec, false, nil)
 	}()
 
 	for deadline := time.Now().Add(time.Second); sub.mu.TryLock(); {
@@ -4338,7 +4580,7 @@ func TestFindRunningDelegateByTranscriptRefRejectsAmbiguousMatches(t *testing.T)
 	waitForShellDone(t, sess.jobManager, first.JobID)
 }
 
-func TestSendDelegateMessageAliasTargetDeliversRuntimeMessage(t *testing.T) {
+func TestSendDelegateMessageRootCallerTargetFails(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	sess := newDelegateTestSession(t, c)
@@ -4347,33 +4589,27 @@ func TestSendDelegateMessageAliasTargetDeliversRuntimeMessage(t *testing.T) {
 		Target:  "caller",
 		Message: "runtime advisory",
 	})
-	if res.Err != nil {
-		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
-	}
-	if res.Target != "caller" ||
-		!res.Delivered ||
-		res.Action != "sent" ||
-		res.MessageType != "runtime" {
-		t.Fatalf("result = %+v, want runtime delivered shape", res)
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "caller is only available") {
+		t.Fatalf("error = %v, want caller route rejection", res.Err)
 	}
 	queue := sess.SteeringQueueSnapshot()
-	if len(queue) != 1 || queue[0].Text != "runtime advisory" {
-		t.Fatalf("steering queue = %+v, want runtime advisory", queue)
+	if len(queue) != 0 {
+		t.Fatalf("steering queue = %+v, want no runtime advisory", queue)
 	}
 }
 
-func TestJobSendMessageMainAliasFailsTargetNotFound(t *testing.T) {
+func TestDelegateSendMainAliasFailsInvalidRequest(t *testing.T) {
 	sess := newTestSession(t)
 	called := false
-	sess.cfg.spawn.parentSteer = func(string) { called = true }
+	sess.cfg.spawn.parentSteer = func(string, *provenance.Causal) { called = true }
 
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  "main",
 		Message: "hello",
 	})
 
-	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_not_found") {
-		t.Fatalf("error = %v, want target_not_found", res.Err)
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "invalid_request") {
+		t.Fatalf("error = %v, want invalid_request", res.Err)
 	}
 	if called {
 		t.Fatal("main alias called parentSteer")
@@ -4392,7 +4628,7 @@ func TestJobSendMessageMainAliasFailsTargetNotFound(t *testing.T) {
 	}
 }
 
-func TestJobSendMessageWatchedWithoutWatchContextFails(t *testing.T) {
+func TestDelegateSendWatchedWithoutWatchContextFails(t *testing.T) {
 	sess := newTestSession(t)
 
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
@@ -4400,8 +4636,8 @@ func TestJobSendMessageWatchedWithoutWatchContextFails(t *testing.T) {
 		Message: "hello",
 	})
 
-	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_not_found") {
-		t.Fatalf("error = %v, want target_not_found", res.Err)
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "invalid_request") {
+		t.Fatalf("error = %v, want invalid_request", res.Err)
 	}
 	if queue := sess.SteeringQueueSnapshot(); len(queue) != 0 {
 		t.Fatalf("steering queue = %+v, want no side effects", queue)
@@ -4416,7 +4652,7 @@ func TestSendDelegateMessageAliasFromSubagentSteersCaller(t *testing.T) {
 	subCfg := SessionConfig{MaxSubagentDepth: 2}
 	subCfg.spawn.depth = 1
 	subCfg.spawn.parentSessionID = parent.ID()
-	subCfg.spawn.parentSteer = parent.Steer
+	subCfg.spawn.parentSteer = parent.SteerWithProvenance
 	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
 	if err != nil {
 		t.Fatalf("NewSession child: %v", err)
@@ -4430,7 +4666,7 @@ func TestSendDelegateMessageAliasFromSubagentSteersCaller(t *testing.T) {
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
-	if res.Target != "caller" || !res.Delivered || res.Action != "sent" || res.MessageType != "runtime" {
+	if res.Target != "caller" || !res.Delivered || res.Action != "delivered" || res.MessageType != "runtime" {
 		t.Fatalf("result = %+v, want runtime alias delivery", res)
 	}
 	if queue := child.SteeringQueueSnapshot(); len(queue) != 0 {
@@ -4452,7 +4688,7 @@ func TestSendDelegateMessageUnsupportedAliasesFromSubagentFailTargetNotFound(t *
 			subCfg := SessionConfig{MaxSubagentDepth: 2}
 			subCfg.spawn.depth = 1
 			subCfg.spawn.parentSessionID = parent.ID()
-			subCfg.spawn.parentSteer = parent.Steer
+			subCfg.spawn.parentSteer = parent.SteerWithProvenance
 			child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
 			if err != nil {
 				t.Fatalf("NewSession child: %v", err)
@@ -4464,8 +4700,8 @@ func TestSendDelegateMessageUnsupportedAliasesFromSubagentFailTargetNotFound(t *
 				Message: "child advisory",
 			})
 
-			if res.Err == nil || !strings.Contains(res.Err.Error(), "target_not_found") {
-				t.Fatalf("error = %v, want target_not_found", res.Err)
+			if res.Err == nil || !strings.Contains(res.Err.Error(), "invalid_request") {
+				t.Fatalf("error = %v, want invalid_request", res.Err)
 			}
 			if strings.Contains(res.Err.Error(), "not_controllable") {
 				t.Fatalf("error = %v, must not report not_controllable", res.Err)
@@ -4513,6 +4749,8 @@ func newDelegateRestorePreflightSession(t *testing.T, c *llm.Client) *Session {
 func seedStoppedDelegateRestoreRecord(t *testing.T, s *Session) *jobstore.JobRecord {
 	t.Helper()
 	childID, childWorkDir := seedRetainedChildSessionWithWorkingDir(t, s)
+	delegateID := jobstore.NewDelegateID()
+	generation := jobstore.NewDelegateGeneration()
 	jobID := jobstore.NewJobID()
 	now := time.Now().UTC()
 	ref := encodeRef("", childID)
@@ -4531,9 +4769,25 @@ func seedStoppedDelegateRestoreRecord(t *testing.T, s *Session) *jobstore.JobRec
 		LocalEnvPolicy:    "default",
 	}
 	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: delegateID,
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   childID,
+			TranscriptRef:    ref,
+			OwnerSessionID:   s.ID(),
+			VisibleSessionID: s.ID(),
+			Generation:       generation,
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append delegate created: %v", err)
+	}
+	if err := s.jobManager.appendEvent(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               now,
 		JobID:            jobID,
+		DelegateID:       delegateID,
 		Type:             jobstore.JobDelegate,
 		Task:             desc.Task,
 		OwnerSessionID:   s.ID(),
@@ -5202,5 +5456,96 @@ func TestDelegateGrantErrorEnumeratesValidRange(t *testing.T) {
 		if !strings.Contains(res.Err.Error(), tc.wantContains) {
 			t.Fatalf("own=%d: error %q missing %q", tc.ownAllowance, res.Err.Error(), tc.wantContains)
 		}
+	}
+}
+
+func TestDelegateSendCallerCarriesActiveProvenanceToParentSteering(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", parent.ID(), "caller")
+	child.replaceActiveProvenance(p)
+	child.cfg.spawn.parentSteerDelivered = parent.trySteerWithProvenance
+
+	res := child.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  runtimeMessageAliasCaller,
+		Message: "PYTHON_QUOTE delivery=wd_1 quote=Ni!",
+	})
+	if res.Err != nil || !res.Delivered {
+		t.Fatalf("sendDelegateMessage = %+v, want delivered", res)
+	}
+
+	parent.mu.Lock()
+	defer parent.mu.Unlock()
+	if len(parent.steeringQueue) != 1 {
+		t.Fatalf("parent steering queue = %d, want 1", len(parent.steeringQueue))
+	}
+	if !provenance.ContainsWatch(parent.steeringQueue[0].Provenance, "watch_A", "wg_1") {
+		t.Fatalf("steering provenance = %+v, want watch_A/wg_1", parent.steeringQueue[0].Provenance)
+	}
+}
+
+func TestRunningDelegateWatchSendCarriesProvenanceToObserverSteering(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	childID := child.ID()
+	sub := &subagent{id: childID, sess: child, running: true}
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, childID, "observer", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", parent.ID(), "caller")
+
+	res := parent.sendRunningDelegateMessage(run.rec.DelegateID, "Watch frame", run.rec, true, p)
+	if res.Err != nil {
+		t.Fatalf("sendRunningDelegateMessage: %+v", res)
+	}
+	child.mu.Lock()
+	defer child.mu.Unlock()
+	if len(child.steeringQueue) != 1 {
+		t.Fatalf("child steering queue = %d, want 1", len(child.steeringQueue))
+	}
+	if !provenance.ContainsWatch(child.steeringQueue[0].Provenance, "watch_A", "wg_1") {
+		t.Fatalf("child steering provenance = %+v, want watch_A/wg_1", child.steeringQueue[0].Provenance)
+	}
+}
+
+// TestCrossWatchObserverResumeAdoptsDrivingWatchProvenance: an observer whose
+// prior run was driven by watch_X is resumed by a watch send delivering watch_Y.
+// The new run must be attributed to the CURRENT driving watch (watch_Y), not the
+// watch that first drove the observer (watch_X) — otherwise the current watch's
+// terminal notification is mis-attributed and not suppressed (the loop reopens).
+func TestCrossWatchObserverResumeAdoptsDrivingWatchProvenance(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	parent := newDelegateTestSession(t, c)
+	child := newDelegateTestSession(t, c)
+	sub := completedDelegateSubagent(child, "already done")
+	parent.subagents.track(sub)
+
+	previousRestore := &jobstore.DelegateRestoreDescriptor{
+		Version:        1,
+		ChildSessionID: child.ID(),
+		Provenance:     provenance.WithWatch(nil, "watch_X", "wg_x", "wd_x", parent.ID(), "caller"),
+	}
+	drivingWatch := provenance.WithWatch(nil, "watch_Y", "wg_y", "wd_y", parent.ID(), "caller")
+
+	run, err := parent.attachDelegateJobWithRestoreAndDelegate(parent.jobManager, child.ID(), "observer", sub, jobstore.NewJobID(), nil, true, nil, previousRestore, delegateJobLink{
+		delegateID: jobstore.NewDelegateID(),
+		generation: jobstore.NewDelegateGeneration(),
+		create:     true,
+	}, drivingWatch)
+	if err != nil {
+		t.Fatalf("attachDelegateJobWithRestoreAndDelegate: %v", err)
+	}
+
+	if !provenance.ContainsWatch(run.rec.Provenance, "watch_Y", "wg_y") {
+		t.Fatalf("run provenance = %+v, want driving watch_Y/wg_y", run.rec.Provenance)
+	}
+	if provenance.ContainsWatch(run.rec.Provenance, "watch_X", "wg_x") {
+		t.Fatalf("run provenance = %+v, must not re-pin to prior watch_X/wg_x", run.rec.Provenance)
+	}
+	if !provenance.ContainsWatch(run.rec.DelegateRestore.Provenance, "watch_Y", "wg_y") {
+		t.Fatalf("restore provenance = %+v, want driving watch_Y/wg_y", run.rec.DelegateRestore.Provenance)
 	}
 }

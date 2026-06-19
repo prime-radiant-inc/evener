@@ -172,6 +172,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		// channel — a later emit after Close is a silent no-op, so the
 		// "told why it stopped" promise would be lost otherwise (spec §2/C11).
 		s.terminateGoalOnError(ctx, err)
+		s.finishActiveProvenance()
 		s.Close()
 	}
 	// Recoverable LLM errors (retry policy exhausted, stream-ended, timeouts,

@@ -1,6 +1,10 @@
 package jobstore
 
-import "time"
+import (
+	"time"
+
+	"primeradiant.com/serf/agent/provenance"
+)
 
 // EventKind identifies a durable job-lifecycle event in jobs.jsonl.
 type EventKind string
@@ -17,6 +21,10 @@ const (
 	EventWatchSendDropped         EventKind = "watch_send_dropped"
 	EventWatchSendEvicted         EventKind = "watch_send_evicted"
 	EventWatchReadGrant           EventKind = "watch_read_grant"
+	EventDelegateCreated          EventKind = "delegate_created"
+	EventDelegateStopGateClosed   EventKind = "delegate_stop_gate_closed"
+	EventWatchRegistered          EventKind = "watch_registered"
+	EventWatchCleared             EventKind = "watch_cleared"
 )
 
 // Event is one line in the append-only jobs.jsonl log. It carries a flat union
@@ -27,7 +35,8 @@ type Event struct {
 	Seq  int64     `json:"seq"`
 	TS   time.Time `json:"ts"`
 
-	JobID string `json:"job_id"`
+	JobID   string `json:"job_id"`
+	WatchID string `json:"watch_id,omitempty"`
 
 	// job_started payload
 	Type             JobType                    `json:"type,omitempty"`
@@ -38,6 +47,7 @@ type Event struct {
 	OwnerSessionID   string                     `json:"owner_session_id,omitempty"`
 	VisibleToSession string                     `json:"visible_to_session_id,omitempty"`
 	ParentJobID      string                     `json:"parent_job_id,omitempty"`
+	DelegateID       string                     `json:"delegate_id,omitempty"`
 	OriginTurnID     string                     `json:"origin_turn_id,omitempty"`
 	OriginToolCallID string                     `json:"origin_tool_call_id,omitempty"`
 	StartedAt        *time.Time                 `json:"started_at,omitempty"`
@@ -69,4 +79,39 @@ type Event struct {
 
 	// watch_read_grant payload; the watched job id rides JobID.
 	ObserverSessionID string `json:"observer_session_id,omitempty"`
+
+	// delegate_* payload
+	Delegate *DelegateEvent `json:"delegate,omitempty"`
+
+	// watch_registered/watch_cleared payload
+	Watch *WatchEvent `json:"watch,omitempty"`
+
+	// causal provenance carried by job_started, job_finished, and job_notification_pending events
+	Provenance *provenance.Causal `json:"provenance,omitempty"`
+}
+
+type DelegateEvent struct {
+	ChildSessionID   string `json:"child_session_id,omitempty"`
+	TranscriptRef    string `json:"transcript_ref,omitempty"`
+	OwnerSessionID   string `json:"owner_session_id,omitempty"`
+	VisibleSessionID string `json:"visible_session_id,omitempty"`
+	ParentDelegateID string `json:"parent_delegate_id,omitempty"`
+	AgentType        string `json:"agent_type,omitempty"`
+	Generation       string `json:"generation,omitempty"`
+	Resumable        bool   `json:"resumable,omitempty"`
+	NotResumableWhy  string `json:"not_resumable_reason,omitempty"`
+	StopJobID        string `json:"stop_job_id,omitempty"`
+}
+
+type WatchEvent struct {
+	Generation       string               `json:"generation,omitempty"`
+	OwnerSessionID   string               `json:"owner_session_id,omitempty"`
+	VisibleSessionID string               `json:"visible_session_id,omitempty"`
+	Target           string               `json:"target,omitempty"`
+	SendTo           string               `json:"send_to,omitempty"`
+	ConfigHash       string               `json:"config_hash,omitempty"`
+	Condition        string               `json:"condition,omitempty"`
+	Config           *WatchConfigSnapshot `json:"config,omitempty"`
+	Deliveries       int                  `json:"deliveries,omitempty"`
+	EndReason        string               `json:"end_reason,omitempty"`
 }

@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 )
@@ -73,7 +74,10 @@ type delegateArgs struct {
 }
 
 type delegateResult struct {
+	DelegateID               string
+	StartedJobID             string
 	JobID                    string
+	LatestJobID              string
 	Type                     string
 	Status                   jobstore.Status
 	Reason                   string
@@ -92,16 +96,20 @@ type delegateResult struct {
 type sendMessageArgs struct {
 	Target         string
 	Message        string
-	OnFinished     string
+	OnIdle         string
 	Background     bool
 	BackgroundSet  bool
 	BlockTimeoutMS int
 	FromWatch      bool
+	Provenance     *provenance.Causal
 }
 
 type sendMessageResult struct {
 	Target                    string
+	DelegateID                string
+	StartedJobID              string
 	JobID                     string
+	LatestJobID               string
 	Type                      string
 	Status                    jobstore.Status
 	Reason                    string
@@ -154,31 +162,36 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	}
 	ctx = context.WithValue(ctx, ctxDelegationAllowance, args.DelegationAllowance)
 
+	delegateID := jobstore.NewDelegateID()
+	delegateGeneration := jobstore.NewDelegateGeneration()
 	jobID := jobstore.NewJobID()
 	ctx = context.WithValue(ctx, ctxParentJobID, jobID)
 	prepared, err := s.prepareSubagentRun(ctx, task, args.Model, "", 0, args.AgentType, args.ReasoningEffort, nil, nil)
 	if err != nil {
-		return delegateStartFailed(err)
+		return delegateStartFailedWithIDs(delegateID, jobID, err)
 	}
 	childID := prepared.sub.id
 	sub := prepared.sub
-	run, err := s.attachDelegateJobWithPrepared(jm, childID, task, sub, jobID, args.ResultSchema, false, prepared)
+	run, err := s.attachDelegateJobWithPreparedAndDelegate(jm, childID, task, sub, jobID, delegateID, delegateGeneration, args.AgentType, args.ResultSchema, false, prepared)
 	if err != nil {
 		prepared.runCancel()
 		sub.sess.Close()
-		return delegateStartFailed(err)
+		return delegateStartFailedWithIDs(delegateID, jobID, err)
 	}
 	if err := s.trackAndLaunchPreparedSubagent(prepared); err != nil {
 		prepared.runCancel()
 		sub.sess.Close()
 		_ = jm.finalize(run.rec.JobID, jobstore.StatusFailed, "start_failed", nil)
-		return delegateStartFailed(err)
+		return delegateStartFailedWithIDs(delegateID, run.rec.JobID, err)
 	}
 	finalizeErr, done := s.bridgeDelegateFinalization(run.rec.JobID, childID, sub)
 
 	if args.Background {
 		return delegateResult{
+			DelegateID:          delegateID,
+			StartedJobID:        run.rec.JobID,
 			JobID:               run.rec.JobID,
+			LatestJobID:         run.rec.JobID,
 			Type:                string(jobstore.JobDelegate),
 			Status:              jobstore.StatusRunning,
 			RunningInBackground: true,
@@ -194,7 +207,10 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	case <-timer.C:
 		output, _, truncated, readErr := tailOutput(run.output, shellInlineOutputBytes)
 		res := delegateResult{
+			DelegateID:          delegateID,
+			StartedJobID:        run.rec.JobID,
 			JobID:               run.rec.JobID,
+			LatestJobID:         run.rec.JobID,
 			Type:                string(jobstore.JobDelegate),
 			Status:              jobstore.StatusRunning,
 			Reason:              "foreground_timeout",
@@ -228,25 +244,45 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if args.BlockTimeoutMS < 0 {
 		return sendMessageFailed(target, errors.New("invalid_request: max_wait_ms must be non-negative"))
 	}
+	onIdle := strings.TrimSpace(args.OnIdle)
+	if onIdle == "" {
+		onIdle = "fail"
+	}
+	if onIdle != "fail" && onIdle != "start" {
+		return sendMessageFailed(target, fmt.Errorf("invalid_request: on_idle must be start or fail"))
+	}
+	if target == "main" || target == runtimeMessageAliasWatched {
+		return sendMessageFailed(target, fmt.Errorf("invalid_request: %s is not a delegate_send target", target))
+	}
+	if strings.HasPrefix(target, "local:") || strings.HasPrefix(target, "proj:") {
+		return sendMessageFailed(target, errors.New("invalid_request: transcript_ref is an archival read handle, not a control target"))
+	}
 	if isRuntimeMessageAlias(target) {
+		if !s.hasCallerRoute() {
+			return sendMessageFailed(target, errors.New("invalid_request: caller is only available from a delegate/watch-delivered context"))
+		}
 		// Watch sends to the caller route through the notification rail
 		// (drainPendingWatchSends enqueues a wake token), never here. A FromWatch
 		// caller send reaching sendDelegateMessage is an internal routing bug.
 		if args.FromWatch {
 			return sendMessageFailed(target, errors.New("internal: watch sends to caller route via the notification rail"))
 		}
+		callerProvenance := provenance.Clone(args.Provenance)
+		if callerProvenance == nil {
+			callerProvenance = s.activeCausalProvenance()
+		}
 		delivered := true
 		if steer := s.cfg.spawn.parentSteerDelivered; steer != nil {
-			delivered = steer(message)
+			delivered = steer(message, callerProvenance)
 		} else if steer := s.cfg.spawn.parentSteer; steer != nil {
-			steer(message)
+			steer(message, callerProvenance)
 		} else {
-			delivered = s.trySteer(message)
+			delivered = s.trySteerWithProvenance(message, callerProvenance)
 		}
 		if !delivered {
 			return sendMessageResult{
 				Target:      target,
-				Action:      "sent",
+				Action:      "delivered",
 				Delivered:   false,
 				MessageType: "runtime",
 				Err:         errors.New("caller unavailable"),
@@ -254,28 +290,54 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		}
 		return sendMessageResult{
 			Target:      target,
-			Action:      "sent",
+			Action:      "delivered",
 			Delivered:   true,
 			MessageType: "runtime",
 		}
-	}
-	if isUnsupportedRuntimeMessageAlias(target) {
-		return sendMessageFailed(target, fmt.Errorf("target_not_found: job %q not found", target))
 	}
 
 	jm, err := sessionJobManager(s)
 	if err != nil {
 		return sendMessageFailed(target, err)
 	}
-	rec, err := findJobRecord(jm, target)
+	if strings.HasPrefix(target, "job_") {
+		if rec, ok := delegateJobRecordForJobID(jm, target); ok {
+			if !delegateControlOwnedBySession(rec.OwnerSessionID, s.id) {
+				return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is owned by descendant session %q; you may only message your own direct delegates", target, rec.OwnerSessionID))
+			}
+			return sendMessageFailed(target, fmt.Errorf("invalid_request: job_id is a job/turn handle; send messages to delegate_id %s", rec.DelegateID))
+		}
+		return sendMessageFailed(target, errors.New("invalid_request: job_id is a job/turn handle; send messages to delegate_id"))
+	}
+	if !strings.HasPrefix(target, "dlg_") {
+		return sendMessageFailed(target, fmt.Errorf("target_not_found: delegate %q not found", target))
+	}
+	recTarget := target
+	delegates, err := jm.store.LoadDelegates()
+	if err != nil {
+		return sendMessageFailed(target, err)
+	}
+	delegateRec := delegates[target]
+	if delegateRec == nil {
+		return sendMessageFailed(target, fmt.Errorf("target_not_found: delegate %q not found", target))
+	}
+	delegateID := delegateRec.DelegateID
+	recTarget = delegateRec.CurrentJobID
+	if recTarget == "" {
+		recTarget = delegateRec.LatestJobID
+	}
+	if recTarget == "" {
+		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate %q has no job history", target))
+	}
+	rec, err := findJobRecord(jm, recTarget)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_found: %w", err))
 	}
 	// Own direct delegates at every level (spec §3): a coordinator at any depth
-	// may message its own direct worker delegate by job_id, but the scope is the
+	// may message its own direct worker delegate by delegate_id, but the scope is the
 	// session's own delegates — a forwarded copy of a deeper descendant's delegate
 	// (owned by another session) is not directly controllable.
-	if rec.OwnerSessionID != "" && rec.OwnerSessionID != s.id {
+	if !delegateControlOwnedBySession(rec.OwnerSessionID, s.id) {
 		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is owned by descendant session %q; you may only message your own direct delegates", target, rec.OwnerSessionID))
 	}
 	if rec.Type != jobstore.JobDelegate {
@@ -298,15 +360,12 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 			// sendRunningDelegateMessage takes the StatusRunning rec directly (no
 			// findRunningDelegate lookup), so the drive turn's missing job record
 			// does not strand the steer.
-			return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch)
-		}
-		if strings.TrimSpace(args.OnFinished) == "fail" {
-			return sendMessageFailed(target, fmt.Errorf("target_terminal: delegate job %q is %s", target, rec.Status))
+			return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch, args.Provenance)
 		}
 		if err := s.finalizeDelegate(rec.JobID, childID, sub); err != nil {
 			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: finalize observed-terminal delegate job %q: %w", target, err))
 		}
-		rec, err = findJobRecord(jm, target)
+		rec, err = findJobRecord(jm, rec.JobID)
 		if err != nil {
 			return sendMessageFailed(target, fmt.Errorf("target_not_found: %w", err))
 		}
@@ -314,8 +373,32 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if !rec.Status.IsTerminal() {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate job %q has status %q", target, rec.Status))
 	}
-	if strings.TrimSpace(args.OnFinished) == "fail" {
-		return sendMessageFailed(target, fmt.Errorf("target_terminal: delegate job %q is %s", target, rec.Status))
+	_, childID, err := decodeRef(rec.TranscriptRef)
+	if err != nil {
+		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: invalid transcript_ref for job %q: %w", target, err))
+	}
+	sub := s.subagents.get(childID)
+	if sub != nil && sub.sess != nil {
+		sub.mu.Lock()
+		running := sub.running
+		driving := sub.driving
+		sub.mu.Unlock()
+		if driving && !running {
+			return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch, args.Provenance)
+		}
+		if running {
+			active, err := findRunningDelegateByTranscriptRef(jm, rec.TranscriptRef)
+			if err != nil {
+				if onIdle == "fail" {
+					return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is running but active job is unknown: %w", childID, err))
+				}
+			} else {
+				return s.sendRunningDelegateMessage(target, message, active, args.FromWatch, args.Provenance)
+			}
+		}
+	}
+	if onIdle == "fail" {
+		return sendMessageFailed(target, fmt.Errorf("target_idle: delegate %q is idle; pass on_idle=\"start\" to start the next job", target))
 	}
 	var restorePreflight *delegateRestorePreflight
 	if isRuntimeLostDelegate(rec) {
@@ -325,11 +408,6 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		}
 		restorePreflight = assessment.Preflight
 	}
-	_, childID, err := decodeRef(rec.TranscriptRef)
-	if err != nil {
-		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: invalid transcript_ref for job %q: %w", target, err))
-	}
-	sub := s.subagents.get(childID)
 	if sub == nil || sub.sess == nil {
 		if restorePreflight == nil {
 			assessment := s.assessDelegateResumability(rec, delegateResumabilityPreflight)
@@ -356,33 +434,40 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		// already hold; sendRunningDelegateMessage's driving-aware guard delivers it
 		// via trySteer (spec §3: a mid-drive send is absorbed by the single
 		// in-flight turn, never a second concurrent ProcessInputKind).
-		return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch)
+		return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch, args.Provenance)
 	}
 	if running {
 		active, err := findRunningDelegateByTranscriptRef(jm, rec.TranscriptRef)
 		if err != nil {
 			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is running but active job is unknown: %w", childID, err))
 		}
-		return s.sendRunningDelegateMessage(target, message, active, args.FromWatch)
+		return s.sendRunningDelegateMessage(target, message, active, args.FromWatch, args.Provenance)
 	}
 
-	run, finalizeErr, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef, delegateResultSchema(rec), rec.DelegateRestore, args.FromWatch)
+	messageProvenance := provenance.Clone(args.Provenance)
+	if messageProvenance == nil {
+		messageProvenance = s.activeCausalProvenance()
+	}
+	run, finalizeErr, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef, delegateID, delegateResultSchema(rec), rec.DelegateRestore, args.FromWatch, messageProvenance)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: resume delegate session %q: %w", childID, err))
 	}
 	if active != nil {
-		return s.sendRunningDelegateMessage(target, message, active, args.FromWatch)
+		return s.sendRunningDelegateMessage(target, message, active, args.FromWatch, args.Provenance)
 	}
 	if !background {
 		return waitForResumedDelegateResult(ctx, jm, target, rec.JobID, run, finalizeErr, args.BlockTimeoutMS)
 	}
 	return sendMessageResult{
 		Target:              target,
+		DelegateID:          delegateID,
+		StartedJobID:        run.rec.JobID,
 		JobID:               run.rec.JobID,
+		LatestJobID:         run.rec.JobID,
 		Type:                string(jobstore.JobDelegate),
 		Status:              jobstore.StatusRunning,
 		RunningInBackground: true,
-		Action:              "resumed",
+		Action:              "started",
 		ResumedFromJobID:    rec.JobID,
 		TranscriptRef:       run.rec.TranscriptRef,
 	}
@@ -597,8 +682,8 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 			parentToolCallID:        desc.OriginToolCallID,
 			parentJobID:             desc.ParentJobID,
 			forwardJobEvent:         s.jobManager.forwardEvent,
-			parentSteer:             s.Steer,
-			parentSteerDelivered:    s.trySteer,
+			parentSteer:             s.SteerWithProvenance,
+			parentSteerDelivered:    s.trySteerWithProvenance,
 			parentGrantedJobRead:    s.lookupGrantedJobRead,
 			subagentTask:            desc.Task,
 			depth:                   s.depth + 1,
@@ -858,7 +943,7 @@ func findRunningDelegateByTranscriptRef(jm *jobManager, transcriptRef string) (*
 	return found, nil
 }
 
-func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobstore.JobRecord, fromWatch bool) sendMessageResult {
+func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobstore.JobRecord, fromWatch bool, p *provenance.Causal) sendMessageResult {
 	_, childID, err := decodeRef(rec.TranscriptRef)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: invalid transcript_ref for job %q: %w", target, err))
@@ -899,17 +984,23 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 		sub.mu.Unlock()
 		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but runtime job is not live", target))
 	}
-	delivered := sub.sess.trySteer(message)
+	steerProvenance := provenance.Clone(p)
+	if steerProvenance == nil {
+		steerProvenance = s.activeCausalProvenance()
+	}
+	delivered := sub.sess.trySteerWithProvenance(message, steerProvenance)
 	if !delivered {
 		sub.mu.Unlock()
 		if fromWatch {
 			return sendMessageResult{
 				Target:                    target,
+				DelegateID:                rec.DelegateID,
 				JobID:                     rec.JobID,
+				LatestJobID:               rec.JobID,
 				Type:                      string(jobstore.JobDelegate),
 				Status:                    jobstore.StatusRunning,
 				RunningInBackground:       true,
-				Action:                    "busy",
+				Action:                    "steered",
 				Delivered:                 false,
 				WatchSendDeliveryClass:    watchSendBusy,
 				WatchSendDeliveryClassSet: true,
@@ -928,16 +1019,25 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 	sub.mu.Unlock()
 	return sendMessageResult{
 		Target:              target,
+		DelegateID:          rec.DelegateID,
 		JobID:               rec.JobID,
+		LatestJobID:         rec.JobID,
 		Type:                string(jobstore.JobDelegate),
 		Status:              jobstore.StatusRunning,
 		RunningInBackground: true,
-		Action:              "sent",
+		Action:              "steered",
 		TranscriptRef:       rec.TranscriptRef,
 	}
 }
 
-func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message string, sub *subagent, transcriptRef string, resultSchema any, restore *jobstore.DelegateRestoreDescriptor, fromWatch bool) (*runningJob, <-chan error, *jobstore.JobRecord, error) {
+// delegateControlOwnedBySession is the shared control-surface predicate for
+// delegate_send and job_list. Empty owner metadata is local to the current store;
+// a non-empty mismatch is a descendant-owned forwarded copy.
+func delegateControlOwnedBySession(ownerSessionID, sessionID string) bool {
+	return ownerSessionID == "" || ownerSessionID == sessionID
+}
+
+func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message string, sub *subagent, transcriptRef, delegateID string, resultSchema any, restore *jobstore.DelegateRestoreDescriptor, fromWatch bool, watchProvenance *provenance.Causal) (*runningJob, <-chan error, *jobstore.JobRecord, error) {
 	sub.mu.Lock()
 	if sub.running {
 		sub.mu.Unlock()
@@ -960,7 +1060,7 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 
-	run, err := s.attachDelegateJobFromWatch(jm, childID, message, sub, resultSchema, restore, fromWatch)
+	run, err := s.attachDelegateJobFromWatchWithDelegate(jm, childID, message, sub, delegateID, resultSchema, restore, fromWatch, watchProvenance)
 	if err != nil {
 		sub.mu.Unlock()
 		runCancel()
@@ -977,7 +1077,7 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 		<-done
 		finalizeErr <- s.finalizeDelegate(run.rec.JobID, childID, sub)
 	}()
-	s.launchSubagentRun(runCtx, sub, runCancel, message, fromWatch)
+	s.launchSubagentRun(runCtx, sub, runCancel, message, watchProvenance)
 	return run, finalizeErr, nil, nil
 }
 
@@ -1011,6 +1111,18 @@ func isUnsupportedRuntimeMessageAlias(target string) bool {
 	default:
 		return false
 	}
+}
+
+func (s *Session) hasCallerRoute() bool {
+	return s != nil && (s.cfg.spawn.parentSteerDelivered != nil || s.cfg.spawn.parentSteer != nil)
+}
+
+func delegateJobRecordForJobID(jm *jobManager, jobID string) (*jobstore.JobRecord, bool) {
+	rec, err := findJobRecord(jm, jobID)
+	if err != nil || rec == nil || strings.TrimSpace(rec.DelegateID) == "" {
+		return nil, false
+	}
+	return rec, true
 }
 
 func waitForDelegateFinalization(ctx context.Context, jm *jobManager, run *runningJob, finalizeErr <-chan error) delegateResult {
@@ -1051,13 +1163,16 @@ func waitForResumedDelegateResult(ctx context.Context, jm *jobManager, target, r
 		output, _, truncated, readErr := tailOutput(run.output, shellInlineOutputBytes)
 		return sendMessageResult{
 			Target:              target,
+			DelegateID:          run.rec.DelegateID,
+			StartedJobID:        run.rec.JobID,
 			JobID:               run.rec.JobID,
+			LatestJobID:         run.rec.JobID,
 			Type:                string(jobstore.JobDelegate),
 			Status:              jobstore.StatusRunning,
 			Reason:              "foreground_timeout",
 			RunningInBackground: true,
 			TimedOut:            true,
-			Action:              "resumed",
+			Action:              "started",
 			ResumedFromJobID:    resumedFromJobID,
 			TranscriptRef:       run.rec.TranscriptRef,
 			Output:              output,
@@ -1067,13 +1182,16 @@ func waitForResumedDelegateResult(ctx context.Context, jm *jobManager, target, r
 	case <-ctx.Done():
 		res = delegateFinalizeFailedResult(run, "cancelled", ctx.Err())
 	}
-	return sendMessageResultFromDelegateResult(target, resumedFromJobID, "resumed", res)
+	return sendMessageResultFromDelegateResult(target, resumedFromJobID, "started", res)
 }
 
 func sendMessageResultFromDelegateResult(target, resumedFromJobID, action string, res delegateResult) sendMessageResult {
 	return sendMessageResult{
 		Target:                   target,
+		DelegateID:               res.DelegateID,
+		StartedJobID:             res.StartedJobID,
 		JobID:                    res.JobID,
+		LatestJobID:              res.LatestJobID,
 		Type:                     res.Type,
 		Status:                   res.Status,
 		Reason:                   res.Reason,
@@ -1094,7 +1212,10 @@ func sendMessageResultFromDelegateResult(target, resumedFromJobID, action string
 
 func delegateFinalizeFailedResult(run *runningJob, reason string, err error) delegateResult {
 	return delegateResult{
+		DelegateID:          run.rec.DelegateID,
+		StartedJobID:        run.rec.JobID,
 		JobID:               run.rec.JobID,
+		LatestJobID:         run.rec.JobID,
 		Type:                string(jobstore.JobDelegate),
 		Status:              jobstore.StatusFailed,
 		Reason:              reason,
@@ -1120,6 +1241,15 @@ func delegateStartFailed(err error) delegateResult {
 		Reason: "start_failed",
 		Err:    err,
 	}
+}
+
+func delegateStartFailedWithIDs(delegateID, jobID string, err error) delegateResult {
+	res := delegateStartFailed(err)
+	res.DelegateID = delegateID
+	res.StartedJobID = jobID
+	res.JobID = jobID
+	res.LatestJobID = jobID
+	return res
 }
 
 func parseSpawnedAgentID(spawned any) (string, error) {
@@ -1152,22 +1282,47 @@ func (s *Session) bridgeDelegateFinalization(jobID, childID string, sub *subagen
 }
 
 func (s *Session) attachDelegateJob(jm *jobManager, childID, task string, sub *subagent) (*runningJob, error) {
-	return s.attachDelegateJobWithID(jm, childID, task, sub, jobstore.NewJobID(), nil, false)
+	link := delegateJobLink{delegateID: jobstore.NewDelegateID(), generation: jobstore.NewDelegateGeneration(), create: true}
+	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobstore.NewJobID(), nil, false, nil, nil, link, nil)
 }
 
 func (s *Session) attachDelegateJobFromWatch(jm *jobManager, childID, task string, sub *subagent, resultSchema any, restore *jobstore.DelegateRestoreDescriptor, fromWatch bool) (*runningJob, error) {
-	return s.attachDelegateJobWithRestore(jm, childID, task, sub, jobstore.NewJobID(), resultSchema, fromWatch, nil, restore)
+	link := delegateJobLink{delegateID: jobstore.NewDelegateID(), generation: jobstore.NewDelegateGeneration(), create: true}
+	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobstore.NewJobID(), resultSchema, fromWatch, nil, restore, link, nil)
+}
+
+func (s *Session) attachDelegateJobFromWatchWithDelegate(jm *jobManager, childID, task string, sub *subagent, delegateID string, resultSchema any, restore *jobstore.DelegateRestoreDescriptor, fromWatch bool, watchProvenance *provenance.Causal) (*runningJob, error) {
+	link := delegateJobLink{delegateID: delegateID, generation: jobstore.NewDelegateGeneration()}
+	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobstore.NewJobID(), resultSchema, fromWatch, nil, restore, link, watchProvenance)
 }
 
 func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any, fromWatch bool) (*runningJob, error) {
-	return s.attachDelegateJobWithRestore(jm, childID, task, sub, jobID, resultSchema, fromWatch, nil, nil)
+	link := delegateJobLink{delegateID: jobstore.NewDelegateID(), generation: jobstore.NewDelegateGeneration(), create: true}
+	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobID, resultSchema, fromWatch, nil, nil, link, nil)
 }
 
 func (s *Session) attachDelegateJobWithPrepared(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any, fromWatch bool, prepared *preparedSubagentRun) (*runningJob, error) {
-	return s.attachDelegateJobWithRestore(jm, childID, task, sub, jobID, resultSchema, fromWatch, prepared, nil)
+	link := delegateJobLink{delegateID: jobstore.NewDelegateID(), generation: jobstore.NewDelegateGeneration(), create: true}
+	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobID, resultSchema, fromWatch, prepared, nil, link, nil)
+}
+
+func (s *Session) attachDelegateJobWithPreparedAndDelegate(jm *jobManager, childID, task string, sub *subagent, jobID, delegateID, delegateGeneration, agentType string, resultSchema any, fromWatch bool, prepared *preparedSubagentRun) (*runningJob, error) {
+	link := delegateJobLink{delegateID: delegateID, generation: delegateGeneration, agentType: agentType, create: true}
+	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobID, resultSchema, fromWatch, prepared, nil, link, nil)
 }
 
 func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any, fromWatch bool, prepared *preparedSubagentRun, previousRestore *jobstore.DelegateRestoreDescriptor) (*runningJob, error) {
+	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobID, resultSchema, fromWatch, prepared, previousRestore, delegateJobLink{}, nil)
+}
+
+type delegateJobLink struct {
+	delegateID string
+	generation string
+	agentType  string
+	create     bool
+}
+
+func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any, fromWatch bool, prepared *preparedSubagentRun, previousRestore *jobstore.DelegateRestoreDescriptor, link delegateJobLink, jobProvenance *provenance.Causal) (*runningJob, error) {
 	// Claim the tree-counter slot for this running delegate turn (spec §4). A
 	// fresh spawn already reserved in prepareSubagentRun — transfer that slot. A
 	// resume (prepared == nil) reserves a new slot here and surfaces
@@ -1198,6 +1353,20 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 	if previousRestore != nil {
 		restore = s.resumedDelegateRestoreDescriptor(jobID, childID, transcriptRef, resultSchema, previousRestore)
 	}
+	// The observer delegate's job provenance attributes the run to the watch
+	// delivery driving it. The driving watch (threaded from the watch send) wins;
+	// the parent's active provenance is next; the previous restore descriptor's
+	// provenance is the fallback only when neither is present — i.e. crash
+	// reconstruction, where active provenance is empty. This keeps a cross-watch
+	// resume attributed to the current watch instead of re-pinning the observer to
+	// the watch that first drove it.
+	if jobProvenance == nil {
+		jobProvenance = s.activeCausalProvenance()
+	}
+	if jobProvenance == nil && previousRestore != nil {
+		jobProvenance = previousRestore.Provenance
+	}
+	restore.Provenance = provenance.Clone(jobProvenance)
 	parentJobID := jm.currentParentJobID()
 	run := &runningJob{
 		rec: &jobstore.JobRecord{
@@ -1208,11 +1377,13 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 			OwnerSessionID:   s.id,
 			VisibleToSession: s.id,
 			ParentJobID:      parentJobID,
+			DelegateID:       link.delegateID,
 			TranscriptRef:    transcriptRef,
 			DelegateRestore:  restore,
 			StartedAt:        startedAt,
 			LastActivity:     &startedAt,
 			OutputPath:       outputPath,
+			Provenance:       provenance.Clone(jobProvenance),
 		},
 		output:         output,
 		signal:         func() { cancelDelegateSub(sub) },
@@ -1230,6 +1401,34 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 		treeSlot.release()
 		return nil, errJobManagerClosing
 	}
+	var startEvents []jobstore.Event
+	if link.delegateID != "" && link.generation != "" {
+		created := jobstore.Event{
+			Kind:       jobstore.EventDelegateCreated,
+			TS:         startedAt,
+			DelegateID: link.delegateID,
+			Delegate: &jobstore.DelegateEvent{
+				ChildSessionID:   childID,
+				TranscriptRef:    transcriptRef,
+				OwnerSessionID:   s.id,
+				VisibleSessionID: s.id,
+				AgentType:        link.agentType,
+				Generation:       link.generation,
+				Resumable:        true,
+			},
+		}
+		if !link.create {
+			created.Delegate = &jobstore.DelegateEvent{
+				ChildSessionID:   childID,
+				TranscriptRef:    transcriptRef,
+				OwnerSessionID:   s.id,
+				VisibleSessionID: s.id,
+				Generation:       link.generation,
+				Resumable:        true,
+			}
+		}
+		startEvents = append(startEvents, created)
+	}
 	started := jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
@@ -1239,12 +1438,15 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 		OwnerSessionID:   run.rec.OwnerSessionID,
 		VisibleToSession: run.rec.VisibleToSession,
 		ParentJobID:      run.rec.ParentJobID,
+		DelegateID:       run.rec.DelegateID,
 		StartedAt:        &startedAt,
 		OutputPath:       run.rec.OutputPath,
 		TranscriptRef:    run.rec.TranscriptRef,
 		DelegateRestore:  run.rec.DelegateRestore,
+		Provenance:       provenance.Clone(run.rec.Provenance),
 	}
-	if err := jm.appendEvent(started); err != nil {
+	startEvents = append(startEvents, started)
+	if err := jm.appendJobEvents(startEvents); err != nil {
 		jm.mu.Unlock()
 		_ = output.Close()
 		_ = os.Remove(outputPath)
@@ -1254,7 +1456,7 @@ func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task str
 	if err := jm.forwardLocked(started); err != nil {
 		_ = output.Close()
 		treeSlot.release()
-		if terminalErr := jm.appendStartForwardFailure(run.rec.JobID, output); terminalErr != nil {
+		if terminalErr := jm.appendStartForwardFailure(run.rec.JobID, output, run.rec.Provenance); terminalErr != nil {
 			// Double-fault: the start forward failed AND the durable
 			// forward_failed terminal could not be appended. Unlike the shell
 			// path, there is no delegate analog to finalizeShellUntilDurable to
@@ -1360,6 +1562,7 @@ func (s *Session) resumedDelegateRestoreDescriptor(jobID, childID, transcriptRef
 		ResultSchema:        cloneDelegateResultSchema(previous.ResultSchema),
 		ExplicitToolGrants:  append([]string(nil), previous.ExplicitToolGrants...),
 		DelegationAllowance: previous.DelegationAllowance,
+		Provenance:          provenance.Clone(previous.Provenance),
 	}
 	if resultSchema != nil {
 		desc.ResultSchema = cloneDelegateResultSchema(resultSchema)
@@ -1415,6 +1618,7 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 			prose = sub.err.Error()
 		}
 		childSess := sub.sess
+		runProvenance := provenance.Clone(sub.runProvenance)
 		sub.mu.Unlock()
 
 		var structured any
@@ -1424,6 +1628,13 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 		} else if delegateResultSchema(run.rec) != nil {
 			structuredCaptureFailed = true
 		}
+		finalProvenance := provenance.Union(run.rec.Provenance, runProvenance)
+		jm.mu.Lock()
+		if jm.running[run.rec.JobID] == run {
+			run.rec.Provenance = provenance.Clone(finalProvenance)
+		}
+		jm.mu.Unlock()
+		outputProvenance := provenance.Clone(finalProvenance)
 
 		output := delegateOutputBytes(prose)
 		for {
@@ -1443,7 +1654,7 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 			}
 			if outputWritten >= len(output) {
 				if len(output) > 0 {
-					if _, err := appendDelegateOutput(jm, run, nil); err != nil {
+					if _, err := appendDelegateOutput(jm, run, nil, outputProvenance); err != nil {
 						return "", "", nil, err
 					}
 				}
@@ -1452,7 +1663,7 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 				jm.mu.Unlock()
 				break
 			}
-			n, err := appendDelegateOutput(jm, run, output[outputWritten:])
+			n, err := appendDelegateOutput(jm, run, output[outputWritten:], outputProvenance)
 			if n > 0 {
 				jm.mu.Lock()
 				run.delegateOutputWritten += n
@@ -1542,11 +1753,11 @@ func delegateOutputBytes(prose string) []byte {
 	return []byte(prose)
 }
 
-func appendDelegateOutput(jm *jobManager, run *runningJob, b []byte) (int, error) {
+func appendDelegateOutput(jm *jobManager, run *runningJob, b []byte, p *provenance.Causal) (int, error) {
 	if run == nil || run.output == nil {
 		return 0, nil
 	}
-	return jm.appendJobOutput(run.rec.JobID, run.output, b)
+	return jm.appendJobOutputWithProvenance(run.rec.JobID, run.output, b, p)
 }
 
 func delegateTerminalStatus(jm *jobManager, run *runningJob, status SubagentStatus) (jobstore.Status, string) {
@@ -1575,7 +1786,10 @@ func delegateTerminalResult(jm *jobManager, run *runningJob) delegateResult {
 	rec, err := findJobRecord(jm, run.rec.JobID)
 	if err != nil {
 		return delegateResult{
+			DelegateID:    run.rec.DelegateID,
+			StartedJobID:  run.rec.JobID,
 			JobID:         run.rec.JobID,
+			LatestJobID:   run.rec.JobID,
 			Type:          string(jobstore.JobDelegate),
 			Status:        jobstore.StatusFailed,
 			Reason:        "read_failed",
@@ -1597,7 +1811,10 @@ func delegateTerminalResult(jm *jobManager, run *runningJob) delegateResult {
 	jm.mu.Unlock()
 	valid := structuredValid != nil && *structuredValid
 	return delegateResult{
+		DelegateID:               rec.DelegateID,
+		StartedJobID:             rec.JobID,
 		JobID:                    rec.JobID,
+		LatestJobID:              rec.JobID,
 		Type:                     string(rec.Type),
 		Status:                   rec.Status,
 		Reason:                   rec.Reason,

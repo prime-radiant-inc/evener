@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/provenance"
 )
 
 // Events returns the session's receive-only channel of SessionEvent values.
@@ -43,12 +44,20 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 // the model is informed. Hook-CONFIGURATION diagnostics must NOT run the
 // Notification hook and instead go through emitDiagnosticWarning.
 func (s *Session) emit(kind events.EventKind, data events.EventData) {
+	s.emitWithProvenance(kind, data, s.activeCausalProvenance())
+}
+
+// emitWithProvenance is emit with an explicit causal provenance stamp. emit
+// passes the session's active provenance; callers with a more specific origin
+// (a watch delivery) pass it directly. The Notification-hook decision and the
+// jobManager fan-out are identical to emit.
+func (s *Session) emitWithProvenance(kind events.EventKind, data events.EventData, p *provenance.Causal) {
 	if s == nil || s.events == nil {
 		return
 	}
-	data = s.sendEvent(kind, data)
+	data, ev := s.sendEvent(kind, data, p)
 	if s.jobManager != nil {
-		s.jobManager.onSessionEvent(kind, data)
+		s.jobManager.onSessionEvent(ev)
 	}
 	if kind == events.EventWarning {
 		s.fireNotificationHook(warningHookMessage(data))
@@ -66,16 +75,18 @@ func (s *Session) emitDiagnosticWarning(data events.WarningData) {
 	if s == nil || s.events == nil {
 		return
 	}
-	s.sendEvent(events.EventWarning, data)
+	s.sendEvent(events.EventWarning, data, s.activeCausalProvenance())
 }
 
-// sendEvent enriches and delivers data on the event stream and returns the
-// enriched payload. It performs no side effects beyond the send; the Notification
-// hook decision belongs to the caller.
-func (s *Session) sendEvent(kind events.EventKind, data events.EventData) events.EventData {
+// sendEvent enriches and delivers data on the event stream, stamping the given
+// causal provenance onto the envelope, and returns the enriched payload alongside
+// the delivered envelope. It performs no side effects beyond the send; the
+// Notification hook decision belongs to the caller.
+func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent) {
 	data = enrichDiagnosticData(kind, data)
 	ev := events.New(data)
 	ev.SessionID = s.id
+	ev.Provenance = provenance.Clone(p)
 	// eventsMu makes the send mutually exclusive with Close()'s close(s.events).
 	// emit is called from caller-owned goroutines the session cannot join
 	// (Enqueue/DrainAsSteer, the ProcessInput loop), so the lock — not a recover()
@@ -90,7 +101,7 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData) events
 		}
 	}
 	s.eventsMu.RUnlock()
-	return data
+	return data, ev
 }
 
 // fireNotificationHook runs the Notification hook for a genuine, model-facing

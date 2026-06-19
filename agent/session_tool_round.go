@@ -197,6 +197,7 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 				Content:        r.Output,
 				IsError:        r.IsError,
 				DurationMS:     r.DurationMS,
+				ToolState:      r.ToolState,
 				ImageData:      r.ImageData,
 				ImageMediaType: r.ImageMediaType,
 			},
@@ -330,7 +331,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 
 	// Inject any queued steering messages before the next model call.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
-		for _, msg := range s.drainSteering() {
+		for _, msg := range s.drainSteeringForTurn() {
 			s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 			s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		}

@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -1743,7 +1744,7 @@ func TestNestedTerminalForwardFailureRetriesSameGeneration(t *testing.T) {
 		t.Fatalf("new child jobManager: %v", err)
 	}
 	finishedEvents := 0
-	childJM.emit = func(kind events.EventKind, _ events.EventData) {
+	childJM.emit = func(kind events.EventKind, _ events.EventData, _ *provenance.Causal) {
 		if kind == events.EventJobFinished {
 			finishedEvents++
 		}
@@ -1815,6 +1816,97 @@ func TestNestedTerminalForwardFailureRetriesSameGeneration(t *testing.T) {
 	}
 	if parentRec.TerminalGen != childRec.TerminalGen {
 		t.Fatalf("parent TerminalGen = %q, want original child generation %q", parentRec.TerminalGen, childRec.TerminalGen)
+	}
+}
+
+func TestKeptSyncNestedTerminalForwardFailureRetriesSameGeneration(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	finishedEvents := 0
+	childJM.emit = func(kind events.EventKind, _ events.EventData, _ *provenance.Causal) {
+		if kind == events.EventJobFinished {
+			finishedEvents++
+		}
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+	rec, err := childJM.createShell(createShellOpts{Command: "true", Description: "nested"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	callbackCalls := 0
+	childJM.mu.Lock()
+	run := childJM.running[rec.JobID]
+	if run == nil {
+		childJM.mu.Unlock()
+		t.Fatalf("running child job %q not found", rec.JobID)
+	}
+	run.afterDurableFinish = func() { callbackCalls++ }
+	childJM.mu.Unlock()
+
+	forwardErr := errors.New("forward terminal failed")
+	childJM.forward = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobFinished {
+			return forwardErr
+		}
+		return parentJM.forwardEvent(e)
+	}
+	code := 0
+	if err := childJM.finalizeKeptSync(run, jobstore.StatusCompleted, "exit_zero", &code); !errors.Is(err, forwardErr) {
+		t.Fatalf("finalizeKeptSync error = %v, want forward terminal failure", err)
+	}
+	childRecords, err := childJM.store.Load()
+	if err != nil {
+		t.Fatalf("load child store: %v", err)
+	}
+	childRec := childRecords[rec.JobID]
+	if childRec == nil || childRec.TerminalGen == "" {
+		t.Fatalf("child record after failed forward = %+v, want terminal generation", childRec)
+	}
+	if callbackCalls != 0 {
+		t.Fatalf("afterDurableFinish calls after failed forward = %d, want 0", callbackCalls)
+	}
+	if finishedEvents != 0 {
+		t.Fatalf("finished events after failed forward = %d, want 0", finishedEvents)
+	}
+
+	childJM.forward = parentJM.forwardEvent
+	if err := childJM.finalizeKeptSync(run, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("retry finalizeKeptSync: %v", err)
+	}
+	if callbackCalls != 1 {
+		t.Fatalf("afterDurableFinish calls after retry = %d, want 1", callbackCalls)
+	}
+	if finishedEvents != 1 {
+		t.Fatalf("finished events after retry = %d, want 1", finishedEvents)
+	}
+	parentRecords, err := parentJM.store.Load()
+	if err != nil {
+		t.Fatalf("load parent store: %v", err)
+	}
+	parentRec := parentRecords[rec.JobID]
+	if parentRec == nil || parentRec.Status != jobstore.StatusCompleted {
+		t.Fatalf("parent record after retry = %+v, want completed forwarded record", parentRec)
+	}
+	if parentRec.TerminalGen != childRec.TerminalGen {
+		t.Fatalf("parent TerminalGen = %q, want original child generation %q", parentRec.TerminalGen, childRec.TerminalGen)
+	}
+	childJM.mu.Lock()
+	_, running := childJM.running[rec.JobID]
+	childJM.mu.Unlock()
+	if running {
+		t.Fatal("kept-sync retry left child job running")
 	}
 }
 
@@ -2047,6 +2139,64 @@ func TestRecoverForwardedTerminalReconstructsMissingParentStart(t *testing.T) {
 		parentRec.OwnerSessionID != "CHILD" || parentRec.VisibleToSession != "PARENT" ||
 		parentRec.ParentJobID != "job_PARENTDELEGATE" || parentRec.OutputPath != "/tmp/nested.log" {
 		t.Fatalf("parent recovered record = %+v, want started metadata plus completed terminal state", parentRec)
+	}
+}
+
+func TestRecoverForwardedTerminalCarriesProvenanceOnReconstructedEvents(t *testing.T) {
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() { _ = childJM.store.Close() })
+	childJM.parentJobID = "job_PARENTDELEGATE"
+
+	var forwarded []jobstore.Event
+	childJM.forward = func(e jobstore.Event) error {
+		forwarded = append(forwarded, e)
+		return nil
+	}
+
+	startedAt := time.Unix(4800, 0).UTC()
+	endedAt := startedAt.Add(time.Second)
+	jobID := jobstore.NewJobID()
+	if err := childJM.store.Append(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            jobID,
+		Type:             jobstore.JobShell,
+		Command:          "printf nested",
+		Description:      "nested terminal recovery with provenance",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: "CHILD",
+		ParentJobID:      "job_PARENTDELEGATE",
+		StartedAt:        &startedAt,
+	}); err != nil {
+		t.Fatalf("append child started: %v", err)
+	}
+	p := provenance.WithWatch(nil, "watch_recover", "wg_1", "wd_1", "PARENT", "job_PARENTDELEGATE")
+	if err := childJM.store.Append(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          endedAt,
+		JobID:       jobID,
+		Status:      jobstore.StatusCompleted,
+		Reason:      "exit_zero",
+		EndedAt:     &endedAt,
+		TerminalGen: jobstore.NewTerminalGeneration(),
+		Provenance:  p,
+	}); err != nil {
+		t.Fatalf("append child finished: %v", err)
+	}
+
+	if err := childJM.recoverForwardedTerminalEvents(); err != nil {
+		t.Fatalf("recoverForwardedTerminalEvents: %v", err)
+	}
+	if len(forwarded) != 2 {
+		t.Fatalf("forwarded events = %d, want started and finished", len(forwarded))
+	}
+	for _, e := range forwarded {
+		if !provenance.ContainsWatch(e.Provenance, "watch_recover", "wg_1") {
+			t.Fatalf("%s provenance = %+v, want recovered watch key", e.Kind, e.Provenance)
+		}
 	}
 }
 

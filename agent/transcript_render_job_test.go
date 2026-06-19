@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/llm"
 )
 
 // renderToolCardForResult builds a one-round transcript (assistant call + paired
@@ -16,6 +19,16 @@ func renderToolCardForResult(toolName, callID string, content any) string {
 	entries := []transcript.Entry{
 		toolCallEntry(call(callID, toolName, `{}`)),
 		toolResultEntry(result(callID, toolName, content, false)),
+	}
+	return renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+}
+
+func renderToolCardForStateResult(toolName, callID string, content any, toolState []byte) string {
+	res := result(callID, toolName, content, false)
+	res.ToolState = toolState
+	entries := []transcript.Entry{
+		toolCallEntry(call(callID, toolName, `{}`)),
+		toolResultEntry(res),
 	}
 	return renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
 }
@@ -125,6 +138,131 @@ func TestRenderMarkdown_JobSendMessageResult(t *testing.T) {
 	}
 	if !strings.Contains(out, "context deadline exceeded") {
 		t.Errorf("expected the error output to be shown, got:\n%s", out)
+	}
+}
+
+func TestRenderMarkdown_DelegateSendResult(t *testing.T) {
+	childRef := "local:01DELEGATESEND000000"
+	body, err := json.Marshal(map[string]any{
+		"delegate_id":           "dlg_01J",
+		"started_job_id":        "job_new",
+		"current_job_id":        "job_new",
+		"latest_job_id":         "job_new",
+		"type":                  "delegate",
+		"status":                "completed",
+		"running_in_background": false,
+		"timed_out":             false,
+		"action":                "started",
+		"transcript_ref":        childRef,
+		"output":                "done",
+		"truncated":             false,
+	})
+	if err != nil {
+		t.Fatalf("marshal delegate_send result: %v", err)
+	}
+
+	out := renderToolCardForResult("delegate_send", "call_send", string(body))
+
+	for _, want := range []string{
+		"job_id=job_new",
+		"status=completed",
+		"transcript_ref=" + childRef,
+		"delegate_id=dlg_01J",
+		"started_job_id=job_new",
+		"current_job_id=job_new",
+		"action=started",
+		"done",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("delegate_send render missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderMarkdown_DelegateSendStateResult(t *testing.T) {
+	c := llm.NewClient()
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("first complete") },
+	}}
+	c.Register(adapter)
+	s := newDelegateTestSession(t, c)
+	first := s.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	adapter.mu.Lock()
+	adapter.steps = append(adapter.steps, func(req llm.Request) llm.Response {
+		return communicateWithDefaultOutput("second complete")
+	})
+	adapter.mu.Unlock()
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "send",
+		Name:      "delegate_send",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"to":%q,"message":"run again","on_idle":"start","max_wait_ms":5000}`, first.DelegateID)),
+	})
+	if res.IsError {
+		t.Fatalf("delegate_send returned error: %s", res.Output)
+	}
+	if len(res.ToolState) == 0 {
+		t.Fatalf("delegate_send missing tool_state; output=%s", res.Output)
+	}
+	if _, ok := decodeJobResult(res.Output); ok {
+		t.Fatalf("delegate_send output unexpectedly decodes as lifecycle JSON; regression requires tool_state: %s", res.Output)
+	}
+
+	out := renderToolCardForStateResult("delegate_send", "send", res.Output, res.ToolState)
+	for _, want := range []string{
+		"job_id=",
+		"status=completed",
+		"transcript_ref=" + first.TranscriptRef,
+		"delegate_id=" + first.DelegateID,
+		"action=started",
+		"second complete",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("delegate_send state render missing %q:\n%s", want, out)
+		}
+	}
+
+	entries := []transcript.Entry{
+		toolCallEntry(call("send", "delegate_send", `{}`)),
+		toolResultEntry(&llm.ToolResultData{
+			ToolCallID: "send",
+			Name:       "delegate_send",
+			Content:    res.Output,
+			ToolState:  res.ToolState,
+		}),
+	}
+	outline, _, _ := renderOutline(entries, 0, len(entries)-1)
+	want := "delegate_send[status=completed child=" + first.TranscriptRef + "]"
+	if !strings.Contains(outline, want) {
+		t.Fatalf("outline missing delegate_send lifecycle bracket %q:\n%s", want, outline)
+	}
+}
+
+func TestRenderMarkdown_UnpairedDelegateSendUsesToolState(t *testing.T) {
+	state := []byte(`{"delegate_id":"dlg_unpaired","current_job_id":"job_unpaired","type":"delegate","status":"completed","running_in_background":false,"action":"started","transcript_ref":"local:01UNPAIRED","output":"done","truncated":false}`)
+	res := result("send", "delegate_send", "done\n[delegate footer without lifecycle JSON]", false)
+	res.ToolState = state
+	entries := []transcript.Entry{toolResultEntry(res)}
+
+	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+	for _, want := range []string{
+		"[call not shown] `delegate_send`",
+		"job_id=job_unpaired",
+		"status=completed",
+		"transcript_ref=local:01UNPAIRED",
+		"delegate_id=dlg_unpaired",
+		"done",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("unpaired delegate_send render missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -344,6 +482,24 @@ func TestDecodeJobResult(t *testing.T) {
 			t.Errorf("subset %+v disagrees with full decode %+v", info, full)
 		}
 	})
+
+	t.Run("delegate_send ids decode to concrete job pivot", func(t *testing.T) {
+		body := `{"delegate_id":"dlg_decode","started_job_id":"job_started","current_job_id":"job_current","latest_job_id":"job_current","type":"delegate","status":"running","transcript_ref":"local:01D"}`
+		r, ok := decodeJobResult(body)
+		if !ok {
+			t.Fatalf("expected decode to succeed for delegate_send body")
+		}
+		if r.effectiveJobID() != "job_current" {
+			t.Fatalf("effectiveJobID = %q, want job_current", r.effectiveJobID())
+		}
+		info, ok := extractJobResult(body)
+		if !ok {
+			t.Fatalf("extractJobResult should succeed")
+		}
+		if info.jobID != "job_current" || info.transcriptRef != "local:01D" {
+			t.Fatalf("extractJobResult = %+v, want job_current/local:01D", info)
+		}
+	})
 }
 
 func TestRenderOutline_JobLifecycleBrackets(t *testing.T) {
@@ -362,6 +518,22 @@ func TestRenderOutline_JobLifecycleBrackets(t *testing.T) {
 	}
 	if strings.Contains(out, "success=") {
 		t.Fatalf("outline job bracket must not include legacy success field:\n%s", out)
+	}
+}
+
+func TestRenderOutline_DelegateSendLifecycleBrackets(t *testing.T) {
+	childRef := "local:01OUTLINEDELEGATESEND"
+	body := `{"delegate_id":"dlg_outline","started_job_id":"job_started","current_job_id":"job_started","latest_job_id":"job_started","type":"delegate","status":"running","running_in_background":true,"timed_out":false,"action":"started","transcript_ref":"` + childRef + `","truncated":false}`
+	entries := []transcript.Entry{
+		toolCallEntry(call("call_send", "delegate_send", `{}`)),
+		toolResultEntry(result("call_send", "delegate_send", body, false)),
+	}
+
+	out, _, _ := renderOutline(entries, 0, len(entries)-1)
+
+	want := "delegate_send[status=running child=" + childRef + "]"
+	if !strings.Contains(out, want) {
+		t.Fatalf("outline missing delegate_send lifecycle bracket %q:\n%s", want, out)
 	}
 }
 

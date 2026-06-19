@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
@@ -274,6 +276,112 @@ func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 	}
 }
 
+func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
+	adapter := &shutdownBlockingAdapter{
+		entered:   make(chan struct{}, 1),
+		cancelled: make(chan struct{}, 1),
+		release:   make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	releaseAdapter := func() {
+		releaseOnce.Do(func() {
+			close(adapter.release)
+		})
+	}
+	t.Cleanup(releaseAdapter)
+
+	oldLoadClient := serveLoadClient
+	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+		client := llm.NewClient()
+		client.Register(adapter)
+		cfg := providercfg.Config{
+			Default: "openai",
+			Instances: []providercfg.InstanceConfig{
+				{Name: "openai", Type: "openai"},
+			},
+		}
+		return client, cfg, true, nil
+	}
+	t.Cleanup(func() {
+		serveLoadClient = oldLoadClient
+	})
+
+	runDir := t.TempDir()
+	args := []string{
+		"--model", "openai/gpt-5.2",
+		"--addr", "127.0.0.1:0",
+		"--dir", t.TempDir(),
+		"--state-dir", t.TempDir(),
+		"--run-dir", runDir,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runServe(args)
+	}()
+
+	entry := waitForServeTestRendezvous(t, runDir)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
+	if err != nil {
+		t.Fatalf("DialWebSocket: %v", err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(context.WithoutCancel(ctx))
+	defer client.Close()
+
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "serve-shutdown-test", Version: "test"},
+	}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
+	if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
+		Ref:   ref,
+		Input: []appwire.InputItem{{Type: "text", Text: "stay busy until shutdown"}},
+	}); err != nil {
+		t.Fatalf("TurnStart: %v", err)
+	}
+
+	select {
+	case <-adapter.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fake adapter was not called")
+	}
+
+	resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
+	if err != nil {
+		t.Fatalf("post /shutdown: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case <-adapter.cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("in-flight input was not cancelled by shutdown")
+	}
+
+	select {
+	case err := <-done:
+		t.Fatalf("runServe returned before in-flight input exited: %v", err)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	releaseAdapter()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runServe: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runServe did not exit after in-flight input was released")
+	}
+}
+
 func waitForServeTestRendezvous(t *testing.T, runDir string) rendezvous.Entry {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -358,4 +466,36 @@ func (a serveLoggingAdapter) Complete(_ context.Context, req llm.Request) (llm.R
 
 func (a serveLoggingAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	return nil, io.EOF
+}
+
+type shutdownBlockingAdapter struct {
+	entered   chan struct{}
+	cancelled chan struct{}
+	release   chan struct{}
+}
+
+func (a *shutdownBlockingAdapter) Name() string { return "openai" }
+
+func (a *shutdownBlockingAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	select {
+	case a.entered <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	select {
+	case a.cancelled <- struct{}{}:
+	default:
+	}
+	<-a.release
+	return llm.Response{
+		Provider: req.Provider,
+		Model:    req.Model,
+		Message:  llm.Assistant("ok"),
+		Finish:   llm.FinishReason{Reason: llm.FinishReasonStop},
+		Usage:    llm.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+	}, ctx.Err()
+}
+
+func (a *shutdownBlockingAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
 }

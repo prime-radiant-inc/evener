@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"primeradiant.com/serf/agent/provenance"
 )
 
 func ev(kind EventKind, seq int64, jobID string, mut func(*Event)) Event {
@@ -88,6 +90,27 @@ func TestFoldAppliesOutputPathFromStarted(t *testing.T) {
 	}
 }
 
+func TestFoldAppliesDelegateIDFromStarted(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.OwnerSessionID = "S1"
+			e.VisibleToSession = "S1"
+			e.StartedAt = &start
+		}),
+	}
+
+	r := Fold(events)["job_A"]
+	if r == nil {
+		t.Fatal("job_A missing")
+	}
+	if r.DelegateID != "dlg_A" {
+		t.Fatalf("delegate_id = %q, want dlg_A", r.DelegateID)
+	}
+}
+
 func TestFoldDelegateDescriptorSchemaAndStructuredReason(t *testing.T) {
 	valid := false
 	events := []Event{
@@ -118,6 +141,345 @@ func TestFoldDelegateDescriptorSchemaAndStructuredReason(t *testing.T) {
 	}
 	if rec.StructuredResultReason != "schema_result_missing" {
 		t.Fatalf("reason = %q", rec.StructuredResultReason)
+	}
+}
+
+func TestFoldDelegatesLinksJobsAndProjectsCurrentLatest(t *testing.T) {
+	start1 := time.Unix(1, 0).UTC()
+	end1 := time.Unix(2, 0).UTC()
+	start2 := time.Unix(3, 0).UTC()
+	events := []Event{
+		ev(EventDelegateCreated, 1, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{
+				ChildSessionID:   "child_A",
+				TranscriptRef:    "local:child_A",
+				OwnerSessionID:   "owner",
+				VisibleSessionID: "owner",
+				AgentType:        "default",
+				Generation:       "dg_1",
+				Resumable:        true,
+			}
+		}),
+		ev(EventJobStarted, 2, "job_1", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.OwnerSessionID = "owner"
+			e.VisibleToSession = "owner"
+			e.TranscriptRef = "local:child_A"
+			e.StartedAt = &start1
+		}),
+		ev(EventJobFinished, 3, "job_1", func(e *Event) {
+			e.Status = StatusCompleted
+			e.EndedAt = &end1
+		}),
+		ev(EventJobStarted, 4, "job_2", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.OwnerSessionID = "owner"
+			e.VisibleToSession = "owner"
+			e.TranscriptRef = "local:child_A"
+			e.StartedAt = &start2
+		}),
+	}
+
+	delegates := FoldDelegates(events)
+	d := delegates["dlg_A"]
+	if d == nil {
+		t.Fatal("delegate dlg_A missing")
+	}
+	if d.CurrentJobID != "job_2" || d.LatestJobID != "job_2" || d.Status != DelegateRunning {
+		t.Fatalf("delegate projection = %+v, want current/latest job_2 running", d)
+	}
+	if d.ChildSessionID != "child_A" || d.TranscriptRef != "local:child_A" || !d.Resumable {
+		t.Fatalf("delegate identity = %+v, want durable child metadata", d)
+	}
+}
+
+func TestFoldDelegatesProjectsOwnerFromJobStarted(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	events := []Event{
+		ev(EventJobStarted, 1, "job_child_delegate", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_child"
+			e.OwnerSessionID = "CHILD"
+			e.VisibleToSession = "ROOT"
+			e.TranscriptRef = "local:child"
+			e.StartedAt = &start
+		}),
+	}
+
+	delegates := FoldDelegates(events)
+	d := delegates["dlg_child"]
+	if d == nil {
+		t.Fatal("delegate dlg_child missing")
+	}
+	if d.OwnerSessionID != "CHILD" || d.VisibleSessionID != "ROOT" {
+		t.Fatalf("delegate ownership = owner %q visible %q, want CHILD/ROOT", d.OwnerSessionID, d.VisibleSessionID)
+	}
+}
+
+func TestFoldDelegatesAppliesSessionAssignedResumability(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	end := time.Unix(2, 0).UTC()
+	resumable := false
+	events := []Event{
+		ev(EventDelegateCreated, 1, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{
+				ChildSessionID: "child_A",
+				TranscriptRef:  "local:child_A",
+				Generation:     "dg_1",
+				Resumable:      true,
+			}
+		}),
+		ev(EventJobStarted, 2, "job_1", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.TranscriptRef = "local:child_A"
+			e.StartedAt = &start
+		}),
+		ev(EventJobSessionAssigned, 3, "job_1", func(e *Event) {
+			e.TranscriptRef = "local:child_A"
+			e.Resumable = &resumable
+			e.NotResumableWhy = "missing checkpoint"
+		}),
+		ev(EventJobFinished, 4, "job_1", func(e *Event) {
+			e.Status = StatusCompleted
+			e.EndedAt = &end
+		}),
+	}
+
+	d := FoldDelegates(events)["dlg_A"]
+	if d == nil {
+		t.Fatal("delegate dlg_A missing")
+	}
+	if d.Resumable {
+		t.Fatalf("delegate resumable = true, want false: %+v", d)
+	}
+	if d.Status != DelegateNotResumable {
+		t.Fatalf("delegate status = %q, want %q", d.Status, DelegateNotResumable)
+	}
+	if d.NotResumableWhy != "missing checkpoint" {
+		t.Fatalf("delegate not_resumable_reason = %q, want missing checkpoint", d.NotResumableWhy)
+	}
+}
+
+func TestFoldDelegatesClosesStopGateForCurrentJob(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	end := time.Unix(2, 0).UTC()
+	events := []Event{
+		ev(EventDelegateCreated, 1, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{ChildSessionID: "child_A", TranscriptRef: "local:child_A", Generation: "dg_1", Resumable: true}
+		}),
+		ev(EventJobStarted, 2, "job_1", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.StartedAt = &start
+		}),
+		ev(EventJobFinished, 3, "job_1", func(e *Event) {
+			e.Status = StatusCancelled
+			e.Reason = "stopped_by_parent"
+			e.EndedAt = &end
+		}),
+		ev(EventDelegateStopGateClosed, 4, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{Generation: "dg_2", StopJobID: "job_1"}
+		}),
+	}
+
+	d := FoldDelegates(events)["dlg_A"]
+	if d == nil {
+		t.Fatal("delegate dlg_A missing")
+	}
+	if !d.StopGateClosed || d.Generation != "dg_2" || d.CurrentJobID != "" || d.LatestJobID != "job_1" || d.Status != DelegateStopped {
+		t.Fatalf("delegate after stop = %+v, want closed gate with latest job_1 stopped and no current job", d)
+	}
+}
+
+func TestFoldDelegatesIgnoresStaleStopGateAfterNewerStart(t *testing.T) {
+	start1 := time.Unix(1, 0).UTC()
+	end1 := time.Unix(2, 0).UTC()
+	start2 := time.Unix(3, 0).UTC()
+	events := []Event{
+		ev(EventDelegateCreated, 1, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{ChildSessionID: "child_A", TranscriptRef: "local:child_A", Generation: "dg_1", Resumable: true}
+		}),
+		ev(EventJobStarted, 2, "job_1", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.StartedAt = &start1
+		}),
+		ev(EventJobFinished, 3, "job_1", func(e *Event) {
+			e.Status = StatusCancelled
+			e.Reason = "stopped_by_parent"
+			e.EndedAt = &end1
+		}),
+		ev(EventDelegateCreated, 4, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{ChildSessionID: "child_A", TranscriptRef: "local:child_A", Generation: "dg_3", Resumable: true}
+		}),
+		ev(EventJobStarted, 5, "job_2", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.StartedAt = &start2
+		}),
+		ev(EventDelegateStopGateClosed, 6, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{Generation: "dg_stale", StopJobID: "job_1"}
+		}),
+	}
+
+	d := FoldDelegates(events)["dlg_A"]
+	if d == nil {
+		t.Fatal("delegate dlg_A missing")
+	}
+	if d.StopGateClosed || d.Generation != "dg_3" || d.CurrentJobID != "job_2" || d.Status != DelegateRunning {
+		t.Fatalf("delegate after stale gate = %+v, want job_2 running with generation dg_3", d)
+	}
+}
+
+func TestFoldDelegatesIgnoresFinishedNonCurrentJob(t *testing.T) {
+	start1 := time.Unix(1, 0).UTC()
+	start2 := time.Unix(2, 0).UTC()
+	end1 := time.Unix(3, 0).UTC()
+	events := []Event{
+		ev(EventDelegateCreated, 1, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{ChildSessionID: "child_A", TranscriptRef: "local:child_A", Generation: "dg_1", Resumable: true}
+		}),
+		ev(EventJobStarted, 2, "job_1", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.StartedAt = &start1
+		}),
+		ev(EventJobStarted, 3, "job_2", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.StartedAt = &start2
+		}),
+		ev(EventJobFinished, 4, "job_1", func(e *Event) {
+			e.Status = StatusCompleted
+			e.EndedAt = &end1
+		}),
+	}
+
+	d := FoldDelegates(events)["dlg_A"]
+	if d == nil {
+		t.Fatal("delegate dlg_A missing")
+	}
+	if d.CurrentJobID != "job_2" || d.LatestJobID != "job_2" || d.Status != DelegateRunning {
+		t.Fatalf("delegate after stale finish = %+v, want current/latest job_2 running", d)
+	}
+}
+
+func TestFoldWatchesUpsertsByConfigHashAndClearsByID(t *testing.T) {
+	events := []Event{
+		ev(EventWatchRegistered, 1, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{
+				Generation:       "wg_1",
+				OwnerSessionID:   "owner",
+				VisibleSessionID: "owner",
+				Target:           "job_1",
+				SendTo:           "dlg_obs",
+				ConfigHash:       "hash_A",
+				Condition:        "events: [assistant.message]",
+			}
+		}),
+		ev(EventWatchRegistered, 2, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{
+				Generation:       "wg_1",
+				OwnerSessionID:   "owner",
+				VisibleSessionID: "owner",
+				Target:           "job_1",
+				SendTo:           "dlg_obs",
+				ConfigHash:       "hash_A",
+				Condition:        "events: [assistant.message]",
+			}
+		}),
+		ev(EventWatchCleared, 3, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{Generation: "wg_1", EndReason: "cleared"}
+		}),
+	}
+
+	watches := FoldWatches(events)
+	w := watches["watch_A"]
+	if w == nil {
+		t.Fatal("watch_A missing")
+	}
+	if w.Active || w.EndReason != "cleared" || w.Target != "job_1" || w.SendTo != "dlg_obs" {
+		t.Fatalf("watch = %+v, want inactive cleared registry row", w)
+	}
+}
+
+func TestFoldWatchesRejectsStaleClearGeneration(t *testing.T) {
+	events := []Event{
+		ev(EventWatchRegistered, 1, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{Generation: "wg_2", OwnerSessionID: "owner", VisibleSessionID: "owner", Target: "job_1", ConfigHash: "hash_2"}
+		}),
+		ev(EventWatchCleared, 2, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{Generation: "wg_1", EndReason: "cleared"}
+		}),
+	}
+
+	w := FoldWatches(events)["watch_A"]
+	if w == nil || !w.Active || w.Generation != "wg_2" {
+		t.Fatalf("watch = %+v, want stale clear ignored", w)
+	}
+}
+
+func TestFoldWatchesRejectsInvalidRegistrationAndEmptyClearGeneration(t *testing.T) {
+	events := []Event{
+		ev(EventWatchRegistered, 1, "", func(e *Event) {
+			e.WatchID = "watch_missing_target"
+			e.Watch = &WatchEvent{Generation: "wg_1", OwnerSessionID: "owner", VisibleSessionID: "owner", ConfigHash: "hash_1"}
+		}),
+		ev(EventWatchRegistered, 2, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{Generation: "wg_1", OwnerSessionID: "owner", VisibleSessionID: "owner", Target: "job_1", ConfigHash: "hash_1"}
+		}),
+		ev(EventWatchCleared, 3, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{EndReason: "cleared"}
+		}),
+	}
+
+	watches := FoldWatches(events)
+	if watches["watch_missing_target"] != nil {
+		t.Fatalf("invalid registration folded into active registry: %+v", watches["watch_missing_target"])
+	}
+	w := watches["watch_A"]
+	if w == nil || !w.Active {
+		t.Fatalf("watch_A = %+v, want active because empty clear generation is ignored", w)
+	}
+}
+
+func TestFoldWatchesPreservesFirstClearReason(t *testing.T) {
+	events := []Event{
+		ev(EventWatchRegistered, 1, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{Generation: "wg_1", OwnerSessionID: "owner", VisibleSessionID: "owner", Target: "job_1", ConfigHash: "hash_1"}
+		}),
+		ev(EventWatchCleared, 2, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{Generation: "wg_1", EndReason: "auto_removed_terminal"}
+		}),
+		ev(EventWatchCleared, 3, "", func(e *Event) {
+			e.WatchID = "watch_A"
+			e.Watch = &WatchEvent{Generation: "wg_1", EndReason: "cleared"}
+		}),
+	}
+
+	w := FoldWatches(events)["watch_A"]
+	if w == nil || w.Active || w.EndReason != "auto_removed_terminal" {
+		t.Fatalf("watch = %+v, want first clear reason preserved", w)
 	}
 }
 
@@ -477,5 +839,79 @@ func TestFoldIgnoresNotificationsForDiscardedTerminalGeneration(t *testing.T) {
 	}
 	if r.NotifyState != NotifyNotArmed {
 		t.Errorf("notify state = %q, want not_armed", r.NotifyState)
+	}
+}
+
+func TestFoldStoresJobProvenanceFromStartedEvent(t *testing.T) {
+	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", "session_1", "caller")
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobDelegate
+			e.OwnerSessionID = "session_1"
+			e.VisibleToSession = "session_1"
+			e.Provenance = p
+		}),
+	}
+
+	rec := Fold(events)["job_A"]
+	if rec == nil {
+		t.Fatal("job_A missing")
+	}
+	if !provenance.ContainsWatch(rec.Provenance, "watch_A", "wg_1") {
+		t.Fatalf("record provenance = %+v, want watch_A/wg_1", rec.Provenance)
+	}
+}
+
+func TestFoldStoresRicherJobProvenanceFromFinishedEvent(t *testing.T) {
+	startProvenance := provenance.WithWatch(nil, "watch_start", "wg_1", "wd_start", "session_1", "caller")
+	finishProvenance := provenance.WithWatch(startProvenance, "watch_finish", "wg_1", "wd_finish", "session_1", "caller")
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobDelegate
+			e.OwnerSessionID = "session_1"
+			e.VisibleToSession = "session_1"
+			e.Provenance = startProvenance
+		}),
+		ev(EventJobFinished, 2, "job_A", func(e *Event) {
+			e.Status = StatusCompleted
+			e.TerminalGen = "GEN1"
+			e.Provenance = finishProvenance
+		}),
+	}
+
+	rec := Fold(events)["job_A"]
+	if rec == nil {
+		t.Fatal("job_A missing")
+	}
+	if !provenance.ContainsWatch(rec.Provenance, "watch_start", "wg_1") ||
+		!provenance.ContainsWatch(rec.Provenance, "watch_finish", "wg_1") {
+		t.Fatalf("record provenance = %+v, want terminal provenance with start and finish watches", rec.Provenance)
+	}
+}
+
+func TestFoldStoresNotificationProvenanceFromPendingEvent(t *testing.T) {
+	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", "session_1", "caller")
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobDelegate
+			e.OwnerSessionID = "session_1"
+			e.VisibleToSession = "session_1"
+		}),
+		ev(EventJobFinished, 2, "job_A", func(e *Event) {
+			e.Status = StatusCompleted
+			e.TerminalGen = "GEN1"
+		}),
+		ev(EventJobNotificationPending, 3, "job_A", func(e *Event) {
+			e.TerminalGen = "GEN1"
+			e.Provenance = p
+		}),
+	}
+
+	rec := Fold(events)["job_A"]
+	if rec == nil {
+		t.Fatal("job_A missing")
+	}
+	if !provenance.ContainsWatch(rec.NotificationProvenance, "watch_A", "wg_1") {
+		t.Fatalf("notification provenance = %+v, want watch_A/wg_1", rec.NotificationProvenance)
 	}
 }

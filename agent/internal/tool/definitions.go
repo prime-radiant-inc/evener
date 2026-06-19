@@ -94,10 +94,11 @@ func DefShell() llm.ToolDefinition {
 }
 
 // DefDelegate defines the delegate tool, which starts a NEW delegate
-// conversation (independent agentic work) and returns a job_id. agentTypes
-// constrains the agent_type enum to the session's available roles; pass nil to
-// omit the enum (free-form). reasoning_effort uses the delegate contract's
-// portable low/medium/high enum; the handler resolves provider-specific details.
+// conversation (independent agentic work) and returns a durable delegate_id plus
+// concrete job IDs. agentTypes constrains the agent_type enum to the session's
+// available roles; pass nil to omit the enum (free-form). reasoning_effort uses
+// the delegate contract's portable low/medium/high enum; the handler resolves
+// provider-specific details.
 func DefDelegate(agentTypes []string) llm.ToolDefinition {
 	strictFalse := false
 	agentTypeSchema := map[string]any{
@@ -109,9 +110,9 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 	}
 	return llm.ToolDefinition{
 		Name: "delegate",
-		Description: "Start a NEW delegate conversation to do independent agentic work; returns a `job_id` " +
-			"immediately by default (you are notified when it finishes). `delegate` never resumes an existing " +
-			"delegate: follow up on one with `job_send_message`. Optional: `agent_type` picks a role from the " +
+		Description: "Start a NEW delegate conversation to do independent agentic work; returns a durable `delegate_id` " +
+			"for follow-up plus concrete `job_id`s for individual turns. `delegate` never resumes an existing " +
+			"delegate: follow up on one with `delegate_send(to=<delegate_id>)`. Optional: `agent_type` picks a role from the " +
 			"enum (described in your agents section); `model` and `reasoning_effort` override the defaults; " +
 			"`result_schema` requests a validated structured result; `max_wait_ms` waits inline up to that many ms " +
 			"(a timeout leaves the job running). `delegation_allowance` lets the delegate itself delegate, up to one " +
@@ -126,7 +127,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 				"agent_type":           agentTypeSchema,
 				"model":                map[string]any{"type": "string", "description": "Model override (default: parent model)."},
 				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
-				"max_wait_ms":          map[string]any{"type": "integer", "description": "0 (default): return the job_id immediately; you are notified on completion. >0: wait inline up to this many ms; a timeout leaves the job running."},
+				"max_wait_ms":          map[string]any{"type": "integer", "description": "0 (default): return the delegate_id and started job_id immediately; you are notified on completion. >0: wait inline up to this many ms; a timeout leaves the job running."},
 				"delegation_allowance": map[string]any{"type": "integer", "description": "0 (default): a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type actually has the `delegate` tool: the built-in `subagent` role is a non-delegating leaf, so a >0 allowance on it is a silent no-op. For a multi-level tree, omit agent_type (the default role can delegate)."},
 				"result_schema": map[string]any{
 					"type":                 "object",
@@ -139,30 +140,30 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 	}
 }
 
-// DefJobSendMessage defines the job_send_message tool, the single follow-up
-// surface for delegate jobs and observer/sidecar commentary.
-func DefJobSendMessage() llm.ToolDefinition {
+// DefDelegateSend defines the delegate_send tool, the single follow-up surface
+// for durable delegates and contextual caller commentary.
+func DefDelegateSend() llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name: "job_send_message",
-		Description: "Send a follow-up message to a delegate by `job_id` — or, from an observer, commentary to `caller`. " +
-			"A delegate steered while it is mid-turn returns on delivery (`action:\"sent\"`, same `job_id`); a finished " +
-			"delegate — or a running one that is idle between turns — is resumed in the same conversation as a new job " +
-			"(`action:\"resumed\"`, new `job_id`, returns immediately by default). Set `on_finished=\"fail\"` only when you " +
-			"require a currently live target: the call then fails with `target_terminal` instead of resuming.",
+		Name: "delegate_send",
+		Description: "Send a message to a durable delegate by delegate_id, or from a delegate/watch-delivered context " +
+			"to the contextual caller route. `to` accepts `dlg_...` or `caller`; it rejects job/turn handles, transcript " +
+			"refs, and legacy runtime aliases. If the delegate is running or being driven, the message is steered and " +
+			"returns on delivery. If the delegate is idle, set `on_idle=\"start\"` to start the next job; the default " +
+			"`on_idle=\"fail\"` rejects idle delegates instead of starting work.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"target":  map[string]any{"type": "string", "description": "A delegate job_id or `caller`."},
+				"to":      map[string]any{"type": "string", "description": "A delegate_id (`dlg_...`) or `caller` when available."},
 				"message": map[string]any{"type": "string"},
-				"on_finished": map[string]any{
+				"on_idle": map[string]any{
 					"type":        "string",
-					"enum":        []string{"resume", "fail"},
-					"description": "Default resume: a finished delegate is resumed as a new job. fail: require a live target (target_terminal if finished).",
+					"enum":        []string{"start", "fail"},
+					"description": "Default fail: reject an idle delegate. start: start the delegate's next job.",
 				},
-				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/resume without waiting. >0: for a resumed job, wait inline up to this many ms for its result; steers and alias sends return on delivery regardless."},
+				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a started job, wait inline up to this many ms for its result; steers and caller sends return on delivery regardless."},
 			},
-			"required": []string{"target", "message"},
+			"required": []string{"to", "message"},
 		},
 	}
 }
@@ -175,19 +176,20 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 	if kinds == "" {
 		kinds = "none available this session"
 	}
-	desc := "Add a standing trigger on a running job or a visible session (`target`: a `job_id`, `caller` for this " +
-		"session, or `*` for all visible). For a one-time \"did it print X yet\", use `job_read_output` with a positive max_wait_ms and grep " +
+	desc := "Create, inspect, list, or clear standing triggers on a running job or this caller session. " +
+		"For a one-time \"did it print X yet\", use `job_read_output` with a positive max_wait_ms and grep " +
 		"instead — watches are for recurring conditions, and completion needs no watch at all (terminal notifications are " +
-		"automatic). Triggers, set only what you need: `output_match` (RE2 over the job's output; if the retained output " +
+		"automatic). For `operation=\"create\"`, set `target` to a `job_id` or `caller`; set only the triggers you need: " +
+		"`output_match` (RE2 over the job's output; if the retained output " +
 		"already contains a match the watch fires immediately, then again on new matches — a finished job gets a one-shot " +
 		"catch-up scan), `progress_interval_ms` (periodic), `events` (kinds this session: " + kinds + "; `every` fires on " +
 		"each Nth occurrence — 1 is the default; above 1 requires `events` to contain exactly one kind). Delivery: omit `send` to be notified " +
-		"yourself; set `send.to` to an observer delegate's `job_id` (or `watched`) to push bounded trigger frames there — " +
-		"this also grants that observer read access to the watched job. Frames coalesce latest-wins while the target is " +
+		"yourself; set `send.to` to an observer `delegate_id` to push bounded trigger frames there — " +
+		"this also grants that observer read access to the observed job. Frames coalesce latest-wins while the target is " +
 		"busy. `include_excerpt` attaches an output excerpt (concrete job targets only). ONE active watch per " +
 		"(target, send.to): a different configuration for the same key replaces the existing watch " +
 		"(`replaced_existing:true`) — use a distinct `send.to` for an additional watch on the same target. " +
-		"`clear=true` removes the watch for (target, send.to)."
+		"`operation=\"clear\"` removes a watch by `watch_id`."
 	return llm.ToolDefinition{
 		Name:        "job_watch",
 		Description: desc,
@@ -195,7 +197,9 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"target":               map[string]any{"type": "string", "description": "job_id, or a visible session: caller, or * for all visible."},
+				"operation":            map[string]any{"type": "string", "description": "create, list, inspect, or clear.", "enum": []string{"create", "list", "inspect", "clear"}},
+				"watch_id":             map[string]any{"type": "string", "description": "watch_id returned by job_watch create/list; required for inspect and clear."},
+				"target":               map[string]any{"type": "string", "description": "job_id, or caller for this session."},
 				"output_match":         map[string]any{"type": "string", "description": "RE2 regex over the job's output. Case-sensitive unless (?i). Invalid regex errors at creation."},
 				"progress_interval_ms": map[string]any{"type": "integer", "description": "Periodic trigger interval in ms (min 1000, max 3600000; handler clamps later). Omit for none."},
 				"events": map[string]any{
@@ -212,14 +216,13 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 					"additionalProperties": false,
 					"description":          "Deliver to another target instead of notifying the caller.",
 					"properties": map[string]any{
-						"to":              map[string]any{"type": "string", "description": "job_id, `caller`, or contextual `watched` for the concrete watched target. `watched` resolves only when the trigger has a concrete job identity; session-only events are skipped for `watched`."},
+						"to":              map[string]any{"type": "string", "description": "delegate_id, or `caller`."},
 						"message":         map[string]any{"type": "string"},
 						"include_excerpt": map[string]any{"type": "boolean"},
 					},
 				},
-				"clear": map[string]any{"type": "boolean", "description": "Remove the matching watch. The only unwatch operation."},
 			},
-			"required": []string{"target"},
+			"required": []string{"operation"},
 		},
 	}
 }

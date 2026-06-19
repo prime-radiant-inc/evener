@@ -44,6 +44,16 @@ const (
 	defaultAgentName = "default"
 )
 
+var delegationPromptToolNames = []string{
+	"delegate",
+	"delegate_send",
+	"job_list",
+	"job_read_output",
+	"job_stop",
+	"job_watch",
+	"shell",
+}
+
 // resultToolName returns the effective name for the communicate tool.
 func (s *Session) resultToolName() string {
 	if s.cfg.ResultToolName != "" {
@@ -467,6 +477,7 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 				Content:        res.Output,
 				IsError:        res.IsError,
 				DurationMS:     res.DurationMS,
+				ToolState:      res.ToolState,
 				ImageData:      res.ImageData,
 				ImageMediaType: res.ImageMediaType,
 			},
@@ -519,12 +530,12 @@ func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
 
 func (s *Session) availableAgentEntries() []agentEntry {
 	allowance := s.delegationAllowance // read under caller's lock or during single-threaded init
+	if allowance <= 0 || !s.canPromptDelegation() {
+		return nil
+	}
 
 	names := make([]string, 0, len(s.pluginAgents))
-	for name, agent := range s.pluginAgents {
-		if agentUsesRootOnlySubagentTools(agent) && allowance <= 0 {
-			continue
-		}
+	for name := range s.pluginAgents {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -544,12 +555,12 @@ func (s *Session) availableAgentEntries() []agentEntry {
 
 func (s *Session) delegateAgentTypeNames() []string {
 	allowance := s.delegationAllowance // read under caller's lock or during single-threaded init
+	if allowance <= 0 || !s.canPromptDelegation() {
+		return nil
+	}
 
 	names := make([]string, 0, len(s.pluginAgents))
-	for name, agent := range s.pluginAgents {
-		if agentUsesRootOnlySubagentTools(agent) && allowance <= 0 {
-			continue
-		}
+	for name := range s.pluginAgents {
 		names = append(names, name)
 	}
 	sort.Strings(names)

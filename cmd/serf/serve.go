@@ -375,7 +375,9 @@ func runServe(args []string) error {
 	// /interrupt actually cancels the in-flight turn. The cancel is
 	// cleared after the turn finishes so capabilities.interrupt only
 	// reports true while a turn is in flight.
+	inputLoopDone := make(chan struct{})
 	go func() {
+		defer close(inputLoopDone)
 		for {
 			select {
 			case <-ctx.Done():
@@ -455,15 +457,21 @@ func runServe(args []string) error {
 	}
 
 	httpSrv := &http.Server{Handler: srv}
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		_ = httpSrv.Close()
+		<-inputLoopDone
 		getSession().Close()
 	}()
 
 	if err := httpSrv.Serve(listener); err != http.ErrServerClosed {
+		cancel()
+		<-shutdownDone
 		return err
 	}
+	<-shutdownDone
 	return nil
 }
 

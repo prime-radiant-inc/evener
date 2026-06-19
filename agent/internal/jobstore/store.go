@@ -74,6 +74,42 @@ func (s *Store) Append(e Event) error {
 	return nil
 }
 
+// AppendBatch assigns contiguous Seq values to events, writes them as one
+// all-or-nothing append, and fsyncs once. If any marshal, write, or sync fails,
+// the file is truncated back to the pre-batch offset and the store seq is left
+// unchanged.
+func (s *Store) AppendBatch(events []Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return err
+	}
+	startOffset, err := s.f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return fmt.Errorf("jobstore: seek append start: %w", err)
+	}
+	nextSeq := s.seq
+	for _, e := range events {
+		nextSeq++
+		e.Seq = nextSeq
+		b, err := json.Marshal(e)
+		if err != nil {
+			return s.appendFailureLocked("marshal event", err, startOffset)
+		}
+		if err := s.writeLineLocked(append(b, '\n')); err != nil {
+			return s.appendFailureLocked("write event", err, startOffset)
+		}
+	}
+	if err := s.f.Sync(); err != nil {
+		return s.appendFailureLocked("sync event", err, startOffset)
+	}
+	s.seq = nextSeq
+	return nil
+}
+
 // Load reads every event and folds them to the current records.
 func (s *Store) Load() (map[string]*JobRecord, error) {
 	s.mu.Lock()
@@ -106,6 +142,34 @@ func (s *Store) LoadOrdered() ([]*JobRecord, error) {
 	return FoldOrdered(events), nil
 }
 
+// LoadDelegates reads every event and folds durable delegate state.
+func (s *Store) LoadDelegates() (map[string]*DelegateRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return nil, err
+	}
+	events, err := s.readAllLocked()
+	if err != nil {
+		return nil, err
+	}
+	return FoldDelegates(events), nil
+}
+
+// LoadWatches reads every event and folds durable watch registry state.
+func (s *Store) LoadWatches() (map[string]*WatchRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return nil, err
+	}
+	events, err := s.readAllLocked()
+	if err != nil {
+		return nil, err
+	}
+	return FoldWatches(events), nil
+}
+
 // LoadWatchSends reads every event and folds durable pending watch-send state.
 func (s *Store) LoadWatchSends() (WatchSendRecord, error) {
 	s.mu.Lock()
@@ -133,6 +197,16 @@ func (s *Store) LoadGrants() (map[string]map[string]bool, error) {
 		return nil, err
 	}
 	return FoldGrants(events), nil
+}
+
+// LoadEvents reads every durable event in append order.
+func (s *Store) LoadEvents() ([]Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return nil, err
+	}
+	return s.readAllLocked()
 }
 
 // readAll is the locked-public test/helper variant of readAllLocked.

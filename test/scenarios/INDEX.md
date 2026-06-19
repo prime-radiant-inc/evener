@@ -192,8 +192,8 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
 ## Job control (CLI)
 
 - `subagent-cancel-runaway.md` — `job_stop` stops a long-running delegate
-  job, then `job_send_message` targets the same delegate job to resume the
-  preserved child conversation and complete a shorter follow-up.
+  job, then `delegate_send(on_idle="start")` targets the delegate_id to
+  continue the preserved child conversation and complete a shorter follow-up.
 - `subagent-list-and-output.md` — `job_list` enumerates a delegate job and
   `job_read_output` peeks the result twice without consuming or hiding it.
 - `job-notification-wake.md` — the proactive completion wake
@@ -214,6 +214,13 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   notification turn for its workers' completions, while the root's
   rail shows only the coordinator's terminal (owner-scoped, asserted
   on the coordinator's own transcript).
+- `job-watch-observer-snide-thread.md` - observer commentary stays in
+  the observer transcript while watch frames carry enough metadata for
+  useful sidecar work.
+- `job-watch-actually-monty-python-injection.md` - caller `communicate`
+  watch frames include content, an observer injects `PYTHON_QUOTE` only
+  for external `actually` messages, and causal provenance suppresses
+  injection and acknowledgement loops.
 
 ## Regression sweep (older surfaces)
 

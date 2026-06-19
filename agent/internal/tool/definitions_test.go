@@ -3,7 +3,38 @@ package tool
 import (
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/llm"
 )
+
+func required(t *testing.T, def llm.ToolDefinition, name string, want []string) {
+	t.Helper()
+	raw, ok := def.Parameters["required"].([]string)
+	if !ok {
+		t.Fatalf("%s required = %T, want []string", name, def.Parameters["required"])
+	}
+	props, ok := def.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s properties = %T, want map[string]any", name, def.Parameters["properties"])
+	}
+	for _, param := range want {
+		if !containsString(raw, param) {
+			t.Fatalf("%s required = %v, want %q", name, raw, param)
+		}
+		if _, ok := props[param]; !ok {
+			t.Fatalf("%s missing required property %q", name, param)
+		}
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
 
 // TestSchemaWaitKnobs asserts the one-wait-knob-per-tool invariant: shell's wait
 // knob is a `background` boolean; the other four wait-capable tools use
@@ -16,7 +47,7 @@ func TestSchemaWaitKnobs(t *testing.T) {
 		def  func() map[string]any // returns the Parameters map
 	}{
 		{"delegate", func() map[string]any { return DefDelegate(nil).Parameters }},
-		{"job_send_message", func() map[string]any { return DefJobSendMessage().Parameters }},
+		{"delegate_send", func() map[string]any { return DefDelegateSend().Parameters }},
 		{"job_read_output", func() map[string]any { return DefJobReadOutput().Parameters }},
 		{"job_stop", func() map[string]any { return DefJobStop().Parameters }},
 	}
@@ -140,6 +171,19 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 	if len(effortEnum) != 3 || effortEnum[0] != "low" || effortEnum[1] != "medium" || effortEnum[2] != "high" {
 		t.Errorf("reasoning_effort enum = %v, want [low medium high]", effortEnum)
 	}
+
+	maxWaitDesc := props["max_wait_ms"].(map[string]any)["description"].(string)
+	for _, text := range []string{def.Description, maxWaitDesc} {
+		if !strings.Contains(text, "delegate_id") {
+			t.Fatalf("delegate schema text must mention delegate_id: %q", text)
+		}
+		if !strings.Contains(text, "job_id") {
+			t.Fatalf("delegate schema text must still mention concrete job_id: %q", text)
+		}
+	}
+	if !strings.Contains(def.Description, "delegate_send(to=<delegate_id>)") {
+		t.Fatalf("delegate description must show delegate_send follow-up target:\n%s", def.Description)
+	}
 }
 
 // TestDefDelegateHasDelegationAllowance pins spec §1/§8: delegate exposes a
@@ -189,49 +233,27 @@ func TestDefDelegateResultSchemaDescriptionIncludesResumeFailureShape(t *testing
 	}
 }
 
-func TestDefJobSendMessageParams(t *testing.T) {
-	def := DefJobSendMessage()
-	if def.Name != "job_send_message" {
-		t.Fatalf("name = %q, want job_send_message", def.Name)
+func TestDefDelegateSendShape(t *testing.T) {
+	def := DefDelegateSend()
+	if def.Name != "delegate_send" {
+		t.Fatalf("name = %q, want delegate_send", def.Name)
 	}
+	required(t, def, "delegate_send", []string{"to", "message"})
 	props := def.Parameters["properties"].(map[string]any)
-	for _, p := range []string{"target", "message", "on_finished", "max_wait_ms"} {
-		if _, ok := props[p]; !ok {
-			t.Errorf("DefJobSendMessage missing param %q", p)
+	if _, ok := props["target"]; ok {
+		t.Fatalf("delegate_send must not expose target")
+	}
+	if _, ok := props["on_finished"]; ok {
+		t.Fatalf("delegate_send must not expose on_finished")
+	}
+	if _, ok := props["on_idle"]; !ok {
+		t.Fatalf("delegate_send missing on_idle")
+	}
+	combined := def.Description + "\n" + props["to"].(map[string]any)["description"].(string)
+	for _, banned := range []string{"job_send_message", "watched", "main"} {
+		if strings.Contains(combined, banned) {
+			t.Fatalf("delegate_send description must not contain %q: %q", banned, combined)
 		}
-	}
-	if _, ok := props["background"]; ok {
-		t.Errorf("DefJobSendMessage must not have the removed background param")
-	}
-	if _, ok := props["block_timeout_ms"]; ok {
-		t.Errorf("DefJobSendMessage must not have the removed block_timeout_ms param")
-	}
-	req := def.Parameters["required"].([]string)
-	if len(req) != 2 || req[0] != "target" || req[1] != "message" {
-		t.Errorf("required = %v, want [target message]", req)
-	}
-	of := props["on_finished"].(map[string]any)
-	enum := of["enum"].([]string)
-	if len(enum) != 2 || enum[0] != "resume" || enum[1] != "fail" {
-		t.Errorf("on_finished enum = %v, want [resume fail]", enum)
-	}
-}
-
-func TestDefJobSendMessageDescriptionKeepsDirectTargetsSmall(t *testing.T) {
-	def := DefJobSendMessage()
-	props := def.Parameters["properties"].(map[string]any)
-	targetDesc := props["target"].(map[string]any)["description"].(string)
-	combined := def.Description + "\n" + targetDesc
-	for _, want := range []string{"delegate job_id", "caller"} {
-		if !strings.Contains(combined, want) {
-			t.Fatalf("job_send_message description = %q, want %q", combined, want)
-		}
-	}
-	if strings.Contains(combined, "watched") {
-		t.Fatalf("job_send_message description must not advertise watched: %q", combined)
-	}
-	if strings.Contains(combined, "main") {
-		t.Fatalf("job_send_message description must not mention main: %q", combined)
 	}
 }
 
@@ -241,18 +263,35 @@ func TestDefJobWatchParamsAndKinds(t *testing.T) {
 		t.Fatalf("name = %q, want job_watch", def.Name)
 	}
 	props := def.Parameters["properties"].(map[string]any)
-	for _, p := range []string{"target", "output_match", "progress_interval_ms", "events", "every", "send", "clear"} {
+	for _, p := range []string{"operation", "watch_id", "target", "output_match", "progress_interval_ms", "events", "every", "send"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefJobWatch missing param %q", p)
 		}
 	}
 	req := def.Parameters["required"].([]string)
-	if len(req) != 1 || req[0] != "target" {
-		t.Errorf("required = %#v, want [target]", req)
+	if len(req) != 1 || req[0] != "operation" {
+		t.Errorf("required = %#v, want [operation]", req)
 	}
 	// The available event kinds are interpolated into the description.
 	if !strings.Contains(def.Description, "assistant.message") || !strings.Contains(def.Description, "job.notification") {
 		t.Errorf("description must enumerate the available event kinds:\n%s", def.Description)
+	}
+}
+
+func TestDefJobWatchRequiresOperationAndWatchIDForClear(t *testing.T) {
+	def := DefJobWatch([]string{"assistant.message"})
+	props := def.Parameters["properties"].(map[string]any)
+	if _, ok := props["operation"]; !ok {
+		t.Fatalf("DefJobWatch missing operation")
+	}
+	if _, ok := props["watch_id"]; !ok {
+		t.Fatalf("DefJobWatch missing watch_id")
+	}
+	if _, ok := props["clear"]; ok {
+		t.Fatalf("DefJobWatch must not expose clear")
+	}
+	if strings.Contains(def.Description, "`*`") || strings.Contains(def.Description, "watched") {
+		t.Fatalf("DefJobWatch description must not expose target wildcard or watched alias: %q", def.Description)
 	}
 }
 
@@ -264,13 +303,15 @@ func TestDefJobWatchDescriptionIncludesCoalesceContract(t *testing.T) {
 	props := def.Parameters["properties"].(map[string]any)
 	sendProps := props["send"].(map[string]any)["properties"].(map[string]any)
 	toDesc := sendProps["to"].(map[string]any)["description"].(string)
-	for _, want := range []string{"caller", "watched", "concrete watched"} {
+	for _, want := range []string{"caller", "delegate_id"} {
 		if !strings.Contains(toDesc, want) {
 			t.Fatalf("send.to description = %q, want %q", toDesc, want)
 		}
 	}
-	if strings.Contains(toDesc, "main") {
-		t.Fatalf("send.to description must not mention main: %q", toDesc)
+	for _, banned := range []string{"main", "watched"} {
+		if strings.Contains(toDesc, banned) {
+			t.Fatalf("send.to description must not mention %q: %q", banned, toDesc)
+		}
 	}
 }
 

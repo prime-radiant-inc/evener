@@ -384,6 +384,10 @@ func init() {
 	jobSendMessageR := toolRenderers["job_send_message"]
 	jobSendMessageR.Target = func(args ToolArgs) string { return args.Str("target") }
 	toolRenderers["job_send_message"] = jobSendMessageR
+	toolRenderers["delegate_send"] = jobControl("message")
+	delegateSendR := toolRenderers["delegate_send"]
+	delegateSendR.Target = func(args ToolArgs) string { return args.Str("to") }
+	toolRenderers["delegate_send"] = delegateSendR
 	toolRenderers["job_read_output"] = jobControl("read")
 	toolRenderers["job_stop"] = jobControl("stop")
 	toolRenderers["job_list"] = ToolRenderer{

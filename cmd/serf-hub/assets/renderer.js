@@ -2116,7 +2116,7 @@
           this.upsertJobRef(info);
         }
       }
-      // A reconciling tool (job_read_output / job_list / job_send_message)
+      // A reconciling tool (job_read_output / job_list / delegate_send)
       // flips any matching subagent rows from a non-JOB_FINISHED signal.
       if (m.renderer.subagentReconcile) {
         const infos = m.renderer.subagentReconcile.call(this, m, data, out);
@@ -2648,7 +2648,7 @@
 
     // reconcileSubagent flips a (possibly stale-running) subagent row from a
     // signal other than JOB_FINISHED — a successful job_read_output / job_list /
-    // job_send_message that names the job and its status. This is the fix for
+    // delegate_send that names the job and its status. This is the fix for
     // the subagent that showed "● running" forever because JOB_FINISHED never
     // arrived. It only updates an EXISTING row (never spawns one from a read).
     reconcileSubagent(info) {

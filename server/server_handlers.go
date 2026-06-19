@@ -181,8 +181,12 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "shutdown not available", http.StatusServiceUnavailable)
 		return
 	}
-	go fn()
+	w.Header().Set("Content-Length", "0")
 	w.WriteHeader(http.StatusAccepted)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	go fn()
 }
 
 func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {

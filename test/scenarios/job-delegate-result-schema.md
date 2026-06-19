@@ -9,7 +9,7 @@ result is reported honestly: `structured_result` omitted,
 `structured_result_valid: false`, machine-readable
 `structured_result_reason` populated (line 294); (c) a resumed turn in
 the same delegate conversation inherits the ORIGINAL `result_schema`
-(line 652) although `job_send_message` has no schema argument.
+(line 652) although `delegate_send` has no schema argument.
 Delegate `status="completed"` never asserts task success (line 295) —
 the structured fields are how the parent judges outcome.
 
@@ -45,14 +45,14 @@ the structured fields are how the parent judges outcome.
    > payload." Report the job_id, then end your turn; when its
    > completion notification arrives, call job_read_output for it and
    > report the full JSON verbatim.
-4. Turn 3 — arm (c), schema inheritance on resume (new user prompt):
+4. Turn 3 — arm (c), schema inheritance on explicit follow-up (new user prompt):
 
-   > Call job_send_message with target set to the turn-1 job_id and
-   > this message: "Follow-up: report a structured result with verdict
-   > resumed and count 21." Report the full result JSON verbatim, then
-   > end your turn; when the resumed job's completion notification
-   > arrives, call job_read_output for the NEW job_id and report the
-   > full JSON verbatim.
+   > Call delegate_send with `to` set to the turn-1 delegate_id,
+   > `on_idle` "start", and this message: "Follow-up: report a
+   > structured result with verdict resumed and count 21." Report the
+   > full result JSON verbatim, then end your turn; when the started
+   > job's completion notification arrives, call job_read_output for
+   > the returned current_job_id and report the full JSON verbatim.
 5. Read the transcript and the durable log
    (`find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`).
 
@@ -86,16 +86,17 @@ the structured fields are how the parent judges outcome.
 - Falsification (catastrophic honesty failure): the violating job
   reports `status` `"failed"` solely because the schema failed —
   schema validation describes the RESULT, not the lifecycle.
-- Arm (c): the `job_send_message` result has `action` `"resumed"`, a
-  NEW `job_id`, and `resumed_from_job_id` equal to the turn-1 job_id.
+- Arm (c): the `delegate_send` result has `action` `"started"`, a NEW
+  `started_job_id`/`current_job_id`, and the same delegate_id as the
+  turn-1 result.
   The read of the new job shows `structured_result`
   `{"verdict":"resumed","count":21}` with `structured_result_valid`
   `true` — the schema's own top-level keys, which can only appear if
   the resumed turn inherited the original conversation's
-  `result_schema` (line 652; no schema was passed on resume).
+  `result_schema` (line 652; no schema was passed on follow-up).
   Falsification: the resumed result reverts to the default
   `message`/`data`/`artifacts` envelope, or the structured triplet is
-  entirely absent from the resumed job — inheritance dropped.
+  entirely absent from the started follow-up job — inheritance dropped.
 - Both background jobs (arms b, c) deliver exactly one terminal
   notification each (format asserted in job-notification-semantics.md,
   not here).
