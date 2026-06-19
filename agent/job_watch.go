@@ -3613,6 +3613,24 @@ func writeWatchFrameEvent(b *strings.Builder, ev events.SessionEvent) {
 		if data != nil {
 			writeCommunicateWatchEvent(b, *data)
 		}
+	case events.AssistantTextEndData:
+		writeAssistantMessageWatchEvent(b, data)
+	case *events.AssistantTextEndData:
+		if data != nil {
+			writeAssistantMessageWatchEvent(b, *data)
+		}
+	case events.ToolCallEndData:
+		writeAssistantToolWatchEvent(b, data)
+	case *events.ToolCallEndData:
+		if data != nil {
+			writeAssistantToolWatchEvent(b, *data)
+		}
+	case events.JobFinishedData:
+		writeJobNotificationWatchEvent(b, data)
+	case *events.JobFinishedData:
+		if data != nil {
+			writeJobNotificationWatchEvent(b, *data)
+		}
 	}
 }
 
@@ -3635,6 +3653,81 @@ func writeCommunicateWatchEvent(b *strings.Builder, data events.CommunicateData)
 	}
 	b.WriteString("  truncated: ")
 	if truncated {
+		b.WriteString("true\n")
+	} else {
+		b.WriteString("false\n")
+	}
+}
+
+func writeAssistantMessageWatchEvent(b *strings.Builder, data events.AssistantTextEndData) {
+	text, truncated := limitedWatchEventText(data.Text)
+	b.WriteString("event:\n")
+	b.WriteString("  kind: assistant.message\n")
+	writeWatchFrameOptionalField(b, "model", data.Model)
+	writeWatchFrameOptionalField(b, "finish_reason", data.FinishReason)
+	writeWatchFrameTextField(b, "text", text)
+	writeWatchFrameBoolField(b, "truncated", truncated)
+}
+
+func writeAssistantToolWatchEvent(b *strings.Builder, data events.ToolCallEndData) {
+	b.WriteString("event:\n")
+	b.WriteString("  kind: assistant.tool\n")
+	writeWatchFrameOptionalField(b, "tool_name", data.ToolName)
+	writeWatchFrameOptionalField(b, "call_id", data.CallID)
+	if data.Output != "" {
+		output, truncated := limitedWatchEventText(data.Output)
+		writeWatchFrameTextField(b, "output", output)
+		writeWatchFrameBoolField(b, "output_truncated", truncated)
+	}
+	if data.Error != "" {
+		errText, truncated := limitedWatchEventText(data.Error)
+		writeWatchFrameTextField(b, "error", errText)
+		writeWatchFrameBoolField(b, "error_truncated", truncated)
+	}
+}
+
+func writeJobNotificationWatchEvent(b *strings.Builder, data events.JobFinishedData) {
+	b.WriteString("event:\n")
+	b.WriteString("  kind: job.notification\n")
+	writeWatchFrameOptionalField(b, "job_id", data.JobID)
+	writeWatchFrameOptionalField(b, "job_type", data.JobType)
+	writeWatchFrameOptionalField(b, "status", data.Status)
+	writeWatchFrameOptionalField(b, "reason", data.Reason)
+	if data.ExitCode != nil {
+		writeWatchFrameOptionalField(b, "exit_code", fmt.Sprint(*data.ExitCode))
+	}
+	b.WriteString("  output_bytes: ")
+	b.WriteString(fmt.Sprint(data.OutputBytes))
+	b.WriteString("\n")
+}
+
+func limitedWatchEventText(s string) (string, bool) {
+	const maxEventTextChars = 1000
+	limited := limitWatchText(s, maxEventTextChars)
+	return limited, limited != s
+}
+
+func writeWatchFrameOptionalField(b *strings.Builder, name, value string) {
+	value = limitWatchText(value, watchTriggerMaxChars)
+	if value == "" {
+		return
+	}
+	writeWatchFrameTextField(b, name, value)
+}
+
+func writeWatchFrameTextField(b *strings.Builder, name, value string) {
+	b.WriteString("  ")
+	b.WriteString(name)
+	b.WriteString(": ")
+	b.WriteString(strings.ReplaceAll(value, "\n", "\n  "))
+	b.WriteString("\n")
+}
+
+func writeWatchFrameBoolField(b *strings.Builder, name string, value bool) {
+	b.WriteString("  ")
+	b.WriteString(name)
+	b.WriteString(": ")
+	if value {
 		b.WriteString("true\n")
 	} else {
 		b.WriteString("false\n")

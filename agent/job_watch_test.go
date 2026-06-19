@@ -7128,6 +7128,94 @@ func TestBuildWatchFrameIncludesCommunicateEventContent(t *testing.T) {
 	}
 }
 
+func TestBuildWatchFrameIncludesAssistantMessageContent(t *testing.T) {
+	jm := newTestJM(t)
+	cfg := &watchConfig{watchID: "watch_A", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
+	ev := events.New(events.AssistantTextEndData{
+		Text:         "The main session actually said the trigger word.",
+		Model:        "kimi-test",
+		FinishReason: "stop",
+	})
+	ev.SessionID = "session_1"
+
+	frame := jm.buildWatchFrame(cfg, runtimeMessageAliasCaller, "event: ASSISTANT_TEXT_END", "wd_1", ev, nil)
+
+	for _, want := range []string{
+		"event:",
+		"  kind: assistant.message",
+		"  model: kimi-test",
+		"  finish_reason: stop",
+		"  text: The main session actually said the trigger word.",
+		"  truncated: false",
+	} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("frame missing %q:\n%s", want, frame)
+		}
+	}
+}
+
+func TestBuildWatchFrameIncludesToolCallContent(t *testing.T) {
+	jm := newTestJM(t)
+	cfg := &watchConfig{watchID: "watch_A", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
+	ev := events.New(events.ToolCallEndData{
+		ToolName: "shell",
+		CallID:   "call_1",
+		Output:   "first line\nsecond line",
+	})
+	ev.SessionID = "session_1"
+
+	frame := jm.buildWatchFrame(cfg, runtimeMessageAliasCaller, "event: TOOL_CALL_END", "wd_1", ev, nil)
+
+	for _, want := range []string{
+		"event:",
+		"  kind: assistant.tool",
+		"  tool_name: shell",
+		"  call_id: call_1",
+		"  output: first line\n  second line",
+		"  output_truncated: false",
+	} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("frame missing %q:\n%s", want, frame)
+		}
+	}
+}
+
+func TestBuildWatchFrameIncludesJobNotificationContentWithoutTranscriptRef(t *testing.T) {
+	jm := newTestJM(t)
+	cfg := &watchConfig{watchID: "watch_A", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
+	exitCode := 2
+	ev := events.New(events.JobFinishedData{
+		JobID:         "job_worker",
+		JobType:       "delegate",
+		Status:        "failed",
+		Reason:        "exit_nonzero",
+		ExitCode:      &exitCode,
+		OutputBytes:   42,
+		TranscriptRef: "local:secret_session",
+	})
+	ev.SessionID = "session_1"
+
+	frame := jm.buildWatchFrame(cfg, "job_worker", "event: JOB_FINISHED", "wd_1", ev, nil)
+
+	for _, want := range []string{
+		"event:",
+		"  kind: job.notification",
+		"  job_id: job_worker",
+		"  job_type: delegate",
+		"  status: failed",
+		"  reason: exit_nonzero",
+		"  exit_code: 2",
+		"  output_bytes: 42",
+	} {
+		if !strings.Contains(frame, want) {
+			t.Fatalf("frame missing %q:\n%s", want, frame)
+		}
+	}
+	if strings.Contains(frame, "transcript_ref") || strings.Contains(frame, "local:secret_session") {
+		t.Fatalf("frame leaked transcript ref:\n%s", frame)
+	}
+}
+
 func TestBuildWatchFrameIncludesCompactProvenanceSummary(t *testing.T) {
 	jm := newTestJM(t)
 	cfg := &watchConfig{watchID: "watch_B", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
