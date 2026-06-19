@@ -78,7 +78,7 @@ func watchesFixture(t *testing.T) (base, sid string) {
 		// w1 registration.
 		{Kind: jobstore.EventWatchRegistered, WatchID: "w1", Watch: &jobstore.WatchEvent{
 			Generation: "g1", OwnerSessionID: "obs", VisibleSessionID: "worker",
-			Target: "job:j1", SendTo: "obs", Condition: "output_match"}},
+			Target: "job:j1", SendTo: "obs", Condition: "output_match", ConfigHash: "cfg1"}},
 		// w1: 3 pending updates coalescing into ONE delivered (delivery d1).
 		{Kind: jobstore.EventWatchSendPending, WatchID: "w1", WatchSend: &jobstore.WatchSendState{Key: kW1Deliv, DeliveryID: "d1", UpdateSeq: 1}},
 		{Kind: jobstore.EventWatchSendPending, WatchID: "w1", WatchSend: &jobstore.WatchSendState{Key: kW1Deliv, DeliveryID: "d1", UpdateSeq: 2}},
@@ -96,7 +96,7 @@ func watchesFixture(t *testing.T) (base, sid string) {
 
 		// w2 registration.
 		{Kind: jobstore.EventWatchRegistered, WatchID: "w2", Watch: &jobstore.WatchEvent{
-			Generation: "g2", OwnerSessionID: "obs", VisibleSessionID: "worker", Target: "job:j9", SendTo: "obs"}},
+			Generation: "g2", OwnerSessionID: "obs", VisibleSessionID: "worker", Target: "job:j9", SendTo: "obs", ConfigHash: "cfg2"}},
 		// w2: a HEALTHY delivery (own stamp only).
 		{Kind: jobstore.EventWatchSendDelivered, WatchID: "w2", WatchSend: &jobstore.WatchSendState{
 			Key: kW2Healthy, DeliveryID: "dh", UpdateSeq: 1, Provenance: ownStamp("w2", "g2", "dh")}},
@@ -136,7 +136,7 @@ func TestWatches_CoalescedPredecessorIsNotSelfLoop(t *testing.T) {
 
 	writeJobsEvents(t, jobsPath, []jobstore.Event{
 		{Kind: jobstore.EventWatchRegistered, WatchID: "wc", Watch: &jobstore.WatchEvent{
-			Generation: "gc", OwnerSessionID: "worker", VisibleSessionID: "worker", Target: "caller", SendTo: "obs"}},
+			Generation: "gc", OwnerSessionID: "worker", VisibleSessionID: "worker", Target: "caller", SendTo: "obs", ConfigHash: "cfgc"}},
 		// dpend: a pending frame for the slot, never delivered.
 		{Kind: jobstore.EventWatchSendPending, WatchID: "wc", WatchSend: &jobstore.WatchSendState{Key: slot, DeliveryID: "dpend", UpdateSeq: 5}},
 		// dco: the next pending coalesces over dpend (same slot) and delivers; its

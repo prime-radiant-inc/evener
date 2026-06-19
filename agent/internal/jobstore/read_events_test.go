@@ -14,7 +14,7 @@ func TestReadEvents_RoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Event{
-		{Kind: EventWatchRegistered, WatchID: "w1", Watch: &WatchEvent{Generation: "g1", Target: "job:x"}},
+		{Kind: EventWatchRegistered, WatchID: "w1", Watch: &WatchEvent{Generation: "g1", OwnerSessionID: "o", VisibleSessionID: "v", Target: "job:x", ConfigHash: "h"}},
 		{Kind: EventWatchSendPending, WatchID: "w1", WatchSend: &WatchSendState{Key: WatchSendKey{WatchID: "w1"}, DeliveryID: "d1", UpdateSeq: 1}},
 		{Kind: EventWatchSendDelivered, WatchID: "w1", WatchSend: &WatchSendState{Key: WatchSendKey{WatchID: "w1"}, DeliveryID: "d1", UpdateSeq: 1}},
 	}

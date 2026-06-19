@@ -26,7 +26,7 @@ func fixture(t *testing.T) (base, sid string) {
 	mustWrite(t, filepath.Join(sess, sid+".meta.json"), `{"id":"`+sid+`"}`)
 
 	jobs := strings.Join([]string{
-		`{"kind":"watch_registered","seq":1,"job_id":"","watch_id":"w1","watch":{"generation":"g1","target":"job:x"}}`,
+		`{"kind":"watch_registered","seq":1,"job_id":"","watch_id":"w1","watch":{"generation":"g1","owner_session_id":"o","visible_session_id":"v","target":"job:x","config_hash":"h"}}`,
 		// dprior: a genuine prior DELIVERED delivery (its own slot).
 		`{"kind":"watch_send_delivered","seq":2,"job_id":"","watch_id":"w1","watch_send":{"key":{"watch_id":"w1","watch_target":"prior"},"delivery_id":"dprior","provenance":{"watch_keys":[{"watch_id":"w1","watch_generation":"g1"}],"chain":[{"kind":"watch","watch_id":"w1","delivery_id":"dprior"}]}}}`,
 		// dl: caused by a prior hop of dprior (which delivered) — a genuine self-loop.
