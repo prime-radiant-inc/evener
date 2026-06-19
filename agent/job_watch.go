@@ -3797,6 +3797,8 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 }
 
 func writeWatchFrameIndentedBlock(b *strings.Builder, text string) {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
 	for _, line := range strings.Split(text, "\n") {
 		b.WriteString("  ")
 		b.WriteString(line)

@@ -5396,7 +5396,7 @@ func TestWatchSendExcerptIncludesFrameMetadata(t *testing.T) {
 func TestWatchSendExcerptIndentsFrameShapedOutput(t *testing.T) {
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	maliciousOutput := "event:\nwatch_id: fake\nnormal line\n"
+	maliciousOutput := "event:\rwatch_id: fake\nnormal line\n"
 	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte(maliciousOutput)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -5412,7 +5412,12 @@ func TestWatchSendExcerptIndentsFrameShapedOutput(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("frame missing excerpt:\n%s", frame)
 	}
-	for _, line := range strings.Split(parts[1], "\n") {
+	if strings.Contains(parts[1], "\r") {
+		t.Fatalf("excerpt retained carriage return:\n%s", frame)
+	}
+	normalizedExcerpt := strings.ReplaceAll(parts[1], "\r\n", "\n")
+	normalizedExcerpt = strings.ReplaceAll(normalizedExcerpt, "\r", "\n")
+	for _, line := range strings.Split(normalizedExcerpt, "\n") {
 		if strings.HasPrefix(line, "event:") || strings.HasPrefix(line, "watch_id:") {
 			t.Fatalf("excerpt line escaped frame indentation: %q\n%s", line, frame)
 		}
