@@ -570,6 +570,14 @@ Observer/sidecar v1 pattern:
 
 Observer sidecars are v1. No separate `observe` or observer-comment tool is required. Observer comments are ordinary `delegate_send` calls with runtime-resolved targets and permissions.
 
+Practical observer guidance for agents:
+
+- Use an observer agent type that actually has the tools the observer needs. An observer that must call `job_read_output`, `delegate_send(to="caller")`, or install nested watches needs a tool surface such as `agent_type="default"`; a limited leaf role is only suitable for observers that comment in their own transcript with `communicate`.
+- Prefer the idle-observer pattern: start the delegate, have its first turn finish with a short ready marker, then let `job_watch` frames start later turns in that same delegate conversation. Delivering frames into an already-running observer is supported, but it is harder for the model to reason about and easier to confuse with ordinary steering.
+- Keep observer instructions narrow and frame-driven. Tell the observer what frame fields to read (`watch_id`, `delivery_id`, `job_id`, `event`, and optional excerpt), what action to take, and when to stop.
+- Use the returned `delegate_id` as `send.to`. A delegate `job_id` is a turn handle, not a conversation handle, and should not be used for watch delivery.
+- Expect ordinary terminal job notifications after observer reports. They are confirmations of delegate/shell job lifecycle, not additional watch frames. Clear long-lived session watches before continuing a free-form conversation when later acknowledgements should not themselves be observed.
+
 Rules:
 
 - Every notification-armed background job emits one terminal notification when Serf observes or reconstructs terminal state, subject to durable duplicate suppression. `job_watch` is unrelated to that terminal notification.
@@ -1195,6 +1203,8 @@ Safety and behavior rules:
 - Watch sends to busy sidecars/delegates are retried from durable latest-frame-wins pending state. Hard/non-resumable delivery failure drops the pending frame only after emitting a caller-visible diagnostic.
 - Access control is target-resolution based: `caller` resolves to the runtime caller/current session; `watched` and `main` are rejected in v1.
 - Broad wildcard watches are not part of v1; watch a concrete `job_id` or the `caller` session.
+- Same-watch feedback suppression is causal: watch-originated events carry provenance, and the same `(watch_id, generation)` does not retrigger itself. A later top-level user input starts with fresh provenance, so legitimate future events can still fire the watch.
+- For observers that need to inspect watched job output, use a concrete job target and `send.to=<observer delegate_id>`; Serf grants the observer `job_read_output` for that watched job. Session-target watches such as `target="caller"` carry event payloads in the frame instead of granting transcript or job-list visibility.
 
 ## Relationship to transcript tools
 
