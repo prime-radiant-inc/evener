@@ -1,14 +1,10 @@
-# job-watch-actually-monty-python-injection: caller event frames cannot yet support content-triggered injection
+# job-watch-actually-monty-python-injection: content-bearing observer frames suppress self-loops
 
-**What this covers**: the desired "inject `Ni!` whenever the caller
-says the whole word `actually`" observer, and the current API gap that
-prevents it. A caller-event observer can receive
-`events:["communicate"]` frames, but as of the live Kimi run on
-2026-06-18 those frames carry only `trigger: event: COMMUNICATE`; they
-do not carry the communicated text. That means the observer cannot
-filter on `actually`, and a model that acknowledges each ignored
-observer notification with `communicate` can create a bounded-but-noisy
-watch loop. Contract anchor: `docs/job-control.md` "Observer and
+**What this covers**: an observer that injects `Ni!` whenever the
+caller says the whole word `actually`, and the causal-provenance safety
+rule that prevents observer-injected steering or notification
+acknowledgements from retriggering the same watch.
+Contract anchor: `docs/job-control.md` "Observer and
 sidecar composition", `delegate_send(to="caller")`, and caller-event
 watch frames.
 
@@ -28,15 +24,16 @@ watch frames.
    > 1. Call `delegate` with `max_wait_ms` 120000 and this exact
    >    task: "You are the Actually Watcher. First turn: communicate
    >    exactly PYTHON_READY and finish. If later started with a
-   >    message containing 'Watch frame', inspect the frame text. If
-   >    the frame contains the whole word actually, case-insensitive,
-   >    call delegate_send with to 'caller' and message exactly
-   >    'PYTHON_QUOTE delivery=<delivery_id> quote=Ni!'. Then
-   >    communicate exactly 'PYTHON_INJECTED delivery=<delivery_id>'
-   >    and finish. If the frame does not contain that whole word,
-   >    communicate exactly 'PYTHON_IGNORED delivery=<delivery_id>'
-   >    and finish. Do not include the word actually in any caller
-   >    message you send. Do not start any delegate of your own."
+   >    message containing 'Watch frame', read the `event.message`
+   >    field from the frame. If that message contains the whole word
+   >    actually, case-insensitive, call delegate_send with to
+   >    'caller' and message exactly 'PYTHON_QUOTE
+   >    delivery=<delivery_id> quote=Ni!'. Then communicate exactly
+   >    'PYTHON_INJECTED delivery=<delivery_id>' and finish. If the
+   >    message field does not contain that whole word, communicate
+   >    exactly 'PYTHON_IGNORED delivery=<delivery_id>' and finish.
+   >    Do not include the word actually in any caller message you
+   >    send. Do not start any delegate of your own."
    >    Capture the observer's `delegate_id`, current `job_id`, and
    >    `transcript_ref`.
    > 2. Call `job_watch` with operation "create": target "caller",
@@ -68,7 +65,7 @@ watch frames.
 6. Read the parent transcript, the observer transcript, and the
    parent's durable `jobs.jsonl`.
 
-## Current Expected
+## Expected
 
 - Turn 1's `job_watch` result has `watching: true`, a `watch_id`,
   target `"caller"`, events `["communicate"]`, and `send.to` equal to
@@ -77,38 +74,22 @@ watch frames.
   watched `communicate` event starts or steers that durable observer
   conversation.
 - Each delivered frame visible in the observer transcript has
-  `delivery_id:` and `trigger: event: COMMUNICATE`, but it does NOT
-  contain the caller's communicated text such as `actually alpha
-  marker`, `plain alpha marker`, or `Actually beta marker`.
-- Because the frame lacks the message body, the observer should not
-  emit `PYTHON_QUOTE`. A cautious observer emits
-  `PYTHON_IGNORED delivery=<delivery_id>` for each frame it cannot
-  classify. This is the current failure evidence, not the desired
-  product behavior.
-- If the parent model acknowledges observer notifications with
-  `communicate`, those acknowledgements are themselves watched
-  `communicate` events. The run may produce additional
-  `PYTHON_IGNORED` jobs until the watch is cleared or the parent stops
-  using `communicate`.
-- The parent's `jobs.jsonl` shows each watch delivery settle with
-  `watch_send_delivered` and no `watch_send_dropped`.
-
-## Desired Future Expected
-
-- Caller event frames include enough content, or `job_watch` provides a
-  content predicate, so the observer can distinguish `actually alpha
-  marker` and `Actually beta marker` from `plain alpha marker` without
-  reading the parent's raw transcript.
+  `watch_id:`, `delivery_id:`, `job_id:`, `trigger: event: COMMUNICATE`,
+  a `provenance:` line, and an `event:` block with `kind: communicate`,
+  `message: ...`, `await_reply: false`, and `truncated: false`.
 - The observer transcript shows `PYTHON_INJECTED` for the two trigger
   turns and `PYTHON_IGNORED` for the plain turn, each with the frame's
   `delivery_id`.
 - The parent transcript receives exactly two caller-steering entries
   containing `PYTHON_QUOTE delivery=<delivery_id> quote=Ni!`, and none
   for the plain turn or setup chatter.
-- The injection does not loop: injected messages and parent
-  acknowledgements either are not watched, or the watch/filter design
-  prevents non-trigger acknowledgements from recursively creating more
-  observer jobs.
+- The injected caller steering entries and any parent acknowledgement
+  turns do not create extra observer jobs for the same watch. The
+  parent's `jobs.jsonl` has no additional `watch_send_pending` entries
+  caused by `PYTHON_QUOTE` or acknowledgement traffic.
+- A later external human message containing `Actually` triggers a second
+  legitimate observer delivery, proving top-level external input resets
+  active provenance to empty.
 
 ## Cleanup
 
@@ -118,9 +99,7 @@ watch frames.
 ## Sharp edges
 
 - This card intentionally watches `communicate` only. Watching all
-  assistant messages is a broader product question, and current
-  communicate frames already lack the message body needed for this
-  filter.
+  assistant messages is a broader product question.
 - Creating a watch and then ending the setup turn is delicate because
   a final `communicate` after watch creation is itself a watched event.
 - Delivery to an idle parent rides the caller steering queue; the

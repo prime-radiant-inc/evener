@@ -69,6 +69,11 @@ composition" plus the caller-event rail.
   `SNIDE_NOTE` inside observer terminal job notifications or in a
   model acknowledgement of those notifications; those are job-output
   echoes, not caller-rail steering.
+- Watch frames include `watch_id:`, `delivery_id:`, and the triggering
+  event metadata needed for the observer to understand what it is
+  commenting on.
+- Observer lifecycle and notification traffic does not recursively
+  trigger the same caller watch.
 - The parent's `jobs.jsonl` shows `watch_send_pending` followed by
   `watch_send_delivered` for the deliveries, and no
   `watch_send_dropped`.
