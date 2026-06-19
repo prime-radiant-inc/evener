@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+
+	"primeradiant.com/serf/agent/provenance"
 )
 
 // JobType identifies the runtime that owns a job.
@@ -58,32 +60,33 @@ const (
 
 // DelegateRestoreDescriptor carries the durable state needed to restore a delegate job.
 type DelegateRestoreDescriptor struct {
-	Version             int      `json:"version"`
-	ChildSessionID      string   `json:"child_session_id"`
-	TranscriptRef       string   `json:"transcript_ref"`
-	ParentSessionID     string   `json:"parent_session_id,omitempty"`
-	ParentJobID         string   `json:"parent_job_id,omitempty"`
-	OwnerSessionID      string   `json:"owner_session_id,omitempty"`
-	VisibleSessionID    string   `json:"visible_session_id,omitempty"`
-	OriginTurnID        string   `json:"origin_turn_id,omitempty"`
-	OriginToolCallID    string   `json:"origin_tool_call_id,omitempty"`
-	Task                string   `json:"task,omitempty"`
-	AgentType           string   `json:"agent_type,omitempty"`
-	RequestedModel      string   `json:"requested_model,omitempty"`
-	ResolvedProfileID   string   `json:"resolved_profile_id,omitempty"`
-	ResolvedModel       string   `json:"resolved_model,omitempty"`
-	ReasoningEffort     string   `json:"reasoning_effort,omitempty"`
-	AgentName           string   `json:"agent_name,omitempty"`
-	FrozenRolePrompt    string   `json:"frozen_role_prompt,omitempty"`
-	FrozenTaskPrompt    string   `json:"frozen_task_prompt,omitempty"`
-	FrozenToolNames     []string `json:"frozen_tool_names,omitempty"`
-	FrozenSkillNames    []string `json:"frozen_skill_names,omitempty"`
-	FrozenSkillBodies   []string `json:"frozen_skill_bodies,omitempty"`
-	WorkingDir          string   `json:"working_dir,omitempty"`
-	LocalEnvPolicy      string   `json:"local_env_policy,omitempty"`
-	ResultSchema        any      `json:"result_schema,omitempty"`
-	ExplicitToolGrants  []string `json:"explicit_tool_grants,omitempty"`
-	DelegationAllowance int      `json:"delegation_allowance,omitempty"`
+	Version             int                `json:"version"`
+	ChildSessionID      string             `json:"child_session_id"`
+	TranscriptRef       string             `json:"transcript_ref"`
+	ParentSessionID     string             `json:"parent_session_id,omitempty"`
+	ParentJobID         string             `json:"parent_job_id,omitempty"`
+	OwnerSessionID      string             `json:"owner_session_id,omitempty"`
+	VisibleSessionID    string             `json:"visible_session_id,omitempty"`
+	OriginTurnID        string             `json:"origin_turn_id,omitempty"`
+	OriginToolCallID    string             `json:"origin_tool_call_id,omitempty"`
+	Task                string             `json:"task,omitempty"`
+	AgentType           string             `json:"agent_type,omitempty"`
+	RequestedModel      string             `json:"requested_model,omitempty"`
+	ResolvedProfileID   string             `json:"resolved_profile_id,omitempty"`
+	ResolvedModel       string             `json:"resolved_model,omitempty"`
+	ReasoningEffort     string             `json:"reasoning_effort,omitempty"`
+	AgentName           string             `json:"agent_name,omitempty"`
+	FrozenRolePrompt    string             `json:"frozen_role_prompt,omitempty"`
+	FrozenTaskPrompt    string             `json:"frozen_task_prompt,omitempty"`
+	FrozenToolNames     []string           `json:"frozen_tool_names,omitempty"`
+	FrozenSkillNames    []string           `json:"frozen_skill_names,omitempty"`
+	FrozenSkillBodies   []string           `json:"frozen_skill_bodies,omitempty"`
+	WorkingDir          string             `json:"working_dir,omitempty"`
+	LocalEnvPolicy      string             `json:"local_env_policy,omitempty"`
+	ResultSchema        any                `json:"result_schema,omitempty"`
+	ExplicitToolGrants  []string           `json:"explicit_tool_grants,omitempty"`
+	DelegationAllowance int                `json:"delegation_allowance,omitempty"`
+	Provenance          *provenance.Causal `json:"provenance,omitempty"`
 }
 
 // DelegateRecord is the folded durable state for a delegate handle.
@@ -143,18 +146,19 @@ type WatchSendKey struct {
 // WatchSendState is the durable payload for a pending or terminal watch-send
 // delivery state.
 type WatchSendState struct {
-	Key                WatchSendKey `json:"key"`
-	DeliveryID         string       `json:"delivery_id"`
-	UpdateSeq          uint64       `json:"update_seq,omitempty"`
-	Message            string       `json:"message,omitempty"`
-	Frame              string       `json:"frame,omitempty"`
-	TriggerIdentity    string       `json:"trigger_identity,omitempty"`
-	TriggerReason      string       `json:"trigger_reason,omitempty"`
-	CoalescedCount     int          `json:"coalesced_count,omitempty"`
-	DelegateGeneration string       `json:"delegate_generation,omitempty"`
-	DiagnosticReason   string       `json:"diagnostic_reason,omitempty"`
-	CreatedAt          time.Time    `json:"created_at,omitempty"`
-	UpdatedAt          time.Time    `json:"updated_at,omitempty"`
+	Key                WatchSendKey       `json:"key"`
+	DeliveryID         string             `json:"delivery_id"`
+	UpdateSeq          uint64             `json:"update_seq,omitempty"`
+	Message            string             `json:"message,omitempty"`
+	Frame              string             `json:"frame,omitempty"`
+	TriggerIdentity    string             `json:"trigger_identity,omitempty"`
+	TriggerReason      string             `json:"trigger_reason,omitempty"`
+	CoalescedCount     int                `json:"coalesced_count,omitempty"`
+	DelegateGeneration string             `json:"delegate_generation,omitempty"`
+	DiagnosticReason   string             `json:"diagnostic_reason,omitempty"`
+	CreatedAt          time.Time          `json:"created_at,omitempty"`
+	UpdatedAt          time.Time          `json:"updated_at,omitempty"`
+	Provenance         *provenance.Causal `json:"provenance,omitempty"`
 }
 
 // WatchSendRecord is the folded durable state for pending watch-send frames.
@@ -188,16 +192,18 @@ type JobRecord struct {
 	// signal for RUNNING jobs and is intentionally NOT folded from a durable
 	// event: a record reloaded from the store has it nil, and the projection
 	// falls back to EndedAt (then StartedAt). See projectJobRecord.
-	LastActivity           *time.Time  `json:"-"`
-	EndedAt                *time.Time  `json:"ended_at,omitempty"`
-	ExitCode               *int        `json:"exit_code,omitempty"`
-	OutputPath             string      `json:"output_path,omitempty"`
-	OutputBytes            int64       `json:"output_bytes"`
-	StructuredResult       any         `json:"structured_result,omitempty"`
-	StructuredResultValid  *bool       `json:"structured_result_valid,omitempty"`
-	StructuredResultReason string      `json:"structured_result_reason,omitempty"`
-	TerminalGen            string      `json:"terminal_generation,omitempty"`
-	NotifyState            NotifyState `json:"terminal_notification_state"`
+	LastActivity           *time.Time         `json:"-"`
+	EndedAt                *time.Time         `json:"ended_at,omitempty"`
+	ExitCode               *int               `json:"exit_code,omitempty"`
+	OutputPath             string             `json:"output_path,omitempty"`
+	OutputBytes            int64              `json:"output_bytes"`
+	StructuredResult       any                `json:"structured_result,omitempty"`
+	StructuredResultValid  *bool              `json:"structured_result_valid,omitempty"`
+	StructuredResultReason string             `json:"structured_result_reason,omitempty"`
+	TerminalGen            string             `json:"terminal_generation,omitempty"`
+	NotifyState            NotifyState        `json:"terminal_notification_state"`
+	Provenance             *provenance.Causal `json:"provenance,omitempty"`
+	NotificationProvenance *provenance.Causal `json:"notification_provenance,omitempty"`
 }
 
 func NewJobID() string {

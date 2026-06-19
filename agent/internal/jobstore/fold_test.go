@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"primeradiant.com/serf/agent/provenance"
 )
 
 func ev(kind EventKind, seq int64, jobID string, mut func(*Event)) Event {
@@ -720,5 +722,52 @@ func TestFoldIgnoresNotificationsForDiscardedTerminalGeneration(t *testing.T) {
 	}
 	if r.NotifyState != NotifyNotArmed {
 		t.Errorf("notify state = %q, want not_armed", r.NotifyState)
+	}
+}
+
+func TestFoldStoresJobProvenanceFromStartedEvent(t *testing.T) {
+	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", "session_1", "caller")
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobDelegate
+			e.OwnerSessionID = "session_1"
+			e.VisibleToSession = "session_1"
+			e.Provenance = p
+		}),
+	}
+
+	rec := Fold(events)["job_A"]
+	if rec == nil {
+		t.Fatal("job_A missing")
+	}
+	if !provenance.ContainsWatch(rec.Provenance, "watch_A", "wg_1") {
+		t.Fatalf("record provenance = %+v, want watch_A/wg_1", rec.Provenance)
+	}
+}
+
+func TestFoldStoresNotificationProvenanceFromPendingEvent(t *testing.T) {
+	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", "session_1", "caller")
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobDelegate
+			e.OwnerSessionID = "session_1"
+			e.VisibleToSession = "session_1"
+		}),
+		ev(EventJobFinished, 2, "job_A", func(e *Event) {
+			e.Status = StatusCompleted
+			e.TerminalGen = "GEN1"
+		}),
+		ev(EventJobNotificationPending, 3, "job_A", func(e *Event) {
+			e.TerminalGen = "GEN1"
+			e.Provenance = p
+		}),
+	}
+
+	rec := Fold(events)["job_A"]
+	if rec == nil {
+		t.Fatal("job_A missing")
+	}
+	if !provenance.ContainsWatch(rec.NotificationProvenance, "watch_A", "wg_1") {
+		t.Fatalf("notification provenance = %+v, want watch_A/wg_1", rec.NotificationProvenance)
 	}
 }

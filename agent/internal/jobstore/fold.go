@@ -1,6 +1,10 @@
 package jobstore
 
-import "sort"
+import (
+	"sort"
+
+	"primeradiant.com/serf/agent/provenance"
+)
 
 // Fold reconstructs the current JobRecord for each job by applying events in
 // seq order. The first job_finished for a job fixes its terminal_generation and
@@ -260,6 +264,7 @@ func applyEvent(r *JobRecord, e Event) {
 		r.OriginTurnID = e.OriginTurnID
 		r.OriginToolCallID = e.OriginToolCallID
 		r.DelegateRestore = e.DelegateRestore
+		r.Provenance = provenance.Clone(e.Provenance)
 		r.OutputPath = e.OutputPath
 		r.TranscriptRef = e.TranscriptRef
 		if e.StartedAt != nil {
@@ -296,6 +301,9 @@ func applyEvent(r *JobRecord, e Event) {
 		}
 		if r.NotifyState == NotifyNotArmed {
 			r.NotifyState = NotifyPending
+		}
+		if e.Provenance != nil {
+			r.NotificationProvenance = provenance.Clone(e.Provenance)
 		}
 	case EventJobNotificationDelivered:
 		if !notificationMatchesTerminalGeneration(r, e) {

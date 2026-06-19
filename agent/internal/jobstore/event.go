@@ -1,6 +1,10 @@
 package jobstore
 
-import "time"
+import (
+	"time"
+
+	"primeradiant.com/serf/agent/provenance"
+)
 
 // EventKind identifies a durable job-lifecycle event in jobs.jsonl.
 type EventKind string
@@ -81,6 +85,9 @@ type Event struct {
 
 	// watch_registered/watch_cleared payload
 	Watch *WatchEvent `json:"watch,omitempty"`
+
+	// causal provenance carried by job_started and job_notification_pending events
+	Provenance *provenance.Causal `json:"provenance,omitempty"`
 }
 
 type DelegateEvent struct {

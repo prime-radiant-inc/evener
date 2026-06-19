@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/agent/provenance"
 )
 
 func TestFoldWatchSendPendingLatestWinsAndTerminalRemoves(t *testing.T) {
@@ -421,5 +423,35 @@ func TestSeededCarryPreservedAcrossDiscard(t *testing.T) {
 	// "server READY", which matches exactly once.
 	if got := m.FeedAt([]byte("ver READY\n"), 22); len(got) != 1 || got[0] != "server READY" {
 		t.Fatalf("seeded carry must survive discard and match once: %#v", got)
+	}
+}
+
+func TestFoldWatchSendsPreservesProvenance(t *testing.T) {
+	key := WatchSendKey{
+		VisibleSessionID:        "session_1",
+		WatchID:                 "watch_A",
+		WatchTarget:             "caller",
+		ResolvedWatchedIdentity: "caller",
+		ResolvedSendTo:          "dlg_1",
+		WatchGeneration:         "wg_1",
+	}
+	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", "session_1", "caller")
+	rec := FoldWatchSends([]Event{{
+		Kind: EventWatchSendPending,
+		Seq:  1,
+		WatchSend: &WatchSendState{
+			Key:        key,
+			DeliveryID: "wd_1",
+			UpdateSeq:  1,
+			Provenance: p,
+		},
+	}})
+
+	pending := rec.Pending[key]
+	if pending == nil {
+		t.Fatal("pending watch send missing")
+	}
+	if !provenance.ContainsWatch(pending.Provenance, "watch_A", "wg_1") {
+		t.Fatalf("pending provenance = %+v, want watch_A/wg_1", pending.Provenance)
 	}
 }
