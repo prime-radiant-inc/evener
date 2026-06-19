@@ -566,6 +566,100 @@ func TestDrainDoesNotReRouteChildCallerPendings(t *testing.T) {
 	}
 }
 
+func TestParentDrainDeliversChildWatchSendThroughChildSession(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	now := time.Unix(4100, 0).UTC()
+	started := now.Add(time.Millisecond)
+	if err := childJM.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: "dlg_worker",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "WORKER",
+			TranscriptRef:    encodeRef("", "WORKER"),
+			OwnerSessionID:   "CHILD",
+			VisibleSessionID: "CHILD",
+			Generation:       "dg_worker",
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append worker delegate: %v", err)
+	}
+	if err := childJM.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               started,
+		JobID:            "job_worker",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_worker",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: "CHILD",
+		TranscriptRef:    encodeRef("", "WORKER"),
+		StartedAt:        &started,
+	}); err != nil {
+		t.Fatalf("append worker job: %v", err)
+	}
+	pending := restoredWatchSendPendingEvents("CHILD", "job_child_watched", "dlg_worker", now)
+	pending[0].WatchSend.DelegateGeneration = "dg_worker"
+	for _, event := range pending {
+		if err := childJM.appendEvent(event); err != nil {
+			t.Fatalf("append child pending: %v", err)
+		}
+	}
+	if err := childJM.restoreWatchSendPending(); err != nil {
+		t.Fatalf("restore child pending: %v", err)
+	}
+
+	worker := &Session{id: "WORKER"}
+	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil)}
+	child.subagents.track(&subagent{
+		id:      "WORKER",
+		sess:    worker,
+		status:  SubagentRunning,
+		driving: true,
+	})
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+	parent.subagents.track(&subagent{
+		id:     "CHILD",
+		sess:   child,
+		status: SubagentRunning,
+	})
+
+	if err := parent.drainPendingWatchSends(context.Background()); err != nil {
+		t.Fatalf("drainPendingWatchSends: %v", err)
+	}
+	if got := len(worker.steeringQueue); got != 1 {
+		t.Fatalf("worker steering queue length = %d, want child-owned watch send delivered once", got)
+	}
+	if !strings.Contains(worker.steeringQueue[0].Text, "delivery_id: delivery_restore_pending") {
+		t.Fatalf("worker steering text = %q, want restored watch-send frame", worker.steeringQueue[0].Text)
+	}
+	events := loadJobStoreEvents(t, childJM)
+	var delivered, dropped int
+	for _, event := range events {
+		switch event.Kind {
+		case jobstore.EventWatchSendDelivered:
+			delivered++
+		case jobstore.EventWatchSendDropped:
+			dropped++
+		}
+	}
+	if delivered != 1 || dropped != 0 {
+		t.Fatalf("child watch-send terminal events: delivered=%d dropped=%d, want delivered=1 dropped=0", delivered, dropped)
+	}
+}
+
 // appendDelegateRecordForChild appends a delegate job record (start + terminal)
 // to jm's store, owned by jm's session and pointing at childSessionID via its
 // transcript ref — the shape the parent's store holds for a delegate it created.

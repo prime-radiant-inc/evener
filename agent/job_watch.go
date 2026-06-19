@@ -3181,7 +3181,7 @@ func (s *Session) drainPendingWatchSends(ctx context.Context) error {
 			if child == nil || child.jobManager == nil {
 				continue
 			}
-			errs = append(errs, s.drainJobManagerWatchSends(ctx, child.jobManager, child.id))
+			errs = append(errs, child.drainJobManagerWatchSends(ctx, child.jobManager, child.id))
 		}
 	}
 	s.driveChildrenWithUndeliveredAttention()
@@ -3394,6 +3394,9 @@ func (s *Session) enqueueOwnCallerWatchSendTokens() {
 	}
 }
 
+// drainJobManagerWatchSends drains jm through the session that owns jm. The
+// receiver is the control surface for delegate-targeted sends; childSessionID is
+// only the caller-token routing marker used when a parent scans a child store.
 func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager, childSessionID string) error {
 	var errs []error
 	for _, delivery := range jm.pendingWatchSendDeliveries(nil) {

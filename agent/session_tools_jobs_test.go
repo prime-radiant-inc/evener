@@ -146,6 +146,75 @@ func TestJobListIncludesDelegatesRecoverySurface(t *testing.T) {
 	}
 }
 
+func TestJobListHidesDescendantDelegateHandles(t *testing.T) {
+	s := newTestSession(t)
+	now := time.Unix(100, 0).UTC()
+	ownedStart := now.Add(time.Second)
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: "dlg_owned",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "OWNED",
+			TranscriptRef:    encodeRef("", "OWNED"),
+			OwnerSessionID:   s.id,
+			VisibleSessionID: s.id,
+			Generation:       "dg_owned",
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append owned delegate: %v", err)
+	}
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               ownedStart,
+		JobID:            "job_owned",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_owned",
+		OwnerSessionID:   s.id,
+		VisibleToSession: s.id,
+		TranscriptRef:    encodeRef("", "OWNED"),
+		StartedAt:        &ownedStart,
+	}); err != nil {
+		t.Fatalf("append owned delegate job: %v", err)
+	}
+	descStart := now.Add(2 * time.Second)
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               descStart,
+		JobID:            "job_descendant",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_descendant",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: s.id,
+		TranscriptRef:    encodeRef("", "DESCENDANT"),
+		StartedAt:        &descStart,
+	}); err != nil {
+		t.Fatalf("append descendant delegate job: %v", err)
+	}
+
+	out, err := jobListTool(s, map[string]any{}, 1<<20)
+	if err != nil {
+		t.Fatalf("jobListTool: %v", err)
+	}
+	var parsed jobListResult
+	if err := json.Unmarshal(handlerJSON(t, out), &parsed); err != nil {
+		t.Fatalf("unmarshal job_list: %v", err)
+	}
+	if len(parsed.Delegates) != 1 || parsed.Delegates[0].DelegateID != "dlg_owned" {
+		t.Fatalf("delegates = %+v, want only owned delegate", parsed.Delegates)
+	}
+	for _, job := range parsed.Jobs {
+		if job.JobID == "job_descendant" && job.DelegateID != "" {
+			t.Fatalf("descendant job row exposes delegate_id %q; want no control handle", job.DelegateID)
+		}
+	}
+	rendered := out.(tooldefs.StateResult).Output
+	if strings.Contains(rendered, "delegate dlg_descendant") || strings.Contains(rendered, "delegate_id dlg_descendant") {
+		t.Fatalf("job_list output exposes descendant delegate handle:\n%s", rendered)
+	}
+}
+
 func TestJobToolsRejectDelegateIDWithActionableGuidance(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{

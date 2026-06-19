@@ -196,6 +196,29 @@ func TestFoldDelegatesLinksJobsAndProjectsCurrentLatest(t *testing.T) {
 	}
 }
 
+func TestFoldDelegatesProjectsOwnerFromJobStarted(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	events := []Event{
+		ev(EventJobStarted, 1, "job_child_delegate", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_child"
+			e.OwnerSessionID = "CHILD"
+			e.VisibleToSession = "ROOT"
+			e.TranscriptRef = "local:child"
+			e.StartedAt = &start
+		}),
+	}
+
+	delegates := FoldDelegates(events)
+	d := delegates["dlg_child"]
+	if d == nil {
+		t.Fatal("delegate dlg_child missing")
+	}
+	if d.OwnerSessionID != "CHILD" || d.VisibleSessionID != "ROOT" {
+		t.Fatalf("delegate ownership = owner %q visible %q, want CHILD/ROOT", d.OwnerSessionID, d.VisibleSessionID)
+	}
+}
+
 func TestFoldDelegatesAppliesSessionAssignedResumability(t *testing.T) {
 	start := time.Unix(1, 0).UTC()
 	end := time.Unix(2, 0).UTC()

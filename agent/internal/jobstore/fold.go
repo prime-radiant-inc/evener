@@ -107,6 +107,12 @@ func FoldDelegates(events []Event) map[string]*DelegateRecord {
 				delegates[e.DelegateID] = d
 			}
 			jobToDelegate[e.JobID] = e.DelegateID
+			if e.OwnerSessionID != "" {
+				d.OwnerSessionID = e.OwnerSessionID
+			}
+			if e.VisibleToSession != "" {
+				d.VisibleSessionID = e.VisibleToSession
+			}
 			d.CurrentJobID = e.JobID
 			d.LatestJobID = e.JobID
 			d.Status = DelegateRunning

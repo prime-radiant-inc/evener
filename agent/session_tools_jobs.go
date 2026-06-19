@@ -690,7 +690,11 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	}
 	sort.Strings(delegateIDs)
 	for _, delegateID := range delegateIDs {
-		delegates = append(delegates, projectDelegateRecord(delegateRecords[delegateID]))
+		delegateRecord := delegateRecords[delegateID]
+		if delegateRecord == nil || delegateRecord.OwnerSessionID != s.id {
+			continue
+		}
+		delegates = append(delegates, projectDelegateRecord(delegateRecord))
 	}
 	s.mu.Lock()
 	allowance := s.delegationAllowance
@@ -1910,10 +1914,25 @@ func projectJobOutputMatches(matches []jobstore.Match) []jobOutputMatch {
 }
 
 func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {
+	return projectJobRecordForViewer(s, s, rec)
+}
+
+func projectJobRecordForViewer(viewer *Session, assessor *Session, rec *jobstore.JobRecord) jobListEntry {
 	resumable := rec.Resumable
 	notResumableReason := stringPtrOrNil(rec.NotResumableWhy)
-	if isRuntimeLostDelegate(rec) {
-		assessment := s.assessDelegateResumability(rec, delegateResumabilityProjection)
+	delegateID := rec.DelegateID
+	viewerID := ""
+	if viewer != nil {
+		viewerID = viewer.id
+	}
+	if rec.OwnerSessionID != viewerID {
+		delegateID = ""
+	}
+	if assessor == nil {
+		assessor = viewer
+	}
+	if assessor != nil && isRuntimeLostDelegate(rec) {
+		assessment := assessor.assessDelegateResumability(rec, delegateResumabilityProjection)
 		resumableValue := assessment.Resumable
 		resumable = &resumableValue
 		if assessment.Resumable {
@@ -1924,7 +1943,7 @@ func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {
 	}
 	return jobListEntry{
 		JobID:              rec.JobID,
-		DelegateID:         rec.DelegateID,
+		DelegateID:         delegateID,
 		Type:               string(rec.Type),
 		Status:             string(rec.Status),
 		Reason:             stringPtrOrNil(rec.Reason),

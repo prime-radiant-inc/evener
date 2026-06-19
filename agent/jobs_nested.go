@@ -92,7 +92,7 @@ func (s *Session) walkDescendantJobs(filter listFilter) ([]jobListEntry, error) 
 		if projectSession == nil {
 			projectSession = s
 		}
-		entry := projectJobRecord(projectSession, row.rec)
+		entry := projectJobRecordForViewer(s, projectSession, row.rec)
 		entry.Depth = row.depth
 		jobs = append(jobs, entry)
 	}
