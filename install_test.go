@@ -18,6 +18,8 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
+const installedDoctoringSkill = "doctoring-serf"
+
 func TestInstallHomeGeneratedHome(t *testing.T) {
 	if testing.Short() {
 		t.Skip("install integration test")
@@ -106,8 +108,10 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	if status.Detailed == nil {
 		t.Fatal("installed serf serve /status omitted detailed status")
 	}
+	installedSkillNames := status.Detailed.SkillNames()
 	assertContainsAll(t, "bundled agents", status.Detailed.Agents, expectedAgents)
-	assertSameSet(t, "bundled skills", status.Detailed.SkillNames(), expectedSkills)
+	assertContainsAll(t, "installed skills", installedSkillNames, []string{installedDoctoringSkill})
+	assertSameSet(t, "bundled skills", installedSkillNames, expectedSkills)
 }
 
 func installedServeStatus(t *testing.T, repoRoot string, baseEnv []string, serfBin string) installedStatus {
