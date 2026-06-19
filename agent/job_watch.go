@@ -2639,26 +2639,51 @@ func (jm *jobManager) delegateStoppedAfterWatchSendPending(delegateID string, st
 }
 
 func watchSendPendingCreationSeq(events []jobstore.Event, state jobstore.WatchSendState) int64 {
-	if !state.CreatedAt.IsZero() {
-		for _, event := range events {
-			if event.Kind == jobstore.EventWatchSendPending && watchSendEventMatchesCreatedAt(event.WatchSend, state) {
-				return event.Seq
-			}
+	currentSeq := watchSendCurrentPendingSeq(events, state)
+	if currentSeq == 0 {
+		return 0
+	}
+	var settledSeq int64
+	for _, event := range events {
+		if event.Seq >= currentSeq {
+			break
+		}
+		if isWatchSendTerminalEvent(event.Kind) && watchSendEventMatchesKey(event.WatchSend, state.Key) {
+			settledSeq = event.Seq
 		}
 	}
 	for _, event := range events {
-		if event.Kind == jobstore.EventWatchSendPending && watchSendEventMatchesState(event.WatchSend, state) {
+		if event.Seq <= settledSeq {
+			continue
+		}
+		if event.Seq > currentSeq {
+			break
+		}
+		if event.Kind == jobstore.EventWatchSendPending && watchSendEventMatchesKey(event.WatchSend, state.Key) {
 			return event.Seq
 		}
 	}
 	return 0
 }
 
-func watchSendEventMatchesCreatedAt(eventState *jobstore.WatchSendState, state jobstore.WatchSendState) bool {
-	return eventState != nil &&
-		eventState.Key == state.Key &&
-		!eventState.CreatedAt.IsZero() &&
-		eventState.CreatedAt.Equal(state.CreatedAt)
+func watchSendCurrentPendingSeq(events []jobstore.Event, state jobstore.WatchSendState) int64 {
+	var seq int64
+	for _, event := range events {
+		if event.Kind == jobstore.EventWatchSendPending && watchSendEventMatchesState(event.WatchSend, state) {
+			seq = event.Seq
+		}
+	}
+	return seq
+}
+
+func watchSendEventMatchesKey(eventState *jobstore.WatchSendState, key jobstore.WatchSendKey) bool {
+	return eventState != nil && eventState.Key == key
+}
+
+func isWatchSendTerminalEvent(kind jobstore.EventKind) bool {
+	return kind == jobstore.EventWatchSendDelivered ||
+		kind == jobstore.EventWatchSendDropped ||
+		kind == jobstore.EventWatchSendEvicted
 }
 
 func watchSendEventMatchesState(eventState *jobstore.WatchSendState, state jobstore.WatchSendState) bool {
