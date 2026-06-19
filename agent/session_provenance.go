@@ -14,6 +14,15 @@ func (s *Session) activeCausalProvenance() *provenance.Causal {
 	return provenance.Clone(provenance.NilIfEmpty(&s.activeProvenance))
 }
 
+func (s *Session) completedCausalProvenance() *provenance.Causal {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return provenance.Clone(provenance.NilIfEmpty(&s.completedInputProvenance))
+}
+
 // replaceActiveProvenance overwrites the active provenance set. Each new external
 // top-level input calls this with nil to reset provenance so a fresh turn does not
 // inherit a prior watch origin.
@@ -24,9 +33,23 @@ func (s *Session) replaceActiveProvenance(p *provenance.Causal) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.activeProvenance = provenance.Causal{}
+	s.completedInputProvenance = provenance.Causal{}
 	if cloned := provenance.Clone(p); cloned != nil {
 		s.activeProvenance = *cloned
 	}
+}
+
+func (s *Session) finishActiveProvenance() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completedInputProvenance = provenance.Causal{}
+	if cloned := provenance.Clone(provenance.NilIfEmpty(&s.activeProvenance)); cloned != nil {
+		s.completedInputProvenance = *cloned
+	}
+	s.activeProvenance = provenance.Causal{}
 }
 
 // unionActiveProvenance merges p into the active provenance set. Consuming a

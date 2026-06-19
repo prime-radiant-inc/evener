@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/llm"
 )
 
@@ -30,6 +31,22 @@ func newTestSession(t *testing.T) *Session {
 	}
 	t.Cleanup(func() { sess.Close() })
 	return sess
+}
+
+func TestSubagentFollowUpProvenanceUnionsLaunchActiveAndCompleted(t *testing.T) {
+	child := &Session{state: SessionProcessing}
+	child.replaceActiveProvenance(testProvenance("watch_completed", "wg_1"))
+	child.finishProcessingAtBoundary(context.Background(), SessionIdle)
+	child.unionActiveProvenance(testProvenance("watch_active", "wg_1"))
+
+	sub := &subagent{sess: child}
+	got := sub.followUpProvenance(testProvenance("watch_launch", "wg_1"))
+
+	for _, watchID := range []string{"watch_launch", "watch_completed", "watch_active"} {
+		if !provenance.ContainsWatch(got, watchID, "wg_1") {
+			t.Fatalf("follow-up provenance = %+v, want %s/wg_1", got, watchID)
+		}
+	}
 }
 
 func spawnRuntimeAgent(t *testing.T, sess *Session, task, model string, maxTurns int, agentType, reasoningEffort string, grantTools []string) string {

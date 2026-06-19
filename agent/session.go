@@ -94,6 +94,10 @@ type Session struct {
 	// empty on each new external top-level input, and unioned with consumed
 	// steering messages' provenance. The zero value means "no watch origin".
 	activeProvenance provenance.Causal
+	// completedInputProvenance is the active provenance captured at the most
+	// recent processing boundary. Subagent follow-up turns use it to preserve
+	// watch keys accumulated during the just-finished run.
+	completedInputProvenance provenance.Causal
 
 	// inputQueue holds messages submitted via Enqueue while a turn is in
 	// flight. Kata 111a: text typed during a running turn returns to the

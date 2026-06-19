@@ -404,6 +404,48 @@ func TestJobWatchSendToWatchedFailsV1TargetValidation(t *testing.T) {
 	}
 }
 
+func TestJobWatchSendToNonResumableDelegateFailsTargetNotResumable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seed func(*testing.T, *jobManager, string)
+	}{
+		{
+			name: "delegate_not_resumable",
+			seed: func(t *testing.T, jm *jobManager, delegateID string) {
+				t.Helper()
+				resumable := false
+				appendDelegateTargetEvents(t, jm, delegateID, &resumable)
+			},
+		},
+		{
+			name: "terminal_job_missing_resumable_marker",
+			seed: func(t *testing.T, jm *jobManager, delegateID string) {
+				t.Helper()
+				appendDelegateTargetEvents(t, jm, delegateID, nil)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jm := newTestJM(t)
+			watched, _ := jm.createShell(createShellOpts{Command: "watched"})
+			tc.seed(t, jm, "dlg_dead")
+
+			_, err := jm.configureWatch(watchArgs{
+				Target:      watched.JobID,
+				OutputMatch: "ready",
+				Send:        &watchSendArgs{To: "dlg_dead", Message: "observe"},
+			})
+
+			if err == nil || !strings.Contains(err.Error(), "target_not_resumable") {
+				t.Fatalf("error = %v, want target_not_resumable", err)
+			}
+			if jm.watchCount() != 0 {
+				t.Fatalf("watch count = %d, want 0", jm.watchCount())
+			}
+		})
+	}
+}
+
 func TestConfigureWatchRejectsTerminalizingConcreteJob(t *testing.T) {
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -4829,6 +4871,62 @@ func seedWatchSendDelegateTarget(t *testing.T, jm *jobManager, target string) {
 		StartedAt:     &now,
 	}); err != nil {
 		t.Fatalf("seed watch-send delegate target %q: %v", jobID, err)
+	}
+}
+
+func appendDelegateTargetEvents(t *testing.T, jm *jobManager, delegateID string, resumable *bool) {
+	t.Helper()
+	jobID := "job_" + strings.TrimPrefix(delegateID, "dlg_")
+	childID := "child_" + jobID
+	now := jm.now()
+	started := now.Add(time.Millisecond)
+	events := []jobstore.Event{
+		{
+			Kind:       jobstore.EventDelegateCreated,
+			TS:         now,
+			DelegateID: delegateID,
+			Delegate: &jobstore.DelegateEvent{
+				ChildSessionID:   childID,
+				TranscriptRef:    encodeRef("", childID),
+				OwnerSessionID:   jm.sessionID,
+				VisibleSessionID: jm.sessionID,
+				Generation:       jobstore.NewDelegateGeneration(),
+				Resumable:        true,
+			},
+		},
+		{
+			Kind:             jobstore.EventJobStarted,
+			TS:               started,
+			JobID:            jobID,
+			Type:             jobstore.JobDelegate,
+			DelegateID:       delegateID,
+			OwnerSessionID:   jm.sessionID,
+			VisibleToSession: jm.sessionID,
+			TranscriptRef:    encodeRef("", childID),
+			StartedAt:        &started,
+		},
+	}
+	if resumable != nil {
+		events = append(events, jobstore.Event{
+			Kind:          jobstore.EventJobSessionAssigned,
+			TS:            now.Add(2 * time.Millisecond),
+			JobID:         jobID,
+			TranscriptRef: encodeRef("", childID),
+			Resumable:     resumable,
+		})
+	}
+	ended := now.Add(3 * time.Millisecond)
+	events = append(events, jobstore.Event{
+		Kind:    jobstore.EventJobFinished,
+		TS:      ended,
+		JobID:   jobID,
+		Status:  jobstore.StatusCompleted,
+		EndedAt: &ended,
+	})
+	for _, event := range events {
+		if err := jm.appendEvent(event); err != nil {
+			t.Fatalf("append %s: %v", event.Kind, err)
+		}
 	}
 }
 

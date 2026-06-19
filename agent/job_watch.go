@@ -767,6 +767,12 @@ func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error 
 	if rec.Type != jobstore.JobDelegate {
 		return fmt.Errorf("target_not_messageable: job %q has type %q", target, rec.Type)
 	}
+	if d.Status == jobstore.DelegateNotResumable || !d.Resumable {
+		return fmt.Errorf("target_not_resumable: delegate %q is %s", target, d.Status)
+	}
+	if rec.Status.IsTerminal() && (rec.Resumable == nil || !*rec.Resumable) {
+		return fmt.Errorf("target_not_resumable: delegate job %q is %s", jobID, rec.Status)
+	}
 	return nil
 }
 

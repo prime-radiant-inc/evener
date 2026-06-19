@@ -47,6 +47,31 @@ func TestFinishProcessingAtBoundaryClearsActiveProvenance(t *testing.T) {
 	}
 }
 
+func TestFinishProcessingAtBoundaryCapturesCompletedProvenance(t *testing.T) {
+	s := &Session{state: SessionProcessing}
+	s.replaceActiveProvenance(testProvenance("watch_A", "wg_1"))
+	s.unionActiveProvenance(testProvenance("watch_B", "wg_1"))
+
+	s.finishProcessingAtBoundary(context.Background(), SessionIdle)
+
+	got := s.completedCausalProvenance()
+	if !provenance.ContainsWatch(got, "watch_A", "wg_1") || !provenance.ContainsWatch(got, "watch_B", "wg_1") {
+		t.Fatalf("completed provenance = %+v, want watch_A and watch_B", got)
+	}
+}
+
+func TestReplaceActiveProvenanceClearsCompletedProvenance(t *testing.T) {
+	s := &Session{state: SessionProcessing}
+	s.replaceActiveProvenance(testProvenance("watch_A", "wg_1"))
+	s.finishProcessingAtBoundary(context.Background(), SessionIdle)
+
+	s.replaceActiveProvenance(testProvenance("watch_B", "wg_1"))
+
+	if provenance.ContainsWatch(s.completedCausalProvenance(), "watch_A", "wg_1") {
+		t.Fatalf("completed provenance survived new input: %+v", s.completedCausalProvenance())
+	}
+}
+
 func TestDrainSteeringForTurnUnionsMessageProvenance(t *testing.T) {
 	s := &Session{}
 	s.steeringQueue = []steeringMessage{

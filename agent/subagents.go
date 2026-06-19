@@ -841,10 +841,10 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		!a.sess.Communicated() &&
 		(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
 	if shouldNudge {
-		res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, inputProvenance)
+		res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, a.followUpProvenance(inputProvenance))
 	}
 	if !cancelRequested {
-		res, err = a.runSubagentStopHook(ctx, res, err, inputProvenance)
+		res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 	}
 
 	a.sess.mu.Lock()
@@ -900,6 +900,13 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 		reason = "SubagentStop hook blocked completion. Continue and address the hook feedback before stopping."
 	}
 	return a.sess.processInputWithProvenance(ctx, reason, nil, inputProvenance)
+}
+
+func (a *subagent) followUpProvenance(inputProvenance *provenance.Causal) *provenance.Causal {
+	if a == nil || a.sess == nil {
+		return provenance.Clone(inputProvenance)
+	}
+	return provenance.Union(inputProvenance, a.sess.activeCausalProvenance(), a.sess.completedCausalProvenance())
 }
 
 func (a *subagent) resultSnapshotLocked() subagentResult {
