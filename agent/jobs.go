@@ -800,6 +800,10 @@ func (jm *jobManager) reconcileLostJobs() error {
 	if err != nil {
 		return err
 	}
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		return err
+	}
 
 	jm.mu.Lock()
 	live := make(map[string]bool, len(jm.running))
@@ -824,9 +828,6 @@ func (jm *jobManager) reconcileLostJobs() error {
 			return err
 		}
 		finished.Provenance = provenance.Clone(rec.Provenance)
-		if err := jm.appendEvent(finished); err != nil {
-			return err
-		}
 		pending := jobstore.Event{
 			Kind:        jobstore.EventJobNotificationPending,
 			TS:          finished.TS,
@@ -834,7 +835,9 @@ func (jm *jobManager) reconcileLostJobs() error {
 			TerminalGen: finished.TerminalGen,
 			Provenance:  provenance.Clone(rec.Provenance),
 		}
-		if err := jm.appendEvent(pending); err != nil {
+		events := []jobstore.Event{finished, pending}
+		events = append(events, recoveredTerminalWatchClearEvents(watches, finished.JobID, finished.TS)...)
+		if err := jm.appendJobEvents(events); err != nil {
 			return err
 		}
 		if jm.enqueue != nil {
@@ -851,6 +854,34 @@ func (jm *jobManager) reconcileLostJobs() error {
 		}
 	}
 	return nil
+}
+
+func recoveredTerminalWatchClearEvents(watches map[string]*jobstore.WatchRecord, jobID string, ts time.Time) []jobstore.Event {
+	if len(watches) == 0 {
+		return nil
+	}
+	var watchIDs []string
+	for watchID, watch := range watches {
+		if watch == nil || !watch.Active || watch.Target != jobID || watch.Generation == "" {
+			continue
+		}
+		watchIDs = append(watchIDs, watchID)
+	}
+	sort.Strings(watchIDs)
+	events := make([]jobstore.Event, 0, len(watchIDs))
+	for _, watchID := range watchIDs {
+		watch := watches[watchID]
+		events = append(events, jobstore.Event{
+			Kind:    jobstore.EventWatchCleared,
+			TS:      ts,
+			WatchID: watchID,
+			Watch: &jobstore.WatchEvent{
+				Generation: watch.Generation,
+				EndReason:  "auto_removed_terminal",
+			},
+		})
+	}
+	return events
 }
 
 func (jm *jobManager) outputPathForJob(rec *jobstore.JobRecord, jobID string) string {

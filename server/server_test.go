@@ -668,6 +668,9 @@ func TestShutdown_InvokesCallback(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status: got %d, want %d (202)", rec.Code, http.StatusAccepted)
 	}
+	if got := rec.Result().Header.Get("Content-Length"); got != "0" {
+		t.Fatalf("Content-Length = %q, want 0", got)
+	}
 	select {
 	case <-called:
 	case <-time.After(time.Second):

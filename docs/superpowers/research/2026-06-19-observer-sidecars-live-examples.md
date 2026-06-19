@@ -21,7 +21,7 @@ These are real sessions from the sidecar/observer work. They are useful because 
 | --- | --- | --- | --- |
 | Snide commentary in observer's own thread | `01KVF48R8B3A15THEDMPRBQ9C2` | `01KVF4940RF5J956AG52MS314J` | Observer wrote `SNIDE_NOTE` in its own transcript and did not call `delegate_send`. |
 | Monty Python injection on `actually` | `01KVF40N0MV1R492KM4QJY7QN0` | `01KVF4142QC88J1VX8QH9RQ715` | Parent received `PYTHON_QUOTE ... quote=Ni!` for external matching messages; same-watch provenance suppressed injected/ack traffic. |
-| Output-match observer with read grant | `01KVF6E7HP0JMT2FPTWAJMK0NX` | `01KVF6JDEQRTVR76QDJG085QWY` | `watch_read_grant`, one delivery `wd_01KVF6JQCKJJ409A9KSDHP0G1P`, observer read the watched shell output and sent `OUTPUT_READ_GRANT_DONE`. |
+| Output-match observer with read grant | `01KVF6E7HP0JMT2FPTWAJMK0NX` | `01KVF6JDEQRTVR76QDJG085QWY` | `watch_read_grant`, one delivery `wd_01KVF6JQCKJJ409A9KSBZ1H6RQ`, observer read the watched shell output and sent `OUTPUT_READ_GRANT_DONE`. |
 | Job notification observer with Kimi | `01KVF85AV90RY3HPYVEPB352T7` | `01KVF898CSACJ9FSHFX5DT92J3` | One watch delivery ID `wd_01KVF8A19AJ23H2GK6ZBPPB6N2`; observer sent `NOTIFY_DONE`; observer delegate completion carried provenance and did not retrigger the watch. |
 | Failed notification observer before fix | `01KVF6V91S6Q389NBJ9CB6MY1T` | observer delegate under that parent | The observer's own delegate completion looked external because `job_finished` lacked provenance, so the same `job.notification` watch fired again. |
 
@@ -190,4 +190,3 @@ Observer support is not "done" because one demo works. It is done when these sta
 - `job_list` exposes enough delegate recovery state for an agent to find the correct `delegate_id`.
 - Failure paths leave enough live/durable state to retry instead of corrupting recovery.
 - The docs teach the idle-observer pattern and the difference between `delegate_id` and `job_id`.
-

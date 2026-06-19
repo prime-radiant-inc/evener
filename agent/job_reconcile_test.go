@@ -58,6 +58,74 @@ func TestReconcileOnRestoreFinalizesLostJob(t *testing.T) {
 	}
 }
 
+func TestReconcileOnRestoreClearsLostJobWatches(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(dir+"/sessions/S1/jobs", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	st, err := jobstore.Open(dir + "/sessions/S1/jobs.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Unix(1, 0).UTC()
+	if err := st.Append(jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_lost", Type: jobstore.JobShell, OwnerSessionID: "S1", VisibleToSession: "S1", StartedAt: &start}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Append(jobstore.Event{
+		Kind:    jobstore.EventWatchRegistered,
+		WatchID: "watch_lost",
+		Watch: &jobstore.WatchEvent{
+			Generation:       "wg_lost",
+			OwnerSessionID:   "S1",
+			VisibleSessionID: "S1",
+			Target:           "job_lost",
+			ConfigHash:       "hash_lost",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Append(jobstore.Event{
+		Kind:    jobstore.EventWatchRegistered,
+		WatchID: "watch_other",
+		Watch: &jobstore.WatchEvent{
+			Generation:       "wg_other",
+			OwnerSessionID:   "S1",
+			VisibleSessionID: "S1",
+			Target:           "job_other",
+			ConfigHash:       "hash_other",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/sessions/S1/jobs/job_lost.log", []byte("lost output\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	jm, err := newJobManager(dir, "S1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jm.now = func() time.Time { return time.Unix(100, 0).UTC() }
+
+	if err := jm.reconcileLostJobs(); err != nil {
+		t.Fatalf("reconcile lost jobs: %v", err)
+	}
+
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := watches["watch_lost"]; w == nil || w.Active || w.EndReason != "auto_removed_terminal" {
+		t.Fatalf("watch_lost = %+v, want inactive auto_removed_terminal", w)
+	}
+	if w := watches["watch_other"]; w == nil || !w.Active {
+		t.Fatalf("watch_other = %+v, want unrelated watch still active", w)
+	}
+}
+
 func TestReconcileOnRestoreSkipsForwardedChildOwnedJob(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(dir+"/sessions/PARENT/jobs", 0o755); err != nil {
