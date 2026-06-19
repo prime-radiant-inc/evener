@@ -683,19 +683,7 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	if err != nil {
 		return "", err
 	}
-	delegates := make([]delegateListEntry, 0, len(delegateRecords))
-	delegateIDs := make([]string, 0, len(delegateRecords))
-	for delegateID := range delegateRecords {
-		delegateIDs = append(delegateIDs, delegateID)
-	}
-	sort.Strings(delegateIDs)
-	for _, delegateID := range delegateIDs {
-		delegateRecord := delegateRecords[delegateID]
-		if delegateRecord == nil || !delegateControlOwnedBySession(delegateRecord.OwnerSessionID, s.id) {
-			continue
-		}
-		delegates = append(delegates, projectDelegateRecord(delegateRecord))
-	}
+	delegates := jobListDelegatesForJobs(s, delegateRecords, jobs)
 	s.mu.Lock()
 	allowance := s.delegationAllowance
 	s.mu.Unlock()
@@ -713,6 +701,35 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	}
 	_ = maxChars
 	return tool.StateResult{Output: formatJobList(result), State: result}, nil
+}
+
+func jobListDelegatesForJobs(s *Session, records map[string]*jobstore.DelegateRecord, jobs []jobListEntry) []delegateListEntry {
+	if len(records) == 0 || len(jobs) == 0 {
+		return nil
+	}
+	delegateIDs := make(map[string]bool)
+	for _, job := range jobs {
+		if job.DelegateID != "" {
+			delegateIDs[job.DelegateID] = true
+		}
+	}
+	if len(delegateIDs) == 0 {
+		return nil
+	}
+	orderedIDs := make([]string, 0, len(delegateIDs))
+	for delegateID := range delegateIDs {
+		orderedIDs = append(orderedIDs, delegateID)
+	}
+	sort.Strings(orderedIDs)
+	delegates := make([]delegateListEntry, 0, len(orderedIDs))
+	for _, delegateID := range orderedIDs {
+		record := records[delegateID]
+		if record == nil || !delegateControlOwnedBySession(record.OwnerSessionID, s.id) {
+			continue
+		}
+		delegates = append(delegates, projectDelegateRecord(record))
+	}
+	return delegates
 }
 
 // formatJobList renders job_list as plain text: a schema header, then one job per
