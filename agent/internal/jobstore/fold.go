@@ -111,6 +111,30 @@ func FoldDelegates(events []Event) map[string]*DelegateRecord {
 			d.LatestJobID = e.JobID
 			d.Status = DelegateRunning
 			d.StopGateClosed = false
+		case EventJobSessionAssigned:
+			delegateID := jobToDelegate[e.JobID]
+			if delegateID == "" {
+				continue
+			}
+			d := delegates[delegateID]
+			if d == nil {
+				continue
+			}
+			if e.TranscriptRef != "" {
+				d.TranscriptRef = e.TranscriptRef
+			}
+			if e.Resumable != nil {
+				d.Resumable = *e.Resumable
+				d.NotResumableWhy = e.NotResumableWhy
+				switch d.Status {
+				case "", DelegateIdle, DelegateNotResumable:
+					if d.Resumable {
+						d.Status = DelegateIdle
+					} else {
+						d.Status = DelegateNotResumable
+					}
+				}
+			}
 		case EventJobFinished:
 			delegateID := jobToDelegate[e.JobID]
 			if delegateID == "" {

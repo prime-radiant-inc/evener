@@ -224,6 +224,7 @@ type watchSendDelivery struct {
 	watchedIdentity          string
 	trigger                  string
 	triggerProvenance        *provenance.Causal
+	delegateGeneration       string
 	// provenance is the delivery's causal chain: the triggering event's
 	// provenance extended with this watch's own (watch_id, generation) key and a
 	// chain entry naming this delivery. Persisted onto the pending WatchSendState
@@ -956,21 +957,37 @@ func (jm *jobManager) watchSendSnapshot(cfg *watchConfig, jobID, trigger string,
 	cfg.nextUpdateSeq++
 	deliveryID := jobstore.NewWatchSendDeliveryID()
 	return watchSendDelivery{
-		cfg:               cfg,
-		key:               watchKey{VisibleSessionID: jm.sessionID, Target: cfg.target, SendTo: sendTo},
-		generation:        cfg.generation,
-		updateSeq:         cfg.nextUpdateSeq,
-		send:              cloneWatchSendArgs(cfg.send),
-		deliveryID:        deliveryID,
-		visibleSessionID:  jm.sessionID,
-		watchTarget:       cfg.target,
-		watchedIdentity:   jobID,
-		trigger:           trigger,
-		triggerProvenance: provenance.Clone(root.Provenance),
-		provenance:        provenance.WithWatch(root.Provenance, cfg.watchID, cfg.generation, deliveryID, root.SessionID, jobID),
-		eventKind:         root.Kind,
-		eventData:         root.Data,
+		cfg:                cfg,
+		key:                watchKey{VisibleSessionID: jm.sessionID, Target: cfg.target, SendTo: sendTo},
+		generation:         cfg.generation,
+		updateSeq:          cfg.nextUpdateSeq,
+		send:               cloneWatchSendArgs(cfg.send),
+		deliveryID:         deliveryID,
+		visibleSessionID:   jm.sessionID,
+		watchTarget:        cfg.target,
+		watchedIdentity:    jobID,
+		trigger:            trigger,
+		triggerProvenance:  provenance.Clone(root.Provenance),
+		delegateGeneration: jm.watchSendDelegateGeneration(sendTo, jobID),
+		provenance:         provenance.WithWatch(root.Provenance, cfg.watchID, cfg.generation, deliveryID, root.SessionID, jobID),
+		eventKind:          root.Kind,
+		eventData:          root.Data,
 	}
+}
+
+func (jm *jobManager) watchSendDelegateGeneration(sendTo, watchedIdentity string) string {
+	target, err := resolveWatchSendTarget(sendTo, watchedIdentity)
+	if err != nil || !strings.HasPrefix(target, "dlg_") {
+		return ""
+	}
+	delegates, err := jm.store.LoadDelegates()
+	if err != nil {
+		return ""
+	}
+	if delegate := delegates[target]; delegate != nil {
+		return delegate.Generation
+	}
+	return ""
 }
 
 // jobProvenanceForWatch returns a clone of the watched job's recorded causal
@@ -2047,6 +2064,10 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		jm.mu.Unlock()
 		return false
 	}
+	if shouldSuppressWatch(cfg, root.Provenance) {
+		jm.mu.Unlock()
+		return true
+	}
 	if cfg.send != nil {
 		deliveries = append(deliveries, jm.watchSendSnapshot(cfg, cfg.target, "progress_tick", root))
 	} else {
@@ -2195,15 +2216,6 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery) (state jobstore.Watch
 		jm.mintWatchSendReadGrant(d.cfg, target, d.watchedIdentity)
 	}
 	state = jm.watchSendState(d, target)
-	if strings.HasPrefix(target, "dlg_") {
-		delegates, derr := jm.store.LoadDelegates()
-		if derr != nil {
-			return jobstore.WatchSendState{}, nil, false, derr
-		}
-		if delegate := delegates[target]; delegate != nil {
-			state.DelegateGeneration = delegate.Generation
-		}
-	}
 	persisted, perr := jm.persistPendingWatchSend(state, d)
 	if perr != nil {
 		if d.allowAfterTerminalExpiry && !persisted {
@@ -2261,13 +2273,14 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 			ResolvedSendTo:          resolvedSendTo,
 			WatchGeneration:         d.generation,
 		},
-		DeliveryID:      deliveryID,
-		UpdateSeq:       d.updateSeq,
-		Message:         d.message,
-		Frame:           d.frame,
-		TriggerIdentity: d.watchedIdentity,
-		TriggerReason:   d.trigger,
-		Provenance:      provenance.Clone(d.provenance),
+		DeliveryID:         deliveryID,
+		UpdateSeq:          d.updateSeq,
+		Message:            d.message,
+		Frame:              d.frame,
+		TriggerIdentity:    d.watchedIdentity,
+		TriggerReason:      d.trigger,
+		Provenance:         provenance.Clone(d.provenance),
+		DelegateGeneration: d.delegateGeneration,
 	}
 }
 
@@ -3492,7 +3505,10 @@ func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliv
 			return watchSendBusy, ""
 		}
 		if !rec.Status.IsTerminal() {
-			return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate job %q is %s", target, rec.Status)
+			return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate job %q is %s", jobID, rec.Status)
+		}
+		if rec.Resumable == nil || !*rec.Resumable {
+			return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate job %q is %s", jobID, rec.Status)
 		}
 		assessment := s.assessDelegateResumability(rec, delegateResumabilityProjection)
 		if !assessment.Resumable {

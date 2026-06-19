@@ -1005,6 +1005,34 @@ func TestOutputMatchSuppressesSameWatchProvenanceOnTerminalFlush(t *testing.T) {
 	}
 }
 
+func TestProgressTickSuppressesSameWatchProvenance(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	cfg, err := newWatchConfig(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}, jm.now())
+	if err != nil {
+		t.Fatalf("newWatchConfig: %v", err)
+	}
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID}
+	p := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", jm.sessionID, rec.JobID)
+	jm.mu.Lock()
+	jm.watches[key] = cfg
+	jm.running[rec.JobID].rec.Provenance = p
+	jm.mu.Unlock()
+
+	if !jm.fireProgressTick(key, cfg) {
+		t.Fatal("progress tick returned false for live watch")
+	}
+	if len(notified) != 0 {
+		t.Fatalf("same-watch progress tick must be suppressed; got %d notifications: %+v", len(notified), notified)
+	}
+	if cfg.deliveries != 0 {
+		t.Fatalf("deliveries = %d, want 0 for suppressed progress tick", cfg.deliveries)
+	}
+}
+
 // TestOutputMatchHonorsScanOffsetThroughFeedPath proves the end offset threaded
 // from the store reaches FeedAt in the matcher's lifetime-byte space: a chunk
 // landing entirely below an attach-time scan offset must not fire, while a later
@@ -4889,6 +4917,61 @@ func seedWatchSendDelegateTarget(t *testing.T, jm *jobManager, target string) {
 	}
 }
 
+func TestWatchSendStateUsesDelegateGenerationAtFireTime(t *testing.T) {
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
+	delegates, err := jm.store.LoadDelegates()
+	if err != nil {
+		t.Fatalf("load delegates: %v", err)
+	}
+	oldGeneration := delegates["dlg_obs"].Generation
+	if oldGeneration == "" {
+		t.Fatal("seeded delegate generation is empty")
+	}
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: ready")
+
+	newGeneration := jobstore.NewDelegateGeneration()
+	if newGeneration == oldGeneration {
+		t.Fatal("new delegate generation matched old generation")
+	}
+	now := jm.now().Add(time.Second)
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: "dlg_obs",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "child_job_obs",
+			TranscriptRef:    encodeRef("", "child_job_obs"),
+			OwnerSessionID:   jm.sessionID,
+			VisibleSessionID: jm.sessionID,
+			Generation:       newGeneration,
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append new delegate generation: %v", err)
+	}
+
+	state, _, ok, err := jm.recordWatchSend(delivery)
+	if err != nil {
+		t.Fatalf("recordWatchSend: %v", err)
+	}
+	if !ok {
+		t.Fatal("recordWatchSend returned ok=false")
+	}
+	if state.DelegateGeneration != oldGeneration {
+		t.Fatalf("delegate_generation = %q, want fire-time generation %q", state.DelegateGeneration, oldGeneration)
+	}
+}
+
 func TestWatchSendFailureNotifiesCaller(t *testing.T) {
 	jm := newTestJM(t)
 	sendErr := errors.New("target_not_messageable: job_obs")
@@ -5637,6 +5720,139 @@ func TestDelegateSendExplicitStartDoesNotReenablePreStopPendingWatchSend(t *test
 	queue := sub.sess.SteeringQueueSnapshot()
 	if len(queue) != 1 || !strings.Contains(queue[0].Text, "after restart") {
 		t.Fatalf("queue after fresh drain = %+v, want only post-restart frame", queue)
+	}
+}
+
+func TestRestoredDelegateTargetRequiresConcreteJobResumable(t *testing.T) {
+	jm := newTestJM(t)
+	now := jm.now()
+	resumable := false
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: "dlg_A",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "child_A",
+			TranscriptRef:    encodeRef("", "child_A"),
+			OwnerSessionID:   jm.sessionID,
+			VisibleSessionID: jm.sessionID,
+			Generation:       "dg_1",
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append delegate created: %v", err)
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               now,
+		JobID:            "job_A",
+		Type:             jobstore.JobDelegate,
+		Status:           jobstore.StatusRunning,
+		OwnerSessionID:   jm.sessionID,
+		VisibleToSession: jm.sessionID,
+		DelegateID:       "dlg_A",
+		TranscriptRef:    encodeRef("", "child_A"),
+		StartedAt:        &now,
+	}); err != nil {
+		t.Fatalf("append job started: %v", err)
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobSessionAssigned,
+		TS:               now,
+		JobID:            "job_A",
+		TranscriptRef:    encodeRef("", "child_A"),
+		Resumable:        &resumable,
+		NotResumableWhy:  "missing checkpoint",
+		OwnerSessionID:   jm.sessionID,
+		VisibleToSession: jm.sessionID,
+	}); err != nil {
+		t.Fatalf("append session assigned: %v", err)
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: "dlg_A",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "child_A",
+			TranscriptRef:    encodeRef("", "child_A"),
+			OwnerSessionID:   jm.sessionID,
+			VisibleSessionID: jm.sessionID,
+			Generation:       "dg_2",
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append stale delegate created: %v", err)
+	}
+	endedAt := now.Add(time.Second)
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          endedAt,
+		JobID:       "job_A",
+		Status:      jobstore.StatusCompleted,
+		EndedAt:     &endedAt,
+		TerminalGen: "tg_1",
+	}); err != nil {
+		t.Fatalf("append job finished: %v", err)
+	}
+	s := &Session{id: jm.sessionID, jobManager: jm}
+
+	class, reason := s.classifyRestoredWatchSendTarget("dlg_A")
+	if class != watchSendHardFailure {
+		t.Fatalf("class = %v, want hard failure", class)
+	}
+	if !strings.Contains(reason, "delegate job \"job_A\"") {
+		t.Fatalf("reason = %q, want concrete job resumability failure", reason)
+	}
+}
+
+func TestStopTerminalizingDelegateDoesNotCloseStopGate(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*runningJob)
+	}{
+		{
+			name: "terminal recorded",
+			setup: func(run *runningJob) {
+				run.rec.Status = jobstore.StatusCompleted
+				run.terminal = &terminalJob{status: jobstore.StatusCompleted}
+			},
+		},
+		{
+			name: "finalize in flight",
+			setup: func(run *runningJob) {
+				run.finalize = &finalizeAttempt{done: make(chan struct{})}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jm := newTestJM(t)
+			rec, _ := jm.createShell(createShellOpts{Command: "x"})
+			jm.mu.Lock()
+			run := jm.running[rec.JobID]
+			run.rec.Type = jobstore.JobDelegate
+			run.rec.DelegateID = "dlg_A"
+			tc.setup(run)
+			jm.mu.Unlock()
+			t.Cleanup(func() { jm.discardDelayedShell(run) })
+
+			realAppend := jm.appendEvent
+			jm.appendEvent = func(e jobstore.Event) error {
+				if e.Kind == jobstore.EventDelegateStopGateClosed {
+					t.Fatalf("stop appended delegate stop gate for terminalizing run: %+v", e)
+				}
+				return realAppend(e)
+			}
+
+			if _, err := jm.stop(rec.JobID); err != nil {
+				t.Fatalf("stop: %v", err)
+			}
+			jm.mu.Lock()
+			stopStatus := run.stopStatus
+			jm.mu.Unlock()
+			if stopStatus != "" {
+				t.Fatalf("run stopStatus = %q, want unchanged", stopStatus)
+			}
+		})
 	}
 }
 
@@ -7245,6 +7461,58 @@ func TestKeptSyncTerminalWatchAppendFailureKeepsRetryState(t *testing.T) {
 	jm.mu.Unlock()
 	if running || watching {
 		t.Fatalf("retry left running=%v watching=%v, want both removed", running, watching)
+	}
+}
+
+func TestKeptSyncRetryDoesNotArmOwnerNotification(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	jm.mu.Lock()
+	run := jm.running[rec.JobID]
+	jm.mu.Unlock()
+	if run == nil {
+		t.Fatal("running job missing")
+	}
+
+	realAppendEvents := jm.appendEvents
+	appendErr := errors.New("append watch clear failed")
+	failed := false
+	jm.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventWatchCleared && !failed {
+				failed = true
+				return appendErr
+			}
+		}
+		return realAppendEvents(events)
+	}
+
+	code := 0
+	jm.finalizeKeptSyncUntilDurable(run, jobstore.StatusCompleted, "exit_zero", &code)
+	if !failed {
+		t.Fatal("test did not exercise the kept-sync retry path")
+	}
+	if len(notified) != 0 {
+		t.Fatalf("kept-sync retry enqueued owner/watch notifications: %+v", notified)
+	}
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Kind == jobstore.EventJobNotificationPending {
+			t.Fatalf("kept-sync retry armed owner notification: %+v", event)
+		}
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending watch sends = %+v, want none", pending)
+	}
+	jm.mu.Lock()
+	_, running := jm.running[rec.JobID]
+	jm.mu.Unlock()
+	if running {
+		t.Fatal("kept-sync retry left job running")
 	}
 }
 

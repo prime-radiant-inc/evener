@@ -196,6 +196,52 @@ func TestFoldDelegatesLinksJobsAndProjectsCurrentLatest(t *testing.T) {
 	}
 }
 
+func TestFoldDelegatesAppliesSessionAssignedResumability(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	end := time.Unix(2, 0).UTC()
+	resumable := false
+	events := []Event{
+		ev(EventDelegateCreated, 1, "", func(e *Event) {
+			e.DelegateID = "dlg_A"
+			e.Delegate = &DelegateEvent{
+				ChildSessionID: "child_A",
+				TranscriptRef:  "local:child_A",
+				Generation:     "dg_1",
+				Resumable:      true,
+			}
+		}),
+		ev(EventJobStarted, 2, "job_1", func(e *Event) {
+			e.Type = JobDelegate
+			e.DelegateID = "dlg_A"
+			e.TranscriptRef = "local:child_A"
+			e.StartedAt = &start
+		}),
+		ev(EventJobSessionAssigned, 3, "job_1", func(e *Event) {
+			e.TranscriptRef = "local:child_A"
+			e.Resumable = &resumable
+			e.NotResumableWhy = "missing checkpoint"
+		}),
+		ev(EventJobFinished, 4, "job_1", func(e *Event) {
+			e.Status = StatusCompleted
+			e.EndedAt = &end
+		}),
+	}
+
+	d := FoldDelegates(events)["dlg_A"]
+	if d == nil {
+		t.Fatal("delegate dlg_A missing")
+	}
+	if d.Resumable {
+		t.Fatalf("delegate resumable = true, want false: %+v", d)
+	}
+	if d.Status != DelegateNotResumable {
+		t.Fatalf("delegate status = %q, want %q", d.Status, DelegateNotResumable)
+	}
+	if d.NotResumableWhy != "missing checkpoint" {
+		t.Fatalf("delegate not_resumable_reason = %q, want missing checkpoint", d.NotResumableWhy)
+	}
+}
+
 func TestFoldDelegatesClosesStopGateForCurrentJob(t *testing.T) {
 	start := time.Unix(1, 0).UTC()
 	end := time.Unix(2, 0).UTC()

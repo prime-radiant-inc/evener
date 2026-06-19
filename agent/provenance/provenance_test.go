@@ -74,6 +74,21 @@ func TestDiagnosticChainTruncatesWithoutDroppingWatchKeys(t *testing.T) {
 	}
 }
 
+func TestCloneTruncatesOverlongDiagnosticChain(t *testing.T) {
+	p := &Causal{}
+	for i := 0; i < maxDiagnosticChain+5; i++ {
+		p.Chain = append(p.Chain, Entry{Kind: "manual", DeliveryID: "wd"})
+	}
+
+	got := Clone(p)
+	if len(got.Chain) > maxDiagnosticChain {
+		t.Fatalf("clone chain length = %d, want at most %d", len(got.Chain), maxDiagnosticChain)
+	}
+	if !got.ChainTruncated {
+		t.Fatal("clone should mark an overlong diagnostic chain truncated")
+	}
+}
+
 func TestNilIfEmpty(t *testing.T) {
 	if NilIfEmpty(nil) != nil {
 		t.Fatal("nil stays nil")

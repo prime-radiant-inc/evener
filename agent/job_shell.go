@@ -175,9 +175,9 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			}
 			// finalizeKeptSync writes the terminal event without arming owner
 			// notification (spec §6.4d: synchronous completion needs no duplicate
-			// terminal notification). Falls back to the durable goroutine on error.
+			// terminal notification). Retry that same no-notification path on error.
 			if err := jm.finalizeKeptSync(run, status, reason, exitCode); err != nil {
-				go jm.finalizeShellUntilDurable(run.rec.JobID, status, reason, exitCode)
+				go jm.finalizeKeptSyncUntilDurable(run, status, reason, exitCode)
 			}
 			return run.rec.JobID
 		}
@@ -552,6 +552,17 @@ func (jm *jobManager) finalizeShellUntilDurable(jobID string, status jobstore.St
 	attempt := 0
 	for {
 		if err := jm.finalize(jobID, status, reason, exitCode); err == nil || errors.Is(err, jobstore.ErrStoreClosed) {
+			return
+		}
+		time.Sleep(shellFinalizeBackoff(attempt))
+		attempt++
+	}
+}
+
+func (jm *jobManager) finalizeKeptSyncUntilDurable(run *runningJob, status jobstore.Status, reason string, exitCode *int) {
+	attempt := 0
+	for {
+		if err := jm.finalizeKeptSync(run, status, reason, exitCode); err == nil || errors.Is(err, jobstore.ErrStoreClosed) {
 			return
 		}
 		time.Sleep(shellFinalizeBackoff(attempt))

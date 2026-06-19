@@ -35,6 +35,7 @@ func Clone(p *Causal) *Causal {
 	out := &Causal{ChainTruncated: p.ChainTruncated}
 	out.WatchKeys = append(out.WatchKeys, p.WatchKeys...)
 	out.Chain = append(out.Chain, p.Chain...)
+	truncateChain(out)
 	return NilIfEmpty(out)
 }
 

@@ -866,6 +866,10 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 	run := jm.running[jobID]
 	if run != nil {
 		rec := cloneJobRecord(run.rec)
+		if run.finalize != nil || run.terminal != nil || run.rec.Status.IsTerminal() {
+			jm.mu.Unlock()
+			return rec, nil
+		}
 		if err := jm.appendDelegateStopGateForRecord(rec); err != nil {
 			jm.mu.Unlock()
 			return nil, err
