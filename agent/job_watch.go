@@ -1701,7 +1701,7 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 			if isWatchSessionTarget(notifyJobID) {
 				notifyJobID = ""
 			}
-			notifications = append(notifications, watchNotification(notifyJobID, fmt.Sprintf("event: %s", kind)))
+			notifications = append(notifications, jm.watchNotificationFromWatch(cfg, notifyJobID, fmt.Sprintf("event: %s", kind), ev.Provenance))
 			if jm.recordWatchDeliveryLocked(cfg) {
 				overBudget = append(overBudget, cfg)
 			}
@@ -1808,7 +1808,7 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 			if cfg.send != nil {
 				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Line, matchRoot))
 			} else {
-				notifications = append(notifications, watchNotification(jobID, "output_match: "+match.Line))
+				notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, "output_match: "+match.Line, match.Provenance))
 				if jm.recordWatchDeliveryLocked(cfg) {
 					overBudget = append(overBudget, cfg)
 				}
@@ -1914,7 +1914,7 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 		overBudget = append(overBudget, cfg)
 	}
 	jm.mu.Unlock()
-	jm.enqueueWatchNotifications([]jobNotification{watchNotification(jobID, reason)})
+	jm.enqueueWatchNotifications([]jobNotification{jm.watchNotificationFromWatch(cfg, jobID, reason, jobProvenanceForWatch(jm, jobID))})
 	jm.autoClearOverBudgetWatches(overBudget)
 	return true
 }
@@ -1962,7 +1962,7 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 	reason := "output_match: " + matches[len(matches)-1].Line
 
 	if a.Send == nil {
-		jm.enqueueWatchNotifications([]jobNotification{watchNotification(key.Target, reason)})
+		jm.enqueueWatchNotifications([]jobNotification{jm.watchNotificationFromWatch(cfg, key.Target, reason, jobProvenanceForWatch(jm, key.Target))})
 		return result, nil
 	}
 	result = watchResultFromConfig(cfg, false)
@@ -2036,7 +2036,7 @@ func (jm *jobManager) completeExpiredJobWatchesLocked(jobID string, expired []ex
 					deliveries = append(deliveries, delivery)
 					trackTerminalFlush = true
 				} else {
-					notifications = append(notifications, watchNotification(jobID, "output_match: "+match.Line))
+					notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, "output_match: "+match.Line, match.Provenance))
 					// A no-send caller notification is delivered for sure, but only
 					// after the cfg is removed below, so the drain's later increment
 					// would never reach recent_watches. Count it now. Send deliveries
@@ -2111,7 +2111,7 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		if isWatchSessionTarget(notifyJobID) {
 			notifyJobID = ""
 		}
-		notifications = append(notifications, watchNotification(notifyJobID, "progress_tick"))
+		notifications = append(notifications, jm.watchNotificationFromWatch(cfg, notifyJobID, "progress_tick", root.Provenance))
 		overBudget = jm.recordWatchDeliveryLocked(cfg)
 	}
 	jm.mu.Unlock()
@@ -2131,6 +2131,15 @@ func watchNotification(jobID, reason string) jobNotification {
 		Status:  jobNotificationEventWatch,
 		Reason:  reason,
 	}
+}
+
+func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason string, root *provenance.Causal) jobNotification {
+	n := watchNotification(jobID, reason)
+	if cfg == nil {
+		return n
+	}
+	n.Provenance = provenance.WithWatch(root, cfg.watchID, cfg.generation, "", jm.sessionID, jobID)
+	return n
 }
 
 // startQuietWatchdog arms the quiet-job watchdog for a running delegate. The
@@ -3797,13 +3806,18 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 }
 
 func writeWatchFrameIndentedBlock(b *strings.Builder, text string) {
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
+	text = normalizeWatchFrameLineEndings(text)
 	for _, line := range strings.Split(text, "\n") {
 		b.WriteString("  ")
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
+}
+
+func normalizeWatchFrameLineEndings(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	return text
 }
 
 func writeWatchFrameProvenance(b *strings.Builder, p *provenance.Causal) {
@@ -3936,6 +3950,7 @@ func writeWatchFrameOptionalField(b *strings.Builder, name, value string) {
 }
 
 func writeWatchFrameTextField(b *strings.Builder, name, value string) {
+	value = normalizeWatchFrameLineEndings(value)
 	b.WriteString("  ")
 	b.WriteString(name)
 	b.WriteString(": ")
