@@ -929,10 +929,13 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 		jm.mu.Unlock()
 		return nil
 	}
-	watchNotifications, watchDeliveries := jm.expireJobWatchesLocked(run.rec.JobID)
+	watchNotifications, watchDeliveries, watchRegistryEvents := jm.expireJobWatchesLocked(run.rec.JobID)
 	delete(jm.running, run.rec.JobID)
 	jm.mu.Unlock()
 
+	if err := jm.appendWatchRegistryEvents(watchRegistryEvents); err != nil {
+		return err
+	}
 	jm.enqueueWatchNotifications(watchNotifications)
 	jm.recordWatchSendsAndKick(watchDeliveries)
 	// No EventJobNotificationPending, no jm.enqueue call: kept within-bound
@@ -1198,12 +1201,16 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	pendingAppended := terminal.notificationPendingAppended
 	var watchNotifications []jobNotification
 	var watchDeliveries []watchSendDelivery
+	var watchRegistryEvents []jobstore.Event
 	if !pendingAppended {
-		watchNotifications, watchDeliveries = jm.expireJobWatchesLocked(run.rec.JobID)
+		watchNotifications, watchDeliveries, watchRegistryEvents = jm.expireJobWatchesLocked(run.rec.JobID)
 	}
 	jm.mu.Unlock()
 
 	if !pendingAppended {
+		if err := jm.appendWatchRegistryEvents(watchRegistryEvents); err != nil {
+			return err
+		}
 		jm.enqueueWatchNotifications(watchNotifications)
 		jm.recordWatchSendsAndKick(watchDeliveries)
 	}

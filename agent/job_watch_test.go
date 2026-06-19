@@ -955,6 +955,56 @@ func TestOutputMatchAllowsDifferentWatchProvenance(t *testing.T) {
 	}
 }
 
+func TestOutputMatchSuppressesSameWatchProvenanceAcrossSplitLine(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	cfg := onlyWatchConfigForTest(t, jm)
+	p := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", jm.sessionID, rec.JobID)
+
+	jm.feedJobOutputWithProvenance(rec.JobID, []byte("re"), 2, p)
+	jm.feedJobOutputWithProvenance(rec.JobID, []byte("ady\n"), 6, nil)
+
+	if len(notified) != 0 {
+		t.Fatalf("split same-watch output_match must be suppressed; got %d notifications: %+v", len(notified), notified)
+	}
+	if cfg.deliveries != 0 {
+		t.Fatalf("deliveries = %d, want 0 for suppressed split output_match", cfg.deliveries)
+	}
+}
+
+func TestOutputMatchSuppressesSameWatchProvenanceOnTerminalFlush(t *testing.T) {
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	cfg := onlyWatchConfigForTest(t, jm)
+	p := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", jm.sessionID, rec.JobID)
+
+	jm.feedJobOutputWithProvenance(rec.JobID, []byte("re"), 2, p)
+	jm.feedJobOutputWithProvenance(rec.JobID, []byte("ady"), 5, nil)
+	code := 0
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("terminal flush split same-watch output_match persisted pending = %+v, want none", pending)
+	}
+}
+
 // TestOutputMatchHonorsScanOffsetThroughFeedPath proves the end offset threaded
 // from the store reaches FeedAt in the matcher's lifetime-byte space: a chunk
 // landing entirely below an attach-time scan offset must not fire, while a later
@@ -3506,6 +3556,52 @@ func TestWatchSendTerminalFlushClearBeforeFailedSendDoesNotPersistPending(t *tes
 	}
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("pending after terminal flush clear = %+v, want none", pending)
+	}
+}
+
+func TestClearWatchByIDDropsTerminalFlushPending(t *testing.T) {
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	res, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
+	})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+	code := 0
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count after terminal expiry = %d, want 0", jm.watchCount())
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("pending after terminal flush = %+v, want one", pending)
+	}
+
+	if _, err := jm.clearWatchByID(res.WatchID); err != nil {
+		t.Fatalf("clear by watch_id: %v", err)
+	}
+
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after watch_id clear = %+v, want none", pending)
+	}
+	var sent []sendMessageArgs
+	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+	if err := drainWatchSendsVia(t, jm, send); err != nil {
+		t.Fatalf("drain after clear: %v", err)
+	}
+	if len(sent) != 0 {
+		t.Fatalf("delivered after watch_id clear = %#v, want none", sent)
 	}
 }
 
@@ -6986,17 +7082,27 @@ func TestWatchHistoryRecordsTerminalAutoRemoval(t *testing.T) {
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	code := 0
-	jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code)
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
 	if jm.watchCount() != 0 {
 		t.Fatalf("watch should auto-remove on terminal, count=%d", jm.watchCount())
 	}
 	hist := jm.recentWatchSummaries()
 	if len(hist) != 1 || hist[0].EndReason != "auto_removed_terminal" || hist[0].Target != rec.JobID {
 		t.Fatalf("recent_watches = %+v, want one auto_removed_terminal entry", hist)
+	}
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		t.Fatalf("LoadWatches: %v", err)
+	}
+	if w := watches[res.WatchID]; w == nil || w.Active || w.EndReason != "auto_removed_terminal" {
+		t.Fatalf("durable watch %s = %+v, want inactive auto_removed_terminal", res.WatchID, w)
 	}
 }
 
@@ -7101,6 +7207,36 @@ func TestJobWatchDoesNotSuppressDifferentGeneration(t *testing.T) {
 	}
 }
 
+func TestWatchSendFrameRendersTriggerProvenanceNotDeliveryProvenance(t *testing.T) {
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_1")
+	installWatchBelowValidation(t, jm, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: "dlg_1", Message: "observe"},
+	})
+	cfg := onlyWatchConfigForTest(t, jm)
+
+	ev := events.New(events.CommunicateData{Message: "actually alpha marker", AwaitReply: false})
+	ev.SessionID = jm.sessionID
+	jm.onSessionEvent(ev)
+
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != 1 {
+		t.Fatalf("pending sends = %+v, want one", pending)
+	}
+	var state *jobstore.WatchSendState
+	for _, pendingState := range pending {
+		state = pendingState
+	}
+	if !strings.Contains(state.Frame, "provenance: external") {
+		t.Fatalf("frame provenance =\n%s\nwant external trigger provenance", state.Frame)
+	}
+	if !provenance.ContainsWatch(state.Provenance, cfg.watchID, cfg.generation) {
+		t.Fatalf("delivery provenance = %+v, want persisted watch key %s/%s", state.Provenance, cfg.watchID, cfg.generation)
+	}
+}
+
 func TestBuildWatchFrameIncludesCommunicateEventContent(t *testing.T) {
 	jm := newTestJM(t)
 	cfg := &watchConfig{watchID: "watch_A", generation: "wg_1", send: &watchSendArgs{Message: "Filter this caller message."}}
@@ -7171,7 +7307,7 @@ func TestBuildWatchFrameIncludesToolCallContent(t *testing.T) {
 		"  kind: assistant.tool",
 		"  tool_name: shell",
 		"  call_id: call_1",
-		"  output: first line\n  second line",
+		"  output: first line\n    second line",
 		"  output_truncated: false",
 	} {
 		if !strings.Contains(frame, want) {
@@ -7254,8 +7390,9 @@ func TestBuildWatchFrameIndentsMultiLineCommunicateMessage(t *testing.T) {
 
 	frame := jm.buildWatchFrame(cfg, runtimeMessageAliasCaller, "event: COMMUNICATE", "wd_C", ev, nil)
 
-	// The injected text must appear continuation-indented, not at column 0.
-	if !strings.Contains(frame, "  message: real line\n  await_reply: true") {
+	// The injected text must appear continuation-indented below the message
+	// field, not aligned with sibling fields.
+	if !strings.Contains(frame, "  message: real line\n    await_reply: true") {
 		t.Fatalf("frame does not contain continuation-indented message:\n%s", frame)
 	}
 	// The REAL await_reply field must be present and correctly false.

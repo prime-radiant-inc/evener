@@ -124,6 +124,7 @@ func (s *Session) finishProcessingAtBoundary(ctx context.Context, state SessionS
 		if err := s.drainPendingWatchSends(ctx); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: "watch send retry at processing boundary failed: " + err.Error()})
 		}
+		s.replaceActiveProvenance(nil)
 	}
 }
 

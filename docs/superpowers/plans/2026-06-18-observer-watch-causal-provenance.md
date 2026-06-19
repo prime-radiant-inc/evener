@@ -1805,9 +1805,13 @@ func jobProvenanceForWatch(jm *jobManager, jobID string) *provenance.Causal {
 	if jm == nil || jobID == "" || isWatchSessionTarget(jobID) {
 		return nil
 	}
+	jm.mu.Lock()
 	if run := jm.running[jobID]; run != nil && run.rec != nil {
-		return provenance.Clone(run.rec.Provenance)
+		p := provenance.Clone(run.rec.Provenance)
+		jm.mu.Unlock()
+		return p
 	}
+	jm.mu.Unlock()
 	recs, err := jm.store.Load()
 	if err != nil {
 		return nil
@@ -1963,9 +1967,14 @@ d.frame = jm.buildWatchFrame(&watchConfig{
 	Kind:       d.eventKind,
 	SessionID:  jm.sessionID,
 	Data:       d.eventData,
-	Provenance: provenance.Clone(d.provenance),
-}, d.provenance)
+	Provenance: provenance.Clone(d.triggerProvenance),
+}, d.triggerProvenance)
 ```
+
+The persisted `WatchSendState` still carries `d.provenance`, which is the
+trigger provenance extended with the current watch key. The frame uses
+`d.triggerProvenance` so observers see what caused the watch to fire, not the
+delivery marker added for downstream loop suppression.
 
 Change `buildWatchFrame` signature:
 

@@ -380,16 +380,19 @@ Exit criteria:
 
 This remediation is complete only when all of the following are true:
 
-- `go test ./agent -count=1` passes.
-- `go test ./agent/provenance ./agent/events ./agent/internal/jobstore -count=1`
-  passes.
+- `go test ./agent/... -count=1` passes.
 - Root workspace tests still pass for packages affected by UI/tool rendering:
   `go test ./... -count=1`.
 - There are focused regression tests for:
   - caller watch-send provenance adoption;
   - caller watch-send same-watch suppression after adoption;
   - output-match same-watch suppression;
+  - output-match same-watch suppression across split lines and terminal flush;
   - output-match cross-watch allowed behavior;
+  - watch-send frames render trigger provenance, while persisted pending sends
+    carry delivery provenance for suppression;
+  - `watch_id` clear drops detached terminal-flush pending sends;
+  - terminal auto-removal durably clears the watch registry entry;
   - assistant tool frame content;
   - assistant message frame content;
   - communicate frame content;

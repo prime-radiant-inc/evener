@@ -148,6 +148,22 @@ func TestOutputMatcherNoSilentMissAcrossChunks(t *testing.T) {
 	}
 }
 
+func TestOutputMatcherCarriesProvenanceAcrossChunks(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`ready`))
+	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", "session_1", "job_1")
+	if got := m.FeedAtWithProvenance([]byte("re"), 2, p); len(got) != 0 {
+		t.Fatalf("partial feed matches = %#v, want none", got)
+	}
+
+	got := m.FeedAtWithProvenance([]byte("ady\n"), 6, nil)
+	if len(got) != 1 || got[0].Line != "ready" {
+		t.Fatalf("matches = %+v, want ready", got)
+	}
+	if !provenance.ContainsWatch(got[0].Provenance, "watch_A", "wg_1") {
+		t.Fatalf("match provenance = %+v, want carried watch_A/wg_1", got[0].Provenance)
+	}
+}
+
 func TestOutputMatcherDoesNotRematchOldBytes(t *testing.T) {
 	m := NewOutputMatcher(regexp.MustCompile(`ready`))
 	_ = m.Feed([]byte("ready\n"))
@@ -164,6 +180,22 @@ func TestOutputMatcherFlushReturnsFinalPartial(t *testing.T) {
 	}
 	if got := m.Flush(); len(got) != 1 || got[0] != "all done" {
 		t.Errorf("Flush must match the buffered final line: %#v", got)
+	}
+}
+
+func TestOutputMatcherCarriesProvenanceToFlush(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`ready`))
+	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", "session_1", "job_1")
+	if got := m.FeedAtWithProvenance([]byte("ready"), 5, p); len(got) != 0 {
+		t.Fatalf("partial feed matches = %#v, want none", got)
+	}
+
+	flushed := m.FlushWithProvenance(nil)
+	if len(flushed) != 1 || flushed[0].Line != "ready" {
+		t.Fatalf("flush matches = %+v, want ready", flushed)
+	}
+	if !provenance.ContainsWatch(flushed[0].Provenance, "watch_A", "wg_1") {
+		t.Fatalf("flush provenance = %+v, want carried watch_A/wg_1", flushed[0].Provenance)
 	}
 }
 

@@ -36,6 +36,17 @@ func TestActiveProvenanceResetsForExternalInput(t *testing.T) {
 	}
 }
 
+func TestFinishProcessingAtBoundaryClearsActiveProvenance(t *testing.T) {
+	s := &Session{state: SessionProcessing}
+	s.replaceActiveProvenance(testProvenance("watch_A", "wg_1"))
+
+	s.finishProcessingAtBoundary(context.Background(), SessionIdle)
+
+	if provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") {
+		t.Fatal("processing boundary must clear active provenance")
+	}
+}
+
 func TestDrainSteeringForTurnUnionsMessageProvenance(t *testing.T) {
 	s := &Session{}
 	s.steeringQueue = []steeringMessage{
