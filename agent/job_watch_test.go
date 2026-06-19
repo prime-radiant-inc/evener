@@ -4985,6 +4985,49 @@ func TestWatchSendStateUsesDelegateGenerationAtFireTime(t *testing.T) {
 	}
 }
 
+func TestLegacyWatchSendWithoutDelegateGenerationDeliversWhenDelegateStillCurrent(t *testing.T) {
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: ready")
+	state, cfg, ok, err := jm.recordWatchSend(delivery)
+	if err != nil {
+		t.Fatalf("recordWatchSend: %v", err)
+	}
+	if !ok {
+		t.Fatal("recordWatchSend returned ok=false")
+	}
+	state.DelegateGeneration = ""
+	jm.mu.Lock()
+	if pending := cfg.pending[state.Key]; pending != nil {
+		pending.DelegateGeneration = ""
+	}
+	jm.mu.Unlock()
+
+	var sent []sendMessageArgs
+	err = jm.deliverPendingWatchSend(context.Background(), cfg, state, false, func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	})
+	if err != nil {
+		t.Fatalf("deliver legacy watch send: %v", err)
+	}
+	if len(sent) != 1 || sent[0].Target != "dlg_obs" {
+		t.Fatalf("delivered sends = %+v, want one send to dlg_obs", sent)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after legacy delivery = %+v, want settled", pending)
+	}
+}
+
 func TestClearWatchByIDClearsDurableActiveWatchWithoutLiveConfig(t *testing.T) {
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})

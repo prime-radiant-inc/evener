@@ -2600,7 +2600,10 @@ func (jm *jobManager) staleDelegateWatchSend(state jobstore.WatchSendState) (boo
 		return false, "", nil
 	}
 	if state.DelegateGeneration == "" {
-		return true, "delegate generation missing before delivery", nil
+		if delegate.StopGateClosed {
+			return true, "delegate stopped before delivery", nil
+		}
+		return false, "", nil
 	}
 	if delegate.StopGateClosed || delegate.Generation != state.DelegateGeneration {
 		return true, "delegate stopped before delivery", nil
