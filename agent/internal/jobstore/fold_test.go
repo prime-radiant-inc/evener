@@ -862,6 +862,33 @@ func TestFoldStoresJobProvenanceFromStartedEvent(t *testing.T) {
 	}
 }
 
+func TestFoldStoresRicherJobProvenanceFromFinishedEvent(t *testing.T) {
+	startProvenance := provenance.WithWatch(nil, "watch_start", "wg_1", "wd_start", "session_1", "caller")
+	finishProvenance := provenance.WithWatch(startProvenance, "watch_finish", "wg_1", "wd_finish", "session_1", "caller")
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobDelegate
+			e.OwnerSessionID = "session_1"
+			e.VisibleToSession = "session_1"
+			e.Provenance = startProvenance
+		}),
+		ev(EventJobFinished, 2, "job_A", func(e *Event) {
+			e.Status = StatusCompleted
+			e.TerminalGen = "GEN1"
+			e.Provenance = finishProvenance
+		}),
+	}
+
+	rec := Fold(events)["job_A"]
+	if rec == nil {
+		t.Fatal("job_A missing")
+	}
+	if !provenance.ContainsWatch(rec.Provenance, "watch_start", "wg_1") ||
+		!provenance.ContainsWatch(rec.Provenance, "watch_finish", "wg_1") {
+		t.Fatalf("record provenance = %+v, want terminal provenance with start and finish watches", rec.Provenance)
+	}
+}
+
 func TestFoldStoresNotificationProvenanceFromPendingEvent(t *testing.T) {
 	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", "session_1", "caller")
 	events := []Event{

@@ -330,6 +330,9 @@ func applyEvent(r *JobRecord, e Event) {
 		if e.StructuredResultValid != nil && !*e.StructuredResultValid {
 			r.StructuredResultReason = e.StructuredResultReason
 		}
+		if e.Provenance != nil {
+			r.Provenance = provenance.Clone(e.Provenance)
+		}
 		r.TerminalGen = e.TerminalGen
 	case EventJobMessageSent:
 		// No record-field mutation; message events are diagnostic/history.
