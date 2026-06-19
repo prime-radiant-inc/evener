@@ -114,6 +114,79 @@ func TestAcceptNotificationInputAdoptsNotificationProvenance(t *testing.T) {
 	}
 }
 
+func TestAcceptNotificationInputAdoptsCallerWatchSendStateProvenance(t *testing.T) {
+	s := newTestSession(t)
+	s.events = make(chan events.SessionEvent, 8)
+	cfg, _, _ := installCallerSendWatchWithCurrentFrame(t, s.jobManager, "frame-v2")
+	beforeSeq := cfg.nextUpdateSeq
+
+	if !s.acceptNotificationInput(context.Background()) {
+		t.Fatal("notification input should proceed")
+	}
+	if !provenance.ContainsWatch(s.activeCausalProvenance(), cfg.watchID, cfg.generation) {
+		t.Fatalf("active provenance = %+v, want caller watch-send state provenance", s.activeCausalProvenance())
+	}
+	ev := <-s.events
+	if ev.Kind != events.EventSteeringInjected {
+		t.Fatalf("first event = %s, want STEERING_INJECTED", ev.Kind)
+	}
+	if !provenance.ContainsWatch(ev.Provenance, cfg.watchID, cfg.generation) {
+		t.Fatalf("steering event provenance = %+v, want %s/%s", ev.Provenance, cfg.watchID, cfg.generation)
+	}
+
+	s.emit(events.EventAssistantTextEnd, events.AssistantTextEndData{Text: "watch-send acknowledgement"})
+	if cfg.nextUpdateSeq != beforeSeq {
+		t.Fatalf("nextUpdateSeq = %d after acknowledgement, want %d (same-watch echo suppressed)", cfg.nextUpdateSeq, beforeSeq)
+	}
+}
+
+func TestAcceptNotificationInputAdoptsRestoredCallerWatchSendProvenance(t *testing.T) {
+	s := newTestSession(t)
+	s.events = make(chan events.SessionEvent, 8)
+	p := testProvenance("watch_restore", "wg_restore")
+	key := jobstore.WatchSendKey{
+		VisibleSessionID:        s.ID(),
+		WatchID:                 "watch_restore",
+		WatchTarget:             "job_restore",
+		ResolvedWatchedIdentity: "job_restore",
+		ResolvedSendTo:          runtimeMessageAliasCaller,
+		WatchGeneration:         "wg_restore",
+	}
+	cfg := &watchConfig{
+		id:         "watch_restore",
+		watchID:    "watch_restore",
+		target:     "job_restore",
+		send:       &watchSendArgs{To: runtimeMessageAliasCaller},
+		generation: "wg_restore",
+		pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{
+			key: {
+				Key:           key,
+				DeliveryID:    "delivery_restore",
+				UpdateSeq:     1,
+				Frame:         "restored frame",
+				TriggerReason: "output_match: ready",
+				Provenance:    p,
+			},
+		},
+		pendingOrder: []jobstore.WatchSendKey{key},
+	}
+	s.jobManager.terminalFlush = map[*watchConfig]bool{cfg: true}
+
+	if !s.acceptNotificationInput(context.Background()) {
+		t.Fatal("notification input should proceed for restored caller watch send")
+	}
+	if !provenance.ContainsWatch(s.activeCausalProvenance(), "watch_restore", "wg_restore") {
+		t.Fatalf("active provenance = %+v, want restored watch-send state provenance", s.activeCausalProvenance())
+	}
+	ev := <-s.events
+	if ev.Kind != events.EventSteeringInjected {
+		t.Fatalf("first event = %s, want STEERING_INJECTED", ev.Kind)
+	}
+	if !provenance.ContainsWatch(ev.Provenance, "watch_restore", "wg_restore") {
+		t.Fatalf("steering event provenance = %+v, want restored watch provenance", ev.Provenance)
+	}
+}
+
 func TestDrainAsSteerCreatesExternalSteering(t *testing.T) {
 	s := &Session{state: SessionProcessing}
 	if err := s.DrainAsSteerWithInput(context.Background(), "human queued text", nil); err != nil {

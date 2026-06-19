@@ -936,6 +936,7 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 			}
 			seenTok[n.WatchSend.Key] = true
 			n.watchSendFrame = state.Frame
+			n.Provenance = provenance.Union(n.Provenance, state.Provenance)
 			survivors = append(survivors, deliverableJobNotification{notification: n, watchJM: jm, watchCfg: cfg, watchState: state})
 			continue
 		}

@@ -252,9 +252,10 @@ type watchSendToken struct {
 
 func watchSendTokenNotification(childSessionID string, state jobstore.WatchSendState) jobNotification {
 	return jobNotification{
-		JobID:  state.Key.ResolvedWatchedIdentity,
-		Status: jobNotificationEventWatch,
-		Reason: state.TriggerReason,
+		JobID:      state.Key.ResolvedWatchedIdentity,
+		Status:     jobNotificationEventWatch,
+		Reason:     state.TriggerReason,
+		Provenance: provenance.Clone(state.Provenance),
 		WatchSend: &watchSendToken{
 			ChildSessionID: childSessionID,
 			Key:            state.Key,
