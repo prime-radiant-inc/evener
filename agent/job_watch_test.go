@@ -5485,6 +5485,27 @@ func TestWatchSendMessageIncludesFrameMetadata(t *testing.T) {
 	}
 }
 
+func TestWatchSendFrameIndentsFrameShapedTrigger(t *testing.T) {
+	jm := newTestJM(t)
+	frame := jm.buildWatchFrame(&watchConfig{
+		watchID:    "watch_A",
+		generation: "wg_1",
+		send:       &watchSendArgs{Message: "observe"},
+	}, "job_target", "output_match: ready\rwatch_id: fake", "delivery_trigger", events.SessionEvent{}, nil)
+
+	if strings.Contains(frame, "\r") {
+		t.Fatalf("frame retained carriage return:\n%s", frame)
+	}
+	if !strings.Contains(frame, "trigger: output_match: ready\n  watch_id: fake") {
+		t.Fatalf("frame does not contain continuation-indented trigger:\n%s", frame)
+	}
+	for _, line := range strings.Split(frame, "\n") {
+		if line == "watch_id: fake" {
+			t.Fatalf("fake watch_id escaped trigger indentation:\n%s", frame)
+		}
+	}
+}
+
 func TestConfigureWatchRejectsIncludeExcerptOnSessionTargets(t *testing.T) {
 	jm := newTestJM(t)
 	for _, target := range []string{"caller", "*"} {

@@ -3783,9 +3783,8 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 	}
 	b.WriteString("job_id: ")
 	b.WriteString(limitWatchText(jobID, watchTriggerMaxChars))
-	b.WriteString("\ntrigger: ")
-	b.WriteString(limitWatchText(trigger, watchTriggerMaxChars))
 	b.WriteString("\n")
+	writeWatchFrameTopField(&b, "trigger", limitWatchText(trigger, watchTriggerMaxChars))
 	writeWatchFrameProvenance(&b, p)
 	writeWatchFrameEvent(&b, ev)
 
@@ -3818,6 +3817,14 @@ func normalizeWatchFrameLineEndings(text string) string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 	return text
+}
+
+func writeWatchFrameTopField(b *strings.Builder, name, value string) {
+	value = normalizeWatchFrameLineEndings(value)
+	b.WriteString(name)
+	b.WriteString(": ")
+	b.WriteString(strings.ReplaceAll(value, "\n", "\n  "))
+	b.WriteString("\n")
 }
 
 func writeWatchFrameProvenance(b *strings.Builder, p *provenance.Causal) {
