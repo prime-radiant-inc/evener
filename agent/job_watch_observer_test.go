@@ -402,3 +402,38 @@ func TestObserverNotificationAcknowledgementDoesNotRetriggerSameWatch(t *testing
 		t.Fatalf("nextUpdateSeq = %d after suppressed ack, want 0 (notification ack must not retrigger watch)", cfg.nextUpdateSeq)
 	}
 }
+
+func TestDelegateOutputCausedByWatchDoesNotRetriggerOutputMatchWatch(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	sub := completedDelegateSubagent(child, "server READY")
+	parent.subagents.track(sub)
+
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "observed delegate", sub)
+	if err != nil {
+		t.Fatalf("attach delegate: %v", err)
+	}
+
+	var watchNotifications []jobNotification
+	parent.jobManager.enqueue = func(n jobNotification) {
+		if n.Status == jobNotificationEventWatch || strings.Contains(n.Reason, "output_match") {
+			watchNotifications = append(watchNotifications, n)
+		}
+	}
+	if _, err := parent.jobManager.configureWatch(watchArgs{Target: run.rec.JobID, OutputMatch: "(?i)ready"}); err != nil {
+		t.Fatalf("configure watch: %v", err)
+	}
+	cfg := onlyWatchConfigForTest(t, parent.jobManager)
+	child.replaceActiveProvenance(provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", parent.ID(), run.rec.JobID))
+
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("finalize delegate: %v", err)
+	}
+
+	if len(watchNotifications) != 0 {
+		t.Fatalf("same-watch delegate output_match must be suppressed; got %d notifications: %+v", len(watchNotifications), watchNotifications)
+	}
+	if cfg.deliveries != 0 {
+		t.Fatalf("deliveries = %d, want 0 for same-watch delegate output", cfg.deliveries)
+	}
+}

@@ -1709,6 +1709,10 @@ func isActiveWatchTargetLocked(jm *jobManager, target string) bool {
 // (the output pump is single-goroutine); a regression is dropped with a single
 // warning so a caller bug cannot poison the matcher's scan-offset accounting.
 func (jm *jobManager) feedJobOutput(jobID string, chunk []byte, endOffset int64) {
+	jm.feedJobOutputWithProvenance(jobID, chunk, endOffset, nil)
+}
+
+func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, endOffset int64, p *provenance.Causal) {
 	if len(chunk) == 0 {
 		return
 	}
@@ -1716,7 +1720,7 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte, endOffset int64)
 	var deliveries []watchSendDelivery
 	var overBudget []*watchConfig
 
-	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, jobID)}
+	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: provenance.Union(jobProvenanceForWatch(jm, jobID), p)}
 	jm.mu.Lock()
 	if last, ok := jm.lastFedOffset[jobID]; ok && endOffset < last {
 		jm.mu.Unlock()
@@ -1732,6 +1736,9 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte, endOffset int64)
 			continue
 		}
 		matches := cfg.outputMatcher.FeedAt(chunk, endOffset)
+		if shouldSuppressWatch(cfg, root.Provenance) {
+			continue
+		}
 		for _, match := range matches {
 			if cfg.send != nil {
 				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match, root))

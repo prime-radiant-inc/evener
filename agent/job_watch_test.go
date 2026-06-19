@@ -909,6 +909,52 @@ func TestOutputMatchWatchFiresOnAppendedBytes(t *testing.T) {
 	}
 }
 
+func TestOutputMatchSuppressesSameWatchProvenance(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "(?i)ready"}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	cfg := onlyWatchConfigForTest(t, jm)
+	p := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", jm.sessionID, rec.JobID)
+
+	chunk := []byte("server READY\n")
+	jm.feedJobOutputWithProvenance(rec.JobID, chunk, int64(len(chunk)), p)
+
+	if len(notified) != 0 {
+		t.Fatalf("same-watch output_match must be suppressed; got %d notifications: %+v", len(notified), notified)
+	}
+	if cfg.deliveries != 0 {
+		t.Fatalf("deliveries = %d, want 0 for suppressed output_match", cfg.deliveries)
+	}
+}
+
+func TestOutputMatchAllowsDifferentWatchProvenance(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "(?i)ready"}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	cfg := onlyWatchConfigForTest(t, jm)
+	p := provenance.WithWatch(nil, "watch_other", "wg_other", "wd_other", jm.sessionID, rec.JobID)
+
+	chunk := []byte("server READY\n")
+	jm.feedJobOutputWithProvenance(rec.JobID, chunk, int64(len(chunk)), p)
+
+	if len(notified) != 1 {
+		t.Fatalf("different-watch output_match must fire once; got %d notifications: %+v", len(notified), notified)
+	}
+	if cfg.deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1 for different-watch output_match", cfg.deliveries)
+	}
+}
+
 // TestOutputMatchHonorsScanOffsetThroughFeedPath proves the end offset threaded
 // from the store reaches FeedAt in the matcher's lifetime-byte space: a chunk
 // landing entirely below an attach-time scan offset must not fire, while a later

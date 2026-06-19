@@ -737,6 +737,10 @@ func (jm *jobManager) outputDropped(jobID string) (int64, error) {
 }
 
 func (jm *jobManager) appendJobOutput(jobID string, output *jobstore.OutputStore, b []byte) (int, error) {
+	return jm.appendJobOutputWithProvenance(jobID, output, b, nil)
+}
+
+func (jm *jobManager) appendJobOutputWithProvenance(jobID string, output *jobstore.OutputStore, b []byte, p *provenance.Causal) (int, error) {
 	if output == nil {
 		return 0, nil
 	}
@@ -744,7 +748,7 @@ func (jm *jobManager) appendJobOutput(jobID string, output *jobstore.OutputStore
 	if err == nil && n > 0 {
 		// Len is the post-append lifetime byte count, the offset space the output
 		// matcher scans in; pass it as the chunk's end offset.
-		jm.feedJobOutput(jobID, b[:n], output.Len())
+		jm.feedJobOutputWithProvenance(jobID, b[:n], output.Len(), p)
 	}
 	return n, err
 }

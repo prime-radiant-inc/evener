@@ -1613,6 +1613,10 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 		} else if delegateResultSchema(run.rec) != nil {
 			structuredCaptureFailed = true
 		}
+		outputProvenance := provenance.Clone(run.rec.Provenance)
+		if childSess != nil {
+			outputProvenance = provenance.Union(outputProvenance, childSess.activeCausalProvenance())
+		}
 
 		output := delegateOutputBytes(prose)
 		for {
@@ -1632,7 +1636,7 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 			}
 			if outputWritten >= len(output) {
 				if len(output) > 0 {
-					if _, err := appendDelegateOutput(jm, run, nil); err != nil {
+					if _, err := appendDelegateOutput(jm, run, nil, outputProvenance); err != nil {
 						return "", "", nil, err
 					}
 				}
@@ -1641,7 +1645,7 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 				jm.mu.Unlock()
 				break
 			}
-			n, err := appendDelegateOutput(jm, run, output[outputWritten:])
+			n, err := appendDelegateOutput(jm, run, output[outputWritten:], outputProvenance)
 			if n > 0 {
 				jm.mu.Lock()
 				run.delegateOutputWritten += n
@@ -1731,11 +1735,11 @@ func delegateOutputBytes(prose string) []byte {
 	return []byte(prose)
 }
 
-func appendDelegateOutput(jm *jobManager, run *runningJob, b []byte) (int, error) {
+func appendDelegateOutput(jm *jobManager, run *runningJob, b []byte, p *provenance.Causal) (int, error) {
 	if run == nil || run.output == nil {
 		return 0, nil
 	}
-	return jm.appendJobOutput(run.rec.JobID, run.output, b)
+	return jm.appendJobOutputWithProvenance(run.rec.JobID, run.output, b, p)
 }
 
 func delegateTerminalStatus(jm *jobManager, run *runningJob, status SubagentStatus) (jobstore.Status, string) {
