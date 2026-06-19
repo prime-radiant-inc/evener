@@ -896,6 +896,7 @@ func TestCreateDelegateMarksChildConsumedAfterDurableFinish(t *testing.T) {
 	resume := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:        res.DelegateID,
 		Message:       "resume after consumption",
+		OnIdle:        "start",
 		Background:    false,
 		BackgroundSet: true,
 	})
@@ -3416,6 +3417,7 @@ func TestReconstructDelegateChildRegistryMismatchDoesNotRunRestoreSideEffects(t 
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  rec.DelegateID,
 		Message: "resume",
+		OnIdle:  "start",
 	})
 
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "parent_only_tool") {
@@ -3483,6 +3485,7 @@ func TestReconstructDelegateChildRegistryMismatchDoesNotReconcileChildJobs(t *te
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  rec.DelegateID,
 		Message: "resume",
+		OnIdle:  "start",
 	})
 
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "parent_only_tool") {
@@ -3620,6 +3623,7 @@ func TestDelegateReconstructionRacingParentCloseDoesNotTrackOrRunSideEffects(t *
 		done <- s.sendDelegateMessage(context.Background(), sendMessageArgs{
 			Target:  rec.DelegateID,
 			Message: "resume while parent closes",
+			OnIdle:  "start",
 		})
 	}()
 	select {
@@ -3697,6 +3701,7 @@ func TestParentCloseWaitsForInFlightDelegateReconstructionClaim(t *testing.T) {
 		sendDone <- s.sendDelegateMessage(context.Background(), sendMessageArgs{
 			Target:  rec.DelegateID,
 			Message: "resume while close waits for reconstruction claim",
+			OnIdle:  "start",
 		})
 	}()
 	select {
@@ -3769,6 +3774,7 @@ func TestDelegateReconstructionParentCloseBeforeDeferredSideEffectsDoesNotRunThe
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  rec.DelegateID,
 		Message: "resume while parent closes before side effects",
+		OnIdle:  "start",
 	})
 
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "session is closed") {
@@ -4153,6 +4159,7 @@ func TestTerminalDelegateRestoreRequiresStrictPreflightBeforeReconstruction(t *t
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 				Target:  rec.DelegateID,
 				Message: "resume",
+				OnIdle:  "start",
 			})
 
 			if res.Err == nil || res.Err.Error() != "target_not_resumable:corrupt_child_transcript" {
@@ -4206,6 +4213,7 @@ func TestTerminalDelegateRestoreUsesStrictPreflightHistory(t *testing.T) {
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         rec.DelegateID,
 		Message:        "resume valid terminal delegate",
+		OnIdle:         "start",
 		Background:     false,
 		BackgroundSet:  true,
 		BlockTimeoutMS: 5000,
