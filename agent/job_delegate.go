@@ -1615,6 +1615,7 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 			prose = sub.err.Error()
 		}
 		childSess := sub.sess
+		runProvenance := provenance.Clone(sub.runProvenance)
 		sub.mu.Unlock()
 
 		var structured any
@@ -1624,10 +1625,7 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 		} else if delegateResultSchema(run.rec) != nil {
 			structuredCaptureFailed = true
 		}
-		finalProvenance := provenance.Clone(run.rec.Provenance)
-		if childSess != nil {
-			finalProvenance = provenance.Union(finalProvenance, childSess.activeCausalProvenance(), childSess.completedCausalProvenance())
-		}
+		finalProvenance := provenance.Union(run.rec.Provenance, runProvenance)
 		jm.mu.Lock()
 		if jm.running[run.rec.JobID] == run {
 			run.rec.Provenance = provenance.Clone(finalProvenance)

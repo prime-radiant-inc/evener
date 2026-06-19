@@ -1525,8 +1525,18 @@ func (jm *jobManager) watchListToolResult() jobWatchListToolResult {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	watches := make([]jobWatchInspectToolResult, 0, len(jm.watches))
+	activeWatchIDs := make(map[string]bool, len(jm.watches))
 	for key, cfg := range jm.watches {
 		watches = append(watches, inspectResultFromWatchConfig(key, cfg))
+		if cfg != nil && cfg.watchID != "" {
+			activeWatchIDs[cfg.watchID] = true
+		}
+	}
+	for cfg := range jm.terminalFlush {
+		if cfg == nil || cfg.watchID == "" || activeWatchIDs[cfg.watchID] {
+			continue
+		}
+		watches = append(watches, inspectResultFromDetachedWatchConfig(cfg))
 	}
 	sort.SliceStable(watches, func(i, j int) bool {
 		if watches[i].Target != watches[j].Target {
@@ -1552,6 +1562,11 @@ func (jm *jobManager) inspectWatchByID(watchID string) jobWatchInspectToolResult
 			return inspectResultFromWatchConfig(key, cfg)
 		}
 	}
+	for cfg := range jm.terminalFlush {
+		if cfg != nil && cfg.watchID == watchID {
+			return inspectResultFromDetachedWatchConfig(cfg)
+		}
+	}
 	for i := len(jm.watchHistory) - 1; i >= 0; i-- {
 		if jm.watchHistory[i].id == watchID {
 			return inspectResultFromWatchHistory(jm.watchHistory[i])
@@ -1573,6 +1588,12 @@ func inspectResultFromWatchConfig(key watchKey, cfg *watchConfig) jobWatchInspec
 		Deliveries: cfg.deliveries,
 		CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
 	}
+}
+
+func inspectResultFromDetachedWatchConfig(cfg *watchConfig) jobWatchInspectToolResult {
+	result := inspectResultFromWatchConfig(watchKey{SendTo: watchSendTo(cfg)}, cfg)
+	result.Watching = false
+	return result
 }
 
 func inspectResultFromWatchHistory(h watchHistoryEntry) jobWatchInspectToolResult {
@@ -1927,6 +1948,11 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 		jm.enqueueWatchNotifications([]jobNotification{watchNotification(key.Target, reason)})
 		return result, nil
 	}
+	result = watchResultFromConfig(cfg, false)
+	result.Watching = false
+	result.Fired = true
+	result.TerminalCatchup = true
+	result.Status = string(status)
 
 	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, key.Target)}
 	jm.mu.Lock()

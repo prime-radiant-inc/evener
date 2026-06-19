@@ -530,15 +530,12 @@ func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
 
 func (s *Session) availableAgentEntries() []agentEntry {
 	allowance := s.delegationAllowance // read under caller's lock or during single-threaded init
-	if allowance > 0 && !s.canPromptDelegation() {
+	if allowance <= 0 || !s.canPromptDelegation() {
 		return nil
 	}
 
 	names := make([]string, 0, len(s.pluginAgents))
-	for name, agent := range s.pluginAgents {
-		if agentUsesRootOnlySubagentTools(agent) && allowance <= 0 {
-			continue
-		}
+	for name := range s.pluginAgents {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -558,12 +555,12 @@ func (s *Session) availableAgentEntries() []agentEntry {
 
 func (s *Session) delegateAgentTypeNames() []string {
 	allowance := s.delegationAllowance // read under caller's lock or during single-threaded init
+	if allowance <= 0 || !s.canPromptDelegation() {
+		return nil
+	}
 
 	names := make([]string, 0, len(s.pluginAgents))
-	for name, agent := range s.pluginAgents {
-		if agentUsesRootOnlySubagentTools(agent) && allowance <= 0 {
-			continue
-		}
+	for name := range s.pluginAgents {
 		names = append(names, name)
 	}
 	sort.Strings(names)

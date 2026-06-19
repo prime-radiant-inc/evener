@@ -49,6 +49,30 @@ func TestSubagentFollowUpProvenanceUnionsLaunchActiveAndCompleted(t *testing.T) 
 	}
 }
 
+func TestSubagentRunSnapshotsFinalProvenance(t *testing.T) {
+	child := newTestSession(t)
+	sub := &subagent{
+		id:      child.ID(),
+		sess:    child,
+		done:    make(chan struct{}),
+		running: true,
+		status:  SubagentRunning,
+	}
+
+	sub.run(context.Background(), "do the task", testProvenance("watch_launch", "wg_1"))
+
+	sub.mu.Lock()
+	got := provenance.Clone(sub.runProvenance)
+	running := sub.running
+	sub.mu.Unlock()
+	if running {
+		t.Fatal("subagent run should be terminal after run returns")
+	}
+	if !provenance.ContainsWatch(got, "watch_launch", "wg_1") {
+		t.Fatalf("run provenance = %+v, want watch_launch/wg_1", got)
+	}
+}
+
 func spawnRuntimeAgent(t *testing.T, sess *Session, task, model string, maxTurns int, agentType, reasoningEffort string, grantTools []string) string {
 	t.Helper()
 	result, err := sess.spawnAgent(context.Background(), task, model, "", maxTurns, agentType, reasoningEffort, nil, grantTools)

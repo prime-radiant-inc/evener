@@ -565,7 +565,8 @@ func TestDelegateOutputCausedByWatchDoesNotRetriggerOutputMatchWatch(t *testing.
 		t.Fatalf("configure watch: %v", err)
 	}
 	cfg := onlyWatchConfigForTest(t, parent.jobManager)
-	child.replaceActiveProvenance(provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", parent.ID(), run.rec.JobID))
+	watchProv := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", parent.ID(), run.rec.JobID)
+	setSubagentRunProvenanceForTest(sub, watchProv)
 
 	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
 		t.Fatalf("finalize delegate: %v", err)
@@ -600,14 +601,14 @@ func TestDelegateOutputCausedByCompletedWatchTurnDoesNotRetriggerOutputMatchWatc
 		t.Fatalf("configure watch: %v", err)
 	}
 	cfg := onlyWatchConfigForTest(t, parent.jobManager)
-	child.mu.Lock()
-	child.state = SessionProcessing
-	child.mu.Unlock()
-	child.replaceActiveProvenance(provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", parent.ID(), run.rec.JobID))
-	child.finishProcessingAtBoundary(context.Background(), SessionIdle)
+	watchProv := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", parent.ID(), run.rec.JobID)
+	completeSessionTurnWithProvenanceForTest(child, watchProv)
 	if provenance.ContainsWatch(child.activeCausalProvenance(), cfg.watchID, cfg.generation) {
 		t.Fatal("test setup left watch provenance active; expected completed provenance only")
 	}
+	setSubagentRunProvenanceForTest(sub, child.completedCausalProvenance())
+	laterProv := provenance.WithWatch(nil, "watch_later", "wg_later", "wd_later", parent.ID(), run.rec.JobID)
+	completeSessionTurnWithProvenanceForTest(child, laterProv)
 
 	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
 		t.Fatalf("finalize delegate: %v", err)
@@ -631,10 +632,16 @@ func TestDelegateOutputCausedByCompletedWatchTurnDoesNotRetriggerOutputMatchWatc
 			if !provenance.ContainsWatch(event.Provenance, cfg.watchID, cfg.generation) {
 				t.Fatalf("finished provenance = %+v, want %s/%s", event.Provenance, cfg.watchID, cfg.generation)
 			}
+			if provenance.ContainsWatch(event.Provenance, "watch_later", "wg_later") {
+				t.Fatalf("finished provenance = %+v, must not include later unrelated child turn", event.Provenance)
+			}
 		case jobstore.EventJobNotificationPending:
 			sawPending = true
 			if !provenance.ContainsWatch(event.Provenance, cfg.watchID, cfg.generation) {
 				t.Fatalf("pending provenance = %+v, want %s/%s", event.Provenance, cfg.watchID, cfg.generation)
+			}
+			if provenance.ContainsWatch(event.Provenance, "watch_later", "wg_later") {
+				t.Fatalf("pending provenance = %+v, must not include later unrelated child turn", event.Provenance)
 			}
 		}
 	}
@@ -664,11 +671,11 @@ func TestDelegateJobNotificationCausedByCompletedWatchTurnDoesNotRetriggerSameWa
 		t.Fatalf("attach delegate: %v", err)
 	}
 
-	child.mu.Lock()
-	child.state = SessionProcessing
-	child.mu.Unlock()
-	child.replaceActiveProvenance(provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", parent.ID(), run.rec.JobID))
-	child.finishProcessingAtBoundary(context.Background(), SessionIdle)
+	watchProv := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", parent.ID(), run.rec.JobID)
+	completeSessionTurnWithProvenanceForTest(child, watchProv)
+	setSubagentRunProvenanceForTest(sub, child.completedCausalProvenance())
+	laterProv := provenance.WithWatch(nil, "watch_later", "wg_later", "wd_later", parent.ID(), run.rec.JobID)
+	completeSessionTurnWithProvenanceForTest(child, laterProv)
 
 	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
 		t.Fatalf("finalize delegate: %v", err)
@@ -680,4 +687,18 @@ func TestDelegateJobNotificationCausedByCompletedWatchTurnDoesNotRetriggerSameWa
 	if cfg.nextUpdateSeq != 0 {
 		t.Fatalf("nextUpdateSeq = %d, want 0 for same-watch delegate job.notification", cfg.nextUpdateSeq)
 	}
+}
+
+func setSubagentRunProvenanceForTest(sub *subagent, p *provenance.Causal) {
+	sub.mu.Lock()
+	sub.runProvenance = provenance.Clone(p)
+	sub.mu.Unlock()
+}
+
+func completeSessionTurnWithProvenanceForTest(s *Session, p *provenance.Causal) {
+	s.mu.Lock()
+	s.state = SessionProcessing
+	s.mu.Unlock()
+	s.replaceActiveProvenance(p)
+	s.finishProcessingAtBoundary(context.Background(), SessionIdle)
 }

@@ -76,6 +76,7 @@ type subagent struct {
 	err             error
 	resultConsumed  bool // true after the first wait returns this run's result
 	endEmitted      bool
+	runProvenance   *provenance.Causal // immutable causal provenance for the completed run result
 	runFromWatch    bool               // true for a run resumed by job_watch.send; suppresses observer feedback loops
 	nudgeEnabled    bool               // true for default subagents that should be nudged to communicate
 	cancel          context.CancelFunc // cancels the current run's context
@@ -774,6 +775,7 @@ func resetSubagentForRunLockedFromWatch(sub *subagent, cancel context.CancelFunc
 	sub.err = nil
 	sub.resultConsumed = false
 	sub.endEmitted = false
+	sub.runProvenance = nil
 	sub.runFromWatch = fromWatch
 	sub.cancel = cancel
 	sub.cancelRequested = false
@@ -865,10 +867,12 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	turns := a.sess.turns
 	a.sess.mu.Unlock()
 
+	runProvenance := a.followUpProvenance(inputProvenance)
 	finalizeTime := time.Now()
 	a.mu.Lock()
 	a.result = res
 	a.err = err
+	a.runProvenance = provenance.Clone(runProvenance)
 	a.running = false
 	a.turnsUsed = turns
 	a.endedAt = &finalizeTime

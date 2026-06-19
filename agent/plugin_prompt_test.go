@@ -264,13 +264,10 @@ func TestAvailableAgentsSection_OmitsTopLevelOnlyAgents(t *testing.T) {
 		"reviewer":    {Name: "reviewer", Description: "Reviews work", Tools: []string{"read_file"}},
 	}
 
-	// At allowance=0 (leaf/dark) delegate-listing types must be filtered out.
+	// At allowance=0 (leaf/dark) no agent types are actionable through delegate.
 	result := renderAvailableAgentsSectionWithAllowance(t, agents, 0)
-	if strings.Contains(result, "coordinator") {
-		t.Fatalf("delegate-listing agent should not be included at allowance=0, got: %s", result)
-	}
-	if !strings.Contains(result, "reviewer") {
-		t.Fatalf("spawnable agent should remain in prompt at allowance=0, got: %s", result)
+	if result != "" {
+		t.Fatalf("available agents should be hidden at allowance=0, got: %s", result)
 	}
 
 	// At allowance=1 (grantable) delegate-listing types ARE included in the prompt.

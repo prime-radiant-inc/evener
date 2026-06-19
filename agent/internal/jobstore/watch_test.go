@@ -486,4 +486,11 @@ func TestFoldWatchSendsPreservesProvenance(t *testing.T) {
 	if !provenance.ContainsWatch(pending.Provenance, "watch_A", "wg_1") {
 		t.Fatalf("pending provenance = %+v, want watch_A/wg_1", pending.Provenance)
 	}
+	p.WatchKeys[0].WatchID = "watch_mutated"
+	if provenance.ContainsWatch(pending.Provenance, "watch_mutated", "wg_1") {
+		t.Fatalf("pending provenance aliases source provenance: %+v", pending.Provenance)
+	}
+	if !provenance.ContainsWatch(pending.Provenance, "watch_A", "wg_1") {
+		t.Fatalf("pending provenance changed after source mutation: %+v", pending.Provenance)
+	}
 }

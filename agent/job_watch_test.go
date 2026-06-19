@@ -6398,6 +6398,9 @@ func TestTerminalCatchupSendRegistersDetachedPendingAndDelivers(t *testing.T) {
 	if !res.Fired || !res.TerminalCatchup || res.Watching {
 		t.Fatalf("result = %+v, want fired+terminal_catchup, watching=false", res)
 	}
+	if res.WatchID == "" {
+		t.Fatalf("terminal catch-up send result missing clearable watch_id: %+v", res)
+	}
 
 	// The catch-up send is a detached pending visible to the drain seam.
 	jm.mu.Lock()
@@ -6411,6 +6414,22 @@ func TestTerminalCatchupSendRegistersDetachedPendingAndDelivers(t *testing.T) {
 	}
 	if got := len(jm.pendingWatchSendDeliveries(nil)); got != 1 {
 		t.Fatalf("pendingWatchSendDeliveries = %d, want 1 (detached terminalFlush home)", got)
+	}
+	inspect := jm.inspectWatchByID(res.WatchID)
+	if inspect.WatchID != res.WatchID || inspect.Target != jobID || inspect.Watching || inspect.SendTo != "dlg_obs" {
+		t.Fatalf("inspect terminal catch-up send = %+v, want pending detached send for %s", inspect, res.WatchID)
+	}
+	listed := false
+	for _, watch := range jm.watchListToolResult().Watches {
+		if watch.WatchID == res.WatchID {
+			listed = true
+			if watch.Watching || watch.Target != jobID || watch.SendTo != "dlg_obs" {
+				t.Fatalf("listed terminal catch-up send = %+v, want pending detached send", watch)
+			}
+		}
+	}
+	if !listed {
+		t.Fatalf("terminal catch-up send %s missing from watch list", res.WatchID)
 	}
 
 	// A drain delivers and settles it end to end.

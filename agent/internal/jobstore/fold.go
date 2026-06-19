@@ -253,6 +253,7 @@ func FoldWatchSends(events []Event) WatchSendRecord {
 				continue
 			}
 			state := *e.WatchSend
+			state.Provenance = provenance.Clone(e.WatchSend.Provenance)
 			rec.Pending[key] = &state
 		case EventWatchSendDelivered, EventWatchSendDropped, EventWatchSendEvicted:
 			if settled, ok := terminalSeq[key]; !ok || e.WatchSend.UpdateSeq > settled {
