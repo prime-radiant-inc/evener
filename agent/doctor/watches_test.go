@@ -236,3 +236,47 @@ func TestWatches_RenderMentionsCoalescingAndVerdict(t *testing.T) {
 		t.Errorf("render should show distinct delivery count; got:\n%s", out)
 	}
 }
+
+func TestEmptyWatchesMessage(t *testing.T) {
+	cases := map[string]string{
+		"":                    "no watches recorded",
+		"self-loops":          "no watches with a self-loop verdict (the session's watches are healthy)",
+		"watch:w9":            "watch w9 not found in this session",
+		"self-loops,watch:w9": "no watches with a self-loop verdict (the session's watches are healthy)",
+	}
+	for filtered, want := range cases {
+		if got := emptyWatchesMessage(filtered); got != want {
+			t.Errorf("emptyWatchesMessage(%q) = %q, want %q", filtered, got, want)
+		}
+	}
+}
+
+func TestFilterLabel(t *testing.T) {
+	if got := filterLabel(WatchOpts{SelfLoopsOnly: true}); got != "self-loops" {
+		t.Errorf("filterLabel(self-loops) = %q", got)
+	}
+	if got := filterLabel(WatchOpts{WatchID: "w1"}); got != "watch:w1" {
+		t.Errorf("filterLabel(watch) = %q", got)
+	}
+	if got := filterLabel(WatchOpts{}); got != "" {
+		t.Errorf("filterLabel(none) = %q", got)
+	}
+}
+
+// A healthy watch under --self-loops must not read as "no watches recorded":
+// w1 in the fixture has no self-loop, so the filtered result is empty but the
+// session clearly has watches.
+func TestWatches_SelfLoopsEmptyMessageIsUnambiguous(t *testing.T) {
+	base, sid := watchesFixture(t)
+	r, err := Watches(base, sid, WatchOpts{WatchID: "w1", SelfLoopsOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := RenderWatches(r)
+	if strings.Contains(out, "no watches recorded") {
+		t.Errorf("healthy --self-loops should not say 'no watches recorded':\n%s", out)
+	}
+	if !strings.Contains(out, "self-loop verdict") {
+		t.Errorf("expected the self-loop-verdict empty message:\n%s", out)
+	}
+}

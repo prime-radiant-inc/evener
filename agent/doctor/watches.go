@@ -13,6 +13,7 @@ import (
 type WatchReport struct {
 	SessionID string      `json:"session_id"`
 	JobsPath  string      `json:"jobs_path"`
+	Filtered  string      `json:"filtered,omitempty"` // which filter narrowed the result: "self-loops" and/or "watch:<id>"
 	Watches   []WatchView `json:"watches"`
 }
 
@@ -129,6 +130,7 @@ func buildWatchReport(paths Paths, events []jobstore.Event, opts WatchOpts) Watc
 	}
 
 	report := WatchReport{SessionID: paths.SessionID, JobsPath: paths.JobsPath, Watches: []WatchView{}}
+	report.Filtered = filterLabel(opts)
 	for _, wID := range orderedWatchIDs(registry, terminals) {
 		if opts.WatchID != "" && wID != opts.WatchID {
 			continue
@@ -256,7 +258,7 @@ func RenderWatches(r WatchReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "session %s  (jobs: %s)\n", r.SessionID, r.JobsPath)
 	if len(r.Watches) == 0 {
-		b.WriteString("no watches recorded\n")
+		b.WriteString(emptyWatchesMessage(r.Filtered) + "\n")
 		return b.String()
 	}
 	for _, w := range r.Watches {
@@ -322,4 +324,31 @@ func dash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// filterLabel records which filters narrowed a watch report, so the render and
+// JSON consumers can tell "no watches at all" from "none matched the filter".
+func filterLabel(opts WatchOpts) string {
+	var parts []string
+	if opts.SelfLoopsOnly {
+		parts = append(parts, "self-loops")
+	}
+	if opts.WatchID != "" {
+		parts = append(parts, "watch:"+opts.WatchID)
+	}
+	return strings.Join(parts, ",")
+}
+
+// emptyWatchesMessage renders the right "no rows" message for the active filter,
+// so a healthy session under --self-loops does not read as "no watches recorded"
+// (it has watches — just none that self-loop).
+func emptyWatchesMessage(filtered string) string {
+	switch {
+	case strings.Contains(filtered, "self-loops"):
+		return "no watches with a self-loop verdict (the session's watches are healthy)"
+	case strings.HasPrefix(filtered, "watch:"):
+		return "watch " + strings.TrimPrefix(filtered, "watch:") + " not found in this session"
+	default:
+		return "no watches recorded"
+	}
 }
