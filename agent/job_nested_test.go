@@ -2142,6 +2142,64 @@ func TestRecoverForwardedTerminalReconstructsMissingParentStart(t *testing.T) {
 	}
 }
 
+func TestRecoverForwardedTerminalCarriesProvenanceOnReconstructedEvents(t *testing.T) {
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() { _ = childJM.store.Close() })
+	childJM.parentJobID = "job_PARENTDELEGATE"
+
+	var forwarded []jobstore.Event
+	childJM.forward = func(e jobstore.Event) error {
+		forwarded = append(forwarded, e)
+		return nil
+	}
+
+	startedAt := time.Unix(4800, 0).UTC()
+	endedAt := startedAt.Add(time.Second)
+	jobID := jobstore.NewJobID()
+	if err := childJM.store.Append(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            jobID,
+		Type:             jobstore.JobShell,
+		Command:          "printf nested",
+		Description:      "nested terminal recovery with provenance",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: "CHILD",
+		ParentJobID:      "job_PARENTDELEGATE",
+		StartedAt:        &startedAt,
+	}); err != nil {
+		t.Fatalf("append child started: %v", err)
+	}
+	p := provenance.WithWatch(nil, "watch_recover", "wg_1", "wd_1", "PARENT", "job_PARENTDELEGATE")
+	if err := childJM.store.Append(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          endedAt,
+		JobID:       jobID,
+		Status:      jobstore.StatusCompleted,
+		Reason:      "exit_zero",
+		EndedAt:     &endedAt,
+		TerminalGen: jobstore.NewTerminalGeneration(),
+		Provenance:  p,
+	}); err != nil {
+		t.Fatalf("append child finished: %v", err)
+	}
+
+	if err := childJM.recoverForwardedTerminalEvents(); err != nil {
+		t.Fatalf("recoverForwardedTerminalEvents: %v", err)
+	}
+	if len(forwarded) != 2 {
+		t.Fatalf("forwarded events = %d, want started and finished", len(forwarded))
+	}
+	for _, e := range forwarded {
+		if !provenance.ContainsWatch(e.Provenance, "watch_recover", "wg_1") {
+			t.Fatalf("%s provenance = %+v, want recovered watch key", e.Kind, e.Provenance)
+		}
+	}
+}
+
 func TestDeferredRestoreSideEffectsForwardsReconciledNestedRuntimeLost(t *testing.T) {
 	var parentNotifications []jobNotification
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(n jobNotification) {

@@ -1678,6 +1678,9 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 		} else if !cfg.eventKinds[kind] {
 			continue
 		}
+		if !watchEventMatchesTarget(cfg.target, data) {
+			continue
+		}
 		if shouldSuppressWatch(cfg, ev.Provenance) {
 			continue
 		}
@@ -1739,6 +1742,20 @@ func watchEventWatchedIdentity(target string, data events.EventData) string {
 		return d.JobID
 	default:
 		return target
+	}
+}
+
+func watchEventMatchesTarget(target string, data events.EventData) bool {
+	if isWatchSessionTarget(target) {
+		return true
+	}
+	switch d := data.(type) {
+	case events.JobStartedData:
+		return d.JobID == target
+	case events.JobFinishedData:
+		return d.JobID == target
+	default:
+		return true
 	}
 }
 

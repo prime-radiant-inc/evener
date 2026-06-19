@@ -601,6 +601,7 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 			StartedAt:        &startedAt,
 			OutputPath:       rec.OutputPath,
 			TranscriptRef:    rec.TranscriptRef,
+			Provenance:       provenance.Clone(rec.Provenance),
 		}); err != nil {
 			return err
 		}
@@ -618,6 +619,7 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 			StructuredResultValid:  rec.StructuredResultValid,
 			StructuredResultReason: rec.StructuredResultReason,
 			TerminalGen:            rec.TerminalGen,
+			Provenance:             provenance.Clone(rec.Provenance),
 		}); err != nil {
 			return err
 		}

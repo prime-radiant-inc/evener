@@ -571,6 +571,58 @@ func TestWildcardJobEventWatchNotifiesConcreteJob(t *testing.T) {
 	}
 }
 
+func TestConcreteJobEventWatchIgnoresOtherJobsBeforeEveryCount(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	watched, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create watched shell: %v", err)
+	}
+	other, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create other shell: %v", err)
+	}
+	t.Cleanup(func() {
+		finishRunningTestJob(t, jm, watched.JobID)
+		finishRunningTestJob(t, jm, other.JobID)
+	})
+
+	if _, err := jm.configureWatch(watchArgs{
+		Target: watched.JobID,
+		Events: []string{"job.notification"},
+		Every:  2,
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	cfg := onlyWatchConfigForTest(t, jm)
+
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: other.JobID, JobType: "shell", Status: "completed"})
+	if cfg.eventCount != 0 {
+		t.Fatalf("unrelated job eventCount = %d, want 0", cfg.eventCount)
+	}
+	if len(notified) != 0 {
+		t.Fatalf("unrelated job event notified: %+v", notified)
+	}
+
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: watched.JobID, JobType: "shell", Status: "completed"})
+	if cfg.eventCount != 1 {
+		t.Fatalf("first watched job eventCount = %d, want 1", cfg.eventCount)
+	}
+	if len(notified) != 0 {
+		t.Fatalf("first watched event with every=2 notified: %+v", notified)
+	}
+
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: watched.JobID, JobType: "shell", Status: "failed"})
+	if len(notified) != 1 {
+		t.Fatalf("second watched event notifications = %d, want 1", len(notified))
+	}
+	if notified[0].JobID != watched.JobID {
+		t.Fatalf("notification job_id = %q, want %q", notified[0].JobID, watched.JobID)
+	}
+}
+
 func TestEventWatchTriggerEveryNth(t *testing.T) {
 	jm := newTestJM(t)
 	var fires int
