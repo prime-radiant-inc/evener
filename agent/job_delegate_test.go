@@ -4358,8 +4358,12 @@ gotEnd:
 	if !end.FromWatch {
 		t.Fatalf("watch-originated send did not mark existing job finished FromWatch; event = %+v", end)
 	}
-	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 0 {
-		t.Fatalf("watch-originated running delegate completion recorded watch sends = %d, want 0: %+v", len(pending), pending)
+	// FromWatch on the payload no longer suppresses watch fires; suppression is now
+	// per-watch causal provenance. This JobFinished does not carry THIS watch's
+	// (watch_id, generation) key — the completion was caused by stop(), not by a
+	// delivery of this watch — so the unrelated caller watch correctly fires once.
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 1 {
+		t.Fatalf("unrelated caller watch should fire on watch-originated completion; pending = %d: %+v", len(pending), pending)
 	}
 }
 

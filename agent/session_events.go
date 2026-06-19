@@ -57,7 +57,7 @@ func (s *Session) emitWithProvenance(kind events.EventKind, data events.EventDat
 	}
 	data, ev := s.sendEvent(kind, data, p)
 	if s.jobManager != nil {
-		s.jobManager.onSessionEvent(ev.Kind, ev.Data)
+		s.jobManager.onSessionEvent(ev)
 	}
 	if kind == events.EventWarning {
 		s.fireNotificationHook(warningHookMessage(data))

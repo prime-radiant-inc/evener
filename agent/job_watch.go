@@ -223,6 +223,13 @@ type watchSendDelivery struct {
 	watchTarget              string
 	watchedIdentity          string
 	trigger                  string
+	// provenance is the delivery's causal chain: the triggering event's
+	// provenance extended with this watch's own (watch_id, generation) key and a
+	// chain entry naming this delivery. Persisted onto the pending WatchSendState
+	// so a downstream event this send causes is recognized as the watch's echo.
+	provenance *provenance.Causal
+	eventKind  events.EventKind
+	eventData  events.EventData
 }
 
 type restoredWatchConfigKey struct {
@@ -939,24 +946,56 @@ func cloneWatchSendArgs(send *watchSendArgs) *watchSendArgs {
 	return &clone
 }
 
-func (jm *jobManager) watchSendSnapshot(cfg *watchConfig, jobID, trigger string) watchSendDelivery {
+func (jm *jobManager) watchSendSnapshot(cfg *watchConfig, jobID, trigger string, root events.SessionEvent) watchSendDelivery {
 	sendTo := ""
 	if cfg.send != nil {
 		sendTo = cfg.send.To
 	}
 	cfg.nextUpdateSeq++
+	deliveryID := jobstore.NewWatchSendDeliveryID()
 	return watchSendDelivery{
 		cfg:              cfg,
 		key:              watchKey{VisibleSessionID: jm.sessionID, Target: cfg.target, SendTo: sendTo},
 		generation:       cfg.generation,
 		updateSeq:        cfg.nextUpdateSeq,
 		send:             cloneWatchSendArgs(cfg.send),
-		deliveryID:       jobstore.NewWatchSendDeliveryID(),
+		deliveryID:       deliveryID,
 		visibleSessionID: jm.sessionID,
 		watchTarget:      cfg.target,
 		watchedIdentity:  jobID,
 		trigger:          trigger,
+		provenance:       provenance.WithWatch(root.Provenance, cfg.watchID, cfg.generation, deliveryID, root.SessionID, jobID),
+		eventKind:        root.Kind,
+		eventData:        root.Data,
 	}
+}
+
+// jobProvenanceForWatch returns a clone of the watched job's recorded causal
+// provenance, the base for a synthetic delivery root on the non-session-event
+// fire paths (output_match, attach scan, terminal catch-up, terminal flush,
+// progress tick) where there is no triggering SessionEvent to carry it. It is
+// self-locking and reads the store on a fallback, so callers MUST NOT hold
+// jm.mu. A session-target jobID (or an unknown job) has no job provenance and
+// returns nil.
+func jobProvenanceForWatch(jm *jobManager, jobID string) *provenance.Causal {
+	if jm == nil || jobID == "" || isWatchSessionTarget(jobID) {
+		return nil
+	}
+	jm.mu.Lock()
+	if run := jm.running[jobID]; run != nil && run.rec != nil {
+		p := provenance.Clone(run.rec.Provenance)
+		jm.mu.Unlock()
+		return p
+	}
+	jm.mu.Unlock()
+	recs, err := jm.store.Load()
+	if err != nil {
+		return nil
+	}
+	if rec := recs[jobID]; rec != nil {
+		return provenance.Clone(rec.Provenance)
+	}
+	return nil
 }
 
 func (jm *jobManager) restoreWatchSendPending() error {
@@ -1573,10 +1612,9 @@ func watchConditionSummary(cfg *watchConfig) string {
 	return strings.Join(parts, "; ")
 }
 
-func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventData) {
-	if isWatchOriginEventData(data) {
-		return
-	}
+func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
+	kind := ev.Kind
+	data := ev.Data
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
 	var overBudget []*watchConfig
@@ -1593,6 +1631,9 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 		} else if !cfg.eventKinds[kind] {
 			continue
 		}
+		if shouldSuppressWatch(cfg, ev.Provenance) {
+			continue
+		}
 		if cfg.triggerEvery > 0 && cfg.triggerKind == kind {
 			cfg.eventCount++
 			if cfg.eventCount%cfg.triggerEvery != 0 {
@@ -1604,7 +1645,7 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 			if cfg.send.To == runtimeMessageAliasWatched && isWatchSessionTarget(watchedIdentity) {
 				continue
 			}
-			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, watchedIdentity, fmt.Sprintf("event: %s", kind)))
+			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, watchedIdentity, fmt.Sprintf("event: %s", kind), ev))
 		} else {
 			notifyJobID := watchedIdentity
 			if isWatchSessionTarget(notifyJobID) {
@@ -1625,15 +1666,16 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 	jm.autoClearOverBudgetWatches(overBudget)
 }
 
-func isWatchOriginEventData(data events.EventData) bool {
-	switch d := data.(type) {
-	case events.JobStartedData:
-		return d.FromWatch
-	case events.JobFinishedData:
-		return d.FromWatch
-	default:
+// shouldSuppressWatch drops an event whose causal provenance already carries this
+// watch's own (watch_id, generation) key: the event is the watch's own downstream
+// echo, so re-delivering it would loop. Membership is per-watch and generation-
+// scoped, so a recreated watch (new generation) is never silenced by a prior
+// generation's deliveries.
+func shouldSuppressWatch(cfg *watchConfig, p *provenance.Causal) bool {
+	if cfg == nil {
 		return false
 	}
+	return provenance.ContainsWatch(p, cfg.watchID, cfg.generation)
 }
 
 func watchEventWatchedIdentity(target string, data events.EventData) string {
@@ -1673,6 +1715,7 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte, endOffset int64)
 	var deliveries []watchSendDelivery
 	var overBudget []*watchConfig
 
+	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, jobID)}
 	jm.mu.Lock()
 	if last, ok := jm.lastFedOffset[jobID]; ok && endOffset < last {
 		jm.mu.Unlock()
@@ -1690,7 +1733,7 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte, endOffset int64)
 		matches := cfg.outputMatcher.FeedAt(chunk, endOffset)
 		for _, match := range matches {
 			if cfg.send != nil {
-				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match))
+				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match, root))
 			} else {
 				notifications = append(notifications, watchNotification(jobID, "output_match: "+match))
 				if jm.recordWatchDeliveryLocked(cfg) {
@@ -1785,8 +1828,9 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	}
 	reason := "output_match: " + last
 	if cfg.send != nil {
+		root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, jobID)}
 		jm.mu.Lock()
-		delivery := jm.watchSendSnapshot(cfg, jobID, reason)
+		delivery := jm.watchSendSnapshot(cfg, jobID, reason, root)
 		jm.mu.Unlock()
 		jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
 		return true
@@ -1849,8 +1893,9 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 		return result, nil
 	}
 
+	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, key.Target)}
 	jm.mu.Lock()
-	delivery := jm.watchSendSnapshot(cfg, key.Target, reason)
+	delivery := jm.watchSendSnapshot(cfg, key.Target, reason, root)
 	delivery.allowAfterTerminalExpiry = true
 	jm.rememberDetachedPendingLocked(cfg)
 	jm.mu.Unlock()
@@ -1862,6 +1907,14 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, [
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
 
+	// The terminal job's record is still in jm.running here (the caller deletes it
+	// after this returns), so its provenance is readable under the held lock
+	// without the store fallback jobProvenanceForWatch would otherwise need.
+	root := events.SessionEvent{SessionID: jm.sessionID}
+	if run := jm.running[jobID]; run != nil && run.rec != nil {
+		root.Provenance = provenance.Clone(run.rec.Provenance)
+	}
+
 	for key, cfg := range jm.watches {
 		if key.Target != jobID {
 			continue
@@ -1870,7 +1923,7 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, [
 			trackTerminalFlush := len(cfg.pending) != 0
 			for _, match := range cfg.outputMatcher.Flush() {
 				if cfg.send != nil {
-					delivery := jm.watchSendSnapshot(cfg, jobID, "output_match: "+match)
+					delivery := jm.watchSendSnapshot(cfg, jobID, "output_match: "+match, root)
 					delivery.allowAfterTerminalExpiry = true
 					deliveries = append(deliveries, delivery)
 					trackTerminalFlush = true
@@ -1926,6 +1979,7 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	var deliveries []watchSendDelivery
 	var overBudget bool
 
+	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, cfg.target)}
 	jm.mu.Lock()
 	if jm.closing {
 		jm.mu.Unlock()
@@ -1940,7 +1994,7 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		return false
 	}
 	if cfg.send != nil {
-		deliveries = append(deliveries, jm.watchSendSnapshot(cfg, cfg.target, "progress_tick"))
+		deliveries = append(deliveries, jm.watchSendSnapshot(cfg, cfg.target, "progress_tick", root))
 	} else {
 		notifyJobID := cfg.target
 		if isWatchSessionTarget(notifyJobID) {
@@ -2144,6 +2198,7 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 		Frame:           d.frame,
 		TriggerIdentity: d.watchedIdentity,
 		TriggerReason:   d.trigger,
+		Provenance:      provenance.Clone(d.provenance),
 	}
 }
 
@@ -2622,6 +2677,9 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 		record.previous = &previous
 		state.CoalescedCount = existing.CoalescedCount + 1
 		state.CreatedAt = existing.CreatedAt
+		// The coalesced frame stands in for both the superseded delivery and this
+		// one, so it must carry both causes to suppress either's downstream echo.
+		state.Provenance = provenance.Union(existing.Provenance, state.Provenance)
 	} else {
 		cfg.pendingOrder = append(cfg.pendingOrder, state.Key)
 	}

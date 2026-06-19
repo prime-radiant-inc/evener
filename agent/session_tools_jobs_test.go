@@ -1024,7 +1024,7 @@ func TestJobListWatchReflectsDeliveries(t *testing.T) {
 	// A no-send caller event watch counts one delivery per fired event.
 	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
 	for i := 0; i < 3; i++ {
-		jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+		onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
 	}
 
 	out := runJobListTool(t, s)

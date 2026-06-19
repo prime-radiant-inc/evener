@@ -10,6 +10,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -251,5 +254,33 @@ func captureWatchSends(t *testing.T, jm *jobManager) func() []sendMessageArgs {
 		mu.Lock()
 		defer mu.Unlock()
 		return append([]sendMessageArgs(nil), sent...)
+	}
+}
+
+// TestWatchSendStateCarriesDeliveryProvenance proves a watch delivery mints its
+// own causal provenance (the watch key + a chain entry naming the delivery id)
+// onto the persisted WatchSendState, so a downstream event that this send causes
+// can be recognized as the watch's own echo.
+func TestWatchSendStateCarriesDeliveryProvenance(t *testing.T) {
+	s := newTestSession(t)
+	cfg := &watchConfig{
+		target:           runtimeMessageAliasCaller,
+		watchID:          "watch_A",
+		generation:       "wg_1",
+		send:             &watchSendArgs{To: "dlg_1", Message: "observe"},
+		pending:          make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
+		settledUpdateSeq: make(map[jobstore.WatchSendKey]uint64),
+	}
+	ev := events.New(events.CommunicateData{Message: "actually alpha marker", AwaitReply: false})
+	ev.SessionID = s.ID()
+
+	d := s.jobManager.watchSendSnapshot(cfg, runtimeMessageAliasCaller, "event: COMMUNICATE", ev)
+	state := s.jobManager.watchSendState(d, "dlg_1")
+
+	if !provenance.ContainsWatch(state.Provenance, "watch_A", "wg_1") {
+		t.Fatalf("watch send provenance = %+v, want watch_A/wg_1", state.Provenance)
+	}
+	if provenance.LatestDeliveryID(state.Provenance) != d.deliveryID {
+		t.Fatalf("latest delivery id = %q, want %q", provenance.LatestDeliveryID(state.Provenance), d.deliveryID)
 	}
 }

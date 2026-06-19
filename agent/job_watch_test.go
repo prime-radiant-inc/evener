@@ -13,9 +13,18 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
+
+// onSessionEventKD drives the jobManager's session-event entry point with a kind
+// and data, wrapping them in a SessionEvent envelope the way Session.emit does.
+// Tests that need to set provenance on the event build a full events.SessionEvent
+// literal and call jm.onSessionEvent directly instead.
+func onSessionEventKD(jm *jobManager, kind events.EventKind, data events.EventData) {
+	jm.onSessionEvent(events.SessionEvent{Kind: kind, SessionID: jm.sessionID, Data: data})
+}
 
 // drainAndAccept advances watch delivery the way the live loop does: one drain
 // pass (delegate targets deliver + caller pendings re-token) followed by one
@@ -474,7 +483,7 @@ func TestEventWatchFiresAndNotifiesCaller(t *testing.T) {
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
 
 	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
-	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
 
 	if len(notified) != 1 {
 		t.Fatalf("an assistant.message event must notify the caller once, got %d", len(notified))
@@ -490,12 +499,12 @@ func TestWildcardEventWatchOnlyFiresSupportedEvents(t *testing.T) {
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
 
 	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"*"}})
-	jm.onSessionEvent(events.EventSteeringInjected, events.SteeringInjectedData{Text: "internal"})
+	onSessionEventKD(jm, events.EventSteeringInjected, events.SteeringInjectedData{Text: "internal"})
 	if len(notified) != 0 {
 		t.Fatalf("internal event fired wildcard watch: %+v", notified)
 	}
 
-	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
 	if len(notified) != 1 {
 		t.Fatalf("supported event fires = %d, want 1", len(notified))
 	}
@@ -509,7 +518,7 @@ func TestWildcardJobEventWatchNotifiesConcreteJob(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{Target: "*", Events: []string{"job.notification"}}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_worker", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_worker", JobType: "delegate", Status: "completed"})
 
 	if len(notified) != 1 {
 		t.Fatalf("job.notification event must notify the caller once, got %d", len(notified))
@@ -530,7 +539,7 @@ func TestEventWatchTriggerEveryNth(t *testing.T) {
 		Every:  3,
 	})
 	for i := 0; i < 7; i++ {
-		jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+		onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
 	}
 	if fires != 2 {
 		t.Errorf("every=3 over 7 events should fire twice, got %d", fires)
@@ -646,7 +655,7 @@ func TestEventWatchIgnoresUnwatchedKind(t *testing.T) {
 	var fires int
 	jm.enqueue = func(jobNotification) { fires++ }
 	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
-	jm.onSessionEvent(events.EventToolCallEnd, nil)
+	onSessionEventKD(jm, events.EventToolCallEnd, nil)
 	if fires != 0 {
 		t.Errorf("an unwatched event kind must not fire; fires = %d", fires)
 	}
@@ -775,6 +784,11 @@ func TestValidateWatchDeliveryLoop(t *testing.T) {
 	}
 }
 
+// TestEventWatchIgnoresWatchOriginatedSubagentEvents covers per-watch causal
+// suppression on the job.notification rail: an event whose provenance already
+// carries THIS watch's (watch_id, generation) key is dropped before any pending
+// send is recorded (it is the watch's own downstream echo), while an event
+// without that key records the send normally.
 func TestEventWatchIgnoresWatchOriginatedSubagentEvents(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
@@ -785,18 +799,29 @@ func TestEventWatchIgnoresWatchOriginatedSubagentEvents(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
+	cfg := onlyWatchConfigForTest(t, jm)
 
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_obs", JobType: "delegate", Status: "completed", FromWatch: true})
+	ownEcho := events.SessionEvent{
+		Kind:       events.EventJobFinished,
+		SessionID:  jm.sessionID,
+		Data:       events.JobFinishedData{JobID: "job_obs", JobType: "delegate", Status: "completed"},
+		Provenance: provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_echo", jm.sessionID, "caller"),
+	}
+	jm.onSessionEvent(ownEcho)
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("watch-originated job event retriggered watch send: %+v", pending)
 	}
 
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_worker", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_worker", JobType: "delegate", Status: "completed"})
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("ordinary job event must record one pending watch send, got %d", len(pending))
 	}
 }
 
+// TestWatchOriginSuppressesDelegateLifecycleWatchSends covers the same per-watch
+// causal suppression for the delegate-lifecycle (job.notification on "*") rail:
+// JobStarted/JobFinished events stamped with the watch's own provenance key are
+// dropped before any pending send is recorded.
 func TestWatchOriginSuppressesDelegateLifecycleWatchSends(t *testing.T) {
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
@@ -807,9 +832,21 @@ func TestWatchOriginSuppressesDelegateLifecycleWatchSends(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
+	cfg := onlyWatchConfigForTest(t, jm)
+	own := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_obs", jm.sessionID, "*")
 
-	jm.onSessionEvent(events.EventJobStarted, events.JobStartedData{JobID: "job_obs", JobType: "delegate", Status: "running", FromWatch: true})
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_obs", JobType: "delegate", Status: "completed", FromWatch: true})
+	jm.onSessionEvent(events.SessionEvent{
+		Kind:       events.EventJobStarted,
+		SessionID:  jm.sessionID,
+		Data:       events.JobStartedData{JobID: "job_obs", JobType: "delegate", Status: "running"},
+		Provenance: own,
+	})
+	jm.onSessionEvent(events.SessionEvent{
+		Kind:       events.EventJobFinished,
+		SessionID:  jm.sessionID,
+		Data:       events.JobFinishedData{JobID: "job_obs", JobType: "delegate", Status: "completed"},
+		Provenance: own,
+	})
 
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("watch-originated delegate lifecycle events recorded watch sends: %+v", pending)
@@ -829,7 +866,7 @@ func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.onSessionEvent(events.EventToolCallEnd, nil)
+	onSessionEventKD(jm, events.EventToolCallEnd, nil)
 
 	// Observation records the send as pending (frame snapshot included); delivery
 	// is the loop-owned drain's job.
@@ -2656,7 +2693,7 @@ func TestWatchSendToWatchedWildcardJobNotificationDeliversConcreteTarget(t *test
 	if err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_delegate", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_delegate", JobType: "delegate", Status: "completed"})
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("observation must record one pending send, got %d", len(pending))
 	}
@@ -3724,7 +3761,7 @@ func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *te
 				}); err != nil {
 					t.Fatalf("configure: %v", err)
 				}
-				jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
+				onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
 				key := watchKey{VisibleSessionID: jm.sessionID, Target: "*", SendTo: "dlg_obs"}
 				delivery := captureWatchSendDeliveryForKey(t, jm, key, "job_trigger_two", "job.notification")
 				return delivery, jm.close
@@ -3855,8 +3892,8 @@ func TestWatchSendDroppedBatchFailureKeepsAllPendingReachable(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_two", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_two", JobType: "delegate", Status: "completed"})
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: "*", SendTo: "dlg_obs"}
 	jm.mu.Lock()
 	cfg := jm.watches[key]
@@ -4051,7 +4088,7 @@ func TestWatchSendAppendFailureDuringCloseReturnsErrorAndClosesStore(t *testing.
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger", JobType: "delegate", Status: "completed"})
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: "*", SendTo: "dlg_obs"}
 	jm.mu.Lock()
 	cfg := jm.watches[key]
@@ -4169,7 +4206,7 @@ func TestWatchSendSettledTombstonesAreBounded(t *testing.T) {
 	}
 	for i := 0; i < defaultWatchSendPendingCap+5; i++ {
 		jobID := "job_trigger_" + string(rune('A'+i))
-		jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
+		onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
 	}
 	jm.mu.Lock()
 	var cfg *watchConfig
@@ -4197,7 +4234,7 @@ func TestWatchSendAppendFailureDuringEvictionKeepsMemoryAndDurableConsistent(t *
 	}
 	for i := 0; i < defaultWatchSendPendingCap; i++ {
 		jobID := "job_trigger_" + string(rune('A'+i))
-		jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
+		onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
 	}
 	jm.mu.Lock()
 	var cfg *watchConfig
@@ -4216,7 +4253,7 @@ func TestWatchSendAppendFailureDuringEvictionKeepsMemoryAndDurableConsistent(t *
 		}
 		return realAppend(e)
 	}
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_over_cap", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_over_cap", JobType: "delegate", Status: "completed"})
 
 	if got := len(cfg.pending); got != defaultWatchSendPendingCap+1 {
 		t.Fatalf("in-memory pending after failed eviction append = %d, want %d", got, defaultWatchSendPendingCap+1)
@@ -4245,7 +4282,7 @@ func TestWatchSendAppendFailureDuringEvictionKeepsMemoryAndDurableConsistent(t *
 	}
 
 	jm.appendEvent = realAppend
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_retry_cleanup", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_retry_cleanup", JobType: "delegate", Status: "completed"})
 	if got := len(cfg.pending); got != defaultWatchSendPendingCap {
 		t.Fatalf("in-memory pending after retry eviction = %d, want %d", got, defaultWatchSendPendingCap)
 	}
@@ -4268,7 +4305,7 @@ func TestWatchSendPendingAppendFailureBeforeEvictionKeepsExistingPending(t *test
 	}
 	for i := 0; i < defaultWatchSendPendingCap; i++ {
 		jobID := "job_trigger_" + string(rune('A'+i))
-		jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
+		onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
 	}
 	jm.mu.Lock()
 	var cfg *watchConfig
@@ -4289,7 +4326,7 @@ func TestWatchSendPendingAppendFailureBeforeEvictionKeepsExistingPending(t *test
 		}
 		return realAppend(e)
 	}
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_over_cap", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_over_cap", JobType: "delegate", Status: "completed"})
 
 	if got := len(cfg.pending); got != defaultWatchSendPendingCap {
 		t.Fatalf("in-memory pending after failed pending append = %d, want %d", got, defaultWatchSendPendingCap)
@@ -4319,11 +4356,12 @@ func TestWatchSendPendingAppendFailureBeforeEvictionKeepsExistingPending(t *test
 
 func captureWatchSendDelivery(t *testing.T, jm *jobManager, jobID, trigger string) watchSendDelivery {
 	t.Helper()
+	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, jobID)}
 	jm.mu.Lock()
 	var delivery watchSendDelivery
 	for _, cfg := range jm.watches {
 		if cfg.target == jobID {
-			delivery = jm.watchSendSnapshot(cfg, jobID, trigger)
+			delivery = jm.watchSendSnapshot(cfg, jobID, trigger, root)
 			break
 		}
 	}
@@ -4336,11 +4374,12 @@ func captureWatchSendDelivery(t *testing.T, jm *jobManager, jobID, trigger strin
 
 func captureWatchSendDeliveryForKey(t *testing.T, jm *jobManager, key watchKey, watchedIdentity, trigger string) watchSendDelivery {
 	t.Helper()
+	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, watchedIdentity)}
 	jm.mu.Lock()
 	cfg := jm.watches[key]
 	var delivery watchSendDelivery
 	if cfg != nil {
-		delivery = jm.watchSendSnapshot(cfg, watchedIdentity, trigger)
+		delivery = jm.watchSendSnapshot(cfg, watchedIdentity, trigger, root)
 	}
 	jm.mu.Unlock()
 	if delivery.cfg == nil {
@@ -4399,7 +4438,7 @@ func TestWatchSendCapEvictsOldestPendingAndNotifies(t *testing.T) {
 	}
 	for i := 0; i < defaultWatchSendPendingCap+1; i++ {
 		jobID := "job_trigger_" + string(rune('A'+i))
-		jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
+		onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
 	}
 
 	pending := loadWatchSendRecord(t, jm).Pending
@@ -4595,11 +4634,11 @@ func TestWatchSendToWatchedAllowsWildcardJobNotificationTrigger(t *testing.T) {
 		t.Fatalf("configureWatch returned error: %v", err)
 	}
 
-	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("assistant.message recorded pending = %#v, want no unresolved watched delivery", pending)
 	}
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger", JobType: "delegate", Status: "completed"})
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("job.notification must record one pending send, got %d", len(pending))
 	}
@@ -4631,7 +4670,7 @@ func TestWatchSendToWatchedAllowsMixedEventsWithJobNotificationTrigger(t *testin
 		t.Fatalf("configureWatch returned error: %v", err)
 	}
 
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger", JobType: "delegate", Status: "completed"})
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("job.notification must record one pending send, got %d", len(pending))
 	}
@@ -4980,7 +5019,7 @@ func installCallerSendWatchWithPending(t *testing.T, jm *jobManager) *watchConfi
 		Events: []string{"assistant.message"},
 		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
 	})
-	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
 	key := watchKey{
 		VisibleSessionID: jm.sessionID,
 		Target:           runtimeMessageAliasCaller,
@@ -5004,7 +5043,7 @@ func installCallerSendWatchWithPending(t *testing.T, jm *jobManager) *watchConfi
 func installCallerSendWatchWithCurrentFrame(t *testing.T, jm *jobManager, frame string) (*watchConfig, jobstore.WatchSendKey, string) {
 	t.Helper()
 	cfg := installCallerSendWatchWithPending(t, jm)
-	jm.onSessionEvent(events.EventAssistantTextEnd, nil) // bump updateSeq 1 -> 2
+	onSessionEventKD(jm, events.EventAssistantTextEnd, nil) // bump updateSeq 1 -> 2
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	if len(cfg.pendingOrder) != 1 {
@@ -5144,7 +5183,7 @@ func TestObservationRecordsIntentOnly(t *testing.T) {
 		t.Fatalf("configure delegate-send watch: %v", err)
 	}
 
-	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
 
 	// Both sends are pending in jm state.
 	if !jm.hasPendingWatchSends() {
@@ -5612,7 +5651,7 @@ func TestWatchDeliveryCounterIncrementsPerNotification(t *testing.T) {
 	}
 
 	for i := 1; i <= 3; i++ {
-		jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+		onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
 		jm.mu.Lock()
 		got := cfg.deliveries
 		jm.mu.Unlock()
@@ -5707,7 +5746,7 @@ func TestWatchDeliveryBudgetAutoClearsWithOneFinalNotification(t *testing.T) {
 	}
 
 	for i := 0; i < watchDeliveryBudget; i++ {
-		jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+		onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
 	}
 
 	if jm.watches[key] != nil {
@@ -5742,7 +5781,7 @@ func TestWatchDeliveryBudgetAutoClearsWithOneFinalNotification(t *testing.T) {
 
 	// No further deliveries after clear: firing again produces nothing.
 	before := len(notified)
-	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+	onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
 	if len(notified) != before {
 		t.Fatalf("a cleared watch must not fire again; notifications grew from %d to %d", before, len(notified))
 	}
@@ -5761,7 +5800,7 @@ func TestWatchDeliveryBudgetDoesNotDoubleClear(t *testing.T) {
 	}
 
 	for i := 0; i < watchDeliveryBudget; i++ {
-		jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+		onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
 	}
 
 	// Simulate an already-in-flight settle that crossed the budget again on a
@@ -6170,7 +6209,7 @@ func TestWatchWildcardSendFireMintsGrantForResolvedWatchedJob(t *testing.T) {
 		t.Fatalf("grant events before fire = %d, want 0", got)
 	}
 
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
 
 	grants := loadGrantTable(t, jm)
 	if !grants["child_job_obs"]["job_trigger_one"] {
@@ -6189,8 +6228,8 @@ func TestWatchWildcardSendRepeatFireMintsGrantOnce(t *testing.T) {
 		t.Fatalf("configure: %v", err)
 	}
 
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "failed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "failed"})
 
 	if got := countWatchReadGrantEvents(t, jm); got != 1 {
 		t.Fatalf("grant events after repeat fire = %d, want 1 (per-config dedup)", got)
@@ -6201,7 +6240,7 @@ func TestWatchWildcardSendRepeatFireMintsGrantOnce(t *testing.T) {
 	}
 
 	// A different watched job is a new (observer, job) pair: it mints its own.
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_two", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_two", JobType: "delegate", Status: "completed"})
 	if got := countWatchReadGrantEvents(t, jm); got != 2 {
 		t.Fatalf("grant events after second pair = %d, want 2", got)
 	}
@@ -6250,7 +6289,7 @@ func TestWatchWatchedAliasSendFireToShellJobSkipsGrantQuietly(t *testing.T) {
 		t.Fatalf("configure: %v", err)
 	}
 
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: shell.JobID, JobType: "shell", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: shell.JobID, JobType: "shell", Status: "completed"})
 
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("pending after fire = %d, want 1 (skip must not block the send)", len(pending))
@@ -6354,7 +6393,7 @@ func TestWatchPerFireGrantAppendFailureProceedsWithSend(t *testing.T) {
 		return realAppend(e)
 	}
 
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
 
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("pending after grant failure = %d, want 1 (delivery > grant)", len(pending))
@@ -6378,7 +6417,7 @@ func TestWatchPerFireGrantAppendFailureProceedsWithSend(t *testing.T) {
 	// A failed mint must not poison the dedup set: once the store recovers,
 	// the next fire for the same pair mints the grant.
 	jm.appendEvent = realAppend
-	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "failed"})
+	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "failed"})
 	if !loadGrantTable(t, jm)["child_job_obs"]["job_trigger_one"] {
 		t.Fatal("grant not re-minted after append recovered")
 	}
@@ -6953,5 +6992,65 @@ func TestWatchHistoryCountsTerminalFlushDeliveries(t *testing.T) {
 	}
 	if hist[0].Deliveries < 1 {
 		t.Fatalf("recent_watches deliveries = %d, want >=1 (terminal-flush match counted)", hist[0].Deliveries)
+	}
+}
+
+func onlyWatchConfigForTest(t *testing.T, jm *jobManager) *watchConfig {
+	t.Helper()
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if len(jm.watches) != 1 {
+		t.Fatalf("watch count = %d, want 1", len(jm.watches))
+	}
+	for _, cfg := range jm.watches {
+		return cfg
+	}
+	panic("unreachable")
+}
+
+func TestJobWatchSuppressesSameWatchProvenanceBeforeDeliveryAccounting(t *testing.T) {
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_1")
+	installWatchBelowValidation(t, jm, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: "dlg_1", Message: "observe"},
+	})
+	cfg := onlyWatchConfigForTest(t, jm)
+
+	ev := events.New(events.CommunicateData{Message: "PYTHON_QUOTE quote=Ni!", AwaitReply: false})
+	ev.SessionID = jm.sessionID
+	ev.Provenance = provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", jm.sessionID, "caller")
+
+	jm.onSessionEvent(ev)
+
+	if cfg.deliveries != 0 {
+		t.Fatalf("deliveries = %d, want 0 for suppressed event", cfg.deliveries)
+	}
+	if len(cfg.pending) != 0 {
+		t.Fatalf("pending sends = %d, want 0 for suppressed event", len(cfg.pending))
+	}
+}
+
+func TestJobWatchDoesNotSuppressDifferentGeneration(t *testing.T) {
+	jm := newTestJM(t)
+	seedWatchSendDelegateTarget(t, jm, "dlg_1")
+	installWatchBelowValidation(t, jm, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: "dlg_1", Message: "observe"},
+	})
+	cfg := onlyWatchConfigForTest(t, jm)
+	oldGeneration := cfg.generation
+	cfg.generation = "wg_recreated"
+
+	ev := events.New(events.CommunicateData{Message: "actually alpha marker", AwaitReply: false})
+	ev.SessionID = jm.sessionID
+	ev.Provenance = provenance.WithWatch(nil, cfg.watchID, oldGeneration, "wd_old", jm.sessionID, "caller")
+
+	jm.onSessionEvent(ev)
+
+	if cfg.deliveries == 0 && len(cfg.pending) == 0 {
+		t.Fatal("old generation provenance must not suppress new generation")
 	}
 }
