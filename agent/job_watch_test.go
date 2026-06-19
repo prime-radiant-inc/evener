@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	tooldefs "primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -6491,6 +6492,15 @@ func TestMarshalWatchResultTerminalCatchupProjection(t *testing.T) {
 	if firedOut.Watching || !firedOut.Fired || !firedOut.TerminalCatchup || firedOut.Status != "completed" {
 		t.Fatalf("fired projection = %+v, want fired+terminal_catchup+completed", firedOut)
 	}
+	firedState, ok := fired.(tooldefs.StateResult)
+	if !ok {
+		t.Fatalf("fired result type = %T, want StateResult", fired)
+	}
+	for _, want := range []string{"terminal catch-up", "fired", "completed"} {
+		if !strings.Contains(firedState.Output, want) {
+			t.Fatalf("fired model output missing %q: %s", want, firedState.Output)
+		}
+	}
 
 	notFired, err := marshalWatchResult(watchResult{
 		Target:          "job_A",
@@ -6508,6 +6518,15 @@ func TestMarshalWatchResultTerminalCatchupProjection(t *testing.T) {
 	// Contract §7.1 promises "fired=false on none" — explicit, not omitted.
 	if !strings.Contains(string(handlerJSON(t, notFired)), `"fired":false`) {
 		t.Fatalf("not-fired projection must report explicit fired:false: %s", notFired)
+	}
+	notFiredState, ok := notFired.(tooldefs.StateResult)
+	if !ok {
+		t.Fatalf("not-fired result type = %T, want StateResult", notFired)
+	}
+	for _, want := range []string{"terminal catch-up", "not fired", "failed"} {
+		if !strings.Contains(notFiredState.Output, want) {
+			t.Fatalf("not-fired model output missing %q: %s", want, notFiredState.Output)
+		}
 	}
 }
 

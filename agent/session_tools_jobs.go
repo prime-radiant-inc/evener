@@ -1241,6 +1241,18 @@ func marshalWatchInspectResult(res jobWatchInspectToolResult, maxChars int) (any
 // formatJobWatch renders a job_watch result as a one-line footer summarizing the
 // watch's target, trigger condition, and disposition.
 func formatJobWatch(out jobWatchToolResult) string {
+	if out.TerminalCatchup {
+		parts := []string{"watch on " + out.Target, "terminal catch-up"}
+		if out.Fired {
+			parts = append(parts, "fired")
+		} else {
+			parts = append(parts, "not fired")
+		}
+		if out.Status != "" {
+			parts = append(parts, out.Status)
+		}
+		return "[" + strings.Join(parts, " · ") + "]"
+	}
 	if !out.Watching {
 		if out.Target == "" && out.WatchID != "" {
 			return fmt.Sprintf("[watch %s cleared]", out.WatchID)
@@ -1269,9 +1281,6 @@ func formatJobWatch(out jobWatchToolResult) string {
 	}
 	if out.Fired {
 		parts = append(parts, "fired")
-	}
-	if out.TerminalCatchup {
-		parts = append(parts, "terminal catch-up")
 	}
 	if out.Status != "" {
 		parts = append(parts, out.Status)
