@@ -1298,7 +1298,11 @@ func formatJobWatchList(out jobWatchListToolResult) string {
 	}
 	var b strings.Builder
 	for _, w := range out.Watches {
-		fmt.Fprintf(&b, "%s  watching  %s", w.WatchID, w.Target)
+		status := "watching"
+		if !w.Watching {
+			status = "pending"
+		}
+		fmt.Fprintf(&b, "%s  %s  %s", w.WatchID, status, w.Target)
 		if w.Condition != "" {
 			fmt.Fprintf(&b, "  %s", w.Condition)
 		}
@@ -1330,6 +1334,16 @@ func formatJobWatchInspect(out jobWatchInspectToolResult) string {
 	}
 	if out.EndReason != "" {
 		return fmt.Sprintf("%s  %s  %s", out.WatchID, out.EndReason, out.Target)
+	}
+	if out.Target != "" {
+		parts := []string{"pending", out.Target}
+		if out.Condition != "" {
+			parts = append(parts, out.Condition)
+		}
+		if out.SendTo != "" {
+			parts = append(parts, "send.to="+out.SendTo)
+		}
+		return out.WatchID + "  " + strings.Join(parts, "  ")
 	}
 	return out.WatchID + "  not found"
 }

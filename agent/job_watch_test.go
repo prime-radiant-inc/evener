@@ -6419,8 +6419,13 @@ func TestTerminalCatchupSendRegistersDetachedPendingAndDelivers(t *testing.T) {
 	if inspect.WatchID != res.WatchID || inspect.Target != jobID || inspect.Watching || inspect.SendTo != "dlg_obs" {
 		t.Fatalf("inspect terminal catch-up send = %+v, want pending detached send for %s", inspect, res.WatchID)
 	}
+	inspectText := formatJobWatchInspect(inspect)
+	if !strings.Contains(inspectText, res.WatchID+"  pending  "+jobID) || strings.Contains(inspectText, "not found") {
+		t.Fatalf("formatted inspect = %q, want pending detached send", inspectText)
+	}
+	listResult := jm.watchListToolResult()
 	listed := false
-	for _, watch := range jm.watchListToolResult().Watches {
+	for _, watch := range listResult.Watches {
 		if watch.WatchID == res.WatchID {
 			listed = true
 			if watch.Watching || watch.Target != jobID || watch.SendTo != "dlg_obs" {
@@ -6430,6 +6435,10 @@ func TestTerminalCatchupSendRegistersDetachedPendingAndDelivers(t *testing.T) {
 	}
 	if !listed {
 		t.Fatalf("terminal catch-up send %s missing from watch list", res.WatchID)
+	}
+	listText := formatJobWatchList(listResult)
+	if !strings.Contains(listText, res.WatchID+"  pending  "+jobID) || strings.Contains(listText, res.WatchID+"  watching") {
+		t.Fatalf("formatted list = %q, want pending detached send", listText)
 	}
 
 	// A drain delivers and settles it end to end.
