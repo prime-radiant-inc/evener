@@ -20,32 +20,31 @@ network firewall, or authenticated reverse proxy.
 From the repo root:
 
 ```bash
-make build-all
-
-mkdir -p "$HOME/.local/bin"
-install -m 0755 ./serf ./serf-hub ./serf-tui "$HOME/.local/bin/"
+make install-home
 ```
 
-Start Hub with an explicit `--serf` binary so every Hub-owned daemon uses the
-binary you just installed:
+This builds `serf`, `serf-hub`, and `serf-tui`, installs the binaries under
+`~/.local/share/serf/bin`, and symlinks them into `~/.local/bin`. Hub and TUI
+resolve sibling binaries through the symlink targets, so the three installed
+commands find each other without extra flags.
+
+For a system-style install under `/usr/local`:
 
 ```bash
-"$HOME/.local/bin/serf-hub" \
-  --config "$HOME/.serf/hub.toml" \
-  --serf "$HOME/.local/bin/serf"
+sudo make install-system
 ```
 
 ## Runtime Directories
 
-```bash
-mkdir -p "$HOME/.serf/run" "$HOME/.serf/log" "$HOME/.local/state/serf"
-chmod 700 "$HOME/.serf" "$HOME/.serf/run" "$HOME/.local/state/serf"
-```
+The installer does not create runtime/config directories. Serf creates them on
+first use.
 
 - `~/.serf/run` is runtime rendezvous state for live daemons.
 - `~/.local/state/serf/projects/*` is durable per-project Serf state and saved
   transcripts.
 - `~/.serf/index.db` is Hub's SQLite search index.
+- `~/.config/serf/skills` and `~/.config/serf/plugins` are user extension
+  roots created by Serf startup.
 
 ## Hub Config
 
@@ -174,10 +173,8 @@ interchangeable credentials for one endpoint.
 Foreground run with logs:
 
 ```bash
-"$HOME/.local/bin/serf-hub" \
-  --config "$HOME/.serf/hub.toml" \
-  --serf "$HOME/.local/bin/serf" \
-  2>&1 | tee -a "$HOME/.serf/log/hub.log"
+mkdir -p "$HOME/.serf/log"
+"$HOME/.local/bin/serf-hub" 2>&1 | tee -a "$HOME/.serf/log/hub.log"
 ```
 
 If you manage credentials via environment variables rather than

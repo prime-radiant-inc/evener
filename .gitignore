@@ -8,6 +8,7 @@
 /.serf/web_cache/
 /.serf/prompts/
 /.serf/launch.local.toml
+/.build/
 /serf
 /serf-hub
 /serf-tui

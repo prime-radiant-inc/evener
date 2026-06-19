@@ -24,6 +24,29 @@ Build the multi-session web orchestrator:
 make build-hub
 ```
 
+## Install
+
+Home install:
+
+```bash
+make install-home
+```
+
+This builds `serf`, `serf-hub`, and `serf-tui`, installs the binaries under
+`~/.local/share/serf/bin`, and symlinks them into `~/.local/bin`.
+
+System-style install:
+
+```bash
+sudo make install-system
+```
+
+This uses the same layout under `/usr/local` by default. Override `PREFIX` to
+stage elsewhere.
+
+The installer only installs binaries and symlinks. Runtime/config directories
+are created by Serf when the relevant binary runs.
+
 ## Usage
 
 ```
@@ -147,7 +170,9 @@ NDJSON events include: `SESSION_START`, `ASSISTANT_TEXT_END` (with usage, reason
 
 ## Session persistence
 
-Serf auto-saves session state to `.serf/sessions/` in the working directory after each assistant turn. This enables resuming interrupted work.
+Serf auto-saves session state under
+`${XDG_STATE_HOME:-~/.local/state}/serf/projects/<project-hash>/sessions/`
+after each assistant turn. This enables resuming interrupted work.
 
 ```bash
 # List saved sessions

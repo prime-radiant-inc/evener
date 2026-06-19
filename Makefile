@@ -1,8 +1,14 @@
-.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean
+.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
            -X primeradiant.com/serf/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+SERF_SHARE_BINDIR ?= $(PREFIX)/share/serf/bin
+INSTALL_BUILD_DIR ?= .build/install
+SERF_INSTALL_BINS := serf serf-hub serf-tui
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o serf ./cmd/serf/
@@ -27,6 +33,35 @@ build-all: build build-hub build-tui build-doctor
 
 build-llmcall:
 	go build -o llmcall ./cmd/llmcall/
+
+install:
+	install -d "$(INSTALL_BUILD_DIR)"
+	go build -ldflags "$(LDFLAGS)" -o "$(INSTALL_BUILD_DIR)/serf" ./cmd/serf/
+	go build -o "$(INSTALL_BUILD_DIR)/serf-hub" ./cmd/serf-hub/
+	go build -o "$(INSTALL_BUILD_DIR)/serf-tui" ./cmd/serf-tui/
+	install -d "$(SERF_SHARE_BINDIR)" "$(BINDIR)"
+	@for bin in $(SERF_INSTALL_BINS); do \
+		install -m 0755 "$(INSTALL_BUILD_DIR)/$$bin" "$(SERF_SHARE_BINDIR)/$$bin"; \
+		ln -sfn "$(SERF_SHARE_BINDIR)/$$bin" "$(BINDIR)/$$bin"; \
+	done
+
+install-home: PREFIX := $(HOME)/.local
+install-home: install
+
+install-system: PREFIX := /usr/local
+install-system: install
+
+test-install:
+	tmpdir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	$(MAKE) install-home PREFIX="$$tmpdir/prefix"; \
+	for bin in $(SERF_INSTALL_BINS); do \
+		test -x "$$tmpdir/prefix/share/serf/bin/$$bin"; \
+		test -L "$$tmpdir/prefix/bin/$$bin"; \
+	done; \
+	"$$tmpdir/prefix/bin/serf" --version >/dev/null; \
+	"$$tmpdir/prefix/bin/serf-hub" --help >/dev/null 2>&1; \
+	"$$tmpdir/prefix/bin/serf-tui" --help >/dev/null 2>&1
 
 # Every Go module in the workspace: the app (.) plus the three published
 # libraries. Under go.work, `./...` resolves per-module, so the gates must loop
