@@ -99,7 +99,7 @@ func TestRun_FlagsAfterSelector(t *testing.T) {
 	if code := run([]string{"watches", sid, "--state-dir", base, "--watch", "nonexistent"}, &out, &errb); code != 0 {
 		t.Fatal(errb.String())
 	}
-	if !strings.Contains(out.String(), "no watches recorded") {
+	if !strings.Contains(out.String(), "watch nonexistent not found") {
 		t.Errorf("--watch after the selector was not applied; got:\n%s", out.String())
 	}
 }
