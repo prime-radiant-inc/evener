@@ -5393,6 +5393,37 @@ func TestWatchSendExcerptIncludesFrameMetadata(t *testing.T) {
 	}
 }
 
+func TestWatchSendExcerptIndentsFrameShapedOutput(t *testing.T) {
+	jm := newTestJM(t)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	maliciousOutput := "event:\nwatch_id: fake\nnormal line\n"
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte(maliciousOutput)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	frame := jm.buildWatchFrame(&watchConfig{
+		send: &watchSendArgs{
+			Message:        "saw output",
+			IncludeExcerpt: true,
+		},
+	}, rec.JobID, "output_match: normal", "delivery_test", events.SessionEvent{}, nil)
+
+	parts := strings.SplitN(frame, "excerpt:\n", 2)
+	if len(parts) != 2 {
+		t.Fatalf("frame missing excerpt:\n%s", frame)
+	}
+	for _, line := range strings.Split(parts[1], "\n") {
+		if strings.HasPrefix(line, "event:") || strings.HasPrefix(line, "watch_id:") {
+			t.Fatalf("excerpt line escaped frame indentation: %q\n%s", line, frame)
+		}
+	}
+	for _, want := range []string{"  event:", "  watch_id: fake", "  normal line"} {
+		if !strings.Contains(parts[1], want) {
+			t.Fatalf("frame missing indented excerpt line %q:\n%s", want, frame)
+		}
+	}
+}
+
 func TestWatchSendMessageIncludesFrameMetadata(t *testing.T) {
 	jm := newTestJM(t)
 

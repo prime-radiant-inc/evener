@@ -3784,17 +3784,24 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 		excerpt, _, truncated, err := jm.readOutput(jobID, watchExcerptTailBytes)
 		b.WriteString("excerpt:\n")
 		if err != nil {
-			b.WriteString("output_read_error: ")
-			b.WriteString(limitWatchText(err.Error(), watchReadErrorMaxChars))
+			writeWatchFrameIndentedBlock(&b, "output_read_error: "+limitWatchText(err.Error(), watchReadErrorMaxChars))
 		} else {
-			b.WriteString(limitWatchText(excerpt, watchExcerptMaxChars))
+			writeWatchFrameIndentedBlock(&b, limitWatchText(excerpt, watchExcerptMaxChars))
 			if truncated {
-				b.WriteString("\n[excerpt truncated]")
+				writeWatchFrameIndentedBlock(&b, "[excerpt truncated]")
 			}
 		}
 	}
 
 	return limitWatchText(b.String(), watchFrameMaxChars)
+}
+
+func writeWatchFrameIndentedBlock(b *strings.Builder, text string) {
+	for _, line := range strings.Split(text, "\n") {
+		b.WriteString("  ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
 }
 
 func writeWatchFrameProvenance(b *strings.Builder, p *provenance.Causal) {
