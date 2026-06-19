@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"primeradiant.com/serf/agent/doctor"
 )
@@ -86,11 +87,25 @@ func stateFlags(name string, stderr io.Writer) (*flag.FlagSet, *string, *bool) {
 	return fs, stateDir, asJSON
 }
 
-func selectorArg(fs *flag.FlagSet) string {
-	if fs.NArg() == 0 {
-		return ""
+// parseSelectorAndFlags parses flags while supporting the documented
+// `serf-doctor <cmd> <selector> [flags]` form (selector first — the form the
+// skill docs and the doctor persona use), as well as `<cmd> [flags] <selector>`.
+// Go's flag package stops at the first non-flag arg, so a bare leading selector
+// is peeled off before parsing the rest. Returns the selector and a process exit
+// code (0 to proceed, 2 on a flag parse error).
+func parseSelectorAndFlags(fs *flag.FlagSet, args []string) (string, int) {
+	var selector string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		selector = args[0]
+		args = args[1:]
 	}
-	return fs.Arg(0)
+	if err := fs.Parse(args); err != nil {
+		return "", 2
+	}
+	if selector == "" && fs.NArg() > 0 {
+		selector = fs.Arg(0)
+	}
+	return selector, 0
 }
 
 func emitJSON(w io.Writer, v any) int {
@@ -110,11 +125,12 @@ func fail(stderr io.Writer, sub string, err error) int {
 
 func cmdLocate(args []string, stdout, stderr io.Writer) int {
 	fs, stateDir, asJSON := stateFlags("locate", stderr)
-	if err := fs.Parse(args); err != nil {
-		return 2
+	sel, code := parseSelectorAndFlags(fs, args)
+	if code != 0 {
+		return code
 	}
 	base := doctor.ResolveStateBase(*stateDir)
-	paths, err := doctor.Locate(base, selectorArg(fs))
+	paths, err := doctor.Locate(base, sel)
 	if err != nil {
 		return fail(stderr, "locate", err)
 	}
@@ -135,11 +151,11 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	count := fs.String("count", "", "print the structural invocation count of this tool name and exit")
 	format := fs.String("format", "markdown", "render format: outline | markdown")
 	rangeArg := fs.String("range", "", "turn window: last:N | start:N | A-B")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	sel, code := parseSelectorAndFlags(fs, args)
+	if code != 0 {
+		return code
 	}
 	base := doctor.ResolveStateBase(*stateDir)
-	sel := selectorArg(fs)
 
 	if *count != "" {
 		res, err := doctor.Count(base, sel, *count)
@@ -168,11 +184,12 @@ func cmdWatches(args []string, stdout, stderr io.Writer) int {
 	fs, stateDir, asJSON := stateFlags("watches", stderr)
 	watchID := fs.String("watch", "", "scope to one watch_id")
 	selfLoops := fs.Bool("self-loops", false, "only watches with a self-loop verdict")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	sel, code := parseSelectorAndFlags(fs, args)
+	if code != 0 {
+		return code
 	}
 	base := doctor.ResolveStateBase(*stateDir)
-	res, err := doctor.Watches(base, selectorArg(fs), doctor.WatchOpts{WatchID: *watchID, SelfLoopsOnly: *selfLoops})
+	res, err := doctor.Watches(base, sel, doctor.WatchOpts{WatchID: *watchID, SelfLoopsOnly: *selfLoops})
 	if err != nil {
 		return fail(stderr, "watches", err)
 	}
@@ -187,11 +204,12 @@ func cmdTree(args []string, stdout, stderr io.Writer) int {
 	fs, stateDir, asJSON := stateFlags("tree", stderr)
 	depth := fs.Int("depth", 0, "max depth (0 = unlimited)")
 	observers := fs.Bool("observers", false, "include observer edges, not just delegate edges")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	sel, code := parseSelectorAndFlags(fs, args)
+	if code != 0 {
+		return code
 	}
 	base := doctor.ResolveStateBase(*stateDir)
-	res, err := doctor.Tree(base, selectorArg(fs), doctor.TreeOpts{Depth: *depth, Observers: *observers})
+	res, err := doctor.Tree(base, sel, doctor.TreeOpts{Depth: *depth, Observers: *observers})
 	if err != nil {
 		return fail(stderr, "tree", err)
 	}

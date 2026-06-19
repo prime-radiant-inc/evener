@@ -79,6 +79,31 @@ func TestRun_WatchesSelfLoop(t *testing.T) {
 	}
 }
 
+// Flags must parse when they follow the selector — the documented
+// `serf-doctor <cmd> <selector> [flags]` form. Go's flag package stops at the
+// first non-flag arg, so without the leading-selector peel these are dropped.
+func TestRun_FlagsAfterSelector(t *testing.T) {
+	base, sid := fixture(t)
+
+	// Both --state-dir and --count follow the selector here.
+	var out, errb bytes.Buffer
+	if code := run([]string{"transcript", sid, "--state-dir", base, "--count", "communicate"}, &out, &errb); code != 0 {
+		t.Fatal(errb.String())
+	}
+	if !strings.Contains(out.String(), "communicate: 0 calls") {
+		t.Errorf("--count after the selector was not applied; got:\n%s", out.String())
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"watches", sid, "--state-dir", base, "--watch", "nonexistent"}, &out, &errb); code != 0 {
+		t.Fatal(errb.String())
+	}
+	if !strings.Contains(out.String(), "no watches recorded") {
+		t.Errorf("--watch after the selector was not applied; got:\n%s", out.String())
+	}
+}
+
 func TestRun_UnknownSubcommand(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := run([]string{"frobnicate"}, &out, &errb); code != 2 {
