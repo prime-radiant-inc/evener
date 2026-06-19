@@ -301,8 +301,11 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return sendMessageFailed(target, err)
 	}
 	if strings.HasPrefix(target, "job_") {
-		if delegateID, ok := delegateIDForJobID(jm, target); ok {
-			return sendMessageFailed(target, fmt.Errorf("invalid_request: job_id is a job/turn handle; send messages to delegate_id %s", delegateID))
+		if rec, ok := delegateJobRecordForJobID(jm, target); ok {
+			if !delegateControlOwnedBySession(rec.OwnerSessionID, s.id) {
+				return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is owned by descendant session %q; you may only message your own direct delegates", target, rec.OwnerSessionID))
+			}
+			return sendMessageFailed(target, fmt.Errorf("invalid_request: job_id is a job/turn handle; send messages to delegate_id %s", rec.DelegateID))
 		}
 		return sendMessageFailed(target, errors.New("invalid_request: job_id is a job/turn handle; send messages to delegate_id"))
 	}
@@ -1114,12 +1117,12 @@ func (s *Session) hasCallerRoute() bool {
 	return s != nil && (s.cfg.spawn.parentSteerDelivered != nil || s.cfg.spawn.parentSteer != nil)
 }
 
-func delegateIDForJobID(jm *jobManager, jobID string) (string, bool) {
+func delegateJobRecordForJobID(jm *jobManager, jobID string) (*jobstore.JobRecord, bool) {
 	rec, err := findJobRecord(jm, jobID)
 	if err != nil || rec == nil || strings.TrimSpace(rec.DelegateID) == "" {
-		return "", false
+		return nil, false
 	}
-	return rec.DelegateID, true
+	return rec, true
 }
 
 func waitForDelegateFinalization(ctx context.Context, jm *jobManager, run *runningJob, finalizeErr <-chan error) delegateResult {

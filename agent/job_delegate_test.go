@@ -1641,6 +1641,60 @@ func TestDelegateIDResumeFinalizesObservedTerminalRunningJob(t *testing.T) {
 	}
 }
 
+func TestDelegateSendJobIDDoesNotRevealDescendantDelegateID(t *testing.T) {
+	parent := newTestSession(t)
+	started := time.Unix(400, 0).UTC()
+	if err := parent.jobManager.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               started,
+		JobID:            "job_child_delegate",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_child_hidden",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: parent.id,
+		TranscriptRef:    encodeRef("", "CHILD"),
+		StartedAt:        &started,
+	}); err != nil {
+		t.Fatalf("append child-owned delegate job: %v", err)
+	}
+
+	listOut, err := jobListTool(parent, decodeJobListArgs(t, `{"include_nested":true}`), 1<<20)
+	if err != nil {
+		t.Fatalf("jobListTool(include_nested): %v", err)
+	}
+	var listed jobListResult
+	if err := json.Unmarshal(handlerJSON(t, listOut), &listed); err != nil {
+		t.Fatalf("unmarshal job_list: %v", err)
+	}
+	var row *jobListEntry
+	for i := range listed.Jobs {
+		if listed.Jobs[i].JobID == "job_child_delegate" {
+			row = &listed.Jobs[i]
+			break
+		}
+	}
+	if row == nil {
+		t.Fatalf("job_list rows = %+v, want child delegate job", listed.Jobs)
+	}
+	if row.DelegateID != "" || strings.Contains(listOut.(tool.StateResult).Output, "dlg_child_hidden") {
+		t.Fatalf("job_list exposed descendant delegate handle: row=%+v output=%s", row, listOut.(tool.StateResult).Output)
+	}
+
+	res := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  "job_child_delegate",
+		Message: "hello",
+	})
+	if res.Err == nil {
+		t.Fatal("sendDelegateMessage succeeded, want rejection")
+	}
+	if strings.Contains(res.Err.Error(), "dlg_child_hidden") {
+		t.Fatalf("delegate_send error exposed descendant delegate_id: %v", res.Err)
+	}
+	if !strings.Contains(res.Err.Error(), "not_controllable") {
+		t.Fatalf("delegate_send error = %v, want not_controllable without delegate_id", res.Err)
+	}
+}
+
 // TestSendDelegateMessageOwnDirectDelegatesAtDepth: a depth-1 coordinator may
 // message its OWN direct worker delegate by job_id (spec §3:
 // "own direct delegates at every level"). Today the depth>0 guard rejects every
