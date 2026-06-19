@@ -578,3 +578,106 @@ func TestDelegateOutputCausedByWatchDoesNotRetriggerOutputMatchWatch(t *testing.
 		t.Fatalf("deliveries = %d, want 0 for same-watch delegate output", cfg.deliveries)
 	}
 }
+
+func TestDelegateOutputCausedByCompletedWatchTurnDoesNotRetriggerOutputMatchWatch(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	sub := completedDelegateSubagent(child, "server READY")
+	parent.subagents.track(sub)
+
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "observed delegate", sub)
+	if err != nil {
+		t.Fatalf("attach delegate: %v", err)
+	}
+
+	var watchNotifications []jobNotification
+	parent.jobManager.enqueue = func(n jobNotification) {
+		if n.Status == jobNotificationEventWatch || strings.Contains(n.Reason, "output_match") {
+			watchNotifications = append(watchNotifications, n)
+		}
+	}
+	if _, err := parent.jobManager.configureWatch(watchArgs{Target: run.rec.JobID, OutputMatch: "(?i)ready"}); err != nil {
+		t.Fatalf("configure watch: %v", err)
+	}
+	cfg := onlyWatchConfigForTest(t, parent.jobManager)
+	child.mu.Lock()
+	child.state = SessionProcessing
+	child.mu.Unlock()
+	child.replaceActiveProvenance(provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", parent.ID(), run.rec.JobID))
+	child.finishProcessingAtBoundary(context.Background(), SessionIdle)
+	if provenance.ContainsWatch(child.activeCausalProvenance(), cfg.watchID, cfg.generation) {
+		t.Fatal("test setup left watch provenance active; expected completed provenance only")
+	}
+
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("finalize delegate: %v", err)
+	}
+
+	if len(watchNotifications) != 0 {
+		t.Fatalf("same-watch delegate output_match must be suppressed; got %d notifications: %+v", len(watchNotifications), watchNotifications)
+	}
+	if cfg.deliveries != 0 {
+		t.Fatalf("deliveries = %d, want 0 for same-watch delegate output", cfg.deliveries)
+	}
+
+	var sawFinished, sawPending bool
+	for _, event := range loadJobStoreEvents(t, parent.jobManager) {
+		if event.JobID != run.rec.JobID {
+			continue
+		}
+		switch event.Kind {
+		case jobstore.EventJobFinished:
+			sawFinished = true
+			if !provenance.ContainsWatch(event.Provenance, cfg.watchID, cfg.generation) {
+				t.Fatalf("finished provenance = %+v, want %s/%s", event.Provenance, cfg.watchID, cfg.generation)
+			}
+		case jobstore.EventJobNotificationPending:
+			sawPending = true
+			if !provenance.ContainsWatch(event.Provenance, cfg.watchID, cfg.generation) {
+				t.Fatalf("pending provenance = %+v, want %s/%s", event.Provenance, cfg.watchID, cfg.generation)
+			}
+		}
+	}
+	if !sawFinished {
+		t.Fatal("missing job_finished event")
+	}
+	if !sawPending {
+		t.Fatal("missing job_notification_pending event")
+	}
+}
+
+func TestDelegateJobNotificationCausedByCompletedWatchTurnDoesNotRetriggerSameWatch(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	seedWatchSendDelegateTarget(t, parent.jobManager, "dlg_observer")
+	installWatchBelowValidation(t, parent.jobManager, watchArgs{
+		Target: "*",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "dlg_observer", Message: "observe"},
+	})
+	cfg := onlyWatchConfigForTest(t, parent.jobManager)
+
+	sub := completedDelegateSubagent(child, "lifecycle complete")
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "observed delegate", sub)
+	if err != nil {
+		t.Fatalf("attach delegate: %v", err)
+	}
+
+	child.mu.Lock()
+	child.state = SessionProcessing
+	child.mu.Unlock()
+	child.replaceActiveProvenance(provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", parent.ID(), run.rec.JobID))
+	child.finishProcessingAtBoundary(context.Background(), SessionIdle)
+
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("finalize delegate: %v", err)
+	}
+
+	if pending := loadWatchSendRecord(t, parent.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("same-watch delegate job.notification must be suppressed; pending sends: %+v", pending)
+	}
+	if cfg.nextUpdateSeq != 0 {
+		t.Fatalf("nextUpdateSeq = %d, want 0 for same-watch delegate job.notification", cfg.nextUpdateSeq)
+	}
+}

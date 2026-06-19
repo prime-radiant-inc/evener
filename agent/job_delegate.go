@@ -1624,10 +1624,16 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 		} else if delegateResultSchema(run.rec) != nil {
 			structuredCaptureFailed = true
 		}
-		outputProvenance := provenance.Clone(run.rec.Provenance)
+		finalProvenance := provenance.Clone(run.rec.Provenance)
 		if childSess != nil {
-			outputProvenance = provenance.Union(outputProvenance, childSess.activeCausalProvenance())
+			finalProvenance = provenance.Union(finalProvenance, childSess.activeCausalProvenance(), childSess.completedCausalProvenance())
 		}
+		jm.mu.Lock()
+		if jm.running[run.rec.JobID] == run {
+			run.rec.Provenance = provenance.Clone(finalProvenance)
+		}
+		jm.mu.Unlock()
+		outputProvenance := provenance.Clone(finalProvenance)
 
 		output := delegateOutputBytes(prose)
 		for {
