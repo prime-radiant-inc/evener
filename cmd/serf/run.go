@@ -76,6 +76,9 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 		cfg.workDir = wd
 	}
+	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
+		return err
+	}
 
 	// Compute runtime state directory.
 	// Priority: --state-dir flag > SERF_STATE_DIR env > XDG-computed default.

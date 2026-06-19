@@ -35,8 +35,8 @@ func EditorURL(absPath string) template.URL {
 	}
 	if !strings.HasPrefix(absPath, "/") {
 		// Not absolute — fall back to file:// only if it actually looks like
-		// a path the OS can resolve. This catches the legacy
-		// "agent/agents/foo.md" placeholder used for built-in agents.
+		// a path the OS can resolve. This catches placeholders used for
+		// built-in bundled assets.
 		return template.URL("")
 	}
 	encoded := url.PathEscape(strings.TrimPrefix(absPath, "/"))

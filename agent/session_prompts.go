@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/promptpath"
+	"primeradiant.com/serf/internal/bundled"
 	"primeradiant.com/serf/llm"
 )
 
@@ -155,7 +156,7 @@ func (s *Session) renderSystemPrompt() string {
 	resolver := &sectionResolver{
 		provider: s.profile.BehaviorTag(),
 		agent:    s.cfg.AgentName,
-		agentFS:  embeddedAgents,
+		agentFS:  bundled.Agents(),
 		sources: []sectionSource{
 			diskSource{dir: projSections},
 			diskSource{dir: globalSections},

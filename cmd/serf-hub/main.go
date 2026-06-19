@@ -61,6 +61,10 @@ func main() {
 	if *addr != "" {
 		cfg.Addr = *addr
 	}
+	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
+		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
+		os.Exit(1)
+	}
 
 	// flock to ensure single hub per host.
 	home, _ := os.UserHomeDir()

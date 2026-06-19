@@ -12,8 +12,8 @@ REPO = os.path.expanduser("~/prime-radiant/serf")
 HARBOR = os.path.expanduser("~/prime-radiant/harbor-runner")
 REPS = 3
 INSTANCE_TYPE = "c6i.xlarge"
-IMPL_PATH = "agent/bundled_plugins/workflow/agents/implementer.md"
-COORD_PATH = "agent/bundled_plugins/workflow/agents/coordinator.md"
+IMPL_PATH = "internal/bundled/plugins/coordinator-workflow/agents/implementer.md"
+COORD_PATH = "internal/bundled/plugins/coordinator-workflow/agents/coordinator.md"
 
 # Distribute vCPU across variants — total 128
 VCPU_PER_VARIANT = 16  # 4 concurrent instances each

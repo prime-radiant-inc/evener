@@ -130,6 +130,9 @@ func runServe(args []string) error {
 			return fmt.Errorf("cannot determine working directory: %w", err)
 		}
 	}
+	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
+		return err
+	}
 
 	// Resolve state directory.
 	// Priority: --state-dir flag > SERF_STATE_DIR env > XDG-computed default.

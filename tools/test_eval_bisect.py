@@ -173,7 +173,7 @@ class TestAgentRelevantPaths:
     """The filter patterns should match agent code, not docs or dashboard."""
 
     def test_agent_paths_included(self):
-        for p in ["agent/bundled_plugins/workflow/agents/implementer.md", "agent/subagents.go",
+        for p in ["internal/bundled/plugins/coordinator-workflow/agents/implementer.md", "agent/subagents.go",
                    "cmd/serf/main.go", "llm/generate.go",
                    "go.mod", "go.sum",
                    "tools/serf_agent.py", "tools/install-serf.sh.j2"]:

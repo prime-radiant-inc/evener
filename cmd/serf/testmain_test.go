@@ -17,9 +17,18 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
+	envRoot, err := os.MkdirTemp("", "serf-cli-test-env-*")
+	if err != nil {
+		panic(err)
+	}
 	os.Setenv("SERF_STATE_DIR", stateDir)
+	os.Setenv("HOME", envRoot)
+	os.Setenv("XDG_CONFIG_HOME", envRoot+"/config")
+	os.Setenv("XDG_STATE_HOME", envRoot+"/state")
+	os.Setenv("XDG_CACHE_HOME", envRoot+"/cache")
 	os.Unsetenv("SERF_PROVIDERS_CONFIG")
 	code := m.Run()
 	os.RemoveAll(stateDir)
+	os.RemoveAll(envRoot)
 	os.Exit(code)
 }

@@ -167,6 +167,55 @@ func TestStartHubClientPassesStateDirAndLogFileToLocalHub(t *testing.T) {
 	}
 }
 
+func TestStartHubClientReloadsAuthTokenAfterAutoStart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	hubBin := filepath.Join(t.TempDir(), "serf-hub")
+	writeExecutable(t, hubBin)
+
+	started := false
+	dials := 0
+	runtime, err := StartHubClient(context.Background(), HubStartConfig{
+		RawAddr:       "127.0.0.1:9180",
+		HubBin:        hubBin,
+		AutoStart:     true,
+		HealthTimeout: time.Millisecond,
+		DialHub: func(_ context.Context, _ HubAddress, httpClient *http.Client) (*appwire.Client, error) {
+			dials++
+			if !started {
+				if token := bearerTokenFromClient(httpClient); token != "" {
+					t.Fatalf("pre-start bearer token = %q, want empty", token)
+				}
+				return nil, errors.New("connection refused")
+			}
+			if token := bearerTokenFromClient(httpClient); token != "after-start" {
+				return nil, errors.New("missing bearer token after start")
+			}
+			return appwire.NewClient(noopAppWireTransport{}), nil
+		},
+		StartLocalHub: func(HubStartRequest) error {
+			started = true
+			tokenFile := AuthTokenFilePath("")
+			if err := os.MkdirAll(filepath.Dir(tokenFile), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(tokenFile, []byte("after-start\n"), 0o600)
+		},
+		CheckHubEnvironment: func(context.Context, HubAddress, *http.Client, string) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartHubClient: %v", err)
+	}
+	if runtime.Client == nil {
+		t.Fatal("runtime client is nil")
+	}
+	if dials < 2 {
+		t.Fatalf("dials = %d, want at least 2", dials)
+	}
+}
+
 func TestStartHubClientDistinguishesStartupFailures(t *testing.T) {
 	tests := []struct {
 		name string
@@ -353,6 +402,17 @@ func writeTempExecutable(t *testing.T) string {
 	path := filepath.Join(t.TempDir(), "serf-hub")
 	writeExecutable(t, path)
 	return path
+}
+
+func bearerTokenFromClient(client *http.Client) string {
+	if client == nil {
+		return ""
+	}
+	transport, ok := client.Transport.(*bearerTransport)
+	if !ok {
+		return ""
+	}
+	return transport.token
 }
 
 type noopAppWireTransport struct{}

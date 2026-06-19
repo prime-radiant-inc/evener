@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LABEL="${1:-test}"
 COORD_MD="${2:-}"
-COORDINATOR_PATH="$REPO_ROOT/agent/bundled_plugins/coordinator-workflow/agents/coordinator.md"
+COORDINATOR_PATH="$REPO_ROOT/internal/bundled/plugins/coordinator-workflow/agents/coordinator.md"
 
 WORKDIR="/tmp/coord-repro-work-${LABEL}"
 STATEDIR="/tmp/coord-repro-state-${LABEL}"

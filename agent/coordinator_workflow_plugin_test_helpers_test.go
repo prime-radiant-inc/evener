@@ -14,7 +14,7 @@ func coordinatorWorkflowPluginDirForTest(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("os.Getwd: %v", err)
 	}
-	return filepath.Join(wd, "bundled_plugins", "coordinator-workflow")
+	return filepath.Join(wd, "..", "internal", "bundled", "plugins", "coordinator-workflow")
 }
 
 func coordinatorWorkflowSessionConfig(t *testing.T, cfg SessionConfig) SessionConfig {

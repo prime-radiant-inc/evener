@@ -112,30 +112,31 @@ func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStart
 
 // ResolveAuthToken determines the hub auth token using the resolution order:
 // explicit value (from flag or env) → token file → empty (with warning).
-// The stateDir is used to locate the token file; if empty, $HOME/.serf is used.
 func ResolveAuthToken(explicit, stateDir string) string {
-	if explicit != "" {
-		return explicit
-	}
-	tokenFile := AuthTokenFilePath(stateDir)
-	data, err := os.ReadFile(tokenFile)
-	if err == nil {
-		if tok := strings.TrimSpace(string(data)); tok != "" {
-			return tok
-		}
+	token, tokenFile := resolveAuthToken(explicit, stateDir)
+	if token != "" {
+		return token
 	}
 	fmt.Fprintf(os.Stderr, "serf-tui: warning: no hub auth token found (checked %s); proceeding without auth\n", tokenFile)
 	return ""
 }
 
+func resolveAuthToken(explicit, stateDir string) (string, string) {
+	if explicit != "" {
+		return explicit, ""
+	}
+	tokenFile := AuthTokenFilePath(stateDir)
+	data, err := os.ReadFile(tokenFile)
+	if err == nil {
+		if tok := strings.TrimSpace(string(data)); tok != "" {
+			return tok, tokenFile
+		}
+	}
+	return "", tokenFile
+}
+
 // AuthTokenFilePath returns the path to the hub auth-token file.
-func AuthTokenFilePath(stateDir string) string {
-	if stateDir != "" {
-		return filepath.Join(filepath.Clean(stateDir), "auth-token")
-	}
-	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
-		return filepath.Join(xdg, "serf", "auth-token")
-	}
+func AuthTokenFilePath(_ string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return filepath.Join(".serf", "auth-token")
@@ -288,12 +289,6 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{}
 	}
-	// Wrap the HTTP client to inject the bearer token on every request.
-	// This covers both the WebSocket upgrade (coder/websocket uses HTTPClient)
-	// and any plain HTTP calls made via hubapi.Client.
-	if cfg.AuthToken != "" {
-		cfg.HTTPClient = HTTPClientWithBearer(cfg.HTTPClient, cfg.AuthToken)
-	}
 	if cfg.HealthTimeout == 0 {
 		cfg.HealthTimeout = 5 * time.Second
 	}
@@ -303,9 +298,10 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 	if cfg.CheckHubEnvironment == nil {
 		cfg.CheckHubEnvironment = checkHubEnvironment
 	}
-	client, err := waitForHubHealth(ctx, addr, cfg.HTTPClient, 500*time.Millisecond, cfg.DialHub)
+	httpClient := hubHTTPClientWithResolvedAuth(cfg.HTTPClient, cfg.AuthToken, cfg.StateDir)
+	client, err := waitForHubHealth(ctx, addr, httpClient, 500*time.Millisecond, cfg.DialHub)
 	if err == nil {
-		if err := cfg.CheckHubEnvironment(ctx, addr, cfg.HTTPClient, cfg.StateDir); err != nil {
+		if err := cfg.CheckHubEnvironment(ctx, addr, httpClient, cfg.StateDir); err != nil {
 			return fail(err)
 		}
 		return HubRuntime{Address: addr, Client: client}, nil
@@ -338,17 +334,26 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 	}); err != nil {
 		return fail(classifyStartHubError(addr, err))
 	}
-	client, err = waitForHubHealth(ctx, addr, cfg.HTTPClient, cfg.HealthTimeout, cfg.DialHub)
+	httpClient = hubHTTPClientWithResolvedAuth(cfg.HTTPClient, cfg.AuthToken, cfg.StateDir)
+	client, err = waitForHubHealth(ctx, addr, httpClient, cfg.HealthTimeout, cfg.DialHub)
 	if err != nil {
 		if isTerminalStartupError(err) {
 			return fail(err)
 		}
 		return fail(StartupError{Kind: StartupErrorUnhealthyHub, Addr: addr.BaseURL, Err: err})
 	}
-	if err := cfg.CheckHubEnvironment(ctx, addr, cfg.HTTPClient, cfg.StateDir); err != nil {
+	if err := cfg.CheckHubEnvironment(ctx, addr, httpClient, cfg.StateDir); err != nil {
 		return fail(err)
 	}
 	return HubRuntime{Address: addr, Client: client}, nil
+}
+
+func hubHTTPClientWithResolvedAuth(base *http.Client, explicitToken, stateDir string) *http.Client {
+	token, _ := resolveAuthToken(explicitToken, stateDir)
+	if token == "" {
+		return base
+	}
+	return HTTPClientWithBearer(base, token)
 }
 
 func waitForHubHealth(ctx context.Context, addr HubAddress, httpClient *http.Client, timeout time.Duration, dialHub func(context.Context, HubAddress, *http.Client) (*appwire.Client, error)) (*appwire.Client, error) {

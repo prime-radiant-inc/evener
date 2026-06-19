@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
+	"primeradiant.com/serf/cmdutil"
 )
 
 func main() {
@@ -32,8 +33,10 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
 		return 2
 	}
-
-	authToken := hubstart.ResolveAuthToken(startupOpts.AuthToken, startupOpts.StateDir)
+	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
+		fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
+		return 1
+	}
 
 	ctx := context.Background()
 	runtime, err := hubstart.StartHubClient(ctx, hubstart.HubStartConfig{
@@ -41,7 +44,7 @@ func run() int {
 		HubBin:            startupOpts.HubBin,
 		StateDir:          startupOpts.StateDir,
 		LogFile:           startupOpts.LogFile,
-		AuthToken:         authToken,
+		AuthToken:         startupOpts.AuthToken,
 		CurrentExecutable: currentExecutable(),
 		AutoStart:         startupOpts.AutoStartHub,
 		HealthTimeout:     5 * time.Second,

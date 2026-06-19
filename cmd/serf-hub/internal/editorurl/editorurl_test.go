@@ -36,7 +36,7 @@ func TestEditorURL_EnvOverride(t *testing.T) {
 
 func TestEditorURL_RejectsRelative(t *testing.T) {
 	t.Setenv("SERF_HUB_EDITOR_URL_TEMPLATE", "")
-	got := string(EditorURL("agent/agents/default.md"))
+	got := string(EditorURL("internal/bundled/agents/default.md"))
 	if got != "" {
 		t.Errorf("expected empty string for relative path, got %q", got)
 	}

@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/serf/internal/bundled"
 	"primeradiant.com/serf/llm"
 )
 
@@ -50,7 +51,7 @@ func renderAvailableAgentsSectionWithAllowanceAndTools(t *testing.T, agents map[
 	resolver := &sectionResolver{
 		provider: sess.profile.ID(),
 		agent:    defaultAgentName,
-		agentFS:  embeddedAgents,
+		agentFS:  bundled.Agents(),
 		sources: []sectionSource{
 			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
 		},

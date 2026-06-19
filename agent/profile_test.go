@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/internal/bundled"
 	"primeradiant.com/serf/llm"
 )
 
@@ -40,7 +41,7 @@ func renderPromptForTest(t *testing.T, p *provider.Profile, data promptData) str
 	resolver := &sectionResolver{
 		provider: p.ID(),
 		agent:    data.Agent,
-		agentFS:  embeddedAgents,
+		agentFS:  bundled.Agents(),
 		sources: []sectionSource{
 			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
 		},
@@ -250,7 +251,7 @@ func TestSubagentPrompt_DoesNotIncludeBackgroundJobsSection(t *testing.T) {
 	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "implementer",
-		agentFS:  embeddedAgents,
+		agentFS:  bundled.Agents(),
 		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 	data := promptData{

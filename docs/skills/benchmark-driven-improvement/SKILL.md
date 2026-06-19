@@ -210,7 +210,7 @@ For regressions, note the git SHA where the regression was introduced.
 ### Step 2: Diff the prompts (regressions only)
 
 ```bash
-git diff LAST_PASSING_SHA..FIRST_FAILING_SHA -- agent/agents/ agent/prompts/
+git diff LAST_PASSING_SHA..FIRST_FAILING_SHA -- internal/bundled/agents/ agent/prompts/
 ```
 
 If a prompt change correlates with the regression, that's your prime suspect.
@@ -275,7 +275,7 @@ Every box must have a concrete answer, not "N/A" or "skipped":
   transcript — actually ran the tool and got a model response). Paste the
   interrogation output.
 - [ ] Ran `git diff` between last-passing SHA and first-failing SHA on
-  `agent/agents/` and `agent/prompts/`. Was there a prompt change? If yes,
+  `internal/bundled/agents/` and `agent/prompts/`. Was there a prompt change? If yes,
   what was it? Why isn't it the cause?
 - [ ] The passing and failing agents used IDENTICAL strategies (same tool
   sequence, same approach, same delegation pattern) with different outcomes.
@@ -322,7 +322,7 @@ breaking previously shipped fixes.
 #    Read the file, find your OLD text
 
 # 2. Blame those lines to find what added them
-git blame agent/agents/implementer.md -L 90,95
+git blame internal/bundled/plugins/coordinator-workflow/agents/implementer.md -L 90,95
 # → each line shows the commit SHA that last touched it
 
 # 3. For each commit SHA, check if it was an experiment
@@ -359,7 +359,7 @@ You want to add a sentence to the implementer's Verify task. Before writing
 the experiment:
 
 ```bash
-git blame agent/agents/implementer.md -L 45,55
+git blame internal/bundled/plugins/coordinator-workflow/agents/implementer.md -L 45,55
 # Line 48: 8209375  (experiment: build-cython-ext-1 — preserve existing packages)
 # Line 50: 3496f7e  (results: Wave 1 complete)
 # Line 52: 0026d39  (experiment: db-wal-recovery-1 — preserve data before inspection)

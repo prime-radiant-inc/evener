@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,7 +61,7 @@ type sectionResolver struct {
 	agent    string
 	sources  []sectionSource
 	tracked  []promptSource
-	agentFS  embed.FS // for role section: reads agents/{agent}.md
+	agentFS  fs.FS // for role section: reads {agent}.md
 }
 
 // Section resolves a named section with provider and agent layering.
@@ -135,8 +136,8 @@ func (r *sectionResolver) resolveRole(data promptData) string {
 		}
 	}
 	// Fall back to embedded agents dir, strip frontmatter.
-	path := "agents/" + r.agent + ".md"
-	raw, err := r.agentFS.ReadFile(path)
+	path := r.agent + ".md"
+	raw, err := fs.ReadFile(r.agentFS, path)
 	if err != nil {
 		return ""
 	}

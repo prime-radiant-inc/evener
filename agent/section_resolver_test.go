@@ -8,6 +8,7 @@ import (
 	"text/template"
 
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/internal/bundled"
 )
 
 func TestDiskSource_ReadFile(t *testing.T) {
@@ -296,7 +297,7 @@ func TestSectionResolver_RoleSection(t *testing.T) {
 		provider: "openai",
 		agent:    "coordinator",
 		sources:  nil,
-		agentFS:  embeddedAgents,
+		agentFS:  bundled.Agents(),
 	}
 	got := r.Section("role", promptData{
 		RolePromptOverride: mustWorkflowAgent(t, "coordinator").SystemPrompt,
@@ -321,7 +322,7 @@ func TestSectionResolver_RoleDiskOverride(t *testing.T) {
 		provider: "openai",
 		agent:    "coordinator",
 		sources:  []sectionSource{diskSource{dir: dir}},
-		agentFS:  embeddedAgents,
+		agentFS:  bundled.Agents(),
 	}
 	got := r.Section("role", promptData{})
 
@@ -374,7 +375,7 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "coordinator",
-		agentFS:  embeddedAgents,
+		agentFS:  bundled.Agents(),
 		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
@@ -456,7 +457,7 @@ func TestGitSection_SingleSourceAndLabeled(t *testing.T) {
 	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "coordinator",
-		agentFS:  embeddedAgents,
+		agentFS:  bundled.Agents(),
 		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
@@ -489,7 +490,7 @@ func TestSubagentTemplate_IncludesGitSection(t *testing.T) {
 	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "implementer",
-		agentFS:  embeddedAgents,
+		agentFS:  bundled.Agents(),
 		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 	data := promptData{
@@ -517,7 +518,7 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "implementer",
-		agentFS:  embeddedAgents,
+		agentFS:  bundled.Agents(),
 		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
@@ -559,7 +560,7 @@ func TestTranscriptsSection_TeachesToolsNotRawRead(t *testing.T) {
 	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "coordinator",
-		agentFS:  embeddedAgents,
+		agentFS:  bundled.Agents(),
 		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 	data := promptData{Provider: "openai", Agent: "coordinator"}
@@ -589,7 +590,7 @@ func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "reviewer",
-		agentFS:  embeddedAgents,
+		agentFS:  bundled.Agents(),
 		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
@@ -632,7 +633,7 @@ func TestAnthropicProvider_UsesEditFile(t *testing.T) {
 	resolver := &sectionResolver{
 		provider: "anthropic",
 		agent:    "coordinator",
-		agentFS:  embeddedAgents,
+		agentFS:  bundled.Agents(),
 		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
