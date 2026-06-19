@@ -64,12 +64,37 @@ func TestFinishProcessingAtBoundaryCapturesCompletedProvenance(t *testing.T) {
 }
 
 func TestProcessInputErrorClearsActiveProvenance(t *testing.T) {
+	s := newProvenanceErrorSession(t, errors.New("llm failed"))
+
+	_, err := s.processInputWithProvenance(context.Background(), "trigger failure", nil, testProvenance("watch_A", "wg_1"))
+	if err == nil {
+		t.Fatal("processInputWithProvenance succeeded, want LLM error")
+	}
+	if provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") {
+		t.Fatalf("active provenance after failed turn = %+v, want cleared", s.activeCausalProvenance())
+	}
+}
+
+func TestNonRetryableModelErrorClearsActiveProvenanceBeforeClose(t *testing.T) {
+	s := newProvenanceErrorSession(t, llm.ErrorFromHTTPStatus("openai", 401, "bad key", nil, nil))
+
+	_, err := s.processInputWithProvenance(context.Background(), "trigger auth failure", nil, testProvenance("watch_A", "wg_1"))
+	if err == nil {
+		t.Fatal("processInputWithProvenance succeeded, want provider error")
+	}
+	if provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") {
+		t.Fatalf("active provenance after closed failed turn = %+v, want cleared", s.activeCausalProvenance())
+	}
+}
+
+func newProvenanceErrorSession(t *testing.T, modelErr error) *Session {
+	t.Helper()
 	c := llm.NewClient()
 	c.Register(&fakeErrAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) (llm.Response, error){
 			func(llm.Request) (llm.Response, error) {
-				return llm.Response{}, errors.New("llm failed")
+				return llm.Response{}, modelErr
 			},
 		},
 	})
@@ -78,14 +103,7 @@ func TestProcessInputErrorClearsActiveProvenance(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
-
-	_, err = s.processInputWithProvenance(context.Background(), "trigger failure", nil, testProvenance("watch_A", "wg_1"))
-	if err == nil {
-		t.Fatal("processInputWithProvenance succeeded, want LLM error")
-	}
-	if provenance.ContainsWatch(s.activeCausalProvenance(), "watch_A", "wg_1") {
-		t.Fatalf("active provenance after failed turn = %+v, want cleared", s.activeCausalProvenance())
-	}
+	return s
 }
 
 func TestReplaceActiveProvenanceClearsCompletedProvenance(t *testing.T) {
