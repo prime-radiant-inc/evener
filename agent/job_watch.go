@@ -2969,6 +2969,17 @@ func (jm *jobManager) removePendingWatchSend(cfg *watchConfig, key jobstore.Watc
 	jm.forgetTerminalFlushIfEmptyLocked(cfg)
 }
 
+func (jm *jobManager) removeRuntimePendingWatchSend(state jobstore.WatchSendState) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	cfg := jm.watchConfigForKeyLocked(state.Key)
+	if cfg == nil {
+		return
+	}
+	removePendingWatchSendLocked(cfg, state.Key, state.UpdateSeq)
+	jm.forgetTerminalFlushIfEmptyLocked(cfg)
+}
+
 func removePendingWatchSendLocked(cfg *watchConfig, key jobstore.WatchSendKey, updateSeq uint64) {
 	if cfg == nil {
 		return
@@ -3452,6 +3463,7 @@ func (s *Session) renderUnreachableChildPendings(live map[string]bool) {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("watch-send fallback drop failed: %v", err)})
 			continue
 		}
+		jm.removeRuntimePendingWatchSend(dropped)
 		n := watchNotification(state.Key.ResolvedWatchedIdentity, dropped.DiagnosticReason)
 		n.Provenance = provenance.Clone(state.Provenance)
 		s.enqueueJobNotification(n)

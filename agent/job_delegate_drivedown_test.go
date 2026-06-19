@@ -1080,11 +1080,20 @@ func TestFallbackRenderNonResumableChildCallerWatchSend(t *testing.T) {
 	if pending := loadWatchSendRecord(t, parentJM).Pending; len(pending) != 1 {
 		t.Fatalf("seeded watch-send pending = %+v, want one pending", pending)
 	}
+	if err := parentJM.restoreWatchSendPending(); err != nil {
+		t.Fatalf("restore watch-send pending: %v", err)
+	}
+	if !parentJM.hasPendingWatchSends() {
+		t.Fatal("restored watch-send pending did not enter runtime pending state")
+	}
 
 	parent.driveChildrenWithUndeliveredAttention()
 
 	if pending := loadWatchSendRecord(t, parentJM).Pending; len(pending) != 0 {
 		t.Fatalf("watch-send pending after unreachable fallback = %+v, want settled/dropped", pending)
+	}
+	if parentJM.hasPendingWatchSends() {
+		t.Fatal("watch-send fallback dropped durable pending but left runtime pending state")
 	}
 	var dropped *jobstore.WatchSendState
 	for _, event := range loadJobStoreEvents(t, parentJM) {
