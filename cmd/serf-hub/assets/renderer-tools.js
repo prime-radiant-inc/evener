@@ -273,8 +273,8 @@
   };
 
   function jobReadOutputText(st, out) {
-    if (st && typeof st.output === "string") return st.output;
     if (st && Array.isArray(st.matches)) return st.matches.map(m => m && m.line || "").filter(Boolean).join("\n");
+    if (st && typeof st.output === "string") return st.output;
     if (st && st.structured_result !== undefined) return JSON.stringify(st.structured_result, null, 2);
     return out || "";
   }

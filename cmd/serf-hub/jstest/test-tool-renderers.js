@@ -130,7 +130,7 @@ await scenario("tool intent renders below header and above results", [
   return { ok: true };
 });
 
-await scenario("job_read_output renders status, truncation, and content preview", [
+await scenario("job_read_output renders status, truncation, and output preview", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "jr1", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_A" }) }],
   ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: "job_A completed, 128 bytes, truncated", tool_state: JSON.stringify({
@@ -150,6 +150,31 @@ await scenario("job_read_output renders status, truncation, and content preview"
   if (!result.textContent.includes("truncated")) return { ok: false, detail: "missing truncation summary" };
   const output = call.querySelector(".job-output");
   if (!output || !output.textContent.includes("line one\nline two")) return { ok: false, detail: "missing job output preview" };
+  return { ok: true };
+});
+
+await scenario("job_read_output grep state renders matches before the output window", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "jr1", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_A", grep: "needle" }) }],
+  ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: "job_A completed, 2 matches", tool_state: JSON.stringify({
+    job_id: "job_A",
+    type: "shell",
+    status: "completed",
+    output: "generic output window",
+    matches: [
+      { line: "needle one" },
+      { line: "needle two" },
+    ],
+    total_bytes: 256,
+  }) }],
+], ({ conv }) => {
+  const call = conv.querySelector(".tool-call.job_read_output");
+  if (!call) return { ok: false, detail: "no job_read_output card" };
+  const result = call.querySelector(".result-detail");
+  if (!result || !result.textContent.includes("2 matches")) return { ok: false, detail: "missing match summary" };
+  const output = call.querySelector(".job-output");
+  if (!output || !output.textContent.includes("needle one\nneedle two")) return { ok: false, detail: "missing grep matches" };
+  if (output.textContent.includes("generic output window")) return { ok: false, detail: "grep view used generic output window" };
   return { ok: true };
 });
 
