@@ -137,7 +137,7 @@ await scenario("job_read_output renders status, truncation, and content preview"
     job_id: "job_A",
     type: "shell",
     status: "completed",
-    content: "line one\nline two\nline three",
+    output: "line one\nline two\nline three",
     total_bytes: 128,
     truncated: true,
   }) }],
@@ -202,7 +202,7 @@ await scenario("job control tools render structured summaries", [
     count: 2,
     jobs: [
       { job_id: "job_1", type: "delegate", status: "running", description: "write tests" },
-      { job_id: "job_2", type: "shell", status: "completed", output_bytes: 42 },
+      { job_id: "job_2", type: "shell", status: "completed", total_bytes: 42 },
     ],
   }) }],
   ["TOOL_CALL_START", { call_id: "jstop1", tool_name: "job_stop", arguments_json: JSON.stringify({ job_id: "job_1" }) }],
@@ -567,7 +567,7 @@ await scenario("server-truncated job output shows an honest drop note, not a fak
   ["TOOL_CALL_START", { call_id: "jr1", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_A" }) }],
   ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: "job_A completed, output truncated", tool_state: JSON.stringify({
     job_id: "job_A", type: "shell", status: "completed",
-    content: "kept line one\nkept line two\nkept line three",
+    output: "kept line one\nkept line two\nkept line three",
     total_bytes: 128, truncated: true,
   }) }],
 ], ({ conv }) => {

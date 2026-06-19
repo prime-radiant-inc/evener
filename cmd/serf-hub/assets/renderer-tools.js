@@ -273,7 +273,7 @@
   };
 
   function jobReadOutputText(st, out) {
-    if (st && typeof st.content === "string") return st.content;
+    if (st && typeof st.output === "string") return st.output;
     if (st && Array.isArray(st.matches)) return st.matches.map(m => m && m.line || "").filter(Boolean).join("\n");
     if (st && st.structured_result !== undefined) return JSON.stringify(st.structured_result, null, 2);
     return out || "";
@@ -310,7 +310,7 @@
     },
     // Reading a subagent's output is a completion signal even when no
     // JOB_FINISHED arrives: flip the matching row to the job's reported status
-    // and surface a short result preview from its content.
+    // and surface a short result preview from its output.
     subagentReconcile: (state, data, out) => {
       if (data.error) return [];
       const st = parseToolJSON(out) || parseToolState(data.tool_state);
@@ -389,7 +389,7 @@
           job.type,
           job.status,
           job.description,
-          formatBytes(job.output_bytes),
+          formatBytes(job.total_bytes),
         ])).join("\n");
       }
       setExpandableOutput(state.body, clip(text, 8000), { moreClass: "job-list-output-more", outputClassName: "job-list-output" });
@@ -408,7 +408,7 @@
           type: job.type,
           status: job.status || "",
           transcript_ref: job.transcript_ref,
-          outputBytes: job.output_bytes,
+          outputBytes: job.total_bytes,
         }));
     },
   };
