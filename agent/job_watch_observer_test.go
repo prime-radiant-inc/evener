@@ -284,3 +284,121 @@ func TestWatchSendStateCarriesDeliveryProvenance(t *testing.T) {
 		t.Fatalf("latest delivery id = %q, want %q", provenance.LatestDeliveryID(state.Provenance), d.deliveryID)
 	}
 }
+
+// TestObserverInjectionDoesNotRetriggerSameWatch proves that when an observer
+// receives a watch delivery and calls delegate_send(to="caller"), the resulting
+// steering injected into the parent carries the watch's provenance, so the
+// parent's acknowledgement communicate event is suppressed by shouldSuppressWatch
+// and the watch does not fire a second time.
+//
+// The load-bearing assertion is cfg.nextUpdateSeq == 1 after the suppressed ack:
+// each real watch firing increments nextUpdateSeq in watchSendSnapshot; suppression
+// skips watchSendSnapshot entirely. If shouldSuppressWatch were removed, the ack
+// emit would re-fire the watch and nextUpdateSeq would be 2.
+func TestObserverInjectionDoesNotRetriggerSameWatch(t *testing.T) {
+	parent := newTestSession(t)
+	observer := newTestSession(t)
+	// Wire the observer's caller route to the parent so delegate_send(to=caller)
+	// enqueues a steering message with the watch provenance on the parent.
+	observer.cfg.spawn.parentSteer = parent.SteerWithProvenance
+
+	observerID := observer.ID()
+	sub := &subagent{id: observerID, sess: observer, running: true, done: make(chan struct{})}
+	parent.subagents.track(sub)
+
+	run, err := parent.attachDelegateJob(parent.jobManager, observerID, "actually watcher", sub)
+	if err != nil {
+		t.Fatalf("attach observer: %v", err)
+	}
+	installWatchBelowValidation(t, parent.jobManager, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: run.rec.DelegateID, Message: "Filter this caller message."},
+	})
+	cfg := onlyWatchConfigForTest(t, parent.jobManager)
+
+	// External communicate event — watch fires once (nextUpdateSeq goes to 1, pending populated).
+	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "actually alpha marker", AwaitReply: false})
+	if cfg.nextUpdateSeq == 0 {
+		t.Fatal("external communicate should trigger observer watch (nextUpdateSeq still 0)")
+	}
+	var state jobstore.WatchSendState
+	for _, pending := range cfg.pending {
+		state = *pending
+	}
+	if !provenance.ContainsWatch(state.Provenance, cfg.watchID, cfg.generation) {
+		t.Fatalf("delivery provenance = %+v, want %s/%s", state.Provenance, cfg.watchID, cfg.generation)
+	}
+
+	// Observer calls delegate_send(to=caller) carrying the delivery's provenance.
+	observer.replaceActiveProvenance(state.Provenance)
+	res := observer.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  runtimeMessageAliasCaller,
+		Message: "PYTHON_QUOTE delivery=" + state.DeliveryID + " quote=Ni!",
+	})
+	if res.Err != nil || !res.Delivered {
+		t.Fatalf("observer caller send = %+v, want delivered", res)
+	}
+
+	// Parent drains steering (with the watch provenance) and emits communicate to
+	// acknowledge the observer's message. The acknowledge emit must be suppressed.
+	for _, msg := range parent.drainSteeringForTurn() {
+		parent.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
+		parent.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+	}
+	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "acknowledged quote", AwaitReply: false})
+
+	// nextUpdateSeq must still be 1: the ack communicate was suppressed and did not
+	// call watchSendSnapshot again. A value of 2 would mean suppression regressed.
+	if cfg.nextUpdateSeq != 1 {
+		t.Fatalf("nextUpdateSeq = %d after suppressed ack, want 1 (only the original external trigger)", cfg.nextUpdateSeq)
+	}
+}
+
+// TestObserverNotificationAcknowledgementDoesNotRetriggerSameWatch proves that
+// when the parent acknowledges an observer's terminal notification (whose pending
+// event carried the watch's provenance), the resulting communicate event is
+// suppressed by shouldSuppressWatch and the watch does not fire.
+//
+// The load-bearing assertion is cfg.nextUpdateSeq == 0 (no firing) after the
+// communicate emit. If shouldSuppressWatch were removed, the ack communicate
+// would fire the watch and nextUpdateSeq would be 1.
+func TestObserverNotificationAcknowledgementDoesNotRetriggerSameWatch(t *testing.T) {
+	parent := newTestSession(t)
+	// Seed the watch send target (dlg_observer / job_observer).
+	seedWatchSendDelegateTarget(t, parent.jobManager, "dlg_observer")
+	installWatchBelowValidation(t, parent.jobManager, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: "dlg_observer", Message: "observe"},
+	})
+	cfg := onlyWatchConfigForTest(t, parent.jobManager)
+
+	// Persist a durable terminal record for "job_completed" (distinct from the
+	// "job_observer" running job seeded by seedWatchSendDelegateTarget) whose
+	// notification-pending event carries the watch's (watchID, generation)
+	// provenance. filterDeliverableJobNotifications rebuilds the notification from
+	// this record so the delivery inherits the provenance and acceptNotificationInput
+	// adopts it into the parent's active provenance.
+	watchProv := provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", parent.ID(), "caller")
+	appendPendingJobNotificationRecordWithProvenance(t, parent.jobManager, parent.ID(), "job_completed", watchProv)
+	// Enqueue a wake token so acceptNotificationInput sees a pending notification.
+	parent.enqueueJobNotification(jobNotification{
+		JobID:   "job_completed",
+		JobType: string(jobstore.JobDelegate),
+		Status:  string(jobstore.StatusCompleted),
+	})
+
+	if !parent.acceptNotificationInput(context.Background()) {
+		t.Fatal("notification input should proceed")
+	}
+	// After accepting the notification, the parent's active provenance carries the
+	// watch provenance. An acknowledgement communicate must be suppressed.
+	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "observer done acknowledged", AwaitReply: false})
+
+	// nextUpdateSeq must still be 0: the ack communicate was suppressed and did not
+	// call watchSendSnapshot. A value of 1 would mean suppression regressed.
+	if cfg.nextUpdateSeq != 0 {
+		t.Fatalf("nextUpdateSeq = %d after suppressed ack, want 0 (notification ack must not retrigger watch)", cfg.nextUpdateSeq)
+	}
+}
