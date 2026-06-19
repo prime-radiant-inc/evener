@@ -301,6 +301,10 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 		_ = store.Close()
 		return nil, err
 	}
+	if err := jm.clearUnrestoredActiveWatches(); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
 	return jm, nil
 }
 
@@ -857,12 +861,28 @@ func (jm *jobManager) reconcileLostJobs() error {
 }
 
 func recoveredTerminalWatchClearEvents(watches map[string]*jobstore.WatchRecord, jobID string, ts time.Time) []jobstore.Event {
+	return watchClearEventsForRecords(watches, ts, "auto_removed_terminal", func(watch *jobstore.WatchRecord) bool {
+		return watch.Target == jobID
+	})
+}
+
+func (jm *jobManager) clearUnrestoredActiveWatches() error {
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		return err
+	}
+	return jm.appendJobEvents(watchClearEventsForRecords(watches, jm.now(), "runtime_lost", func(*jobstore.WatchRecord) bool {
+		return true
+	}))
+}
+
+func watchClearEventsForRecords(watches map[string]*jobstore.WatchRecord, ts time.Time, endReason string, include func(*jobstore.WatchRecord) bool) []jobstore.Event {
 	if len(watches) == 0 {
 		return nil
 	}
 	var watchIDs []string
 	for watchID, watch := range watches {
-		if watch == nil || !watch.Active || watch.Target != jobID || watch.Generation == "" {
+		if watch == nil || !watch.Active || watch.Generation == "" || !include(watch) {
 			continue
 		}
 		watchIDs = append(watchIDs, watchID)
@@ -877,7 +897,7 @@ func recoveredTerminalWatchClearEvents(watches map[string]*jobstore.WatchRecord,
 			WatchID: watchID,
 			Watch: &jobstore.WatchEvent{
 				Generation: watch.Generation,
-				EndReason:  "auto_removed_terminal",
+				EndReason:  endReason,
 			},
 		})
 	}

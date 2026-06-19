@@ -245,6 +245,27 @@ func TestRenderMarkdown_DelegateSendStateResult(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdown_UnpairedDelegateSendUsesToolState(t *testing.T) {
+	state := []byte(`{"delegate_id":"dlg_unpaired","current_job_id":"job_unpaired","type":"delegate","status":"completed","running_in_background":false,"action":"started","transcript_ref":"local:01UNPAIRED","output":"done","truncated":false}`)
+	res := result("send", "delegate_send", "done\n[delegate footer without lifecycle JSON]", false)
+	res.ToolState = state
+	entries := []transcript.Entry{toolResultEntry(res)}
+
+	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+	for _, want := range []string{
+		"[call not shown] `delegate_send`",
+		"job_id=job_unpaired",
+		"status=completed",
+		"transcript_ref=local:01UNPAIRED",
+		"delegate_id=dlg_unpaired",
+		"done",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("unpaired delegate_send render missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // TestRenderMarkdown_JobResultHugeOutputBounded verifies a job result with a
 // very long output is still bounded, and the ref stays visible before the
 // truncated output.

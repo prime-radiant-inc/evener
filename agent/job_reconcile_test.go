@@ -58,7 +58,7 @@ func TestReconcileOnRestoreFinalizesLostJob(t *testing.T) {
 	}
 }
 
-func TestReconcileOnRestoreClearsLostJobWatches(t *testing.T) {
+func TestNewJobManagerClearsUnrestoredActiveWatches(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(dir+"/sessions/S1/jobs", 0o755); err != nil {
 		t.Fatal(err)
@@ -100,29 +100,21 @@ func TestReconcileOnRestoreClearsLostJobWatches(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(dir+"/sessions/S1/jobs/job_lost.log", []byte("lost output\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	jm, err := newJobManager(dir, "S1", nil)
 	if err != nil {
 		t.Fatal(err)
-	}
-	jm.now = func() time.Time { return time.Unix(100, 0).UTC() }
-
-	if err := jm.reconcileLostJobs(); err != nil {
-		t.Fatalf("reconcile lost jobs: %v", err)
 	}
 
 	watches, err := jm.store.LoadWatches()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w := watches["watch_lost"]; w == nil || w.Active || w.EndReason != "auto_removed_terminal" {
-		t.Fatalf("watch_lost = %+v, want inactive auto_removed_terminal", w)
+	if w := watches["watch_lost"]; w == nil || w.Active || w.EndReason != "runtime_lost" {
+		t.Fatalf("watch_lost = %+v, want inactive runtime_lost", w)
 	}
-	if w := watches["watch_other"]; w == nil || !w.Active {
-		t.Fatalf("watch_other = %+v, want unrelated watch still active", w)
+	if w := watches["watch_other"]; w == nil || w.Active || w.EndReason != "runtime_lost" {
+		t.Fatalf("watch_other = %+v, want inactive runtime_lost", w)
 	}
 }
 

@@ -911,7 +911,7 @@ func writeUnpairedResults(b *strings.Builder, idx *resultIndex) {
 	for _, id := range ids {
 		pr := idx.byCallID[id]
 		fmt.Fprintf(b, "- [call not shown] `%s`\n", pr.result.Name)
-		writeResultBody(b, pr.result.Content, false)
+		writeToolResultBody(b, pr.result.Name, pr.result, false)
 	}
 }
 
