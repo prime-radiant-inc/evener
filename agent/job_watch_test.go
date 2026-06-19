@@ -4270,13 +4270,15 @@ func TestWatchSendAppendFailureDuringCloseReturnsErrorAndClosesStore(t *testing.
 		t.Fatalf("pending before close = %+v, want one", cfg)
 	}
 	storePath := jm.dir + "/jobs.jsonl"
-	realAppend := jm.appendEvent
+	realAppendEvents := jm.appendEvents
 	appendErr := errors.New("append dropped failed")
-	jm.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventWatchSendDropped {
-			return appendErr
+	jm.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventWatchSendDropped {
+				return appendErr
+			}
 		}
-		return realAppend(e)
+		return realAppendEvents(events)
 	}
 
 	if err := jm.close(); !errors.Is(err, appendErr) {
@@ -5219,6 +5221,34 @@ drained:
 	case <-fired:
 		t.Fatal("progress timer fired after close")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestJobManagerCloseDurablyClearsActiveWatches(t *testing.T) {
+	jm := newTestJM(t)
+	res, err := jm.configureWatch(watchArgs{Target: "caller", ProgressIntervalMS: minWatchProgressIntervalMS})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	if err := jm.closeRuntimeState(); err != nil {
+		t.Fatalf("close runtime state: %v", err)
+	}
+	t.Cleanup(func() { _ = jm.closeStoreOnly() })
+
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		t.Fatalf("load watches: %v", err)
+	}
+	w := watches[res.WatchID]
+	if w == nil {
+		t.Fatalf("watch %q missing from durable registry", res.WatchID)
+	}
+	if w.Active {
+		t.Fatalf("watch = %+v, want inactive after close", w)
+	}
+	if w.EndReason != "job_manager_closed" {
+		t.Fatalf("end reason = %q, want job_manager_closed", w.EndReason)
 	}
 }
 
@@ -7513,6 +7543,54 @@ func TestKeptSyncRetryDoesNotArmOwnerNotification(t *testing.T) {
 	jm.mu.Unlock()
 	if running {
 		t.Fatal("kept-sync retry left job running")
+	}
+}
+
+func TestKeptSyncTerminalWatchAppendFailureRetainsBufferedMatch(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	jm.mu.Lock()
+	run := jm.running[rec.JobID]
+	jm.mu.Unlock()
+	if run == nil {
+		t.Fatal("running job missing")
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, run.output, []byte("server ready")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+
+	realAppendEvents := jm.appendEvents
+	appendErr := errors.New("append watch clear failed")
+	failed := false
+	jm.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventWatchCleared && !failed {
+				failed = true
+				return appendErr
+			}
+		}
+		return realAppendEvents(events)
+	}
+
+	code := 0
+	if err := jm.finalizeKeptSync(run, jobstore.StatusCompleted, "exit_zero", &code); !errors.Is(err, appendErr) {
+		t.Fatalf("finalizeKeptSync error = %v, want append failure", err)
+	}
+	if len(notified) != 0 {
+		t.Fatalf("failed durable clear emitted notifications: %+v", notified)
+	}
+
+	jm.appendEvents = realAppendEvents
+	if err := jm.finalizeKeptSync(run, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("retry finalizeKeptSync: %v", err)
+	}
+	if len(notified) != 1 || !strings.Contains(notified[0].Reason, "server ready") {
+		t.Fatalf("notifications = %+v, want retained terminal output_match", notified)
 	}
 }
 

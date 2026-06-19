@@ -302,9 +302,10 @@ func (jm *jobManager) closeRuntimeState() error {
 	targets := make([]watchConfigTerminalSnapshot, 0, len(jm.watches))
 	for key, cfg := range jm.watches {
 		targets = append(targets, watchConfigTerminalSnapshot{
-			key:      key,
-			cfg:      cfg,
-			terminal: watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()),
+			key:       key,
+			cfg:       cfg,
+			terminal:  watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()),
+			endReason: "job_manager_closed",
 		})
 	}
 	markWatchConfigSnapshotsRejectingLocked(targets)
@@ -325,14 +326,13 @@ func (jm *jobManager) closeRuntimeState() error {
 	jm.mu.Unlock()
 	jm.watchNotifyMu.Unlock()
 
-	applied, err := jm.appendWatchSendTerminalSnapshots(dropped)
+	err := jm.appendWatchTeardownBatch(dropped, targets)
 	if err != nil {
-		jm.removeWatchSendTerminalSnapshots(applied)
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
 		jm.closeWatchConfigSnapshots(targets)
 	} else {
 		jm.detachWatchConfigSnapshots(targets)
-		jm.removeWatchSendTerminalSnapshots(applied)
+		jm.removeWatchSendTerminalSnapshots(dropped)
 	}
 	watchCleanupErr := err
 	jm.mu.Lock()
@@ -940,13 +940,13 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 		jm.mu.Unlock()
 		return nil
 	}
-	watchNotifications, watchDeliveries, watchRegistryEvents, expiredWatches := jm.expireJobWatchesLocked(run.rec.JobID)
+	watchRegistryEvents, expiredWatches, watchRootProvenance := jm.expireJobWatchesLocked(run.rec.JobID)
 	jm.mu.Unlock()
 
 	if err := jm.appendWatchRegistryEvents(watchRegistryEvents); err != nil {
 		return err
 	}
-	jm.detachExpiredJobWatches(expiredWatches)
+	watchNotifications, watchDeliveries := jm.completeExpiredJobWatches(run.rec.JobID, expiredWatches, watchRootProvenance)
 	jm.enqueueWatchNotifications(watchNotifications)
 	jm.recordWatchSendsAndKick(watchDeliveries)
 	// No EventJobNotificationPending, no jm.enqueue call: kept within-bound
@@ -1221,8 +1221,9 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	var watchDeliveries []watchSendDelivery
 	var watchRegistryEvents []jobstore.Event
 	var expiredWatches []expiredJobWatch
+	var watchRootProvenance *provenance.Causal
 	if !pendingAppended {
-		watchNotifications, watchDeliveries, watchRegistryEvents, expiredWatches = jm.expireJobWatchesLocked(run.rec.JobID)
+		watchRegistryEvents, expiredWatches, watchRootProvenance = jm.expireJobWatchesLocked(run.rec.JobID)
 	}
 	jm.mu.Unlock()
 
@@ -1230,7 +1231,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		if err := jm.appendWatchRegistryEvents(watchRegistryEvents); err != nil {
 			return err
 		}
-		jm.detachExpiredJobWatches(expiredWatches)
+		watchNotifications, watchDeliveries = jm.completeExpiredJobWatches(run.rec.JobID, expiredWatches, watchRootProvenance)
 		jm.enqueueWatchNotifications(watchNotifications)
 		jm.recordWatchSendsAndKick(watchDeliveries)
 	}

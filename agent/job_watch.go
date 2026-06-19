@@ -1952,9 +1952,7 @@ type expiredJobWatch struct {
 	endReason string
 }
 
-func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, []watchSendDelivery, []jobstore.Event, []expiredJobWatch) {
-	var notifications []jobNotification
-	var deliveries []watchSendDelivery
+func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobstore.Event, []expiredJobWatch, *provenance.Causal) {
 	var registryEvents []jobstore.Event
 	var expired []expiredJobWatch
 
@@ -1970,6 +1968,27 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, [
 		if key.Target != jobID {
 			continue
 		}
+		registryEvents = append(registryEvents, watchClearedEvent(jm, cfg, "auto_removed_terminal"))
+		expired = append(expired, expiredJobWatch{key: key, cfg: cfg, endReason: "auto_removed_terminal"})
+	}
+
+	return registryEvents, expired, root.Provenance
+}
+
+func (jm *jobManager) completeExpiredJobWatches(jobID string, expired []expiredJobWatch, rootProvenance *provenance.Causal) ([]jobNotification, []watchSendDelivery) {
+	if len(expired) == 0 {
+		return nil, nil
+	}
+	var notifications []jobNotification
+	var deliveries []watchSendDelivery
+	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: provenance.Clone(rootProvenance)}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, e := range expired {
+		if jm.watches[e.key] != e.cfg {
+			continue
+		}
+		cfg := e.cfg
 		if cfg.outputMatcher != nil {
 			trackTerminalFlush := len(cfg.pending) != 0
 			for _, match := range cfg.outputMatcher.FlushWithProvenance(root.Provenance) {
@@ -1999,27 +2018,11 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, [
 		} else if len(cfg.pending) != 0 {
 			jm.rememberDetachedPendingLocked(cfg)
 		}
-		registryEvents = append(registryEvents, watchClearedEvent(jm, cfg, "auto_removed_terminal"))
-		expired = append(expired, expiredJobWatch{key: key, cfg: cfg, endReason: "auto_removed_terminal"})
-	}
-
-	return notifications, deliveries, registryEvents, expired
-}
-
-func (jm *jobManager) detachExpiredJobWatches(expired []expiredJobWatch) {
-	if len(expired) == 0 {
-		return
-	}
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	for _, e := range expired {
-		if jm.watches[e.key] != e.cfg {
-			continue
-		}
 		jm.recordWatchEndedLocked(e.key, e.cfg, e.endReason)
 		closeWatchConfig(e.cfg)
 		delete(jm.watches, e.key)
 	}
+	return notifications, deliveries
 }
 
 func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-chan struct{}) {

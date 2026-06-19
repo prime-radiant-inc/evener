@@ -496,12 +496,14 @@ func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
 	}
 
 	cleanupErr := errors.New("drop watch send failed")
-	realAppend := jm.appendEvent
-	jm.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventWatchSendDropped {
-			return cleanupErr
+	realAppendEvents := jm.appendEvents
+	jm.appendEvents = func(events []jobstore.Event) error {
+		for _, event := range events {
+			if event.Kind == jobstore.EventWatchSendDropped {
+				return cleanupErr
+			}
 		}
-		return realAppend(e)
+		return realAppendEvents(events)
 	}
 
 	if err := jm.close(); !errors.Is(err, cleanupErr) {
