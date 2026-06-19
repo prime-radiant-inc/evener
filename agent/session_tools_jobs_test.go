@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -1862,7 +1863,7 @@ func TestJobWatchToolSendToMainAliasFailsTargetNotFound(t *testing.T) {
 func TestDelegateSendToolMainAliasFailsInvalidRequestWithoutSideEffects(t *testing.T) {
 	s := newTestSession(t)
 	called := false
-	s.cfg.spawn.parentSteer = func(string) { called = true }
+	s.cfg.spawn.parentSteer = func(string, *provenance.Causal) { called = true }
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send",
@@ -2997,7 +2998,7 @@ func TestDelegateSendToShellJobIDRejectsJobHandle(t *testing.T) {
 
 func TestDelegateSendCallerTargetReturnsRuntimeShape(t *testing.T) {
 	s := newTestSession(t)
-	s.cfg.spawn.parentSteer = s.Steer
+	s.cfg.spawn.parentSteer = s.SteerWithProvenance
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send",

@@ -27,11 +27,17 @@ const (
 	terminalExcerptMaxChars = 400
 )
 
-func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
-	p := rec.NotificationProvenance
-	if p == nil {
-		p = rec.Provenance
+// recordNotificationProvenance is the causal provenance a record's notification
+// carries: the explicit NotificationProvenance set at finish time, falling back
+// to the record's own Provenance. Callers wrap the result with provenance.Clone.
+func recordNotificationProvenance(rec *jobstore.JobRecord) *provenance.Causal {
+	if rec.NotificationProvenance != nil {
+		return rec.NotificationProvenance
 	}
+	return rec.Provenance
+}
+
+func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 	return jobNotification{
 		JobID:         rec.JobID,
 		JobType:       string(rec.Type),
@@ -40,7 +46,7 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 		TranscriptRef: rec.TranscriptRef,
 		OutputBytes:   rec.OutputBytes,
 		ExitCode:      rec.ExitCode,
-		Provenance:    provenance.Clone(p),
+		Provenance:    provenance.Clone(recordNotificationProvenance(rec)),
 	}
 }
 

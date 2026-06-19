@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 )
 
@@ -2402,6 +2403,7 @@ func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchCon
 		Background:    true,
 		BackgroundSet: true,
 		FromWatch:     true,
+		Provenance:    provenance.Clone(state.Provenance),
 	})
 	switch classifyWatchSendDelivery(res) {
 	case watchSendDelivered:

@@ -67,6 +67,12 @@ func (s *Session) trySteer(msg string) bool {
 	return s.trySteerWithImages(msg, nil)
 }
 
+// SteerWithProvenance queues a text-only steering message carrying the causal
+// watch provenance that produced it (nil for human/system-authored steering).
+func (s *Session) SteerWithProvenance(msg string, p *provenance.Causal) {
+	_ = s.trySteerWithProvenance(msg, p)
+}
+
 // SteerWithImages queues a steering message that carries optional image
 // attachments alongside the text. The combined message is appended to
 // session history as a TurnSteering with text + ContentImage parts when

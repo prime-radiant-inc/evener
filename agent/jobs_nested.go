@@ -647,7 +647,7 @@ func (jm *jobManager) recoverForwardedPendingNotifications() error {
 			TS:          jm.recoveredEventTime(rec),
 			JobID:       rec.JobID,
 			TerminalGen: rec.TerminalGen,
-			Provenance:  provenance.Clone(rec.Provenance),
+			Provenance:  provenance.Clone(recordNotificationProvenance(rec)),
 		}); err != nil {
 			return err
 		}

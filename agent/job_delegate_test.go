@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
@@ -1564,7 +1565,7 @@ func TestDelegateIDResumeFinalizesObservedTerminalRunningJob(t *testing.T) {
 		delegateID: delegateID,
 		generation: jobstore.NewDelegateGeneration(),
 		create:     true,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("attachDelegateJobWithRestoreAndDelegate: %v", err)
 	}
@@ -1965,7 +1966,7 @@ func TestWatchOriginatedRunningSendDoesNotMarkNonLiveDelegateFromWatch(t *testin
 		waitForShellDone(t, parent.jobManager, run.rec.JobID)
 	})
 
-	res := parent.sendRunningDelegateMessage(run.rec.JobID, "watch-originated steer", run.rec, true)
+	res := parent.sendRunningDelegateMessage(run.rec.JobID, "watch-originated steer", run.rec, true, nil)
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "not_controllable") {
 		t.Fatalf("error = %v, want not_controllable", res.Err)
 	}
@@ -2004,7 +2005,7 @@ func TestWatchOriginatedRunningSendRejectedByClosingChildStaysBusy(t *testing.T)
 	child.state = SessionClosed
 	child.mu.Unlock()
 
-	res := parent.sendRunningDelegateMessage(run.rec.JobID, "watch-originated steer", run.rec, true)
+	res := parent.sendRunningDelegateMessage(run.rec.JobID, "watch-originated steer", run.rec, true, nil)
 	if res.Err != nil {
 		t.Fatalf("sendRunningDelegateMessage returned error: %v", res.Err)
 	}
@@ -4390,7 +4391,7 @@ func TestSendDelegateMessageRunningTargetHoldsRunLockThroughSteer(t *testing.T) 
 
 	done := make(chan sendMessageResult, 1)
 	go func() {
-		done <- parent.sendRunningDelegateMessage(rec.JobID, "atomic steer", rec, false)
+		done <- parent.sendRunningDelegateMessage(rec.JobID, "atomic steer", rec, false, nil)
 	}()
 
 	for deadline := time.Now().Add(time.Second); sub.mu.TryLock(); {
@@ -4484,7 +4485,7 @@ func TestSendDelegateMessageRootCallerTargetFails(t *testing.T) {
 func TestDelegateSendMainAliasFailsInvalidRequest(t *testing.T) {
 	sess := newTestSession(t)
 	called := false
-	sess.cfg.spawn.parentSteer = func(string) { called = true }
+	sess.cfg.spawn.parentSteer = func(string, *provenance.Causal) { called = true }
 
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  "main",
@@ -4535,7 +4536,7 @@ func TestSendDelegateMessageAliasFromSubagentSteersCaller(t *testing.T) {
 	subCfg := SessionConfig{MaxSubagentDepth: 2}
 	subCfg.spawn.depth = 1
 	subCfg.spawn.parentSessionID = parent.ID()
-	subCfg.spawn.parentSteer = parent.Steer
+	subCfg.spawn.parentSteer = parent.SteerWithProvenance
 	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
 	if err != nil {
 		t.Fatalf("NewSession child: %v", err)
@@ -4571,7 +4572,7 @@ func TestSendDelegateMessageUnsupportedAliasesFromSubagentFailTargetNotFound(t *
 			subCfg := SessionConfig{MaxSubagentDepth: 2}
 			subCfg.spawn.depth = 1
 			subCfg.spawn.parentSessionID = parent.ID()
-			subCfg.spawn.parentSteer = parent.Steer
+			subCfg.spawn.parentSteer = parent.SteerWithProvenance
 			child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
 			if err != nil {
 				t.Fatalf("NewSession child: %v", err)
@@ -5339,5 +5340,96 @@ func TestDelegateGrantErrorEnumeratesValidRange(t *testing.T) {
 		if !strings.Contains(res.Err.Error(), tc.wantContains) {
 			t.Fatalf("own=%d: error %q missing %q", tc.ownAllowance, res.Err.Error(), tc.wantContains)
 		}
+	}
+}
+
+func TestDelegateSendCallerCarriesActiveProvenanceToParentSteering(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", parent.ID(), "caller")
+	child.replaceActiveProvenance(p)
+	child.cfg.spawn.parentSteerDelivered = parent.trySteerWithProvenance
+
+	res := child.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  runtimeMessageAliasCaller,
+		Message: "PYTHON_QUOTE delivery=wd_1 quote=Ni!",
+	})
+	if res.Err != nil || !res.Delivered {
+		t.Fatalf("sendDelegateMessage = %+v, want delivered", res)
+	}
+
+	parent.mu.Lock()
+	defer parent.mu.Unlock()
+	if len(parent.steeringQueue) != 1 {
+		t.Fatalf("parent steering queue = %d, want 1", len(parent.steeringQueue))
+	}
+	if !provenance.ContainsWatch(parent.steeringQueue[0].Provenance, "watch_A", "wg_1") {
+		t.Fatalf("steering provenance = %+v, want watch_A/wg_1", parent.steeringQueue[0].Provenance)
+	}
+}
+
+func TestRunningDelegateWatchSendCarriesProvenanceToObserverSteering(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	childID := child.ID()
+	sub := &subagent{id: childID, sess: child, running: true}
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, childID, "observer", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", parent.ID(), "caller")
+
+	res := parent.sendRunningDelegateMessage(run.rec.DelegateID, "Watch frame", run.rec, true, p)
+	if res.Err != nil {
+		t.Fatalf("sendRunningDelegateMessage: %+v", res)
+	}
+	child.mu.Lock()
+	defer child.mu.Unlock()
+	if len(child.steeringQueue) != 1 {
+		t.Fatalf("child steering queue = %d, want 1", len(child.steeringQueue))
+	}
+	if !provenance.ContainsWatch(child.steeringQueue[0].Provenance, "watch_A", "wg_1") {
+		t.Fatalf("child steering provenance = %+v, want watch_A/wg_1", child.steeringQueue[0].Provenance)
+	}
+}
+
+// TestCrossWatchObserverResumeAdoptsDrivingWatchProvenance: an observer whose
+// prior run was driven by watch_X is resumed by a watch send delivering watch_Y.
+// The new run must be attributed to the CURRENT driving watch (watch_Y), not the
+// watch that first drove the observer (watch_X) — otherwise the current watch's
+// terminal notification is mis-attributed and not suppressed (the loop reopens).
+func TestCrossWatchObserverResumeAdoptsDrivingWatchProvenance(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	parent := newDelegateTestSession(t, c)
+	child := newDelegateTestSession(t, c)
+	sub := completedDelegateSubagent(child, "already done")
+	parent.subagents.track(sub)
+
+	previousRestore := &jobstore.DelegateRestoreDescriptor{
+		Version:        1,
+		ChildSessionID: child.ID(),
+		Provenance:     provenance.WithWatch(nil, "watch_X", "wg_x", "wd_x", parent.ID(), "caller"),
+	}
+	drivingWatch := provenance.WithWatch(nil, "watch_Y", "wg_y", "wd_y", parent.ID(), "caller")
+
+	run, err := parent.attachDelegateJobWithRestoreAndDelegate(parent.jobManager, child.ID(), "observer", sub, jobstore.NewJobID(), nil, true, nil, previousRestore, delegateJobLink{
+		delegateID: jobstore.NewDelegateID(),
+		generation: jobstore.NewDelegateGeneration(),
+		create:     true,
+	}, drivingWatch)
+	if err != nil {
+		t.Fatalf("attachDelegateJobWithRestoreAndDelegate: %v", err)
+	}
+
+	if !provenance.ContainsWatch(run.rec.Provenance, "watch_Y", "wg_y") {
+		t.Fatalf("run provenance = %+v, want driving watch_Y/wg_y", run.rec.Provenance)
+	}
+	if provenance.ContainsWatch(run.rec.Provenance, "watch_X", "wg_x") {
+		t.Fatalf("run provenance = %+v, must not re-pin to prior watch_X/wg_x", run.rec.Provenance)
+	}
+	if !provenance.ContainsWatch(run.rec.DelegateRestore.Provenance, "watch_Y", "wg_y") {
+		t.Fatalf("restore provenance = %+v, want driving watch_Y/wg_y", run.rec.DelegateRestore.Provenance)
 	}
 }
