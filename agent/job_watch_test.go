@@ -386,7 +386,7 @@ func TestJobWatchSendToKnownShellJobFailsJobIDGuidance(t *testing.T) {
 	}
 }
 
-func TestJobWatchSendToWatchedKnownShellJobFailsTargetNotMessageable(t *testing.T) {
+func TestJobWatchSendToWatchedFailsV1TargetValidation(t *testing.T) {
 	jm := newTestJM(t)
 	watched, _ := jm.createShell(createShellOpts{Command: "watched"})
 
@@ -396,8 +396,8 @@ func TestJobWatchSendToWatchedKnownShellJobFailsTargetNotMessageable(t *testing.
 		Send:        &watchSendArgs{To: "watched", Message: "observe"},
 	})
 
-	if err == nil || !strings.Contains(err.Error(), "target_not_messageable") {
-		t.Fatalf("error = %v, want target_not_messageable", err)
+	if err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
+		t.Fatalf("error = %v, want watched alias rejection", err)
 	}
 	if jm.watchCount() != 0 {
 		t.Fatalf("watch count = %d, want 0", jm.watchCount())
@@ -829,7 +829,7 @@ func TestWatchOriginSuppressesDelegateLifecycleWatchSends(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "watched", Message: "observe"},
+		Send:   &watchSendArgs{To: "dlg_obs", Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -2769,14 +2769,9 @@ func TestWatchSendTerminalFlushBatchContinuesAfterPersistenceFailure(t *testing.
 	}
 }
 
-func TestWatchSendToWatchedDeliversFrameToConcreteTarget(t *testing.T) {
+func TestWatchSendToWatchedRejectsConcreteTarget(t *testing.T) {
 	jm := newTestJM(t)
-	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
-		sent = append(sent, a)
-		return sendMessageResult{}
-	}
 
 	rec := createRunningDelegateWatchTarget(t, jm)
 	_, err := jm.configureWatch(watchArgs{
@@ -2784,51 +2779,28 @@ func TestWatchSendToWatchedDeliversFrameToConcreteTarget(t *testing.T) {
 		OutputMatch: "(?i)ready",
 		Send:        &watchSendArgs{To: "watched", Message: "saw ready"},
 	})
-	if err != nil {
-		t.Fatalf("configure: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
+		t.Fatalf("error = %v, want watched alias rejection", err)
 	}
-	feedJob(jm, rec.JobID, []byte("server READY\n"))
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
-		t.Fatalf("observation must record one pending send, got %d", len(pending))
-	}
-	drainWatchSendsVia(t, jm, send)
-
-	if len(sent) != 1 {
-		t.Fatalf("a send watch must deliver once, got %d", len(sent))
-	}
-	if sent[0].Target != rec.JobID {
-		t.Fatalf("delivery target = %q, want watched job %q", sent[0].Target, rec.JobID)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("rejected watched send recorded pending: %+v", pending)
 	}
 }
 
-func TestWatchSendToWatchedWildcardJobNotificationDeliversConcreteTarget(t *testing.T) {
+func TestWatchSendToWatchedRejectsWildcardJobNotification(t *testing.T) {
 	jm := newTestJM(t)
-	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
-		sent = append(sent, a)
-		return sendMessageResult{}
-	}
 
 	_, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
 		Send:   &watchSendArgs{To: "watched", Message: "observe"},
 	})
-	if err != nil {
-		t.Fatalf("configure: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
+		t.Fatalf("error = %v, want watched alias rejection", err)
 	}
-	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_delegate", JobType: "delegate", Status: "completed"})
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
-		t.Fatalf("observation must record one pending send, got %d", len(pending))
-	}
-	drainWatchSendsVia(t, jm, send)
-
-	if len(sent) != 1 {
-		t.Fatalf("wildcard job notification must deliver once, got %d", len(sent))
-	}
-	if sent[0].Target != "job_delegate" {
-		t.Fatalf("delivery target = %q, want concrete watched job", sent[0].Target)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("rejected watched send recorded pending: %+v", pending)
 	}
 }
 
@@ -3086,16 +3058,12 @@ func TestWatchSendRestoreClearDropsWatchedTargetedPendingState(t *testing.T) {
 		t.Fatalf("new job manager: %v", err)
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
-	seedCommonWatchSendTargets(t, jm)
-	rec := createRunningDelegateWatchTarget(t, jm)
-	if _, err := jm.configureWatch(watchArgs{
-		Target:      rec.JobID,
-		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "watched", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure: %v", err)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	for _, event := range restoredWatchSendPendingEvents(jm.sessionID, rec.JobID, rec.JobID, jm.now()) {
+		if err := jm.appendEvent(event); err != nil {
+			t.Fatalf("append %s: %v", event.Kind, err)
+		}
 	}
-	feedJob(jm, rec.JobID, []byte("server ready\n"))
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("pending before restore = %d, want 1", len(pending))
 	}
@@ -3121,23 +3089,19 @@ func TestWatchSendRestoreClearDropsWatchedTargetedPendingState(t *testing.T) {
 	}
 }
 
-func TestWatchSendRestoreReconfigureDropsWatchedPendingState(t *testing.T) {
+func TestWatchSendRestoreReconfigureRejectsWatchedAliasAndKeepsLegacyPending(t *testing.T) {
 	stateDir := t.TempDir()
 	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
 	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
-	seedCommonWatchSendTargets(t, jm)
-	rec := createRunningDelegateWatchTarget(t, jm)
-	if _, err := jm.configureWatch(watchArgs{
-		Target:      rec.JobID,
-		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "watched", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure first watch: %v", err)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	for _, event := range restoredWatchSendPendingEvents(jm.sessionID, rec.JobID, rec.JobID, jm.now()) {
+		if err := jm.appendEvent(event); err != nil {
+			t.Fatalf("append %s: %v", event.Kind, err)
+		}
 	}
-	feedJob(jm, rec.JobID, []byte("server ready\n"))
 	firstPending := loadWatchSendRecord(t, jm).Pending
 	if len(firstPending) != 1 {
 		t.Fatalf("pending before restore = %d, want 1", len(firstPending))
@@ -3155,12 +3119,6 @@ func TestWatchSendRestoreReconfigureDropsWatchedPendingState(t *testing.T) {
 		t.Fatalf("reopen job manager: %v", err)
 	}
 	reopened.now = func() time.Time { return time.Unix(1001, 0).UTC() }
-	output, err := jobstore.OpenOutput(reopened.outputPathForJob(rec, rec.JobID), maxJobOutputRetentionBytes)
-	if err != nil {
-		t.Fatalf("reopen output: %v", err)
-	}
-	reopened.running[rec.JobID] = &runningJob{rec: rec, output: output, done: make(chan struct{}), durableStarted: true}
-	t.Cleanup(func() { _ = output.Close() })
 	t.Cleanup(func() { _ = reopened.store.Close() })
 	if restored := runtimeWatchSendPending(t, reopened); len(restored) != 1 {
 		t.Fatalf("runtime pending after restore = %d, want 1", len(restored))
@@ -3170,16 +3128,16 @@ func TestWatchSendRestoreReconfigureDropsWatchedPendingState(t *testing.T) {
 		Target:      rec.JobID,
 		OutputMatch: "blocked",
 		Send:        &watchSendArgs{To: "watched", Message: "replacement"},
-	}); err != nil {
-		t.Fatalf("reconfigure watched pending: %v", err)
+	}); err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
+		t.Fatalf("error = %v, want watched alias rejection", err)
 	}
 
 	pending := loadWatchSendRecord(t, reopened).Pending
-	if _, ok := pending[firstKey]; ok {
-		t.Fatalf("old restored watched pending survived replacement cleanup: %+v", pending)
+	if _, ok := pending[firstKey]; !ok {
+		t.Fatalf("legacy watched pending was dropped by rejected replacement: %+v", pending)
 	}
-	if len(pending) != 0 {
-		t.Fatalf("pending after watched replacement = %+v, want none before new trigger", pending)
+	if len(pending) != 1 {
+		t.Fatalf("pending after rejected watched replacement = %+v, want original pending only", pending)
 	}
 }
 
@@ -3512,40 +3470,28 @@ func TestWatchSendClearNormalizesSendTarget(t *testing.T) {
 	}
 }
 
-func TestWatchSendTerminalFlushWatchedTargetedClearDropsPending(t *testing.T) {
+func TestWatchSendClearDropsRuntimeLegacyWatchedResolvedPending(t *testing.T) {
 	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
-	rec := createRunningDelegateWatchTarget(t, jm)
-	if _, err := jm.configureWatch(watchArgs{
-		Target:      rec.JobID,
-		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "watched", Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure: %v", err)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	for _, event := range restoredWatchSendPendingEvents(jm.sessionID, rec.JobID, rec.JobID, jm.now()) {
+		if err := jm.appendEvent(event); err != nil {
+			t.Fatalf("append %s: %v", event.Kind, err)
+		}
 	}
-	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
-		t.Fatalf("append output: %v", err)
-	}
-	code := 0
-	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
-		t.Fatalf("finalize: %v", err)
+	if err := jm.restoreWatchSendPending(); err != nil {
+		t.Fatalf("restore pending: %v", err)
 	}
 	pending := loadWatchSendRecord(t, jm).Pending
 	if len(pending) != 1 {
-		t.Fatalf("pending after terminal flush = %d, want 1: %+v", len(pending), pending)
-	}
-	for key := range pending {
-		if key.ResolvedSendTo != rec.JobID {
-			t.Fatalf("pending resolved send target = %q, want watched job %q", key.ResolvedSendTo, rec.JobID)
-		}
+		t.Fatalf("pending before clear = %d, want 1: %+v", len(pending), pending)
 	}
 
 	if _, err := jm.clearWatch(watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "watched"}); err != nil {
-		t.Fatalf("clear terminal-flushed watched pending: %v", err)
+		t.Fatalf("clear legacy watched pending: %v", err)
 	}
 
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
-		t.Fatalf("pending after terminal watched clear = %+v, want none", pending)
+		t.Fatalf("pending after legacy watched clear = %+v, want none", pending)
 	}
 }
 
@@ -4776,8 +4722,8 @@ func TestWatchSendToWatchedRejectsSessionEventsWithoutConcreteTarget(t *testing.
 				Send:   &watchSendArgs{To: "watched", Message: "observe"},
 			})
 
-			if err == nil || !strings.Contains(err.Error(), "target_not_found") {
-				t.Fatalf("error = %v, want target_not_found", err)
+			if err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
+				t.Fatalf("error = %v, want watched alias rejection", err)
 			}
 			if jm.watchCount() != 0 {
 				t.Fatalf("watch count = %d, want 0", jm.watchCount())
@@ -4789,71 +4735,37 @@ func TestWatchSendToWatchedRejectsSessionEventsWithoutConcreteTarget(t *testing.
 	}
 }
 
-func TestWatchSendToWatchedAllowsWildcardJobNotificationTrigger(t *testing.T) {
+func TestWatchSendToWatchedRejectsWildcardJobNotificationTrigger(t *testing.T) {
 	jm := newTestJM(t)
-	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
-		sent = append(sent, a)
-		return sendMessageResult{Delivered: true, Action: "sent"}
-	}
 
 	_, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"*"},
 		Send:   &watchSendArgs{To: "watched", Message: "observe"},
 	})
-	if err != nil {
-		t.Fatalf("configureWatch returned error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
+		t.Fatalf("error = %v, want watched alias rejection", err)
 	}
-
-	onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
-		t.Fatalf("assistant.message recorded pending = %#v, want no unresolved watched delivery", pending)
-	}
-	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger", JobType: "delegate", Status: "completed"})
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
-		t.Fatalf("job.notification must record one pending send, got %d", len(pending))
-	}
-	drainWatchSendsVia(t, jm, send)
-
-	if len(sent) != 1 {
-		t.Fatalf("sent = %#v, want one delivery", sent)
-	}
-	if sent[0].Target != "job_trigger" {
-		t.Fatalf("send target = %q, want concrete watched job", sent[0].Target)
+		t.Fatalf("rejected watched send recorded pending: %+v", pending)
 	}
 }
 
-func TestWatchSendToWatchedAllowsMixedEventsWithJobNotificationTrigger(t *testing.T) {
+func TestWatchSendToWatchedRejectsMixedEventsWithJobNotificationTrigger(t *testing.T) {
 	jm := newTestJM(t)
-	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
-	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
-		sent = append(sent, a)
-		return sendMessageResult{Delivered: true, Action: "sent"}
-	}
 
 	_, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"assistant.message", "job.notification"},
 		Send:   &watchSendArgs{To: "watched", Message: "observe"},
 	})
-	if err != nil {
-		t.Fatalf("configureWatch returned error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
+		t.Fatalf("error = %v, want watched alias rejection", err)
 	}
-
-	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger", JobType: "delegate", Status: "completed"})
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
-		t.Fatalf("job.notification must record one pending send, got %d", len(pending))
-	}
-	drainWatchSendsVia(t, jm, send)
-
-	if len(sent) != 1 {
-		t.Fatalf("sent = %#v, want one delivery", sent)
-	}
-	if sent[0].Target != "job_trigger" {
-		t.Fatalf("send target = %q, want concrete watched job", sent[0].Target)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("rejected watched send recorded pending: %+v", pending)
 	}
 }
 
@@ -6594,7 +6506,6 @@ func TestWatchCreateMintsNoGrantForSessionTargetNotifyOnlyOrCaller(t *testing.T)
 	if err != nil {
 		t.Fatalf("create shellB: %v", err)
 	}
-	delegate := createRunningDelegateWatchTarget(t, jm)
 
 	// Session-target watch with a delegate send target: the concrete watched
 	// job is unknown until a fire, so creation mints nothing.
@@ -6619,15 +6530,6 @@ func TestWatchCreateMintsNoGrantForSessionTargetNotifyOnlyOrCaller(t *testing.T)
 		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
 	}); err != nil {
 		t.Fatalf("configure caller watch: %v", err)
-	}
-	// send.to=watched is an alias, not a concrete delegate job: the observer
-	// is resolved per-fire, so creation mints nothing.
-	if _, err := jm.configureWatch(watchArgs{
-		Target: delegate.JobID,
-		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasWatched, Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure watched-alias watch: %v", err)
 	}
 
 	if grants := loadGrantTable(t, jm); len(grants) != 0 {
@@ -6686,61 +6588,45 @@ func TestWatchWildcardSendRepeatFireMintsGrantOnce(t *testing.T) {
 	}
 }
 
-func TestWatchWatchedAliasSendFireSkipsGrantForWatchedJob(t *testing.T) {
+func TestWatchWatchedAliasSendRejectsConcreteTarget(t *testing.T) {
 	jm := newTestJM(t)
 	target := createRunningDelegateWatchTarget(t, jm)
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      target.JobID,
 		OutputMatch: "ready",
 		Send:        &watchSendArgs{To: runtimeMessageAliasWatched, Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure: %v", err)
+	}); err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
+		t.Fatalf("error = %v, want watched alias rejection", err)
 	}
-	if got := countWatchReadGrantEvents(t, jm); got != 0 {
-		t.Fatalf("grant events before fire = %d, want 0 (watched resolves per-fire)", got)
-	}
-
-	feedJob(jm, target.JobID, []byte("server ready\n"))
 
 	if grants := loadGrantTable(t, jm); len(grants) != 0 {
-		t.Fatalf("grants after fire = %+v, want none for watched alias", grants)
+		t.Fatalf("grants after rejected watched alias = %+v, want none", grants)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("rejected watched alias recorded pending: %+v", pending)
 	}
 }
 
-// TestWatchWatchedAliasSendFireToShellJobSkipsGrantQuietly pins the per-fire
-// mint's quiet-skip branch: create-time validation accepts send.to=watched on
-// a wildcard job.notification watch, so a SHELL job can fire with itself as
-// the watched identity. The resolved send target is then a non-delegate with
-// no child session to grant to — the mint skips without a grant AND without a
-// diagnostic (the delivery rail reports the undeliverable send on its own).
-func TestWatchWatchedAliasSendFireToShellJobSkipsGrantQuietly(t *testing.T) {
+func TestWatchWatchedAliasSendRejectsWildcardJobNotification(t *testing.T) {
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
-	shell, err := jm.createShell(createShellOpts{Command: "x"})
-	if err != nil {
-		t.Fatalf("create shell: %v", err)
-	}
 	if _, err := jm.configureWatch(watchArgs{
 		Target: "*",
 		Events: []string{"job.notification"},
 		Send:   &watchSendArgs{To: runtimeMessageAliasWatched, Message: "observe"},
-	}); err != nil {
-		t.Fatalf("configure: %v", err)
+	}); err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
+		t.Fatalf("error = %v, want watched alias rejection", err)
 	}
 
-	onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: shell.JobID, JobType: "shell", Status: "completed"})
-
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
-		t.Fatalf("pending after fire = %d, want 1 (skip must not block the send)", len(pending))
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("rejected watched alias recorded pending: %+v", pending)
 	}
 	if got := countWatchReadGrantEvents(t, jm); got != 0 {
-		t.Fatalf("grant events after fire = %d, want 0 (shell job is not a grantable observer)", got)
+		t.Fatalf("grant events after rejected watched alias = %d, want 0", got)
 	}
-	for _, n := range notified {
-		if strings.Contains(n.Reason, "watch read grant failed") {
-			t.Fatalf("quiet skip produced a grant diagnostic: %+v", notified)
-		}
+	if len(notified) != 0 {
+		t.Fatalf("rejected watched alias emitted diagnostics: %+v", notified)
 	}
 }
 

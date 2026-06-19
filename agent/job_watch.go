@@ -729,7 +729,7 @@ func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error 
 	case runtimeMessageAliasCaller:
 		return nil
 	case runtimeMessageAliasWatched:
-		return jm.validateWatchedSendTarget(a)
+		return errors.New("invalid_request: watched is not a v1 delivery target")
 	case "main", "*":
 		return watchTargetNotFoundError(target)
 	}
@@ -768,49 +768,6 @@ func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error 
 		return fmt.Errorf("target_not_messageable: job %q has type %q", target, rec.Type)
 	}
 	return nil
-}
-
-func (jm *jobManager) validateWatchedSendTarget(a watchArgs) error {
-	watchTarget := a.Target
-	if watchTarget == "" {
-		return watchTargetNotFoundError(runtimeMessageAliasWatched)
-	}
-	if isWatchSessionTarget(watchTarget) {
-		if watchCanResolveConcreteWatchedTarget(a) {
-			return nil
-		}
-		return watchTargetNotFoundError(runtimeMessageAliasWatched)
-	}
-	recs, err := jm.listWithError(listFilter{IncludeNested: true})
-	if err != nil {
-		return err
-	}
-	for _, rec := range recs {
-		if rec.JobID != watchTarget {
-			continue
-		}
-		if rec.Type != jobstore.JobDelegate {
-			return fmt.Errorf("target_not_messageable: job %q has type %q", watchTarget, rec.Type)
-		}
-		return nil
-	}
-	return watchTargetNotFoundError(watchTarget)
-}
-
-// watchCanResolveConcreteWatchedTarget reports whether a wildcard-target watch
-// with send.to=watched can ever resolve a concrete job. A concrete job identity
-// is carried only by job-carrying event kinds: job.notification and * (wildcard).
-// Without at least one such kind in events, watched can never resolve.
-func watchCanResolveConcreteWatchedTarget(a watchArgs) bool {
-	if a.Target != "*" || a.ProgressIntervalMS > 0 || a.OutputMatch != "" {
-		return false
-	}
-	for _, name := range a.Events {
-		if name == "*" || name == "job.notification" {
-			return true
-		}
-	}
-	return false
 }
 
 func isWatchableConcreteJobLocked(run *runningJob) bool {
@@ -2458,7 +2415,7 @@ func (s *Session) lookupGrantedJobRead(observerSessionID, jobID string) (*grante
 // sidecar watch without its grant would hand the observer frames about a job
 // it cannot read, the keyhole this grant exists to open. The caller and
 // watched aliases mint nothing here: caller delivery grants nothing, and
-// watched resolves its observer per-fire (mintWatchSendReadGrant).
+// watched is rejected during watch configuration.
 func (jm *jobManager) mintWatchCreateReadGrant(cfg *watchConfig) error {
 	if cfg.send == nil || isWatchSessionTarget(cfg.target) {
 		return nil
@@ -2492,8 +2449,8 @@ func (jm *jobManager) mintWatchCreateReadGrant(cfg *watchConfig) error {
 // mintWatchSendReadGrant appends the observer read grant for a fired
 // delegate-targeted send whose watched identity resolved to a concrete job
 // (spec §5.1). This is the per-fire half of grant minting: wildcard-target
-// watches and send.to=watched only learn the concrete (observer, watched job)
-// pair at fire time, and a terminal catch-up send never had a create mint.
+// watches learn the concrete watched job at fire time, and a terminal catch-up
+// send never had a create mint.
 // Pairs already minted in this config's lifetime are skipped (append-noise
 // control; duplicates fold harmlessly), and a failed mint is NOT remembered,
 // so the next fire retries. Failure policy: enqueue one diagnostic
@@ -3642,6 +3599,8 @@ func resolveWatchSendTarget(target, watchedJobID string) (string, error) {
 	if target != runtimeMessageAliasWatched {
 		return target, nil
 	}
+	// New watch configurations reject the watched alias. Keep resolution here
+	// so historical pending sends can still be folded, drained, or cleared.
 	if watchedJobID == "" || isWatchSessionTarget(watchedJobID) {
 		return "", errors.New("watched_unresolved")
 	}
