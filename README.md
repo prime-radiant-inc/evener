@@ -32,8 +32,9 @@ Home install:
 make install-home
 ```
 
-This builds `serf`, `serf-hub`, and `serf-tui`, installs the binaries under
-`~/.local/share/serf/bin`, and symlinks them into `~/.local/bin`.
+This builds `serf`, `serf-hub`, `serf-tui`, and `serf-doctor`, installs the
+binaries under `~/.local/share/serf/bin`, and symlinks them into
+`~/.local/bin`.
 
 System-style install:
 
@@ -52,6 +53,7 @@ Verify the installed commands with:
 ```bash
 serf --version
 serf-tui --help
+serf-doctor --help
 ```
 
 On first use, Serf creates:

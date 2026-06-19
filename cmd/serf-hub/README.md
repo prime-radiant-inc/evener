@@ -23,10 +23,11 @@ From the repo root:
 make install-home
 ```
 
-This builds `serf`, `serf-hub`, and `serf-tui`, installs the binaries under
-`~/.local/share/serf/bin`, and symlinks them into `~/.local/bin`. Hub and TUI
-resolve sibling binaries through the symlink targets, so the three installed
-commands find each other without extra flags.
+This builds `serf`, `serf-hub`, `serf-tui`, and `serf-doctor`, installs the
+binaries under `~/.local/share/serf/bin`, and symlinks them into
+`~/.local/bin`. Hub, TUI, and doctor workflows resolve sibling binaries through
+the symlink targets, so the installed commands find each other without extra
+flags.
 
 For a system-style install under `/usr/local`:
 

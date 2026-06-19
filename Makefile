@@ -8,7 +8,7 @@ PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 SERF_SHARE_BINDIR ?= $(PREFIX)/share/serf/bin
 INSTALL_BUILD_DIR ?= .build/install
-SERF_INSTALL_BINS := serf serf-hub serf-tui
+SERF_INSTALL_BINS := serf serf-hub serf-tui serf-doctor
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o serf ./cmd/serf/
@@ -39,6 +39,7 @@ install:
 	go build -ldflags "$(LDFLAGS)" -o "$(INSTALL_BUILD_DIR)/serf" ./cmd/serf/
 	go build -o "$(INSTALL_BUILD_DIR)/serf-hub" ./cmd/serf-hub/
 	go build -o "$(INSTALL_BUILD_DIR)/serf-tui" ./cmd/serf-tui/
+	go build -o "$(INSTALL_BUILD_DIR)/serf-doctor" ./cmd/serf-doctor/
 	install -d "$(SERF_SHARE_BINDIR)" "$(BINDIR)"
 	@for bin in $(SERF_INSTALL_BINS); do \
 		install -m 0755 "$(INSTALL_BUILD_DIR)/$$bin" "$(SERF_SHARE_BINDIR)/$$bin"; \
@@ -99,4 +100,4 @@ lint-golangci:
 lint: lint-naming lint-internal lint-docs lint-golangci
 
 clean:
-	rm -f serf serf-hub serf-tui llmcall serf-namingcheck serf-internalcheck
+	rm -f serf serf-hub serf-tui serf-doctor llmcall serf-namingcheck serf-internalcheck

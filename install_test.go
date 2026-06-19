@@ -42,7 +42,7 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 
 	binDir := filepath.Join(home, ".local", "bin")
 	shareBinDir := filepath.Join(home, ".local", "share", "serf", "bin")
-	for _, bin := range []string{"serf", "serf-hub", "serf-tui"} {
+	for _, bin := range []string{"serf", "serf-hub", "serf-tui", "serf-doctor"} {
 		installed := filepath.Join(shareBinDir, bin)
 		info, err := os.Stat(installed)
 		if err != nil {
@@ -80,6 +80,7 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	runCommand(t, repoRoot, env, serfBin, "--version")
 	runCommand(t, repoRoot, env, filepath.Join(binDir, "serf-hub"), "--help")
 	runCommand(t, repoRoot, env, filepath.Join(binDir, "serf-tui"), "--help")
+	runCommand(t, repoRoot, env, filepath.Join(binDir, "serf-doctor"), "--help")
 	runCommand(t, repoRoot, env, serfBin, "--list-sessions")
 
 	for _, dir := range []string{

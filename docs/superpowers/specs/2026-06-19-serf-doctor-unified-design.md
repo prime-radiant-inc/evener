@@ -61,7 +61,7 @@ The doctoring system is therefore three thin layers over serf's existing runtime
 
 ### Layer 1 — the `doctoring-serf` skill (knowledge + contracts + runbooks)
 
-Lives at `docs/skills/doctoring-serf/`, loaded into serf at runtime, modeled on the in-repo `docs/skills/benchmark-driven-improvement/` shape. It is **portable**: any serf agent can load it. It carries the doctor's *knowledge* — not its data plane: the data plane is the compiled `serf-doctor` tools (Layer 2), which the skill *references*. Structure: a small always-loaded `SKILL.md` (the diagnose→findings loop, the Finding contract in brief, the `serf-doctor` subcommand list, and *when* to pull each reference) + `references/` (the heavy grammar/recipes, pulled only on demand) + `runbooks/` (audit definitions that INSPECT via `serf-doctor <cmd>` invocations). The craft is the **progressive-disclosure boundary**: `SKILL.md` stays small; the data-model grammar, the failure taxonomy, the finding schema, the runbook-authoring craft, and the repair guardrails live in references that are pulled only when the task needs them. Detailed in §3.
+Lives at `internal/bundled/skills/doctoring-serf/` and is embedded into Serf. It is **portable** inside Serf: any Serf agent can load it by name through the skill registry. It carries the doctor's *knowledge* — not its data plane: the data plane is the compiled `serf-doctor` tools (Layer 2), which the skill *references*. Structure: a small always-loaded `SKILL.md` (the diagnose→findings loop, the Finding contract in brief, the `serf-doctor` subcommand list, and *when* to pull each reference) + `references/` (the heavy grammar/recipes, pulled only on demand) + `runbooks/` (audit definitions that INSPECT via `serf-doctor <cmd>` invocations). The craft is the **progressive-disclosure boundary**: `SKILL.md` stays small; the data-model grammar, the failure taxonomy, the finding schema, the runbook-authoring craft, and the repair guardrails live in references that are pulled only when the task needs them. Detailed in §3.
 
 ### Layer 2 — the `serf-doctor` binary (data plane)
 
@@ -114,10 +114,10 @@ The surviving column is small and entirely *contract*. That is the whole point.
 
 ## 3. The `doctoring-serf` skill
 
-Greenfield at `docs/skills/doctoring-serf/`. Shape cloned from `docs/skills/benchmark-driven-improvement/` (a `SKILL.md` + reference siblings), with an added `runbooks/` directory.
+Greenfield at `internal/bundled/skills/doctoring-serf/`. Shape cloned from `docs/skills/benchmark-driven-improvement/` (a `SKILL.md` + reference siblings), with an added `runbooks/` directory.
 
 ```
-docs/skills/doctoring-serf/
+internal/bundled/skills/doctoring-serf/
 ├── SKILL.md                       # always-loaded: the loop + contracts-in-brief + `serf-doctor` subcommand list + when-to-pull
 ├── references/
 │   ├── data-model.md              # what is on disk (conceptual), each artifact → Go type (the source of truth) + the `serf-doctor` reader

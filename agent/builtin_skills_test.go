@@ -12,6 +12,8 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+const embeddedDoctoringSkill = "doctoring-serf"
+
 func TestExtractEmbeddedSkills_CreatesDir(t *testing.T) {
 	dir, err := skill.ExtractEmbeddedSkills()
 	if err != nil {
@@ -29,19 +31,21 @@ func TestExtractEmbeddedSkills_CreatesDir(t *testing.T) {
 	}
 }
 
-func TestExtractEmbeddedSkills_EmptyAfterOpsTaskRemoval(t *testing.T) {
+func TestExtractEmbeddedSkills_IncludesDoctoringSkill(t *testing.T) {
 	dir, err := skill.ExtractEmbeddedSkills()
 	if err != nil {
 		t.Fatalf("extractEmbeddedSkills: %v", err)
 	}
 	defer os.RemoveAll(dir)
 
-	// No embedded skills remain after ops-task removal.
-	// The skill catalog is populated by filesystem-discovered project skills only.
 	skills := make(map[string]skill.SkillMeta)
 	skill.ScanSkillsDir(dir, skills)
-	if len(skills) != 0 {
-		t.Fatalf("expected 0 embedded skills, got %d", len(skills))
+	meta, ok := skills[embeddedDoctoringSkill]
+	if !ok {
+		t.Fatalf("expected embedded %q skill, got %v", embeddedDoctoringSkill, builtinSkillNames(skills))
+	}
+	if !strings.Contains(meta.Description, "serf") {
+		t.Fatalf("embedded %q description = %q, want serf-specific description", embeddedDoctoringSkill, meta.Description)
 	}
 }
 
@@ -52,17 +56,15 @@ func TestExtractEmbeddedSkills_DiscoverableByDiscoverSkills(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	// The extracted dir should work as an extraDirs argument to DiscoverSkills,
-	// even when empty (no embedded skills remain).
+	// The extracted dir should work as an extraDirs argument to DiscoverSkills.
 	root := t.TempDir()
 	initGitRepo(t, root)
 
 	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := skill.DiscoverSkills(env, dir)
 
-	// No embedded skills remain, so only project skills (none here) are found.
-	if len(skills) != 0 {
-		t.Fatalf("expected 0 skills from empty embedded dir, got %d: %v", len(skills), builtinSkillNames(skills))
+	if _, ok := skills[embeddedDoctoringSkill]; !ok {
+		t.Fatalf("expected embedded %q skill from extracted dir, got %v", embeddedDoctoringSkill, builtinSkillNames(skills))
 	}
 }
 
@@ -73,18 +75,21 @@ func TestExtractEmbeddedSkills_FilesystemShadowsEmbedded(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	// With no embedded skills, project skills are the only source.
 	root := t.TempDir()
 	initGitRepo(t, root)
-	writeSkillMD(t, root, "test-driven-development",
-		"---\nname: test-driven-development\ndescription: \"Project TDD\"\n---\nCustom TDD.\n")
+	writeSkillMD(t, root, embeddedDoctoringSkill,
+		"---\nname: doctoring-serf\ndescription: \"Project doctoring override\"\n---\nCustom doctoring.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := skill.DiscoverSkills(env, dir)
+	skills := make(map[string]skill.SkillMeta)
+	skill.ScanSkillsDir(dir, skills)
+	for name, meta := range skill.DiscoverSkills(env) {
+		skills[name] = meta
+	}
 
-	tdd := skills["test-driven-development"]
-	if tdd.Name != "test-driven-development" {
-		t.Fatalf("expected TDD skill, got %q", tdd.Name)
+	doctoring := skills[embeddedDoctoringSkill]
+	if doctoring.Description != "Project doctoring override" {
+		t.Fatalf("expected project skill to shadow embedded skill, got description %q", doctoring.Description)
 	}
 }
 
@@ -119,10 +124,11 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
 
-	// With no embedded skills and no project skills, the skill catalog
-	// should be absent from the system prompt.
-	if strings.Contains(capturedSystem, "\n<skill-catalog>\n") {
-		t.Error("system prompt should not contain <skill-catalog> when no skills exist")
+	if !strings.Contains(capturedSystem, "<skill-catalog>") {
+		t.Fatal("system prompt should contain <skill-catalog> for embedded skills")
+	}
+	if !strings.Contains(capturedSystem, "- doctoring-serf:") {
+		t.Fatal("system prompt should list embedded doctoring-serf skill")
 	}
 }
 
@@ -175,9 +181,9 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root)
 
-	// Project has a custom TDD skill that should shadow the embedded one.
-	writeSkillMD(t, root, "test-driven-development",
-		"---\nname: test-driven-development\ndescription: \"Custom project TDD\"\n---\nCustom TDD body.\n")
+	// Project has a custom doctoring skill that should shadow the embedded one.
+	writeSkillMD(t, root, embeddedDoctoringSkill,
+		"---\nname: doctoring-serf\ndescription: \"Custom project doctoring\"\n---\nCustom doctoring body.\n")
 
 	c := llm.NewClient()
 	comm := communicateCall("c1", "done")
@@ -206,9 +212,8 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
 
-	// Should have the project override description, not the embedded one.
-	if !strings.Contains(capturedSystem, "Custom project TDD") {
-		t.Error("system prompt should show project TDD description, not embedded")
+	if !strings.Contains(capturedSystem, "Custom project doctoring") {
+		t.Error("system prompt should show project doctoring description, not embedded")
 	}
 }
 
@@ -322,10 +327,17 @@ func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
 	skills := make(map[string]skill.SkillMeta)
 	skill.ScanSkillsDir(dir, skills)
 
-	// No embedded skills remain after ops-task removal.
-	// This test verifies the extraction still works without error.
-	if len(skills) != 0 {
-		t.Fatalf("expected 0 embedded skills, got %d", len(skills))
+	if len(skills) == 0 {
+		t.Fatal("expected at least one embedded skill")
+	}
+	for name, meta := range skills {
+		body, err := skill.LoadSkillBody(meta)
+		if err != nil {
+			t.Fatalf("LoadSkillBody(%s): %v", name, err)
+		}
+		if strings.TrimSpace(body) == "" {
+			t.Fatalf("embedded skill %q has empty body", name)
+		}
 	}
 }
 

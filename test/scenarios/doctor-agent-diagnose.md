@@ -1,6 +1,6 @@
 # doctor-agent-diagnose: the `doctor` agent type runs a real LLM-driven diagnosis end-to-end
 
-**What this covers**: the `doctor` agent type (`agent/agents/doctor.md`) driving
+**What this covers**: the `doctor` agent type (`internal/bundled/agents/doctor.md`) driving
 a live diagnosis loop — loading the `doctoring-serf` skill, invoking the
 `serf-doctor` tools via the shell tool, classifying results, and emitting (or
 withholding) structured Findings. This is the full collapse the design bets on:
@@ -19,8 +19,8 @@ carries the skill + shell/edit tools). This card proves the *behavior*.
 - Built `serf` and `serf-doctor` (`make build && make build-doctor`), with
   `serf-doctor` reachable from the doctor's shell (on `PATH` or in cwd).
 - A working provider (e.g. `openai/gpt-5.4-mini`).
-- Run from the serf repo root so the doctor can `read_file
-  docs/skills/doctoring-serf/SKILL.md`.
+- Run from the serf repo root with a Serf binary that includes the bundled
+  `doctoring-serf` skill.
 
 ## Steps
 
