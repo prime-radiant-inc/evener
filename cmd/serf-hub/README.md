@@ -46,6 +46,10 @@ first use.
 - `~/.config/serf/skills` and `~/.config/serf/plugins` are user extension
   roots created by Serf startup.
 
+Those extension roots are not active just because they exist. Add standalone
+skill paths to `skills_dirs` and plugin roots to `plugin_dirs` in the layered
+launch config, or pass the equivalent CLI flags for a single launch.
+
 ## Hub Config
 
 `~/.serf/hub.toml` is optional. If it is absent, Hub uses defaults:

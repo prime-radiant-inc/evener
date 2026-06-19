@@ -47,6 +47,32 @@ stage elsewhere.
 The installer only installs binaries and symlinks. Runtime/config directories
 are created by Serf when the relevant binary runs.
 
+Verify the installed commands with:
+
+```bash
+serf --version
+serf-tui --help
+```
+
+On first use, Serf creates:
+
+- `~/.serf/run` for live daemon rendezvous files.
+- `~/.serf/auth-token` for the local Hub/TUI bearer token.
+- `${XDG_STATE_HOME:-~/.local/state}/serf/projects/*` for saved per-project
+  session state.
+- `${XDG_CONFIG_HOME:-~/.config}/serf/skills` for standalone user skills.
+- `${XDG_CONFIG_HOME:-~/.config}/serf/plugins` for user plugins.
+
+The user skill and plugin directories are extension roots; installing Serf
+does not automatically enable their contents. Add standalone skill paths to
+`skills_dirs` and plugin paths to `plugin_dirs` in `~/.serf/launch.toml`, or
+pass them with the corresponding CLI flags for a single run. Plugin-contained
+skills live under that plugin and become available through the plugin path.
+
+Provider credentials are not created by install. Configure them through the Hub
+or TUI credentials UI, `~/.serf/credentials.toml`, provider environment
+variables such as `OPENAI_API_KEY`, or OpenAI OAuth.
+
 ## Usage
 
 ```
