@@ -3424,6 +3424,38 @@ func (s *Session) renderUnreachableChildPendings(live map[string]bool) {
 		n.Reason = strings.TrimSpace("child unreachable: " + rec.Reason)
 		s.enqueueJobNotification(n)
 	}
+	watchSends, err := jm.store.LoadWatchSends()
+	if err != nil {
+		return
+	}
+	for _, state := range watchSends.Pending {
+		if state == nil ||
+			state.Key.ResolvedSendTo != runtimeMessageAliasCaller ||
+			state.Key.VisibleSessionID == "" ||
+			state.Key.VisibleSessionID == jm.sessionID {
+			continue
+		}
+		childSessionID := state.Key.VisibleSessionID
+		if live[childSessionID] {
+			continue // driven, not rendered
+		}
+		if s.childResumable(childSessionID) {
+			continue // resumable but idle: left for its own future drive/resume turn
+		}
+		dropped := *state
+		dropped.DiagnosticReason = limitWatchText("child unreachable: "+state.TriggerReason, watchReadErrorMaxChars)
+		if err := jm.appendWatchSendEvents([]jobstore.Event{{
+			Kind:      jobstore.EventWatchSendDropped,
+			TS:        jm.now(),
+			WatchSend: &dropped,
+		}}); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("watch-send fallback drop failed: %v", err)})
+			continue
+		}
+		n := watchNotification(state.Key.ResolvedWatchedIdentity, dropped.DiagnosticReason)
+		n.Provenance = provenance.Clone(state.Provenance)
+		s.enqueueJobNotification(n)
+	}
 }
 
 // childResumable reports whether the parent holds an OWN delegate record for

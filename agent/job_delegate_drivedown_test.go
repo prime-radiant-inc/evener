@@ -805,6 +805,20 @@ func appendForwardedChildTerminalPending(t *testing.T, jm *jobManager, jobID, ch
 	}
 }
 
+func appendForwardedChildCallerWatchSendPending(t *testing.T, jm *jobManager, childSessionID, watchedJobID string) jobstore.WatchSendState {
+	t.Helper()
+	var state jobstore.WatchSendState
+	for _, event := range restoredWatchSendPendingEvents(childSessionID, watchedJobID, runtimeMessageAliasCaller, jm.now()) {
+		if event.WatchSend != nil {
+			state = *event.WatchSend
+		}
+		if err := jm.appendEvent(event); err != nil {
+			t.Fatalf("append forwarded caller watch-send pending %q: %v", watchedJobID, err)
+		}
+	}
+	return state
+}
+
 func childPendingNotifyState(t *testing.T, jm *jobManager, jobID string) jobstore.NotifyState {
 	t.Helper()
 	recs, err := jm.store.Load()
@@ -1050,6 +1064,56 @@ func TestFallbackRenderNonResumableChildSurvivesDeliveryFilter(t *testing.T) {
 		t.Fatalf("the unreachable-child notification was filtered out before the model saw it; the fallback "+
 			"settled the record to NotifyDelivered before any render, so ShouldDeliver gated it out (deliverable=%+v)",
 			deliverable)
+	}
+}
+
+func TestFallbackRenderNonResumableChildCallerWatchSend(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	t.Cleanup(func() { _ = parentJM.store.Close() })
+
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+
+	state := appendForwardedChildCallerWatchSendPending(t, parentJM, "GONE", "job_gone_watch")
+	if pending := loadWatchSendRecord(t, parentJM).Pending; len(pending) != 1 {
+		t.Fatalf("seeded watch-send pending = %+v, want one pending", pending)
+	}
+
+	parent.driveChildrenWithUndeliveredAttention()
+
+	if pending := loadWatchSendRecord(t, parentJM).Pending; len(pending) != 0 {
+		t.Fatalf("watch-send pending after unreachable fallback = %+v, want settled/dropped", pending)
+	}
+	var dropped *jobstore.WatchSendState
+	for _, event := range loadJobStoreEvents(t, parentJM) {
+		if event.Kind == jobstore.EventWatchSendDropped &&
+			event.WatchSend != nil &&
+			event.WatchSend.Key == state.Key {
+			dropped = event.WatchSend
+		}
+	}
+	if dropped == nil {
+		t.Fatalf("watch-send fallback did not append a dropped tombstone for key %+v", state.Key)
+	}
+	if !strings.HasPrefix(dropped.DiagnosticReason, "child unreachable:") {
+		t.Fatalf("drop reason = %q, want child unreachable prefix", dropped.DiagnosticReason)
+	}
+
+	deliverable, _, _ := parent.filterDeliverableJobNotifications(parent.drainJobNotifications())
+	var rendered *deliverableJobNotification
+	for i := range deliverable {
+		n := deliverable[i].notification
+		if n.Status == jobNotificationEventWatch && n.JobID == "job_gone_watch" {
+			rendered = &deliverable[i]
+		}
+	}
+	if rendered == nil {
+		t.Fatalf("the unreachable child's caller watch-send was not rendered to the parent; deliverable=%+v", deliverable)
+	}
+	if !strings.HasPrefix(rendered.notification.Reason, "child unreachable:") {
+		t.Fatalf("rendered reason = %q, want child unreachable prefix", rendered.notification.Reason)
 	}
 }
 
