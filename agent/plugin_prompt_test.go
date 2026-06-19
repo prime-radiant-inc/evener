@@ -19,12 +19,18 @@ func renderAvailableAgentsSectionForTest(t *testing.T, agents map[string]plugin.
 // renderAvailableAgentsSectionWithAllowance renders the available-agents section with
 // the given delegationAllowance overridden (pass -1 to use the session default).
 func renderAvailableAgentsSectionWithAllowance(t *testing.T, agents map[string]plugin.Agent, allowance int) string {
+	return renderAvailableAgentsSectionWithAllowanceAndTools(t, agents, allowance, nil)
+}
+
+func renderAvailableAgentsSectionWithAllowanceAndTools(t *testing.T, agents map[string]plugin.Agent, allowance int, allowedTools []string) string {
 	t.Helper()
 
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	cfg := SessionConfig{}
+	cfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -131,7 +137,7 @@ func TestSubagentPromptUsesDelegateSendForFollowup(t *testing.T) {
 }
 
 func TestSubagentPromptSuppressesDelegationWhenToolsUnavailable(t *testing.T) {
-	prompt := renderSubagentPromptWithAllowanceAndTools(t, 1, []string{"communicate", "read_file"})
+	prompt := renderSubagentPromptWithAllowanceAndTools(t, 1, []string{"communicate", "delegate", "job_watch"})
 	if strings.Contains(prompt, "## Delegation") {
 		t.Fatalf("subagent prompt must not contain delegation guidance when delegate tools are unavailable:\n%s", prompt)
 	}
@@ -274,5 +280,16 @@ func TestAvailableAgentsSection_OmitsTopLevelOnlyAgents(t *testing.T) {
 	}
 	if !strings.Contains(result, "reviewer") {
 		t.Fatalf("spawnable agent should remain in prompt at allowance=1, got: %s", result)
+	}
+}
+
+func TestAvailableAgentsSectionSuppressedWhenDelegationSurfaceUnavailable(t *testing.T) {
+	agents := map[string]plugin.Agent{
+		"reviewer": {Name: "reviewer", Description: "Reviews work", Tools: []string{"read_file"}},
+	}
+
+	result := renderAvailableAgentsSectionWithAllowanceAndTools(t, agents, 1, []string{"communicate", "delegate", "job_watch"})
+	if result != "" {
+		t.Fatalf("available agents should be hidden when delegation prompt surface is incomplete, got: %s", result)
 	}
 }

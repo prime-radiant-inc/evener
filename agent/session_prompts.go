@@ -124,10 +124,15 @@ func (s *Session) buildPromptData() promptData {
 }
 
 func (s *Session) canPromptDelegation() bool {
-	return s.delegationAllowance > 0 &&
-		s.reg != nil &&
-		s.reg.Get("delegate") != nil &&
-		s.reg.Get("job_watch") != nil
+	if s.delegationAllowance <= 0 || s.reg == nil {
+		return false
+	}
+	for _, name := range delegationPromptToolNames {
+		if s.reg.Get(name) == nil {
+			return false
+		}
+	}
+	return true
 }
 
 // renderSystemPrompt renders the system prompt using the template resolver.
