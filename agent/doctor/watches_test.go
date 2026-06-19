@@ -71,6 +71,7 @@ func watchesFixture(t *testing.T) (base, sid string) {
 	kW1Drop := key("worker", "w1", "job:j2", "obs", "g1")
 	kW1Evict := key("worker", "w1", "job:j3", "obs", "g1")
 	kW2Healthy := key("worker", "w2", "job:j9", "obs", "g2")
+	kW2Prior := key("worker", "w2", "job:j8", "obs", "g2")
 	kW2Loop := key("worker", "w2", "job:j9b", "obs", "g2")
 
 	writeJobsEvents(t, jobsPath, []jobstore.Event{
@@ -99,7 +100,11 @@ func watchesFixture(t *testing.T) (base, sid string) {
 		// w2: a HEALTHY delivery (own stamp only).
 		{Kind: jobstore.EventWatchSendDelivered, WatchID: "w2", WatchSend: &jobstore.WatchSendState{
 			Key: kW2Healthy, DeliveryID: "dh", UpdateSeq: 1, Provenance: ownStamp("w2", "g2", "dh")}},
-		// w2: a SELF-LOOP delivery (prior same-watch hop).
+		// w2: dprior — a genuine PRIOR delivered delivery (its own distinct slot).
+		{Kind: jobstore.EventWatchSendDelivered, WatchID: "w2", WatchSend: &jobstore.WatchSendState{
+			Key: kW2Prior, DeliveryID: "dprior", UpdateSeq: 1, Provenance: ownStamp("w2", "g2", "dprior")}},
+		// w2: a SELF-LOOP delivery — its chain carries a prior hop of dprior, a
+		// delivery that actually DELIVERED, so this is a genuine feedback loop.
 		{Kind: jobstore.EventWatchSendDelivered, WatchID: "w2", WatchSend: &jobstore.WatchSendState{
 			Key: kW2Loop, DeliveryID: "dl", UpdateSeq: 1, Provenance: loopStamp("w2", "g2", "dprior", "dl")}},
 	})
@@ -113,6 +118,45 @@ func findWatch(r WatchReport, watchID string) *WatchView {
 		}
 	}
 	return nil
+}
+
+// A coalesced-away pending predecessor is NOT a self-loop. When a new pending
+// supersedes an earlier pending for the same slot, the runtime unions their
+// provenance (job_watch.go: "the coalesced frame stands in for both"), so the
+// survivor's Chain carries the superseded delivery_id — but that predecessor
+// never independently delivered. This is the real 01KVEZ5K… production pattern;
+// flagging it is a false positive.
+func TestWatches_CoalescedPredecessorIsNotSelfLoop(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidA
+	writeSession(t, bucket, sid)
+	jobsPath := filepath.Join(bucket, "sessions", sid, "jobs.jsonl")
+	slot := key("worker", "wc", "caller", "obs", "gc")
+
+	writeJobsEvents(t, jobsPath, []jobstore.Event{
+		{Kind: jobstore.EventWatchRegistered, WatchID: "wc", Watch: &jobstore.WatchEvent{
+			Generation: "gc", OwnerSessionID: "worker", VisibleSessionID: "worker", Target: "caller", SendTo: "obs"}},
+		// dpend: a pending frame for the slot, never delivered.
+		{Kind: jobstore.EventWatchSendPending, WatchID: "wc", WatchSend: &jobstore.WatchSendState{Key: slot, DeliveryID: "dpend", UpdateSeq: 5}},
+		// dco: the next pending coalesces over dpend (same slot) and delivers; its
+		// Chain carries dpend's hop by the coalescing-union design.
+		{Kind: jobstore.EventWatchSendPending, WatchID: "wc", WatchSend: &jobstore.WatchSendState{Key: slot, DeliveryID: "dco", UpdateSeq: 6, CoalescedCount: 1}},
+		{Kind: jobstore.EventWatchSendDelivered, WatchID: "wc", WatchSend: &jobstore.WatchSendState{
+			Key: slot, DeliveryID: "dco", UpdateSeq: 6, CoalescedCount: 1, Provenance: loopStamp("wc", "gc", "dpend", "dco")}},
+	})
+
+	r, err := Watches(base, sid, WatchOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wc := findWatch(r, "wc")
+	if wc == nil {
+		t.Fatal("wc missing")
+	}
+	if wc.SelfLoop.Detected {
+		t.Errorf("a coalesced-away pending predecessor (dpend, never delivered) must NOT be a self-loop; got %v", wc.SelfLoop.DeliveryIDs)
+	}
 }
 
 func TestWatches_CoalescingCollapse(t *testing.T) {

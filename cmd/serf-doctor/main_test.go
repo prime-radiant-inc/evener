@@ -27,7 +27,10 @@ func fixture(t *testing.T) (base, sid string) {
 
 	jobs := strings.Join([]string{
 		`{"kind":"watch_registered","seq":1,"job_id":"","watch_id":"w1","watch":{"generation":"g1","target":"job:x"}}`,
-		`{"kind":"watch_send_delivered","seq":2,"job_id":"","watch_id":"w1","watch_send":{"key":{"watch_id":"w1"},"delivery_id":"dl","provenance":{"watch_keys":[{"watch_id":"w1","watch_generation":"g1"}],"chain":[{"kind":"watch","watch_id":"w1","delivery_id":"dprior"},{"kind":"watch","watch_id":"w1","delivery_id":"dl"}]}}}`,
+		// dprior: a genuine prior DELIVERED delivery (its own slot).
+		`{"kind":"watch_send_delivered","seq":2,"job_id":"","watch_id":"w1","watch_send":{"key":{"watch_id":"w1","watch_target":"prior"},"delivery_id":"dprior","provenance":{"watch_keys":[{"watch_id":"w1","watch_generation":"g1"}],"chain":[{"kind":"watch","watch_id":"w1","delivery_id":"dprior"}]}}}`,
+		// dl: caused by a prior hop of dprior (which delivered) — a genuine self-loop.
+		`{"kind":"watch_send_delivered","seq":3,"job_id":"","watch_id":"w1","watch_send":{"key":{"watch_id":"w1","watch_target":"loop"},"delivery_id":"dl","provenance":{"watch_keys":[{"watch_id":"w1","watch_generation":"g1"}],"chain":[{"kind":"watch","watch_id":"w1","delivery_id":"dprior"},{"kind":"watch","watch_id":"w1","delivery_id":"dl"}]}}}`,
 	}, "\n") + "\n"
 	mustWrite(t, filepath.Join(sess, sid, "jobs.jsonl"), jobs)
 	return base, sid

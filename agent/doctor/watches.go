@@ -158,8 +158,12 @@ func buildWatchView(wID string, rec *jobstore.WatchRecord, settledByID map[strin
 	}
 
 	deliveries := make([]settledDelivery, 0, len(settledByID))
-	for _, d := range settledByID {
+	deliveredIDs := make(map[string]bool, len(settledByID))
+	for id, d := range settledByID {
 		deliveries = append(deliveries, d)
+		if d.kind == "delivered" {
+			deliveredIDs[id] = true
+		}
 	}
 	sort.Slice(deliveries, func(i, j int) bool { return deliveries[i].ev.Seq < deliveries[j].ev.Seq })
 
@@ -173,7 +177,7 @@ func buildWatchView(wID string, rec *jobstore.WatchRecord, settledByID map[strin
 			CoalescedCount:   ws.CoalescedCount,
 			DiagnosticReason: ws.DiagnosticReason,
 			Provenance:       ws.Provenance,
-			SelfLoop:         deliverySelfLoop(wID, ws),
+			SelfLoop:         deliverySelfLoop(wID, ws, deliveredIDs),
 		}
 		switch d.kind {
 		case "delivered":
@@ -199,26 +203,28 @@ func buildWatchView(wID string, rec *jobstore.WatchRecord, settledByID map[strin
 
 // deliverySelfLoop reports whether a settled delivery was caused by a prior
 // delivery of the SAME watch — a same-watch_id hop in the diagnostic Chain whose
-// delivery_id differs from this delivery's own (delivery-time) stamp. The own
-// stamp (matching delivery_id) is excluded; the WatchKeys set is never consulted
-// (it always contains the watch's own key on a recorded delivery).
-func deliverySelfLoop(watchID string, ws *jobstore.WatchSendState) bool {
+// delivery_id is a DIFFERENT, genuinely-delivered delivery of this watch. The own
+// delivery-time stamp (matching delivery_id) is excluded; the WatchKeys set is
+// never consulted (it always contains the watch's own key on a recorded
+// delivery).
+//
+// Crucially, a hop only counts when its delivery_id actually DELIVERED. When a
+// pending frame is superseded by a later one for the same slot, the runtime
+// unions their provenance (the survivor "stands in for both"), so the survivor's
+// Chain carries the coalesced-away predecessor's delivery_id — but that
+// predecessor never independently delivered and is not a distinct prior delivery.
+// Counting it is a false positive (the real 01KVEZ5K… production case).
+func deliverySelfLoop(watchID string, ws *jobstore.WatchSendState, deliveredIDs map[string]bool) bool {
 	if ws == nil || ws.Provenance == nil {
 		return false
 	}
-	sameWatch := 0
 	for _, hop := range ws.Provenance.Chain {
-		if hop.WatchID != watchID {
-			continue
+		if hop.WatchID != watchID || hop.DeliveryID == ws.DeliveryID {
+			continue // a different watch, or this delivery's own stamp
 		}
-		sameWatch++
-		if ws.DeliveryID != "" && hop.DeliveryID != ws.DeliveryID {
+		if deliveredIDs[hop.DeliveryID] {
 			return true
 		}
-	}
-	// Fallback only when the delivery id is unavailable to exclude the own stamp.
-	if ws.DeliveryID == "" {
-		return sameWatch >= 2
 	}
 	return false
 }
