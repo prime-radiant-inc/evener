@@ -225,6 +225,33 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   frames that need no action can finish with bare assistant text and no
   tool call, while `assistant.tool` `event_filter` prevents `job_list`
   and failed `read_file` events from waking the observer.
+- `sidecar-approval-broker-communicate.md` - approval broker watches
+  caller `communicate` frames and packages an explicit approval packet.
+- `sidecar-drift-detector-communicate.md` - drift detector flags a
+  scope-change signal without waking on ordinary assistant turns.
+- `sidecar-artifact-freshness-communicate.md` - artifact freshness
+  sidecar reports a missing final draft reference.
+- `sidecar-memory-reminder-read-file.md` - memory sidecar watches
+  successful `read_file` frames with `event_filter` and reminds on a
+  project rule.
+- `sidecar-secrets-monitor-read-file.md` - secrets monitor reports a
+  redacted finding from `read_file` output without repeating the
+  secret.
+- `sidecar-stuckness-read-file-error.md` - stuckness observer wakes
+  only on `read_file` errors and reports a missing-input alert.
+- `sidecar-test-triage-output-match.md` - test triage observer wakes
+  on an output signature and reads the watched job through the grant.
+- `sidecar-progress-digest-output-match.md` - progress concierge
+  summarizes a meaningful milestone instead of heartbeat noise.
+- `sidecar-handoff-packager-job-notification.md` - handoff sidecar
+  packages a completed delegate result from a `job.notification`
+  frame.
+- `sidecar-runbook-capture-output-match.md` - runbook scribe captures
+  a successful operational resolution from job output.
+- `sidecar-feedback-governor-communicate.md` - loop governor reports
+  repeated-tool-choice risk from an explicit caller frame.
+- `sidecar-quality-auditor-communicate.md` - quality auditor flags a
+  TODO left in a deliverable draft.
 
 ## Regression sweep (older surfaces)
 

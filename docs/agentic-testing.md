@@ -72,7 +72,7 @@ resp=$(curl -s -X POST -H "Content-Type: application/json" \
     \"launch_overrides\":{}
   }" \
   "$HUB/api/spawn")
-SID=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['session_id'])")
+SID=$(echo "$resp" | jq -r '.session_id')
 ```
 
 `SID` is a ULID like `01KRYW3VGR1J5XJH131A9KMDGR`. The session's
@@ -87,7 +87,7 @@ scenario needs:
 ```bash
 for i in $(seq 1 60); do
   state=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
-            | python3 -c "import json,sys; print(json.load(sys.stdin).get('state',''))" 2>/dev/null)
+            | jq -r '.state // ""' 2>/dev/null)
   [ "$state" = "idle" ] && break          # change "idle" to "processing" as needed
   sleep 1
 done
@@ -293,20 +293,22 @@ Every session writes a JSONL transcript and meta sidecar under
 TS=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
 META=$(find ~/.local/state/serf/projects -name "$SID.meta.json")
 
-# How many STEERING entries did the daemon write?
-grep -c '"kind":"STEERING"' "$TS"
+# Locate the canonical files for a session selector.
+go run ./cmd/serf-doctor locate "$SID"
 
-# Find the most recent STEERING text:
-grep '"kind":"STEERING"' "$TS" | tail -1 | python3 -c "
-import json,sys
-e = json.loads(sys.stdin.read())
-print(e['turn']['message']['content'][0]['text'])
-"
+# Read a compact, typed turn outline instead of raw JSONL.
+go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:20
+
+# Count structural tool invocations. This does not confuse tool-name
+# mentions in prompts/API payloads with real tool calls.
+go run ./cmd/serf-doctor transcript "$SID" --count delegate_send
 ```
 
-Useful when a scenario's web/TUI assertion is ambiguous — the
-on-disk transcript is the daemon's authoritative record of what
-happened.
+Useful when a scenario's web/TUI assertion is ambiguous. The on-disk
+transcript is the daemon's authoritative record of what happened, but
+do not hand-parse transcript JSONL for comprehension; use
+`serf-doctor transcript`. Raw `jsonl` reads are for byte-level replay
+or debugging the transcript format itself.
 
 ## Falsification debugging — when an assertion fails
 
@@ -374,17 +376,48 @@ prior sessions.
 ## Inspecting watch sidecars
 
 Watch/observer scenarios should assert against durable state, not only
-the parent's final prose. Read the parent `jobs.jsonl` for
-`watch_registered`, `watch_send_pending`, `watch_send_delivered`,
-`watch_send_dropped`, and `watch_cleared`, then read the observer
-transcript to confirm what the sidecar actually did with the delivered
-frame.
+the parent's final prose. Use `serf-doctor` instead of custom JSONL
+parsers:
+
+```bash
+# Parent watch lifecycle, coalesced delivery counts, dropped sends, and
+# self-loop verdicts.
+go run ./cmd/serf-doctor watches "$SID"
+
+# Parent/delegate/observer topology. Use observer transcript refs from
+# this output when you audit sidecar behavior.
+go run ./cmd/serf-doctor tree "$SID" --observers
+
+# Parent and observer turns. The observer transcript should show whether
+# a frame caused useful work, a no-op text response, or unwanted tool churn.
+go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:30
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range last:30
+
+# Structural tool counts when the scenario cares about fluency.
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count job_list
+```
 
 This matters when an observer calls `delegate_send(to="caller")`: the
 caller steering can be consumed before the parent emits a scripted
 "done" marker, or the model may choose to stop after handling the
 steering. Treat the durable watch rows and observer transcript as the
 contract; treat final parent text as a convenience signal only.
+
+For sidecar fluency, record these separately from pass/fail:
+
+- **Wrong trigger**: the parent creates `events: [assistant.message]`
+  when the scenario requires `events: [communicate]`, causing watch
+  frames from its own tool-call turns.
+- **Observer readiness race**: the parent creates the watch and triggers
+  it before the observer's first `*_READY` turn has finished, so the
+  real frame is consumed by setup behavior.
+- **Tool churn**: the observer uses `job_list`, `read_session_transcript`,
+  or another harmless tool only to acknowledge a frame that required no
+  action.
+- **Weak marker**: the parent emits `SCENARIO_DONE` even though the
+  observer never sent the expected finding/reminder/package.
 
 ## The over-specification trap
 

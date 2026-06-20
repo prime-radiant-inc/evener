@@ -122,84 +122,27 @@ watch turns do not need a harmless tool call.
 
 ## Manual Inspection Recipe
 
-Use a short parser rather than eyeballing full JSONL entries. Replace
-the paths and watch ids with the values from the run:
+Use `serf-doctor` rather than a one-off transcript or jobs parser.
+Replace the selectors with the parent session id and observer
+transcript ref from the run:
 
 ```bash
-python3 - <<'PY'
-import json, re
-from pathlib import Path
-
-jobs = Path("PARENT_JOBS_JSONL")
-observer = Path("OBSERVER_TRANSCRIPT_JSONL")
-watch_ids = {
-    "broad": "BROAD_WATCH_ID",
-    "filtered": "FILTERED_WATCH_ID",
-}
-
-for label, wid in watch_ids.items():
-    deliveries = {}
-    dropped = []
-    condition = None
-    cleared = None
-    for line in jobs.open():
-        rec = json.loads(line)
-        if rec.get("kind") == "watch_registered" and rec.get("watch_id") == wid:
-            condition = rec.get("watch", {}).get("condition")
-        if rec.get("kind") == "watch_cleared" and rec.get("watch_id") == wid:
-            cleared = rec.get("watch", {}).get("end_reason")
-        if not rec.get("kind", "").startswith("watch_send_"):
-            continue
-        ws = rec.get("watch_send") or {}
-        if (ws.get("key") or {}).get("watch_id") != wid:
-            continue
-        did = ws.get("delivery_id")
-        item = deliveries.setdefault(did, {"events": set(), "tools": set()})
-        item["events"].add(rec["kind"])
-        m = re.search(r"^  tool_name: (.+)$", ws.get("frame", ""), re.M)
-        if m:
-            item["tools"].add(m.group(1))
-        if rec.get("kind") == "watch_send_dropped":
-            dropped.append(did)
-    print(label, wid, condition, "cleared=", cleared)
-    for did, item in deliveries.items():
-        print(" ", did, sorted(item["events"]), sorted(item["tools"]))
-    print(" unique_deliveries=", len(deliveries), "dropped=", dropped)
-
-pending = None
-for line in observer.open():
-    rec = json.loads(line)
-    turn = rec.get("turn") or {}
-    msg = turn.get("message") or {}
-    text = "\n".join(
-        c.get("text", "")
-        for c in msg.get("content", [])
-        if c.get("kind") == "text"
-    )
-    if turn.get("kind") == "USER_INPUT" and "Watch frame" in text:
-        wid = re.search(r"^watch_id: (.+)$", text, re.M)
-        did = re.search(r"^delivery_id: (.+)$", text, re.M)
-        tool = re.search(r"^  tool_name: (.+)$", text, re.M)
-        pending = {
-            "watch_id": wid.group(1) if wid else "",
-            "delivery_id": did.group(1) if did else "",
-            "tool": tool.group(1) if tool else "",
-        }
-    elif pending and turn.get("kind") == "ASSISTANT":
-        calls = [
-            (c.get("tool_call") or {}).get("name")
-            for c in msg.get("content", [])
-            if c.get("kind") == "tool_call"
-        ]
-        texts = [
-            c.get("text", "")
-            for c in msg.get("content", [])
-            if c.get("kind") == "text"
-        ]
-        print("observer", pending, "text=", texts, "tool_calls=", calls)
-        pending = None
-PY
+go run ./cmd/serf-doctor watches "$SID"
+go run ./cmd/serf-doctor tree "$SID" --observers
+go run ./cmd/serf-doctor transcript "$SID" --format outline --range last:30
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range last:40
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count job_list
 ```
+
+The parent watch report should show the broad watch ended as
+`cleared`, the filtered watch condition as `events: [assistant.tool]
+where tool_name=read_file, status=ok`, no dropped sends, and no
+self-loop verdict. The observer outline should show ignored broad
+frames as bare assistant text with no tool calls, and the successful
+filtered `read_file` frame as `delegate_send` followed by
+`communicate`.
 
 ## Cleanup
 
