@@ -1,7 +1,7 @@
 # Passive Observer Sidecars Design
 
 Date: 2026-06-20
-Status: draft for Jesse review
+Status: implemented root-cause fix
 Builds on: `docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-design.md`, `docs/superpowers/specs/2026-06-18-observer-watch-origin-loop-design.md`, `docs/superpowers/specs/2026-06-19-serf-doctor-unified-design.md`
 
 ## Problem
@@ -19,7 +19,7 @@ That composition is safe enough for active observers, but it fails for passive o
 - `exec_command`: 24 calls
 - `task_list`: 3 calls
 
-The root cause was not watch delivery. The sidecar was a normal delegate being asked to act like a passive callback. A normal delegate turn must produce either a tool call or a result-tool response. If it produces no content, the session loop treats that as an empty model response and retries with steering such as “Your previous response was empty. Please continue working on the task.” The sidecar therefore used harmless tools (`job_list`, later `exec_command true`) as a substitute for a missing “ignore this frame” operation.
+The root cause was not watch delivery. The sidecar was a normal delegate being asked to act like a passive callback. Normal delegate turns were built with required tool choice and then expected to end with a result-tool response. When a watch frame needed no action, the delegate still had to produce some tool call. The sidecar therefore used harmless tools (`job_list`, later `exec_command true`) as a substitute for a missing “nothing to do for this frame” outcome.
 
 A second issue amplified the churn: `events: ["assistant.tool"]` delivered every parent tool event to the sidecar. The observer had to inspect and ignore `job_watch`, `job_read_output`, `use_skill`, `job_list`, `task_list`, `exec_command`, and transcript tools even though only successful `read_file` results were relevant.
 
@@ -30,7 +30,7 @@ Keep observer sidecars as composition: `delegate` + `job_watch` + `delegate_send
 Add two narrowly scoped capabilities:
 
 1. **Structured event predicates** at the watch boundary, so irrelevant events are never delivered.
-2. **Watch-frame acknowledgement** for watch-originated observer turns, so a delegate can explicitly mark a frame handled or ignored without producing user-facing output and without triggering empty-response repair.
+2. **Watch-delivery turn semantics** for watch-originated observer turns, so a delegate can finish with non-empty bare text when it has no tool work to do.
 
 Together these make passive sidecars cheap and deterministic while preserving the existing watch mailbox, causal provenance, and same-watch loop suppression design.
 
@@ -42,6 +42,7 @@ Together these make passive sidecars cheap and deterministic while preserving th
 - Preserve existing same-watch causal suppression. Observer output caused by a watch delivery must not retrigger that same watch.
 - Keep normal session empty-response and bare-text protections unchanged.
 - Keep the public API small and implementable incrementally.
+- Avoid a new no-op tool whose only purpose is to satisfy forced tool choice.
 
 ## Non-Goals
 
@@ -59,9 +60,9 @@ Together these make passive sidecars cheap and deterministic while preserving th
 | Passive observer | A delegate whose common action is to ignore most watch frames and react only to selected frames. |
 | Watch-originated turn | A delegate turn started or steered by `job_watch.send`, carrying watch provenance and `FromWatch`/equivalent runtime metadata. |
 | Event predicate | A structured filter evaluated against an event payload before a watch delivery is recorded. |
-| Watch ack | A small observer action that marks the current watch frame `handled` or `ignored` and terminates that watch-originated turn. |
+| Internal disposition | Non-empty bare assistant text recorded in the observer transcript for a watch-originated turn that needs no tool action. |
 | Qualifying frame | A watch frame that passes the watch condition and event predicate. |
-| Ignored frame | A delivered frame that the observer explicitly acknowledges as requiring no side effect. |
+| Ignored frame | A delivered frame for which the observer produces an internal disposition and no side effect. |
 
 ## Design Overview
 
@@ -100,23 +101,16 @@ In v1 these fields apply only to `assistant.tool` events. Supplying `tool_name` 
 
 The matcher evaluates predicates after event-kind matching and same-watch suppression, but before recording a watch send/notification. A non-matching event is a non-event for this watch: no delivery id, no pending row, no notification, and no observer wake.
 
-### Layer 2: Watch-frame acknowledgement
+### Layer 2: Watch-delivery turn semantics
 
-Observers need a way to consume a watch frame without producing user-facing output. Add a small tool available only in watch-originated delegate turns:
+Observers need a way to consume a watch frame without producing user-facing output or calling a no-op tool. When a delegate run is started or resumed by watch delivery:
 
-```go
-watch_ack(action: "ignored" | "handled", note?: string)
-```
+- the model request uses `tool_choice:auto` instead of `required`;
+- a non-empty no-tool response is accepted as an internal disposition;
+- a truly empty response still uses the existing empty-response retry path;
+- the default delegate `communicate` nudge is skipped for that watch-delivery run.
 
-Semantics:
-
-- `ignored`: the observer intentionally took no external action for this frame.
-- `handled`: the observer completed whatever internal handling was needed without sending a caller message.
-- `note` is optional, short, and diagnostic only. It is not sent to the user.
-
-A successful `watch_ack` terminates the current watch-originated delegate turn cleanly. It is neither a user-facing result nor an error. It does not call `communicate`, does not inject steering into the parent, and does not create a new watchable assistant output event beyond ordinary tool-call events emitted by the observer session itself.
-
-The tool is only valid when the active input provenance or run metadata identifies the turn as watch-originated. Outside that context it returns `invalid_request: watch_ack is only available while handling a watch delivery`.
+This is intentionally scoped to the run source, not just provenance. A normal delegate that happens to receive watch-stamped steering still keeps the normal delegate contract.
 
 ## Event Predicate Details
 
@@ -150,31 +144,29 @@ Examples:
 
 `event_filter` is for event payloads. It does not replace `output_match`, which continues to operate on job output. A watch may not combine `event_filter` with a watch that has no event condition; doing so returns `invalid_request`.
 
-## Watch Ack Details
+## Watch-Delivery Turn Details
 
-### Tool availability
+### Turn classification
 
-`watch_ack` should be present in the observer's tool registry when processing a watch-originated delegate turn. It may be hidden or return an explicit error in other contexts. The stricter implementation is preferred: do not advertise the tool unless the turn can use it.
+The runtime snapshots `runFromWatch` when `subagent.run` starts. If true, the child session processes the input as `EntryWatchDelivery`; otherwise it remains an ordinary `EntryUserInput` delegate turn.
 
 ### Turn completion
 
-A `watch_ack` result counts as an intentional terminal action for the current watch-originated input. The session loop must not inject empty-response steering after a successful ack.
+For `EntryWatchDelivery`, a non-empty response with no tool calls terminates the turn cleanly. The text remains in the child transcript as the observer's internal disposition, but no `communicate` output is produced and no parent steering is injected.
 
-This is intentionally narrower than changing `handleNoToolCalls`: ordinary empty model responses remain errors/retries. The special case is not “empty is okay”; the special case is “this watch-originated turn called the explicit ack tool.”
+This is narrower than changing `handleNoToolCalls`: ordinary empty model responses remain errors/retries, and ordinary delegate bare text still triggers the result-tool repair path.
 
 ### Delivery accounting
 
-A watch delivery is still considered delivered when the frame reaches the observer, matching current delivery semantics. `watch_ack` is not a fifth watch-send terminal. It is observer-turn state, not watch-send state.
+A watch delivery is still considered delivered when the frame reaches the observer, matching current delivery semantics. Internal disposition is observer-turn state, not a fifth watch-send terminal.
 
 Optional future diagnostics may count observer dispositions (`ignored`, `handled`, `responded`) in the delegate transcript or doctor tooling, but v1 does not need a new durable watch-send terminal.
 
 ### Provenance and loop suppression
 
-`watch_ack` carries the active watch provenance like any other tool call in the observer session. It must not weaken `shouldSuppressWatch` or the existing provenance propagation rules.
-
 If an observer calls `delegate_send(to="caller")`, the caller steering continues to inherit watch provenance. Parent events caused by acknowledging that steering continue to be suppressed by the same-watch key.
 
-If an observer calls `watch_ack`, no parent steering is created, so there is no parent-side echo to suppress.
+If an observer produces only an internal disposition, no parent steering is created, so there is no parent-side echo to suppress.
 
 ## Example Flow
 
@@ -200,7 +192,7 @@ If an observer calls `watch_ack`, no parent steering is created, so there is no 
 Some observers will still subscribe to broader event sets. For a delivered frame they do not need to act on:
 
 1. Watch sends frame to observer.
-2. Observer calls `watch_ack(action="ignored")`.
+2. Observer produces non-empty bare text such as “ignored: not relevant”.
 3. Observer turn completes cleanly.
 4. No empty-response steering is injected and no no-op `job_list`/`exec_command` call is needed.
 
@@ -208,9 +200,8 @@ Some observers will still subscribe to broader event sets. For a delivered frame
 
 - Invalid predicate fields return `invalid_request` at watch creation.
 - Unsupported predicate/event combinations return `invalid_request` at watch creation.
-- `watch_ack` outside a watch-originated turn returns `invalid_request`.
-- If `watch_ack` fails for an internal reason, the delegate turn remains subject to normal error handling.
-- If the observer ignores a frame by doing nothing, existing empty-response repair still applies. The explicit ack is the contract.
+- If the observer returns truly empty output, existing empty-response repair still applies.
+- If an ordinary delegate turn returns bare text without `communicate`, existing result-tool repair still applies.
 
 ## Testing Plan
 
@@ -222,42 +213,42 @@ Some observers will still subscribe to broader event sets. For a delivered frame
 - `event_filter` without an event condition fails watch creation.
 - Unsupported event kind plus `tool_name` or `status` fails watch creation.
 
-### Watch ack tests
+### Watch-delivery turn tests
 
-- A watch-originated observer turn can call `watch_ack(action="ignored")` and complete without empty-response steering.
-- A watch-originated observer turn can call `watch_ack(action="handled")` and complete without `communicate`.
-- `watch_ack` outside a watch-originated turn fails.
+- A watch-originated observer turn uses `tool_choice:auto`.
+- A watch-originated observer turn can return non-empty bare text and complete without empty-response steering.
+- A watch-originated observer turn that returns bare text does not trigger the default `communicate` nudge.
+- A truly empty watch-originated response still uses empty-response repair.
 - Ordinary empty responses outside watch-originated turns still trigger `handleNoToolCalls` retries.
 
 ### Integration tests
 
 - Recreate the file-read encouragement sidecar using `event_filter={tool_name:"read_file", status:"ok"}`. Run several non-read tools and one successful read. Assert the observer receives only the read frame and sends one encouragement.
-- Recreate a broad observer that receives multiple frames and acks ignored frames. Assert no no-op `job_list`/`exec_command true` churn.
+- Recreate a broad observer that receives multiple frames and ignores irrelevant frames with bare-text dispositions. Assert no no-op `job_list`/`exec_command true` churn.
 - Preserve existing observer loop-suppression tests: `delegate_send(to="caller")` from a watch-originated observer must not retrigger the same watch.
 
 ## Compatibility and Migration
 
 Existing watches without `event_filter` keep their current behavior. Existing sidecar patterns continue to work.
 
-The new filter is additive and opt-in. The new ack tool is also additive and only matters for observers that choose to use it.
+The new filter is additive and opt-in. The watch-delivery turn mode is internal and only affects delegate runs started or resumed by watch delivery.
 
 Tool descriptions should be updated to guide models toward the safer pattern:
 
 - Use `event_filter` instead of broad event watches when possible.
-- In watch-originated observers, call `watch_ack(action="ignored")` for frames that need no action.
+- In watch-originated observers, return a short internal disposition for frames that need no action.
 - Do not use harmless tools as no-op acknowledgements.
 
 ## Open Questions
 
-1. Should `watch_ack` be model-visible as a normal tool card, or should it be hidden behind a more declarative observer runtime interface? Recommendation: model-visible in v1, because it is explicit and testable.
-2. Should observer dispositions be persisted for doctoring? Recommendation: defer; current transcript structural counts are enough for v1 diagnosis.
-3. Should `event_filter` later support arrays, negation, or regex? Recommendation: defer until real use cases require them. Keep v1 exact-match only.
+1. Should observer dispositions be summarized by doctor tooling? Recommendation: defer; current transcript structural counts are enough for v1 diagnosis.
+2. Should `event_filter` later support arrays, negation, or regex? Recommendation: defer until real use cases require them. Keep v1 exact-match only.
 
 ## Recommendation
 
 Implement this in two phases:
 
 1. Add structured `assistant.tool` predicates to `job_watch` so passive observers receive fewer frames.
-2. Add `watch_ack` for watch-originated delegate turns so ignored delivered frames terminate cleanly.
+2. Add `EntryWatchDelivery` for watch-originated delegate turns so ignored delivered frames can terminate cleanly without a no-op tool call.
 
 This fixes the observed failure mode without introducing a separate observer runtime, and it leaves the existing provenance-based loop suppression as the safety boundary.

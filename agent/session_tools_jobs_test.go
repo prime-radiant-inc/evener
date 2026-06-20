@@ -2299,6 +2299,35 @@ func TestJobWatchEmptySendPlaceholderIsOmitted(t *testing.T) {
 	}
 }
 
+func TestMarshalWatchResultSurfacesEventFilter(t *testing.T) {
+	res, err := marshalWatchResult(watchResult{
+		Target:   runtimeMessageAliasCaller,
+		Watching: true,
+		Events:   []string{"assistant.tool"},
+		EventFilter: &watchEventFilter{
+			ToolName: "read_file",
+			Status:   "ok",
+		},
+	}, 4096)
+	if err != nil {
+		t.Fatalf("marshal watch result: %v", err)
+	}
+	var out jobWatchToolResult
+	if err := json.Unmarshal(handlerJSON(t, res), &out); err != nil {
+		t.Fatalf("unmarshal watch result: %v (%s)", err, res)
+	}
+	if out.EventFilter == nil || out.EventFilter.ToolName != "read_file" || out.EventFilter.Status != "ok" {
+		t.Fatalf("event_filter = %+v, want read_file/ok", out.EventFilter)
+	}
+	state, ok := res.(tooldefs.StateResult)
+	if !ok {
+		t.Fatalf("result type = %T, want StateResult", res)
+	}
+	if !strings.Contains(state.Output, "where tool_name=read_file,status=ok") {
+		t.Fatalf("model output = %q, want event filter summary", state.Output)
+	}
+}
+
 // TestMarshalWatchResultSurfacesFired pins the tool-JSON projection of an
 // attach-time fire: a watchResult with Fired=true renders "fired":true, and
 // Fired=false omits the field (omitempty), so the agent learns its condition was
@@ -3453,7 +3482,7 @@ func TestJobToolsDefinitions(t *testing.T) {
 		}
 	}
 	watchProps := tooldefs.DefJobWatch(WatchEventKindNames).Parameters["properties"].(map[string]any)
-	for _, param := range []string{"operation", "watch_id", "target", "output_match", "progress_interval_ms", "events", "every", "send"} {
+	for _, param := range []string{"operation", "watch_id", "target", "output_match", "progress_interval_ms", "events", "event_filter", "every", "send"} {
 		if _, ok := watchProps[param]; !ok {
 			t.Fatalf("job_watch missing param %q", param)
 		}

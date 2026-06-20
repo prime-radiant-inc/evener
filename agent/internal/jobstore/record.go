@@ -123,14 +123,20 @@ type WatchRecord struct {
 }
 
 type WatchConfigSnapshot struct {
-	Target             string   `json:"target"`
-	OutputMatch        string   `json:"output_match,omitempty"`
-	ProgressIntervalMS int      `json:"progress_interval_ms,omitempty"`
-	Events             []string `json:"events,omitempty"`
-	Every              int      `json:"every,omitempty"`
-	SendTo             string   `json:"send_to,omitempty"`
-	SendMessage        string   `json:"send_message,omitempty"`
-	IncludeExcerpt     bool     `json:"include_excerpt,omitempty"`
+	Target             string                    `json:"target"`
+	OutputMatch        string                    `json:"output_match,omitempty"`
+	ProgressIntervalMS int                       `json:"progress_interval_ms,omitempty"`
+	Events             []string                  `json:"events,omitempty"`
+	Every              int                       `json:"every,omitempty"`
+	EventFilter        *WatchEventFilterSnapshot `json:"event_filter,omitempty"`
+	SendTo             string                    `json:"send_to,omitempty"`
+	SendMessage        string                    `json:"send_message,omitempty"`
+	IncludeExcerpt     bool                      `json:"include_excerpt,omitempty"`
+}
+
+type WatchEventFilterSnapshot struct {
+	ToolName string `json:"tool_name,omitempty"`
+	Status   string `json:"status,omitempty"`
 }
 
 // WatchSendKey identifies the coalescing slot for a durable watch-send frame.

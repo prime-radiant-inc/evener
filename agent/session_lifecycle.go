@@ -241,6 +241,11 @@ const (
 	// notifications and surfaces them to the model as a steering reminder. An empty
 	// queue makes it a no-op (no model request).
 	EntryNotification
+	// EntryWatchDelivery is a watch-originated delegate turn. It may decide a
+	// delivered watch frame needs no action; non-empty bare text is retained in
+	// the child transcript as an internal disposition and does not require
+	// communicate.
+	EntryWatchDelivery
 )
 
 // ProcessInput processes a single user input (with optional image attachments)
@@ -563,6 +568,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		profile, sys, history, req, reqEffort := s.prepareModelRequest(ctx, round, &timings)
+		if kind == EntryWatchDelivery {
+			req.ToolChoice = &llm.ToolChoice{Mode: "auto"}
+		}
 
 		// --- Phase: LLMCall ---
 		tPhaseStart := time.Now()
@@ -657,6 +665,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		progressed = progressed || s.callsMadeProgress(calls)
 
 		if len(calls) == 0 {
+			if kind == EntryWatchDelivery && !noContent {
+				s.finishProcessingAtBoundary(ctx, SessionIdle)
+				return "", progressed, nil
+			}
 			// A bare-text response to a notification turn is the agent acknowledging
 			// a terminal notification it has nothing to act on (it often already read
 			// the job's output itself). Finish idle instead of scolding it toward a

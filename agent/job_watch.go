@@ -112,6 +112,7 @@ type watchConfig struct {
 	events             []string
 	eventKinds         map[events.EventKind]bool
 	wildcardEvents     bool
+	eventFilter        *watchEventFilter
 	// every-Nth throttle: set from `every` + the single events[0] when every > 0.
 	triggerKind       events.EventKind
 	triggerEvery      int
@@ -165,8 +166,14 @@ type watchArgs struct {
 	ProgressIntervalMS int
 	Events             []string
 	Every              int
+	EventFilter        *watchEventFilter
 	Send               *watchSendArgs
 	Clear              bool
+}
+
+type watchEventFilter struct {
+	ToolName string `json:"tool_name,omitempty"`
+	Status   string `json:"status,omitempty"`
 }
 
 type watchSendArgs struct {
@@ -189,6 +196,7 @@ type watchResult struct {
 	Watching           bool
 	OutputMatch        string
 	Events             []string
+	EventFilter        *watchEventFilter
 	ProgressIntervalMS int
 	Send               *watchSendArgs
 	ReplacedExisting   bool
@@ -387,6 +395,13 @@ func normalizeWatchArgs(a *watchArgs) error {
 	// only to every>1, which actually throttles.
 	if a.Every == 1 {
 		a.Every = 0
+	}
+	if a.EventFilter != nil {
+		a.EventFilter.ToolName = strings.TrimSpace(a.EventFilter.ToolName)
+		a.EventFilter.Status = strings.ToLower(strings.TrimSpace(a.EventFilter.Status))
+		if a.EventFilter.ToolName == "" && a.EventFilter.Status == "" {
+			a.EventFilter = nil
+		}
 	}
 	return nil
 }
@@ -608,6 +623,19 @@ func validateWatchEventArgs(a watchArgs) error {
 			return errors.New(`invalid_request: every requires a single concrete event kind, not "*"`)
 		}
 	}
+	if a.EventFilter != nil {
+		if len(a.Events) == 0 {
+			return errors.New("invalid_request: event_filter requires events")
+		}
+		if len(a.Events) != 1 || a.Events[0] != "assistant.tool" {
+			return errors.New(`invalid_request: event_filter tool_name/status are only supported with events ["assistant.tool"]`)
+		}
+		switch a.EventFilter.Status {
+		case "", "ok", "error":
+		default:
+			return errors.New(`invalid_request: event_filter.status must be "ok" or "error"`)
+		}
+	}
 	return nil
 }
 
@@ -816,6 +844,7 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 		events:             canonicalWatchEvents(a.Events),
 		eventKinds:         eventKinds,
 		wildcardEvents:     wildcardEvents,
+		eventFilter:        cloneWatchEventFilter(a.EventFilter),
 		send:               cloneWatchSendArgs(a.Send),
 		generation:         jobstore.NewWatchGeneration(),
 		createdAt:          createdAt,
@@ -842,6 +871,7 @@ func normalizedWatchConfigHash(a watchArgs) string {
 		ProgressIntervalMS: a.ProgressIntervalMS,
 		Events:             canonicalWatchEvents(a.Events),
 		Every:              a.Every,
+		EventFilter:        watchEventFilterSnapshot(a.EventFilter),
 	}
 	if a.Send != nil {
 		snapshot.SendTo = a.Send.To
@@ -902,6 +932,24 @@ func canonicalWatchEvents(events []string) []string {
 	out := append([]string(nil), events...)
 	sort.Strings(out)
 	return out
+}
+
+func cloneWatchEventFilter(filter *watchEventFilter) *watchEventFilter {
+	if filter == nil {
+		return nil
+	}
+	clone := *filter
+	return &clone
+}
+
+func watchEventFilterSnapshot(filter *watchEventFilter) *jobstore.WatchEventFilterSnapshot {
+	if filter == nil {
+		return nil
+	}
+	return &jobstore.WatchEventFilterSnapshot{
+		ToolName: filter.ToolName,
+		Status:   filter.Status,
+	}
 }
 
 func cloneWatchSendArgs(send *watchSendArgs) *watchSendArgs {
@@ -1349,6 +1397,7 @@ func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult 
 		Watching:           true,
 		OutputMatch:        cfg.outputMatch,
 		Events:             append([]string(nil), cfg.events...),
+		EventFilter:        cloneWatchEventFilter(cfg.eventFilter),
 		ProgressIntervalMS: cfg.progressIntervalMS,
 		Send:               cloneWatchSendArgs(cfg.send),
 		ReplacedExisting:   replacedExisting,
@@ -1372,6 +1421,7 @@ func watchConfigSnapshot(cfg *watchConfig) *jobstore.WatchConfigSnapshot {
 		ProgressIntervalMS: cfg.progressIntervalMS,
 		Events:             append([]string(nil), cfg.events...),
 		Every:              cfg.triggerEvery,
+		EventFilter:        watchEventFilterSnapshot(cfg.eventFilter),
 	}
 	if cfg.send != nil {
 		snapshot.SendTo = cfg.send.To
@@ -1651,12 +1701,29 @@ func watchConditionSummary(cfg *watchConfig) string {
 		if cfg.triggerEvery > 0 {
 			summary += fmt.Sprintf(" every %d", cfg.triggerEvery)
 		}
+		if filterSummary := watchEventFilterSummary(cfg.eventFilter); filterSummary != "" {
+			summary += " where " + filterSummary
+		}
 		parts = append(parts, summary)
 	}
 	if len(parts) == 0 {
 		return ""
 	}
 	return strings.Join(parts, "; ")
+}
+
+func watchEventFilterSummary(filter *watchEventFilter) string {
+	if filter == nil {
+		return ""
+	}
+	var parts []string
+	if filter.ToolName != "" {
+		parts = append(parts, "tool_name="+filter.ToolName)
+	}
+	if filter.Status != "" {
+		parts = append(parts, "status="+filter.Status)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
@@ -1682,6 +1749,9 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 			continue
 		}
 		if shouldSuppressWatch(cfg, ev.Provenance) {
+			continue
+		}
+		if !watchEventFilterMatches(cfg.eventFilter, ev) {
 			continue
 		}
 		if cfg.triggerEvery > 0 && cfg.triggerKind == kind {
@@ -1726,6 +1796,41 @@ func shouldSuppressWatch(cfg *watchConfig, p *provenance.Causal) bool {
 		return false
 	}
 	return provenance.ContainsWatch(p, cfg.watchID, cfg.generation)
+}
+
+func watchEventFilterMatches(filter *watchEventFilter, ev events.SessionEvent) bool {
+	if filter == nil {
+		return true
+	}
+	if ev.Kind != events.EventToolCallEnd {
+		return false
+	}
+	var data events.ToolCallEndData
+	switch d := ev.Data.(type) {
+	case events.ToolCallEndData:
+		data = d
+	case *events.ToolCallEndData:
+		if d == nil {
+			return false
+		}
+		data = *d
+	default:
+		return false
+	}
+	if filter.ToolName != "" && data.ToolName != filter.ToolName {
+		return false
+	}
+	if filter.Status != "" && toolCallStatus(data) != filter.Status {
+		return false
+	}
+	return true
+}
+
+func toolCallStatus(data events.ToolCallEndData) string {
+	if data.Error != "" {
+		return "error"
+	}
+	return "ok"
 }
 
 func watchEventWatchedIdentity(target string, data events.EventData) string {

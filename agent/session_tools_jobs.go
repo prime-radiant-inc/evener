@@ -1097,13 +1097,14 @@ type delegateSendResult struct {
 }
 
 type jobWatchToolResult struct {
-	WatchID            string                `json:"watch_id,omitempty"`
-	Target             string                `json:"target"`
-	Watching           bool                  `json:"watching"`
-	OutputMatch        string                `json:"output_match,omitempty"`
-	Events             []string              `json:"events,omitempty"`
-	ProgressIntervalMS int                   `json:"progress_interval_ms,omitempty"`
-	Send               *jobWatchToolSendArgs `json:"send,omitempty"`
+	WatchID            string                   `json:"watch_id,omitempty"`
+	Target             string                   `json:"target"`
+	Watching           bool                     `json:"watching"`
+	OutputMatch        string                   `json:"output_match,omitempty"`
+	Events             []string                 `json:"events,omitempty"`
+	EventFilter        *jobWatchToolEventFilter `json:"event_filter,omitempty"`
+	ProgressIntervalMS int                      `json:"progress_interval_ms,omitempty"`
+	Send               *jobWatchToolSendArgs    `json:"send,omitempty"`
 	// replaced_existing and fired serialize explicitly even when false: the
 	// contract's install example shows replaced_existing:false, and §7.1
 	// promises "fired=false on none" for terminal catch-up.
@@ -1111,6 +1112,11 @@ type jobWatchToolResult struct {
 	Fired            bool   `json:"fired"`
 	TerminalCatchup  bool   `json:"terminal_catchup,omitempty"`
 	Status           string `json:"status,omitempty"`
+}
+
+type jobWatchToolEventFilter struct {
+	ToolName string `json:"tool_name,omitempty"`
+	Status   string `json:"status,omitempty"`
 }
 
 type jobWatchListToolResult struct {
@@ -1251,6 +1257,12 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 		TerminalCatchup:    res.TerminalCatchup,
 		Status:             res.Status,
 	}
+	if res.EventFilter != nil {
+		out.EventFilter = &jobWatchToolEventFilter{
+			ToolName: res.EventFilter.ToolName,
+			Status:   res.EventFilter.Status,
+		}
+	}
 	if res.Send != nil {
 		out.Send = &jobWatchToolSendArgs{
 			To:             res.Send.To,
@@ -1298,7 +1310,11 @@ func formatJobWatch(out jobWatchToolResult) string {
 		cond = append(cond, "output_match: "+out.OutputMatch)
 	}
 	if len(out.Events) > 0 {
-		cond = append(cond, "events: "+strings.Join(out.Events, ","))
+		events := "events: " + strings.Join(out.Events, ",")
+		if filter := formatJobWatchEventFilter(out.EventFilter); filter != "" {
+			events += " " + filter
+		}
+		cond = append(cond, events)
 	}
 	if out.ProgressIntervalMS > 0 {
 		cond = append(cond, fmt.Sprintf("every %dms", out.ProgressIntervalMS))
@@ -1319,6 +1335,23 @@ func formatJobWatch(out jobWatchToolResult) string {
 		parts = append(parts, out.Status)
 	}
 	return "[" + strings.Join(parts, " · ") + "]"
+}
+
+func formatJobWatchEventFilter(filter *jobWatchToolEventFilter) string {
+	if filter == nil {
+		return ""
+	}
+	var parts []string
+	if filter.ToolName != "" {
+		parts = append(parts, "tool_name="+filter.ToolName)
+	}
+	if filter.Status != "" {
+		parts = append(parts, "status="+filter.Status)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "where " + strings.Join(parts, ",")
 }
 
 func formatJobWatchList(out jobWatchListToolResult) string {
@@ -1560,6 +1593,11 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	if n, ok := shellIntArg(args, "every"); ok {
 		a.Every = n
 	}
+	eventFilter, err := watchEventFilterArg(args)
+	if err != nil {
+		return watchArgs{}, err
+	}
+	a.EventFilter = eventFilter
 	send, err := watchSendArg(args)
 	if err != nil {
 		return watchArgs{}, err
@@ -1594,6 +1632,36 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 		return watchArgs{}, errors.New("invalid_request: watched is not a v1 delivery target")
 	}
 	return a, nil
+}
+
+func watchEventFilterArg(args map[string]any) (*watchEventFilter, error) {
+	raw, ok := args["event_filter"]
+	if !ok {
+		return nil, nil
+	}
+	values, ok := raw.(map[string]any)
+	if !ok {
+		return nil, errors.New("event_filter must be an object")
+	}
+	var filter watchEventFilter
+	for key, value := range values {
+		s, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid_request: event_filter.%s must be a string", key)
+		}
+		switch key {
+		case "tool_name":
+			filter.ToolName = strings.TrimSpace(s)
+		case "status":
+			filter.Status = strings.TrimSpace(s)
+		default:
+			return nil, fmt.Errorf("invalid_request: unknown event_filter field %q", key)
+		}
+	}
+	if filter.ToolName == "" && filter.Status == "" {
+		return nil, nil
+	}
+	return &filter, nil
 }
 
 func stringArrayArg(args map[string]any, key string) ([]string, error) {

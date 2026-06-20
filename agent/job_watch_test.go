@@ -536,6 +536,73 @@ func TestEventWatchFiresAndNotifiesCaller(t *testing.T) {
 	}
 }
 
+func TestEventWatchFiltersAssistantToolByNameAndStatus(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	installWatchBelowValidation(t, jm, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"assistant.tool"},
+		EventFilter: &watchEventFilter{
+			ToolName: "read_file",
+			Status:   "ok",
+		},
+	})
+	onSessionEventKD(jm, events.EventToolCallEnd, events.ToolCallEndData{ToolName: "job_list", Output: "{}"})
+	onSessionEventKD(jm, events.EventToolCallEnd, events.ToolCallEndData{ToolName: "read_file", Error: "failed"})
+	if len(notified) != 0 {
+		t.Fatalf("non-matching tool events fired watch: %+v", notified)
+	}
+
+	onSessionEventKD(jm, events.EventToolCallEnd, events.ToolCallEndData{ToolName: "read_file", Output: "ok"})
+	if len(notified) != 1 {
+		t.Fatalf("matching assistant.tool event fired %d notifications, want 1", len(notified))
+	}
+}
+
+func TestConfigureWatchRejectsUnsupportedEventFilterShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		args watchArgs
+		want string
+	}{
+		{
+			name: "without_events",
+			args: watchArgs{Target: runtimeMessageAliasCaller, EventFilter: &watchEventFilter{ToolName: "read_file"}},
+			want: "event_filter requires events",
+		},
+		{
+			name: "wrong_event",
+			args: watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"assistant.message"}, EventFilter: &watchEventFilter{ToolName: "read_file"}},
+			want: "only supported with events",
+		},
+		{
+			name: "wildcard_event",
+			args: watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"*"}, EventFilter: &watchEventFilter{Status: "ok"}},
+			want: "only supported with events",
+		},
+		{
+			name: "bad_status",
+			args: watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"assistant.tool"}, EventFilter: &watchEventFilter{Status: "pending"}},
+			want: `event_filter.status must be "ok" or "error"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			jm := newTestJM(t)
+			_, err := jm.configureWatch(tc.args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+			if jm.watchCount() != 0 {
+				t.Fatalf("watch count = %d, want 0", jm.watchCount())
+			}
+		})
+	}
+}
+
 func TestWildcardEventWatchOnlyFiresSupportedEvents(t *testing.T) {
 	jm := newTestJM(t)
 	var notified []jobNotification

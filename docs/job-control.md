@@ -485,7 +485,7 @@ Return shape when injecting into the contextual caller route:
 `job_watch` creates, lists, inspects, or clears standing triggers. Create configures what should happen when a running job or the caller session meets a condition. Its create schema has two orthogonal axes:
 
 - **Delivery:** omit `send` to notify the caller; include `send` to deliver a configured message/frame to `send.to`.
-- **Trigger source:** use `output_match` for output regex matches, `progress_interval_ms` for periodic progress, and `events` (optionally gated by `every`) for session/job event frames.
+- **Trigger source:** use `output_match` for output regex matches, `progress_interval_ms` for periodic progress, and `events` (optionally gated by `every` and `event_filter`) for session/job event frames.
 
 Operations:
 
@@ -544,11 +544,30 @@ Send configured frame/message shape:
 }
 ```
 
+Filtered assistant-tool sidecar shape:
+
+```json
+{
+  "operation": "create",
+  "target": "caller",
+  "events": ["assistant.tool"],
+  "event_filter": {
+    "tool_name": "read_file",
+    "status": "ok"
+  },
+  "send": {
+    "to": "dlg_observer",
+    "message": "Encourage successful file reads only."
+  }
+}
+```
+
 Trigger sources:
 
 - `output_match` is level-triggered: it fires once at attach if the job's already-retained output contains a match, then again as appended output matches the regex. It requires a concrete job target; `output_match` on a session target (`caller`) fails `invalid_request`.
 - `progress_interval_ms` fires periodically with bounded progress/excerpt metadata even if no match occurred.
 - `events` selects session/job event kinds to include in the watch frame. `events: ["*"]` means all visible event kinds allowed by caller permissions and filtering. Event kind names are implementation-defined but must be discoverable by the model; the shipped vocabulary is `assistant.message`, `assistant.tool`, `communicate`, and `job.notification`.
+- `event_filter` narrows event watches before any delivery is recorded. In v1 it applies only to `events: ["assistant.tool"]` and supports exact `tool_name` plus `status` (`"ok"` or `"error"`). Non-matching events do not create a delivery, pending row, notification, or observer wake.
 - `every` gates event delivery: `every: N` fires on each Nth occurrence of the watched event kind — for example `events: ["assistant.message"], every: 3` for every third assistant message. `every: 1` is the semantic default (fire on each occurrence) and reads as unset, whatever `events` contains. `every > 1` is valid only when `events` names exactly one concrete kind; supplying it with zero, multiple, or wildcard (`"*"`) kinds fails `invalid_request`.
 
 Delivery modes:
@@ -565,7 +584,8 @@ Observer/sidecar v1 pattern:
 1. delegate(...) starts an observer sidecar -> delegate_id=dlg_obs, current job_id=job_obs.
 2. job_watch(operation="create", target=<job_id_or_caller>, events=[...], send={to:"dlg_obs"}) sends frames to the observer.
 3. The observer receives frames as messages.
-4. The observer advises the watched session with delegate_send(to="caller", message="...").
+4. If useful, the observer advises the watched session with delegate_send(to="caller", message="...").
+5. If no action is needed, the observer may finish the watch-originated turn with a short no-action disposition; it does not need a harmless no-op tool call.
 ```
 
 Observer sidecars are v1. No separate `observe` or observer-comment tool is required. Observer comments are ordinary `delegate_send` calls with runtime-resolved targets and permissions.

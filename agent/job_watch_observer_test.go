@@ -356,6 +356,47 @@ func TestObserverInjectionDoesNotRetriggerSameWatch(t *testing.T) {
 	}
 }
 
+func TestWatchOriginatedDelegateCanFinishWithNoToolBareText(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("nothing to do")}
+		},
+	}}
+	c := llm.NewClient()
+	c.Register(adapter)
+	child := newDelegateTestSession(t, c)
+	sub := &subagent{
+		id:           child.ID(),
+		sess:         child,
+		running:      true,
+		done:         make(chan struct{}),
+		nudgeEnabled: true,
+		runFromWatch: true,
+	}
+
+	sub.run(context.Background(), "Watch delivery frame", nil)
+
+	if sub.status != SubagentCompleted {
+		t.Fatalf("subagent status = %s err=%v, want completed", sub.status, sub.err)
+	}
+	if sub.err != nil {
+		t.Fatalf("subagent err = %v, want nil", sub.err)
+	}
+	if sub.result != "" {
+		t.Fatalf("subagent result = %q, want no communicated result", sub.result)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("model requests = %d, want 1 (no communicate nudge)", len(requests))
+	}
+	if requests[0].ToolChoice == nil || requests[0].ToolChoice.Mode != "auto" {
+		t.Fatalf("tool choice = %+v, want auto for watch delivery", requests[0].ToolChoice)
+	}
+	if child.Communicated() {
+		t.Fatal("watch no-op disposition must not mark the delegate as communicated")
+	}
+}
+
 func TestIdleWatchSendObserverCallerSendCarriesProvenance(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{

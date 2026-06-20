@@ -838,7 +838,15 @@ func communicateNudge(toolName string) string {
 }
 
 func (a *subagent) run(ctx context.Context, input string, inputProvenance *provenance.Causal) {
-	res, err := a.sess.processInputWithProvenance(ctx, input, nil, inputProvenance)
+	a.mu.Lock()
+	runStartedFromWatch := a.runFromWatch
+	a.mu.Unlock()
+
+	kind := EntryUserInput
+	if runStartedFromWatch {
+		kind = EntryWatchDelivery
+	}
+	res, err := a.sess.processInputKindWithProvenance(ctx, input, nil, kind, inputProvenance)
 
 	// A requested cancel suppresses both the communicate-nudge and the
 	// SubagentStop blocking-continuation: neither should run another turn on the
@@ -853,6 +861,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	// and repeated bare-text responses that exhausted the session-level retry
 	// loop before the subagent had a chance to report back.
 	shouldNudge := !cancelRequested &&
+		!runStartedFromWatch &&
 		a.nudgeEnabled &&
 		!a.sess.Communicated() &&
 		(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
