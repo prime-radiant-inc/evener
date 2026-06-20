@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -20,9 +21,22 @@ import (
 	"primeradiant.com/serf/agent/doctor"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
+	_ "primeradiant.com/serf/llm/providers/anthropic"
+	_ "primeradiant.com/serf/llm/providers/glm"
+	_ "primeradiant.com/serf/llm/providers/google"
+	_ "primeradiant.com/serf/llm/providers/kimi"
+	_ "primeradiant.com/serf/llm/providers/kimi_anthropic"
+	_ "primeradiant.com/serf/llm/providers/minimax"
+	_ "primeradiant.com/serf/llm/providers/ollama"
+	_ "primeradiant.com/serf/llm/providers/openai"
+	_ "primeradiant.com/serf/llm/providers/openaicompat"
+	_ "primeradiant.com/serf/llm/providers/openrouter"
+	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
 )
 
 func main() {
@@ -166,6 +180,7 @@ type artifactExpect struct {
 type runConfig struct {
 	model             string
 	fastCheapModel    string
+	harness           string
 	probesDir         string
 	probeFilter       string
 	outDir            string
@@ -173,6 +188,7 @@ type runConfig struct {
 	build             bool
 	repetitions       int
 	timeout           time.Duration
+	postTurnWait      time.Duration
 	reasoningEffort   string
 	clearOpenAIAPIKey bool
 }
@@ -182,6 +198,7 @@ func runSuite(args []string) error {
 	cfg := runConfig{}
 	fs.StringVar(&cfg.model, "model", defaultModel(), "provider/model")
 	fs.StringVar(&cfg.fastCheapModel, "fast-cheap-model", "", "provider/model or bare model for Serf auxiliary side calls")
+	fs.StringVar(&cfg.harness, "harness", "cli", "execution harness: cli or live")
 	fs.StringVar(&cfg.probesDir, "probes-dir", "tools/tool-fluency/probes", "probe manifest directory")
 	fs.StringVar(&cfg.probeFilter, "probe", "all", "probe id or all")
 	fs.StringVar(&cfg.outDir, "out", "", "result directory")
@@ -189,6 +206,7 @@ func runSuite(args []string) error {
 	fs.BoolVar(&cfg.build, "build", false, "build a fresh serf binary before running")
 	fs.IntVar(&cfg.repetitions, "repetitions", 1, "repetitions per probe")
 	fs.DurationVar(&cfg.timeout, "timeout", 8*time.Minute, "timeout per probe repetition")
+	fs.DurationVar(&cfg.postTurnWait, "post-turn-wait", 45*time.Second, "live harness post-root-turn wait window")
 	fs.StringVar(&cfg.reasoningEffort, "reasoning-effort", "high", "reasoning effort")
 	fs.BoolVar(&cfg.clearOpenAIAPIKey, "clear-openai-api-key", false, "clear OPENAI_API_KEY for OAuth-backed OpenAI runs")
 	if err := fs.Parse(args); err != nil {
@@ -197,13 +215,16 @@ func runSuite(args []string) error {
 	if cfg.repetitions < 1 {
 		return errors.New("--repetitions must be >= 1")
 	}
+	if cfg.harness != "cli" && cfg.harness != "live" {
+		return errors.New("--harness must be cli or live")
+	}
 	if cfg.outDir == "" {
 		cfg.outDir = filepath.Join("tools", "tool-fluency", "results", time.Now().UTC().Format("20060102T150405Z"))
 	}
 	if err := os.MkdirAll(cfg.outDir, 0o755); err != nil {
 		return err
 	}
-	if cfg.build || cfg.serfBin == "" {
+	if cfg.harness == "cli" && (cfg.build || cfg.serfBin == "") {
 		bin, err := buildSerf(cfg.outDir)
 		if err != nil {
 			return err
@@ -365,31 +386,13 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
 	defer cancel()
-	args := []string{
-		"--model", cfg.model,
-	}
-	if strings.TrimSpace(cfg.fastCheapModel) != "" {
-		args = append(args, "--fast-cheap-model", cfg.fastCheapModel)
-	}
-	args = append(args,
-		"--dir", workDir,
-		"--state-dir", stateDir,
-		"--reasoning-effort", cfg.reasoningEffort,
-		"--context-strategy", "compact",
-		"--max-rounds", "80",
-		"--no-project-prompts",
-		"--verbose",
-		probe.Prompt,
-	)
-	cmd := exec.CommandContext(ctx, cfg.serfBin, args...)
-	cmd.Env = os.Environ()
-	if cfg.clearOpenAIAPIKey {
-		cmd.Env = append(cmd.Env, "OPENAI_API_KEY=")
-	}
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
+	var err error
+	if cfg.harness == "live" {
+		err = runLiveProbe(ctx, cfg, probe, &res, &stdout, &stderr)
+	} else {
+		err = runCLIProbe(ctx, cfg, probe, res, &stdout, &stderr)
+	}
 	_ = os.MkdirAll(base, 0o755)
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
@@ -418,6 +421,207 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 	}
 	res.DurationMS = time.Since(start).Milliseconds()
 	return res
+}
+
+func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeResult, stdout, stderr *bytes.Buffer) error {
+	args := []string{
+		"--model", cfg.model,
+	}
+	if strings.TrimSpace(cfg.fastCheapModel) != "" {
+		args = append(args, "--fast-cheap-model", cfg.fastCheapModel)
+	}
+	args = append(args,
+		"--dir", res.WorkDir,
+		"--state-dir", res.StateDir,
+		"--reasoning-effort", cfg.reasoningEffort,
+		"--context-strategy", "compact",
+		"--max-rounds", "80",
+		"--no-project-prompts",
+		"--verbose",
+		probe.Prompt,
+	)
+	cmd := exec.CommandContext(ctx, cfg.serfBin, args...)
+	cmd.Env = os.Environ()
+	if cfg.clearOpenAIAPIKey {
+		cmd.Env = append(cmd.Env, "OPENAI_API_KEY=")
+	}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
+
+type liveKick struct {
+	kind  agent.EntryKind
+	input string
+}
+
+func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *probeResult, stdout, stderr *bytes.Buffer) error {
+	restoreEnv := maybeClearOpenAIAPIKey(cfg.clearOpenAIAPIKey)
+	defer restoreEnv()
+
+	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
+		return err
+	}
+	modelRef, err := cmdutil.ParseModelRef(cfg.model)
+	if err != nil {
+		return err
+	}
+	client, provCfg, hasProvConfig, err := cmdutil.LoadClient(llm.WithStateDir(res.StateDir))
+	if err != nil {
+		return fmt.Errorf("LLM client setup: %w", err)
+	}
+	closeAPILog, err := cmdutil.AttachAPILogger(client, res.StateDir, stderr)
+	if err != nil {
+		return err
+	}
+	defer closeAPILog() //nolint:errcheck
+
+	profile, err := runnerInitialProfile(provCfg, modelRef)
+	if err != nil {
+		return err
+	}
+	profile, err = runnerApplyFastCheapModel(profile, cfg.fastCheapModel, client)
+	if err != nil {
+		return err
+	}
+	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, os.Getenv("SERF_REASONING_EFFORT"))
+	if err != nil {
+		return err
+	}
+
+	sessCfg := agent.SessionConfig{
+		MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(80),
+		StateDir:              res.StateDir,
+		NoProjectPrompts:      true,
+		NonInteractive:        true,
+		ContextStrategy:       "compact",
+		ResolveProfile:        cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
+	}
+	if effort.Set {
+		sessCfg.ReasoningEffort = effort.Value
+	}
+	sess, err := agent.NewSession(client, profile, execenv.NewLocalExecutionEnvironment(res.WorkDir), sessCfg)
+	if err != nil {
+		return err
+	}
+	res.SessionID = sess.ID()
+
+	var stderrMu sync.Mutex
+	eventsDone := make(chan struct{})
+	go func() {
+		defer close(eventsDone)
+		for ev := range sess.Events() {
+			line, err := json.Marshal(ev)
+			if err != nil {
+				continue
+			}
+			stderrMu.Lock()
+			stderr.Write(line)
+			stderr.WriteByte('\n')
+			stderrMu.Unlock()
+		}
+	}()
+
+	kicks := make(chan liveKick, 16)
+	submitKick := func(k liveKick) {
+		select {
+		case kicks <- k:
+		default:
+		}
+	}
+	sess.SetKickFunc(func(prompt string) {
+		submitKick(liveKick{kind: agent.EntryContinuation, input: prompt})
+	})
+	sess.SetNotifyFunc(func() {
+		submitKick(liveKick{kind: agent.EntryNotification})
+	})
+
+	closeSession := func() {
+		sess.Close()
+		<-eventsDone
+	}
+	defer closeSession()
+
+	out, err := sess.ProcessInput(ctx, probe.Prompt, nil)
+	if strings.TrimSpace(out) != "" {
+		stdout.WriteString(out)
+		stdout.WriteByte('\n')
+	}
+	if err != nil {
+		return err
+	}
+	if cfg.postTurnWait <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(cfg.postTurnWait)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		case kick := <-kicks:
+			out, err := sess.ProcessInputKind(ctx, kick.input, nil, kick.kind)
+			if strings.TrimSpace(out) != "" {
+				stdout.WriteString(out)
+				stdout.WriteByte('\n')
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func maybeClearOpenAIAPIKey(clear bool) func() {
+	if !clear {
+		return func() {}
+	}
+	old, ok := os.LookupEnv("OPENAI_API_KEY")
+	_ = os.Unsetenv("OPENAI_API_KEY")
+	return func() {
+		if ok {
+			_ = os.Setenv("OPENAI_API_KEY", old)
+		} else {
+			_ = os.Unsetenv("OPENAI_API_KEY")
+		}
+	}
+}
+
+func runnerInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef) (*provider.Profile, error) {
+	raw, err := cmdutil.ResolveProfileWithLiveWindow(cfg, modelRef.Qualified())
+	if err != nil {
+		return nil, err
+	}
+	return provider.WithAllowedDecisions(raw, cmdutil.ParseAllowedDecisions(os.Getenv("SERF_ALLOWED_DECISIONS"))), nil
+}
+
+func runnerApplyFastCheapModel(profile *provider.Profile, raw string, client *llm.Client) (*provider.Profile, error) {
+	if profile == nil || strings.TrimSpace(raw) == "" {
+		return profile, nil
+	}
+	raw = strings.TrimSpace(raw)
+	if cheapProvider, model, ok := strings.Cut(raw, "/"); ok && cheapProvider != "" && model != "" && cheapProvider != profile.ID() {
+		if !runnerClientHasProvider(client, cheapProvider) {
+			return nil, fmt.Errorf("--fast-cheap-model provider %q is not configured or has no credential (active provider %q); available providers: %s",
+				cheapProvider, profile.ID(), strings.Join(client.ProviderNames(), ", "))
+		}
+	}
+	return provider.WithCheapModel(profile, raw), nil
+}
+
+func runnerClientHasProvider(client *llm.Client, name string) bool {
+	if client == nil {
+		return false
+	}
+	for _, p := range client.ProviderNames() {
+		if strings.EqualFold(p, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func unavailableFinding(probe probeFile, available map[string]bool) *finding {

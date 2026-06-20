@@ -76,6 +76,22 @@ go run ./tools/tool-fluency/cmd/serf-fluency run \
   --probe read_file.happy_path
 ```
 
+Run a callback or notification probe with a live session harness:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency run \
+  --harness live \
+  --model openai/gpt-5.4-mini \
+  --fast-cheap-model openai/gpt-5.4-mini \
+  --clear-openai-api-key \
+  --probe job_watch.observer_callback \
+  --post-turn-wait 45s
+```
+
+Use `--harness live` when a probe needs `SetNotifyFunc` or `SetKickFunc`
+wiring, such as observer callbacks, watch deliveries, or notification-driven
+parent resumes. Use the default CLI harness for ordinary one-shot tool probes.
+
 ## Failure classification
 
 Use these categories in reports:
@@ -135,6 +151,7 @@ go run ./cmd/serf-doctor watches "$SID" --state-dir "$STATE"
 ```
 
 If a live observer/callback scenario needs a session to remain open across
-notification turns, the current CLI harness may be insufficient. Use the live
-scenario process in `docs/agentic-testing.md`, or improve the Go runner with a
-live-session/hub harness instead of accumulating shell glue.
+notification turns, use `serf-fluency run --harness live`. If that harness
+cannot represent the needed shape, use the live scenario process in
+`docs/agentic-testing.md`, or improve the Go runner instead of accumulating
+shell glue.

@@ -79,6 +79,26 @@ Use `--probe <id>` for a single probe. The runner writes per-repetition
 `result.json`, `stdout.txt`, `stderr.ndjson`, plus run-level `results.jsonl` and
 `summary.json`.
 
+For callback or notification workflows, use the live in-process harness. The
+default CLI harness intentionally matches one-shot `serf` behavior and closes
+the session after the root turn; that is useful for ordinary tool probes but
+cannot prove that a watch-resumed observer had time to complete callback work.
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency run \
+  --harness live \
+  --model openai/gpt-5.4-mini \
+  --fast-cheap-model openai/gpt-5.4-mini \
+  --clear-openai-api-key \
+  --probe job_watch.observer_callback \
+  --post-turn-wait 45s \
+  --out /tmp/serf-fluency-live-job-watch
+```
+
+The live harness wires the same session notification and continuation callbacks
+that `serf serve` wires, waits on runtime kicks, and then closes the session
+after the bounded post-turn window. It is not a polling harness.
+
 ## Data model
 
 ### Suite

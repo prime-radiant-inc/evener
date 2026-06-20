@@ -31,7 +31,7 @@ JSONL parsing. If an inspection is hard, improve the Go runner or
 | --- | --- | --- | --- | --- |
 | E00 | Baseline inventory and reproducibility | `catalog`, committed broad reports | GPT, Kimi | complete |
 | E01 | CLI harness may cancel observer callbacks before callback work runs | `job_watch.observer_callback` | GPT, Kimi | complete |
-| E02 | Live-session harness needed for true watch callback verification | `job_watch.observer_callback` | GPT, Kimi | planned |
+| E02 | Live-session harness needed for true watch callback verification | `job_watch.observer_callback` | GPT, Kimi | complete |
 | E03 | Observer sidecar readiness should wait for watch frames fluently | `job_watch.observer_callback` | GPT, Kimi | planned |
 | E04 | `job_watch` caller notification argument shape confuses GPT | `job_watch.observer_callback` | GPT, Kimi | planned |
 | E05 | Waiting workflows should not poll job state | `job_watch.observer_callback`, `jobs.control_lifecycle` | GPT, Kimi | planned |
@@ -42,6 +42,7 @@ JSONL parsing. If an inspection is hard, improve the Go runner or
 | E10 | Job lifecycle workflow should avoid shell escapes and redundant job calls | `jobs.control_lifecycle` | GPT, Kimi | planned |
 | E11 | Unavailable tools should skip cleanly, not create fake failures | `web_search.current`, `catalog` | GPT, Kimi | planned |
 | E12 | Full-suite regression after focused fixes | `all` | GPT, Kimi | planned |
+| E13 | `communicate` should not be used as a progress update while work remains | `job_watch.observer_callback`, `communicate.no_plain_message` | GPT, Kimi | planned |
 
 ## Experiment Log
 
@@ -153,16 +154,61 @@ teardown behavior.
 Commands:
 
 ```sh
-# To be selected after E01 confirms the harness failure shape.
+go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --post-turn-wait 45s --out /tmp/serf-fluency-issue-e02-openai
+go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --post-turn-wait 45s --out /tmp/serf-fluency-issue-e02-kimi
 ```
 
 Artifacts:
 
-- pending
+- Runner change: `serf-fluency run --harness live`, which hosts a session
+  in-process, wires `SetNotifyFunc` and `SetKickFunc`, and keeps the session
+  alive for `--post-turn-wait` instead of closing immediately after the root
+  turn.
+- GPT result directory:
+  `/tmp/serf-fluency-issue-e02-openai/job_watch.observer_callback/rep-01`
+- GPT parent session: `01KVK19XD9VQAQDGZJQWHVNDPC`
+- GPT observer session: `01KVK1A5RHFTTJ4F8GKG7D414X`
+- Kimi result directory:
+  `/tmp/serf-fluency-issue-e02-kimi/job_watch.observer_callback/rep-01`
+- Kimi parent session: `01KVK1F61FG97GFTRHJJ069B3F`
+- Kimi observer session: `01KVK1FCWBW8RWZFK9EM3G3YNF`
 
 Result:
 
-- pending
+- Complete.
+- The live harness answered the E02 infrastructure question: GPT reached the
+  observer callback path and produced the expected `RESULT_JOB_WATCH` marker.
+  The one-shot CLI failure in E01 was therefore a harness limitation.
+- GPT runner result: failed with meaningful fluency findings, not harness
+  failure. Final output contained `RESULT_JOB_WATCH`; tool counts were
+  `communicate:2`, `delegate:1`, `delegate_send:2`, `job_list:2`,
+  `job_watch:2`, `read_file:2`.
+- GPT findings:
+  - `job_watch` had one validation/runtime error before repair.
+  - The parent used `job_list` twice while waiting.
+  - The parent read `watch-trigger.txt` once before the watch was installed,
+    then read it again after installing the repaired watch.
+  - The parent sent extra `delegate_send` messages to the observer instead of
+    simply installing the watch and waiting for callback delivery.
+- GPT doctor evidence:
+  - `serf-doctor watches` showed one delivered watch frame and no self-loop:
+    `watch_01KVK1BHGPAFFV3RZA3Z24RFKY`.
+  - The observer was idle at the end, not stopped by parent teardown.
+  - The parent transcript completed through `communicate`, then emitted a
+    second completion after the observer delegate job notification.
+- Kimi runner result: failed before watch installation. Final output was a
+  `communicate` payload saying the observer was ready and that it was now
+  creating the watch, but no `job_watch` or `read_file` call followed.
+- Kimi doctor evidence:
+  - No watches were recorded.
+  - Parent transcript: `delegate`, then `communicate`, then stop.
+  - Observer transcript: `communicate` readiness only.
+- Root cause classification:
+  - E02 harness gap is fixed by the live harness.
+  - GPT now exposes `arguments`, `polling`/`churn`, and parent over-control
+    issues for E04/E05/E03.
+  - Kimi exposes a newly split issue: `communicate` used as a premature
+    terminal result while work remains. Track this under E13.
 
 ### E03 - Observer Readiness Wait Semantics
 
@@ -372,6 +418,30 @@ go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-c
 Artifacts:
 
 - pending
+
+Result:
+
+- pending
+
+### E13 - Premature `communicate` As Progress Update
+
+Hypothesis: some models use `communicate` as a progress/status update even
+when they still intend to do more tool work. Because `communicate` is the result
+tool, this ends the turn and strands the task. The model should use ordinary
+tool calls until it has a user-visible final result, or use `communicate` with
+`await_reply=true` only when it is intentionally waiting for external input.
+
+Commands:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 45s --out /tmp/serf-fluency-issue-e13-kimi
+go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 45s --out /tmp/serf-fluency-issue-e13-openai
+```
+
+Artifacts:
+
+- Initial evidence from E02 Kimi:
+  `/tmp/serf-fluency-issue-e02-kimi/job_watch.observer_callback/rep-01`
 
 Result:
 
