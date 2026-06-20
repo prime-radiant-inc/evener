@@ -30,7 +30,7 @@ JSONL parsing. If an inspection is hard, improve the Go runner or
 | ID | Issue | Primary probe | Models | Status |
 | --- | --- | --- | --- | --- |
 | E00 | Baseline inventory and reproducibility | `catalog`, committed broad reports | GPT, Kimi | complete |
-| E01 | CLI harness may cancel observer callbacks before callback work runs | `job_watch.observer_callback` | GPT, Kimi | planned |
+| E01 | CLI harness may cancel observer callbacks before callback work runs | `job_watch.observer_callback` | GPT, Kimi | complete |
 | E02 | Live-session harness needed for true watch callback verification | `job_watch.observer_callback` | GPT, Kimi | planned |
 | E03 | Observer sidecar readiness should wait for watch frames fluently | `job_watch.observer_callback` | GPT, Kimi | planned |
 | E04 | `job_watch` caller notification argument shape confuses GPT | `job_watch.observer_callback` | GPT, Kimi | planned |
@@ -102,11 +102,47 @@ go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-c
 
 Artifacts:
 
-- pending
+- GPT result directory:
+  `/tmp/serf-fluency-issue-e01-openai/job_watch.observer_callback/rep-01`
+- GPT parent session: `01KVK0XEJKXYGBWBPJ1X52YBA7`
+- GPT observer session: `01KVK0Y2DQX738W7MTDR8S49ZG`
+- Kimi result directory:
+  `/tmp/serf-fluency-issue-e01-kimi/job_watch.observer_callback/rep-01`
+- Kimi parent session: `01KVK0YX8SZ73N7JAQ9YRBYEQ1`
+- Kimi observer session: `01KVK0Z1J7CE44M53X1WF5JDXZ`
+- Doctor commands used:
+  - `go run ./cmd/serf-doctor tree <parent> --state-dir <state> --observers`
+  - `go run ./cmd/serf-doctor watches <parent> --state-dir <state>`
+  - `go run ./cmd/serf-doctor transcript <observer> --state-dir <state> -format outline`
+  - `go run ./cmd/serf-doctor transcript <observer> --state-dir <state> -count delegate_send`
+  - `go run ./cmd/serf-doctor transcript <observer> --state-dir <state> -count communicate`
 
 Result:
 
-- pending
+- Complete.
+- GPT runner result: failed, `delegate:1`, `job_watch:1`, `read_file:2`.
+  Findings were missing expected `communicate` in the parent and missing final
+  `RESULT_JOB_WATCH`.
+- Kimi runner result: failed, `delegate:1`, `job_watch:1`, `read_file:1`.
+  Findings were missing expected `communicate` in the parent and missing final
+  `RESULT_JOB_WATCH`.
+- Both parent sessions had one observer child, and both child sessions ended
+  `stopped`.
+- `serf-doctor watches` showed one delivered watch frame for both models:
+  - GPT: `watch_01KVK0YD510J697PZ2TH92RRVZ`, one delivered frame, no self-loop.
+  - Kimi: `watch_01KVK0ZCW0GTGNTNA4MWCF7E70`, one delivered frame, no self-loop.
+- Both observer transcripts had the delivered watch frame as user input, then a
+  system interruption reminder before any `delegate_send`.
+- `delegate_send` count was `0` for both observer sessions.
+- `communicate` count was `1` for both observer sessions, so this reproduction
+  did not include the earlier Kimi readiness rewrite; keep that isolated under
+  E03.
+- Root cause classification: `infra` for this probe shape. The current
+  noninteractive CLI harness is not sufficient to verify callback completion.
+  It can prove watch installation and delivery, but it cancels the resumed
+  observer before callback work can finish.
+- Next action: E02 must add or use a live-session/hub harness before treating
+  `job_watch.observer_callback` as a model fluency failure.
 
 ### E02 - Live-Session Watch Callback Harness
 
