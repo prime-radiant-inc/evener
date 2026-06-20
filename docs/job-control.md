@@ -494,7 +494,7 @@ Operations:
 - `operation="inspect"` requires `watch_id`.
 - `operation="clear"` requires `watch_id`.
 
-The everyday Monitor-like case is `output_match` or `progress_interval_ms` with no `send`. Observer sidecars are the v1 Serf-specific `events`/frame + `send` corner: a watch sends bounded frames to a delegate sidecar, and that sidecar comments back with `delegate_send`. The observer's `delegate_send(to="caller")` is the callback that resumes the caller with the observer's finding. The normal flow is: create the observer, create the watch, trigger the condition, then continue from the callback steering when it arrives. Use `job_list` or `job_read_output` after the callback when explicit audit or diagnostic evidence is needed. Other useful combinations are allowed when authorized, such as `output_match + send` to nudge a specific delegate when a server prints “ready,” or `events` without `send` to notify the caller with bounded event metadata.
+The everyday Monitor-like case is `output_match` or `progress_interval_ms` with no `send`. Observer sidecars are the v1 Serf-specific `events`/frame + `send` corner: a watch sends bounded frames to a delegate sidecar, and that sidecar comments back with `delegate_send`. The observer's `delegate_send(to="caller")` is the callback that resumes the caller with the observer's finding. The normal flow is: create the observer, create the watch, trigger the condition, then continue from the callback steering when it arrives. That callback is completion evidence for the observer's task; one final result message is enough unless the caller asked for audit details. Use `job_list` or `job_read_output` after the callback when explicit audit or diagnostic evidence is needed. Other useful combinations are allowed when authorized, such as `output_match + send` to nudge a specific delegate when a server prints “ready,” or `events` without `send` to notify the caller with bounded event metadata.
 
 `job_watch` is not a completion subscription: terminal completion/failure/cancellation/stopped notifications are automatic for notification-armed jobs.
 
@@ -527,14 +527,13 @@ Clear an existing watch:
 }
 ```
 
-Send configured frame/message shape:
+Send configured frame/message shape for a concrete job target:
 
 ```json
 {
   "operation": "create",
-  "target": "job_...|caller",
+  "target": "job_...",
   "output_match": "(?i)(ready|blocked|needs input)",
-  "events": ["communicate", "assistant.tool", "job.notification"],
   "progress_interval_ms": 300000,
   "send": {
     "to": "dlg_observer|caller",
@@ -543,6 +542,9 @@ Send configured frame/message shape:
   }
 }
 ```
+
+Caller/session event watches use the event payload rather than an output
+excerpt, as in the filtered assistant-tool sidecar shape below.
 
 Filtered assistant-tool sidecar shape:
 
@@ -575,7 +577,7 @@ Delivery modes:
 - If `send` is omitted, the watch produces a normal notification to the caller when the condition is met.
 - If `send` is present, Serf sends `send.message` plus the requested bounded frame/excerpt to `send.to` using `delegate_send` target-resolution and authorization semantics. Watch sends to delegate targets use `on_idle="start"` and deliver without waiting (unset `max_wait_ms`) for any newly started delegate job. If the target sidecar/delegate is busy, Serf keeps one durable latest-frame-wins pending send per watch key and retries when the target is idle or resumable. Caller-alias (`send.to="caller"`) deliveries surface as a job-notification turn at the next owner-session boundary; delegate-target deliveries steer or start the target as `delegate_send` does. All watch-send delivery happens at owner-session boundaries (between tool rounds, at input end, or on idle wake), not mid-stream.
 - Sent frames always carry bounded trigger metadata (the watched `job_id` when one exists, the trigger, and a `delivery_id`); there is no opt-out, and no `include_frame` option exists.
-- `include_excerpt=true` attaches a bounded output excerpt and is valid only for concrete job targets; supplying it for a session-target watch (`caller`) fails `invalid_request`. Session-target frames carry the bounded event payload that caused the trigger (`communicate` message text, tool output/error, or job notification metadata); they do not expose a `transcript_ref`.
+- For concrete job targets, `include_excerpt=true` attaches a bounded output excerpt. Session-target frames carry the bounded event payload that caused the trigger (`communicate` message text, tool output/error, or job notification metadata); they do not expose a `transcript_ref`.
 - The sent message is the current configured message at the time the watch fires.
 
 Observer/sidecar v1 pattern:

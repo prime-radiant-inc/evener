@@ -191,11 +191,12 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"yourself; set `send.to` to an observer `delegate_id` to push bounded trigger frames there — " +
 		"this also grants that observer read access to the observed job. Observer callback flow: trigger frame reaches " +
 		"the observer, the observer calls `delegate_send(to=\"caller\")`, and the caller continues from that callback. " +
+		"The callback is completion evidence for the observer's task; after it arrives, produce one final result unless the user asked for audit details. " +
 		"Use `job_list`/`job_read_output` after the callback when you need audit evidence. Choose one common sidecar shape: " +
 		"communicate results/status use `target=\"caller\", events=[\"communicate\"], send.to=<delegate_id>`; " +
 		"tool events use `target=\"caller\", events=[\"assistant.tool\"], event_filter={\"tool_name\":\"read_file\",\"status\":\"ok\"}, send.to=<delegate_id>`. " +
 		"For communicate content such as APPROVAL_REQUEST, the observer task checks the delivered `event.message`. Frames coalesce latest-wins while the target is " +
-		"busy. `include_excerpt` attaches an output excerpt (concrete job targets only). ONE active watch per " +
+		"busy. For concrete job targets, `include_excerpt` attaches a bounded output excerpt. Caller/session-target event frames already carry bounded event payloads. ONE active watch per " +
 		"(target, send.to): a different configuration for the same key replaces the existing watch " +
 		"(`replaced_existing:true`) — use a distinct `send.to` for an additional watch on the same target. " +
 		"`operation=\"clear\"` removes a watch by `watch_id`."
@@ -237,7 +238,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 					"properties": map[string]any{
 						"to":              map[string]any{"type": "string", "description": "delegate_id, or `caller`."},
 						"message":         map[string]any{"type": "string"},
-						"include_excerpt": map[string]any{"type": "boolean"},
+						"include_excerpt": map[string]any{"type": "boolean", "description": "For concrete job targets, attach a bounded output excerpt to delivered frames. Caller/session-target event frames already include the event payload."},
 					},
 				},
 			},
@@ -318,7 +319,7 @@ func DefJobStop() llm.ToolDefinition {
 func DefGrep() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "grep",
-		Description: "Search file contents using regex patterns. Use this to find definitions, references, and recurring patterns across files.",
+		Description: "Search file contents using regex patterns. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -413,7 +414,7 @@ Important:
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"patch": map[string]any{"type": "string"},
+				"patch": map[string]any{"type": "string", "description": "Complete v4a patch text, starting with *** Begin Patch and ending with *** End Patch."},
 			},
 			"required": []string{"patch"},
 		},
@@ -462,7 +463,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        name,
-		Description: "Send a user-facing message. Use this tool for every message, readiness marker, status update, request for input, and final answer the user or caller should see. Set `message` to the exact visible text. Set `await_reply=true` when this message opens a wait state for later user, caller, or watch-frame input; set `await_reply=false` when this message completes the current work. Always include `output` as an object with exactly these top-level fields: `message`, `data`, and `artifacts`. For ordinary text replies, use `output.message=\"\"`, `output.data={}`, and `output.artifacts=[]`. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs. Some workflows may also require extra fields inside `output`, such as `output.decision` or specific `output.data.*` keys.",
+		Description: "Send a user-facing message. Use this tool for every message, readiness marker, status update, request for input, and final answer the user or caller should see. A valid call has visible text in `message` or `output.message`. While tool work remains, call the next work tool; use this when the next useful action is to report, wait, announce readiness, or finish. Set `message` to the exact visible text. Set `await_reply=true` when this message opens a wait state for later user, caller, or watch-frame input; set `await_reply=false` when this message completes the current work. Always include `output` as an object with exactly these top-level fields: `message`, `data`, and `artifacts`. For ordinary text replies, use `output.message=\"\"`, `output.data={}`, and `output.artifacts=[]`. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs. Some workflows may also require extra fields inside `output`, such as `output.decision` or specific `output.data.*` keys.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -470,7 +471,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"message": map[string]any{
 					"type":        "string",
-					"description": "Exact user-facing message text. Prefer filling this even when output.message is also populated. When the task asks for concrete findings, put the concrete findings here.",
+					"description": "Exact user-facing message text. Fill this with the text the user or caller should see. When the task asks for concrete findings, put the concrete findings here.",
 				},
 				"await_reply": map[string]any{
 					"type":        "boolean",
@@ -478,7 +479,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 				},
 				"output": map[string]any{
 					"type":                 "object",
-					"description":          "Structured output envelope. Keep this present on every call with exactly these top-level fields: message, data, artifacts. For ordinary text replies, leave message empty, data empty, and artifacts empty.",
+					"description":          "Structured output envelope. Keep this present on every call with exactly these top-level fields: message, data, artifacts. For ordinary text replies, keep user-visible text in the top-level message and leave data/artifacts empty.",
 					"additionalProperties": false,
 					"properties": map[string]any{
 						"message": map[string]any{"type": "string", "description": "Human-readable structured summary for automation and orchestration. Leave empty for ordinary conversational replies."},

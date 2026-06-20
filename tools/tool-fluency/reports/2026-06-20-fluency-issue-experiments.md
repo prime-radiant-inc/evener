@@ -38,11 +38,11 @@ JSONL parsing. If an inspection is hard, improve the Go runner or
 | E06 | Explicit URL fetch request should select `web_fetch` | `web_fetch.example` | GPT, Kimi | complete |
 | E07 | `communicate` should be selected instead of assistant plain text | `communicate.final_message`, `read_file.happy_path`, `task_list.plan` | GPT, Kimi | complete |
 | E08 | Provider aliasing should not hide `list_dir` semantics | `list_dir.inventory`, `catalog` | GPT, Kimi | complete |
-| E09 | `task_list` should not churn on a tiny planning task | `task_list.plan` | GPT, Kimi | planned |
-| E10 | Job lifecycle workflow should avoid shell escapes and redundant job calls | `jobs.control_lifecycle` | GPT, Kimi | planned |
-| E11 | Unavailable tools should skip cleanly, not create fake failures | `web_search.current`, `catalog` | GPT, Kimi | planned |
-| E12 | Full-suite regression after focused fixes | `all` | GPT, Kimi | planned |
-| E13 | `communicate` should not be used as a progress update while work remains | `job_watch.observer_callback`, `communicate.final_message` | GPT, Kimi | planned |
+| E09 | `task_list` should not churn on a tiny planning task | `task_list.plan` | GPT, Kimi | complete |
+| E10 | Job lifecycle workflow should avoid shell escapes and redundant job calls | `jobs.control_lifecycle` | GPT, Kimi | complete |
+| E11 | Unavailable tools should skip cleanly, not create fake failures | `web_search.current`, `catalog` | GPT, Kimi | complete |
+| E12 | Full-suite regression after focused fixes | `all` | GPT, Kimi | complete |
+| E13 | `communicate` should not be used as a progress update while work remains | `job_watch.observer_callback`, `communicate.final_message` | GPT, Kimi | complete |
 
 ## Experiment Log
 
@@ -467,11 +467,34 @@ go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-c
 
 Artifacts:
 
-- pending
+- GPT result directory:
+  `/tmp/serf-fluency-issue-e09-openai/task_list.plan`
+- Kimi result directory:
+  `/tmp/serf-fluency-issue-e09-kimi/task_list.plan`
+- GPT rep 1 session: `01KVK2DEW1CJ6Z506FSYQZ23W8`
+- Kimi rep 1 session: `01KVK2FM7A8EEJWJT67R1DVMV6`
 
 Result:
 
-- pending
+- Complete.
+- GPT used `task_list:4`, `communicate:1` in all 3 repetitions.
+- Kimi used:
+  - rep 1: `task_list:4`, `list_dir:1`, `communicate:1`
+  - rep 2: `task_list:3`, `communicate:1`
+  - rep 3: `task_list:4`, `list_dir:1`, `communicate:1`
+- Doctor transcripts show the extra task-list calls are driven by task-list
+  workflow reminders, not random repeated inspection:
+  - The first calls create/update the two-step plan.
+  - Marking task 1 done injects a `<CURRENT-TASK id="2">` reminder.
+  - Completing the final task injects the "completed all tasks" reminder before
+    final `communicate`.
+- Classification: workflow-induced `churn`, with a probe-design caveat. The
+  probe asks for a plan "with one item in progress" and then asks the agent to
+  finish the probe, so the model treats the plan as executable task state.
+- Next action: add explicit runner metrics for expected maximum call counts
+  before treating this as a prompt/tool bug. If the desired contract is "create
+  a plan but do not execute it", that should be a separate task-list probe with
+  a different semantic oracle.
 
 ### E10 - Job Lifecycle Churn
 
@@ -488,11 +511,23 @@ go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-c
 
 Artifacts:
 
-- pending
+- Reused E05 focused job lifecycle evidence:
+  - `/tmp/serf-fluency-issue-e05-openai/jobs.control_lifecycle`
+  - `/tmp/serf-fluency-issue-e05-kimi/jobs.control_lifecycle`
 
 Result:
 
-- pending
+- Complete.
+- Focused reruns did not reproduce broad-run job lifecycle churn.
+- GPT reps 1-3 each used exactly one required job lifecycle call:
+  `shell:1`, `job_list:1`, `job_read_output:1`, `job_stop:1`, plus
+  `communicate:2`.
+- Kimi reps 1-3 each used exactly one required job lifecycle call:
+  `shell:1`, `job_list:1`, `job_read_output:1`, `job_stop:1`, plus
+  `communicate:1`.
+- Classification: no current issue in the focused sample. Keep watching this in
+  full-suite regressions, but do not optimize based on the earlier noisy pass
+  alone.
 
 ### E11 - Unavailable Tool Skip Semantics
 
@@ -509,11 +544,18 @@ go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-c
 
 Artifacts:
 
-- pending
+- GPT result directory:
+  `/tmp/serf-fluency-issue-e11-openai/web_search.current`
+- Kimi result directory:
+  `/tmp/serf-fluency-issue-e11-kimi/web_search.current`
 
 Result:
 
-- pending
+- Complete.
+- GPT status: `skipped_unavailable`, no tool calls.
+- Kimi status: `skipped_unavailable`, no tool calls.
+- Classification: healthy `availability` skip. The probe correctly reflects
+  that Serf's `web_search` function is not advertised on these model surfaces.
 
 ### E12 - Full-Suite Regression
 
@@ -530,11 +572,56 @@ go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-c
 
 Artifacts:
 
-- pending
+- GPT result directory:
+  `/tmp/serf-fluency-issue-e12-openai`
+- Kimi result directory:
+  `/tmp/serf-fluency-issue-e12-kimi`
+- GPT notable sessions:
+  - `job_watch.observer_callback`: `01KVK38P14ZBZEYZ6MESCT8MX1`
+  - `web_fetch.example`: `01KVK3D12Z6BY5WJA3TYQ21Z7K`
+- Kimi notable sessions:
+  - `apply_patch.happy_path`: `01KVK367PGPVXH8ZSY87VA6HHT`
+  - `grep.find_token`: `01KVK38TP0X128YNRJVF92R2HF`
+  - `job_watch.observer_callback`: `01KVK3925MDJN5J9MAXG7GXYM2`
+  - `web_fetch.example`: `01KVK3MVRTJX963KMMNSFAQ4XD`
 
 Result:
 
-- pending
+- Complete.
+- GPT full suite: 17 passed, 2 failed, 1 skipped unavailable.
+- GPT failures:
+  - `job_watch.observer_callback`: failed under the CLI harness with
+    `delegate:1`, `job_watch:2`, `read_file:2`, no final `communicate`, and
+    one `job_watch` error. Doctor/error evidence shows the known
+    `include_excerpt` misuse for a caller/session-target watch:
+    `include_excerpt requires a concrete job target`.
+  - `web_fetch.example`: called `web_fetch`, then produced the correct final
+    marker, but first called `communicate` with both `message` and
+    `output.message` empty. Classification: `arguments` on result-tool
+    envelope, not web-fetch selection.
+- GPT skipped `web_search.current` because the tool is unavailable.
+- Kimi full suite: 15 passed, 4 failed, 1 skipped unavailable.
+- Kimi failures:
+  - `apply_patch.happy_path`: reached the correct final content and
+    `RESULT_APPLY_PATCH`, but the first `apply_patch` call omitted the required
+    `*** Begin Patch` wrapper and had to repair. Classification: `arguments`.
+  - `grep.find_token`: found the token with `shell` instead of `grep`.
+    Classification: `selection` plus forbidden-tool `churn`.
+  - `job_watch.observer_callback`: read unrelated session transcripts before
+    delegating, then hit the known CLI-harness observer interruption path after
+    watch delivery. Classification: mixed `churn` plus `infra`; use E02/E13
+    live-harness results for callback fluency.
+  - `web_fetch.example`: selected `web_fetch` but omitted the required
+    `RESULT_WEB_FETCH` marker. Classification: `interpretation`.
+- Kimi skipped `web_search.current` because the tool is unavailable.
+- Cross-suite conclusion:
+  - The primary sidecar failures remain concentrated in `job_watch` workflow
+    affordance, not missing tool availability.
+  - The CLI harness is still useful as a broad regression tripwire, but it is
+    not the acceptance harness for observer callback completion.
+  - Other tool fluency gaps are small and specific: result-tool empty-message
+    repair, Kimi patch format repair, Kimi shell-over-grep selection, and Kimi
+    final-marker omission for `web_fetch`.
 
 ### E13 - Premature `communicate` As Progress Update
 
@@ -547,15 +634,59 @@ tool calls until it has a user-visible final result, or use `communicate` with
 Commands:
 
 ```sh
-go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 45s --out /tmp/serf-fluency-issue-e13-kimi
-go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 45s --out /tmp/serf-fluency-issue-e13-openai
+go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/serf-fluency-issue-e13-kimi
+go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/serf-fluency-issue-e13-openai
 ```
 
 Artifacts:
 
 - Initial evidence from E02 Kimi:
   `/tmp/serf-fluency-issue-e02-kimi/job_watch.observer_callback/rep-01`
+- Kimi result directory:
+  `/tmp/serf-fluency-issue-e13-kimi/job_watch.observer_callback`
+- Kimi sessions:
+  - rep 1: `01KVK2M024PT37NM1RCJPASJ0Z`
+  - rep 2: `01KVK2WG1KM08GQVKG6VQKFSY3`
+  - rep 3: `01KVK2XAFZKEWTNSGJSCZAFDG7`
+- GPT result directory:
+  `/tmp/serf-fluency-issue-e13-openai/job_watch.observer_callback`
+- GPT sessions:
+  - rep 1: `01KVK2YV9BKQNFSWXR3KG3T33A`
+  - rep 2: `01KVK312KW1KAK7EZK2NYNC5D7`
+  - rep 3: `01KVK333G1HEJWDX6VS245FYE6`
 
 Result:
 
-- pending
+- Complete.
+- The original Kimi E02 failure, where the parent used `communicate` as a
+  progress update before installing the watch, did not reproduce in this
+  focused 3-repetition live run.
+- Kimi passed 2 of 3 repetitions with the minimal happy path:
+  `communicate:1`, `delegate:1`, `job_watch:1`, `read_file:1`.
+- Kimi rep 1 reached the correct final result but failed the strict probe
+  because the parent used `job_read_output:2` to inspect delegate state. Doctor
+  outline: `delegate`, `job_read_output`, `job_watch`, `read_file`, callback
+  steering `WATCH_OBSERVED`, another `job_read_output`, then two final
+  `communicate` calls after delegate completion notifications.
+- GPT failed all 3 repetitions, but all failures were already-covered callback
+  workflow issues rather than plain-message or premature-result-tool failures:
+  - rep 1: `job_watch:2` with one `job_watch` error, `job_read_output:1`,
+    duplicate final `communicate`.
+  - rep 2: `job_list:2`, duplicate final `communicate`.
+  - rep 3: `job_watch:2` with one `job_watch` error, duplicate final
+    `communicate`.
+- Doctor transcripts confirm the callback itself was delivered in every GPT
+  rep. The sidecar sent `WATCH_OBSERVED`; GPT then either finalized immediately
+  and finalized again after delegate completion, or audited job state before
+  finalizing.
+- Classification:
+  - Premature `communicate`: not reproduced in focused sample; keep as watch
+    item, but do not fix from the stale E02 single run alone.
+  - GPT: `arguments`, `churn`, and duplicate completion in the observer
+    callback workflow.
+  - Kimi: mostly clean callback path, with one `churn` failure from
+    job-output inspection.
+- Next action: target the root workflow affordance instead of adding "do not"
+  prompt patches. The positive happy path should make the completion contract
+  obvious: start observer, install watch, trigger event, accept callback
+  steering as completion evidence, then produce one final `communicate`.

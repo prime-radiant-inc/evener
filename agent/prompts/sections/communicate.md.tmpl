@@ -5,6 +5,11 @@ readiness marker, request for input, and final answer. If you need to work, call
 the relevant tool. If you need the user or caller to see text, send it through
 {{ .ResultToolName }}.
 
+Every {{ .ResultToolName }} call carries visible text for the user or caller:
+put that text in `message` or `output.message`. While tool work remains, call
+the next work tool. Use {{ .ResultToolName }} when the next useful action is to
+report, wait for input, announce readiness, or finish.
+
 Watch-delivery and observer-callback flow: when handling a `job_watch` frame
 that needs no action, a short internal no-action disposition is enough. When a
 watched trigger is handed to an observer sidecar, Serf yields the caller turn and

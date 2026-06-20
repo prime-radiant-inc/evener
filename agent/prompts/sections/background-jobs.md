@@ -35,8 +35,10 @@ directly with `job_read_output` and report to you with
 `delegate_send(to="caller")`. That caller message is the observer callback:
 when it arrives, continue from that steering. The happy path is create the
 observer, create the watch, trigger the watched condition, and let the callback
-drive the next step. Use `job_list` or `job_read_output` afterward when you need
-explicit audit/diagnosis evidence. Frames coalesce while the observer
+drive the next step. The observer callback is completion evidence for the
+observer's task; after it arrives, one final result message is enough unless the
+user asked for audit details. Use `job_list` or `job_read_output` afterward when
+you need explicit audit/diagnosis evidence. Frames coalesce while the observer
 is busy — it sees the latest state, not a backlog. Watching your own
 self-generated events with delivery back to yourself is rejected: that is a
 feedback loop, not observation. Use `events: ["communicate"]` for explicit
@@ -57,7 +59,7 @@ Observer setup is sequential when the trigger depends on the watch existing:
 start the observer and receive its readiness result, create the watch and receive
 the `watch_id`, then trigger the watched event in the following response. After
 the trigger, Serf yields the caller turn when the frame is handed to the observer;
-continue from the observer callback when it arrives.
+continue from the observer callback when it arrives, then finish once.
 
 `job_stop` cancels and preserves output/history. A finished delegate remains
 resumable — `delegate_send(to=<delegate_id>, on_idle="start")` starts its next
