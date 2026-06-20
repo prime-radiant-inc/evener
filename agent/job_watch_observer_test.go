@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/agenttest"
@@ -590,6 +592,157 @@ func TestIdleWatchSendObserverCallerSendCarriesProvenance(t *testing.T) {
 	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "acknowledged observer", AwaitReply: false})
 	if cfg.nextUpdateSeq != 1 {
 		t.Fatalf("nextUpdateSeq = %d after observer ack, want 1 (same-watch echo suppressed)", cfg.nextUpdateSeq)
+	}
+}
+
+func TestNotificationTurnDrainsSteeringOnlyCallback(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return communicateWithDefaultOutput("callback handled") },
+	}})
+	s := newDelegateTestSession(t, c)
+	s.SteerWithProvenance("OBSERVER_CALLBACK rule=no-force-push", nil)
+
+	out, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
+	if err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+	if !strings.Contains(out, "callback handled") {
+		t.Fatalf("notification output = %q, want callback handled", out)
+	}
+}
+
+func TestParentYieldsAfterObserverHandoffInsteadOfPolling(t *testing.T) {
+	memoryPath := filepath.Join(t.TempDir(), "memory.md")
+	if err := os.WriteFile(memoryPath, []byte("rule: no-force-push\n"), 0o600); err != nil {
+		t.Fatalf("write memory fixture: %v", err)
+	}
+
+	var observerID string
+	var allowParentCallback atomic.Bool
+	var unexpectedPoll atomic.Bool
+	rawArgs := func(v any) json.RawMessage {
+		t.Helper()
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal args: %v", err)
+		}
+		return b
+	}
+	c := llm.NewClient()
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return communicateWithDefaultOutput("observer ready")
+		},
+		func(llm.Request) llm.Response {
+			return toolCallResponse(llm.ToolCallData{
+				ID:   "watch",
+				Name: "job_watch",
+				Arguments: rawArgs(map[string]any{
+					"operation": "create",
+					"target":    runtimeMessageAliasCaller,
+					"events":    []string{"assistant.tool"},
+					"event_filter": map[string]any{
+						"tool_name": "read_file",
+						"status":    "ok",
+					},
+					"send": map[string]any{
+						"to":      observerID,
+						"message": "Check successful read_file output.",
+					},
+				}),
+				Type: "function",
+			})
+		},
+		func(llm.Request) llm.Response {
+			return toolCallResponse(llm.ToolCallData{
+				ID:        "read",
+				Name:      "read_file",
+				Arguments: rawArgs(map[string]any{"file_path": memoryPath}),
+				Type:      "function",
+			})
+		},
+		func(req llm.Request) llm.Response {
+			if req.ToolChoice != nil && req.ToolChoice.Mode == "required" && !allowParentCallback.Load() {
+				unexpectedPoll.Store(true)
+				return communicateWithDefaultOutput("unexpected parent poll")
+			}
+			return toolCallResponse(llm.ToolCallData{
+				ID: "send_callback", Name: "delegate_send",
+				Arguments: rawArgs(map[string]any{
+					"to":      runtimeMessageAliasCaller,
+					"message": "MEMORY_REMINDER rule=no-force-push",
+				}),
+				Type: "function",
+			})
+		},
+		func(llm.Request) llm.Response {
+			return communicateWithDefaultOutput("MEMORY_RECORDED")
+		},
+		func(req llm.Request) llm.Response {
+			if req.ToolChoice == nil || req.ToolChoice.Mode != "required" {
+				t.Fatalf("callback handling request tool choice = %+v, want required parent turn", req.ToolChoice)
+			}
+			return communicateWithDefaultOutput("SCENARIO_DONE")
+		},
+	}}
+	c.Register(adapter)
+	parent := newDelegateTestSession(t, c)
+	observer := parent.createDelegate(context.Background(), delegateArgs{Task: "observe memory reads", Background: false, BlockTimeoutMS: 5000})
+	if observer.Err != nil {
+		t.Fatalf("observer delegate: %v", observer.Err)
+	}
+	observerID = observer.DelegateID
+
+	out, err := parent.ProcessInput(context.Background(), "Read memory through an observer sidecar.", nil)
+	if err != nil {
+		t.Fatalf("parent ProcessInput: %v", err)
+	}
+	if strings.Contains(out, "unexpected parent poll") {
+		t.Fatalf("parent output = %q, contains unexpected poll marker", out)
+	}
+	if unexpectedPoll.Load() {
+		t.Fatal("parent requested another required tool round instead of yielding to the observer callback")
+	}
+
+	if !strings.Contains(out, "SCENARIO_DONE") {
+		_, childID, err := decodeRef(observer.TranscriptRef)
+		if err != nil {
+			t.Fatalf("decode observer ref: %v", err)
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		var queued []SteeringEntry
+		for time.Now().Before(deadline) {
+			queued = parent.SteeringQueueSnapshot()
+			if len(queued) == 1 && strings.Contains(queued[0].Text, "MEMORY_REMINDER") {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if len(queued) != 1 || !strings.Contains(queued[0].Text, "MEMORY_REMINDER") {
+			var requestModes []string
+			for _, req := range adapter.Requests() {
+				mode := "<nil>"
+				if req.ToolChoice != nil {
+					mode = req.ToolChoice.Mode
+				}
+				requestModes = append(requestModes, mode)
+			}
+			t.Fatalf("parent steering queue = %+v, want observer callback; request tool choices = %v", queued, requestModes)
+		}
+		result := waitForRuntimeSubagent(t, parent, childID)
+		if result.Status != SubagentCompleted || !result.Success {
+			t.Fatalf("observer result = %+v, want completed callback", result)
+		}
+
+		allowParentCallback.Store(true)
+		finalOut, err := parent.ProcessInputKind(context.Background(), "", nil, EntryNotification)
+		if err != nil {
+			t.Fatalf("callback notification turn: %v", err)
+		}
+		if !strings.Contains(finalOut, "SCENARIO_DONE") {
+			t.Fatalf("callback output = %q, want SCENARIO_DONE", finalOut)
+		}
 	}
 }
 

@@ -55,7 +55,7 @@ func drainWatchSendsVia(t *testing.T, jm *jobManager, send sendMessageFunc) erro
 		if d.state.Key.ResolvedSendTo == runtimeMessageAliasCaller {
 			continue
 		}
-		if err := jm.deliverPendingWatchSend(context.Background(), d.cfg, d.state, true, send); err != nil {
+		if _, err := jm.deliverPendingWatchSend(context.Background(), d.cfg, d.state, true, send); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -73,7 +73,8 @@ func deliverWatchSendVia(t *testing.T, jm *jobManager, d watchSendDelivery, send
 	if err != nil || !ok {
 		return err
 	}
-	return jm.deliverPendingWatchSend(context.Background(), cfg, state, false, send)
+	_, err = jm.deliverPendingWatchSend(context.Background(), cfg, state, false, send)
+	return err
 }
 
 // installWatchBelowValidation installs a watch directly into jm.watches the way
@@ -358,10 +359,23 @@ func TestConfigureWatchRejectsOutputMatchOnSessionTargets(t *testing.T) {
 			if err == nil {
 				t.Fatal("session target output_match watch must error")
 			}
-			if !strings.Contains(err.Error(), "output_match requires a concrete job target") {
+			if !strings.Contains(err.Error(), "output_match watches concrete job output") {
 				t.Fatalf("error = %v, want output_match concrete-target validation", err)
 			}
 		})
+	}
+}
+
+func TestConfigureWatchOutputMatchOnCallerCommunicateGivesRepairShape(t *testing.T) {
+	jm := newTestJM(t)
+
+	_, err := jm.configureWatch(watchArgs{Target: "caller", OutputMatch: "APPROVAL_REQUEST", Events: []string{"communicate"}})
+
+	if err == nil {
+		t.Fatal("caller communicate output_match watch must error")
+	}
+	if !strings.Contains(err.Error(), `caller communicate observer watch uses events ["communicate"]`) {
+		t.Fatalf("error = %v, want communicate repair shape", err)
 	}
 }
 
@@ -591,12 +605,12 @@ func TestConfigureWatchRejectsUnsupportedEventFilterShapes(t *testing.T) {
 		{
 			name: "wrong_event",
 			args: watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}, EventFilter: &watchEventFilter{ToolName: "read_file"}},
-			want: "only supported with events",
+			want: `communicate observer watch uses events ["communicate"]`,
 		},
 		{
 			name: "wildcard_event",
 			args: watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"*"}, EventFilter: &watchEventFilter{Status: "ok"}},
-			want: "only supported with events",
+			want: `event_filter matches assistant.tool events`,
 		},
 		{
 			name: "bad_status",
@@ -5191,7 +5205,7 @@ func TestLegacyWatchSendWithoutDelegateGenerationDeliversWhenDelegateStillCurren
 	jm.mu.Unlock()
 
 	var sent []sendMessageArgs
-	err = jm.deliverPendingWatchSend(context.Background(), cfg, state, false, func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	_, err = jm.deliverPendingWatchSend(context.Background(), cfg, state, false, func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
 	})
@@ -5285,7 +5299,7 @@ func TestLegacyWatchSendWithoutDelegateGenerationIgnoresPriorStopWithSameTimesta
 	jm.mu.Unlock()
 
 	var sent []sendMessageArgs
-	err = jm.deliverPendingWatchSend(context.Background(), cfg, state, false, func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	_, err = jm.deliverPendingWatchSend(context.Background(), cfg, state, false, func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
 	})
@@ -5319,7 +5333,7 @@ func TestLegacyWatchSendWithoutDelegateGenerationIgnoresSettledSameTimestampPend
 	if !ok {
 		t.Fatal("record first watch send returned ok=false")
 	}
-	if err := jm.deliverPendingWatchSend(context.Background(), cfg, firstState, false, func(context.Context, sendMessageArgs) sendMessageResult {
+	if _, err := jm.deliverPendingWatchSend(context.Background(), cfg, firstState, false, func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{}
 	}); err != nil {
 		t.Fatalf("deliver first watch send: %v", err)
@@ -5388,7 +5402,7 @@ func TestLegacyWatchSendWithoutDelegateGenerationIgnoresSettledSameTimestampPend
 	jm.mu.Unlock()
 
 	var sent []sendMessageArgs
-	err = jm.deliverPendingWatchSend(context.Background(), cfg, secondState, false, func(_ context.Context, a sendMessageArgs) sendMessageResult {
+	_, err = jm.deliverPendingWatchSend(context.Background(), cfg, secondState, false, func(_ context.Context, a sendMessageArgs) sendMessageResult {
 		sent = append(sent, a)
 		return sendMessageResult{}
 	})

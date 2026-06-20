@@ -131,6 +131,31 @@ func TestDelegateResultIncludesDurableDelegateAndStartedJobIDs(t *testing.T) {
 	}
 }
 
+func TestForegroundDelegateCompletionDoesNotArmTerminalNotification(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
+	}})
+	s := newDelegateTestSession(t, c)
+
+	res := s.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+	if res.Status != jobstore.StatusCompleted {
+		t.Fatalf("status = %q, want completed", res.Status)
+	}
+
+	rec := loadShellRecord(t, s.jobManager, res.JobID)
+	if rec.NotifyState != jobstore.NotifyNotArmed {
+		t.Fatalf("foreground delegate NotifyState = %q, want %q", rec.NotifyState, jobstore.NotifyNotArmed)
+	}
+}
+
 func TestCreateDelegateEmptyResultSchemaIsNoSchema(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -1838,7 +1863,7 @@ func TestSendDelegateMessageResumedJobCopiesCompleteDelegateDescriptor(t *testin
 		prepared.sub.sess.Close()
 		t.Fatalf("trackAndLaunchPreparedSubagent: %v", err)
 	}
-	finalizeErr, _ := sess.bridgeDelegateFinalization(run.rec.JobID, childID, prepared.sub)
+	finalizeErr, _ := sess.bridgeDelegateFinalization(run.rec.JobID, childID, prepared.sub, true)
 	first := waitForDelegateFinalization(context.Background(), sess.jobManager, run, finalizeErr)
 	if first.Err != nil || first.Status != jobstore.StatusCompleted {
 		t.Fatalf("first delegate result = %+v, want completed", first)

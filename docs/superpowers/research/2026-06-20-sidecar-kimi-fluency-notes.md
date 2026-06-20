@@ -62,3 +62,43 @@ first-class live scenario runner that can:
 
 Until that exists, do not build new one-off JSONL parsers around these
 scenarios. Run the markdown cards manually and audit with `serf-doctor`.
+
+## Final callback-fluency retest
+
+After the passive-observer fixes, one remaining Kimi failure was root
+caused to the built-in `subagent` role. When the parent explicitly used
+`agent_type:"subagent"`, that role froze its allowed tools without
+`delegate_send`. The observer prompt therefore listed `delegate_send`
+as unavailable, and Kimi correctly finished with `communicate` instead
+of calling back to the parent. The fix is to include `delegate_send` in
+the built-in `subagent` tools and to state positively that reports use
+`communicate` while observer callbacks use `delegate_send(to="caller")`.
+
+Fresh binaries were rebuilt and the memory/approval sidecar scenarios
+were rerun through the hub REST shim, with `serf-doctor` transcript
+audits:
+
+| Model | Scenario | Parent session | Observer session | Audit result |
+|---|---|---:|---:|---|
+| `kimi/kimi-for-coding` | Memory reminder | `01KVJ13N9GN8WBK3SHZ53PVX1T` | `01KVJ13V30DBVN9HXANTM16EMS` | Pass: observer `delegate_send: 1`, `communicate: 2`; parent `job_list: 0`, `job_read_output: 0`; parent completed from `MEMORY_REMINDER`. |
+| `kimi/kimi-for-coding` | Approval broker | `01KVJ16BSQX55EACFWPSVEBT15` | `01KVJ16J39T79M9FQT0X5KGV89` | Pass: watch used `events:["communicate"]`; observer `delegate_send: 1`; parent `job_list: 0`, `job_read_output: 0`; parent completed from `APPROVAL_PACKET`. |
+| `openai/gpt-5.4-mini` | Memory reminder | `01KVJ1D17EFGPQGQZ38Q5JJD68` | `01KVJ1DPZ71JS11GPBJWBYDHVV` | Pass: observer `delegate_send: 1`, `communicate: 2`; parent `job_list: 0`, `job_read_output: 0`; first watch attempt used invalid `include_excerpt` on `caller`, then repaired before triggering. |
+| `openai/gpt-5.4-mini` | Approval broker | `01KVJ1G8VD357V506TPHX5TECE` | `01KVJ1HG3FG9JN45ZQC9EPSZSH` | Pass: watch used `events:["communicate"]`; observer `delegate_send: 1`; parent `job_list: 0`, `job_read_output: 0`; parent completed from `APPROVAL_PACKET`. |
+
+The first GPT retest attempt (`01KVJ18NH2PWG29XWMVMY0024G`) failed
+before any assistant turn because the daemon inherited an exhausted
+`OPENAI_API_KEY`. Clearing only `OPENAI_API_KEY` while leaving normal
+OpenAI OAuth state visible allowed the GPT runs above to complete.
+
+Residual fluency notes:
+
+- Kimi and GPT both sometimes emit an extra summary after the observer
+  terminal notification confirms `MEMORY_RECORDED` or
+  `APPROVAL_RECORDED`. That is not polling; it is a noisy reaction to a
+  later confirmation notification.
+- GPT invoked `use_skill` because the Superpowers prompt required it.
+  That is unrelated to sidecar waiting, but it adds an extra tool turn
+  in live runs with the plugin enabled.
+- GPT's memory run repaired an invalid `include_excerpt` watcher. The
+  validation error was specific and the model corrected the watch before
+  triggering `read_file`.

@@ -262,8 +262,11 @@ func TestDefJobWatchParamsAndKinds(t *testing.T) {
 	if def.Name != "job_watch" {
 		t.Fatalf("name = %q, want job_watch", def.Name)
 	}
+	if def.Strict == nil || *def.Strict {
+		t.Fatalf("Strict = %v, want false because job_watch has conditional optional arguments", def.Strict)
+	}
 	props := def.Parameters["properties"].(map[string]any)
-	for _, p := range []string{"operation", "watch_id", "target", "output_match", "progress_interval_ms", "events", "every", "send"} {
+	for _, p := range []string{"operation", "watch_id", "target", "output_match", "progress_interval_ms", "events", "event_filter", "every", "send"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefJobWatch missing param %q", p)
 		}
@@ -275,6 +278,14 @@ func TestDefJobWatchParamsAndKinds(t *testing.T) {
 	// The available event kinds are interpolated into the description.
 	if !strings.Contains(def.Description, "communicate") || !strings.Contains(def.Description, "job.notification") {
 		t.Errorf("description must enumerate the available event kinds:\n%s", def.Description)
+	}
+}
+
+func TestOptionalJobInspectionToolsAreNonStrict(t *testing.T) {
+	for _, def := range []llm.ToolDefinition{DefJobReadOutput(), DefJobList()} {
+		if def.Strict == nil || *def.Strict {
+			t.Fatalf("%s Strict = %v, want false so OpenAI does not require optional inspection fields", def.Name, def.Strict)
+		}
 	}
 }
 

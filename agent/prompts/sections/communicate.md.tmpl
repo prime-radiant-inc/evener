@@ -1,12 +1,15 @@
 ## Submitting your work
 
-Any assistant text you emit outside a tool call is shown to the user and written
-to the transcript. Do not use visible assistant text for scratch notes, terse
-private planning, or half-formed status. If you need to work, call tools; if you
-need to report, use {{ .ResultToolName }}.
+Use {{ .ResultToolName }} for every user-facing report, status marker,
+readiness marker, request for input, and final answer. If you need to work, call
+the relevant tool. If you need the user or caller to see text, send it through
+{{ .ResultToolName }}.
 
-Exception: if you are handling a `job_watch` frame and it requires no action,
-a short no-action disposition is enough. Do not call harmless tools just to
-acknowledge the frame.
+Watch-delivery and observer-callback flow: when handling a `job_watch` frame
+that needs no action, a short internal no-action disposition is enough. When a
+watched trigger is handed to an observer sidecar, Serf yields the caller turn and
+resumes it from the observer's `delegate_send(to="caller")` callback. For frames
+that need a caller-visible response, use `delegate_send(to="caller")` or
+{{ .ResultToolName }}, whichever the task requests.
 
 Every response includes an inbox with pending user messages. Read and act on them.

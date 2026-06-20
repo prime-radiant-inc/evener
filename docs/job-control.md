@@ -494,7 +494,7 @@ Operations:
 - `operation="inspect"` requires `watch_id`.
 - `operation="clear"` requires `watch_id`.
 
-The everyday Monitor-like case is `output_match` or `progress_interval_ms` with no `send`. Observer sidecars are the v1 Serf-specific `events`/frame + `send` corner: a watch sends bounded frames to a delegate sidecar, and that sidecar comments back with `delegate_send`. Other useful combinations are allowed when authorized, such as `output_match + send` to nudge a specific delegate when a server prints “ready,” or `events` without `send` to notify the caller with bounded event metadata.
+The everyday Monitor-like case is `output_match` or `progress_interval_ms` with no `send`. Observer sidecars are the v1 Serf-specific `events`/frame + `send` corner: a watch sends bounded frames to a delegate sidecar, and that sidecar comments back with `delegate_send`. The observer's `delegate_send(to="caller")` is the callback that resumes the caller with the observer's finding. The normal flow is: create the observer, create the watch, trigger the condition, then continue from the callback steering when it arrives. Use `job_list` or `job_read_output` after the callback when explicit audit or diagnostic evidence is needed. Other useful combinations are allowed when authorized, such as `output_match + send` to nudge a specific delegate when a server prints “ready,” or `events` without `send` to notify the caller with bounded event metadata.
 
 `job_watch` is not a completion subscription: terminal completion/failure/cancellation/stopped notifications are automatic for notification-armed jobs.
 
@@ -1207,6 +1207,7 @@ Observer sidecars are a v1 Serf composition pattern. Claude Monitor covers only 
 2. Configure `job_watch(operation="create", ...)` over a concrete job or the `caller` session.
 3. Set `send.to` to the sidecar `delegate_id` so the watch condition sends bounded event/output frames to the sidecar.
 4. The sidecar responds with `delegate_send(to="caller", message=...)` when it has useful commentary or advice.
+5. The caller treats that steering as the observer callback and continues from it. Follow-up `job_list` or `job_read_output` calls are audit/diagnostic evidence after the callback, not the callback mechanism itself.
 
 This makes observer behavior a composition of two primitives:
 

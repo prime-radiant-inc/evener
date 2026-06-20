@@ -1026,6 +1026,7 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] == run && run.terminal == terminal {
 		delete(jm.running, run.rec.JobID)
+		run.treeSlot.release()
 	}
 	jm.mu.Unlock()
 	run.stopWatchdog()
@@ -1035,6 +1036,14 @@ func (jm *jobManager) finalizeKeptSync(run *runningJob, status jobstore.Status, 
 }
 
 func (jm *jobManager) finalizeWithRun(jobID string, prepare func(*runningJob) (jobstore.Status, string, *int, error)) error {
+	return jm.finalizeWithRunMode(jobID, prepare, true)
+}
+
+func (jm *jobManager) finalizeWithRunNoNotification(jobID string, prepare func(*runningJob) (jobstore.Status, string, *int, error)) error {
+	return jm.finalizeWithRunMode(jobID, prepare, false)
+}
+
+func (jm *jobManager) finalizeWithRunMode(jobID string, prepare func(*runningJob) (jobstore.Status, string, *int, error), armNotification bool) error {
 	jm.mu.Lock()
 	run := jm.running[jobID]
 	if run == nil {
@@ -1057,15 +1066,21 @@ func (jm *jobManager) finalizeWithRun(jobID string, prepare func(*runningJob) (j
 		status, reason, exitCode, prepareErr := prepare(run)
 		if prepareErr != nil {
 			err = prepareErr
-		} else {
+		} else if armNotification {
 			err = jm.finishJob(run, status, reason, exitCode)
+		} else {
+			err = jm.finalizeKeptSync(run, status, reason, exitCode)
 		}
 	} else {
-		err = jm.forwardFinishedJob(run, terminal)
-		if err == nil {
-			jm.emitFinishedJob(run, terminal)
-			jm.runAfterDurableFinish(run, terminal, run.afterDurableFinish)
-			err = jm.armFinalizedJob(run, terminal)
+		if armNotification {
+			err = jm.forwardFinishedJob(run, terminal)
+			if err == nil {
+				jm.emitFinishedJob(run, terminal)
+				jm.runAfterDurableFinish(run, terminal, run.afterDurableFinish)
+				err = jm.armFinalizedJob(run, terminal)
+			}
+		} else {
+			err = jm.finalizeKeptSync(run, "", "", nil)
 		}
 	}
 

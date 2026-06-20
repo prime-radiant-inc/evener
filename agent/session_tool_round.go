@@ -268,8 +268,9 @@ func (s *Session) notifyStrategyAfterAction(ctx context.Context) error {
 // steering before the next model call: it appends the round's tool-call signatures
 // to toolSigs and runs loop detection, tracks the read-only streak (nudging at 5 and
 // 10 consecutive read-only rounds), drains queued steering messages, and injects any
-// task reminder. It returns the abort error if the turn is canceled mid-injection.
-func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCallData, toolSigs *[]string) error {
+// task reminder. The bool return asks the turn loop to yield after a watch frame is
+// handed to an observer and no callback steering is ready yet.
+func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCallData, toolSigs *[]string) (bool, error) {
 	// Loop detection: track per-call signatures and check for repeating patterns.
 	for _, call := range calls {
 		*toolSigs = append(*toolSigs, call.Name+":"+shortHash(call.Arguments))
@@ -287,7 +288,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 				s.appendTurn(schema.TurnSteering, llm.User(warning))
 				s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: warning})
 			}); abortErr != nil {
-				return abortErr
+				return false, abortErr
 			}
 		}
 	}
@@ -313,7 +314,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 			s.appendTurn(schema.TurnSteering, llm.User(nudge))
 			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: nudge})
 		}); abortErr != nil {
-			return abortErr
+			return false, abortErr
 		}
 	case 10:
 		nudge := "<SYSTEM-REMINDER>You have been reading for 10 turns without acting. Stop reading. Write the deliverable file now, even if incomplete. You can iterate after you have something to test.</SYSTEM-REMINDER>"
@@ -321,22 +322,28 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 			s.appendTurn(schema.TurnSteering, llm.User(nudge))
 			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: nudge})
 		}); abortErr != nil {
-			return abortErr
+			return false, abortErr
 		}
 	}
 
-	if err := s.drainPendingWatchSends(ctx); err != nil {
-		return err
+	drained, err := s.drainPendingWatchSendsReport(ctx)
+	if err != nil {
+		return false, err
 	}
+	yieldToObserverCallback := drained.observerHandoff
 
 	// Inject any queued steering messages before the next model call.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
-		for _, msg := range s.drainSteeringForTurn() {
+		drainedSteering := s.drainSteeringForTurn()
+		if len(drainedSteering) > 0 {
+			yieldToObserverCallback = false
+		}
+		for _, msg := range drainedSteering {
 			s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 			s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		}
 	}); abortErr != nil {
-		return abortErr
+		return false, abortErr
 	}
 
 	// Task reminder injection.
@@ -346,9 +353,9 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder})
 		}
 	}); abortErr != nil {
-		return abortErr
+		return false, abortErr
 	}
-	return nil
+	return yieldToObserverCallback, nil
 }
 
 // deliverIfCommunicated checks whether the agent delivered a result this round via

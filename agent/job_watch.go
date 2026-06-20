@@ -467,7 +467,10 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	// (caller, *); a concrete launch target never reaches them, so they stay here
 	// rather than in the shared install validator.
 	if a.OutputMatch != "" && isWatchSessionTarget(a.Target) {
-		return watchResult{}, errors.New("invalid_request: output_match requires a concrete job target")
+		if len(a.Events) == 1 && a.Events[0] == "communicate" {
+			return watchResult{}, errors.New(`invalid_request: output_match watches concrete job output. A caller communicate observer watch uses events ["communicate"] with send.to=<observer delegate_id>; the observer reads delivered event.message for content matching.`)
+		}
+		return watchResult{}, errors.New("invalid_request: output_match watches concrete job output; session-target event watches use events and send.to")
 	}
 	if a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
 		return watchResult{}, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry bounded event payloads, not output excerpts")
@@ -630,7 +633,10 @@ func validateWatchEventArgs(a watchArgs) error {
 			return errors.New("invalid_request: event_filter requires events")
 		}
 		if len(a.Events) != 1 || a.Events[0] != "assistant.tool" {
-			return errors.New(`invalid_request: event_filter tool_name/status are only supported with events ["assistant.tool"]`)
+			if len(a.Events) == 1 && a.Events[0] == "communicate" {
+				return errors.New(`invalid_request: event_filter matches assistant.tool events. A communicate observer watch uses events ["communicate"] with send.to=<observer delegate_id>; the observer reads delivered event.message for content matching.`)
+			}
+			return errors.New(`invalid_request: event_filter matches assistant.tool events; use events ["assistant.tool"] with event_filter {"tool_name":"read_file","status":"ok"}.`)
 		}
 		switch a.EventFilter.Status {
 		case "", "ok", "error":
@@ -2661,28 +2667,28 @@ func (jm *jobManager) mintWatchSendReadGrant(cfg *watchConfig, resolvedSendTo, w
 // pending send as undeliverable.
 type sendMessageFunc func(context.Context, sendMessageArgs) sendMessageResult
 
-func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchConfig, state jobstore.WatchSendState, ensurePending bool, send sendMessageFunc) error {
+func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchConfig, state jobstore.WatchSendState, ensurePending bool, send sendMessageFunc) (bool, error) {
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
-		return nil
+		return false, nil
 	}
 	if ensurePending {
 		if err := jm.appendWatchSendPendingState(cfg, state); err != nil {
 			jm.enqueueWatchNotifications([]jobNotification{
 				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 			})
-			return err
+			return false, err
 		}
 	}
 	if send == nil {
-		return jm.dropWatchSend(state, cfg, "delivery unavailable")
+		return false, jm.dropWatchSend(state, cfg, "delivery unavailable")
 	}
 	if stale, reason, err := jm.staleDelegateWatchSend(state); err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification(state.Key.ResolvedWatchedIdentity, "watch send gate check failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
-		return err
+		return false, err
 	} else if stale {
-		return jm.dropWatchSend(state, cfg, reason)
+		return false, jm.dropWatchSend(state, cfg, reason)
 	}
 	res := send(ctx, sendMessageArgs{
 		Target:        state.Key.ResolvedSendTo,
@@ -2696,25 +2702,25 @@ func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchCon
 	switch classifyWatchSendDelivery(res) {
 	case watchSendDelivered:
 		if !jm.isCurrentPendingWatchSend(cfg, state) {
-			return nil
+			return false, nil
 		}
 		if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
 			jm.enqueueWatchNotifications([]jobNotification{
 				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send delivered state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 			})
-			return err
+			return false, err
 		}
-		return nil
+		return true, nil
 	case watchSendBusy:
-		return nil
+		return false, nil
 	case watchSendHardFailure:
 		reason := "delivery failed"
 		if res.Err != nil {
 			reason = res.Err.Error()
 		}
-		return jm.dropWatchSend(state, cfg, reason)
+		return false, jm.dropWatchSend(state, cfg, reason)
 	default:
-		return nil
+		return false, nil
 	}
 }
 
@@ -3431,21 +3437,35 @@ type pendingWatchSendDelivery struct {
 // all-token batch renders and settles in the notification turn; an EMPTY accept
 // hits finishNotificationNoop → finishProcessingAtBoundary → here, so
 // delegate-only wakes deliver with zero model turns.
+type watchSendDrainResult struct {
+	observerHandoff bool
+}
+
 func (s *Session) drainPendingWatchSends(ctx context.Context) error {
+	_, err := s.drainPendingWatchSendsReport(ctx)
+	return err
+}
+
+func (s *Session) drainPendingWatchSendsReport(ctx context.Context) (watchSendDrainResult, error) {
+	var result watchSendDrainResult
 	var errs []error
 	if s.jobManager != nil {
-		errs = append(errs, s.drainJobManagerWatchSends(ctx, s.jobManager, ""))
+		drained, err := s.drainJobManagerWatchSends(ctx, s.jobManager, "")
+		result.observerHandoff = result.observerHandoff || drained.observerHandoff
+		errs = append(errs, err)
 	}
 	if s.subagents != nil {
 		for _, child := range s.subagents.sessions() {
 			if child == nil || child.jobManager == nil {
 				continue
 			}
-			errs = append(errs, child.drainJobManagerWatchSends(ctx, child.jobManager, child.id))
+			drained, err := child.drainJobManagerWatchSends(ctx, child.jobManager, child.id)
+			result.observerHandoff = result.observerHandoff || drained.observerHandoff
+			errs = append(errs, err)
 		}
 	}
 	s.driveChildrenWithUndeliveredAttention()
-	return errors.Join(errs...)
+	return result, errors.Join(errs...)
 }
 
 // driveChildrenWithUndeliveredAttention re-purposes the parent's loop-boundary
@@ -3690,7 +3710,8 @@ func (s *Session) enqueueOwnCallerWatchSendTokens() {
 // drainJobManagerWatchSends drains jm through the session that owns jm. The
 // receiver is the control surface for delegate-targeted sends; childSessionID is
 // only the caller-token routing marker used when a parent scans a child store.
-func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager, childSessionID string) error {
+func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager, childSessionID string) (watchSendDrainResult, error) {
+	var result watchSendDrainResult
 	var errs []error
 	for _, delivery := range jm.pendingWatchSendDeliveries(nil) {
 		target := delivery.state.Key.ResolvedSendTo
@@ -3711,11 +3732,13 @@ func (s *Session) drainJobManagerWatchSends(ctx context.Context, jm *jobManager,
 			}
 			continue
 		}
-		if err := jm.deliverPendingWatchSend(ctx, delivery.cfg, delivery.state, true, s.sendDelegateMessage); err != nil {
+		delivered, err := jm.deliverPendingWatchSend(ctx, delivery.cfg, delivery.state, true, s.sendDelegateMessage)
+		result.observerHandoff = result.observerHandoff || delivered
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	return result, errors.Join(errs...)
 }
 
 func (s *Session) retryRestoredPendingWatchSends(ctx context.Context) error {

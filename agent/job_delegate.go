@@ -184,9 +184,8 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		_ = jm.finalize(run.rec.JobID, jobstore.StatusFailed, "start_failed", nil)
 		return delegateStartFailedWithIDs(delegateID, run.rec.JobID, err)
 	}
-	finalizeErr, done := s.bridgeDelegateFinalization(run.rec.JobID, childID, sub)
-
 	if args.Background {
+		s.bridgeDelegateFinalization(run.rec.JobID, childID, sub, true)
 		return delegateResult{
 			DelegateID:          delegateID,
 			StartedJobID:        run.rec.JobID,
@@ -199,12 +198,15 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		}
 	}
 
+	done := delegateDone(sub)
 	timer := time.NewTimer(blockTimeout)
 	defer timer.Stop()
 	select {
 	case <-done:
+		finalizeErr := s.bridgeDelegateFinalizationWithDone(run.rec.JobID, childID, sub, done, false)
 		return waitForDelegateFinalization(ctx, jm, run, finalizeErr)
 	case <-timer.C:
+		s.bridgeDelegateFinalizationWithDone(run.rec.JobID, childID, sub, done, true)
 		output, _, truncated, readErr := tailOutput(run.output, shellInlineOutputBytes)
 		res := delegateResult{
 			DelegateID:          delegateID,
@@ -683,7 +685,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 			parentJobID:             desc.ParentJobID,
 			forwardJobEvent:         s.jobManager.forwardEvent,
 			parentSteer:             s.SteerWithProvenance,
-			parentSteerDelivered:    s.trySteerWithProvenance,
+			parentSteerDelivered:    s.trySteerWithProvenanceAndNotify,
 			parentGrantedJobRead:    s.lookupGrantedJobRead,
 			subagentTask:            desc.Task,
 			depth:                   s.depth + 1,
@@ -1072,11 +1074,7 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 	done := sub.done
 	sub.mu.Unlock()
 
-	finalizeErr := make(chan error, 1)
-	go func() {
-		<-done
-		finalizeErr <- s.finalizeDelegate(run.rec.JobID, childID, sub)
-	}()
+	finalizeErr := s.bridgeDelegateFinalizationWithDone(run.rec.JobID, childID, sub, done, true)
 	s.launchSubagentRun(runCtx, sub, runCancel, message, watchProvenance)
 	return run, finalizeErr, nil, nil
 }
@@ -1269,16 +1267,29 @@ func parseSpawnedAgentID(spawned any) (string, error) {
 	return out.AgentID, nil
 }
 
-func (s *Session) bridgeDelegateFinalization(jobID, childID string, sub *subagent) (<-chan error, <-chan struct{}) {
+func delegateDone(sub *subagent) <-chan struct{} {
 	sub.mu.Lock()
 	done := sub.done
 	sub.mu.Unlock()
+	return done
+}
+
+func (s *Session) bridgeDelegateFinalization(jobID, childID string, sub *subagent, armNotification bool) (<-chan error, <-chan struct{}) {
+	done := delegateDone(sub)
+	return s.bridgeDelegateFinalizationWithDone(jobID, childID, sub, done, armNotification), done
+}
+
+func (s *Session) bridgeDelegateFinalizationWithDone(jobID, childID string, sub *subagent, done <-chan struct{}, armNotification bool) <-chan error {
 	finalizeErr := make(chan error, 1)
 	go func() {
 		<-done
-		finalizeErr <- s.finalizeDelegate(jobID, childID, sub)
+		if armNotification {
+			finalizeErr <- s.finalizeDelegate(jobID, childID, sub)
+			return
+		}
+		finalizeErr <- s.finalizeDelegateNoNotification(jobID, childID, sub)
 	}()
-	return finalizeErr, done
+	return finalizeErr
 }
 
 func (s *Session) attachDelegateJob(jm *jobManager, childID, task string, sub *subagent) (*runningJob, error) {
@@ -1584,6 +1595,14 @@ func cancelDelegateSub(sub *subagent) {
 }
 
 func (s *Session) finalizeDelegate(jobID, childID string, sub *subagent) error {
+	return s.finalizeDelegateWithNotification(jobID, childID, sub, true)
+}
+
+func (s *Session) finalizeDelegateNoNotification(jobID, childID string, sub *subagent) error {
+	return s.finalizeDelegateWithNotification(jobID, childID, sub, false)
+}
+
+func (s *Session) finalizeDelegateWithNotification(jobID, childID string, sub *subagent, armNotification bool) error {
 	jm, err := sessionJobManager(s)
 	if err != nil {
 		return err
@@ -1593,7 +1612,7 @@ func (s *Session) finalizeDelegate(jobID, childID string, sub *subagent) error {
 	}
 
 	for {
-		err := s.finalizeDelegateOnce(jm, jobID, sub)
+		err := s.finalizeDelegateOnce(jm, jobID, sub, armNotification)
 		if err == nil {
 			return nil
 		}
@@ -1605,8 +1624,8 @@ func (s *Session) finalizeDelegate(jobID, childID string, sub *subagent) error {
 	}
 }
 
-func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subagent) error {
-	return jm.finalizeWithRun(jobID, func(run *runningJob) (jobstore.Status, string, *int, error) {
+func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subagent, armNotification bool) error {
+	prepare := func(run *runningJob) (jobstore.Status, string, *int, error) {
 		if sub == nil {
 			return jobstore.StatusFailed, "child_missing", nil, nil
 		}
@@ -1687,7 +1706,11 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 
 		jobStatus, reason := delegateTerminalStatus(jm, run, status)
 		return jobStatus, reason, nil, nil
-	})
+	}
+	if armNotification {
+		return jm.finalizeWithRun(jobID, prepare)
+	}
+	return jm.finalizeWithRunNoNotification(jobID, prepare)
 }
 
 func (s *Session) persistDelegateResumability(jm *jobManager, run *runningJob) error {

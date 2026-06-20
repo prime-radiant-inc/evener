@@ -531,7 +531,7 @@ func TestDrainDoesNotReRouteChildCallerPendings(t *testing.T) {
 
 	// The parent's drain (iterating the child's jm with childSessionID="CHILD")
 	// must NOT re-token the child's caller pending onto the parent's rail.
-	if err := parent.drainJobManagerWatchSends(context.Background(), childJM, "CHILD"); err != nil {
+	if _, err := parent.drainJobManagerWatchSends(context.Background(), childJM, "CHILD"); err != nil {
 		t.Fatalf("drainJobManagerWatchSends(child): %v", err)
 	}
 	for _, n := range parentEnqueued {
@@ -544,7 +544,7 @@ func TestDrainDoesNotReRouteChildCallerPendings(t *testing.T) {
 
 	// The CHILD's own drain (childSessionID="") renders the caller pending on the
 	// child's own rail — the mid-side render the drive turn performs.
-	if err := child.drainJobManagerWatchSends(context.Background(), childJM, ""); err != nil {
+	if _, err := child.drainJobManagerWatchSends(context.Background(), childJM, ""); err != nil {
 		t.Fatalf("drainJobManagerWatchSends(own): %v", err)
 	}
 	var childTokens []jobNotification

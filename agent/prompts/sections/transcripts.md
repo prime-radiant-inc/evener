@@ -1,7 +1,11 @@
 ## Session transcripts
 
-Two read-only tools inspect prior session transcripts (your own and other sessions on
-this machine). Do not access raw transcript files directly — always use these tools.
+Two read-only tools inspect archived session transcripts (your own and other
+sessions on this machine). Use them for audit, forensics, prior-session search,
+or recovering compacted turns. During active delegate/watch work, use the current
+tool result, job output, notification, or observer callback as your working
+evidence; read a transcript when you specifically need the full child
+conversation history.
 
 - **`find_session_transcripts`** — find sessions. No arguments lists recent sessions
   newest-first; `query` searches their content; `children_of:"<transcript_ref>"` lists

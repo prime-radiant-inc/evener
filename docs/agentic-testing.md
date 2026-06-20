@@ -39,6 +39,17 @@ The hub picks up provider credentials from env (`OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`) and/or `~/.serf/credentials.toml`. If a scenario
 needs a specific provider, check `./serf <provider> status` first.
 
+OpenAI footgun: an inherited `OPENAI_API_KEY` takes precedence over
+stored OAuth. If `serf openai status` is signed in but a GPT run fails
+with API-key quota, start the test hub with the key cleared:
+
+```bash
+OPENAI_API_KEY= /tmp/serf-hub-test -addr 127.0.0.1:9180 -serf /tmp/serf-test &
+```
+
+Do not also isolate `XDG_STATE_HOME` for that run, because OpenAI OAuth
+state lives under the normal user state home.
+
 ## Hermetic workdir per scenario
 
 Every scenario runs in its own scratch directory so reruns don't
@@ -47,6 +58,29 @@ contained:
 
 ```bash
 tmpdir=$(mktemp -d -t serf-e2e-XXXXX)
+```
+
+For transcript isolation, pass a per-scenario `SERF_STATE_DIR` in
+`launch_overrides.env`. This keeps the spawned daemon's sessions and
+logs under one directory while still using the hub REST shim:
+
+```bash
+state=$(mktemp -d -t serf-e2e-state-XXXXX)
+body=$(jq -n \
+  --arg prompt "$prompt" \
+  --arg model "$model" \
+  --arg wd "$tmpdir" \
+  --arg state "$state" \
+  '{
+    prompt:$prompt,
+    model:$model,
+    working_dir:$wd,
+    harness:"serf",
+    branch:"",
+    access_mode:"full",
+    agent:"default",
+    launch_overrides:{env:{SERF_STATE_DIR:$state}}
+  }')
 ```
 
 If the scenario needs an `AGENTS.md` (see pacing trick below), write
@@ -97,6 +131,27 @@ echo "state=$state"
 The same `/api/sessions/local:$SID` response carries
 `capabilities.steer`, `capabilities.queue`, etc. — useful for
 asserting daemon-side gating (kata `wymv`).
+
+## Auditing sidecar scenarios
+
+For observer sidecar scenarios, do not trust the final scenario marker
+alone. Audit the parent and observer transcripts:
+
+```bash
+/tmp/serf-doctor-test tree "$SID" --state-dir "$state" --observers
+/tmp/serf-doctor-test transcript "$SID" --state-dir "$state" --format outline --range last:80
+/tmp/serf-doctor-test transcript "$SID" --state-dir "$state" --count job_list
+/tmp/serf-doctor-test transcript "$SID" --state-dir "$state" --count job_read_output
+/tmp/serf-doctor-test transcript "$OBSERVER_SID" --state-dir "$state" --format outline --range last:80
+/tmp/serf-doctor-test transcript "$OBSERVER_SID" --state-dir "$state" --count delegate_send
+```
+
+For the happy path, the parent should use the current delegate result,
+watch result, watched event result, and observer callback as working
+signals. `job_list` and `job_read_output` should be zero before the
+callback unless the scenario is explicitly testing diagnosis. A later
+terminal notification from the observer delegate is confirmation; it is
+not the signal the parent should poll for.
 
 ## AGENTS.md pacing trick — keeping a turn in `processing`
 
@@ -414,6 +469,10 @@ For sidecar fluency, record these separately from pass/fail:
 - **Observer readiness race**: the parent creates the watch and triggers
   it before the observer's first `*_READY` turn has finished, so the
   real frame is consumed by setup behavior.
+- **Parent polling wait**: after installing a watch and triggering it,
+  the parent polls with `job_list`, `job_read_output`, or transcript
+  tools to wait for the observer. The fluent path is to continue from
+  the observer's `delegate_send(to="caller")` callback steering.
 - **Tool churn**: the observer uses `job_list`, `read_session_transcript`,
   or another harmless tool only to acknowledge a frame that required no
   action.

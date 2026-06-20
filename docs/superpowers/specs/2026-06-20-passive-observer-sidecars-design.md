@@ -32,6 +32,23 @@ is the explicit result/status channel models should watch. Serf should reject
 upgrading it to `communicate`, because auto-upgrade would hide the model's
 confused event selection.
 
+Implementation and scenario retesting exposed four additional root causes that
+sit next to the original passive-observer problem:
+
+- OpenAI strict tool schemas treated omitted optional fields as required for
+  `job_watch`, `job_read_output`, and `job_list`. Those tools must be non-strict
+  until their schemas can faithfully express optional object fields.
+- After Serf handed a watch trigger to an observer, the caller could continue in
+  the same turn and choose to poll. The caller should yield at that boundary and
+  resume from the observer's `delegate_send(to="caller")` callback.
+- A callback delivered to an idle caller must wake the session even when there
+  are no ordinary job notifications to process.
+- Explicit `agent_type:"subagent"` froze a tool list that omitted
+  `delegate_send`; Kimi correctly treated the callback tool as unavailable. The
+  built-in `subagent` role needs `delegate_send` and positive reporting guidance:
+  use `communicate` for reports/readiness/finals and `delegate_send(to="caller")`
+  for observer callbacks.
+
 ## Design Thesis
 
 Keep observer sidecars as composition: `delegate` + `job_watch` + `delegate_send`. Do not introduce a full observer-agent runtime in v1.
@@ -45,6 +62,16 @@ Add one API cleanup and two narrowly scoped capabilities:
 3. **Watch-delivery turn semantics** for watch-originated observer turns, so a delegate can finish with non-empty bare text when it has no tool work to do.
 
 Together these make passive sidecars cheap and deterministic while preserving the existing watch mailbox, causal provenance, and same-watch loop suppression design.
+
+The caller-side wait path is the observer callback, not polling. After a parent
+creates a watch and triggers the watched condition, a useful observer response
+arrives through `delegate_send(to="caller")` steering. Parent-side
+`job_list`/`job_read_output` calls are audit or diagnosis after that callback,
+not the normal way to wait for the observer.
+
+The implementation also treats a later observer terminal notification as
+confirmation. It can arrive after the callback has already driven the parent to
+completion; it should not become a polling cue.
 
 ## Goals
 

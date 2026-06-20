@@ -734,6 +734,49 @@ func TestSpawnAgent_TaskListPreservedForNamedAgent(t *testing.T) {
 	}
 }
 
+func TestSpawnAgent_BuiltinSubagentCanSendCallerCallback(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	var subagentTools []string
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				for _, td := range req.Tools {
+					subagentTools = append(subagentTools, td.Name)
+				}
+				return finalResponse("done")
+			},
+		},
+	}
+	c.Register(adapter)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	agentID := spawnRuntimeAgent(t, sess, "observe and call back", "", 0, "subagent", "", nil)
+	waitForRuntimeSubagent(t, sess, agentID)
+
+	toolSet := map[string]bool{}
+	for _, name := range subagentTools {
+		toolSet[name] = true
+	}
+	if !toolSet["delegate_send"] {
+		t.Fatalf("built-in subagent tools = %v, want delegate_send for caller callbacks", subagentTools)
+	}
+	for _, forbidden := range []string{"delegate", "job_watch"} {
+		if toolSet[forbidden] {
+			t.Fatalf("built-in subagent tools = %v, must keep leaf role without %s", subagentTools, forbidden)
+		}
+	}
+}
+
 func TestSpawnAgent_AllToolsAgentStripsAgentManagementTools(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -853,22 +896,26 @@ func TestSpawnAgent_DirectNestedCallRejected(t *testing.T) {
 	}
 }
 
-// --- subagent.md includes task_list ---
+// --- subagent.md leaf callback tools ---
 
-func TestBuiltinAgents_SubagentHasTaskList(t *testing.T) {
+func TestBuiltinAgents_SubagentHasLeafCallbackTools(t *testing.T) {
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
 	}
 	sub := agents["subagent"]
-	hasTaskList := false
+	want := map[string]bool{
+		"task_list":     false,
+		"delegate_send": false,
+	}
 	for _, tool := range sub.Tools {
-		if tool == "task_list" {
-			hasTaskList = true
-			break
+		if _, ok := want[tool]; ok {
+			want[tool] = true
 		}
 	}
-	if !hasTaskList {
-		t.Errorf("subagent should have task_list in tools, got: %v", sub.Tools)
+	for tool, found := range want {
+		if !found {
+			t.Errorf("subagent should have %s in tools, got: %v", tool, sub.Tools)
+		}
 	}
 }

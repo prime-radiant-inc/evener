@@ -89,6 +89,14 @@ func (s *Session) trySteerWithProvenance(msg string, p *provenance.Causal) bool 
 	return s.trySteerWithImagesAndProvenance(msg, nil, p)
 }
 
+func (s *Session) trySteerWithProvenanceAndNotify(msg string, p *provenance.Causal) bool {
+	if !s.trySteerWithProvenance(msg, p) {
+		return false
+	}
+	s.notify()
+	return true
+}
+
 func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAttachment, p *provenance.Causal) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -394,6 +402,12 @@ func (s *Session) drainSteering() []steeringMessage {
 	out := append([]steeringMessage{}, s.steeringQueue...)
 	s.steeringQueue = nil
 	return out
+}
+
+func (s *Session) hasPendingSteering() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.steeringQueue) > 0
 }
 
 func (s *Session) prependSteering(entries []steeringMessage) {

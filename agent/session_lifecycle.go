@@ -732,7 +732,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		timings.AfterAction = time.Since(tPhaseStart)
 
-		if steerErr := s.injectPostToolSteering(ctx, calls, &toolSigs); steerErr != nil {
+		yieldToObserverCallback, steerErr := s.injectPostToolSteering(ctx, calls, &toolSigs)
+		if steerErr != nil {
 			return "", progressed, steerErr
 		}
 
@@ -749,6 +750,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// communicate sets the flag; exit the loop with the communicated message.
 		if done, text := s.deliverIfCommunicated(ctx); done {
 			return text, progressed, nil
+		}
+		if yieldToObserverCallback {
+			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			return "", progressed, nil
 		}
 	}
 
@@ -880,10 +885,11 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	// this same drive turn. Caller-only — sidecar delivery stays at the boundary.
 	s.enqueueOwnCallerWatchSendTokens()
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
+	hasSteering := s.hasPendingSteering()
 	s.requeueJobNotifications(retryJobNotifs)
 	injectedFailures := s.markJobNotificationsDelivered(injectedJobNotifs)
 	s.requeueJobNotifications(injectedFailures)
-	if len(jobNotifs) == 0 {
+	if len(jobNotifs) == 0 && !hasSteering {
 		if len(retryJobNotifs) == 0 && len(injectedFailures) == 0 {
 			s.resetJobNotificationRetry()
 		}
@@ -903,13 +909,15 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	}
 	s.replaceActiveProvenance(notificationProvenance)
 
-	reminder := s.formatJobNotificationReminder(jobNotifs)
-	if err := s.appendTurnDurably(schema.TurnSteering, llm.User(reminder)); err != nil {
-		s.requeueJobNotifications(jobNotifications(jobNotifs))
-		s.finishNotificationNoop()
-		return false
+	if len(jobNotifs) > 0 {
+		reminder := s.formatJobNotificationReminder(jobNotifs)
+		if err := s.appendTurnDurably(schema.TurnSteering, llm.User(reminder)); err != nil {
+			s.requeueJobNotifications(jobNotifications(jobNotifs))
+			s.finishNotificationNoop()
+			return false
+		}
+		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder})
 	}
-	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder})
 	deliveredFailures := s.markJobNotificationsDelivered(jobNotifs)
 	s.requeueJobNotifications(deliveredFailures)
 	if len(deliveredFailures) == 0 {
