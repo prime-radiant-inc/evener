@@ -371,6 +371,21 @@ If you skip cleanup, the next run inherits a half-shutdown daemon
 fleet and `state: idle` polling can return false-positives from
 prior sessions.
 
+## Inspecting watch sidecars
+
+Watch/observer scenarios should assert against durable state, not only
+the parent's final prose. Read the parent `jobs.jsonl` for
+`watch_registered`, `watch_send_pending`, `watch_send_delivered`,
+`watch_send_dropped`, and `watch_cleared`, then read the observer
+transcript to confirm what the sidecar actually did with the delivered
+frame.
+
+This matters when an observer calls `delegate_send(to="caller")`: the
+caller steering can be consumed before the parent emits a scripted
+"done" marker, or the model may choose to stop after handling the
+steering. Treat the durable watch rows and observer transcript as the
+contract; treat final parent text as a convenience signal only.
+
 ## The over-specification trap
 
 A scenario can describe a behavior that production gating prevents.

@@ -221,6 +221,10 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   watch frames include content, an observer injects `PYTHON_QUOTE` only
   for external `actually` messages, and causal provenance suppresses
   injection and acknowledgement loops.
+- `job-watch-passive-observer-noop-filter.md` - passive observer
+  frames that need no action can finish with bare assistant text and no
+  tool call, while `assistant.tool` `event_filter` prevents `job_list`
+  and failed `read_file` events from waking the observer.
 
 ## Regression sweep (older surfaces)
 
