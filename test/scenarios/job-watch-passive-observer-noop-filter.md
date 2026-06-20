@@ -218,6 +218,13 @@ PY
   durable logs are the assertion surface.
 - Do not check raw final assistant prose for this card. Check
   `jobs.jsonl` delivery rows and the observer transcript.
+- The parent model may need an extra `job_watch(operation="list")`
+  because the short rendered `job_watch` create result does not always
+  include the watch id in the text it is reasoning over.
+- After the successful `read_file`, the parent may inspect delegate
+  jobs before emitting the final marker. That is acceptable; the
+  fluency signal to watch is whether it finds the filtered observer job
+  without human steering.
 
 ## Recorded Run
 
@@ -232,5 +239,10 @@ fresh hub on `127.0.0.1:9187`.
 - Filtered watch: `watch_01KVHFTZ45VX841TVSY9H5QD8P`; 1 unique
   delivery, only for successful `read_file`; no delivery for `job_list`
   or failed `read_file`.
+- Fluency note: the observer was clean and direct. The parent followed
+  the ordered steps without human steering, but it needed a watch-list
+  call to recover watch ids and briefly inspected an older observer job
+  before finding the filtered observer job. This is acceptable but not
+  effortless.
 - Both watches were cleared and the session was shut down after the
   run.
