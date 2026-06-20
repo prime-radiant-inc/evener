@@ -690,3 +690,139 @@ Result:
   prompt patches. The positive happy path should make the completion contract
   obvious: start observer, install watch, trigger event, accept callback
   steering as completion evidence, then produce one final `communicate`.
+
+## Fix Passes
+
+### F01 - Positive Tool Affordance Fixes
+
+Changes:
+
+- Made observer callback completion evidence explicit in the background-jobs
+  prompt and `job_watch` tool description.
+- Clarified that `communicate` calls carry visible user/caller text and that
+  work-in-progress continues through the next work tool.
+- Clarified that `send.include_excerpt` is for `job_...` targets, while
+  caller/session event frames already contain bounded event payloads.
+- Described `grep` as the direct tool for text search and token-finding
+  requests.
+- Put the `*** Begin Patch` / `*** End Patch` envelope requirement on the
+  `apply_patch.patch` parameter.
+- Updated `docs/job-control.md` so examples no longer imply
+  `include_excerpt=true` is valid for `target="caller"`.
+
+Verification:
+
+```sh
+go test ./agent/internal/tool
+go test ./tools/tool-fluency/cmd/serf-fluency
+go test ./agent -run 'Test(JobWatchAdvertisedDefinitionUsesCanonicalEventKinds|JobToolsDefinitions|Communicate|ApplyPatch_DescriptionIncludesCapabilities|Parity_GrepAndGlob|BuildSystemPrompt_IncludesBackgroundJobsSection|BuildSystemPrompt_DoesNotDuplicateProviderToolDescriptions)'
+git diff --check
+```
+
+Broad package caveat:
+
+- `go test ./agent/internal/tool ./agent` was also run. It failed in
+  `TestIntegration_Delegate` and
+  `TestTranscriptsSection_TeachesToolsNotRawRead`.
+- Those failures were outside the files changed here. The transcript section in
+  `HEAD` already lacks the exact phrase the brittle prompt-string test expects,
+  and adding a "do not" prompt line just to satisfy that test conflicts with
+  this work's positive-prompting constraint.
+
+Full-suite rerun:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe all --timeout 10m --out /tmp/serf-fluency-f01-openai
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe all --timeout 10m --out /tmp/serf-fluency-f01-kimi
+```
+
+F01 full-suite result:
+
+- GPT: 16 passed, 3 failed, 1 skipped unavailable.
+  - Improved: `web_fetch.example` passed.
+  - Still failed: `apply_patch.happy_path` (`apply_patch` repair),
+    `list_dir.inventory` (`communicate` output envelope repair), and
+    CLI-harness `job_watch.observer_callback`.
+- Kimi: 15 passed, 4 failed, 1 skipped unavailable.
+  - Improved: `apply_patch.happy_path` and `grep.find_token` passed.
+  - Still failed: `read_file.happy_path`, `shell.command`, and
+    `web_fetch.example` by missing required result markers; CLI-harness
+    `job_watch.observer_callback` still failed as expected.
+
+Live sidecar rerun:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/serf-fluency-f01-live-openai
+go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/serf-fluency-f01-live-kimi
+```
+
+F01 live result:
+
+- Kimi passed 3 of 3 with the minimal path:
+  `communicate:1`, `delegate:1`, `job_watch:1`, `read_file:1`.
+- GPT passed 2 of 3. The remaining failure was a `job_watch` argument repair
+  from `include_excerpt` on a caller/session-target watch.
+
+### F02/F03 - Result Envelope And Progress Marker Tightening
+
+F02 changes:
+
+- Removed contradictory default `communicate` wording about extra fields inside
+  `output`.
+- Made `include_excerpt` field language name `job_...` targets explicitly.
+
+F02 reruns:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe list_dir.inventory --repetitions 3 --timeout 8m --out /tmp/serf-fluency-f02-openai-listdir
+go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/serf-fluency-f02-live-openai
+```
+
+F02 result:
+
+- GPT `list_dir.inventory`: 2 of 3 passed; the remaining failure still put
+  `purpose` inside `output`.
+- GPT live `job_watch.observer_callback`: 1 of 3 passed. Failures were a
+  premature progress `communicate` ("Starting observer setup.") and a
+  `communicate` output-envelope repair.
+
+F03 changes:
+
+- Clarified that `communicate` status markers are requested user/caller-visible
+  milestones and that internal progress continues through work tools.
+- Clarified that `purpose`, when included, belongs beside `output`, while
+  `output` remains `message`, `data`, and `artifacts`.
+
+F03 reruns:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe list_dir.inventory --repetitions 3 --timeout 8m --out /tmp/serf-fluency-f03-openai-listdir
+go run ./tools/tool-fluency/cmd/serf-fluency run --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 15s --timeout 8m --out /tmp/serf-fluency-f03-live-openai
+```
+
+F03 result:
+
+- GPT `list_dir.inventory`: passed 3 of 3. The `output.purpose` repair did not
+  reproduce in this focused sample.
+- GPT live `job_watch.observer_callback`: passed 1 of 3.
+  - rep 1 passed with no job audit and no `job_watch` repair.
+  - rep 2 reached the correct final result but called `job_list:1`.
+  - rep 3 reached the callback and final result but repaired one invalid
+    `job_watch` call that included invalid `message`/`include_excerpt`
+    arguments.
+
+Current conclusion:
+
+- Positive prompt/schema affordance changes helped materially:
+  - Kimi `apply_patch` repair fixed in the broad rerun.
+  - Kimi `grep` shell escape fixed in the broad rerun.
+  - GPT `web_fetch` passed in the broad rerun.
+  - GPT `list_dir` result-envelope repair fixed in the focused F03 rerun.
+  - Kimi live observer callback is clean 3 of 3.
+- GPT observer sidecar fluency remains unstable after prompt-only fixes. The
+  remaining failures are not plain-message failures; they are invalid
+  `job_watch` argument shapes and occasional job-state auditing.
+- Next action: stop adding broad wording. The next root-cause fix should reduce
+  the invalid `job_watch` argument surface itself, likely by changing the
+  model-facing schema shape for caller/session watches. Runtime leniency would
+  be a backward-compatibility change and needs explicit approval.

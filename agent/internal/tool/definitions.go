@@ -196,7 +196,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"communicate results/status use `target=\"caller\", events=[\"communicate\"], send.to=<delegate_id>`; " +
 		"tool events use `target=\"caller\", events=[\"assistant.tool\"], event_filter={\"tool_name\":\"read_file\",\"status\":\"ok\"}, send.to=<delegate_id>`. " +
 		"For communicate content such as APPROVAL_REQUEST, the observer task checks the delivered `event.message`. Frames coalesce latest-wins while the target is " +
-		"busy. For concrete job targets, `include_excerpt` attaches a bounded output excerpt. Caller/session-target event frames already carry bounded event payloads. ONE active watch per " +
+		"busy. For target values that start with `job_`, `include_excerpt` attaches a bounded output excerpt. Caller/session-target event frames already carry bounded event payloads. ONE active watch per " +
 		"(target, send.to): a different configuration for the same key replaces the existing watch " +
 		"(`replaced_existing:true`) — use a distinct `send.to` for an additional watch on the same target. " +
 		"`operation=\"clear\"` removes a watch by `watch_id`."
@@ -238,7 +238,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 					"properties": map[string]any{
 						"to":              map[string]any{"type": "string", "description": "delegate_id, or `caller`."},
 						"message":         map[string]any{"type": "string"},
-						"include_excerpt": map[string]any{"type": "boolean", "description": "For concrete job targets, attach a bounded output excerpt to delivered frames. Caller/session-target event frames already include the event payload."},
+						"include_excerpt": map[string]any{"type": "boolean", "description": "For target values that start with job_, attach a bounded output excerpt to delivered frames. Caller/session-target event frames already include the event payload."},
 					},
 				},
 			},
@@ -463,7 +463,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        name,
-		Description: "Send a user-facing message. Use this tool for every message, readiness marker, status update, request for input, and final answer the user or caller should see. A valid call has visible text in `message` or `output.message`. While tool work remains, call the next work tool; use this when the next useful action is to report, wait, announce readiness, or finish. Set `message` to the exact visible text. Set `await_reply=true` when this message opens a wait state for later user, caller, or watch-frame input; set `await_reply=false` when this message completes the current work. Always include `output` as an object with exactly these top-level fields: `message`, `data`, and `artifacts`. For ordinary text replies, use `output.message=\"\"`, `output.data={}`, and `output.artifacts=[]`. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs. Some workflows may also require extra fields inside `output`, such as `output.decision` or specific `output.data.*` keys.",
+		Description: "Send a user-facing message. Use this tool for every message, readiness marker, requested status marker, request for input, and final answer the user or caller should see. A valid call has visible text in `message` or `output.message`. While tool work remains, call the next work tool; use this when the next useful action is to report, wait, announce readiness, or finish. A status marker is a requested user/caller-visible milestone; internal progress continues through the next work tool. Set `message` to the exact visible text. Set `await_reply=true` when this message opens a wait state for later user, caller, or watch-frame input; set `await_reply=false` when this message completes the current work. Always include `output` as an object with exactly these top-level fields: `message`, `data`, and `artifacts`. For ordinary text replies, use `output.message=\"\"`, `output.data={}`, and `output.artifacts=[]`. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -479,7 +479,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 				},
 				"output": map[string]any{
 					"type":                 "object",
-					"description":          "Structured output envelope. Keep this present on every call with exactly these top-level fields: message, data, artifacts. For ordinary text replies, keep user-visible text in the top-level message and leave data/artifacts empty.",
+					"description":          "Structured output envelope. Keep this present on every call with exactly these top-level fields: message, data, artifacts. For ordinary text replies, keep user-visible text in the top-level message and leave data/artifacts empty. If you include a purpose, place it as a top-level tool argument beside output.",
 					"additionalProperties": false,
 					"properties": map[string]any{
 						"message": map[string]any{"type": "string", "description": "Human-readable structured summary for automation and orchestration. Leave empty for ordinary conversational replies."},
