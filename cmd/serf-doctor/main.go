@@ -8,6 +8,7 @@
 //
 //	serf-doctor locate     <selector> [--all-buckets]
 //	serf-doctor transcript <selector> [--count <tool>] [--format outline|markdown] [--range last:N|start:N|A-B]
+//	serf-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary]
 //	serf-doctor watches    <selector> [--watch <id>] [--self-loops]
 //	serf-doctor tree       <selector> [--depth N] [--observers]
 //
@@ -41,6 +42,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdLocate(rest, stdout, stderr)
 	case "transcript":
 		return cmdTranscript(rest, stdout, stderr)
+	case "apilog":
+		return cmdAPILog(rest, stdout, stderr)
 	case "watches":
 		return cmdWatches(rest, stdout, stderr)
 	case "tree":
@@ -64,6 +67,7 @@ USAGE:
 SUBCOMMANDS:
   locate      resolve a selector to its on-disk transcript/meta/jobs paths
   transcript  render a session's turns; --count <tool> prints the structural call count
+  apilog      API-call diagnostics: per-call tokens/latency, empties, errors, cache spikes
   watches     watch/delivery inspector: distinct deliveries, provenance, self-loop verdict
   tree        parent ↔ delegate/observer session tree across buckets
 
@@ -177,6 +181,36 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 		return emitJSON(stdout, res)
 	}
 	fmt.Fprint(stdout, doctor.RenderTranscript(res, *format))
+	return 0
+}
+
+func cmdAPILog(args []string, stdout, stderr io.Writer) int {
+	fs, stateDir, asJSON := stateFlags("apilog", stderr)
+	empty := fs.Bool("empty", false, "only empty responses (no text, no tool calls)")
+	errorsOnly := fs.Bool("errors", false, "only failed calls")
+	cacheSpikes := fs.Bool("cache-spikes", false, "only calls whose uncached input >= --threshold")
+	threshold := fs.Int("threshold", 0, "uncached-input-token floor for --cache-spikes (default 50000)")
+	summary := fs.Bool("summary", false, "render only the per-session aggregate")
+	sel, code := parseSelectorAndFlags(fs, args)
+	if code != 0 {
+		return code
+	}
+	base := doctor.ResolveStateBase(*stateDir)
+	opts := doctor.APILogOpts{
+		EmptyOnly:      *empty,
+		ErrorsOnly:     *errorsOnly,
+		CacheSpikes:    *cacheSpikes,
+		SpikeThreshold: *threshold,
+		SummaryOnly:    *summary,
+	}
+	res, err := doctor.APILog(base, sel, opts)
+	if err != nil {
+		return fail(stderr, "apilog", err)
+	}
+	if *asJSON {
+		return emitJSON(stdout, res)
+	}
+	fmt.Fprint(stdout, doctor.RenderAPILog(res, opts))
 	return 0
 }
 

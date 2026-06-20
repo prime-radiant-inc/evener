@@ -18,15 +18,12 @@
 /llmcall
 /sessions/
 inspo/
-tools/**/__pycache__/
 .serf-launches/
 serf-linux-amd64
-tools/serf-linux-amd64
 node_modules/
 results/
 docs/experiments/runs/
 docs/experiments/dashboard.html
 docs/experiments/dashboard-session24.html
-tools/microtasks/
 .kata.local.toml
 /serf-doctoring-report.html

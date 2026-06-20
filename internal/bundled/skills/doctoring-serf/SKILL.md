@@ -54,6 +54,7 @@ Run them via the shell tool. First positional arg is a session selector:
 |---|---|---|
 | `serf-doctor locate <sel>` | where are this session's transcript / meta / jobs files? | `--all-buckets` |
 | `serf-doctor transcript <sel>` | render the turns; **how many real `X` calls?** | `--count <tool>`, `--format outline\|markdown`, `--range last:N` |
+| `serf-doctor apilog <sel>` | per-call tokens/latency, **empty responses, errors, cache spikes**, session token spend | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary` |
 | `serf-doctor watches <sel>` | distinct deliveries (collapsing coalescing), provenance, **self-loop verdict** | `--watch <id>`, `--self-loops` |
 | `serf-doctor tree <sel>` | parent ↔ delegate/observer tree across buckets | `--depth N`, `--observers` |
 
