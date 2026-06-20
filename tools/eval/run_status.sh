@@ -2,13 +2,13 @@
 # Check the live status of an eval run.
 #
 # Usage:
-#   ./tools/run_status.sh RUN_ID
+#   ./tools/eval/run_status.sh RUN_ID
 #
 # Shows: instance states (running/terminated), S3 upload status per rep,
 # and a pass/fail summary for completed reps.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HARBOR_DIR="${HARBOR_DIR:-$HOME/prime-radiant/harbor-runner}"
 
 RUN_ID="${1:?Usage: run_status.sh RUN_ID}"

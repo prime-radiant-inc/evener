@@ -60,7 +60,7 @@ is wasted experiments.
 set -a; source .env; set +a
 
 # 2. Verify interrogation works (pick any recent run from docs/experiments/runs/)
-python3 tools/interrogate_session.py \
+python3 tools/transcripts/interrogate_session.py \
     --run RECENT_WAVE --rep 1 --task ANY_TASK --list-sessions
 ```
 
@@ -142,15 +142,15 @@ targets, and what to do next. For prompt behavior patterns, read `prompt-lessons
 ## Key Tools
 
 ```bash
-./tools/serf-report compare CURRENT BASELINE  # find what improved/regressed
-./tools/serf-report regressions               # tasks below historical best
-./tools/serf-report history TASK              # full timeline with regression markers
-./tools/serf-report cost WAVE                 # token/dollar costs per task
-./tools/serf-report dashboard                 # generate HTML dashboard
-./tools/wave_scores.py WAVE_ID                # live scores (N tasks scored, X/N complete, Y perfect)
-./tools/wave_compare.py --labels "a,b" W1 W2  # side-by-side wave comparison with deltas
-./tools/run_eval.sh --wave --tasks "t1,t2"    # launch evals
-./tools/post_run.sh WAVE_ID                   # collect results
+./tools/eval/serf-report compare CURRENT BASELINE  # find what improved/regressed
+./tools/eval/serf-report regressions               # tasks below historical best
+./tools/eval/serf-report history TASK              # full timeline with regression markers
+./tools/eval/serf-report cost WAVE                 # token/dollar costs per task
+./tools/eval/serf-report dashboard                 # generate HTML dashboard
+./tools/eval/wave_scores.py WAVE_ID                # live scores (N tasks scored, X/N complete, Y perfect)
+./tools/eval/wave_compare.py --labels "a,b" W1 W2  # side-by-side wave comparison with deltas
+./tools/eval/run_eval.sh --wave --tasks "t1,t2"    # launch evals
+./tools/eval/post_run.sh WAVE_ID                   # collect results
 ```
 
 For full tool reference, see `tools-reference.md` in this skill directory.
@@ -161,7 +161,7 @@ For full tool reference, see `tools-reference.md` in this skill directory.
 
 Use when tasks that used to pass now fail. This is the highest-leverage work.
 
-1. **Find regressions:** `./tools/serf-report regressions`
+1. **Find regressions:** `./tools/eval/serf-report regressions`
 2. **For each regressed task:** follow the Investigation Sequence below
 3. **Write experiments** for behavioral regressions, skip capability gaps
 4. **Run experiments** using the Three-Phase Execution Process below
@@ -201,7 +201,7 @@ rep, or mark the task as needing a rerun.
 ### Step 1: Get the history
 
 ```bash
-./tools/serf-report history TASK_NAME
+./tools/eval/serf-report history TASK_NAME
 ```
 
 This shows every run, when the task last passed, and when it regressed.
@@ -222,11 +222,11 @@ a failing rep. You're looking for where behavior diverges.
 
 ```bash
 # List sessions
-python3 tools/read_transcript.py --run WAVE --rep N --task TASK --list-sessions
+python3 tools/transcripts/read_transcript.py --run WAVE --rep N --task TASK --list-sessions
 # Read coordinator tool calls
-python3 tools/read_transcript.py --run WAVE --rep N --task TASK --tool-calls
+python3 tools/transcripts/read_transcript.py --run WAVE --rep N --task TASK --tool-calls
 # Read a specific session
-python3 tools/read_transcript.py --run WAVE --rep N --task TASK --session 0 --full --limit 30
+python3 tools/transcripts/read_transcript.py --run WAVE --rep N --task TASK --session 0 --full --limit 30
 ```
 
 Compare side by side. Find the FIRST point of divergence. Everything before
@@ -255,7 +255,7 @@ decision point:
 
 ```bash
 export $(grep -v '^#' .env | xargs)
-python3 tools/interrogate_session.py \
+python3 tools/transcripts/interrogate_session.py \
     --run WAVE --rep N --task TASK \
     --question "At turn N you did X. Your prompt says Y. What were you optimizing for?"
 ```
@@ -397,10 +397,10 @@ Run ONLY the tasks the experiment targets + blame-derived regression tasks.
 
 ```bash
 # Experiment
-./tools/run_eval.sh --tasks "target1,target2,blame-task1,blame-task2" --reps 3
+./tools/eval/run_eval.sh --tasks "target1,target2,blame-task1,blame-task2" --reps 3
 
 # Control (build from clean main, same tasks, same reps)
-./tools/run_eval.sh --tasks "target1,target2,blame-task1,blame-task2" --reps 3 \
+./tools/eval/run_eval.sh --tasks "target1,target2,blame-task1,blame-task2" --reps 3 \
     --run-id "exp-NAME-control-TIMESTAMP"
 ```
 
@@ -430,16 +430,16 @@ After results arrive:
 Run all discriminator tasks to check for broad regressions.
 
 ```bash
-./tools/run_eval.sh --tasks discriminators
+./tools/eval/run_eval.sh --tasks discriminators
 ```
 
 After results arrive:
 
 1. **Validate infra** — same check. If >5 silent failures, rerun.
 2. **Compare against the same-day CONTROL** (not a stale baseline). Use
-   `./tools/wave_compare.py --labels "control,variant" CONTROL_WAVE VARIANT_WAVE`
+   `./tools/eval/wave_compare.py --labels "control,variant" CONTROL_WAVE VARIANT_WAVE`
    for side-by-side per-task deltas. For multiple variants:
-   `./tools/wave_compare.py --labels "control,27a,27b,27d" W_CTRL W_A W_B W_D`
+   `./tools/eval/wave_compare.py --labels "control,27a,27b,27d" W_CTRL W_A W_B W_D`
 3. **Interrogate EVERY task that scored LOWER than baseline.** For each:
    - Is it infra? (Step 0 of investigation sequence)
    - Is it caused by this experiment? (Interrogate with specific question
@@ -456,7 +456,7 @@ After results arrive:
 Run the always-perfect tasks as a safety net.
 
 ```bash
-./tools/run_eval.sh --tasks crosscheck --run-id WAVE_ID --backfill
+./tools/eval/run_eval.sh --tasks crosscheck --run-id WAVE_ID --backfill
 ```
 
 After results arrive:
@@ -617,7 +617,7 @@ tested sequentially or combined into a single experiment.
    # Commit on the experiment branch
    # Build: make build-linux
    # Verify: strings serf-linux-amd64 | grep "expected phrase"
-   # Launch: ./tools/run_eval.sh --tasks "target1,target2,regression1" --reps 3
+   # Launch: ./tools/eval/run_eval.sh --tasks "target1,target2,regression1" --reps 3
    # Monitor: poll wave_scores.py until complete
    # Report results back to orchestrator
    ```
@@ -645,7 +645,7 @@ Steps:
 4. make build-linux
 5. strings serf-linux-amd64 | grep "EXPECTED_PHRASE"
 6. set -a; source .env; set +a
-7. ./tools/run_eval.sh --tasks "TARGET_TASKS,REGRESSION_TASKS" --reps 3
+7. ./tools/eval/run_eval.sh --tasks "TARGET_TASKS,REGRESSION_TASKS" --reps 3
 8. Monitor wave_scores.py until all reps complete
 9. Report: per-task scores, comparison to baseline, any regressions
 

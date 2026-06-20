@@ -6,21 +6,21 @@ extracts rewards, and updates git-tracked metadata (run files, task
 scorecards, master scoreboard).
 
 Usage:
-    ./tools/collect_results.py v20-impl-test-a \\
+    ./tools/eval/collect_results.py v20-impl-test-a \\
         --model openai/gpt-5.4-mini \\
         --git-sha abc1234 \\
         --variant "implementer: write minimal client command"
 
     # Light mode: only download reward.txt files (fast backfill)
-    ./tools/collect_results.py v20-impl-test-a --light \\
+    ./tools/eval/collect_results.py v20-impl-test-a --light \\
         --model openai/gpt-5.4-mini --git-sha abc1234
 
     # Skip S3 download, just update metadata from existing cache
-    ./tools/collect_results.py v20-impl-test-a --no-download \\
+    ./tools/eval/collect_results.py v20-impl-test-a --no-download \\
         --model openai/gpt-5.4-mini --git-sha abc1234
 
     # Rebuild scoreboard from existing task files (no run processing)
-    ./tools/collect_results.py --rebuild-scoreboard
+    ./tools/eval/collect_results.py --rebuild-scoreboard
 """
 
 import argparse
@@ -44,7 +44,7 @@ from eval_results import (
     update_task_scorecard,
 )
 
-SERF_ROOT = Path(__file__).resolve().parent.parent
+SERF_ROOT = Path(__file__).resolve().parent.parent.parent
 METADATA_DIR = SERF_ROOT / "docs" / "experiments"
 RUNS_DIR = METADATA_DIR / "runs"
 TASKS_DIR = METADATA_DIR / "tasks"

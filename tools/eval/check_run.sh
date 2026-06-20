@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Check results for a harbor-runner eval run.
-# Usage: ./tools/check_run.sh RUN_ID
+# Usage: ./tools/eval/check_run.sh RUN_ID
 #
 # Auto-discovers tasks from downloaded results.
 # Downloads results from S3 if not already local.

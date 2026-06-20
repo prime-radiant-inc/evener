@@ -42,7 +42,7 @@ python3 tools/interrogate_trajectory.py nudge /tmp/trajectory.json \
 python3 tools/interrogate_trajectory.py --model gpt-5.3-codex interrogate ...
 ```
 
-### `tools/lace_interrogate.py`
+### `tools/prompt-iteration/lace_interrogate.py`
 
 Interrogate lace sessions from events.jsonl files. Similar to interrogate_trajectory.py
 but reads the native lace event format instead of ATIF.
@@ -51,24 +51,24 @@ but reads the native lace event format instead of ATIF.
 export OPENROUTER_API_KEY=<key>
 
 # Show event summary
-python3 tools/lace_interrogate.py events /path/to/events.jsonl
+python3 tools/prompt-iteration/lace_interrogate.py events /path/to/events.jsonl
 
 # List sessions in a trial directory
-python3 tools/lace_interrogate.py sessions /data/agent-evals/runs/job/task__trial/
+python3 tools/prompt-iteration/lace_interrogate.py sessions /data/agent-evals/runs/job/task__trial/
 
 # Interrogate (narrative mode — cheap, ~4K tokens)
-python3 tools/lace_interrogate.py --model qwen/qwen3.5-flash-02-23 interrogate \
+python3 tools/prompt-iteration/lace_interrogate.py --model qwen/qwen3.5-flash-02-23 interrogate \
     /path/to/events.jsonl \
     -q "Why did you use pyOpenSSL?"
 
 # Resume (full replay mode — shows what tool calls the model would make next)
 # More reliable than interrogate for testing prompt changes
-python3 tools/lace_interrogate.py --model qwen/qwen3.5-flash-02-23 resume \
+python3 tools/prompt-iteration/lace_interrogate.py --model qwen/qwen3.5-flash-02-23 resume \
     /path/to/events.jsonl \
     -q "Continue working on the task."
 
 # Resume with persona swap and truncation (the main prompt testing workflow)
-python3 tools/lace_interrogate.py --model qwen/qwen3.5-flash-02-23 resume \
+python3 tools/prompt-iteration/lace_interrogate.py --model qwen/qwen3.5-flash-02-23 resume \
     /path/to/events.jsonl \
     --up-to-event 13 \
     --persona tools/prompt-optimize/personas/iter-6-doc-reading.md \
@@ -78,7 +78,7 @@ python3 tools/lace_interrogate.py --model qwen/qwen3.5-flash-02-23 resume \
 # Accepts: .jsonl files, session dirs, trial dirs, trajectory.json
 ```
 
-### `tools/replay_microtask.py`
+### `tools/prompt-iteration/replay_microtask.py`
 
 Original microtask replay tool (OpenAI Responses API only, for gpt-5.x models).
 Use interrogate_trajectory.py instead for OpenRouter/Qwen models.

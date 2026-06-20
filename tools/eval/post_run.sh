@@ -2,7 +2,7 @@
 # Collect results from a completed eval run and update the scoreboard.
 #
 # Usage:
-#   ./tools/post_run.sh RUN_ID [--variant "description"]
+#   ./tools/eval/post_run.sh RUN_ID [--variant "description"]
 #
 # Does:
 #   1. Checks that all reps have uploaded results
@@ -15,7 +15,7 @@
 #   - Run must be complete (all instances terminated, results in S3)
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 RUN_ID="${1:?Usage: post_run.sh RUN_ID [--variant \"description\"]}"
@@ -103,7 +103,7 @@ if [[ -n "$VARIANT" ]]; then
     COLLECT_ARGS+=(--variant "$VARIANT")
 fi
 
-python3 tools/collect_results.py "${COLLECT_ARGS[@]}" 2>&1 | tail -20
+python3 tools/eval/collect_results.py "${COLLECT_ARGS[@]}" 2>&1 | tail -20
 
 # --- Show diff ---
 echo ""

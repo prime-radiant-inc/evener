@@ -7,17 +7,17 @@ Subcommands:
     collect  Collect results and generate summary from a finished job
 
 Examples:
-    ./tools/run_eval.py launch --ak reasoning_effort=medium
-    ./tools/run_eval.py launch --ak reasoning_effort=medium --rep 2
-    ./tools/run_eval.py launch --job custom-name --task build-cython-ext --reps 1
-    ./tools/run_eval.py launch --task crack-7z-hash --task fix-code-vulnerability --reps 1
-    ./tools/run_eval.py launch --plugin ~/git/superpowers --task build-cython-ext --reps 1
-    ./tools/run_eval.py launch --harness lace --reps 3
-    ./tools/run_eval.py launch --harness lace --task build-cython-ext --reps 1
-    ./tools/run_eval.py launch --harness lace --task discriminators --reps 3
-    ./tools/run_eval.py launch --list-tasks
-    ./tools/run_eval.py status --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
-    ./tools/run_eval.py collect --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
+    ./tools/eval/run_eval.py launch --ak reasoning_effort=medium
+    ./tools/eval/run_eval.py launch --ak reasoning_effort=medium --rep 2
+    ./tools/eval/run_eval.py launch --job custom-name --task build-cython-ext --reps 1
+    ./tools/eval/run_eval.py launch --task crack-7z-hash --task fix-code-vulnerability --reps 1
+    ./tools/eval/run_eval.py launch --plugin ~/git/superpowers --task build-cython-ext --reps 1
+    ./tools/eval/run_eval.py launch --harness lace --reps 3
+    ./tools/eval/run_eval.py launch --harness lace --task build-cython-ext --reps 1
+    ./tools/eval/run_eval.py launch --harness lace --task discriminators --reps 3
+    ./tools/eval/run_eval.py launch --list-tasks
+    ./tools/eval/run_eval.py status --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
+    ./tools/eval/run_eval.py collect --job serf_gpt-5.3-codex_medium_abc1234_20260302_1
 
 Job names are auto-generated as {harness}[+plugin1+plugin2]_{model}_{effort}_{git-sha}_{date}_{rep}
 unless --job is provided explicitly.
@@ -53,7 +53,7 @@ from eval_lib import (
 from task_sets import list_task_sets, resolve_tasks
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.dirname(SCRIPT_DIR)
+REPO_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 
 
 def cmd_launch(args):
@@ -154,8 +154,8 @@ def cmd_launch(args):
             )
             files_to_deploy = [
                 (binary_path, f"{REMOTE}:{run_stage_dir}/serf-linux-amd64"),
-                (f"{REPO_ROOT}/tools/serf_agent.py", f"{REMOTE}:{run_stage_dir}/serf_agent.py"),
-                (f"{REPO_ROOT}/tools/install-serf.sh.j2", f"{REMOTE}:{run_stage_dir}/install-serf.sh.j2"),
+                (f"{REPO_ROOT}/tools/eval/serf_agent.py", f"{REMOTE}:{run_stage_dir}/serf_agent.py"),
+                (f"{REPO_ROOT}/tools/eval/install-serf.sh.j2", f"{REMOTE}:{run_stage_dir}/install-serf.sh.j2"),
             ]
             for src, dst in files_to_deploy:
                 subprocess.run(["scp", src, dst], check=True)

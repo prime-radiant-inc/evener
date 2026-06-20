@@ -2,7 +2,7 @@
 """Analyze api.jsonl and transcript API call files from serf runs.
 
 Usage:
-  tools/api-log-analyze.py <api-log-file-or-dir> [options]
+  tools/transcripts/api-log-analyze.py <api-log-file-or-dir> [options]
 
 Options:
   --empty             Show only empty responses (no text, no tool calls)

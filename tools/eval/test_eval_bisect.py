@@ -176,12 +176,12 @@ class TestAgentRelevantPaths:
         for p in ["internal/bundled/plugins/coordinator-workflow/agents/implementer.md", "agent/subagents.go",
                    "cmd/serf/main.go", "llm/generate.go",
                    "go.mod", "go.sum",
-                   "tools/serf_agent.py", "tools/install-serf.sh.j2"]:
+                   "tools/eval/serf_agent.py", "tools/eval/install-serf.sh.j2"]:
             assert any(p.startswith(prefix) for prefix in AGENT_RELEVANT_PATHS), \
                 f"{p} should be agent-relevant"
 
     def test_non_agent_paths_excluded(self):
-        for p in ["docs/experiments/NOTEBOOK.md", "tools/eval_dashboard.py",
+        for p in ["docs/experiments/NOTEBOOK.md", "tools/eval/scoreboard.py",
                    "README.md", ".github/workflows/ci.yml"]:
             assert not any(p.startswith(prefix) for prefix in AGENT_RELEVANT_PATHS), \
                 f"{p} should NOT be agent-relevant"

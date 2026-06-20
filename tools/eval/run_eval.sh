@@ -2,13 +2,13 @@
 # Build and launch eval runs on AWS spot instances (one task per instance).
 #
 # Usage:
-#   ./tools/run_eval.sh                                     # all 89 tasks (3 reps)
-#   ./tools/run_eval.sh --tasks "chess-best-move,kv-store"  # specific tasks
-#   ./tools/run_eval.sh --tasks failing                     # all currently failing
-#   ./tools/run_eval.sh --tasks untested                    # all untested
-#   ./tools/run_eval.sh --tasks hard                        # historically hard 16
-#   ./tools/run_eval.sh --tasks vision                       # 9 tasks using vision side-channel
-#   ./tools/run_eval.sh --dry-run                           # preview without launching
+#   ./tools/eval/run_eval.sh                                     # all 89 tasks (3 reps)
+#   ./tools/eval/run_eval.sh --tasks "chess-best-move,kv-store"  # specific tasks
+#   ./tools/eval/run_eval.sh --tasks failing                     # all currently failing
+#   ./tools/eval/run_eval.sh --tasks untested                    # all untested
+#   ./tools/eval/run_eval.sh --tasks hard                        # historically hard 16
+#   ./tools/eval/run_eval.sh --tasks vision                       # 9 tasks using vision side-channel
+#   ./tools/eval/run_eval.sh --dry-run                           # preview without launching
 #
 # Options:
 #   --tasks STR        Comma-separated task names, or: failing, untested, hard
@@ -22,7 +22,7 @@
 #   --dry-run          Preview without launching
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HARBOR_DIR="${HARBOR_DIR:-$HOME/prime-radiant/harbor-runner}"
 
 # Defaults
@@ -201,8 +201,8 @@ AGENT_DIR="/tmp/eval-${RUN_ID}/agent"
 rm -rf "/tmp/eval-${RUN_ID}"
 mkdir -p "$AGENT_DIR"
 cp serf-linux-amd64 "$AGENT_DIR/"
-cp tools/serf_agent.py "$AGENT_DIR/"
-cp tools/install-serf.sh.j2 "$AGENT_DIR/"
+cp tools/eval/serf_agent.py "$AGENT_DIR/"
+cp tools/eval/install-serf.sh.j2 "$AGENT_DIR/"
 echo "  Staged to $AGENT_DIR"
 
 # --- Save launch metadata (post_run.sh reads this) ---
@@ -236,7 +236,7 @@ if $BACKFILL; then
     BACKFILL_FLAG="--backfill"
 fi
 
-LAUNCHER_CMD=(env PYTHONUNBUFFERED=1 python3 "$REPO_ROOT/tools/wave_launcher.py"
+LAUNCHER_CMD=(env PYTHONUNBUFFERED=1 python3 "$REPO_ROOT/tools/eval/wave_launcher.py"
     --run-id "$RUN_ID"
     --agent-dir "$AGENT_DIR"
     --model "$MODEL"

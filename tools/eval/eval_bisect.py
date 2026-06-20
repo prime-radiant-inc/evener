@@ -6,7 +6,7 @@ each candidate commit in a worktree, launches evals on AWS, polls for
 scores, and narrows the range until it finds the first bad commit.
 
 Usage:
-  python3 tools/eval_bisect.py \\
+  python3 tools/eval/eval_bisect.py \\
     --task build-cython-ext \\
     --good 7ead614 \\
     --bad HEAD \\
@@ -14,7 +14,7 @@ Usage:
     --threshold 0.8
 
   # Preview without launching:
-  python3 tools/eval_bisect.py --task X --good A --bad B --dry-run
+  python3 tools/eval/eval_bisect.py --task X --good A --bad B --dry-run
 """
 
 import argparse
@@ -31,13 +31,14 @@ AGENT_RELEVANT_PATHS = [
     "agent/",
     "cmd/",
     "llm/",
+    "internal/bundled/",
     "go.mod",
     "go.sum",
-    "tools/serf_agent.py",
-    "tools/install-serf.sh.j2",
+    "tools/eval/serf_agent.py",
+    "tools/eval/install-serf.sh.j2",
 ]
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HARBOR_DIR_DEFAULT = os.path.expanduser("~/prime-radiant/harbor-runner")
 
 
@@ -251,7 +252,7 @@ def launch_eval(run_id, agent_dir, task, reps, model, instance_type, max_vcpu, h
     """Launch eval via wave_launcher.py. Streams output to stdout."""
     cmd = [
         sys.executable, "-u",  # unbuffered
-        os.path.join(REPO_ROOT, "tools", "wave_launcher.py"),
+        os.path.join(REPO_ROOT, "tools", "eval", "wave_launcher.py"),
         "--run-id", run_id,
         "--agent-dir", agent_dir,
         "--model", model,
@@ -273,7 +274,7 @@ def poll_scores(run_id, task, expected_reps, timeout=3600, interval=30):
     """Poll S3 for scores until all reps complete or timeout."""
     # Import wave_scores from the tools directory
     spec = importlib.util.spec_from_file_location(
-        "wave_scores", os.path.join(REPO_ROOT, "tools", "wave_scores.py"))
+        "wave_scores", os.path.join(REPO_ROOT, "tools", "eval", "wave_scores.py"))
     ws = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ws)
 

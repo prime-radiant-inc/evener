@@ -2,8 +2,8 @@
 """Side-by-side comparison of multiple waves.
 
 Usage:
-    ./tools/wave_compare.py WAVE1 WAVE2 [WAVE3 ...]
-    ./tools/wave_compare.py --labels "control,27a,27b,27d" WAVE1 WAVE2 WAVE3 WAVE4
+    ./tools/eval/wave_compare.py WAVE1 WAVE2 [WAVE3 ...]
+    ./tools/eval/wave_compare.py --labels "control,27a,27b,27d" WAVE1 WAVE2 WAVE3 WAVE4
 
 Shows summary stats for each wave plus per-task comparison.
 """
@@ -18,7 +18,7 @@ from pathlib import Path
 def get_wave_scores(wave_id: str) -> dict:
     """Run wave_scores.py --json and normalize to {task: {reps: [...]}}."""
     result = subprocess.run(
-        ["./tools/wave_scores.py", wave_id, "--json"],
+        ["./tools/eval/wave_scores.py", wave_id, "--json"],
         capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
@@ -45,7 +45,7 @@ def get_wave_scores(wave_id: str) -> dict:
 
 def _parse_text_output(wave_id: str) -> dict:
     result = subprocess.run(
-        ["./tools/wave_scores.py", wave_id],
+        ["./tools/eval/wave_scores.py", wave_id],
         capture_output=True, text=True, check=False,
     )
     tasks = {}

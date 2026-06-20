@@ -2,11 +2,11 @@
 """Display the eval scoreboard and per-task history.
 
 Usage:
-    ./tools/scoreboard.py                     # Full matrix
-    ./tools/scoreboard.py --task kv-store-grpc  # Single task history
-    ./tools/scoreboard.py --failing           # Tasks with score < 1.0
-    ./tools/scoreboard.py --untested          # Tasks not yet tested
-    ./tools/scoreboard.py --solved            # Tasks with score == 1.0
+    ./tools/eval/scoreboard.py                     # Full matrix
+    ./tools/eval/scoreboard.py --task kv-store-grpc  # Single task history
+    ./tools/eval/scoreboard.py --failing           # Tasks with score < 1.0
+    ./tools/eval/scoreboard.py --untested          # Tasks not yet tested
+    ./tools/eval/scoreboard.py --solved            # Tasks with score == 1.0
 """
 
 import argparse
@@ -14,7 +14,7 @@ import json
 import sys
 from pathlib import Path
 
-SERF_ROOT = Path(__file__).resolve().parent.parent
+SERF_ROOT = Path(__file__).resolve().parent.parent.parent
 METADATA_DIR = SERF_ROOT / "docs" / "experiments"
 SCOREBOARD_PATH = METADATA_DIR / "scoreboard.json"
 TASKS_DIR = METADATA_DIR / "tasks"

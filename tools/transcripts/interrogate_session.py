@@ -7,22 +7,22 @@ original session — same system prompt, same tool calls, same results.
 
 Usage:
     # List sessions for a rep
-    python3 tools/interrogate_session.py \
+    python3 tools/transcripts/interrogate_session.py \
         --run v10-deleg-goldplate --rep 1 --task chess-best-move --list-sessions
 
     # Interrogate coordinator (default)
-    python3 tools/interrogate_session.py \
+    python3 tools/transcripts/interrogate_session.py \
         --run v10-deleg-goldplate --rep 3 --task chess-best-move \
         --question "Why did you not delegate?"
 
     # Interrogate a subagent by session ID (prefix match)
-    python3 tools/interrogate_session.py \
+    python3 tools/transcripts/interrogate_session.py \
         --run v10-deleg-goldplate --rep 1 --task chess-best-move \
         --session 01KMPF5M \
         --question "Why did you override the computational proof?"
 
     # Interrogate subagent by index (from --list-sessions output)
-    python3 tools/interrogate_session.py \
+    python3 tools/transcripts/interrogate_session.py \
         --run v10-deleg-goldplate --rep 1 --task chess-best-move \
         --session 2 \
         --question "Why did you override the computational proof?"

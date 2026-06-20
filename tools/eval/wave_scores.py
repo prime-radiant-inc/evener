@@ -5,13 +5,13 @@ Pulls result.json files directly from S3 — no local download needed.
 Groups by task with per-rep breakdown and summary stats.
 
 Usage:
-    ./tools/wave_scores.py WAVE_ID
-    ./tools/wave_scores.py WAVE_ID --json
-    ./tools/wave_scores.py  # auto-detects most recent wave from .serf-launches/
+    ./tools/eval/wave_scores.py WAVE_ID
+    ./tools/eval/wave_scores.py WAVE_ID --json
+    ./tools/eval/wave_scores.py  # auto-detects most recent wave from .serf-launches/
 
 Examples:
-    ./tools/wave_scores.py wave-625cbaf-20260331-1616
-    ./tools/wave_scores.py wave-625cbaf-20260331-1616 --json
+    ./tools/eval/wave_scores.py wave-625cbaf-20260331-1616
+    ./tools/eval/wave_scores.py wave-625cbaf-20260331-1616 --json
 """
 
 import argparse
@@ -52,7 +52,7 @@ def s3_get_json(key: str) -> dict | None:
 
 
 def launches_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / ".serf-launches"
+    return Path(__file__).resolve().parent.parent.parent / ".serf-launches"
 
 
 def find_latest_wave() -> str | None:

@@ -36,7 +36,7 @@ cd {REPO_PATH} && set -a && source .env && set +a
 
 ```bash
 # For each rep:
-python3 tools/read_transcript.py --run {WAVE_ID} --rep {REP} --task {TASK_NAME} --list-sessions
+python3 tools/transcripts/read_transcript.py --run {WAVE_ID} --rep {REP} --task {TASK_NAME} --list-sessions
 ```
 
 Note the session numbers for the implementer, verifier, and coordinator in each rep.
@@ -44,7 +44,7 @@ Note the session numbers for the implementer, verifier, and coordinator in each 
 **Step 2: Read the implementer transcript for one failing rep**
 
 ```bash
-python3 tools/read_transcript.py --run {WAVE_ID} --rep {FAIL_REP} --task {TASK_NAME} \
+python3 tools/transcripts/read_transcript.py --run {WAVE_ID} --rep {FAIL_REP} --task {TASK_NAME} \
     --session {IMPLEMENTER_SESSION} --full --limit 50
 ```
 
@@ -56,7 +56,7 @@ Find the FIRST wrong decision. Write it down:
 You MUST actually run this tool. Do NOT simulate, imagine, or skip this step.
 
 ```bash
-python3 tools/interrogate_session.py \
+python3 tools/transcripts/interrogate_session.py \
     --run {WAVE_ID} --rep {FAIL_REP} --task {TASK_NAME} \
     --session {IMPLEMENTER_SESSION} \
     --question "We're conducting a blameless postmortem. You [specific wrong
@@ -69,7 +69,7 @@ python3 tools/interrogate_session.py \
 **Step 4: Read the verifier transcript for that failing rep**
 
 ```bash
-python3 tools/read_transcript.py --run {WAVE_ID} --rep {FAIL_REP} --task {TASK_NAME} \
+python3 tools/transcripts/read_transcript.py --run {WAVE_ID} --rep {FAIL_REP} --task {TASK_NAME} \
     --session {VERIFIER_SESSION} --full --limit 50
 ```
 
@@ -78,7 +78,7 @@ Find what the verifier tested and what it MISSED.
 **Step 5: INTERROGATE the failing verifier (MANDATORY)**
 
 ```bash
-python3 tools/interrogate_session.py \
+python3 tools/transcripts/interrogate_session.py \
     --run {WAVE_ID} --rep {FAIL_REP} --task {TASK_NAME} \
     --session {VERIFIER_SESSION} \
     --question "We're conducting a blameless postmortem. The implementer's
@@ -99,7 +99,7 @@ Read the passing implementer transcript. Find what it did differently at
 the divergence point from step 2. Then interrogate:
 
 ```bash
-python3 tools/interrogate_session.py \
+python3 tools/transcripts/interrogate_session.py \
     --run {WAVE_ID} --rep {PASS_REP} --task {TASK_NAME} \
     --session {IMPLEMENTER_SESSION} \
     --question "You got this right where other reps didn't. At [divergence

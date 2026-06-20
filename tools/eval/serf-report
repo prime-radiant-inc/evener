@@ -2,12 +2,12 @@
 """Eval analytics and regression detection.
 
 Usage:
-    ./tools/serf-report compare CURRENT BASELINE
-    ./tools/serf-report regressions [--since WAVE] [--threshold N]
-    ./tools/serf-report history TASK [TASK...]
-    ./tools/serf-report cost RUN_ID [--task TASK] [--vs WAVE]
-    ./tools/serf-report dashboard [--runs W1,W2,...] [-o PATH]
-    ./tools/serf-report summary RUN_ID [--vs WAVE]
+    ./tools/eval/serf-report compare CURRENT BASELINE
+    ./tools/eval/serf-report regressions [--since WAVE] [--threshold N]
+    ./tools/eval/serf-report history TASK [TASK...]
+    ./tools/eval/serf-report cost RUN_ID [--task TASK] [--vs WAVE]
+    ./tools/eval/serf-report dashboard [--runs W1,W2,...] [-o PATH]
+    ./tools/eval/serf-report summary RUN_ID [--vs WAVE]
 """
 
 import argparse
@@ -19,7 +19,7 @@ import sys
 from html import escape as html_escape
 from pathlib import Path
 
-SERF_ROOT = Path(__file__).resolve().parent.parent
+SERF_ROOT = Path(__file__).resolve().parent.parent.parent
 METADATA_DIR = SERF_ROOT / "docs" / "experiments"
 TASKS_DIR = METADATA_DIR / "tasks"
 RUNS_DIR = METADATA_DIR / "runs"

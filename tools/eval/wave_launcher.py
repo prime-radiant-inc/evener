@@ -477,8 +477,8 @@ def main():
 
     print()
     print("Next steps:")
-    print(f"  ./tools/run_status.sh {args.run_id}")
-    print(f"  ./tools/post_run.sh {args.run_id}")
+    print(f"  ./tools/eval/run_status.sh {args.run_id}")
+    print(f"  ./tools/eval/post_run.sh {args.run_id}")
 
 
 if __name__ == "__main__":

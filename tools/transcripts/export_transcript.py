@@ -6,10 +6,10 @@ run/rep/task and renders them as a navigable HTML page with session
 hierarchy, tool calls, text output, and token usage.
 
 Usage:
-    python3 tools/export_transcript.py \
+    python3 tools/transcripts/export_transcript.py \
         --run wave-121bc79-20260330-0549 --rep 1 --task cobol-modernization
 
-    python3 tools/export_transcript.py \
+    python3 tools/transcripts/export_transcript.py \
         --run wave-121bc79-20260330-0549 --rep 1 --task cobol-modernization \
         --output transcript.html
 """

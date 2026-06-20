@@ -7,19 +7,19 @@ instance** (`--wave` mode). Never batch multiple tasks on one instance.
 
 ### Full eval (all 89 tasks × 3 reps)
 ```bash
-./tools/run_eval.sh --wave                    # build, stage, launch
-./tools/run_eval.sh --wave --dry-run          # preview without launching
-./tools/run_eval.sh --wave --reps 5           # more reps
+./tools/eval/run_eval.sh --wave                    # build, stage, launch
+./tools/eval/run_eval.sh --wave --dry-run          # preview without launching
+./tools/eval/run_eval.sh --wave --reps 5           # more reps
 ```
 Saves launch metadata to `.serf-launches/` for `post_run.sh` to read.
 
 ### Subset of tasks
 ```bash
-./tools/run_eval.sh --wave --tasks "chess-best-move,kv-store-grpc"
-./tools/run_eval.sh --wave --tasks failing       # all currently failing
-./tools/run_eval.sh --wave --tasks untested      # all untested
-./tools/run_eval.sh --wave --tasks hard          # historically hard 16
-./tools/run_eval.sh --wave --tasks failing --dry-run  # preview
+./tools/eval/run_eval.sh --wave --tasks "chess-best-move,kv-store-grpc"
+./tools/eval/run_eval.sh --wave --tasks failing       # all currently failing
+./tools/eval/run_eval.sh --wave --tasks untested      # all untested
+./tools/eval/run_eval.sh --wave --tasks hard          # historically hard 16
+./tools/eval/run_eval.sh --wave --tasks failing --dry-run  # preview
 ```
 
 ### Local coordinator delegation test (~2 min/run)
@@ -33,9 +33,9 @@ Binary signal: DELEGATE vs BYPASS. For fast iteration on coordinator prompts.
 ## Post-experiment workflow
 
 ```bash
-./tools/run_status.sh RUN_ID                             # live instance status
-./tools/post_run.sh RUN_ID --variant "description"       # collect + diff
-./tools/interrogate_failures.sh RUN_ID                   # auto-interrogate
+./tools/eval/run_status.sh RUN_ID                             # live instance status
+./tools/eval/post_run.sh RUN_ID --variant "description"       # collect + diff
+./tools/transcripts/interrogate_failures.sh RUN_ID                   # auto-interrogate
 git add docs/experiments/ && git commit -m "results: RUN_ID"
 ```
 
@@ -46,30 +46,30 @@ was launched with `run_eval.sh`.
 
 ```bash
 # List sessions
-python3 tools/interrogate_session.py \
+python3 tools/transcripts/interrogate_session.py \
     --run RUN_ID --rep REP --task TASK --list-sessions
 
 # Interrogate coordinator (default)
-python3 tools/interrogate_session.py \
+python3 tools/transcripts/interrogate_session.py \
     --run RUN_ID --rep REP --task TASK \
     --question "Why did you not delegate?"
 
 # Interrogate subagent by index
-python3 tools/interrogate_session.py \
+python3 tools/transcripts/interrogate_session.py \
     --run RUN_ID --rep REP --task TASK --session 2 \
     --question "Why did you override the correct answer?"
 
 # Auto-interrogate ALL failures (coordinator + subagents)
-./tools/interrogate_failures.sh RUN_ID
+./tools/transcripts/interrogate_failures.sh RUN_ID
 ```
 
 ## Scoreboard
 
 ```bash
-./tools/scoreboard.py                         # full 89-task matrix
-./tools/scoreboard.py --task TASK             # single task history
-./tools/scoreboard.py --failing               # tasks with score < 1.0
-./tools/scoreboard.py --sort score            # sorted by score
+./tools/eval/scoreboard.py                         # full 89-task matrix
+./tools/eval/scoreboard.py --task TASK             # single task history
+./tools/eval/scoreboard.py --failing               # tasks with score < 1.0
+./tools/eval/scoreboard.py --sort score            # sorted by score
 ```
 
 ## Results system

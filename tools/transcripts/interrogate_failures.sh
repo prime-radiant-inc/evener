@@ -2,7 +2,7 @@
 # Auto-interrogate all failures in a completed eval run.
 #
 # Usage:
-#   ./tools/interrogate_failures.sh RUN_ID [--question "custom question"]
+#   ./tools/transcripts/interrogate_failures.sh RUN_ID [--question "custom question"]
 #
 # For each failing rep, runs interrogate_session.py with standard questions
 # against the coordinator. Outputs a summary of all interrogation results.
@@ -13,7 +13,7 @@
 #   - serf binary built (uses local serf for resume)
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 RUN_ID="${1:?Usage: interrogate_failures.sh RUN_ID [--question \"...\"]}"
@@ -84,7 +84,7 @@ while IFS=$'\t' read -r task rep; do
     echo "=== $task rep $rep ==="
 
     # List all sessions for this rep
-    SESSIONS_OUTPUT=$(python3 tools/interrogate_session.py \
+    SESSIONS_OUTPUT=$(python3 tools/transcripts/interrogate_session.py \
         --run "$RUN_ID" --rep "$rep" --task "$task" --list-sessions 2>&1) || true
     echo "$SESSIONS_OUTPUT"
     echo ""
@@ -103,7 +103,7 @@ while IFS=$'\t' read -r task rep; do
         Q_ARGS+=(--question "$q")
     done
 
-    python3 tools/interrogate_session.py \
+    python3 tools/transcripts/interrogate_session.py \
         --run "$RUN_ID" --rep "$rep" --task "$task" \
         "${Q_ARGS[@]}" \
         2>&1 | tee "$OUTFILE" | tail -5
@@ -125,7 +125,7 @@ while IFS=$'\t' read -r task rep; do
                 Q_ARGS+=(--question "$CUSTOM_Q")
             fi
 
-            python3 tools/interrogate_session.py \
+            python3 tools/transcripts/interrogate_session.py \
                 --run "$RUN_ID" --rep "$rep" --task "$task" \
                 --session "$idx" \
                 "${Q_ARGS[@]}" \

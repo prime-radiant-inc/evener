@@ -22,66 +22,66 @@ scoring script (`grep`/`jq`/Python), use the same rule.
 
 ### Compare two runs
 ```bash
-./tools/serf-report compare CURRENT_WAVE BASELINE_WAVE
-./tools/serf-report compare CURRENT BASELINE --only regressed    # just regressions
-./tools/serf-report compare CURRENT BASELINE --include-reps      # show per-rep breakdown
-./tools/serf-report compare CURRENT BASELINE --format json       # machine-readable
-./tools/serf-report compare CURRENT BASELINE --min-delta 0.33    # skip small changes
+./tools/eval/serf-report compare CURRENT_WAVE BASELINE_WAVE
+./tools/eval/serf-report compare CURRENT BASELINE --only regressed    # just regressions
+./tools/eval/serf-report compare CURRENT BASELINE --include-reps      # show per-rep breakdown
+./tools/eval/serf-report compare CURRENT BASELINE --format json       # machine-readable
+./tools/eval/serf-report compare CURRENT BASELINE --min-delta 0.33    # skip small changes
 ```
 
 ### Find regressions (tasks below historical best)
 ```bash
-./tools/serf-report regressions                        # all regressions
-./tools/serf-report regressions --since WAVE           # only count runs after WAVE
-./tools/serf-report regressions --threshold 0.33       # skip small regressions
+./tools/eval/serf-report regressions                        # all regressions
+./tools/eval/serf-report regressions --since WAVE           # only count runs after WAVE
+./tools/eval/serf-report regressions --threshold 0.33       # skip small regressions
 ```
 
 ### Task history with regression markers
 ```bash
-./tools/serf-report history TASK_NAME
-./tools/serf-report history task1 task2 task3          # multiple tasks
+./tools/eval/serf-report history TASK_NAME
+./tools/eval/serf-report history task1 task2 task3          # multiple tasks
 ```
 
 ### Token and dollar costs
 ```bash
-./tools/serf-report cost WAVE                          # run summary
-./tools/serf-report cost WAVE --task TASK              # per-rep breakdown
-./tools/serf-report cost WAVE --vs OTHER_WAVE          # cost comparison
-./tools/serf-report cost WAVE --sort cost              # sort by most expensive
+./tools/eval/serf-report cost WAVE                          # run summary
+./tools/eval/serf-report cost WAVE --task TASK              # per-rep breakdown
+./tools/eval/serf-report cost WAVE --vs OTHER_WAVE          # cost comparison
+./tools/eval/serf-report cost WAVE --sort cost              # sort by most expensive
 ```
 
 ### Generate HTML dashboard
 ```bash
-./tools/serf-report dashboard                          # from current data
-./tools/serf-report dashboard --runs W1,W2,W3 --labels "L1,L2,L3"
-./tools/serf-report dashboard --include-cost           # add cost column
-./tools/serf-report dashboard -o path/to/dashboard.html
+./tools/eval/serf-report dashboard                          # from current data
+./tools/eval/serf-report dashboard --runs W1,W2,W3 --labels "L1,L2,L3"
+./tools/eval/serf-report dashboard --include-cost           # add cost column
+./tools/eval/serf-report dashboard -o path/to/dashboard.html
 ```
 
 ### One-page markdown summary
 ```bash
-./tools/serf-report summary WAVE
-./tools/serf-report summary WAVE --vs BASELINE         # with comparison
+./tools/eval/serf-report summary WAVE
+./tools/eval/serf-report summary WAVE --vs BASELINE         # with comparison
 ```
 
 ## scoreboard.py — Current Scores
 
 ```bash
-./tools/scoreboard.py                         # full 89-task matrix
-./tools/scoreboard.py --task TASK_NAME        # single task history
-./tools/scoreboard.py --failing               # tasks with score < 1.0
-./tools/scoreboard.py --solved                # tasks with score == 1.0
-./tools/scoreboard.py --sort score            # sort by score descending
+./tools/eval/scoreboard.py                         # full 89-task matrix
+./tools/eval/scoreboard.py --task TASK_NAME        # single task history
+./tools/eval/scoreboard.py --failing               # tasks with score < 1.0
+./tools/eval/scoreboard.py --solved                # tasks with score == 1.0
+./tools/eval/scoreboard.py --sort score            # sort by score descending
 ```
 
 ## run_eval.sh — Launch Evals
 
 ```bash
-./tools/run_eval.sh --wave                              # full 89-task eval
-./tools/run_eval.sh --wave --tasks "t1,t2"              # specific tasks
-./tools/run_eval.sh --wave --tasks failing              # all currently failing
-./tools/run_eval.sh --wave --tasks "t1,t2" --reps 3     # explicit rep count
-./tools/run_eval.sh --wave --tasks "t1" --dry-run       # preview without launching
+./tools/eval/run_eval.sh --wave                              # full 89-task eval
+./tools/eval/run_eval.sh --wave --tasks "t1,t2"              # specific tasks
+./tools/eval/run_eval.sh --wave --tasks failing              # all currently failing
+./tools/eval/run_eval.sh --wave --tasks "t1,t2" --reps 3     # explicit rep count
+./tools/eval/run_eval.sh --wave --tasks "t1" --dry-run       # preview without launching
 ```
 
 **Rules:**
@@ -95,8 +95,8 @@ scoring script (`grep`/`jq`/Python), use the same rule.
 ## post_run.sh — Collect Results
 
 ```bash
-./tools/post_run.sh WAVE_ID                             # collect + scoreboard diff
-./tools/post_run.sh WAVE_ID --variant "description"     # with variant label
+./tools/eval/post_run.sh WAVE_ID                             # collect + scoreboard diff
+./tools/eval/post_run.sh WAVE_ID --variant "description"     # with variant label
 ```
 
 Auto-reads model/SHA/branch from `.serf-launches/` if launched with `run_eval.sh`.
@@ -105,22 +105,22 @@ Auto-reads model/SHA/branch from `.serf-launches/` if launched with `run_eval.sh
 
 ```bash
 # List all sessions for a rep
-python3 tools/interrogate_session.py \
+python3 tools/transcripts/interrogate_session.py \
     --run WAVE --rep N --task TASK --list-sessions
 
 # Interrogate coordinator (default)
-python3 tools/interrogate_session.py \
+python3 tools/transcripts/interrogate_session.py \
     --run WAVE --rep N --task TASK \
     --question "Why did you not delegate?"
 
 # Interrogate a subagent by index
-python3 tools/interrogate_session.py \
+python3 tools/transcripts/interrogate_session.py \
     --run WAVE --rep N --task TASK \
     --session 2 \
     --question "Your prompt says X. Why did you do Y instead?"
 
 # Auto-interrogate all failures
-./tools/interrogate_failures.sh WAVE_ID
+./tools/transcripts/interrogate_failures.sh WAVE_ID
 ```
 
 **Requires API keys:** `set -a; source .env; set +a` before running.
@@ -137,25 +137,25 @@ download. After that, transcripts are cached locally.
 
 ```bash
 # List sessions
-python3 tools/read_transcript.py --run WAVE --rep N --task TASK --list-sessions
+python3 tools/transcripts/read_transcript.py --run WAVE --rep N --task TASK --list-sessions
 
 # Coordinator tool calls
-python3 tools/read_transcript.py --run WAVE --rep N --task TASK --tool-calls
+python3 tools/transcripts/read_transcript.py --run WAVE --rep N --task TASK --tool-calls
 
 # Specific session tool calls
-python3 tools/read_transcript.py --run WAVE --rep N --task TASK --session 0 --tool-calls
+python3 tools/transcripts/read_transcript.py --run WAVE --rep N --task TASK --session 0 --tool-calls
 
 # System prompt
-python3 tools/read_transcript.py --run WAVE --rep N --task TASK --session 0 --system-prompt
+python3 tools/transcripts/read_transcript.py --run WAVE --rep N --task TASK --session 0 --system-prompt
 
 # Delegation message
-python3 tools/read_transcript.py --run WAVE --rep N --task TASK --delegation
+python3 tools/transcripts/read_transcript.py --run WAVE --rep N --task TASK --delegation
 
 # Verifier output
-python3 tools/read_transcript.py --run WAVE --rep N --task TASK --verifier
+python3 tools/transcripts/read_transcript.py --run WAVE --rep N --task TASK --verifier
 
 # Full transcript dump
-python3 tools/read_transcript.py --run WAVE --rep N --task TASK --session 0 --full --limit 20
+python3 tools/transcripts/read_transcript.py --run WAVE --rep N --task TASK --session 0 --full --limit 20
 ```
 
 ## Binary Verification
