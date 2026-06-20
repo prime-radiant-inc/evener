@@ -192,11 +192,11 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"this also grants that observer read access to the observed job. Observer callback flow: trigger frame reaches " +
 		"the observer, the observer calls `delegate_send(to=\"caller\")`, and the caller continues from that callback. " +
 		"The callback is completion evidence for the observer's task; after it arrives, produce one final result unless the user asked for audit details. " +
-		"Use `job_list`/`job_read_output` after the callback when you need audit evidence. Choose one common sidecar shape: " +
+		"For normal callback flow, the callback-to-final-result path is complete; audit tools are for explicit audit requests or failed/missing callbacks. Choose one common sidecar shape: " +
 		"communicate results/status use `target=\"caller\", events=[\"communicate\"], send.to=<delegate_id>`; " +
 		"tool events use `target=\"caller\", events=[\"assistant.tool\"], event_filter={\"tool_name\":\"read_file\",\"status\":\"ok\"}, send.to=<delegate_id>`. " +
 		"For communicate content such as APPROVAL_REQUEST, the observer task checks the delivered `event.message`. Frames coalesce latest-wins while the target is " +
-		"busy. For target values that start with `job_`, `include_excerpt` attaches a bounded output excerpt. Caller/session-target event frames already carry bounded event payloads. ONE active watch per " +
+		"busy. Use `send.include_excerpt` only when `target` starts with `job_`; for `target=\"caller\"`, use `send.to` without an excerpt. Caller/session-target event frames already carry bounded event payloads. ONE active watch per " +
 		"(target, send.to): a different configuration for the same key replaces the existing watch " +
 		"(`replaced_existing:true`) — use a distinct `send.to` for an additional watch on the same target. " +
 		"`operation=\"clear\"` removes a watch by `watch_id`."
@@ -238,7 +238,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 					"properties": map[string]any{
 						"to":              map[string]any{"type": "string", "description": "delegate_id, or `caller`."},
 						"message":         map[string]any{"type": "string"},
-						"include_excerpt": map[string]any{"type": "boolean", "description": "For target values that start with job_, attach a bounded output excerpt to delivered frames. Caller/session-target event frames already include the event payload."},
+						"include_excerpt": map[string]any{"type": "boolean", "description": "Only for target values that start with job_; attaches a bounded output excerpt to delivered frames. For target \"caller\", omit this because session-event frames already include the event payload."},
 					},
 				},
 			},
@@ -496,6 +496,10 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 						},
 					},
 					"required": []string{"message", "data", "artifacts"},
+				},
+				"purpose": map[string]any{
+					"type":        "string",
+					"description": "Top-level reason for this communicate call, placed beside message, await_reply, and output. The output object contains only message, data, and artifacts.",
 				},
 			},
 			"required": []string{"message", "await_reply", "output"},

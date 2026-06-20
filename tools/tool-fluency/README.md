@@ -79,6 +79,21 @@ Use `--probe <id>` for a single probe. The runner writes per-repetition
 `result.json`, `stdout.txt`, `stderr.ndjson`, plus run-level `results.jsonl` and
 `summary.json`.
 
+To test prompt or tool-description improvements without editing the product
+prompt first, pass one or more append files:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency run \
+  --model openai/gpt-5.4-mini \
+  --probe read_file.happy_path \
+  --system-prompt-append tools/tool-fluency/variants/example.md \
+  --out /tmp/serf-fluency-example
+```
+
+Keep each append file atomic. A useful campaign changes one guidance surface at
+a time, then reruns the same probe/model/harness that exposed the failure. Store
+reusable variants under `tools/tool-fluency/variants/`.
+
 For callback or notification workflows, use the live in-process harness. The
 default CLI harness intentionally matches one-shot `serf` behavior and closes
 the session after the root turn; that is useful for ordinary tool probes but

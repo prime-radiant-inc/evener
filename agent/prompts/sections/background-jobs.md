@@ -33,13 +33,27 @@ Observer sidecars: start a delegate as the observer, then
 pushes the observer a bounded frame; the observer can read the watched job
 directly with `job_read_output` and report to you with
 `delegate_send(to="caller")`. That caller message is the observer callback:
-when it arrives, continue from that steering. The happy path is create the
-observer, create the watch, trigger the watched condition, and let the callback
-drive the next step. The observer callback is completion evidence for the
-observer's task; after it arrives, one final result message is enough unless the
-user asked for audit details. Use `job_list` or `job_read_output` afterward when
-you need explicit audit/diagnosis evidence. Frames coalesce while the observer
-is busy — it sees the latest state, not a backlog. Watching your own
+when it arrives, continue from that steering.
+
+For watch-driven tasks, complete this sequence:
+
+1. Start the observer.
+2. Wait for observer readiness.
+3. Create the watch.
+4. Trigger the watched action.
+5. Finish from the callback message.
+
+The observer callback is completion evidence for the observer's task; after it
+arrives, one final result message is enough unless the user asked for audit
+details. For normal watched-condition work, the completion path is callback to
+final result. Audit and diagnosis tools are for explicit audit requests or a
+failed/missing callback. For `job_watch` create calls, keep operation fields at
+the top level (`operation`, `target`, `events`, `event_filter`) and delivery
+fields under `send`. For `target:"caller"` or other session-event watches,
+delivery is `send.to`; output excerpts apply to concrete job-output watches. If
+validation reports unknown top-level fields, rebuild the create call from those
+field groups. Frames coalesce while the observer is busy — it sees the latest
+state, not a backlog. Watching your own
 self-generated events with delivery back to yourself is rejected: that is a
 feedback loop, not observation. Use `events: ["communicate"]` for explicit
 result/status messages sent through the result tool; `communicate` is the
@@ -55,11 +69,9 @@ delegate can arrive as confirmation of work already represented by the delegate
 result or callback job. The callback steering carrying the observer's packet is
 the next actionable signal.
 
-Observer setup is sequential when the trigger depends on the watch existing:
-start the observer and receive its readiness result, create the watch and receive
-the `watch_id`, then trigger the watched event in the following response. After
-the trigger, Serf yields the caller turn when the frame is handed to the observer;
-continue from the observer callback when it arrives, then finish once.
+Observer setup is sequential when the trigger depends on the watch existing.
+After the trigger, Serf yields the caller turn when the frame is handed to the
+observer; continue from the observer callback when it arrives, then finish once.
 
 `job_stop` cancels and preserves output/history. A finished delegate remains
 resumable — `delegate_send(to=<delegate_id>, on_idle="start")` starts its next

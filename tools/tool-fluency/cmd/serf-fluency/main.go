@@ -178,19 +178,20 @@ type artifactExpect struct {
 }
 
 type runConfig struct {
-	model             string
-	fastCheapModel    string
-	harness           string
-	probesDir         string
-	probeFilter       string
-	outDir            string
-	serfBin           string
-	build             bool
-	repetitions       int
-	timeout           time.Duration
-	postTurnWait      time.Duration
-	reasoningEffort   string
-	clearOpenAIAPIKey bool
+	model              string
+	fastCheapModel     string
+	harness            string
+	probesDir          string
+	probeFilter        string
+	outDir             string
+	serfBin            string
+	systemPromptAppend []string
+	build              bool
+	repetitions        int
+	timeout            time.Duration
+	postTurnWait       time.Duration
+	reasoningEffort    string
+	clearOpenAIAPIKey  bool
 }
 
 func runSuite(args []string) error {
@@ -203,6 +204,8 @@ func runSuite(args []string) error {
 	fs.StringVar(&cfg.probeFilter, "probe", "all", "probe id or all")
 	fs.StringVar(&cfg.outDir, "out", "", "result directory")
 	fs.StringVar(&cfg.serfBin, "serf-bin", "", "serf binary to run")
+	var systemPromptAppend cmdutil.StringSliceFlag
+	fs.Var(&systemPromptAppend, "system-prompt-append", "path to append to system prompt (repeatable)")
 	fs.BoolVar(&cfg.build, "build", false, "build a fresh serf binary before running")
 	fs.IntVar(&cfg.repetitions, "repetitions", 1, "repetitions per probe")
 	fs.DurationVar(&cfg.timeout, "timeout", 8*time.Minute, "timeout per probe repetition")
@@ -212,6 +215,7 @@ func runSuite(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	cfg.systemPromptAppend = []string(systemPromptAppend)
 	if cfg.repetitions < 1 {
 		return errors.New("--repetitions must be >= 1")
 	}
@@ -424,11 +428,25 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 }
 
 func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeResult, stdout, stderr *bytes.Buffer) error {
-	args := []string{
-		"--model", cfg.model,
+	cmd := exec.CommandContext(ctx, cfg.serfBin, cliProbeArgs(cfg, probe, res)...)
+	cmd.Env = os.Environ()
+	if cfg.clearOpenAIAPIKey {
+		cmd.Env = append(cmd.Env, "OPENAI_API_KEY=")
 	}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
+
+func cliProbeArgs(cfg runConfig, probe probeFile, res probeResult) []string {
+	args := []string{"--model", cfg.model}
 	if strings.TrimSpace(cfg.fastCheapModel) != "" {
 		args = append(args, "--fast-cheap-model", cfg.fastCheapModel)
+	}
+	for _, path := range cfg.systemPromptAppend {
+		if strings.TrimSpace(path) != "" {
+			args = append(args, "--system-prompt-append", path)
+		}
 	}
 	args = append(args,
 		"--dir", res.WorkDir,
@@ -440,14 +458,7 @@ func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeR
 		"--verbose",
 		probe.Prompt,
 	)
-	cmd := exec.CommandContext(ctx, cfg.serfBin, args...)
-	cmd.Env = os.Environ()
-	if cfg.clearOpenAIAPIKey {
-		cmd.Env = append(cmd.Env, "OPENAI_API_KEY=")
-	}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	return cmd.Run()
+	return args
 }
 
 type liveKick struct {
@@ -493,6 +504,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 		MaxToolRoundsPerInput: cmdutil.MaxRoundsToConfig(80),
 		StateDir:              res.StateDir,
 		NoProjectPrompts:      true,
+		SystemPromptAppend:    cfg.systemPromptAppend,
 		NonInteractive:        true,
 		ContextStrategy:       "compact",
 		ResolveProfile:        cmdutil.BuildResolveProfile(provCfg, hasProvConfig),

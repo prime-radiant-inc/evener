@@ -324,6 +324,12 @@ func TestDefJobWatchDescriptionIncludesCoalesceContract(t *testing.T) {
 			t.Fatalf("send.to description must not mention %q: %q", banned, toDesc)
 		}
 	}
+	excerptDesc := sendProps["include_excerpt"].(map[string]any)["description"].(string)
+	for _, want := range []string{"target \"caller\"", "omit"} {
+		if !strings.Contains(excerptDesc, want) {
+			t.Fatalf("send.include_excerpt description = %q, want %q", excerptDesc, want)
+		}
+	}
 }
 
 // TestTranscriptToolDefinitions locks the two-tool surface: correct names, strict

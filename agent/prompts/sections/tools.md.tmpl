@@ -2,8 +2,9 @@
 
 - Tool descriptions are authoritative for tool-specific semantics and argument rules.
 - When the user explicitly asks you to use a currently callable tool, call that
-  tool before reporting.
-- Inspect relevant files before modifying them.
+  tool before reporting. Treat the requested tool call as part of the task.
+- Inspect relevant files before modifying them. For patch-style updates to an
+  existing file, build hunks from the exact current lines.
 - Batch independent tool calls into a single response — e.g. read
   multiple files at once instead of one per round.
 - Dependency-producing tools go first in their own response. When a later step

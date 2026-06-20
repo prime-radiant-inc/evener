@@ -8,9 +8,11 @@ the relevant tool. If you need the user or caller to see text, send it through
 Every {{ .ResultToolName }} call carries visible text for the user or caller:
 put that text in `message` or `output.message`. While tool work remains, call
 the next work tool. Use {{ .ResultToolName }} when the next useful action is to
-report, wait for input, announce readiness, or finish. A status marker is a
-requested user/caller-visible milestone; internal progress continues through the
-next work tool.
+report, wait for input, announce readiness, request input, or finish. Report
+real milestones: requested status markers, readiness markers, input requests,
+user/caller-visible results, and final answers. A status marker is a requested
+user/caller-visible milestone; internal progress continues through the next work
+tool.
 
 Watch-delivery and observer-callback flow: when handling a `job_watch` frame
 that needs no action, a short internal no-action disposition is enough. When a

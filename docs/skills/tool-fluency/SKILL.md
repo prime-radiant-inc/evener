@@ -76,6 +76,20 @@ go run ./tools/tool-fluency/cmd/serf-fluency run \
   --probe read_file.happy_path
 ```
 
+Run one probe with an experimental prompt append:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency run \
+  --serf-bin /tmp/serf \
+  --model openai/gpt-5.4-mini \
+  --probe read_file.happy_path \
+  --system-prompt-append tools/tool-fluency/variants/example.md
+```
+
+Use prompt-append variants for experiments, not as a substitute for product
+fixes. Keep each variant small and atomic, and run it against the same
+probe/model/harness as the failure you are trying to explain.
+
 Run a callback or notification probe with a live session harness:
 
 ```sh

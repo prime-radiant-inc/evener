@@ -722,8 +722,9 @@ func TestTerminalNotificationCompleteExcerptOmitsReadInstruction(t *testing.T) {
 	}
 }
 
-// A truncated excerpt still has more to read, so the instruction stays.
-func TestTerminalNotificationTruncatedExcerptKeepsReadInstruction(t *testing.T) {
+// A truncated excerpt still has more to read, so the notification advertises
+// the read affordance without making it the next required action.
+func TestTerminalNotificationTruncatedExcerptAdvertisesReadAffordance(t *testing.T) {
 	sess, adapter := newNotificationExcerptSession(t)
 	writeFinishedJobWithOutput(t, sess.jobManager, "job_T", jobstore.JobShell,
 		strings.Repeat("x", 600)+"_TAIL_MARKER")
@@ -733,8 +734,8 @@ func TestTerminalNotificationTruncatedExcerptKeepsReadInstruction(t *testing.T) 
 	}
 
 	text := deliveredNotificationText(t, adapter)
-	if !strings.Contains(text, "Use job_read_output to inspect output.") {
-		t.Fatalf("truncated excerpt must keep the read instruction:\n%s", text)
+	if !strings.Contains(text, "Output is available through job_read_output if needed.") {
+		t.Fatalf("truncated excerpt must advertise the read affordance:\n%s", text)
 	}
 	if !strings.Contains(text, "[excerpt truncated]") {
 		t.Fatalf("truncated excerpt must carry the truncation marker:\n%s", text)

@@ -145,9 +145,10 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 		)
 	}
 
-	// A complete excerpt makes a job_read_output call redundant; only point at
-	// the read tool when there is more output than the excerpt shows.
-	instruction := "Use job_read_output to inspect output."
+	// A complete excerpt makes a job_read_output call redundant. Otherwise,
+	// present output inspection as an available follow-up instead of the next
+	// required action.
+	instruction := "Output is available through job_read_output if needed."
 	if excerpt.text != "" && excerpt.complete {
 		instruction = "Complete output below."
 	}
