@@ -18,7 +18,7 @@ For each experiment:
    `availability`, `selection`, `arguments`, `repair`, `interpretation`,
    `churn`, `polling`, `plain_message`, or `infra`.
 6. Do not call a fix successful until the same experiment passes on both
-   `openai/gpt-5.4-mini` and `moonshot/kimi-k2-0905`, unless the issue is
+   `openai/gpt-5.4-mini` and `kimi/kimi-for-coding`, unless the issue is
    provider-specific by design.
 
 No experiment in this file should depend on ad-hoc Python, jq, or transcript
@@ -29,7 +29,7 @@ JSONL parsing. If an inspection is hard, improve the Go runner or
 
 | ID | Issue | Primary probe | Models | Status |
 | --- | --- | --- | --- | --- |
-| E00 | Baseline inventory and reproducibility | `catalog`, committed broad reports | GPT, Kimi | planned |
+| E00 | Baseline inventory and reproducibility | `catalog`, committed broad reports | GPT, Kimi | complete |
 | E01 | CLI harness may cancel observer callbacks before callback work runs | `job_watch.observer_callback` | GPT, Kimi | planned |
 | E02 | Live-session harness needed for true watch callback verification | `job_watch.observer_callback` | GPT, Kimi | planned |
 | E03 | Observer sidecar readiness should wait for watch frames fluently | `job_watch.observer_callback` | GPT, Kimi | planned |
@@ -55,16 +55,37 @@ Commands:
 
 ```sh
 go run ./tools/tool-fluency/cmd/serf-fluency catalog --model openai/gpt-5.4-mini
-go run ./tools/tool-fluency/cmd/serf-fluency catalog --model moonshot/kimi-k2-0905
+go run ./tools/tool-fluency/cmd/serf-fluency catalog --model kimi/kimi-for-coding
 ```
 
 Artifacts:
 
-- pending
+- Command output captured in terminal for:
+  - `go run ./tools/tool-fluency/cmd/serf-fluency catalog --model openai/gpt-5.4-mini`
+  - `go run ./tools/tool-fluency/cmd/serf-fluency catalog --model kimi/kimi-for-coding`
+- Prior broad run reports:
+  - `tools/tool-fluency/reports/2026-06-20-openai-gpt-5.4-mini.md`
+  - `tools/tool-fluency/reports/2026-06-20-kimi-for-coding.md`
 
 Result:
 
-- pending
+- Complete.
+- GPT cataloged 21 model-facing tools:
+  `apply_patch`, `communicate`, `compact`, `delegate`, `delegate_send`,
+  `edit_file`, `exec_command`, `find_session_transcripts`, `grep_files`,
+  `job_list`, `job_read_output`, `job_stop`, `job_watch`, `list_dir`,
+  `read_file`, `read_session_transcript`, `task_list`, `update_goal`,
+  `use_skill`, `web_fetch`, `write_file`.
+- Kimi cataloged 22 model-facing tools:
+  `apply_patch`, `communicate`, `compact`, `delegate`, `delegate_send`,
+  `edit_file`, `find_session_transcripts`, `glob`, `grep`, `job_list`,
+  `job_read_output`, `job_stop`, `job_watch`, `list_dir`, `read_file`,
+  `read_session_transcript`, `shell`, `task_list`, `update_goal`,
+  `use_skill`, `web_fetch`, `write_file`.
+- The initial experiment draft used `moonshot/kimi-k2-0905`, which the runner
+  rejected as `unknown provider type "moonshot"`. The executable model id in
+  this repo is `kimi/kimi-for-coding`; commands in this journal were corrected.
+- Classification: `availability`/catalog baseline, no failure.
 
 ### E01 - CLI Harness Observer Callback Cancellation
 
@@ -76,7 +97,7 @@ Commands:
 
 ```sh
 go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --out /tmp/serf-fluency-issue-e01-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model moonshot/kimi-k2-0905 --probe job_watch.observer_callback --out /tmp/serf-fluency-issue-e01-kimi
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe job_watch.observer_callback --out /tmp/serf-fluency-issue-e01-kimi
 ```
 
 Artifacts:
@@ -138,7 +159,7 @@ Commands:
 
 ```sh
 go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --out /tmp/serf-fluency-issue-e04-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model moonshot/kimi-k2-0905 --probe job_watch.observer_callback --repetitions 3 --out /tmp/serf-fluency-issue-e04-kimi
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 3 --out /tmp/serf-fluency-issue-e04-kimi
 ```
 
 Artifacts:
@@ -159,7 +180,7 @@ Commands:
 
 ```sh
 go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe jobs.control_lifecycle --repetitions 3 --out /tmp/serf-fluency-issue-e05-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model moonshot/kimi-k2-0905 --probe jobs.control_lifecycle --repetitions 3 --out /tmp/serf-fluency-issue-e05-kimi
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe jobs.control_lifecycle --repetitions 3 --out /tmp/serf-fluency-issue-e05-kimi
 ```
 
 Artifacts:
@@ -181,7 +202,7 @@ Commands:
 
 ```sh
 go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe web_fetch.example --repetitions 3 --out /tmp/serf-fluency-issue-e06-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model moonshot/kimi-k2-0905 --probe web_fetch.example --repetitions 3 --out /tmp/serf-fluency-issue-e06-kimi
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe web_fetch.example --repetitions 3 --out /tmp/serf-fluency-issue-e06-kimi
 ```
 
 Artifacts:
@@ -202,7 +223,7 @@ Commands:
 
 ```sh
 go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe communicate.no_plain_message --repetitions 3 --out /tmp/serf-fluency-issue-e07-openai-communicate
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model moonshot/kimi-k2-0905 --probe communicate.no_plain_message --repetitions 3 --out /tmp/serf-fluency-issue-e07-kimi-communicate
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe communicate.no_plain_message --repetitions 3 --out /tmp/serf-fluency-issue-e07-kimi-communicate
 ```
 
 Artifacts:
@@ -223,9 +244,9 @@ Commands:
 
 ```sh
 go run ./tools/tool-fluency/cmd/serf-fluency catalog --model openai/gpt-5.4-mini
-go run ./tools/tool-fluency/cmd/serf-fluency catalog --model moonshot/kimi-k2-0905
+go run ./tools/tool-fluency/cmd/serf-fluency catalog --model kimi/kimi-for-coding
 go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe list_dir.inventory --out /tmp/serf-fluency-issue-e08-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model moonshot/kimi-k2-0905 --probe list_dir.inventory --out /tmp/serf-fluency-issue-e08-kimi
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe list_dir.inventory --out /tmp/serf-fluency-issue-e08-kimi
 ```
 
 Artifacts:
@@ -246,7 +267,7 @@ Commands:
 
 ```sh
 go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe task_list.plan --repetitions 3 --out /tmp/serf-fluency-issue-e09-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model moonshot/kimi-k2-0905 --probe task_list.plan --repetitions 3 --out /tmp/serf-fluency-issue-e09-kimi
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe task_list.plan --repetitions 3 --out /tmp/serf-fluency-issue-e09-kimi
 ```
 
 Artifacts:
@@ -267,7 +288,7 @@ Commands:
 
 ```sh
 go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe jobs.control_lifecycle --repetitions 3 --out /tmp/serf-fluency-issue-e10-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model moonshot/kimi-k2-0905 --probe jobs.control_lifecycle --repetitions 3 --out /tmp/serf-fluency-issue-e10-kimi
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe jobs.control_lifecycle --repetitions 3 --out /tmp/serf-fluency-issue-e10-kimi
 ```
 
 Artifacts:
@@ -288,7 +309,7 @@ Commands:
 
 ```sh
 go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe web_search.current --out /tmp/serf-fluency-issue-e11-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model moonshot/kimi-k2-0905 --probe web_search.current --out /tmp/serf-fluency-issue-e11-kimi
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe web_search.current --out /tmp/serf-fluency-issue-e11-kimi
 ```
 
 Artifacts:
@@ -309,7 +330,7 @@ Commands:
 
 ```sh
 go run ./tools/tool-fluency/cmd/serf-fluency run --build --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe all --out /tmp/serf-fluency-issue-e12-openai
-go run ./tools/tool-fluency/cmd/serf-fluency run --build --model moonshot/kimi-k2-0905 --probe all --out /tmp/serf-fluency-issue-e12-kimi
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --model kimi/kimi-for-coding --probe all --out /tmp/serf-fluency-issue-e12-kimi
 ```
 
 Artifacts:
