@@ -1,0 +1,16 @@
+schema: 1
+id: grep.find_token
+tool: grep
+prompt: |
+  Use grep to find FLUENCY_GREP_TOKEN in the files under this directory.
+  Report the file path and finish with RESULT_GREP.
+fixture:
+  files:
+    notes/a.txt: "nothing here\n"
+    notes/b.txt: "needle=FLUENCY_GREP_TOKEN\n"
+expect:
+  calls:
+    - tool: grep
+    - tool: communicate
+  forbidden_calls: [shell]
+  final_contains: ["RESULT_GREP", "notes/b.txt"]

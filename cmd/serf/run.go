@@ -31,6 +31,7 @@ import (
 type runConfig struct {
 	prompt             string
 	model              string
+	fastCheapModel     string // --fast-cheap-model override for auxiliary side calls
 	workDir            string
 	stateDir           string   // --state-dir override
 	systemPrompt       string   // --system-prompt file path
@@ -149,6 +150,10 @@ func run(ctx context.Context, cfg runConfig) error {
 	defer closeAPILog() //nolint:errcheck
 
 	profile, err := buildInitialProfile(provCfg, modelRef, cfg.outputSchema)
+	if err != nil {
+		return err
+	}
+	profile, err = applyFastCheapModel(profile, cfg.fastCheapModel, client)
 	if err != nil {
 		return err
 	}

@@ -1,0 +1,14 @@
+schema: 1
+id: list_dir.inventory
+tool: list_dir
+prompt: |
+  Use list_dir to list the inventory directory. Report the file named visible-item.txt and finish with RESULT_LIST_DIR.
+fixture:
+  files:
+    inventory/visible-item.txt: "visible\n"
+expect:
+  calls:
+    - tool: list_dir
+    - tool: communicate
+  forbidden_calls: [shell]
+  final_contains: ["RESULT_LIST_DIR", "visible-item.txt"]

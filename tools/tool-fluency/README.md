@@ -1,11 +1,12 @@
 # Tool Fluency Experiments
 
-Design-stage framework for measuring whether models use Serf tools fluently.
-This is for real tools exposed by Serf now or added later. It is not a
-framework for testing imaginary tools.
+Framework for measuring whether models use Serf tools fluently. This is for
+real tools exposed by Serf now or added later. It is not a framework for testing
+imaginary tools.
 
-The intended implementation lives under `tools/tool-fluency/`. The operational
-skill for agents lives at `docs/skills/tool-fluency/SKILL.md`.
+The current implementation is a Go runner at
+`tools/tool-fluency/cmd/serf-fluency`. The operational skill for agents lives at
+`docs/skills/tool-fluency/SKILL.md`.
 
 ## Goal
 
@@ -19,9 +20,8 @@ runtime, and the model. A model is fluent when it:
 - recovers from expected validation failures;
 - avoids unrelated inspection, polling, transcript reads, or shell escapes.
 
-The framework should let us run the same probe suite across models, providers,
-agent roles, and Serf revisions, then compare behavior without hand-written
-glue.
+The framework lets us run the same probe set across models, providers, agent
+roles, and Serf revisions, then compare behavior without hand-written glue.
 
 ## Non-goals
 
@@ -34,45 +34,58 @@ glue.
 - Do not require every future tool to invent a bespoke runner. Future tools add
   a small probe manifest and, when needed, a semantic oracle.
 
-## Proposed layout
+## Layout
 
 ```text
 tools/tool-fluency/
   README.md
-  cmd/serf-fluency/        # future Go runner entrypoint
-  internal/
-    catalog/               # tool definition/context discovery
-    hubrun/                # hub + session launch helpers
-    probes/                # probe loading and fixture setup
-    score/                 # assertions, metrics, summaries
-  schemas/
-    suite.schema.json
-    probe.schema.json
-  suites/
-    core.yaml              # all built-in tools, cheap smoke coverage
-    jobs.yaml              # shell/job lifecycle probes
-    delegation.yaml        # delegate/delegate_send probes
-    sidecars.yaml          # job_watch observer probes
-    transcript.yaml        # transcript tool probes
+  cmd/serf-fluency/        # Go runner
   probes/
     read_file.yaml
     write_file.yaml
     shell.yaml
     delegate.yaml
     job_watch.yaml
-  fixtures/
     ...
+  reports/                 # committed run summaries
   results/                 # gitignored local run output
 ```
 
-The runner should be Go. It can import Serf packages directly and should not
-force agents to write custom Python, jq pipelines, or one-off JSONL parsers.
+The runner is Go. It imports Serf packages directly for cataloging and result
+inspection and should not force agents to write custom Python, jq pipelines, or
+one-off JSONL parsers.
+
+## Quick Start
+
+Catalog the model-facing tools for a provider/model:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency catalog --model openai/gpt-5.4-mini
+```
+
+Run every current probe with a fresh `serf` binary:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency run \
+  --build \
+  --model openai/gpt-5.4-mini \
+  --fast-cheap-model openai/gpt-5.4-mini \
+  --clear-openai-api-key \
+  --probe all \
+  --out /tmp/serf-fluency-openai
+```
+
+Use `--probe <id>` for a single probe. The runner writes per-repetition
+`result.json`, `stdout.txt`, `stderr.ndjson`, plus run-level `results.jsonl` and
+`summary.json`.
 
 ## Data model
 
 ### Suite
 
-A suite selects probes, models, repetitions, and launch options.
+A suite selects probes, models, repetitions, and launch options. Suite manifests
+are planned; the current runner selects probes with `--probe all` or
+`--probe <id>`.
 
 ```yaml
 schema: 1
@@ -156,23 +169,27 @@ marked `semantic_unverified`.
 
 ## Tool catalog
 
-The runner needs a first-class catalog export. It should not scrape prompt text.
+The runner has a first-class catalog export. It should not scrape prompt text.
 
-Catalog records:
+Current catalog records:
+
+- model-facing tool name;
+- description;
+- strict mode.
+
+Planned catalog records:
 
 - canonical tool name;
 - provider-facing name after profile renaming;
-- description;
 - JSON schema;
-- strict mode;
 - available agent contexts;
 - gating reason when unavailable;
 - built-in vs plugin/custom source;
 - result tool name when `communicate` is renamed.
 
-The catalog should be produced by the same registry/profile path that sessions
-use (`agent/session_tool_registry.go`, profile tool definitions, runtime
-registered tools). This catches prompt/schema drift before a live model run.
+The catalog is produced by the same registry/profile path that sessions use
+(`agent/session_tool_registry.go`, profile tool definitions, runtime registered
+tools). This catches prompt/schema drift before a live model run.
 
 ## Contexts
 
@@ -256,22 +273,25 @@ one happy path and one negative or repair path where that is meaningful:
 Workflow suites can combine tools after single-tool probes pass. Sidecar
 fluency is a workflow suite, not just a `job_watch` unit.
 
-## Runner flow
+## Current Runner Flow
 
-1. Build fresh `serf`, `serf-hub`, and `serf-doctor` binaries when requested.
-2. Start a local hub with explicit env handling. For OpenAI OAuth runs, clear
-   inherited `OPENAI_API_KEY` when the suite asks for OAuth credentials.
+1. Build a fresh `serf` binary when requested.
+2. For OpenAI OAuth runs, clear inherited `OPENAI_API_KEY` when requested.
 3. For each probe repetition, create a hermetic workdir and `SERF_STATE_DIR`.
-4. Materialize fixtures and optional `AGENTS.md` pacing instructions.
-5. Spawn a session through the hub API using the selected model/context.
-6. Wait for a terminal probe state: idle, awaiting input, closed, timeout, or
-   probe-specific condition.
-7. Collect structured trace data from the session and state dir.
-8. Evaluate oracles through runtime packages, especially `agent/doctor`.
-9. Write `result.json`, append `results.jsonl`, and store relevant transcripts
+4. Materialize fixtures.
+5. Run noninteractive `serf --verbose` with the selected model/context.
+6. Collect structured events and transcript data from the session state dir.
+7. Evaluate tool-call, artifact, final-output, and tool-error expectations.
+8. Write `result.json`, append `results.jsonl`, and store relevant transcripts
    and artifacts under the run directory.
-10. Print a compact matrix summary and the exact commands/session IDs needed for
+9. Print a compact matrix summary and the exact commands/session IDs needed for
     forensic follow-up.
+
+This CLI harness intentionally started small. It does not yet keep a session
+alive after the initial noninteractive invocation to drive follow-up
+`EntryNotification` turns. Observer sidecar probes can therefore expose both
+model fluency and CLI/harness lifecycle gaps. A live-session or hub-backed
+runner is the next step for full `job_watch` callback verification.
 
 ## Result shape
 
@@ -313,18 +333,18 @@ empty findings list.
 8. Fix the root cause in runtime schema, tool description, system prompt, or
    tool behavior. Do not "fix" the probe to match bad behavior.
 
-## MVP implementation plan
+## Next Improvements
 
-1. Add `cmd/serf-fluency` under this directory with suite loading, fixture
-   setup, hub launch, and JSON result writing.
-2. Add catalog export for the default root context and leaf subagent context.
-3. Implement `tool_call`, `artifact`, `doctor_count`, and `session_state`
-   oracles.
-4. Port the two observer-sidecar scenarios that caught the latest regressions.
-5. Add one happy-path probe for each built-in tool that can run hermetically.
-6. Add one negative-control probe per tool family.
-7. Add the summary matrix and failure artifact layout.
+1. Add a live-session or hub-backed harness that can drive notification turns
+   after observer callbacks.
+2. Expand the catalog with canonical names, provider aliases, JSON schema, and
+   context availability.
+3. Promote common checks into reusable oracles: first-call tool, max tool calls,
+   doctor counts, doctor tree, doctor watches, and session state.
+4. Add suite manifests after the single-probe runner shape has proven useful.
+5. Add cross-model comparison summaries without hiding individual repetition
+   failures.
 
-Stop there until the reports have paid for themselves. More dashboards,
-statistical analysis, and automatic probe generation are YAGNI until we have
-repeatable runs producing useful failures.
+Stop there until the reports have paid for themselves. More dashboards and
+automatic probe generation are YAGNI until repeatable runs produce useful
+failures.

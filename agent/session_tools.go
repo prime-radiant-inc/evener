@@ -507,6 +507,12 @@ func (s *Session) allToolDefinitions(_ int) []llm.ToolDefinition {
 	return s.cachedToolDefs
 }
 
+// ToolDefinitions returns the model-facing tool definitions currently
+// advertised by this session.
+func (s *Session) ToolDefinitions() []llm.ToolDefinition {
+	return append([]llm.ToolDefinition(nil), s.cachedToolDefs...)
+}
+
 func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
 	allowance := s.delegationAllowance // read under caller's lock or during single-threaded init
 

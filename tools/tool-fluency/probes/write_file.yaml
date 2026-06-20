@@ -1,0 +1,16 @@
+schema: 1
+id: write_file.create
+tool: write_file
+prompt: |
+  Use write_file to create created.txt containing exactly FLUENCY_WRITE_FILE.
+  Finish with RESULT_WRITE_FILE.
+expect:
+  calls:
+    - tool: write_file
+    - tool: communicate
+  forbidden_calls: [shell]
+  artifacts:
+    - path: created.txt
+      exists: true
+      contains: "FLUENCY_WRITE_FILE"
+  final_contains: ["RESULT_WRITE_FILE"]

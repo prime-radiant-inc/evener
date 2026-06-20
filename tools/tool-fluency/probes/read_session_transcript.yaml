@@ -1,0 +1,12 @@
+schema: 1
+id: read_session_transcript.current
+tool: read_session_transcript
+prompt: |
+  Use read_session_transcript with no transcript_ref to inspect this current session's outline.
+  Then finish with RESULT_READ_TRANSCRIPT.
+expect:
+  calls:
+    - tool: read_session_transcript
+    - tool: communicate
+  forbidden_calls: [shell]
+  final_contains: ["RESULT_READ_TRANSCRIPT"]

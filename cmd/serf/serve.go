@@ -61,7 +61,7 @@ func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
 	model := fs.String("model", "", "LLM model identifier (provider/model)")
-	fastCheapModel := fs.String("fast-cheap-model", "", "cheap model for side calls (naming, summarization); 'provider/model' may use a different provider than --model, or a bare 'model' for the active provider")
+	fastCheapModel := fs.String("fast-cheap-model", "", "auxiliary model for side calls (naming, summarization, web fetch); 'provider/model' may use a different provider than --model, or a bare 'model' for the active provider")
 	workDir := fs.String("dir", "", "working directory")
 	stateDir := fs.String("state-dir", "", "override runtime state directory")
 	runDirFlag := fs.String("run-dir", "", "override rendezvous run directory")

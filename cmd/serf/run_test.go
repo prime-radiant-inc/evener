@@ -156,6 +156,29 @@ func TestRunInvalidOutputSchema(t *testing.T) {
 	}
 }
 
+func TestRunFastCheapModelValidation(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	t.Setenv("OPENAI_API_KEY", "dummy-for-wire-test")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), runConfig{
+		prompt:         "do something",
+		model:          "openai/gpt-5.2",
+		fastCheapModel: "anthropic/claude-haiku-4-5-20251001",
+		workDir:        t.TempDir(),
+		stateDir:       t.TempDir(),
+		stdout:         &stdout,
+		stderr:         &stderr,
+	})
+	if err == nil {
+		t.Fatal("expected unavailable --fast-cheap-model provider error")
+	}
+	if !strings.Contains(err.Error(), "--fast-cheap-model provider") {
+		t.Fatalf("error %q, want --fast-cheap-model provider guidance", err.Error())
+	}
+}
+
 // TestRunMissingModel verifies that run returns an error when no --model is
 // provided and SERF_MODEL is unset.
 func TestRunMissingModel(t *testing.T) {

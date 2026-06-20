@@ -12,4 +12,8 @@ resumes it from the observer's `delegate_send(to="caller")` callback. For frames
 that need a caller-visible response, use `delegate_send(to="caller")` or
 {{ .ResultToolName }}, whichever the task requests.
 
+Observer sidecars that announce readiness and keep waiting for a later watch
+frame use {{ .ResultToolName }} with `await_reply=true` for the readiness
+marker. Completed work and final answers use `await_reply=false`.
+
 Every response includes an inbox with pending user messages. Read and act on them.

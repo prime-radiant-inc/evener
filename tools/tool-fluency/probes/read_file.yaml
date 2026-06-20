@@ -1,0 +1,14 @@
+schema: 1
+id: read_file.happy_path
+tool: read_file
+prompt: |
+  Use read_file to read read-me.txt. Report the TOKEN value exactly and finish with RESULT_READ_FILE.
+fixture:
+  files:
+    read-me.txt: "TOKEN=FLUENCY_READ_FILE_123\n"
+expect:
+  calls:
+    - tool: read_file
+    - tool: communicate
+  forbidden_calls: [shell, grep]
+  final_contains: ["RESULT_READ_FILE", "FLUENCY_READ_FILE_123"]

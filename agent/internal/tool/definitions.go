@@ -423,7 +423,7 @@ Important:
 func DefWebFetch() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "web_fetch",
-		Description: "Fetch a URL, convert HTML to markdown, cache the results, and answer a question about the content using a cheap model.",
+		Description: "Fetch a URL, convert HTML to markdown, cache the results, and answer a question about the page content. When the user asks you to fetch, inspect, summarize, or answer from a URL, call web_fetch with that URL and the user's question before answering.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -462,7 +462,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        name,
-		Description: "Send a user-facing message. Use this tool for every message, readiness marker, status update, request for input, and final answer the user or caller should see. Set `message` to the exact visible text. Set `await_reply=true` only when you need user input before you can continue; otherwise set `await_reply=false`. Always include the structured `output` envelope. For ordinary conversational replies, leave `output.message` empty, `output.data` empty, and `output.artifacts` empty. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs. Some workflows may also require extra fields inside `output`, such as `output.decision` or specific `output.data.*` keys.",
+		Description: "Send a user-facing message. Use this tool for every message, readiness marker, status update, request for input, and final answer the user or caller should see. Set `message` to the exact visible text. Set `await_reply=true` when this message opens a wait state for later user, caller, or watch-frame input; set `await_reply=false` when this message completes the current work. Always include `output` as an object with exactly these top-level fields: `message`, `data`, and `artifacts`. For ordinary text replies, use `output.message=\"\"`, `output.data={}`, and `output.artifacts=[]`. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs. Some workflows may also require extra fields inside `output`, such as `output.decision` or specific `output.data.*` keys.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -474,11 +474,11 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 				},
 				"await_reply": map[string]any{
 					"type":        "boolean",
-					"description": "Set to true only when you need user input before you can continue. Otherwise set to false.",
+					"description": "Set to true when waiting for later user, caller, or watch-frame input before continuing. Set to false when this message completes the current work.",
 				},
 				"output": map[string]any{
 					"type":                 "object",
-					"description":          "Structured output envelope. Keep this present on every call. For ordinary conversational replies, leave message empty, data empty, and artifacts empty.",
+					"description":          "Structured output envelope. Keep this present on every call with exactly these top-level fields: message, data, artifacts. For ordinary text replies, leave message empty, data empty, and artifacts empty.",
 					"additionalProperties": false,
 					"properties": map[string]any{
 						"message": map[string]any{"type": "string", "description": "Human-readable structured summary for automation and orchestration. Leave empty for ordinary conversational replies."},

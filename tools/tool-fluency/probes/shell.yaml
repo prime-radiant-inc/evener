@@ -1,0 +1,11 @@
+schema: 1
+id: shell.command
+tool: shell
+prompt: |
+  Use shell to run: printf FLUENCY_SHELL_TOKEN
+  Report the output exactly and finish with RESULT_SHELL.
+expect:
+  calls:
+    - tool: shell
+    - tool: communicate
+  final_contains: ["RESULT_SHELL", "FLUENCY_SHELL_TOKEN"]

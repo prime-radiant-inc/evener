@@ -12,7 +12,8 @@ coverage.
 ## Required reading
 
 1. Read `tools/tool-fluency/README.md`.
-2. Read `docs/agentic-testing.md` if you need to run a live scenario manually.
+2. Read `docs/agentic-testing.md` if the Go runner cannot exercise the live
+   session shape you need.
 3. For session/job/watch forensics, use `serf-doctor` or the `agent/doctor`
    package. Do not hand-parse transcript JSONL.
 
@@ -46,6 +47,34 @@ coverage.
 6. Run the probe across the requested models and repetitions.
 7. Inspect every failure for root cause before changing prompts, schemas, or
    probes.
+
+## Runner commands
+
+Catalog currently advertised tools:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency catalog --model openai/gpt-5.4-mini
+```
+
+Run all current probes:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency run \
+  --build \
+  --model openai/gpt-5.4-mini \
+  --fast-cheap-model openai/gpt-5.4-mini \
+  --clear-openai-api-key \
+  --probe all
+```
+
+Run one probe with an existing binary:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency run \
+  --serf-bin /tmp/serf \
+  --model openai/gpt-5.4-mini \
+  --probe read_file.happy_path
+```
 
 ## Failure classification
 
@@ -93,14 +122,19 @@ fix: make job_watch optional field X non-strict / clarify repair message
 
 Healthy runs should have no findings. Do not manufacture "looks good" findings.
 
-## Until the runner exists
+## Forensics
 
-The design is in place before the runner. If you need to run a probe now:
+The runner writes `result.json`, `stdout.txt`, and `stderr.ndjson` under each
+probe repetition directory. For session/job/watch inspection, prefer:
 
-1. Use the live scenario process in `docs/agentic-testing.md`.
-2. Use hermetic workdirs and per-scenario `SERF_STATE_DIR`.
-3. Use `serf-doctor` for counts, tree, watches, and transcript outlines.
-4. Record the same fields the future runner will emit: model, session ID,
-   state dir, expected calls, forbidden calls, metrics, and root cause.
-5. If manual execution needs repeated shell glue, stop and add the missing
-   inspection or runner feature instead of accumulating scripts.
+```sh
+go run ./cmd/serf-doctor transcript "$SID" --state-dir "$STATE" -format outline
+go run ./cmd/serf-doctor transcript "$SID" --state-dir "$STATE" -count delegate_send
+go run ./cmd/serf-doctor tree "$SID" --state-dir "$STATE" --observers
+go run ./cmd/serf-doctor watches "$SID" --state-dir "$STATE"
+```
+
+If a live observer/callback scenario needs a session to remain open across
+notification turns, the current CLI harness may be insufficient. Use the live
+scenario process in `docs/agentic-testing.md`, or improve the Go runner with a
+live-session/hub harness instead of accumulating shell glue.

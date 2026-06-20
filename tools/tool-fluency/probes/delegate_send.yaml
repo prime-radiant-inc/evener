@@ -1,0 +1,13 @@
+schema: 1
+id: delegate_send.followup
+tool: delegate_send
+prompt: |
+  Start a delegate with max_wait_ms 60000. Its task is: "Use communicate to say DELEGATE_FIRST."
+  After that delegate finishes, use delegate_send with on_idle="start" to send the same delegate:
+  "Use communicate to say DELEGATE_SECOND." Finish only after the second delegate response, with RESULT_DELEGATE_SEND.
+expect:
+  calls:
+    - tool: delegate
+    - tool: delegate_send
+    - tool: communicate
+  final_contains: ["RESULT_DELEGATE_SEND"]

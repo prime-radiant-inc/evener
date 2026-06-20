@@ -1,0 +1,17 @@
+schema: 1
+id: glob.find_targets
+tool: glob
+prompt: |
+  Use glob to find files matching "*.target" under the current directory.
+  Report the matching path and finish with RESULT_GLOB.
+fixture:
+  files:
+    alpha.target: "A\n"
+    nested/beta.target: "B\n"
+    nested/ignore.txt: "ignore\n"
+expect:
+  calls:
+    - tool: glob
+    - tool: communicate
+  forbidden_calls: [shell]
+  final_contains: ["RESULT_GLOB", "alpha.target"]

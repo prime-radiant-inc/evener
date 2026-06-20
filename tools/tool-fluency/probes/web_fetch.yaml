@@ -1,0 +1,12 @@
+schema: 1
+id: web_fetch.example
+tool: web_fetch
+prompt: |
+  Use web_fetch to fetch https://example.com and answer what domain the page is for.
+  Finish with RESULT_WEB_FETCH.
+expect:
+  calls:
+    - tool: web_fetch
+    - tool: communicate
+  forbidden_calls: [shell]
+  final_contains: ["RESULT_WEB_FETCH"]

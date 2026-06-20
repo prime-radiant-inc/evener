@@ -1,0 +1,19 @@
+schema: 1
+id: edit_file.happy_path
+tool: edit_file
+prompt: |
+  Read edit-target.txt, then use edit_file to change "color=red" to "color=blue".
+  Finish with RESULT_EDIT_FILE.
+fixture:
+  files:
+    edit-target.txt: "color=red\n"
+expect:
+  calls:
+    - tool: read_file
+    - tool: edit_file
+    - tool: communicate
+  forbidden_calls: [shell]
+  artifacts:
+    - path: edit-target.txt
+      contains: "color=blue"
+  final_contains: ["RESULT_EDIT_FILE"]

@@ -1,0 +1,9 @@
+schema: 1
+id: communicate.final_message
+tool: communicate
+prompt: |
+  Send the exact final message RESULT_COMMUNICATE using the normal result tool.
+expect:
+  calls:
+    - tool: communicate
+  final_contains: ["RESULT_COMMUNICATE"]

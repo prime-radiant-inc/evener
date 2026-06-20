@@ -1,0 +1,15 @@
+schema: 1
+id: jobs.control_lifecycle
+tool: job_list
+prompt: |
+  Use shell with background=true to start: sh -c 'printf JOB_READY; sleep 30'
+  Then use job_list to inspect the running job, job_read_output to read JOB_READY from that job,
+  and job_stop with max_wait_ms 5000 to stop it. Finish with RESULT_JOBS.
+expect:
+  calls:
+    - tool: shell
+    - tool: job_list
+    - tool: job_read_output
+    - tool: job_stop
+    - tool: communicate
+  final_contains: ["RESULT_JOBS"]

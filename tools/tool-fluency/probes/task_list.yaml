@@ -1,0 +1,11 @@
+schema: 1
+id: task_list.plan
+tool: task_list
+prompt: |
+  Use task_list to create a two-step plan for this probe, with one item in progress.
+  Then finish with RESULT_TASK_LIST.
+expect:
+  calls:
+    - tool: task_list
+    - tool: communicate
+  final_contains: ["RESULT_TASK_LIST"]

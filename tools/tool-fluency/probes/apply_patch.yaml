@@ -1,0 +1,18 @@
+schema: 1
+id: apply_patch.happy_path
+tool: apply_patch
+prompt: |
+  Use apply_patch to change patch-target.txt so it contains "patched=YES".
+  Finish with RESULT_APPLY_PATCH.
+fixture:
+  files:
+    patch-target.txt: "patched=NO\n"
+expect:
+  calls:
+    - tool: apply_patch
+    - tool: communicate
+  forbidden_calls: [shell]
+  artifacts:
+    - path: patch-target.txt
+      contains: "patched=YES"
+  final_contains: ["RESULT_APPLY_PATCH"]

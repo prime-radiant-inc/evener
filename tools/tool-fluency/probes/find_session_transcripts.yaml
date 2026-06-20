@@ -1,0 +1,12 @@
+schema: 1
+id: find_session_transcripts.catalog
+tool: find_session_transcripts
+prompt: |
+  Use find_session_transcripts with no query to inspect the recent session catalog.
+  Then finish with RESULT_FIND_TRANSCRIPTS.
+expect:
+  calls:
+    - tool: find_session_transcripts
+    - tool: communicate
+  forbidden_calls: [shell]
+  final_contains: ["RESULT_FIND_TRANSCRIPTS"]

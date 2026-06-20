@@ -1,0 +1,10 @@
+schema: 1
+id: update_goal.no_active_goal
+tool: update_goal
+prompt: |
+  Use update_goal to mark the active goal complete. Then report the tool result and finish with RESULT_UPDATE_GOAL.
+expect:
+  calls:
+    - tool: update_goal
+    - tool: communicate
+  final_contains: ["RESULT_UPDATE_GOAL"]

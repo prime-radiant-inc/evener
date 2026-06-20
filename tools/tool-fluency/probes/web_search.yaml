@@ -1,0 +1,14 @@
+schema: 1
+id: web_search.current
+tool: web_search
+skip:
+  if_unavailable: web_search
+prompt: |
+  Use web_search to search for "Serf agentic tool fluency" and report one concise observation.
+  Finish with RESULT_WEB_SEARCH.
+expect:
+  calls:
+    - tool: web_search
+    - tool: communicate
+  forbidden_calls: [shell]
+  final_contains: ["RESULT_WEB_SEARCH"]

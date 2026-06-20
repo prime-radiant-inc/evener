@@ -1,0 +1,10 @@
+schema: 1
+id: compact.pin_note
+tool: compact
+prompt: |
+  Use compact to pin note_to_self "FLUENCY_COMPACT_NOTE". Then finish with RESULT_COMPACT.
+expect:
+  calls:
+    - tool: compact
+    - tool: communicate
+  final_contains: ["RESULT_COMPACT"]

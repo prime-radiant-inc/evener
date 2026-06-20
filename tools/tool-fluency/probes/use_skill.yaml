@@ -1,0 +1,10 @@
+schema: 1
+id: use_skill.load_doctoring
+tool: use_skill
+prompt: |
+  Use use_skill to load the doctoring-serf skill. Then finish with RESULT_USE_SKILL.
+expect:
+  calls:
+    - tool: use_skill
+    - tool: communicate
+  final_contains: ["RESULT_USE_SKILL"]
