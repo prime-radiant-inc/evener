@@ -386,7 +386,7 @@ func TestFoldWatchesUpsertsByConfigHashAndClearsByID(t *testing.T) {
 				Target:           "job_1",
 				SendTo:           "dlg_obs",
 				ConfigHash:       "hash_A",
-				Condition:        "events: [assistant.message]",
+				Condition:        "events: [communicate]",
 			}
 		}),
 		ev(EventWatchRegistered, 2, "", func(e *Event) {
@@ -398,7 +398,7 @@ func TestFoldWatchesUpsertsByConfigHashAndClearsByID(t *testing.T) {
 				Target:           "job_1",
 				SendTo:           "dlg_obs",
 				ConfigHash:       "hash_A",
-				Condition:        "events: [assistant.message]",
+				Condition:        "events: [communicate]",
 			}
 		}),
 		ev(EventWatchCleared, 3, "", func(e *Event) {

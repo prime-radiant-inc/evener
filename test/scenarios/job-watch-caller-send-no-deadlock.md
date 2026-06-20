@@ -2,7 +2,7 @@
 
 **What this covers**: the watch-send deadlock incident (session
 `01KTWN9KEHZ041D77B3GKK572M`; watch-mailbox spec §1) and its fix.
-`job_watch(operation="create", target="caller", events=["assistant.message"], send={to:"caller"})`
+`job_watch(operation="create", target="caller", events=["communicate"], send={to:"caller"})`
 used to fire while the session emitted events under `responseSideEffectsMu`
 and re-lock the same mutex — wedging the session on its next assistant
 message or tool call. Under the watch-mailbox design that config can no
@@ -33,12 +33,12 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
    > Follow these steps exactly, in order. Steps 1 and 2 are expected to
    > return tool errors — report each error verbatim and continue.
    > 1. Call `job_watch` with exactly: operation "create", target
-   >    "caller", events ["assistant.message"], send {to: "caller"}
+   >    "caller", events ["communicate"], send {to: "caller"}
    >    — and NO other
    >    parameters (no every, no include_excerpt).
    >    Report the full response or error verbatim.
    > 2. Call `job_watch` with exactly: operation "create", target
-   >    "caller", events ["assistant.message"], and NO send. Report
+   >    "caller", events ["communicate"], and NO send. Report
    >    verbatim.
    > 3. Call `delegate` (max_wait_ms unset — returns immediately)
    >    with this task: "Call communicate with exactly OBSERVER_READY
@@ -46,7 +46,7 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
    >    'Watch frame', call communicate with exactly FRAME_SEEN and
    >    finish." Capture the returned delegate_id.
    > 4. Call `job_watch` with exactly: operation "create", target
-   >    "caller", events ["assistant.message", "assistant.tool"],
+   >    "caller", events ["communicate", "assistant.tool"],
    >    send {to: that delegate_id}
    >    — and NO other parameters (in particular do NOT pass `every`;
    >    it requires a single event kind). Report the full JSON.
@@ -87,7 +87,7 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
   transcript to begin accumulating runaway notification/assistant turns
   even after the user turn ends.
 - Secondary (should-hold, not the headline): the step-4 watch fired on
-  the parent's own assistant/tool events and delivered through the
+  the parent's own communicate/tool events and delivered through the
   drain rail — the observer session eventually shows a started follow-up job
   whose input contains `Watch frame` (check `job_list` from a follow-up
   parent turn, or read the observer transcript via its transcript_ref).

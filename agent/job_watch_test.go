@@ -308,6 +308,22 @@ func TestConfigureWatchRejectsUnknownEventKinds(t *testing.T) {
 	}
 }
 
+func TestConfigureWatchRejectsAssistantMessageEvent(t *testing.T) {
+	jm := newTestJM(t)
+
+	_, err := jm.configureWatch(watchArgs{Target: "caller", Events: []string{"assistant.message"}})
+
+	if err == nil || !strings.Contains(err.Error(), "assistant.message is not watchable") {
+		t.Fatalf("error = %v, want assistant.message guidance", err)
+	}
+	if !strings.Contains(err.Error(), "use communicate") {
+		t.Fatalf("error = %v, want communicate guidance", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0", jm.watchCount())
+	}
+}
+
 func TestJobWatchMainAliasTargetFailsTargetNotFound(t *testing.T) {
 	jm := newTestJM(t)
 
@@ -525,11 +541,11 @@ func TestEventWatchFiresAndNotifiesCaller(t *testing.T) {
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
 
-	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
-	onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"communicate"}})
+	onSessionEventKD(jm, events.EventCommunicate, nil)
 
 	if len(notified) != 1 {
-		t.Fatalf("an assistant.message event must notify the caller once, got %d", len(notified))
+		t.Fatalf("a communicate event must notify the caller once, got %d", len(notified))
 	}
 	if notified[0].JobID != "" {
 		t.Fatalf("session event notification job_id = %q, want empty", notified[0].JobID)
@@ -574,7 +590,7 @@ func TestConfigureWatchRejectsUnsupportedEventFilterShapes(t *testing.T) {
 		},
 		{
 			name: "wrong_event",
-			args: watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"assistant.message"}, EventFilter: &watchEventFilter{ToolName: "read_file"}},
+			args: watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}, EventFilter: &watchEventFilter{ToolName: "read_file"}},
 			want: "only supported with events",
 		},
 		{
@@ -615,6 +631,11 @@ func TestWildcardEventWatchOnlyFiresSupportedEvents(t *testing.T) {
 	}
 
 	onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
+	if len(notified) != 0 {
+		t.Fatalf("assistant text event fired wildcard watch after assistant.message removal: %+v", notified)
+	}
+
+	onSessionEventKD(jm, events.EventCommunicate, nil)
 	if len(notified) != 1 {
 		t.Fatalf("supported event fires = %d, want 1", len(notified))
 	}
@@ -697,11 +718,11 @@ func TestEventWatchTriggerEveryNth(t *testing.T) {
 
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: "caller",
-		Events: []string{"assistant.message"},
+		Events: []string{"communicate"},
 		Every:  3,
 	})
 	for i := 0; i < 7; i++ {
-		onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
+		onSessionEventKD(jm, events.EventCommunicate, nil)
 	}
 	if fires != 2 {
 		t.Errorf("every=3 over 7 events should fire twice, got %d", fires)
@@ -713,7 +734,7 @@ func TestConfigureWatchRejectsEveryWithMultipleEvents(t *testing.T) {
 
 	_, err := jm.configureWatch(watchArgs{
 		Target: "caller",
-		Events: []string{"assistant.message", "job.notification"},
+		Events: []string{"communicate", "job.notification"},
 		Every:  2,
 	})
 	if err == nil || !strings.Contains(err.Error(), "every requires exactly one watched event kind") {
@@ -750,7 +771,7 @@ func TestConfigureWatchEveryOneReadsAsUnset(t *testing.T) {
 
 	res, err := jm.configureWatch(watchArgs{
 		Target: rec.JobID,
-		Events: []string{"assistant.message", "job.notification"},
+		Events: []string{"communicate", "job.notification"},
 		Every:  1,
 		Send:   &watchSendArgs{To: "dlg_obs"},
 	})
@@ -816,7 +837,7 @@ func TestEventWatchIgnoresUnwatchedKind(t *testing.T) {
 	jm := newTestJM(t)
 	var fires int
 	jm.enqueue = func(jobNotification) { fires++ }
-	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"communicate"}})
 	onSessionEventKD(jm, events.EventToolCallEnd, nil)
 	if fires != 0 {
 		t.Errorf("an unwatched event kind must not fire; fires = %d", fires)
@@ -825,7 +846,7 @@ func TestEventWatchIgnoresUnwatchedKind(t *testing.T) {
 
 // TestValidateWatchDeliveryLoop covers the feedback-loop guard: configureWatch
 // must reject any watch whose resolved event kinds include a self-generated kind
-// (assistant.message/assistant.tool/communicate, including via "*") AND whose
+// (assistant.tool/communicate, including via "*") AND whose
 // delivery returns to the generating session (send omitted or send.to=caller).
 // The guard is target-independent: onSessionEvent matches kinds across all
 // watches regardless of cfg.target, so a job-target watch with send.to=caller
@@ -837,23 +858,23 @@ func TestValidateWatchDeliveryLoop(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "notify_self_assistant_message",
+			name: "notify_self_assistant_tool",
 			build: func(*testing.T, *jobManager) watchArgs {
-				return watchArgs{Target: "caller", Events: []string{"assistant.message"}}
+				return watchArgs{Target: "caller", Events: []string{"assistant.tool"}}
 			},
 			wantErr: true,
 		},
 		{
 			name: "send_to_self_incident_shape",
 			build: func(*testing.T, *jobManager) watchArgs {
-				return watchArgs{Target: "caller", Events: []string{"assistant.message"}, Send: &watchSendArgs{To: "caller"}}
+				return watchArgs{Target: "caller", Events: []string{"assistant.tool"}, Send: &watchSendArgs{To: "caller"}}
 			},
 			wantErr: true,
 		},
 		{
 			name: "every_derived_single_kind_to_self",
 			build: func(*testing.T, *jobManager) watchArgs {
-				return watchArgs{Target: "caller", Events: []string{"assistant.message"}, Every: 2, Send: &watchSendArgs{To: "caller"}}
+				return watchArgs{Target: "caller", Events: []string{"assistant.tool"}, Every: 2, Send: &watchSendArgs{To: "caller"}}
 			},
 			wantErr: true,
 		},
@@ -864,7 +885,7 @@ func TestValidateWatchDeliveryLoop(t *testing.T) {
 				if err != nil {
 					t.Fatalf("createShell: %v", err)
 				}
-				return watchArgs{Target: rec.JobID, Events: []string{"assistant.message"}, Send: &watchSendArgs{To: "caller"}}
+				return watchArgs{Target: rec.JobID, Events: []string{"assistant.tool"}, Send: &watchSendArgs{To: "caller"}}
 			},
 			wantErr: true,
 		},
@@ -893,7 +914,7 @@ func TestValidateWatchDeliveryLoop(t *testing.T) {
 			name: "sidecar_delivery_to_delegate",
 			build: func(t *testing.T, jm *jobManager) watchArgs {
 				seedCommonWatchSendTargets(t, jm)
-				return watchArgs{Target: "caller", Events: []string{"assistant.message"}, Send: &watchSendArgs{To: "dlg_obs"}}
+				return watchArgs{Target: "caller", Events: []string{"communicate"}, Send: &watchSendArgs{To: "dlg_obs"}}
 			},
 			wantErr: false,
 		},
@@ -1586,7 +1607,7 @@ func TestSessionWatchSurvivesAJobTerminal(t *testing.T) {
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"communicate"}})
 	code := 0
 	jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code)
 	if jm.watchCount() != 1 {
@@ -4910,7 +4931,7 @@ func runtimeWatchSendPending(t *testing.T, jm *jobManager) map[jobstore.WatchSen
 }
 
 func TestWatchSendToWatchedRejectsSessionEventsWithoutConcreteTarget(t *testing.T) {
-	for _, eventName := range []string{"assistant.message", "assistant.tool", "communicate"} {
+	for _, eventName := range []string{"assistant.tool", "communicate"} {
 		t.Run(eventName, func(t *testing.T) {
 			jm := newTestJM(t)
 			seedCommonWatchSendTargets(t, jm)
@@ -4957,7 +4978,7 @@ func TestWatchSendToWatchedRejectsMixedEventsWithJobNotificationTrigger(t *testi
 
 	_, err := jm.configureWatch(watchArgs{
 		Target: "*",
-		Events: []string{"assistant.message", "job.notification"},
+		Events: []string{"communicate", "job.notification"},
 		Send:   &watchSendArgs{To: "watched", Message: "observe"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
@@ -5760,16 +5781,16 @@ func TestWatchEventKindNamesResolve(t *testing.T) {
 
 func installCallerSendWatchWithPending(t *testing.T, jm *jobManager) *watchConfig {
 	t.Helper()
-	// This is the feedback-loop shape (caller target, assistant.message,
+	// This is the feedback-loop shape (caller target, communicate,
 	// send.to=caller) that configureWatch now rejects (TestValidateWatchDeliveryLoop
 	// asserts the rejection). Install below validation to exercise the caller-send
 	// pending/busy-delivery mechanics this helper's callers depend on.
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
-		Events: []string{"assistant.message"},
+		Events: []string{"communicate"},
 		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
 	})
-	onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
+	onSessionEventKD(jm, events.EventCommunicate, nil)
 	key := watchKey{
 		VisibleSessionID: jm.sessionID,
 		Target:           runtimeMessageAliasCaller,
@@ -5793,7 +5814,7 @@ func installCallerSendWatchWithPending(t *testing.T, jm *jobManager) *watchConfi
 func installCallerSendWatchWithCurrentFrame(t *testing.T, jm *jobManager, frame string) (*watchConfig, jobstore.WatchSendKey, string) {
 	t.Helper()
 	cfg := installCallerSendWatchWithPending(t, jm)
-	onSessionEventKD(jm, events.EventAssistantTextEnd, nil) // bump updateSeq 1 -> 2
+	onSessionEventKD(jm, events.EventCommunicate, nil) // bump updateSeq 1 -> 2
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	if len(cfg.pendingOrder) != 1 {
@@ -5897,7 +5918,7 @@ func TestJobManagerWakeAndHasPendingWatchSends(t *testing.T) {
 // TestObservationRecordsIntentOnly is the spec §3 invariant: observation paths
 // persist fired sends as pending, enqueue a wake token for caller-targeted
 // sends, and kick the owner — but never deliver. A caller send and a delegate
-// send both fire on assistant.message; afterward both must be pending, the
+// send both fire on communicate; afterward both must be pending, the
 // caller send must have produced exactly one wake token, the owner must have
 // been woken, and no delivery (no watch_send_delivered event, no jm.send call)
 // must have occurred.
@@ -5922,18 +5943,18 @@ func TestObservationRecordsIntentOnly(t *testing.T) {
 	// observation records intent for a caller send and a delegate send together.
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
-		Events: []string{"assistant.message"},
+		Events: []string{"communicate"},
 		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "to-caller"},
 	})
 	if _, err := jm.configureWatch(watchArgs{
 		Target: runtimeMessageAliasCaller,
-		Events: []string{"assistant.message"},
+		Events: []string{"communicate"},
 		Send:   &watchSendArgs{To: "dlg_obs", Message: "to-delegate"},
 	}); err != nil {
 		t.Fatalf("configure delegate-send watch: %v", err)
 	}
 
-	onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
+	onSessionEventKD(jm, events.EventCommunicate, nil)
 
 	// Both sends are pending in jm state.
 	if !jm.hasPendingWatchSends() {
@@ -6544,14 +6565,14 @@ func TestWatchDeliveryCounterIncrementsPerNotification(t *testing.T) {
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 
-	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"communicate"}})
 	cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: "caller"}]
 	if cfg == nil {
 		t.Fatal("no-send caller watch not installed")
 	}
 
 	for i := 1; i <= 3; i++ {
-		onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
+		onSessionEventKD(jm, events.EventCommunicate, nil)
 		jm.mu.Lock()
 		got := cfg.deliveries
 		jm.mu.Unlock()
@@ -6638,7 +6659,7 @@ func TestWatchDeliveryBudgetAutoClearsWithOneFinalNotification(t *testing.T) {
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
 
-	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"communicate"}})
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: "caller"}
 	cfg := jm.watches[key]
 	if cfg == nil {
@@ -6646,7 +6667,7 @@ func TestWatchDeliveryBudgetAutoClearsWithOneFinalNotification(t *testing.T) {
 	}
 
 	for i := 0; i < watchDeliveryBudget; i++ {
-		onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
+		onSessionEventKD(jm, events.EventCommunicate, nil)
 	}
 
 	if jm.watches[key] != nil {
@@ -6681,7 +6702,7 @@ func TestWatchDeliveryBudgetAutoClearsWithOneFinalNotification(t *testing.T) {
 
 	// No further deliveries after clear: firing again produces nothing.
 	before := len(notified)
-	onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
+	onSessionEventKD(jm, events.EventCommunicate, nil)
 	if len(notified) != before {
 		t.Fatalf("a cleared watch must not fire again; notifications grew from %d to %d", before, len(notified))
 	}
@@ -6692,7 +6713,7 @@ func TestWatchDeliveryBudgetDoesNotDoubleClear(t *testing.T) {
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
 
-	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"communicate"}})
 	key := watchKey{VisibleSessionID: jm.sessionID, Target: "caller"}
 	cfg := jm.watches[key]
 	if cfg == nil {
@@ -6700,7 +6721,7 @@ func TestWatchDeliveryBudgetDoesNotDoubleClear(t *testing.T) {
 	}
 
 	for i := 0; i < watchDeliveryBudget; i++ {
-		onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
+		onSessionEventKD(jm, events.EventCommunicate, nil)
 	}
 
 	// Simulate an already-in-flight settle that crossed the budget again on a
@@ -6939,8 +6960,8 @@ func TestTerminalCatchupRejectsEventsCondition(t *testing.T) {
 		name string
 		args watchArgs
 	}{
-		{"events only", watchArgs{Target: jobID, Events: []string{"assistant.message"}}},
-		{"output_match plus events", watchArgs{Target: jobID, OutputMatch: "ready", Events: []string{"assistant.message"}}},
+		{"events only", watchArgs{Target: jobID, Events: []string{"communicate"}}},
+		{"output_match plus events", watchArgs{Target: jobID, OutputMatch: "ready", Events: []string{"communicate"}}},
 		{"output_match plus progress", watchArgs{Target: jobID, OutputMatch: "ready", ProgressIntervalMS: 1000}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

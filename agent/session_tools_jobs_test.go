@@ -414,7 +414,7 @@ func TestJobToolsRejectDelegateIDWithActionableGuidance(t *testing.T) {
 	}{
 		{"read", "job_read_output", fmt.Sprintf(`{"job_id":%q}`, res.DelegateID), "delegate_id is a conversation handle; read output from job_id"},
 		{"stop", "job_stop", fmt.Sprintf(`{"job_id":%q}`, res.DelegateID), "delegate_id is a conversation handle; stop a concrete job_id"},
-		{"watch", "job_watch", fmt.Sprintf(`{"operation":"create","target":%q,"events":["assistant.message"]}`, res.DelegateID), "delegate_id is not watchable; watch current_job_id"},
+		{"watch", "job_watch", fmt.Sprintf(`{"operation":"create","target":%q,"events":["communicate"]}`, res.DelegateID), "delegate_id is not watchable; watch current_job_id"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			call := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -1345,7 +1345,7 @@ func TestJobListWatchConditionSummaryFormats(t *testing.T) {
 	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	if _, err := jm.configureWatch(watchArgs{
 		Target: rec.JobID,
-		Events: []string{"assistant.message"},
+		Events: []string{"communicate"},
 		Every:  5,
 		Send:   &watchSendArgs{To: "dlg_obs"},
 	}); err != nil {
@@ -1366,8 +1366,8 @@ func TestJobListWatchConditionSummaryFormats(t *testing.T) {
 	if every == nil {
 		t.Fatalf("watches = %+v, want every-N watch", out.Watches)
 	}
-	if every.Condition != "events: [assistant.message] every 5" {
-		t.Fatalf("every-N condition = %q, want %q", every.Condition, "events: [assistant.message] every 5")
+	if every.Condition != "events: [communicate] every 5" {
+		t.Fatalf("every-N condition = %q, want %q", every.Condition, "events: [communicate] every 5")
 	}
 }
 
@@ -1377,9 +1377,9 @@ func TestJobListWatchReflectsDeliveries(t *testing.T) {
 	jm.enqueue = func(jobNotification) {}
 
 	// A no-send caller event watch counts one delivery per fired event.
-	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}})
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"communicate"}})
 	for i := 0; i < 3; i++ {
-		onSessionEventKD(jm, events.EventAssistantTextEnd, nil)
+		onSessionEventKD(jm, events.EventCommunicate, nil)
 	}
 
 	out := runJobListTool(t, s)
@@ -2201,7 +2201,7 @@ func TestJobWatchToolSendToMainAliasFailsTargetNotFound(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"operation":"create","target":"caller","events":["assistant.message"],"send":{"to":"main","message":"observe"}}`),
+		Arguments: json.RawMessage(`{"operation":"create","target":"caller","events":["communicate"],"send":{"to":"main","message":"observe"}}`),
 	})
 
 	if !res.IsError {
@@ -2262,7 +2262,7 @@ func TestJobWatchSendToRequired(t *testing.T) {
 			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 				ID:        "watch",
 				Name:      "job_watch",
-				Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":"caller","events":["assistant.message"],"send":%s}`, tc.send)),
+				Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":"caller","events":["communicate"],"send":%s}`, tc.send)),
 			})
 			if !res.IsError {
 				t.Fatalf("job_watch succeeded, want send.to error: %s", res.Output)

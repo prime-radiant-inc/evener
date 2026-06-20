@@ -19,7 +19,10 @@ the watch shape:
   most reliable.
 - `communicate` watches exposed a common wrong-trigger failure: Kimi
   sometimes created `events: [assistant.message]`, which woke the
-  observer on the parent's own tool-call turns.
+  observer on the parent's own tool-call turns. The follow-up API
+  cleanup removes `assistant.message` from the public `job_watch`
+  event vocabulary, so this should now fail fast and recover with a
+  `communicate` watch.
 - Readiness matters. If the parent creates a watch before the
   observer's first `*_READY` turn is terminal, the real frame can be
   consumed by setup behavior.

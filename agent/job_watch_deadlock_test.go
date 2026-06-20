@@ -23,8 +23,7 @@ func shellExecCall(id string) llm.ToolCallData {
 }
 
 // newCallerSendWatchSession builds a session whose scripted provider runs one
-// tool round (so EventToolCallEnd AND EventAssistantTextEnd both fire under
-// responseSideEffectsMu) and then communicates "done", and installs a
+// tool round and then communicates "done", and installs a
 // caller-send watch on the given event kind BEFORE the turn is driven.
 func newCallerSendWatchSession(t *testing.T, watchEvent string) *Session {
 	t.Helper()
@@ -112,8 +111,8 @@ func driveWithWatchdog(t *testing.T, sess *Session) {
 	}
 }
 
-func TestCallerSendWatchDoesNotDeadlockOnAssistantEvents(t *testing.T) {
-	sess := newCallerSendWatchSession(t, "assistant.message")
+func TestCallerSendWatchDoesNotDeadlockOnCommunicateEvents(t *testing.T) {
+	sess := newCallerSendWatchSession(t, "communicate")
 	driveWithWatchdog(t, sess)
 	assertToolRoundPersisted(t, sess)
 }

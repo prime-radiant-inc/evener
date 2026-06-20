@@ -407,9 +407,10 @@ contract; treat final parent text as a convenience signal only.
 
 For sidecar fluency, record these separately from pass/fail:
 
-- **Wrong trigger**: the parent creates `events: [assistant.message]`
-  when the scenario requires `events: [communicate]`, causing watch
-  frames from its own tool-call turns.
+- **Invalid event selection**: the parent tries
+  `events: [assistant.message]` when the scenario requires
+  `events: [communicate]`. That event should be rejected; a fluent
+  agent should recover by creating a `communicate` watch.
 - **Observer readiness race**: the parent creates the watch and triggers
   it before the observer's first `*_READY` turn has finished, so the
   real frame is consumed by setup behavior.

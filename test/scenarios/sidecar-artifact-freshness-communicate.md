@@ -36,7 +36,8 @@ path.
 
 ## Expected
 
-- The watch uses `communicate`, not `assistant.message`.
+- The watch uses `communicate`; `assistant.message` is not a public
+  watch event.
 - The observer emits `ARTIFACT_ALERT` without trying to edit or create
   the missing artifact.
 - Nonmatching frames, if any, are ignored with bare assistant text and
@@ -57,4 +58,3 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count job_list
 
 - This intentionally checks observation/reporting, not artifact repair.
   A sidecar that starts fixing the file is out of scope.
-

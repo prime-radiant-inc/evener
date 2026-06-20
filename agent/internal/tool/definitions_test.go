@@ -258,7 +258,7 @@ func TestDefDelegateSendShape(t *testing.T) {
 }
 
 func TestDefJobWatchParamsAndKinds(t *testing.T) {
-	def := DefJobWatch([]string{"assistant.message", "job.notification"})
+	def := DefJobWatch([]string{"communicate", "job.notification"})
 	if def.Name != "job_watch" {
 		t.Fatalf("name = %q, want job_watch", def.Name)
 	}
@@ -273,13 +273,13 @@ func TestDefJobWatchParamsAndKinds(t *testing.T) {
 		t.Errorf("required = %#v, want [operation]", req)
 	}
 	// The available event kinds are interpolated into the description.
-	if !strings.Contains(def.Description, "assistant.message") || !strings.Contains(def.Description, "job.notification") {
+	if !strings.Contains(def.Description, "communicate") || !strings.Contains(def.Description, "job.notification") {
 		t.Errorf("description must enumerate the available event kinds:\n%s", def.Description)
 	}
 }
 
 func TestDefJobWatchRequiresOperationAndWatchIDForClear(t *testing.T) {
-	def := DefJobWatch([]string{"assistant.message"})
+	def := DefJobWatch([]string{"communicate"})
 	props := def.Parameters["properties"].(map[string]any)
 	if _, ok := props["operation"]; !ok {
 		t.Fatalf("DefJobWatch missing operation")
@@ -296,7 +296,7 @@ func TestDefJobWatchRequiresOperationAndWatchIDForClear(t *testing.T) {
 }
 
 func TestDefJobWatchDescriptionIncludesCoalesceContract(t *testing.T) {
-	def := DefJobWatch([]string{"assistant.message"})
+	def := DefJobWatch([]string{"communicate"})
 	if !strings.Contains(def.Description, "coalesce") || !strings.Contains(def.Description, "busy") {
 		t.Fatalf("job_watch description must mention coalescing and busy-target behavior:\n%s", def.Description)
 	}

@@ -87,7 +87,7 @@ type profileSpec struct {
 // Keep in sync with agent.WatchEventKindNames / agent.modelEventKinds. The
 // provider package cannot import agent, but provider-advertised job_watch must
 // describe the same model-facing event vocabulary as the registered tool.
-var jobWatchEventKindNames = []string{"assistant.message", "assistant.tool", "communicate", "job.notification"}
+var jobWatchEventKindNames = []string{"assistant.tool", "communicate", "job.notification"}
 
 var (
 	openAICodexCapabilities = []toolCapability{

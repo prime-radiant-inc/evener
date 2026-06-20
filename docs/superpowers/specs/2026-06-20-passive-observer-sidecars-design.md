@@ -23,20 +23,33 @@ The root cause was not watch delivery. The sidecar was a normal delegate being a
 
 A second issue amplified the churn: `events: ["assistant.tool"]` delivered every parent tool event to the sidecar. The observer had to inspect and ignore `job_watch`, `job_read_output`, `use_skill`, `job_list`, `task_list`, `exec_command`, and transcript tools even though only successful `read_file` results were relevant.
 
+A later Kimi fluency run exposed a related API-shape problem: the model chose
+`events: ["assistant.message"]` when it needed result-tool messages. That was
+not a passive-observer runtime failure; it was a public vocabulary problem.
+Plain assistant prose is an internal transcript/UI event, while `communicate`
+is the explicit result/status channel models should watch. Serf should reject
+`assistant.message` at `job_watch` creation with guidance rather than silently
+upgrading it to `communicate`, because auto-upgrade would hide the model's
+confused event selection.
+
 ## Design Thesis
 
 Keep observer sidecars as composition: `delegate` + `job_watch` + `delegate_send`. Do not introduce a full observer-agent runtime in v1.
 
-Add two narrowly scoped capabilities:
+Add one API cleanup and two narrowly scoped capabilities:
 
-1. **Structured event predicates** at the watch boundary, so irrelevant events are never delivered.
-2. **Watch-delivery turn semantics** for watch-originated observer turns, so a delegate can finish with non-empty bare text when it has no tool work to do.
+1. **Public event vocabulary cleanup** so `job_watch` exposes
+   `assistant.tool`, `communicate`, and `job.notification`, and rejects
+   `assistant.message` with actionable guidance.
+2. **Structured event predicates** at the watch boundary, so irrelevant events are never delivered.
+3. **Watch-delivery turn semantics** for watch-originated observer turns, so a delegate can finish with non-empty bare text when it has no tool work to do.
 
 Together these make passive sidecars cheap and deterministic while preserving the existing watch mailbox, causal provenance, and same-watch loop suppression design.
 
 ## Goals
 
 - Support passive observer sidecars that ignore non-matching frames without tool churn.
+- Make `communicate` the only public watch kind for result/status messages and keep bare assistant prose internal.
 - Let `assistant.tool` watches filter on stable structured fields such as tool name and success/error status.
 - Preserve existing watch delivery accounting: pending, delivered, dropped, evicted, coalesced, and self-loop diagnostics remain meaningful.
 - Preserve existing same-watch causal suppression. Observer output caused by a watch delivery must not retrigger that same watch.

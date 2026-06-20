@@ -35,9 +35,11 @@ pushes the observer a bounded frame; the observer can read the watched job
 directly with `job_read_output` and report to you with
 `delegate_send(to="caller")`. Frames coalesce while the observer is
 busy — it sees the latest state, not a backlog. Watching your own
-assistant/tool events with delivery back to yourself is rejected: that is a
-feedback loop, not observation. For `assistant.tool` observer watches, use
-`event_filter` when only a specific tool or success/error status matters.
+self-generated events with delivery back to yourself is rejected: that is a
+feedback loop, not observation. Use `events: ["communicate"]` for explicit
+result/status messages sent through the result tool; plain assistant prose is
+not watchable. Use `events: ["assistant.tool"]` for tool events, preferably
+with `event_filter` when only a specific tool or success/error status matters.
 
 `job_stop` cancels; it never deletes output or history. A finished delegate is
 not gone — `delegate_send(to=<delegate_id>, on_idle="start")` starts its next

@@ -534,7 +534,7 @@ Send configured frame/message shape:
   "operation": "create",
   "target": "job_...|caller",
   "output_match": "(?i)(ready|blocked|needs input)",
-  "events": ["assistant.message", "assistant.tool", "job.notification"],
+  "events": ["communicate", "assistant.tool", "job.notification"],
   "progress_interval_ms": 300000,
   "send": {
     "to": "dlg_observer|caller",
@@ -566,16 +566,16 @@ Trigger sources:
 
 - `output_match` is level-triggered: it fires once at attach if the job's already-retained output contains a match, then again as appended output matches the regex. It requires a concrete job target; `output_match` on a session target (`caller`) fails `invalid_request`.
 - `progress_interval_ms` fires periodically with bounded progress/excerpt metadata even if no match occurred.
-- `events` selects session/job event kinds to include in the watch frame. `events: ["*"]` means all visible event kinds allowed by caller permissions and filtering. Event kind names are implementation-defined but must be discoverable by the model; the shipped vocabulary is `assistant.message`, `assistant.tool`, `communicate`, and `job.notification`.
+- `events` selects session/job event kinds to include in the watch frame. `events: ["*"]` means all visible event kinds allowed by caller permissions and filtering. Event kind names are implementation-defined but must be discoverable by the model; the shipped vocabulary is `assistant.tool`, `communicate`, and `job.notification`. Plain assistant prose is an internal transcript/UI event and is not watchable through `job_watch`.
 - `event_filter` narrows event watches before any delivery is recorded. In v1 it applies only to `events: ["assistant.tool"]` and supports exact `tool_name` plus `status` (`"ok"` or `"error"`). Non-matching events do not create a delivery, pending row, notification, or observer wake.
-- `every` gates event delivery: `every: N` fires on each Nth occurrence of the watched event kind — for example `events: ["assistant.message"], every: 3` for every third assistant message. `every: 1` is the semantic default (fire on each occurrence) and reads as unset, whatever `events` contains. `every > 1` is valid only when `events` names exactly one concrete kind; supplying it with zero, multiple, or wildcard (`"*"`) kinds fails `invalid_request`.
+- `every` gates event delivery: `every: N` fires on each Nth occurrence of the watched event kind — for example `events: ["communicate"], every: 3` for every third result-tool message. `every: 1` is the semantic default (fire on each occurrence) and reads as unset, whatever `events` contains. `every > 1` is valid only when `events` names exactly one concrete kind; supplying it with zero, multiple, or wildcard (`"*"`) kinds fails `invalid_request`.
 
 Delivery modes:
 
 - If `send` is omitted, the watch produces a normal notification to the caller when the condition is met.
 - If `send` is present, Serf sends `send.message` plus the requested bounded frame/excerpt to `send.to` using `delegate_send` target-resolution and authorization semantics. Watch sends to delegate targets use `on_idle="start"` and deliver without waiting (unset `max_wait_ms`) for any newly started delegate job. If the target sidecar/delegate is busy, Serf keeps one durable latest-frame-wins pending send per watch key and retries when the target is idle or resumable. Caller-alias (`send.to="caller"`) deliveries surface as a job-notification turn at the next owner-session boundary; delegate-target deliveries steer or start the target as `delegate_send` does. All watch-send delivery happens at owner-session boundaries (between tool rounds, at input end, or on idle wake), not mid-stream.
 - Sent frames always carry bounded trigger metadata (the watched `job_id` when one exists, the trigger, and a `delivery_id`); there is no opt-out, and no `include_frame` option exists.
-- `include_excerpt=true` attaches a bounded output excerpt and is valid only for concrete job targets; supplying it for a session-target watch (`caller`) fails `invalid_request`. Session-target frames carry the bounded event payload that caused the trigger (`communicate` message text, assistant text, tool output/error, or job notification metadata); they do not expose a `transcript_ref`.
+- `include_excerpt=true` attaches a bounded output excerpt and is valid only for concrete job targets; supplying it for a session-target watch (`caller`) fails `invalid_request`. Session-target frames carry the bounded event payload that caused the trigger (`communicate` message text, tool output/error, or job notification metadata); they do not expose a `transcript_ref`.
 - The sent message is the current configured message at the time the watch fires.
 
 Observer/sidecar v1 pattern:
@@ -606,7 +606,7 @@ Rules:
 - For an already-terminal concrete job that still has retained output, an `output_match`-only `job_watch` (no `events` or `progress_interval_ms`) performs a one-shot catch-up scan of that retained output instead of installing a live watch: it returns `terminal_catchup=true` with `watching=false`, `fired=true` and a frame/notification on a match or `fired=false` on none, and the terminal `status`. Any other condition on a terminal target still fails synchronously with `target_terminal` (nothing can ever fire). Unknown or no-longer-retained concrete job targets still fail synchronously with `target_not_found`.
 - `job_watch(operation="clear", watch_id=...)` does not stop the watched job. Clearing is by `watch_id`, is idempotent, and returns a no-op success (`watching:false`) when the watch is already inactive, unknown, or was auto-removed because the target reached terminal state. The caller never has to reconstruct the original target/send key.
 - `job_watch` fails synchronously with `target_not_watchable` for targets the caller is not allowed to watch. A watch resolves the caller's own jobs only: a target owned by a child or deeper descendant session is not directly watchable. When the target is a known descendant in the live subtree, the failure carries the **delegate-the-watching** guidance — it names the owning descendant session and directs the caller to delegate the watch to that session, which attaches the watch on its own job (the only session that can watch it).
-- Self-delivery feedback loops are rejected at creation with `invalid_request`, regardless of target: a watch whose resolved event kinds include a self-generated kind (`assistant.message`, `assistant.tool`, `communicate`, including via `["*"]`) and whose delivery returns to the watching session (`send` omitted, or `send.to="caller"`) would make each delivery cause the next event. Watch self-generated kinds only with `send.to` set to an observer `delegate_id`. `job.notification` self-watches remain allowed.
+- Self-delivery feedback loops are rejected at creation with `invalid_request`, regardless of target: a watch whose resolved event kinds include a self-generated kind (`assistant.tool`, `communicate`, including via `["*"]`) and whose delivery returns to the watching session (`send` omitted, or `send.to="caller"`) would make each delivery cause the next event. Watch self-generated kinds only with `send.to` set to an observer `delegate_id`. `job.notification` self-watches remain allowed.
 - Watches expire automatically when their concrete watched job reaches terminal state. Session-level watches remain active until their configured scope ends, the session/job manager closes, or retention policy removes them.
 - A watch whose delivery target is a concrete `delegate_id` (the observer/sidecar pattern) grants that observer `job_read_output` on the watched job. Grants are durable read capabilities keyed on the observer's session identity, not the observer's current job handle — they survive observer follow-up turns with new `job_id`s — and are not revoked by watch clear or expiry, because the observer's main read typically happens after the watched job finishes; output retention still bounds what a grant can read. Grants extend `job_read_output` only: no `job_list` visibility, no `job_stop`, and no additional `delegate_send` authorization.
 - Watches are not required to survive Serf process restart unless an implementation explicitly marks them durable.
@@ -633,7 +633,7 @@ Return shape:
   "target": "job_...",
   "watching": true,
   "output_match": "(?i)(ready|blocked|needs input)",
-  "events": ["assistant.message", "assistant.tool", "job.notification"],
+  "events": ["communicate", "assistant.tool", "job.notification"],
   "progress_interval_ms": 300000,
   "send": {
     "to": "dlg_observer",

@@ -40,8 +40,9 @@ send it back through `delegate_send(to="caller")`.
 ## Expected
 
 - The parent waits for `APPROVAL_READY` before creating the watch.
-- The watch condition is `events: [communicate]`, not
-  `events: [assistant.message]`.
+- The watch condition is `events: [communicate]`. Attempts to use
+  `events: [assistant.message]` should be rejected before a watch is
+  installed.
 - The observer sends `APPROVAL_PACKET` to the caller and then records
   `APPROVAL_RECORDED` with the same delivery id.
 - The watch is cleared and has no dropped deliveries or self-loop
@@ -59,7 +60,6 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send
 
 ## Sharp edges
 
-- Kimi sometimes chooses `assistant.message` for caller-message
-  scenarios. That is a fluency failure here because it wakes the
-  observer on the parent's own tool-call turns.
-
+- Kimi previously chose `assistant.message` for caller-message
+  scenarios. That is now an invalid event selection; a fluent run
+  should recover by creating a `communicate` watch.

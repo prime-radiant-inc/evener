@@ -24,7 +24,7 @@ import (
 // JobManager gates on them via modelEventKinds. Exported so the provider-side
 // capabilityJobControl block (which cannot import agent/events) passes the same
 // literal into DefJobWatch (Task 8).
-var WatchEventKindNames = []string{"assistant.message", "assistant.tool", "communicate", "job.notification"}
+var WatchEventKindNames = []string{"assistant.tool", "communicate", "job.notification"}
 
 func availableEventKindNames() []string { return append([]string(nil), WatchEventKindNames...) }
 
@@ -33,10 +33,9 @@ func availableEventKindNames() []string { return append([]string(nil), WatchEven
 // the discoverable vocabulary of spec §5.9; it is intentionally a small, stable
 // subset of the full event stream, not every internal kind.
 var modelEventKinds = map[string]events.EventKind{
-	WatchEventKindNames[0]: events.EventAssistantTextEnd,
-	WatchEventKindNames[1]: events.EventToolCallEnd,
-	WatchEventKindNames[3]: events.EventJobFinished,
-	WatchEventKindNames[2]: events.EventCommunicate,
+	"assistant.tool":   events.EventToolCallEnd,
+	"communicate":      events.EventCommunicate,
+	"job.notification": events.EventJobFinished,
 }
 
 const (
@@ -611,6 +610,9 @@ func validateWatchEventArgs(a watchArgs) error {
 		if name == "*" {
 			continue
 		}
+		if name == "assistant.message" {
+			return errors.New("invalid_request: assistant.message is not watchable; use communicate for result messages, assistant.tool for tool calls, or job.notification for job lifecycle events")
+		}
 		if _, ok := modelEventKinds[name]; !ok {
 			return fmt.Errorf("invalid_request: unknown event kind %q", name)
 		}
@@ -905,8 +907,8 @@ func resolveEventKinds(names []string) (map[events.EventKind]bool, bool) {
 
 // validateWatchDeliveryLoop rejects configs that deliver self-generated event
 // kinds back into the session that generates them — a structural feedback loop
-// regardless of watch target (spec §6.1). assistant.message/assistant.tool/
-// communicate (including via the "*" wildcard) are produced by the owning
+// regardless of watch target (spec §6.1). assistant.tool/communicate
+// (including via the "*" wildcard) are produced by the owning
 // session's own turn, and onSessionEvent matches event kinds across every watch
 // independent of cfg.target, so delivering such a kind back to the caller (send
 // omitted, or send.to=caller) makes each delivery cause the next event.
@@ -916,13 +918,12 @@ func validateWatchDeliveryLoop(cfg *watchConfig) error {
 		return nil
 	}
 	selfGenerated := cfg.wildcardEvents ||
-		cfg.eventKinds[events.EventAssistantTextEnd] ||
 		cfg.eventKinds[events.EventToolCallEnd] ||
 		cfg.eventKinds[events.EventCommunicate]
 	if !selfGenerated {
 		return nil
 	}
-	return errors.New("invalid_request: watching assistant.message/assistant.tool/communicate with delivery back to the caller is a feedback loop (each delivery causes the next event); watch these kinds only with send.to set to an observer delegate")
+	return errors.New("invalid_request: watching assistant.tool/communicate with delivery back to the caller is a feedback loop (each delivery causes the next event); watch these kinds only with send.to set to an observer delegate")
 }
 
 func canonicalWatchEvents(events []string) []string {

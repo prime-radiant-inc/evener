@@ -50,7 +50,6 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range las
 
 ## Sharp edges
 
-- As with the drift detector, `assistant.message` is the wrong trigger.
-  It can make the sidecar react to the parent's internal tool-call
-  turns instead of the explicit loop signal.
-
+- As with the drift detector, `assistant.message` is not a public watch
+  event. The sidecar should observe the explicit loop signal through
+  `communicate`.

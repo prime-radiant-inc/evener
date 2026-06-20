@@ -184,7 +184,8 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"already contains a match the watch fires immediately, then again on new matches — a finished job gets a one-shot " +
 		"catch-up scan), `progress_interval_ms` (periodic), `events` (kinds this session: " + kinds + "; `every` fires on " +
 		"each Nth occurrence — 1 is the default; above 1 requires `events` to contain exactly one kind; `event_filter` can narrow " +
-		"`assistant.tool` events by tool_name and ok/error status). Delivery: omit `send` to be notified " +
+		"`assistant.tool` events by tool_name and ok/error status). Use `communicate` for result/status messages, " +
+		"`assistant.tool` for tool calls, and `job.notification` for job lifecycle events. Delivery: omit `send` to be notified " +
 		"yourself; set `send.to` to an observer `delegate_id` to push bounded trigger frames there — " +
 		"this also grants that observer read access to the observed job. Frames coalesce latest-wins while the target is " +
 		"busy. `include_excerpt` attaches an output excerpt (concrete job targets only). ONE active watch per " +
@@ -206,7 +207,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 				"events": map[string]any{
 					"type":        "array",
 					"items":       map[string]any{"type": "string"},
-					"description": "Event kinds to watch; [\"*\"] = all visible. Available: " + kinds + ".",
+					"description": "Event kinds to watch; [\"*\"] = all visible. Available: " + kinds + ". Use communicate for result/status messages; assistant.message is not watchable.",
 				},
 				"every": map[string]any{
 					"type":        "integer",

@@ -173,7 +173,7 @@ Required tests:
 - A restart test for pending output-triggered watch sends, if the pending send is
   persisted before delivery.
 
-### 4. Watch frames are not content-bearing for tool and assistant events
+### 4. Watch frames are not content-bearing for tool and result events
 
 The current frame renderer includes a payload block only for `communicate`.
 That is not enough for a real observer API. The snide observer scenario watches
@@ -182,15 +182,17 @@ metadata. An observer cannot make high-quality comments about a tool event
 without at least the tool name, call id, status, and bounded output/error
 summary.
 
+Implementation note (2026-06-20): `assistant.message` is no longer a public
+`job_watch` event kind. Models should watch `communicate` for explicit
+result/status messages. Plain assistant prose remains an internal
+transcript/UI event; if an internal diagnostic renders it, that does not make
+it model-watchable.
+
 Required content blocks:
 
 - `communicate`
   - message excerpt;
   - `await_reply`;
-  - truncation flag.
-- `assistant.message`
-  - final text excerpt;
-  - model, finish reason, reasoning/usage if already present and bounded;
   - truncation flag.
 - `assistant.tool`
   - tool name;

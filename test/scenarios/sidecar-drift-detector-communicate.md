@@ -54,5 +54,6 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range las
 
 - A prior Kimi run first created an `assistant.message` watch, causing
   repeated `DRIFT_IGNORED` turns before it corrected to `communicate`.
-  That is the failure this card should catch.
-
+  That historical wrong-trigger path should now be rejected as an
+  invalid event selection; this card should catch whether the agent
+  recovers by creating a `communicate` watch.
