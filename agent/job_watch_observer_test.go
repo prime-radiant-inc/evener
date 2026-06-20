@@ -397,6 +397,135 @@ func TestWatchOriginatedDelegateCanFinishWithNoToolBareText(t *testing.T) {
 	}
 }
 
+func TestScenarioPassiveObserverIgnoresWatchFrameWithoutNoopTool(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return communicateWithDefaultOutput("observer ready") },
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("ignored: no action needed")}
+		},
+		func(llm.Request) llm.Response {
+			return toolCallResponse(llm.ToolCallData{
+				ID:        "noop_list",
+				Name:      "job_list",
+				Arguments: json.RawMessage(`{}`),
+				Type:      "function",
+			})
+		},
+		func(llm.Request) llm.Response { return communicateWithDefaultOutput("noop completed") },
+	}}
+	c := llm.NewClient()
+	c.Register(adapter)
+	parent := newDelegateTestSession(t, c)
+	observer := parent.createDelegate(context.Background(), delegateArgs{Task: "observe passively", Background: false, BlockTimeoutMS: 5000})
+	if observer.Err != nil {
+		t.Fatalf("observer delegate: %v", observer.Err)
+	}
+
+	if _, err := parent.jobManager.configureWatch(watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"assistant.tool"},
+		Send:   &watchSendArgs{To: observer.DelegateID, Message: "Ignore this frame unless it matters."},
+	}); err != nil {
+		t.Fatalf("configure observer watch: %v", err)
+	}
+	parent.emit(events.EventToolCallEnd, events.ToolCallEndData{ToolName: "job_list", Output: "{}"})
+	if err := drainWatchSendsVia(t, parent.jobManager, parent.sendDelegateMessage); err != nil {
+		t.Fatalf("drain watch sends: %v", err)
+	}
+
+	_, childID, err := decodeRef(observer.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode observer transcript ref: %v", err)
+	}
+	result := waitForRuntimeSubagent(t, parent, childID)
+	if result.Status != SubagentCompleted || !result.Success {
+		t.Fatalf("observer result = %+v, want completed no-error no-op disposition", result)
+	}
+	if result.Output != "" {
+		t.Fatalf("observer output = %q, want no communicated result for ignored frame", result.Output)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want 2; third request would be the old no-op job_list retry", len(requests))
+	}
+	if requests[1].ToolChoice == nil || requests[1].ToolChoice.Mode != "auto" {
+		t.Fatalf("watch delivery tool choice = %+v, want auto", requests[1].ToolChoice)
+	}
+}
+
+func TestScenarioAssistantToolEventFilterAvoidsPassiveObserverWakeups(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return communicateWithDefaultOutput("observer ready") },
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("ignored: matched but no action needed")}
+		},
+		func(llm.Request) llm.Response {
+			return toolCallResponse(llm.ToolCallData{
+				ID:        "noop_list",
+				Name:      "job_list",
+				Arguments: json.RawMessage(`{}`),
+				Type:      "function",
+			})
+		},
+	}}
+	c := llm.NewClient()
+	c.Register(adapter)
+	parent := newDelegateTestSession(t, c)
+	observer := parent.createDelegate(context.Background(), delegateArgs{Task: "observe successful reads", Background: false, BlockTimeoutMS: 5000})
+	if observer.Err != nil {
+		t.Fatalf("observer delegate: %v", observer.Err)
+	}
+
+	if _, err := parent.jobManager.configureWatch(watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"assistant.tool"},
+		EventFilter: &watchEventFilter{
+			ToolName: "read_file",
+			Status:   "ok",
+		},
+		Send: &watchSendArgs{To: observer.DelegateID, Message: "Only successful read_file matters."},
+	}); err != nil {
+		t.Fatalf("configure filtered observer watch: %v", err)
+	}
+	cfg := onlyWatchConfigForTest(t, parent.jobManager)
+
+	parent.emit(events.EventToolCallEnd, events.ToolCallEndData{ToolName: "job_list", Output: "{}"})
+	parent.emit(events.EventToolCallEnd, events.ToolCallEndData{ToolName: "read_file", Error: "permission denied"})
+	if cfg.nextUpdateSeq != 0 {
+		t.Fatalf("non-matching events fired %d watch sends, want 0", cfg.nextUpdateSeq)
+	}
+	if pending := parent.jobManager.pendingWatchSendDeliveries(nil); len(pending) != 0 {
+		t.Fatalf("non-matching events recorded pending deliveries: %+v", pending)
+	}
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("observer woke on non-matching events; model requests = %d, want initial ready only", got)
+	}
+
+	parent.emit(events.EventToolCallEnd, events.ToolCallEndData{ToolName: "read_file", Output: "ok"})
+	if cfg.nextUpdateSeq != 1 {
+		t.Fatalf("matching event fired %d watch sends, want 1", cfg.nextUpdateSeq)
+	}
+	if err := drainWatchSendsVia(t, parent.jobManager, parent.sendDelegateMessage); err != nil {
+		t.Fatalf("drain watch sends: %v", err)
+	}
+
+	_, childID, err := decodeRef(observer.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode observer transcript ref: %v", err)
+	}
+	result := waitForRuntimeSubagent(t, parent, childID)
+	if result.Status != SubagentCompleted || !result.Success {
+		t.Fatalf("observer result = %+v, want completed no-error filtered delivery", result)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want 2; third request would be the old no-op job_list retry", len(requests))
+	}
+	if requests[1].ToolChoice == nil || requests[1].ToolChoice.Mode != "auto" {
+		t.Fatalf("watch delivery tool choice = %+v, want auto", requests[1].ToolChoice)
+	}
+}
+
 func TestIdleWatchSendObserverCallerSendCarriesProvenance(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
