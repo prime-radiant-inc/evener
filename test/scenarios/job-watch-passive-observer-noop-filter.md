@@ -37,7 +37,8 @@ watch turns do not need a harmless tool call.
    >    is read_file, call delegate_send with to exactly 'caller' and
    >    message exactly 'PASSIVE_READ_OK delivery=<delivery_id>'; then
    >    call communicate exactly 'PASSIVE_READ_DONE
-   >    delivery=<delivery_id>' and finish. For every other Watch frame,
+   >    delivery=<delivery_id>' and finish. Do not emit assistant text
+   >    before or after those two tool calls. For every other Watch frame,
    >    return a regular assistant message exactly
    >    PASSIVE_IGNORED_NO_ACTION and finish; do not call communicate
    >    and do not call any other tool for ignored frames. Never call
@@ -110,7 +111,8 @@ watch turns do not need a harmless tool call.
   - the `PASSIVE_SUCCESS_SENTINEL` output
 - The observer's filtered-frame turn calls `delegate_send(to="caller")`
   with `PASSIVE_READ_OK delivery=<delivery_id>` and then communicates
-  `PASSIVE_READ_DONE delivery=<same delivery_id>`.
+  `PASSIVE_READ_DONE delivery=<same delivery_id>`. It should not emit
+  visible assistant text in that turn.
 - The parent may stop after consuming the `PASSIVE_READ_OK` steering
   instead of emitting `PASSIVE_PARENT_DONE`. Do not use that final
   marker as pass/fail evidence; use the durable `jobs.jsonl` and
@@ -218,13 +220,17 @@ PY
   durable logs are the assertion surface.
 - Do not check raw final assistant prose for this card. Check
   `jobs.jsonl` delivery rows and the observer transcript.
-- The parent model may need an extra `job_watch(operation="list")`
-  because the short rendered `job_watch` create result does not always
-  include the watch id in the text it is reasoning over.
+- The LLM-facing `job_watch` create result should include the
+  `watch_id`. If the parent needs `job_watch(operation="list")` only
+  to recover an id it just created, treat that as a tool-output
+  ergonomics regression.
 - After the successful `read_file`, the parent may inspect delegate
   jobs before emitting the final marker. That is acceptable; the
   fluency signal to watch is whether it finds the filtered observer job
   without human steering.
+- If the filtered observer emits explanatory assistant text before the
+  `delegate_send`/`communicate` tool calls, treat that as prompt
+  noncompliance, not a watch-delivery failure.
 
 ## Recorded Run
 
@@ -242,7 +248,29 @@ fresh hub on `127.0.0.1:9187`.
 - Fluency note: the observer was clean and direct. The parent followed
   the ordered steps without human steering, but it needed a watch-list
   call to recover watch ids and briefly inspected an older observer job
-  before finding the filtered observer job. This is acceptable but not
-  effortless.
+  before finding the filtered observer job. The watch-list detour was
+  traced to `job_watch` create surfacing `watch_id` only through
+  `tool_state`, not model-facing text; future runs should not need
+  that recovery step.
+- Both watches were cleared and the session was shut down after the
+  run.
+
+Verified again after surfacing `watch_id` in the model-facing
+`job_watch` output.
+
+- Parent session: `01KVHKVE52QN6MN7MNHM63PT0N`
+- Observer transcript: `local:01KVHKVN1B0G6292KWE8PJ7AWJ`
+- Parent captured both watch ids directly from create results:
+  `[watching caller · watch_id ...]`; it did not call
+  `job_watch(operation="list")` to recover ids.
+- Parent still used `job_list` and `job_read_output` after successful
+  `read_file` to wait for the async observer job. That was fluent
+  enough: it found the correct running observer job without human
+  steering.
+- Observer ignored the broad `job_watch` frame with bare
+  `PASSIVE_IGNORED_NO_ACTION` and zero tool calls. The filtered
+  `read_file` frame correctly called `delegate_send` and `communicate`,
+  but also emitted a small explanatory text preface; the prompt above
+  was tightened after this run to forbid that.
 - Both watches were cleared and the session was shut down after the
   run.

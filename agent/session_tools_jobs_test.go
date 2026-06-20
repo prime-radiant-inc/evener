@@ -2328,6 +2328,41 @@ func TestMarshalWatchResultSurfacesEventFilter(t *testing.T) {
 	}
 }
 
+func TestMarshalWatchResultSurfacesWatchIDInModelOutput(t *testing.T) {
+	created, err := marshalWatchResult(watchResult{
+		WatchID:  "watch_visible",
+		Target:   runtimeMessageAliasCaller,
+		Watching: true,
+		Events:   []string{"assistant.tool"},
+	}, 4096)
+	if err != nil {
+		t.Fatalf("marshal created watch result: %v", err)
+	}
+	createdState, ok := created.(tooldefs.StateResult)
+	if !ok {
+		t.Fatalf("created result type = %T, want StateResult", created)
+	}
+	if !strings.Contains(createdState.Output, "watch_id watch_visible") {
+		t.Fatalf("created model output = %q, want watch_id", createdState.Output)
+	}
+
+	cleared, err := marshalWatchResult(watchResult{
+		WatchID:  "watch_visible",
+		Target:   runtimeMessageAliasCaller,
+		Watching: false,
+	}, 4096)
+	if err != nil {
+		t.Fatalf("marshal cleared watch result: %v", err)
+	}
+	clearedState, ok := cleared.(tooldefs.StateResult)
+	if !ok {
+		t.Fatalf("cleared result type = %T, want StateResult", cleared)
+	}
+	if !strings.Contains(clearedState.Output, "watch_id watch_visible") {
+		t.Fatalf("cleared model output = %q, want watch_id", clearedState.Output)
+	}
+}
+
 // TestMarshalWatchResultSurfacesFired pins the tool-JSON projection of an
 // attach-time fire: a watchResult with Fired=true renders "fired":true, and
 // Fired=false omits the field (omitempty), so the agent learns its condition was

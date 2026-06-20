@@ -1302,9 +1302,16 @@ func formatJobWatch(out jobWatchToolResult) string {
 		if out.Target == "" && out.WatchID != "" {
 			return fmt.Sprintf("[watch %s cleared]", out.WatchID)
 		}
-		return fmt.Sprintf("[watch on %s cleared]", out.Target)
+		parts := []string{"watch on " + out.Target + " cleared"}
+		if out.WatchID != "" {
+			parts = append(parts, "watch_id "+out.WatchID)
+		}
+		return "[" + strings.Join(parts, " · ") + "]"
 	}
 	parts := []string{"watching " + out.Target}
+	if out.WatchID != "" {
+		parts = append(parts, "watch_id "+out.WatchID)
+	}
 	var cond []string
 	if out.OutputMatch != "" {
 		cond = append(cond, "output_match: "+out.OutputMatch)
