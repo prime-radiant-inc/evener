@@ -63,6 +63,11 @@ type runConfig struct {
 	listSessions bool   // print saved sessions and exit
 }
 
+// runLoadClient is the injectable hook for tests. Production code calls
+// cmdutil.LoadClient; tests may replace this to drive run() with a scripted
+// provider while exercising the real CLI/session/tool plumbing.
+var runLoadClient = cmdutil.LoadClient
+
 func run(ctx context.Context, cfg runConfig) error {
 	if cfg.stdout == nil {
 		cfg.stdout = os.Stdout
@@ -138,7 +143,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 
-	client, provCfg, hasProvConfig, err := cmdutil.LoadClient(llm.WithStateDir(stateDir))
+	client, provCfg, hasProvConfig, err := runLoadClient(llm.WithStateDir(stateDir))
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}

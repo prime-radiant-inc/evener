@@ -1605,9 +1605,7 @@ func TestAdapter_Complete_FinishReason_Normalized(t *testing.T) {
 }
 
 func TestAdapter_Integration_WebSearch(t *testing.T) {
-	if os.Getenv("GEMINI_API_KEY") == "" && os.Getenv("GOOGLE_API_KEY") == "" {
-		t.Skip("GEMINI_API_KEY not set")
-	}
+	requireLiveGoogle(t)
 
 	a, err := NewFromEnv()
 	if err != nil {
@@ -1649,9 +1647,7 @@ func TestAdapter_Integration_WebSearch(t *testing.T) {
 }
 
 func TestAdapter_Integration_CountInputTokens(t *testing.T) {
-	if os.Getenv("GEMINI_API_KEY") == "" && os.Getenv("GOOGLE_API_KEY") == "" {
-		t.Skip("GEMINI_API_KEY not set")
-	}
+	requireLiveGoogle(t)
 
 	a, err := NewFromEnv()
 	if err != nil {
@@ -1687,9 +1683,7 @@ func TestAdapter_Integration_CountInputTokens(t *testing.T) {
 }
 
 func TestAdapter_Integration_WebSearch_WithFunctionTools(t *testing.T) {
-	if os.Getenv("GEMINI_API_KEY") == "" && os.Getenv("GOOGLE_API_KEY") == "" {
-		t.Skip("GEMINI_API_KEY not set")
-	}
+	requireLiveGoogle(t)
 
 	a, err := NewFromEnv()
 	if err != nil {

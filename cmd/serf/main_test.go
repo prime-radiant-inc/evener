@@ -25,9 +25,7 @@ import (
 // TestNewSessionFromEnv verifies that we can create a working session
 // from environment variables. This is the core wiring test.
 func TestNewSessionFromEnv(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
+	requireLiveOpenAI(t)
 
 	client, err := llm.NewFromEnv()
 	if err != nil {
@@ -57,9 +55,7 @@ func TestNewSessionFromEnv(t *testing.T) {
 // TestProcessInputSimplePrompt sends a simple prompt to the model and verifies
 // that the session returns a non-empty text response.
 func TestProcessInputSimplePrompt(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
+	requireLiveOpenAI(t)
 
 	client, err := llm.NewFromEnv()
 	if err != nil {
@@ -92,9 +88,7 @@ func TestProcessInputSimplePrompt(t *testing.T) {
 // TestProcessInputWithToolUse sends a prompt that requires the model to use a tool
 // (write a file), then verifies the file was created.
 func TestProcessInputWithToolUse(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
+	requireLiveOpenAI(t)
 
 	client, err := llm.NewFromEnv()
 	if err != nil {

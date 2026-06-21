@@ -133,6 +133,9 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
+	if os.Getenv("SERF_LIVE_TESTS") != "1" {
+		t.Skip("set SERF_LIVE_TESTS=1 to run live serve integration test")
+	}
 	if os.Getenv("OPENAI_API_KEY") == "" && os.Getenv("ANTHROPIC_API_KEY") == "" {
 		t.Skip("requires an LLM API key for serve startup")
 	}

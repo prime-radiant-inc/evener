@@ -200,10 +200,7 @@ func TestAdapter_CountInputTokens_CodexBackendFallsBackToLocalEstimate(t *testin
 }
 
 func TestAdapter_Integration_CountInputTokens(t *testing.T) {
-	key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
-	if key == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
+	key := requireLiveOpenAIKey(t)
 	if testing.Short() {
 		t.Skip("skipping live OpenAI integration test in short mode")
 	}
@@ -1665,9 +1662,7 @@ func TestToResponsesInput_WebSearch_ReplayedAsItem(t *testing.T) {
 }
 
 func TestAdapter_Integration_PhaseAnnotation(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
+	requireLiveOpenAIKey(t)
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -1738,9 +1733,7 @@ func TestAdapter_Integration_PhaseAnnotation(t *testing.T) {
 }
 
 func TestAdapter_Integration_WebSearch(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
+	requireLiveOpenAIKey(t)
 
 	a, err := NewFromEnv()
 	if err != nil {

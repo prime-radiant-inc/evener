@@ -14,10 +14,14 @@ import (
 
 // TestE2E_HubAndDaemon brings up a real serf daemon plus the hub and
 // verifies the landing page lists the daemon. Skip-by-default; runs only
-// when SERF_TEST_PROVIDER, SERF_TEST_MODEL, and an API key are set.
+// when SERF_LIVE_TESTS=1, SERF_TEST_PROVIDER, SERF_TEST_MODEL, and an API key
+// are set.
 func TestE2E_HubAndDaemon(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
+	}
+	if os.Getenv("SERF_LIVE_TESTS") != "1" {
+		t.Skip("set SERF_LIVE_TESTS=1 to run live hub/daemon e2e test")
 	}
 	provider := os.Getenv("SERF_TEST_PROVIDER")
 	model := os.Getenv("SERF_TEST_MODEL")

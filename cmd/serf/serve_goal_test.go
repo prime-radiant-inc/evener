@@ -11,11 +11,12 @@ import (
 	"time"
 
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
 
-// TestServeGoalLive_TUIPathEndToEnd is the live proof that /goal works through
-// the REAL daemon glue — the exact path the TUI drives — end to end:
+// TestServeGoal_TUIPathEndToEnd is the proof that /goal works through the REAL
+// daemon glue — the exact path the TUI drives — end to end:
 //
 //	appwire goal/set  →  Server.goalFunc  →  Session.SetGoal
 //	                  →  kick (SetKickFunc)  →  Server.SubmitContinuation
@@ -25,8 +26,9 @@ import (
 // None of that wiring (cmd/serf/serve.go's SetGoalFunc / SetKickFunc callbacks
 // and the InputCh→ProcessInputKind loop) is exercised by the unit tests, which
 // stub the goalFunc or drive the Session directly. This test starts the real
-// `serve` daemon with a real cheap model, connects an appwire client over the
-// websocket RPC exactly like the TUI's hubstart does, and sets a goal whose
+// `serve` daemon with a scripted provider at the LLM boundary, connects an
+// appwire client over the websocket RPC exactly like the TUI's hubstart does,
+// and sets a goal whose
 // second step is gated on an external file that only appears AFTER the first
 // goal turn has ended and a continuation has begun. That makes a second turn —
 // driven through SubmitContinuation → inputCh → ProcessInputKind — structurally
@@ -36,17 +38,42 @@ import (
 // It then asserts the real on-disk outcome (a.txt and b.txt with the gated
 // content) plus a completed goal whose Iterations>=1 — the projection the TUI
 // reads to render /goal status.
-func TestServeGoalLive_TUIPathEndToEnd(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
-
+func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
 	workDir := t.TempDir()
 	stateDir := t.TempDir()
 	runDir := t.TempDir()
+	aPath := filepath.Join(workDir, "a.txt")
+	bPath := filepath.Join(workDir, "b.txt")
+	gatePath := filepath.Join(workDir, "gate.txt")
+	const gateToken = "go-2718281828"
+
+	installServeScriptedProvider(t, &scriptedProvider{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return scriptedToolCalls(scriptedWriteFileCall("write_a", "a.txt", "seed"))
+			},
+			func(llm.Request) llm.Response {
+				return scriptedCommunicate("step 1 complete; waiting for gate")
+			},
+			func(llm.Request) llm.Response {
+				token, ok := waitForFileContent(gatePath, 5*time.Second)
+				if !ok {
+					return scriptedCommunicate("gate.txt was not released")
+				}
+				return scriptedToolCalls(scriptedWriteFileCall("write_b", "b.txt", strings.TrimSpace(token)))
+			},
+			func(llm.Request) llm.Response {
+				return scriptedToolCalls(scriptedUpdateGoalCall("goal_1", "complete"))
+			},
+			func(llm.Request) llm.Response {
+				return scriptedCommunicate("goal complete")
+			},
+		},
+	})
 
 	args := []string{
-		"--model", "openai/gpt-5.4-mini",
+		"--model", "openai/gpt-test",
 		"--addr", "127.0.0.1:0",
 		"--dir", workDir,
 		"--state-dir", stateDir,
@@ -82,11 +109,6 @@ func TestServeGoalLive_TUIPathEndToEnd(t *testing.T) {
 
 	// The daemon is single-session; its app identity is ("local", sessionID).
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
-
-	aPath := filepath.Join(workDir, "a.txt")
-	bPath := filepath.Join(workDir, "b.txt")
-	gatePath := filepath.Join(workDir, "gate.txt")
-	const gateToken = "go-2718281828"
 
 	// The objective: step 1 (a.txt) can be done immediately; step 2 (b.txt) needs
 	// the contents of gate.txt, which the harness withholds until the goal loop
@@ -188,10 +210,10 @@ func TestServeGoalLive_TUIPathEndToEnd(t *testing.T) {
 	}
 	// b.txt must carry the gate token, which only existed on disk after a
 	// continuation turn ran. Assert containment (trimmed) rather than byte-exact
-	// equality: the unique token proves the causal dependency, while a live model
-	// may add incidental whitespace or a stray character around it.
-	if !strings.Contains(strings.TrimSpace(string(bData)), gateToken) {
-		t.Fatalf("b.txt content = %q, want it to contain %q (the gate token released only on a continuation turn)", string(bData), gateToken)
+	// equality: the unique token proves the causal dependency and trims the same
+	// way a real tool call would tolerate line endings around file content.
+	if strings.TrimSpace(string(bData)) != gateToken {
+		t.Fatalf("b.txt content = %q, want %q (the gate token released only on a continuation turn)", string(bData), gateToken)
 	}
 
 	// Cross-check: the persisted transcript exists for this session (the loop
@@ -201,7 +223,7 @@ func TestServeGoalLive_TUIPathEndToEnd(t *testing.T) {
 		t.Fatalf("transcript %s not written: %v", transcriptPath, err)
 	}
 
-	t.Logf("LIVE PROOF (TUI path): GoalSet.Started=%v; SerfThread.Goal{Status:%q Iterations:%d}; a.txt=%q b.txt=%q",
+	t.Logf("TUI PATH PROOF: GoalSet.Started=%v; SerfThread.Goal{Status:%q Iterations:%d}; a.txt=%q b.txt=%q",
 		resp.Started, goalState.Status, goalState.Iterations, string(aData), string(bData))
 
 	// Shut the daemon down and assert a clean exit.

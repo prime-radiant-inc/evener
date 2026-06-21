@@ -2,7 +2,6 @@ package openai
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -19,9 +18,7 @@ import (
 // ({"type":"function","function":{"name":"X"}}) is rejected with a 400. This test
 // is the live regression guard for PRI-2007.
 func TestAdapter_Integration_NamedToolChoice_ResponsesAPI(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
+	requireLiveOpenAIKey(t)
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}

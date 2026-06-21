@@ -25,6 +25,9 @@ const integrationTestModel = "gpt-5.4-mini"
 
 func skipWithoutAPIKey(t *testing.T) {
 	t.Helper()
+	if os.Getenv("SERF_LIVE_TESTS") != "1" {
+		t.Skip("set SERF_LIVE_TESTS=1 to run live agent integration tests")
+	}
 	if os.Getenv("OPENAI_API_KEY") == "" {
 		t.Skip("OPENAI_API_KEY not set")
 	}

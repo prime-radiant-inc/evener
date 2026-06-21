@@ -19,14 +19,17 @@ import (
 // TestRunWithArgs verifies that the run function processes a prompt from CLI args
 // and produces output on stdout.
 func TestRunWithArgs(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
+	installRunScriptedProvider(t, &scriptedProvider{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return scriptedCommunicate("PONG") },
+		},
+	})
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
 		prompt:  "Reply with exactly the word PONG and nothing else.",
-		model:   "openai/gpt-5.4-mini",
+		model:   "openai/gpt-test",
 		workDir: t.TempDir(),
 		stdout:  &stdout,
 		stderr:  &stderr,
@@ -42,15 +45,21 @@ func TestRunWithArgs(t *testing.T) {
 // TestRunEmitsToolEvents verifies that tool call events are written to stderr
 // when the model uses tools.
 func TestRunEmitsToolEvents(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
-
 	tmpDir := t.TempDir()
+	installRunScriptedProvider(t, &scriptedProvider{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return scriptedToolCalls(scriptedWriteFileCall("write_1", "test.txt", "hello"))
+			},
+			func(llm.Request) llm.Response { return scriptedCommunicate("created test.txt") },
+		},
+	})
+
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
 		prompt:  "Create a file called test.txt in " + tmpDir + " with content 'hello'. Use the write_file tool.",
-		model:   "openai/gpt-5.4-mini",
+		model:   "openai/gpt-test",
 		workDir: tmpDir,
 		stdout:  &stdout,
 		stderr:  &stderr,
@@ -132,11 +141,7 @@ func TestRunBareModelRejected(t *testing.T) {
 // --output-schema contains malformed JSON. This is the black-box wire-through
 // test — it confirms cfg.outputSchema reaches buildInitialProfile.
 func TestRunInvalidOutputSchema(t *testing.T) {
-	// Need at least one API key so llm.NewFromEnv succeeds and we actually
-	// reach buildInitialProfile where the schema is parsed.
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Setenv("OPENAI_API_KEY", "dummy-for-wire-test")
-	}
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
@@ -519,14 +524,17 @@ func TestDrainEventsHuman_PluginEvents(t *testing.T) {
 }
 
 func TestRunWithContextStrategy(t *testing.T) {
-	if os.Getenv("OPENAI_API_KEY") == "" {
-		t.Skip("OPENAI_API_KEY not set")
-	}
+	installRunScriptedProvider(t, &scriptedProvider{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return scriptedCommunicate("PONG") },
+		},
+	})
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
 		prompt:          "Reply with exactly the word PONG and nothing else.",
-		model:           "openai/gpt-5.4-mini",
+		model:           "openai/gpt-test",
 		workDir:         t.TempDir(),
 		contextStrategy: "compact",
 		stdout:          &stdout,

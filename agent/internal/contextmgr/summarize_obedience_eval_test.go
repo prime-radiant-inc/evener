@@ -318,6 +318,9 @@ func TestSummarizeObedience(t *testing.T) {
 // It skips the test if no provider API keys are present in the environment.
 func newRealSummarizerManager(t *testing.T) *Manager {
 	t.Helper()
+	if os.Getenv("SERF_LIVE_TESTS") != "1" {
+		t.Skip("set SERF_LIVE_TESTS=1 to run live summarizer obedience eval")
+	}
 
 	// Gate on any known provider key. The providers are registered via the
 	// blank imports at the top of the file; llm.NewFromEnv will find them.

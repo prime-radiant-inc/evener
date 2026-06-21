@@ -3275,13 +3275,17 @@ func TestWeb_Settings_Transcript_Renders(t *testing.T) {
 
 // TestWeb_ApiModels_ReturnsListWithProviderEnv verifies the endpoint
 // shape — returns a JSON array of {provider, model, …} entries when
-// run against a live provider API. Skips when no real API key is set.
+// run against a live provider API. Skips unless live tests are explicitly
+// enabled and a real API key is set.
 func TestWeb_ApiModels_ReturnsListWithProviderEnv(t *testing.T) {
 	// Force-clear cache to make the test run a fresh fetch.
 	liveModelsCache.mu.Lock()
 	liveModelsCache.expires = time.Time{}
 	liveModelsCache.models = nil
 	liveModelsCache.mu.Unlock()
+	if os.Getenv("SERF_LIVE_TESTS") != "1" {
+		t.Skip("set SERF_LIVE_TESTS=1 to run live provider model-list test")
+	}
 	if os.Getenv("OPENAI_API_KEY") == "" {
 		t.Skip("OPENAI_API_KEY not set; live list models requires a real API key")
 	}

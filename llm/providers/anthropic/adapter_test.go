@@ -1645,9 +1645,7 @@ func TestToAnthropicMessages_WebSearch_ReplayedAsBlocks(t *testing.T) {
 }
 
 func TestAdapter_Integration_WebSearch(t *testing.T) {
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
-		t.Skip("ANTHROPIC_API_KEY not set")
-	}
+	requireLiveAnthropic(t)
 
 	a, err := NewFromEnv()
 	if err != nil {
@@ -3216,9 +3214,7 @@ func TestListModels_Generates1MVariants(t *testing.T) {
 }
 
 func TestAdapter_Integration_PromptCaching(t *testing.T) {
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
-		t.Skip("ANTHROPIC_API_KEY not set")
-	}
+	requireLiveAnthropic(t)
 
 	a, err := NewFromEnv()
 	if err != nil {
