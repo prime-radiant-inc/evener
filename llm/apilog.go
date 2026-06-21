@@ -88,9 +88,17 @@ type APIRawLogEntry struct {
 func RawBodyEnabled() bool { return rawBodyEnabled }
 
 var rawBodyEnabled = func() bool {
-	v := strings.ToLower(envvars.SERFLogRawHTTP.Trimmed())
-	return v == "1" || v == "true"
+	return rawHTTPLogEnabled(envvars.SERFLogRawHTTP.Getenv())
 }()
+
+func rawHTTPLogEnabled(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
 
 // APILogger is middleware that logs every LLM API call to a JSONL file.
 type APILogger struct {
