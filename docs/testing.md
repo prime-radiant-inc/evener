@@ -1,5 +1,38 @@
 # Testing
 
+## Test Reliability Policy
+
+The default test suite must be deterministic. Running `make test` or
+`go test ./...` must not depend on provider credentials, model availability,
+network access, quota, current model behavior, wall-clock timing outside the
+process, or ambient developer machine state.
+
+Use this boundary when adding or fixing tests:
+
+- If the test verifies Serf plumbing, use a scripted provider at the LLM
+  boundary and exercise the real Serf code below it. Examples: CLI flag/config
+  wiring, appwire RPC, daemon input queues, session loops, tool execution,
+  transcript writes, event emission, goal continuation routing, hook dispatch,
+  and prompt composition.
+- If the test verifies model behavior, keep it live. Examples: whether a
+  specific model chooses a tool from a natural-language instruction, follows an
+  output contract, supports a provider feature, honors a live API wire shape, or
+  behaves well across multi-turn goal prompts.
+- Live tests must be explicitly opt-in with a `SERF_*_E2E=1` or
+  `SERF_LIVE_TESTS=1` style environment variable in addition to the provider
+  credential. A provider key by itself must never make the default suite issue
+  live requests.
+- Do not use sleeps, polling races, or large string snapshots to prove behavior
+  when a structured event, state field, file result, or fake transport script can
+  prove the same contract.
+- Do not mock Serf internals to make a test pass. Keep the fake boundary at an
+  external dependency: LLM provider, network server, filesystem root, clock, or
+  process launcher.
+
+When a test needs a model, name that as the behavior under test and keep it out
+of the default suite. When the model is only a way to drive Serf, replace it with
+a scripted `llm.ProviderAdapter` response and assert the Serf side effects.
+
 ## OpenAI Codex Backend E2E
 
 The OpenAI adapter has opt-in live tests for the ChatGPT/Codex Responses backend.
