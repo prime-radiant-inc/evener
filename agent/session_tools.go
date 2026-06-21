@@ -327,9 +327,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 		res := skippedToolResult(call, err)
 		s.responseSideEffectsMu.Lock()
 		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
-			ToolName: res.ToolName,
-			CallID:   res.CallID,
-			Error:    res.FullOutput,
+			ToolName:      res.ToolName,
+			CallID:        res.CallID,
+			ArgumentsJSON: string(call.Arguments),
+			Error:         res.FullOutput,
 		})
 		s.responseSideEffectsMu.Unlock()
 		closeToolEvent()
@@ -353,9 +354,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	s.responseSideEffectsMu.Lock()
 	if err := s.errIfClosing(); err != nil {
 		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
-			ToolName: call.Name,
-			CallID:   call.ID,
-			Error:    skippedToolResult(call, err).FullOutput,
+			ToolName:      call.Name,
+			CallID:        call.ID,
+			ArgumentsJSON: string(call.Arguments),
+			Error:         skippedToolResult(call, err).FullOutput,
 		})
 		s.responseSideEffectsMu.Unlock()
 		closeToolEvent()
@@ -378,9 +380,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	}
 
 	endData := events.ToolCallEndData{
-		ToolName:  res.ToolName,
-		CallID:    res.CallID,
-		ToolState: res.ToolState,
+		ToolName:      res.ToolName,
+		CallID:        res.CallID,
+		ArgumentsJSON: string(call.Arguments),
+		ToolState:     res.ToolState,
 	}
 	if res.IsError {
 		endData.Error = res.FullOutput

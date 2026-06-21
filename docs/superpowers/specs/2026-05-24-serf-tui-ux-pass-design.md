@@ -430,7 +430,7 @@ When the composer is in any non-default mode, a `StatusBadge`-styled chip appear
 | queue          | turn busy + queueable                     | `QUEUE N`  | `StateProcessing`|
 | steer          | brief flash on `⇧↵` while active          | `STEER`    | `Accent`         |
 | fork draft     | `f` on user turn in scroll-browse         | `FORK DRAFT` | `StateWarning` |
-| awaiting input | session in `awaiting`                     | `AWAITING` | `StateAwaiting`  |
+| awaiting input | session needs user attention after a turn ended | `AWAITING` | `StateAwaiting`  |
 
 Mode-chip placement:
 ```

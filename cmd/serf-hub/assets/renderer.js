@@ -166,7 +166,7 @@
       this.newContentNeedsYou = false;
       this.newContentJumpTarget = null;
       // Blocking "needs-you" question (mockup #16): the agentMessage element
-      // for an unanswered communicate.await_reply, or null when none is
+      // for an unanswered agent question, or null when none is
       // pending. Drives both the in-flow amber frame (Alt A) and the docked
       // bar above the composer (Alt C).
       this.agentQuestionEl = null;
@@ -1759,10 +1759,8 @@
       const id = this.currentMessageId;
       const m = this.activeMessages.get(id);
       const finalText = (data && data.text) || (m && m.textBuf) || "";
-      const awaitReply = !!(data && data.awaitReply);
       if (!m) {
-        const el = this.appendAssistantBlock(finalText);
-        if (awaitReply && el) this.markAgentQuestion(el);
+        this.appendAssistantBlock(finalText);
         return;
       }
       this.activeMessages.delete(id);
@@ -1772,7 +1770,6 @@
         return;
       }
       this.renderAssistantMessage(m, finalText);
-      if (awaitReply) this.markAgentQuestion(m.el);
     },
 
     // markAgentQuestion frames an agent message as the blocking "needs-you"

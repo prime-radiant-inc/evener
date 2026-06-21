@@ -76,7 +76,7 @@ watch frames.
 - Each delivered frame visible in the observer transcript has
   `watch_id:`, `delivery_id:`, `job_id:`, `trigger: event: COMMUNICATE`,
   a `provenance:` line, and an `event:` block with `kind: communicate`,
-  `message: ...`, `await_reply: false`, and `truncated: false`.
+  `message: ...`, `end_turn: false`, and `truncated: false`.
 - The observer transcript shows `PYTHON_INJECTED` for the two trigger
   turns and `PYTHON_IGNORED` for the plain turn, each with the frame's
   `delivery_id`.

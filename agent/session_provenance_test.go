@@ -21,7 +21,7 @@ func TestEmitAttachesActiveProvenance(t *testing.T) {
 	s := &Session{id: "session_1", events: make(chan events.SessionEvent, 1)}
 	s.replaceActiveProvenance(testProvenance("watch_A", "wg_1"))
 
-	s.emit(events.EventCommunicate, events.CommunicateData{Message: "ack", AwaitReply: false})
+	s.emit(events.EventCommunicate, events.CommunicateData{Message: "ack", EndTurn: false})
 
 	ev := <-s.events
 	if !provenance.ContainsWatch(ev.Provenance, "watch_A", "wg_1") {

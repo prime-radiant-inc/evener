@@ -463,11 +463,11 @@ func findToolCallArgs(history []schema.Turn, toolCallID string) json.RawMessage 
 	return nil
 }
 
-func parseCommunicateArgs(args json.RawMessage) (awaitReply bool, message string) {
+func parseCommunicateArgs(args json.RawMessage) (endTurn bool, message string) {
 	var payload struct {
-		Message    string `json:"message"`
-		AwaitReply *bool  `json:"await_reply"`
-		Output     *struct {
+		Message string `json:"message"`
+		EndTurn *bool  `json:"end_turn"`
+		Output  *struct {
 			Message string `json:"message"`
 		} `json:"output"`
 	}
@@ -478,13 +478,13 @@ func parseCommunicateArgs(args json.RawMessage) (awaitReply bool, message string
 	if message == "" && payload.Output != nil {
 		message = strings.TrimSpace(payload.Output.Message)
 	}
-	if payload.AwaitReply == nil {
+	if payload.EndTurn == nil {
 		return false, ""
 	}
-	return *payload.AwaitReply, message
+	return *payload.EndTurn, message
 }
 
-func communicateArgsFromHistory(history []schema.Turn, toolCallID string) (awaitReply bool, message string) {
+func communicateArgsFromHistory(history []schema.Turn, toolCallID string) (endTurn bool, message string) {
 	return parseCommunicateArgs(findToolCallArgs(history, toolCallID))
 }
 
@@ -693,14 +693,14 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
 
 		case schema.TurnTool, schema.TurnToolResults:
-			// Extract non-await communicate results (agent responses to the user).
+			// Extract terminal communicate results (agent responses to the user).
 			for _, p := range t.Message.Content {
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 					continue
 				}
 				if p.ToolResult.Name == resultToolName {
-					awaitReply, msg := communicateArgsFromHistory(history[:i+1], p.ToolResult.ToolCallID)
-					if !awaitReply && msg != "" {
+					endTurn, msg := communicateArgsFromHistory(history[:i+1], p.ToolResult.ToolCallID)
+					if endTurn && msg != "" {
 						data.conversation = append(data.conversation, checkpointConversationEntry{Role: "agent", Text: msg})
 					}
 					continue
@@ -1217,15 +1217,15 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 			}
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == cm.resultToolName() {
-					awaitReply, msg := parseCommunicateArgs(p.ToolCall.Arguments)
+					endTurn, msg := parseCommunicateArgs(p.ToolCall.Arguments)
 					if msg == "" {
 						continue
 					}
 					switch {
-					case awaitReply:
-						b.WriteString(fmt.Sprintf("Agent Question: %s\n", msg))
-					default:
+					case endTurn:
 						b.WriteString(fmt.Sprintf("Agent Message: %s\n", msg))
+					default:
+						b.WriteString(fmt.Sprintf("Agent Status: %s\n", msg))
 					}
 				}
 			}

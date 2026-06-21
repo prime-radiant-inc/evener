@@ -28,7 +28,10 @@ func communicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 		message = strings.TrimSpace(fmt.Sprint(v))
 	}
 
-	awaitReply, _ := args["await_reply"].(bool)
+	endTurn := true
+	if v, ok := args["end_turn"].(bool); ok {
+		endTurn = v
+	}
 
 	output := map[string]any{
 		"message":   "",
@@ -47,7 +50,7 @@ func communicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 	}
 
 	normalized["message"] = message
-	normalized["await_reply"] = awaitReply
+	normalized["end_turn"] = endTurn
 	normalized["output"] = output
 
 	raw, _ := json.Marshal(normalized)
@@ -143,12 +146,85 @@ func TestCommunicate_ResultExitsLoop(t *testing.T) {
 	}
 }
 
+func TestCommunicate_StatusMessageContinuesTurn(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	status := communicateCallArgs("c1", map[string]any{
+		"message":  "Starting the work.",
+		"end_turn": false,
+	})
+	final := communicateCall("c2", "Finished the work.")
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(status)
+			},
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(final)
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hi", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	if strings.TrimSpace(out) != "Finished the work." {
+		t.Fatalf("ProcessInput returned %q, want final message", out)
+	}
+	if got := len(f.Requests()); got != 2 {
+		t.Fatalf("requests: got %d want 2", got)
+	}
+}
+
+func TestCommunicateRejectsLegacyAwaitReply(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	rawArgs, _ := json.Marshal(map[string]any{
+		"message":     "legacy",
+		"await_reply": false,
+		"output": map[string]any{
+			"message":   "",
+			"data":      map[string]any{},
+			"artifacts": []string{},
+		},
+	})
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "communicate",
+		Arguments: rawArgs,
+		Type:      "function",
+	})
+	if !res.IsError {
+		t.Fatalf("legacy await_reply call succeeded: %s", res.Output)
+	}
+}
+
 func TestCommunicate_StructuredOutputExitsLoop(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
 	comm := communicateCallArgs("c1", map[string]any{
-		"await_reply": false,
+		"end_turn": true,
 		"output": map[string]any{
 			"message": "Structured final answer.",
 			"data": map[string]any{
@@ -192,6 +268,119 @@ func TestCommunicate_StructuredOutputExitsLoop(t *testing.T) {
 	}
 }
 
+func TestCommunicate_FirstTerminalResultWins(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	first := communicateCallArgs("c1", map[string]any{
+		"end_turn": true,
+		"output": map[string]any{
+			"message": "First final answer.",
+			"data": map[string]any{
+				"winner": "first",
+			},
+		},
+	})
+	second := communicateCallArgs("c2", map[string]any{
+		"end_turn": true,
+		"output": map[string]any{
+			"message": "Second final answer.",
+			"data": map[string]any{
+				"winner": "second",
+			},
+		},
+	})
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(first, second)
+			},
+			func(req llm.Request) llm.Response {
+				t.Fatalf("should not reach second LLM call after terminal communicate")
+				return llm.Response{}
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hi", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	want := `{"message":"First final answer.","data":{"winner":"first"},"artifacts":[]}`
+	if strings.TrimSpace(out) != want {
+		t.Fatalf("ProcessInput returned %q, want %q", out, want)
+	}
+	sess.Close()
+
+	if got := len(f.Requests()); got != 1 {
+		t.Fatalf("requests: got %d want 1", got)
+	}
+}
+
+func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	delegateArgs, _ := json.Marshal(map[string]any{
+		"task":        "Return CHILD_DONE.",
+		"max_wait_ms": 5000,
+	})
+	delegate := llm.ToolCallData{
+		ID:        "delegate_1",
+		Name:      "delegate",
+		Arguments: delegateArgs,
+		Type:      "function",
+	}
+	status := communicateCallArgs("status_1", map[string]any{
+		"message":  "Starting observer delegate and watch flow.",
+		"end_turn": false,
+	})
+	childDone := communicateCall("child_done", "CHILD_DONE")
+	parentDone := communicateCall("parent_done", "Parent saw the delegate complete.")
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(delegate, status)
+			},
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(childDone)
+			},
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(parentDone)
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "start the observer flow", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	if strings.TrimSpace(out) != "Parent saw the delegate complete." {
+		t.Fatalf("ProcessInput returned %q, want parent final", out)
+	}
+	if got := len(f.Requests()); got != 3 {
+		t.Fatalf("requests: got %d want 3 (parent, child delegate, parent continuation)", got)
+	}
+}
+
 func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 	var captured any
 	deps := &toolDeps{
@@ -206,7 +395,7 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateResult:     func(bool, string, string, string) {},
+		setCommunicateResult:     func(string, string, string) {},
 		setCommunicateStructured: func(raw any) { captured = raw },
 	}
 	reg := tool.NewRegistry()
@@ -217,8 +406,8 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 	}
 
 	args := map[string]any{
-		"message":     "report",
-		"await_reply": false,
+		"message":  "report",
+		"end_turn": true,
 		"output": map[string]any{
 			"summary": "did the thing",
 			"files":   []any{"a.go", "b.go"},
@@ -249,7 +438,7 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 		resultToolName: func() string {
 			return "communicate"
 		},
-		setCommunicateResult:     func(bool, string, string, string) {},
+		setCommunicateResult:     func(string, string, string) {},
 		setCommunicateStructured: func(raw any) { captured = raw },
 	}
 	reg := tool.NewRegistry()
@@ -278,9 +467,9 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 
 	output := map[string]any{}
 	args := map[string]any{
-		"message":     "report",
-		"await_reply": false,
-		"output":      output,
+		"message":  "report",
+		"end_turn": true,
+		"output":   output,
 	}
 	if _, err := rt.Exec(context.Background(), execenv.ExecutionEnvironment(nil), args); err != nil {
 		t.Fatalf("exec: %v", err)
@@ -422,8 +611,8 @@ func TestCommunicate_SchemaRejectsMalformedOutput(t *testing.T) {
 	defer sess.Close()
 
 	rawArgs, _ := json.Marshal(map[string]any{
-		"message":     "missing data field",
-		"await_reply": false,
+		"message":  "missing data field",
+		"end_turn": true,
 		"output": map[string]any{
 			"message": "missing data field",
 		},
@@ -497,8 +686,8 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 	if d.Message != "Final answer" {
 		t.Fatalf("event 0 message: got %q want %q", d.Message, "Final answer")
 	}
-	if d.AwaitReply {
-		t.Fatalf("event 0 await_reply: got %v want false", d.AwaitReply)
+	if !d.EndTurn {
+		t.Fatalf("event 0 end_turn: got %v want true", d.EndTurn)
 	}
 }
 

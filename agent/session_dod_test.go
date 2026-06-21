@@ -2771,8 +2771,8 @@ func TestSession_ToolResults_SingleCallAlsoAggregated(t *testing.T) {
 	}
 }
 
-// WS2a: AWAITING_INPUT state
-func TestSession_AwaitingInput_QuestionMarkResponse(t *testing.T) {
+// WS2a: terminal communicate returns to IDLE.
+func TestSession_EndTurnQuestionResponseGoesIdle(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -2781,8 +2781,8 @@ func TestSession_AwaitingInput_QuestionMarkResponse(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				return toolCallResponse(communicateCallArgs("ask1", map[string]any{
-					"await_reply": true,
-					"message":     "What file would you like me to edit?",
+					"end_turn": true,
+					"message":  "What file would you like me to edit?",
 				}))
 			},
 		},
@@ -2805,13 +2805,13 @@ func TestSession_AwaitingInput_QuestionMarkResponse(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
-	if got := sess.State(); got != SessionAwaitingInput {
-		t.Fatalf("state after question: got %q want %q", got, SessionAwaitingInput)
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after question: got %q want %q", got, SessionIdle)
 	}
 	sess.Close()
 }
 
-func TestSession_AwaitingInput_DeclarativeResponse_GoesIdle(t *testing.T) {
+func TestSession_EndTurnDeclarativeResponseGoesIdle(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -2820,8 +2820,8 @@ func TestSession_AwaitingInput_DeclarativeResponse_GoesIdle(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				return toolCallResponse(communicateCallArgs("msg1", map[string]any{
-					"await_reply": false,
-					"message":     "I have completed the task.",
+					"end_turn": true,
+					"message":  "I have completed the task.",
 				}))
 			},
 		},
@@ -2850,7 +2850,7 @@ func TestSession_AwaitingInput_DeclarativeResponse_GoesIdle(t *testing.T) {
 	sess.Close()
 }
 
-func TestSession_AwaitingInput_TransitionsToProcessing(t *testing.T) {
+func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -2859,14 +2859,14 @@ func TestSession_AwaitingInput_TransitionsToProcessing(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				return toolCallResponse(communicateCallArgs("ask2", map[string]any{
-					"await_reply": true,
-					"message":     "What language?",
+					"end_turn": true,
+					"message":  "What language?",
 				}))
 			},
 			func(req llm.Request) llm.Response {
 				return toolCallResponse(communicateCallArgs("msg2", map[string]any{
-					"await_reply": false,
-					"message":     "Done writing Go code.",
+					"end_turn": true,
+					"message":  "Done writing Go code.",
 				}))
 			},
 		},
@@ -2885,16 +2885,16 @@ func TestSession_AwaitingInput_TransitionsToProcessing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// First input: question → AWAITING_INPUT
+	// First input: terminal question -> IDLE
 	_, err = sess.ProcessInput(ctx, "write code", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput #1: %v", err)
 	}
-	if got := sess.State(); got != SessionAwaitingInput {
-		t.Fatalf("state after question: got %q want %q", got, SessionAwaitingInput)
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after question: got %q want %q", got, SessionIdle)
 	}
 
-	// Second input: AWAITING_INPUT → PROCESSING → IDLE
+	// Second input: IDLE -> PROCESSING -> IDLE
 	_, err = sess.ProcessInput(ctx, "Go", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput #2: %v", err)

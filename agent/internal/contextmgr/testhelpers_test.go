@@ -13,13 +13,13 @@ import (
 )
 
 // communicateCall builds a communicate tool call carrying the given message and
-// a non-await reply, matching the wire shape the compaction code parses. It
+// a terminal reply, matching the wire shape the compaction code parses. It
 // mirrors the agent package's test helper; the checkpoint conversation
-// extraction reads only the message and await_reply fields.
+// extraction reads only the message and end_turn fields.
 func communicateCall(id, message string) llm.ToolCallData {
 	raw, _ := json.Marshal(map[string]any{
-		"message":     message,
-		"await_reply": false,
+		"message":  message,
+		"end_turn": true,
 		"output": map[string]any{
 			"message":   "",
 			"data":      map[string]any{},

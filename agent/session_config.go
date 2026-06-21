@@ -212,6 +212,11 @@ type spawnConfig struct {
 	// delivery, and carries the message's causal watch provenance.
 	parentSteerDelivered func(string, *provenance.Causal) bool
 
+	// parentMarkCallerCallbackDelivered records that the current parent delegate
+	// job has already delivered a caller callback. Watch-origin delegate jobs use
+	// this to avoid a duplicate terminal owner notification after the callback.
+	parentMarkCallerCallbackDelivered func(jobID string)
+
 	// parentGrantedJobRead resolves watch-granted cross-session reads against
 	// the parent's job store (spec §5.1 read grants): given the child's
 	// (observer) session id and a job id the child cannot resolve locally, the

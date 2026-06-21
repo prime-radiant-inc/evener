@@ -1324,12 +1324,11 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 /* ─────────────────────────────────────────────────────────────────────── */
 
 /* ── Blocking needs-you: the agent question (mockup #16) ───────────────────
-   When the agent calls communicate with await_reply=true it is the bottleneck —
-   wall-clock bleeds until you answer. Amber owns the container (the scarce
-   "this needs you" signal); the question text stays the readable hero so it
-   can't be mistaken for the agent thinking aloud. Glyph-paired (◆) for
-   colourblind safety. The composer is the reply affordance — clicking the
-   frame focuses it. (Alt A: amber-framed container + glyph header.) */
+   Amber owns the container (the scarce "this needs you" signal); the question
+   text stays readable so it can't be mistaken for the agent thinking aloud.
+   Glyph-paired (◆) for colourblind safety. The composer is the reply affordance
+   — clicking the frame focuses it. (Alt A: amber-framed container + glyph
+   header.) */
 .assistant-message.agent-question {
   border: 1px solid color-mix(in srgb, var(--state-awaiting) 30%, transparent);
   background: color-mix(in srgb, var(--state-awaiting) 5%, transparent);

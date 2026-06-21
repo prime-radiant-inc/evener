@@ -192,7 +192,7 @@ Required content blocks:
 
 - `communicate`
   - message excerpt;
-  - `await_reply`;
+  - `end_turn`;
   - truncation flag.
 - `assistant.tool`
   - tool name;

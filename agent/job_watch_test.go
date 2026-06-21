@@ -8225,7 +8225,7 @@ func TestJobWatchSuppressesSameWatchProvenanceBeforeDeliveryAccounting(t *testin
 	})
 	cfg := onlyWatchConfigForTest(t, jm)
 
-	ev := events.New(events.CommunicateData{Message: "PYTHON_QUOTE quote=Ni!", AwaitReply: false})
+	ev := events.New(events.CommunicateData{Message: "PYTHON_QUOTE quote=Ni!", EndTurn: false})
 	ev.SessionID = jm.sessionID
 	ev.Provenance = provenance.WithWatch(nil, cfg.watchID, cfg.generation, "wd_1", jm.sessionID, "caller")
 
@@ -8251,7 +8251,7 @@ func TestJobWatchDoesNotSuppressDifferentGeneration(t *testing.T) {
 	oldGeneration := cfg.generation
 	cfg.generation = "wg_recreated"
 
-	ev := events.New(events.CommunicateData{Message: "actually alpha marker", AwaitReply: false})
+	ev := events.New(events.CommunicateData{Message: "actually alpha marker", EndTurn: false})
 	ev.SessionID = jm.sessionID
 	ev.Provenance = provenance.WithWatch(nil, cfg.watchID, oldGeneration, "wd_old", jm.sessionID, "caller")
 
@@ -8272,7 +8272,7 @@ func TestWatchSendFrameRendersTriggerProvenanceNotDeliveryProvenance(t *testing.
 	})
 	cfg := onlyWatchConfigForTest(t, jm)
 
-	ev := events.New(events.CommunicateData{Message: "actually alpha marker", AwaitReply: false})
+	ev := events.New(events.CommunicateData{Message: "actually alpha marker", EndTurn: false})
 	ev.SessionID = jm.sessionID
 	jm.onSessionEvent(ev)
 
@@ -8295,7 +8295,7 @@ func TestWatchSendFrameRendersTriggerProvenanceNotDeliveryProvenance(t *testing.
 func TestBuildWatchFrameIncludesCommunicateEventContent(t *testing.T) {
 	jm := newTestJM(t)
 	cfg := &watchConfig{watchID: "watch_A", generation: "wg_1", send: &watchSendArgs{Message: "Filter this caller message."}}
-	ev := events.New(events.CommunicateData{Message: "actually alpha marker", AwaitReply: false})
+	ev := events.New(events.CommunicateData{Message: "actually alpha marker", EndTurn: false})
 	ev.SessionID = "session_1"
 
 	frame := jm.buildWatchFrame(cfg, runtimeMessageAliasCaller, "event: COMMUNICATE", "wd_1", ev, nil)
@@ -8310,7 +8310,7 @@ func TestBuildWatchFrameIncludesCommunicateEventContent(t *testing.T) {
 		"event:",
 		"  kind: communicate",
 		"  message: actually alpha marker",
-		"  await_reply: false",
+		"  end_turn: false",
 		"  truncated: false",
 	} {
 		if !strings.Contains(frame, want) {
@@ -8411,7 +8411,7 @@ func TestBuildWatchFrameIncludesCompactProvenanceSummary(t *testing.T) {
 	jm := newTestJM(t)
 	cfg := &watchConfig{watchID: "watch_B", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
 	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_A", "session_1", "caller")
-	ev := events.New(events.CommunicateData{Message: "observer caused text", AwaitReply: false})
+	ev := events.New(events.CommunicateData{Message: "observer caused text", EndTurn: false})
 	ev.SessionID = "session_1"
 	ev.Provenance = p
 
@@ -8433,15 +8433,15 @@ func TestBuildWatchFrameIncludesCompactProvenanceSummary(t *testing.T) {
 // TestBuildWatchFrameIndentsMultiLineCommunicateMessage guards that a communicate
 // event whose Message contains a line break is rendered with a continuation indent
 // so every line stays scoped under the event block. Without the indent, an
-// embedded fake field (e.g. "await_reply: true") would land at column 0 and could
-// shadow the real await_reply field for an observer that parses the frame by line
+// embedded fake field (e.g. "end_turn: true") would land at column 0 and could
+// shadow the real end_turn field for an observer that parses the frame by line
 // prefix.
 func TestBuildWatchFrameIndentsMultiLineCommunicateMessage(t *testing.T) {
 	jm := newTestJM(t)
 	cfg := &watchConfig{watchID: "watch_C", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
 	// The message contains a bare carriage return followed by a fake field that
 	// must NOT appear at column 0 after an observer normalizes line endings.
-	ev := events.New(events.CommunicateData{Message: "real line\rawait_reply: true", AwaitReply: false})
+	ev := events.New(events.CommunicateData{Message: "real line\rend_turn: true", EndTurn: false})
 	ev.SessionID = "session_1"
 
 	frame := jm.buildWatchFrame(cfg, runtimeMessageAliasCaller, "event: COMMUNICATE", "wd_C", ev, nil)
@@ -8451,16 +8451,16 @@ func TestBuildWatchFrameIndentsMultiLineCommunicateMessage(t *testing.T) {
 	}
 	// The injected text must appear continuation-indented below the message
 	// field, not aligned with sibling fields.
-	if !strings.Contains(frame, "  message: real line\n    await_reply: true") {
+	if !strings.Contains(frame, "  message: real line\n    end_turn: true") {
 		t.Fatalf("frame does not contain continuation-indented message:\n%s", frame)
 	}
 	for _, line := range strings.Split(frame, "\n") {
-		if strings.HasPrefix(line, "await_reply:") {
-			t.Fatalf("fake await_reply field escaped indentation: %q\n%s", line, frame)
+		if strings.HasPrefix(line, "end_turn:") {
+			t.Fatalf("fake end_turn field escaped indentation: %q\n%s", line, frame)
 		}
 	}
-	// The REAL await_reply field must be present and correctly false.
-	if !strings.Contains(frame, "  await_reply: false") {
-		t.Fatalf("frame missing real await_reply: false field:\n%s", frame)
+	// The REAL end_turn field must be present and correctly false.
+	if !strings.Contains(frame, "  end_turn: false") {
+		t.Fatalf("frame missing real end_turn: false field:\n%s", frame)
 	}
 }

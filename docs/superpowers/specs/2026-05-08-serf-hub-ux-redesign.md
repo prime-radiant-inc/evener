@@ -61,7 +61,7 @@ Five visual states, distinguished by dot color:
 
 | State | Color | Meaning |
 |---|---|---|
-| awaiting | `#f7768e` (pink) | agent paused on `communicate(await_reply=true)` or errored — needs you |
+| awaiting | `#f7768e` (pink) | turn ended with an agent-visible need for the user or an error — needs you |
 | processing | `#7aa2f7` (blue) | agent currently working: streaming, tool-calling, compacting |
 | warning | `#e0af68` (amber) | context pressure high, near turn limit, or other warn |
 | idle | `#9ece6a` (green, or muted gray when not freshly idle) | ready for input |

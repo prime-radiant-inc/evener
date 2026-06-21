@@ -195,6 +195,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"For normal callback flow, the callback-to-final-result path is complete; audit tools are for explicit audit requests or failed/missing callbacks. Choose one common sidecar shape: " +
 		"communicate results/status use `target=\"caller\", events=[\"communicate\"], send.to=<delegate_id>`; " +
 		"tool events use `target=\"caller\", events=[\"assistant.tool\"], event_filter={\"tool_name\":\"read_file\",\"status\":\"ok\"}, send.to=<delegate_id>`. " +
+		"Assistant.tool frames include the matched `status` and the original tool `arguments_json`, so observers can usually decide from the frame itself. " +
 		"For communicate content such as APPROVAL_REQUEST, the observer task checks the delivered `event.message`. Frames coalesce latest-wins while the target is " +
 		"busy. Use `send.include_excerpt` only when `target` starts with `job_`; for `target=\"caller\"`, use `send.to` without an excerpt. Caller/session-target event frames already carry bounded event payloads. ONE active watch per " +
 		"(target, send.to): a different configuration for the same key replaces the existing watch " +
@@ -463,7 +464,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        name,
-		Description: "Send a user-facing message. Use this tool for every message, readiness marker, requested status marker, request for input, and final answer the user or caller should see. A valid call has visible text in `message` or `output.message`. While tool work remains, call the next work tool; use this when the next useful action is to report, wait, announce readiness, or finish. A status marker is a requested user/caller-visible milestone; internal progress continues through the next work tool. Set `message` to the exact visible text. Set `await_reply=true` when this message opens a wait state for later user, caller, or watch-frame input; set `await_reply=false` when this message completes the current work. Always include `output` as an object with exactly these top-level fields: `message`, `data`, and `artifacts`. For ordinary text replies, use `output.message=\"\"`, `output.data={}`, and `output.artifacts=[]`. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs.",
+		Description: "Send a user-facing message. Use this tool for every message, readiness marker, requested status marker, request for input, and final answer the user or caller should see. A valid call has visible text in `message` or `output.message`. If you will immediately keep working after this message, set `end_turn=false` and continue by calling the next work tool in the following round. Use `end_turn=false` only for visible narration or status before immediate continued work. Use `end_turn=true` when this message should stop the current activation: final answers, completed results, blocking requests for input, or readiness markers that wait for future user/caller/watch-frame input. Set `message` to the exact visible text. Always include `output` as an object with exactly these top-level fields: `message`, `data`, and `artifacts`. For ordinary status or conversational messages, use `output.message=\"\"`, `output.data={}`, and `output.artifacts=[]`. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -473,9 +474,9 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 					"type":        "string",
 					"description": "Exact user-facing message text. Fill this with the text the user or caller should see. When the task asks for concrete findings, put the concrete findings here.",
 				},
-				"await_reply": map[string]any{
+				"end_turn": map[string]any{
 					"type":        "boolean",
-					"description": "Set to true when waiting for later user, caller, or watch-frame input before continuing. Set to false when this message completes the current work.",
+					"description": "Set to false only for visible narration/status before immediate continued work. Set to true when this message ends the current activation: final answer, completed result, blocking input request, or readiness marker that waits for future user/caller/watch-frame input.",
 				},
 				"output": map[string]any{
 					"type":                 "object",
@@ -499,10 +500,10 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 				},
 				"purpose": map[string]any{
 					"type":        "string",
-					"description": "Top-level reason for this communicate call, placed beside message, await_reply, and output. The output object contains only message, data, and artifacts.",
+					"description": "Top-level reason for this communicate call, placed beside message, end_turn, and output. The output object contains only message, data, and artifacts.",
 				},
 			},
-			"required": []string{"message", "await_reply", "output"},
+			"required": []string{"message", "end_turn", "output"},
 		},
 	}
 }

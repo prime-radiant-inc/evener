@@ -486,7 +486,7 @@ func TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage(t *testing.T) 
 		{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 			ToolName:      "communicate",
 			CallID:        "call_1",
-			ArgumentsJSON: `{"message":"done","await_reply":false}`,
+			ArgumentsJSON: `{"message":"done","end_turn":true}`,
 		}},
 		{Kind: events.EventCommunicate, SessionID: "th_1", Data: events.CommunicateData{Message: "done"}},
 		{Kind: events.EventToolCallOutputDelta, SessionID: "th_1", Data: events.ToolCallOutputDeltaData{

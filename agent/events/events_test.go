@@ -10,7 +10,7 @@ import (
 )
 
 func TestSessionEventCarriesCausalProvenanceOnEnvelope(t *testing.T) {
-	ev := events.New(events.CommunicateData{AwaitReply: false, Message: "actually alpha marker"})
+	ev := events.New(events.CommunicateData{EndTurn: false, Message: "actually alpha marker"})
 	ev.SessionID = "session_1"
 	ev.Provenance = provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", "session_1", "caller")
 

@@ -292,7 +292,7 @@ provenance: external
 event:
   kind: communicate
   message: actually alpha marker
-  await_reply: false
+  end_turn: false
   truncated: false
 ```
 
@@ -329,7 +329,7 @@ gap. Later event blocks can be added one kind at a time:
 
 | Event kind | Frame fields |
 | --- | --- |
-| `communicate` | `message`, `await_reply`, `truncated` |
+| `communicate` | `message`, `end_turn`, `truncated` |
 | `assistant.message` | final text excerpt, model, finish reason, truncation |
 | `assistant.tool` | tool name, call id, argument excerpt/hash, result status |
 | `job.notification` | job id, status, reason, excerpt if available |
@@ -546,7 +546,7 @@ The design is implemented only when all of these are true:
 
 - Event-watch frames for `communicate` include `watch_id`, `delivery_id`,
   trigger metadata, and a bounded `event:` block containing the communicated
-  `message`, `await_reply`, and `truncated` flag.
+  `message`, `end_turn`, and `truncated` flag.
 - Every event emitted from a watch-delivered observer turn, and every event
   emitted from downstream work caused by that turn, carries the watch provenance
   set or equivalent internal metadata.
