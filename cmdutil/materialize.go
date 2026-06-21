@@ -2,9 +2,8 @@ package cmdutil
 
 import (
 	"fmt"
-	"os"
-	"strings"
 
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
@@ -27,10 +26,10 @@ func seedConfigFromEnv(opts ...llm.EnvOption) (providercfg.Config, error) {
 		if typ == "ollama" {
 			// Match the ollama adapter's resolution order: OLLAMA_BASE_URL
 			// takes precedence over OLLAMA_HOST.
-			if v := strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL")); v != "" {
+			if v := envvars.OllamaBaseURL.Trimmed(); v != "" {
 				return v
 			}
-			if v := strings.TrimSpace(os.Getenv("OLLAMA_HOST")); v != "" {
+			if v := envvars.OllamaHost.Trimmed(); v != "" {
 				return v
 			}
 			return ""
@@ -39,7 +38,11 @@ func seedConfigFromEnv(opts ...llm.EnvOption) (providercfg.Config, error) {
 		if v == "" {
 			return ""
 		}
-		return strings.TrimSpace(os.Getenv(v))
+		envVar, ok := envvars.Find(v)
+		if !ok {
+			return ""
+		}
+		return envVar.Trimmed()
 	}
 
 	return Seed(names, def, getBaseURL), nil

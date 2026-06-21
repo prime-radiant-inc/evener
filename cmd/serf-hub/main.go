@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
@@ -19,6 +21,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubedge"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/internal/binresolve"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/llm/providercfg"
@@ -50,6 +53,8 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: serf-hub [flags]\n\nMulti-session web orchestrator for serf serve daemons.\n\n")
 		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nEnvironment variables:\n")
+		printHubEnvVars(os.Stderr)
 	}
 	flag.Parse()
 
@@ -117,7 +122,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[hub] credentials store: %v\n", err)
 		os.Exit(1)
 	}
-	providersConfigPath := os.Getenv("SERF_PROVIDERS_CONFIG")
+	providersConfigPath := envvars.SERFProvidersConfig.Getenv()
 	if providersConfigPath == "" {
 		providersConfigPath = filepath.Join(hubStateRoot, "providers.toml")
 	}
@@ -248,6 +253,23 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func printHubEnvVars(w io.Writer) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, v := range []envvars.Var{
+		envvars.SERFProvidersConfig,
+		envvars.SERFStateDir,
+		envvars.SERFHubEditorURLTemplate,
+		envvars.OpenAIAPIKey,
+		envvars.AnthropicAPIKey,
+		envvars.GeminiAPIKey,
+		envvars.GoogleAPIKey,
+		envvars.OpenRouterAPIKey,
+	} {
+		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)
+	}
+	_ = tw.Flush()
 }
 
 // currentExecutable returns the path of the running serf-hub binary,

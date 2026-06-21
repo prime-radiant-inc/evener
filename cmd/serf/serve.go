@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"primeradiant.com/serf/agent"
@@ -24,6 +25,7 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf/internal/rvreg"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
@@ -101,6 +103,8 @@ func runServe(args []string) error {
 		fmt.Fprintf(os.Stderr, "Usage: serf serve [flags]\n\n")
 		fmt.Fprintf(os.Stderr, "Start serf as an app-wire JSON-RPC server.\n\n")
 		fs.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nEnvironment variables:\n")
+		printServeEnvVars(os.Stderr)
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -138,7 +142,7 @@ func runServe(args []string) error {
 	// Priority: --state-dir flag > SERF_STATE_DIR env > XDG-computed default.
 	sd := *stateDir
 	if sd == "" {
-		sd = os.Getenv("SERF_STATE_DIR")
+		sd = envvars.SERFStateDir.Getenv()
 	}
 	if sd == "" {
 		originURL := cmdutil.GitOriginURLFromDir(wd)
@@ -163,15 +167,15 @@ func runServe(args []string) error {
 	var modelRef cmdutil.ModelRef
 	var err error
 	if resuming {
-		modelRef, err = cmdutil.ResolveResumeModelRef(*model, os.Getenv("SERF_MODEL"), resumeProvider, resumeModel)
+		modelRef, err = cmdutil.ResolveResumeModelRef(*model, envvars.SERFModel.Getenv(), resumeProvider, resumeModel)
 	} else {
-		modelRef, err = cmdutil.ResolveModelRef(*model, os.Getenv("SERF_MODEL"), "", "")
+		modelRef, err = cmdutil.ResolveModelRef(*model, envvars.SERFModel.Getenv(), "", "")
 	}
 	if err != nil {
 		return err
 	}
 
-	effort, err := cmdutil.ResolveReasoningEffort(*reasoningEffort, os.Getenv("SERF_REASONING_EFFORT"))
+	effort, err := cmdutil.ResolveReasoningEffort(*reasoningEffort, envvars.SERFReasoningEffort.Getenv())
 	if err != nil {
 		return err
 	}
@@ -254,7 +258,7 @@ func runServe(args []string) error {
 		return fmt.Errorf("listen %s: %w", *addr, err)
 	}
 
-	hubToken := os.Getenv("SERF_HUB_TOKEN")
+	hubToken := envvars.SERFHubToken.Getenv()
 	srv := server.NewServer(server.ServerConfig{
 		AppReplaySize: *appReplaySize,
 		HubToken:      hubToken,
@@ -424,12 +428,12 @@ func runServe(args []string) error {
 	fmt.Fprintf(os.Stderr, "[serve] listening on %s (session %s)\n", listener.Addr(), getSession().ID())
 
 	spawnedBy := "user"
-	if os.Getenv("SERF_HUB_SPAWNED") == "1" {
+	if envvars.SERFHubSpawned.Getenv() == "1" {
 		spawnedBy = "hub"
 	}
 	runDir := *runDirFlag
 	if runDir == "" {
-		runDir = os.Getenv("SERF_RUN_DIR")
+		runDir = envvars.SERFRunDir.Getenv()
 	}
 	if runDir == "" {
 		runDir = rendezvous.DefaultDir()
@@ -478,6 +482,23 @@ func runServe(args []string) error {
 	return nil
 }
 
+func printServeEnvVars(w io.Writer) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, v := range []envvars.Var{
+		envvars.SERFModel,
+		envvars.SERFReasoningEffort,
+		envvars.SERFStateDir,
+		envvars.SERFRunDir,
+		envvars.SERFHubToken,
+		envvars.SERFHubSpawned,
+		envvars.SERFAllowedDecisions,
+		envvars.SERFProvidersConfig,
+	} {
+		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)
+	}
+	_ = tw.Flush()
+}
+
 // buildInitialProfile constructs the session's initial *Profile from
 // the provider config. Instance names (e.g. "work" defined in providers.toml)
 // are resolved via cmdutil.ResolveProfileWithLiveWindow, which sources the
@@ -497,7 +518,7 @@ func buildInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef, outp
 		}
 	}
 	p := provider.WithCommunicateOutputSchema(raw, outputSchema)
-	allowedDecisions := cmdutil.ParseAllowedDecisions(os.Getenv("SERF_ALLOWED_DECISIONS"))
+	allowedDecisions := cmdutil.ParseAllowedDecisions(envvars.SERFAllowedDecisions.Getenv())
 	return provider.WithAllowedDecisions(p, allowedDecisions), nil
 }
 

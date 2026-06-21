@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/appwire"
 	authopenai "primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/llm/providercfg"
 )
@@ -591,8 +592,8 @@ func (c *hubAuthController) openAIInstanceStatus(name string) (appwire.AuthStatu
 	envKey := ""
 	envSet := false
 	if name == "openai" {
-		envKey = "OPENAI_API_KEY"
-		envSet = strings.TrimSpace(c.authEnv["OPENAI_API_KEY"]) != ""
+		envKey = envvars.OpenAIAPIKey.Name
+		envSet = strings.TrimSpace(c.authEnv[envvars.OpenAIAPIKey.Name]) != ""
 	}
 
 	var active authopenai.AuthStatus

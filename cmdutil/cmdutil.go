@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/kimicoding"
@@ -147,7 +147,7 @@ func ResolveModelRef(modelValue, envModel, resumeProvider, resumeModel string) (
 	if resumeProvider != "" && resumeModel != "" {
 		return ModelRef{Provider: resumeProvider, Model: resumeModel}, nil
 	}
-	return ModelRef{}, errors.New("no model: use --model provider/model or set SERF_MODEL=provider/model")
+	return ModelRef{}, fmt.Errorf("no model: use --model provider/model or set %s=provider/model", envvars.SERFModel.Name)
 }
 
 // ResolveResumeModelRef resolves the model for an explicit session resume.
@@ -166,7 +166,7 @@ func ResolveResumeModelRef(modelValue, envModel, resumeProvider, resumeModel str
 	if strings.TrimSpace(envModel) != "" {
 		return ParseModelRef(envModel)
 	}
-	return ModelRef{}, errors.New("no model: use --model provider/model or set SERF_MODEL=provider/model")
+	return ModelRef{}, fmt.Errorf("no model: use --model provider/model or set %s=provider/model", envvars.SERFModel.Name)
 }
 
 // StringSliceFlag implements flag.Value for a repeatable string flag.
@@ -294,17 +294,6 @@ func parseAllowedDecisions(raw string) []string {
 	return out
 }
 
-// providerEnvConfig maps provider names to their env var and base URL info.
-var providerEnvConfig = map[string]struct {
-	apiKeyEnv  string
-	baseURLEnv string
-	defaultURL string
-}{
-	"kimi":       {"KIMI_API_KEY", "KIMI_BASE_URL", "https://api.moonshot.ai/v1"},
-	"glm":        {"GLM_API_KEY", "GLM_BASE_URL", "https://api.z.ai/api/paas/v4"},
-	"openrouter": {"OPENROUTER_API_KEY", "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"},
-}
-
 // queryModelContextWindow queries the provider's /models endpoint for the
 // context window of the given model. Returns 0 if the query fails or the
 // provider doesn't report context length. Best-effort — the profile falls
@@ -315,8 +304,11 @@ var providerEnvConfig = map[string]struct {
 // (kimi/glm/openrouter), not an instance name — the lookup keys on
 // providerEnvConfig by that tag.
 var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPIKey string) int {
-	cfg, ok := providerEnvConfig[provider]
-	if !ok {
+	if provider != "kimi" && provider != "glm" && provider != "openrouter" {
+		return 0
+	}
+	env, ok := envvars.Provider(provider)
+	if !ok || len(env.APIKeyVars) == 0 {
 		return 0
 	}
 	// Prefer the instance's configured key/base URL (providers.toml) over the
@@ -324,17 +316,17 @@ var queryModelContextWindow = func(provider, model, instanceBaseURL, instanceAPI
 	// (the Kimi coding plan) is queried at its real /models.
 	apiKey := strings.TrimSpace(instanceAPIKey)
 	if apiKey == "" {
-		apiKey = strings.TrimSpace(os.Getenv(cfg.apiKeyEnv))
+		apiKey = env.APIKeyVars[0].Trimmed()
 	}
 	if apiKey == "" {
 		return 0
 	}
 	baseURL := strings.TrimSpace(instanceBaseURL)
-	if baseURL == "" {
-		baseURL = strings.TrimSpace(os.Getenv(cfg.baseURLEnv))
+	if baseURL == "" && len(env.BaseURLVars) > 0 {
+		baseURL = env.BaseURLVars[0].Trimmed()
 	}
 	if baseURL == "" {
-		baseURL = cfg.defaultURL
+		baseURL = env.DefaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 

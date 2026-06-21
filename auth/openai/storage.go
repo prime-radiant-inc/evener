@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"primeradiant.com/serf/envvars"
 )
 
 const (
@@ -62,7 +64,7 @@ func DefaultStateDir() string {
 func DefaultStateDirWithStateHome(stateHome string) string {
 	base := strings.TrimSpace(stateHome)
 	if base == "" {
-		base = strings.TrimSpace(os.Getenv("XDG_STATE_HOME"))
+		base = envvars.XDGStateHome.Trimmed()
 	}
 	if base == "" {
 		home, err := os.UserHomeDir()

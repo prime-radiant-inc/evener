@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // RuntimeDir computes the XDG-compliant state directory for a project.
@@ -54,7 +56,7 @@ func shortHash(b []byte) string {
 
 // xdgStateHome returns $XDG_STATE_HOME or ~/.local/state as default.
 func xdgStateHome() string {
-	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
+	if v := envvars.XDGStateHome.Getenv(); v != "" {
 		return v
 	}
 	home, err := os.UserHomeDir()
@@ -66,7 +68,7 @@ func xdgStateHome() string {
 
 // xdgCacheHome returns $XDG_CACHE_HOME or ~/.cache per the XDG spec.
 func xdgCacheHome() string {
-	if v := os.Getenv("XDG_CACHE_HOME"); v != "" {
+	if v := envvars.XDGCacheHome.Getenv(); v != "" {
 		return v
 	}
 	home, err := os.UserHomeDir()

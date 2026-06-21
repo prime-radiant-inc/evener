@@ -4,17 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/oklog/ulid/v2"
 
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/transport"
@@ -39,7 +38,7 @@ type GoogleInstanceParams struct {
 // Empty BaseURL falls back to the default Gemini API endpoint.
 func NewForInstance(params GoogleInstanceParams) (*Adapter, error) {
 	if strings.TrimSpace(params.APIKey) == "" {
-		return nil, errors.New("GEMINI_API_KEY is required")
+		return nil, fmt.Errorf("%s is required", envvars.GeminiAPIKey.Name)
 	}
 	base := strings.TrimSpace(params.BaseURL)
 	if base == "" {
@@ -56,7 +55,7 @@ func NewForInstance(params GoogleInstanceParams) (*Adapter, error) {
 
 func init() {
 	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
-		if strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) == "" && strings.TrimSpace(os.Getenv("GOOGLE_API_KEY")) == "" {
+		if envvars.GeminiAPIKey.Trimmed() == "" && envvars.GoogleAPIKey.Trimmed() == "" {
 			return nil, false, nil
 		}
 		a, err := NewFromEnv()
@@ -78,15 +77,15 @@ func init() {
 }
 
 func NewFromEnv() (*Adapter, error) {
-	key := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	key := envvars.GeminiAPIKey.Trimmed()
 	if key == "" {
 		// Common alias.
-		key = strings.TrimSpace(os.Getenv("GOOGLE_API_KEY"))
+		key = envvars.GoogleAPIKey.Trimmed()
 	}
 	return NewForInstance(GoogleInstanceParams{
 		Name:    "google",
 		APIKey:  key,
-		BaseURL: strings.TrimSpace(os.Getenv("GEMINI_BASE_URL")),
+		BaseURL: envvars.GeminiBaseURL.Trimmed(),
 	})
 }
 

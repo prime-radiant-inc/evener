@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	authopenai "primeradiant.com/serf/auth/openai"
+	"primeradiant.com/serf/envvars"
 )
 
 func openAIStateDirFromEnvList(env []string) string {
@@ -23,21 +24,21 @@ func openAIStateDirFromEnvMap(env map[string]string) string {
 }
 
 func openAIStateDirFromLookup(goos string, lookup func(string) (string, bool)) string {
-	if stateHome, ok := lookup("XDG_STATE_HOME"); ok && strings.TrimSpace(stateHome) != "" {
+	if stateHome, ok := lookup(envvars.XDGStateHome.Name); ok && strings.TrimSpace(stateHome) != "" {
 		return authopenai.DefaultStateDirWithStateHome(stateHome)
 	}
 	if goos == "windows" {
-		if userProfile, ok := lookup("USERPROFILE"); ok && strings.TrimSpace(userProfile) != "" {
+		if userProfile, ok := lookup(envvars.UserProfile.Name); ok && strings.TrimSpace(userProfile) != "" {
 			return filepath.Join(strings.TrimSpace(userProfile), ".local", "state", "serf")
 		}
-		drive, hasDrive := lookup("HOMEDRIVE")
-		path, hasPath := lookup("HOMEPATH")
+		drive, hasDrive := lookup(envvars.HomeDrive.Name)
+		path, hasPath := lookup(envvars.HomePath.Name)
 		if hasDrive && hasPath && strings.TrimSpace(drive) != "" && strings.TrimSpace(path) != "" {
 			return filepath.Join(strings.TrimSpace(drive)+strings.TrimSpace(path), ".local", "state", "serf")
 		}
 		return filepath.Join(os.TempDir(), ".local", "state", "serf")
 	}
-	if home, ok := lookup("HOME"); ok && strings.TrimSpace(home) != "" {
+	if home, ok := lookup(envvars.Home.Name); ok && strings.TrimSpace(home) != "" {
 		return filepath.Join(strings.TrimSpace(home), ".local", "state", "serf")
 	}
 	return filepath.Join(os.TempDir(), ".local", "state", "serf")

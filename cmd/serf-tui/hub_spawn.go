@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -11,6 +10,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
+	"primeradiant.com/serf/envvars"
 )
 
 func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -296,7 +296,7 @@ func (m *hubModel) resetSpawnForm() {
 	m.spawnFocus = hubSpawnFieldPrompt
 	m.spawnDirInput.Blur()
 	m.session.resetInput()
-	if envModel := strings.TrimSpace(os.Getenv("SERF_MODEL")); strings.Contains(envModel, "/") {
+	if envModel := envvars.SERFModel.Trimmed(); strings.Contains(envModel, "/") {
 		m.spawnModel = envModel
 	}
 }

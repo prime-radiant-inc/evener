@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/internal/diagnostic"
 )
@@ -332,11 +333,11 @@ func (s *WebServer) handleAPIReasoningEffort(w http.ResponseWriter, r *http.Requ
 func (s *WebServer) handleApiDirs(w http.ResponseWriter, r *http.Request) {
 	prefix := r.URL.Query().Get("prefix")
 	if prefix == "" {
-		prefix = os.Getenv("HOME")
+		prefix = envvars.Home.Getenv()
 	}
 	// Expand ~ to home.
 	if strings.HasPrefix(prefix, "~/") || prefix == "~" {
-		prefix = filepath.Join(os.Getenv("HOME"), strings.TrimPrefix(prefix, "~"))
+		prefix = filepath.Join(envvars.Home.Getenv(), strings.TrimPrefix(prefix, "~"))
 	}
 	// Reject traversal; preserve trailing slash so the listDir/filter logic
 	// below still distinguishes "list dir contents" from "filter siblings".

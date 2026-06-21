@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
+	"primeradiant.com/serf/envvars"
 )
 
 type launchTab int
@@ -606,7 +607,7 @@ func validateLocalLaunchPath(path, kind string) error {
 		return errors.New("path is required")
 	}
 	if strings.HasPrefix(path, "~/") || path == "~" {
-		path = filepath.Join(os.Getenv("HOME"), strings.TrimPrefix(path, "~"))
+		path = filepath.Join(envvars.Home.Getenv(), strings.TrimPrefix(path, "~"))
 	}
 	if kind == "command" && !strings.ContainsRune(path, filepath.Separator) {
 		_, err := exec.LookPath(path)

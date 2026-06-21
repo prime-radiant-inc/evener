@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
+	"primeradiant.com/serf/envvars"
 )
 
 // EnvVarPolicy controls which environment variables are inherited by child processes.
@@ -35,6 +36,22 @@ const (
 	// EnvPolicyCoreOnly inherits only a core set of variables (PATH, HOME, USER, SHELL, LANG, TERM, TMPDIR) plus language toolchain paths.
 	EnvPolicyCoreOnly // Only PATH, HOME, USER, SHELL, LANG, TERM, TMPDIR + language paths
 )
+
+var coreEnvVars = []envvars.Var{
+	envvars.Path,
+	envvars.Home,
+	envvars.User,
+	envvars.Shell,
+	envvars.Lang,
+	envvars.Term,
+	envvars.TmpDir,
+	envvars.GoPath,
+	envvars.GoModCache,
+	envvars.CargoHome,
+	envvars.RustupHome,
+	envvars.NVMDir,
+	envvars.PyenvRoot,
+}
 
 // LocalExecutionEnvironment runs commands and file operations on the local
 // machine, rooted at RootDir and governed by EnvPolicy. It tracks the PIDs of
@@ -892,10 +909,11 @@ func injectLocalVenvPath(env []string, roots []string) []string {
 	}
 
 	sep := string(os.PathListSeparator)
+	pathPrefix := envvars.Path.Name + "="
 	findPath := func(env []string) (int, string) {
 		for i, kv := range env {
-			if strings.HasPrefix(kv, "PATH=") {
-				return i, strings.TrimPrefix(kv, "PATH=")
+			if strings.HasPrefix(kv, pathPrefix) {
+				return i, strings.TrimPrefix(kv, pathPrefix)
 			}
 		}
 		return -1, ""
@@ -934,10 +952,10 @@ func injectLocalVenvPath(env []string, roots []string) []string {
 	}
 
 	if idx >= 0 {
-		env[idx] = "PATH=" + newPath
+		env[idx] = envvars.Path.Assignment(newPath)
 		return env
 	}
-	return append(env, "PATH="+newPath)
+	return append(env, envvars.Path.Assignment(newPath))
 }
 
 // shellCommand returns an *exec.Cmd that runs the given command string
@@ -1058,12 +1076,9 @@ func filteredEnvWithPolicy(policy EnvVarPolicy, extra map[string]string) []strin
 		}
 		return out
 	case EnvPolicyCoreOnly:
-		core := map[string]bool{
-			"PATH": true, "HOME": true, "USER": true,
-			"SHELL": true, "LANG": true, "TERM": true,
-			"TMPDIR": true, "GOPATH": true, "GOMODCACHE": true,
-			"CARGO_HOME": true, "RUSTUP_HOME": true,
-			"NVM_DIR": true, "PYENV_ROOT": true,
+		core := make(map[string]bool, len(coreEnvVars))
+		for _, v := range coreEnvVars {
+			core[v.Name] = true
 		}
 		out := []string{}
 		for _, kv := range os.Environ() {

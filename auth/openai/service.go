@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"primeradiant.com/serf/envvars"
 )
 
 const refreshSkew = 5 * time.Minute
@@ -422,7 +423,7 @@ func (s *Service) Status(stateDir, instanceName string) (AuthStatus, error) {
 		return AuthStatus{}, err
 	}
 
-	if envToken := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); envToken != "" {
+	if envToken := envvars.OpenAIAPIKey.Trimmed(); envToken != "" {
 		return AuthStatus{
 			SignedIn: true,
 			Source:   AuthSourceEnv,
@@ -455,7 +456,7 @@ func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, insta
 	record, err := LoadAuth(stateDir, instanceName)
 	if err != nil {
 		if errors.Is(err, ErrAuthNotFound) {
-			if envToken := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); envToken != "" {
+			if envToken := envvars.OpenAIAPIKey.Trimmed(); envToken != "" {
 				return RuntimeCredentials{
 					BearerToken: envToken,
 					Source:      AuthSourceEnv,

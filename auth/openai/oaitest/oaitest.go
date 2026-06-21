@@ -8,6 +8,8 @@ package oaitest
 import (
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // IsolateOpenAIAuth clears every env var that the OpenAI provider /
@@ -19,17 +21,17 @@ import (
 // Safe to call multiple times in one test; t.Setenv handles cleanup.
 func IsolateOpenAIAuth(t *testing.T) string {
 	t.Helper()
-	for _, key := range []string{
-		"OPENAI_API_KEY",
-		"OPENAI_BASE_URL",
-		"OPENAI_CHATGPT_BASE_URL",
-		"OPENAI_ORG_ID",
-		"OPENAI_PROJECT_ID",
-		"OPENAI_CHATGPT_CLIENT_ID",
+	for _, v := range []envvars.Var{
+		envvars.OpenAIAPIKey,
+		envvars.OpenAIBaseURL,
+		envvars.OpenAIChatGPTBaseURL,
+		envvars.OpenAIOrgID,
+		envvars.OpenAIProjectID,
+		envvars.OpenAIChatGPTClientID,
 	} {
-		t.Setenv(key, "")
+		t.Setenv(v.Name, "")
 	}
 	stateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv(envvars.XDGStateHome.Name, stateHome)
 	return filepath.Join(stateHome, "serf")
 }

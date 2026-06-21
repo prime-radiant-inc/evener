@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/editorurl"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubedge"
 	"primeradiant.com/serf/cmd/serf-hub/internal/mcpstatus"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/frontmatter"
 )
 
@@ -296,7 +297,7 @@ func fileSizeHuman(path string) string {
 // defaultPluginsRoot is the conventional XDG location for serf plugins:
 // ~/.config/serf/plugins (or $XDG_CONFIG_HOME/serf/plugins).
 func defaultPluginsRoot() string {
-	dir := os.Getenv("XDG_CONFIG_HOME")
+	dir := envvars.XDGConfigHome.Getenv()
 	if dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -310,7 +311,7 @@ func defaultPluginsRoot() string {
 // defaultMCPConfigPath is the conventional XDG location for the global
 // MCP config (~/.config/serf/mcp.json), matching agent.globalMCPConfigPath.
 func defaultMCPConfigPath() string {
-	dir := os.Getenv("XDG_CONFIG_HOME")
+	dir := envvars.XDGConfigHome.Getenv()
 	if dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {

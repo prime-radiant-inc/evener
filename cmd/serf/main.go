@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/cmd/serf/internal/cliprompt"
 	"primeradiant.com/serf/cmd/serf/internal/launchcheck"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/envvars"
 	openaiprovider "primeradiant.com/serf/llm/providers/openai"
 )
 
@@ -198,7 +199,7 @@ func printRunUsage(w io.Writer, fs *flag.FlagSet) {
 	_, _ = fmt.Fprintf(w, "       serf <command> [flags]\n\n")
 	_, _ = fmt.Fprintf(w, "A non-interactive coding agent.\n\n")
 	_, _ = fmt.Fprintf(w, "The prompt can be passed as arguments or piped via stdin.\n")
-	_, _ = fmt.Fprintf(w, "--model can be omitted when SERF_MODEL supplies a default or when resuming.\n\n")
+	_, _ = fmt.Fprintf(w, "--model can be omitted when %s supplies a default or when resuming.\n\n", envvars.SERFModel.Name)
 	_, _ = fmt.Fprintf(w, "Commands:\n")
 	printRunCommands(w)
 	_, _ = fmt.Fprintf(w, "\nRun 'serf <command> --help' for command-specific flags.\n\n")
@@ -235,11 +236,20 @@ func printLongFlagDefaults(w io.Writer, fs *flag.FlagSet) {
 
 func printRunEnvVars(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintf(tw, "  SERF_MODEL\tDefault model as provider/model (used when --model is omitted)\n")
-	_, _ = fmt.Fprintf(tw, "  SERF_REASONING_EFFORT\tDefault reasoning effort (minimal|low|medium|high|xhigh|max|none)\n")
-	_, _ = fmt.Fprintf(tw, "  OPENAI_API_KEY\tOpenAI API key\n")
-	_, _ = fmt.Fprintf(tw, "  ANTHROPIC_API_KEY\tAnthropic API key\n")
-	_, _ = fmt.Fprintf(tw, "  GEMINI_API_KEY\tGoogle Gemini API key\n")
+	for _, v := range []envvars.Var{
+		envvars.SERFModel,
+		envvars.SERFReasoningEffort,
+		envvars.SERFStateDir,
+		envvars.SERFProvidersConfig,
+		envvars.SERFAllowedDecisions,
+		envvars.OpenAIAPIKey,
+		envvars.AnthropicAPIKey,
+		envvars.GeminiAPIKey,
+		envvars.GoogleAPIKey,
+		envvars.OpenRouterAPIKey,
+	} {
+		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)
+	}
 	_ = tw.Flush()
 }
 

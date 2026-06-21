@@ -4,14 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/transport"
@@ -36,7 +35,7 @@ type AnthropicInstanceParams struct {
 // Empty BaseURL falls back to the default Anthropic API endpoint.
 func NewForInstance(params AnthropicInstanceParams) (*Adapter, error) {
 	if strings.TrimSpace(params.APIKey) == "" {
-		return nil, errors.New("ANTHROPIC_API_KEY is required")
+		return nil, fmt.Errorf("%s is required", envvars.AnthropicAPIKey.Name)
 	}
 	base := strings.TrimSpace(params.BaseURL)
 	if base == "" {
@@ -53,7 +52,7 @@ func NewForInstance(params AnthropicInstanceParams) (*Adapter, error) {
 
 func init() {
 	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
-		if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
+		if envvars.AnthropicAPIKey.Trimmed() == "" {
 			return nil, false, nil
 		}
 		a, err := NewFromEnv()
@@ -74,8 +73,8 @@ func init() {
 func NewFromEnv() (*Adapter, error) {
 	return NewForInstance(AnthropicInstanceParams{
 		Name:    "anthropic",
-		APIKey:  strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
-		BaseURL: strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")),
+		APIKey:  envvars.AnthropicAPIKey.Trimmed(),
+		BaseURL: envvars.AnthropicBaseURL.Trimmed(),
 	})
 }
 

@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
+	"primeradiant.com/serf/envvars"
 )
 
 type hubTUISampleCorpus struct {
@@ -275,7 +276,7 @@ func sampleDiagnostics() []tuiNoticeSample {
 
 func sampleAuthStates() []tuiAuthSample {
 	return []tuiAuthSample{
-		{Name: "env-key", Source: "OPENAI_API_KEY", State: "ready"},
+		{Name: "env-key", Source: envvars.OpenAIAPIKey.Name, State: "ready"},
 		{Name: "signed-out", Source: "serf-oauth", State: "login required", Reason: "no stored token"},
 		{Name: "signed-in", Source: "serf-oauth", State: "ready"},
 		{Name: "expired-refreshable", Source: "serf-oauth", State: "refreshable"},

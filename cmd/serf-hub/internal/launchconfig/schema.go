@@ -1,5 +1,7 @@
 package launchconfig
 
+import "primeradiant.com/serf/envvars"
+
 type LaunchControlKind string
 type LaunchPathKind string
 type LaunchGroup string
@@ -79,8 +81,8 @@ func LaunchOptionSchema() []LaunchOption {
 	serfOnly := map[string]bool{"serf": true}
 	return []LaunchOption{
 		{Field: "agent", WireField: "agent", Label: "Agent", Description: "Name of the agent binary to run. Defaults to serf.", Group: LaunchGroupAgent, Kind: LaunchControlText, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
-		{Field: "model", WireField: "model", Label: "Model", Description: "Primary model used for the main reasoning loop. Overrides SERF_MODEL env var.", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: "SERF_MODEL"}, DriverSupport: serfOnly},
-		{Field: "reasoning_effort", WireField: "reasoningEffort", Label: "Reasoning effort", Description: "Extended thinking budget for models that support it. Higher effort increases cost and latency.", Group: LaunchGroupModel, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: "SERF_REASONING_EFFORT"}, Choices: reasoningChoices(), DriverSupport: serfOnly},
+		{Field: "model", WireField: "model", Label: "Model", Description: "Primary model used for the main reasoning loop. Overrides " + envvars.SERFModel.Name + " env var.", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.SERFModel.Name}, DriverSupport: serfOnly},
+		{Field: "reasoning_effort", WireField: "reasoningEffort", Label: "Reasoning effort", Description: "Extended thinking budget for models that support it. Higher effort increases cost and latency.", Group: LaunchGroupModel, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.SERFReasoningEffort.Name}, Choices: reasoningChoices(), DriverSupport: serfOnly},
 		{Field: "fast_cheap_model", WireField: "fastCheapModel", Label: "Fast cheap model", Description: "Lightweight model for quick sub-tasks like file triage. Falls back to the primary model if unset.", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
 		{Field: "context_strategy", WireField: "contextStrategy", Label: "Context strategy", Description: "How serf manages context window pressure. compact prunes aggressively; session-log and ooda use alternative strategies.", Group: LaunchGroupLimits, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: contextChoices(), DriverSupport: serfOnly},
 		{Field: "max_rounds", WireField: "maxRounds", Label: "Max rounds", Description: "Hard cap on the number of model turns per session. The session ends with an error if the limit is reached.", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},

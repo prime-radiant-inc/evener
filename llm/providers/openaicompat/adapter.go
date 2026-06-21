@@ -7,13 +7,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/openaichat"
@@ -50,7 +50,7 @@ func NewForInstance(params OpenAICompatInstanceParams) *Adapter {
 
 func init() {
 	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
-		base := strings.TrimSpace(os.Getenv("OPENAI_COMPATIBLE_BASE_URL"))
+		base := envvars.OpenAICompatibleBaseURL.Trimmed()
 		if base == "" {
 			return nil, false, nil
 		}
@@ -73,14 +73,14 @@ func init() {
 }
 
 func NewFromEnv() (*Adapter, error) {
-	base := strings.TrimSpace(os.Getenv("OPENAI_COMPATIBLE_BASE_URL"))
+	base := envvars.OpenAICompatibleBaseURL.Trimmed()
 	if base == "" {
-		return nil, errors.New("OPENAI_COMPATIBLE_BASE_URL is required")
+		return nil, fmt.Errorf("%s is required", envvars.OpenAICompatibleBaseURL.Name)
 	}
-	key := strings.TrimSpace(os.Getenv("OPENAI_COMPATIBLE_API_KEY"))
+	key := envvars.OpenAICompatibleAPIKey.Trimmed()
 
 	var quirks ProviderQuirks
-	if preset := strings.TrimSpace(os.Getenv("OPENAI_COMPATIBLE_PROVIDER_QUIRKS")); preset != "" {
+	if preset := envvars.OpenAICompatibleProviderQuirks.Trimmed(); preset != "" {
 		quirks = QuirksPreset(preset)
 	}
 

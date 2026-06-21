@@ -3,12 +3,14 @@ package promptpath
 import (
 	"os"
 	"path/filepath"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // GlobalPromptsDir returns the path to the global prompts directory.
 // Uses XDG_CONFIG_HOME if set, otherwise ~/.config.
 func GlobalPromptsDir() string {
-	dir := os.Getenv("XDG_CONFIG_HOME")
+	dir := envvars.XDGConfigHome.Getenv()
 	if dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {

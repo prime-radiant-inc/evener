@@ -8,15 +8,16 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/envvars"
 )
 
 func CompleteDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteResponse, error) {
 	prefix := params.Prefix
 	if prefix == "" {
-		prefix = os.Getenv("HOME")
+		prefix = envvars.Home.Getenv()
 	}
 	if strings.HasPrefix(prefix, "~/") || prefix == "~" {
-		prefix = filepath.Join(os.Getenv("HOME"), strings.TrimPrefix(prefix, "~"))
+		prefix = filepath.Join(envvars.Home.Getenv(), strings.TrimPrefix(prefix, "~"))
 	}
 	cleaned, err := SanitizeDirPrefix(prefix)
 	if err != nil {
@@ -71,7 +72,7 @@ func ValidateLaunchPath(params appwire.PathValidateParams) appwire.PathValidateR
 		return appwire.PathValidateResponse{Valid: false, Error: "path is required"}
 	}
 	if strings.HasPrefix(path, "~/") || path == "~" {
-		path = filepath.Join(os.Getenv("HOME"), strings.TrimPrefix(path, "~"))
+		path = filepath.Join(envvars.Home.Getenv(), strings.TrimPrefix(path, "~"))
 	}
 	if kind == "command" && !strings.ContainsRune(path, filepath.Separator) {
 		resolved, err := exec.LookPath(path)

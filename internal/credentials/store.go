@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"primeradiant.com/serf/envvars"
 )
 
 // Source describes where a provider's effective value came from.
@@ -32,43 +33,14 @@ type Provider struct {
 	Source    Source
 }
 
-// providerEnvVars maps provider name -> env var(s) checked for fallback.
-// Order matters: first non-empty wins.
-var providerEnvVars = map[string][]string{
-	"openai":               {"OPENAI_API_KEY"},
-	"anthropic":            {"ANTHROPIC_API_KEY"},
-	"google":               {"GEMINI_API_KEY", "GOOGLE_API_KEY"},
-	"gemini":               {"GEMINI_API_KEY", "GOOGLE_API_KEY"},
-	"minimax":              {"MINIMAX_API_KEY"},
-	"openrouter":           {"OPENROUTER_API_KEY"},
-	"openrouter-anthropic": {"OPENROUTER_API_KEY"},
-	"kimi":                 {"KIMI_API_KEY"},
-	"kimi-anthropic":       {"KIMI_CODING_API_KEY"},
-	"glm":                  {"GLM_API_KEY"},
-	"openai-compatible":    {"OPENAI_COMPATIBLE_API_KEY"},
-	"ollama":               nil,
-}
-
 // EnvVars returns the accepted environment variable names for provider.
 func EnvVars(provider string) []string {
-	vars := providerEnvVars[strings.ToLower(provider)]
-	return append([]string(nil), vars...)
-}
-
-// providerAuthModes lists supported auth flows per provider.
-var providerAuthModes = map[string][]string{
-	"openai":               {"apiKey", "oauth"},
-	"anthropic":            {"apiKey"},
-	"google":               {"apiKey"},
-	"gemini":               {"apiKey"},
-	"minimax":              {"apiKey"},
-	"openrouter":           {"apiKey"},
-	"openrouter-anthropic": {"apiKey"},
-	"kimi":                 {"apiKey"},
-	"kimi-anthropic":       {"apiKey"},
-	"glm":                  {"apiKey"},
-	"openai-compatible":    {"apiKey"},
-	"ollama":               {"none"},
+	vars := envvars.APIKeyVars(strings.ToLower(provider))
+	out := make([]string, 0, len(vars))
+	for _, v := range vars {
+		out = append(out, v.Name)
+	}
+	return out
 }
 
 type fileShape struct {
@@ -120,8 +92,8 @@ func (s *Store) Get(provider string) (string, Source) {
 	if p, ok := s.data.Providers[provider]; ok && strings.TrimSpace(p.APIKey) != "" {
 		return p.APIKey, SourceFile
 	}
-	for _, env := range providerEnvVars[provider] {
-		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
+	for _, env := range envvars.APIKeyVars(provider) {
+		if v := env.Trimmed(); v != "" {
 			return v, SourceEnv
 		}
 	}
@@ -135,9 +107,9 @@ func (s *Store) Layers(provider string) (hasFile bool, envVar string) {
 	if p, ok := s.data.Providers[provider]; ok && strings.TrimSpace(p.APIKey) != "" {
 		hasFile = true
 	}
-	for _, env := range providerEnvVars[provider] {
-		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
-			envVar = env
+	for _, env := range envvars.APIKeyVars(provider) {
+		if v := env.Trimmed(); v != "" {
+			envVar = env.Name
 			break
 		}
 	}
@@ -154,14 +126,14 @@ func (s *Store) InstanceLayers(name, typ string) (hasFile bool, envVar string) {
 	if p, ok := s.data.Providers[name]; ok && strings.TrimSpace(p.APIKey) != "" {
 		hasFile = true
 	}
-	var candidates []string
-	candidates = append(candidates, providerEnvVars[name]...)
+	var candidates []envvars.Var
+	candidates = append(candidates, envvars.APIKeyVars(name)...)
 	if typ != name {
-		candidates = append(candidates, providerEnvVars[typ]...)
+		candidates = append(candidates, envvars.APIKeyVars(typ)...)
 	}
 	for _, env := range candidates {
-		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
-			envVar = env
+		if v := env.Trimmed(); v != "" {
+			envVar = env.Name
 			break
 		}
 	}
@@ -188,7 +160,9 @@ func (s *Store) Clear(provider string) error {
 // List returns one Provider entry per supported provider.
 func (s *Store) List() []Provider {
 	out := []Provider{}
-	for name, modes := range providerAuthModes {
+	for _, provider := range envvars.Providers() {
+		name := provider.Name
+		modes := append([]string(nil), provider.AuthModes...)
 		_, src := s.Get(name)
 		// Ollama needs no creds — report SourceNone.
 		if len(modes) == 1 && modes[0] == "none" {
@@ -216,13 +190,13 @@ func (s *Store) ResolveKey(name, typ string) (string, Source) {
 	// Env fallback: the instance name's var(s) first (covers openai-compatible,
 	// whose key is OPENAI_COMPATIBLE_API_KEY though its type is openai), then the
 	// type's var(s) (covers custom-named instances that fall back to their type key).
-	var candidates []string
-	candidates = append(candidates, providerEnvVars[name]...)
+	var candidates []envvars.Var
+	candidates = append(candidates, envvars.APIKeyVars(name)...)
 	if typ != name {
-		candidates = append(candidates, providerEnvVars[typ]...)
+		candidates = append(candidates, envvars.APIKeyVars(typ)...)
 	}
 	for _, env := range candidates {
-		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
+		if v := env.Trimmed(); v != "" {
 			return v, SourceEnv
 		}
 	}

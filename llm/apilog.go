@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // Context keys for API log metadata.
@@ -86,7 +88,7 @@ type APIRawLogEntry struct {
 func RawBodyEnabled() bool { return rawBodyEnabled }
 
 var rawBodyEnabled = func() bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv("SERF_LOG_RAW_HTTP")))
+	v := strings.ToLower(envvars.SERFLogRawHTTP.Trimmed())
 	return v == "1" || v == "true"
 }()
 

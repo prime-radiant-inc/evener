@@ -3,9 +3,9 @@
 package glm
 
 import (
-	"os"
 	"strings"
 
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
@@ -52,11 +52,11 @@ func NewForInstance(params InstanceParams) *adapter {
 
 func init() {
 	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
-		key := strings.TrimSpace(os.Getenv("GLM_API_KEY"))
+		key := envvars.GLMAPIKey.Trimmed()
 		if key == "" {
 			return nil, false, nil
 		}
-		base := strings.TrimSpace(os.Getenv("GLM_BASE_URL"))
+		base := envvars.GLMBaseURL.Trimmed()
 		return NewForInstance(InstanceParams{
 			Name:    providerName,
 			BaseURL: base,

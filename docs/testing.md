@@ -33,6 +33,23 @@ When a test needs a model, name that as the behavior under test and keep it out
 of the default suite. When the model is only a way to drive Serf, replace it with
 a scripted `llm.ProviderAdapter` response and assert the Serf side effects.
 
+## Environment Variable Tests
+
+Supported runtime environment variables are defined in the `envvars` package
+and documented in `docs/environment.md`. Production code, help text, and test
+helpers should use those rows instead of hard-coded env names. The default test
+suite includes an audit that fails when a supported env var is used as a raw Go
+string outside `envvars`.
+
+When adding a runtime env var:
+
+- Add one `envvars.Var` row.
+- Use the row's `Name`, `Getenv`, `LookupEnv`, `Trimmed`, or `Assignment`
+  helper at call sites.
+- Document it in `docs/environment.md`.
+- Keep live-test opt-in gates explicit; a provider credential alone must not
+  make a default test issue network requests.
+
 ## OpenAI Codex Backend E2E
 
 The OpenAI adapter has opt-in live tests for the ChatGPT/Codex Responses backend.

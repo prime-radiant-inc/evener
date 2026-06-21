@@ -22,6 +22,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // clipboardProbeTimeout bounds each external clipboard tool invocation so a
@@ -138,7 +140,7 @@ func (s *SystemClipboardSource) ProcVersion() string {
 // Wayland compositor. WAYLAND_DISPLAY is set for native Wayland; we
 // fall back to X11 otherwise.
 func isWaylandSession() bool {
-	return strings.TrimSpace(os.Getenv("WAYLAND_DISPLAY")) != ""
+	return envvars.WaylandDisplay.Trimmed() != ""
 }
 
 // readFilePathsMacOS asks osascript for any file references on the

@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
@@ -423,7 +424,7 @@ func resolveSerfLaunchStateDir(workDir string, env map[string]string) string {
 	if env == nil {
 		return resolveSerfStateDir(workDir, "")
 	}
-	return resolveSerfStateDirWithStateHome(workDir, env["SERF_STATE_DIR"], env["XDG_STATE_HOME"])
+	return resolveSerfStateDirWithStateHome(workDir, env[envvars.SERFStateDir.Name], env[envvars.XDGStateHome.Name])
 }
 
 func resolveSerfStateDirWithStateHome(workDir, override, stateHome string) string {
@@ -549,7 +550,9 @@ func providerCredentialInEnv(provider string, env []string) bool {
 	for _, key := range credentials.EnvVars(provider) {
 		value, ok := envLookup(env, key)
 		if env == nil {
-			value, ok = os.Getenv(key), true
+			if v, found := envvars.Find(key); found {
+				value, ok = v.LookupEnv()
+			}
 		}
 		if ok && strings.TrimSpace(value) != "" {
 			return true
@@ -559,9 +562,9 @@ func providerCredentialInEnv(provider string, env []string) bool {
 }
 
 func openAICompatibleBaseURLInEnv(env []string) bool {
-	value, ok := envLookup(env, "OPENAI_COMPATIBLE_BASE_URL")
+	value, ok := envLookup(env, envvars.OpenAICompatibleBaseURL.Name)
 	if env == nil {
-		value, ok = os.Getenv("OPENAI_COMPATIBLE_BASE_URL"), true
+		value, ok = envvars.OpenAICompatibleBaseURL.LookupEnv()
 	}
 	return ok && strings.TrimSpace(value) != ""
 }

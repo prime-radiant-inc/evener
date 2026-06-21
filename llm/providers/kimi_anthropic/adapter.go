@@ -13,9 +13,9 @@ package kimi_anthropic
 
 import (
 	"net/http"
-	"os"
 	"strings"
 
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/anthropic"
@@ -73,11 +73,11 @@ func newTestAdapter(baseURL, apiKey string, client *http.Client) *adapter {
 
 func init() {
 	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
-		key := strings.TrimSpace(os.Getenv("KIMI_CODING_API_KEY"))
+		key := envvars.KimiCodingAPIKey.Trimmed()
 		if key == "" {
 			return nil, false, nil
 		}
-		base := strings.TrimSpace(os.Getenv("KIMI_CODING_BASE_URL"))
+		base := envvars.KimiCodingBaseURL.Trimmed()
 		return NewForInstance(InstanceParams{
 			Name:    providerName,
 			BaseURL: base,

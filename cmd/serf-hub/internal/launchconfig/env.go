@@ -3,6 +3,8 @@ package launchconfig
 import (
 	"sort"
 	"strings"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // CredentialResolver is the slice of internal/credentials.Store that
@@ -26,22 +28,6 @@ type EnvInputs struct {
 	ProvidersConfigPath string // if set, passed as SERF_PROVIDERS_CONFIG to spawned children
 }
 
-// providerEnvVar maps provider name → the canonical env var that serf
-// reads for that provider.
-var providerEnvVar = map[string]string{
-	"openai":               "OPENAI_API_KEY",
-	"anthropic":            "ANTHROPIC_API_KEY",
-	"google":               "GEMINI_API_KEY",
-	"gemini":               "GEMINI_API_KEY",
-	"minimax":              "MINIMAX_API_KEY",
-	"openrouter":           "OPENROUTER_API_KEY",
-	"openrouter-anthropic": "OPENROUTER_API_KEY",
-	"kimi":                 "KIMI_API_KEY",
-	"kimi-anthropic":       "KIMI_CODING_API_KEY",
-	"glm":                  "GLM_API_KEY",
-	"openai-compatible":    "OPENAI_COMPATIBLE_API_KEY",
-}
-
 // ToEnv produces the env slice for the spawned `serf serve`. Order of
 // precedence per the spec §4.5:
 //  1. Per-launch env from Resolved.Effective.Env (last-write-wins).
@@ -53,24 +39,24 @@ var providerEnvVar = map[string]string{
 // overwrite earlier writes.
 func ToEnv(in EnvInputs) []string {
 	out := append([]string{}, in.ParentEnv...)
-	out = setEnv(out, "SERF_HUB_SPAWNED", "1")
+	out = setEnv(out, envvars.SERFHubSpawned.Name, "1")
 	if in.RunDir != "" {
-		out = setEnv(out, "SERF_RUN_DIR", in.RunDir)
+		out = setEnv(out, envvars.SERFRunDir.Name, in.RunDir)
 	}
 	if in.StateDir != "" {
-		out = setEnv(out, "SERF_STATE_DIR", in.StateDir)
+		out = setEnv(out, envvars.SERFStateDir.Name, in.StateDir)
 	}
 	if in.HubToken != "" {
-		out = setEnv(out, "SERF_HUB_TOKEN", in.HubToken)
+		out = setEnv(out, envvars.SERFHubToken.Name, in.HubToken)
 	}
 	if in.ProvidersConfigPath != "" {
-		out = setEnv(out, "SERF_PROVIDERS_CONFIG", in.ProvidersConfigPath)
+		out = setEnv(out, envvars.SERFProvidersConfig.Name, in.ProvidersConfigPath)
 	}
 
 	// 2. Credentials store value.
-	if envKey, ok := providerEnvVar[strings.ToLower(in.Provider)]; ok && in.Creds != nil {
+	if envKey, ok := envvars.InjectAPIKeyVar(strings.ToLower(in.Provider)); ok && in.Creds != nil {
 		if v, _ := in.Creds.APIKeyFor(strings.ToLower(in.Provider)); v != "" {
-			out = setEnv(out, envKey, v)
+			out = setEnv(out, envKey.Name, v)
 		}
 	}
 

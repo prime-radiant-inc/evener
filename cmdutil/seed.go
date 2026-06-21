@@ -3,6 +3,7 @@ package cmdutil
 import (
 	"sort"
 
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm/providercfg"
 )
 
@@ -55,26 +56,8 @@ func Seed(providerNames []string, defaultName string, getBaseURL func(typ string
 // given provider type tag. Returns "" for unknown types (e.g. ollama, whose base
 // URL the materializer resolves from OLLAMA_BASE_URL/OLLAMA_HOST).
 func BaseURLEnvVar(typ string) string {
-	switch typ {
-	case "openai":
-		return "OPENAI_BASE_URL"
-	case "anthropic":
-		return "ANTHROPIC_BASE_URL"
-	case "google":
-		return "GEMINI_BASE_URL"
-	case "kimi":
-		return "KIMI_BASE_URL"
-	case "kimi-anthropic":
-		return "KIMI_CODING_BASE_URL"
-	case "glm":
-		return "GLM_BASE_URL"
-	case "openrouter":
-		return "OPENROUTER_BASE_URL"
-	case "minimax":
-		return "MINIMAX_BASE_URL"
-	case "openai-compatible":
-		return "OPENAI_COMPATIBLE_BASE_URL"
-	default:
-		return ""
+	if v, ok := envvars.BaseURLVar(typ); ok && typ != "ollama" {
+		return v.Name
 	}
+	return ""
 }

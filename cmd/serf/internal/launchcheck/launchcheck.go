@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
@@ -37,7 +38,7 @@ var launchCheckLoadProviderConfig = cmdutil.LoadProviderConfig
 // LoadClient) and parses it. Returns (cfg, true, nil) when the file exists and
 // is valid, (cfg{}, false, nil) when absent, or (cfg{}, _, err) on parse error.
 var launchCheckLoadConfig = func() (providercfg.Config, bool, error) {
-	path := os.Getenv("SERF_PROVIDERS_CONFIG")
+	path := envvars.SERFProvidersConfig.Getenv()
 	if path == "" {
 		path = filepath.Join(cmdutil.DefaultStateRoot(), "providers.toml")
 	}

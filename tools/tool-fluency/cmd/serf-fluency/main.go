@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
@@ -211,7 +212,7 @@ func runSuite(args []string) error {
 	fs.DurationVar(&cfg.timeout, "timeout", 8*time.Minute, "timeout per probe repetition")
 	fs.DurationVar(&cfg.postTurnWait, "post-turn-wait", 45*time.Second, "live harness post-root-turn wait window")
 	fs.StringVar(&cfg.reasoningEffort, "reasoning-effort", "high", "reasoning effort")
-	fs.BoolVar(&cfg.clearOpenAIAPIKey, "clear-openai-api-key", false, "clear OPENAI_API_KEY for OAuth-backed OpenAI runs")
+	fs.BoolVar(&cfg.clearOpenAIAPIKey, "clear-openai-api-key", false, "clear "+envvars.OpenAIAPIKey.Name+" for OAuth-backed OpenAI runs")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -267,10 +268,10 @@ func runSuite(args []string) error {
 }
 
 func defaultModel() string {
-	if v := strings.TrimSpace(os.Getenv("SERF_FLUENCY_MODEL")); v != "" {
+	if v := envvars.SERFFluencyModel.Trimmed(); v != "" {
 		return v
 	}
-	if v := strings.TrimSpace(os.Getenv("SERF_MODEL")); v != "" {
+	if v := envvars.SERFModel.Trimmed(); v != "" {
 		return v
 	}
 	return "openai/gpt-5.4-mini"
@@ -431,7 +432,7 @@ func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeR
 	cmd := exec.CommandContext(ctx, cfg.serfBin, cliProbeArgs(cfg, probe, res)...)
 	cmd.Env = os.Environ()
 	if cfg.clearOpenAIAPIKey {
-		cmd.Env = append(cmd.Env, "OPENAI_API_KEY=")
+		cmd.Env = append(cmd.Env, envvars.OpenAIAPIKey.Assignment(""))
 	}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -495,7 +496,7 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	if err != nil {
 		return err
 	}
-	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, os.Getenv("SERF_REASONING_EFFORT"))
+	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, envvars.SERFReasoningEffort.Getenv())
 	if err != nil {
 		return err
 	}
@@ -591,13 +592,13 @@ func maybeClearOpenAIAPIKey(clear bool) func() {
 	if !clear {
 		return func() {}
 	}
-	old, ok := os.LookupEnv("OPENAI_API_KEY")
-	_ = os.Unsetenv("OPENAI_API_KEY")
+	old, ok := envvars.OpenAIAPIKey.LookupEnv()
+	_ = envvars.OpenAIAPIKey.Unsetenv()
 	return func() {
 		if ok {
-			_ = os.Setenv("OPENAI_API_KEY", old)
+			_ = envvars.OpenAIAPIKey.Setenv(old)
 		} else {
-			_ = os.Unsetenv("OPENAI_API_KEY")
+			_ = envvars.OpenAIAPIKey.Unsetenv()
 		}
 	}
 }
@@ -607,7 +608,7 @@ func runnerInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef) (*p
 	if err != nil {
 		return nil, err
 	}
-	return provider.WithAllowedDecisions(raw, cmdutil.ParseAllowedDecisions(os.Getenv("SERF_ALLOWED_DECISIONS"))), nil
+	return provider.WithAllowedDecisions(raw, cmdutil.ParseAllowedDecisions(envvars.SERFAllowedDecisions.Getenv())), nil
 }
 
 func runnerApplyFastCheapModel(profile *provider.Profile, raw string, client *llm.Client) (*provider.Profile, error) {

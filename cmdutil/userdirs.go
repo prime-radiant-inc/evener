@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // DefaultConfigRoot returns the user config root for serf:
 // $XDG_CONFIG_HOME/serf, or ~/.config/serf when XDG_CONFIG_HOME is unset.
 func DefaultConfigRoot() string {
-	base := os.Getenv("XDG_CONFIG_HOME")
+	base := envvars.XDGConfigHome.Getenv()
 	if base == "" {
 		home, err := os.UserHomeDir()
 		if err != nil || home == "" {

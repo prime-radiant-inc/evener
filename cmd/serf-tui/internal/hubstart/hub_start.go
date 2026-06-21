@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/internal/binresolve"
 )
@@ -65,11 +66,11 @@ func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStart
 		getenv = os.Getenv
 	}
 	opts := TUIStartupOptions{
-		HubAddr:      EnvDefault(getenv, "SERF_HUB_ADDR", DefaultHubAddr),
-		HubBin:       getenv("SERF_HUB_BIN"),
-		StateDir:     getenv("SERF_STATE_DIR"),
-		LogFile:      getenv("SERF_TUI_LOG_FILE"),
-		AuthToken:    getenv("SERF_HUB_AUTH_TOKEN"),
+		HubAddr:      EnvDefault(getenv, envvars.SERFHubAddr.Name, DefaultHubAddr),
+		HubBin:       envvars.SERFHubBin.From(getenv),
+		StateDir:     envvars.SERFStateDir.From(getenv),
+		LogFile:      envvars.SERFTUILogFile.From(getenv),
+		AuthToken:    envvars.SERFHubAuthToken.From(getenv),
 		AutoStartHub: true,
 	}
 	fs := flag.NewFlagSet("serf-tui", flag.ContinueOnError)
@@ -80,7 +81,7 @@ func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStart
 	fs.BoolVar(&noAutoStartHub, "no-auto-start-hub", false, "do not start a local hub when unreachable")
 	fs.StringVar(&opts.StateDir, "state-dir", opts.StateDir, "override Serf state directory")
 	fs.StringVar(&opts.LogFile, "log-file", opts.LogFile, "write startup diagnostics to this file")
-	fs.StringVar(&opts.AuthToken, "auth-token", opts.AuthToken, "hub capability token (overrides SERF_HUB_AUTH_TOKEN and token file)")
+	fs.StringVar(&opts.AuthToken, "auth-token", opts.AuthToken, fmt.Sprintf("hub capability token (overrides %s and token file)", envvars.SERFHubAuthToken.Name))
 	fs.BoolVar(&opts.Debug, "debug", opts.Debug, "disable alternate screen")
 	fs.Usage = func() {
 		// Write failures to the flag usage writer are unactionable.
@@ -92,14 +93,14 @@ func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStart
 			"  --no-auto-start-hub      do not start a local hub when unreachable\n"+
 			"  --state-dir <path>       override Serf state directory\n"+
 			"  --log-file <path>        write startup diagnostics to this file\n"+
-			"  --auth-token <token>     hub capability token (overrides SERF_HUB_AUTH_TOKEN and token file)\n"+
+			"  --auth-token <token>     hub capability token (overrides %s and token file)\n"+
 			"  --debug                  disable alternate screen\n\n"+
 			"Environment variables:\n"+
-			"  SERF_HUB_ADDR            default value for --hub-addr\n"+
-			"  SERF_HUB_BIN             default value for --hub-bin\n"+
-			"  SERF_STATE_DIR           default value for --state-dir\n"+
-			"  SERF_TUI_LOG_FILE        default value for --log-file\n"+
-			"  SERF_HUB_AUTH_TOKEN      default value for --auth-token\n", opts.HubAddr)
+			"  %s            default value for --hub-addr\n"+
+			"  %s             default value for --hub-bin\n"+
+			"  %s           default value for --state-dir\n"+
+			"  %s        default value for --log-file\n"+
+			"  %s      default value for --auth-token\n", opts.HubAddr, envvars.SERFHubAuthToken.Name, envvars.SERFHubAddr.Name, envvars.SERFHubBin.Name, envvars.SERFStateDir.Name, envvars.SERFTUILogFile.Name, envvars.SERFHubAuthToken.Name)
 	}
 	if err := fs.Parse(args); err != nil {
 		return TUIStartupOptions{}, err
@@ -425,8 +426,8 @@ func StartLocalHub(req HubStartRequest) error {
 	cmd := exec.Command(req.Binary, "--addr", req.BindAddr)
 	if req.StateDir != "" {
 		cmd.Env = append(os.Environ(),
-			"SERF_STATE_DIR="+req.StateDir,
-			"XDG_STATE_HOME="+StateHomeForSerfStateDir(req.StateDir),
+			envvars.SERFStateDir.Assignment(req.StateDir),
+			envvars.XDGStateHome.Assignment(StateHomeForSerfStateDir(req.StateDir)),
 		)
 	}
 	var out *os.File

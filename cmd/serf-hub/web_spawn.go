@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/llm"
@@ -62,9 +62,9 @@ func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request)
 
 func safeSpawnEnv() map[string]string {
 	out := map[string]string{}
-	for _, name := range []string{"SERF_MODEL", "SERF_REASONING_EFFORT"} {
-		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
-			out[name] = value
+	for _, v := range []envvars.Var{envvars.SERFModel, envvars.SERFReasoningEffort} {
+		if value := v.Trimmed(); value != "" {
+			out[v.Name] = value
 		}
 	}
 	return out

@@ -2,10 +2,10 @@ package cmdutil
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
@@ -30,7 +30,7 @@ import (
 //
 // Always returns (cfg, true, nil) on success.
 func LoadProviderConfig(opts ...llm.EnvOption) (providercfg.Config, bool, error) {
-	path := os.Getenv("SERF_PROVIDERS_CONFIG")
+	path := envvars.SERFProvidersConfig.Getenv()
 	if path == "" {
 		path = filepath.Join(DefaultStateRoot(), "providers.toml")
 	}

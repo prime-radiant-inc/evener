@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
 	_ "primeradiant.com/serf/llm/providers/glm"
@@ -90,7 +91,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	// Priority: --state-dir flag > SERF_STATE_DIR env > XDG-computed default.
 	stateDir := cfg.stateDir
 	if stateDir == "" {
-		stateDir = os.Getenv("SERF_STATE_DIR")
+		stateDir = envvars.SERFStateDir.Getenv()
 	}
 	if stateDir == "" {
 		originURL := cmdutil.GitOriginURLFromDir(cfg.workDir)
@@ -122,7 +123,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		return errors.New("no prompt provided")
 	}
 
-	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, os.Getenv("SERF_REASONING_EFFORT"))
+	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, envvars.SERFReasoningEffort.Getenv())
 	if err != nil {
 		return err
 	}
@@ -135,9 +136,9 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 	var modelRef cmdutil.ModelRef
 	if meta != nil {
-		modelRef, err = cmdutil.ResolveResumeModelRef(cfg.model, os.Getenv("SERF_MODEL"), resumeProvider, resumeModel)
+		modelRef, err = cmdutil.ResolveResumeModelRef(cfg.model, envvars.SERFModel.Getenv(), resumeProvider, resumeModel)
 	} else {
-		modelRef, err = cmdutil.ResolveModelRef(cfg.model, os.Getenv("SERF_MODEL"), "", "")
+		modelRef, err = cmdutil.ResolveModelRef(cfg.model, envvars.SERFModel.Getenv(), "", "")
 	}
 	if err != nil {
 		return err

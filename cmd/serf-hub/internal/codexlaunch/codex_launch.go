@@ -17,6 +17,7 @@ import (
 
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
+	"primeradiant.com/serf/envvars"
 )
 
 type CodexLaunchConfig struct {
@@ -250,7 +251,7 @@ func argsContainFlag(args []string, flag string) bool {
 
 func codexLaunchEnv(overrides map[string]string) []string {
 	env := append([]string{}, os.Environ()...)
-	env = append(env, "SERF_HUB_SPAWNED_CODEX=1")
+	env = append(env, envvars.SERFHubSpawnedCodex.Assignment("1"))
 	for key, value := range overrides {
 		env = append(env, key+"="+value)
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/serf/envvars"
 )
 
 // ProviderConfig lists the models available from a single provider.
@@ -68,7 +69,7 @@ func DefaultConfigPath() string {
 
 // DefaultStateGlob returns the project state roots indexed by the hub.
 func DefaultStateGlob() string {
-	base := os.Getenv("XDG_STATE_HOME")
+	base := envvars.XDGStateHome.Getenv()
 	if base == "" {
 		home, err := os.UserHomeDir()
 		if err != nil || home == "" {

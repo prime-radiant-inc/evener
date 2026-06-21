@@ -5,8 +5,9 @@ package editorurl
 import (
 	"html/template"
 	"net/url"
-	"os"
 	"strings"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // EditorURL returns a URL that, when opened by the browser, asks the OS to
@@ -29,7 +30,7 @@ func EditorURL(absPath string) template.URL {
 	if absPath == "" {
 		return template.URL("")
 	}
-	tmpl := strings.TrimSpace(os.Getenv("SERF_HUB_EDITOR_URL_TEMPLATE"))
+	tmpl := envvars.SERFHubEditorURLTemplate.Trimmed()
 	if tmpl == "" {
 		tmpl = "vscode://file/{path}"
 	}

@@ -9,13 +9,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	authopenai "primeradiant.com/serf/auth/openai"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
@@ -173,9 +173,9 @@ func instanceParamsFromConfig(name, baseURL, apiKey, stateHome string) OpenAIIns
 		Name:           name,
 		BaseURL:        baseURL,
 		APIKey:         apiKey,
-		OrgID:          strings.TrimSpace(os.Getenv("OPENAI_ORG_ID")),
-		ProjectID:      strings.TrimSpace(os.Getenv("OPENAI_PROJECT_ID")),
-		ChatGPTBaseURL: strings.TrimSpace(os.Getenv("OPENAI_CHATGPT_BASE_URL")),
+		OrgID:          envvars.OpenAIOrgID.Trimmed(),
+		ProjectID:      envvars.OpenAIProjectID.Trimmed(),
+		ChatGPTBaseURL: envvars.OpenAIChatGPTBaseURL.Trimmed(),
 		StateHome:      stateHome,
 	}
 }
@@ -189,11 +189,11 @@ func NewFromEnv(cfgs ...Config) (*Adapter, error) {
 	}
 	return NewForInstance(OpenAIInstanceParams{
 		Name:           "openai",
-		APIKey:         strings.TrimSpace(os.Getenv("OPENAI_API_KEY")),
-		BaseURL:        strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")),
-		OrgID:          strings.TrimSpace(os.Getenv("OPENAI_ORG_ID")),
-		ProjectID:      strings.TrimSpace(os.Getenv("OPENAI_PROJECT_ID")),
-		ChatGPTBaseURL: strings.TrimSpace(os.Getenv("OPENAI_CHATGPT_BASE_URL")),
+		APIKey:         envvars.OpenAIAPIKey.Trimmed(),
+		BaseURL:        envvars.OpenAIBaseURL.Trimmed(),
+		OrgID:          envvars.OpenAIOrgID.Trimmed(),
+		ProjectID:      envvars.OpenAIProjectID.Trimmed(),
+		ChatGPTBaseURL: envvars.OpenAIChatGPTBaseURL.Trimmed(),
 		StateHome:      cfg.StateHome,
 	})
 }

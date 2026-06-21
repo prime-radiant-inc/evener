@@ -3,6 +3,8 @@ package cmdutil
 import (
 	"os"
 	"path/filepath"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // DefaultStateRoot returns the serf state root: $SERF_STATE_DIR when set,
@@ -13,7 +15,7 @@ import (
 // sandboxed runs, and multi-instance setups all honor it, so cmd/serf and
 // cmd/serf-hub resolve the identical path.
 func DefaultStateRoot() string {
-	if dir := os.Getenv("SERF_STATE_DIR"); dir != "" {
+	if dir := envvars.SERFStateDir.Getenv(); dir != "" {
 		return dir
 	}
 	if home, err := os.UserHomeDir(); err == nil {

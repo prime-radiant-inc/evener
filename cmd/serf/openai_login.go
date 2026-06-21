@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	authopenai "primeradiant.com/serf/auth/openai"
+	"primeradiant.com/serf/envvars"
 )
 
 var openAILoginAction = func(ctx context.Context, stateDir, instanceName string, openBrowser func(string) error, readRedirectURL func(context.Context) (string, error)) (authopenai.AuthStatus, error) {
@@ -78,10 +79,10 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 		_, _ = fmt.Fprintf(stderr, "Start the OpenAI OAuth login flow.\n\n")
 		_, _ = fmt.Fprintf(stderr, "By default, serf picks between the browser flow and the device-code flow\n")
 		_, _ = fmt.Fprintf(stderr, "automatically. It uses device-code when it looks like there is no graphical\n")
-		_, _ = fmt.Fprintf(stderr, "session: when $SSH_CONNECTION or $SSH_TTY is set, or on Linux/BSD when\n")
-		_, _ = fmt.Fprintf(stderr, "neither $DISPLAY nor $WAYLAND_DISPLAY is set. macOS and Windows default to\n")
+		_, _ = fmt.Fprintf(stderr, "session: when $%s or $%s is set, or on Linux/BSD when\n", envvars.SSHConnection.Name, envvars.SSHTTY.Name)
+		_, _ = fmt.Fprintf(stderr, "neither $%s nor $%s is set. macOS and Windows default to\n", envvars.Display.Name, envvars.WaylandDisplay.Name)
 		_, _ = fmt.Fprintf(stderr, "the browser flow unless an SSH session is detected. Setting\n")
-		_, _ = fmt.Fprintf(stderr, "SERF_LOGIN_HEADLESS=1 (or 0) overrides the detection.\n\n")
+		_, _ = fmt.Fprintf(stderr, "%s=1 (or 0) overrides the detection.\n\n", envvars.SERFLoginHeadless.Name)
 		_, _ = fmt.Fprintf(stderr, "Flags:\n")
 		_, _ = fmt.Fprintf(stderr, "  --dir <path>         Working directory hint\n")
 		_, _ = fmt.Fprintf(stderr, "  --state-dir <path>   Override OpenAI auth state directory\n")
@@ -165,7 +166,7 @@ func isHeadlessLogin() bool {
 // isHeadlessLoginFor is the testable core of isHeadlessLogin. Pass a goos
 // string ("linux", "darwin", "windows", ...) and an env lookup function.
 func isHeadlessLoginFor(goos string, getenv func(string) string) bool {
-	if v := strings.TrimSpace(getenv("SERF_LOGIN_HEADLESS")); v != "" {
+	if v := envvars.SERFLoginHeadless.FromTrimmed(getenv); v != "" {
 		switch strings.ToLower(v) {
 		case "1", "true", "yes", "on":
 			return true
@@ -173,7 +174,7 @@ func isHeadlessLoginFor(goos string, getenv func(string) string) bool {
 			return false
 		}
 	}
-	if strings.TrimSpace(getenv("SSH_CONNECTION")) != "" || strings.TrimSpace(getenv("SSH_TTY")) != "" {
+	if envvars.SSHConnection.FromTrimmed(getenv) != "" || envvars.SSHTTY.FromTrimmed(getenv) != "" {
 		return true
 	}
 	switch goos {
@@ -181,7 +182,7 @@ func isHeadlessLoginFor(goos string, getenv func(string) string) bool {
 		return false
 	default:
 		// Linux, BSDs, and anything else unix-y: need a display server.
-		if strings.TrimSpace(getenv("DISPLAY")) == "" && strings.TrimSpace(getenv("WAYLAND_DISPLAY")) == "" {
+		if envvars.Display.FromTrimmed(getenv) == "" && envvars.WaylandDisplay.FromTrimmed(getenv) == "" {
 			return true
 		}
 		return false

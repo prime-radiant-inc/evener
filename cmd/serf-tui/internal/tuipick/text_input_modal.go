@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
+	"primeradiant.com/serf/envvars"
 )
 
 type TextInputResultMsg struct {
@@ -121,10 +122,10 @@ func CompleteLastPathSegment(input string, accept func(os.DirEntry) bool) string
 	leading := prefix[:len(prefix)-len(strings.TrimLeft(prefix, " \t"))]
 	raw := strings.TrimSpace(prefix)
 	if raw == "" {
-		raw = os.Getenv("HOME")
+		raw = envvars.Home.Getenv()
 	}
 	if strings.HasPrefix(raw, "~/") || raw == "~" {
-		raw = filepath.Join(os.Getenv("HOME"), strings.TrimPrefix(raw, "~"))
+		raw = filepath.Join(envvars.Home.Getenv(), strings.TrimPrefix(raw, "~"))
 	}
 	var listDir, filter string
 	if strings.HasSuffix(raw, string(filepath.Separator)) {

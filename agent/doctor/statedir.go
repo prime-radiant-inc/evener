@@ -3,6 +3,8 @@ package doctor
 import (
 	"os"
 	"path/filepath"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // ResolveStateBase resolves the doctor's state base with serf's session-state
@@ -17,10 +19,10 @@ func ResolveStateBase(flagStateDir string) string {
 	if flagStateDir != "" {
 		return flagStateDir
 	}
-	if v := os.Getenv("SERF_STATE_DIR"); v != "" {
+	if v := envvars.SERFStateDir.Getenv(); v != "" {
 		return v
 	}
-	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
+	if v := envvars.XDGStateHome.Getenv(); v != "" {
 		return v
 	}
 	home, err := os.UserHomeDir()

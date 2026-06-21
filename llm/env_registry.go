@@ -2,8 +2,9 @@ package llm
 
 import (
 	"errors"
-	"os"
 	"sync"
+
+	"primeradiant.com/serf/envvars"
 )
 
 // EnvConfig holds configuration derived from environment variables and options
@@ -58,8 +59,8 @@ func NewFromEnv(opts ...EnvOption) (*Client, error) {
 	envFactoriesMu.Unlock()
 
 	cfg := EnvConfig{
-		StateDir:  os.Getenv("SERF_STATE_DIR"),
-		StateHome: os.Getenv("XDG_STATE_HOME"),
+		StateDir:  envvars.SERFStateDir.Getenv(),
+		StateHome: envvars.XDGStateHome.Getenv(),
 	}
 	for _, opt := range opts {
 		if opt != nil {

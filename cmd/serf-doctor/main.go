@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/doctor"
+	"primeradiant.com/serf/envvars"
 )
 
 func main() {
@@ -59,7 +60,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `serf-doctor — read-only forensic inspector for serf sessions, jobs, and watches
+	fmt.Fprintf(w, `serf-doctor — read-only forensic inspector for serf sessions, jobs, and watches
 
 USAGE:
   serf-doctor <subcommand> <selector> [flags]
@@ -75,18 +76,18 @@ SELECTOR:
   "" | current  (rejected — name a session)   local:<id>   proj:<hash>:<id>   <id>
 
 COMMON FLAGS:
-  --state-dir <path>   state root (default: SERF_STATE_DIR, then XDG_STATE_HOME, then ~/.local/state)
+  --state-dir <path>   state root (default: %s, then %s, then ~/.local/state)
   --json               emit JSON instead of the human summary
 
 Run "serf-doctor <subcommand> -h" for subcommand flags.
-`)
+`, envvars.SERFStateDir.Name, envvars.XDGStateHome.Name)
 }
 
 // stateFlags registers the flags every subcommand shares and returns the set.
 func stateFlags(name string, stderr io.Writer) (*flag.FlagSet, *string, *bool) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	stateDir := fs.String("state-dir", "", "state root (default: SERF_STATE_DIR / XDG_STATE_HOME / ~/.local/state)")
+	stateDir := fs.String("state-dir", "", fmt.Sprintf("state root (default: %s / %s / ~/.local/state)", envvars.SERFStateDir.Name, envvars.XDGStateHome.Name))
 	asJSON := fs.Bool("json", false, "emit JSON instead of the human summary")
 	return fs, stateDir, asJSON
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/envvars"
 )
 
 // ServerConfig describes a single MCP server connection.
@@ -291,7 +292,7 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 // globalMCPConfigPath returns the path to the global MCP config file.
 // Uses XDG_CONFIG_HOME if set, otherwise ~/.config.
 func globalMCPConfigPath() string {
-	dir := os.Getenv("XDG_CONFIG_HOME")
+	dir := envvars.XDGConfigHome.Getenv()
 	if dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {

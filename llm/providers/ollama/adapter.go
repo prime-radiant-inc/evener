@@ -22,9 +22,9 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
@@ -155,9 +155,9 @@ func newForInstance(params InstanceParams) *adapter {
 
 func init() {
 	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
-		baseEnv := strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL"))
-		hostEnv := strings.TrimSpace(os.Getenv("OLLAMA_HOST"))
-		keyEnv := strings.TrimSpace(os.Getenv("OLLAMA_API_KEY"))
+		baseEnv := envvars.OllamaBaseURL.Trimmed()
+		hostEnv := envvars.OllamaHost.Trimmed()
+		keyEnv := envvars.OllamaAPIKey.Trimmed()
 		// Always register: ollama implements NonDefaultEligible, so the
 		// "silent default provider" concern is handled at the client
 		// level. Explicit --provider ollama works zero-config.

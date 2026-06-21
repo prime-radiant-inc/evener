@@ -8,10 +8,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
@@ -142,11 +142,11 @@ func stripKimiTokenCountOutputFields(body map[string]any) {
 
 func init() {
 	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
-		key := strings.TrimSpace(os.Getenv("KIMI_API_KEY"))
+		key := envvars.KimiAPIKey.Trimmed()
 		if key == "" {
 			return nil, false, nil
 		}
-		base := strings.TrimSpace(os.Getenv("KIMI_BASE_URL"))
+		base := envvars.KimiBaseURL.Trimmed()
 		return NewForInstance(InstanceParams{
 			Name:    providerName,
 			BaseURL: base,
