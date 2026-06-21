@@ -183,7 +183,7 @@ func TestProviderProfiles_AllIncludeUseSkill(t *testing.T) {
 	}
 }
 
-func TestProviderProfiles_AddPurposeToEveryToolSchema(t *testing.T) {
+func TestProviderProfiles_AddPurposeToWorkToolSchemas(t *testing.T) {
 	profiles := []*provider.Profile{
 		NewOpenAIProfile("gpt-5.2"),
 		newAnthropicProfile("claude-test"),
@@ -193,12 +193,20 @@ func TestProviderProfiles_AddPurposeToEveryToolSchema(t *testing.T) {
 	for _, p := range profiles {
 		nameMap := p.ToolNameMap()
 		for _, td := range p.ToolDefinitions() {
-			td = wireToolDef(td, nameMap)
+			canonicalName := td.Name
+			td = wireToolDef(td, nameMap, "communicate")
 			props, _ := td.Parameters["properties"].(map[string]any)
 			if props == nil {
 				t.Fatalf("%s/%s has no properties schema", p.ID(), td.Name)
 			}
-			if _, ok := props["purpose"]; !ok {
+			_, hasPurpose := props["purpose"]
+			if canonicalName == "communicate" {
+				if hasPurpose {
+					t.Fatalf("%s/%s should not advertise purpose", p.ID(), td.Name)
+				}
+				continue
+			}
+			if !hasPurpose {
 				t.Fatalf("%s/%s missing purpose parameter", p.ID(), td.Name)
 			}
 		}
@@ -1243,7 +1251,7 @@ func wiredToolNames(p *provider.Profile) map[string]bool {
 	nameMap := p.ToolNameMap()
 	names := map[string]bool{}
 	for _, td := range p.ToolDefinitions() {
-		names[wireToolDef(td, nameMap).Name] = true
+		names[wireToolDef(td, nameMap, "communicate").Name] = true
 	}
 	return names
 }

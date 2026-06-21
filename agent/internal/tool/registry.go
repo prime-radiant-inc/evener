@@ -47,6 +47,43 @@ func WithPurposeParameter(td llm.ToolDefinition) llm.ToolDefinition {
 	return td
 }
 
+func WithoutPurposeParameter(td llm.ToolDefinition) llm.ToolDefinition {
+	params := CloneSchemaMap(td.Parameters)
+	props, _ := params["properties"].(map[string]any)
+	if props != nil {
+		delete(props, "purpose")
+	}
+	switch required := params["required"].(type) {
+	case []string:
+		params["required"] = removeRequiredField(required, "purpose")
+	case []any:
+		params["required"] = removeRequiredFieldAny(required, "purpose")
+	}
+	td.Parameters = params
+	return td
+}
+
+func removeRequiredField(values []string, field string) []string {
+	out := values[:0]
+	for _, value := range values {
+		if value != field {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func removeRequiredFieldAny(values []any, field string) []any {
+	out := values[:0]
+	for _, value := range values {
+		if s, ok := value.(string); ok && s == field {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
 func CloneSchemaMap(in map[string]any) map[string]any {
 	if in == nil {
 		return nil
@@ -197,9 +234,10 @@ func ParseDocumentResult(path, readFileOutput string) *ImageResult {
 // Execute), its compiled validation schema, output limit, and the agent-layer
 // executor that receives the execenv.ExecutionEnvironment.
 type RegisteredTool struct {
-	llm.Tool // embeds Definition + Execute
-	Schema   *jsonschema.Schema
-	Limit    schema.ToolOutputLimit
+	llm.Tool    // embeds Definition + Execute
+	Schema      *jsonschema.Schema
+	Limit       schema.ToolOutputLimit
+	OmitPurpose bool
 	// Agent-layer executor with environment context.
 	Exec func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error)
 }
@@ -230,15 +268,18 @@ func (r *Registry) Use(mw toolMiddleware) {
 }
 
 // Register validates and stores a tool in the registry. It rejects an invalid
-// tool name or a missing executor, injects the purpose parameter into the
-// definition, applies a default output limit when none is set, compiles (or
-// reuses) the argument schema, and bridges llm.Tool.Execute from Exec when
-// unset.
+// tool name or a missing executor, injects the purpose parameter into work-tool
+// definitions, applies a default output limit when none is set, compiles (or
+// reuses) the argument schema, and bridges llm.Tool.Execute from Exec when unset.
 func (r *Registry) Register(t RegisteredTool) error {
 	if err := llm.ValidateToolName(t.Definition.Name); err != nil {
 		return err
 	}
-	t.Definition = WithPurposeParameter(t.Definition)
+	if t.OmitPurpose {
+		t.Definition = WithoutPurposeParameter(t.Definition)
+	} else {
+		t.Definition = WithPurposeParameter(t.Definition)
+	}
 	if strings.TrimSpace(t.Definition.Description) == "" {
 		log.Printf("WARNING: tool %q registered with empty description", t.Definition.Name)
 	}

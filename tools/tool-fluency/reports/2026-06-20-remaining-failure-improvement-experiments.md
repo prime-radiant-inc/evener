@@ -146,6 +146,11 @@ Based on the experiments, I made small product changes:
 - Added top-level `purpose` placement to the `communicate` tool schema
   description without loosening the strict schema.
 
+Supersession note: the later `communicate(end_turn)` follow-up removed
+`purpose` from the model-facing `communicate` schema entirely. Work tools still
+advertise `purpose`; result tools carry intent through `message`, `end_turn`,
+and `output`.
+
 ## Post-Fix Reruns
 
 Post-fix GPT 5.4 mini reruns without prompt-append variants:
@@ -167,6 +172,11 @@ The watch path remains unstable. The remaining failures are not one thing:
 - `job_watch` repair after unrelated extra fields;
 - terminal notification treated as new work;
 - `communicate.output.purpose` schema error.
+
+Supersession note: the later `communicate(end_turn)` follow-up fixed premature
+progress messages, redundant terminal notifications, and
+`communicate.output.purpose`. The remaining design issue is the `job_watch`
+shape for caller/session watches.
 
 ## Conclusions
 

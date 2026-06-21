@@ -480,7 +480,7 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 				},
 				"output": map[string]any{
 					"type":                 "object",
-					"description":          "Structured output envelope. Keep this present on every call with exactly these top-level fields: message, data, artifacts. For ordinary text replies, keep user-visible text in the top-level message and leave data/artifacts empty. If you include a purpose, place it as a top-level tool argument beside output.",
+					"description":          "Structured output envelope. Keep this present on every call with exactly these top-level fields: message, data, artifacts. For ordinary text replies, keep user-visible text in the top-level message and leave data/artifacts empty.",
 					"additionalProperties": false,
 					"properties": map[string]any{
 						"message": map[string]any{"type": "string", "description": "Human-readable structured summary for automation and orchestration. Leave empty for ordinary conversational replies."},
@@ -497,10 +497,6 @@ func DefCommunicateNamed(name string) llm.ToolDefinition {
 						},
 					},
 					"required": []string{"message", "data", "artifacts"},
-				},
-				"purpose": map[string]any{
-					"type":        "string",
-					"description": "Top-level reason for this communicate call, placed beside message, end_turn, and output. The output object contains only message, data, and artifacts.",
 				},
 			},
 			"required": []string{"message", "end_turn", "output"},

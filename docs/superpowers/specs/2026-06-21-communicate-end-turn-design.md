@@ -100,8 +100,10 @@ The envelope is meaningful when `end_turn=true`. For ordinary narration with
 {"message": "", "data": {}, "artifacts": []}
 ```
 
-`purpose` remains a top-level tool argument injected by the registry. It is not
-part of `output`.
+The universal `purpose` field remains for work tools. `communicate` and result
+tool aliases do not advertise `purpose`: the visible `message`, `end_turn`, and
+`output` envelope already describe the result. `output.purpose` remains invalid;
+the default `output` object has only `message`, `data`, and `artifacts`.
 
 ## Runtime Contract
 
@@ -181,10 +183,11 @@ Live scenario validation after these fixes:
 
 ## Follow-On Work
 
-This design fixes the premature progress/narration failure and the two
-observer-callback validation issues above.
+This design fixes the premature progress/narration failure, the two
+observer-callback validation issues above, and the
+`communicate.output.purpose` strict-envelope failure by removing `purpose` from
+the model-facing `communicate` schema.
 
-The remaining known failure modes still need separate decisions:
+The remaining known failure mode still needs a separate decision:
 
-- `job_watch` mode-shape friction for caller/session event watches;
-- `communicate.output.purpose` strict-envelope mistakes.
+- `job_watch` mode-shape friction for caller/session event watches.
