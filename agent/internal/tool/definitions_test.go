@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -214,6 +215,23 @@ func TestDefDelegateHasDelegationAllowance(t *testing.T) {
 	}
 }
 
+func TestDefDelegateHasWatchParent(t *testing.T) {
+	def := DefDelegate([]string{"subagent"})
+	props := def.Parameters["properties"].(map[string]any)
+	watchParent, ok := props["watch_parent"].(map[string]any)
+	if !ok {
+		t.Fatal("DefDelegate missing watch_parent")
+	}
+	if got, _ := watchParent["type"].(string); got != "boolean" {
+		t.Fatalf("watch_parent type = %q, want boolean", got)
+	}
+	for _, want := range []string{"watch_parent=true", "job_watch(source=\"parent\")", "communicate(end_turn=true)"} {
+		if !strings.Contains(def.Description, want) {
+			t.Fatalf("delegate description = %q, want %q", def.Description, want)
+		}
+	}
+}
+
 func TestDefDelegateNoEnumWhenNoTypes(t *testing.T) {
 	def := DefDelegate(nil)
 	props := def.Parameters["properties"].(map[string]any)
@@ -257,6 +275,41 @@ func TestDefDelegateSendShape(t *testing.T) {
 	}
 }
 
+func TestDefDelegateSendNoCallerAlias(t *testing.T) {
+	def := DefDelegateSend()
+	descriptions := []string{def.Description}
+	collectSchemaDescriptions(def.Parameters, &descriptions)
+	for _, desc := range descriptions {
+		if strings.Contains(desc, "caller") {
+			t.Fatalf("DefDelegateSend description must describe child delegate messaging only: %q", desc)
+		}
+	}
+}
+
+func collectSchemaDescriptions(value any, descriptions *[]string) {
+	switch v := value.(type) {
+	case map[string]any:
+		if desc, ok := v["description"]; ok {
+			*descriptions = append(*descriptions, fmt.Sprint(desc))
+		}
+		for _, child := range v {
+			collectSchemaDescriptions(child, descriptions)
+		}
+	case []any:
+		for _, child := range v {
+			collectSchemaDescriptions(child, descriptions)
+		}
+	case []map[string]any:
+		for _, child := range v {
+			collectSchemaDescriptions(child, descriptions)
+		}
+	case []string:
+		for _, child := range v {
+			collectSchemaDescriptions(child, descriptions)
+		}
+	}
+}
+
 func TestDefJobWatchParamsAndKinds(t *testing.T) {
 	def := DefJobWatch([]string{"communicate", "job.notification"})
 	if def.Name != "job_watch" {
@@ -266,7 +319,7 @@ func TestDefJobWatchParamsAndKinds(t *testing.T) {
 		t.Fatalf("Strict = %v, want false because job_watch has conditional optional arguments", def.Strict)
 	}
 	props := def.Parameters["properties"].(map[string]any)
-	for _, p := range []string{"operation", "watch_id", "target", "output_match", "progress_interval_ms", "events", "event_filter", "every", "send"} {
+	for _, p := range []string{"operation", "watch_id", "source", "output_match", "progress_interval_ms", "events", "event_filter", "every"} {
 		if _, ok := props[p]; !ok {
 			t.Errorf("DefJobWatch missing param %q", p)
 		}
@@ -278,6 +331,23 @@ func TestDefJobWatchParamsAndKinds(t *testing.T) {
 	// The available event kinds are interpolated into the description.
 	if !strings.Contains(def.Description, "communicate") || !strings.Contains(def.Description, "job.notification") {
 		t.Errorf("description must enumerate the available event kinds:\n%s", def.Description)
+	}
+}
+
+func TestDefJobWatchUsesSourceAndOmitsSend(t *testing.T) {
+	def := DefJobWatch([]string{"assistant.tool", "communicate", "job.notification"})
+	props := def.Parameters["properties"].(map[string]any)
+	if _, ok := props["source"]; !ok {
+		t.Fatal("DefJobWatch missing source")
+	}
+	if _, ok := props["target"]; ok {
+		t.Fatal("DefJobWatch must not expose legacy target")
+	}
+	if _, ok := props["send"]; ok {
+		t.Fatal("DefJobWatch must not expose public send")
+	}
+	if strings.Contains(def.Description, "send.to") || strings.Contains(def.Description, "target=") {
+		t.Fatalf("DefJobWatch description leaks legacy routing shape: %q", def.Description)
 	}
 }
 
@@ -306,28 +376,23 @@ func TestDefJobWatchRequiresOperationAndWatchIDForClear(t *testing.T) {
 	}
 }
 
-func TestDefJobWatchDescriptionIncludesCoalesceContract(t *testing.T) {
+func TestDefJobWatchDescriptionIncludesImplicitDeliveryContract(t *testing.T) {
 	def := DefJobWatch([]string{"communicate"})
-	if !strings.Contains(def.Description, "coalesce") || !strings.Contains(def.Description, "busy") {
-		t.Fatalf("job_watch description must mention coalescing and busy-target behavior:\n%s", def.Description)
+	for _, want := range []string{"source you can observe", "Delivery is implicit", "communicate(end_turn=true)"} {
+		if !strings.Contains(def.Description, want) {
+			t.Fatalf("job_watch description = %q, want %q", def.Description, want)
+		}
 	}
 	props := def.Parameters["properties"].(map[string]any)
-	sendProps := props["send"].(map[string]any)["properties"].(map[string]any)
-	toDesc := sendProps["to"].(map[string]any)["description"].(string)
-	for _, want := range []string{"caller", "delegate_id"} {
-		if !strings.Contains(toDesc, want) {
-			t.Fatalf("send.to description = %q, want %q", toDesc, want)
+	sourceDesc := props["source"].(map[string]any)["description"].(string)
+	for _, want := range []string{"self", "parent", "job_id"} {
+		if !strings.Contains(sourceDesc, want) {
+			t.Fatalf("source description = %q, want %q", sourceDesc, want)
 		}
 	}
-	for _, banned := range []string{"main", "watched"} {
-		if strings.Contains(toDesc, banned) {
-			t.Fatalf("send.to description must not mention %q: %q", banned, toDesc)
-		}
-	}
-	excerptDesc := sendProps["include_excerpt"].(map[string]any)["description"].(string)
-	for _, want := range []string{"target \"caller\"", "omit"} {
-		if !strings.Contains(excerptDesc, want) {
-			t.Fatalf("send.include_excerpt description = %q, want %q", excerptDesc, want)
+	for _, banned := range []string{"send", "target"} {
+		if _, ok := props[banned]; ok {
+			t.Fatalf("DefJobWatch must not expose %q", banned)
 		}
 	}
 }

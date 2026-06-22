@@ -116,7 +116,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 			"enum (described in your agents section); `model` and `reasoning_effort` override the defaults; " +
 			"`result_schema` requests a validated structured result; `max_wait_ms` waits inline up to that many ms " +
 			"(a timeout leaves the job running). `delegation_allowance` lets the delegate itself delegate, up to one " +
-			"level shallower than your own allowance. For delegate readiness, status, findings, and final reports, ask the " +
+			"level shallower than your own allowance. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\") and report findings with communicate(end_turn=true). For delegate readiness, status, findings, and final reports, ask the " +
 			"delegate to call `communicate` with the exact marker/report. Use the delegate's output as the evidence for judging the work.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
@@ -129,6 +129,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
 				"max_wait_ms":          map[string]any{"type": "integer", "description": "0 (default): return the delegate_id and started job_id immediately; you are notified on completion. >0: wait inline up to this many ms; a timeout leaves the job running."},
 				"delegation_allowance": map[string]any{"type": "integer", "description": "0 (default): a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type actually has the `delegate` tool: the built-in `subagent` role is a non-delegating leaf, so a >0 allowance on it is a silent no-op. For a multi-level tree, omit agent_type (the default role can delegate)."},
+				"watch_parent":         map[string]any{"type": "boolean", "description": "Grant this child permission to observe your session with job_watch(source=\"parent\"). This does not grant delegation or any transitive watch permission."},
 				"result_schema": map[string]any{
 					"type":                 "object",
 					"description":          "JSON-Schema-like object for structured delegate results. Serf validates it for initial and resumed turns, surfaces structured_result when valid, and reports structured_result_reason when invalid.",
@@ -141,28 +142,26 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 }
 
 // DefDelegateSend defines the delegate_send tool, the single follow-up surface
-// for durable delegates and contextual caller commentary.
+// for durable delegates.
 func DefDelegateSend() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "delegate_send",
-		Description: "Send a message to a durable delegate by delegate_id, or from a delegate/watch-delivered context " +
-			"to the contextual caller route. `to` accepts `dlg_...` or `caller`; it rejects job/turn handles, transcript " +
-			"refs, and legacy runtime aliases. If the delegate is running or being driven, the message is steered and " +
-			"returns on delivery. If the delegate is idle, set `on_idle=\"start\"` to start the next job; the default " +
-			"`on_idle=\"fail\"` rejects idle delegates instead of starting work. In observer sidecars, " +
-			"`delegate_send(to=\"caller\")` is the callback that wakes the caller with the observer's finding.",
+		Description: "Send a message to one of your durable delegates by delegate_id. " +
+			"`to` accepts a `dlg_...` delegate_id; it rejects job/turn handles and unrelated runtime aliases. " +
+			"If the delegate is running or being driven, the message is steered and returns on delivery. " +
+			"If the delegate is idle, set `on_idle=\"start\"` to start the next job; the default `on_idle=\"fail\"` rejects idle delegates instead of starting work.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"to":      map[string]any{"type": "string", "description": "A delegate_id (`dlg_...`) or `caller` when available."},
+				"to":      map[string]any{"type": "string", "description": "A delegate_id (`dlg_...`) owned by this session."},
 				"message": map[string]any{"type": "string"},
 				"on_idle": map[string]any{
 					"type":        "string",
 					"enum":        []string{"start", "fail"},
 					"description": "Default fail: reject an idle delegate. start: start the delegate's next job.",
 				},
-				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a started job, wait inline up to this many ms for its result; steers and caller sends return on delivery regardless."},
+				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a started job, wait inline up to this many ms for its result; delivery to a running delegate returns once delivered."},
 			},
 			"required": []string{"to", "message"},
 		},
@@ -178,28 +177,14 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 	if kinds == "" {
 		kinds = "none available this session"
 	}
-	desc := "Create, inspect, list, or clear standing triggers on a running job or this caller session. " +
-		"For a one-time \"did it print X yet\", use `job_read_output` with a positive max_wait_ms and grep " +
-		"instead — watches are for recurring conditions, and completion needs no watch at all (terminal notifications are " +
-		"automatic). For `operation=\"create\"`, set `target` to a `job_id` or `caller`; set only the triggers you need: " +
-		"`output_match` (RE2 over the job's output; if the retained output " +
-		"already contains a match the watch fires immediately, then again on new matches — a finished job gets a one-shot " +
-		"catch-up scan), `progress_interval_ms` (periodic), `events` (kinds this session: " + kinds + "; `every` fires on " +
-		"each Nth occurrence — 1 is the default; above 1 requires `events` to contain exactly one kind; `event_filter` can narrow " +
-		"`assistant.tool` events by tool_name and ok/error status). Use `communicate` for result/status messages, " +
-		"`assistant.tool` for tool calls, and `job.notification` for job lifecycle events. Delivery: omit `send` to be notified " +
-		"yourself; set `send.to` to an observer `delegate_id` to push bounded trigger frames there — " +
-		"this also grants that observer read access to the observed job. Observer callback flow: trigger frame reaches " +
-		"the observer, the observer calls `delegate_send(to=\"caller\")`, and the caller continues from that callback. " +
-		"The callback is completion evidence for the observer's task; after it arrives, produce one final result unless the user asked for audit details. " +
-		"For normal callback flow, the callback-to-final-result path is complete; audit tools are for explicit audit requests or failed/missing callbacks. Choose one common sidecar shape: " +
-		"communicate results/status use `target=\"caller\", events=[\"communicate\"], send.to=<delegate_id>`; " +
-		"tool events use `target=\"caller\", events=[\"assistant.tool\"], event_filter={\"tool_name\":\"read_file\",\"status\":\"ok\"}, send.to=<delegate_id>`. " +
-		"Assistant.tool frames include the matched `status` and the original tool `arguments_json`, so observers can usually decide from the frame itself. " +
-		"For communicate content such as APPROVAL_REQUEST, the observer task checks the delivered `event.message`. Frames coalesce latest-wins while the target is " +
-		"busy. Use `send.include_excerpt` only when `target` starts with `job_`; for `target=\"caller\"`, use `send.to` without an excerpt. Caller/session-target event frames already carry bounded event payloads. ONE active watch per " +
-		"(target, send.to): a different configuration for the same key replaces the existing watch " +
-		"(`replaced_existing:true`) — use a distinct `send.to` for an additional watch on the same target. " +
+	desc := "Create, inspect, list, or clear standing triggers on a source you can observe. " +
+		"For operation=\"create\", set `source` to `self`, `parent`, or a concrete `job_id`. " +
+		"`parent` is available only inside a delegate spawned with `watch_parent=true`. " +
+		"Delivery is implicit: matching frames are delivered to the session that created the watch. " +
+		"For cross-session session sources such as `parent`, omitting trigger fields watches all bounded public events for that source. " +
+		"Use `events` (available: " + kinds + "), `event_filter`, `every`, `output_match`, or `progress_interval_ms` to narrow when useful. " +
+		"`event_filter` narrows assistant.tool events by tool_name and ok/error status. " +
+		"Observers report findings with `communicate(end_turn=true)`. " +
 		"`operation=\"clear\"` removes a watch by `watch_id`."
 	return llm.ToolDefinition{
 		Name:        "job_watch",
@@ -211,7 +196,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"operation":            map[string]any{"type": "string", "description": "create, list, inspect, or clear.", "enum": []string{"create", "list", "inspect", "clear"}},
 				"watch_id":             map[string]any{"type": "string", "description": "watch_id returned by job_watch create/list; required for inspect and clear."},
-				"target":               map[string]any{"type": "string", "description": "job_id, or caller for this session."},
+				"source":               map[string]any{"type": "string", "description": "`self`, `parent` when granted by delegate(watch_parent=true), or a concrete job_id visible to this session."},
 				"output_match":         map[string]any{"type": "string", "description": "RE2 regex over the job's output. Case-sensitive unless (?i). Invalid regex errors at creation."},
 				"progress_interval_ms": map[string]any{"type": "integer", "description": "Periodic trigger interval in ms (min 1000, max 3600000; handler clamps later). Omit for none."},
 				"events": map[string]any{
@@ -230,16 +215,6 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 					"properties": map[string]any{
 						"tool_name": map[string]any{"type": "string", "description": "For assistant.tool events, match the canonical tool name exactly."},
 						"status":    map[string]any{"type": "string", "description": "For assistant.tool events, match ok or error.", "enum": []string{"ok", "error"}},
-					},
-				},
-				"send": map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"description":          "Deliver to another target instead of notifying the caller.",
-					"properties": map[string]any{
-						"to":              map[string]any{"type": "string", "description": "delegate_id, or `caller`."},
-						"message":         map[string]any{"type": "string"},
-						"include_excerpt": map[string]any{"type": "boolean", "description": "Only for target values that start with job_; attaches a bounded output excerpt to delivered frames. For target \"caller\", omit this because session-event frames already include the event payload."},
 					},
 				},
 			},
