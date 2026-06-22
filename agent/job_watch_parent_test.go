@@ -298,14 +298,17 @@ func TestRestoredParentSourcePendingSendPreservesReceiverRouting(t *testing.T) {
 		t.Fatalf("restored cfg receiver = %q/%q, want %q/%q", cfg.receiverSessionID, cfg.receiverDelegateID, receiverSessionID, receiverDelegateID)
 	}
 
-	list := restored.watchListToolResult()
+	list := restored.watchListToolResultForReceiver(receiverSessionID, receiverDelegateID)
 	if len(list.Watches) != 1 {
-		t.Fatalf("restored watch list length = %d, want 1", len(list.Watches))
+		t.Fatalf("restored receiver watch list length = %d, want 1", len(list.Watches))
 	}
 	if list.Watches[0].SendTo != "" {
 		t.Fatalf("restored public list send_to = %q, want hidden internal send", list.Watches[0].SendTo)
 	}
-	inspect := restored.inspectWatchByID(res.WatchID)
+	inspect, ok := restored.inspectReceiverWatchByID(res.WatchID, receiverSessionID, receiverDelegateID)
+	if !ok {
+		t.Fatalf("restored receiver inspect %q not found", res.WatchID)
+	}
 	if inspect.SendTo != "" {
 		t.Fatalf("restored public inspect send_to = %q, want hidden internal send", inspect.SendTo)
 	}

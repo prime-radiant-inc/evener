@@ -7798,6 +7798,37 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 		t.Fatalf("watch inspect = %+v, want forwarded watch", inspect)
 	}
 
+	childListOut, err := jobWatchTool(child, map[string]any{"operation": "list"}, 20000)
+	if err != nil {
+		t.Fatalf("child jobWatchTool list: %v", err)
+	}
+	childList := childListOut.(tooldefs.StateResult).State.(jobWatchListToolResult)
+	if childList.Count != 0 || len(childList.Watches) != 0 || len(childList.RecentWatches) != 0 {
+		t.Fatalf("child owner watch list = %+v, want no ancestor-owned watch", childList)
+	}
+	childInspectOut, err := jobWatchTool(child, map[string]any{"operation": "inspect", "watch_id": state.WatchID}, 20000)
+	if err != nil {
+		t.Fatalf("child jobWatchTool inspect: %v", err)
+	}
+	childInspect := childInspectOut.(tooldefs.StateResult).State.(jobWatchInspectToolResult)
+	if childInspect.Watching || childInspect.Target != "" {
+		t.Fatalf("child owner inspect = %+v, want not found", childInspect)
+	}
+	if _, err := jobWatchTool(child, map[string]any{"operation": "clear", "watch_id": state.WatchID}, 20000); err != nil {
+		t.Fatalf("child jobWatchTool clear: %v", err)
+	}
+	if childJM.watchCount() != 1 {
+		t.Fatalf("child watch count after owner clear = %d, want ancestor-owned watch intact", childJM.watchCount())
+	}
+	inspectOut, err = jobWatchTool(root, map[string]any{"operation": "inspect", "watch_id": state.WatchID}, 20000)
+	if err != nil {
+		t.Fatalf("root inspect after child clear: %v", err)
+	}
+	inspect = inspectOut.(tooldefs.StateResult).State.(jobWatchInspectToolResult)
+	if inspect.WatchID != state.WatchID || inspect.Target != childRec.JobID || !inspect.Watching {
+		t.Fatalf("root inspect after child clear = %+v, want forwarded watch still active", inspect)
+	}
+
 	feedJob(childJM, childRec.JobID, []byte("server READY\n"))
 	if got := root.drainJobNotifications(); len(got) != 1 || got[0].JobID != childRec.JobID {
 		t.Fatalf("root notifications after match = %+v, want one child job watch notification", got)
@@ -7813,6 +7844,30 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 	}
 	if childJM.watchCount() != 0 {
 		t.Fatalf("child watch count = %d, want cleared", childJM.watchCount())
+	}
+	recentOut, err := jobWatchTool(root, map[string]any{"operation": "inspect", "watch_id": state.WatchID}, 20000)
+	if err != nil {
+		t.Fatalf("root inspect recent: %v", err)
+	}
+	recent := recentOut.(tooldefs.StateResult).State.(jobWatchInspectToolResult)
+	if recent.Watching || recent.Target != childRec.JobID || recent.EndReason != "cleared" {
+		t.Fatalf("root recent inspect = %+v, want receiver-owned cleared history", recent)
+	}
+	childListOut, err = jobWatchTool(child, map[string]any{"operation": "list"}, 20000)
+	if err != nil {
+		t.Fatalf("child list after clear: %v", err)
+	}
+	childList = childListOut.(tooldefs.StateResult).State.(jobWatchListToolResult)
+	if childList.Count != 0 || len(childList.Watches) != 0 || len(childList.RecentWatches) != 0 {
+		t.Fatalf("child owner watch list after clear = %+v, want no receiver-owned history", childList)
+	}
+	childInspectOut, err = jobWatchTool(child, map[string]any{"operation": "inspect", "watch_id": state.WatchID}, 20000)
+	if err != nil {
+		t.Fatalf("child inspect after clear: %v", err)
+	}
+	childInspect = childInspectOut.(tooldefs.StateResult).State.(jobWatchInspectToolResult)
+	if childInspect.Watching || childInspect.Target != "" || childInspect.EndReason != "" {
+		t.Fatalf("child owner inspect after clear = %+v, want not found", childInspect)
 	}
 
 	feedJob(childJM, childRec.JobID, []byte("server READY again\n"))

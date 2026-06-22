@@ -3450,7 +3450,7 @@ func TestDelegateSendToShellJobIDRejectsJobHandle(t *testing.T) {
 	}
 }
 
-func TestDelegateSendCallerTargetReturnsRuntimeShape(t *testing.T) {
+func TestDelegateSendCallerTargetRejectsPublicAlias(t *testing.T) {
 	s := newTestSession(t)
 	s.cfg.spawn.parentSteer = s.SteerWithProvenance
 
@@ -3459,23 +3459,15 @@ func TestDelegateSendCallerTargetReturnsRuntimeShape(t *testing.T) {
 		Name:      "delegate_send",
 		Arguments: json.RawMessage(`{"to":"caller","message":"runtime advisory"}`),
 	})
-	if res.IsError {
-		t.Fatalf("delegate_send returned error: %s", res.Output)
+	if !res.IsError {
+		t.Fatalf("delegate_send(to=caller) succeeded, want public alias rejection: %s", res.Output)
 	}
-	var out struct {
-		Type   string `json:"type"`
-		Status string `json:"status"`
-		Action string `json:"action"`
-	}
-	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-		t.Fatalf("unmarshal delegate_send output: %v (output: %s)", err, res.Output)
-	}
-	if out.Type != "runtime" || out.Status != "delivered" || out.Action != "delivered" {
-		t.Fatalf("delegate_send output = %+v, want runtime delivered shape", out)
+	if !strings.Contains(res.Output, "communicate(end_turn=true)") {
+		t.Fatalf("delegate_send error = %q, want communicate guidance", res.Output)
 	}
 	queue := s.SteeringQueueSnapshot()
-	if len(queue) != 1 || queue[0].Text != "runtime advisory" {
-		t.Fatalf("steering queue = %+v, want runtime advisory", queue)
+	if len(queue) != 0 {
+		t.Fatalf("steering queue = %+v, want no public caller delivery", queue)
 	}
 }
 
