@@ -981,6 +981,37 @@ func TestValidateWatchDeliveryLoop(t *testing.T) {
 	}
 }
 
+func TestJobWatchCreateSelfSourceFormatsSource(t *testing.T) {
+	sess := newTestSession(t)
+	res, err := jobWatchTool(sess, map[string]any{
+		"operation": "create",
+		"source":    "self",
+		"events":    []any{"job.notification"},
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("jobWatchTool returned error: %v", err)
+	}
+	state := res.(tooldefs.StateResult).State.(jobWatchToolResult)
+	if state.Source != "self" {
+		t.Fatalf("Source = %q, want self", state.Source)
+	}
+}
+
+func TestJobWatchSelfSourceKeepsLoopGuard(t *testing.T) {
+	sess := newTestSession(t)
+	_, err := jobWatchTool(sess, map[string]any{
+		"operation": "create",
+		"source":    "self",
+		"events":    []any{"assistant.tool"},
+	}, jobToolResultDefaultMaxChar)
+	if err == nil {
+		t.Fatal("jobWatchTool succeeded, want loop guard error")
+	}
+	if !strings.Contains(err.Error(), "feedback loop") {
+		t.Fatalf("error = %v, want feedback loop", err)
+	}
+}
+
 // TestEventWatchIgnoresWatchOriginatedSubagentEvents covers per-watch causal
 // suppression on the job.notification rail: an event whose provenance already
 // carries THIS watch's (watch_id, generation) key is dropped before any pending

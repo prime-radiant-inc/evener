@@ -104,6 +104,7 @@ type watchConfig struct {
 	id                 string
 	watchID            string
 	configHash         string
+	sourcePublic       string
 	target             string
 	outputMatch        string
 	outputMatcher      *jobstore.OutputMatcher
@@ -171,6 +172,48 @@ type watchArgs struct {
 	Clear              bool
 }
 
+type watchSourceKind int
+
+const (
+	watchSourceConcreteJob watchSourceKind = iota
+	watchSourceSelfSession
+	watchSourceParentSession
+)
+
+type watchSource struct {
+	Kind     watchSourceKind
+	Public   string
+	Internal string
+}
+
+func normalizeWatchSource(source string) (watchSource, error) {
+	source = strings.TrimSpace(source)
+	switch source {
+	case "":
+		return watchSource{}, errors.New("invalid_request: source is required")
+	case "self":
+		return watchSource{Kind: watchSourceSelfSession, Public: "self", Internal: runtimeMessageAliasCaller}, nil
+	case "parent":
+		return watchSource{Kind: watchSourceParentSession, Public: "parent", Internal: runtimeMessageAliasCaller}, nil
+	default:
+		if strings.HasPrefix(source, "job_") {
+			return watchSource{Kind: watchSourceConcreteJob, Public: source, Internal: source}, nil
+		}
+		return watchSource{}, fmt.Errorf("source_not_watchable: %q is not self, parent, or a concrete job_id", source)
+	}
+}
+
+func watchPublicSource(source, target string) string {
+	source = strings.TrimSpace(source)
+	if source != "" {
+		return source
+	}
+	if target == runtimeMessageAliasCaller {
+		return "self"
+	}
+	return target
+}
+
 type watchEventFilter struct {
 	ToolName string `json:"tool_name,omitempty"`
 	Status   string `json:"status,omitempty"`
@@ -192,6 +235,7 @@ const (
 
 type watchResult struct {
 	WatchID            string
+	Source             string
 	Target             string
 	Watching           bool
 	OutputMatch        string
@@ -847,6 +891,7 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 		id:                 watchID,
 		watchID:            watchID,
 		configHash:         normalizedWatchConfigHash(a),
+		sourcePublic:       watchPublicSource(a.Source, a.Target),
 		target:             a.Target,
 		outputMatch:        a.OutputMatch,
 		progressIntervalMS: a.ProgressIntervalMS,
@@ -1070,12 +1115,13 @@ func (jm *jobManager) restoreWatchSendPending() error {
 		cfg := cfgs[cfgKey]
 		if cfg == nil {
 			cfg = &watchConfig{
-				id:         key.WatchID,
-				watchID:    key.WatchID,
-				target:     key.WatchTarget,
-				send:       &watchSendArgs{To: key.ResolvedSendTo},
-				generation: key.WatchGeneration,
-				pending:    make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
+				id:           key.WatchID,
+				watchID:      key.WatchID,
+				sourcePublic: watchPublicSource("", key.WatchTarget),
+				target:       key.WatchTarget,
+				send:         &watchSendArgs{To: key.ResolvedSendTo},
+				generation:   key.WatchGeneration,
+				pending:      make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
 			}
 			cfgs[cfgKey] = cfg
 		}
@@ -1167,6 +1213,7 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 	jm.forgetDetachedWatchSendConfigsIfEmpty(detachedCfgs)
 
 	return watchResult{
+		Source:   sourcePublicForClearedWatch(key, targets),
 		Target:   key.Target,
 		Watching: false,
 	}, nil
@@ -1221,9 +1268,19 @@ func (jm *jobManager) clearWatchByID(watchID string) (watchResult, error) {
 
 	return watchResult{
 		WatchID:  watchID,
+		Source:   cfg.sourcePublic,
 		Target:   key.Target,
 		Watching: false,
 	}, nil
+}
+
+func sourcePublicForClearedWatch(key watchKey, targets []watchConfigTerminalSnapshot) string {
+	for _, target := range targets {
+		if target.key == key && target.cfg != nil && target.cfg.sourcePublic != "" {
+			return target.cfg.sourcePublic
+		}
+	}
+	return ""
 }
 
 func (jm *jobManager) durableWatchClearEvent(watchID, endReason string) (*jobstore.Event, error) {
@@ -1401,6 +1458,7 @@ func closeWatchConfig(cfg *watchConfig) {
 func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult {
 	return watchResult{
 		WatchID:            cfg.watchID,
+		Source:             cfg.sourcePublic,
 		Target:             cfg.target,
 		Watching:           true,
 		OutputMatch:        cfg.outputMatch,
@@ -2062,7 +2120,7 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 	}
 	re := cfg.outputMatcher.Regexp()
 
-	result := watchResult{Target: key.Target, Watching: false, TerminalCatchup: true, Status: string(status)}
+	result := watchResult{Source: cfg.sourcePublic, Target: key.Target, Watching: false, TerminalCatchup: true, Status: string(status)}
 
 	matches, err := jm.grepOutput(key.Target, re)
 	if err != nil {

@@ -174,9 +174,16 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	var res watchResult
 	switch a.Operation {
 	case "create":
-		if strings.HasPrefix(a.Source, "job_") {
-			a.Target = a.Source
+		var source watchSource
+		source, err = normalizeWatchSource(a.Source)
+		if err != nil {
+			return "", err
 		}
+		if source.Kind == watchSourceParentSession {
+			return "", errors.New("source_not_watchable: parent source requires a parent-watch grant")
+		}
+		a.Source = source.Public
+		a.Target = source.Internal
 		res, err = jm.configureWatch(a)
 	case "clear":
 		res, err = jm.clearWatchByID(a.WatchID)
@@ -1102,7 +1109,7 @@ type delegateSendResult struct {
 
 type jobWatchToolResult struct {
 	WatchID            string                   `json:"watch_id,omitempty"`
-	Target             string                   `json:"target"`
+	Source             string                   `json:"source"`
 	Watching           bool                     `json:"watching"`
 	OutputMatch        string                   `json:"output_match,omitempty"`
 	Events             []string                 `json:"events,omitempty"`
@@ -1251,7 +1258,7 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 	_ = maxChars
 	out := jobWatchToolResult{
 		WatchID:            res.WatchID,
-		Target:             res.Target,
+		Source:             watchPublicSource(res.Source, res.Target),
 		Watching:           res.Watching,
 		OutputMatch:        res.OutputMatch,
 		Events:             res.Events,
@@ -1288,10 +1295,10 @@ func marshalWatchInspectResult(res jobWatchInspectToolResult, maxChars int) (any
 }
 
 // formatJobWatch renders a job_watch result as a one-line footer summarizing the
-// watch's target, trigger condition, and disposition.
+// watch's source, trigger condition, and disposition.
 func formatJobWatch(out jobWatchToolResult) string {
 	if out.TerminalCatchup {
-		parts := []string{"watch on " + out.Target, "terminal catch-up"}
+		parts := []string{"watch on " + out.Source, "terminal catch-up"}
 		if out.Fired {
 			parts = append(parts, "fired")
 		} else {
@@ -1303,16 +1310,16 @@ func formatJobWatch(out jobWatchToolResult) string {
 		return "[" + strings.Join(parts, " · ") + "]"
 	}
 	if !out.Watching {
-		if out.Target == "" && out.WatchID != "" {
-			return fmt.Sprintf("[watch %s cleared]", out.WatchID)
+		if out.Source == "" && out.WatchID != "" {
+			return fmt.Sprintf("[watch_id %s cleared]", out.WatchID)
 		}
-		parts := []string{"watch on " + out.Target + " cleared"}
+		parts := []string{"watch on " + out.Source + " cleared"}
 		if out.WatchID != "" {
 			parts = append(parts, "watch_id "+out.WatchID)
 		}
 		return "[" + strings.Join(parts, " · ") + "]"
 	}
-	parts := []string{"watching " + out.Target}
+	parts := []string{"watching " + out.Source}
 	if out.WatchID != "" {
 		parts = append(parts, "watch_id "+out.WatchID)
 	}
