@@ -1943,7 +1943,7 @@ func TestJobWatchDuplicateCreateReturnsSameIDAndChangedConfigReturnsNewID(t *tes
 		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 			ID:        "watch-" + outputMatch,
 			Name:      "job_watch",
-			Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":%q}`, shellOut.JobID, outputMatch)),
+			Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","source":%q,"output_match":%q}`, shellOut.JobID, outputMatch)),
 		})
 		if res.IsError {
 			t.Fatalf("job_watch create %q returned error: %s", outputMatch, res.Output)
@@ -1997,7 +1997,7 @@ func TestJobWatchListAndInspectReturnWatchIDs(t *testing.T) {
 	createRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":"ready"}`, shellOut.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","source":%q,"output_match":"ready"}`, shellOut.JobID)),
 	})
 	if createRes.IsError {
 		t.Fatalf("job_watch create returned error: %s", createRes.Output)
