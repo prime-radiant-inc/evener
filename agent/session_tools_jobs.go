@@ -125,6 +125,9 @@ func delegateSendTool(ctx context.Context, s *Session, args map[string]any, maxC
 		OnIdle:     stringArg(args, "on_idle"),
 		Background: true, // default: no wait, return immediately
 	}
+	if strings.TrimSpace(a.Target) == runtimeMessageAliasCaller {
+		return "", errors.New("invalid_request: delegate_send sends to child delegate_id only; observer callbacks use communicate(end_turn=true)")
+	}
 	// max_wait_ms: 0/absent = no wait; positive = wait inline up to N;
 	// negative = invalid_request. Zero reads as unset (strict-provider safe).
 	if n, ok := shellIntArg(args, "max_wait_ms"); ok && n != 0 {

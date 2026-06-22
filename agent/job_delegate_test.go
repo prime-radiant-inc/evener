@@ -4739,6 +4739,21 @@ func TestSendDelegateMessageRootCallerTargetFails(t *testing.T) {
 	}
 }
 
+func TestDelegateSendToolRejectsCallerAliasPublicly(t *testing.T) {
+	sess := newTestSession(t)
+
+	_, err := delegateSendTool(context.Background(), sess, map[string]any{
+		"to":      "caller",
+		"message": "old observer callback",
+	}, jobToolResultDefaultMaxChar)
+	if err == nil {
+		t.Fatal("delegate_send(to=caller) succeeded, want invalid_request")
+	}
+	if !strings.Contains(err.Error(), "delegate_id") || !strings.Contains(err.Error(), "communicate(end_turn=true)") {
+		t.Fatalf("error = %v, want child delegate_id and communicate guidance", err)
+	}
+}
+
 func TestDelegateSendMainAliasFailsInvalidRequest(t *testing.T) {
 	sess := newTestSession(t)
 	called := false

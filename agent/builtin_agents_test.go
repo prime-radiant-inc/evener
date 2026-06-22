@@ -734,7 +734,7 @@ func TestSpawnAgent_TaskListPreservedForNamedAgent(t *testing.T) {
 	}
 }
 
-func TestSpawnAgent_BuiltinSubagentCanSendCallerCallback(t *testing.T) {
+func TestSpawnAgent_BuiltinSubagentKeepsDelegateSendTool(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -768,7 +768,7 @@ func TestSpawnAgent_BuiltinSubagentCanSendCallerCallback(t *testing.T) {
 		toolSet[name] = true
 	}
 	if !toolSet["delegate_send"] {
-		t.Fatalf("built-in subagent tools = %v, want delegate_send for caller callbacks", subagentTools)
+		t.Fatalf("built-in subagent tools = %v, want delegate_send for child delegate follow-up", subagentTools)
 	}
 	for _, forbidden := range []string{"delegate", "job_watch"} {
 		if toolSet[forbidden] {
