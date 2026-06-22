@@ -109,6 +109,7 @@ type watchConfig struct {
 	sourcePublic       string
 	receiverSessionID  string
 	receiverDelegateID string
+	receiverNotify     func(jobNotification)
 	target             string
 	outputMatch        string
 	outputMatcher      *jobstore.OutputMatcher
@@ -169,6 +170,7 @@ type watchArgs struct {
 	Target               string
 	ReceiverSessionID    string
 	ReceiverDelegateID   string
+	ReceiverNotify       func(jobNotification)
 	OutputMatch          string
 	ProgressIntervalMS   int
 	Events               []string
@@ -913,6 +915,7 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 		sourcePublic:       watchPublicSource(a.Source, a.Target),
 		receiverSessionID:  strings.TrimSpace(a.ReceiverSessionID),
 		receiverDelegateID: strings.TrimSpace(a.ReceiverDelegateID),
+		receiverNotify:     a.ReceiverNotify,
 		target:             a.Target,
 		outputMatch:        a.OutputMatch,
 		progressIntervalMS: a.ProgressIntervalMS,
@@ -1804,6 +1807,46 @@ func (jm *jobManager) watchListToolResult() jobWatchListToolResult {
 	return jobWatchListToolResult{Watches: watches, RecentWatches: recent, Count: len(watches)}
 }
 
+func (jm *jobManager) watchListToolResultForReceiver(receiverSessionID, receiverDelegateID string) jobWatchListToolResult {
+	receiverSessionID = strings.TrimSpace(receiverSessionID)
+	receiverDelegateID = strings.TrimSpace(receiverDelegateID)
+	if receiverSessionID == "" {
+		return jobWatchListToolResult{}
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	watches := make([]jobWatchInspectToolResult, 0, len(jm.watches))
+	activeWatchIDs := make(map[string]bool, len(jm.watches))
+	for key, cfg := range jm.watches {
+		if !watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID) {
+			continue
+		}
+		watches = append(watches, inspectResultFromWatchConfig(key, cfg))
+		if cfg != nil && cfg.watchID != "" {
+			activeWatchIDs[cfg.watchID] = true
+		}
+	}
+	for cfg := range jm.terminalFlush {
+		if cfg == nil || cfg.watchID == "" || activeWatchIDs[cfg.watchID] {
+			continue
+		}
+		if !watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID) {
+			continue
+		}
+		watches = append(watches, inspectResultFromDetachedWatchConfig(cfg))
+	}
+	sort.SliceStable(watches, func(i, j int) bool {
+		if watches[i].Target != watches[j].Target {
+			return watches[i].Target < watches[j].Target
+		}
+		if watches[i].SendTo != watches[j].SendTo {
+			return watches[i].SendTo < watches[j].SendTo
+		}
+		return watches[i].WatchID < watches[j].WatchID
+	})
+	return jobWatchListToolResult{Watches: watches, Count: len(watches)}
+}
+
 func (jm *jobManager) inspectWatchByID(watchID string) jobWatchInspectToolResult {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
@@ -1823,6 +1866,27 @@ func (jm *jobManager) inspectWatchByID(watchID string) jobWatchInspectToolResult
 		}
 	}
 	return jobWatchInspectToolResult{WatchID: watchID, Watching: false}
+}
+
+func (jm *jobManager) inspectReceiverWatchByID(watchID, receiverSessionID, receiverDelegateID string) (jobWatchInspectToolResult, bool) {
+	receiverSessionID = strings.TrimSpace(receiverSessionID)
+	receiverDelegateID = strings.TrimSpace(receiverDelegateID)
+	if receiverSessionID == "" {
+		return jobWatchInspectToolResult{}, false
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for key, cfg := range jm.watches {
+		if cfg != nil && cfg.watchID == watchID && watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID) {
+			return inspectResultFromWatchConfig(key, cfg), true
+		}
+	}
+	for cfg := range jm.terminalFlush {
+		if cfg != nil && cfg.watchID == watchID && watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID) {
+			return inspectResultFromDetachedWatchConfig(cfg), true
+		}
+	}
+	return jobWatchInspectToolResult{}, false
 }
 
 func inspectResultFromWatchConfig(key watchKey, cfg *watchConfig) jobWatchInspectToolResult {
@@ -1888,6 +1952,14 @@ func (jm *jobManager) liveWatchSummaries() []watchListEntry {
 		return entries[i].SendTo < entries[j].SendTo
 	})
 	return entries
+}
+
+func watchConfigMatchesReceiver(cfg *watchConfig, receiverSessionID, receiverDelegateID string) bool {
+	if cfg == nil {
+		return false
+	}
+	return cfg.receiverSessionID == receiverSessionID &&
+		cfg.receiverDelegateID == receiverDelegateID
 }
 
 // watchConditionSummary renders a watch config's trigger condition as a single
@@ -2456,6 +2528,10 @@ func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason
 		visibleSessionID = jm.sessionID
 	}
 	n.Provenance = provenance.WithWatch(root, cfg.watchID, cfg.generation, "", visibleSessionID, jobID)
+	if cfg.receiverSessionID != "" {
+		n.receiverSessionID = cfg.receiverSessionID
+		n.receiverNotify = cfg.receiverNotify
+	}
 	return n
 }
 
@@ -4414,42 +4490,19 @@ func (jm *jobManager) enqueueWatchNotifications(notifications []jobNotification)
 		return
 	}
 	for _, n := range notifications {
-		if receiverSessionID := watchNotificationReceiverSessionID(n); receiverSessionID != "" && receiverSessionID != jm.sessionID {
-			if enqueue := jm.watchNotificationReceivers[receiverSessionID]; enqueue != nil {
-				enqueue(n)
-				continue
-			}
+		if n.receiverNotify != nil {
+			enqueue := n.receiverNotify
+			n.receiverNotify = nil
+			enqueue(n)
+			continue
+		}
+		if n.receiverSessionID != "" && n.receiverSessionID != jm.sessionID {
+			continue
 		}
 		if jm.enqueue != nil {
 			jm.enqueue(n)
 		}
 	}
-}
-
-func (jm *jobManager) registerWatchNotificationReceiver(sessionID string, enqueue func(jobNotification)) {
-	sessionID = strings.TrimSpace(sessionID)
-	if jm == nil || sessionID == "" || enqueue == nil {
-		return
-	}
-	jm.watchNotifyMu.Lock()
-	defer jm.watchNotifyMu.Unlock()
-	if jm.watchNotificationReceivers == nil {
-		jm.watchNotificationReceivers = make(map[string]func(jobNotification))
-	}
-	jm.watchNotificationReceivers[sessionID] = enqueue
-}
-
-func watchNotificationReceiverSessionID(n jobNotification) string {
-	if n.Provenance == nil {
-		return ""
-	}
-	for i := len(n.Provenance.Chain) - 1; i >= 0; i-- {
-		entry := n.Provenance.Chain[i]
-		if entry.Kind == "watch" && entry.SessionID != "" {
-			return entry.SessionID
-		}
-	}
-	return ""
 }
 
 func (jm *jobManager) watchCount() int {

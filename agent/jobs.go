@@ -65,9 +65,6 @@ type jobManager struct {
 	forward       func(jobstore.Event) error
 	parentJobID   string
 	enqueue       func(jobNotification)
-	// watchNotificationReceivers routes no-send watch notifications to ancestor
-	// sessions that installed concrete descendant watches on this manager.
-	watchNotificationReceivers map[string]func(jobNotification)
 	// currentProvenance reports the owning session's active causal provenance at
 	// call time. A job records this at creation so its detached lifecycle events
 	// and terminal notification carry the origin of whatever input launched it.
@@ -243,6 +240,12 @@ type jobNotification struct {
 	// against the owning jobManager's CURRENT pending state at accept time
 	// (spec §4.3). The frame text is deliberately NOT carried here.
 	WatchSend *watchSendToken
+	// receiverSessionID/receiverNotify route no-send watch notifications for
+	// concrete descendant watches back to the ancestor session that installed
+	// them. They are in-memory only; active watches are not restored without a
+	// live installer.
+	receiverSessionID string
+	receiverNotify    func(jobNotification)
 	// watchSendFrame is the rendered frame, populated only between filter and
 	// format inside one accept pass (never persisted, never enqueued).
 	watchSendFrame string

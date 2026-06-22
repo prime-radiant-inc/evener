@@ -725,6 +725,32 @@ func TestConcreteJobEventWatchIgnoresOtherJobsBeforeEveryCount(t *testing.T) {
 	}
 }
 
+func TestReceiverWatchNotificationWithoutCallbackDoesNotNotifyOwner(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+
+	if _, err := jm.configureWatch(watchArgs{
+		Source:            rec.JobID,
+		Target:            rec.JobID,
+		ReceiverSessionID: "ROOT",
+		OutputMatch:       "READY",
+	}); err != nil {
+		t.Fatalf("configure receiver watch: %v", err)
+	}
+
+	feedJob(jm, rec.JobID, []byte("server READY\n"))
+	if len(notified) != 0 {
+		t.Fatalf("owner notifications = %+v, want no fallback delivery", notified)
+	}
+}
+
 func TestEventWatchTriggerEveryNth(t *testing.T) {
 	jm := newTestJM(t)
 	var fires int
@@ -7716,6 +7742,84 @@ func TestGrantedReadRejectsBlock(t *testing.T) {
 }
 
 var _ = jobstore.JobShell
+
+func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
+	rootJM := newWalkJobManager(t, "ROOT")
+	childJM := newWalkJobManager(t, "CHILD")
+	t.Cleanup(func() {
+		_ = rootJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	childJM.forward = rootJM.forwardEvent
+	childJM.parentJobID = "job_root_delegate_child"
+
+	childRec, err := childJM.createShell(createShellOpts{Command: "sleep 30", Description: "child job"})
+	if err != nil {
+		t.Fatalf("create child shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, childJM, childRec.JobID) })
+
+	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root.subagents.track(&subagent{id: "CHILD", sess: child, status: SubagentRunning})
+
+	out, err := jobWatchTool(root, map[string]any{
+		"operation":    "create",
+		"source":       childRec.JobID,
+		"output_match": "READY",
+	}, 20000)
+	if err != nil {
+		t.Fatalf("jobWatchTool create: %v", err)
+	}
+	state := out.(tooldefs.StateResult).State.(jobWatchToolResult)
+	if state.Source != childRec.JobID || !state.Watching || state.Send != nil {
+		t.Fatalf("watch state = %+v, want direct child source watching without public send", state)
+	}
+
+	listOut, err := jobWatchTool(root, map[string]any{"operation": "list"}, 20000)
+	if err != nil {
+		t.Fatalf("jobWatchTool list: %v", err)
+	}
+	list := listOut.(tooldefs.StateResult).State.(jobWatchListToolResult)
+	if list.Count != 1 || len(list.Watches) != 1 {
+		t.Fatalf("watch list = %+v, want one forwarded watch", list)
+	}
+	if list.Watches[0].WatchID != state.WatchID || list.Watches[0].Target != childRec.JobID || !list.Watches[0].Watching {
+		t.Fatalf("watch list row = %+v, want forwarded watch %s on %s", list.Watches[0], state.WatchID, childRec.JobID)
+	}
+
+	inspectOut, err := jobWatchTool(root, map[string]any{"operation": "inspect", "watch_id": state.WatchID}, 20000)
+	if err != nil {
+		t.Fatalf("jobWatchTool inspect: %v", err)
+	}
+	inspect := inspectOut.(tooldefs.StateResult).State.(jobWatchInspectToolResult)
+	if inspect.WatchID != state.WatchID || inspect.Target != childRec.JobID || !inspect.Watching {
+		t.Fatalf("watch inspect = %+v, want forwarded watch", inspect)
+	}
+
+	feedJob(childJM, childRec.JobID, []byte("server READY\n"))
+	if got := root.drainJobNotifications(); len(got) != 1 || got[0].JobID != childRec.JobID {
+		t.Fatalf("root notifications after match = %+v, want one child job watch notification", got)
+	}
+
+	clearOut, err := jobWatchTool(root, map[string]any{"operation": "clear", "watch_id": state.WatchID}, 20000)
+	if err != nil {
+		t.Fatalf("jobWatchTool clear: %v", err)
+	}
+	clearState := clearOut.(tooldefs.StateResult).State.(jobWatchToolResult)
+	if clearState.Watching || clearState.Source != childRec.JobID {
+		t.Fatalf("clear state = %+v, want cleared forwarded watch", clearState)
+	}
+	if childJM.watchCount() != 0 {
+		t.Fatalf("child watch count = %d, want cleared", childJM.watchCount())
+	}
+
+	feedJob(childJM, childRec.JobID, []byte("server READY again\n"))
+	if got := root.drainJobNotifications(); len(got) != 0 {
+		t.Fatalf("root notifications after clear = %+v, want none", got)
+	}
+}
 
 func TestJobWatchAllowsDescendantConcreteJobSource(t *testing.T) {
 	rootJM := newWalkJobManager(t, "ROOT")

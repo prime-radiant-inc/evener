@@ -190,47 +190,131 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
 		}
 		a.Source = source.Public
 		a.Target = source.Internal
+		if source.Kind == watchSourceConcreteJob {
+			if ownerRes, forwarded, ownerErr := s.configureDescendantReceiverWatch(a); forwarded || ownerErr != nil {
+				res, err = ownerRes, ownerErr
+				break
+			}
+		}
 		res, err = jm.configureWatch(a)
 	case "clear":
 		local, localErr := jm.hasWatchID(a.WatchID)
 		if localErr != nil {
 			return "", localErr
 		}
-		if local || !s.cfg.spawn.parentWatchGranted || s.cfg.spawn.parentClearWatch == nil {
+		if local {
+			res, err = jm.clearWatchByID(a.WatchID)
+			break
+		}
+		if ownerRes, found, ownerErr := s.clearDescendantReceiverWatchByID(a.WatchID); found || ownerErr != nil {
+			res, err = ownerRes, ownerErr
+			break
+		}
+		if !s.cfg.spawn.parentWatchGranted || s.cfg.spawn.parentClearWatch == nil {
 			res, err = jm.clearWatchByID(a.WatchID)
 			break
 		}
 		res, err = s.cfg.spawn.parentClearWatch(s.ID(), s.cfg.spawn.parentDelegateID, a.WatchID)
 	case "list":
-		return marshalWatchListResult(jm.watchListToolResult(), maxChars)
+		return marshalWatchListResult(s.watchListToolResultWithDescendantReceivers(jm.watchListToolResult()), maxChars)
 	case "inspect":
-		return marshalWatchInspectResult(jm.inspectWatchByID(a.WatchID), maxChars)
+		inspect := jm.inspectWatchByID(a.WatchID)
+		if watchInspectFound(inspect) {
+			return marshalWatchInspectResult(inspect, maxChars)
+		}
+		if ownerInspect, found := s.inspectDescendantReceiverWatchByID(a.WatchID); found {
+			return marshalWatchInspectResult(ownerInspect, maxChars)
+		}
+		return marshalWatchInspectResult(inspect, maxChars)
 	default:
 		return "", fmt.Errorf("invalid_request: unsupported operation %q", a.Operation)
 	}
 	if err != nil {
-		if errors.Is(err, errWatchTargetNotFound) && strings.HasPrefix(a.Target, "job_") {
-			if ownerJM, ownerSess, _, _, ok := s.resolveDescendantJobOwner(a.Target); ok && ownerJM != nil && ownerSess != nil {
-				childArgs := a
-				childArgs.Source = a.Source
-				childArgs.Target = a.Target
-				childArgs.ReceiverSessionID = s.ID()
-				childArgs.ReceiverDelegateID = ""
-				ownerJM.registerWatchNotificationReceiver(s.ID(), s.enqueueJobNotificationAndNotify)
-				ownerRes, ownerErr := ownerJM.configureWatch(childArgs)
-				return marshalWatchResultFromOwner(ownerRes, ownerErr, maxChars)
-			}
-		}
 		return "", err
 	}
 	return marshalWatchResult(res, maxChars)
 }
 
-func marshalWatchResultFromOwner(res watchResult, err error, maxChars int) (any, error) {
-	if err != nil {
-		return "", err
+func (s *Session) configureDescendantReceiverWatch(a watchArgs) (watchResult, bool, error) {
+	if s == nil || !strings.HasPrefix(a.Target, "job_") {
+		return watchResult{}, false, nil
 	}
-	return marshalWatchResult(res, maxChars)
+	ownerJM, ownerSess, _, _, ok := s.resolveDescendantJobOwner(a.Target)
+	if !ok || ownerJM == nil || ownerSess == nil {
+		return watchResult{}, false, nil
+	}
+	childArgs := a
+	childArgs.Source = a.Source
+	childArgs.Target = a.Target
+	childArgs.ReceiverSessionID = s.ID()
+	childArgs.ReceiverDelegateID = ""
+	childArgs.ReceiverNotify = s.enqueueJobNotificationAndNotify
+	res, err := ownerJM.configureWatch(childArgs)
+	return res, true, err
+}
+
+func (s *Session) watchListToolResultWithDescendantReceivers(local jobWatchListToolResult) jobWatchListToolResult {
+	for _, child := range s.liveDescendantSessions() {
+		if child == nil || child.jobManager == nil {
+			continue
+		}
+		descendant := child.jobManager.watchListToolResultForReceiver(s.ID(), "")
+		local.Watches = append(local.Watches, descendant.Watches...)
+		local.RecentWatches = append(local.RecentWatches, descendant.RecentWatches...)
+	}
+	sort.SliceStable(local.Watches, func(i, j int) bool {
+		if local.Watches[i].Target != local.Watches[j].Target {
+			return local.Watches[i].Target < local.Watches[j].Target
+		}
+		if local.Watches[i].SendTo != local.Watches[j].SendTo {
+			return local.Watches[i].SendTo < local.Watches[j].SendTo
+		}
+		return local.Watches[i].WatchID < local.Watches[j].WatchID
+	})
+	local.Count = len(local.Watches)
+	return local
+}
+
+func (s *Session) inspectDescendantReceiverWatchByID(watchID string) (jobWatchInspectToolResult, bool) {
+	for _, child := range s.liveDescendantSessions() {
+		if child == nil || child.jobManager == nil {
+			continue
+		}
+		if inspect, ok := child.jobManager.inspectReceiverWatchByID(watchID, s.ID(), ""); ok {
+			return inspect, true
+		}
+	}
+	return jobWatchInspectToolResult{}, false
+}
+
+func (s *Session) clearDescendantReceiverWatchByID(watchID string) (watchResult, bool, error) {
+	for _, child := range s.liveDescendantSessions() {
+		if child == nil || child.jobManager == nil {
+			continue
+		}
+		if _, ok := child.jobManager.inspectReceiverWatchByID(watchID, s.ID(), ""); !ok {
+			continue
+		}
+		res, err := child.jobManager.clearReceiverWatchByID(watchID, s.ID(), "")
+		return res, true, err
+	}
+	return watchResult{}, false, nil
+}
+
+func (s *Session) liveDescendantSessions() []*Session {
+	if s == nil {
+		return nil
+	}
+	var out []*Session
+	for _, child := range s.liveSubagentSessions() {
+		out = append(out, child)
+		out = append(out, child.liveDescendantSessions()...)
+	}
+	return out
+}
+
+func watchInspectFound(inspect jobWatchInspectToolResult) bool {
+	return inspect.Watching || inspect.Target != "" || inspect.EndReason != ""
 }
 
 func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
