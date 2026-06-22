@@ -225,6 +225,15 @@ type spawnConfig struct {
 	// parent Session state through it.
 	parentGrantedJobRead func(observerSessionID, jobID string) (*grantedJobRead, bool)
 
+	// parentWatchGranted allows this child to install watches on its immediate
+	// parent through parentInstallWatch. It is non-transitive and does not grant
+	// delegate.
+	parentWatchGranted bool
+
+	// parentInstallWatch installs a source:"parent" watch on the live parent,
+	// owned by this child as watcher/receiver.
+	parentInstallWatch func(observerSessionID string, observerDelegateID string, args watchArgs) (watchResult, error)
+
 	// subagentTask is the task description passed to delegate.
 	subagentTask string
 

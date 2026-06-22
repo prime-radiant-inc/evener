@@ -687,6 +687,35 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	}
 }
 
+func TestWatchParentChildGetsJobWatchButNotDelegate(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	subCfg := SessionConfig{MaxSubagentDepth: 2}
+	subCfg.spawn.depth = 1
+	subCfg.spawn.parentSessionID = "parent"
+	subCfg.spawn.parentWatchGranted = true
+
+	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Close()
+
+	if child.reg.Get("job_watch") == nil {
+		t.Fatal("watch_parent child must have job_watch registered")
+	}
+	if !hasCachedCallableToolDefinition(child, "job_watch") {
+		t.Fatal("watch_parent child must advertise job_watch")
+	}
+	if child.reg.Get("delegate") != nil {
+		t.Fatal("watch_parent child must not get delegate without delegation_allowance")
+	}
+	if hasCachedCallableToolDefinition(child, "delegate") {
+		t.Fatal("watch_parent child must not advertise delegate without delegation_allowance")
+	}
+}
+
 func hasCachedCallableToolDefinition(s *Session, name string) bool {
 	if mappedName := s.profile.ToolNameMap()[name]; mappedName != "" {
 		name = mappedName

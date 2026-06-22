@@ -397,6 +397,10 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	if grantedAllowance, ok := ctx.Value(ctxDelegationAllowance).(int); ok {
 		subCfg.spawn.delegationAllowance = grantedAllowance
 	}
+	if watchParent, ok := ctx.Value(ctxWatchParent).(bool); ok && watchParent {
+		subCfg.spawn.parentWatchGranted = true
+		subCfg.spawn.parentInstallWatch = s.installParentSourceWatchForChild
+	}
 	childCanDelegate := subCfg.spawn.delegationAllowance > 0
 	if schema, ok := ctx.Value(ctxCommunicateOutputSchema).(map[string]any); ok && len(schema) > 0 {
 		subCfg.spawn.communicateOutputSchema = schema
@@ -451,6 +455,13 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	}
 
 	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(agent, allowance > 0)
+	if subCfg.spawn.parentWatchGranted && !allTools {
+		if len(allowedTools) > 0 {
+			allowedTools = appendUniqueStrings(allowedTools, "job_watch")
+		} else {
+			deniedTools = removeStrings(deniedTools, []string{"job_watch"})
+		}
+	}
 	if len(canonicalGrantTools) > 0 {
 		currentTools := s.reg.RegisteredNames()
 		for _, toolName := range canonicalGrantTools {
@@ -615,6 +626,10 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		}
 	}
 	return prepared, nil
+}
+
+func (s *Session) installParentSourceWatchForChild(observerSessionID string, observerDelegateID string, args watchArgs) (watchResult, error) {
+	return watchResult{}, errors.New("parent watch installation is not wired")
 }
 
 func (s *Session) trackAndLaunchPreparedSubagent(prepared *preparedSubagentRun) error {

@@ -575,6 +575,9 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 	if s.delegationAllowance <= 0 {
 		for _, name := range rootOnlySubagentTools() {
+			if s.cfg.spawn.parentWatchGranted && name == "job_watch" {
+				continue
+			}
 			s.reg.Remove(name)
 		}
 	}
