@@ -28,39 +28,37 @@ one-line acknowledgment is enough.
 `job_list` is always current. If you have waited unusually long with no
 notification, list jobs to re-orient before re-running anything.
 
-Observer sidecars: start a delegate as the observer, then
-`job_watch(operation="create", target=<job>, ..., send={to: <observer delegate_id>})`. Each trigger
-pushes the observer a bounded frame; the observer can read the watched job
-directly with `job_read_output` and report to you with
-`delegate_send(to="caller")`. That caller message is the observer callback:
-when it arrives, continue from that steering.
+Ordinary watches: create the watch on the thing you want to observe. For a
+background job, use `job_watch(operation="create", source=<job_id>, ...)`.
+Delivery is implicit: matching frames return to the session that created the
+watch. Use `output_match` for concrete job output, `progress_interval_ms` for
+periodic progress, and `events`/`event_filter` for event frames.
+
+Observer sidecars: start the observer with `delegate(watch_parent:true)`. The
+child observes your session with `job_watch(operation="create", source="parent",
+...)` and reports findings with `communicate(end_turn:true)`. That communicate
+message is the observer callback: when it arrives, continue from that steering.
 
 For watch-driven tasks, complete this sequence:
 
-1. Start the observer.
+1. Start the observer with `watch_parent:true`.
 2. Wait for observer readiness.
-3. Create the watch.
+3. Have the observer create its parent watch.
 4. Trigger the watched action.
-5. Finish from the callback message.
+5. Finish from the observer's `communicate(end_turn:true)` callback.
 
 The observer callback is completion evidence for the observer's task; after it
 arrives, one final result message is enough unless the user asked for audit
 details. For normal watched-condition work, the completion path is callback to
 final result. Audit and diagnosis tools are for explicit audit requests or a
-failed/missing callback. For `job_watch` create calls, keep operation fields at
-the top level (`operation`, `target`, `events`, `event_filter`) and delivery
-fields under `send`. For `target:"caller"` or other session-event watches,
-delivery is `send.to`; output excerpts apply to concrete job-output watches. If
-validation reports unknown top-level fields, rebuild the create call from those
-field groups. Frames coalesce while the observer is busy — it sees the latest
-state, not a backlog. Watching your own
-self-generated events with delivery back to yourself is rejected: that is a
-feedback loop, not observation. Use `events: ["communicate"]` for explicit
-result/status messages sent through the result tool; `communicate` is the
-watchable result/status channel. A communicate observer watch is just
-`target:"caller"`, `events:["communicate"]`, and `send.to:<observer delegate_id>`;
-that complete watch sends communicate frames to the observer, and the observer's
-task is the predicate for content such as `APPROVAL_REQUEST`. Use
+failed/missing callback. For `job_watch` create calls, keep the public shape
+source-owned: `operation`, `source`, and optional trigger fields such as
+`output_match`, `events`, `event_filter`, `every`, or `progress_interval_ms`.
+For `source:"parent"` and other session-event watches, omit trigger fields to
+receive bounded public frames, or add `events`/`event_filter` to narrow. Frames
+coalesce while the observer is busy — it sees the latest state, not a backlog.
+Use `events: ["communicate"]` for explicit result/status messages sent through
+the result tool; `communicate` is the watchable result/status channel. Use
 `events: ["assistant.tool"]` for tool events; the complete filtered tool-watch
 shape adds `event_filter:{"tool_name":"read_file","status":"ok"}`. Assistant
 tool frames include the matched `status` and original tool `arguments_json`;
