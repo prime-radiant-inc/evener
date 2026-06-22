@@ -1749,6 +1749,46 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 	}
 }
 
+func TestWatchArgsFromToolArgsUsesSource(t *testing.T) {
+	got, err := watchArgsFromToolArgs(map[string]any{
+		"operation": "create",
+		"source":    "parent",
+	})
+	if err != nil {
+		t.Fatalf("watchArgsFromToolArgs returned error: %v", err)
+	}
+	if got.Source != "parent" {
+		t.Fatalf("Source = %q, want parent", got.Source)
+	}
+	if got.Target != "" {
+		t.Fatalf("legacy Target = %q, want empty model-facing parse", got.Target)
+	}
+}
+
+func TestWatchArgsFromToolArgsRejectsLegacyTargetAndSend(t *testing.T) {
+	for name, args := range map[string]map[string]any{
+		"target": {
+			"operation": "create",
+			"target":    "caller",
+		},
+		"send": {
+			"operation": "create",
+			"source":    "parent",
+			"send":      map[string]any{"to": "dlg_old"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := watchArgsFromToolArgs(args)
+			if err == nil {
+				t.Fatal("watchArgsFromToolArgs succeeded, want invalid_request")
+			}
+			if !strings.Contains(err.Error(), "invalid_request") {
+				t.Fatalf("error = %v, want invalid_request", err)
+			}
+		})
+	}
+}
+
 func TestJobWatchCreateReturnsIDAndClearUsesIDOnly(t *testing.T) {
 	s := newTestSession(t)
 
@@ -4538,6 +4578,21 @@ func TestDelegateToolParsesDelegationAllowance(t *testing.T) {
 	}
 	if !strings.Contains(negGrant.Output, "invalid_request") || !strings.Contains(negGrant.Output, "non-negative") {
 		t.Fatalf("error = %q, want invalid_request non-negative", negGrant.Output)
+	}
+}
+
+func TestDelegateToolParsesWatchParent(t *testing.T) {
+	args := map[string]any{
+		"task":         "observe my work",
+		"watch_parent": true,
+	}
+	parsed := delegateArgs{
+		Task:        stringArg(args, "task"),
+		WatchParent: shellBoolArg(args, "watch_parent"),
+		Background:  true,
+	}
+	if !parsed.WatchParent {
+		t.Fatal("WatchParent = false, want true")
 	}
 }
 

@@ -70,6 +70,7 @@ type delegateArgs struct {
 	Background          bool
 	BlockTimeoutMS      int
 	DelegationAllowance int
+	WatchParent         bool
 	ResultSchema        map[string]any
 }
 
@@ -161,6 +162,9 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		ctx = context.WithValue(ctx, ctxCommunicateOutputSchema, args.ResultSchema)
 	}
 	ctx = context.WithValue(ctx, ctxDelegationAllowance, args.DelegationAllowance)
+	if args.WatchParent {
+		ctx = context.WithValue(ctx, ctxWatchParent, true)
+	}
 
 	delegateID := jobstore.NewDelegateID()
 	delegateGeneration := jobstore.NewDelegateGeneration()

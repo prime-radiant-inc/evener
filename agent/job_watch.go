@@ -160,6 +160,7 @@ type watchGrantKey struct {
 type watchArgs struct {
 	Operation          string
 	WatchID            string
+	Source             string
 	Target             string
 	OutputMatch        string
 	ProgressIntervalMS int

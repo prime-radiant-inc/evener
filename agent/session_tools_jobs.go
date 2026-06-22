@@ -205,6 +205,7 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 		AgentType:       stringArg(args, "agent_type"),
 		Model:           stringArg(args, "model"),
 		ReasoningEffort: stringArg(args, "reasoning_effort"),
+		WatchParent:     shellBoolArg(args, "watch_parent"),
 		Background:      true, // default: no wait, return job_id immediately
 	}
 	// max_wait_ms: 0/absent = no wait (background); positive = wait inline up to N;
@@ -1583,10 +1584,16 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	if operation == "" {
 		return watchArgs{}, errors.New("invalid_request: operation is required")
 	}
+	if _, ok := args["target"]; ok {
+		return watchArgs{}, errors.New("invalid_request: job_watch uses source, not target")
+	}
+	if _, ok := args["send"]; ok {
+		return watchArgs{}, errors.New("invalid_request: job_watch delivers to the watcher automatically; send is not a public argument")
+	}
 	a := watchArgs{
 		Operation:   operation,
 		WatchID:     strings.TrimSpace(stringArg(args, "watch_id")),
-		Target:      strings.TrimSpace(stringArg(args, "target")),
+		Source:      strings.TrimSpace(stringArg(args, "source")),
 		OutputMatch: stringArg(args, "output_match"),
 	}
 	if n, ok := shellIntArg(args, "progress_interval_ms"); ok {
@@ -1605,22 +1612,17 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 		return watchArgs{}, err
 	}
 	a.EventFilter = eventFilter
-	send, err := watchSendArg(args)
-	if err != nil {
-		return watchArgs{}, err
-	}
-	a.Send = send
 	switch a.Operation {
 	case "create":
-		if a.Target == "" {
-			return watchArgs{}, errors.New("invalid_request: target is required")
+		if a.Source == "" {
+			return watchArgs{}, errors.New("invalid_request: source is required")
 		}
-		if strings.HasPrefix(a.Target, "dlg_") {
-			return watchArgs{}, errors.New("invalid_request: delegate_id is not watchable; watch current_job_id")
+		if strings.HasPrefix(a.Source, "dlg_") {
+			return watchArgs{}, errors.New("invalid_request: delegate_id is a conversation handle; watch source self, parent, or a concrete job_id")
 		}
 	case "list":
-		if a.Target != "" || a.WatchID != "" {
-			return watchArgs{}, errors.New("invalid_request: list requires no target or watch_id")
+		if a.Source != "" || a.WatchID != "" {
+			return watchArgs{}, errors.New("invalid_request: list requires no source or watch_id")
 		}
 	case "inspect", "clear":
 		if a.WatchID == "" {
@@ -1629,7 +1631,7 @@ func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
 	default:
 		return watchArgs{}, fmt.Errorf("invalid_request: unsupported operation %q", a.Operation)
 	}
-	if a.Target == "*" {
+	if a.Source == "*" {
 		return watchArgs{}, errors.New("invalid_request: wildcard watch target is not supported in v1")
 	}
 	if a.Send != nil && strings.HasPrefix(a.Send.To, "job_") {

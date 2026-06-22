@@ -40,6 +40,11 @@ const ctxCommunicateOutputSchema ctxKey = "communicateOutputSchema"
 // the child's spawnConfig.
 const ctxDelegationAllowance ctxKey = "delegationAllowance"
 
+// ctxWatchParent carries the non-transitive parent observation grant into child
+// session spawn plumbing. createDelegate sets it from delegate(watch_parent=true);
+// prepareSubagentRun copies it onto the child's spawnConfig.
+const ctxWatchParent ctxKey = "watchParent"
+
 const (
 	defaultAgentName = "default"
 )
