@@ -4544,6 +4544,7 @@ func TestJobReadOutputZeroHeadTailTreatedAsUnset(t *testing.T) {
 		_, _ = s.jobManager.stop(shellOut.JobID)
 		waitForShellDone(t, s.jobManager, shellOut.JobID)
 	})
+	waitForJobOutputContent(t, s, shellOut.JobID, "ZERO_RULE_MARKER")
 
 	cases := []struct {
 		name string
@@ -4573,6 +4574,33 @@ func TestJobReadOutputZeroHeadTailTreatedAsUnset(t *testing.T) {
 			}
 		})
 	}
+}
+
+func waitForJobOutputContent(t *testing.T, s *Session, jobID, want string) jobReadOutputTestResult {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "read-wait",
+			Name:      "job_read_output",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":65536}`, jobID)),
+		})
+		if res.IsError {
+			t.Fatalf("job_read_output returned error: %s", res.Output)
+		}
+		last = res.Output
+		var out jobReadOutputTestResult
+		if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+			t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
+		}
+		if strings.Contains(out.Content, want) {
+			return out
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("job_read_output never contained %q; last output: %s", want, last)
+	return jobReadOutputTestResult{}
 }
 
 // TestJobReadOutputNegativeHeadBytesRejected verifies that head_lines:-1
