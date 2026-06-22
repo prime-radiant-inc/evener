@@ -270,7 +270,7 @@
     }).then(function (result) {
       if (isBlocked(result)) return result;
       const channel = (result && result.channel) || "current channel";
-      const restart = result && result.restart_message;
+      const restart = result && result.restartMessage;
       if (window.SerfToast) window.SerfToast.show("Serf upgraded to " + channel, "success");
       if (restart && window.SerfRenderer && window.SerfRenderer.appendBanner) {
         window.SerfRenderer.appendBanner("info", restart, { source: "hub", title: "Upgrade complete" });

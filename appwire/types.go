@@ -609,10 +609,10 @@ type UpgradeResponse struct {
 	URL            string   `json:"url"`
 	Archive        string   `json:"archive"`
 	Prefix         string   `json:"prefix"`
-	BinDir         string   `json:"bin_dir"`
-	ShareBinDir    string   `json:"share_bin_dir"`
+	BinDir         string   `json:"binDir"`
+	ShareBinDir    string   `json:"shareBinDir"`
 	Installed      []string `json:"installed"`
-	RestartMessage string   `json:"restart_message"`
+	RestartMessage string   `json:"restartMessage"`
 }
 
 type AuthStatusParams struct {

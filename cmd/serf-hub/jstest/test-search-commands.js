@@ -203,7 +203,7 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
       postedPath = url;
       postedMethod = (opts && opts.method) || "GET";
       postedBody = opts && opts.body;
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ channel: "release", restart_message: "Restart Serf." }) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ channel: "release", restartMessage: "Restart Serf." }) });
     };
     ctx.window.SerfSearch.open();
     ctx.input.value = "/upgrade";
@@ -230,7 +230,7 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     ctx.window.SerfAppwire = {
       upgrade: (target) => {
         requested = target;
-        return Promise.resolve({ channel: "snapshot", restart_message: "Restart Serf." });
+        return Promise.resolve({ channel: "snapshot", restartMessage: "Restart Serf." });
       },
     };
     ctx.window.SerfSearch.open();
