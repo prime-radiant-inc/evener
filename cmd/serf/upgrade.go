@@ -7,13 +7,14 @@ import (
 	"io"
 
 	"primeradiant.com/serf/buildinfo"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/internal/selfupdate"
 )
 
 func runUpgrade(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	prefix := fs.String("prefix", "", "install prefix (default: $HOME/.local)")
+	prefix := fs.String("prefix", "", "install prefix (default: "+envvars.Home.Name+"/.local)")
 	binDir := fs.String("bin-dir", "", "symlink directory (default: <prefix>/bin)")
 	shareBinDir := fs.String("share-bin-dir", "", "managed binary directory (default: <prefix>/share/serf/bin)")
 	repoURL := fs.String("repo-url", "", "GitHub repository URL for release downloads")

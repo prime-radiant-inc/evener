@@ -886,7 +886,7 @@ type tmuxTUI struct {
 
 func startTUITmux(t *testing.T, bin, hubURL string) *tmuxTUI {
 	t.Helper()
-	return startTUITmuxSized(t, bin, hubURL, 120, 40)
+	return startTUITmuxSized(t, bin, hubURL, 140, 40)
 }
 
 func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
