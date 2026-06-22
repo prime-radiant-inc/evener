@@ -86,6 +86,7 @@ type DelegateRestoreDescriptor struct {
 	ResultSchema        any                `json:"result_schema,omitempty"`
 	ExplicitToolGrants  []string           `json:"explicit_tool_grants,omitempty"`
 	DelegationAllowance int                `json:"delegation_allowance,omitempty"`
+	ParentWatchGranted  bool               `json:"parent_watch_granted,omitempty"`
 	Provenance          *provenance.Causal `json:"provenance,omitempty"`
 }
 

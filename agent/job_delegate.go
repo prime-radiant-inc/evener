@@ -693,6 +693,8 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 			forwardJobEvent:         s.jobManager.forwardEvent,
 			parentSteer:             s.SteerWithProvenance,
 			parentSteerDelivered:    s.trySteerWithProvenanceAndNotify,
+			parentWatchGranted:      desc.ParentWatchGranted,
+			parentInstallWatch:      restoredParentInstallWatch(s, desc),
 			parentGrantedJobRead:    s.lookupGrantedJobRead,
 			subagentTask:            desc.Task,
 			depth:                   s.depth + 1,
@@ -843,10 +845,20 @@ func (s *Session) validateRestoredDelegateRequiredTools(desc *jobstore.DelegateR
 	registered := s.reg.RegisteredNames()
 	if desc.DelegationAllowance <= 0 {
 		for _, name := range rootOnlySubagentTools() {
+			if desc.ParentWatchGranted && name == "job_watch" {
+				continue
+			}
 			delete(registered, name)
 		}
 	}
 	return validateRestoredDelegateRequiredToolNames(registered, required)
+}
+
+func restoredParentInstallWatch(s *Session, desc *jobstore.DelegateRestoreDescriptor) func(observerSessionID string, observerDelegateID string, args watchArgs) (watchResult, error) {
+	if desc == nil || !desc.ParentWatchGranted {
+		return nil
+	}
+	return s.installParentSourceWatchForChild
 }
 
 func validateRestoredDelegateRequiredToolNames(registered map[string]bool, required []string) error {
@@ -1544,6 +1556,7 @@ func (s *Session) delegateRestoreDescriptor(jobID, childID, task, transcriptRef 
 		desc.ResolvedProfileID = profile.ID()
 		desc.ResolvedModel = profile.Model()
 		desc.DelegationAllowance = prepared.sub.sess.delegationAllowance
+		desc.ParentWatchGranted = prepared.sub.sess.cfg.spawn.parentWatchGranted
 	}
 	return desc
 }
@@ -1580,6 +1593,7 @@ func (s *Session) resumedDelegateRestoreDescriptor(jobID, childID, transcriptRef
 		ResultSchema:        cloneDelegateResultSchema(previous.ResultSchema),
 		ExplicitToolGrants:  append([]string(nil), previous.ExplicitToolGrants...),
 		DelegationAllowance: previous.DelegationAllowance,
+		ParentWatchGranted:  previous.ParentWatchGranted,
 		Provenance:          provenance.Clone(previous.Provenance),
 	}
 	if resultSchema != nil {

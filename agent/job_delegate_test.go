@@ -450,6 +450,7 @@ func TestCreateDelegateDescriptorDurableBeforeFirstModelRequest(t *testing.T) {
 			Model:           "gpt-5.3",
 			ReasoningEffort: "high",
 			Background:      true,
+			WatchParent:     true,
 			ResultSchema:    resultSchema,
 		})
 	}()
@@ -503,8 +504,14 @@ func TestCreateDelegateDescriptorDurableBeforeFirstModelRequest(t *testing.T) {
 	if desc.FrozenRolePrompt != "Review carefully." {
 		t.Fatalf("descriptor frozen role prompt = %q", desc.FrozenRolePrompt)
 	}
-	if !hasString(desc.FrozenToolNames, "read_file") || !hasString(desc.FrozenToolNames, "task_list") {
-		t.Fatalf("descriptor frozen tool names = %+v, want read_file and task_list", desc.FrozenToolNames)
+	if !hasString(desc.FrozenToolNames, "read_file") || !hasString(desc.FrozenToolNames, "task_list") || !hasString(desc.FrozenToolNames, "job_watch") {
+		t.Fatalf("descriptor frozen tool names = %+v, want read_file, task_list, and job_watch", desc.FrozenToolNames)
+	}
+	if desc.ParentWatchGranted != true {
+		t.Fatalf("descriptor parent_watch_granted = %t, want true", desc.ParentWatchGranted)
+	}
+	if hasString(desc.FrozenToolNames, "delegate") {
+		t.Fatalf("descriptor frozen tool names = %+v, must not grant delegate for watch_parent leaf", desc.FrozenToolNames)
 	}
 	if desc.WorkingDir != workDir || desc.LocalEnvPolicy != "core_only" {
 		t.Fatalf("descriptor env = %q/%q, want %q/core_only", desc.WorkingDir, desc.LocalEnvPolicy, workDir)
@@ -2952,6 +2959,78 @@ func TestJobSendMessageReconstructsRestoredDelegateRuntimeFromDescriptor(t *test
 	}
 }
 
+func TestJobSendMessageRestoresWatchParentLeafObserverJobWatch(t *testing.T) {
+	var request llm.Request
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				request = req
+				return communicateWithDefaultOutput("restored observer complete")
+			},
+		},
+	})
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	childID := rec.DelegateRestore.ChildSessionID
+	rec.DelegateRestore.DelegationAllowance = 0
+	rec.DelegateRestore.ParentWatchGranted = true
+	rec.DelegateRestore.FrozenToolNames = []string{"job_watch"}
+	replaceStoredDelegateRecord(t, s, rec)
+	parentMeta := s.Meta()
+	stateDir := s.stateDir
+	s.Close()
+
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), parentMeta, RestoreSessionConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+
+	res := restored.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         rec.DelegateID,
+		Message:        "resume observer after restart",
+		OnIdle:         "start",
+		Background:     false,
+		BackgroundSet:  true,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+
+	sub := restored.subagents.get(childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("reconstructed child runtime = %+v, want retained observer child", sub)
+	}
+	child := sub.sess
+	if !child.cfg.spawn.parentWatchGranted {
+		t.Fatal("restored observer lost parentWatchGranted")
+	}
+	if child.cfg.spawn.parentInstallWatch == nil {
+		t.Fatal("restored observer lost parentInstallWatch")
+	}
+	if child.reg.Get("job_watch") == nil {
+		t.Fatal("restored observer missing job_watch")
+	}
+	if !hasCachedCallableToolDefinition(child, "job_watch") {
+		t.Fatal("restored observer must advertise job_watch")
+	}
+	if child.reg.Get("delegate") != nil {
+		t.Fatal("restored leaf observer must not get delegate")
+	}
+	if hasCachedCallableToolDefinition(child, "delegate") {
+		t.Fatal("restored leaf observer must not advertise delegate")
+	}
+	if !requestHasTool(request, "job_watch") {
+		t.Fatalf("restored observer request missing job_watch tool: %+v", request.Tools)
+	}
+	if requestHasTool(request, "delegate") {
+		t.Fatalf("restored leaf observer request advertised delegate: %+v", request.Tools)
+	}
+}
+
 func TestRuntimeLostDelegateResumeAfterRestoreCreatesNewJobFromRetainedState(t *testing.T) {
 	const originalTask = "original runtime-lost delegate task"
 	const firstOutput = "old retained delegate output"
@@ -5327,6 +5406,15 @@ func communicateWithDefaultOutput(message string) llm.Response {
 		"data":      map[string]any{},
 		"artifacts": []string{},
 	})
+}
+
+func requestHasTool(req llm.Request, name string) bool {
+	for _, td := range req.Tools {
+		if td.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func communicateOutputSchemaHasProperty(req llm.Request, property string) bool {
