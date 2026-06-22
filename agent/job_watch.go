@@ -1221,7 +1221,7 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 		})
 	} else {
 		for existingKey, cfg := range jm.watches {
-			if existingKey.VisibleSessionID == key.VisibleSessionID && existingKey.Target == key.Target {
+			if watchKeyMatchesClearRequest(existingKey, key) {
 				targets = append(targets, watchConfigTerminalSnapshot{
 					key:       existingKey,
 					cfg:       cfg,
@@ -1438,7 +1438,7 @@ func (jm *jobManager) hasWatchClearState(key watchKey) bool {
 		}
 	} else {
 		for existingKey := range jm.watches {
-			if existingKey.VisibleSessionID == key.VisibleSessionID && existingKey.Target == key.Target {
+			if watchKeyMatchesClearRequest(existingKey, key) {
 				return true
 			}
 		}

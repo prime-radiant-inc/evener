@@ -102,6 +102,41 @@ func TestJobWatchParentSourceIsDistinctPerChildReceiver(t *testing.T) {
 	assertParentWatchReceivers(t, parent, wantReceivers)
 }
 
+func TestJobWatchParentSourceReceiverScopedClearLeavesOtherReceivers(t *testing.T) {
+	parent := newTestSession(t)
+	first, firstDelegateID := createParentWatchChild(t, parent, "first observer")
+	second, secondDelegateID := createParentWatchChild(t, parent, "second observer")
+
+	if _, err := jobWatchTool(first.sess, map[string]any{
+		"operation": "create",
+		"source":    "parent",
+	}, jobToolResultDefaultMaxChar); err != nil {
+		t.Fatalf("first jobWatchTool: %v", err)
+	}
+	if _, err := jobWatchTool(second.sess, map[string]any{
+		"operation": "create",
+		"source":    "parent",
+	}, jobToolResultDefaultMaxChar); err != nil {
+		t.Fatalf("second jobWatchTool: %v", err)
+	}
+	assertParentWatchReceivers(t, parent, map[string]string{
+		first.sess.ID():  firstDelegateID,
+		second.sess.ID(): secondDelegateID,
+	})
+
+	if _, err := parent.jobManager.configureWatch(watchArgs{
+		Target:             runtimeMessageAliasCaller,
+		ReceiverSessionID:  first.sess.ID(),
+		ReceiverDelegateID: firstDelegateID,
+		Clear:              true,
+	}); err != nil {
+		t.Fatalf("receiver-scoped clear: %v", err)
+	}
+	assertParentWatchReceivers(t, parent, map[string]string{
+		second.sess.ID(): secondDelegateID,
+	})
+}
+
 func createParentWatchChild(t *testing.T, parent *Session, task string) (*subagent, string) {
 	t.Helper()
 	res := parent.createDelegate(context.Background(), delegateArgs{
