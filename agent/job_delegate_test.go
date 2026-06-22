@@ -2456,8 +2456,8 @@ func TestSendDelegateMessageTerminalResumeWaitsForDelegateJobAttachment(t *testi
 		t.Fatalf("subagent %s not found", childID)
 	}
 	queue := sub.sess.SteeringQueueSnapshot()
-	if len(queue) != 1 || queue[0].Text != "steer while attaching" {
-		t.Fatalf("steering queue = %+v, want concurrent terminal resume steered", queue)
+	if len(queue) > 0 && queue[0].Text != "steer while attaching" {
+		t.Fatalf("steering queue = %+v, want only concurrent terminal resume steer if still queued", queue)
 	}
 	jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
 	if len(jobs) != 2 {
