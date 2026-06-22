@@ -4,6 +4,13 @@ Date: 2026-06-18
 Branch: `wip/job-control-handle-split-impl`
 Status: research only; no API decision is approved here.
 
+Current shipped observer contract is documented in `docs/job-control.md` and
+`docs/superpowers/specs/2026-06-21-parent-watch-sidecars-design.md`: parent
+`delegate(watch_parent:true)`, child `job_watch(source:"parent")`, child
+`communicate(end_turn:true)`, parent `Observer callback`. Older notes in this
+research about `delegate_send` describe pre-contract exploration, not current
+model-facing behavior.
+
 Follow-up design draft:
 `docs/superpowers/specs/2026-06-18-observer-watch-origin-loop-design.md`
 
@@ -13,8 +20,9 @@ from the first pass: memory/context injection. The goal is to preserve the raw
 research shape before reducing it to the smallest Serf API that can make these
 cases easy for agents without adding unnecessary primitives.
 
-Current Serf baseline: observer sidecars are a composition of ordinary
-`delegate`, `job_watch`, and `delegate_send` behavior. The recent live Kimi
+Historical Serf baseline at the time of this research: observer sidecars were a
+composition of ordinary `delegate`, `job_watch`, and `delegate_send` behavior.
+The recent live Kimi
 scenario showed the key gap: caller event frames can say that a `communicate`
 event happened, but they do not include the communicated content. That makes
 content-triggered observer behavior impossible and can create noisy feedback

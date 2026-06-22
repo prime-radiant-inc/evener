@@ -176,7 +176,8 @@ Optional filters remain available:
 `events`, `event_filter`, `every`, `output_match`, and
 `progress_interval_ms` keep their existing semantics after being interpreted
 against `source`. `event_filter` is precision, not the mechanism that makes a
-watch valid.
+watch valid. Session event watches use `events`/`event_filter`/`every`;
+periodic progress watches use `progress_interval_ms`.
 
 ### Observer Results
 

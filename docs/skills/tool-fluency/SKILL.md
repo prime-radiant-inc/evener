@@ -146,7 +146,7 @@ evidence:
   doctor:
     parent job_list count: 0
     parent job_read_output count: 0
-    observer delegate_send count: 1
+    observer communicate count: 1
 fix: make job_watch optional field X non-strict / clarify repair message
 ```
 
@@ -159,7 +159,7 @@ probe repetition directory. For session/job/watch inspection, prefer:
 
 ```sh
 go run ./cmd/serf-doctor transcript "$SID" --state-dir "$STATE" -format outline
-go run ./cmd/serf-doctor transcript "$SID" --state-dir "$STATE" -count delegate_send
+go run ./cmd/serf-doctor transcript "$SID" --state-dir "$STATE" -count communicate
 go run ./cmd/serf-doctor tree "$SID" --state-dir "$STATE" --observers
 go run ./cmd/serf-doctor watches "$SID" --state-dir "$STATE"
 ```

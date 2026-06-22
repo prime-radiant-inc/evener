@@ -1,16 +1,23 @@
 # Passive Observer Sidecars Design
 
-> Superseded where conflicting by `docs/superpowers/specs/2026-06-21-parent-watch-sidecars-design.md`.
-> The older `job_watch(send.to=...)` and `delegate_send(to="caller")` sidecar
-> shape is no longer the model-facing contract.
+> Archived historical design. Superseded where conflicting by
+> `docs/superpowers/specs/2026-06-21-parent-watch-sidecars-design.md` and the
+> evergreen contract in `docs/job-control.md`.
+>
+> Current shipped observer shape: parent calls `delegate(watch_parent:true)`;
+> the child creates `job_watch(source:"parent")`; the child reports upward with
+> `communicate(end_turn:true)`; the parent receives an `Observer callback`
+> block. The older `job_watch(send.to=...)` and `delegate_send(to="caller")`
+> sidecar shape is no longer the model-facing contract.
 
 Date: 2026-06-20
-Status: implemented root-cause fix
+Status: archived, superseded in part
 Builds on: `docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-design.md`, `docs/superpowers/specs/2026-06-18-observer-watch-origin-loop-design.md`, `docs/superpowers/specs/2026-06-19-serf-doctor-unified-design.md`
 
 ## Problem
 
-Observer sidecars are currently composed from existing primitives:
+At the time of this investigation, observer sidecars were composed from these
+older primitives:
 
 1. start a delegate,
 2. create a `job_watch` that sends frames to that delegate,
@@ -44,18 +51,19 @@ sit next to the original passive-observer problem:
   until their schemas can faithfully express optional object fields.
 - After Serf handed a watch trigger to an observer, the caller could continue in
   the same turn and choose to poll. The caller should yield at that boundary and
-  resume from the observer's `delegate_send(to="caller")` callback.
+  resume from the observer's `communicate(end_turn:true)` callback.
 - A callback delivered to an idle caller must wake the session even when there
   are no ordinary job notifications to process.
-- Explicit `agent_type:"subagent"` froze a tool list that omitted
-  `delegate_send`; Kimi correctly treated the callback tool as unavailable. The
-  built-in `subagent` role needs `delegate_send` and positive reporting guidance:
-  use `communicate` for reports/readiness/finals and `delegate_send(to="caller")`
-  for observer callbacks.
+- Explicit `agent_type:"subagent"` froze a tool list that omitted the then-used
+  callback path. The current contract avoids that extra path: observer sidecars
+  use `communicate` for readiness, reports, finals, and parent callbacks.
 
 ## Design Thesis
 
-Keep observer sidecars as composition: `delegate` + `job_watch` + `delegate_send`. Do not introduce a full observer-agent runtime in v1.
+Keep observer sidecars as composition. The final shipped composition is
+`delegate(watch_parent:true)` + child-owned `job_watch(source:"parent")` +
+observer `communicate(end_turn:true)`. Do not introduce a full observer-agent
+runtime in v1.
 
 Add one API cleanup and two narrowly scoped capabilities:
 
@@ -69,9 +77,9 @@ Together these make passive sidecars cheap and deterministic while preserving th
 
 The caller-side wait path is the observer callback, not polling. After a parent
 creates a watch and triggers the watched condition, a useful observer response
-arrives through `delegate_send(to="caller")` steering. Parent-side
-`job_list`/`job_read_output` calls are audit or diagnosis after that callback,
-not the normal way to wait for the observer.
+arrives through the observer's `communicate(end_turn:true)` callback.
+Parent-side `job_list`/`job_read_output` calls are audit or diagnosis after
+that callback, not the normal way to wait for the observer.
 
 The implementation also treats a later observer terminal notification as
 confirmation. It can arrive after the callback has already driven the parent to
@@ -93,7 +101,7 @@ completion; it should not become a polling cue.
 - Do not add a new top-level `observer` primitive or a new always-running sidecar runtime in v1.
 - Do not add arbitrary expression evaluation to `job_watch` filters.
 - Do not make prompts responsible for loop prevention or silent ignore semantics.
-- Do not change `delegate_send(to="caller")` provenance behavior.
+- Do not make `delegate_send(to="caller")` the observer callback path.
 - Do not relax empty-response handling for ordinary user-driven or delegate-driven turns.
 - Do not require observers to receive every broad event and filter in model space.
 
@@ -208,7 +216,9 @@ Optional future diagnostics may count observer dispositions (`ignored`, `handled
 
 ### Provenance and loop suppression
 
-If an observer calls `delegate_send(to="caller")`, the caller steering continues to inherit watch provenance. Parent events caused by acknowledging that steering continue to be suppressed by the same-watch key.
+If an observer reports with `communicate(end_turn:true)`, the parent callback
+inherits watch provenance. Parent events caused by acknowledging that callback
+continue to be suppressed by the same-watch key.
 
 If an observer produces only an internal disposition, no parent steering is created, so there is no parent-side echo to suppress.
 
@@ -220,7 +230,7 @@ If an observer produces only an internal disposition, no parent steering is crea
 2. Parent emits `assistant.tool` with `tool_name=read_file`, `status=ok`.
 3. Watch event-kind and predicate both match.
 4. Watch sends one frame to the sidecar delegate.
-5. Sidecar decides to encourage and calls `delegate_send(to="caller", message="Nice read.")`.
+5. Sidecar decides to encourage and calls `communicate(end_turn:true, message="Nice read.")`.
 6. Parent receives steering with watch provenance.
 7. Same-watch suppression prevents the encouragement/acknowledgement path from retriggering the same watch.
 
@@ -269,7 +279,7 @@ Some observers will still subscribe to broader event sets. For a delivered frame
 
 - Recreate the file-read encouragement sidecar using `event_filter={tool_name:"read_file", status:"ok"}`. Run several non-read tools and one successful read. Assert the observer receives only the read frame and sends one encouragement.
 - Recreate a broad observer that receives multiple frames and ignores irrelevant frames with bare-text dispositions. Assert no no-op `job_list`/`exec_command true` churn.
-- Preserve existing observer loop-suppression tests: `delegate_send(to="caller")` from a watch-originated observer must not retrigger the same watch.
+- Preserve existing observer loop-suppression tests: `communicate(end_turn:true)` from a watch-originated observer must not retrigger the same watch.
 
 ## Compatibility and Migration
 

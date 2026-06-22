@@ -10,6 +10,11 @@ ad hoc runner; that was the wrong long-term shape. The durable sessions
 below were then audited with `serf-doctor`, which is the supported
 inspection surface for transcripts, watches, and observer topology.
 
+Current shipped observer callbacks use `communicate(end_turn:true)` from a
+child spawned with `delegate(watch_parent:true)`, and the parent receives an
+`Observer callback` block. Mentions of `delegate_send(to="caller")` below are
+historical fluency evidence from the pre-current sidecar contract.
+
 ## Summary
 
 Kimi can execute the sidecar pattern, but fluency depends heavily on
@@ -70,9 +75,9 @@ caused to the built-in `subagent` role. When the parent explicitly used
 `agent_type:"subagent"`, that role froze its allowed tools without
 `delegate_send`. The observer prompt therefore listed `delegate_send`
 as unavailable, and Kimi correctly finished with `communicate` instead
-of calling back to the parent. The fix is to include `delegate_send` in
-the built-in `subagent` tools and to state positively that reports use
-`communicate` while observer callbacks use `delegate_send(to="caller")`.
+of calling back to the parent under the old contract. The current contract
+uses `communicate(end_turn:true)` for observer callbacks, so a sidecar does
+not need `delegate_send(to="caller")` to report upward.
 
 Fresh binaries were rebuilt and the memory/approval sidecar scenarios
 were rerun through the hub REST shim, with `serf-doctor` transcript
