@@ -33,8 +33,79 @@ func TestJobWatchParentSourceRequiresGrant(t *testing.T) {
 
 func TestJobWatchParentSourceInstallsOnParentWithChildReceiver(t *testing.T) {
 	parent := newTestSession(t)
+	sub, delegateID := createParentWatchChild(t, parent, "observe parent")
+
+	out, err := jobWatchTool(sub.sess, map[string]any{
+		"operation": "create",
+		"source":    "parent",
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("jobWatchTool: %v", err)
+	}
+	state := out.(tooldefs.StateResult).State.(jobWatchToolResult)
+	if state.Source != "parent" || !state.Watching {
+		t.Fatalf("watch state = %+v, want source parent watching", state)
+	}
+
+	cfg := onlyWatchConfigForTest(t, parent.jobManager)
+	if cfg.receiverSessionID != sub.sess.ID() {
+		t.Fatalf("receiverSessionID = %q, want child %q", cfg.receiverSessionID, sub.sess.ID())
+	}
+	if cfg.receiverDelegateID != delegateID {
+		t.Fatalf("receiverDelegateID = %q, want delegate %q", cfg.receiverDelegateID, delegateID)
+	}
+}
+
+func TestJobWatchParentSourceIsDistinctPerChildReceiver(t *testing.T) {
+	parent := newTestSession(t)
+	first, firstDelegateID := createParentWatchChild(t, parent, "first observer")
+	second, secondDelegateID := createParentWatchChild(t, parent, "second observer")
+
+	firstOut, err := jobWatchTool(first.sess, map[string]any{
+		"operation": "create",
+		"source":    "parent",
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("first jobWatchTool: %v", err)
+	}
+	firstState := firstOut.(tooldefs.StateResult).State.(jobWatchToolResult)
+
+	secondOut, err := jobWatchTool(second.sess, map[string]any{
+		"operation": "create",
+		"source":    "parent",
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("second jobWatchTool: %v", err)
+	}
+	secondState := secondOut.(tooldefs.StateResult).State.(jobWatchToolResult)
+
+	if firstState.WatchID == secondState.WatchID {
+		t.Fatalf("watch ids collided: first=%q second=%q", firstState.WatchID, secondState.WatchID)
+	}
+	wantReceivers := map[string]string{
+		first.sess.ID():  firstDelegateID,
+		second.sess.ID(): secondDelegateID,
+	}
+	assertParentWatchReceivers(t, parent, wantReceivers)
+
+	againOut, err := jobWatchTool(first.sess, map[string]any{
+		"operation": "create",
+		"source":    "parent",
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("first reinstall jobWatchTool: %v", err)
+	}
+	againState := againOut.(tooldefs.StateResult).State.(jobWatchToolResult)
+	if againState.WatchID != firstState.WatchID {
+		t.Fatalf("same receiver reinstall watch_id = %q, want original %q", againState.WatchID, firstState.WatchID)
+	}
+	assertParentWatchReceivers(t, parent, wantReceivers)
+}
+
+func createParentWatchChild(t *testing.T, parent *Session, task string) (*subagent, string) {
+	t.Helper()
 	res := parent.createDelegate(context.Background(), delegateArgs{
-		Task:           "observe parent",
+		Task:           task,
 		WatchParent:    true,
 		Background:     false,
 		BlockTimeoutMS: 5000,
@@ -54,24 +125,23 @@ func TestJobWatchParentSourceInstallsOnParentWithChildReceiver(t *testing.T) {
 	if sub == nil || sub.sess == nil {
 		t.Fatalf("missing child session for %s", delegate.ChildSessionID)
 	}
+	return sub, res.DelegateID
+}
 
-	out, err := jobWatchTool(sub.sess, map[string]any{
-		"operation": "create",
-		"source":    "parent",
-	}, jobToolResultDefaultMaxChar)
-	if err != nil {
-		t.Fatalf("jobWatchTool: %v", err)
+func assertParentWatchReceivers(t *testing.T, parent *Session, want map[string]string) {
+	t.Helper()
+	parent.jobManager.mu.Lock()
+	defer parent.jobManager.mu.Unlock()
+	if len(parent.jobManager.watches) != len(want) {
+		t.Fatalf("parent watch count = %d, want %d", len(parent.jobManager.watches), len(want))
 	}
-	state := out.(tooldefs.StateResult).State.(jobWatchToolResult)
-	if state.Source != "parent" || !state.Watching {
-		t.Fatalf("watch state = %+v, want source parent watching", state)
-	}
-
-	cfg := onlyWatchConfigForTest(t, parent.jobManager)
-	if cfg.receiverSessionID != sub.sess.ID() {
-		t.Fatalf("receiverSessionID = %q, want child %q", cfg.receiverSessionID, sub.sess.ID())
-	}
-	if cfg.receiverDelegateID != res.DelegateID {
-		t.Fatalf("receiverDelegateID = %q, want delegate %q", cfg.receiverDelegateID, res.DelegateID)
+	for _, cfg := range parent.jobManager.watches {
+		wantDelegateID, ok := want[cfg.receiverSessionID]
+		if !ok {
+			t.Fatalf("unexpected receiver session %q in cfg %+v", cfg.receiverSessionID, cfg)
+		}
+		if cfg.receiverDelegateID != wantDelegateID {
+			t.Fatalf("receiverDelegateID for %q = %q, want %q", cfg.receiverSessionID, cfg.receiverDelegateID, wantDelegateID)
+		}
 	}
 }

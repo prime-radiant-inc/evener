@@ -93,9 +93,11 @@ func watchBudgetClearedMessage(target string) string {
 }
 
 type watchKey struct {
-	VisibleSessionID string
-	Target           string
-	SendTo           string
+	VisibleSessionID   string
+	Target             string
+	SendTo             string
+	ReceiverSessionID  string
+	ReceiverDelegateID string
 }
 
 type watchConfig struct {
@@ -467,9 +469,11 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		sendTo = a.Send.To
 	}
 	key := watchKey{
-		VisibleSessionID: jm.sessionID,
-		Target:           a.Target,
-		SendTo:           sendTo,
+		VisibleSessionID:   jm.sessionID,
+		Target:             a.Target,
+		SendTo:             sendTo,
+		ReceiverSessionID:  strings.TrimSpace(a.ReceiverSessionID),
+		ReceiverDelegateID: strings.TrimSpace(a.ReceiverDelegateID),
 	}
 	if a.Clear && jm.hasWatchClearState(key) {
 		return jm.clearWatch(key)
@@ -941,7 +945,21 @@ func normalizedWatchConfigHash(a watchArgs) string {
 		snapshot.SendMessage = a.Send.Message
 		snapshot.IncludeExcerpt = a.Send.IncludeExcerpt
 	}
-	b, err := json.Marshal(snapshot)
+	receiverSessionID := strings.TrimSpace(a.ReceiverSessionID)
+	receiverDelegateID := strings.TrimSpace(a.ReceiverDelegateID)
+	var payload any = snapshot
+	if receiverSessionID != "" || receiverDelegateID != "" {
+		payload = struct {
+			jobstore.WatchConfigSnapshot
+			ReceiverSessionID  string `json:"receiver_session_id,omitempty"`
+			ReceiverDelegateID string `json:"receiver_delegate_id,omitempty"`
+		}{
+			WatchConfigSnapshot: snapshot,
+			ReceiverSessionID:   receiverSessionID,
+			ReceiverDelegateID:  receiverDelegateID,
+		}
+	}
+	b, err := json.Marshal(payload)
 	if err != nil {
 		return ""
 	}
@@ -1036,7 +1054,7 @@ func (jm *jobManager) watchSendSnapshot(cfg *watchConfig, jobID, trigger string,
 	deliveryID := jobstore.NewWatchSendDeliveryID()
 	return watchSendDelivery{
 		cfg:                cfg,
-		key:                watchKey{VisibleSessionID: jm.sessionID, Target: cfg.target, SendTo: sendTo},
+		key:                watchKey{VisibleSessionID: jm.sessionID, Target: cfg.target, SendTo: sendTo, ReceiverSessionID: cfg.receiverSessionID, ReceiverDelegateID: cfg.receiverDelegateID},
 		generation:         cfg.generation,
 		updateSeq:          cfg.nextUpdateSeq,
 		send:               cloneWatchSendArgs(cfg.send),
@@ -1290,11 +1308,27 @@ func (jm *jobManager) clearWatchByID(watchID string) (watchResult, error) {
 
 func sourcePublicForClearedWatch(key watchKey, targets []watchConfigTerminalSnapshot) string {
 	for _, target := range targets {
-		if target.key == key && target.cfg != nil && target.cfg.sourcePublic != "" {
+		if watchKeyMatchesClearRequest(target.key, key) && target.cfg != nil && target.cfg.sourcePublic != "" {
 			return target.cfg.sourcePublic
 		}
 	}
 	return ""
+}
+
+func watchKeyMatchesClearRequest(candidate, request watchKey) bool {
+	if candidate.VisibleSessionID != request.VisibleSessionID || candidate.Target != request.Target {
+		return false
+	}
+	if request.SendTo != "" && candidate.SendTo != request.SendTo {
+		return false
+	}
+	if request.ReceiverSessionID != "" && candidate.ReceiverSessionID != request.ReceiverSessionID {
+		return false
+	}
+	if request.ReceiverDelegateID != "" && candidate.ReceiverDelegateID != request.ReceiverDelegateID {
+		return false
+	}
+	return true
 }
 
 func (jm *jobManager) durableWatchClearEvent(watchID, endReason string) (*jobstore.Event, error) {
@@ -1419,6 +1453,9 @@ func (jm *jobManager) hasWatchClearState(key watchKey) bool {
 
 func watchConfigHasPendingMatchingKey(cfg *watchConfig, key watchKey) bool {
 	if cfg == nil || len(cfg.pending) == 0 {
+		return false
+	}
+	if !watchConfigReceiverMatchesWatchKey(cfg, key) {
 		return false
 	}
 	for pendingKey := range cfg.pending {
@@ -2960,7 +2997,7 @@ func (jm *jobManager) isCurrentPendingWatchSendLocked(cfg *watchConfig, state jo
 	if jm.terminalFlush != nil && jm.terminalFlush[cfg] {
 		return true
 	}
-	key := watchKey{VisibleSessionID: state.Key.VisibleSessionID, Target: state.Key.WatchTarget, SendTo: cfg.sendTo()}
+	key := watchKey{VisibleSessionID: state.Key.VisibleSessionID, Target: state.Key.WatchTarget, SendTo: cfg.sendTo(), ReceiverSessionID: cfg.receiverSessionID, ReceiverDelegateID: cfg.receiverDelegateID}
 	return jm.watches[key] == cfg
 }
 
@@ -3398,6 +3435,9 @@ func watchConfigMatchesWatchKey(cfg *watchConfig, key watchKey) bool {
 	if cfg == nil || cfg.target != key.Target {
 		return false
 	}
+	if !watchConfigReceiverMatchesWatchKey(cfg, key) {
+		return false
+	}
 	if key.SendTo == "" {
 		return true
 	}
@@ -3408,10 +3448,24 @@ func watchConfigMatchesWatchKey(cfg *watchConfig, key watchKey) bool {
 }
 
 func watchConfigSendToMatchesWatchKey(cfg *watchConfig, key watchKey) bool {
+	if !watchConfigReceiverMatchesWatchKey(cfg, key) {
+		return false
+	}
 	if key.SendTo == "" {
 		return true
 	}
 	return cfg.send != nil && cfg.send.To == key.SendTo
+}
+
+func watchConfigReceiverMatchesWatchKey(cfg *watchConfig, key watchKey) bool {
+	if cfg == nil {
+		return false
+	}
+	if key.ReceiverSessionID == "" && key.ReceiverDelegateID == "" {
+		return true
+	}
+	return cfg.receiverSessionID == key.ReceiverSessionID &&
+		cfg.receiverDelegateID == key.ReceiverDelegateID
 }
 
 func markWatchConfigsRejectingLocked(cfgs []*watchConfig) {
