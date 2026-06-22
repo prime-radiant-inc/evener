@@ -98,6 +98,10 @@ type Session struct {
 	// recent processing boundary. Subagent follow-up turns use it to preserve
 	// watch keys accumulated during the just-finished run.
 	completedInputProvenance provenance.Causal
+	// activeEntryKind names the entry currently being processed. It lets tools
+	// distinguish ordinary user turns from watch-delivery callbacks without
+	// duplicating provenance state.
+	activeEntryKind EntryKind
 
 	// inputQueue holds messages submitted via Enqueue while a turn is in
 	// flight. Kata 111a: text typed during a running turn returns to the
@@ -114,6 +118,10 @@ type Session struct {
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
+	// watchCallbackDelivered is a per-processOneInput latch. A watch-origin turn
+	// may callback via delegate_send(to=caller) or terminal communicate; once one
+	// route succeeds, the other must not duplicate the parent steer.
+	watchCallbackDelivered bool
 
 	// subagents
 	depth                            int

@@ -489,6 +489,9 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 }
 
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
+	s.setActiveEntryKind(kind)
+	defer s.setActiveEntryKind(EntryUserInput)
+
 	// Flush meta.json on every exit from this function — normal return, error
 	// return, ctx cancellation, retry-budget exhaustion, or panic. Without
 	// this, in-memory modelResponses bumps that happen between happy-path
@@ -520,6 +523,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}
 	s.setStateIfOpenLocked(SessionProcessing)
 	s.comm = communicateResult{}
+	s.watchCallbackDelivered = false
 	s.mu.Unlock()
 
 	select {

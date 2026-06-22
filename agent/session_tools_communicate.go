@@ -94,6 +94,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				if explicitStructuredOutput {
 					deps.setCommunicateStructured(rawOutput)
 				}
+				if deps.deliverWatchCallback != nil {
+					deps.deliverWatchCallback(message)
+				}
 			}
 
 			resp := map[string]any{
@@ -105,6 +108,26 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			return string(b), nil
 		},
 	})
+}
+
+func (s *Session) deliverWatchCommunicateCallback(message string) {
+	if s == nil || s.currentEntryKind() != EntryWatchDelivery {
+		return
+	}
+	if s.watchCallbackDeliveredForCurrentTurn() {
+		return
+	}
+	steer := s.cfg.spawn.parentSteerDelivered
+	if steer == nil {
+		return
+	}
+	if !steer(message, s.activeCausalProvenance()) {
+		return
+	}
+	if mark := s.cfg.spawn.parentMarkCallerCallbackDelivered; mark != nil {
+		mark(s.cfg.spawn.parentJobID)
+	}
+	s.markWatchCallbackDeliveredForCurrentTurn()
 }
 
 func registerSkillTool(reg *tool.Registry, deps *toolDeps) {

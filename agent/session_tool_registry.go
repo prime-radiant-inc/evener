@@ -69,6 +69,10 @@ type toolDeps struct {
 	// before communicate canonicalization, for delegate structured_result capture.
 	setCommunicateStructured func(raw any)
 
+	// deliverWatchCallback routes a terminal communicate from a watch-delivery
+	// turn back to the parent that owns the watch-origin delegate job.
+	deliverWatchCallback func(message string)
+
 	// skill looks up a discovered skill by name.
 	skill func(name string) (skill.SkillMeta, bool)
 
@@ -199,6 +203,7 @@ func newToolDeps(s *Session) *toolDeps {
 			s.comm.structured = raw
 			s.mu.Unlock()
 		},
+		deliverWatchCallback: s.deliverWatchCommunicateCallback,
 		skill: func(name string) (skill.SkillMeta, bool) {
 			meta, ok := s.skills[name]
 			return meta, ok

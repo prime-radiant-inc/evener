@@ -298,6 +298,9 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		if mark := s.cfg.spawn.parentMarkCallerCallbackDelivered; mark != nil {
 			mark(s.cfg.spawn.parentJobID)
 		}
+		if s.currentEntryKind() == EntryWatchDelivery {
+			s.markWatchCallbackDeliveredForCurrentTurn()
+		}
 		return sendMessageResult{
 			Target:      target,
 			Action:      "delivered",

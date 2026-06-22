@@ -5,7 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/llm"
 )
 
 func TestJobWatchParentSourceRequiresGrant(t *testing.T) {
@@ -175,6 +178,113 @@ func TestJobWatchParentSourcePublicClearRoutesToParent(t *testing.T) {
 	assertParentWatchReceivers(t, parent, map[string]string{
 		second.sess.ID(): secondDelegateID,
 	})
+}
+
+func TestParentSourceWatchFrameDeliveredToChildWatcher(t *testing.T) {
+	parent := newTestSession(t)
+	sub, delegateID := createParentWatchChild(t, parent, "observe parent")
+
+	out, err := jobWatchTool(sub.sess, map[string]any{
+		"operation": "create",
+		"source":    "parent",
+		"events":    []any{"assistant.tool"},
+		"event_filter": map[string]any{
+			"tool_name": "read_file",
+			"status":    "ok",
+		},
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("jobWatchTool: %v", err)
+	}
+	state := out.(tooldefs.StateResult).State.(jobWatchToolResult)
+	if state.Send != nil {
+		t.Fatalf("public watch result exposed internal send: %+v", state.Send)
+	}
+
+	parent.emit(events.EventToolCallEnd, events.ToolCallEndData{
+		ToolName: "job_list",
+		Output:   "{}",
+	})
+	parent.emit(events.EventToolCallEnd, events.ToolCallEndData{
+		ToolName: "read_file",
+		Error:    "permission denied",
+	})
+	if sends := parent.jobManager.pendingWatchSendDeliveries(nil); len(sends) != 0 {
+		t.Fatalf("non-matching events created pending sends: %+v", sends)
+	}
+
+	parent.emit(events.EventToolCallEnd, events.ToolCallEndData{
+		ToolName:      "read_file",
+		CallID:        "call_read_file",
+		ArgumentsJSON: `{"file_path":"notes.txt"}`,
+		Output:        "ok",
+	})
+
+	sends := parent.jobManager.pendingWatchSendDeliveries(nil)
+	if len(sends) != 1 {
+		t.Fatalf("pending sends = %d, want 1", len(sends))
+	}
+	if sends[0].state.Key.ResolvedSendTo != delegateID {
+		t.Fatalf("delivery target = %q, want delegate %q", sends[0].state.Key.ResolvedSendTo, delegateID)
+	}
+	if !strings.Contains(sends[0].state.Frame, "read_file") ||
+		!strings.Contains(sends[0].state.Frame, "notes.txt") ||
+		!strings.Contains(sends[0].state.Frame, "status: ok") {
+		t.Fatalf("frame = %q, want matching read_file event content", sends[0].state.Frame)
+	}
+}
+
+func TestWatchOriginCommunicateEndTurnResumesParentOnce(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return communicateWithDefaultOutput("observer ready") },
+		func(llm.Request) llm.Response {
+			return communicateWithDefaultOutput("WATCH_OBSERVED read_file succeeded")
+		},
+	}})
+	parent := newDelegateTestSession(t, c)
+	sub, _ := createParentWatchChild(t, parent, "observe parent")
+	child := sub.sess
+
+	var steered []steeringMessage
+	child.cfg.spawn.parentSteerDelivered = func(msg string, p *provenance.Causal) bool {
+		steered = append(steered, steeringMessage{
+			Text:       msg,
+			Provenance: provenance.Clone(p),
+		})
+		return true
+	}
+
+	parentRun, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "watch callback owner", sub)
+	if err != nil {
+		t.Fatalf("attach delegate job: %v", err)
+	}
+	parentRun.fromWatch.Store(true)
+	child.cfg.spawn.parentJobID = parentRun.rec.JobID
+	child.cfg.spawn.parentMarkCallerCallbackDelivered = parent.jobManager.markWatchOriginCallerCallbackDelivered
+
+	watchProvenance := provenance.WithWatch(nil, "watch_parent", "wg_1", "wd_1", parent.ID(), runtimeMessageAliasCaller)
+	_, err = child.processInputKindWithProvenance(context.Background(), "Watch delivery frame", nil, EntryWatchDelivery, watchProvenance)
+	if err != nil {
+		t.Fatalf("watch delivery process: %v", err)
+	}
+
+	if len(steered) != 1 {
+		t.Fatalf("parent steers = %d, want one callback", len(steered))
+	}
+	if !strings.Contains(steered[0].Text, "WATCH_OBSERVED") {
+		t.Fatalf("callback = %q, want WATCH_OBSERVED", steered[0].Text)
+	}
+	if !provenance.ContainsWatch(steered[0].Provenance, "watch_parent", "wg_1") {
+		t.Fatalf("callback provenance = %+v, want watch provenance", steered[0].Provenance)
+	}
+
+	if err := parent.finalizeDelegate(parentRun.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("finalize delegate: %v", err)
+	}
+	if got := parent.peekNotifications(); got != 0 {
+		t.Fatalf("pending owner notifications = %d, want duplicate suppressed", got)
+	}
 }
 
 func createParentWatchChild(t *testing.T, parent *Session, task string) (*subagent, string) {

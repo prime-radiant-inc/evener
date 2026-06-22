@@ -163,19 +163,20 @@ type watchGrantKey struct {
 }
 
 type watchArgs struct {
-	Operation          string
-	WatchID            string
-	Source             string
-	Target             string
-	ReceiverSessionID  string
-	ReceiverDelegateID string
-	OutputMatch        string
-	ProgressIntervalMS int
-	Events             []string
-	Every              int
-	EventFilter        *watchEventFilter
-	Send               *watchSendArgs
-	Clear              bool
+	Operation            string
+	WatchID              string
+	Source               string
+	Target               string
+	ReceiverSessionID    string
+	ReceiverDelegateID   string
+	OutputMatch          string
+	ProgressIntervalMS   int
+	Events               []string
+	Every                int
+	EventFilter          *watchEventFilter
+	Send                 *watchSendArgs
+	ReceiverSendInternal bool
+	Clear                bool
 }
 
 type watchSourceKind int
@@ -412,7 +413,7 @@ func (jm *jobManager) validateWatchConfig(a watchArgs) (*watchConfig, error) {
 	if !watchArgsHasCondition(a) {
 		return nil, errors.New("invalid_request: nothing to watch")
 	}
-	if a.Send != nil {
+	if a.Send != nil && !a.ReceiverSendInternal {
 		if err := jm.validateWatchSendTarget(a.Send.To, a); err != nil {
 			return nil, err
 		}
@@ -463,10 +464,14 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if err := normalizeWatchArgs(&a); err != nil {
 		return watchResult{}, err
 	}
+	applyReceiverWatchSend(&a)
 	sendTo := ""
-	if a.Send != nil {
+	if a.Send != nil && !a.ReceiverSendInternal {
 		a.Send.To = strings.TrimSpace(a.Send.To)
 		sendTo = a.Send.To
+	}
+	if a.Send != nil && a.ReceiverSendInternal {
+		sendTo = strings.TrimSpace(a.Send.To)
 	}
 	key := watchKey{
 		VisibleSessionID:   jm.sessionID,
@@ -500,7 +505,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 				return watchResult{}, statusErr
 			}
 			if terminal {
-				if a.Send != nil {
+				if a.Send != nil && !a.ReceiverSendInternal {
 					if sendErr := jm.validateWatchSendTarget(a.Send.To, a); sendErr != nil {
 						return watchResult{}, sendErr
 					}
@@ -896,6 +901,7 @@ func isWatchSessionTarget(target string) bool {
 }
 
 func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
+	applyReceiverWatchSend(&a)
 	eventKinds, wildcardEvents := resolveEventKinds(a.Events)
 	watchID := jobstore.NewWatchID()
 	cfg := &watchConfig{
@@ -931,7 +937,18 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 	return cfg, nil
 }
 
+func applyReceiverWatchSend(a *watchArgs) {
+	if a == nil || a.Send != nil {
+		return
+	}
+	if receiverDelegateID := strings.TrimSpace(a.ReceiverDelegateID); receiverDelegateID != "" {
+		a.Send = &watchSendArgs{To: receiverDelegateID}
+		a.ReceiverSendInternal = true
+	}
+}
+
 func normalizedWatchConfigHash(a watchArgs) string {
+	applyReceiverWatchSend(&a)
 	snapshot := jobstore.WatchConfigSnapshot{
 		Target:             a.Target,
 		OutputMatch:        a.OutputMatch,
@@ -1559,6 +1576,10 @@ func closeWatchConfig(cfg *watchConfig) {
 }
 
 func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult {
+	var send *watchSendArgs
+	if cfg.receiverDelegateID == "" {
+		send = cloneWatchSendArgs(cfg.send)
+	}
 	return watchResult{
 		WatchID:            cfg.watchID,
 		Source:             cfg.sourcePublic,
@@ -1568,7 +1589,7 @@ func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult 
 		Events:             append([]string(nil), cfg.events...),
 		EventFilter:        cloneWatchEventFilter(cfg.eventFilter),
 		ProgressIntervalMS: cfg.progressIntervalMS,
-		Send:               cloneWatchSendArgs(cfg.send),
+		Send:               send,
 		ReplacedExisting:   replacedExisting,
 	}
 }
@@ -1706,11 +1727,15 @@ func (jm *jobManager) recordWatchEndedLocked(key watchKey, cfg *watchConfig, rea
 	if cfg == nil {
 		return
 	}
+	sendTo := key.SendTo
+	if cfg.receiverDelegateID != "" {
+		sendTo = ""
+	}
 	jm.watchHistory = append(jm.watchHistory, watchHistoryEntry{
 		id:         cfg.id,
 		target:     cfg.target,
 		condition:  watchConditionSummary(cfg),
-		sendTo:     key.SendTo,
+		sendTo:     sendTo,
 		deliveries: cfg.deliveries,
 		endReason:  reason,
 		endedAt:    jm.now(),
@@ -1798,12 +1823,16 @@ func inspectResultFromWatchConfig(key watchKey, cfg *watchConfig) jobWatchInspec
 	if cfg == nil {
 		return jobWatchInspectToolResult{Watching: false}
 	}
+	sendTo := key.SendTo
+	if cfg.receiverDelegateID != "" {
+		sendTo = ""
+	}
 	return jobWatchInspectToolResult{
 		WatchID:    cfg.watchID,
 		Target:     cfg.target,
 		Watching:   true,
 		Condition:  watchConditionSummary(cfg),
-		SendTo:     key.SendTo,
+		SendTo:     sendTo,
 		Deliveries: cfg.deliveries,
 		CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
 	}
@@ -1833,11 +1862,15 @@ func (jm *jobManager) liveWatchSummaries() []watchListEntry {
 	defer jm.mu.Unlock()
 	entries := make([]watchListEntry, 0, len(jm.watches))
 	for key, cfg := range jm.watches {
+		sendTo := key.SendTo
+		if cfg.receiverDelegateID != "" {
+			sendTo = ""
+		}
 		entries = append(entries, watchListEntry{
 			ID:         cfg.id,
 			Target:     cfg.target,
 			Condition:  watchConditionSummary(cfg),
-			SendTo:     key.SendTo,
+			SendTo:     sendTo,
 			Deliveries: cfg.deliveries,
 			CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
 		})
@@ -2756,11 +2789,16 @@ func (jm *jobManager) mintWatchCreateReadGrant(cfg *watchConfig) error {
 	case runtimeMessageAliasCaller, runtimeMessageAliasWatched:
 		return nil
 	}
-	observerSessionID, ok, err := jm.watchReadGrantObserver(cfg.send.To)
-	if err == nil && !ok {
-		// validateWatchSendTarget proved send.to is a delegate job and the
-		// store is append-only, so an unresolvable observer here is a fault.
-		err = fmt.Errorf("job %q is not a grantable delegate", cfg.send.To)
+	observerSessionID := strings.TrimSpace(cfg.receiverSessionID)
+	var err error
+	if observerSessionID == "" {
+		var ok bool
+		observerSessionID, ok, err = jm.watchReadGrantObserver(cfg.send.To)
+		if err == nil && !ok {
+			// validateWatchSendTarget proved send.to is a delegate job and the
+			// store is append-only, so an unresolvable observer here is a fault.
+			err = fmt.Errorf("job %q is not a grantable delegate", cfg.send.To)
+		}
 	}
 	if err == nil {
 		err = jm.appendWatchReadGrant(observerSessionID, cfg.target)
@@ -2800,9 +2838,14 @@ func (jm *jobManager) mintWatchSendReadGrant(cfg *watchConfig, resolvedSendTo, w
 	if minted {
 		return
 	}
-	observerSessionID, ok, err := jm.watchReadGrantObserver(resolvedSendTo)
-	if err == nil && !ok {
-		return
+	observerSessionID := strings.TrimSpace(cfg.receiverSessionID)
+	var err error
+	if observerSessionID == "" {
+		var ok bool
+		observerSessionID, ok, err = jm.watchReadGrantObserver(resolvedSendTo)
+		if err == nil && !ok {
+			return
+		}
 	}
 	if err == nil {
 		err = jm.appendWatchReadGrant(observerSessionID, watchedIdentity)
