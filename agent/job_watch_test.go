@@ -7722,7 +7722,7 @@ func TestJobWatchDeepDescendantGivesDelegateGuidance(t *testing.T) {
 
 	_, err = jobWatchTool(root, map[string]any{
 		"operation": "create",
-		"target":    workerRec.JobID,
+		"source":    workerRec.JobID,
 		"events":    []any{"job.notification"},
 	}, 20000)
 	if err == nil {
@@ -7740,7 +7740,7 @@ func TestJobWatchDeepDescendantGivesDelegateGuidance(t *testing.T) {
 	// precise — it does not over-broaden to every miss).
 	_, err = jobWatchTool(root, map[string]any{
 		"operation": "create",
-		"target":    "job_does_not_exist_anywhere",
+		"source":    "job_does_not_exist_anywhere",
 		"events":    []any{"job.notification"},
 	}, 20000)
 	if err == nil || !strings.Contains(err.Error(), "target_not_found") {

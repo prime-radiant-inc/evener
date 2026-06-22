@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,16 +143,12 @@ func TestWatchSendBuildsObserverFrame(t *testing.T) {
 	})
 
 	captured := captureWatchSends(t, s.jobManager)
-	watchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:   "watch",
-		Name: "job_watch",
-		Arguments: json.RawMessage(fmt.Sprintf(
-			`{"operation":"create","target":%q,"output_match":"(?i)ready","send":{"to":"dlg_obs","message":"observe"}}`,
-			shellOut.JobID,
-		)),
-	})
-	if watchRes.IsError {
-		t.Fatalf("job_watch returned error: %s", watchRes.Output)
+	if _, err := s.jobManager.configureWatch(watchArgs{
+		Target:      shellOut.JobID,
+		OutputMatch: "(?i)ready",
+		Send:        &watchSendArgs{To: "dlg_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configureWatch: %v", err)
 	}
 
 	feedJob(s.jobManager, shellOut.JobID, []byte("server READY\n"))
@@ -200,17 +195,12 @@ func TestJobWatchSendsToObserverDelegateIDAcrossResume(t *testing.T) {
 		waitForShellDone(t, s.jobManager, shellOut.JobID)
 	})
 
-	watchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:   "watch",
-		Name: "job_watch",
-		Arguments: json.RawMessage(fmt.Sprintf(
-			`{"operation":"create","target":%q,"output_match":"READY","send":{"to":%q,"message":"observe","include_excerpt":true}}`,
-			shellOut.JobID,
-			observer.DelegateID,
-		)),
-	})
-	if watchRes.IsError {
-		t.Fatalf("job_watch returned error: %s", watchRes.Output)
+	if _, err := s.jobManager.configureWatch(watchArgs{
+		Target:      shellOut.JobID,
+		OutputMatch: "READY",
+		Send:        &watchSendArgs{To: observer.DelegateID, Message: "observe", IncludeExcerpt: true},
+	}); err != nil {
+		t.Fatalf("configureWatch: %v", err)
 	}
 
 	feedJob(s.jobManager, shellOut.JobID, []byte("server READY\n"))
@@ -675,26 +665,6 @@ func TestParentYieldsAfterObserverHandoffInsteadOfPolling(t *testing.T) {
 		},
 		func(llm.Request) llm.Response {
 			return toolCallResponse(llm.ToolCallData{
-				ID:   "watch",
-				Name: "job_watch",
-				Arguments: rawArgs(map[string]any{
-					"operation": "create",
-					"target":    runtimeMessageAliasCaller,
-					"events":    []string{"assistant.tool"},
-					"event_filter": map[string]any{
-						"tool_name": "read_file",
-						"status":    "ok",
-					},
-					"send": map[string]any{
-						"to":      observerID,
-						"message": "Check successful read_file output.",
-					},
-				}),
-				Type: "function",
-			})
-		},
-		func(llm.Request) llm.Response {
-			return toolCallResponse(llm.ToolCallData{
 				ID:        "read",
 				Name:      "read_file",
 				Arguments: rawArgs(map[string]any{"file_path": memoryPath}),
@@ -732,6 +702,20 @@ func TestParentYieldsAfterObserverHandoffInsteadOfPolling(t *testing.T) {
 		t.Fatalf("observer delegate: %v", observer.Err)
 	}
 	observerID = observer.DelegateID
+	if _, err := parent.jobManager.configureWatch(watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"assistant.tool"},
+		EventFilter: &watchEventFilter{
+			ToolName: "read_file",
+			Status:   "ok",
+		},
+		Send: &watchSendArgs{
+			To:      observerID,
+			Message: "Check successful read_file output.",
+		},
+	}); err != nil {
+		t.Fatalf("configure observer watch: %v", err)
+	}
 
 	out, err := parent.ProcessInput(context.Background(), "Read memory through an observer sidecar.", nil)
 	if err != nil {
