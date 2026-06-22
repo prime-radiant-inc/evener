@@ -213,7 +213,7 @@ func TestTopLevelHelpListsSubcommands(t *testing.T) {
 	fs.Usage()
 	usage := stderr.String()
 
-	for _, cmd := range []string{"openai", "serve", "launch-check"} {
+	for _, cmd := range []string{"openai", "serve", "launch-check", "upgrade"} {
 		if !strings.Contains(usage, cmd) {
 			t.Errorf("usage missing subcommand %q:\n%s", cmd, usage)
 		}
