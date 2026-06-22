@@ -7717,14 +7717,7 @@ func TestGrantedReadRejectsBlock(t *testing.T) {
 
 var _ = jobstore.JobShell
 
-// TestJobWatchDeepDescendantGivesDelegateGuidance: the root issues job_watch on
-// a grandchild worker's shell job (a known live descendant the root cannot
-// directly watch — watches are own-jobs-only, spec §3/§8). Today this surfaces a
-// bare target_not_found. The model needs the delegate-the-watching guidance:
-// name the owning session and tell the model to have that session attach the
-// watch (only watches resolve own jobs). The error is precise — it fires only
-// for a target that IS a known descendant, not for a genuinely unknown job_id.
-func TestJobWatchDeepDescendantGivesDelegateGuidance(t *testing.T) {
+func TestJobWatchAllowsDescendantConcreteJobSource(t *testing.T) {
 	rootJM := newWalkJobManager(t, "ROOT")
 	coordJM := newWalkJobManager(t, "COORD")
 	workerJM := newWalkJobManager(t, "WORK")
@@ -7751,20 +7744,39 @@ func TestJobWatchDeepDescendantGivesDelegateGuidance(t *testing.T) {
 	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
 	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
 
-	_, err = jobWatchTool(root, map[string]any{
-		"operation": "create",
-		"source":    workerRec.JobID,
-		"events":    []any{"job.notification"},
+	out, err := jobWatchTool(root, map[string]any{
+		"operation":    "create",
+		"source":       workerRec.JobID,
+		"output_match": "READY",
 	}, 20000)
-	if err == nil {
-		t.Fatal("job_watch on a deep descendant succeeded, want delegate-the-watching guidance")
+	if err != nil {
+		t.Fatalf("jobWatchTool: %v", err)
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "WORK") {
-		t.Fatalf("job_watch error = %q, want it to name the owning session WORK", msg)
+	state := out.(tooldefs.StateResult).State.(jobWatchToolResult)
+	if state.Source != workerRec.JobID || !state.Watching {
+		t.Fatalf("watch state = %+v, want descendant concrete source watching", state)
 	}
-	if !strings.Contains(msg, "delegate") {
-		t.Fatalf("job_watch error = %q, want delegate-the-watching guidance", msg)
+	if state.Send != nil {
+		t.Fatalf("watch state exposed send routing: %+v", state.Send)
+	}
+	cfg := onlyWatchConfigForTest(t, workerJM)
+	if cfg.receiverSessionID != root.ID() || cfg.receiverDelegateID != "" {
+		t.Fatalf("watch receiver = %q/%q, want ancestor session %q with no delegate", cfg.receiverSessionID, cfg.receiverDelegateID, root.ID())
+	}
+
+	feedJob(workerJM, workerRec.JobID, []byte("worker READY\n"))
+	rootNotified := root.drainJobNotifications()
+	if len(rootNotified) != 1 {
+		t.Fatalf("root notifications = %+v, want one output-match notification", rootNotified)
+	}
+	if rootNotified[0].JobID != workerRec.JobID {
+		t.Fatalf("notification job_id = %q, want %q", rootNotified[0].JobID, workerRec.JobID)
+	}
+	if !strings.Contains(rootNotified[0].Reason, "READY") {
+		t.Fatalf("notification reason = %q, want output match", rootNotified[0].Reason)
+	}
+	if len(worker.drainJobNotifications()) != 0 {
+		t.Fatal("descendant owner received the watcher notification; want ancestor watcher only")
 	}
 
 	// A genuinely unknown job_id keeps the bare target_not_found (the guidance is

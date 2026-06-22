@@ -1490,7 +1490,7 @@ func (jm *jobManager) autoClearWatchOverBudget(cfg *watchConfig) {
 	jm.removeWatchSendTerminalSnapshots(dropped)
 
 	jm.enqueueWatchNotifications([]jobNotification{
-		watchNotification("", watchBudgetClearedMessage(cfg.target)),
+		jm.watchNotificationFromWatch(cfg, "", watchBudgetClearedMessage(cfg.target), nil),
 	})
 	jm.kick()
 }
@@ -2189,7 +2189,7 @@ func (jm *jobManager) prepareAttachScanLocked(cfg *watchConfig, run *runningJob)
 func (jm *jobManager) completeAttachScan(cfg *watchConfig, jobID string, data []byte, scan bool, prepErr error) bool {
 	if prepErr != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
-			watchNotification(jobID, "output_match attach scan skipped: "+limitWatchText(prepErr.Error(), watchReadErrorMaxChars)),
+			jm.watchNotificationFromWatch(cfg, jobID, "output_match attach scan skipped: "+limitWatchText(prepErr.Error(), watchReadErrorMaxChars), nil),
 		})
 		return false
 	}
@@ -2451,7 +2451,11 @@ func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason
 	if cfg == nil {
 		return n
 	}
-	n.Provenance = provenance.WithWatch(root, cfg.watchID, cfg.generation, "", jm.sessionID, jobID)
+	visibleSessionID := cfg.receiverSessionID
+	if visibleSessionID == "" {
+		visibleSessionID = jm.sessionID
+	}
+	n.Provenance = provenance.WithWatch(root, cfg.watchID, cfg.generation, "", visibleSessionID, jobID)
 	return n
 }
 
@@ -4410,10 +4414,42 @@ func (jm *jobManager) enqueueWatchNotifications(notifications []jobNotification)
 		return
 	}
 	for _, n := range notifications {
+		if receiverSessionID := watchNotificationReceiverSessionID(n); receiverSessionID != "" && receiverSessionID != jm.sessionID {
+			if enqueue := jm.watchNotificationReceivers[receiverSessionID]; enqueue != nil {
+				enqueue(n)
+				continue
+			}
+		}
 		if jm.enqueue != nil {
 			jm.enqueue(n)
 		}
 	}
+}
+
+func (jm *jobManager) registerWatchNotificationReceiver(sessionID string, enqueue func(jobNotification)) {
+	sessionID = strings.TrimSpace(sessionID)
+	if jm == nil || sessionID == "" || enqueue == nil {
+		return
+	}
+	jm.watchNotifyMu.Lock()
+	defer jm.watchNotifyMu.Unlock()
+	if jm.watchNotificationReceivers == nil {
+		jm.watchNotificationReceivers = make(map[string]func(jobNotification))
+	}
+	jm.watchNotificationReceivers[sessionID] = enqueue
+}
+
+func watchNotificationReceiverSessionID(n jobNotification) string {
+	if n.Provenance == nil {
+		return ""
+	}
+	for i := len(n.Provenance.Chain) - 1; i >= 0; i-- {
+		entry := n.Provenance.Chain[i]
+		if entry.Kind == "watch" && entry.SessionID != "" {
+			return entry.SessionID
+		}
+	}
+	return ""
 }
 
 func (jm *jobManager) watchCount() int {

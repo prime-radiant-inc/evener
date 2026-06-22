@@ -209,15 +209,25 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
 		return "", fmt.Errorf("invalid_request: unsupported operation %q", a.Operation)
 	}
 	if err != nil {
-		// Watches resolve own jobs only (spec §3/§8): a target_not_found for a
-		// target that is actually a known descendant in the live subtree is
-		// enriched with the delegate-the-watching guidance — the model should have
-		// the owning session attach the watch, since only it can watch its own job.
-		if errors.Is(err, errWatchTargetNotFound) {
-			if _, owner, _, _, ok := s.resolveDescendantJobOwner(a.Target); ok && owner != nil {
-				return "", fmt.Errorf("target_not_watchable: job %q is owned by descendant session %q, which you cannot watch directly (watches resolve own jobs only); delegate the watching to session %q so it attaches the watch on its own job", a.Target, owner.id, owner.id)
+		if errors.Is(err, errWatchTargetNotFound) && strings.HasPrefix(a.Target, "job_") {
+			if ownerJM, ownerSess, _, _, ok := s.resolveDescendantJobOwner(a.Target); ok && ownerJM != nil && ownerSess != nil {
+				childArgs := a
+				childArgs.Source = a.Source
+				childArgs.Target = a.Target
+				childArgs.ReceiverSessionID = s.ID()
+				childArgs.ReceiverDelegateID = ""
+				ownerJM.registerWatchNotificationReceiver(s.ID(), s.enqueueJobNotificationAndNotify)
+				ownerRes, ownerErr := ownerJM.configureWatch(childArgs)
+				return marshalWatchResultFromOwner(ownerRes, ownerErr, maxChars)
 			}
 		}
+		return "", err
+	}
+	return marshalWatchResult(res, maxChars)
+}
+
+func marshalWatchResultFromOwner(res watchResult, err error, maxChars int) (any, error) {
+	if err != nil {
 		return "", err
 	}
 	return marshalWatchResult(res, maxChars)
