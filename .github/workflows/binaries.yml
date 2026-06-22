@@ -72,3 +72,37 @@ jobs:
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
             gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Serf $GITHUB_REF_NAME"
           gh release upload "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums.txt --clobber
+
+  snapshot:
+    name: Publish snapshot assets
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksum file
+        run: sha256sum dist/*.tar.gz > dist/checksums.txt
+
+      - name: Move snapshot tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f snapshot "$GITHUB_SHA"
+          git push origin "refs/tags/snapshot" --force
+
+      - name: Publish snapshot release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "snapshot" >/dev/null 2>&1 || \
+            gh release create "snapshot" --title "Serf snapshot" --notes "Latest successful build from main." --prerelease
+          gh release upload "snapshot" dist/*.tar.gz dist/checksums.txt --clobber

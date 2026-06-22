@@ -42,6 +42,12 @@ Install a specific tagged release:
 curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/serf/main/install.sh | env SERF_INSTALL_VERSION=v1.2.3 sh
 ```
 
+Install the latest successful build from `main`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/serf/main/install.sh | env SERF_INSTALL_VERSION=snapshot sh
+```
+
 Override the install prefix, using `sudo` for system-owned paths:
 
 ```bash
