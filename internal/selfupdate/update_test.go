@@ -153,7 +153,7 @@ func TestUpgradeRejectsUnsupportedPlatform(t *testing.T) {
 	if err == nil {
 		t.Fatal("Upgrade succeeded on unsupported platform")
 	}
-	if !strings.Contains(err.Error(), "No Serf binary release is available") {
+	if !strings.Contains(err.Error(), "unsupported platform darwin-amd64") {
 		t.Fatalf("error = %q, want unsupported platform", err.Error())
 	}
 }

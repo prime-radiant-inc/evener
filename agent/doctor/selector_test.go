@@ -14,8 +14,8 @@ func TestParseSelector(t *testing.T) {
 		{in: "proj:" + hash1 + ":" + sidA, wantHash: hash1, wantSID: sidA},
 		{in: "", wantErr: true},
 		{in: "current", wantErr: true},
-		{in: "proj:onlyonepart", wantErr: true}, // missing the :<id>
-		{in: "proj::" + sidA, wantErr: true},     // empty hash
+		{in: "proj:onlyonepart", wantErr: true},    // missing the :<id>
+		{in: "proj::" + sidA, wantErr: true},       // empty hash
 		{in: "proj:" + hash1 + ":", wantErr: true}, // empty sid
 		{in: "local:", wantErr: true},
 		{in: "../escape", wantErr: true},

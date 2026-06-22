@@ -591,9 +591,7 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 // task list, transcript list, directory completion, path validation, and the
 // harness descriptor list.
 func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) {
-	appserver.HandleTyped(server.Router(), appwire.MethodSerfUpgrade, func(ctx context.Context, params appwire.UpgradeParams) (appwire.UpgradeResponse, error) {
-		return hubUpgrade(ctx, params)
-	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfUpgrade, hubUpgrade)
 	appserver.HandleTyped(server.Router(), appwire.MethodModelList, func(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		return hubModelList(ctx, cfg, sources, params)
 	})

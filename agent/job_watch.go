@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -533,9 +534,9 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	// rather than in the shared install validator.
 	if a.OutputMatch != "" && isWatchSessionTarget(a.Target) {
 		if len(a.Events) == 1 && a.Events[0] == "communicate" {
-			return watchResult{}, errors.New(`invalid_request: output_match watches concrete job output. A parent observer that needs communicate messages uses source="parent" with events ["communicate"], reads delivered event.message in the frame, and reports findings with communicate(end_turn=true).`)
+			return watchResult{}, errors.New(`invalid_request: output_match watches concrete job output; parent observers that need communicate messages use source="parent" with events ["communicate"], read delivered event.message in the frame, and report findings with communicate(end_turn=true)`)
 		}
-		return watchResult{}, errors.New(`invalid_request: output_match watches concrete job output; session-source watches use events and, for assistant.tool, event_filter.`)
+		return watchResult{}, errors.New(`invalid_request: output_match watches concrete job output; session-source watches use events and, for assistant.tool, event_filter`)
 	}
 	if a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
 		return watchResult{}, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry bounded event payloads, not output excerpts")
@@ -702,9 +703,9 @@ func validateWatchEventArgs(a watchArgs) error {
 		}
 		if len(a.Events) != 1 || a.Events[0] != "assistant.tool" {
 			if len(a.Events) == 1 && a.Events[0] == "communicate" {
-				return errors.New(`invalid_request: event_filter matches assistant.tool events. A parent observer that needs communicate messages uses source="parent" with events ["communicate"], reads delivered event.message in the frame, and reports findings with communicate(end_turn=true).`)
+				return errors.New(`invalid_request: event_filter matches assistant.tool events; parent observers that need communicate messages use source="parent" with events ["communicate"], read delivered event.message in the frame, and report findings with communicate(end_turn=true)`)
 			}
-			return errors.New(`invalid_request: event_filter matches assistant.tool events; use events ["assistant.tool"] with event_filter {"tool_name":"read_file","status":"ok"}.`)
+			return errors.New(`invalid_request: event_filter matches assistant.tool events; use events ["assistant.tool"] with event_filter {"tool_name":"read_file","status":"ok"}`)
 		}
 		switch a.EventFilter.Status {
 		case "", "ok", "error":
@@ -1039,7 +1040,7 @@ func validateWatchDeliveryLoop(cfg *watchConfig) error {
 	if !selfGenerated {
 		return nil
 	}
-	return errors.New(`invalid_request: feedback loop: watching assistant.tool/communicate on source="self" feeds back into your own tool/result events. To observe this session, start an observer with delegate(watch_parent=true); inside that child call job_watch(source="parent", events=[...]) and report with communicate(end_turn=true).`)
+	return errors.New(`invalid_request: feedback loop: watching assistant.tool/communicate on source="self" feeds back into your own tool/result events; to observe this session, start an observer with delegate(watch_parent=true), then inside that child call job_watch(source="parent", events=[...]) and report with communicate(end_turn=true)`)
 }
 
 func canonicalWatchEvents(events []string) []string {
@@ -4528,10 +4529,10 @@ func writeJobNotificationWatchEvent(b *strings.Builder, data events.JobFinishedD
 	writeWatchFrameOptionalField(b, "status", data.Status)
 	writeWatchFrameOptionalField(b, "reason", data.Reason)
 	if data.ExitCode != nil {
-		writeWatchFrameOptionalField(b, "exit_code", fmt.Sprint(*data.ExitCode))
+		writeWatchFrameOptionalField(b, "exit_code", strconv.Itoa(*data.ExitCode))
 	}
 	b.WriteString("  output_bytes: ")
-	b.WriteString(fmt.Sprint(data.OutputBytes))
+	b.WriteString(strconv.FormatInt(data.OutputBytes, 10))
 	b.WriteString("\n")
 }
 

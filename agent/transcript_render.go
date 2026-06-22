@@ -981,7 +981,11 @@ func writeToolResultBody(b *strings.Builder, toolName string, result *llm.ToolRe
 		return
 	}
 
-	writeFencedBody(b, raw, full)
+	if result == nil {
+		writeFencedBody(b, raw, full)
+		return
+	}
+	writeResultBody(b, result.Content, full)
 }
 
 // jobResultBody renders a decoded jobResult as a status line followed by its

@@ -60,7 +60,7 @@ func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjecte
 // Steer queues a text-only message to inject after the current tool round
 // completes.
 func (s *Session) Steer(msg string) {
-	s.SteerWithImages(msg, nil)
+	_ = s.trySteer(msg)
 }
 
 func (s *Session) trySteer(msg string) bool {

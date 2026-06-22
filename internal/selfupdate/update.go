@@ -98,7 +98,9 @@ func Upgrade(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		_ = os.RemoveAll(tmpDir)
+	}()
 
 	archivePath := filepath.Join(tmpDir, asset)
 	if err := download(ctx, client, url, archivePath); err != nil {
@@ -136,7 +138,7 @@ func releaseAsset(goos, goarch string) (asset, root string, err error) {
 	case "darwin-arm64":
 		return "serf_darwin_arm64.tar.gz", "serf_darwin_arm64", nil
 	default:
-		return "", "", fmt.Errorf("No Serf binary release is available for %s-%s.", goos, goarch)
+		return "", "", fmt.Errorf("unsupported platform %s-%s: no Serf binary release is available", goos, goarch)
 	}
 }
 
@@ -167,7 +169,9 @@ func download(ctx context.Context, client *http.Client, url, dest string) error 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
 	}
@@ -175,8 +179,10 @@ func download(ctx context.Context, client *http.Client, url, dest string) error 
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 	if _, err := io.Copy(file, resp.Body); err != nil {
+		if closeErr := file.Close(); closeErr != nil {
+			return errors.Join(err, closeErr)
+		}
 		return err
 	}
 	return file.Close()
@@ -187,12 +193,16 @@ func extractReleaseArchive(archivePath, root, destRoot string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+	}()
 	gz, err := gzip.NewReader(file)
 	if err != nil {
 		return err
 	}
-	defer gz.Close()
+	defer func() {
+		_ = gz.Close()
+	}()
 	tr := tar.NewReader(gz)
 
 	want := map[string]string{}
@@ -215,7 +225,7 @@ func extractReleaseArchive(archivePath, root, destRoot string) error {
 		if !ok {
 			continue
 		}
-		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+		if header.Typeflag != tar.TypeReg {
 			return fmt.Errorf("release archive entry %s is not a regular file", header.Name)
 		}
 		out := filepath.Join(destRoot, bin)
@@ -268,7 +278,9 @@ func copyExecutable(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() {
+		_ = in.Close()
+	}()
 	tmp := dst + ".tmp"
 	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
 	if err != nil {

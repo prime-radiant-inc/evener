@@ -361,12 +361,12 @@ func atoi(s string) int {
 	return n
 }
 
-func truncate(s string, max int) string {
+func truncate(s string, maxLen int) string {
 	s = strings.TrimSpace(s)
-	if len(s) <= max {
+	if len(s) <= maxLen {
 		return s
 	}
-	return s[:max] + "…"
+	return s[:maxLen] + "…"
 }
 
 func oneLine(s string) string {

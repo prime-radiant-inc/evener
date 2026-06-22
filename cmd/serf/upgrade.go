@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -30,7 +31,7 @@ func runUpgrade(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if fs.NArg() > 1 {
-		return fmt.Errorf("expected at most one upgrade target")
+		return errors.New("expected at most one upgrade target")
 	}
 	requested := ""
 	if fs.NArg() == 1 {

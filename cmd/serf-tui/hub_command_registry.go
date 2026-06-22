@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -69,7 +70,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Scopes:        hubCommandDashboard | hubCommandSession,
 		Run: func(m *hubModel, args string) tea.Cmd {
 			if m.client == nil {
-				err := fmt.Errorf("upgrade is not available without a hub client")
+				err := errors.New("upgrade is not available without a hub client")
 				if m.mode == hubModeSession {
 					m.recordSessionError(err.Error())
 				} else {

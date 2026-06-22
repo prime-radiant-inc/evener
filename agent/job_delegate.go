@@ -260,7 +260,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		onIdle = "fail"
 	}
 	if onIdle != "fail" && onIdle != "start" {
-		return sendMessageFailed(target, fmt.Errorf("invalid_request: on_idle must be start or fail"))
+		return sendMessageFailed(target, errors.New("invalid_request: on_idle must be start or fail"))
 	}
 	if target == "main" || target == runtimeMessageAliasWatched {
 		return sendMessageFailed(target, fmt.Errorf("invalid_request: %s is not a delegate_send target", target))
@@ -329,7 +329,6 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if !strings.HasPrefix(target, "dlg_") {
 		return sendMessageFailed(target, fmt.Errorf("target_not_found: delegate %q not found", target))
 	}
-	recTarget := target
 	delegates, err := jm.store.LoadDelegates()
 	if err != nil {
 		return sendMessageFailed(target, err)
@@ -339,7 +338,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return sendMessageFailed(target, fmt.Errorf("target_not_found: delegate %q not found", target))
 	}
 	delegateID := delegateRec.DelegateID
-	recTarget = delegateRec.CurrentJobID
+	recTarget := delegateRec.CurrentJobID
 	if recTarget == "" {
 		recTarget = delegateRec.LatestJobID
 	}
@@ -1335,6 +1334,7 @@ func (s *Session) attachDelegateJob(jm *jobManager, childID, task string, sub *s
 	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobstore.NewJobID(), nil, false, nil, nil, link, nil)
 }
 
+//nolint:unused // retained for watch restore paths that create a fresh delegate without a preexisting delegate id.
 func (s *Session) attachDelegateJobFromWatch(jm *jobManager, childID, task string, sub *subagent, resultSchema any, restore *jobstore.DelegateRestoreDescriptor, fromWatch bool) (*runningJob, error) {
 	link := delegateJobLink{delegateID: jobstore.NewDelegateID(), generation: jobstore.NewDelegateGeneration(), create: true}
 	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobstore.NewJobID(), resultSchema, fromWatch, nil, restore, link, nil)
@@ -1360,6 +1360,7 @@ func (s *Session) attachDelegateJobWithPreparedAndDelegate(jm *jobManager, child
 	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobID, resultSchema, fromWatch, prepared, nil, link, nil)
 }
 
+//nolint:unused // retained for crash-restore attach paths that resume from a previous delegate descriptor.
 func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any, fromWatch bool, prepared *preparedSubagentRun, previousRestore *jobstore.DelegateRestoreDescriptor) (*runningJob, error) {
 	return s.attachDelegateJobWithRestoreAndDelegate(jm, childID, task, sub, jobID, resultSchema, fromWatch, prepared, previousRestore, delegateJobLink{}, nil)
 }
