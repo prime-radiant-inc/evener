@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean
+.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -9,6 +9,12 @@ BINDIR ?= $(PREFIX)/bin
 SERF_SHARE_BINDIR ?= $(PREFIX)/share/serf/bin
 INSTALL_BUILD_DIR ?= .build/install
 SERF_INSTALL_BINS := serf serf-hub serf-tui serf-doctor
+DIST_DIR ?= dist
+DIST_GOOS ?= $(shell go env GOOS)
+DIST_GOARCH ?= $(shell go env GOARCH)
+SERF_DIST_NAME := serf_$(DIST_GOOS)_$(DIST_GOARCH)
+SERF_DIST_BIN_DIR := $(DIST_DIR)/$(SERF_DIST_NAME)
+SERF_DIST_ARCHIVE := $(DIST_DIR)/$(SERF_DIST_NAME).tar.gz
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o serf ./cmd/serf/
@@ -33,6 +39,15 @@ build-all: build build-hub build-tui build-doctor
 
 build-llmcall:
 	go build -o llmcall ./cmd/llmcall/
+
+dist:
+	rm -rf "$(SERF_DIST_BIN_DIR)" "$(SERF_DIST_ARCHIVE)"
+	install -d "$(SERF_DIST_BIN_DIR)"
+	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -ldflags "$(LDFLAGS)" -o "$(SERF_DIST_BIN_DIR)/serf" ./cmd/serf/
+	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(SERF_DIST_BIN_DIR)/serf-hub" ./cmd/serf-hub/
+	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(SERF_DIST_BIN_DIR)/serf-tui" ./cmd/serf-tui/
+	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(SERF_DIST_BIN_DIR)/serf-doctor" ./cmd/serf-doctor/
+	tar -C "$(DIST_DIR)" -czf "$(SERF_DIST_ARCHIVE)" "$(SERF_DIST_NAME)"
 
 install:
 	install -d "$(INSTALL_BUILD_DIR)"

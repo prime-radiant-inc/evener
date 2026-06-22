@@ -26,7 +26,35 @@ make build-hub
 
 ## Install
 
-Home install:
+Install the latest release on Linux x64 or macOS Apple silicon:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/serf/main/install.sh | sh
+```
+
+The release installer downloads the matching GitHub release archive, installs
+`serf`, `serf-hub`, `serf-tui`, and `serf-doctor` under
+`~/.local/share/serf/bin`, and symlinks them into `~/.local/bin`.
+
+Install a specific tagged release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/serf/main/install.sh | env SERF_INSTALL_VERSION=v1.2.3 sh
+```
+
+Install the latest successful build from `main`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/serf/main/install.sh | env SERF_INSTALL_VERSION=snapshot sh
+```
+
+Override the install prefix, using `sudo` for system-owned paths:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/serf/main/install.sh | sudo env PREFIX=/usr/local sh
+```
+
+From a source checkout:
 
 ```bash
 make install

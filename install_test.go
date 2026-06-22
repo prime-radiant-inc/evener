@@ -1,13 +1,16 @@
 package serf_test
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -112,6 +115,115 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	assertContainsAll(t, "bundled agents", status.Detailed.Agents, expectedAgents)
 	assertContainsAll(t, "installed skills", installedSkillNames, []string{installedDoctoringSkill})
 	assertSameSet(t, "bundled skills", installedSkillNames, expectedSkills)
+}
+
+func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(repoRoot, "install.sh")
+
+	for _, tc := range []struct {
+		name     string
+		osName   string
+		archName string
+		asset    string
+	}{
+		{
+			name:     "linux amd64",
+			osName:   "Linux",
+			archName: "x86_64",
+			asset:    "serf_linux_amd64.tar.gz",
+		},
+		{
+			name:     "darwin arm64",
+			osName:   "Darwin",
+			archName: "arm64",
+			asset:    "serf_darwin_arm64.tar.gz",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			fixtures := t.TempDir()
+			archive := filepath.Join(fixtures, tc.asset)
+			writeInstallReleaseArchive(t, archive, strings.TrimSuffix(tc.asset, ".tar.gz"))
+
+			fakeBin := filepath.Join(fixtures, "bin")
+			if err := os.Mkdir(fakeBin, 0o755); err != nil {
+				t.Fatalf("mkdir fake bin: %v", err)
+			}
+			writeExecutable(t, filepath.Join(fakeBin, "uname"), fmt.Sprintf(`#!/bin/sh
+case "$1" in
+  -s) echo %q ;;
+  -m) echo %q ;;
+  *) echo "unsupported uname args: $*" >&2; exit 2 ;;
+esac
+`, tc.osName, tc.archName))
+
+			urlFile := filepath.Join(fixtures, "curl-url")
+			writeExecutable(t, filepath.Join(fakeBin, "curl"), `#!/bin/sh
+out=
+url=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+if [ -z "$out" ]; then
+  echo "missing -o" >&2
+  exit 2
+fi
+printf '%s\n' "$url" > "$SERF_FAKE_CURL_URL_FILE"
+cp "$SERF_FAKE_CURL_ARCHIVE" "$out"
+`)
+
+			env := installTestEnv(t, home, map[string]string{
+				"PATH":                    fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"SERF_INSTALL_VERSION":    "v1.2.3",
+				"SERF_FAKE_CURL_ARCHIVE":  archive,
+				"SERF_FAKE_CURL_URL_FILE": urlFile,
+			})
+			runCommand(t, repoRoot, env, "sh", script)
+
+			expectedURL := "https://github.com/prime-radiant-inc/serf/releases/download/v1.2.3/" + tc.asset
+			data, err := os.ReadFile(urlFile)
+			if err != nil {
+				t.Fatalf("read fake curl URL: %v", err)
+			}
+			if got := strings.TrimSpace(string(data)); got != expectedURL {
+				t.Fatalf("download URL = %q, want %q", got, expectedURL)
+			}
+
+			binDir := filepath.Join(home, ".local", "bin")
+			shareBinDir := filepath.Join(home, ".local", "share", "serf", "bin")
+			for _, bin := range []string{"serf", "serf-hub", "serf-tui", "serf-doctor"} {
+				installed := filepath.Join(shareBinDir, bin)
+				info, err := os.Stat(installed)
+				if err != nil {
+					t.Fatalf("installed binary %s: %v", installed, err)
+				}
+				if info.Mode().Perm()&0o111 == 0 {
+					t.Fatalf("installed binary %s is not executable: mode %s", installed, info.Mode())
+				}
+
+				link := filepath.Join(binDir, bin)
+				target, err := os.Readlink(link)
+				if err != nil {
+					t.Fatalf("readlink %s: %v", link, err)
+				}
+				if target != installed {
+					t.Fatalf("symlink %s -> %s, want %s", link, target, installed)
+				}
+			}
+		})
+	}
 }
 
 func installedServeStatus(t *testing.T, repoRoot string, baseEnv []string, serfBin string) installedStatus {
@@ -324,6 +436,45 @@ func runCommand(t *testing.T, dir string, env []string, name string, args ...str
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, out)
+	}
+}
+
+func writeInstallReleaseArchive(t *testing.T, path, root string) {
+	t.Helper()
+
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create release archive: %v", err)
+	}
+	defer file.Close()
+
+	gz := gzip.NewWriter(file)
+	defer gz.Close()
+
+	tw := tar.NewWriter(gz)
+	defer tw.Close()
+
+	for _, bin := range []string{"serf", "serf-hub", "serf-tui", "serf-doctor"} {
+		body := fmt.Sprintf("#!/bin/sh\necho %s\n", bin)
+		header := &tar.Header{
+			Name: filepath.ToSlash(filepath.Join(root, bin)),
+			Mode: 0o755,
+			Size: int64(len(body)),
+		}
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatalf("write tar header: %v", err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatalf("write tar body: %v", err)
+		}
+	}
+}
+
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
 	}
 }
 
