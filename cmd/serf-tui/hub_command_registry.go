@@ -62,6 +62,25 @@ var hubCommandRegistry = []hubCommandDefinition{
 		},
 	},
 	{
+		Name:          "upgrade",
+		Summary:       "Upgrade installed Serf",
+		PaletteLabel:  "/upgrade",
+		PaletteDetail: "upgrade installed Serf",
+		Scopes:        hubCommandDashboard | hubCommandSession,
+		Run: func(m *hubModel, args string) tea.Cmd {
+			if m.client == nil {
+				err := fmt.Errorf("upgrade is not available without a hub client")
+				if m.mode == hubModeSession {
+					m.recordSessionError(err.Error())
+				} else {
+					m.err = err
+				}
+				return nil
+			}
+			return sendHubUpgrade(m.client, args)
+		},
+	},
+	{
 		Name:          "help",
 		Summary:       "Show this help",
 		PaletteLabel:  "/help",

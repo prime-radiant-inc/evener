@@ -84,6 +84,19 @@ serf-tui --help
 serf-doctor --help
 ```
 
+Upgrade installed binaries manually:
+
+```bash
+serf upgrade
+```
+
+`serf upgrade` follows the binary's install channel: release builds upgrade to
+the latest release, and snapshot builds upgrade to the latest successful
+`main` build. You can override the target with `serf upgrade release`,
+`serf upgrade snapshot`, or a tagged version such as `serf upgrade v1.2.3`.
+The TUI and web UI also expose a manual `/upgrade` command that calls through
+the hub and uses the same channel tracking.
+
 On first use, Serf creates:
 
 - `~/.serf/run` for live daemon rendezvous files.

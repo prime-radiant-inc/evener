@@ -300,6 +300,33 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("Steering sent.")
 		}
 		return m, nil
+	case hubUpgradeMsg:
+		if msg.err != nil {
+			if m.mode == hubModeSession {
+				m.addHubErrorNotice("Upgrade failed", "upgrade", msg.err, "Check the hub connection and retry /upgrade.")
+				m.recordSessionError("Upgrade failed: " + msg.err.Error())
+			} else {
+				m.err = fmt.Errorf("upgrade failed: %w", msg.err)
+			}
+			return m, nil
+		}
+		m.err = nil
+		m.clearNoticesByCategory("upgrade")
+		m.clearSessionError()
+		text := formatHubUpgradeResult(msg.resp)
+		if m.mode == hubModeSession {
+			m.addSessionSystem(text)
+		} else {
+			m.addNotice(noticePanel{
+				Title:      "Upgrade complete",
+				Category:   "upgrade",
+				Summary:    strings.SplitN(text, "\n", 2)[0],
+				Source:     "hub",
+				Reason:     strings.TrimSpace(msg.resp.Archive),
+				NextAction: strings.TrimSpace(msg.resp.RestartMessage),
+			})
+		}
+		return m, nil
 	case hubClearMsg:
 		if msg.err != nil {
 			m.recordSessionError("Clear failed: " + msg.err.Error())

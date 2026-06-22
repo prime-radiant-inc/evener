@@ -63,6 +63,11 @@ type hubActionMsg struct {
 	err    error
 }
 
+type hubUpgradeMsg struct {
+	resp appwire.UpgradeResponse
+	err  error
+}
+
 type hubClearMsg struct {
 	resp hubRefResponse
 	err  error
@@ -442,6 +447,38 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, turnI
 		}
 		return hubActionMsg{action: action, err: err}
 	}
+}
+
+func sendHubUpgrade(client *appwire.Client, requested string) tea.Cmd {
+	requested = strings.TrimSpace(requested)
+	return func() tea.Msg {
+		resp, err := client.Upgrade(context.Background(), appwire.UpgradeParams{Requested: requested})
+		return hubUpgradeMsg{resp: resp, err: err}
+	}
+}
+
+func formatHubUpgradeResult(resp appwire.UpgradeResponse) string {
+	target := strings.TrimSpace(resp.Channel)
+	if target == "" {
+		target = strings.TrimSpace(resp.Release)
+	}
+	if target == "" {
+		target = "requested channel"
+	}
+	lines := []string{fmt.Sprintf("Serf upgraded to %s.", target)}
+	if resp.Archive != "" {
+		lines = append(lines, "Archive: "+resp.Archive)
+	}
+	if resp.ShareBinDir != "" {
+		lines = append(lines, "Installed: "+resp.ShareBinDir)
+	}
+	if resp.BinDir != "" {
+		lines = append(lines, "Symlinks: "+resp.BinDir)
+	}
+	if resp.RestartMessage != "" {
+		lines = append(lines, resp.RestartMessage)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func appendTextInput(text string, items []appwire.InputItem) []appwire.InputItem {

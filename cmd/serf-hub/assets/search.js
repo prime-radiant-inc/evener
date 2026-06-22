@@ -252,6 +252,36 @@
     }).catch(() => []);
   }
 
+  function upgradeSerf(requested) {
+    requested = String(requested || "").trim();
+    const promise = window.SerfAppwire
+      ? window.SerfAppwire.upgrade(requested)
+      : fetch("/api/upgrade", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requested: requested }),
+        });
+    return Promise.resolve(promise).then(function (resp) {
+      if (resp && typeof resp.ok !== "undefined") {
+        if (!resp.ok) return blockedFromResponse("upgrade failed", resp);
+        return resp.json();
+      }
+      return resp;
+    }).then(function (result) {
+      if (isBlocked(result)) return result;
+      const channel = (result && result.channel) || "current channel";
+      const restart = result && result.restart_message;
+      if (window.SerfToast) window.SerfToast.show("Serf upgraded to " + channel, "success");
+      if (restart && window.SerfRenderer && window.SerfRenderer.appendBanner) {
+        window.SerfRenderer.appendBanner("info", restart, { source: "hub", title: "Upgrade complete" });
+      }
+      return result;
+    }, function (err) {
+      if (window.SerfToast) window.SerfToast.show("Upgrade failed", "error");
+      throw err;
+    });
+  }
+
 
   // Nav is the navigation indirection. JSDOM's Location.assign is
   // non-configurable, so production code routes navigations through this
@@ -280,6 +310,8 @@
       { id: "help", title: "Show keyboard shortcuts", hint: "TUI parity reference", keywords: ["?", "keys", "shortcuts"], scope: "global",
         stayOpen: true,
         run: () => { renderHelpPanel(); input.focus(); } },
+      { id: "upgrade", title: "Upgrade Serf", hint: "current channel", keywords: ["update", "snapshot", "release"], scope: "global",
+        run: () => upgradeSerf("") },
 
       // session (live only)
       { id: "compact", title: "Compact transcript", hint: "free up token space", keywords: ["compress"], scope: "session",
