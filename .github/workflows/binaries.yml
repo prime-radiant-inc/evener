@@ -36,7 +36,9 @@ jobs:
           go-version-file: go.work
 
       - name: Build archive
-        run: make dist DIST_GOOS=${{ matrix.goos }} DIST_GOARCH=${{ matrix.goarch }}
+        env:
+          BUILD_CHANNEL: ${{ github.ref == 'refs/heads/main' && 'snapshot' || 'release' }}
+        run: make dist DIST_GOOS=${{ matrix.goos }} DIST_GOARCH=${{ matrix.goarch }} BUILD_CHANNEL=${BUILD_CHANNEL}
 
       - name: Inspect archive
         run: tar -tzf dist/${{ matrix.asset }}
