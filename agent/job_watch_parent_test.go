@@ -234,6 +234,90 @@ func TestParentSourceWatchFrameDeliveredToChildWatcher(t *testing.T) {
 	}
 }
 
+func TestRestoredParentSourcePendingSendPreservesReceiverRouting(t *testing.T) {
+	const (
+		parentSessionID    = "PARENT"
+		receiverSessionID  = "child_observer"
+		receiverDelegateID = "dlg_observer"
+	)
+	stateDir := t.TempDir()
+	jm, err := newJobManager(stateDir, parentSessionID, func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+
+	res, err := jm.configureWatch(watchArgs{
+		Source:             "parent",
+		Target:             runtimeMessageAliasCaller,
+		ReceiverSessionID:  receiverSessionID,
+		ReceiverDelegateID: receiverDelegateID,
+		Events:             []string{"assistant.tool"},
+	})
+	if err != nil {
+		t.Fatalf("configureWatch: %v", err)
+	}
+	jm.onSessionEvent(events.SessionEvent{
+		Kind:      events.EventToolCallEnd,
+		SessionID: parentSessionID,
+		Data: events.ToolCallEndData{
+			ToolName:      "read_file",
+			CallID:        "call_read_file",
+			ArgumentsJSON: `{"file_path":"notes.txt"}`,
+			Output:        "ok",
+		},
+	})
+
+	record, err := jm.store.LoadWatchSends()
+	if err != nil {
+		t.Fatalf("LoadWatchSends: %v", err)
+	}
+	if len(record.Pending) != 1 {
+		t.Fatalf("pending sends = %d, want 1", len(record.Pending))
+	}
+	for _, state := range record.Pending {
+		if state.ReceiverSessionID != receiverSessionID || state.ReceiverDelegateID != receiverDelegateID {
+			t.Fatalf("pending receiver = %q/%q, want %q/%q", state.ReceiverSessionID, state.ReceiverDelegateID, receiverSessionID, receiverDelegateID)
+		}
+	}
+	if err := jm.store.Close(); err != nil {
+		t.Fatalf("close original store: %v", err)
+	}
+
+	restored, err := newJobManager(stateDir, parentSessionID, func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("restore jobManager: %v", err)
+	}
+	t.Cleanup(func() { _ = restored.store.Close() })
+
+	sends := restored.pendingWatchSendDeliveries(nil)
+	if len(sends) != 1 {
+		t.Fatalf("restored pending sends = %d, want 1", len(sends))
+	}
+	cfg := sends[0].cfg
+	if cfg.receiverSessionID != receiverSessionID || cfg.receiverDelegateID != receiverDelegateID {
+		t.Fatalf("restored cfg receiver = %q/%q, want %q/%q", cfg.receiverSessionID, cfg.receiverDelegateID, receiverSessionID, receiverDelegateID)
+	}
+
+	list := restored.watchListToolResult()
+	if len(list.Watches) != 1 {
+		t.Fatalf("restored watch list length = %d, want 1", len(list.Watches))
+	}
+	if list.Watches[0].SendTo != "" {
+		t.Fatalf("restored public list send_to = %q, want hidden internal send", list.Watches[0].SendTo)
+	}
+	inspect := restored.inspectWatchByID(res.WatchID)
+	if inspect.SendTo != "" {
+		t.Fatalf("restored public inspect send_to = %q, want hidden internal send", inspect.SendTo)
+	}
+
+	if _, err := restored.clearReceiverWatchByID(res.WatchID, receiverSessionID, receiverDelegateID); err != nil {
+		t.Fatalf("clearReceiverWatchByID: %v", err)
+	}
+	if sends := restored.pendingWatchSendDeliveries(nil); len(sends) != 0 {
+		t.Fatalf("pending sends after receiver clear = %d, want 0", len(sends))
+	}
+}
+
 func TestWatchOriginCommunicateEndTurnResumesParentOnce(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{

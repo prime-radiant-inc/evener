@@ -162,6 +162,8 @@ type WatchSendState struct {
 	TriggerReason      string             `json:"trigger_reason,omitempty"`
 	CoalescedCount     int                `json:"coalesced_count,omitempty"`
 	DelegateGeneration string             `json:"delegate_generation,omitempty"`
+	ReceiverSessionID  string             `json:"receiver_session_id,omitempty"`
+	ReceiverDelegateID string             `json:"receiver_delegate_id,omitempty"`
 	DiagnosticReason   string             `json:"diagnostic_reason,omitempty"`
 	CreatedAt          time.Time          `json:"created_at,omitempty"`
 	UpdatedAt          time.Time          `json:"updated_at,omitempty"`

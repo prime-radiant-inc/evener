@@ -294,11 +294,13 @@ type watchSendDelivery struct {
 }
 
 type restoredWatchConfigKey struct {
-	visibleSessionID string
-	watchID          string
-	target           string
-	sendTo           string
-	generation       string
+	visibleSessionID   string
+	watchID            string
+	target             string
+	sendTo             string
+	receiverSessionID  string
+	receiverDelegateID string
+	generation         string
 }
 
 // watchSendToken identifies a pending caller-targeted watch send. Tokens are
@@ -1155,22 +1157,26 @@ func (jm *jobManager) restoreWatchSendPending() error {
 	for _, state := range states {
 		key := state.Key
 		cfgKey := restoredWatchConfigKey{
-			visibleSessionID: key.VisibleSessionID,
-			watchID:          key.WatchID,
-			target:           key.WatchTarget,
-			sendTo:           key.ResolvedSendTo,
-			generation:       key.WatchGeneration,
+			visibleSessionID:   key.VisibleSessionID,
+			watchID:            key.WatchID,
+			target:             key.WatchTarget,
+			sendTo:             key.ResolvedSendTo,
+			receiverSessionID:  strings.TrimSpace(state.ReceiverSessionID),
+			receiverDelegateID: strings.TrimSpace(state.ReceiverDelegateID),
+			generation:         key.WatchGeneration,
 		}
 		cfg := cfgs[cfgKey]
 		if cfg == nil {
 			cfg = &watchConfig{
-				id:           key.WatchID,
-				watchID:      key.WatchID,
-				sourcePublic: watchPublicSource("", key.WatchTarget),
-				target:       key.WatchTarget,
-				send:         &watchSendArgs{To: key.ResolvedSendTo},
-				generation:   key.WatchGeneration,
-				pending:      make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
+				id:                 key.WatchID,
+				watchID:            key.WatchID,
+				sourcePublic:       watchPublicSource("", key.WatchTarget),
+				receiverSessionID:  cfgKey.receiverSessionID,
+				receiverDelegateID: cfgKey.receiverDelegateID,
+				target:             key.WatchTarget,
+				send:               &watchSendArgs{To: key.ResolvedSendTo},
+				generation:         key.WatchGeneration,
+				pending:            make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
 			}
 			cfgs[cfgKey] = cfg
 		}
@@ -2633,6 +2639,8 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 		TriggerReason:      d.trigger,
 		Provenance:         provenance.Clone(d.provenance),
 		DelegateGeneration: d.delegateGeneration,
+		ReceiverSessionID:  d.cfg.receiverSessionID,
+		ReceiverDelegateID: d.cfg.receiverDelegateID,
 	}
 }
 
