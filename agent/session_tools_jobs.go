@@ -174,6 +174,9 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	var res watchResult
 	switch a.Operation {
 	case "create":
+		if strings.HasPrefix(a.Source, "job_") {
+			a.Target = a.Source
+		}
 		res, err = jm.configureWatch(a)
 	case "clear":
 		res, err = jm.clearWatchByID(a.WatchID)

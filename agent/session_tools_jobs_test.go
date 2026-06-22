@@ -1730,7 +1730,7 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":"(?i)ready"}`, shellOut.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","source":%q,"output_match":"(?i)ready"}`, shellOut.JobID)),
 	})
 	if res.IsError {
 		t.Fatalf("job_watch returned error: %s", res.Output)
@@ -1817,7 +1817,7 @@ func TestJobWatchCreateReturnsIDAndClearUsesIDOnly(t *testing.T) {
 	createRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","target":%q,"output_match":"ready"}`, shellOut.JobID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","source":%q,"output_match":"ready"}`, shellOut.JobID)),
 	})
 	if createRes.IsError {
 		t.Fatalf("job_watch create returned error: %s", createRes.Output)
@@ -1884,14 +1884,14 @@ func TestJobWatchRejectsRemovedPublicShapes(t *testing.T) {
 		args string
 		want string
 	}{
-		{name: "missing operation", args: `{"target":"caller","events":["job.notification"]}`, want: "missing properties: 'operation'"},
-		{name: "unsupported operation", args: `{"operation":"pause","target":"caller","events":["job.notification"]}`, want: "value must be one of"},
-		{name: "create without target", args: `{"operation":"create","events":["job.notification"]}`, want: "target is required"},
+		{name: "missing operation", args: `{"source":"self","events":["job.notification"]}`, want: "missing properties: 'operation'"},
+		{name: "unsupported operation", args: `{"operation":"pause","source":"self","events":["job.notification"]}`, want: "value must be one of"},
+		{name: "create without source", args: `{"operation":"create","events":["job.notification"]}`, want: "source is required"},
 		{name: "inspect without watch id", args: `{"operation":"inspect"}`, want: "watch_id is required"},
 		{name: "clear without watch id", args: `{"operation":"clear"}`, want: "watch_id is required"},
-		{name: "target wildcard", args: `{"operation":"create","target":"*","events":["job.notification"]}`, want: "wildcard watch target is not supported"},
-		{name: "send to job id", args: `{"operation":"create","target":"caller","events":["job.notification"],"send":{"to":"job_observer","message":"observe"}}`, want: "job_id is a job/turn handle"},
-		{name: "send to watched", args: `{"operation":"create","target":"caller","events":["job.notification"],"send":{"to":"watched","message":"observe"}}`, want: "watched is not a v1 delivery target"},
+		{name: "source wildcard", args: `{"operation":"create","source":"*","events":["job.notification"]}`, want: "wildcard watch target is not supported"},
+		{name: "legacy target rejected", args: `{"operation":"create","target":"caller","events":["job.notification"]}`, want: "additionalProperties 'target' not allowed"},
+		{name: "legacy send rejected", args: `{"operation":"create","source":"self","events":["job.notification"],"send":{"to":"job_observer","message":"observe"}}`, want: "additionalProperties 'send' not allowed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestSession(t)
