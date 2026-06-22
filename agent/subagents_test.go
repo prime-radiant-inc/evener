@@ -716,6 +716,57 @@ func TestWatchParentChildGetsJobWatchButNotDelegate(t *testing.T) {
 	}
 }
 
+func TestWatchParentGrantIsNotInheritedByGrandchild(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	subCfg := SessionConfig{MaxSubagentDepth: 3}
+	subCfg.spawn.depth = 1
+	subCfg.spawn.parentSessionID = "parent"
+	subCfg.spawn.delegationAllowance = 1
+	subCfg.spawn.parentWatchGranted = true
+
+	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Close()
+	if child.reg.Get("job_watch") == nil {
+		t.Fatal("test setup: watch_parent child must have job_watch registered")
+	}
+
+	child.pluginAgents = map[string]plugin.Agent{
+		"typed-child": {
+			Name:  "typed-child",
+			Tools: []string{"read_file"},
+		},
+	}
+	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
+	prepared, err := child.prepareSubagentRun(ctx, "grandchild task", "", dir, 5, "typed-child", "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releasePreparedTreeSlot(prepared)
+	defer prepared.sub.sess.Close()
+
+	grandchild := prepared.sub.sess
+	if grandchild.cfg.spawn.parentWatchGranted {
+		t.Fatal("grandchild must not inherit parentWatchGranted without watch_parent")
+	}
+	if grandchild.cfg.spawn.parentInstallWatch != nil {
+		t.Fatal("grandchild must not inherit parentInstallWatch without watch_parent")
+	}
+	if grandchild.reg.Get("job_watch") != nil {
+		t.Fatal("grandchild without watch_parent must not have job_watch registered")
+	}
+	if hasCachedCallableToolDefinition(grandchild, "job_watch") {
+		t.Fatal("grandchild without watch_parent must not advertise job_watch")
+	}
+	if grandchild.reg.Get("delegate") != nil {
+		t.Fatal("grandchild with delegation_allowance 0 must not have delegate registered")
+	}
+}
+
 func hasCachedCallableToolDefinition(s *Session, name string) bool {
 	if mappedName := s.profile.ToolNameMap()[name]; mappedName != "" {
 		name = mappedName

@@ -367,6 +367,8 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	subCfg.MCPInline = nil
 	subCfg.spawn.parentJobID = ""
 	subCfg.spawn.forwardJobEvent = nil
+	subCfg.spawn.parentWatchGranted = false
+	subCfg.spawn.parentInstallWatch = nil
 	subCfg.spawn.parentSessionID = s.id
 	subCfg.spawn.subagentTask = task
 	subCfg.spawn.depth = depth + 1
