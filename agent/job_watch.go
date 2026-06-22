@@ -1306,6 +1306,58 @@ func (jm *jobManager) clearWatchByID(watchID string) (watchResult, error) {
 	}, nil
 }
 
+func (jm *jobManager) hasWatchID(watchID string) (bool, error) {
+	jm.mu.Lock()
+	if _, _, ok := jm.watchConfigByIDLocked(watchID); ok {
+		jm.mu.Unlock()
+		return true, nil
+	}
+	for cfg := range jm.terminalFlush {
+		if cfg != nil && cfg.watchID == watchID {
+			jm.mu.Unlock()
+			return true, nil
+		}
+	}
+	jm.mu.Unlock()
+
+	watches, err := jm.store.LoadWatches()
+	if err != nil {
+		return false, err
+	}
+	w := watches[watchID]
+	return w != nil && w.Active, nil
+}
+
+func (jm *jobManager) clearReceiverWatchByID(watchID, receiverSessionID, receiverDelegateID string) (watchResult, error) {
+	receiverSessionID = strings.TrimSpace(receiverSessionID)
+	receiverDelegateID = strings.TrimSpace(receiverDelegateID)
+	if receiverSessionID == "" {
+		return watchResult{}, errors.New("source_not_watchable: parent watch observer session is unknown")
+	}
+
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(watchID)
+	if !ok {
+		for terminalCfg := range jm.terminalFlush {
+			if terminalCfg != nil && terminalCfg.watchID == watchID {
+				cfg = terminalCfg
+				ok = true
+				break
+			}
+		}
+	}
+	if !ok {
+		jm.mu.Unlock()
+		return watchResult{WatchID: watchID, Watching: false}, nil
+	}
+	if cfg.receiverSessionID != receiverSessionID || cfg.receiverDelegateID != receiverDelegateID {
+		jm.mu.Unlock()
+		return watchResult{WatchID: watchID, Watching: false}, nil
+	}
+	jm.mu.Unlock()
+	return jm.clearWatchByID(watchID)
+}
+
 func sourcePublicForClearedWatch(key watchKey, targets []watchConfigTerminalSnapshot) string {
 	for _, target := range targets {
 		if watchKeyMatchesClearRequest(target.key, key) && target.cfg != nil && target.cfg.sourcePublic != "" {

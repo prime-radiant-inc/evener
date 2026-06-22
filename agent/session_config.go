@@ -238,6 +238,10 @@ type spawnConfig struct {
 	// owned by this child as watcher/receiver.
 	parentInstallWatch func(observerSessionID string, observerDelegateID string, args watchArgs) (watchResult, error)
 
+	// parentClearWatch clears a source:"parent" watch owned by this child from
+	// the live parent.
+	parentClearWatch func(observerSessionID string, observerDelegateID string, watchID string) (watchResult, error)
+
 	// subagentTask is the task description passed to delegate.
 	subagentTask string
 

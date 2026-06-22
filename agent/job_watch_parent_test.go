@@ -137,6 +137,46 @@ func TestJobWatchParentSourceReceiverScopedClearLeavesOtherReceivers(t *testing.
 	})
 }
 
+func TestJobWatchParentSourcePublicClearRoutesToParent(t *testing.T) {
+	parent := newTestSession(t)
+	first, firstDelegateID := createParentWatchChild(t, parent, "first observer")
+	second, secondDelegateID := createParentWatchChild(t, parent, "second observer")
+
+	firstOut, err := jobWatchTool(first.sess, map[string]any{
+		"operation": "create",
+		"source":    "parent",
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("first jobWatchTool: %v", err)
+	}
+	firstState := firstOut.(tooldefs.StateResult).State.(jobWatchToolResult)
+	if _, err := jobWatchTool(second.sess, map[string]any{
+		"operation": "create",
+		"source":    "parent",
+	}, jobToolResultDefaultMaxChar); err != nil {
+		t.Fatalf("second jobWatchTool: %v", err)
+	}
+	assertParentWatchReceivers(t, parent, map[string]string{
+		first.sess.ID():  firstDelegateID,
+		second.sess.ID(): secondDelegateID,
+	})
+
+	clearOut, err := jobWatchTool(first.sess, map[string]any{
+		"operation": "clear",
+		"watch_id":  firstState.WatchID,
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("public clear: %v", err)
+	}
+	clearState := clearOut.(tooldefs.StateResult).State.(jobWatchToolResult)
+	if clearState.WatchID != firstState.WatchID || clearState.Watching {
+		t.Fatalf("clear state = %+v, want watch %q cleared", clearState, firstState.WatchID)
+	}
+	assertParentWatchReceivers(t, parent, map[string]string{
+		second.sess.ID(): secondDelegateID,
+	})
+}
+
 func createParentWatchChild(t *testing.T, parent *Session, task string) (*subagent, string) {
 	t.Helper()
 	res := parent.createDelegate(context.Background(), delegateArgs{

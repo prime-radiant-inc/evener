@@ -697,6 +697,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 			parentSteerDelivered:    s.trySteerWithProvenanceAndNotify,
 			parentWatchGranted:      desc.ParentWatchGranted,
 			parentInstallWatch:      restoredParentInstallWatch(s, desc),
+			parentClearWatch:        restoredParentClearWatch(s, desc),
 			parentGrantedJobRead:    s.lookupGrantedJobRead,
 			subagentTask:            desc.Task,
 			depth:                   s.depth + 1,
@@ -861,6 +862,13 @@ func restoredParentInstallWatch(s *Session, desc *jobstore.DelegateRestoreDescri
 		return nil
 	}
 	return s.installParentSourceWatchForChild
+}
+
+func restoredParentClearWatch(s *Session, desc *jobstore.DelegateRestoreDescriptor) func(observerSessionID string, observerDelegateID string, watchID string) (watchResult, error) {
+	if desc == nil || !desc.ParentWatchGranted {
+		return nil
+	}
+	return s.clearParentSourceWatchForChild
 }
 
 func validateRestoredDelegateRequiredToolNames(registered map[string]bool, required []string) error {

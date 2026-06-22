@@ -3048,6 +3048,24 @@ func TestJobSendMessageRestoresWatchParentLeafObserverJobWatch(t *testing.T) {
 	if cfg.receiverDelegateID != rec.DelegateID {
 		t.Fatalf("restored receiverDelegateID = %q, want delegate %q", cfg.receiverDelegateID, rec.DelegateID)
 	}
+
+	clearOut, err := jobWatchTool(child, map[string]any{
+		"operation": "clear",
+		"watch_id":  state.WatchID,
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("restored observer public clear: %v", err)
+	}
+	clearState := clearOut.(tool.StateResult).State.(jobWatchToolResult)
+	if clearState.WatchID != state.WatchID || clearState.Watching {
+		t.Fatalf("restored observer clear state = %+v, want watch %q cleared", clearState, state.WatchID)
+	}
+	restored.jobManager.mu.Lock()
+	remaining := len(restored.jobManager.watches)
+	restored.jobManager.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("restored parent watch count after clear = %d, want 0", remaining)
+	}
 }
 
 func TestRuntimeLostDelegateResumeAfterRestoreCreatesNewJobFromRetainedState(t *testing.T) {

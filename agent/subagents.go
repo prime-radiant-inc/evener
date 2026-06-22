@@ -370,6 +370,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	subCfg.spawn.forwardJobEvent = nil
 	subCfg.spawn.parentWatchGranted = false
 	subCfg.spawn.parentInstallWatch = nil
+	subCfg.spawn.parentClearWatch = nil
 	subCfg.spawn.parentSessionID = s.id
 	subCfg.spawn.subagentTask = task
 	subCfg.spawn.depth = depth + 1
@@ -406,6 +407,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	if watchParent, ok := ctx.Value(ctxWatchParent).(bool); ok && watchParent {
 		subCfg.spawn.parentWatchGranted = true
 		subCfg.spawn.parentInstallWatch = s.installParentSourceWatchForChild
+		subCfg.spawn.parentClearWatch = s.clearParentSourceWatchForChild
 	}
 	childCanDelegate := subCfg.spawn.delegationAllowance > 0
 	if schema, ok := ctx.Value(ctxCommunicateOutputSchema).(map[string]any); ok && len(schema) > 0 {
@@ -652,6 +654,17 @@ func (s *Session) installParentSourceWatchForChild(observerSessionID string, obs
 		return watchResult{}, err
 	}
 	return jm.configureWatch(a)
+}
+
+func (s *Session) clearParentSourceWatchForChild(observerSessionID string, observerDelegateID string, watchID string) (watchResult, error) {
+	if strings.TrimSpace(observerSessionID) == "" {
+		return watchResult{}, errors.New("source_not_watchable: parent watch observer session is unknown")
+	}
+	jm, err := sessionJobManager(s)
+	if err != nil {
+		return watchResult{}, err
+	}
+	return jm.clearReceiverWatchByID(watchID, observerSessionID, observerDelegateID)
 }
 
 func (s *Session) trackAndLaunchPreparedSubagent(prepared *preparedSubagentRun) error {

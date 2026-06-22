@@ -192,7 +192,15 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
 		a.Target = source.Internal
 		res, err = jm.configureWatch(a)
 	case "clear":
-		res, err = jm.clearWatchByID(a.WatchID)
+		local, localErr := jm.hasWatchID(a.WatchID)
+		if localErr != nil {
+			return "", localErr
+		}
+		if local || !s.cfg.spawn.parentWatchGranted || s.cfg.spawn.parentClearWatch == nil {
+			res, err = jm.clearWatchByID(a.WatchID)
+			break
+		}
+		res, err = s.cfg.spawn.parentClearWatch(s.ID(), s.cfg.spawn.parentDelegateID, a.WatchID)
 	case "list":
 		return marshalWatchListResult(jm.watchListToolResult(), maxChars)
 	case "inspect":
