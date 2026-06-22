@@ -1981,6 +1981,9 @@ func (jm *jobManager) liveWatchSummaries() []watchListEntry {
 	defer jm.mu.Unlock()
 	entries := make([]watchListEntry, 0, len(jm.watches))
 	for key, cfg := range jm.watches {
+		if !watchConfigVisibleToSession(cfg, jm.sessionID) {
+			continue
+		}
 		sendTo := key.SendTo
 		if cfg.receiverDelegateID != "" {
 			sendTo = ""

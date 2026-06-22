@@ -7806,6 +7806,14 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 	if childList.Count != 0 || len(childList.Watches) != 0 || len(childList.RecentWatches) != 0 {
 		t.Fatalf("child owner watch list = %+v, want no ancestor-owned watch", childList)
 	}
+	childJobListOut, err := jobListTool(child, map[string]any{}, 20000)
+	if err != nil {
+		t.Fatalf("child jobListTool: %v", err)
+	}
+	childJobList := childJobListOut.(tooldefs.StateResult).State.(jobListResult)
+	if len(childJobList.Watches) != 0 || len(childJobList.RecentWatches) != 0 {
+		t.Fatalf("child owner job_list watches = %+v recent=%+v, want no ancestor-owned watch", childJobList.Watches, childJobList.RecentWatches)
+	}
 	childInspectOut, err := jobWatchTool(child, map[string]any{"operation": "inspect", "watch_id": state.WatchID}, 20000)
 	if err != nil {
 		t.Fatalf("child jobWatchTool inspect: %v", err)
@@ -7860,6 +7868,14 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 	childList = childListOut.(tooldefs.StateResult).State.(jobWatchListToolResult)
 	if childList.Count != 0 || len(childList.Watches) != 0 || len(childList.RecentWatches) != 0 {
 		t.Fatalf("child owner watch list after clear = %+v, want no receiver-owned history", childList)
+	}
+	childJobListOut, err = jobListTool(child, map[string]any{}, 20000)
+	if err != nil {
+		t.Fatalf("child jobListTool after clear: %v", err)
+	}
+	childJobList = childJobListOut.(tooldefs.StateResult).State.(jobListResult)
+	if len(childJobList.Watches) != 0 || len(childJobList.RecentWatches) != 0 {
+		t.Fatalf("child owner job_list watches after clear = %+v recent=%+v, want no receiver-owned history", childJobList.Watches, childJobList.RecentWatches)
 	}
 	childInspectOut, err = jobWatchTool(child, map[string]any{"operation": "inspect", "watch_id": state.WatchID}, 20000)
 	if err != nil {
