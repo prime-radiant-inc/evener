@@ -7,10 +7,10 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func communicateResponse(awaitReply bool, message string) llm.Response {
+func communicateResponse(endTurn bool, message string) llm.Response {
 	args, _ := json.Marshal(map[string]any{
-		"message":     message,
-		"await_reply": awaitReply,
+		"message":  message,
+		"end_turn": endTurn,
 		"output": map[string]any{
 			"message":   "",
 			"data":      map[string]any{},
@@ -36,7 +36,7 @@ func communicateResponse(awaitReply bool, message string) llm.Response {
 }
 
 func finalResponse(message string) llm.Response {
-	return communicateResponse(false, message)
+	return communicateResponse(true, message)
 }
 
 func wrapCommunicateResponse(resp llm.Response) llm.Response {
@@ -45,7 +45,6 @@ func wrapCommunicateResponse(resp llm.Response) llm.Response {
 		return resp
 	}
 
-	awaitReply := looksLikeQuestion(text)
 	wrapped := resp
 	wrapped.Message = resp.Message
 	wrapped.Message.Content = append(append([]llm.ContentPart{}, resp.Message.Content...), llm.ContentPart{
@@ -53,7 +52,7 @@ func wrapCommunicateResponse(resp llm.Response) llm.Response {
 		ToolCall: &llm.ToolCallData{
 			ID:        "communicate_test_call",
 			Name:      "communicate",
-			Arguments: communicateResponse(awaitReply, text).ToolCalls()[0].Arguments,
+			Arguments: communicateResponse(true, text).ToolCalls()[0].Arguments,
 			Type:      "function",
 		},
 	})

@@ -131,6 +131,7 @@ type runningJob struct {
 	delegateResumeAssessed  bool
 	afterDurableFinish      func()
 	fromWatch               atomic.Bool
+	callerCallbackDelivered atomic.Bool
 	forwardDisabled         bool
 	// watchdogStop, when non-nil, stops the quiet-job watchdog goroutine for a
 	// running delegate. Closed once at finalize. quietNotified latches the
@@ -1303,6 +1304,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		return nil
 	}
 	pendingAppended := terminal.notificationPendingAppended
+	suppressOwnerNotification := !pendingAppended && run.fromWatch.Load() && run.callerCallbackDelivered.Load()
 	var watchNotifications []jobNotification
 	var watchDeliveries []watchSendDelivery
 	var watchRegistryEvents []jobstore.Event
@@ -1325,7 +1327,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		jm.mu.Unlock()
 	}
 
-	if !pendingAppended {
+	if !pendingAppended && !suppressOwnerNotification {
 		pending := jobstore.Event{
 			Kind:        jobstore.EventJobNotificationPending,
 			TS:          terminal.endedAt,
@@ -1344,8 +1346,10 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		jm.mu.Unlock()
 	}
 
-	if err := jm.forwardPendingJobNotification(run, terminal); err != nil {
-		return err
+	if !suppressOwnerNotification {
+		if err := jm.forwardPendingJobNotification(run, terminal); err != nil {
+			return err
+		}
 	}
 
 	jm.mu.Lock()
@@ -1365,7 +1369,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	// wakes on done (blocked reads, boundary checks) must find the notification
 	// already queued, or a notification turn driven right after the wake drains
 	// an empty queue and the delivery slips a boundary.
-	if jm.enqueue != nil {
+	if jm.enqueue != nil && !suppressOwnerNotification {
 		jm.enqueue(jobNotification{
 			JobID:         run.rec.JobID,
 			JobType:       string(run.rec.Type),
@@ -1379,6 +1383,18 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	}
 	run.closeDone()
 	return nil
+}
+
+func (jm *jobManager) markWatchOriginCallerCallbackDelivered(jobID string) {
+	if jm == nil || jobID == "" {
+		return
+	}
+	jm.mu.Lock()
+	run := jm.running[jobID]
+	if run != nil && run.fromWatch.Load() {
+		run.callerCallbackDelivered.Store(true)
+	}
+	jm.mu.Unlock()
 }
 
 func (jm *jobManager) forwardPendingJobNotification(run *runningJob, terminal *terminalJob) error {

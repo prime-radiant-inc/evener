@@ -609,7 +609,7 @@ func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 		t.Fatalf("render error: %v", err)
 	}
 
-	if !strings.Contains(result, "`message` to your full review report") || !strings.Contains(result, "`await_reply` to `false`") {
+	if !strings.Contains(result, "`message` to your full review report") || !strings.Contains(result, "`end_turn` to `true`") {
 		t.Error("reviewer prompt should require the current communicate review contract")
 	}
 	if !strings.Contains(result, "output.decision") {

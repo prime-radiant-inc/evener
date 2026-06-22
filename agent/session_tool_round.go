@@ -61,7 +61,7 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 		})
 		steering := "You responded with bare text instead of a tool call. " +
 			"All user-facing messages MUST use " + s.resultToolName() + ". " +
-			"If that bare text was meant for the user, call " + s.resultToolName() + " now with that text in message, set await_reply=true only if you need user input, and include the output envelope. " +
+			"If that bare text was meant for the user, call " + s.resultToolName() + " now with that text in message, set end_turn=true, and include the output envelope. " +
 			"Otherwise call your next tool and keep working."
 		s.appendTurn(schema.TurnSteering, llm.User(steering))
 		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: steering})
@@ -358,16 +358,15 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	return yieldToObserverCallback, nil
 }
 
-// deliverIfCommunicated checks whether the agent delivered a result this round via
-// the communicate/result tool. If so — and unless a Stop hook blocks completion, in
-// which case the turn keeps looping — it runs the Stop hooks, transitions the session
-// to awaiting-input or idle, and returns done=true with the reply to hand back to the
+// deliverIfCommunicated checks whether the agent ended the turn this round via
+// the communicate/result tool. If so — and unless a Stop hook blocks completion,
+// in which case the turn keeps looping — it runs the Stop hooks, transitions the
+// session to idle, and returns done=true with the reply to hand back to the
 // caller. It returns done=false when nothing was delivered or a Stop hook blocked
 // completion, meaning the turn should continue to the next round.
 func (s *Session) deliverIfCommunicated(ctx context.Context) (done bool, text string) {
 	s.mu.Lock()
 	delivered := s.comm.called
-	awaitReply := s.comm.awaitReply
 	text = s.comm.reply
 	s.mu.Unlock()
 	if !delivered {
@@ -376,11 +375,7 @@ func (s *Session) deliverIfCommunicated(ctx context.Context) (done bool, text st
 	// Stop hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookStop)
-		if awaitReply {
-			hi.Reason = "communicate.await_reply"
-		} else {
-			hi.Reason = "communicate.complete"
-		}
+		hi.Reason = "communicate.end_turn"
 		stopResult := s.hookRunner.RunStop(ctx, hi)
 		for _, m := range stopResult.ModelContext {
 			s.deliverHookContext(m)
@@ -393,10 +388,6 @@ func (s *Session) deliverIfCommunicated(ctx context.Context) (done bool, text st
 			return false, ""
 		}
 	}
-	state := SessionIdle
-	if awaitReply {
-		state = SessionAwaitingInput
-	}
-	s.finishProcessingAtBoundary(ctx, state)
+	s.finishProcessingAtBoundary(ctx, SessionIdle)
 	return true, text
 }

@@ -62,12 +62,14 @@ watchable result/status channel. A communicate observer watch is just
 that complete watch sends communicate frames to the observer, and the observer's
 task is the predicate for content such as `APPROVAL_REQUEST`. Use
 `events: ["assistant.tool"]` for tool events; the complete filtered tool-watch
-shape adds `event_filter:{"tool_name":"read_file","status":"ok"}`.
+shape adds `event_filter:{"tool_name":"read_file","status":"ok"}`. Assistant
+tool frames include the matched `status` and original tool `arguments_json`;
+use those frame fields as the first evidence before reaching for audit tools.
 
-While an observer callback is expected, a terminal notification for the observer
-delegate can arrive as confirmation of work already represented by the delegate
-result or callback job. The callback steering carrying the observer's packet is
-the next actionable signal.
+When a watch-origin observer sends a caller callback, Serf records that
+observer job's terminal state without adding another owner notification for the
+same job. The callback steering carrying the observer's packet is the actionable
+signal.
 
 Observer setup is sequential when the trigger depends on the watch existing.
 After the trigger, Serf yields the caller turn when the frame is handed to the

@@ -5291,9 +5291,9 @@ func (a *resumeBlockingDelegateAdapter) Stream(ctx context.Context, req llm.Requ
 
 func communicateWithStructured(message string, output map[string]any) llm.Response {
 	args, _ := json.Marshal(map[string]any{
-		"message":     message,
-		"await_reply": false,
-		"output":      output,
+		"message":  message,
+		"end_turn": true,
+		"output":   output,
 	})
 	return toolCallResponse(llm.ToolCallData{
 		ID:        "delegate_communicate",
@@ -5305,8 +5305,13 @@ func communicateWithStructured(message string, output map[string]any) llm.Respon
 
 func communicateWithoutStructured(message string) llm.Response {
 	args, _ := json.Marshal(map[string]any{
-		"message":     message,
-		"await_reply": false,
+		"message":  message,
+		"end_turn": true,
+		"output": map[string]any{
+			"message":   "",
+			"data":      map[string]any{},
+			"artifacts": []string{},
+		},
 	})
 	return toolCallResponse(llm.ToolCallData{
 		ID:        "delegate_communicate",

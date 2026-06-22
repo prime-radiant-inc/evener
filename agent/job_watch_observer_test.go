@@ -274,7 +274,7 @@ func TestWatchSendStateCarriesDeliveryProvenance(t *testing.T) {
 		pending:          make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
 		settledUpdateSeq: make(map[jobstore.WatchSendKey]uint64),
 	}
-	ev := events.New(events.CommunicateData{Message: "actually alpha marker", AwaitReply: false})
+	ev := events.New(events.CommunicateData{Message: "actually alpha marker", EndTurn: false})
 	ev.SessionID = s.ID()
 
 	d := s.jobManager.watchSendSnapshot(cfg, runtimeMessageAliasCaller, "event: COMMUNICATE", ev)
@@ -321,7 +321,7 @@ func TestObserverInjectionDoesNotRetriggerSameWatch(t *testing.T) {
 	cfg := onlyWatchConfigForTest(t, parent.jobManager)
 
 	// External communicate event — watch fires once (nextUpdateSeq goes to 1, pending populated).
-	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "actually alpha marker", AwaitReply: false})
+	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "actually alpha marker", EndTurn: false})
 	if cfg.nextUpdateSeq == 0 {
 		t.Fatal("external communicate should trigger observer watch (nextUpdateSeq still 0)")
 	}
@@ -349,7 +349,7 @@ func TestObserverInjectionDoesNotRetriggerSameWatch(t *testing.T) {
 		parent.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 		parent.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	}
-	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "acknowledged quote", AwaitReply: false})
+	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "acknowledged quote", EndTurn: false})
 
 	// nextUpdateSeq must still be 1: the ack communicate was suppressed and did not
 	// call watchSendSnapshot again. A value of 2 would mean suppression regressed.
@@ -503,7 +503,12 @@ func TestScenarioAssistantToolEventFilterAvoidsPassiveObserverWakeups(t *testing
 		t.Fatalf("observer woke on non-matching events; model requests = %d, want initial ready only", got)
 	}
 
-	parent.emit(events.EventToolCallEnd, events.ToolCallEndData{ToolName: "read_file", Output: "ok"})
+	parent.emit(events.EventToolCallEnd, events.ToolCallEndData{
+		ToolName:      "read_file",
+		CallID:        "read_1",
+		ArgumentsJSON: `{"file_path":"watch-trigger.txt"}`,
+		Output:        "ok",
+	})
 	if cfg.nextUpdateSeq != 1 {
 		t.Fatalf("matching event fired %d watch sends, want 1", cfg.nextUpdateSeq)
 	}
@@ -525,6 +530,12 @@ func TestScenarioAssistantToolEventFilterAvoidsPassiveObserverWakeups(t *testing
 	}
 	if requests[1].ToolChoice == nil || requests[1].ToolChoice.Mode != "auto" {
 		t.Fatalf("watch delivery tool choice = %+v, want auto", requests[1].ToolChoice)
+	}
+	deliveryPrompt := messagesText(requests[1].Messages)
+	for _, want := range []string{"status: ok", `"file_path":"watch-trigger.txt"`} {
+		if !strings.Contains(deliveryPrompt, want) {
+			t.Fatalf("watch delivery prompt missing %q:\n%s", want, deliveryPrompt)
+		}
 	}
 }
 
@@ -560,7 +571,7 @@ func TestIdleWatchSendObserverCallerSendCarriesProvenance(t *testing.T) {
 	}
 	cfg := onlyWatchConfigForTest(t, parent.jobManager)
 
-	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "actually alpha marker", AwaitReply: false})
+	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "actually alpha marker", EndTurn: false})
 	if cfg.nextUpdateSeq != 1 {
 		t.Fatalf("external communicate fired %d watch sends, want 1", cfg.nextUpdateSeq)
 	}
@@ -581,6 +592,34 @@ func TestIdleWatchSendObserverCallerSendCarriesProvenance(t *testing.T) {
 		t.Fatalf("observer resumed status = %s, want completed: %+v", result.Status, result)
 	}
 
+	var latestJobID string
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		delegates, err = parent.jobManager.store.LoadDelegates()
+		if err != nil {
+			t.Fatalf("LoadDelegates after callback: %v", err)
+		}
+		delegateRec = delegates[observer.DelegateID]
+		if delegateRec == nil {
+			t.Fatalf("observer delegate record missing after callback")
+		}
+		latestJobID = delegateRec.LatestJobID
+		recs, err := parent.jobManager.store.Load()
+		if err != nil {
+			t.Fatalf("Load jobs after callback: %v", err)
+		}
+		if rec := recs[latestJobID]; rec != nil && rec.Status.IsTerminal() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for watch-origin delegate job %q to finish", latestJobID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := parent.peekNotifications(); got != 0 {
+		t.Fatalf("pending notifications after watch-origin caller callback = %d, want 0", got)
+	}
+
 	drained := parent.drainSteeringForTurn()
 	if len(drained) != 1 {
 		t.Fatalf("parent steering messages = %d, want observer caller send", len(drained))
@@ -589,7 +628,7 @@ func TestIdleWatchSendObserverCallerSendCarriesProvenance(t *testing.T) {
 		t.Fatalf("observer caller steering provenance = %+v, want %s/%s", drained[0].Provenance, cfg.watchID, cfg.generation)
 	}
 
-	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "acknowledged observer", AwaitReply: false})
+	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "acknowledged observer", EndTurn: false})
 	if cfg.nextUpdateSeq != 1 {
 		t.Fatalf("nextUpdateSeq = %d after observer ack, want 1 (same-watch echo suppressed)", cfg.nextUpdateSeq)
 	}
@@ -814,7 +853,7 @@ func TestObserverNotificationAcknowledgementDoesNotRetriggerSameWatch(t *testing
 	}
 	// After accepting the notification, the parent's active provenance carries the
 	// watch provenance. An acknowledgement communicate must be suppressed.
-	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "observer done acknowledged", AwaitReply: false})
+	parent.emit(events.EventCommunicate, events.CommunicateData{Message: "observer done acknowledged", EndTurn: false})
 
 	// nextUpdateSeq must still be 0: the ack communicate was suppressed and did not
 	// call watchSendSnapshot. A value of 1 would mean suppression regressed.

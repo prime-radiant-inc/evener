@@ -566,7 +566,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterHappyTurn(t *testing.T) {
 			streamCallCount++
 			streamMu.Unlock()
 			if n == 0 {
-				// Turn 1: model calls communicate (await_reply=false) and finishes.
+				// Turn 1: model calls communicate (end_turn=true) and finishes.
 				st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 				st.Send(llm.StreamEvent{
 					Type: llm.StreamEventToolCallStart,
@@ -2604,9 +2604,6 @@ func TestSessionState_Transitions(t *testing.T) {
 	if SessionProcessing != SessionState("active") {
 		t.Fatal("SessionProcessing wrong")
 	}
-	if SessionAwaitingInput != SessionState("awaiting") {
-		t.Fatal("SessionAwaitingInput wrong")
-	}
 	if SessionClosed != SessionState("closed") {
 		t.Fatal("SessionClosed wrong")
 	}
@@ -3533,7 +3530,7 @@ func TestSession_StreamsCommunicateToolArgumentsAsAssistantDeltas(t *testing.T) 
 				Type: llm.StreamEventToolCallDelta,
 				ToolCall: &llm.ToolCallData{
 					ID:        "c1",
-					Arguments: json.RawMessage(`lo","await_reply":false,"output":{"message":"","data":{},"artifacts":[]}}`),
+					Arguments: json.RawMessage(`lo","end_turn":true,"output":{"message":"","data":{},"artifacts":[]}}`),
 				},
 			})
 			st.Send(llm.StreamEvent{

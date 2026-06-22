@@ -290,6 +290,9 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 				Err:         errors.New("caller unavailable"),
 			}
 		}
+		if mark := s.cfg.spawn.parentMarkCallerCallbackDelivered; mark != nil {
+			mark(s.cfg.spawn.parentJobID)
+		}
 		return sendMessageResult{
 			Target:      target,
 			Action:      "delivered",

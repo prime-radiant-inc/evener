@@ -372,6 +372,9 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	subCfg.spawn.depth = depth + 1
 	subCfg.spawn.parentSteer = s.SteerWithProvenance
 	subCfg.spawn.parentSteerDelivered = s.trySteerWithProvenanceAndNotify
+	if s.jobManager != nil {
+		subCfg.spawn.parentMarkCallerCallbackDelivered = s.jobManager.markWatchOriginCallerCallbackDelivered
+	}
 	subCfg.spawn.parentGrantedJobRead = s.lookupGrantedJobRead
 	if s.cfg.ShareTasksWithChildren {
 		subCfg.spawn.sharedTaskStore = s.getOrCreateTaskStore()
@@ -832,7 +835,7 @@ func (s *Session) getSub(agentID string) *subagent {
 // calling the result tool. Sent at most once.
 func communicateNudge(toolName string) string {
 	return "You stopped without calling " + toolName + ". " +
-		"You MUST call " + toolName + " with await_reply=false and a message summarizing your complete findings " +
+		"You MUST call " + toolName + " with end_turn=true and a message summarizing your complete findings " +
 		"before stopping. The parent agent receives ONLY the " + toolName + " message — " +
 		"it cannot see anything else you did. Report your results now."
 }

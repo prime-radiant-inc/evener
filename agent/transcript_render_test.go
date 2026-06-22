@@ -1019,7 +1019,7 @@ func TestRenderMarkdown_ResultToolResultNotOrphaned(t *testing.T) {
 		// Result-tool call (rendered as assistant text).
 		toolCallEntry(call("comm-1", "communicate", `{"message":"All done."}`)),
 		// The runtime persists a tool-result turn for the communicate call.
-		toolResultEntry(result("comm-1", "communicate", `{"accepted":true,"await_reply":false}`, false)),
+		toolResultEntry(result("comm-1", "communicate", `{"accepted":true,"end_turn":true}`, false)),
 	}
 	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
 

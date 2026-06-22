@@ -342,7 +342,7 @@ Matcher is the `command_name` string. Empty matcher matches all expansions.
 
 **Output schema.** Universal + `additionalContext` + top-level `decision: "block"` + `reason`.
 
-**Decision semantics.** `decision: "block"` (or exit code 2) cancels the expansion: the original user input is dropped, a system message displays the reason, and `processOneInput` returns to `SessionAwaitingInput`. `additionalContext` is appended to the expanded prompt before the LLM sees it.
+**Decision semantics.** `decision: "block"` (or exit code 2) cancels the expansion: the original user input is dropped, a system message displays the reason, and `processOneInput` returns to idle. `additionalContext` is appended to the expanded prompt before the LLM sees it.
 
 ### 3.6 `PostCompact`
 
@@ -466,7 +466,7 @@ Open question 3 is resolved here. Async-with-rewake hooks must be able to interr
    ```
 
 4. The same arm runs after the model returns and before tool dispatch, so an in-flight LLM call cannot delay rewake by more than one round.
-5. When the session is in `SessionAwaitingInput` (no input pending), the rewake signal is dropped on the floor with a debug log. Rationale: a paused session has no one to steer; the hook author asked for a rewake on a running session.
+5. When the session is idle with no input pending, the rewake signal is dropped on the floor with a debug log. Rationale: a paused session has no one to steer; the hook author asked for a rewake on a running session.
 
 `formatRewakeMessage` wraps the hook's stderr in `<async-hook-rewake plugin=... event=...>...</async-hook-rewake>` tags so the model can identify the source.
 
@@ -915,7 +915,7 @@ The warning is logged at `level: info` to stderr and emitted as a structured eve
 
 ### 14.3 `asyncRewake` main-loop integration — addressed in §3.10
 
-Wake channel (capacity 16), non-blocking select arms at two safe points per round (top of round, before LLM call). Signals during `SessionAwaitingInput` are dropped with a debug log. A full channel drops the new signal and warns.
+Wake channel (capacity 16), non-blocking select arms at two safe points per round (top of round, before LLM call). Signals while the session is idle with no input pending are dropped with a debug log. A full channel drops the new signal and warns.
 
 ### 14.4 Genuinely open at SP5 close
 

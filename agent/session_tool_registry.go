@@ -60,9 +60,10 @@ type toolDeps struct {
 	requestForceCompact func(instructions string) error
 	pressure            func() float64
 
-	// setCommunicateResult records the communicate tool's result on the session
-	// (fields stay Session-owned; this is the only writer reachable from the handler).
-	setCommunicateResult func(awaitReply bool, message, reply, output string)
+	// setCommunicateResult records a terminal communicate tool result on the
+	// session. Fields stay Session-owned; this is the only writer reachable from
+	// the handler.
+	setCommunicateResult func(message, reply, output string)
 
 	// setCommunicateStructured records the raw output object the model emitted,
 	// before communicate canonicalization, for delegate structured_result capture.
@@ -175,19 +176,26 @@ func newToolDeps(s *Session) *toolDeps {
 		setPinnedNote:       s.setPinnedNote,
 		requestForceCompact: s.requestForceCompact,
 		pressure:            s.ContextPressure,
-		setCommunicateResult: func(awaitReply bool, message, reply, output string) {
+		setCommunicateResult: func(message, reply, output string) {
 			s.mu.Lock()
+			if s.comm.called {
+				s.mu.Unlock()
+				return
+			}
 			s.comm = communicateResult{
-				called:     true,
-				awaitReply: awaitReply,
-				text:       message,
-				reply:      reply,
-				output:     output,
+				called: true,
+				text:   message,
+				reply:  reply,
+				output: output,
 			}
 			s.mu.Unlock()
 		},
 		setCommunicateStructured: func(raw any) {
 			s.mu.Lock()
+			if !s.comm.called || s.comm.structured != nil {
+				s.mu.Unlock()
+				return
+			}
 			s.comm.structured = raw
 			s.mu.Unlock()
 		},
@@ -215,7 +223,8 @@ func newProfileToolRegistry(p *provider.Profile) *tool.Registry {
 	}
 	for _, td := range p.ToolDefinitions() {
 		_ = reg.Register(tool.RegisteredTool{
-			Tool: llm.Tool{Definition: td},
+			Tool:        llm.Tool{Definition: td},
+			OmitPurpose: td.Name == "communicate",
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				return nil, errors.New("tool executor not wired")
 			},

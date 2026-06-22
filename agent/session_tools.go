@@ -327,9 +327,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 		res := skippedToolResult(call, err)
 		s.responseSideEffectsMu.Lock()
 		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
-			ToolName: res.ToolName,
-			CallID:   res.CallID,
-			Error:    res.FullOutput,
+			ToolName:      res.ToolName,
+			CallID:        res.CallID,
+			ArgumentsJSON: string(call.Arguments),
+			Error:         res.FullOutput,
 		})
 		s.responseSideEffectsMu.Unlock()
 		closeToolEvent()
@@ -353,9 +354,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	s.responseSideEffectsMu.Lock()
 	if err := s.errIfClosing(); err != nil {
 		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
-			ToolName: call.Name,
-			CallID:   call.ID,
-			Error:    skippedToolResult(call, err).FullOutput,
+			ToolName:      call.Name,
+			CallID:        call.ID,
+			ArgumentsJSON: string(call.Arguments),
+			Error:         skippedToolResult(call, err).FullOutput,
 		})
 		s.responseSideEffectsMu.Unlock()
 		closeToolEvent()
@@ -378,9 +380,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	}
 
 	endData := events.ToolCallEndData{
-		ToolName:  res.ToolName,
-		CallID:    res.CallID,
-		ToolState: res.ToolState,
+		ToolName:      res.ToolName,
+		CallID:        res.CallID,
+		ArgumentsJSON: string(call.Arguments),
+		ToolState:     res.ToolState,
 	}
 	if res.IsError {
 		endData.Error = res.FullOutput
@@ -575,13 +578,25 @@ func (s *Session) delegateAgentTypeNames() []string {
 
 // wireToolDef renders a canonical tool definition in its provider-visible wire
 // form: it renames the tool to the provider-specific name (nameMap is
-// canonical→provider) and adds the shared "purpose" parameter. This is the form
-// advertised to the model; the executor registry stays keyed by canonical names.
-func wireToolDef(td llm.ToolDefinition, nameMap map[string]string) llm.ToolDefinition {
+// canonical→provider) and adds the shared "purpose" parameter to work tools.
+// communicate/result tools omit purpose because their user-facing message and
+// strict output envelope already carry the result intent.
+func wireToolDef(td llm.ToolDefinition, nameMap map[string]string, resultToolName string) llm.ToolDefinition {
+	canonicalName := td.Name
 	if mapped, ok := nameMap[td.Name]; ok {
 		td.Name = mapped
 	}
+	if isResultToolDefinition(canonicalName, td.Name, resultToolName) {
+		return tool.WithoutPurposeParameter(td)
+	}
 	return tool.WithPurposeParameter(td)
+}
+
+func isResultToolDefinition(canonicalName, wireName, resultToolName string) bool {
+	if resultToolName == "" {
+		resultToolName = "communicate"
+	}
+	return canonicalName == "communicate" || wireName == resultToolName
 }
 
 // profileWireToolDefs returns all of the profile's tool definitions in their
@@ -590,7 +605,7 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 	nameMap := s.profile.ToolNameMap()
 	defs := s.profile.ToolDefinitions()
 	for i := range defs {
-		defs[i] = wireToolDef(defs[i], nameMap)
+		defs[i] = wireToolDef(defs[i], nameMap, s.resultToolName())
 	}
 	return defs
 }
@@ -624,7 +639,7 @@ func (s *Session) rebuildToolDefsCache() {
 			if td.Name == "job_watch" {
 				td = tool.DefJobWatch(availableEventKindNames())
 			}
-			wire := wireToolDef(td, nameMap)
+			wire := wireToolDef(td, nameMap, s.resultToolName())
 			defs = append(defs, wire)
 			included[td.Name] = true // canonical
 			// Also track the provider-mapped name so loop 3 (registry tools)
@@ -657,7 +672,11 @@ func (s *Session) rebuildToolDefsCache() {
 		defs = append(defs, td)
 	}
 	for i := range defs {
-		defs[i] = tool.WithPurposeParameter(defs[i])
+		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
+			defs[i] = tool.WithoutPurposeParameter(defs[i])
+		} else {
+			defs[i] = tool.WithPurposeParameter(defs[i])
+		}
 	}
 
 	s.cachedToolDefs = defs

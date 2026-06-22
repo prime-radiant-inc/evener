@@ -1,13 +1,15 @@
 # Tool Fluency Experiment: communicate envelope
 
-Use `communicate` for final user-facing results. Put the reason for the call in
-the top-level `purpose` field. Put user-visible text in `output.message`.
+Use `communicate` for final user-facing results. Put user-visible text in the
+top-level `message`. Use `output` only as the structured result envelope.
+`communicate` has no `purpose` field.
 
 Canonical shape:
 
 ```json
 {
-  "purpose": "final_result",
-  "output": {"message": "RESULT_TOKEN and answer text"}
+  "message": "RESULT_TOKEN and answer text",
+  "end_turn": true,
+  "output": {"message": "", "data": {}, "artifacts": []}
 }
 ```

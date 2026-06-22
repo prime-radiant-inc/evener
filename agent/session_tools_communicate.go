@@ -24,7 +24,8 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 		resultToolDef = existing.Definition
 	}
 	_ = reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: resultToolDef},
+		Tool:        llm.Tool{Definition: resultToolDef},
+		OmitPurpose: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			if err := deps.abort(ctx); err != nil {
@@ -34,9 +35,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			if v, ok := args["message"]; ok {
 				message = strings.TrimSpace(fmt.Sprint(v))
 			}
-			awaitReply, ok := args["await_reply"].(bool)
+			endTurn, ok := args["end_turn"].(bool)
 			if !ok {
-				return nil, errors.New("communicate requires await_reply")
+				return nil, errors.New("communicate requires end_turn")
 			}
 
 			originalOutput := normalizeNodeOutput(args["output"])
@@ -64,36 +65,41 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			}
 
 			deps.emit(events.EventCommunicate, events.CommunicateData{
-				AwaitReply: awaitReply,
-				Message:    message,
+				EndTurn: endTurn,
+				Message: message,
 			})
 
-			// Drain steering queue into the inbox. The inbox is text-only
-			// in the wire shape, so image-bearing entries are also appended
-			// as TurnSteering to keep their ContentImage parts available to
-			// the next model round.
-			drained := deps.drainSteering()
-			inbox := make([]string, 0, len(drained))
-			var deferred []steeringMessage
-			for _, msg := range drained {
-				if strings.TrimSpace(msg.Text) != "" {
-					inbox = append(inbox, msg.Text)
+			inbox := []string{}
+			if endTurn {
+				// Drain steering queue into the inbox for terminal delivery. The
+				// inbox is text-only in the wire shape, so image-bearing entries
+				// are also appended as TurnSteering to keep their ContentImage
+				// parts available to the next model round.
+				drained := deps.drainSteering()
+				inbox = make([]string, 0, len(drained))
+				var deferred []steeringMessage
+				for _, msg := range drained {
+					if strings.TrimSpace(msg.Text) != "" {
+						inbox = append(inbox, msg.Text)
+					}
+					if len(msg.Images) > 0 {
+						deferred = append(deferred, msg)
+					}
 				}
-				if len(msg.Images) > 0 {
-					deferred = append(deferred, msg)
-				}
+				deps.prependSteering(deferred)
 			}
-			deps.prependSteering(deferred)
 
-			deps.setCommunicateResult(awaitReply, message, resultText, structuredText)
-			if explicitStructuredOutput {
-				deps.setCommunicateStructured(rawOutput)
+			if endTurn {
+				deps.setCommunicateResult(message, resultText, structuredText)
+				if explicitStructuredOutput {
+					deps.setCommunicateStructured(rawOutput)
+				}
 			}
 
 			resp := map[string]any{
-				"accepted":    true,
-				"await_reply": awaitReply,
-				"inbox":       inbox,
+				"accepted": true,
+				"end_turn": endTurn,
+				"inbox":    inbox,
 			}
 			b, _ := json.Marshal(resp)
 			return string(b), nil

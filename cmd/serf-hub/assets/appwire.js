@@ -526,14 +526,8 @@
     return String(item.text || "").replace(/\s+/g, " ").trim();
   }
 
-  // agentMessageEndPayload carries the agent's final text plus the per-item
-  // awaitReply flag (the projected communicate.await_reply signal). awaitReply
-  // marks the message as a blocking "needs-you" question so the renderer can
-  // frame it (mockup #16 Alt A) instead of treating it as ordinary prose.
   function agentMessageEndPayload(item) {
-    const payload = { text: item.text || "" };
-    if (item.awaitReply) payload.awaitReply = true;
-    return payload;
+    return { text: item.text || "" };
   }
 
   function eventsFromItem(item, turnStatus) {

@@ -94,7 +94,7 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 			ToolCall: &hubcore.ReplayToolCall{
 				ID:        "call_1",
 				Name:      "communicate",
-				Arguments: []byte(`{"message":"done","await_reply":false}`),
+				Arguments: []byte(`{"message":"done","end_turn":true}`),
 			},
 		}}},
 	}, toolNames)

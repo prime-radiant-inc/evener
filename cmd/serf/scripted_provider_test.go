@@ -103,8 +103,8 @@ func scriptedProviderConfig(name string) providercfg.Config {
 
 func scriptedCommunicate(message string) llm.Response {
 	args, _ := json.Marshal(map[string]any{
-		"message":     message,
-		"await_reply": false,
+		"message":  message,
+		"end_turn": true,
 		"output": map[string]any{
 			"message":   "",
 			"data":      map[string]any{},

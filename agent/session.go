@@ -370,8 +370,7 @@ func (s *Session) resetJobNotificationRetry() {
 // transient — reset at the top of each call, then read back by Communicated,
 // CommunicateOutput, and the turn loop's deliver step. Guarded by s.mu.
 type communicateResult struct {
-	called     bool // communicate/result was invoked this turn
-	awaitReply bool // the call expects a user reply rather than completing
+	called     bool // terminal communicate/result was invoked this turn
 	text       string
 	reply      string
 	output     string // canonical structured output (CommunicateOutput)

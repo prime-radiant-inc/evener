@@ -104,6 +104,49 @@ func TestToolRegistry_AddsAndStripsUniversalPurpose(t *testing.T) {
 	}
 }
 
+func TestToolRegistry_OmitPurposeLeavesSchemaStrict(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Name:        "result",
+			Description: "report a result",
+			Parameters: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"message": map[string]any{"type": "string"},
+				},
+				"required": []string{"message"},
+			},
+		}},
+		OmitPurpose: true,
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			_ = args
+			return "ok", nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	defs := r.Definitions()
+	props, _ := defs[0].Parameters["properties"].(map[string]any)
+	if _, ok := props["purpose"]; ok {
+		t.Fatalf("schema should omit purpose: %#v", props["purpose"])
+	}
+	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+		ID:        "c1",
+		Name:      "result",
+		Arguments: json.RawMessage(`{"message":"done","purpose":"final_result"}`),
+	})
+	if !res.IsError {
+		t.Fatalf("purpose should be rejected by strict schema, got: %q", res.Output)
+	}
+	if !strings.Contains(res.Output, "additionalProperties") || !strings.Contains(res.Output, "purpose") {
+		t.Fatalf("expected purpose schema error, got: %s", res.Output)
+	}
+}
+
 func TestToolRegistry_UnknownTool_ReturnsErrorResult(t *testing.T) {
 	r := NewRegistry()
 	// No tools registered.

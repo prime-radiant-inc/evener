@@ -299,8 +299,8 @@ func drainEventsHuman(eventCh <-chan events.SessionEvent, w io.Writer) <-chan st
 				}
 			case events.EventCommunicate:
 				if d, ok := ev.Data.(events.CommunicateData); ok {
-					if d.AwaitReply {
-						fmt.Fprintf(w, "[communicate:await_reply] %s\n", d.Message) //nolint:errcheck
+					if d.EndTurn {
+						fmt.Fprintf(w, "[communicate:end_turn] %s\n", d.Message) //nolint:errcheck
 					} else {
 						fmt.Fprintf(w, "[communicate] %s\n", d.Message) //nolint:errcheck
 					}

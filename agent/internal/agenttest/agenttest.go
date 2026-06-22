@@ -143,7 +143,10 @@ func CommunicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 		message = strings.TrimSpace(fmt.Sprint(v))
 	}
 
-	awaitReply, _ := args["await_reply"].(bool)
+	endTurn := true
+	if v, ok := args["end_turn"].(bool); ok {
+		endTurn = v
+	}
 
 	output := map[string]any{
 		"message":   "",
@@ -162,7 +165,7 @@ func CommunicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 	}
 
 	normalized["message"] = message
-	normalized["await_reply"] = awaitReply
+	normalized["end_turn"] = endTurn
 	normalized["output"] = output
 
 	raw, _ := json.Marshal(normalized)
@@ -186,11 +189,11 @@ func ToolCallResponse(calls ...llm.ToolCallData) llm.Response {
 }
 
 // CommunicateResponse builds an assistant response that calls the communicate
-// tool with the given message and await_reply flag.
-func CommunicateResponse(awaitReply bool, message string) llm.Response {
+// tool with the given message and end_turn flag.
+func CommunicateResponse(endTurn bool, message string) llm.Response {
 	args, _ := json.Marshal(map[string]any{
-		"message":     message,
-		"await_reply": awaitReply,
+		"message":  message,
+		"end_turn": endTurn,
 		"output": map[string]any{
 			"message":   "",
 			"data":      map[string]any{},
@@ -216,4 +219,4 @@ func CommunicateResponse(awaitReply bool, message string) llm.Response {
 }
 
 // FinalResponse is a communicate response that does not await a reply.
-func FinalResponse(message string) llm.Response { return CommunicateResponse(false, message) }
+func FinalResponse(message string) llm.Response { return CommunicateResponse(true, message) }

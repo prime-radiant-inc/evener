@@ -98,10 +98,11 @@ type ToolCallOutputDeltaData struct {
 
 // ToolCallEndData is the payload for an EventToolCallEnd event.
 type ToolCallEndData struct {
-	ToolName string `json:"tool_name"`
-	CallID   string `json:"call_id"`
-	Output   string `json:"output,omitempty"`
-	Error    string `json:"error,omitempty"`
+	ToolName      string `json:"tool_name"`
+	CallID        string `json:"call_id"`
+	ArgumentsJSON string `json:"arguments_json,omitempty"`
+	Output        string `json:"output,omitempty"`
+	Error         string `json:"error,omitempty"`
 
 	// ToolState is an optional JSON snapshot produced by the tool
 	// executor. Dashboards and other consumers render from this directly
@@ -137,8 +138,8 @@ type LoopDetectionData struct {
 
 // CommunicateData is the payload for an EventCommunicate event.
 type CommunicateData struct {
-	AwaitReply bool   `json:"await_reply"`
-	Message    string `json:"message"`
+	EndTurn bool   `json:"end_turn"`
+	Message string `json:"message"`
 }
 
 // SkillActivatedData is the payload for an EventSkillActivated event.

@@ -4059,8 +4059,8 @@ func writeCommunicateWatchEvent(b *strings.Builder, data events.CommunicateData)
 	b.WriteString("event:\n")
 	b.WriteString("  kind: communicate\n")
 	writeWatchFrameTextField(b, "message", message)
-	b.WriteString("  await_reply: ")
-	if data.AwaitReply {
+	b.WriteString("  end_turn: ")
+	if data.EndTurn {
 		b.WriteString("true\n")
 	} else {
 		b.WriteString("false\n")
@@ -4088,6 +4088,12 @@ func writeAssistantToolWatchEvent(b *strings.Builder, data events.ToolCallEndDat
 	b.WriteString("  kind: assistant.tool\n")
 	writeWatchFrameOptionalField(b, "tool_name", data.ToolName)
 	writeWatchFrameOptionalField(b, "call_id", data.CallID)
+	if data.Error != "" {
+		writeWatchFrameOptionalField(b, "status", "error")
+	} else {
+		writeWatchFrameOptionalField(b, "status", "ok")
+	}
+	writeWatchFrameOptionalField(b, "arguments_json", data.ArgumentsJSON)
 	if data.Output != "" {
 		output, truncated := limitedWatchEventText(data.Output)
 		writeWatchFrameTextField(b, "output", output)
