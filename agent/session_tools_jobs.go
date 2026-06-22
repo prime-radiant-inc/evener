@@ -180,7 +180,13 @@ func jobWatchTool(s *Session, args map[string]any, maxChars int) (any, error) {
 			return "", err
 		}
 		if source.Kind == watchSourceParentSession {
-			return "", errors.New("source_not_watchable: parent source requires a parent-watch grant")
+			if !s.cfg.spawn.parentWatchGranted || s.cfg.spawn.parentInstallWatch == nil {
+				return "", errors.New("source_not_watchable: source parent requires delegate(watch_parent=true)")
+			}
+			a.Source = "parent"
+			a.Target = runtimeMessageAliasCaller
+			res, err = s.cfg.spawn.parentInstallWatch(s.ID(), s.cfg.spawn.parentDelegateID, a)
+			break
 		}
 		a.Source = source.Public
 		a.Target = source.Internal

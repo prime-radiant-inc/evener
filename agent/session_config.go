@@ -198,6 +198,10 @@ type spawnConfig struct {
 	// parentJobID is the delegate job ID that spawned this sub-agent session.
 	parentJobID string
 
+	// parentDelegateID is the durable delegate handle that owns this child
+	// session in its parent.
+	parentDelegateID string
+
 	// forwardJobEvent lets child job managers send nested job events to the
 	// parent manager. The forwarding behavior is installed by later phases.
 	forwardJobEvent func(jobstore.Event) error

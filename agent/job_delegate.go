@@ -169,6 +169,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	delegateID := jobstore.NewDelegateID()
 	delegateGeneration := jobstore.NewDelegateGeneration()
 	jobID := jobstore.NewJobID()
+	ctx = context.WithValue(ctx, ctxParentDelegateID, delegateID)
 	ctx = context.WithValue(ctx, ctxParentJobID, jobID)
 	prepared, err := s.prepareSubagentRun(ctx, task, args.Model, "", 0, args.AgentType, args.ReasoningEffort, nil, nil)
 	if err != nil {
@@ -690,6 +691,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 			parentSessionID:         desc.ParentSessionID,
 			parentToolCallID:        desc.OriginToolCallID,
 			parentJobID:             desc.ParentJobID,
+			parentDelegateID:        rec.DelegateID,
 			forwardJobEvent:         s.jobManager.forwardEvent,
 			parentSteer:             s.SteerWithProvenance,
 			parentSteerDelivered:    s.trySteerWithProvenanceAndNotify,

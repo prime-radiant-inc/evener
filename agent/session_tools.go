@@ -45,6 +45,10 @@ const ctxDelegationAllowance ctxKey = "delegationAllowance"
 // prepareSubagentRun copies it onto the child's spawnConfig.
 const ctxWatchParent ctxKey = "watchParent"
 
+// ctxParentDelegateID carries the delegate handle that owns a child session
+// into spawn plumbing so parent-source watches can route back to that child.
+const ctxParentDelegateID ctxKey = "parentDelegateID"
+
 const (
 	defaultAgentName = "default"
 )

@@ -366,6 +366,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	subCfg.MCPConfigFiles = nil
 	subCfg.MCPInline = nil
 	subCfg.spawn.parentJobID = ""
+	subCfg.spawn.parentDelegateID = ""
 	subCfg.spawn.forwardJobEvent = nil
 	subCfg.spawn.parentWatchGranted = false
 	subCfg.spawn.parentInstallWatch = nil
@@ -391,6 +392,9 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		if s.jobManager != nil {
 			subCfg.spawn.forwardJobEvent = s.jobManager.forwardEvent
 		}
+	}
+	if delegateID, ok := ctx.Value(ctxParentDelegateID).(string); ok {
+		subCfg.spawn.parentDelegateID = delegateID
 	}
 	// The granted delegation_allowance (validated by createDelegate against this
 	// session's own allowance) shapes the child's grant capability. The delegate
@@ -631,7 +635,23 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 }
 
 func (s *Session) installParentSourceWatchForChild(observerSessionID string, observerDelegateID string, args watchArgs) (watchResult, error) {
-	return watchResult{}, errors.New("parent watch installation is not wired")
+	if strings.TrimSpace(observerSessionID) == "" {
+		return watchResult{}, errors.New("source_not_watchable: parent watch observer session is unknown")
+	}
+	defaultEvents := !watchArgsHasCondition(args)
+	a := args
+	a.Source = "parent"
+	a.Target = runtimeMessageAliasCaller
+	a.ReceiverSessionID = observerSessionID
+	a.ReceiverDelegateID = observerDelegateID
+	if defaultEvents {
+		a.Events = []string{"*"}
+	}
+	jm, err := sessionJobManager(s)
+	if err != nil {
+		return watchResult{}, err
+	}
+	return jm.configureWatch(a)
 }
 
 func (s *Session) trackAndLaunchPreparedSubagent(prepared *preparedSubagentRun) error {

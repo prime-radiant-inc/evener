@@ -105,6 +105,8 @@ type watchConfig struct {
 	watchID            string
 	configHash         string
 	sourcePublic       string
+	receiverSessionID  string
+	receiverDelegateID string
 	target             string
 	outputMatch        string
 	outputMatcher      *jobstore.OutputMatcher
@@ -163,6 +165,8 @@ type watchArgs struct {
 	WatchID            string
 	Source             string
 	Target             string
+	ReceiverSessionID  string
+	ReceiverDelegateID string
 	OutputMatch        string
 	ProgressIntervalMS int
 	Events             []string
@@ -637,6 +641,9 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 }
 
 func watchArgsHasCondition(a watchArgs) bool {
+	if strings.TrimSpace(a.ReceiverSessionID) != "" && a.ReceiverSessionID != a.Target && isWatchSessionTarget(a.Target) {
+		return true
+	}
 	return a.OutputMatch != "" || a.ProgressIntervalMS > 0 || len(a.Events) > 0
 }
 
@@ -892,6 +899,8 @@ func newWatchConfig(a watchArgs, createdAt time.Time) (*watchConfig, error) {
 		watchID:            watchID,
 		configHash:         normalizedWatchConfigHash(a),
 		sourcePublic:       watchPublicSource(a.Source, a.Target),
+		receiverSessionID:  strings.TrimSpace(a.ReceiverSessionID),
+		receiverDelegateID: strings.TrimSpace(a.ReceiverDelegateID),
 		target:             a.Target,
 		outputMatch:        a.OutputMatch,
 		progressIntervalMS: a.ProgressIntervalMS,
@@ -965,6 +974,11 @@ func resolveEventKinds(names []string) (map[events.EventKind]bool, bool) {
 // independent of cfg.target, so delivering such a kind back to the caller (send
 // omitted, or send.to=caller) makes each delivery cause the next event.
 func validateWatchDeliveryLoop(cfg *watchConfig) error {
+	if cfg.receiverSessionID != "" {
+		// Cross-session receivers are not delivering back into the session whose
+		// event stream is being watched.
+		return nil
+	}
 	selfDelivery := cfg.send == nil || cfg.send.To == runtimeMessageAliasCaller
 	if !selfDelivery {
 		return nil
