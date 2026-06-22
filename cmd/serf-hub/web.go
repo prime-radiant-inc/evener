@@ -139,6 +139,7 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/git/head", s.handleApiGitHead)
 	mux.HandleFunc("/api/search", s.handleApiSearch)
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
+	mux.HandleFunc("/api/upgrade", s.handleAPIUpgrade)
 	mux.HandleFunc("/api/tree", s.handleAPITree)
 	mux.HandleFunc("/api/archive", s.handleAPIArchive)
 	mux.HandleFunc("/api/spawn-schema", s.handleAPISpawnSchema)

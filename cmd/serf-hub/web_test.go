@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/serf/internal/selfupdate"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -52,6 +53,45 @@ func TestWeb_Landing_Renders(t *testing.T) {
 	}
 	if !strings.Contains(body, `id="workspace"`) {
 		t.Errorf("body missing #workspace: %q", body)
+	}
+}
+
+func TestWebAPIUpgradeRunsSelfUpdater(t *testing.T) {
+	var got selfupdate.Options
+	previous := runHubSelfUpgrade
+	runHubSelfUpgrade = func(_ context.Context, opts selfupdate.Options) (selfupdate.Result, error) {
+		got = opts
+		return selfupdate.Result{
+			Release:        "snapshot",
+			Channel:        "snapshot",
+			Archive:        "serf_linux_amd64.tar.gz",
+			ShareBinDir:    "/tmp/share/serf/bin",
+			BinDir:         "/tmp/bin",
+			RestartMessage: "Restart serf-tui and serf-hub to use the upgraded binaries.",
+		}, nil
+	}
+	t.Cleanup(func() { runHubSelfUpgrade = previous })
+
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	req := httptest.NewRequest(http.MethodPost, "/api/upgrade", strings.NewReader(`{"requested":"snapshot"}`))
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp appwire.UpgradeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Channel != "snapshot" || resp.Archive != "serf_linux_amd64.tar.gz" {
+		t.Fatalf("response=%+v", resp)
+	}
+	if got.Requested != "snapshot" {
+		t.Fatalf("Requested=%q, want snapshot", got.Requested)
+	}
+	if got.CurrentChannel == "" {
+		t.Fatal("CurrentChannel is empty")
 	}
 }
 

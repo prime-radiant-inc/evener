@@ -337,6 +337,12 @@ func (c *Client) HarnessList(ctx context.Context, params HarnessListParams) (Har
 	return out, err
 }
 
+func (c *Client) Upgrade(ctx context.Context, params UpgradeParams) (UpgradeResponse, error) {
+	var out UpgradeResponse
+	err := c.request(ctx, MethodSerfUpgrade, params, &out)
+	return out, err
+}
+
 func (c *Client) AuthStatus(ctx context.Context, params AuthStatusParams) (AuthStatusResponse, error) {
 	var out AuthStatusResponse
 	err := c.request(ctx, MethodSerfAuthStatus, params, &out)
