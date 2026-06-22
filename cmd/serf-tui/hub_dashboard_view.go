@@ -29,6 +29,10 @@ func (m hubModel) dashboardView() string {
 		b.WriteString(tuitext.TruncateText(fmt.Sprintf("error: %v", m.err), width))
 		b.WriteString("\n\n")
 	}
+	if notices := m.renderNotices(); notices != "" {
+		b.WriteString(notices)
+		b.WriteString("\n")
+	}
 	if m.commandPalette != nil {
 		footer := tuiprim.ActionBarForWidth(m.width, "up/down select", "enter open/toggle", "n new", "/ palette", "ctrl+o dashboard", "q quit")
 		overlayHeight := paletteOverlayHeight(m.height, topBar, b.String(), footer)

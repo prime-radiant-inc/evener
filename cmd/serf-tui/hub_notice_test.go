@@ -55,6 +55,26 @@ func TestHubModelNoticesPersistUntilDismissed(t *testing.T) {
 	}
 }
 
+func TestHubModelDashboardRendersNotices(t *testing.T) {
+	m := newHubModel(nil, "http://hub.test")
+	m.width = 100
+	m.addNotice(noticePanel{
+		Title:      "Upgrade complete",
+		Category:   "upgrade",
+		Summary:    "Serf upgraded to snapshot.",
+		Source:     "hub",
+		Reason:     "serf_linux_amd64.tar.gz",
+		NextAction: "Restart serf-tui and serf-hub to use the upgraded binaries.",
+	})
+
+	got := m.dashboardView()
+	for _, want := range []string{"Serf upgraded to snapshot.", "serf_linux_amd64.tar.gz", "Restart serf-tui and serf-hub"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("dashboard notice missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestHubModelNoticesRenderAsPane(t *testing.T) {
 	withTestColorProfile(t)
 	m := newSessionHubModel(nil)
