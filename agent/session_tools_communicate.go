@@ -95,7 +95,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 					deps.setCommunicateStructured(rawOutput)
 				}
 				if deps.deliverWatchCallback != nil {
-					deps.deliverWatchCallback(message)
+					deps.deliverWatchCallback(watchCommunicateCallbackText(message, structuredText))
 				}
 			}
 
@@ -108,6 +108,15 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			return string(b), nil
 		},
 	})
+}
+
+func watchCommunicateCallbackText(message, output string) string {
+	message = strings.TrimSpace(message)
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return "Observer callback:\nmessage: " + message
+	}
+	return "Observer callback:\nmessage: " + message + "\noutput: " + output
 }
 
 func (s *Session) deliverWatchCommunicateCallback(message string) {

@@ -326,7 +326,14 @@ func TestWatchOriginCommunicateEndTurnResumesParentOnce(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return communicateWithDefaultOutput("observer ready") },
 		func(llm.Request) llm.Response {
-			return communicateWithDefaultOutput("WATCH_OBSERVED read_file succeeded")
+			return communicateWithStructured("WATCH_OBSERVED read_file succeeded", map[string]any{
+				"message": "WATCH_OBSERVED read_file succeeded",
+				"data": map[string]any{
+					"file_path": "watch-trigger.txt",
+					"status":    "ok",
+				},
+				"artifacts": []string{},
+			})
 		},
 	}})
 	parent := newDelegateTestSession(t, c)
@@ -361,6 +368,11 @@ func TestWatchOriginCommunicateEndTurnResumesParentOnce(t *testing.T) {
 	}
 	if !strings.Contains(steered[0].Text, "WATCH_OBSERVED") {
 		t.Fatalf("callback = %q, want WATCH_OBSERVED", steered[0].Text)
+	}
+	for _, want := range []string{"Observer callback", "output:", "watch-trigger.txt", `"status":"ok"`} {
+		if !strings.Contains(steered[0].Text, want) {
+			t.Fatalf("callback = %q, want %q", steered[0].Text, want)
+		}
 	}
 	if !provenance.ContainsWatch(steered[0].Provenance, "watch_parent", "wg_1") {
 		t.Fatalf("callback provenance = %+v, want watch provenance", steered[0].Provenance)

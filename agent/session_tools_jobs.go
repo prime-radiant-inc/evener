@@ -1194,23 +1194,25 @@ func classifyStopOutcome(previous jobstore.Status, rec *jobstore.JobRecord) stri
 }
 
 type delegateSendResult struct {
-	DelegateID             string  `json:"delegate_id,omitempty"`
-	StartedJobID           string  `json:"started_job_id,omitempty"`
-	CurrentJobID           string  `json:"current_job_id,omitempty"`
-	LatestJobID            string  `json:"latest_job_id,omitempty"`
-	Type                   string  `json:"type,omitempty"`
-	Status                 string  `json:"status,omitempty"`
-	Reason                 *string `json:"reason,omitempty"`
-	RunningInBackground    bool    `json:"running_in_background"`
-	TimedOut               bool    `json:"timed_out,omitempty"`
-	Action                 string  `json:"action"`
-	TranscriptRef          string  `json:"transcript_ref,omitempty"`
-	Output                 *string `json:"output,omitempty"`
-	Truncated              *bool   `json:"truncated,omitempty"`
-	StructuredResult       any     `json:"structured_result,omitempty"`
-	StructuredResultValid  *bool   `json:"structured_result_valid,omitempty"`
-	StructuredResultReason string  `json:"structured_result_reason,omitempty"`
-	WaitIgnoredReason      string  `json:"wait_ignored_reason,omitempty"`
+	DelegateID             string           `json:"delegate_id,omitempty"`
+	StartedJobID           string           `json:"started_job_id,omitempty"`
+	CurrentJobID           string           `json:"current_job_id,omitempty"`
+	LatestJobID            string           `json:"latest_job_id,omitempty"`
+	Type                   string           `json:"type,omitempty"`
+	Status                 string           `json:"status,omitempty"`
+	Reason                 *string          `json:"reason,omitempty"`
+	RunningInBackground    bool             `json:"running_in_background"`
+	TimedOut               bool             `json:"timed_out,omitempty"`
+	Action                 string           `json:"action"`
+	TranscriptRef          string           `json:"transcript_ref,omitempty"`
+	Output                 *string          `json:"output,omitempty"`
+	Truncated              *bool            `json:"truncated,omitempty"`
+	StructuredResult       any              `json:"structured_result,omitempty"`
+	StructuredResultValid  *bool            `json:"structured_result_valid,omitempty"`
+	StructuredResultReason string           `json:"structured_result_reason,omitempty"`
+	Watching               bool             `json:"watching,omitempty"`
+	Watches                []watchListEntry `json:"watches,omitempty"`
+	WaitIgnoredReason      string           `json:"wait_ignored_reason,omitempty"`
 }
 
 type jobWatchToolResult struct {
@@ -1260,21 +1262,23 @@ type jobWatchToolSendArgs struct {
 }
 
 type delegateToolResult struct {
-	DelegateID             string  `json:"delegate_id,omitempty"`
-	StartedJobID           string  `json:"started_job_id,omitempty"`
-	JobID                  string  `json:"job_id"`
-	LatestJobID            string  `json:"latest_job_id,omitempty"`
-	Type                   string  `json:"type"`
-	Status                 string  `json:"status"`
-	Reason                 *string `json:"reason,omitempty"`
-	RunningInBackground    bool    `json:"running_in_background"`
-	TimedOut               bool    `json:"timed_out"`
-	TranscriptRef          string  `json:"transcript_ref"`
-	Output                 *string `json:"output,omitempty"`
-	Truncated              *bool   `json:"truncated,omitempty"`
-	StructuredResult       any     `json:"structured_result,omitempty"`
-	StructuredResultValid  *bool   `json:"structured_result_valid,omitempty"`
-	StructuredResultReason string  `json:"structured_result_reason,omitempty"`
+	DelegateID             string           `json:"delegate_id,omitempty"`
+	StartedJobID           string           `json:"started_job_id,omitempty"`
+	JobID                  string           `json:"job_id"`
+	LatestJobID            string           `json:"latest_job_id,omitempty"`
+	Type                   string           `json:"type"`
+	Status                 string           `json:"status"`
+	Reason                 *string          `json:"reason,omitempty"`
+	RunningInBackground    bool             `json:"running_in_background"`
+	TimedOut               bool             `json:"timed_out"`
+	TranscriptRef          string           `json:"transcript_ref"`
+	Output                 *string          `json:"output,omitempty"`
+	Truncated              *bool            `json:"truncated,omitempty"`
+	StructuredResult       any              `json:"structured_result,omitempty"`
+	StructuredResultValid  *bool            `json:"structured_result_valid,omitempty"`
+	StructuredResultReason string           `json:"structured_result_reason,omitempty"`
+	Watching               bool             `json:"watching,omitempty"`
+	Watches                []watchListEntry `json:"watches,omitempty"`
 }
 
 func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error) {
@@ -1300,6 +1304,8 @@ func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error)
 		TimedOut:            res.TimedOut,
 		Action:              res.Action,
 		TranscriptRef:       res.TranscriptRef,
+		Watching:            res.Watching,
+		Watches:             res.Watches,
 		WaitIgnoredReason:   res.WaitIgnoredReason,
 	}
 	if !res.RunningInBackground || res.TimedOut {
@@ -1346,10 +1352,19 @@ func formatDelegateSend(out delegateSendResult) string {
 	if out.RunningInBackground {
 		foot = append(foot, "running in background")
 	}
+	if out.Watching {
+		foot = append(foot, "watching")
+	}
 	if out.WaitIgnoredReason != "" {
 		foot = append(foot, "wait ignored: "+out.WaitIgnoredReason)
 	}
 	b.WriteString("[" + strings.Join(foot, " · ") + "]")
+	if len(out.Watches) > 0 {
+		b.WriteString("\nwatches:")
+		for _, w := range out.Watches {
+			fmt.Fprintf(&b, "\n- %s → %s (%s)", w.ID, w.Source, w.Condition)
+		}
+	}
 	if out.StructuredResult != nil {
 		if sr, err := json.Marshal(out.StructuredResult); err == nil {
 			valid := out.StructuredResultValid != nil && *out.StructuredResultValid
@@ -1536,6 +1551,8 @@ func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
 		RunningInBackground: res.RunningInBackground,
 		TimedOut:            res.TimedOut,
 		TranscriptRef:       res.TranscriptRef,
+		Watching:            res.Watching,
+		Watches:             res.Watches,
 	}
 	if !res.RunningInBackground || res.TimedOut {
 		out.Output = &res.Output

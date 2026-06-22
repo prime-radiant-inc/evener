@@ -91,6 +91,8 @@ type delegateResult struct {
 	StructuredResultValid    bool
 	StructuredResultValidSet bool
 	StructuredResultReason   string
+	Watching                 bool
+	Watches                  []watchListEntry
 	Err                      error
 }
 
@@ -125,6 +127,8 @@ type sendMessageResult struct {
 	StructuredResultValid     bool
 	StructuredResultValidSet  bool
 	StructuredResultReason    string
+	Watching                  bool
+	Watches                   []watchListEntry
 	Delivered                 bool
 	MessageType               string
 	WatchSendDeliveryClass    watchSendDeliveryClass
@@ -1236,6 +1240,8 @@ func sendMessageResultFromDelegateResult(target, resumedFromJobID, action string
 		StructuredResultValid:    res.StructuredResultValid,
 		StructuredResultValidSet: res.StructuredResultValidSet,
 		StructuredResultReason:   res.StructuredResultReason,
+		Watching:                 res.Watching,
+		Watches:                  res.Watches,
 		Err:                      res.Err,
 	}
 }
@@ -1855,6 +1861,7 @@ func delegateTerminalResult(jm *jobManager, run *runningJob) delegateResult {
 		}
 	}
 	output, _, truncated, err := jm.readOutput(rec.JobID, shellInlineOutputBytes)
+	activeWatches := activeDelegateWatchSummaries(jm, rec)
 	jm.mu.Lock()
 	structured := rec.StructuredResult
 	structuredValid := rec.StructuredResultValid
@@ -1883,8 +1890,21 @@ func delegateTerminalResult(jm *jobManager, run *runningJob) delegateResult {
 		StructuredResultValid:    valid,
 		StructuredResultValidSet: structuredValid != nil,
 		StructuredResultReason:   rec.StructuredResultReason,
+		Watching:                 len(activeWatches) > 0,
+		Watches:                  activeWatches,
 		Err:                      err,
 	}
+}
+
+func activeDelegateWatchSummaries(jm *jobManager, rec *jobstore.JobRecord) []watchListEntry {
+	if jm == nil || rec == nil || rec.DelegateID == "" || rec.TranscriptRef == "" {
+		return nil
+	}
+	_, childID, err := decodeRef(rec.TranscriptRef)
+	if err != nil || childID == "" {
+		return nil
+	}
+	return jm.liveWatchSummariesForReceiver(childID, rec.DelegateID)
 }
 
 func delegateResultSchema(rec *jobstore.JobRecord) any {

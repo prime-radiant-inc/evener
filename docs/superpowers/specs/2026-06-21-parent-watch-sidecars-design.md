@@ -203,7 +203,8 @@ For a watch-originated observer turn:
   continue working;
 - `communicate(end_turn:true)` is the observer result for that activation;
 - when the observer turn was caused by a parent-source watch frame, terminal
-  `communicate(end_turn:true)` resumes the parent as the observer callback;
+  `communicate(end_turn:true)` resumes the parent as an `Observer callback`
+  block containing the observer message and canonical output envelope;
 - the later ordinary delegate terminal notification is suppressed when it would
   duplicate the delivered callback.
 
@@ -241,8 +242,9 @@ grants the read, but does not gain general read access to the parent job store.
 6. Runtime starts or steers the child with the frame.
 7. Child evaluates the frame.
 8. Child calls `communicate(end_turn:true, ...)` when it has a result.
-9. Runtime resumes the parent with that result as the observer callback and
-   marks the callback delivered for duplicate-notification suppression.
+9. Runtime resumes the parent with an `Observer callback` block carrying that
+   result and marks the callback delivered for duplicate-notification
+   suppression.
 
 ### Parent watching a descendant job
 

@@ -123,13 +123,20 @@ type ToolCallSummary struct {
 	IsResult   bool   `json:"is_result,omitempty"` // the session's effective result tool
 }
 
+type ToolResultSummary struct {
+	Name           string `json:"name,omitempty"`
+	ContentPreview string `json:"content_preview,omitempty"`
+	IsError        bool   `json:"is_error,omitempty"`
+}
+
 // TurnSummary is the structural view of one transcript turn.
 type TurnSummary struct {
-	Index     int               `json:"index"` // 1-based position in the conversation
-	Kind      string            `json:"kind"`
-	Role      string            `json:"role,omitempty"`
-	ToolCalls []ToolCallSummary `json:"tool_calls,omitempty"`
-	Text      string            `json:"text,omitempty"`
+	Index       int                 `json:"index"` // 1-based position in the conversation
+	Kind        string              `json:"kind"`
+	Role        string              `json:"role,omitempty"`
+	ToolCalls   []ToolCallSummary   `json:"tool_calls,omitempty"`
+	ToolResults []ToolResultSummary `json:"tool_results,omitempty"`
+	Text        string              `json:"text,omitempty"`
 }
 
 // TranscriptResult is the rendered transcript with an honest elision footer:
@@ -196,10 +203,34 @@ func summarizeTurn(index int, e transcript.Entry, resultTool string) TurnSummary
 				ArgPreview: truncate(string(part.ToolCall.Arguments), argPreviewMax),
 				IsResult:   part.ToolCall.Name == resultTool,
 			})
+		case llm.ContentToolResult:
+			if part.ToolResult == nil {
+				continue
+			}
+			ts.ToolResults = append(ts.ToolResults, ToolResultSummary{
+				Name:           part.ToolResult.Name,
+				ContentPreview: truncate(toolResultContentText(part.ToolResult.Content), textPreviewMax),
+				IsError:        part.ToolResult.IsError,
+			})
 		}
 	}
 	ts.Text = truncate(strings.TrimSpace(text.String()), textPreviewMax)
 	return ts
+}
+
+func toolResultContentText(content any) string {
+	switch v := content.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	default:
+		b, err := json.Marshal(v)
+		if err == nil {
+			return string(b)
+		}
+		return fmt.Sprint(v)
+	}
 }
 
 // resolveResultTool reads the session's effective result-tool name from meta
@@ -222,6 +253,9 @@ func RenderTranscript(r TranscriptResult, format string) string {
 			if names := toolCallNames(t.ToolCalls); names != "" {
 				fmt.Fprintf(&b, "  tools: %s", names)
 			}
+			if names := toolResultNames(t.ToolResults); names != "" {
+				fmt.Fprintf(&b, "  results: %s", names)
+			}
 			if t.Text != "" {
 				fmt.Fprintf(&b, "  %q", oneLine(t.Text))
 			}
@@ -240,6 +274,13 @@ func RenderTranscript(r TranscriptResult, format string) string {
 			}
 			fmt.Fprintf(&b, "%s `%s`\n", label, oneLine(tc.ArgPreview))
 		}
+		for _, tr := range t.ToolResults {
+			label := "← " + tr.Name
+			if tr.IsError {
+				label += " (error)"
+			}
+			fmt.Fprintf(&b, "%s `%s`\n", label, oneLine(tr.ContentPreview))
+		}
 		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "— turns_total=%d turns_rendered=%d elided=%d (session %s, result_tool=%s)\n",
@@ -254,6 +295,24 @@ func toolCallNames(tcs []ToolCallSummary) string {
 	names := make([]string, len(tcs))
 	for i, tc := range tcs {
 		names[i] = tc.Name
+	}
+	return strings.Join(names, ", ")
+}
+
+func toolResultNames(trs []ToolResultSummary) string {
+	if len(trs) == 0 {
+		return ""
+	}
+	names := make([]string, len(trs))
+	for i, tr := range trs {
+		name := tr.Name
+		if name == "" {
+			name = "<unnamed>"
+		}
+		if tr.IsError {
+			name += "(error)"
+		}
+		names[i] = name
 	}
 	return strings.Join(names, ", ")
 }

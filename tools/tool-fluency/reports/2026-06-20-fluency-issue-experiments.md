@@ -826,3 +826,89 @@ Current conclusion:
   the invalid `job_watch` argument surface itself, likely by changing the
   model-facing schema shape for caller/session watches. Runtime leniency would
   be a backward-compatibility change and needs explicit approval.
+
+### F04 - Observer Watch State And Callback Evidence
+
+Root causes found after reading the live transcripts:
+
+- The delegate readiness result looked terminal even when the observer had
+  installed an active parent watch. The parent had no direct evidence that the
+  sidecar was still watching.
+- The observer callback steering only surfaced the callback message. It dropped
+  the canonical output envelope, so GPT sometimes audited with `job_list` or
+  `job_read_output` to recover evidence it should already have had.
+- GPT sometimes mixed trigger modes by adding `progress_interval_ms` to a
+  session event watch. That created noisy progress frames and made the event
+  watch harder to reason about.
+- GPT also sometimes sent `progress_interval_ms:null`. The handler would have
+  treated that as absent, but the model-facing schema rejected it before the
+  handler ran, forcing a repair call.
+
+F04 changes:
+
+- Renamed the model-facing readiness state to `watching:true` with `watches`
+  details on `delegate` and `delegate_send` results. This matches the domain
+  question: "is the observer watching?"
+- Added runtime validation for mixed session event/progress watches. Session
+  event watches use `events`, `event_filter`, and optional `every`; periodic
+  progress watches use `progress_interval_ms`.
+- Routed watch-origin terminal `communicate` callbacks to the parent as an
+  `Observer callback` block that includes both the marker and the canonical
+  output envelope.
+- Allowed `null` for optional `job_watch` integer fields so a nullable omitted
+  value reaches the existing handler path instead of failing schema validation.
+- Improved `serf-doctor transcript` to show bounded tool-result previews, so
+  future transcript reads do not require ad hoc JSON parsing.
+
+Focused verification:
+
+```sh
+go test ./agent/internal/tool ./agent -run 'TestDefJobWatchParamsAndKinds|TestJobWatchToolTreatsNullOptionalIntegersAsOmitted|TestConfigureWatchRejectsSessionEventWatchWithProgress|TestWatchOriginCommunicateEndTurnResumesParentOnce|TestDelegateReadyResultSurfacesWatching' -count=1
+go test ./agent/doctor ./cmd/serf-doctor -count=1
+go test ./... -count=1
+```
+
+Live GPT rerun:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --harness live --model openai/gpt-5.4-mini --fast-cheap-model openai/gpt-5.4-mini --clear-openai-api-key --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 45s --timeout 10m --out /tmp/serf-fluency-observer-final-gpt54mini
+```
+
+F04 GPT result:
+
+- Passed 3 of 3.
+- Root canonical calls in every repetition: `delegate:1`, `read_file:1`,
+  `communicate:1`.
+- Model-level `job_watch` count was exactly 1 in every repetition, so the
+  previous nullable-integer schema repair did not reproduce.
+- Doctor transcript checks showed no parent `job_list` or `job_read_output`
+  after the observer callback. The parent saw:
+  `Observer callback: message: WATCH_OBSERVED output: {...}`.
+
+Live Kimi reruns:
+
+```sh
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 3 --post-turn-wait 45s --timeout 10m --out /tmp/serf-fluency-observer-final-kimi
+go run ./tools/tool-fluency/cmd/serf-fluency run --build --harness live --model kimi/kimi-for-coding --probe job_watch.observer_callback --repetitions 1 --post-turn-wait 45s --timeout 10m --out /tmp/serf-fluency-observer-final-kimi-single
+```
+
+F04 Kimi result:
+
+- A prior Kimi run after the callback/evidence fix passed 3 of 3 at
+  `/tmp/serf-fluency-observer-callback-block-kimi`.
+- The final 3-repetition Kimi run did not produce a clean sample. Rep 1 reached
+  the expected final output but had an extra child-side `delegate_send`; rep 2
+  derailed into inspecting the previous repetition's result files instead of
+  executing the probe and was killed.
+- A fresh single-repetition retry was blocked by Kimi provider quota:
+  `status=403` usage limit. That did not exercise the runtime path.
+
+Current conclusion:
+
+- The "is watching" framing is simpler and easier for the parent model than the
+  previous readiness wording.
+- GPT's remaining observed failures in this probe are fixed in the focused
+  3-repetition sample.
+- Kimi could not be fully revalidated at this exact revision because of provider
+  quota, but the last clean Kimi run after the callback/evidence runtime fix was
+  3 of 3.

@@ -188,6 +188,8 @@ observer-callback validation issues above, and the
 `communicate.output.purpose` strict-envelope failure by removing `purpose` from
 the model-facing `communicate` schema.
 
-The remaining known failure mode still needs a separate decision:
-
-- `job_watch` mode-shape friction for caller/session event watches.
+The remaining `job_watch` mode-shape friction for caller/session event watches
+was resolved by separating event-frame watches from periodic progress watches in
+the model-facing contract. Session event watches use `events`/`event_filter`
+and optional `every`; `progress_interval_ms` remains the periodic progress
+trigger and is rejected when combined with session `events`.

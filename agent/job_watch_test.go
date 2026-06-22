@@ -635,6 +635,28 @@ func TestConfigureWatchRejectsUnsupportedEventFilterShapes(t *testing.T) {
 	}
 }
 
+func TestConfigureWatchRejectsSessionEventWatchWithProgress(t *testing.T) {
+	jm := newTestJM(t)
+
+	_, err := jm.configureWatch(watchArgs{
+		Target:             runtimeMessageAliasCaller,
+		ProgressIntervalMS: minWatchProgressIntervalMS,
+		Events:             []string{"assistant.tool"},
+		EventFilter: &watchEventFilter{
+			ToolName: "read_file",
+			Status:   "ok",
+		},
+		ReceiverSessionID:  "child_session",
+		ReceiverDelegateID: "dlg_child",
+	})
+	if err == nil {
+		t.Fatal("session event watch with periodic progress must fail")
+	}
+	if !strings.Contains(err.Error(), "session event watches use events/event_filter/every") {
+		t.Fatalf("error = %v, want session event/progress mode guidance", err)
+	}
+}
+
 func TestWildcardEventWatchOnlyFiresSupportedEvents(t *testing.T) {
 	jm := newTestJM(t)
 	var notified []jobNotification

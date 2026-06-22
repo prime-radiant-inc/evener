@@ -31,8 +31,9 @@ notification, list jobs to re-orient before re-running anything.
 Ordinary watches: create the watch on the thing you want to observe. For a
 background job, use `job_watch(operation="create", source=<job_id>, ...)`.
 Delivery is implicit: matching frames return to the session that created the
-watch. Use `output_match` for concrete job output, `progress_interval_ms` for
-periodic progress, and `events`/`event_filter` for event frames.
+watch. Pick the trigger mode that matches the signal: `output_match` for
+concrete job output, `progress_interval_ms` for periodic progress, and
+`events`/`event_filter` for event frames.
 
 Observer sidecars: start the observer with `delegate(watch_parent:true)`. The
 child observes your session with `job_watch(operation="create", source="parent",
@@ -47,13 +48,18 @@ For watch-driven tasks, complete this sequence:
 4. Trigger the watched action.
 5. Finish from the observer's later `communicate(end_turn:true)` callback.
 
+When the readiness result includes `watching:true` and
+`watches`, the observer is watching. Trigger the planned watched action and
+continue from the later callback.
+
 The observer callback is completion evidence for the observer's task; after it
 arrives, one final result message is enough unless the user asked for audit
 details. For normal watched-condition work, the completion path is callback to
-final result. Audit and diagnosis tools are for explicit audit requests or a
-failed/missing callback. For `job_watch` create calls, keep the public shape
-source-owned: `operation`, `source`, and optional trigger fields such as
-`output_match`, `events`, `event_filter`, `every`, or `progress_interval_ms`.
+final result. Watch-origin callbacks are delivered as an "Observer callback"
+block with the observer's message and output envelope. Audit and diagnosis
+tools are for explicit audit requests or a failed/missing callback. For
+`job_watch` create calls, keep the public shape
+source-owned: `operation`, `source`, and the trigger fields for the chosen mode.
 For `source:"parent"` and other session-event watches, omit trigger fields to
 receive bounded public frames, or add `events`/`event_filter` to narrow. Frames
 coalesce while the observer is busy — it sees the latest state, not a backlog.

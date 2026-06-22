@@ -131,6 +131,70 @@ func TestDelegateResultIncludesDurableDelegateAndStartedJobIDs(t *testing.T) {
 	}
 }
 
+func TestDelegateReadyResultSurfacesWatching(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			if !requestHasTool(req, "job_watch") {
+				t.Fatalf("watch_parent child request missing job_watch")
+			}
+			return toolCallResponse(llm.ToolCallData{
+				ID:   "create_parent_watch",
+				Name: "job_watch",
+				Arguments: json.RawMessage(`{
+					"operation":"create",
+					"source":"parent",
+					"events":["assistant.tool"],
+					"event_filter":{"tool_name":"read_file","status":"ok"}
+				}`),
+				Type: "function",
+			})
+		},
+		func(req llm.Request) llm.Response {
+			return communicateWithDefaultOutput("OBSERVER_READY")
+		},
+	}})
+	s := newDelegateTestSession(t, c)
+
+	res := s.createDelegate(context.Background(), delegateArgs{
+		Task:           "install parent watch and report readiness",
+		WatchParent:    true,
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+	if res.Status != jobstore.StatusCompleted || res.RunningInBackground {
+		t.Fatalf("delegate result = %+v, want completed foreground readiness activation", res)
+	}
+	if !res.Watching {
+		t.Fatalf("watching = false, watches = %+v", res.Watches)
+	}
+	if len(res.Watches) != 1 {
+		t.Fatalf("watches = %+v, want one parent watch", res.Watches)
+	}
+	watch := res.Watches[0]
+	if watch.ID == "" || watch.Source != "parent" || watch.Deliveries != 0 {
+		t.Fatalf("active watch = %+v, want undelivered parent watch", watch)
+	}
+	if !strings.Contains(watch.Condition, "read_file") {
+		t.Fatalf("active watch condition = %q, want read_file signal", watch.Condition)
+	}
+
+	wire, err := marshalDelegateResult(res, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("marshalDelegateResult: %v", err)
+	}
+	var parsed delegateToolResult
+	if err := json.Unmarshal(handlerJSON(t, wire), &parsed); err != nil {
+		t.Fatalf("unmarshal delegate result: %v\n%s", err, wire)
+	}
+	if !parsed.Watching || len(parsed.Watches) != 1 {
+		t.Fatalf("wire result = %+v, want active watch callback signal", parsed)
+	}
+}
+
 func TestForegroundDelegateCompletionDoesNotArmTerminalNotification(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{

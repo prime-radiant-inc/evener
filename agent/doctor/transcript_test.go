@@ -20,6 +20,15 @@ func toolCall(name, args string) llm.ContentPart {
 		ID: "tc-" + name, Name: name, Arguments: json.RawMessage(args)}}
 }
 
+func toolResult(name string, content any, isError bool) llm.ContentPart {
+	return llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+		ToolCallID: "tc-" + name,
+		Name:       name,
+		Content:    content,
+		IsError:    isError,
+	}}
+}
+
 // writeRichSession writes a real transcript (header + turns + api_calls) plus a
 // meta file, via serf's own transcript.Writer so the bytes match production.
 func writeRichSession(t *testing.T, bucket, sid string, turns []schema.Turn, apiCalls []transcript.APICall, meta schema.SessionMeta) {
@@ -153,6 +162,38 @@ func TestTranscript_ResultToolDefaultsToCommunicate(t *testing.T) {
 	last := r.Turns[len(r.Turns)-1]
 	if len(last.ToolCalls) != 1 || !last.ToolCalls[0].IsResult {
 		t.Errorf("communicate call should be flagged IsResult: %+v", last.ToolCalls)
+	}
+}
+
+func TestTranscript_RendersToolResultPreviews(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidB
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			toolResult("job_watch", map[string]any{
+				"watching": true,
+				"watch_id": "watch_123",
+			}, false),
+			toolResult("job_list", "target_not_found", true),
+		}}),
+	}
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
+
+	r, err := Transcript(base, sid, TranscriptOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(r.Turns[0].ToolResults); got != 2 {
+		t.Fatalf("tool results = %d, want 2", got)
+	}
+	if !strings.Contains(r.Turns[0].ToolResults[0].ContentPreview, "watch_123") {
+		t.Fatalf("content preview = %q, want watch id", r.Turns[0].ToolResults[0].ContentPreview)
+	}
+
+	out := RenderTranscript(r, "markdown")
+	if !strings.Contains(out, "← job_watch") || !strings.Contains(out, "← job_list (error)") {
+		t.Fatalf("rendered transcript missing tool result previews:\n%s", out)
 	}
 }
 

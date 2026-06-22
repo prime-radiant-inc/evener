@@ -522,6 +522,9 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if err := validateWatchEventArgs(a); err != nil {
 		return watchResult{}, err
 	}
+	if err := validateWatchTriggerShape(a); err != nil {
+		return watchResult{}, err
+	}
 	if a.Clear {
 		return jm.clearWatch(key)
 	}
@@ -708,6 +711,13 @@ func validateWatchEventArgs(a watchArgs) error {
 		default:
 			return errors.New(`invalid_request: event_filter.status must be "ok" or "error"`)
 		}
+	}
+	return nil
+}
+
+func validateWatchTriggerShape(a watchArgs) error {
+	if a.ProgressIntervalMS > 0 && len(a.Events) > 0 && isWatchSessionTarget(a.Target) {
+		return errors.New("invalid_request: session event watches use events/event_filter/every; progress_interval_ms is for periodic progress watches")
 	}
 	return nil
 }
@@ -1976,6 +1986,37 @@ func (jm *jobManager) liveWatchSummaries() []watchListEntry {
 	entries := make([]watchListEntry, 0, len(jm.watches))
 	for key, cfg := range jm.watches {
 		if !watchConfigVisibleToSession(cfg, jm.sessionID) {
+			continue
+		}
+		_ = key
+		entries = append(entries, watchListEntry{
+			ID:         cfg.id,
+			Source:     watchPublicSource(cfg.sourcePublic, cfg.target),
+			Condition:  watchConditionSummary(cfg),
+			Deliveries: cfg.deliveries,
+			CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
+		})
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Source != entries[j].Source {
+			return entries[i].Source < entries[j].Source
+		}
+		return entries[i].ID < entries[j].ID
+	})
+	return entries
+}
+
+func (jm *jobManager) liveWatchSummariesForReceiver(receiverSessionID, receiverDelegateID string) []watchListEntry {
+	receiverSessionID = strings.TrimSpace(receiverSessionID)
+	receiverDelegateID = strings.TrimSpace(receiverDelegateID)
+	if receiverSessionID == "" || receiverDelegateID == "" {
+		return nil
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	entries := make([]watchListEntry, 0, len(jm.watches))
+	for key, cfg := range jm.watches {
+		if !watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID) {
 			continue
 		}
 		_ = key

@@ -36,9 +36,10 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Use `delegate` to start a new delegate conversation/job. It returns both a concrete `job_id` for that turn and a durable `delegate_id` for conversation follow-up. It does not continue an existing conversation.
 - Use `delegate_send` for follow-up on a durable delegate conversation: if the delegate is running, it steers the active turn; if the delegate is idle, the default `on_idle="fail"` rejects instead of starting work. Use `on_idle="start"` only when you intend to start the delegate's next job in the same conversation.
 - Use `delegate_send` only for follow-up on a durable child delegate conversation. Observer sidecars report through `communicate(end_turn=true)`, not `delegate_send`. `delegate_send` rejects `job_id`, `transcript_ref`, and runtime aliases on the public tool surface; ordinary delegate follow-up targets a `delegate_id`.
+- When an observer readiness delegate result includes `watching:true` and `watches`, the observer is watching. Continue with the planned watched action and use the later observer `communicate(end_turn=true)` as the callback.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_read_output`.
 - Serf automatically injects one terminal notification for notification-armed background jobs when they complete, fail, are cancelled, or are stopped/lost. You are told when YOUR delegates finish; your delegates handle their own children's completions in their own turns (you are not interrupted about a job you did not create).
-- Use `job_watch` when a condition should notify the watcher. `source` names what the watcher observes (`self`, `parent` when granted by `delegate(watch_parent=true)`, or a concrete `job_id` owned by this session or a live descendant). Delivery is implicit to the session that created the watch. Trigger fields are `output_match`, `progress_interval_ms`, and, for event/frame watches, `events` (optionally gated by `every` and `event_filter`). Do not use `job_watch` to learn when a job completes.
+- Use `job_watch` when a condition should notify the watcher. `source` names what the watcher observes (`self`, `parent` when granted by `delegate(watch_parent=true)`, or a concrete `job_id` owned by this session or a live descendant). Delivery is implicit to the session that created the watch. Pick the trigger mode that matches the signal: `output_match` for concrete job output, `progress_interval_ms` for periodic progress, and `events`/`event_filter` for event frames. Do not use `job_watch` to learn when a job completes.
 - Use `job_read_output` for shell stdout/stderr and delegate invocation output/final reports. For delegates, `status="completed"` means the delegate turn ended normally; it does not prove the delegated task succeeded. Read `output`/`structured_result` to judge task outcome.
 - Use transcript tools for delegate child conversation history; `job_read_output` is not a transcript reader.
 - Use `job_stop` only when the intent is to cancel or stop work. It does not delete output/history and it does not acknowledge results.
@@ -320,6 +321,7 @@ Defaults:
 - Delegates have no model-facing `max_runtime_ms` in v1. Delegate runtime limits, if any, are implementation policy rather than a tool argument.
 - `result_schema`, when supplied, is a JSON Schema-like contract for the initial delegate final result and for resumed turns in the same delegate conversation. The delegate output remains readable as prose/log text, and Serf validates and surfaces a structured result when possible. When validation or capture fails for a schema-backed delegate result, Serf omits `structured_result`, sets `structured_result_valid:false`, and includes a machine-readable `structured_result_reason`.
 - Delegate interaction is turn-based in this target contract. A delegate that needs more input should finish with a request for that input; the parent follows up with `delegate_send`. Mid-turn interactive input/awaiting-input notifications are not a v1 guarantee. Delegate `status="completed"` means the delegate turn ended normally; it does not assert that the requested task succeeded. Agents must inspect `output`, `structured_result`, or task-specific schema fields for task success/failure.
+- A foreground delegate turn that installs watches and reports readiness is still a completed delegate job, but its result includes `watching:true` and `watches`. That means the watch remains active for the delegate conversation and later matching frames will resume it.
 
 Background return shape:
 
@@ -355,7 +357,17 @@ Foreground terminal return shape:
   "output": "bounded final report or invocation output",
   "truncated": false,
   "structured_result": {"summary": "...", "files": ["parser.go"]},
-  "structured_result_valid": true
+  "structured_result_valid": true,
+  "watching": true,
+  "watches": [
+    {
+      "id": "watch_...",
+      "source": "parent",
+      "condition": "assistant.tool where tool_name=read_file,status=ok",
+      "deliveries": 0,
+      "created_at": "2026-06-22T05:41:25Z"
+    }
+  ]
 }
 ```
 
@@ -538,10 +550,11 @@ Clear an existing watch:
 Trigger fields:
 
 - `output_match` is level-triggered: it fires once at attach if the job's already-retained output contains a match, then again as appended output matches the regex. It requires a concrete job source; `output_match` on a session source (`self` or `parent`) fails `invalid_request`.
-- `progress_interval_ms` fires periodically with bounded progress/excerpt metadata even if no match occurred.
+- `progress_interval_ms` fires periodically with bounded progress/excerpt metadata even if no match occurred. It is a separate progress trigger, not an event-frame modifier.
 - `events` selects session/job event kinds to include in the watch frame. `events: ["*"]` means all visible event kinds allowed by caller permissions and filtering. Event kind names are implementation-defined but must be discoverable by the model; the shipped vocabulary is `assistant.tool`, `communicate`, and `job.notification`. Plain assistant prose is an internal transcript/UI event and is not watchable through `job_watch`.
 - `event_filter` narrows event watches before any delivery is recorded. In v1 it applies only to `events: ["assistant.tool"]` and supports exact `tool_name` plus `status` (`"ok"` or `"error"`). Non-matching events do not create a delivery, pending row, notification, or observer wake. Assistant-tool frames include the resulting `status` plus the original tool `arguments_json`, so an observer can usually decide from the delivered frame before using audit tools.
 - `every` gates event delivery: `every: N` fires on each Nth occurrence of the watched event kind, for example `events: ["communicate"], every: 3` for every third result-tool message. `every: 1` is the semantic default and reads as unset, whatever `events` contains. `every > 1` is valid only when `events` names exactly one concrete kind; supplying it with zero, multiple, or wildcard (`"*"`) kinds fails `invalid_request`.
+- Session event watches that set `events` use `event_filter` and optional `every` for precision. Combining session `events` with `progress_interval_ms` fails `invalid_request` because periodic progress is a different trigger mode.
 
 For cross-session session sources such as `parent`, omitting trigger fields means
 deliver all bounded public watch frames for that source. For concrete jobs and
@@ -564,8 +577,9 @@ Practical observer guidance for agents:
 
 - Start the observer with `watch_parent:true` when it needs to observe the parent.
 - Inside the observer, call `job_watch(source:"parent")`; omit trigger fields for the default bounded parent frame stream, or add `events`/`event_filter` for precision.
+- When the readiness delegate result carries `watching:true` and `watches`, treat the observer as watching and perform the planned watched action.
 - Report readiness or continuing status with `communicate(end_turn=false)` only when the observer will continue working in that same turn.
-- Report the observer result with `communicate(end_turn=true)`. That terminal communicate is the callback to the parent.
+- Report the observer result with `communicate(end_turn=true)`. That terminal communicate is the callback to the parent. The parent receives it as an "Observer callback" block containing the observer message and canonical output envelope.
 - Keep observer instructions narrow and frame-driven. Tell the observer what frame fields to read (`watch_id`, `delivery_id`, `job_id`, event kind/status/arguments, and optional excerpt), what action to take, and when to stop.
 - A watch-origin observer job that has already sent its terminal `communicate(end_turn=true)` records terminal state without adding another owner notification for the same job. Other terminal job notifications remain lifecycle confirmations, not additional watch frames. Clear long-lived session watches before continuing a free-form conversation when later acknowledgements should not themselves be observed.
 
@@ -589,7 +603,7 @@ Rules:
 - Invalid regexes fail synchronously at watch creation time.
 - For the retained output present at attach and for bytes successfully appended while a watch is active, Serf must not silently miss a regex match because of preview-window eviction. The no-silent-miss guarantee extends to the attach scan: a token already retained at attach, or one straddling the attach boundary, must still match. Implementations may use line-buffered append-stream matching, chunk-overlap matching, or another mechanism, but the contract is no silent miss for retained/appended watched output.
 - Event frames and output excerpts are bounded and filtered before notification or observer delivery. Implementations may apply redaction/scrubbing for cross-session or observer delivery, but this contract does not promise perfect secret detection; callers must not treat frames as guaranteed secret-free.
-- Default `progress_interval_ms` is absent/no periodic progress wake-up. If supplied, minimum is `1000`, maximum is `3600000`, and omitted/`0` means no periodic progress notification. Negative values fail `invalid_request`.
+- Default `progress_interval_ms` is absent/no periodic progress wake-up. If supplied, minimum is `1000`, maximum is `3600000`, and omitted/`0` means no periodic progress notification. Negative values fail `invalid_request`. Session event watches use `events`/`event_filter` instead of combining events with periodic progress.
 - Match/event/progress notifications are batched/throttled. Multiple triggers may be coalesced. For parent-watch observer frames, coalescing is latest-frame-wins by durable key and must not turn a matched condition into silence: Serf either delivers the current pending frame, replaces it with a newer pending frame for the same key, or emits a caller-visible diagnostic for hard failure.
 - Each watch configuration has a model-facing delivery budget of 50 (watch notifications plus observer frames, the count `job_list` reports per watch). A watch that exhausts its budget is auto-cleared with one final notification telling the caller to re-arm with a tighter condition (higher `every`, narrower `output_match`, or longer `progress_interval_ms`).
 - Terminal notification ordering: flush any queued watch notification/frame for a concrete job, then deliver the terminal notification.
@@ -1169,7 +1183,7 @@ Observer sidecars are a v1 Serf composition pattern. Claude Monitor covers only 
 2. Inside that child, configure `job_watch(operation="create", source="parent", ...)`.
 3. Serf delivers matching bounded event/output frames to the child that created the watch.
 4. The sidecar responds with `communicate(end_turn=true, ...)` when it has useful commentary or advice.
-5. The caller treats that communicate as the observer callback and continues from it. Follow-up `job_list` or `job_read_output` calls are audit/diagnostic evidence after the callback, not the callback mechanism itself.
+5. The caller receives an "Observer callback" block with the observer message and canonical output envelope, then continues from it. Follow-up `job_list` or `job_read_output` calls are audit/diagnostic evidence after the callback, not the callback mechanism itself.
 
 This makes observer behavior a composition of two primitives:
 

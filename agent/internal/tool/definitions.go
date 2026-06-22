@@ -117,7 +117,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 			"`result_schema` requests a validated structured result; `max_wait_ms` waits inline up to that many ms " +
 			"(a timeout leaves the job running). `delegation_allowance` lets the delegate itself delegate, up to one " +
 			"level shallower than your own allowance. Set watch_parent=true for an observer sidecar: the child can call job_watch(source=\"parent\") and report findings with communicate(end_turn=true). For delegate readiness, status, findings, and final reports, ask the " +
-			"delegate to call `communicate` with the exact marker/report. Use the delegate's output as the evidence for judging the work.",
+			"delegate to call `communicate` with the exact marker/report. Observer readiness results can include `watching:true` and `watches` when the observer installed watches. Use the delegate's output as the evidence for judging the work.",
 		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -182,7 +182,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"`parent` is available only inside a delegate spawned with `watch_parent=true`. " +
 		"Delivery is implicit: matching frames are delivered to the session that created the watch. " +
 		"For cross-session session sources such as `parent`, omitting trigger fields watches all bounded public events for that source. " +
-		"Use `events` (available: " + kinds + "), `event_filter`, `every`, `output_match`, or `progress_interval_ms` to narrow when useful. " +
+		"Pick the trigger mode that matches the signal: session event frames use `events` (available: " + kinds + "), `event_filter`, and optional `every`; concrete job output uses `output_match`; periodic progress uses `progress_interval_ms`. " +
 		"`event_filter` narrows assistant.tool events by tool_name and ok/error status. " +
 		"Observers report findings with `communicate(end_turn=true)`. " +
 		"`operation=\"clear\"` removes a watch by `watch_id`."
@@ -198,14 +198,14 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 				"watch_id":             map[string]any{"type": "string", "description": "watch_id returned by job_watch create/list; required for inspect and clear."},
 				"source":               map[string]any{"type": "string", "description": "`self`, `parent` when granted by delegate(watch_parent=true), or a concrete job_id visible to this session."},
 				"output_match":         map[string]any{"type": "string", "description": "RE2 regex over the job's output. Case-sensitive unless (?i). Invalid regex errors at creation."},
-				"progress_interval_ms": map[string]any{"type": "integer", "description": "Periodic trigger interval in ms (min 1000, max 3600000; handler clamps later). Omit for none."},
+				"progress_interval_ms": map[string]any{"type": []string{"integer", "null"}, "description": "Periodic progress trigger interval in ms (min 1000, max 3600000; handler clamps later). Use events/event_filter for session event frames."},
 				"events": map[string]any{
 					"type":        "array",
 					"items":       map[string]any{"type": "string"},
 					"description": "Event kinds to watch; [\"*\"] = all visible. Available: " + kinds + ". Watch communicate for result/status messages.",
 				},
 				"every": map[string]any{
-					"type":        "integer",
+					"type":        []string{"integer", "null"},
 					"description": "Fire on each Nth occurrence of the single watched event kind. 1 is the default (fire on every occurrence); values above 1 require `events` to contain exactly one kind.",
 				},
 				"event_filter": map[string]any{

@@ -1743,6 +1743,36 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 	}
 }
 
+func TestJobWatchToolTreatsNullOptionalIntegersAsOmitted(t *testing.T) {
+	s := newTestSession(t)
+
+	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, s.jobManager, rec.JobID) })
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:   "watch",
+		Name: "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(
+			`{"operation":"create","source":%q,"output_match":"ready","progress_interval_ms":null,"every":null}`,
+			rec.JobID,
+		)),
+	})
+	if res.IsError {
+		t.Fatalf("job_watch returned error for null optional integers: %s", res.Output)
+	}
+
+	var out jobWatchToolResult
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal job_watch output: %v (output: %s)", err, res.Output)
+	}
+	if !out.Watching || out.ProgressIntervalMS != 0 {
+		t.Fatalf("job_watch output = %+v, want null integers omitted", out)
+	}
+}
+
 func TestWatchArgsFromToolArgsUsesSource(t *testing.T) {
 	got, err := watchArgsFromToolArgs(map[string]any{
 		"operation": "create",
