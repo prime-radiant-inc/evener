@@ -3,7 +3,7 @@
 For watch-driven tasks, complete this sequence:
 
 1. Start the observer.
-2. Wait for observer readiness.
-3. Create the watch.
+2. In the observer's initial turn, create the watch.
+3. Wait for observer readiness after the watch is installed.
 4. Trigger the watched action.
 5. Finish from the callback message.

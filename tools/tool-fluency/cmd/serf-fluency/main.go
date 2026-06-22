@@ -405,9 +405,9 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 	res.CanonicalToolCounts, res.ToolErrors, res.CommunicateMessages = parseEvents(stderr.Bytes())
 	if id, err := rootSessionID(stateDir); err == nil {
 		res.SessionID = id
-		if tr, err := doctor.Transcript(stateDir, id, doctor.TranscriptOpts{}); err == nil {
-			res.ModelToolCounts = transcriptToolCounts(tr)
-		}
+	}
+	if counts, err := allTranscriptToolCounts(stateDir); err == nil {
+		res.ModelToolCounts = counts
 	}
 	if err != nil {
 		res.Error = err.Error()
@@ -718,6 +718,30 @@ func transcriptToolCounts(tr doctor.TranscriptResult) map[string]int {
 		}
 	}
 	return counts
+}
+
+func allTranscriptToolCounts(stateDir string) (map[string]int, error) {
+	counts := map[string]int{}
+	matches, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.transcript.jsonl"))
+	if err != nil {
+		return counts, err
+	}
+	sort.Strings(matches)
+	for _, path := range matches {
+		name := filepath.Base(path)
+		id, ok := strings.CutSuffix(name, ".transcript.jsonl")
+		if !ok || id == "" {
+			continue
+		}
+		tr, err := doctor.Transcript(stateDir, id, doctor.TranscriptOpts{})
+		if err != nil {
+			return counts, err
+		}
+		for tool, n := range transcriptToolCounts(tr) {
+			counts[tool] += n
+		}
+	}
+	return counts, nil
 }
 
 func rootSessionID(stateDir string) (string, error) {

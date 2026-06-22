@@ -42,10 +42,10 @@ message is the observer callback: when it arrives, continue from that steering.
 For watch-driven tasks, complete this sequence:
 
 1. Start the observer with `watch_parent:true`.
-2. Wait for observer readiness.
-3. Have the observer create its parent watch.
+2. In the observer's initial turn, create `job_watch(source:"parent", ...)`.
+3. Have the observer report readiness only after the watch is installed.
 4. Trigger the watched action.
-5. Finish from the observer's `communicate(end_turn:true)` callback.
+5. Finish from the observer's later `communicate(end_turn:true)` callback.
 
 The observer callback is completion evidence for the observer's task; after it
 arrives, one final result message is enough unless the user asked for audit
