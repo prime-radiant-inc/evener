@@ -173,7 +173,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.shareTaskStore = fs.Bool("share-task-store", false, "share task list between parent and child sessions")
 	flags.resultToolName = fs.String("result-tool-name", "", "override the result tool `name` (default: communicate)")
 	flags.reasoningEffort = fs.String("reasoning-effort", "", "reasoning effort `level`: minimal|low|medium|high|xhigh|max|none")
-	flags.exportATIF = fs.String("export-atif", "", "export ATIF v1.6 trajectory to this `path` on session close")
+	flags.exportATIF = fs.String("export-atif", "", "export ATIF v1.7 trajectory to this `path` on session close")
 	flags.contextStrategy = fs.String("context-strategy", "", "context management `strategy`: compact|session-log|ooda (default: compact)")
 	flags.outputSchema = fs.String("output-schema", "", "inline JSON Schema `document` applied to the communicate tool's output field (replaces the default schema)")
 	flags.verbose = fs.Bool("verbose", false, "emit NDJSON events to stderr")

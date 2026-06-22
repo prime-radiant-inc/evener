@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/serf/agent/internal/atif"
 )
 
-// exportATIF reads a transcript JSONL file, converts it to an ATIF v1.6
+// exportATIF reads a transcript JSONL file, converts it to an ATIF v1.7
 // trajectory, and writes the result to outPath.
 func exportATIF(transcriptPath, outPath string) error {
 	header, entries, _, err := readTranscript(transcriptPath)

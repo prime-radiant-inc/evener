@@ -61,8 +61,8 @@ func TestExportATIF_WritesFile(t *testing.T) {
 	if traj.SessionID != "test-sess" {
 		t.Errorf("SessionID = %q, want %q", traj.SessionID, "test-sess")
 	}
-	if traj.SchemaVersion != "ATIF-v1.6" {
-		t.Errorf("SchemaVersion = %q, want %q", traj.SchemaVersion, "ATIF-v1.6")
+	if traj.SchemaVersion != "ATIF-v1.7" {
+		t.Errorf("SchemaVersion = %q, want %q", traj.SchemaVersion, "ATIF-v1.7")
 	}
 	if len(traj.Steps) != 1 {
 		t.Errorf("len(Steps) = %d, want 1", len(traj.Steps))

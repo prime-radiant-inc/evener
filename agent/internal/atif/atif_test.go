@@ -50,8 +50,8 @@ func TestConvertToATIF_SimpleConversation(t *testing.T) {
 	traj := Convert(header, entries)
 
 	// --- Root trajectory fields ---
-	if traj.SchemaVersion != "ATIF-v1.6" {
-		t.Errorf("SchemaVersion = %q, want %q", traj.SchemaVersion, "ATIF-v1.6")
+	if traj.SchemaVersion != "ATIF-v1.7" {
+		t.Errorf("SchemaVersion = %q, want %q", traj.SchemaVersion, "ATIF-v1.7")
 	}
 	if traj.SessionID != "sess-001" {
 		t.Errorf("SessionID = %q, want %q", traj.SessionID, "sess-001")
@@ -663,8 +663,8 @@ func TestConvertToATIF_EmptyTranscript(t *testing.T) {
 
 	traj := Convert(header, nil)
 
-	if traj.SchemaVersion != "ATIF-v1.6" {
-		t.Errorf("SchemaVersion = %q, want %q", traj.SchemaVersion, "ATIF-v1.6")
+	if traj.SchemaVersion != "ATIF-v1.7" {
+		t.Errorf("SchemaVersion = %q, want %q", traj.SchemaVersion, "ATIF-v1.7")
 	}
 	if traj.SessionID != "sess-empty" {
 		t.Errorf("SessionID = %q, want %q", traj.SessionID, "sess-empty")
@@ -801,8 +801,13 @@ func TestConvertToATIF_OrphanedToolResults(t *testing.T) {
 	}
 
 	step := traj.Steps[0]
-	if step.Source != "system" {
-		t.Errorf("Source = %q, want %q", step.Source, "system")
+	// ATIF forbids an observation on a non-agent step and requires every
+	// observation source_call_id to reference a tool_call in the same step.
+	// An orphaned tool result has no originating tool_call, so it is emitted as
+	// an agent step with the source_call_id nulled; the original ids are kept
+	// in extra for traceability.
+	if step.Source != "agent" {
+		t.Errorf("Source = %q, want %q", step.Source, "agent")
 	}
 	if step.Extra["serf_kind"] != "orphaned_tool_results" {
 		t.Errorf("Extra[serf_kind] = %v, want %q", step.Extra["serf_kind"], "orphaned_tool_results")
@@ -813,8 +818,15 @@ func TestConvertToATIF_OrphanedToolResults(t *testing.T) {
 	if len(step.Observation.Results) != 1 {
 		t.Fatalf("len(Observation.Results) = %d, want 1", len(step.Observation.Results))
 	}
-	if step.Observation.Results[0].SourceCallID != "orphan-call-1" {
-		t.Errorf("Results[0].SourceCallID = %q, want %q", step.Observation.Results[0].SourceCallID, "orphan-call-1")
+	if step.Observation.Results[0].SourceCallID != "" {
+		t.Errorf("Results[0].SourceCallID = %q, want empty (nulled)", step.Observation.Results[0].SourceCallID)
+	}
+	origIDs, ok := step.Extra["orphaned_source_call_ids"].([]string)
+	if !ok {
+		t.Fatalf("Extra[orphaned_source_call_ids] type = %T, want []string", step.Extra["orphaned_source_call_ids"])
+	}
+	if len(origIDs) != 1 || origIDs[0] != "orphan-call-1" {
+		t.Errorf("Extra[orphaned_source_call_ids] = %v, want [orphan-call-1]", origIDs)
 	}
 	if step.Observation.Results[0].Content != "orphaned result" {
 		t.Errorf("Results[0].Content = %q, want %q", step.Observation.Results[0].Content, "orphaned result")

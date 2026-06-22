@@ -135,7 +135,7 @@ type SessionConfig struct {
 	// Snapshots are written to <StateDir>/sessions/ and tasks to <StateDir>/tasks/.
 	StateDir string `json:"-"`
 
-	// ExportATIFPath, when non-empty, causes Session.Close to export an ATIF v1.6
+	// ExportATIFPath, when non-empty, causes Session.Close to export an ATIF v1.7
 	// trajectory JSON file to this path. Only root sessions (spawn.depth==0) export.
 	ExportATIFPath string `json:"-"`
 
