@@ -3029,6 +3029,25 @@ func TestJobSendMessageRestoresWatchParentLeafObserverJobWatch(t *testing.T) {
 	if requestHasTool(request, "delegate") {
 		t.Fatalf("restored leaf observer request advertised delegate: %+v", request.Tools)
 	}
+
+	out, err := jobWatchTool(child, map[string]any{
+		"operation": "create",
+		"source":    "parent",
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("restored observer jobWatchTool(source parent): %v", err)
+	}
+	state := out.(tool.StateResult).State.(jobWatchToolResult)
+	if state.Source != "parent" || !state.Watching {
+		t.Fatalf("restored observer watch state = %+v, want source parent watching", state)
+	}
+	cfg := onlyWatchConfigForTest(t, restored.jobManager)
+	if cfg.receiverSessionID != child.ID() {
+		t.Fatalf("restored receiverSessionID = %q, want child %q", cfg.receiverSessionID, child.ID())
+	}
+	if cfg.receiverDelegateID != rec.DelegateID {
+		t.Fatalf("restored receiverDelegateID = %q, want delegate %q", cfg.receiverDelegateID, rec.DelegateID)
+	}
 }
 
 func TestRuntimeLostDelegateResumeAfterRestoreCreatesNewJobFromRetainedState(t *testing.T) {
