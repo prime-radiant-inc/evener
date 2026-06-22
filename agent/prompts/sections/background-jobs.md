@@ -64,10 +64,10 @@ shape adds `event_filter:{"tool_name":"read_file","status":"ok"}`. Assistant
 tool frames include the matched `status` and original tool `arguments_json`;
 use those frame fields as the first evidence before reaching for audit tools.
 
-When a watch-origin observer sends a caller callback, Serf records that
-observer job's terminal state without adding another owner notification for the
-same job. The callback steering carrying the observer's packet is the actionable
-signal.
+When a watch-origin observer sends its terminal `communicate(end_turn:true)`,
+Serf records that observer job's terminal state without adding another owner
+notification for the same job. The observer callback carrying the packet is the
+actionable signal.
 
 Observer setup is sequential when the trigger depends on the watch existing.
 After the trigger, Serf yields the caller turn when the frame is handed to the

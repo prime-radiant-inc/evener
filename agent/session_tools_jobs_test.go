@@ -1297,15 +1297,12 @@ func TestJobListEnumeratesActiveWatches(t *testing.T) {
 		t.Fatalf("job_list watches = %+v, want 2 entries", out.Watches)
 	}
 
-	notify := findJobListToolWatch(out.Watches, rec.JobID, "")
+	notify := findJobListToolWatch(out.Watches, rec.JobID, "output_match: ready")
 	if notify == nil {
 		t.Fatalf("job_list watches = %+v, want notify-caller output_match watch", out.Watches)
 	}
 	if notify.Condition != "output_match: ready" {
 		t.Fatalf("notify watch condition = %q, want %q", notify.Condition, "output_match: ready")
-	}
-	if notify.SendTo != "" {
-		t.Fatalf("notify watch send_to = %q, want empty", notify.SendTo)
 	}
 	if notify.CreatedAt == "" {
 		t.Fatalf("notify watch created_at must be populated, got empty")
@@ -1314,12 +1311,9 @@ func TestJobListEnumeratesActiveWatches(t *testing.T) {
 		t.Fatalf("notify watch created_at = %q, not RFC3339Nano: %v", notify.CreatedAt, err)
 	}
 
-	sidecar := findJobListToolWatch(out.Watches, rec.JobID, "dlg_obs")
+	sidecar := findJobListToolWatch(out.Watches, rec.JobID, "events: [job.notification]")
 	if sidecar == nil {
 		t.Fatalf("job_list watches = %+v, want sidecar event watch", out.Watches)
-	}
-	if sidecar.SendTo != "dlg_obs" {
-		t.Fatalf("sidecar watch send_to = %q, want dlg_obs", sidecar.SendTo)
 	}
 	if sidecar.Condition != "events: [job.notification]" {
 		t.Fatalf("sidecar watch condition = %q, want %q", sidecar.Condition, "events: [job.notification]")
@@ -1354,7 +1348,7 @@ func TestJobListWatchConditionSummaryFormats(t *testing.T) {
 
 	out := runJobListTool(t, s)
 
-	progress := findJobListToolWatch(out.Watches, rec.JobID, "")
+	progress := findJobListToolWatch(out.Watches, rec.JobID, "progress_interval_ms: 2000")
 	if progress == nil {
 		t.Fatalf("watches = %+v, want progress watch", out.Watches)
 	}
@@ -1362,7 +1356,7 @@ func TestJobListWatchConditionSummaryFormats(t *testing.T) {
 		t.Fatalf("progress condition = %q, want %q", progress.Condition, "progress_interval_ms: 2000")
 	}
 
-	every := findJobListToolWatch(out.Watches, rec.JobID, "dlg_obs")
+	every := findJobListToolWatch(out.Watches, rec.JobID, "events: [communicate] every 5")
 	if every == nil {
 		t.Fatalf("watches = %+v, want every-N watch", out.Watches)
 	}
@@ -1383,7 +1377,7 @@ func TestJobListWatchReflectsDeliveries(t *testing.T) {
 	}
 
 	out := runJobListTool(t, s)
-	w := findJobListToolWatch(out.Watches, "caller", "")
+	w := findJobListToolWatch(out.Watches, "self", "events: [communicate]")
 	if w == nil {
 		t.Fatalf("watches = %+v, want caller watch", out.Watches)
 	}
@@ -1913,6 +1907,51 @@ func TestJobWatchRejectsRemovedPublicShapes(t *testing.T) {
 	}
 }
 
+func TestJobWatchValidationGuidesObserversToParentSource(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args string
+		want string
+	}{
+		{
+			name: "session output_match",
+			args: `{"operation":"create","source":"self","events":["communicate"],"output_match":"ready"}`,
+			want: `source="parent"`,
+		},
+		{
+			name: "communicate event filter",
+			args: `{"operation":"create","source":"self","events":["communicate"],"event_filter":{"tool_name":"read_file","status":"ok"}}`,
+			want: `source="parent"`,
+		},
+		{
+			name: "self tool event loop",
+			args: `{"operation":"create","source":"self","events":["assistant.tool"]}`,
+			want: `delegate(watch_parent=true)`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSession(t)
+			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+				ID:        "watch",
+				Name:      "job_watch",
+				Arguments: json.RawMessage(tc.args),
+			})
+			if !res.IsError {
+				t.Fatalf("job_watch succeeded, want validation guidance error: %s", res.Output)
+			}
+			if !strings.Contains(res.Output, tc.want) {
+				t.Fatalf("job_watch error = %q, want repair guidance %q", res.Output, tc.want)
+			}
+			if strings.Contains(res.Output, "send.to") {
+				t.Fatalf("job_watch error leaks removed send.to observer guidance: %q", res.Output)
+			}
+			if s.jobManager.watchCount() != 0 {
+				t.Fatalf("watch count = %d, want 0", s.jobManager.watchCount())
+			}
+		})
+	}
+}
+
 func TestJobWatchDuplicateCreateReturnsSameIDAndChangedConfigReturnsNewID(t *testing.T) {
 	s := newTestSession(t)
 
@@ -2020,14 +2059,14 @@ func TestJobWatchListAndInspectReturnWatchIDs(t *testing.T) {
 	var listed struct {
 		Watches []struct {
 			WatchID  string `json:"watch_id"`
-			Target   string `json:"target"`
+			Source   string `json:"source"`
 			Watching bool   `json:"watching"`
 		} `json:"watches"`
 	}
 	if err := json.Unmarshal(toolResultJSON(listRes), &listed); err != nil {
 		t.Fatalf("unmarshal list watch output: %v (output: %s)", err, listRes.Output)
 	}
-	if len(listed.Watches) != 1 || listed.Watches[0].WatchID != created.WatchID || listed.Watches[0].Target != shellOut.JobID || !listed.Watches[0].Watching {
+	if len(listed.Watches) != 1 || listed.Watches[0].WatchID != created.WatchID || listed.Watches[0].Source != shellOut.JobID || !listed.Watches[0].Watching {
 		t.Fatalf("list result = %+v, want active watch %s", listed, created.WatchID)
 	}
 
@@ -2041,13 +2080,13 @@ func TestJobWatchListAndInspectReturnWatchIDs(t *testing.T) {
 	}
 	var inspected struct {
 		WatchID  string `json:"watch_id"`
-		Target   string `json:"target"`
+		Source   string `json:"source"`
 		Watching bool   `json:"watching"`
 	}
 	if err := json.Unmarshal(toolResultJSON(inspectRes), &inspected); err != nil {
 		t.Fatalf("unmarshal inspect watch output: %v (output: %s)", err, inspectRes.Output)
 	}
-	if inspected.WatchID != created.WatchID || inspected.Target != shellOut.JobID || !inspected.Watching {
+	if inspected.WatchID != created.WatchID || inspected.Source != shellOut.JobID || !inspected.Watching {
 		t.Fatalf("inspect result = %+v, want active watch %s", inspected, created.WatchID)
 	}
 }
@@ -4033,16 +4072,15 @@ type jobListToolEntry struct {
 }
 
 type jobListToolWatch struct {
-	Target     string `json:"target"`
+	Source     string `json:"source"`
 	Condition  string `json:"condition"`
-	SendTo     string `json:"send_to"`
 	Deliveries int    `json:"deliveries"`
 	CreatedAt  string `json:"created_at"`
 }
 
-func findJobListToolWatch(watches []jobListToolWatch, target, sendTo string) *jobListToolWatch {
+func findJobListToolWatch(watches []jobListToolWatch, source, condition string) *jobListToolWatch {
 	for i := range watches {
-		if watches[i].Target == target && watches[i].SendTo == sendTo {
+		if watches[i].Source == source && watches[i].Condition == condition {
 			return &watches[i]
 		}
 	}
@@ -4810,14 +4848,14 @@ func TestJobListSurfacesRecentWatches(t *testing.T) {
 	var got struct {
 		RecentWatches []struct {
 			ID        string `json:"id"`
-			Target    string `json:"target"`
+			Source    string `json:"source"`
 			EndReason string `json:"end_reason"`
 		} `json:"recent_watches"`
 	}
 	if err := json.Unmarshal(handlerJSON(t, out), &got); err != nil {
 		t.Fatalf("unmarshal: %v (out=%s)", err, out)
 	}
-	if len(got.RecentWatches) != 1 || got.RecentWatches[0].EndReason != "cleared" || got.RecentWatches[0].Target != rec.JobID {
+	if len(got.RecentWatches) != 1 || got.RecentWatches[0].EndReason != "cleared" || got.RecentWatches[0].Source != rec.JobID {
 		t.Fatalf("recent_watches = %+v, want one cleared entry on %s", got.RecentWatches, rec.JobID)
 	}
 }

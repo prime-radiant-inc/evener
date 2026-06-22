@@ -530,9 +530,9 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	// rather than in the shared install validator.
 	if a.OutputMatch != "" && isWatchSessionTarget(a.Target) {
 		if len(a.Events) == 1 && a.Events[0] == "communicate" {
-			return watchResult{}, errors.New(`invalid_request: output_match watches concrete job output. A caller communicate observer watch uses events ["communicate"] with send.to=<observer delegate_id>; the observer reads delivered event.message for content matching.`)
+			return watchResult{}, errors.New(`invalid_request: output_match watches concrete job output. A parent observer that needs communicate messages uses source="parent" with events ["communicate"], reads delivered event.message in the frame, and reports findings with communicate(end_turn=true).`)
 		}
-		return watchResult{}, errors.New("invalid_request: output_match watches concrete job output; session-target event watches use events and send.to")
+		return watchResult{}, errors.New(`invalid_request: output_match watches concrete job output; session-source watches use events and, for assistant.tool, event_filter.`)
 	}
 	if a.Send != nil && a.Send.IncludeExcerpt && isWatchSessionTarget(a.Target) {
 		return watchResult{}, errors.New("invalid_request: include_excerpt requires a concrete job target; session-target frames carry bounded event payloads, not output excerpts")
@@ -541,8 +541,8 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if err != nil {
 		return watchResult{}, err
 	}
-	// A sidecar watch (concrete job target, send.to = a concrete delegate job)
-	// mints its observer read grant BEFORE install so a grant failure fails the
+	// A sidecar watch with an internal observer delivery target mints its
+	// observer read grant BEFORE install so a grant failure fails the
 	// creation and never installs the watch (spec §5.1). The replace and
 	// idempotent re-configure paths below re-append the same grant; FoldGrants
 	// collapses duplicates. The converse residue — an abort below (target
@@ -699,7 +699,7 @@ func validateWatchEventArgs(a watchArgs) error {
 		}
 		if len(a.Events) != 1 || a.Events[0] != "assistant.tool" {
 			if len(a.Events) == 1 && a.Events[0] == "communicate" {
-				return errors.New(`invalid_request: event_filter matches assistant.tool events. A communicate observer watch uses events ["communicate"] with send.to=<observer delegate_id>; the observer reads delivered event.message for content matching.`)
+				return errors.New(`invalid_request: event_filter matches assistant.tool events. A parent observer that needs communicate messages uses source="parent" with events ["communicate"], reads delivered event.message in the frame, and reports findings with communicate(end_turn=true).`)
 			}
 			return errors.New(`invalid_request: event_filter matches assistant.tool events; use events ["assistant.tool"] with event_filter {"tool_name":"read_file","status":"ok"}.`)
 		}
@@ -824,7 +824,7 @@ func (jm *jobManager) terminalWatchTargetStatus(target string) (status jobstore.
 
 func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error {
 	if target == "" {
-		return errors.New("invalid_request: send.to is required")
+		return errors.New("invalid_request: internal watch delivery target is required")
 	}
 	switch target {
 	case runtimeMessageAliasCaller:
@@ -835,7 +835,7 @@ func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error 
 		return watchTargetNotFoundError(target)
 	}
 	if strings.HasPrefix(target, "job_") {
-		return errors.New("invalid_request: job_id is a job/turn handle; watch sends target delegate_id")
+		return errors.New("invalid_request: job_id is a job/turn handle; internal watch delivery targets delegate_id")
 	}
 	if !strings.HasPrefix(target, "dlg_") {
 		return watchTargetNotFoundError(target)
@@ -1011,8 +1011,8 @@ func resolveEventKinds(names []string) (map[events.EventKind]bool, bool) {
 // regardless of watch target (spec §6.1). assistant.tool/communicate
 // (including via the "*" wildcard) are produced by the owning
 // session's own turn, and onSessionEvent matches event kinds across every watch
-// independent of cfg.target, so delivering such a kind back to the caller (send
-// omitted, or send.to=caller) makes each delivery cause the next event.
+// independent of cfg.target, so delivering such a kind back to the same session
+// makes each delivery cause the next event.
 func validateWatchDeliveryLoop(cfg *watchConfig) error {
 	if cfg.receiverSessionID != "" {
 		// Cross-session receivers are not delivering back into the session whose
@@ -1029,7 +1029,7 @@ func validateWatchDeliveryLoop(cfg *watchConfig) error {
 	if !selfGenerated {
 		return nil
 	}
-	return errors.New("invalid_request: watching assistant.tool/communicate with delivery back to the caller is a feedback loop (each delivery causes the next event); watch these kinds only with send.to set to an observer delegate")
+	return errors.New(`invalid_request: feedback loop: watching assistant.tool/communicate on source="self" feeds back into your own tool/result events. To observe this session, start an observer with delegate(watch_parent=true); inside that child call job_watch(source="parent", events=[...]) and report with communicate(end_turn=true).`)
 }
 
 func canonicalWatchEvents(events []string) []string {
@@ -1170,10 +1170,14 @@ func (jm *jobManager) restoreWatchSendPending() error {
 		}
 		cfg := cfgs[cfgKey]
 		if cfg == nil {
+			sourcePublic := watchPublicSource("", key.WatchTarget)
+			if cfgKey.receiverSessionID != "" && key.WatchTarget == runtimeMessageAliasCaller {
+				sourcePublic = "parent"
+			}
 			cfg = &watchConfig{
 				id:                 key.WatchID,
 				watchID:            key.WatchID,
-				sourcePublic:       watchPublicSource("", key.WatchTarget),
+				sourcePublic:       sourcePublic,
 				receiverSessionID:  cfgKey.receiverSessionID,
 				receiverDelegateID: cfgKey.receiverDelegateID,
 				target:             key.WatchTarget,
@@ -1733,8 +1737,8 @@ func (jm *jobManager) appendWatchRegistryEvents(events []jobstore.Event) error {
 
 // liveWatchSummaries snapshots the session's active watch configs (jm.watches
 // only; terminalFlush is drain-only residue and excluded) into model-facing
-// rows for job_list (spec §4 F2). One row per live config, ordered by target
-// then send.to for stable output.
+// rows for job_list. One row per live config, ordered by source for stable
+// output.
 // watchHistoryCap bounds the recent-watch ring surfaced by job_list. Old entries
 // are trimmed; the ring is a debugging aid, not a durable audit log.
 const watchHistoryCap = 16
@@ -1742,6 +1746,7 @@ const watchHistoryCap = 16
 // watchHistoryEntry is the final state of a watch that has left the active set.
 type watchHistoryEntry struct {
 	id                 string
+	source             string
 	target             string
 	condition          string
 	sendTo             string
@@ -1765,6 +1770,7 @@ func (jm *jobManager) recordWatchEndedLocked(key watchKey, cfg *watchConfig, rea
 	}
 	jm.watchHistory = append(jm.watchHistory, watchHistoryEntry{
 		id:                 cfg.id,
+		source:             cfg.sourcePublic,
 		target:             cfg.target,
 		condition:          watchConditionSummary(cfg),
 		sendTo:             sendTo,
@@ -1791,9 +1797,8 @@ func (jm *jobManager) recentWatchSummaries() []recentWatchEntry {
 		}
 		out = append(out, recentWatchEntry{
 			ID:         h.id,
-			Target:     h.target,
+			Source:     watchPublicSource(h.source, h.target),
 			Condition:  h.condition,
-			SendTo:     h.sendTo,
 			Deliveries: h.deliveries,
 			EndReason:  h.endReason,
 			EndedAt:    h.endedAt.Format(time.RFC3339Nano),
@@ -1826,11 +1831,8 @@ func (jm *jobManager) watchListToolResult() jobWatchListToolResult {
 		watches = append(watches, inspectResultFromDetachedWatchConfig(cfg))
 	}
 	sort.SliceStable(watches, func(i, j int) bool {
-		if watches[i].Target != watches[j].Target {
-			return watches[i].Target < watches[j].Target
-		}
-		if watches[i].SendTo != watches[j].SendTo {
-			return watches[i].SendTo < watches[j].SendTo
+		if watches[i].Source != watches[j].Source {
+			return watches[i].Source < watches[j].Source
 		}
 		return watches[i].WatchID < watches[j].WatchID
 	})
@@ -1873,11 +1875,8 @@ func (jm *jobManager) watchListToolResultForReceiver(receiverSessionID, receiver
 		watches = append(watches, inspectResultFromDetachedWatchConfig(cfg))
 	}
 	sort.SliceStable(watches, func(i, j int) bool {
-		if watches[i].Target != watches[j].Target {
-			return watches[i].Target < watches[j].Target
-		}
-		if watches[i].SendTo != watches[j].SendTo {
-			return watches[i].SendTo < watches[j].SendTo
+		if watches[i].Source != watches[j].Source {
+			return watches[i].Source < watches[j].Source
 		}
 		return watches[i].WatchID < watches[j].WatchID
 	})
@@ -1942,16 +1941,12 @@ func inspectResultFromWatchConfig(key watchKey, cfg *watchConfig) jobWatchInspec
 	if cfg == nil {
 		return jobWatchInspectToolResult{Watching: false}
 	}
-	sendTo := key.SendTo
-	if cfg.receiverDelegateID != "" {
-		sendTo = ""
-	}
+	_ = key
 	return jobWatchInspectToolResult{
 		WatchID:    cfg.watchID,
-		Target:     cfg.target,
+		Source:     watchPublicSource(cfg.sourcePublic, cfg.target),
 		Watching:   true,
 		Condition:  watchConditionSummary(cfg),
-		SendTo:     sendTo,
 		Deliveries: cfg.deliveries,
 		CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
 	}
@@ -1966,10 +1961,9 @@ func inspectResultFromDetachedWatchConfig(cfg *watchConfig) jobWatchInspectToolR
 func inspectResultFromWatchHistory(h watchHistoryEntry) jobWatchInspectToolResult {
 	return jobWatchInspectToolResult{
 		WatchID:    h.id,
-		Target:     h.target,
+		Source:     watchPublicSource(h.source, h.target),
 		Watching:   false,
 		Condition:  h.condition,
-		SendTo:     h.sendTo,
 		Deliveries: h.deliveries,
 		EndReason:  h.endReason,
 		EndedAt:    h.endedAt.Format(time.RFC3339Nano),
@@ -1984,24 +1978,20 @@ func (jm *jobManager) liveWatchSummaries() []watchListEntry {
 		if !watchConfigVisibleToSession(cfg, jm.sessionID) {
 			continue
 		}
-		sendTo := key.SendTo
-		if cfg.receiverDelegateID != "" {
-			sendTo = ""
-		}
+		_ = key
 		entries = append(entries, watchListEntry{
 			ID:         cfg.id,
-			Target:     cfg.target,
+			Source:     watchPublicSource(cfg.sourcePublic, cfg.target),
 			Condition:  watchConditionSummary(cfg),
-			SendTo:     sendTo,
 			Deliveries: cfg.deliveries,
 			CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
 		})
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].Target != entries[j].Target {
-			return entries[i].Target < entries[j].Target
+		if entries[i].Source != entries[j].Source {
+			return entries[i].Source < entries[j].Source
 		}
-		return entries[i].SendTo < entries[j].SendTo
+		return entries[i].ID < entries[j].ID
 	})
 	return entries
 }
@@ -2951,7 +2941,7 @@ func (jm *jobManager) mintWatchCreateReadGrant(cfg *watchConfig) error {
 		var ok bool
 		observerSessionID, ok, err = jm.watchReadGrantObserver(cfg.send.To)
 		if err == nil && !ok {
-			// validateWatchSendTarget proved send.to is a delegate job and the
+			// validateWatchSendTarget proved the internal delivery target is a delegate job and the
 			// store is append-only, so an unresolvable observer here is a fault.
 			err = fmt.Errorf("job %q is not a grantable delegate", cfg.send.To)
 		}
@@ -2960,7 +2950,7 @@ func (jm *jobManager) mintWatchCreateReadGrant(cfg *watchConfig) error {
 		err = jm.appendWatchReadGrant(observerSessionID, cfg.target)
 	}
 	if err != nil {
-		return fmt.Errorf("watch read grant for send.to %q: %w", cfg.send.To, err)
+		return fmt.Errorf("watch read grant for delivery target %q: %w", cfg.send.To, err)
 	}
 	// Surface the observer link to the hub by stamping the watched worker's
 	// meta. Best-effort: the read grant above is the load-bearing capability.
@@ -4076,7 +4066,7 @@ func (s *Session) settleDrivenChildForwardedPendings(childSessionID string) {
 // watch-send tokens onto its OWN rail. A drive turn launched on the
 // hasPendingWatchSends signal (drive signal b) may have no token queued yet; this
 // puts the caller frames on the rail so they render in the same drive turn. It is
-// caller-only — it does not deliver sidecar (send.to=job) frames, which the loop
+// caller-only — it does not deliver delegate-targeted observer frames, which the loop
 // boundary handles — so it never duplicates a sidecar delivery.
 func (s *Session) enqueueOwnCallerWatchSendTokens() {
 	if s == nil || s.jobManager == nil || s.jobManager.enqueue == nil {

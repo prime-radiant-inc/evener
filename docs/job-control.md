@@ -35,10 +35,10 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Delegate work starts in the background by default (no `job_id` wait); use `max_wait_ms` when you want to wait inline for up to N ms. Shell and delegate defaults differ deliberately: shell commands are usually short decision-producing calls, while delegates are independent agentic work.
 - Use `delegate` to start a new delegate conversation/job. It returns both a concrete `job_id` for that turn and a durable `delegate_id` for conversation follow-up. It does not continue an existing conversation.
 - Use `delegate_send` for follow-up on a durable delegate conversation: if the delegate is running, it steers the active turn; if the delegate is idle, the default `on_idle="fail"` rejects instead of starting work. Use `on_idle="start"` only when you intend to start the delegate's next job in the same conversation.
-- Use `delegate_send` for observer/sidecar commentary too. Runtime alias `caller` is available for delegate/watch-delivered contexts and resolves to the **immediate parent at every level** (a depth-2 worker's `caller` is its coordinator, not the root). `delegate_send` rejects `job_id` and `transcript_ref` handles; ordinary delegate follow-up targets a `delegate_id`.
+- Use `delegate_send` only for follow-up on a durable child delegate conversation. Observer sidecars report through `communicate(end_turn=true)`, not `delegate_send`. `delegate_send` rejects `job_id`, `transcript_ref`, and runtime aliases on the public tool surface; ordinary delegate follow-up targets a `delegate_id`.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_read_output`.
 - Serf automatically injects one terminal notification for notification-armed background jobs when they complete, fail, are cancelled, or are stopped/lost. You are told when YOUR delegates finish; your delegates handle their own children's completions in their own turns (you are not interrupted about a job you did not create).
-- Use `job_watch` when a condition should notify the caller or send a configured message/frame to another target. `send` is the delivery discriminator: omit it for caller notification, include it for target delivery. Trigger sources are orthogonal: `output_match`, `progress_interval_ms`, and, for event/frame watches, `events` (optionally gated by `every`). Do not use `job_watch` to learn when a job completes.
+- Use `job_watch` when a condition should notify the watcher. `source` names what the watcher observes (`self`, `parent` when granted by `delegate(watch_parent=true)`, or a concrete `job_id` owned by this session or a live descendant). Delivery is implicit to the session that created the watch. Trigger fields are `output_match`, `progress_interval_ms`, and, for event/frame watches, `events` (optionally gated by `every` and `event_filter`). Do not use `job_watch` to learn when a job completes.
 - Use `job_read_output` for shell stdout/stderr and delegate invocation output/final reports. For delegates, `status="completed"` means the delegate turn ended normally; it does not prove the delegated task succeeded. Read `output`/`structured_result` to judge task outcome.
 - Use transcript tools for delegate child conversation history; `job_read_output` is not a transcript reader.
 - Use `job_stop` only when the intent is to cancel or stop work. It does not delete output/history and it does not acknowledge results.
@@ -46,12 +46,12 @@ This reference contract is not itself the runtime system prompt, but the followi
 
 Tool descriptions should avoid these phrases because they train bad behavior:
 
-- Do not describe `job_watch` as subscribing to job completion. Say: “When output/event/progress conditions happen, either notify the caller (`send` omitted) or send the configured bounded frame/message to a target (`send` present).”
+- Do not describe `job_watch` as subscribing to job completion. Say: “When output/event/progress conditions happen, deliver a bounded watch notification/frame to the watcher that created the watch.”
 - Do not describe `job_read_output(max_wait_ms=...)` as the normal way to wait. Say: “Optionally perform one bounded wait for terminal state, new output, or (with `grep`) a match; do not poll.”
 - Do not describe `job_stop` as cleanup. Say: “Request cancellation/stop; retained history/output remains.”
 - Do not say `delegate` resumes an old agent. Say: “Start a fresh delegate conversation/job.”
 - Do not say `delegate_send` resumes by default. Say: “Send a follow-up message to a delegate_id; running delegates receive it live, while idle delegates require `on_idle="start"` to start the next job.”
-- Do not say `job_watch` sends arbitrary unbounded transcript context. Say: “Send the configured message plus bounded frame/excerpt metadata when the watch condition is met.”
+- Do not say `job_watch` sends arbitrary unbounded transcript context. Say: “Deliver bounded frame/excerpt metadata when the watch condition is met.”
 - Do not say `job_read_output` reads a delegate transcript. Say: “Read invocation output/final report; use transcript tools for full child conversation.”
 
 ## Choosing a wait primitive
@@ -64,8 +64,8 @@ Several tools can wait, but they wait on different things. Pick by intent, and d
 | Launch a long command without waiting | `shell(background=true)` — returns a `job_id` immediately |
 | Start a delegate and wait up to N ms for its result | `delegate(max_wait_ms=N)` — a timeout leaves it running |
 | Learn when a backgrounded job finishes | the automatic terminal notification — nothing to call |
-| Wait until a job's output contains X | `job_read_output(grep=X, max_wait_ms=N)`, or `job_watch(operation="create", target=<job_id>, output_match=X)` to be notified |
-| Re-observe progress on a long job | `job_watch(operation="create", target=<job_id>, progress_interval_ms=N)` (running targets only) |
+| Wait until a job's output contains X | `job_read_output(grep=X, max_wait_ms=N)`, or `job_watch(operation="create", source=<job_id>, output_match=X)` to be notified |
+| Re-observe progress on a long job | `job_watch(operation="create", source=<job_id>, progress_interval_ms=N)` (running targets only) |
 | Resume an idle delegate and wait for its answer | `delegate_send(to=<delegate_id>, on_idle="start", max_wait_ms=N)` |
 | Steer a running delegate | `delegate_send(to=<delegate_id>)` — returns on delivery; `max_wait_ms` is ignored and reported as `wait_ignored_reason` |
 
@@ -81,7 +81,7 @@ Terminal targets differ by watch type: only an `output_match`-only `job_watch` s
 | Job | One asynchronous unit of work owned by a session. |
 | Job type | The class of work: initially `shell` or `delegate`. |
 | `job_id` | Durable opaque identifier for one job/turn. Use it for read, stop, watch, list, and notifications. |
-| `delegate_id` | Durable opaque identifier for one delegate conversation. Use it for `delegate_send` and observer watch delivery. |
+| `delegate_id` | Durable opaque identifier for one delegate conversation. Use it for `delegate_send`. |
 | `watch_id` | Durable opaque identifier for one watch configuration. Use it for `job_watch` inspect/clear. |
 | Parent session | The session containing the job or turn that caused another session/job to exist. |
 | Owner session | The session whose runtime/job manager owns the job. |
@@ -92,7 +92,7 @@ Terminal targets differ by watch type: only an `output_match`-only `job_watch` s
 | Notification | Metadata injected into a visible session to tell the agent that a job reached a lifecycle/progress event. |
 | Output | Bounded textual/log content associated with a job. |
 
-A **delegate job** is not the same as a **delegate conversation**. Each `delegate` invocation starts a new child conversation and a concrete delegate job/turn. Follow-up on that delegate conversation is performed through `delegate_send` against its `delegate_id`; if the delegate is idle and `on_idle="start"` is supplied, `delegate_send` creates a new job with a new `job_id` in the same delegate conversation. Observer/sidecar comments use the same message-sending surface with runtime-resolved aliases rather than a separate observer-comment command.
+A **delegate job** is not the same as a **delegate conversation**. Each `delegate` invocation starts a new child conversation and a concrete delegate job/turn. Follow-up on that delegate conversation is performed through `delegate_send` against its `delegate_id`; if the delegate is idle and `on_idle="start"` is supplied, `delegate_send` creates a new job with a new `job_id` in the same delegate conversation. Observer sidecars use the normal result surface: `communicate(end_turn=true)` is the observer callback.
 
 For a top-level job, `owner_session_id` and `visible_to_session_id` are the creating session; `parent_session_id` is omitted unless an implementation records a diagnostic lineage field. For a nested forwarded job, `owner_session_id` is the child/delegate session that owns the runtime, `visible_to_session_id` is the parent session that can see the forwarded record, `parent_session_id` identifies the session that caused the child session to exist when that lineage is recorded, and `parent_job_id` links to the delegate job that caused the nested job.
 
@@ -110,8 +110,8 @@ The lifecycle/output/notification contract is generic enough for future job type
 8. **No automatic process resume after restart.** Durable job history survives; running processes do not have to. Serf must notify when a previously running job is discovered stopped/lost after restart.
 9. **Nested shell jobs are supported; nested delegation is allowance-gated.** Subagents may start shell jobs. A subagent may itself delegate only when it was granted a non-zero `delegation_allowance`; a leaf delegate (allowance 0, the default) cannot delegate, so an observer sidecar started without an allowance still must not delegate. See the delegation-allowance amendment below.
 10. **Delegate creation and follow-up are separate.** `delegate` starts a new delegate conversation; `delegate_send` follows up on an existing `delegate_id`.
-11. **Watches can send messages.** `job_watch` defines conditions over output/events/progress; when a condition is met it may notify the caller or send a configured message/frame to a messageable target.
-12. **Observers are composed, not special.** An observer is a delegate plus a watch that sends frames to its `delegate_id`; the observer comments back with `delegate_send`.
+11. **Watches are watcher-owned.** `job_watch` defines conditions over a source's output/events/progress; when a condition is met it delivers a bounded notification/frame to the watcher that created the watch.
+12. **Observers are composed, not special.** An observer is a delegate granted `watch_parent:true`, a child-created `job_watch(source="parent")`, and an observer result through `communicate(end_turn=true)`.
 13. **Transcript tools stay separate.** Job output is not a transcript. Delegate child transcripts remain readable through transcript tools.
 
 ### Delegation allowance (recursive delegation)
@@ -130,7 +130,7 @@ Serf must mint `job_id` values that are globally unique enough to be used withou
 
 The model-facing API must not expose two competing job handles such as `owner_job_id` and `parent_visible_job_id`. If an implementation internally maps child-owned IDs into parent-visible records, that mapping must be durable and invisible to the model-facing tools. The only accepted job handle is the parent-visible `job_id` returned or listed by Serf.
 
-Job-control tools accept their purpose-specific handles, not `transcript_ref`. Transcript tools accept `transcript_ref`, not `job_id` or `delegate_id`, unless a future transcript tool explicitly documents a job-derived lookup. `delegate` creates a new conversation and does not accept any handle for continuation. `delegate_send` accepts `delegate_id` or contextual `caller`; `job_read_output`, `job_stop`, and `job_watch(operation="create")` accept concrete `job_id` targets; `job_watch(operation="inspect"|"clear")` accepts `watch_id`.
+Job-control tools accept their purpose-specific handles, not `transcript_ref`. Transcript tools accept `transcript_ref`, not `job_id` or `delegate_id`, unless a future transcript tool explicitly documents a job-derived lookup. `delegate` creates a new conversation and does not accept any handle for continuation. `delegate_send` accepts `delegate_id`; `job_read_output` and `job_stop` accept concrete `job_id` handles; `job_watch(operation="create")` accepts a `source` (`self`, granted `parent`, or concrete `job_id`); `job_watch(operation="inspect"|"clear")` accepts `watch_id`.
 
 ## Job status and reason model
 
@@ -211,7 +211,7 @@ Defaults and timeout semantics:
 - `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Serf stops it and finalizes the job as `stopped` with reason `run_timeout`. It bounds how long the process may *run*, distinct from the foreground wait.
 - Omitted `max_runtime_ms` means implementation-defined shell runtime policy. Recommended policy: default finite runtime for foreground/promoted shell jobs, no default runtime limit for `background: true` shell jobs unless configured by the user/tool call.
 - A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the foreground wait expired; it never means the process hit `max_runtime_ms`.
-- To wait for a launch-and-return command to reach a state (e.g. a server printing "ready"), use `job_read_output(job_id, grep, max_wait_ms)` for a synchronous bounded wait, or `job_watch(operation="create", target=<job_id>, output_match=...)` to be notified — an output-match watch catch-up-scans a job's retained output even if it already finished.
+- To wait for a launch-and-return command to reach a state (e.g. a server printing "ready"), use `job_read_output(job_id, grep, max_wait_ms)` for a synchronous bounded wait, or `job_watch(operation="create", source=<job_id>, output_match=...)` to be notified — an output-match watch catch-up-scans a job's retained output even if it already finished.
 
 Normative foreground-wait bounds:
 
@@ -276,7 +276,7 @@ Whichever behavior an implementation chooses must be reflected consistently in `
 
 ### `delegate`
 
-`delegate` starts a new delegate/subagent conversation and job. It does not resume or steer an existing delegate conversation. Follow-up on an existing delegate, including observer/sidecar commentary, is handled by `delegate_send` using the returned `delegate_id`.
+`delegate` starts a new delegate/subagent conversation and job. It does not resume or steer an existing delegate conversation. Follow-up on an existing delegate is handled by `delegate_send` using the returned `delegate_id`. To start an observer sidecar, set `watch_parent:true`; the child can then observe its immediate parent with `job_watch(source="parent")` and report through `communicate(end_turn=true)`.
 
 Canonical background shape:
 
@@ -297,6 +297,7 @@ Full target shape:
   "agent_type": "explorer",
   "model": "openai/gpt-5.5",
   "reasoning_effort": "high",
+  "watch_parent": false,
   "max_wait_ms": 120000,
   "result_schema": {
     "type": "object",
@@ -314,6 +315,7 @@ Defaults:
 - `max_wait_ms` unset (or `0`) means return the `job_id` immediately without waiting for the delegate to finish.
 - Each `delegate` call creates a new delegate job and a new child session.
 - `delegate` does not accept `target`, `mode`, `job_id`, `delegate_id`, or `transcript_ref` for continuation.
+- `watch_parent:true` grants only the spawned child permission to observe the immediate parent with `job_watch(source="parent")`. It is not transitive and does not grant `delegate`.
 - With a positive `max_wait_ms`, the tool performs one bounded foreground wait of up to that many ms; timeout leaves the delegate job running in the background with reason `foreground_timeout`.
 - Delegates have no model-facing `max_runtime_ms` in v1. Delegate runtime limits, if any, are implementation policy rather than a tool argument.
 - `result_schema`, when supplied, is a JSON Schema-like contract for the initial delegate final result and for resumed turns in the same delegate conversation. The delegate output remains readable as prose/log text, and Serf validates and surfaces a structured result when possible. When validation or capture fails for a schema-backed delegate result, Serf omits `structured_result`, sets `structured_result_valid:false`, and includes a machine-readable `structured_result_reason`.
@@ -380,7 +382,7 @@ Foreground timeout return shape:
 
 ### `delegate_send`
 
-`delegate_send` sends a message to a durable delegate conversation or, from a delegate/watch-delivered context, to the contextual caller route. It is the single surface for follow-up with delegates and for observer/sidecar commentary into the parent/watched context.
+`delegate_send` sends a message to one of your durable child delegate conversations by `delegate_id`. It is the public follow-up surface for delegates. It is not the observer-to-parent callback surface; observers report through `communicate(end_turn=true)`.
 
 Target shape:
 
@@ -397,25 +399,23 @@ Core target resolution:
 
 | Target | Meaning |
 | --- | --- |
-| `dlg_...` | A durable delegate conversation. |
-| `caller` | The contextual immediate parent route, available only from delegate/watch-delivered runtime contexts. |
+| `dlg_...` | A durable delegate conversation owned by this session. |
 
-`delegate_send` rejects `job_id` handles because they identify concrete turns, not delegate conversations. It also rejects `transcript_ref` handles and legacy aliases such as `main` or `watched`. Ordinary delegate follow-up should target a `delegate_id`.
+`delegate_send` rejects `job_id` handles because they identify concrete turns, not delegate conversations. It also rejects `transcript_ref` handles and runtime/legacy aliases such as `caller`, `main`, or `watched`. Ordinary delegate follow-up should target a `delegate_id`.
 
 Semantics:
 
 - If `to` identifies a running or currently-driven delegate, Serf injects the message into that active run, returns the current `job_id`, and does not create another terminal notification. The return `action` is `steered`.
 - If `to` identifies an idle delegate and `on_idle="fail"` or is omitted, the call fails synchronously with `target_idle`. This default prevents accidental restarts.
 - If `to` identifies an idle/resumable delegate and `on_idle="start"`, Serf creates the delegate's next job in the same delegate conversation, with a new `job_id`. The return `action` is `started`.
-- If `to` resolves to `caller`, Serf injects a runtime message into that session. The message is advisory/runtime-originated unless the target's tool description says otherwise; it must not impersonate the user.
-- If `to` is a `job_id`, `transcript_ref`, unknown delegate, unauthorized delegate, non-resumable delegate, or legacy alias, the call fails synchronously without creating a job record. A `job_id` error should guide the caller to the corresponding `delegate_id` when Serf can resolve it.
+- If `to` is `caller`, a `job_id`, `transcript_ref`, unknown delegate, unauthorized delegate, non-resumable delegate, or legacy alias, the call fails synchronously without creating a job record. A `job_id` error should guide the caller to the corresponding `delegate_id` when Serf can resolve it.
 - If another job is already running in the same delegate conversation and the target is not that running job, the call fails synchronously with `delegate_session_busy` unless an implementation explicitly supports concurrent child turns.
 - Target state is resolved atomically at delivery time. A race between terminal/running state and the tool call is resolved by the observed state at delivery.
 - `on_idle` defaults to `fail`. Allowed values are `start` and `fail`.
-- `max_wait_ms` unset (or `0`) for a started delegate returns the new `job_id` immediately without waiting. With a positive `max_wait_ms`, the started delegate performs one bounded foreground wait; if that wait expires, the new job remains running in the background with reason `foreground_timeout`. Sending to a running delegate or `caller` returns promptly regardless of `max_wait_ms`. When a positive `max_wait_ms` is supplied to a live steer (which cannot honor it), the return carries `wait_ignored_reason` so the caller does not mistake delivery for a reply. There is no "steer and wait for the next reply" mode; let the live steer's turn finish (you are notified) and read its output, or start the next delegate turn once it is idle.
-- `on_idle` and `max_wait_ms` apply to concrete delegate targets. Caller sends are prompt runtime injections and do not create or wait on a job.
+- `max_wait_ms` unset (or `0`) for a started delegate returns the new `job_id` immediately without waiting. With a positive `max_wait_ms`, the started delegate performs one bounded foreground wait; if that wait expires, the new job remains running in the background with reason `foreground_timeout`. Sending to a running delegate returns promptly regardless of `max_wait_ms`. When a positive `max_wait_ms` is supplied to a live steer (which cannot honor it), the return carries `wait_ignored_reason` so the caller does not mistake delivery for a reply. There is no "steer and wait for the next reply" mode; let the live steer's turn finish (you are notified) and read its output, or start the next delegate turn once it is idle.
+- `on_idle` and `max_wait_ms` apply to concrete delegate targets.
 
-`delegate_send` is also the runtime substrate used by `job_watch.send`: when a watch condition fires, Serf sends the configured message/frame to the configured `delegate_id` or `caller` target using the same target-resolution and authorization rules. Watch delivery supplies `on_idle="start"` for delegate targets so an idle observer can receive its frame in a new turn.
+Watch-origin parent callbacks use `communicate(end_turn=true)` from the observer. Internal runtime plumbing may still steer a parent session, but `caller` is not a public `delegate_send` target.
 
 ```mermaid
 stateDiagram-v2
@@ -423,14 +423,11 @@ stateDiagram-v2
     ValidateTarget --> Error: unknown / unauthorized / wrong handle
     ValidateTarget --> TargetRunning: delegate running
     ValidateTarget --> TargetIdle: delegate idle
-    ValidateTarget --> CallerAlias: caller
     TargetRunning --> MessageSameJob: inject guidance
     TargetIdle --> NewJobSameSession: on_idle=start + resumable
     TargetIdle --> Error: on_idle omitted/fail / not_resumable / session_busy
-    CallerAlias --> InjectRuntimeMessage: advisory runtime message
     MessageSameJob --> [*]
     NewJobSameSession --> [*]
-    InjectRuntimeMessage --> [*]
     Error --> [*]
 ```
 
@@ -469,52 +466,63 @@ Return shape when starting an idle delegate's next job:
 }
 ```
 
-Return shape when injecting into the contextual caller route:
-
-```json
-{
-  "type": "runtime",
-  "status": "delivered",
-  "running_in_background": false,
-  "action": "delivered"
-}
-```
-
 ### `job_watch`
 
-`job_watch` creates, lists, inspects, or clears standing triggers. Create configures what should happen when a running job or the caller session meets a condition. Its create schema has two orthogonal axes:
-
-- **Delivery:** omit `send` to notify the caller; include `send` to deliver a configured message/frame to `send.to`.
-- **Trigger source:** use `output_match` for output regex matches, `progress_interval_ms` for periodic progress, and `events` (optionally gated by `every` and `event_filter`) for session/job event frames.
+`job_watch` creates, lists, inspects, or clears standing triggers. A watch is
+owned by the session that creates it. Create names the observed `source`; when a
+condition matches, Serf delivers a bounded notification/frame back to that
+watcher. There is no model-facing `send` object.
 
 Operations:
 
-- `operation="create"` requires `target` and at least one trigger condition.
-- `operation="list"` takes no target or watch ID.
+- `operation="create"` requires `source`.
+- `operation="list"` takes no source or watch ID.
 - `operation="inspect"` requires `watch_id`.
 - `operation="clear"` requires `watch_id`.
 
-The everyday Monitor-like case is `output_match` or `progress_interval_ms` with no `send`. Observer sidecars are the v1 Serf-specific `events`/frame + `send` corner: a watch sends bounded frames to a delegate sidecar, and that sidecar comments back with `delegate_send`. The observer's `delegate_send(to="caller")` is the callback that resumes the caller with the observer's finding. The normal flow is: create the observer, create the watch, trigger the condition, then continue from the callback steering when it arrives. That callback is completion evidence for the observer's task; one final result message is enough unless the caller asked for audit details. Use `job_list` or `job_read_output` after the callback when explicit audit or diagnostic evidence is needed. Other useful combinations are allowed when authorized, such as `output_match + send` to nudge a specific delegate when a server prints “ready,” or `events` without `send` to notify the caller with bounded event metadata.
+Sources:
 
-`job_watch` is not a completion subscription: terminal completion/failure/cancellation/stopped notifications are automatic for notification-armed jobs.
+| Source | Meaning | Authorization |
+| --- | --- | --- |
+| `self` | This session's public events | Always allowed, subject to loop guards |
+| `parent` | Immediate parent session's public events | Only inside a child spawned with `delegate(watch_parent:true)` |
+| `job_...` | A concrete job's output/progress/events | Allowed when the job is owned by this session or a live descendant session |
 
-Notify caller on output-match shape:
+`job_watch` is not a completion subscription: terminal
+completion/failure/cancellation/stopped notifications are automatic for
+notification-armed jobs.
+
+Output-match shape:
 
 ```json
 {
   "operation": "create",
-  "target": "job_...",
+  "source": "job_...",
   "output_match": "(?i)(ready|blocked|needs input)"
 }
 ```
 
-Notify caller on periodic-progress shape:
+Periodic-progress shape:
 
 ```json
 {
   "operation": "create",
-  "target": "job_...",
+  "source": "job_...",
   "progress_interval_ms": 300000
+}
+```
+
+Filtered parent observer shape:
+
+```json
+{
+  "operation": "create",
+  "source": "parent",
+  "events": ["assistant.tool"],
+  "event_filter": {
+    "tool_name": "read_file",
+    "status": "ok"
+  }
 }
 ```
 
@@ -527,120 +535,76 @@ Clear an existing watch:
 }
 ```
 
-Send configured frame/message shape for a concrete job target:
+Trigger fields:
 
-```json
-{
-  "operation": "create",
-  "target": "job_...",
-  "output_match": "(?i)(ready|blocked|needs input)",
-  "progress_interval_ms": 300000,
-  "send": {
-    "to": "dlg_observer|caller",
-    "message": "Review this frame and comment only if useful.",
-    "include_excerpt": true
-  }
-}
-```
-
-Caller/session event watches use the event payload rather than an output
-excerpt, as in the filtered assistant-tool sidecar shape below.
-
-Filtered assistant-tool sidecar shape:
-
-```json
-{
-  "operation": "create",
-  "target": "caller",
-  "events": ["assistant.tool"],
-  "event_filter": {
-    "tool_name": "read_file",
-    "status": "ok"
-  },
-  "send": {
-    "to": "dlg_observer",
-    "message": "Encourage successful file reads only."
-  }
-}
-```
-
-Trigger sources:
-
-- `output_match` is level-triggered: it fires once at attach if the job's already-retained output contains a match, then again as appended output matches the regex. It requires a concrete job target; `output_match` on a session target (`caller`) fails `invalid_request`.
+- `output_match` is level-triggered: it fires once at attach if the job's already-retained output contains a match, then again as appended output matches the regex. It requires a concrete job source; `output_match` on a session source (`self` or `parent`) fails `invalid_request`.
 - `progress_interval_ms` fires periodically with bounded progress/excerpt metadata even if no match occurred.
 - `events` selects session/job event kinds to include in the watch frame. `events: ["*"]` means all visible event kinds allowed by caller permissions and filtering. Event kind names are implementation-defined but must be discoverable by the model; the shipped vocabulary is `assistant.tool`, `communicate`, and `job.notification`. Plain assistant prose is an internal transcript/UI event and is not watchable through `job_watch`.
 - `event_filter` narrows event watches before any delivery is recorded. In v1 it applies only to `events: ["assistant.tool"]` and supports exact `tool_name` plus `status` (`"ok"` or `"error"`). Non-matching events do not create a delivery, pending row, notification, or observer wake. Assistant-tool frames include the resulting `status` plus the original tool `arguments_json`, so an observer can usually decide from the delivered frame before using audit tools.
-- `every` gates event delivery: `every: N` fires on each Nth occurrence of the watched event kind — for example `events: ["communicate"], every: 3` for every third result-tool message. `every: 1` is the semantic default (fire on each occurrence) and reads as unset, whatever `events` contains. `every > 1` is valid only when `events` names exactly one concrete kind; supplying it with zero, multiple, or wildcard (`"*"`) kinds fails `invalid_request`.
+- `every` gates event delivery: `every: N` fires on each Nth occurrence of the watched event kind, for example `events: ["communicate"], every: 3` for every third result-tool message. `every: 1` is the semantic default and reads as unset, whatever `events` contains. `every > 1` is valid only when `events` names exactly one concrete kind; supplying it with zero, multiple, or wildcard (`"*"`) kinds fails `invalid_request`.
 
-Delivery modes:
+For cross-session session sources such as `parent`, omitting trigger fields means
+deliver all bounded public watch frames for that source. For concrete jobs and
+`self`, create still requires a meaningful output/event/progress condition.
 
-- If `send` is omitted, the watch produces a normal notification to the caller when the condition is met.
-- If `send` is present, Serf sends `send.message` plus the requested bounded frame/excerpt to `send.to` using `delegate_send` target-resolution and authorization semantics. Watch sends to delegate targets use `on_idle="start"` and deliver without waiting (unset `max_wait_ms`) for any newly started delegate job. If the target sidecar/delegate is busy, Serf keeps one durable latest-frame-wins pending send per watch key and retries when the target is idle or resumable. Caller-alias (`send.to="caller"`) deliveries surface as a job-notification turn at the next owner-session boundary; delegate-target deliveries steer or start the target as `delegate_send` does. All watch-send delivery happens at owner-session boundaries (between tool rounds, at input end, or on idle wake), not mid-stream.
-- Sent frames always carry bounded trigger metadata (the watched `job_id` when one exists, the trigger, and a `delivery_id`); there is no opt-out, and no `include_frame` option exists.
-- For target values that start with `job_`, `include_excerpt=true` attaches a bounded output excerpt. Session-target frames carry the bounded event payload that caused the trigger (`communicate` message text, assistant-tool status/arguments/output/error, or job notification metadata); they do not expose a `transcript_ref`.
-- The sent message is the current configured message at the time the watch fires.
-
-Observer/sidecar v1 pattern:
+Observer/sidecar pattern:
 
 ```text
-1. delegate(...) starts an observer sidecar -> delegate_id=dlg_obs, current job_id=job_obs.
-2. job_watch(operation="create", target=<job_id_or_caller>, events=[...], send={to:"dlg_obs"}) sends frames to the observer.
-3. The observer receives frames as messages.
-4. If useful, the observer advises the watched session with delegate_send(to="caller", message="...").
-5. If no action is needed, the observer may finish the watch-originated turn with a short no-action disposition; it does not need a harmless no-op tool call.
+1. Parent starts a child with delegate(watch_parent:true).
+2. The child creates job_watch(operation="create", source="parent", ...).
+3. Matching parent frames are delivered to that child.
+4. The child reports useful findings with communicate(end_turn=true).
+5. The parent treats that communicate as the observer callback and finishes from it.
 ```
 
-Observer sidecars are v1. No separate `observe` or observer-comment tool is required. Observer comments are ordinary `delegate_send` calls with runtime-resolved targets and permissions.
+Observer sidecars are composition, not a separate model-facing observer tool.
+Use `delegate_send(to=<delegate_id>)` only for parent-to-child follow-up.
 
 Practical observer guidance for agents:
 
-- Use an observer agent type that actually has the tools the observer needs. `agent_type="default"` is enough for an observer that needs `job_read_output` or `delegate_send(to="caller")`; a limited leaf role is only suitable for observers that comment in their own transcript with `communicate`.
-- Installing nested watches is a delegation-depth capability, not just an agent-type choice. An observer that must create its own delegates or watches needs non-zero `delegation_allowance`, and its parent must have enough remaining depth to grant that allowance.
-- Prefer the idle-observer pattern: start the delegate, have its first turn finish with a short ready marker, then let `job_watch` frames start later turns in that same delegate conversation. Delivering frames into an already-running observer is supported, but it is harder for the model to reason about and easier to confuse with ordinary steering.
-- Keep observer instructions narrow and frame-driven. Tell the observer what frame fields to read (`watch_id`, `delivery_id`, `job_id`, `event`, and optional excerpt), what action to take, and when to stop.
-- Use the returned `delegate_id` as `send.to`. A delegate `job_id` is a turn handle, not a conversation handle, and should not be used for watch delivery.
-- A watch-origin observer job that has already sent `delegate_send(to="caller")` records terminal state without adding another owner notification for the same job. Other terminal job notifications remain lifecycle confirmations, not additional watch frames. Clear long-lived session watches before continuing a free-form conversation when later acknowledgements should not themselves be observed.
+- Start the observer with `watch_parent:true` when it needs to observe the parent.
+- Inside the observer, call `job_watch(source:"parent")`; omit trigger fields for the default bounded parent frame stream, or add `events`/`event_filter` for precision.
+- Report readiness or continuing status with `communicate(end_turn=false)` only when the observer will continue working in that same turn.
+- Report the observer result with `communicate(end_turn=true)`. That terminal communicate is the callback to the parent.
+- Keep observer instructions narrow and frame-driven. Tell the observer what frame fields to read (`watch_id`, `delivery_id`, `job_id`, event kind/status/arguments, and optional excerpt), what action to take, and when to stop.
+- A watch-origin observer job that has already sent its terminal `communicate(end_turn=true)` records terminal state without adding another owner notification for the same job. Other terminal job notifications remain lifecycle confirmations, not additional watch frames. Clear long-lived session watches before continuing a free-form conversation when later acknowledgements should not themselves be observed.
 
 Rules:
 
 - Every notification-armed background job emits one terminal notification when Serf observes or reconstructs terminal state, subject to durable duplicate suppression. `job_watch` is unrelated to that terminal notification.
-- `job_watch` only adds extra notifications or configured sends while the watched target is active/visible.
+- `job_watch` only adds extra notifications or frames while the watched source is active/visible.
 - For an already-terminal concrete job that still has retained output, an `output_match`-only `job_watch` (no `events` or `progress_interval_ms`) performs a one-shot catch-up scan of that retained output instead of installing a live watch: it returns `terminal_catchup=true` with `watching=false`, `fired=true` and a frame/notification on a match or `fired=false` on none, and the terminal `status`. Any other condition on a terminal target still fails synchronously with `target_terminal` (nothing can ever fire). Unknown or no-longer-retained concrete job targets still fail synchronously with `target_not_found`.
-- `job_watch(operation="clear", watch_id=...)` does not stop the watched job. Clearing is by `watch_id`, is idempotent, and returns a no-op success (`watching:false`) when the watch is already inactive, unknown, or was auto-removed because the target reached terminal state. The caller never has to reconstruct the original target/send key.
-- `job_watch` fails synchronously with `target_not_watchable` for targets the caller is not allowed to watch. A watch resolves the caller's own jobs only: a target owned by a child or deeper descendant session is not directly watchable. When the target is a known descendant in the live subtree, the failure carries the **delegate-the-watching** guidance — it names the owning descendant session and directs the caller to delegate the watch to that session, which attaches the watch on its own job (the only session that can watch it).
-- Self-delivery feedback loops are rejected at creation with `invalid_request`, regardless of target: a watch whose resolved event kinds include a self-generated kind (`assistant.tool`, `communicate`, including via `["*"]`) and whose delivery returns to the watching session (`send` omitted, or `send.to="caller"`) would make each delivery cause the next event. Watch self-generated kinds only with `send.to` set to an observer `delegate_id`. `job.notification` self-watches remain allowed.
+- `job_watch(operation="clear", watch_id=...)` does not stop the watched job. Clearing is by `watch_id`, is idempotent, and returns a no-op success (`watching:false`) when the watch is already inactive, unknown, or was auto-removed because the source reached terminal state. The caller never has to reconstruct the original source/condition identity.
+- `job_watch` fails synchronously with `source_not_watchable` or `target_not_watchable` for sources the caller is not allowed to observe. A concrete descendant job can be watched by forwarding the watch install to the live owning descendant while keeping the ancestor as receiver. Parent, sibling, unrelated, closed, or non-live sources are not watchable unless explicitly granted.
+- Self-delivery feedback loops are rejected at creation with `invalid_request` when the resolved event kinds include a self-generated kind (`assistant.tool`, `communicate`, including via `["*"]`) and the watcher/source are the same session. `job.notification` self-watches remain allowed. Parent-source sidecars are cross-session and do not trip the self loop guard.
 - Watches expire automatically when their concrete watched job reaches terminal state. Session-level watches remain active until their configured scope ends, the session/job manager closes, or retention policy removes them.
-- A watch whose delivery target is a concrete `delegate_id` (the observer/sidecar pattern) grants that observer `job_read_output` on the watched job. Grants are durable read capabilities keyed on the observer's session identity, not the observer's current job handle — they survive observer follow-up turns with new `job_id`s — and are not revoked by watch clear or expiry, because the observer's main read typically happens after the watched job finishes; output retention still bounds what a grant can read. Grants extend `job_read_output` only: no `job_list` visibility, no `job_stop`, and no additional `delegate_send` authorization.
+- A parent-source observer may receive a granted read for a concrete watched job referenced by a frame. Grants are durable read capabilities keyed on the observer's session identity, not the observer's current job handle, and are not revoked by watch clear or expiry; output retention still bounds what a grant can read. Grants extend `job_read_output` only: no `job_list` visibility, no `job_stop`, and no additional `delegate_send` authorization.
 - Watches are not required to survive Serf process restart unless an implementation explicitly marks them durable.
-- Already-fired watch-send frames are durable until delivered, replaced by a newer frame for the same durable key, evicted by watch cleanup, or dropped with a caller-visible diagnostic on hard/non-resumable failure. The durable key includes the `watch_id`, visible session, configured watch target, resolved watched identity, resolved send target, and watch generation.
+- Already-fired parent-watch frames are durable until delivered, replaced by a newer frame for the same durable key, evicted by watch cleanup, or dropped with a caller-visible diagnostic on hard/non-resumable failure. The durable key includes the `watch_id`, visible session, configured watch source/target, receiver identity, resolved watched identity, and watch generation.
 - `job_watch(operation="clear", watch_id=...)` is the model-facing unwatch operation; there is no separate unwatch tool.
-- There is at most one active watch configuration per `(visible_session_id, target, send.to)` unless an implementation documents additive watches. For notify-caller watches, `send.to` is the implicit caller notification endpoint, which is distinct from an explicit `send.to="caller"` send: the two are different keys and may coexist for the same target. A duplicate call with the same configuration is idempotent. A different call replaces the previous configuration for that key, and the return value must make replacement explicit with `replaced_existing=true`.
+- There is at most one active watch configuration per `(watcher_session_id, source identity, receiver identity, condition hash)` unless an implementation documents additive watches. A duplicate call with the same configuration is idempotent. A different call replaces the previous configuration for that key, and the return value must make replacement explicit with `replaced_existing=true`.
 - `output_match` is a Go/RE2 regular expression over the watched job's retained output at attach and then output appended while the watch is active.
 - Regex matching is case-sensitive by default; use inline flags such as `(?i)` or `(?i:plugh)` for case-insensitive matching.
 - Go/RE2 syntax is leftmost-first and excludes backreferences/lookaround. `.` does not match newline unless `(?s)` is used; use `(?m)` for multiline `^`/`$` behavior.
 - Invalid regexes fail synchronously at watch creation time.
 - For the retained output present at attach and for bytes successfully appended while a watch is active, Serf must not silently miss a regex match because of preview-window eviction. The no-silent-miss guarantee extends to the attach scan: a token already retained at attach, or one straddling the attach boundary, must still match. Implementations may use line-buffered append-stream matching, chunk-overlap matching, or another mechanism, but the contract is no silent miss for retained/appended watched output.
-- Event frames and output excerpts are bounded and filtered before notification or send delivery. Implementations may apply redaction/scrubbing for cross-session or observer delivery, but this contract does not promise perfect secret detection; callers must not treat frames as guaranteed secret-free.
+- Event frames and output excerpts are bounded and filtered before notification or observer delivery. Implementations may apply redaction/scrubbing for cross-session or observer delivery, but this contract does not promise perfect secret detection; callers must not treat frames as guaranteed secret-free.
 - Default `progress_interval_ms` is absent/no periodic progress wake-up. If supplied, minimum is `1000`, maximum is `3600000`, and omitted/`0` means no periodic progress notification. Negative values fail `invalid_request`.
-- Match/event/progress notifications are batched/throttled. Multiple triggers may be coalesced. For watch sends, coalescing is latest-frame-wins by durable key and must not turn a matched condition into silence: Serf either delivers the current pending frame, replaces it with a newer pending frame for the same key, or emits a caller-visible diagnostic for hard failure.
-- Each watch configuration has a model-facing delivery budget of 50 (caller notifications plus sent frames, the count `job_list` reports per watch). A watch that exhausts its budget is auto-cleared with one final notification telling the caller to re-arm with a tighter condition (higher `every`, narrower `output_match`, or longer `progress_interval_ms`).
-- Terminal notification ordering: flush any queued watch notification/send for a concrete job, then deliver the terminal notification.
-- If no watch condition is supplied (`output_match`, `events`, or `progress_interval_ms`) for `operation="create"`, the tool fails because terminal notifications are automatic and there is no condition to watch.
+- Match/event/progress notifications are batched/throttled. Multiple triggers may be coalesced. For parent-watch observer frames, coalescing is latest-frame-wins by durable key and must not turn a matched condition into silence: Serf either delivers the current pending frame, replaces it with a newer pending frame for the same key, or emits a caller-visible diagnostic for hard failure.
+- Each watch configuration has a model-facing delivery budget of 50 (watch notifications plus observer frames, the count `job_list` reports per watch). A watch that exhausts its budget is auto-cleared with one final notification telling the caller to re-arm with a tighter condition (higher `every`, narrower `output_match`, or longer `progress_interval_ms`).
+- Terminal notification ordering: flush any queued watch notification/frame for a concrete job, then deliver the terminal notification.
+- If no watch condition is supplied (`output_match`, `events`, or `progress_interval_ms`) for `operation="create"`, the tool fails unless the source is a granted cross-session session source such as `parent`, where the default is the bounded public frame stream.
 
 Return shape:
 
 ```json
 {
   "watch_id": "watch_...",
-  "target": "job_...",
+  "source": "job_...",
   "watching": true,
   "output_match": "(?i)(ready|blocked|needs input)",
   "events": ["communicate", "assistant.tool", "job.notification"],
   "progress_interval_ms": 300000,
-  "send": {
-    "to": "dlg_observer",
-    "include_excerpt": true
-  },
   "replaced_existing": false,
   "fired": false
 }
@@ -651,13 +615,11 @@ Return shape:
 ```mermaid
 stateDiagram-v2
     [*] --> Unwatched
-    Unwatched --> Watched: job_watch(operation=create, condition)
+    Unwatched --> Watched: job_watch(operation=create, source, condition)
     Watched --> Watched: duplicate idempotent / replacement update
     Watched --> ConditionMet: output / event / progress trigger
-    ConditionMet --> NotifyCaller: no send configured
-    ConditionMet --> SendMessage: send configured
-    SendMessage --> Watched: delivered/coalesced
-    NotifyCaller --> Watched: delivered/coalesced
+    ConditionMet --> NotifyWatcher: deliver bounded frame/notification
+    NotifyWatcher --> Watched: delivered/coalesced
     Watched --> Expired: concrete job terminal / scope ends
     Expired --> [*]
 ```
@@ -683,7 +645,7 @@ Canonical behavior:
 - Omit `head_lines`/`tail_lines` for the default **head+tail digest**: the first ~100 and last ~100 lines of retained output, with the middle elided and a marker stating how much (bytes, and a permanent-loss note when output was evicted past the retention cap).
 - Pass `head_lines` to read that many whole lines from the START of retained output, `tail_lines` from the END, or **both together** for a custom-sized head+tail digest. For an arbitrary middle window, use `from_line` (1-based) + `line_count` (default 100); `from_line` cannot be combined with `head_lines`/`tail_lines`. Omit all of them for the default digest. A per-side byte budget bounds a pathological run of very long lines.
 - `grep`, when supplied, searches retained output server-side using Go/RE2 syntax and returns bounded matching lines/chunks plus output metadata. Match entries should include a byte position such as `byte_offset` when available. In the core model-facing contract this is informational/triage metadata; agents can act on it only when an implementation also exposes advanced paging or a UI uses the coordinate to fetch surrounding context.
-- `grep` is for inspecting retained output, including terminal jobs. `job_watch.output_match` is for triggering a notification or configured send while a watched running job emits matching output.
+- `grep` is for inspecting retained output, including terminal jobs. `job_watch.output_match` is for triggering a notification/frame while a watched running job emits matching output.
 - Reads are non-consuming and non-acknowledging.
 - The result reports `total_bytes` (lifetime output), `dropped_bytes` (bytes permanently evicted past the retention cap), and `output_status`: `all_retained` (the returned window is the whole retained log), `windowed` (more is retained — read it), or `evicted` (`dropped_bytes` are gone). `output_status` describes the WINDOW, not the job lifecycle — a running job whose window covers everything-so-far still reports `all_retained`.
 - `grep` always scans the full retained output; there is no scan-budget parameter, so a grep over retained bytes never silently misses a match for budget reasons. The returned `matches` array is bounded by match-count and per-line caps.
@@ -691,7 +653,7 @@ Canonical behavior:
 - With `max_wait_ms > 0`, the tool performs at most one bounded wait, then returns current state/output. Without `grep`, the wait ends on terminal state or more output. With `grep`, the wait ends when the retained output contains a match, on terminal state, or on timeout. Timeout never stops the job.
 - `max_wait_ms` is not a polling primitive and must not be used repeatedly in a loop. Terminal notifications remain the normal completion mechanism.
 - `job_read_output` must work for terminal durable jobs after the live runtime is gone, as long as the job record/output file is retained.
-- An observer delegate granted by a `job_watch` send (see `job_watch`) may `job_read_output` its watched job even though that job lives in the watching session's store; granted cross-session reads are snapshot-only — positive `max_wait_ms` fails `invalid_request`.
+- An observer delegate granted by a parent-source watch frame may `job_read_output` its watched job even though that job lives in the watched session's store; granted cross-session reads are snapshot-only — positive `max_wait_ms` fails `invalid_request`.
 
 Canonical return shape:
 
@@ -800,9 +762,8 @@ Return shape:
   "watches": [
     {
       "id": "watch_1",
-      "target": "job_...",
+      "source": "job_...",
       "condition": "output_match: ready",
-      "send_to": "",
       "deliveries": 0,
       "created_at": "..."
     }
@@ -810,9 +771,8 @@ Return shape:
   "recent_watches": [
     {
       "id": "watch_0",
-      "target": "job_...",
+      "source": "job_...",
       "condition": "output_match: ready",
-      "send_to": "",
       "deliveries": 2,
       "end_reason": "auto_removed_terminal",
       "ended_at": "..."
@@ -825,8 +785,8 @@ Return shape:
 Rows are lean for scanning: a field that is null/absent for a job is omitted (a running shell row carries no `reason`, `exit_code`, `ended_at`, `transcript_ref`, or resumability keys), `visible_to_session_id` is internal routing and not emitted, and `owner_session_id` is only interesting under tree walks though it is always present. Detail beyond the scan (resumability assessment specifics, the full output) comes from `job_read_output`.
 
 - `delegation_allowance` reports the calling session's current recursive-delegation budget: the largest value it may grant a child is one less (see Delegation allowance). It is omitted when `<= 1` (a leaf with no `delegate` tool, or a budget that can only grant `0` — a no-op knob) and present when the session can actually fan out, so an agent sees a meaningful budget without re-reading its system prompt.
-- `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries a stable `id` (preserved across an idempotent re-configure; a replacement gets a fresh `id`), `target`, a one-line `condition` summary of the watch's trigger (`output_match`, `progress_interval_ms`, or `events` with an optional `every N`), `send_to` (empty for a notify-caller watch, otherwise the configured delivery target), `deliveries` (model-facing deliveries so far against the per-watch budget), and `created_at`. Drain-only residue from already-terminal watched jobs is not listed. `watches` rides with the result when non-empty (omitted from the lean scan when there are none); it is not subject to the job list's size bounding.
-- `recent_watches` is a bounded, latest-first ring of watches that have left the active set, so a watch that fired and then disappeared stays legible (it is not a watch vanishing into ambiguity). Each entry carries the same `id`/`target`/`condition`/`send_to`/`deliveries` plus `end_reason` — `auto_removed_terminal` (the watched job went terminal), `cleared` (`job_watch(operation="clear", watch_id=...)`), `replaced` (a different configuration superseded it), or `budget_exhausted` (it hit the per-watch delivery budget) — and `ended_at`. Combined with `deliveries`, this distinguishes a watch that fired before it was removed from one that never fired, and both from a watch that was never installed (absent from both lists). It is omitted from the lean scan when empty. The ring is a debugging aid, not a durable audit log, and does not survive process restart.
+- `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries a stable `id` (preserved across an idempotent re-configure; a replacement gets a fresh `id`), the public `source`, a one-line `condition` summary of the watch's trigger (`output_match`, `progress_interval_ms`, or `events` with an optional `every N`), `deliveries` (model-facing deliveries so far against the per-watch budget), and `created_at`. Receiver-owned watches are visible to the receiver, not to the descendant manager that physically observes the source. Drain-only residue from already-terminal watched jobs is not listed. `watches` rides with the result when non-empty (omitted from the lean scan when there are none); it is not subject to the job list's size bounding.
+- `recent_watches` is a bounded, latest-first ring of watches that have left the active set, so a watch that fired and then disappeared stays legible (it is not a watch vanishing into ambiguity). Each entry carries the same `id`/`source`/`condition`/`deliveries` plus `end_reason` — `auto_removed_terminal` (the watched job went terminal), `cleared` (`job_watch(operation="clear", watch_id=...)`), `replaced` (a different configuration superseded it), or `budget_exhausted` (it hit the per-watch delivery budget) — and `ended_at`. Combined with `deliveries`, this distinguishes a watch that fired before it was removed from one that never fired, and both from a watch that was never installed (absent from both lists). Receiver-owned history is visible to the receiver, not the physical source owner. It is omitted from the lean scan when empty. The ring is a debugging aid, not a durable audit log, and does not survive process restart.
 
 `description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate jobs have no separate `description` argument in v1; implementations may derive a display label from the delegate `task` or leave `description` empty while retaining `task` in durable storage.
 
@@ -926,8 +886,8 @@ The v1 model-facing tool matrix is:
 
 | Caller context | Available job tools | Notes |
 | --- | --- | --- |
-| Root session | shell, `delegate`, `job_watch`, `delegate_send`, `job_read_output`, `job_list`, `job_stop` | Root may create delegates and watches, message its direct delegate conversations by `delegate_id`, and use contextual aliases when authorized. |
-| Delegate/subagent session | shell, `delegate_send`, `job_read_output`, `job_list`, `job_stop` | Delegates may start shell jobs. `delegate` and `job_watch` are allowance-gated (a leaf delegate with allowance 0 receives neither; see the delegation-allowance amendment). Delegate `delegate_send` may use `caller`; concrete `delegate_id` targets are scoped to the session's **own direct delegates** at every level — a coordinator may message its own worker delegate by `delegate_id`, but not an arbitrary descendant's delegate (which fails `not_controllable`). `caller` resolves to the immediate parent at every level. |
+| Root session | shell, `delegate`, `job_watch`, `delegate_send`, `job_read_output`, `job_list`, `job_stop` | Root may create delegates and watches, and message its direct delegate conversations by `delegate_id`. |
+| Delegate/subagent session | shell, `delegate_send`, `job_read_output`, `job_list`, `job_stop` | Delegates may start shell jobs. `delegate` and `job_watch` are allowance-gated, with the separate `watch_parent:true` grant exposing `job_watch(source="parent")` to observer leaves. Concrete `delegate_id` targets are scoped to the session's **own direct delegates** at every level — a coordinator may message its own worker delegate by `delegate_id`, but not an arbitrary descendant's delegate (which fails `not_controllable`). |
 
 Tool availability is part of the model-facing contract. If an implementation narrows these permissions for policy reasons, it must make that visible in tool availability or tool descriptions rather than failing late with surprising generic errors.
 
@@ -1062,7 +1022,7 @@ Rules:
 
 Terminal job notifications are automatic for notification-armed jobs. A model should not need to subscribe to learn that a background job finished.
 
-A job is notification-armed if its creating tool call returned before terminal state, including shell foreground calls that timed out and were promoted to durable background jobs. A job that completed synchronously before the creating tool returned is not required to inject a duplicate terminal notification; the terminal result is already in the tool result. `delegate_send` against a running delegate or `caller` does not arm an additional terminal notification. `delegate_send(on_idle="start")` against an idle/resumable delegate creates a new notification-armed delegate job, except that a watch-origin observer job that successfully calls `delegate_send(to="caller")` uses that callback as the owner signal and skips the redundant terminal owner notification. V1 sidecars are ordinary delegate jobs for public semantics and notification behavior; Serf keeps only internal watch-origin bookkeeping for frame routing and feedback-loop suppression, plus the durable observer read grants minted by `job_watch` (keyed on the sidecar's session identity, not a marker on any job record).
+A job is notification-armed if its creating tool call returned before terminal state, including shell foreground calls that timed out and were promoted to durable background jobs. A job that completed synchronously before the creating tool returned is not required to inject a duplicate terminal notification; the terminal result is already in the tool result. `delegate_send` against a running delegate does not arm an additional terminal notification. `delegate_send(on_idle="start")` against an idle/resumable delegate creates a new notification-armed delegate job. A watch-origin observer job that successfully calls `communicate(end_turn=true)` uses that callback as the owner signal and skips the redundant terminal owner notification. V1 sidecars are ordinary delegate jobs for public semantics and notification behavior; Serf keeps only internal watch-origin bookkeeping for frame routing and feedback-loop suppression, plus durable observer read grants keyed on the sidecar's session identity.
 
 Notification example:
 
@@ -1079,15 +1039,15 @@ When the excerpt contains the job's complete output (nothing was truncated away)
 
 Rules:
 
-- Terminal job notifications carry a concrete `job_id`, `event` (the lifecycle/progress notification kind), `job_type` (`shell` or `delegate`), status, reason, output byte count, exit code when known, and optional transcript ref for delegate jobs. `reason` is rendered even when the status carries no reason (`reason=""`), for example an ordinary delegate completion. Watch notifications use `event="watch"` and `job_type="watch"`; output/progress/job-event watches carry the concrete watched `job_id` when one exists, while session-level event watches may omit a concrete `job_id`. Notification `event` must not be named `type`, because durable job records already use `type` for the job class. The v1 event vocabulary is terminal statuses `completed`, `failed`, `cancelled`, and `stopped`, plus `watch` for watch output/event/progress notifications and `watch_send` for caller-delivered watch-send frames (`send.to="caller"`), whose blocks carry `delivery_id` and `trigger` attributes in place of the job status fields.
-- Terminal `job_finished` notifications carry a bounded result excerpt in a labeled `excerpt:` section, re-read from the durable job record at render time (consistent on the durable-replay path). The excerpt is directional: a `shell` job shows the last ~400 characters of retained output (the tail); a `delegate` job shows the first ~400 characters of its report (the head). Over-budget excerpts end with a `[excerpt truncated]` marker. A job with no output omits the `excerpt:` section entirely, and a failed output read degrades to no excerpt rather than failing the notification. Watch notifications carry no terminal-notification excerpt; configured watch-send frames to either `caller` or a delegate may carry an embedded frame `excerpt:` when `include_excerpt=true` on a concrete target.
+- Terminal job notifications carry a concrete `job_id`, `event` (the lifecycle/progress notification kind), `job_type` (`shell` or `delegate`), status, reason, output byte count, exit code when known, and optional transcript ref for delegate jobs. `reason` is rendered even when the status carries no reason (`reason=""`), for example an ordinary delegate completion. Watch notifications use `event="watch"` and `job_type="watch"`; output/progress/job-event watches carry the concrete watched `job_id` when one exists, while session-level event watches may omit a concrete `job_id`. Notification `event` must not be named `type`, because durable job records already use `type` for the job class. The v1 event vocabulary is terminal statuses `completed`, `failed`, `cancelled`, and `stopped`, plus `watch` for watch output/event/progress notifications and observer frames.
+- Terminal `job_finished` notifications carry a bounded result excerpt in a labeled `excerpt:` section, re-read from the durable job record at render time (consistent on the durable-replay path). The excerpt is directional: a `shell` job shows the last ~400 characters of retained output (the tail); a `delegate` job shows the first ~400 characters of its report (the head). Over-budget excerpts end with a `[excerpt truncated]` marker. A job with no output omits the `excerpt:` section entirely, and a failed output read degrades to no excerpt rather than failing the notification. Watch notifications carry no terminal-notification excerpt; concrete-job watch frames may carry a bounded output excerpt.
 - Notifications include a bounded excerpt that may be the complete output when the whole result fits the budget (rendered with `Complete output below.`), and is otherwise a truncated preview pointing the reader to `job_read_output`.
-- Notifications wake the visible session if idle. Notifications render only in their owner's own turns: a session is never asked to render a notification for a job it does not own. A child/delegate session with undelivered attention (a queued owner notification or a pending caller-targeted watch send) is **driven** by its parent at the parent's own loop boundaries — the parent launches one notification turn on the child's own drain loop so the child's model receives its own notifications. The root is driven the same way by serve.go's wake. The drive mints no new job record and notification-arms nothing new; it is the child processing its own durable queue. A child's owner-side notification state remains durable and is delivered when that child is next driven (or resumed).
+- Notifications wake the visible session if idle. Notifications render only in their owner's own turns: a session is never asked to render a notification for a job it does not own. A child/delegate session with undelivered attention (a queued owner notification or a pending observer frame) is **driven** by its parent at the parent's own loop boundaries — the parent launches one notification turn on the child's own drain loop so the child's model receives its own notifications. The root is driven the same way by serve.go's wake. The drive mints no new job record and notification-arms nothing new; it is the child processing its own durable queue. A child's owner-side notification state remains durable and is delivered when that child is next driven (or resumed).
 - A parent **drives** a child for the child's own (delegate-owned) job notifications; it still **renders** its OWN jobs' terminal notifications, including its direct delegates' terminals — the parent is told when its own coordinator finishes, because that is the parent's job ending, not noise about a job it did not create.
 - A successful drive handoff settles the parent's forwarded pending COPY of a child-owned terminal (marks it delivered) so the same stale signal does not re-drive forever. The forwarded copy is only a drive signal; the child's own durable queue is the delivery ledger and is never touched by the parent's settle. On restart the parent re-arms only its OWN jobs' terminal notifications; a forwarded copy of a direct child's own job is a drive signal, not the parent's render, so it is not re-armed onto the parent's rail (no restart wake-storm). A child whose latest delegate record (by durable append order) terminated by deliberate stop is not driven for attention that predates the stop; new work clears the gate. If a child cannot be driven (non-resumable, closed, descriptor-less) the parent renders the pending itself prefixed `child unreachable:`, so attention escalates one honest level instead of vanishing.
 - If the parent is mid-turn, notifications queue for a safe turn boundary.
 - Duplicate terminal notifications for the same job are suppressed.
-- Watch wake-ups and configured watch sends are opt-in through `job_watch`.
+- Watch wake-ups and observer frames are opt-in through `job_watch`.
 - Serf supervises running delegate jobs with a built-in quiet-job watchdog. A running delegate that produces no parent-observable activity (no output append; `last_activity` unchanged) for 10 minutes triggers one owner notification reading `quiet for 10m; last activity: <timestamp>`, delivered like a watch notification (`event="watch"`, the delegate's `job_id`). It fires at most once per quiet stretch and re-arms only after the delegate shows fresh activity. This is always-on supervision, not an opt-in `job_watch`; a quiet delegate that is genuinely working (for example reading a large file) is reported the same as a stalled one, because the two are not distinguishable from parent-observable state. The watchdog only notifies the owner; it never steers, resumes, or stops the delegate.
 - Notification delivery state is internal; there is no `job_ack`.
 
@@ -1144,7 +1104,7 @@ stateDiagram-v2
     NotifyDelivered --> [*]
 ```
 
-Graceful shutdown is the deliberate counterpart of restart reconciliation. When an owner session closes cleanly, Serf stop-signals each still-running job and waits a bounded grace period (5 seconds in the shipped implementation) for runtimes to confirm; a job that stops within the grace period finalizes as `cancelled` with reason `stopped_by_parent`, while a job already finalizing under an explicit stop keeps that stop's status/reason. A job that does not confirm in time is abandoned with its durable record still `running`; the next restore of that session finalizes it as `stopped/runtime_lost` through the reconciliation steps above. Child/delegate sessions close before the parent's durable store, so nested jobs finalize through their owner sessions and forward terminal events while the parent can still record them. Undelivered pending watch-send frames are evicted by watch cleanup at close.
+Graceful shutdown is the deliberate counterpart of restart reconciliation. When an owner session closes cleanly, Serf stop-signals each still-running job and waits a bounded grace period (5 seconds in the shipped implementation) for runtimes to confirm; a job that stops within the grace period finalizes as `cancelled` with reason `stopped_by_parent`, while a job already finalizing under an explicit stop keeps that stop's status/reason. A job that does not confirm in time is abandoned with its durable record still `running`; the next restore of that session finalizes it as `stopped/runtime_lost` through the reconciliation steps above. Child/delegate sessions close before the parent's durable store, so nested jobs finalize through their owner sessions and forward terminal events while the parent can still record them. Undelivered pending observer frames are evicted by watch cleanup at close.
 
 ## Nested jobs
 
@@ -1165,7 +1125,7 @@ Rules:
 - Shell jobs created by subagents are visible to the parent through forwarded durable job events.
 - Delegate jobs created by subagents join the same one-hop forwarding: delegate-job creation forwards its `job_started` one hop to the parent's store, carrying `parent_job_id` plus owner/type identity (`owner_session_id`, `type=delegate`). This seeds a typed parent-visible record at start, so the later forwarded terminal event merges onto it rather than producing a type-less phantom record.
 - Dedupe rule: the owner session's durable record is authoritative for a forwarded job. A forwarded copy of the same `job_id` in an ancestor store is suppressed in favor of the owner record; the forwarded start carries enough identity (owner session + type) to make that suppression unambiguous.
-- Terminal notifications for a parent-visible nested background job are **owner-scoped** (spec §3/§10 drive-down): the notification renders only on the OWNER's rail — the subagent that created the nested job — never on the ancestor's. The parent is told only about its OWN jobs, including its direct delegates' terminals (the subagent itself finishing). It is **not** interrupted about a job a descendant created; the forwarded copy is a drive signal for the parent, and the parent drives the subagent so the subagent renders its own notification. The ancestor retains on-demand visibility into the nested job via `job_list(include_descendants=true)`. `job_watch` is only for extra output/event/progress notifications or configured sends.
+- Terminal notifications for a parent-visible nested background job are **owner-scoped** (spec §3/§10 drive-down): the notification renders only on the OWNER's rail — the subagent that created the nested job — never on the ancestor's. The parent is told only about its OWN jobs, including its direct delegates' terminals (the subagent itself finishing). It is **not** interrupted about a job a descendant created; the forwarded copy is a drive signal for the parent, and the parent drives the subagent so the subagent renders its own notification. The ancestor retains on-demand visibility into the nested job via `job_list(include_descendants=true)`. `job_watch` is only for extra output/event/progress notifications or observer frames.
 - Parent `job_stop` on a nested job routes to the owning session/runtime if live.
 - If routing is unavailable after restart, Serf reports terminal `stopped/runtime_lost` according to restart reconciliation.
 - If routing fails while the owner runtime is believed live, an active control attempt may fail or finalize according to the status matrix by failing synchronously with `not_controllable`.
@@ -1197,25 +1157,26 @@ flowchart TD
     ChildShellJob -->|job_started forwarded| ForwardedRecord
     ForwardedRecord -->|job_list include_nested=true| ParentVisible
     ParentVisible -->|job_read_output parent-visible job_id| ParentCanRead
-    ParentVisible -->|job_watch own job_id only| ParentCanWatch
+    ParentVisible -->|job_watch source=job_id on live descendant| ParentCanWatch
     ParentVisible -->|job_stop own delegate cascades subtree| ParentCanStop
 ```
 
 ## Observer and sidecar composition
 
-Observer sidecars are a v1 Serf composition pattern. Claude Monitor covers only the basic stream-notification profile; Serf also supports sidecars that receive bounded event/output frames and comment back through normal message delivery. Serf does not need a separate observer-comment command or a Sprout-style raw handle model. The shipped composition uses existing job primitives:
+Observer sidecars are a v1 Serf composition pattern. Claude Monitor covers only the basic stream-notification profile; Serf also supports sidecars that receive bounded event/output frames and report back through the normal result surface. Serf does not need a separate observer-comment command or a Sprout-style raw handle model. The shipped composition uses existing job primitives:
 
-1. Start a sidecar with `delegate(...)`; this creates an ordinary delegate job with no public marker. (The read grant a later `job_watch` send mints is durable session-keyed bookkeeping, not a job-record marker.)
-2. Configure `job_watch(operation="create", ...)` over a concrete job or the `caller` session.
-3. Set `send.to` to the sidecar `delegate_id` so the watch condition sends bounded event/output frames to the sidecar.
-4. The sidecar responds with `delegate_send(to="caller", message=...)` when it has useful commentary or advice.
-5. The caller treats that steering as the observer callback and continues from it. Follow-up `job_list` or `job_read_output` calls are audit/diagnostic evidence after the callback, not the callback mechanism itself.
+1. Start a sidecar with `delegate(watch_parent:true, ...)`; this creates an ordinary delegate job with a non-transitive parent-watch grant.
+2. Inside that child, configure `job_watch(operation="create", source="parent", ...)`.
+3. Serf delivers matching bounded event/output frames to the child that created the watch.
+4. The sidecar responds with `communicate(end_turn=true, ...)` when it has useful commentary or advice.
+5. The caller treats that communicate as the observer callback and continues from it. Follow-up `job_list` or `job_read_output` calls are audit/diagnostic evidence after the callback, not the callback mechanism itself.
 
 This makes observer behavior a composition of two primitives:
 
 ```text
-job_watch        condition -> notify or send configured message/frame
-delegate_send   message delivery -> running delegate, idle delegate with on_idle=start, or caller
+delegate         create observer with watch_parent
+job_watch        source-owned condition -> bounded frame to watcher
+communicate      observer callback -> parent resumes from the result
 ```
 
 Safety and behavior rules:
@@ -1223,12 +1184,12 @@ Safety and behavior rules:
 - Watch frames are bounded and filtered. Redaction may be applied for cross-session or observer delivery, but frames are not guaranteed secret-free.
 - Observer/sidecar telemetry should be excluded from frames by default to avoid feedback loops.
 - Observer advice is runtime-originated commentary, not user instruction.
-- Observer failures should not fail the watched session; they produce diagnostics or warnings. A failed watch send must surface as a caller-visible diagnostic notification rather than silently dropping the matched condition.
-- Watch sends to busy sidecars/delegates are retried from durable latest-frame-wins pending state. Hard/non-resumable delivery failure drops the pending frame only after emitting a caller-visible diagnostic.
-- Access control is target-resolution based: `caller` resolves to the runtime caller/current session; `watched` and `main` are rejected in v1.
-- Broad wildcard watches are not part of v1; watch a concrete `job_id` or the `caller` session.
+- Observer failures should not fail the watched session; they produce diagnostics or warnings. A failed observer-frame delivery must surface as a caller-visible diagnostic notification rather than silently dropping the matched condition.
+- Watch frames to busy sidecars are retried from durable latest-frame-wins pending state. Hard/non-resumable delivery failure drops the pending frame only after emitting a caller-visible diagnostic.
+- Access control is source-resolution based: `parent` requires `delegate(watch_parent:true)`, concrete jobs must be owned by this session or a live descendant, and unrelated sessions are rejected.
+- Broad unbounded transcript watches are not part of v1; watch a concrete `job_id`, `self`, or a granted `parent` session source.
 - Same-watch feedback suppression is causal: watch-originated events carry provenance, and the same `(watch_id, generation)` does not retrigger itself. A later top-level user input starts with fresh provenance, so legitimate future events can still fire the watch.
-- For observers that need to inspect watched job output, use a concrete job target and `send.to=<observer delegate_id>`; Serf grants the observer `job_read_output` for that watched job. Session-target watches such as `target="caller"` carry event payloads in the frame instead of granting transcript or job-list visibility.
+- For observers that need to inspect watched job output, use frames that reference a concrete watched `job_id`; Serf grants the observer `job_read_output` for that watched job. Session-source watches such as `source="parent"` carry event payloads in the frame instead of granting transcript or job-list visibility.
 
 ## Relationship to transcript tools
 
@@ -1255,7 +1216,7 @@ Decision table:
 | Shell stdout/stderr | `job_read_output(job_id)` |
 | Delegate invocation final report/log | `job_read_output(job_id)` |
 | Delegate full child conversation/tool history | `read_session_transcript(transcript_ref)` |
-| Trigger observer/sidecar review | `job_watch(operation="create", ..., send={to:<observer_delegate_id>})` |
+| Trigger observer/sidecar review | Parent: `delegate(watch_parent:true)`; observer: `job_watch(operation="create", source="parent", ...)`; callback: `communicate(end_turn=true)` |
 | Start a fresh delegate conversation | `delegate(...)` |
 | Follow up on an existing delegate conversation | `delegate_send(to=<delegate_id>, message=...)` |
 | Start an idle delegate's next turn | `delegate_send(to=<delegate_id>, message=..., on_idle="start")` |
@@ -1335,10 +1296,10 @@ The contract-level requirements are:
 - globally unique opaque `job_id` as primary handle;
 - foreground shell default (`background:false` waits the session timeout) with promotion to a durable background job on timeout; delegate default returns the job immediately (unset `max_wait_ms`);
 - automatic terminal notification with durable no-loss/dedupe semantics;
-- `job_watch` for condition-triggered caller notifications and configured sends, including v1 observer sidecar event/frame delivery;
+- `job_watch` for source-owned condition-triggered notifications and v1 observer sidecar event/frame delivery;
 - bounded output inspection and retained-output grep through `job_read_output`;
 - durable listing/history;
 - clear stopped/runtime-lost restart behavior;
-- observer/sidecar composition through `delegate` + `job_watch` + `delegate_send`;
+- observer/sidecar composition through `delegate(watch_parent:true)` + `job_watch(source:"parent")` + `communicate(end_turn:true)`;
 - nested shell jobs from subagents;
 - no model-facing `wait`, `ack`, `kill`, `close_agent`, or `agent_id`.

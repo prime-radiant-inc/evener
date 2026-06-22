@@ -2,7 +2,7 @@
 
 For `job_watch` create calls, use these field groups:
 
-- Top-level: `operation`, `target`, `events`, `event_filter`
-- Nested delivery: `send.to`, `send.message`, `send.include_excerpt`
+- Required top-level fields: `operation`, `source`
+- Optional trigger fields: `events`, `event_filter`, `output_match`, `progress_interval_ms`, `every`
 
 Choose the smallest set that satisfies the task, then submit the create call.

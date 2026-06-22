@@ -1,5 +1,9 @@
 # Passive Observer Sidecars Design
 
+> Superseded where conflicting by `docs/superpowers/specs/2026-06-21-parent-watch-sidecars-design.md`.
+> The older `job_watch(send.to=...)` and `delegate_send(to="caller")` sidecar
+> shape is no longer the model-facing contract.
+
 Date: 2026-06-20
 Status: implemented root-cause fix
 Builds on: `docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-design.md`, `docs/superpowers/specs/2026-06-18-observer-watch-origin-loop-design.md`, `docs/superpowers/specs/2026-06-19-serf-doctor-unified-design.md`

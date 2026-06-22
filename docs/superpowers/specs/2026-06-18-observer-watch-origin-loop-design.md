@@ -1,5 +1,9 @@
 # Observer Watch Causal Provenance and Loop Suppression Design
 
+> Superseded where conflicting by `docs/superpowers/specs/2026-06-21-parent-watch-sidecars-design.md`.
+> The older `job_watch(send.to=...)` and `delegate_send(to="caller")` sidecar
+> shape is no longer the model-facing contract.
+
 Date: 2026-06-18
 Status: draft for Jesse review
 Builds on: `docs/job-control.md`, `docs/superpowers/specs/2026-06-18-job-control-handle-split-design.md`, `docs/superpowers/research/2026-06-18-observer-sidecar-use-cases.md`

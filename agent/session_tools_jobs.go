@@ -266,11 +266,8 @@ func (s *Session) watchListToolResultWithDescendantReceivers(local jobWatchListT
 		local.RecentWatches = append(local.RecentWatches, descendant.RecentWatches...)
 	}
 	sort.SliceStable(local.Watches, func(i, j int) bool {
-		if local.Watches[i].Target != local.Watches[j].Target {
-			return local.Watches[i].Target < local.Watches[j].Target
-		}
-		if local.Watches[i].SendTo != local.Watches[j].SendTo {
-			return local.Watches[i].SendTo < local.Watches[j].SendTo
+		if local.Watches[i].Source != local.Watches[j].Source {
+			return local.Watches[i].Source < local.Watches[j].Source
 		}
 		return local.Watches[i].WatchID < local.Watches[j].WatchID
 	})
@@ -317,7 +314,7 @@ func (s *Session) liveDescendantSessions() []*Session {
 }
 
 func watchInspectFound(inspect jobWatchInspectToolResult) bool {
-	return inspect.Watching || inspect.Target != "" || inspect.EndReason != ""
+	return inspect.Watching || inspect.Source != "" || inspect.EndReason != ""
 }
 
 func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
@@ -940,10 +937,10 @@ func formatJobList(out jobListResult) string {
 		}
 	}
 	for _, w := range out.Watches {
-		fmt.Fprintf(&b, "\nwatch %s → %s (%s)", w.ID, w.Target, w.Condition)
+		fmt.Fprintf(&b, "\nwatch %s → %s (%s)", w.ID, w.Source, w.Condition)
 	}
 	for _, w := range out.RecentWatches {
-		fmt.Fprintf(&b, "\nrecent watch %s → %s (%s, %d delivered)", w.ID, w.Target, w.EndReason, w.Deliveries)
+		fmt.Fprintf(&b, "\nrecent watch %s → %s (%s, %d delivered)", w.ID, w.Source, w.EndReason, w.Deliveries)
 	}
 	return b.String()
 }
@@ -1092,15 +1089,14 @@ type delegateListEntry struct {
 	ParentDelegateID string `json:"parent_delegate_id,omitempty"`
 }
 
-// watchListEntry is one active watch in job_list's result (spec §4 F2),
-// projected from the session's live watch configs. condition is a compact
-// one-line summary of the watch's trigger; send_to is empty for a notify-caller
-// watch; created_at is the watch's install time as an RFC3339Nano timestamp.
+// watchListEntry is one active watch in job_list's result, projected from the
+// session's live watch configs. condition is a compact one-line summary of the
+// watch's trigger; created_at is the watch's install time as an RFC3339Nano
+// timestamp.
 type watchListEntry struct {
 	ID         string `json:"id"`
-	Target     string `json:"target"`
+	Source     string `json:"source"`
 	Condition  string `json:"condition"`
-	SendTo     string `json:"send_to"`
 	Deliveries int    `json:"deliveries"`
 	CreatedAt  string `json:"created_at"`
 }
@@ -1110,9 +1106,8 @@ type watchListEntry struct {
 // is one of auto_removed_terminal, cleared, replaced, budget_exhausted.
 type recentWatchEntry struct {
 	ID         string `json:"id"`
-	Target     string `json:"target"`
+	Source     string `json:"source"`
 	Condition  string `json:"condition"`
-	SendTo     string `json:"send_to"`
 	Deliveries int    `json:"deliveries"`
 	EndReason  string `json:"end_reason"`
 	EndedAt    string `json:"ended_at"`
@@ -1249,10 +1244,9 @@ type jobWatchListToolResult struct {
 
 type jobWatchInspectToolResult struct {
 	WatchID    string `json:"watch_id"`
-	Target     string `json:"target,omitempty"`
+	Source     string `json:"source,omitempty"`
 	Watching   bool   `json:"watching"`
 	Condition  string `json:"condition,omitempty"`
-	SendTo     string `json:"send_to,omitempty"`
 	Deliveries int    `json:"deliveries,omitempty"`
 	CreatedAt  string `json:"created_at,omitempty"`
 	EndReason  string `json:"end_reason,omitempty"`
@@ -1493,17 +1487,14 @@ func formatJobWatchList(out jobWatchListToolResult) string {
 		if !w.Watching {
 			status = "pending"
 		}
-		fmt.Fprintf(&b, "%s  %s  %s", w.WatchID, status, w.Target)
+		fmt.Fprintf(&b, "%s  %s  %s", w.WatchID, status, w.Source)
 		if w.Condition != "" {
 			fmt.Fprintf(&b, "  %s", w.Condition)
-		}
-		if w.SendTo != "" {
-			fmt.Fprintf(&b, "  send.to=%s", w.SendTo)
 		}
 		b.WriteByte('\n')
 	}
 	for _, w := range out.RecentWatches {
-		fmt.Fprintf(&b, "%s  %s  %s", w.WatchID, w.EndReason, w.Target)
+		fmt.Fprintf(&b, "%s  %s  %s", w.WatchID, w.EndReason, w.Source)
 		if w.Condition != "" {
 			fmt.Fprintf(&b, "  %s", w.Condition)
 		}
@@ -1514,25 +1505,19 @@ func formatJobWatchList(out jobWatchListToolResult) string {
 
 func formatJobWatchInspect(out jobWatchInspectToolResult) string {
 	if out.Watching {
-		parts := []string{"watching " + out.Target}
+		parts := []string{"watching " + out.Source}
 		if out.Condition != "" {
 			parts = append(parts, out.Condition)
-		}
-		if out.SendTo != "" {
-			parts = append(parts, "send.to="+out.SendTo)
 		}
 		return out.WatchID + "  " + strings.Join(parts, "  ")
 	}
 	if out.EndReason != "" {
-		return fmt.Sprintf("%s  %s  %s", out.WatchID, out.EndReason, out.Target)
+		return fmt.Sprintf("%s  %s  %s", out.WatchID, out.EndReason, out.Source)
 	}
-	if out.Target != "" {
-		parts := []string{"pending", out.Target}
+	if out.Source != "" {
+		parts := []string{"pending", out.Source}
 		if out.Condition != "" {
 			parts = append(parts, out.Condition)
-		}
-		if out.SendTo != "" {
-			parts = append(parts, "send.to="+out.SendTo)
 		}
 		return out.WatchID + "  " + strings.Join(parts, "  ")
 	}

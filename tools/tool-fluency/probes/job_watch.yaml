@@ -2,11 +2,10 @@ schema: 1
 id: job_watch.observer_callback
 tool: job_watch
 prompt: |
-  Start an observer delegate with max_wait_ms 60000. Its task is:
-  "First communicate OBSERVER_READY. Then wait for a watch frame. When the frame reports a caller read_file event for watch-trigger.txt with status ok, call delegate_send(to=\"caller\", message=\"WATCH_OBSERVED\")."
+  Start an observer delegate with watch_parent=true and max_wait_ms 60000. Its task is:
+  "Create a job_watch with source \"parent\" for events [\"assistant.tool\"] and event_filter {\"tool_name\":\"read_file\",\"status\":\"ok\"}. After the watch is installed, communicate with end_turn=true and message OBSERVER_READY. When a later watch frame reports a parent read_file event for watch-trigger.txt with status ok, communicate with end_turn=true and message WATCH_OBSERVED."
 
-  After the observer is ready, create a job_watch on target "caller" for events ["assistant.tool"] with event_filter {"tool_name":"read_file","status":"ok"} that sends to that observer delegate_id.
-  Then read watch-trigger.txt. Finish only after the observer callback arrives, with RESULT_JOB_WATCH.
+  After the observer reports OBSERVER_READY, read watch-trigger.txt. Finish only after the observer callback arrives, with RESULT_JOB_WATCH.
 fixture:
   files:
     watch-trigger.txt: "WATCH_TRIGGER_FILE\n"
@@ -16,5 +15,5 @@ expect:
     - tool: job_watch
     - tool: read_file
     - tool: communicate
-  forbidden_calls: [job_list, job_read_output, read_session_transcript]
+  forbidden_calls: [delegate_send, job_list, job_read_output, read_session_transcript]
   final_contains: ["RESULT_JOB_WATCH"]

@@ -454,10 +454,10 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count communicate
 go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count job_list
 ```
 
-This matters when an observer calls `delegate_send(to="caller")`: the
-caller steering can be consumed before the parent emits a scripted
+This matters when an observer calls `communicate(end_turn=true)`: the
+observer callback can be consumed before the parent emits a scripted
 "done" marker, or the model may choose to stop after handling the
-steering. Treat the durable watch rows and observer transcript as the
+callback. Treat the durable watch rows and observer transcript as the
 contract; treat final parent text as a convenience signal only.
 
 For sidecar fluency, record these separately from pass/fail:
@@ -472,7 +472,7 @@ For sidecar fluency, record these separately from pass/fail:
 - **Parent polling wait**: after installing a watch and triggering it,
   the parent polls with `job_list`, `job_read_output`, or transcript
   tools to wait for the observer. The fluent path is to continue from
-  the observer's `delegate_send(to="caller")` callback steering.
+  the observer's `communicate(end_turn=true)` callback.
 - **Tool churn**: the observer uses `job_list`, `read_session_transcript`,
   or another harmless tool only to acknowledge a frame that required no
   action.

@@ -374,7 +374,9 @@ func TestConfigureWatchOutputMatchOnCallerCommunicateGivesRepairShape(t *testing
 	if err == nil {
 		t.Fatal("caller communicate output_match watch must error")
 	}
-	if !strings.Contains(err.Error(), `caller communicate observer watch uses events ["communicate"]`) {
+	if !strings.Contains(err.Error(), `source="parent"`) ||
+		!strings.Contains(err.Error(), `events ["communicate"]`) ||
+		!strings.Contains(err.Error(), `communicate(end_turn=true)`) {
 		t.Fatalf("error = %v, want communicate repair shape", err)
 	}
 }
@@ -605,7 +607,7 @@ func TestConfigureWatchRejectsUnsupportedEventFilterShapes(t *testing.T) {
 		{
 			name: "wrong_event",
 			args: watchArgs{Target: runtimeMessageAliasCaller, Events: []string{"communicate"}, EventFilter: &watchEventFilter{ToolName: "read_file"}},
-			want: `communicate observer watch uses events ["communicate"]`,
+			want: `source="parent"`,
 		},
 		{
 			name: "wildcard_event",
@@ -6976,7 +6978,7 @@ func TestTerminalCatchupSendRegistersDetachedPendingAndDelivers(t *testing.T) {
 		t.Fatalf("pendingWatchSendDeliveries = %d, want 1 (detached terminalFlush home)", got)
 	}
 	inspect := jm.inspectWatchByID(res.WatchID)
-	if inspect.WatchID != res.WatchID || inspect.Target != jobID || inspect.Watching || inspect.SendTo != "dlg_obs" {
+	if inspect.WatchID != res.WatchID || inspect.Source != jobID || inspect.Watching {
 		t.Fatalf("inspect terminal catch-up send = %+v, want pending detached send for %s", inspect, res.WatchID)
 	}
 	inspectText := formatJobWatchInspect(inspect)
@@ -6988,7 +6990,7 @@ func TestTerminalCatchupSendRegistersDetachedPendingAndDelivers(t *testing.T) {
 	for _, watch := range listResult.Watches {
 		if watch.WatchID == res.WatchID {
 			listed = true
-			if watch.Watching || watch.Target != jobID || watch.SendTo != "dlg_obs" {
+			if watch.Watching || watch.Source != jobID {
 				t.Fatalf("listed terminal catch-up send = %+v, want pending detached send", watch)
 			}
 		}
@@ -7785,7 +7787,7 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 	if list.Count != 1 || len(list.Watches) != 1 {
 		t.Fatalf("watch list = %+v, want one forwarded watch", list)
 	}
-	if list.Watches[0].WatchID != state.WatchID || list.Watches[0].Target != childRec.JobID || !list.Watches[0].Watching {
+	if list.Watches[0].WatchID != state.WatchID || list.Watches[0].Source != childRec.JobID || !list.Watches[0].Watching {
 		t.Fatalf("watch list row = %+v, want forwarded watch %s on %s", list.Watches[0], state.WatchID, childRec.JobID)
 	}
 
@@ -7794,7 +7796,7 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 		t.Fatalf("jobWatchTool inspect: %v", err)
 	}
 	inspect := inspectOut.(tooldefs.StateResult).State.(jobWatchInspectToolResult)
-	if inspect.WatchID != state.WatchID || inspect.Target != childRec.JobID || !inspect.Watching {
+	if inspect.WatchID != state.WatchID || inspect.Source != childRec.JobID || !inspect.Watching {
 		t.Fatalf("watch inspect = %+v, want forwarded watch", inspect)
 	}
 
@@ -7819,7 +7821,7 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 		t.Fatalf("child jobWatchTool inspect: %v", err)
 	}
 	childInspect := childInspectOut.(tooldefs.StateResult).State.(jobWatchInspectToolResult)
-	if childInspect.Watching || childInspect.Target != "" {
+	if childInspect.Watching || childInspect.Source != "" {
 		t.Fatalf("child owner inspect = %+v, want not found", childInspect)
 	}
 	if _, err := jobWatchTool(child, map[string]any{"operation": "clear", "watch_id": state.WatchID}, 20000); err != nil {
@@ -7833,7 +7835,7 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 		t.Fatalf("root inspect after child clear: %v", err)
 	}
 	inspect = inspectOut.(tooldefs.StateResult).State.(jobWatchInspectToolResult)
-	if inspect.WatchID != state.WatchID || inspect.Target != childRec.JobID || !inspect.Watching {
+	if inspect.WatchID != state.WatchID || inspect.Source != childRec.JobID || !inspect.Watching {
 		t.Fatalf("root inspect after child clear = %+v, want forwarded watch still active", inspect)
 	}
 
@@ -7858,7 +7860,7 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 		t.Fatalf("root inspect recent: %v", err)
 	}
 	recent := recentOut.(tooldefs.StateResult).State.(jobWatchInspectToolResult)
-	if recent.Watching || recent.Target != childRec.JobID || recent.EndReason != "cleared" {
+	if recent.Watching || recent.Source != childRec.JobID || recent.EndReason != "cleared" {
 		t.Fatalf("root recent inspect = %+v, want receiver-owned cleared history", recent)
 	}
 	childListOut, err = jobWatchTool(child, map[string]any{"operation": "list"}, 20000)
@@ -7882,7 +7884,7 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 		t.Fatalf("child inspect after clear: %v", err)
 	}
 	childInspect = childInspectOut.(tooldefs.StateResult).State.(jobWatchInspectToolResult)
-	if childInspect.Watching || childInspect.Target != "" || childInspect.EndReason != "" {
+	if childInspect.Watching || childInspect.Source != "" || childInspect.EndReason != "" {
 		t.Fatalf("child owner inspect after clear = %+v, want not found", childInspect)
 	}
 
@@ -8125,7 +8127,7 @@ func TestWatchHistoryRecordsTerminalAutoRemoval(t *testing.T) {
 		t.Fatalf("watch should auto-remove on terminal, count=%d", jm.watchCount())
 	}
 	hist := jm.recentWatchSummaries()
-	if len(hist) != 1 || hist[0].EndReason != "auto_removed_terminal" || hist[0].Target != rec.JobID {
+	if len(hist) != 1 || hist[0].EndReason != "auto_removed_terminal" || hist[0].Source != rec.JobID {
 		t.Fatalf("recent_watches = %+v, want one auto_removed_terminal entry", hist)
 	}
 	watches, err := jm.store.LoadWatches()
