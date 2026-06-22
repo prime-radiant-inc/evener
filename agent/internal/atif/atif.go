@@ -1,5 +1,5 @@
 // Package atif converts a serf session transcript into an Agent Trajectory
-// Interchange Format (ATIF v1.6) document.
+// Interchange Format (ATIF v1.7) document.
 package atif
 
 import (
@@ -11,9 +11,9 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// ATIF v1.6 types — Agent Trajectory Interchange Format.
+// ATIF v1.7 types — Agent Trajectory Interchange Format.
 
-// Trajectory is the root object of an ATIF v1.6 document.
+// Trajectory is the root object of an ATIF v1.7 document.
 type Trajectory struct {
 	SchemaVersion string         `json:"schema_version"`
 	SessionID     string         `json:"session_id"`
@@ -59,7 +59,7 @@ type Observation struct {
 
 // ObservationResult is a single tool result within an observation.
 type ObservationResult struct {
-	SourceCallID string `json:"source_call_id"`
+	SourceCallID string `json:"source_call_id,omitempty"`
 	Content      string `json:"content"`
 }
 
@@ -80,7 +80,7 @@ type FinalMetrics struct {
 	Extra                 map[string]any `json:"extra,omitempty"`
 }
 
-// Convert converts a serf transcript (header + entries) into an ATIF v1.6 trajectory.
+// Convert converts a serf transcript (header + entries) into an ATIF v1.7 trajectory.
 func Convert(header transcript.Header, entries []transcript.Entry) Trajectory {
 	version := header.BuildVersion
 	if version == "" {
@@ -88,7 +88,7 @@ func Convert(header transcript.Header, entries []transcript.Entry) Trajectory {
 	}
 
 	traj := Trajectory{
-		SchemaVersion: "ATIF-v1.6",
+		SchemaVersion: "ATIF-v1.7",
 		SessionID:     header.SessionID,
 		Agent: Agent{
 			Name:      "serf",
@@ -178,9 +178,26 @@ func Convert(header transcript.Header, entries []transcript.Entry) Trajectory {
 			stepID++
 
 		case schema.TurnToolResults:
-			// Orphaned TOOL_RESULTS (not preceded by ASSISTANT). Preserve as system step.
+			// Orphaned TOOL_RESULTS (not preceded by ASSISTANT). ATIF forbids an
+			// observation on a non-agent step and requires every observation
+			// source_call_id to reference a tool_call in the same step. These
+			// results have no originating tool_call in this trajectory, so emit
+			// them on an agent step with the source_call_id nulled and preserve
+			// the original ids in extra for traceability.
 			obs, errMap, durMap := convertToolResults(turn)
 			extra := map[string]any{"serf_kind": "orphaned_tool_results"}
+			if obs != nil {
+				var origIDs []string
+				for i := range obs.Results {
+					if obs.Results[i].SourceCallID != "" {
+						origIDs = append(origIDs, obs.Results[i].SourceCallID)
+						obs.Results[i].SourceCallID = ""
+					}
+				}
+				if len(origIDs) > 0 {
+					extra["orphaned_source_call_ids"] = origIDs
+				}
+			}
 			if len(errMap) > 0 {
 				extra["tool_errors"] = errMap
 			}
@@ -189,7 +206,7 @@ func Convert(header transcript.Header, entries []transcript.Entry) Trajectory {
 			}
 			step := Step{
 				StepID:      stepID,
-				Source:      "system",
+				Source:      "agent",
 				Timestamp:   formatTimestamp(turn),
 				Observation: obs,
 				Extra:       extra,
