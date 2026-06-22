@@ -359,6 +359,34 @@ func TestOptionalJobInspectionToolsAreNonStrict(t *testing.T) {
 	}
 }
 
+func TestJobControlDescriptionsDoNotAdvertiseCallerDelegateSend(t *testing.T) {
+	defs := []llm.ToolDefinition{
+		DefJobWatch([]string{"communicate"}),
+		DefJobReadOutput(),
+		DefJobList(),
+		DefJobStop(),
+	}
+	for _, def := range defs {
+		t.Run(def.Name, func(t *testing.T) {
+			descriptions := []string{def.Description}
+			collectSchemaDescriptions(def.Parameters, &descriptions)
+			for _, desc := range descriptions {
+				if strings.Contains(desc, "delegate_send(to=\"caller\")") {
+					t.Fatalf("%s advertises legacy observer callback path: %q", def.Name, desc)
+				}
+			}
+			if def.Name == "job_read_output" || def.Name == "job_list" {
+				if !strings.Contains(def.Description, "communicate(end_turn=true)") {
+					t.Fatalf("%s description = %q, want observer sidecar communicate report path", def.Name, def.Description)
+				}
+				if !strings.Contains(def.Description, "audit or diagnosis") {
+					t.Fatalf("%s description = %q, want audit/diagnosis guidance", def.Name, def.Description)
+				}
+			}
+		})
+	}
+}
+
 func TestDefJobWatchRequiresOperationAndWatchIDForClear(t *testing.T) {
 	def := DefJobWatch([]string{"communicate"})
 	props := def.Parameters["properties"].(map[string]any)
