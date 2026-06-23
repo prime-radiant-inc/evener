@@ -676,17 +676,7 @@ func TestParentYieldsAfterObserverHandoffInsteadOfPolling(t *testing.T) {
 				unexpectedPoll.Store(true)
 				return communicateWithDefaultOutput("unexpected parent poll")
 			}
-			return toolCallResponse(llm.ToolCallData{
-				ID: "send_callback", Name: "delegate_send",
-				Arguments: rawArgs(map[string]any{
-					"to":      runtimeMessageAliasCaller,
-					"message": "MEMORY_REMINDER rule=no-force-push",
-				}),
-				Type: "function",
-			})
-		},
-		func(llm.Request) llm.Response {
-			return communicateWithDefaultOutput("MEMORY_RECORDED")
+			return communicateWithDefaultOutput("MEMORY_REMINDER rule=no-force-push")
 		},
 		func(req llm.Request) llm.Response {
 			if req.ToolChoice == nil || req.ToolChoice.Mode != "required" {
