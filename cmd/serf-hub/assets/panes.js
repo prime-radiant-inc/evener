@@ -1,5 +1,5 @@
-// panes.js — host-side multi-pane manager. Each side pane is an <iframe> loading an
-// existing /s/<id> route, so the single-instance renderer runs unchanged per pane.
+// panes.js — host-side multi-pane manager. Each side pane is an <iframe> loading a
+// standalone thread document route, so pane chrome stays compact and isolated.
 (function () {
   "use strict";
   var MAX_SIDE_PANES = 3;
@@ -10,6 +10,38 @@
 
   function region() { return document.getElementById("side-panes"); }
   function splitter() { return document.getElementById("pane-splitter"); }
+  function sidebar() { return document.getElementById("sidebar"); }
+  function sidebarResizer() { return document.getElementById("sidebar-resizer"); }
+
+  function threadHref(ref) {
+    ref = String(ref || "").trim();
+    return ref ? "/thread/" + encodeURIComponent(ref) : "";
+  }
+
+  function normalizePaneHref(href) {
+    href = String(href || "").trim();
+    if (!href) return "";
+    try {
+      var u = new URL(href, window.location.origin);
+      if (u.origin !== window.location.origin) return href;
+      if (u.pathname.indexOf("/thread/") === 0) return u.pathname + u.search + u.hash;
+      if (u.pathname.indexOf("/s/") === 0) {
+        var rest = u.pathname.slice(3);
+        if (rest && rest.indexOf("/") === -1) {
+          return threadHref(decodeURIComponent(rest));
+        }
+      }
+    } catch (e) {
+      if (href.indexOf("/thread/") === 0) return href;
+      if (href.indexOf("/s/") === 0) {
+        var id = href.slice(3);
+        if (id && id.indexOf("/") === -1 && id.indexOf("?") === -1 && id.indexOf("#") === -1) {
+          return threadHref(decodeURIComponent(id));
+        }
+      }
+    }
+    return href;
+  }
 
   function paneFor(href) {
     var r = region();
@@ -21,12 +53,103 @@
     return null;
   }
 
+  function clearPaneLoadTimer(pane) {
+    if (pane && pane.__loadTimer) {
+      window.clearTimeout(pane.__loadTimer);
+      pane.__loadTimer = null;
+    }
+  }
+
+  function markLoading(pane, href) {
+    if (!pane) return;
+    clearPaneLoadTimer(pane);
+    pane.dataset.state = "loading";
+    pane.__loadTimer = window.setTimeout(function () {
+      markError(href, "Pane did not finish loading");
+    }, 15000);
+  }
+
+  function markError(href, message) {
+    href = normalizePaneHref(href);
+    var pane = paneFor(href);
+    if (!pane) return null;
+    clearPaneLoadTimer(pane);
+    pane.dataset.state = "error";
+    var existing = pane.querySelector(".pane-error");
+    if (existing) existing.remove();
+    var err = document.createElement("div");
+    err.className = "pane-error";
+    var text = document.createElement("div");
+    text.className = "pane-error-text";
+    text.textContent = message || "Pane failed to load";
+    var retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "btn btn-secondary";
+    retry.dataset.paneRetry = "";
+    retry.textContent = "retry";
+    retry.addEventListener("click", function () {
+      var frame = pane.querySelector(".pane-frame");
+      if (frame) {
+        err.remove();
+        markLoading(pane, href);
+        frame.setAttribute("src", href);
+      }
+    });
+    var closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "btn btn-secondary";
+    closeBtn.dataset.paneErrorClose = "";
+    closeBtn.textContent = "close";
+    closeBtn.addEventListener("click", function () { close(href); });
+    err.appendChild(text);
+    err.appendChild(retry);
+    err.appendChild(closeBtn);
+    pane.appendChild(err);
+    return pane;
+  }
+
   function openHrefs() {
     var r = region();
     if (!r) return [];
     return Array.prototype.map.call(r.querySelectorAll(".pane-frame"), function (f) {
-      return f.getAttribute("src");
+      return normalizePaneHref(f.getAttribute("src"));
     });
+  }
+
+  function isKnownPaneSource(source) {
+    var r = region();
+    if (!r || !source) return false;
+    var frames = r.querySelectorAll(".pane-frame");
+    for (var i = 0; i < frames.length; i++) {
+      if (frames[i].contentWindow === source) return true;
+    }
+    return false;
+  }
+
+  function isPaneSafeHref(href) {
+    href = normalizePaneHref(href);
+    if (!href) return false;
+    try {
+      var u = new URL(href, window.location.origin);
+      if (u.origin !== window.location.origin) return false;
+      return u.pathname.indexOf("/thread/") === 0 || u.pathname.indexOf("/doc/") === 0;
+    } catch (e) {
+      return href.indexOf("/thread/") === 0 || href.indexOf("/doc/") === 0;
+    }
+  }
+
+  function openFromChild(source, href, title) {
+    href = normalizePaneHref(href);
+    if (!isKnownPaneSource(source)) return null;
+    if (!isPaneSafeHref(href)) return null;
+    return open(href, String(title || href));
+  }
+
+  function onMessage(e) {
+    if (!e || e.origin !== window.location.origin) return;
+    var data = e.data || {};
+    if (data.type !== "serf:open-beside") return;
+    openFromChild(e.source, data.href, data.title);
   }
 
   function showRegion(show) {
@@ -36,9 +159,15 @@
   }
 
   function open(href, title) {
+    href = normalizePaneHref(href);
     if (!href) return null;
     var r = region();
-    if (!r) return null;
+    if (!r) {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: "serf:open-beside", href: href, title: title || href }, window.location.origin);
+      }
+      return null;
+    }
     // An explicit open of a previously-dismissed href clears its suppression:
     // the user asked for it back, so auto-open may bring it back too.
     unsuppress(href);
@@ -48,6 +177,7 @@
 
     var pane = document.createElement("section");
     pane.className = "pane";
+    pane.dataset.state = "loading";
     var head = document.createElement("header");
     head.className = "pane-header";
     var t = document.createElement("span");
@@ -64,6 +194,14 @@
     frame.className = "pane-frame";
     frame.setAttribute("src", href);
     frame.setAttribute("title", title || href);
+    frame.addEventListener("load", function () {
+      clearPaneLoadTimer(pane);
+      if (pane.dataset.state !== "error") pane.dataset.state = "ready";
+    });
+    frame.addEventListener("error", function () {
+      markError(href, "Pane failed to load");
+    });
+    markLoading(pane, href);
     pane.appendChild(head); pane.appendChild(frame);
     r.appendChild(pane);
     showRegion(true);
@@ -73,8 +211,12 @@
   }
 
   function close(href) {
+    href = normalizePaneHref(href);
     var pane = paneFor(href);
-    if (pane) pane.remove();
+    if (pane) {
+      clearPaneLoadTimer(pane);
+      pane.remove();
+    }
     if (region() && region().querySelectorAll(".pane").length === 0) showRegion(false);
     // Remember the user's dismissal so auto-open does not re-open this href on
     // the next init/navigation. A later explicit open() clears the suppression.
@@ -102,16 +244,19 @@
   }
 
   function isSuppressed(href) {
+    href = normalizePaneHref(href);
     return readClosed().indexOf(href) !== -1;
   }
 
   function suppress(href) {
+    href = normalizePaneHref(href);
     if (!href) return;
     var list = readClosed();
     if (list.indexOf(href) === -1) { list.push(href); writeClosed(list); }
   }
 
   function unsuppress(href) {
+    href = normalizePaneHref(href);
     if (!href) return;
     var list = readClosed();
     var i = list.indexOf(href);
@@ -150,22 +295,76 @@
     applyPaneMinWidth();
   }
 
-  // Drag handler (verified manually; logic delegates to setSidePanesWidth).
+  // Drag handler: side panes grow as the pointer moves left and shrink as it
+  // moves right. Resizing is only active while a drag that began on the splitter
+  // still has a mouse button down; losing the button/window reliably ends it so
+  // later hover/contact with the splitter cannot keep resizing.
   function bindSplitter() {
     var s = splitter(); if (!s || s.__bound) return; s.__bound = true;
     s.addEventListener("mousedown", function (e) {
       e.preventDefault();
+      var dragging = true;
+      document.body.dataset.paneDragging = "true";
+      function stop() {
+        if (!dragging) return;
+        dragging = false;
+        delete document.body.dataset.paneDragging;
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", stop);
+        window.removeEventListener("mouseup", stop);
+        window.removeEventListener("blur", stop);
+      }
       function move(ev) {
+        if (!dragging) return;
+        if (ev.buttons === 0) { stop(); return; }
         // splitter sits between #workspace and #side-panes; panes grow as the
         // pointer moves left. Width = distance from pointer to right viewport edge.
         setSidePanesWidth(window.innerWidth - ev.clientX);
       }
-      function up() {
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", stop);
+      window.addEventListener("mouseup", stop);
+      window.addEventListener("blur", stop);
+    });
+  }
+
+  function bindSidebarResizer() {
+    var s = sidebar(), h = sidebarResizer();
+    if (!s || !h || h.__bound) return;
+    h.__bound = true;
+    h.addEventListener("mousedown", function (e) {
+      if (document.body.dataset.sidebarRail !== undefined) return;
+      e.preventDefault();
+      var dragging = true;
+      document.body.dataset.sidebarResizing = "true";
+      function clamp(px) {
+        var min = 180;
+        var max = Math.min(480, Math.round(window.innerWidth * 0.45));
+        return Math.max(min, Math.min(max, Math.round(px)));
+      }
+      function setWidth(px) {
+        var w = clamp(px);
+        document.body.style.setProperty("--sidebar-w", w + "px");
+        return w;
+      }
+      function stop() {
+        if (!dragging) return;
+        dragging = false;
+        delete document.body.dataset.sidebarResizing;
         document.removeEventListener("mousemove", move);
-        document.removeEventListener("mouseup", up);
+        document.removeEventListener("mouseup", stop);
+        window.removeEventListener("mouseup", stop);
+        window.removeEventListener("blur", stop);
+      }
+      function move(ev) {
+        if (!dragging) return;
+        if (ev.buttons === 0) { stop(); return; }
+        setWidth(ev.clientX);
       }
       document.addEventListener("mousemove", move);
-      document.addEventListener("mouseup", up);
+      document.addEventListener("mouseup", stop);
+      window.addEventListener("mouseup", stop);
+      window.addEventListener("blur", stop);
     });
   }
 
@@ -194,7 +393,7 @@
     var data = Array.prototype.map.call(r.querySelectorAll(".pane"), function (p) {
       var f = p.querySelector(".pane-frame");
       var t = p.querySelector(".pane-title");
-      return { href: f.getAttribute("src"), title: t ? t.textContent : "" };
+      return { href: normalizePaneHref(f.getAttribute("src")), title: t ? t.textContent : "" };
     });
     try { window.localStorage.setItem(STORE_KEY, JSON.stringify(data)); } catch (e) { /* ignore */ }
     refreshURL();
@@ -213,6 +412,7 @@
       // URL-specified panes: open each, bypassing suppression (an explicit
       // share link is a deliberate request so local dismissals are overridden).
       urlPanes.forEach(function (href) {
+        href = normalizePaneHref(href);
         if (!href) return;
         // Clear any local suppression so the pane can open.
         unsuppress(href);
@@ -228,12 +428,13 @@
     var data;
     try { data = JSON.parse(raw); } catch (e) { return; }
     if (!Array.isArray(data)) return;
-    data.forEach(function (p) { if (p && p.href) open(p.href, p.title); });
+    data.forEach(function (p) { if (p && p.href) open(normalizePaneHref(p.href), p.title); });
   }
 
-  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, isSuppressed: isSuppressed, setSidePanesWidth: setSidePanesWidth, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
+  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, isSuppressed: isSuppressed, setSidePanesWidth: setSidePanesWidth, threadHref: threadHref, normalizePaneHref: normalizePaneHref, openFromChild: openFromChild, isPaneSafeHref: isPaneSafeHref, markError: markError, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
+  window.addEventListener("message", onMessage);
 
-  function onLoad() { restore(); bindSplitter(); restoreWidth(); }
+  function onLoad() { restore(); bindSplitter(); bindSidebarResizer(); restoreWidth(); }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", onLoad);
   } else { onLoad(); }

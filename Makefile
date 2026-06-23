@@ -2,7 +2,8 @@
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
-           -X primeradiant.com/serf/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ)
+           -X primeradiant.com/serf/buildinfo.BuildTime=$$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+           -X primeradiant.com/serf/buildinfo.Channel=$(BUILD_CHANNEL)
 
 PREFIX ?= $(HOME)/.local
 BINDIR ?= $(PREFIX)/bin
@@ -12,6 +13,7 @@ SERF_INSTALL_BINS := serf serf-hub serf-tui serf-doctor
 DIST_DIR ?= dist
 DIST_GOOS ?= $(shell go env GOOS)
 DIST_GOARCH ?= $(shell go env GOARCH)
+BUILD_CHANNEL ?=
 SERF_DIST_NAME := serf_$(DIST_GOOS)_$(DIST_GOARCH)
 SERF_DIST_BIN_DIR := $(DIST_DIR)/$(SERF_DIST_NAME)
 SERF_DIST_ARCHIVE := $(DIST_DIR)/$(SERF_DIST_NAME).tar.gz

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -141,6 +142,24 @@ func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 			RemoteSources:    len(s.cfg.CodexSources) > 0,
 		},
 	})
+}
+
+func (s *WebServer) handleAPIUpgrade(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	var params appwire.UpgradeParams
+	if err := json.NewDecoder(r.Body).Decode(&params); err != nil && !errors.Is(err, io.EOF) {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp, err := hubUpgrade(r.Context(), params)
+	if err != nil {
+		writeAPIError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, resp)
 }
 
 func (s *WebServer) apiStateGlob() string {

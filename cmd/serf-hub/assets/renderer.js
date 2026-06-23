@@ -183,6 +183,7 @@
 
       this.bindInputForm();
       this.bindScrollAffordance();
+      this.bindPaneParentLinks();
       this.syncTurnActionControls();
       this.bindKeyboard();
       this.ensureLivenessEl();
@@ -215,11 +216,44 @@
     // href the user has explicitly dismissed (panes.js suppression memory), so
     // auto-open never fights a user's close. SerfPanes.open dedups by href and
     // enforces the pane cap, so re-init and over-cap opens are safe no-ops.
+    threadHref(ref) {
+      ref = String(ref || "").trim();
+      if (!ref) return "";
+      if (window.SerfPanes && window.SerfPanes.threadHref) return window.SerfPanes.threadHref(ref);
+      return "/thread/" + encodeURIComponent(ref);
+    },
+
+    openBeside(spec) {
+      if (!spec || !spec.href) return false;
+      if (window.SerfPanes && window.SerfPanes.open) {
+        window.SerfPanes.open(spec.href, spec.title);
+        return true;
+      }
+      if (this.isInPane && this.isInPane() && window.parent) {
+        window.parent.postMessage({ type: "serf:open-beside", href: spec.href, title: spec.title || spec.href }, window.location.origin);
+        return true;
+      }
+      return false;
+    },
+
+    bindPaneParentLinks() {
+      if (this.__paneParentLinksBound) return;
+      this.__paneParentLinksBound = true;
+      document.addEventListener("click", (e) => {
+        const a = e.target && e.target.closest && e.target.closest("[data-open-parent-beside]");
+        if (!a) return;
+        const href = a.getAttribute("data-open-parent-beside") || a.getAttribute("href") || "";
+        const title = a.textContent || href;
+        if (!this.openBeside({ href, title })) return;
+        e.preventDefault();
+      });
+    },
+
     autoOpenObservers(conversationEl) {
       if (!window.SerfPanes || !conversationEl) return;
       var refs = (conversationEl.dataset.observers || "").split(/\s+/).filter(Boolean);
       for (var i = 0; i < refs.length; i++) {
-        var href = "/s/" + encodeURIComponent(refs[i]);
+        var href = this.threadHref(refs[i]);
         if (window.SerfPanes.isSuppressed && window.SerfPanes.isSuppressed(href)) continue;
         window.SerfPanes.open(href, refs[i]);
       }
@@ -2484,10 +2518,10 @@
     // every "open beside" affordance (subagent rows, image cards, file-
     // referencing tool cards). `ariaLabel` names the specific action; `resolve`
     // returns {href, title} at click time so callers can defer the URL/label
-    // until the row's data is final. Returns null when SerfPanes is absent
-    // (e.g. this renderer is itself inside a pane iframe — panes must not nest).
+    // until the row's data is final. Returns null when SerfPanes is absent outside
+    // a pane iframe; framed renderers post a bridge request to the host instead.
     makeOpenBesideButton(ariaLabel, resolve) {
-      if (!window.SerfPanes) return null;
+      if (!window.SerfPanes && !(this.isInPane && this.isInPane())) return null;
       var beside = document.createElement("span");
       beside.className = "open-beside-btn";
       beside.setAttribute("role", "button");
@@ -2495,11 +2529,12 @@
       beside.setAttribute("aria-label", ariaLabel);
       beside.title = "open beside";
       beside.textContent = "⇲";
+      var self = this;
       function openBeside(e) {
         e.preventDefault();
         e.stopPropagation(); // do not trigger the host card's own click
         var spec = resolve();
-        if (spec && spec.href) window.SerfPanes.open(spec.href, spec.title);
+        if (spec && spec.href) self.openBeside(spec);
       }
       beside.addEventListener("click", openBeside);
       beside.addEventListener("keydown", function (e) {
@@ -2514,10 +2549,11 @@
       row.onclick = () => { this.navigateTo("/s/" + encodeURIComponent(data.transcriptRef)); };
       // "Open beside" — opens the subagent in a side pane instead of navigating away.
       if (!row.querySelector(".open-beside-btn")) {
+        var renderer = this;
         var beside = this.makeOpenBesideButton("open subagent beside", function () {
           var ref = row.dataset.transcriptRef;
           var label = (row.querySelector(".nm") || {}).textContent || ref;
-          return { href: "/s/" + encodeURIComponent(ref), title: label };
+          return { href: renderer.threadHref(ref), title: label };
         });
         if (beside) row.appendChild(beside);
       }
@@ -3363,7 +3399,7 @@
 	            return;
 	          }
 	          if (!text && !hasQueued && !hasAttachments) {
-            ta.placeholder = "type a steering message, then click send as steer…";
+            ta.placeholder = "type a steering message, then click steer…";
             ta.focus();
             return;
           }
@@ -3669,18 +3705,19 @@
       this.bindSubagentEscapeToParent();
       const ta = document.querySelector(".message-input");
       if (!ta) return;
+      const suppressSubmitShortcuts = this.isInPane && this.isInPane();
       ta.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        if (!suppressSubmitShortcuts && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
           const form = ta.closest("form");
           if (form) form.requestSubmit();
           return;
         }
-        // Shift+Enter is the keybind equivalent of the "send as steer"
+        // Shift+Enter is the keybind equivalent of the "steer"
         // button (kata 0bq1): drain whatever's queued (plus anything in
         // the textarea) as a single STEERING injection. Pre-existing
         // browser default (newline insertion) is suppressed.
-        if (e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (!suppressSubmitShortcuts && e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
           const steer = document.querySelector("[data-steer-trigger]");
           if (steer && !steer.disabled) {
             e.preventDefault();

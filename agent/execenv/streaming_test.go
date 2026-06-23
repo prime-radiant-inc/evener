@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,6 +80,9 @@ func TestStreamCommandSignalStops(t *testing.T) {
 // run on 2026-06-12 suspected an orphaned exec'd sleep after run_timeout; the
 // evidence was a pgrep -f self-match, but nothing pinned real group death.
 func TestStreamCommandSignalKillsWholeProcessGroup(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires /proc/<pid>/cmdline to observe exec replacement")
+	}
 	env := &LocalExecutionEnvironment{RootDir: t.TempDir()}
 	if err := env.Initialize(); err != nil {
 		t.Fatal(err)

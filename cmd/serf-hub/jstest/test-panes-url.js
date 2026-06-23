@@ -57,7 +57,7 @@ function currentPath(dom) {
     throw new Error(
       "open: expected 1 pane= param, got " + panes.length
     );
-  if (panes[0] !== "/s/sub-1")
+  if (panes[0] !== "/thread/sub-1")
     throw new Error("open: wrong pane= value: " + panes[0]);
   if (currentPath(dom) !== "/s/main-session")
     throw new Error(
@@ -76,7 +76,7 @@ function currentPath(dom) {
   var panes = searchParams(dom).getAll("pane");
   if (panes.length !== 2)
     throw new Error("two opens: expected 2 pane= params, got " + panes.length);
-  if (panes[0] !== "/s/sub-1" || panes[1] !== "/s/sub-2")
+  if (panes[0] !== "/thread/sub-1" || panes[1] !== "/thread/sub-2")
     throw new Error("two opens: wrong pane= values: " + panes.join(","));
   console.log("test-panes-url open two panes adds two params: ok");
 }());
@@ -92,7 +92,7 @@ function currentPath(dom) {
   var panes = searchParams(dom).getAll("pane");
   if (panes.length !== 1)
     throw new Error("close: expected 1 pane= param, got " + panes.length);
-  if (panes[0] !== "/s/sub-2")
+  if (panes[0] !== "/thread/sub-2")
     throw new Error("close: wrong remaining pane: " + panes[0]);
   if (currentPath(dom) !== "/s/main-session")
     throw new Error("close: path changed");
@@ -161,11 +161,26 @@ function currentPath(dom) {
   P.restore();
 
   var open = P.openHrefs();
-  if (open.indexOf(href1) === -1)
+  if (open.indexOf("/thread/shared-sub-1") === -1)
     throw new Error("URL restore: href1 not opened");
-  if (open.indexOf(href2) === -1)
+  if (open.indexOf("/thread/shared-sub-2") === -1)
     throw new Error("URL restore: href2 not opened");
   console.log("test-panes-url restore from URL: ok");
+}());
+
+// ---- Test: restore normalizes legacy /s session pane hrefs to thread documents --
+(function testRestoreNormalizesLegacySessionPaneHref() {
+  const dom = makeDOM("http://localhost/s/parent?pane=%2Fs%2Flocal%253Achild-A");
+  const P = dom.window.SerfPanes;
+
+  P.restore();
+
+  var hrefs = P.openHrefs();
+  if (hrefs.length !== 1)
+    throw new Error("restore normalize: expected one restored pane, got " + hrefs.length);
+  if (hrefs[0] !== "/thread/local%3Achild-A")
+    throw new Error("restore normalize: wrong restored href: " + hrefs[0]);
+  console.log("test-panes-url restore normalizes legacy /s pane hrefs: ok");
 }());
 
 // ---- Test: URL pane= takes precedence over localStorage on restore ----------
@@ -186,10 +201,10 @@ function currentPath(dom) {
   P.restore();
 
   var open = P.openHrefs();
-  if (open.indexOf(urlHref) === -1)
+  if (open.indexOf("/thread/url-pane") === -1)
     throw new Error("URL precedence: URL pane not opened");
   // localStorage pane should NOT be opened when URL has pane= params.
-  if (open.indexOf(lsHref) !== -1)
+  if (open.indexOf("/thread/ls-only-pane") !== -1)
     throw new Error(
       "URL precedence: localStorage pane was opened despite URL having pane= params"
     );
@@ -210,7 +225,7 @@ function currentPath(dom) {
   P.restore();
 
   var open = P.openHrefs();
-  if (open.indexOf(lsHref) === -1)
+  if (open.indexOf("/thread/from-storage") === -1)
     throw new Error("localStorage fallback: stored pane not restored");
   console.log("test-panes-url falls back to localStorage when no URL params: ok");
 }());
@@ -233,10 +248,10 @@ function currentPath(dom) {
   P.restore();
 
   var open = P.openHrefs();
-  if (open.indexOf(href) === -1)
+  if (open.indexOf("/thread/previously-closed") === -1)
     throw new Error("URL suppression override: suppressed pane not opened");
   // Suppression should now be cleared so future auto-open can work normally.
-  if (P.isSuppressed(href))
+  if (P.isSuppressed("/thread/previously-closed"))
     throw new Error("URL suppression override: isSuppressed still true after URL restore");
   console.log("test-panes-url URL-specified pane overrides suppression: ok");
 }());
@@ -303,8 +318,8 @@ function currentPath(dom) {
   var stored = dom.window.localStorage.getItem("serf-hub.panes");
   if (!stored) throw new Error("persist: localStorage not written");
   var data = JSON.parse(stored);
-  if (!data.some(function (p) { return p.href === "/s/sub-1"; }))
-    throw new Error("persist: /s/sub-1 not found in stored data");
+  if (!data.some(function (p) { return p.href === "/thread/sub-1"; }))
+    throw new Error("persist: /thread/sub-1 not found in stored data");
   console.log("test-panes-url localStorage persist still works alongside URL: ok");
 }());
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -25,6 +26,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/diagnostic"
+	"primeradiant.com/serf/internal/selfupdate"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
@@ -82,6 +84,50 @@ func TestHubRPCDoesNotAdvertiseUnsupportedTurnLists(t *testing.T) {
 	}
 	if init.Features.ThreadTurnsList {
 		t.Fatalf("ThreadTurnsList advertised without Hub handlers: %+v", init.Features)
+	}
+}
+
+func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
+	var got selfupdate.Options
+	previous := runHubSelfUpgrade
+	runHubSelfUpgrade = func(_ context.Context, opts selfupdate.Options) (selfupdate.Result, error) {
+		got = opts
+		return selfupdate.Result{
+			Release:        "snapshot",
+			Channel:        "snapshot",
+			Archive:        "serf_linux_amd64.tar.gz",
+			ShareBinDir:    "/tmp/share/serf/bin",
+			BinDir:         "/tmp/bin",
+			RestartMessage: "Restart serf-tui and serf-hub to use the upgraded binaries.",
+		}, nil
+	}
+	t.Cleanup(func() { runHubSelfUpgrade = previous })
+
+	server := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
+	params, err := json.Marshal(appwire.UpgradeParams{Requested: "snapshot"})
+	if err != nil {
+		t.Fatalf("MarshalParams: %v", err)
+	}
+	raw, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodSerfUpgrade,
+		Params: params,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch upgrade: %v", err)
+	}
+	resp, ok := raw.(appwire.UpgradeResponse)
+	if !ok {
+		t.Fatalf("response type=%T", raw)
+	}
+	if resp.Channel != "snapshot" || resp.Archive != "serf_linux_amd64.tar.gz" {
+		t.Fatalf("response=%+v", resp)
+	}
+	if got.Requested != "snapshot" {
+		t.Fatalf("Requested=%q, want snapshot", got.Requested)
+	}
+	if got.CurrentChannel == "" {
+		t.Fatal("CurrentChannel is empty")
 	}
 }
 

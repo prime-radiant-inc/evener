@@ -50,17 +50,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "tree":
 		return cmdTree(rest, stdout, stderr)
 	case "-h", "--help", "help":
-		usage(stdout)
-		return 0
+		return usage(stdout)
 	default:
-		fmt.Fprintf(stderr, "serf-doctor: unknown subcommand %q\n\n", sub)
-		usage(stderr)
+		if code := writef(stderr, "serf-doctor: unknown subcommand %q\n\n", sub); code != 0 {
+			return code
+		}
+		if code := usage(stderr); code != 0 {
+			return code
+		}
 		return 2
 	}
 }
 
-func usage(w io.Writer) {
-	fmt.Fprintf(w, `serf-doctor — read-only forensic inspector for serf sessions, jobs, and watches
+func usage(w io.Writer) int {
+	return writef(w, `serf-doctor — read-only forensic inspector for serf sessions, jobs, and watches
 
 USAGE:
   serf-doctor <subcommand> <selector> [flags]
@@ -81,6 +84,27 @@ COMMON FLAGS:
 
 Run "serf-doctor <subcommand> -h" for subcommand flags.
 `, envvars.SERFStateDir.Name, envvars.XDGStateHome.Name)
+}
+
+func writef(w io.Writer, format string, args ...any) int {
+	if _, err := fmt.Fprintf(w, format, args...); err != nil {
+		return 1
+	}
+	return 0
+}
+
+func writeln(w io.Writer, args ...any) int {
+	if _, err := fmt.Fprintln(w, args...); err != nil {
+		return 1
+	}
+	return 0
+}
+
+func writeText(w io.Writer, text string) int {
+	if _, err := fmt.Fprint(w, text); err != nil {
+		return 1
+	}
+	return 0
 }
 
 // stateFlags registers the flags every subcommand shares and returns the set.
@@ -117,14 +141,16 @@ func emitJSON(w io.Writer, v any) int {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
-		fmt.Fprintln(w, "serf-doctor: encode json:", err)
+		_ = writeln(w, "serf-doctor: encode json:", err)
 		return 1
 	}
 	return 0
 }
 
 func fail(stderr io.Writer, sub string, err error) int {
-	fmt.Fprintf(stderr, "serf-doctor %s: %v\n", sub, err)
+	if code := writef(stderr, "serf-doctor %s: %v\n", sub, err); code != 0 {
+		return code
+	}
 	return 1
 }
 
@@ -146,9 +172,8 @@ func cmdLocate(args []string, stdout, stderr io.Writer) int {
 	if bucket == "" {
 		bucket = "(override root)"
 	}
-	fmt.Fprintf(stdout, "session %s\n  ref:        %s\n  transcript: %s\n  meta:       %s\n  jobs:       %s\n  bucket:     %s\n",
+	return writef(stdout, "session %s\n  ref:        %s\n  transcript: %s\n  meta:       %s\n  jobs:       %s\n  bucket:     %s\n",
 		paths.SessionID, paths.TranscriptRef, paths.TranscriptPath, paths.MetaPath, paths.JobsPath, bucket)
-	return 0
 }
 
 func cmdTranscript(args []string, stdout, stderr io.Writer) int {
@@ -170,8 +195,7 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 		if *asJSON {
 			return emitJSON(stdout, res)
 		}
-		fmt.Fprintln(stdout, doctor.RenderCount(res))
-		return 0
+		return writeln(stdout, doctor.RenderCount(res))
 	}
 
 	res, err := doctor.Transcript(base, sel, doctor.TranscriptOpts{Format: *format, Range: *rangeArg})
@@ -181,8 +205,7 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	if *asJSON {
 		return emitJSON(stdout, res)
 	}
-	fmt.Fprint(stdout, doctor.RenderTranscript(res, *format))
-	return 0
+	return writeText(stdout, doctor.RenderTranscript(res, *format))
 }
 
 func cmdAPILog(args []string, stdout, stderr io.Writer) int {
@@ -211,8 +234,7 @@ func cmdAPILog(args []string, stdout, stderr io.Writer) int {
 	if *asJSON {
 		return emitJSON(stdout, res)
 	}
-	fmt.Fprint(stdout, doctor.RenderAPILog(res, opts))
-	return 0
+	return writeText(stdout, doctor.RenderAPILog(res, opts))
 }
 
 func cmdWatches(args []string, stdout, stderr io.Writer) int {
@@ -231,8 +253,7 @@ func cmdWatches(args []string, stdout, stderr io.Writer) int {
 	if *asJSON {
 		return emitJSON(stdout, res)
 	}
-	fmt.Fprint(stdout, doctor.RenderWatches(res))
-	return 0
+	return writeText(stdout, doctor.RenderWatches(res))
 }
 
 func cmdTree(args []string, stdout, stderr io.Writer) int {
@@ -251,6 +272,5 @@ func cmdTree(args []string, stdout, stderr io.Writer) int {
 	if *asJSON {
 		return emitJSON(stdout, res)
 	}
-	fmt.Fprint(stdout, doctor.RenderTree(res))
-	return 0
+	return writeText(stdout, doctor.RenderTree(res))
 }

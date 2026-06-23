@@ -1,6 +1,6 @@
 // Observer auto-open: when #conversation carries data-observers="<ref>", the
 // renderer's init auto-opens each LIVE observer beside the worker via
-// SerfPanes.open("/s/<ref>"). A user-closed observer pane stays closed across
+// SerfPanes.open("/thread/<ref>"). A user-closed observer pane stays closed across
 // re-init (suppression memory in panes.js), and an explicit manual open clears
 // that suppression.
 const fs = require("fs");
@@ -45,7 +45,7 @@ function check(name, cond, detail) {
 (function () {
   const { opened } = newHarness("OBS1");
   check("auto-open calls SerfPanes.open for the observer",
-    opened.length === 1 && opened[0].href === "/s/OBS1",
+    opened.length === 1 && opened[0].href === "/thread/OBS1",
     JSON.stringify(opened));
 })();
 
@@ -54,7 +54,7 @@ function check(name, cond, detail) {
   const { opened } = newHarness("OBS1 OBS2");
   const hrefs = opened.map(o => o.href);
   check("auto-open opens each of multiple observers",
-    hrefs.includes("/s/OBS1") && hrefs.includes("/s/OBS2") && opened.length === 2,
+    hrefs.includes("/thread/OBS1") && hrefs.includes("/thread/OBS2") && opened.length === 2,
     JSON.stringify(hrefs));
 })();
 
@@ -66,7 +66,7 @@ function check(name, cond, detail) {
 
 // suppressed observer is NOT re-opened
 (function () {
-  const { opened } = newHarness("OBS1", { isSuppressed: (href) => href === "/s/OBS1" });
+  const { opened } = newHarness("OBS1", { isSuppressed: (href) => href === "/thread/OBS1" });
   check("a suppressed (user-closed) observer is not re-opened", opened.length === 0, JSON.stringify(opened));
 })();
 
@@ -96,7 +96,7 @@ function check(name, cond, detail) {
 
   // suppression persists in localStorage under the documented key
   const raw = dom.window.localStorage.getItem("serf-hub.panes.closed");
-  check("suppression persists to serf-hub.panes.closed", !!raw && raw.indexOf("/s/OBS1") !== -1, String(raw));
+  check("suppression persists to serf-hub.panes.closed", !!raw && raw.indexOf("/thread/OBS1") !== -1, String(raw));
 
   // explicit manual open clears suppression
   P.open("/s/OBS1", "Observer 1");

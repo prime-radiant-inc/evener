@@ -18,7 +18,7 @@ const pane = P.open("/s/sub-1", "Subagent 1");
 if (!pane) throw new Error("open returned null");
 const frames = () => document.querySelectorAll("#side-panes .pane-frame");
 if (frames().length !== 1) throw new Error("expected 1 frame, got " + frames().length);
-if (frames()[0].getAttribute("src") !== "/s/sub-1") throw new Error("wrong iframe src");
+if (frames()[0].getAttribute("src") !== "/thread/sub-1") throw new Error("wrong iframe src");
 if (document.getElementById("side-panes").hidden) throw new Error("region should be visible");
 
 // opening same href again does NOT duplicate
@@ -40,13 +40,13 @@ if (!document.getElementById("side-panes").hidden) throw new Error("region shoul
 // persistence: opening writes localStorage; a fresh load restores
 P.open("/s/keep-1", "Keep 1");
 const stored = JSON.parse(dom.window.localStorage.getItem("serf-hub.panes") || "[]");
-if (!stored.some(p => p.href === "/s/keep-1")) throw new Error("open not persisted");
+if (!stored.some(p => p.href === "/thread/keep-1")) throw new Error("open not persisted");
 
 // simulate reload: clear DOM panes, call restore()
 document.querySelectorAll("#side-panes .pane").forEach(n => n.remove());
 document.getElementById("side-panes").hidden = true;
 P.restore();
-if (!P.openHrefs().includes("/s/keep-1")) throw new Error("restore did not reopen pane");
+if (!P.openHrefs().includes("/thread/keep-1")) throw new Error("restore did not reopen pane");
 console.log("test-panes persistence: ok");
 
 // max = Math.min(1200, window.innerWidth - 360); jsdom innerWidth = 1024 → max = 664
@@ -123,6 +123,68 @@ console.log("test-panes width: ok");
   if (isNaN(wAfterRestore) || wAfterRestore < openCount * PANE_MIN)
     throw new Error("restore(): width after restore " + wAfterRestore + " < " + openCount + "×PANE_MIN=" + (openCount * PANE_MIN));
   console.log("test-panes PANE_MIN restore enforces minimum: ok (width=" + wAfterRestore + " panes=" + openCount + ")");
+}());
+
+
+// ---- Splitter drag lifecycle regression ------------------------------------
+(function () {
+  var dom3 = new JSDOM(`<!DOCTYPE html><body class="app">
+    <main id="workspace"></main>
+    <div id="pane-splitter" hidden></div>
+    <aside id="side-panes" hidden></aside>
+  </body>`, { url: "http://localhost/" });
+  global.window = dom3.window; global.document = dom3.window.document;
+  Object.defineProperty(dom3.window, "innerWidth", { configurable: true, value: 1200 });
+  eval(fs.readFileSync(path.join(__dirname, "..", "assets", "panes.js"), "utf8"));
+  dom3.window.document.dispatchEvent(new dom3.window.Event("DOMContentLoaded", { bubbles: true }));
+  var P3 = dom3.window.SerfPanes;
+  P3.open("/s/drag-a", "Drag A");
+  var split = dom3.window.document.getElementById("pane-splitter");
+  var storedWidth = function () { return parseInt(dom3.window.localStorage.getItem("serf-hub.panes.width"), 10); };
+  var mouse = function (type, clientX, buttons) {
+    return new dom3.window.MouseEvent(type, { bubbles: true, cancelable: true, clientX: clientX, buttons: buttons });
+  };
+
+  split.dispatchEvent(mouse("mousedown", 700, 1));
+  if (dom3.window.document.body.dataset.paneDragging !== "true") {
+    throw new Error("splitter drag should mark body[data-pane-dragging=true] so iframes stop stealing shrink mousemove events");
+  }
+  dom3.window.document.dispatchEvent(mouse("mousemove", 500, 1));
+  var widened = storedWidth();
+  if (widened !== 700) throw new Error("active splitter drag left should widen side panes to 700, got " + widened);
+
+  dom3.window.document.dispatchEvent(mouse("mousemove", 900, 1));
+  var shrunk = storedWidth();
+  if (shrunk >= widened) throw new Error("active splitter drag right should shrink side panes / widen main pane, got " + shrunk + " after " + widened);
+
+  dom3.window.document.dispatchEvent(mouse("mousemove", 450, 0));
+  var afterReleasedMove = storedWidth();
+  if (afterReleasedMove !== shrunk) throw new Error("mousemove with no pressed button must not keep resizing after drag release; before=" + shrunk + " after=" + afterReleasedMove);
+
+  dom3.window.document.dispatchEvent(mouse("mouseup", 450, 0));
+  if (dom3.window.document.body.dataset.paneDragging) {
+    throw new Error("splitter drag should clear body[data-pane-dragging] on mouseup");
+  }
+  dom3.window.document.dispatchEvent(mouse("mousemove", 520, 0));
+  var afterMouseupHover = storedWidth();
+  if (afterMouseupHover !== shrunk) throw new Error("hover/contact after mouseup must not resize; before=" + shrunk + " after=" + afterMouseupHover);
+  console.log("test-panes splitter drag lifecycle: ok");
+}());
+
+
+// ---- Width model contract ---------------------------------------------------
+(function () {
+  var css = fs.readFileSync(path.join(__dirname, "..", "assets", "style.css"), "utf8");
+  if (!/\.side-panes\s*\{[^}]*flex:\s*0\s+0\s+var\(--side-panes-w,\s*420px\)/m.test(css)) {
+    throw new Error("side-panes must use a non-shrinking/non-growing flex basis tied to --side-panes-w so splitter drags visibly resize it");
+  }
+  if (!/\.pane\s*\{[^}]*min-width:\s*var\(--pane-min,/m.test(css)) {
+    throw new Error("pane min-width must be driven by the shared --pane-min CSS variable");
+  }
+  if (!/body\.app\[data-pane-dragging="true"\]\s+\.pane-frame\s*\{[^}]*pointer-events:\s*none/m.test(css)) {
+    throw new Error("pane iframes must ignore pointer events while the host splitter is dragging");
+  }
+  console.log("test-panes width model CSS contract: ok");
 }());
 
 console.log("test-panes: ok");

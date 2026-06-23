@@ -64,11 +64,18 @@ const plainEvs = window.SerfAppwire.eventsFromNotification("item/completed", {
 const plainSys = plainEvs.find((e) => e[0] === "SYSTEM_MESSAGE");
 pass(!!plainSys && !plainSys[1].raw, "an ordinary systemMessage carries no raw (got " + JSON.stringify(plainSys && plainSys[1]) + ")");
 
+async function waitForRendererReady(renderer) {
+  for (let i = 0; i < 100; i++) {
+    if (renderer.descriptionsReady && !renderer.eventBuffer) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 (async () => {
   const conv = window.document.getElementById("conversation");
   window.SerfRenderer.init(conv);
-  await new Promise((r) => setTimeout(r, 30)); // flush the cold-load buffer
   const R = window.SerfRenderer;
+  await waitForRendererReady(R); // flush the cold-load buffer deterministically
 
   // ── renderer: compaction is a quiet, expandable lifecycle line ─────────────
   R.handleData("SYSTEM_MESSAGE", {

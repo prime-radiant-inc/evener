@@ -20,6 +20,7 @@
     tasksList: "serf/tasks/list",
     dirsComplete: "serf/dirs/complete",
     pathValidate: "serf/path/validate",
+    serfUpgrade: "serf/upgrade",
     modelList: "model/list",
   };
 
@@ -286,6 +287,10 @@
 
   function validatePath(path, kind) {
     return request(METHOD.pathValidate, { path: path || "", kind: kind || "" });
+  }
+
+  function upgrade(requested) {
+    return request(METHOD.serfUpgrade, { requested: String(requested || "").trim() });
   }
 
   function startThread(body) {
@@ -856,6 +861,7 @@
     listModelsWithDiagnostics,
     completeDirs,
     validatePath,
+    upgrade,
     startThread,
     readThread,
     tasks,

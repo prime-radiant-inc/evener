@@ -313,7 +313,7 @@
   document.addEventListener("click", onSubagentToggle);
 
   // Open-beside control on sidebar subagent rows — delegate clicks on
-  // .subagent-row-wrap .open-beside-btn → window.SerfPanes.open("/s/<ref>", title).
+  // .subagent-row-wrap .open-beside-btn → window.SerfPanes.open("/thread/<ref>", title).
   // Guards:
   //   • preventDefault + stopPropagation so the sibling <a> row does not navigate.
   //   • window.SerfPanes presence: absent when this sidebar runs inside a pane
@@ -329,7 +329,8 @@
     var ref = wrap.getAttribute("data-ref") || "";
     var title = wrap.getAttribute("data-title") || ref;
     if (!ref) return;
-    window.SerfPanes.open("/s/" + encodeURIComponent(ref), title);
+    var href = window.SerfPanes.threadHref ? window.SerfPanes.threadHref(ref) : ("/thread/" + encodeURIComponent(ref));
+    window.SerfPanes.open(href, title);
   }
   document.addEventListener("click", onSidebarOpenBeside);
 

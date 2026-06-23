@@ -192,6 +192,58 @@ function tick(ms) { return new Promise(r => setTimeout(r, ms)); }
     pass(ctx.dialog.open === false, "dialog closes after argless run");
   }
 
+  // -------- Scenario 7b: /upgrade fallback POSTs to the hub API --------
+  {
+    const dom = makeDom("", { url: "http://localhost/" });
+    const ctx = await loadAndOpen(dom);
+    let postedPath = null;
+    let postedMethod = null;
+    let postedBody = null;
+    ctx.window.fetch = (url, opts) => {
+      postedPath = url;
+      postedMethod = (opts && opts.method) || "GET";
+      postedBody = opts && opts.body;
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ channel: "release", restartMessage: "Restart Serf." }) });
+    };
+    ctx.window.SerfSearch.open();
+    ctx.input.value = "/upgrade";
+    ctx.input.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+    await tick(20);
+    ctx.input.dispatchEvent(new ctx.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await tick(20);
+    pass(postedPath === "/api/upgrade", "upgrade fallback POSTs to /api/upgrade (got " + postedPath + ")");
+    pass(postedMethod === "POST", "upgrade fallback uses POST");
+    pass(JSON.parse(postedBody || "{}").requested === "", "upgrade fallback uses current channel target");
+    pass(ctx.dialog.open === false, "dialog closes after upgrade fallback succeeds");
+  }
+
+  // -------- Scenario 7c: /upgrade prefers appwire when available --------
+  {
+    const dom = makeDom("", { url: "http://localhost/" });
+    const ctx = await loadAndOpen(dom);
+    let fetchCalls = 0;
+    let requested = "not-called";
+    ctx.window.fetch = () => {
+      fetchCalls += 1;
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    };
+    ctx.window.SerfAppwire = {
+      upgrade: (target) => {
+        requested = target;
+        return Promise.resolve({ channel: "snapshot", restartMessage: "Restart Serf." });
+      },
+    };
+    ctx.window.SerfSearch.open();
+    ctx.input.value = "/upgrade";
+    ctx.input.dispatchEvent(new ctx.window.Event("input", { bubbles: true }));
+    await tick(20);
+    ctx.input.dispatchEvent(new ctx.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await tick(20);
+    pass(requested === "", "upgrade appwire uses current channel target");
+    pass(fetchCalls === 0, "upgrade appwire path does not fetch REST fallback");
+    pass(ctx.dialog.open === false, "dialog closes after upgrade appwire succeeds");
+  }
+
   // -------- Scenario 8: Enum-args command transitions to args mode, lists items, Esc returns to filter --------
   {
     const dom = makeDom(`<div id="conversation" data-session-id="01S" data-state="live"></div>`,

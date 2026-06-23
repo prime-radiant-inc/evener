@@ -3460,6 +3460,44 @@ func TestHubModelHelpAndPaletteShareSessionCommands(t *testing.T) {
 	}
 }
 
+func TestHubModelUpgradeSlashCommandCallsHub(t *testing.T) {
+	var got appwire.UpgradeParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodSerfUpgrade, func(_ context.Context, params appwire.UpgradeParams) (appwire.UpgradeResponse, error) {
+			got = params
+			return appwire.UpgradeResponse{
+				Channel:        "snapshot",
+				Archive:        "serf_linux_amd64.tar.gz",
+				ShareBinDir:    "/tmp/share/serf/bin",
+				BinDir:         "/tmp/bin",
+				RestartMessage: "Restart serf-tui and serf-hub to use the upgraded binaries.",
+			}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.session.setInputValue("/upgrade snapshot")
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("/upgrade should call Hub")
+	}
+	msg, ok := cmd().(hubUpgradeMsg)
+	if !ok || msg.err != nil {
+		t.Fatalf("/upgrade cmd = %#v, err=%v", msg, msg.err)
+	}
+	updated, _ = updated.(hubModel).Update(msg)
+	view := updated.(hubModel).View()
+	for _, want := range []string{"Serf upgraded to snapshot.", "serf_linux_amd64.tar.gz", "Restart serf-tui and serf-hub"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("upgrade result missing %q:\n%s", want, view)
+		}
+	}
+	if got.Requested != "snapshot" {
+		t.Fatalf("Requested=%q, want snapshot", got.Requested)
+	}
+}
+
 func TestHubModelSessionCommandPaletteDoesNotShowOtherSessions(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.Project = "serf"

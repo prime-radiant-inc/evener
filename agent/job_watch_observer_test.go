@@ -735,14 +735,21 @@ func TestParentYieldsAfterObserverHandoffInsteadOfPolling(t *testing.T) {
 		}
 		deadline := time.Now().Add(2 * time.Second)
 		var queued []SteeringEntry
+		observerCallbackQueued := func(queued []SteeringEntry) bool {
+			if len(queued) != 1 {
+				return false
+			}
+			return strings.Contains(queued[0].Text, "MEMORY_REMINDER") ||
+				strings.Contains(queued[0].Text, "MEMORY_RECORDED")
+		}
 		for time.Now().Before(deadline) {
 			queued = parent.SteeringQueueSnapshot()
-			if len(queued) == 1 && strings.Contains(queued[0].Text, "MEMORY_REMINDER") {
+			if observerCallbackQueued(queued) {
 				break
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
-		if len(queued) != 1 || !strings.Contains(queued[0].Text, "MEMORY_REMINDER") {
+		if !observerCallbackQueued(queued) {
 			var requestModes []string
 			for _, req := range adapter.Requests() {
 				mode := "<nil>"

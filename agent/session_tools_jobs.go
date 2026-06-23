@@ -1816,6 +1816,7 @@ func stringArrayArg(args map[string]any, key string) ([]string, error) {
 	return out, nil
 }
 
+//nolint:unused // retained for internal watch-send parsing; public job_watch currently rejects send.
 func watchSendArg(args map[string]any) (*watchSendArgs, error) {
 	raw, ok := args["send"]
 	if !ok {
@@ -1839,6 +1840,7 @@ func watchSendArg(args map[string]any) (*watchSendArgs, error) {
 	}, nil
 }
 
+//nolint:unused // retained with watchSendArg for internal watch-send parsing.
 func isEmptyWatchSend(values map[string]any) bool {
 	return strings.TrimSpace(stringArg(values, "to")) == "" &&
 		stringArg(values, "message") == "" &&

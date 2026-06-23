@@ -36,7 +36,9 @@ jobs:
           go-version-file: go.work
 
       - name: Build archive
-        run: make dist DIST_GOOS=${{ matrix.goos }} DIST_GOARCH=${{ matrix.goarch }}
+        env:
+          BUILD_CHANNEL: ${{ github.ref == 'refs/heads/main' && 'snapshot' || 'release' }}
+        run: make dist DIST_GOOS=${{ matrix.goos }} DIST_GOARCH=${{ matrix.goarch }} BUILD_CHANNEL=${BUILD_CHANNEL}
 
       - name: Inspect archive
         run: tar -tzf dist/${{ matrix.asset }}
@@ -68,6 +70,7 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
             gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Serf $GITHUB_REF_NAME"

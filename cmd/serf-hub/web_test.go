@@ -24,8 +24,10 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/internal/appserver"
+	"primeradiant.com/serf/internal/selfupdate"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -52,6 +54,45 @@ func TestWeb_Landing_Renders(t *testing.T) {
 	}
 	if !strings.Contains(body, `id="workspace"`) {
 		t.Errorf("body missing #workspace: %q", body)
+	}
+}
+
+func TestWebAPIUpgradeRunsSelfUpdater(t *testing.T) {
+	var got selfupdate.Options
+	previous := runHubSelfUpgrade
+	runHubSelfUpgrade = func(_ context.Context, opts selfupdate.Options) (selfupdate.Result, error) {
+		got = opts
+		return selfupdate.Result{
+			Release:        "snapshot",
+			Channel:        "snapshot",
+			Archive:        "serf_linux_amd64.tar.gz",
+			ShareBinDir:    "/tmp/share/serf/bin",
+			BinDir:         "/tmp/bin",
+			RestartMessage: "Restart serf-tui and serf-hub to use the upgraded binaries.",
+		}, nil
+	}
+	t.Cleanup(func() { runHubSelfUpgrade = previous })
+
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	req := httptest.NewRequest(http.MethodPost, "/api/upgrade", strings.NewReader(`{"requested":"snapshot"}`))
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp appwire.UpgradeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Channel != "snapshot" || resp.Archive != "serf_linux_amd64.tar.gz" {
+		t.Fatalf("response=%+v", resp)
+	}
+	if got.Requested != "snapshot" {
+		t.Fatalf("Requested=%q, want snapshot", got.Requested)
+	}
+	if got.CurrentChannel == "" {
+		t.Fatal("CurrentChannel is empty")
 	}
 }
 
@@ -231,7 +272,7 @@ func TestWeb_WorkspaceRendersDisabledSteerControlForIdleSendCapableAppThread(t *
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `data-steer-trigger data-capability-steer="false"`) || !strings.Contains(body, `disabled>send as steer`) {
+	if !strings.Contains(body, `data-steer-trigger data-capability-steer="false"`) || !strings.Contains(body, `disabled>steer`) {
 		t.Fatalf("workspace should render disabled steer control for idle send-capable app thread:\n%s", body)
 	}
 	if !strings.Contains(body, `class="btn btn-danger stop-btn" data-action-trigger="interrupt" data-capability-interrupt="false"`) ||
@@ -2437,6 +2478,190 @@ func TestWeb_SessionRoute_FullPage_ServesAppShell(t *testing.T) {
 	}
 }
 
+func TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/thread/anysession", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`<!DOCTYPE html>`,
+		`<body class="thread-document"`,
+		`id="conversation"`,
+		`data-input-form`,
+		`/assets/renderer.js`,
+		`/assets/appwire.js`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("thread document missing %q in %q", want, body)
+		}
+	}
+	for _, forbidden := range []string{
+		`id="sidebar"`,
+		`id="search-dialog"`,
+		`data-sidebar-toggle`,
+		`/_partials/sidebar`,
+		`settings-link`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("thread document should not contain %q in %q", forbidden, body)
+		}
+	}
+}
+
+func TestWeb_ThreadDocument_RouteEncoding(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
+	})
+
+	cases := []string{
+		"local%3Achild-A",
+		"codex%3Ath_active",
+		"bare-session",
+	}
+	for _, encoded := range cases {
+		t.Run(encoded, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/thread/"+encoded, nil)
+			req.Host = "127.0.0.1:9180"
+			rec := httptest.NewRecorder()
+			web.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK && rec.Code != http.StatusNotFound {
+				t.Fatalf("unexpected status for encoded route %s: %d", encoded, rec.Code)
+			}
+		})
+	}
+}
+
+func TestWeb_ThreadDocument_SecurityHeaders(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/thread/anysession", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	csp := rec.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "frame-ancestors 'self'") {
+		t.Fatalf("thread document should preserve same-origin frame policy, CSP=%q", csp)
+	}
+}
+
+func TestWeb_ThreadDocument_CompactsSubagentChromeAndFooter(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
+	data := WorkspaceData{
+		ID:                 "local:child",
+		Title:              "child",
+		SourceLabel:        "local",
+		State:              "ended",
+		StateLabel:         "ended",
+		TurnCount:          36,
+		WorkingDir:         "/projects/serf",
+		Branch:             "main",
+		Model:              "gpt-5.5",
+		ParentRouteID:      "local:parent",
+		ParentTitle:        "parent",
+		ThreadDocumentMode: true,
+		ShowSidebarToggle:  false,
+	}
+	rec := httptest.NewRecorder()
+	if err := web.threadTmpl.ExecuteTemplate(rec, "thread_document", data); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	body := rec.Body.String()
+	for _, forbidden := range []string{
+		`class="subagent-parent-banner"`,
+		`subagent-parent-esc`,
+		`<span class="status-key">src</span>`,
+		`<span class="status-key">cwd</span>`,
+		`<span class="status-key">branch</span>`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("thread document contains compact-forbidden markup %q in:\n%s", forbidden, body)
+		}
+	}
+	for _, required := range []string{
+		`class="workspace-title-row"`,
+		`class="message-input"`,
+		`data-task-status-text`,
+		`class="status-badge"`,
+		`class="status-item turns"`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("thread document missing compact-required markup %q in:\n%s", required, body)
+		}
+	}
+}
+
+func TestWeb_ThreadDocument_ComposerControlsLiveInsideInputCard(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
+	data := WorkspaceData{
+		ID:                 "local:child",
+		Title:              "child",
+		State:              "idle",
+		StateLabel:         "idle",
+		Model:              "gpt-5.5",
+		Capabilities:       hubapi.SessionCapabilities{Send: true, Steer: true},
+		ThreadDocumentMode: true,
+		ShowSidebarToggle:  false,
+	}
+	rec := httptest.NewRecorder()
+	if err := web.threadTmpl.ExecuteTemplate(rec, "thread_document", data); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	body := rec.Body.String()
+	taskStatus := strings.Index(body, `class="task-status-row"`)
+	inputCard := strings.Index(body, `class="input-card"`)
+	messageInput := strings.Index(body, `class="message-input"`)
+	composerModel := strings.Index(body, `class="composer-model"`)
+	inputControls := strings.Index(body, `class="input-controls"`)
+	inputStatus := strings.Index(body, `id="input-status"`)
+	if taskStatus < 0 || inputCard < 0 || messageInput < 0 || composerModel < 0 || inputControls < 0 || inputStatus < 0 {
+		t.Fatalf("missing composer structure: taskStatus=%d inputCard=%d messageInput=%d composerModel=%d inputControls=%d inputStatus=%d", taskStatus, inputCard, messageInput, composerModel, inputControls, inputStatus)
+	}
+	if !(taskStatus < inputCard && inputCard < messageInput && messageInput < inputControls && inputControls < composerModel && composerModel < inputStatus) {
+		t.Fatalf("composer should render task status above input, then textarea, then controls/model row before input status")
+	}
+	if strings.Contains(body, `send as steer`) {
+		t.Fatalf("composer should use short steer label, not send as steer")
+	}
+	if !strings.Contains(body, `data-steer-trigger`) || !strings.Contains(body, `>steer`) {
+		t.Fatalf("composer should render short steer button label")
+	}
+}
+
+func TestWeb_WorkspacePartial_RemainsHXGated(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/anysession/workspace", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("workspace partial without HX should remain hidden: status=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestWeb_SessionRoute_LocalRefCanonicalizesWorkspaceURL(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
@@ -3322,6 +3547,12 @@ func disableLiveOllamaForModelTest(t *testing.T) {
 	t.Setenv("OLLAMA_API_KEY", "")
 }
 
+func isolateProviderConfigForModelTest(t *testing.T) {
+	t.Helper()
+	t.Setenv(envvars.SERFProvidersConfig.Name, filepath.Join(t.TempDir(), "providers.toml"))
+	t.Setenv(envvars.SERFStateDir.Name, t.TempDir())
+}
+
 func disableStoredOpenAIAuthForModelTest(t *testing.T) {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -3341,6 +3572,7 @@ func TestWeb_ApiModels_ReturnsSerfLaunchContractWhenLiveUnavailable(t *testing.T
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	disableLiveOllamaForModelTest(t)
+	isolateProviderConfigForModelTest(t)
 
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
@@ -3421,6 +3653,7 @@ func TestWeb_ApiModels_DoesNotUseLiveProvidersWhenLaunchContractIsEmpty(t *testi
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	disableLiveOllamaForModelTest(t)
+	isolateProviderConfigForModelTest(t)
 	disableStoredOpenAIAuthForModelTest(t)
 
 	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3628,6 +3861,7 @@ func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	disableLiveOllamaForModelTest(t)
+	isolateProviderConfigForModelTest(t)
 	disableStoredOpenAIAuthForModelTest(t)
 
 	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3682,6 +3916,7 @@ func TestWeb_ApiModels_NoProvidersConfigured(t *testing.T) {
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	disableLiveOllamaForModelTest(t)
+	isolateProviderConfigForModelTest(t)
 	disableStoredOpenAIAuthForModelTest(t)
 
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})

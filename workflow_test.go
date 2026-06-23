@@ -43,6 +43,41 @@ func TestBinariesWorkflowPublishesSnapshotFromMain(t *testing.T) {
 	}
 }
 
+func TestBinariesWorkflowPublishesVersionTags(t *testing.T) {
+	data, err := os.ReadFile(".github/workflows/binaries.yml")
+	if err != nil {
+		t.Fatalf("read binaries workflow: %v", err)
+	}
+
+	var workflow githubActionsWorkflow
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatalf("parse binaries workflow: %v", err)
+	}
+
+	job, ok := workflow.Jobs["release"]
+	if !ok {
+		t.Fatal("binaries workflow is missing release job")
+	}
+	if !strings.Contains(job.If, "refs/tags/v") {
+		t.Fatalf("release job condition = %q, want v tag only", job.If)
+	}
+	if !workflowNeeds(job.Needs, "build") {
+		t.Fatalf("release job needs = %#v, want build", job.Needs)
+	}
+	if job.Permissions["contents"] != "write" {
+		t.Fatalf("release contents permission = %q, want write", job.Permissions["contents"])
+	}
+	if !workflowUses(job.Steps, "actions/download-artifact@v4") {
+		t.Fatal("release job does not download build artifacts")
+	}
+	if !workflowRuns(job.Steps, `gh release upload "$GITHUB_REF_NAME"`) {
+		t.Fatal("release job does not upload assets to the GitHub release")
+	}
+	if !workflowStepEnv(job.Steps, "Publish GitHub release", "GH_REPO", "${{ github.repository }}") {
+		t.Fatal("release publish step must set GH_REPO because the artifact-only job has no checkout")
+	}
+}
+
 type githubActionsWorkflow struct {
 	Jobs map[string]githubActionsJob `yaml:"jobs"`
 }
@@ -55,8 +90,10 @@ type githubActionsJob struct {
 }
 
 type githubActionStep struct {
-	Uses string `yaml:"uses"`
-	Run  string `yaml:"run"`
+	Name string            `yaml:"name"`
+	Uses string            `yaml:"uses"`
+	Env  map[string]string `yaml:"env"`
+	Run  string            `yaml:"run"`
 }
 
 func workflowNeeds(needs any, want string) bool {
@@ -85,6 +122,15 @@ func workflowUses(steps []githubActionStep, want string) bool {
 func workflowRuns(steps []githubActionStep, want string) bool {
 	for _, step := range steps {
 		if strings.Contains(step.Run, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowStepEnv(steps []githubActionStep, name, key, want string) bool {
+	for _, step := range steps {
+		if step.Name == name && step.Env[key] == want {
 			return true
 		}
 	}

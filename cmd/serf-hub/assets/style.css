@@ -276,11 +276,16 @@ body {
 /* Legacy landing-page main padding. Scoped away from the app shell
  * (which uses #workspace flex layout); otherwise it injects 24/48px
  * padding into the workspace and the input form floats off the bottom. */
-body:not(.app) main {
+body:not(.app):not(.thread-document) main {
   padding: var(--space-6);
   padding-bottom: var(--space-8);
   max-width: 1400px;
   margin: 0 auto;
+}
+.thread-document main {
+  padding: 0;
+  max-width: none;
+  margin: 0;
 }
 .cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-6); }
 section.panel {
@@ -394,12 +399,34 @@ html, body.app { height: 100vh; margin: 0; }
 body.app { display: flex; background: var(--bg); color: var(--text); font-family: var(--font-sans); overflow: hidden; }
 /* Mono utility — for one-off mono spans that don't have a dedicated class. */
 .mono { font-family: var(--font-mono); }
-#sidebar { width: 260px; flex-shrink: 0; height: 100vh; border-right: 1px solid var(--rule); overflow-y: auto; }
+#sidebar {
+  width: var(--sidebar-w, 260px);
+  min-width: 180px;
+  max-width: min(480px, 45vw);
+  flex-shrink: 0;
+  height: 100vh;
+  border-right: 1px solid var(--rule);
+  overflow: auto;
+}
+.sidebar-resizer {
+  width: 6px;
+  height: 100vh;
+  flex-shrink: 0;
+  margin-left: -3px;
+  margin-right: -3px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 2;
+}
+.sidebar-resizer:hover,
+body.app[data-sidebar-resizing="true"] .sidebar-resizer {
+  background: color-mix(in srgb, var(--rule) 70%, transparent);
+}
 #workspace { position: relative; flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 /* Multi-pane: side panes sit as flex columns to the right of #workspace. */
-.side-panes { display: flex; flex-direction: row; min-width: 0; height: 100vh; width: var(--side-panes-w, 420px); }
+.side-panes { --pane-min: 300px; display: flex; flex-direction: row; min-width: 0; height: 100vh; width: var(--side-panes-w, 420px); flex: 0 0 var(--side-panes-w, 420px); }
 .side-panes[hidden] { display: none; }
-.pane { display: flex; flex-direction: column; min-width: 300px; flex: 1;
+.pane { display: flex; flex-direction: column; min-width: var(--pane-min, 300px); flex: 1;
   border-left: 1px solid var(--rule); height: 100vh; overflow: hidden; }
 .pane-header { display: flex; align-items: center; gap: var(--space-2);
   padding: 0 var(--space-3); height: 38px; flex-shrink: 0; border-bottom: 1px solid var(--rule);
@@ -409,7 +436,13 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   font-size: var(--text-md); line-height: 1; padding: var(--space-1) var(--space-2); }
 .pane-close:hover { color: var(--text); }
 .pane-frame { flex: 1; width: 100%; border: 0; min-height: 0; }
-.pane-splitter { width: 5px; flex-shrink: 0; cursor: col-resize; background: var(--rule); opacity: .4; }
+body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
+.pane[data-state="loading"] .pane-frame { opacity: 0.65; }
+.pane-error { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center;
+  padding: var(--space-5); color: var(--text); border-top: 1px solid var(--rule);
+  background: var(--bg-raised); }
+.pane-error-text { flex-basis: 100%; margin-bottom: var(--space-2); color: var(--text-muted); }
+.pane-splitter { width: 6px; flex-shrink: 0; cursor: col-resize; background: var(--rule); opacity: .4; }
 .pane-splitter:hover { opacity: 1; }
 .pane-splitter[hidden] { display: none; }
 @media (max-width: 767px) { .side-panes, .pane-splitter { display: none !important; } }
@@ -690,7 +723,8 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 }
 
 /* Rail mode: collapse to 56px, hide text columns, hide most header actions. */
-body.app[data-sidebar-rail] #sidebar { width: 56px; }
+body.app[data-sidebar-rail] #sidebar { width: 56px; min-width: 56px; max-width: 56px; }
+body.app[data-sidebar-rail] .sidebar-resizer { display: none; }
 body.app[data-sidebar-rail] .sidebar-header .sidebar-action { display: none; }
 body.app[data-sidebar-rail] .sidebar-header { padding: 0 var(--space-3) var(--space-3); justify-content: center; gap: 0; }
 body.app[data-sidebar-rail] .sidebar-rail-toggle::before { content: "⇥"; }
@@ -1417,7 +1451,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 
 /* Queue preview: shows messages typed during a processing turn that will
    become fresh user turns when the active turn completes (kata 111a). The
-   "send as steer" button (and ⇧↵) drain these into a single STEERING
+   "steer" button (and ⇧↵) drains these into a single STEERING
    injection (kata 0bq1). Hidden via the [hidden] attribute when empty. */
 .queue-preview {
   padding: var(--space-3) var(--space-3);
@@ -1487,7 +1521,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   flex: 1;
 }
 
-.input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-4) var(--space-4); min-height: 80px; transition: border-color var(--motion-fast); }
+.input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); min-height: 0; transition: border-color var(--motion-fast); }
 /* kata 65mm: drop-active is set by the shared composer-attachments helper
    on dragenter. Visually subtle so dropping onto the existing .input-card
    keeps its border style; the dashed outline cues "drop here" without
@@ -1498,11 +1532,89 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .composer-attachment-error:empty,
 .composer-attachment-error[hidden] { display: none; }
 .message-input { width: 100%; min-height: 36px; max-height: 50vh; background: transparent; border: none; resize: none; color: var(--text); font: inherit; font-family: var(--font-sans); font-size: var(--text-md); outline: none; line-height: var(--leading-snug); overflow-y: auto; }
+.composer-model {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.composer-model-key { color: var(--text-muted); }
+.composer-model-value {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font: inherit;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+button.composer-model-value { cursor: pointer; color: var(--accent); }
+button.composer-model-value:hover { text-decoration: underline; }
+.input-card .input-controls {
+  padding: var(--space-3) 0 0;
+  margin-top: var(--space-2);
+}
+.thread-document .workspace-input {
+  padding: var(--space-3) var(--space-4);
+}
+.thread-document .input-status {
+  gap: var(--space-3);
+  padding-top: var(--space-2);
+  margin-top: var(--space-1);
+  border-top: 0;
+}
+.thread-document .conversation {
+  padding: var(--space-4);
+}
+.pane-compact .workspace-input {
+  padding: var(--space-1) var(--space-3);
+  border-top: 0;
+}
+.pane-compact .input-card {
+  padding: var(--space-2);
+}
+.pane-compact .message-input {
+  min-height: 26px;
+  font-size: var(--text-sm);
+}
+.pane-compact .input-card .input-controls {
+  padding-top: var(--space-2);
+  margin-top: 0;
+  gap: var(--space-2);
+}
+.pane-compact .controls-left { gap: var(--space-2); }
+.pane-compact .controls-right {
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.pane-compact .send-btn {
+  min-height: 34px;
+  padding: var(--space-2) var(--space-4);
+}
+.pane-compact .input-status {
+  padding-top: var(--space-1);
+  margin-top: 0;
+  border-top: 0;
+  gap: var(--space-2);
+}
+.pane-compact .input-status .source,
+.pane-compact .input-status .cwd,
+.pane-compact .input-status .branch {
+  display: none;
+}
 
 .input-controls { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0 0; flex-wrap: wrap; }
 .controls-left,
 .controls-right { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
-.controls-center { flex: 1; display: flex; align-items: center; justify-content: flex-start; min-height: 1px; }
+.controls-center { flex: 1; display: flex; align-items: center; justify-content: flex-start; min-width: 0; min-height: 1px; }
 
 .input-status {
   display: flex;
@@ -1510,7 +1622,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   gap: var(--space-5);
   padding: var(--space-3) 0 0;
   margin-top: var(--space-2);
-  border-top: 1px solid var(--rule);
+  border-top: 0;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--text);
@@ -3858,7 +3970,13 @@ body.doc-page {
 /* Trim and condense the workspace header in a pane: it dominates the narrow
    pane width and repeats information already visible in the pane header bar. */
 .pane-compact .workspace-header {
-  padding: var(--space-2) var(--space-4);
+  display: none;
+}
+.pane-compact .workspace-title-row {
+  display: none;
+}
+.pane-compact kbd {
+  display: none;
 }
 /* Hide the secondary meta row (model, cwd, turn count) — it's too much at
    pane width; the title row alone orients the reader. */

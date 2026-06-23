@@ -159,6 +159,66 @@ func TestClientGoalSetRoundTrip(t *testing.T) {
 	}
 }
 
+func TestClientUpgradeRoundTrip(t *testing.T) {
+	transport := newMemoryTransport()
+	client := NewClient(transport)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client.Start(ctx)
+
+	done := make(chan struct {
+		resp UpgradeResponse
+		err  error
+	}, 1)
+	go func() {
+		resp, err := client.Upgrade(ctx, UpgradeParams{Requested: "snapshot"})
+		done <- struct {
+			resp UpgradeResponse
+			err  error
+		}{resp: resp, err: err}
+	}()
+
+	var written Message
+	select {
+	case written = <-transport.writes:
+	case <-time.After(time.Second):
+		t.Fatal("request was not written")
+	}
+	if written.Request.Method != MethodSerfUpgrade {
+		t.Fatalf("method=%q", written.Request.Method)
+	}
+	var params UpgradeParams
+	if err := json.Unmarshal(written.Request.Params, &params); err != nil {
+		t.Fatalf("params decode: %v", err)
+	}
+	if params.Requested != "snapshot" {
+		t.Fatalf("params=%+v", params)
+	}
+
+	transport.reads <- ResponseMessage(written.Request.ID, UpgradeResponse{
+		Channel:        "snapshot",
+		Archive:        "serf_linux_amd64.tar.gz",
+		RestartMessage: "Restart serf-tui and serf-hub to use the upgraded binaries.",
+	})
+
+	var result struct {
+		resp UpgradeResponse
+		err  error
+	}
+	select {
+	case result = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("response was not routed")
+	}
+	if result.err != nil {
+		t.Fatalf("Upgrade: %v", result.err)
+	}
+	if result.resp.Channel != "snapshot" || result.resp.Archive != "serf_linux_amd64.tar.gz" {
+		t.Fatalf("response=%+v", result.resp)
+	}
+}
+
 // A legitimate notification burst that lands while no consumer has drained yet
 // (a codex initial-turn replay is ~160 messages; consumers can be a scheduling
 // slice behind) must ride the buffer, not kill the connection. The overflow

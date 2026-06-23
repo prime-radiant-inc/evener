@@ -117,7 +117,9 @@ func catalogTools(modelRef string) ([]catalogTool, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(tmp)
+	defer func() {
+		_ = os.RemoveAll(tmp)
+	}()
 	client := llm.NewClient()
 	sess, err := agent.NewSession(client, profile, execenv.NewLocalExecutionEnvironment(tmp), agent.SessionConfig{
 		StateDir:         filepath.Join(tmp, "state"),
@@ -283,7 +285,7 @@ func buildSerf(outDir string) (string, error) {
 		return "", err
 	}
 	bin := filepath.Join(binDir, "serf")
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/serf")
+	cmd := exec.CommandContext(context.Background(), "go", "build", "-o", bin, "./cmd/serf")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -588,8 +590,8 @@ func runLiveProbe(ctx context.Context, cfg runConfig, probe probeFile, res *prob
 	}
 }
 
-func maybeClearOpenAIAPIKey(clear bool) func() {
-	if !clear {
+func maybeClearOpenAIAPIKey(shouldClear bool) func() {
+	if !shouldClear {
 		return func() {}
 	}
 	old, ok := envvars.OpenAIAPIKey.LookupEnv()
@@ -884,9 +886,13 @@ func writeProbeResult(outDir string, res probeResult) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = f.Write(append(line, '\n'))
-	return err
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		if closeErr := f.Close(); closeErr != nil {
+			return errors.Join(err, closeErr)
+		}
+		return err
+	}
+	return f.Close()
 }
 
 func writeSummary(outDir string, results []probeResult) error {

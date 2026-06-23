@@ -1,5 +1,5 @@
 // "Open beside" affordance on subagent rows: each completed subagent row
-// gains an ⇲ button that calls window.SerfPanes.open("/s/<ref>", title)
+// gains an ⇲ button that calls window.SerfPanes.open("/thread/<ref>", title)
 // without triggering the row's hard-navigation onclick.
 // Guard: when window.SerfPanes is absent the button must not be added.
 const fs = require("fs");
@@ -22,7 +22,10 @@ function newHarness(opts) {
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
   // Inject SerfPanes stub before evalRenderer so guard check works at render time.
   if (opts.withPanes !== false) {
-    window.SerfPanes = { open: opts.panesOpen || (() => {}) };
+    window.SerfPanes = {
+      open: opts.panesOpen || (() => {}),
+      threadHref: ref => "/thread/" + encodeURIComponent(ref),
+    };
   }
   require("./load-renderer").evalRenderer(window);
   const conv = window.document.getElementById("conversation");
@@ -81,8 +84,25 @@ await scenario("clicking open-beside calls SerfPanes.open with correct href", as
   const beforeHref = window.location.href;
   btn.click();
   if (!openedWith) return { ok: false, detail: "SerfPanes.open was not called" };
-  if (openedWith.href !== "/s/sub-xyz") return { ok: false, detail: "wrong href: " + JSON.stringify(openedWith.href) };
+  if (openedWith.href !== "/thread/sub-xyz") return { ok: false, detail: "wrong href: " + JSON.stringify(openedWith.href) };
   if (window.location.href !== beforeHref) return { ok: false, detail: "open-beside must not navigate, got: " + window.location.href };
+  return { ok: true };
+});
+
+await scenario("subagent open-beside uses thread document route for source-qualified refs", async () => {
+  let openedWith = null;
+  const { window } = newHarness({
+    panesOpen: (href, title) => { openedWith = { href, title }; },
+  });
+  await new Promise(r => setTimeout(r, 30));
+  spawnDelegate(window, "c2b", "job_A", "source qualified task");
+  finishDelegate(window, "job_A", "local:child-A");
+  await new Promise(r => setTimeout(r, 10));
+  const btn = window.document.querySelector(".open-beside-btn");
+  if (!btn) return { ok: false, detail: "missing open-beside button" };
+  btn.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  if (!openedWith) return { ok: false, detail: "SerfPanes.open was not called" };
+  if (openedWith.href !== "/thread/local%3Achild-A") return { ok: false, detail: "wrong href: " + openedWith.href };
   return { ok: true };
 });
 

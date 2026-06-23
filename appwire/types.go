@@ -30,6 +30,7 @@ const (
 	MethodSerfDirsComplete          = "serf/dirs/complete"
 	MethodSerfPathValidate          = "serf/path/validate"
 	MethodSerfHarnessesList         = "serf/harnesses/list"
+	MethodSerfUpgrade               = "serf/upgrade"
 	MethodSerfAuthStatus            = "serf/auth/status"
 	MethodSerfAuthLoginStart        = "serf/auth/login/start"
 	MethodSerfAuthLoginComplete     = "serf/auth/login/complete"
@@ -596,6 +597,22 @@ type HarnessDescriptor struct {
 
 type HarnessListResponse struct {
 	Data []HarnessDescriptor `json:"data"`
+}
+
+type UpgradeParams struct {
+	Requested string `json:"requested,omitempty"`
+}
+
+type UpgradeResponse struct {
+	Release        string   `json:"release"`
+	Channel        string   `json:"channel"`
+	URL            string   `json:"url"`
+	Archive        string   `json:"archive"`
+	Prefix         string   `json:"prefix"`
+	BinDir         string   `json:"binDir"`
+	ShareBinDir    string   `json:"shareBinDir"`
+	Installed      []string `json:"installed"`
+	RestartMessage string   `json:"restartMessage"`
 }
 
 type AuthStatusParams struct {

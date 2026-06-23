@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -59,6 +60,25 @@ var hubCommandRegistry = []hubCommandDefinition{
 				return fetchHubTree(m.client)
 			}
 			return nil
+		},
+	},
+	{
+		Name:          "upgrade",
+		Summary:       "Upgrade installed Serf",
+		PaletteLabel:  "/upgrade",
+		PaletteDetail: "upgrade installed Serf",
+		Scopes:        hubCommandDashboard | hubCommandSession,
+		Run: func(m *hubModel, args string) tea.Cmd {
+			if m.client == nil {
+				err := errors.New("upgrade is not available without a hub client")
+				if m.mode == hubModeSession {
+					m.recordSessionError(err.Error())
+				} else {
+					m.err = err
+				}
+				return nil
+			}
+			return sendHubUpgrade(m.client, args)
 		},
 	},
 	{
