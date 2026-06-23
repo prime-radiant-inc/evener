@@ -592,6 +592,9 @@ func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	if jobID == "" {
 		return "", errors.New("invalid_request: job_id is required")
 	}
+	if strings.HasPrefix(jobID, "dlg_") {
+		return "", errors.New("invalid_request: delegate_id is a conversation handle; inspect a concrete job_id")
+	}
 	jm, rec, err := s.nestedOrLocalJobManager(jobID)
 	if err != nil {
 		return "", err

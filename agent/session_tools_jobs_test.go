@@ -467,7 +467,7 @@ func TestJobToolsRejectDelegateIDWithActionableGuidance(t *testing.T) {
 		args string
 		want string
 	}{
-		{"read", "job_read_output", fmt.Sprintf(`{"job_id":%q}`, res.DelegateID), "delegate_id is a conversation handle; read output from job_id"},
+		{"status", "job_status", fmt.Sprintf(`{"job_id":%q}`, res.DelegateID), "delegate_id is a conversation handle; inspect a concrete job_id"},
 		{"stop", "job_stop", fmt.Sprintf(`{"job_id":%q}`, res.DelegateID), "delegate_id is a conversation handle; stop a concrete job_id"},
 		{"watch", "job_watch", fmt.Sprintf(`{"operation":"create","source":%q,"events":["communicate"]}`, res.DelegateID), "delegate_id is a conversation handle; watch source self, parent, or a concrete job_id"},
 	} {
@@ -3648,7 +3648,12 @@ func TestJobToolsDefinitions(t *testing.T) {
 		if def.Name != name {
 			t.Fatalf("definition name = %q, want %q", def.Name, name)
 		}
-		required := requiredParams(t, name, def.Parameters["required"])
+		var required []string
+		if raw := def.Parameters["required"]; raw != nil {
+			required = requiredParams(t, name, raw)
+		} else if len(want) > 0 {
+			t.Fatalf("%s required = <nil>, want %v", name, want)
+		}
 		for _, param := range want {
 			if !containsString(required, param) {
 				t.Fatalf("%s required = %v, want %q", name, required, param)

@@ -49,7 +49,7 @@ func TestAssembleOutputDigest(t *testing.T) {
 	if !strings.HasPrefix(got, "h1\nh2\n") || !strings.HasSuffix(got, "t1\nt2\n") {
 		t.Fatalf("digest must bracket head and tail:\n%s", got)
 	}
-	if !strings.Contains(got, "elided") || !strings.Contains(got, "head_lines") {
+	if !strings.Contains(got, "elided") || !strings.Contains(got, "read_transcript") || !strings.Contains(got, "transcript_ref") {
 		t.Fatalf("digest must carry an elision marker + recovery hint:\n%s", got)
 	}
 	if !strings.Contains(got, "988 B") {
