@@ -269,7 +269,7 @@ func DefJobList() llm.ToolDefinition {
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List this session's durable jobs, newest first; filter by `status` or `type`. Rows include kind, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list jobs to re-orient instead of re-running work. The result also includes your active watches. Terminal statuses: completed, failed, cancelled, stopped. A short job can finish before a running-only filter sees it; when recency matters, list unfiltered or read the job by id.",
+		Description: "List this session's durable jobs, newest first; filter by `status` or `type`. Rows include kind, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list jobs to re-orient instead of re-running work. Observer sidecars report findings with `communicate(end_turn=true)`; use transcript evidence after that report when you need audit or diagnosis context. The result also includes your active watches. Terminal statuses: completed, failed, cancelled, stopped. A short job can finish before a running-only filter sees it; when recency matters, list unfiltered or read the job by id.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -617,6 +617,28 @@ func DefReadSessionTranscript() llm.ToolDefinition {
 				"format":         map[string]any{"type": "string", "enum": []string{"outline", "markdown", "jsonl"}, "description": "outline = per-turn map; markdown (default) = condensed conversation for comprehension; jsonl = raw bytes, debug/replay only."},
 				"range":          map[string]any{"type": "string", "description": "Turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40. Applies to every format."},
 				"expand_turn":    map[string]any{"type": "integer", "description": "A Turn number whose tool results to render in full (un-truncated). markdown only."},
+			},
+		},
+	}
+}
+
+// DefReadTranscript defines the generic transcript reader. It accepts archived
+// session refs and job:<job_id> refs, so callers can use one evidence reader for
+// both agent and shell jobs.
+func DefReadTranscript() llm.ToolDefinition {
+	strictFalse := false
+	return llm.ToolDefinition{
+		Name:        "read_transcript",
+		Description: "Read raw evidence by transcript_ref. Accepts session refs from find_session_transcripts or delegate results, and job:<job_id> refs from job_status/job_list for shell output logs. format=markdown (default) is for comprehension; session refs also support outline and jsonl. Completion is notification-driven; do not poll this waiting for job completion.",
+		Strict:      &strictFalse,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current, or job:<job_id>."},
+				"format":         map[string]any{"type": "string", "enum": []string{"outline", "markdown", "jsonl"}, "description": "markdown (default) = readable evidence. Session refs also support outline and jsonl."},
+				"range":          map[string]any{"type": "string", "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40."},
+				"expand_turn":    map[string]any{"type": "integer", "description": "For session refs, a Turn number whose tool results to render in full. markdown only."},
 			},
 		},
 	}

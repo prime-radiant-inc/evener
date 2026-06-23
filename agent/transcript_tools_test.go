@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +14,42 @@ import (
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
+
+func TestReadTranscriptReadsShellJobRef(t *testing.T) {
+	s := newTestSession(t)
+	jm := s.jobManager
+	rec, err := jm.createShell(createShellOpts{Command: "printf hello"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+	run := runningJobByID(t, jm, rec.JobID)
+	if _, err := jm.appendJobOutput(rec.JobID, run.output, []byte("hello\n")); err != nil {
+		t.Fatalf("appendJobOutput: %v", err)
+	}
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read",
+		Name:      "read_transcript",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"transcript_ref":"job:%s"}`, rec.JobID)),
+	})
+	if res.IsError {
+		t.Fatalf("read_transcript returned error: %s", res.Output)
+	}
+	var out readMarkdownEnvelope
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal read_transcript: %v (output: %s)", err, res.Output)
+	}
+	if out.TranscriptRef != "job:"+rec.JobID {
+		t.Fatalf("transcript_ref = %q, want job:%s", out.TranscriptRef, rec.JobID)
+	}
+	if out.ContentType != "text/markdown" {
+		t.Fatalf("content_type = %q, want text/markdown", out.ContentType)
+	}
+	if !strings.Contains(out.Content, "hello") {
+		t.Fatalf("content missing shell output: %q", out.Content)
+	}
+}
 
 // findMetaSpec describes a synthetic SessionMeta to write for find tests.
 type findMetaSpec struct {

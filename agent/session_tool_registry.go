@@ -86,9 +86,12 @@ type toolDeps struct {
 	// stateDir and sessionID locate the current session's transcript bucket and
 	// transcript file. They are the inputs the transcript tools pass to
 	// resolveTranscript; an empty stateDir means state persistence is off, in
-	// which case the transcript tools are not advertised.
+	// which case archived session transcript tools are not advertised.
 	stateDir  string
 	sessionID string
+
+	// jobManager resolves job:<job_id> transcript refs for read_transcript.
+	jobManager *jobManager
 
 	// currentMeta returns the live SessionMeta of the current session, used as
 	// the render metadata when a transcript read resolves to the current session
@@ -212,6 +215,7 @@ func newToolDeps(s *Session) *toolDeps {
 		webSearchEnabled:      s.profile.BehaviorTag() == "google",
 		stateDir:              s.stateDir,
 		sessionID:             s.id,
+		jobManager:            s.jobManager,
 		currentMeta:           s.Meta,
 	}
 }
@@ -255,14 +259,9 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	registerWebTools(reg, deps)
 	registerCommunicateTool(reg, deps)
 	registerSkillTool(reg, deps)
-	// Transcript tools are advertised only when state persistence is enabled:
-	// without a state dir there is no transcript file to read and no bucket to
-	// resolve refs against.
-	if deps.stateDir != "" {
-		for _, rt := range transcriptTools(deps) {
-			if err := reg.Register(rt); err != nil {
-				return err
-			}
+	for _, rt := range transcriptTools(deps) {
+		if err := reg.Register(rt); err != nil {
+			return err
 		}
 	}
 	return nil

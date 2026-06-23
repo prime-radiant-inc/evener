@@ -2,11 +2,13 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -18,13 +20,18 @@ import (
 // invalid JSON. It is a backstop, not a participant.
 const transcriptToolMaxChars = 600_000
 
-// transcriptTools returns the read-only transcript inspection tools. It is wired into
-// the session's tool assembly only when state persistence is enabled (a non-empty
-// StateDir), since the tools resolve and read on-disk transcript files.
+// transcriptTools returns the read-only transcript inspection tools. read_transcript
+// is always available for job:<job_id> refs; archived session lookup tools are
+// advertised only when state persistence is enabled.
 func transcriptTools(deps *toolDeps) []tool.RegisteredTool {
 	tools := []tool.RegisteredTool{
-		readSessionTranscriptTool(deps),
-		findSessionTranscriptsTool(deps),
+		readTranscriptTool(deps),
+	}
+	if deps != nil && deps.stateDir != "" {
+		tools = append(tools,
+			readSessionTranscriptTool(deps),
+			findSessionTranscriptsTool(deps),
+		)
 	}
 	for i := range tools {
 		tools[i].Limit = schema.ToolOutputLimit{MaxChars: transcriptToolMaxChars}
@@ -57,6 +64,16 @@ type readMarkdownMeta struct {
 
 const formatMarkdown = "markdown"
 
+func readTranscriptTool(deps *toolDeps) tool.RegisteredTool {
+	return tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefReadTranscript(), ReadOnly: true},
+		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			return execReadTranscript(deps, args)
+		},
+	}
+}
+
 func readSessionTranscriptTool(deps *toolDeps) tool.RegisteredTool {
 	return tool.RegisteredTool{
 		Tool: llm.Tool{Definition: tool.DefReadSessionTranscript(), ReadOnly: true},
@@ -65,6 +82,16 @@ func readSessionTranscriptTool(deps *toolDeps) tool.RegisteredTool {
 			return execReadSessionTranscript(deps, args)
 		},
 	}
+}
+
+func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
+	selector := strings.TrimSpace(stringArg(args, "transcript_ref"))
+	rangeArg := strings.TrimSpace(stringArg(args, "range"))
+	format := strings.TrimSpace(stringArg(args, "format"))
+	if strings.HasPrefix(selector, "job:") {
+		return readJobTranscript(deps, selector, rangeArg, format)
+	}
+	return execReadSessionTranscript(deps, args)
 }
 
 // execReadSessionTranscript dispatches to the appropriate format handler.
@@ -92,6 +119,73 @@ func execReadSessionTranscript(deps *toolDeps, args map[string]any) (any, error)
 	default:
 		return nil, fmt.Errorf("unknown format %q: use markdown, outline, or jsonl", format)
 	}
+}
+
+func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error) {
+	_ = rangeArg
+	if deps == nil || deps.jobManager == nil {
+		return nil, errors.New("job transcript unavailable: job manager is not available")
+	}
+	if format == "" {
+		format = formatMarkdown
+	}
+	if format != formatMarkdown {
+		return nil, fmt.Errorf("job transcript format %q is not supported: use markdown", format)
+	}
+	jobID := strings.TrimSpace(strings.TrimPrefix(ref, "job:"))
+	if jobID == "" {
+		return nil, errors.New("invalid_request: job transcript_ref must be job:<job_id>")
+	}
+	rec, err := findJobRecord(deps.jobManager, jobID)
+	if err != nil {
+		return nil, err
+	}
+	content, total, dropped, truncated, err := deps.jobManager.readJobWindow(jobID, maxJobOutputRetentionBytes, false)
+	if err != nil {
+		return nil, err
+	}
+	return readMarkdownEnvelope{
+		TranscriptRef: ref,
+		Format:        formatMarkdown,
+		ContentType:   "text/markdown",
+		Content:       renderShellJobTranscript(rec, content, total, dropped),
+		Meta: readMarkdownMeta{
+			TurnsTotal:    1,
+			Range:         "shell-log",
+			TurnsRendered: 1,
+			Truncated:     truncated || dropped > 0 || total > int64(len([]byte(content))),
+		},
+	}, nil
+}
+
+func renderShellJobTranscript(rec *jobstore.JobRecord, output string, total, dropped int64) string {
+	var b strings.Builder
+	jobID := ""
+	status := ""
+	command := ""
+	if rec != nil {
+		jobID = rec.JobID
+		status = string(rec.Status)
+		command = rec.Command
+	}
+	fmt.Fprintf(&b, "# Shell Job %s\n\n", jobID)
+	if status != "" {
+		fmt.Fprintf(&b, "- status: %s\n", status)
+	}
+	if command != "" {
+		fmt.Fprintf(&b, "- command: `%s`\n", strings.ReplaceAll(command, "`", "\\`"))
+	}
+	fmt.Fprintf(&b, "- total_bytes: %d\n", total)
+	if dropped > 0 {
+		fmt.Fprintf(&b, "- dropped_bytes: %d\n", dropped)
+	}
+	b.WriteString("\n```text\n")
+	b.WriteString(output)
+	if output != "" && !strings.HasSuffix(output, "\n") {
+		b.WriteByte('\n')
+	}
+	b.WriteString("```\n")
+	return b.String()
 }
 
 // rangeAcceptedGrammar is the grammar hint included in range_warning messages
