@@ -269,7 +269,7 @@ func TestAPILoggerNoContext(t *testing.T) {
 	}
 }
 
-func TestAPILoggerWrapStreamPassthrough(t *testing.T) {
+func TestAPILoggerWrapStreamCallsNext(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "api.jsonl")
 
@@ -293,6 +293,88 @@ func TestAPILoggerWrapStreamPassthrough(t *testing.T) {
 	})
 	if !called {
 		t.Error("stream func was not called (passthrough failed)")
+	}
+}
+
+func TestAPILoggerWrapStreamWritesRawLogOnFinish(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.jsonl")
+	rawPath := filepath.Join(dir, "api-raw.jsonl")
+
+	logger, err := NewAPILogger(path)
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	if err := logger.EnableRawLogging(rawPath); err != nil {
+		t.Fatalf("EnableRawLogging: %v", err)
+	}
+
+	wrapped := logger.WrapStream(func(ctx context.Context, req Request) (Stream, error) {
+		_ = ctx
+		st := NewChanStream(nil)
+		go func() {
+			defer st.CloseSend()
+			resp := Response{
+				ID:              "stream-123",
+				Model:           req.Model,
+				Provider:        req.Provider,
+				Message:         Assistant("stream ok"),
+				Finish:          FinishReason{Reason: FinishReasonStop},
+				Usage:           Usage{InputTokens: 5, OutputTokens: 2, TotalTokens: 7},
+				Raw:             map[string]any{"endpoint_url": "https://example.test/v1/chat/completions"},
+				RawRequestBody:  `{"input":"hi"}`,
+				RawResponseBody: "data: done\n\n",
+			}
+			st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Usage: &resp.Usage, Response: &resp})
+		}()
+		return st, nil
+	})
+
+	st, err := wrapped(WithAPILogContext(context.Background(), "sess-stream", 9), Request{
+		Model:    "test-model",
+		Provider: "test",
+		Messages: []Message{User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range st.Events() {
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("stream Close: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("logger Close: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read api.jsonl: %v", err)
+	}
+	var entry APILogEntry
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("unmarshal api.jsonl: %v\n%s", err, string(data))
+	}
+	if entry.SessionID != "sess-stream" || entry.Round != 9 {
+		t.Fatalf("api context = %q/%d, want sess-stream/9", entry.SessionID, entry.Round)
+	}
+	if entry.Response == nil || entry.Response.EndpointURL != "https://example.test/v1/chat/completions" {
+		t.Fatalf("api response = %+v, want endpoint URL", entry.Response)
+	}
+
+	rawData, err := os.ReadFile(rawPath)
+	if err != nil {
+		t.Fatalf("read api-raw.jsonl: %v", err)
+	}
+	var rawEntry APIRawLogEntry
+	if err := json.Unmarshal(bytes.TrimSpace(rawData), &rawEntry); err != nil {
+		t.Fatalf("unmarshal api-raw.jsonl: %v\n%s", err, string(rawData))
+	}
+	if rawEntry.Mode != "stream" {
+		t.Fatalf("raw mode = %q, want stream", rawEntry.Mode)
+	}
+	if rawEntry.RequestBody != `{"input":"hi"}` || rawEntry.ResponseBody != "data: done\n\n" {
+		t.Fatalf("raw bodies = %q / %q", rawEntry.RequestBody, rawEntry.ResponseBody)
 	}
 }
 

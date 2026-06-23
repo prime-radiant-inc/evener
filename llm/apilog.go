@@ -148,16 +148,7 @@ func (l *APILogger) WrapComplete(next CompleteFunc) CompleteFunc {
 
 		resp, err := next(ctx, req)
 
-		entry := APILogEntry{
-			Timestamp: start.UTC().Format(time.RFC3339),
-			LatencyMs: time.Since(start).Milliseconds(),
-			Request:   BuildAPILogRequest(req),
-		}
-
-		if lc, ok := getAPILogContext(ctx); ok {
-			entry.SessionID = lc.SessionID
-			entry.Round = lc.Round
-		}
+		entry := buildAPILogEntry(ctx, req, start)
 
 		if err != nil {
 			entry.Error = err.Error()
@@ -166,29 +157,31 @@ func (l *APILogger) WrapComplete(next CompleteFunc) CompleteFunc {
 		}
 
 		l.write(entry)
-
-		if l.rawFile != nil && (resp.RawRequestBody != "" || resp.RawResponseBody != "") {
-			rawEntry := APIRawLogEntry{
-				Timestamp:    entry.Timestamp,
-				SessionID:    entry.SessionID,
-				Round:        entry.Round,
-				Provider:     req.Provider,
-				Model:        req.Model,
-				Mode:         "complete",
-				RequestBody:  resp.RawRequestBody,
-				ResponseBody: resp.RawResponseBody,
-				LatencyMs:    entry.LatencyMs,
-			}
-			l.writeRaw(rawEntry)
-		}
+		l.writeRawResponse(entry, req, "complete", resp)
 
 		return resp, err
 	}
 }
 
-// WrapStream is a passthrough — sessions use Complete, not Stream.
+// WrapStream wraps streaming calls so the final streamed Response is recorded
+// with the same request/response metadata and optional raw HTTP bodies as
+// non-streaming calls.
 func (l *APILogger) WrapStream(next StreamFunc) StreamFunc {
-	return next
+	return func(ctx context.Context, req Request) (Stream, error) {
+		start := time.Now()
+
+		st, err := next(ctx, req)
+		if err != nil {
+			entry := buildAPILogEntry(ctx, req, start)
+			entry.Error = err.Error()
+			l.write(entry)
+			return nil, err
+		}
+		if st == nil {
+			return nil, nil
+		}
+		return newAPILogStream(st, l, ctx, req, start), nil
+	}
 }
 
 // Close flushes and closes the log file(s).
@@ -255,6 +248,36 @@ func (l *APILogger) writeRaw(entry APIRawLogEntry) {
 	l.rawFile.Sync()                    //nolint:errcheck
 }
 
+func buildAPILogEntry(ctx context.Context, req Request, start time.Time) APILogEntry {
+	entry := APILogEntry{
+		Timestamp: start.UTC().Format(time.RFC3339),
+		LatencyMs: time.Since(start).Milliseconds(),
+		Request:   BuildAPILogRequest(req),
+	}
+	if lc, ok := getAPILogContext(ctx); ok {
+		entry.SessionID = lc.SessionID
+		entry.Round = lc.Round
+	}
+	return entry
+}
+
+func (l *APILogger) writeRawResponse(entry APILogEntry, req Request, mode string, resp Response) {
+	if l.rawFile == nil || (resp.RawRequestBody == "" && resp.RawResponseBody == "") {
+		return
+	}
+	l.writeRaw(APIRawLogEntry{
+		Timestamp:    entry.Timestamp,
+		SessionID:    entry.SessionID,
+		Round:        entry.Round,
+		Provider:     req.Provider,
+		Model:        req.Model,
+		Mode:         mode,
+		RequestBody:  resp.RawRequestBody,
+		ResponseBody: resp.RawResponseBody,
+		LatencyMs:    entry.LatencyMs,
+	})
+}
+
 // BuildAPILogRequest projects an LLM request into the metadata recorded in API
 // logs and transcript api_call entries.
 func BuildAPILogRequest(req Request) APILogRequest {
@@ -312,4 +335,101 @@ func buildLogResponse(resp Response) *APILogResponse {
 		EndpointURL:   endpoint,
 		Raw:           resp.Raw,
 	}
+}
+
+type apiLogStream struct {
+	inner   Stream
+	logger  *APILogger
+	ctx     context.Context
+	req     Request
+	start   time.Time
+	out     chan StreamEvent
+	once    sync.Once
+	logOnce sync.Once
+	done    chan struct{}
+	closing chan struct{}
+}
+
+func newAPILogStream(inner Stream, logger *APILogger, ctx context.Context, req Request, start time.Time) *apiLogStream {
+	s := &apiLogStream{
+		inner:   inner,
+		logger:  logger,
+		ctx:     ctx,
+		req:     req,
+		start:   start,
+		out:     make(chan StreamEvent, 128),
+		done:    make(chan struct{}),
+		closing: make(chan struct{}),
+	}
+	go s.pump()
+	return s
+}
+
+func (s *apiLogStream) pump() {
+	defer close(s.done)
+	defer close(s.out)
+	acc := NewStreamAccumulator()
+	for {
+		select {
+		case <-s.closing:
+			return
+		case ev, ok := <-s.inner.Events():
+			if !ok {
+				return
+			}
+			acc.Process(ev)
+			if ev.Type == StreamEventFinish {
+				var resp Response
+				if ev.Response != nil {
+					resp = *ev.Response
+				} else if accumulated := acc.Response(); accumulated != nil {
+					resp = *accumulated
+				}
+				if resp.Model == "" {
+					resp.Model = s.req.Model
+				}
+				if resp.Provider == "" {
+					resp.Provider = s.req.Provider
+				}
+				s.logFinish(resp)
+			}
+			if ev.Type == StreamEventError && ev.Err != nil {
+				s.logError(ev.Err)
+			}
+			select {
+			case s.out <- ev:
+			case <-s.closing:
+				return
+			}
+		}
+	}
+}
+
+func (s *apiLogStream) logFinish(resp Response) {
+	s.logOnce.Do(func() {
+		entry := buildAPILogEntry(s.ctx, s.req, s.start)
+		entry.Response = buildLogResponse(resp)
+		s.logger.write(entry)
+		s.logger.writeRawResponse(entry, s.req, "stream", resp)
+	})
+}
+
+func (s *apiLogStream) logError(err error) {
+	s.logOnce.Do(func() {
+		entry := buildAPILogEntry(s.ctx, s.req, s.start)
+		entry.Error = err.Error()
+		s.logger.write(entry)
+	})
+}
+
+func (s *apiLogStream) Events() <-chan StreamEvent { return s.out }
+
+func (s *apiLogStream) Close() error {
+	var err error
+	s.once.Do(func() {
+		close(s.closing)
+		err = s.inner.Close()
+	})
+	<-s.done
+	return err
 }
