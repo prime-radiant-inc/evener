@@ -621,9 +621,9 @@ func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
 
 	// job_read_output must report TotalBytes >= 70000 — proving all bytes were
 	// retained in the OutputStore (not just what fits in the tool-result).
-	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "r1",
-		Name:      "job_read_output",
+	readRes := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "r1",
+
 		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_lines":1048576}`),
 	})
 	if readRes.IsError {
@@ -778,9 +778,9 @@ func TestShellHandlePeekTailIsSmall(t *testing.T) {
 	}
 
 	// The full bytes remain retrievable through the handle.
-	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "r1",
-		Name:      "job_read_output",
+	readRes := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "r1",
+
 		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_lines":1048576}`),
 	})
 	if readRes.IsError {

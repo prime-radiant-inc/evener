@@ -10,7 +10,7 @@ import (
 // elision marker describing what sits between, then the tail slice. total is the
 // lifetime output byte count and dropped is the bytes permanently evicted past
 // the retention cap. The marker states the EXACT elided byte count plus the
-// recovery call — never a line estimate: the store is byte-oriented and does not
+// transcript-read hint — never a line estimate: the store is byte-oriented and does not
 // track total lines, and estimating from the shown lines' average length is
 // unreliable (the head/tail sample is biased toward short lines, so a guess can
 // exceed the true total).
@@ -25,10 +25,10 @@ func assembleOutputDigest(head, tail []byte, total, dropped int64) string {
 		b.WriteByte('\n')
 	}
 	if dropped > 0 {
-		fmt.Fprintf(&b, "…[%s elided, %s of them permanently dropped past the retention cap — recover the retained middle with job_read_output(head_lines=… / tail_lines=… / grep=…)]…\n",
+		fmt.Fprintf(&b, "…[%s elided, %s of them permanently dropped past the retention cap — inspect retained output with read_transcript using the returned job transcript_ref]…\n",
 			humanBytes(elidedBytes), humanBytes(dropped))
 	} else {
-		fmt.Fprintf(&b, "…[%s elided — read more with job_read_output(head_lines=… / tail_lines=… / grep=…)]…\n",
+		fmt.Fprintf(&b, "…[%s elided — read more with read_transcript using the returned job transcript_ref]…\n",
 			humanBytes(elidedBytes))
 	}
 	b.Write(tail)
@@ -60,7 +60,7 @@ const (
 // shellInlineDigest renders a compact head+tail digest of a completed command's
 // full output for the inline shell result: whole lines from the first and last
 // ~shellDigestHalfBytes with the middle elided. The full output stays in the
-// OutputStore, reachable via job_read_output.
+// OutputStore, reachable via the job transcript_ref.
 func shellInlineDigest(full string, total, dropped int64) string {
 	b := []byte(full)
 	headRaw := b

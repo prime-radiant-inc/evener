@@ -468,9 +468,9 @@ func TestJobReadOutputCarriesLastActivity(t *testing.T) {
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
 
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "read",
-		Name:      "job_read_output",
+	res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "read",
+
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, rec.JobID)),
 	})
 	if res.IsError {

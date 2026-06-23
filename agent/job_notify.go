@@ -52,7 +52,7 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 
 // notificationExcerpt is a rendered terminal-result excerpt plus whether it
 // contains the job's complete output. Completeness drives the body wording:
-// a complete excerpt needs no job_read_output instruction.
+// a complete excerpt needs no transcript-read instruction.
 type notificationExcerpt struct {
 	text     string
 	complete bool
@@ -97,6 +97,16 @@ func (s *Session) terminalNotificationExcerpt(n jobNotification) notificationExc
 		rendered += "\n[excerpt truncated]"
 	}
 	return notificationExcerpt{text: rendered, complete: !truncated}
+}
+
+func notificationTranscriptRef(n jobNotification) string {
+	if n.TranscriptRef != "" {
+		return n.TranscriptRef
+	}
+	if n.JobID != "" {
+		return "job:" + n.JobID
+	}
+	return ""
 }
 
 // formatJobNotificationBlock renders one notification block. excerpt is the
@@ -145,10 +155,13 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 		)
 	}
 
-	// A complete excerpt makes a job_read_output call redundant. Otherwise,
+	// A complete excerpt makes a transcript read redundant. Otherwise,
 	// present output inspection as an available follow-up instead of the next
 	// required action.
-	instruction := "Output is available through job_read_output if needed."
+	instruction := "Output is available through read_transcript if needed."
+	if ref := notificationTranscriptRef(n); ref != "" {
+		instruction = fmt.Sprintf("Output is available through read_transcript(transcript_ref=%q) if needed.", ref)
+	}
 	if excerpt.text != "" && excerpt.complete {
 		instruction = "Complete output below."
 	}

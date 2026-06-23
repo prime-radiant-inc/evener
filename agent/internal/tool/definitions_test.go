@@ -49,7 +49,7 @@ func TestSchemaWaitKnobs(t *testing.T) {
 	}{
 		{"delegate", func() map[string]any { return DefDelegate(nil).Parameters }},
 		{"delegate_send", func() map[string]any { return DefDelegateSend().Parameters }},
-		{"job_read_output", func() map[string]any { return DefJobReadOutput().Parameters }},
+		{"wait_for_transcript_match", func() map[string]any { return DefWaitForTranscriptMatch().Parameters }},
 		{"job_stop", func() map[string]any { return DefJobStop().Parameters }},
 	}
 
@@ -352,7 +352,7 @@ func TestDefJobWatchUsesSourceAndOmitsSend(t *testing.T) {
 }
 
 func TestOptionalJobInspectionToolsAreNonStrict(t *testing.T) {
-	for _, def := range []llm.ToolDefinition{DefJobReadOutput(), DefJobList()} {
+	for _, def := range []llm.ToolDefinition{DefJobStatus(), DefWaitForTranscriptMatch(), DefJobList(), DefReadTranscript()} {
 		if def.Strict == nil || *def.Strict {
 			t.Fatalf("%s Strict = %v, want false so OpenAI does not require optional inspection fields", def.Name, def.Strict)
 		}
@@ -362,7 +362,9 @@ func TestOptionalJobInspectionToolsAreNonStrict(t *testing.T) {
 func TestJobControlDescriptionsDoNotAdvertiseCallerDelegateSend(t *testing.T) {
 	defs := []llm.ToolDefinition{
 		DefJobWatch([]string{"communicate"}),
-		DefJobReadOutput(),
+		DefJobStatus(),
+		DefWaitForTranscriptMatch(),
+		DefReadTranscript(),
 		DefJobList(),
 		DefJobStop(),
 	}
@@ -375,7 +377,7 @@ func TestJobControlDescriptionsDoNotAdvertiseCallerDelegateSend(t *testing.T) {
 					t.Fatalf("%s advertises legacy observer callback path: %q", def.Name, desc)
 				}
 			}
-			if def.Name == "job_read_output" || def.Name == "job_list" {
+			if def.Name == "job_list" {
 				if !strings.Contains(def.Description, "communicate(end_turn=true)") {
 					t.Fatalf("%s description = %q, want observer sidecar communicate report path", def.Name, def.Description)
 				}

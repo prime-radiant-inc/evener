@@ -65,16 +65,6 @@ var rootOnlyJobControlTools = []string{"delegate", "job_watch"}
 func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	_ = deps
 	if err := reg.Register(tool.RegisteredTool{
-		Tool:  llm.Tool{Definition: tool.DefJobReadOutput(), ReadOnly: true},
-		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
-		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = env
-			return jobReadOutputTool(ctx, s, args, jobToolResultMaxChars(reg, "job_read_output"))
-		},
-	}); err != nil {
-		return err
-	}
-	if err := reg.Register(tool.RegisteredTool{
 		Tool:  llm.Tool{Definition: tool.DefJobStatus(), ReadOnly: true},
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -2424,7 +2414,7 @@ func enforceJobToolJSONLimits(reg *tool.Registry) {
 		return
 	}
 	overrides := map[string]schema.ToolOutputLimit{}
-	for _, name := range []string{"job_read_output", "job_status", "wait_for_transcript_match", "job_list", "job_stop", "delegate", "job_watch", "delegate_send"} {
+	for _, name := range []string{"job_status", "wait_for_transcript_match", "job_list", "job_stop", "delegate", "job_watch", "delegate_send"} {
 		registered := reg.Get(name)
 		if registered == nil || registered.Limit.MaxChars >= jobToolResultMinJSONChars {
 			continue

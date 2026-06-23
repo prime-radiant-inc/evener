@@ -669,7 +669,7 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if child.reg.Get("delegate_send") == nil {
 		t.Fatal("depth>0 child must keep delegate_send registered")
 	}
-	for _, name := range []string{"shell", "job_read_output", "job_list", "job_stop"} {
+	for _, name := range []string{"shell", "job_status", "job_list", "job_stop", "read_transcript", "wait_for_transcript_match"} {
 		if child.reg.Get(name) == nil {
 			t.Fatalf("depth>0 child must keep %s registered", name)
 		}
@@ -680,7 +680,7 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if !hasCachedCallableToolDefinition(child, "delegate_send") {
 		t.Fatal("depth>0 child must advertise delegate_send")
 	}
-	for _, name := range []string{"shell", "job_read_output", "job_list", "job_stop"} {
+	for _, name := range []string{"shell", "job_status", "job_list", "job_stop", "read_transcript", "wait_for_transcript_match"} {
 		if !hasCachedCallableToolDefinition(child, name) {
 			t.Fatalf("depth>0 child must advertise %s", name)
 		}

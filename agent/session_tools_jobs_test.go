@@ -32,6 +32,61 @@ func toolResultJSON(res tooldefs.ExecResult) []byte {
 	return []byte(res.Output)
 }
 
+func executeJobReadOutputForTest(t *testing.T, s *Session, call llm.ToolCallData) tooldefs.ExecResult {
+	t.Helper()
+	args := map[string]any{}
+	if len(call.Arguments) > 0 {
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			msg := fmt.Sprintf("invalid tool arguments JSON: %v", err)
+			return tooldefs.ExecResult{
+				ToolName:   "job_read_output",
+				CallID:     call.ID,
+				Output:     msg,
+				FullOutput: msg,
+				IsError:    true,
+			}
+		}
+	}
+	callID := call.ID
+	if strings.TrimSpace(callID) == "" {
+		callID = "job_read_output_test"
+	}
+	v, err := jobReadOutputTool(context.Background(), s, args, jobToolResultDefaultMaxChar)
+	if err != nil {
+		msg := fmt.Sprintf("%v", err)
+		return tooldefs.ExecResult{
+			ToolName:   "job_read_output",
+			CallID:     callID,
+			Output:     msg,
+			FullOutput: msg,
+			IsError:    true,
+		}
+	}
+	if st, ok := v.(tooldefs.StateResult); ok {
+		res := tooldefs.ExecResult{
+			ToolName:   "job_read_output",
+			CallID:     callID,
+			Output:     st.Output,
+			FullOutput: st.Output,
+		}
+		if st.State != nil {
+			data, err := json.Marshal(st.State)
+			if err != nil {
+				t.Fatalf("marshal job_read_output test state: %v", err)
+			}
+			res.ToolState = data
+		}
+		return res
+	}
+	out := fmt.Sprint(v)
+	return tooldefs.ExecResult{
+		ToolName:   "job_read_output",
+		CallID:     callID,
+		Output:     out,
+		FullOutput: out,
+	}
+}
+
 // handlerJSON returns the structured JSON from a tool handler called directly
 // (not via the registry), whose return is now a tooldefs.StateResult: it marshals
 // the State. Tools still returning a JSON string yield that string verbatim.
@@ -73,9 +128,9 @@ func TestJobReadOutputReportsStatus(t *testing.T) {
 		t.Fatalf("9 KiB output returned no job_id")
 	}
 
-	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "r1",
-		Name:      "job_read_output",
+	readRes := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "r1",
+
 		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","tail_lines":500}`),
 	})
 	if readRes.IsError {
@@ -439,9 +494,9 @@ func TestJobToolsRejectDelegateIDWithActionableGuidance(t *testing.T) {
 func TestJobReadOutputUnknownIDPointsToJobList(t *testing.T) {
 	s := newTestSession(t)
 
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "r1",
-		Name:      "job_read_output",
+	res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "r1",
+
 		Arguments: json.RawMessage(`{"job_id":"0"}`),
 	})
 	if !res.IsError {
@@ -473,9 +528,9 @@ func TestJobReadOutputDefaultWindowIsBounded(t *testing.T) {
 		t.Fatalf("20 KiB output returned no job_id")
 	}
 
-	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "r1",
-		Name:      "job_read_output",
+	readRes := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "r1",
+
 		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `"}`),
 	})
 	if readRes.IsError {
@@ -513,9 +568,9 @@ func TestJobReadOutputHeadAndTailTogether(t *testing.T) {
 	if out.JobID == "" {
 		t.Fatalf("seq 1 5000 should be a handle: %s", res.Output)
 	}
-	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "r1",
-		Name:      "job_read_output",
+	readRes := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "r1",
+
 		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","head_lines":3,"tail_lines":3}`),
 	})
 	if readRes.IsError {
@@ -551,9 +606,9 @@ func TestJobReadOutputFromLineMiddleSlice(t *testing.T) {
 	if out.JobID == "" {
 		t.Fatalf("seq 1 5000 should be a handle: %s", res.Output)
 	}
-	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "r1",
-		Name:      "job_read_output",
+	readRes := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "r1",
+
 		Arguments: json.RawMessage(`{"job_id":"` + out.JobID + `","from_line":2500,"line_count":3}`),
 	})
 	if readRes.IsError {
@@ -2757,9 +2812,9 @@ func TestJobReadOutputReturnsBackgroundDelegateStructuredResult(t *testing.T) {
 	}
 	waitForShellDone(t, s.jobManager, delegateOut.JobID)
 
-	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "read",
-		Name:      "job_read_output",
+	readRes := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "read",
+
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, delegateOut.JobID)),
 	})
 	if readRes.IsError {
@@ -2815,9 +2870,9 @@ func TestJobReadOutputReturnsBackgroundDelegateSchemaResultMissingReason(t *test
 	}
 	waitForShellDone(t, s.jobManager, delegateOut.JobID)
 
-	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "read",
-		Name:      "job_read_output",
+	readRes := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "read",
+
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, delegateOut.JobID)),
 	})
 	if readRes.IsError {
@@ -2848,9 +2903,9 @@ func TestJobReadOutputBlockReturnsOnNewOutput(t *testing.T) {
 	}()
 
 	started := time.Now()
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "read",
-		Name:      "job_read_output",
+	res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "read",
+
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_wait_ms":1000}`, rec.JobID)),
 	})
 	if res.IsError {
@@ -2940,9 +2995,9 @@ func TestWaitForTranscriptMatchWaitsForShellOutput(t *testing.T) {
 func blockingGrepRead(t *testing.T, s *Session, jobID, grep string, timeoutMS int) (jobReadOutputTestResult, time.Duration) {
 	t.Helper()
 	started := time.Now()
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "read",
-		Name:      "job_read_output",
+	res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "read",
+
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"grep":%q,"max_wait_ms":%d}`, jobID, grep, timeoutMS)),
 	})
 	elapsed := time.Since(started)
@@ -3610,24 +3665,26 @@ func TestJobToolsDefinitions(t *testing.T) {
 		}
 	}
 
-	required(t, tooldefs.DefJobReadOutput(), "job_read_output", []string{"job_id"})
+	required(t, tooldefs.DefJobStatus(), "job_status", []string{"job_id"})
+	required(t, tooldefs.DefWaitForTranscriptMatch(), "wait_for_transcript_match", []string{"transcript_ref", "grep"})
 	required(t, tooldefs.DefJobStop(), "job_stop", []string{"job_id"})
 	required(t, tooldefs.DefJobList(), "job_list", nil)
+	required(t, tooldefs.DefReadTranscript(), "read_transcript", nil)
 	required(t, tooldefs.DefDelegate([]string{"reviewer"}), "delegate", []string{"task"})
 	required(t, tooldefs.DefJobWatch(WatchEventKindNames), "job_watch", []string{"operation"})
 	required(t, tooldefs.DefDelegateSend(), "delegate_send", []string{"to", "message"})
 
-	readProps := tooldefs.DefJobReadOutput().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"tail_lines", "grep", "max_wait_ms"} {
-		if _, ok := readProps[param]; !ok {
-			t.Fatalf("job_read_output missing param %q", param)
+	waitProps := tooldefs.DefWaitForTranscriptMatch().Parameters["properties"].(map[string]any)
+	for _, param := range []string{"transcript_ref", "grep", "max_wait_ms"} {
+		if _, ok := waitProps[param]; !ok {
+			t.Fatalf("wait_for_transcript_match missing param %q", param)
 		}
 	}
-	if _, ok := readProps["max_chars"]; ok {
-		t.Fatalf("job_read_output schema unexpectedly contains removed max_chars param")
-	}
-	if _, ok := readProps["limit_bytes"]; ok {
-		t.Fatalf("job_read_output schema unexpectedly contains removed limit_bytes param")
+	readProps := tooldefs.DefReadTranscript().Parameters["properties"].(map[string]any)
+	for _, param := range []string{"transcript_ref", "format", "range", "expand_turn"} {
+		if _, ok := readProps[param]; !ok {
+			t.Fatalf("read_transcript missing param %q", param)
+		}
 	}
 	listProps := tooldefs.DefJobList().Parameters["properties"].(map[string]any)
 	for _, param := range []string{"status", "type", "include_nested", "limit"} {
@@ -3706,9 +3763,9 @@ func TestJobReadOutputRejectsInvalidArgs(t *testing.T) {
 		{"grep", fmt.Sprintf(`{"job_id":%q,"grep":"["}`, shellOut.JobID)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-				ID:        "read",
-				Name:      "job_read_output",
+			res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+				ID: "read",
+
 				Arguments: json.RawMessage(tc.args),
 			})
 			if !res.IsError {
@@ -3789,9 +3846,9 @@ func TestJobReadOutputProjectionTooLargeDoesNotMutateDurableStructuredResult(t *
 	}
 	waitForShellDone(t, s.jobManager, delegateOut.JobID)
 
-	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "read",
-		Name:      "job_read_output",
+	readRes := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "read",
+
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, delegateOut.JobID)),
 	})
 	if readRes.IsError {
@@ -3815,16 +3872,17 @@ func TestJobReadOutputProjectionTooLargeDoesNotMutateDurableStructuredResult(t *
 func TestJobToolOutputLimitsHaveJSONMinimum(t *testing.T) {
 	s := newShellToolTestSession(t, SessionConfig{
 		ToolOutputLimits: map[string]schema.ToolOutputLimit{
-			"job_read_output": {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"job_list":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"job_stop":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"delegate":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"job_watch":       {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"delegate_send":   {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_status":                {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"wait_for_transcript_match": {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_list":                  {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_stop":                  {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"delegate":                  {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_watch":                 {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"delegate_send":             {MaxChars: 1, Strategy: schema.TruncHeadTail},
 		},
 	})
 
-	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate", "job_watch", "delegate_send"} {
+	for _, name := range []string{"job_status", "wait_for_transcript_match", "job_list", "job_stop", "delegate", "job_watch", "delegate_send"} {
 		rt := s.reg.Get(name)
 		if rt == nil {
 			t.Fatalf("%s not registered", name)
@@ -3832,6 +3890,19 @@ func TestJobToolOutputLimitsHaveJSONMinimum(t *testing.T) {
 		if rt.Limit.MaxChars != jobToolResultMinJSONChars {
 			t.Fatalf("%s MaxChars = %d, want JSON minimum %d", name, rt.Limit.MaxChars, jobToolResultMinJSONChars)
 		}
+	}
+}
+
+func TestJobReadOutputIsNotModelFacing(t *testing.T) {
+	s := newTestSession(t)
+	if got := s.reg.Get("job_read_output"); got != nil {
+		t.Fatalf("job_read_output is still registered: %+v", got.Tool.Definition.Name)
+	}
+	if got := s.reg.Get("job_status"); got == nil {
+		t.Fatalf("job_status is not registered")
+	}
+	if got := s.reg.Get("wait_for_transcript_match"); got == nil {
+		t.Fatalf("wait_for_transcript_match is not registered")
 	}
 }
 
@@ -3987,9 +4058,9 @@ func TestJobReadOutputRejectsLargeGrepBeforeRegistryTruncation(t *testing.T) {
 	// produce a durable id here. The test is about grep validation, not shell.
 	rec := newManualRunningJob(t, s)
 
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "read",
-		Name:      "job_read_output",
+	res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "read",
+
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"grep":%q}`, rec.JobID, strings.Repeat("a", maxJobGrepPatternBytes+1))),
 	})
 	if !res.IsError {
@@ -4012,9 +4083,9 @@ func TestJobReadOutputRejectsJSONExpandedGrepBeforeRegistryTruncation(t *testing
 	if err != nil {
 		t.Fatalf("marshal grep pattern: %v", err)
 	}
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "read",
-		Name:      "job_read_output",
+	res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "read",
+
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"grep":%s}`, rec.JobID, patternJSON)),
 	})
 	if !res.IsError {
@@ -4083,9 +4154,9 @@ func waitForJobOutput(t *testing.T, s *Session, jobID, want string) jobReadOutpu
 	deadline := time.Now().Add(2 * time.Second)
 	var last string
 	for time.Now().Before(deadline) {
-		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-			ID:        "read",
-			Name:      "job_read_output",
+		res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+			ID: "read",
+
 			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":65536,"grep":"ready"}`, jobID)),
 		})
 		if res.IsError {
@@ -4110,9 +4181,9 @@ func waitForJobGrepMatchResult(t *testing.T, s *Session, jobID, want string, tai
 	deadline := time.Now().Add(2 * time.Second)
 	var last string
 	for time.Now().Before(deadline) {
-		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-			ID:        "read",
-			Name:      "job_read_output",
+		res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+			ID: "read",
+
 			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":%d,"grep":%q}`, jobID, tailBytes, want)),
 		})
 		if res.IsError {
@@ -4391,9 +4462,9 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 		s := newTestSession(t)
 		// Use internal API to create a running job (avoids shell decoder chicken-and-egg).
 		rec := newManualRunningJob(t, s)
-		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-			ID:        "read",
-			Name:      "job_read_output",
+		res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+			ID: "read",
+
 			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_wait_ms":-1}`, rec.JobID)),
 		})
 		if !res.IsError {
@@ -4410,9 +4481,9 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 		rec := newManualRunningJob(t, s)
 		// max_wait_ms=0: snapshot now (should not block).
 		started := time.Now()
-		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-			ID:        "read",
-			Name:      "job_read_output",
+		res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+			ID: "read",
+
 			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_wait_ms":0}`, rec.JobID)),
 		})
 		if res.IsError {
@@ -4507,9 +4578,9 @@ func TestJobReadOutputHeadLinesReadsFromStart(t *testing.T) {
 	}
 
 	// (a) The default head+tail digest must contain BOTH ends + an elision marker.
-	digRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "read-digest",
-		Name:      "job_read_output",
+	digRes := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "read-digest",
+
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, shellOut.JobID)),
 	})
 	if digRes.IsError {
@@ -4527,9 +4598,9 @@ func TestJobReadOutputHeadLinesReadsFromStart(t *testing.T) {
 	}
 
 	// (b) head_lines:1024 read must contain HEAD_MARKER_9, not TAIL_MARKER_7, and be truncated.
-	headRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "read-head",
-		Name:      "job_read_output",
+	headRes := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "read-head",
+
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"head_lines":1024}`, shellOut.JobID)),
 	})
 	if headRes.IsError {
@@ -4560,9 +4631,9 @@ func TestJobReadOutputFromLineExclusiveWithHeadTail(t *testing.T) {
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, s.jobManager, rec.JobID) })
 
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "read",
-		Name:      "job_read_output",
+	res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "read",
+
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"from_line":5,"head_lines":3}`, rec.JobID)),
 	})
 	if !res.IsError {
@@ -4611,9 +4682,8 @@ func TestJobReadOutputZeroHeadTailTreatedAsUnset(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
 				ID:        "read-" + tc.name,
-				Name:      "job_read_output",
 				Arguments: json.RawMessage(tc.args),
 			})
 			if res.IsError {
@@ -4667,9 +4737,9 @@ func TestJobReadOutputNegativeHeadBytesRejected(t *testing.T) {
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, s.jobManager, rec.JobID) })
 
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "read",
-		Name:      "job_read_output",
+	res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+		ID: "read",
+
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"head_lines":-1}`, rec.JobID)),
 	})
 	if !res.IsError {

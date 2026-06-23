@@ -367,8 +367,8 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.StateRes
 	out.JobID = jobID
 	out.OutputStatus = outputWindowStatus(res.TotalBytes, res.DroppedBytes, true)
 
-	// The model sees only a small head+tail digest + the job_id — it pages the rest
-	// via job_read_output. The full output is retained in the durable job.
+	// The model sees only a small head+tail digest + the job_id; it reads the rest
+	// through the job transcript_ref. The full output is retained in the durable job.
 	digest := shellInlineDigest(res.Output, res.TotalBytes, res.DroppedBytes)
 	peekTruncated := true
 	out.Output = &digest
@@ -378,8 +378,8 @@ func marshalCompleteOrHandleResult(res shellResult, maxChars int) (tool.StateRes
 
 // outputWindowStatus classifies an output window for the model: "all_retained"
 // when the returned window is the whole retained log, "windowed" when the full
-// log is retained but only a slice was returned (page the rest via
-// job_read_output), and "evicted" when the oldest bytes were permanently dropped
+// log is retained but only a slice was returned (read the rest via the job
+// transcript_ref), and "evicted" when the oldest bytes were permanently dropped
 // past the retention cap. It describes the WINDOW, not the job lifecycle — a
 // running job whose window covers everything-so-far still reports "all_retained".
 func outputWindowStatus(total, dropped int64, truncated bool) string {
@@ -420,7 +420,7 @@ func formatShellResult(out shellToolResult) string {
 	case out.RunningInBackground && out.JobID != "":
 		foot = append(foot, "running in background as "+out.JobID)
 	case out.JobID != "":
-		foot = append(foot, "output windowed — read more with job_read_output(job_id="+out.JobID+")")
+		foot = append(foot, fmt.Sprintf("output windowed — read more with read_transcript(transcript_ref=%q)", "job:"+out.JobID))
 	}
 	if out.DroppedBytes > 0 {
 		foot = append(foot, fmt.Sprintf("%d bytes dropped past the retention cap", out.DroppedBytes))

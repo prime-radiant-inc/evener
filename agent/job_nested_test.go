@@ -664,9 +664,8 @@ func TestParentReadsNestedOutputViaOwnerRuntime(t *testing.T) {
 		t.Fatalf("append nested output: %v", err)
 	}
 
-	res := parent.reg.ExecuteCall(context.Background(), parent.env, llm.ToolCallData{
+	res := executeJobReadOutputForTest(t, parent, llm.ToolCallData{
 		ID:        "read",
-		Name:      "job_read_output",
 		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":65536,"grep":"owner"}`, nested.JobID)),
 	})
 	if res.IsError {

@@ -209,7 +209,8 @@ func toolDefinitionsForCapabilities(capabilities []toolCapability, efforts []str
 		add(tool.DefListDir())
 	}
 	if enabled[capabilityJobControl] {
-		add(tool.DefJobReadOutput())
+		add(tool.DefJobStatus())
+		add(tool.DefWaitForTranscriptMatch())
 		add(tool.DefJobList())
 		add(tool.DefJobStop())
 		add(tool.DefDelegate(nil))

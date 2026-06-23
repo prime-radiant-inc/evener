@@ -56,11 +56,13 @@ const (
 var delegationPromptToolNames = []string{
 	"delegate",
 	"delegate_send",
+	"job_status",
 	"job_list",
-	"job_read_output",
 	"job_stop",
 	"job_watch",
+	"read_transcript",
 	"shell",
+	"wait_for_transcript_match",
 }
 
 // resultToolName returns the effective name for the communicate tool.

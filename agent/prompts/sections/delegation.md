@@ -7,8 +7,9 @@ allowance, so the chain always shortens and allowance 0 is a leaf.
 
 Use `delegate` to assign scoped work. It returns a durable `delegate_id` for
 follow-up and concrete `job_id`s for individual turns. Use `delegate_send` with
-the `delegate_id` to continue delegate work; use `job_read_output`, `job_list`,
-and `job_stop` with concrete `job_id`s to inspect or stop specific turns.
+the `delegate_id` to continue delegate work; use `job_status`, `job_list`,
+`read_transcript`, and `job_stop` with concrete `job_id`s or transcript refs to
+inspect or stop specific turns.
 
 Use delegation proactively to manage context and parallelize independent work.
 For broad, ambiguous, or multi-part tasks, decompose the work into bounded

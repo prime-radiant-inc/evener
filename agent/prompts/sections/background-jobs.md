@@ -11,8 +11,13 @@ Pick the waiting primitive by how many answers you need:
 - The result of a quick command now → plain `shell` (foreground). To launch long
   work without waiting → `shell` with `background: true` (returns a `job_id`
   immediately; you are notified when it finishes).
-- One signal ("the server printed ready") → `job_read_output` with `max_wait_ms`
-  and `grep`. One bounded wait, nothing to clean up afterward.
+- Orientation ("what is it doing?") → `job_status`, or `job_list` when you need
+  the current set. Rows include `phase`, `running_for_ms`, `quiet_for_ms`, and
+  `transcript_ref`.
+- Raw evidence → `read_transcript` with the `transcript_ref` from `job_status`,
+  `job_list`, or the notification.
+- One signal ("the server printed ready") → `wait_for_transcript_match` with
+  `grep` and `max_wait_ms`. One bounded wait, nothing to clean up afterward.
 - A recurring condition (every new match, periodic progress, event frames to an
   observer) → `job_watch`.
 - "Tell me when it finishes" → the terminal notification is automatic.

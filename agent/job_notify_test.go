@@ -21,7 +21,7 @@ func TestFormatJobNotification(t *testing.T) {
 		JobID: "job_X", JobType: "shell", Status: "completed", Reason: "exit_zero",
 		OutputBytes: 42, ExitCode: &code,
 	}, notificationExcerpt{})
-	for _, want := range []string{`job_id="job_X"`, `event="completed"`, `job_type="shell"`, `status="completed"`, `reason="exit_zero"`, "job_read_output"} {
+	for _, want := range []string{`job_id="job_X"`, `event="completed"`, `job_type="shell"`, `status="completed"`, `reason="exit_zero"`, "read_transcript", `transcript_ref="job:job_X"`} {
 		if !strings.Contains(block, want) {
 			t.Errorf("notification missing %q:\n%s", want, block)
 		}
@@ -38,8 +38,8 @@ func TestFormatJobNotification(t *testing.T) {
 	if !strings.Contains(watchBlock, "Watch event triggered") {
 		t.Fatalf("watch notification block = %q, want watch wording", watchBlock)
 	}
-	if strings.Contains(watchBlock, "job_read_output") {
-		t.Fatalf("watch notification without job_id must not suggest job_read_output:\n%s", watchBlock)
+	if strings.Contains(watchBlock, "read_transcript") {
+		t.Fatalf("watch notification without job_id must not suggest read_transcript:\n%s", watchBlock)
 	}
 
 	emptyReason := formatJobNotificationBlock(jobNotification{
@@ -699,7 +699,7 @@ func TestTerminalNotificationShortOutputHasNoTruncationMarker(t *testing.T) {
 }
 
 // A complete excerpt (the job's entire output fit the budget) makes a
-// job_read_output call redundant — the body must say the output is complete
+// transcript read redundant — the body must say the output is complete
 // instead of instructing a read (live finding 2026-06-12: the template nudged
 // a wasted tool call while carrying the full result).
 func TestTerminalNotificationCompleteExcerptOmitsReadInstruction(t *testing.T) {
@@ -711,7 +711,7 @@ func TestTerminalNotificationCompleteExcerptOmitsReadInstruction(t *testing.T) {
 	}
 
 	text := deliveredNotificationText(t, adapter)
-	if strings.Contains(text, "Use job_read_output") {
+	if strings.Contains(text, "read_transcript") {
 		t.Fatalf("complete excerpt must not instruct a redundant read:\n%s", text)
 	}
 	if !strings.Contains(text, "Complete output below.") {
@@ -734,7 +734,7 @@ func TestTerminalNotificationTruncatedExcerptAdvertisesReadAffordance(t *testing
 	}
 
 	text := deliveredNotificationText(t, adapter)
-	if !strings.Contains(text, "Output is available through job_read_output if needed.") {
+	if !strings.Contains(text, `Output is available through read_transcript(transcript_ref="job:job_T") if needed.`) {
 		t.Fatalf("truncated excerpt must advertise the read affordance:\n%s", text)
 	}
 	if !strings.Contains(text, "[excerpt truncated]") {

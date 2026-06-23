@@ -24,7 +24,7 @@ const (
 	shellRideWholeBytes = 8 * 1024
 	// shellDefaultTailBytes is the small peek tail shown inline when output
 	// exceeds the ride-whole budget, and for running-job snapshots. The full
-	// output stays in the OutputStore, reachable via job_read_output.
+	// output stays in the OutputStore, reachable via the job transcript_ref.
 	shellDefaultTailBytes = 1024
 	// shellInlineOutputBytes is the read budget for delegate report output
 	// (a bounded final result, not raw logs); shell peeks use shellDefaultTailBytes.
