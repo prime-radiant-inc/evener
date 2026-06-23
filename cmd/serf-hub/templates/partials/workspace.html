@@ -66,7 +66,7 @@
       <button type="button"
               class="queue-preview-help"
               aria-label="queue help"
-              title="Queued messages process after the current turn. Press ⇧↵ or click &quot;send as steer&quot; to drain them as a steering message.">?</button>
+                  title="Queued messages process after the current turn. Press ⇧↵ or click &quot;steer&quot; to drain them as a steering message.">?</button>
     </div>
     <ul class="queue-preview-list" data-queue-list></ul>
   </div>
@@ -76,28 +76,29 @@
     </button>
   </div>
   <div class="input-card" data-drop-zone>
-    <div class="composer-model" title="{{if .Model}}{{.Model}}{{else}}model unavailable{{end}}">
-      <span class="composer-model-key">model</span>
-      {{if .Capabilities.ChangeModel}}
-      <button type="button" class="composer-model-value" data-model-trigger{{if .Model}} title="{{.Model}}"{{end}}>
-        <span data-model-display>{{if .Model}}{{.Model}}{{else}}—{{end}}</span><span class="caret">▾</span>
-      </button>
-      {{else}}
-      <span class="composer-model-value" data-model-display>{{if .Model}}{{.Model}}{{else}}—{{end}}</span>
-      {{end}}
-    </div>
     <textarea class="message-input" placeholder="message the agent…" autofocus rows="1"></textarea>
     <div class="input-controls">
       <div class="controls-left">
         <button type="button" class="btn btn-secondary" data-attach-trigger title="attach image" aria-label="attach image">＋</button>
       </div>
-      <div class="controls-center"></div>
+      <div class="controls-center">
+        <div class="composer-model" title="{{if .Model}}{{.Model}}{{else}}model unavailable{{end}}">
+          <span class="composer-model-key">model</span>
+          {{if .Capabilities.ChangeModel}}
+          <button type="button" class="composer-model-value" data-model-trigger{{if .Model}} title="{{.Model}}"{{end}}>
+            <span data-model-display>{{if .Model}}{{.Model}}{{else}}—{{end}}</span><span class="caret">▾</span>
+          </button>
+          {{else}}
+          <span class="composer-model-value" data-model-display>{{if .Model}}{{.Model}}{{else}}—{{end}}</span>
+          {{end}}
+        </div>
+      </div>
       <div class="controls-right">
         {{if and (ne .State "ended") (ne .State "closed") (or .Capabilities.Interrupt .Capabilities.Steer .Capabilities.Send .Capabilities.Queue)}}
         <button type="button" class="btn btn-danger stop-btn" data-action-trigger="interrupt" data-capability-interrupt="{{.Capabilities.Interrupt}}" title="stop the in-flight turn"{{if or (not .Capabilities.Interrupt) (eq .ActiveTurnID "") (and (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}>Stop</button>
         {{end}}
         {{if or .Capabilities.Steer .Capabilities.Send .Capabilities.Queue}}
-        <button type="button" class="btn btn-ghost" data-steer-trigger data-capability-steer="{{.Capabilities.Steer}}" title="drain the queue as a steering message — or steer with the textarea text when the queue is empty"{{if or (not .Capabilities.Steer) (eq .ActiveTurnID "") (and (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}>send as steer <kbd>⇧↵</kbd></button>
+        <button type="button" class="btn btn-ghost" data-steer-trigger data-capability-steer="{{.Capabilities.Steer}}" title="drain the queue as a steering message — or steer with the textarea text when the queue is empty"{{if or (not .Capabilities.Steer) (eq .ActiveTurnID "") (and (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}>steer <kbd>⇧↵</kbd></button>
         {{end}}
         <button type="submit" class="btn btn-primary send-btn" data-capability-send="{{.Capabilities.Send}}" data-capability-queue="{{.Capabilities.Queue}}"{{if and (not .Capabilities.Send) (not .Capabilities.Queue)}} disabled title="send unavailable"{{end}}>send <kbd>⌘↵</kbd></button>
       </div>

@@ -1422,7 +1422,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 
 /* Queue preview: shows messages typed during a processing turn that will
    become fresh user turns when the active turn completes (kata 111a). The
-   "send as steer" button (and ⇧↵) drain these into a single STEERING
+   "steer" button (and ⇧↵) drains these into a single STEERING
    injection (kata 0bq1). Hidden via the [hidden] attribute when empty. */
 .queue-preview {
   padding: var(--space-3) var(--space-3);
@@ -1507,7 +1507,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-bottom: var(--space-2);
+  min-width: 0;
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
@@ -1549,7 +1549,7 @@ button.composer-model-value:hover { text-decoration: underline; }
 .input-controls { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0 0; flex-wrap: wrap; }
 .controls-left,
 .controls-right { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
-.controls-center { flex: 1; display: flex; align-items: center; justify-content: flex-start; min-height: 1px; }
+.controls-center { flex: 1; display: flex; align-items: center; justify-content: flex-start; min-width: 0; min-height: 1px; }
 
 .input-status {
   display: flex;
@@ -3906,6 +3906,12 @@ body.doc-page {
    pane width and repeats information already visible in the pane header bar. */
 .pane-compact .workspace-header {
   padding: var(--space-2) var(--space-4);
+}
+.pane-compact .workspace-title-row {
+  display: none;
+}
+.pane-compact kbd {
+  display: none;
 }
 /* Hide the secondary meta row (model, cwd, turn count) — it's too much at
    pane width; the title row alone orients the reader. */

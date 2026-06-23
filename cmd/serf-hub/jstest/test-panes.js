@@ -125,5 +125,45 @@ console.log("test-panes width: ok");
   console.log("test-panes PANE_MIN restore enforces minimum: ok (width=" + wAfterRestore + " panes=" + openCount + ")");
 }());
 
+
+// ---- Splitter drag lifecycle regression ------------------------------------
+(function () {
+  var dom3 = new JSDOM(`<!DOCTYPE html><body class="app">
+    <main id="workspace"></main>
+    <div id="pane-splitter" hidden></div>
+    <aside id="side-panes" hidden></aside>
+  </body>`, { url: "http://localhost/" });
+  global.window = dom3.window; global.document = dom3.window.document;
+  Object.defineProperty(dom3.window, "innerWidth", { configurable: true, value: 1200 });
+  eval(fs.readFileSync(path.join(__dirname, "..", "assets", "panes.js"), "utf8"));
+  dom3.window.document.dispatchEvent(new dom3.window.Event("DOMContentLoaded", { bubbles: true }));
+  var P3 = dom3.window.SerfPanes;
+  P3.open("/s/drag-a", "Drag A");
+  var split = dom3.window.document.getElementById("pane-splitter");
+  var storedWidth = function () { return parseInt(dom3.window.localStorage.getItem("serf-hub.panes.width"), 10); };
+  var mouse = function (type, clientX, buttons) {
+    return new dom3.window.MouseEvent(type, { bubbles: true, cancelable: true, clientX: clientX, buttons: buttons });
+  };
+
+  split.dispatchEvent(mouse("mousedown", 700, 1));
+  dom3.window.document.dispatchEvent(mouse("mousemove", 500, 1));
+  var widened = storedWidth();
+  if (widened !== 700) throw new Error("active splitter drag left should widen side panes to 700, got " + widened);
+
+  dom3.window.document.dispatchEvent(mouse("mousemove", 900, 1));
+  var shrunk = storedWidth();
+  if (shrunk >= widened) throw new Error("active splitter drag right should shrink side panes / widen main pane, got " + shrunk + " after " + widened);
+
+  dom3.window.document.dispatchEvent(mouse("mousemove", 450, 0));
+  var afterReleasedMove = storedWidth();
+  if (afterReleasedMove !== shrunk) throw new Error("mousemove with no pressed button must not keep resizing after drag release; before=" + shrunk + " after=" + afterReleasedMove);
+
+  dom3.window.document.dispatchEvent(mouse("mouseup", 450, 0));
+  dom3.window.document.dispatchEvent(mouse("mousemove", 520, 0));
+  var afterMouseupHover = storedWidth();
+  if (afterMouseupHover !== shrunk) throw new Error("hover/contact after mouseup must not resize; before=" + shrunk + " after=" + afterMouseupHover);
+  console.log("test-panes splitter drag lifecycle: ok");
+}());
+
 console.log("test-panes: ok");
 process.exit(0);

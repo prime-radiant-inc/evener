@@ -36,7 +36,7 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
       </div>
       <div class="controls-center"></div>
       <div class="controls-right">
-        <button type="button" class="btn btn-ghost" data-steer-trigger>send as steer</button>
+        <button type="button" class="btn btn-ghost" data-steer-trigger>steer</button>
         <button type="submit" class="send-btn btn btn-primary"
                 data-capability-send="false"
                 data-capability-queue="true"

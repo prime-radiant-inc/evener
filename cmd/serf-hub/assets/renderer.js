@@ -3399,7 +3399,7 @@
 	            return;
 	          }
 	          if (!text && !hasQueued && !hasAttachments) {
-            ta.placeholder = "type a steering message, then click send as steer…";
+            ta.placeholder = "type a steering message, then click steer…";
             ta.focus();
             return;
           }
@@ -3705,18 +3705,19 @@
       this.bindSubagentEscapeToParent();
       const ta = document.querySelector(".message-input");
       if (!ta) return;
+      const suppressSubmitShortcuts = this.isInPane && this.isInPane();
       ta.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        if (!suppressSubmitShortcuts && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
           const form = ta.closest("form");
           if (form) form.requestSubmit();
           return;
         }
-        // Shift+Enter is the keybind equivalent of the "send as steer"
+        // Shift+Enter is the keybind equivalent of the "steer"
         // button (kata 0bq1): drain whatever's queued (plus anything in
         // the textarea) as a single STEERING injection. Pre-existing
         // browser default (newline insertion) is suppressed.
-        if (e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (!suppressSubmitShortcuts && e.key === "Enter" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
           const steer = document.querySelector("[data-steer-trigger]");
           if (steer && !steer.disabled) {
             e.preventDefault();

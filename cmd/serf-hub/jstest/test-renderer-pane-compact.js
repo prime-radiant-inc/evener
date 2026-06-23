@@ -25,12 +25,12 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 function makeDOM() {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>
     <main id="workspace">
-      <header class="workspace-header" data-session-id="01PANE"></header>
+      <header class="workspace-header" data-session-id="01PANE"><div class="workspace-title-row"><span class="title">Pane child</span></div></header>
       <div class="conversation" id="conversation"
            data-session-id="01PANE" data-state="ended"></div>
       <form class="workspace-input" data-input-form data-session-id="01PANE">
         <textarea class="message-input"></textarea>
-        <button class="send-btn" type="submit">send</button>
+        <button type="button" data-steer-trigger>steer <kbd>⇧↵</kbd></button><button class="send-btn" type="submit">send <kbd>⌘↵</kbd></button>
       </form>
     </main>
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
@@ -133,6 +133,8 @@ async function testClusterCompact() {
   const css = fs.readFileSync(cssPath, "utf8");
   pass(css.includes(".pane-compact"), "style.css must define a .pane-compact scope");
   pass(css.includes(".pane-compact .workspace-header"), "style.css must trim .workspace-header in pane-compact");
+  pass(css.includes(".pane-compact .workspace-title-row") && css.includes("display: none"), "style.css must hide inner title row in pane-compact");
+  pass(css.includes(".pane-compact kbd") && css.includes("display: none"), "style.css must hide composer hotkey labels in pane-compact");
   pass(css.includes(".pane-compact .conversation"), "style.css must tighten .conversation in pane-compact");
   pass(
     css.includes(".pane-compact .tool-call-cluster[data-compact]"),

@@ -293,22 +293,34 @@
     applyPaneMinWidth();
   }
 
-  // Drag handler (verified manually; logic delegates to setSidePanesWidth).
+  // Drag handler: side panes grow as the pointer moves left and shrink as it
+  // moves right. Resizing is only active while a drag that began on the splitter
+  // still has a mouse button down; losing the button/window reliably ends it so
+  // later hover/contact with the splitter cannot keep resizing.
   function bindSplitter() {
     var s = splitter(); if (!s || s.__bound) return; s.__bound = true;
     s.addEventListener("mousedown", function (e) {
       e.preventDefault();
+      var dragging = true;
+      function stop() {
+        if (!dragging) return;
+        dragging = false;
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", stop);
+        window.removeEventListener("mouseup", stop);
+        window.removeEventListener("blur", stop);
+      }
       function move(ev) {
+        if (!dragging) return;
+        if (ev.buttons === 0) { stop(); return; }
         // splitter sits between #workspace and #side-panes; panes grow as the
         // pointer moves left. Width = distance from pointer to right viewport edge.
         setSidePanesWidth(window.innerWidth - ev.clientX);
       }
-      function up() {
-        document.removeEventListener("mousemove", move);
-        document.removeEventListener("mouseup", up);
-      }
       document.addEventListener("mousemove", move);
-      document.addEventListener("mouseup", up);
+      document.addEventListener("mouseup", stop);
+      window.addEventListener("mouseup", stop);
+      window.addEventListener("blur", stop);
     });
   }
 

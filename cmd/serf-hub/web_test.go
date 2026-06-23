@@ -272,7 +272,7 @@ func TestWeb_WorkspaceRendersDisabledSteerControlForIdleSendCapableAppThread(t *
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `data-steer-trigger data-capability-steer="false"`) || !strings.Contains(body, `disabled>send as steer`) {
+	if !strings.Contains(body, `data-steer-trigger data-capability-steer="false"`) || !strings.Contains(body, `disabled>steer`) {
 		t.Fatalf("workspace should render disabled steer control for idle send-capable app thread:\n%s", body)
 	}
 	if !strings.Contains(body, `class="btn btn-danger stop-btn" data-action-trigger="interrupt" data-capability-interrupt="false"`) ||
@@ -2616,6 +2616,7 @@ func TestWeb_ThreadDocument_ComposerControlsLiveInsideInputCard(t *testing.T) {
 		State:              "idle",
 		StateLabel:         "idle",
 		Model:              "gpt-5.5",
+		Capabilities:       hubapi.SessionCapabilities{Send: true, Steer: true},
 		ThreadDocumentMode: true,
 		ShowSidebarToggle:  false,
 	}
@@ -2624,18 +2625,23 @@ func TestWeb_ThreadDocument_ComposerControlsLiveInsideInputCard(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	body := rec.Body.String()
+	taskStatus := strings.Index(body, `class="task-status-row"`)
 	inputCard := strings.Index(body, `class="input-card"`)
 	messageInput := strings.Index(body, `class="message-input"`)
+	composerModel := strings.Index(body, `class="composer-model"`)
 	inputControls := strings.Index(body, `class="input-controls"`)
 	inputStatus := strings.Index(body, `id="input-status"`)
-	if inputCard < 0 || messageInput < 0 || inputControls < 0 || inputStatus < 0 {
-		t.Fatalf("missing composer structure: inputCard=%d messageInput=%d inputControls=%d inputStatus=%d", inputCard, messageInput, inputControls, inputStatus)
+	if taskStatus < 0 || inputCard < 0 || messageInput < 0 || composerModel < 0 || inputControls < 0 || inputStatus < 0 {
+		t.Fatalf("missing composer structure: taskStatus=%d inputCard=%d messageInput=%d composerModel=%d inputControls=%d inputStatus=%d", taskStatus, inputCard, messageInput, composerModel, inputControls, inputStatus)
 	}
-	if !(inputCard < messageInput && messageInput < inputControls && inputControls < inputStatus) {
-		t.Fatalf("composer controls should be inside input card before input status")
+	if !(taskStatus < inputCard && inputCard < messageInput && messageInput < inputControls && inputControls < composerModel && composerModel < inputStatus) {
+		t.Fatalf("composer should render task status above input, then textarea, then controls/model row before input status")
 	}
-	if !strings.Contains(body, `class="composer-model"`) {
-		t.Fatalf("composer should render model outside the button row")
+	if strings.Contains(body, `send as steer`) {
+		t.Fatalf("composer should use short steer label, not send as steer")
+	}
+	if !strings.Contains(body, `data-steer-trigger`) || !strings.Contains(body, `>steer`) {
+		t.Fatalf("composer should render short steer button label")
 	}
 }
 
