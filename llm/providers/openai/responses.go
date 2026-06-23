@@ -188,14 +188,15 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 	// Handle non-2xx immediately.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer func() { _ = resp.Body.Close() }()
+		rawBytes, _ := io.ReadAll(resp.Body)
 		var raw map[string]any
-		dec := json.NewDecoder(resp.Body)
+		dec := json.NewDecoder(bytes.NewReader(rawBytes))
 		dec.UseNumber()
 		_ = dec.Decode(&raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := fmt.Sprintf("responses.create(stream) failed: %v", raw)
 		cancel()
-		return nil, llm.ErrorFromHTTPStatus("openai", resp.StatusCode, msg, raw, ra)
+		return nil, llm.ErrorFromHTTPStatusWithRawBodies("openai", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
 	}
 
 	s := llm.NewChanStream(cancel)

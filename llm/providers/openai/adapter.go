@@ -329,7 +329,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := fmt.Sprintf("responses.create failed: %v", raw)
-		return llm.Response{}, llm.ErrorFromHTTPStatus("openai", resp.StatusCode, msg, raw, ra)
+		return llm.Response{}, llm.ErrorFromHTTPStatusWithRawBodies("openai", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
 	}
 
 	r := fromResponses(raw, req.Model)

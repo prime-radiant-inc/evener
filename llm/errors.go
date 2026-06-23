@@ -21,6 +21,12 @@ type Error interface {
 	Raw() any
 }
 
+// RawHTTPBodyError exposes raw provider HTTP bodies carried by an error.
+// Adapters populate these only when raw HTTP logging is enabled.
+type RawHTTPBodyError interface {
+	RawHTTPBodies() (requestBody, responseBody string)
+}
+
 // ConfigurationError reports a configuration problem (e.g. invalid or missing
 // setup) and carries an optional underlying Cause. It satisfies the Error
 // interface with empty provider, behavior tag, status code, and error code,
@@ -62,15 +68,17 @@ func (e *ConfigurationError) Raw() any { return nil }
 func (e *ConfigurationError) Unwrap() error { return e.Cause }
 
 type httpBaseError struct {
-	provider    string
-	behaviorTag string
-	statusCode  int
-	message     string
-	errorCode   string
-	retryable   bool
-	retryAfter  *time.Duration
-	rawResponse any
-	cause       error
+	provider        string
+	behaviorTag     string
+	statusCode      int
+	message         string
+	errorCode       string
+	retryable       bool
+	retryAfter      *time.Duration
+	rawResponse     any
+	rawRequestBody  string
+	rawResponseBody string
+	cause           error
 }
 
 // Error returns the error message in the form "<provider> error (status=<code>): <message>",
@@ -108,6 +116,12 @@ func (e *httpBaseError) RetryAfter() *time.Duration { return e.retryAfter }
 
 // Raw returns the decoded raw provider response body, or nil if unavailable.
 func (e *httpBaseError) Raw() any { return e.rawResponse }
+
+// RawHTTPBodies returns the raw HTTP request and response bodies captured for
+// this provider error, if raw HTTP logging was enabled.
+func (e *httpBaseError) RawHTTPBodies() (requestBody, responseBody string) {
+	return e.rawRequestBody, e.rawResponseBody
+}
 
 // Unwrap returns the underlying cause, exposing it to errors.Is/errors.As.
 func (e *httpBaseError) Unwrap() error { return e.cause }
@@ -252,7 +266,29 @@ func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw an
 		retryAfter:  retryAfter,
 		rawResponse: raw,
 	}
-	switch statusCode {
+	return errorFromHTTPStatus(base)
+}
+
+// ErrorFromHTTPStatusWithRawBodies maps an HTTP status code like
+// ErrorFromHTTPStatus and attaches raw HTTP bodies when raw logging is enabled.
+func ErrorFromHTTPStatusWithRawBodies(provider string, statusCode int, message string, raw any, retryAfter *time.Duration, rawRequestBody, rawResponseBody string) error {
+	base := httpBaseError{
+		provider:    strings.TrimSpace(provider),
+		statusCode:  statusCode,
+		message:     message,
+		errorCode:   extractErrorCode(raw),
+		retryAfter:  retryAfter,
+		rawResponse: raw,
+	}
+	if RawBodyEnabled() {
+		base.rawRequestBody = rawRequestBody
+		base.rawResponseBody = rawResponseBody
+	}
+	return errorFromHTTPStatus(base)
+}
+
+func errorFromHTTPStatus(base httpBaseError) error {
+	switch base.statusCode {
 	case 400, 422:
 		// Ambiguous status codes: check message for more specific classification.
 		base.retryable = false

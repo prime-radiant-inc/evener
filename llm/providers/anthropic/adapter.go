@@ -134,7 +134,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "messages.create failed: " + strings.TrimSpace(string(rawBytes))
-		return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
+		return llm.Response{}, llm.ErrorFromHTTPStatusWithRawBodies("anthropic", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
 	}
 
 	r := fromAnthropicResponse(raw, req.Model)
@@ -262,7 +262,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "messages.create(stream) failed: " + strings.TrimSpace(string(rawBytes))
 		cancel()
-		return nil, llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
+		return nil, llm.ErrorFromHTTPStatusWithRawBodies("anthropic", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
 	}
 
 	s := llm.NewChanStream(cancel)

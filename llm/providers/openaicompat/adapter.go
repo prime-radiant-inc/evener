@@ -138,7 +138,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if statusCode != http.StatusOK {
 		msg := extractErrorMessage(raw)
 		retryAfter := llm.ParseRetryAfter(headers.Get("Retry-After"), time.Now())
-		return llm.Response{}, llm.ErrorFromHTTPStatus("openai-compatible", statusCode, msg, raw, retryAfter)
+		return llm.Response{}, llm.ErrorFromHTTPStatusWithRawBodies("openai-compatible", statusCode, msg, raw, retryAfter, string(rawReqBody), string(rawRespBody))
 	}
 
 	resp, err := fromChatCompletionResponse(raw, a.Quirks)
@@ -191,7 +191,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		_ = json.Unmarshal(b, &raw)
 		msg := extractErrorMessage(raw)
 		retryAfter := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		return nil, llm.ErrorFromHTTPStatus("openai-compatible", resp.StatusCode, msg, raw, retryAfter)
+		return nil, llm.ErrorFromHTTPStatusWithRawBodies("openai-compatible", resp.StatusCode, msg, raw, retryAfter, string(jsonBody), string(b))
 	}
 
 	sctx, cancel := context.WithCancel(ctx)

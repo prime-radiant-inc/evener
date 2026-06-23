@@ -155,7 +155,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "generateContent failed: " + strings.TrimSpace(string(rawBytes))
-		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
+		httpErr := llm.ErrorFromHTTPStatusWithRawBodies("google", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
 		return llm.Response{}, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
 	}
 
@@ -309,7 +309,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		_ = json.Unmarshal(rawBytes, &raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "streamGenerateContent failed: " + strings.TrimSpace(string(rawBytes))
-		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
+		httpErr := llm.ErrorFromHTTPStatusWithRawBodies("google", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
 		cancel()
 		return nil, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
 	}

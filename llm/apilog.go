@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,7 +158,11 @@ func (l *APILogger) WrapComplete(next CompleteFunc) CompleteFunc {
 		}
 
 		l.write(entry)
-		l.writeRawResponse(entry, req, "complete", resp)
+		if err != nil {
+			l.writeRawError(entry, req, "complete", err)
+		} else {
+			l.writeRawResponse(entry, req, "complete", resp)
+		}
 
 		return resp, err
 	}
@@ -175,6 +180,7 @@ func (l *APILogger) WrapStream(next StreamFunc) StreamFunc {
 			entry := buildAPILogEntry(ctx, req, start)
 			entry.Error = err.Error()
 			l.write(entry)
+			l.writeRawError(entry, req, "stream", err)
 			return nil, err
 		}
 		if st == nil {
@@ -274,6 +280,31 @@ func (l *APILogger) writeRawResponse(entry APILogEntry, req Request, mode string
 		Mode:         mode,
 		RequestBody:  resp.RawRequestBody,
 		ResponseBody: resp.RawResponseBody,
+		LatencyMs:    entry.LatencyMs,
+	})
+}
+
+func (l *APILogger) writeRawError(entry APILogEntry, req Request, mode string, err error) {
+	if l.rawFile == nil || err == nil {
+		return
+	}
+	var rawErr RawHTTPBodyError
+	if !errors.As(err, &rawErr) {
+		return
+	}
+	requestBody, responseBody := rawErr.RawHTTPBodies()
+	if requestBody == "" && responseBody == "" {
+		return
+	}
+	l.writeRaw(APIRawLogEntry{
+		Timestamp:    entry.Timestamp,
+		SessionID:    entry.SessionID,
+		Round:        entry.Round,
+		Provider:     req.Provider,
+		Model:        req.Model,
+		Mode:         mode,
+		RequestBody:  requestBody,
+		ResponseBody: responseBody,
 		LatencyMs:    entry.LatencyMs,
 	})
 }
@@ -419,6 +450,7 @@ func (s *apiLogStream) logError(err error) {
 		entry := buildAPILogEntry(s.ctx, s.req, s.start)
 		entry.Error = err.Error()
 		s.logger.write(entry)
+		s.logger.writeRawError(entry, s.req, "stream", err)
 	})
 }
 
