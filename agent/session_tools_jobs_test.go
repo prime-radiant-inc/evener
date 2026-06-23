@@ -2890,6 +2890,53 @@ func appendManualJobOutput(jm *jobManager, jobID string, output string) {
 	}
 }
 
+func TestWaitForTranscriptMatchWaitsForShellOutput(t *testing.T) {
+	s := newTestSession(t)
+	jm := s.jobManager
+	rec, err := jm.createShell(createShellOpts{Command: "server"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+	run := runningJobByID(t, jm, rec.JobID)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(50 * time.Millisecond)
+		_, _ = jm.appendJobOutput(rec.JobID, run.output, []byte("server ready\n"))
+	}()
+
+	start := time.Now()
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "wait",
+		Name:      "wait_for_transcript_match",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"transcript_ref":"job:%s","grep":"ready","max_wait_ms":1000}`, rec.JobID)),
+	})
+	<-done
+	if res.IsError {
+		t.Fatalf("wait_for_transcript_match returned error: %s", res.Output)
+	}
+	if elapsed := time.Since(start); elapsed < 40*time.Millisecond {
+		t.Fatalf("wait returned before output append: elapsed=%s", elapsed)
+	}
+	var out struct {
+		TranscriptRef string           `json:"transcript_ref"`
+		Matched       bool             `json:"matched"`
+		Matches       []jobOutputMatch `json:"matches"`
+		Status        string           `json:"status"`
+	}
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal wait result: %v (output: %s)", err, res.Output)
+	}
+	if !out.Matched || len(out.Matches) == 0 {
+		t.Fatalf("wait result = %+v, want match", out)
+	}
+	if out.TranscriptRef != "job:"+rec.JobID {
+		t.Fatalf("transcript_ref = %q, want job:%s", out.TranscriptRef, rec.JobID)
+	}
+}
+
 func blockingGrepRead(t *testing.T, s *Session, jobID, grep string, timeoutMS int) (jobReadOutputTestResult, time.Duration) {
 	t.Helper()
 	started := time.Now()

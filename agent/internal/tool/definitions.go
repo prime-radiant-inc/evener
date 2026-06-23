@@ -263,6 +263,25 @@ func DefJobReadOutput() llm.ToolDefinition {
 	}
 }
 
+func DefWaitForTranscriptMatch() llm.ToolDefinition {
+	strictFalse := false
+	return llm.ToolDefinition{
+		Name:        "wait_for_transcript_match",
+		Description: "One-shot readiness wait over a transcript_ref. Use this when you need one bounded signal such as a shell job printing \"ready\". This is not a polling loop and does not acknowledge completion. Currently supports job:<job_id> refs with grep and max_wait_ms.",
+		Strict:      &strictFalse,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"transcript_ref": map[string]any{"type": "string", "description": "A job:<job_id> transcript_ref from job_status or job_list."},
+				"grep":           map[string]any{"type": "string", "description": "Regular expression to wait for in the retained transcript output."},
+				"max_wait_ms":    map[string]any{"type": "integer", "description": "Maximum wait in milliseconds. Values are clamped to Serf's job wait bounds."},
+			},
+			"required": []string{"transcript_ref", "grep"},
+		},
+	}
+}
+
 func DefJobList() llm.ToolDefinition {
 	strictFalse := false
 	statusEnum := []any{"running", "completed", "failed", "cancelled", "stopped"}
