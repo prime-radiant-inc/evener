@@ -88,53 +88,66 @@ func main() {
 // checkPackage parses the non-test Go files in dir and returns a violation for
 // each exported package-level declaration that lacks a doc comment.
 func checkPackage(dir string) ([]violation, error) {
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, dir, func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, parser.ParseComments)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
 
+	fset := token.NewFileSet()
 	var out []violation
-	for _, pkg := range pkgs {
-		if strings.HasSuffix(pkg.Name, "_test") {
+	for _, entry := range entries {
+		if entry.IsDir() {
 			continue
 		}
-		for path, file := range pkg.Files {
-			base := filepath.Base(path)
-			for _, decl := range file.Decls {
-				switch d := decl.(type) {
-				case *ast.FuncDecl:
-					// Package-level functions only (methods are out of scope).
-					if d.Recv == nil && d.Name.IsExported() && d.Doc == nil {
-						out = append(out, violation{dir, base, "func", d.Name.Name})
-					}
-				case *ast.GenDecl:
-					// A doc on the GenDecl block (e.g. a single `// X ...` above a
-					// lone `type X ...`, or a comment above a parenthesized group)
-					// documents its specs.
-					if d.Doc != nil {
-						continue
-					}
-					for _, spec := range d.Specs {
-						switch s := spec.(type) {
-						case *ast.TypeSpec:
-							if s.Name.IsExported() && s.Doc == nil {
-								out = append(out, violation{dir, base, "type", s.Name.Name})
-							}
-						case *ast.ValueSpec:
-							if s.Doc != nil {
-								continue
-							}
-							kind := "var"
-							if d.Tok.String() == "const" {
-								kind = "const"
-							}
-							for _, n := range s.Names {
-								if n.IsExported() {
-									out = append(out, violation{dir, base, kind, n.Name})
-								}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+
+		path := filepath.Join(dir, name)
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return nil, err
+		}
+		// Skip external test packages (e.g. `package foo_test`); the filename
+		// filter already drops *_test.go, this guards a non-test file that
+		// nonetheless declares a _test package name.
+		if strings.HasSuffix(file.Name.Name, "_test") {
+			continue
+		}
+
+		base := filepath.Base(path)
+		for _, decl := range file.Decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				// Package-level functions only (methods are out of scope).
+				if d.Recv == nil && d.Name.IsExported() && d.Doc == nil {
+					out = append(out, violation{dir, base, "func", d.Name.Name})
+				}
+			case *ast.GenDecl:
+				// A doc on the GenDecl block (e.g. a single `// X ...` above a
+				// lone `type X ...`, or a comment above a parenthesized group)
+				// documents its specs.
+				if d.Doc != nil {
+					continue
+				}
+				for _, spec := range d.Specs {
+					switch s := spec.(type) {
+					case *ast.TypeSpec:
+						if s.Name.IsExported() && s.Doc == nil {
+							out = append(out, violation{dir, base, "type", s.Name.Name})
+						}
+					case *ast.ValueSpec:
+						if s.Doc != nil {
+							continue
+						}
+						kind := "var"
+						if d.Tok.String() == "const" {
+							kind = "const"
+						}
+						for _, n := range s.Names {
+							if n.IsExported() {
+								out = append(out, violation{dir, base, kind, n.Name})
 							}
 						}
 					}

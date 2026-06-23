@@ -237,8 +237,8 @@ func unifiedDiff(filename, old, new_ string) string {
 	newLines := strings.Split(new_, "\n")
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("--- %s\n+++ %s\n@@ -%d,%d +%d,%d @@\n",
-		filename, filename, 1, len(oldLines), 1, len(newLines)))
+	fmt.Fprintf(&b, "--- %s\n+++ %s\n@@ -%d,%d +%d,%d @@\n",
+		filename, filename, 1, len(oldLines), 1, len(newLines))
 	for _, l := range oldLines {
 		b.WriteString("-" + l + "\n")
 	}
@@ -292,7 +292,7 @@ func renderTaskAppend(tasks []any) string {
 			continue
 		}
 		desc, _ := m["description"].(string)
-		b.WriteString(fmt.Sprintf("  %d. %s\n", i+1, desc))
+		fmt.Fprintf(&b, "  %d. %s\n", i+1, desc)
 		if prompt, _ := m["prompt"].(string); prompt != "" {
 			// Show first line of prompt indented.
 			first := prompt
@@ -302,7 +302,7 @@ func renderTaskAppend(tasks []any) string {
 			if len(first) > 72 {
 				first = first[:72] + "…"
 			}
-			b.WriteString(fmt.Sprintf("     %s\n", first))
+			fmt.Fprintf(&b, "     %s\n", first)
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -331,7 +331,7 @@ func renderTaskUpdate(updates []any) string {
 		if icon == "" {
 			icon = "·"
 		}
-		b.WriteString(fmt.Sprintf("  %s task %d → %s\n", icon, id, status))
+		fmt.Fprintf(&b, "  %s task %d → %s\n", icon, id, status)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

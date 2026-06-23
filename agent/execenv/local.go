@@ -195,7 +195,7 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 	}
 	var out strings.Builder
 	for i := start; i <= end; i++ {
-		out.WriteString(fmt.Sprintf("%4d\t%s\n", i, lines[i-1]))
+		fmt.Fprintf(&out, "%4d\t%s\n", i, lines[i-1])
 	}
 	return out.String(), nil
 }

@@ -500,8 +500,8 @@ func runBufferedShell(ctx context.Context, env execenv.ExecutionEnvironment, dep
 	if errors.Is(err, context.Canceled) && !res.TimedOut {
 		b.WriteString("[ERROR: Command was canceled before completion. Partial output is shown above.]\n")
 	} else if res.TimedOut {
-		b.WriteString(fmt.Sprintf("[ERROR: Command timed out after %dms. Partial output is shown above.\nYou can retry with a longer timeout by setting the %s parameter.]\n", timeout, timeoutParam))
+		fmt.Fprintf(&b, "[ERROR: Command timed out after %dms. Partial output is shown above.\nYou can retry with a longer timeout by setting the %s parameter.]\n", timeout, timeoutParam)
 	}
-	b.WriteString(fmt.Sprintf("exit_code=%d duration_ms=%d timed_out=%t\n", res.ExitCode, res.DurationMS, res.TimedOut))
+	fmt.Fprintf(&b, "exit_code=%d duration_ms=%d timed_out=%t\n", res.ExitCode, res.DurationMS, res.TimedOut)
 	return b.String(), err
 }

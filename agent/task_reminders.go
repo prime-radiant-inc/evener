@@ -12,15 +12,15 @@ import (
 func formatCurrentTaskSteering(task taskpkg.Task) string {
 	var b strings.Builder
 	b.WriteString("<SYSTEM-REMINDER>\n")
-	b.WriteString(fmt.Sprintf("<CURRENT-TASK id=\"%d\">\n", task.ID))
-	b.WriteString(fmt.Sprintf("<TITLE>%s</TITLE>\n", task.Description))
+	fmt.Fprintf(&b, "<CURRENT-TASK id=\"%d\">\n", task.ID)
+	fmt.Fprintf(&b, "<TITLE>%s</TITLE>\n", task.Description)
 	if task.Prompt != "" {
 		b.WriteString("<INSTRUCTIONS>\n")
 		b.WriteString(strings.TrimSpace(task.Prompt))
 		b.WriteString("\n</INSTRUCTIONS>\n")
 	}
 	b.WriteString("</CURRENT-TASK>\n")
-	b.WriteString(fmt.Sprintf("Call your next tool: use task_list to mark task %d as done when this step is complete.\n", task.ID))
+	fmt.Fprintf(&b, "Call your next tool: use task_list to mark task %d as done when this step is complete.\n", task.ID)
 	b.WriteString("</SYSTEM-REMINDER>")
 	return b.String()
 }
@@ -38,16 +38,16 @@ func taskReminderFull(store *taskpkg.TaskStore) string {
 	b.WriteString("<SYSTEM-REMINDER>\n")
 	b.WriteString("Task list:\n")
 	for _, t := range tasks {
-		b.WriteString(fmt.Sprintf("  [%s] #%d: %s", t.Status, t.ID, t.Description))
+		fmt.Fprintf(&b, "  [%s] #%d: %s", t.Status, t.ID, t.Description)
 		if t.ReasoningEffort != "" {
-			b.WriteString(fmt.Sprintf(" [%s]", t.ReasoningEffort))
+			fmt.Fprintf(&b, " [%s]", t.ReasoningEffort)
 		}
 		if len(t.DependsOn) > 0 {
-			b.WriteString(fmt.Sprintf(" (depends_on: %v)", t.DependsOn))
+			fmt.Fprintf(&b, " (depends_on: %v)", t.DependsOn)
 		}
 		b.WriteString("\n")
 		for _, n := range t.Notes {
-			b.WriteString(fmt.Sprintf("    note: %s\n", n))
+			fmt.Fprintf(&b, "    note: %s\n", n)
 		}
 	}
 	b.WriteString("</SYSTEM-REMINDER>")

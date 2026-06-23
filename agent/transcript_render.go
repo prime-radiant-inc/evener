@@ -1040,7 +1040,7 @@ func jobResultBody(raw string) (string, bool) {
 		if pretty, ok := prettyJSONValue(r.StructuredResult); ok {
 			b.WriteString(pretty)
 		} else {
-			b.WriteString(fmt.Sprint(r.StructuredResult))
+			fmt.Fprint(&b, r.StructuredResult)
 		}
 		b.WriteString("\n")
 	}

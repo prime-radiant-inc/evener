@@ -66,7 +66,7 @@ func (s *MemoryCrystalsStrategy) injectCrystals(history *[]schema.Turn) {
 	var b strings.Builder
 	b.WriteString("[MEMORY CRYSTALS]\nKey facts preserved from this session:\n\n")
 	for _, c := range s.crystals {
-		b.WriteString(fmt.Sprintf("Turn %d [%s]: %s\n", c.Turn, c.Action, c.Facts))
+		fmt.Fprintf(&b, "Turn %d [%s]: %s\n", c.Turn, c.Action, c.Facts)
 	}
 	b.WriteString("[END CRYSTALS]")
 
@@ -131,7 +131,7 @@ func (s *MemoryCrystalsStrategy) crystallize(ctx context.Context, client *llm.Cl
 					if p.ToolResult.IsError {
 						errTag = " ERROR"
 					}
-					b.WriteString(fmt.Sprintf("Tool(%s)%s: %s\n", p.ToolResult.Name, errTag, truncate(content, 200)))
+					fmt.Fprintf(&b, "Tool(%s)%s: %s\n", p.ToolResult.Name, errTag, truncate(content, 200))
 				}
 			}
 		}

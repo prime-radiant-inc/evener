@@ -240,7 +240,7 @@ func renderTasks(tasks []task.Task, _ int) string {
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Tasks (%d):\n", len(tasks)))
+	fmt.Fprintf(&b, "Tasks (%d):\n", len(tasks))
 
 	statusIcon := map[task.TaskStatus]string{
 		task.TaskOpen:       "○",
@@ -254,12 +254,12 @@ func renderTasks(tasks []task.Task, _ int) string {
 		if icon == "" {
 			icon = "?"
 		}
-		b.WriteString(fmt.Sprintf("  %s [%d] %s — %s", icon, t.ID, t.Type, t.Description))
+		fmt.Fprintf(&b, "  %s [%d] %s — %s", icon, t.ID, t.Type, t.Description)
 		if len(t.DependsOn) > 0 {
-			b.WriteString(fmt.Sprintf(" (depends on: %v)", t.DependsOn))
+			fmt.Fprintf(&b, " (depends on: %v)", t.DependsOn)
 		}
 		if t.ReasoningEffort != "" {
-			b.WriteString(fmt.Sprintf(" [%s]", t.ReasoningEffort))
+			fmt.Fprintf(&b, " [%s]", t.ReasoningEffort)
 		}
 		b.WriteString("\n")
 	}

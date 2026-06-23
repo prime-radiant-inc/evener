@@ -791,7 +791,7 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 
 	// Transcript pointer — tells the model how to access full history via transcript tools.
 	if meta != nil && meta.SessionID != "" {
-		fixed.WriteString(fmt.Sprintf("Earlier history was compacted. This session's id is %s. Use read_session_transcript to recover earlier detail, or find_session_transcripts to search it.\n", meta.SessionID))
+		fmt.Fprintf(&fixed, "Earlier history was compacted. This session's id is %s. Use read_session_transcript to recover earlier detail, or find_session_transcripts to search it.\n", meta.SessionID)
 	}
 
 	// Files modified.
@@ -801,12 +801,12 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 			files = append(files, f)
 		}
 		sort.Strings(files)
-		fixed.WriteString(fmt.Sprintf("Files modified: %s\n", strings.Join(files, ", ")))
+		fmt.Fprintf(&fixed, "Files modified: %s\n", strings.Join(files, ", "))
 	}
 
 	// Tool call counts.
 	if total := sumCounts(data.toolCounts); total > 0 {
-		fixed.WriteString(fmt.Sprintf("Actions taken: %d tool calls (", total))
+		fmt.Fprintf(&fixed, "Actions taken: %d tool calls (", total)
 		toolNames := make([]string, 0, len(data.toolCounts))
 		for name := range data.toolCounts {
 			toolNames = append(toolNames, name)
@@ -816,7 +816,7 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 			if i > 0 {
 				fixed.WriteString(", ")
 			}
-			fixed.WriteString(fmt.Sprintf("%d %s", data.toolCounts[name], name))
+			fmt.Fprintf(&fixed, "%d %s", data.toolCounts[name], name)
 		}
 		fixed.WriteString(")\n")
 	}
@@ -849,7 +849,7 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 			skillNames = append(skillNames, s)
 		}
 		sort.Strings(skillNames)
-		fixed.WriteString(fmt.Sprintf("Activated skills: %s\n", strings.Join(skillNames, ", ")))
+		fmt.Fprintf(&fixed, "Activated skills: %s\n", strings.Join(skillNames, ", "))
 	}
 
 	fixedStr := fixed.String()
@@ -1141,11 +1141,11 @@ func renderTurnForElicit(t schema.Turn) string {
 			}
 		case llm.ContentToolCall:
 			if p.ToolCall != nil {
-				b.WriteString(fmt.Sprintf("Tool call %s(%s)\n", p.ToolCall.Name, strings.TrimSpace(string(p.ToolCall.Arguments))))
+				fmt.Fprintf(&b, "Tool call %s(%s)\n", p.ToolCall.Name, strings.TrimSpace(string(p.ToolCall.Arguments)))
 			}
 		case llm.ContentToolResult:
 			if p.ToolResult != nil {
-				b.WriteString(fmt.Sprintf("Tool result %s: %s\n", p.ToolResult.Name, fmt.Sprint(p.ToolResult.Content)))
+				fmt.Fprintf(&b, "Tool result %s: %s\n", p.ToolResult.Name, fmt.Sprint(p.ToolResult.Content))
 			}
 		}
 	}
@@ -1223,9 +1223,9 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 					}
 					switch {
 					case endTurn:
-						b.WriteString(fmt.Sprintf("Agent Message: %s\n", msg))
+						fmt.Fprintf(&b, "Agent Message: %s\n", msg)
 					default:
-						b.WriteString(fmt.Sprintf("Agent Status: %s\n", msg))
+						fmt.Fprintf(&b, "Agent Status: %s\n", msg)
 					}
 				}
 			}
@@ -1236,7 +1236,7 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 					if len(content) > 200 {
 						content = content[:200] + "..."
 					}
-					b.WriteString(fmt.Sprintf("Tool(%s): %s\n", p.ToolResult.Name, content))
+					fmt.Fprintf(&b, "Tool(%s): %s\n", p.ToolResult.Name, content)
 				}
 			}
 		case schema.TurnSteering:
