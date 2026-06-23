@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/llm"
 )
@@ -63,6 +64,38 @@ func readJobListEntry(t *testing.T, s *Session, jobID string) jobListToolEntry {
 		t.Fatalf("job_list missing job %q; jobs = %+v", jobID, out.Jobs)
 	}
 	return *entry
+}
+
+func readJobStatus(t *testing.T, s *Session, jobID string) jobStatusToolOutput {
+	t.Helper()
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "status",
+		Name:      "job_status",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, jobID)),
+	})
+	if res.IsError {
+		t.Fatalf("job_status returned error: %s", res.Output)
+	}
+	var out jobStatusToolOutput
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal job_status: %v (output: %s)", err, res.Output)
+	}
+	return out
+}
+
+func waitForJobPhase(t *testing.T, s *Session, jobID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var got string
+	for time.Now().Before(deadline) {
+		status := readJobStatus(t, s, jobID)
+		got = status.Phase
+		if got == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("phase = %q, want %q", got, want)
 }
 
 type jobStatusToolOutput struct {
@@ -164,6 +197,187 @@ func TestJobListRowsIncludeStatusSupervisionFields(t *testing.T) {
 	}
 	if entry.TranscriptRef == nil || *entry.TranscriptRef != "job:"+rec.JobID {
 		t.Fatalf("transcript_ref = %v, want job:%s", entry.TranscriptRef, rec.JobID)
+	}
+}
+
+func TestAgentJobStatusUpdatesFromChildObservablePhases(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	clk := newMutableClock(time.Unix(7000, 0).UTC())
+	parent.jobManager.now = clk.now
+
+	sub := completedDelegateSubagent(child, "report")
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
+		waitForShellDone(t, parent.jobManager, run.rec.JobID)
+	})
+
+	clk.advance(2 * time.Second)
+	parent.jobManager.noteJobActivity(run.rec.JobID, jobPhaseAwaitingModel)
+	status := readJobStatus(t, parent, run.rec.JobID)
+	if status.Kind != "agent" {
+		t.Fatalf("kind = %q, want agent", status.Kind)
+	}
+	if status.Phase != "awaiting_model" {
+		t.Fatalf("phase = %q, want awaiting_model", status.Phase)
+	}
+	if status.QuietForMS != 0 {
+		t.Fatalf("quiet_for_ms immediately after event = %d, want 0", status.QuietForMS)
+	}
+
+	clk.advance(5 * time.Second)
+	status = readJobStatus(t, parent, run.rec.JobID)
+	if status.QuietForMS != 5000 {
+		t.Fatalf("quiet_for_ms after no events = %d, want 5000", status.QuietForMS)
+	}
+
+	parent.jobManager.noteJobActivity(run.rec.JobID, jobPhaseToolRunning)
+	status = readJobStatus(t, parent, run.rec.JobID)
+	if status.Phase != "tool_running" {
+		t.Fatalf("phase = %q, want tool_running", status.Phase)
+	}
+	if status.QuietForMS != 0 {
+		t.Fatalf("quiet_for_ms after tool event = %d, want 0", status.QuietForMS)
+	}
+}
+
+func TestPreparedSubagentReportsParentJobActivity(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	clk := newMutableClock(time.Unix(7100, 0).UTC())
+	parent.jobManager.now = clk.now
+
+	sub := completedDelegateSubagent(child, "report")
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
+		waitForShellDone(t, parent.jobManager, run.rec.JobID)
+	})
+
+	ctx := context.WithValue(context.Background(), ctxParentJobID, run.rec.JobID)
+	ctx = context.WithValue(ctx, ctxDelegationAllowance, 0)
+	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("prepareSubagentRun: %v", err)
+	}
+	defer releasePreparedTreeSlot(prepared)
+	defer prepared.sub.sess.Close()
+
+	clk.advance(4 * time.Second)
+	prepared.sub.sess.noteParentJobActivity(jobPhaseAwaitingModel)
+	status := readJobStatus(t, parent, run.rec.JobID)
+	if status.Phase != "awaiting_model" {
+		t.Fatalf("phase = %q, want awaiting_model", status.Phase)
+	}
+	if status.QuietForMS != 0 {
+		t.Fatalf("quiet_for_ms after child activity = %d, want 0", status.QuietForMS)
+	}
+}
+
+func TestSubagentTurnReportsAwaitingModelAndToolRunning(t *testing.T) {
+	var parent *Session
+	var run *runningJob
+	adapter := &fakeAdapter{name: "openai"}
+	adapter.steps = []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			_ = req
+			status := readJobStatus(t, parent, run.rec.JobID)
+			if status.Phase != "awaiting_model" {
+				t.Fatalf("phase during model request = %q, want awaiting_model", status.Phase)
+			}
+			return finalResponse("done")
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	var err error
+	parent, err = NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { parent.Close() })
+	clk := newMutableClock(time.Unix(7200, 0).UTC())
+	parent.jobManager.now = clk.now
+
+	jobID := jobstore.NewJobID()
+	ctx := context.WithValue(context.Background(), ctxParentJobID, jobID)
+	ctx = context.WithValue(ctx, ctxDelegationAllowance, 0)
+	prepared, err := parent.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("prepareSubagentRun: %v", err)
+	}
+	defer prepared.runCancel()
+	defer prepared.sub.sess.Close()
+	run, err = parent.attachDelegateJobWithPrepared(parent.jobManager, prepared.sub.sess.ID(), "child task", prepared.sub, jobID, nil, false, prepared)
+	if err != nil {
+		t.Fatalf("attachDelegateJobWithPrepared: %v", err)
+	}
+	t.Cleanup(func() {
+		finishRunningTestJob(t, parent.jobManager, run.rec.JobID)
+		waitForShellDone(t, parent.jobManager, run.rec.JobID)
+	})
+
+	if _, err := prepared.sub.sess.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatalf("child ProcessInput: %v", err)
+	}
+	status := readJobStatus(t, parent, run.rec.JobID)
+	if status.Phase != "tool_running" {
+		t.Fatalf("phase after tool execution = %q, want tool_running", status.Phase)
+	}
+}
+
+func TestSubagentStreamEventsReportModelStreaming(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	clk := newMutableClock(time.Unix(7300, 0).UTC())
+	parent.jobManager.now = clk.now
+
+	sub := completedDelegateSubagent(child, "report")
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "investigate", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
+		waitForShellDone(t, parent.jobManager, run.rec.JobID)
+	})
+	child.cfg.spawn.parentJobID = run.rec.JobID
+	child.cfg.spawn.parentJobActivity = parent.jobManager.noteJobActivity
+
+	st := llm.NewChanStream(nil)
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, err := child.consumeModelStream(context.Background(), llm.Request{Provider: "openai", Model: "gpt-5.2"}, st)
+		errCh <- err
+	}()
+
+	st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "t0"})
+	st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: "t0", Delta: "hello"})
+	waitForJobPhase(t, parent, run.rec.JobID, jobPhaseModelStreaming)
+	finish := llm.FinishReason{Reason: llm.FinishReasonStop}
+	st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+	st.CloseSend()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("consumeModelStream: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("consumeModelStream did not finish")
 	}
 }
 

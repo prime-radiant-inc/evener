@@ -151,12 +151,16 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		acc.Process(ev)
 		switch ev.Type {
 		case llm.StreamEventTextStart:
+			s.noteParentJobActivity(jobPhaseModelStreaming)
 			emitAssistantStart()
 		case llm.StreamEventTextDelta:
+			s.noteParentJobActivity(jobPhaseModelStreaming)
 			emitAssistantDelta(ev.Delta)
 		case llm.StreamEventReasoningDelta:
+			s.noteParentJobActivity(jobPhaseModelStreaming)
 			emitReasoningDelta(ev.ReasoningDelta)
 		case llm.StreamEventToolCallStart:
+			s.noteParentJobActivity(jobPhaseModelStreaming)
 			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
 				break
 			}
@@ -165,6 +169,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 				toolArgs[ev.ToolCall.ID] = &strings.Builder{}
 			}
 		case llm.StreamEventToolCallDelta:
+			s.noteParentJobActivity(jobPhaseModelStreaming)
 			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
 				break
 			}
@@ -181,6 +186,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 				emitCommunicatePreview(ev.ToolCall.ID)
 			}
 		case llm.StreamEventToolCallEnd:
+			s.noteParentJobActivity(jobPhaseModelStreaming)
 			if ev.ToolCall == nil || ev.ToolCall.ID == "" {
 				break
 			}

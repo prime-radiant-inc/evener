@@ -198,6 +198,10 @@ type spawnConfig struct {
 	// parentJobID is the delegate job ID that spawned this sub-agent session.
 	parentJobID string
 
+	// parentJobActivity reports parent-observable child progress for the
+	// delegate job that owns this session.
+	parentJobActivity func(jobID, phase string)
+
 	// parentDelegateID is the durable delegate handle that owns this child
 	// session in its parent.
 	parentDelegateID string

@@ -596,6 +596,9 @@ func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	if err != nil {
 		return "", err
 	}
+	if live, liveErr := findJobRecord(jm, jobID); liveErr == nil {
+		rec = live
+	}
 	out := projectJobStatus(jm.now(), rec)
 	rendered, err := marshalBoundedJSON(out, maxChars)
 	if err != nil {

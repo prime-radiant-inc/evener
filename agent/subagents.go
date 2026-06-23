@@ -366,6 +366,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	subCfg.MCPConfigFiles = nil
 	subCfg.MCPInline = nil
 	subCfg.spawn.parentJobID = ""
+	subCfg.spawn.parentJobActivity = nil
 	subCfg.spawn.parentDelegateID = ""
 	subCfg.spawn.forwardJobEvent = nil
 	subCfg.spawn.parentWatchGranted = false
@@ -392,6 +393,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		subCfg.spawn.parentJobID = parentJobID
 		if s.jobManager != nil {
 			subCfg.spawn.forwardJobEvent = s.jobManager.forwardEvent
+			subCfg.spawn.parentJobActivity = s.jobManager.noteJobActivity
 		}
 	}
 	if delegateID, ok := ctx.Value(ctxParentDelegateID).(string); ok {
@@ -683,6 +685,13 @@ func (s *Session) trackAndLaunchPreparedSubagent(prepared *preparedSubagentRun) 
 
 	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, s.activeCausalProvenance())
 	return nil
+}
+
+func (s *Session) noteParentJobActivity(phase string) {
+	if s == nil || s.cfg.spawn.parentJobActivity == nil || s.cfg.spawn.parentJobID == "" {
+		return
+	}
+	s.cfg.spawn.parentJobActivity(s.cfg.spawn.parentJobID, phase)
 }
 
 func (s *Session) sendInput(ctx context.Context, agentID string, input string) (any, error) {

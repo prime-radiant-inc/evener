@@ -203,6 +203,23 @@ func (jm *jobManager) stampLastActivityLocked(jobID string) {
 	run.rec.LastActivity = &now
 }
 
+func (jm *jobManager) noteJobActivity(jobID, phase string) {
+	if jm == nil || strings.TrimSpace(jobID) == "" {
+		return
+	}
+	now := jm.now()
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	run := jm.running[jobID]
+	if run == nil || run.rec == nil || run.rec.Status.IsTerminal() {
+		return
+	}
+	run.rec.LastActivity = &now
+	if phase != "" {
+		run.rec.Phase = phase
+	}
+}
+
 type terminalJob struct {
 	status                       jobstore.Status
 	reason                       string
@@ -487,6 +504,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		VisibleToSession: jm.sessionID,
 		ParentJobID:      parentJobID,
 		StartedAt:        startedAt,
+		Phase:            jobPhaseProcessRunning,
 		LastActivity:     &startedAt,
 		OutputPath:       outputPath,
 		Provenance:       provenance.Clone(jobProvenance),

@@ -579,6 +579,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// --- Phase: LLMCall ---
 		tPhaseStart := time.Now()
 
+		s.noteParentJobActivity(jobPhaseAwaitingModel)
 		modelResp, req, err := s.callModelWithFallback(ctx, profile, req, reqEffort, round)
 		resp := modelResp.Response
 
@@ -710,6 +711,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		tPhaseStart = time.Now()
 
 		// Execute tool calls (possibly in parallel) and send results back.
+		s.noteParentJobActivity(jobPhaseToolRunning)
 		results, execErr := s.execToolBatch(ctx, calls, profile)
 		if execErr != nil {
 			return "", progressed, execErr

@@ -418,6 +418,8 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 			VisibleToSession: jm.sessionID,
 			ParentJobID:      parentJobID,
 			StartedAt:        startedAt,
+			Phase:            jobPhaseProcessRunning,
+			LastActivity:     &startedAt,
 			OutputPath:       outputPath,
 			Provenance:       jm.currentCausalProvenance(),
 		},

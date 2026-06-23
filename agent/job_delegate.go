@@ -1431,6 +1431,7 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 			TranscriptRef:    transcriptRef,
 			DelegateRestore:  restore,
 			StartedAt:        startedAt,
+			Phase:            jobPhaseStarting,
 			LastActivity:     &startedAt,
 			OutputPath:       outputPath,
 			Provenance:       provenance.Clone(jobProvenance),
