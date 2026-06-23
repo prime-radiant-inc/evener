@@ -27,16 +27,20 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
     <div class="composer-attachments" data-composer-attachments data-attachments></div>
     <div class="composer-attachment-error" data-attachment-error hidden></div>
     <div class="input-card" data-drop-zone>
-      <textarea class="message-input" rows="1"></textarea>
-    </div>
-    <div class="input-controls">
-      <div class="controls-left">
-        <button type="button" class="btn btn-secondary" data-attach-trigger>＋</button>
+      <div class="composer-model" title="gpt-5.5">
+        <span class="composer-model-key">model</span>
+        <span class="composer-model-value" data-model-display>gpt-5.5</span>
       </div>
-      <div class="controls-center"></div>
-      <div class="controls-right">
-        <button type="button" class="btn btn-ghost" data-steer-trigger>steer</button>
-        <button type="submit" class="send-btn btn btn-primary">send</button>
+      <textarea class="message-input" rows="1"></textarea>
+      <div class="input-controls">
+        <div class="controls-left">
+          <button type="button" class="btn btn-secondary" data-attach-trigger>＋</button>
+        </div>
+        <div class="controls-center"></div>
+        <div class="controls-right">
+          <button type="button" class="btn btn-ghost" data-steer-trigger>steer</button>
+          <button type="submit" class="send-btn btn btn-primary">send</button>
+        </div>
       </div>
     </div>
     <div class="input-status" id="input-status"></div>
@@ -123,6 +127,12 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
 const ta = window.document.querySelector(".message-input");
 const form = window.document.querySelector("form[data-input-form]");
+const inputCard = form.querySelector(".input-card");
+const inputControls = form.querySelector(".input-controls");
+const composerModel = form.querySelector(".composer-model");
+pass(inputCard && inputCard.contains(inputControls), "expected input controls inside input card");
+pass(composerModel && composerModel.querySelector("[data-model-display]"), "expected model display outside button row");
+pass(!form.querySelector(".model-chip"), "model should not occupy the composer button row");
 
 // Helper to read the inline height back as a number.
 const heightPx = () => parseFloat(ta.style.height) || 0;

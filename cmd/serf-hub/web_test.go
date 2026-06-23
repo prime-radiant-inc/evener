@@ -2562,11 +2562,18 @@ func TestWeb_ThreadDocument_SecurityHeaders(t *testing.T) {
 	}
 }
 
-func TestWeb_ThreadDocument_SubagentBreadcrumbUsesPaneSafeAttributes(t *testing.T) {
+func TestWeb_ThreadDocument_CompactsSubagentChromeAndFooter(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	data := WorkspaceData{
 		ID:                 "local:child",
 		Title:              "child",
+		SourceLabel:        "local",
+		State:              "ended",
+		StateLabel:         "ended",
+		TurnCount:          36,
+		WorkingDir:         "/projects/serf",
+		Branch:             "main",
+		Model:              "gpt-5.5",
 		ParentRouteID:      "local:parent",
 		ParentTitle:        "parent",
 		ThreadDocumentMode: true,
@@ -2577,11 +2584,58 @@ func TestWeb_ThreadDocument_SubagentBreadcrumbUsesPaneSafeAttributes(t *testing.
 		t.Fatalf("render: %v", err)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `data-open-parent-beside="/thread/local%3Aparent"`) {
-		t.Fatalf("breadcrumb missing pane-safe parent target: %q", body)
+	for _, forbidden := range []string{
+		`class="subagent-parent-banner"`,
+		`subagent-parent-esc`,
+		`<span class="status-key">src</span>`,
+		`<span class="status-key">cwd</span>`,
+		`<span class="status-key">branch</span>`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("thread document contains compact-forbidden markup %q in:\n%s", forbidden, body)
+		}
 	}
-	if strings.Contains(body, `href="/s/local:parent"`) {
-		t.Fatalf("thread document breadcrumb must not target full app shell: %q", body)
+	for _, required := range []string{
+		`class="workspace-title-row"`,
+		`class="message-input"`,
+		`data-task-status-text`,
+		`class="status-badge"`,
+		`class="status-item turns"`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("thread document missing compact-required markup %q in:\n%s", required, body)
+		}
+	}
+}
+
+func TestWeb_ThreadDocument_ComposerControlsLiveInsideInputCard(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
+	data := WorkspaceData{
+		ID:                 "local:child",
+		Title:              "child",
+		State:              "idle",
+		StateLabel:         "idle",
+		Model:              "gpt-5.5",
+		ThreadDocumentMode: true,
+		ShowSidebarToggle:  false,
+	}
+	rec := httptest.NewRecorder()
+	if err := web.threadTmpl.ExecuteTemplate(rec, "thread_document", data); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	body := rec.Body.String()
+	inputCard := strings.Index(body, `class="input-card"`)
+	messageInput := strings.Index(body, `class="message-input"`)
+	inputControls := strings.Index(body, `class="input-controls"`)
+	inputStatus := strings.Index(body, `id="input-status"`)
+	if inputCard < 0 || messageInput < 0 || inputControls < 0 || inputStatus < 0 {
+		t.Fatalf("missing composer structure: inputCard=%d messageInput=%d inputControls=%d inputStatus=%d", inputCard, messageInput, inputControls, inputStatus)
+	}
+	if !(inputCard < messageInput && messageInput < inputControls && inputControls < inputStatus) {
+		t.Fatalf("composer controls should be inside input card before input status")
+	}
+	if !strings.Contains(body, `class="composer-model"`) {
+		t.Fatalf("composer should render model outside the button row")
 	}
 }
 

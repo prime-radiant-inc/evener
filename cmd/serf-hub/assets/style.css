@@ -1492,7 +1492,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   flex: 1;
 }
 
-.input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-4) var(--space-4); min-height: 80px; transition: border-color var(--motion-fast); }
+.input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); min-height: 0; transition: border-color var(--motion-fast); }
 /* kata 65mm: drop-active is set by the shared composer-attachments helper
    on dragenter. Visually subtle so dropping onto the existing .input-card
    keeps its border style; the dashed outline cues "drop here" without
@@ -1503,6 +1503,48 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .composer-attachment-error:empty,
 .composer-attachment-error[hidden] { display: none; }
 .message-input { width: 100%; min-height: 36px; max-height: 50vh; background: transparent; border: none; resize: none; color: var(--text); font: inherit; font-family: var(--font-sans); font-size: var(--text-md); outline: none; line-height: var(--leading-snug); overflow-y: auto; }
+.composer-model {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.composer-model-key { color: var(--text-muted); }
+.composer-model-value {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font: inherit;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+button.composer-model-value { cursor: pointer; color: var(--accent); }
+button.composer-model-value:hover { text-decoration: underline; }
+.input-card .input-controls {
+  padding: var(--space-3) 0 0;
+  margin-top: var(--space-2);
+}
+.thread-document .workspace-input {
+  padding: var(--space-3) var(--space-4);
+}
+.thread-document .input-status {
+  gap: var(--space-3);
+  padding-top: var(--space-2);
+  margin-top: var(--space-1);
+  border-top: 0;
+}
+.thread-document .conversation {
+  padding: var(--space-4);
+}
 
 .input-controls { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0 0; flex-wrap: wrap; }
 .controls-left,
