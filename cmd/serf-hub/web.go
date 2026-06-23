@@ -25,6 +25,7 @@ type WebServer struct {
 	appTmpl             *template.Template
 	sidebarTmpl         *template.Template
 	workspaceTmpl       *template.Template
+	threadTmpl          *template.Template
 	spawnTmpl           *template.Template
 	inputStripTmpl      *template.Template
 	projectSettingsTmpl *template.Template
@@ -49,6 +50,11 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	appTmpl := template.Must(template.ParseFS(templatesFS, "templates/app.html"))
 	sidebarTmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
 	workspaceTmpl := template.Must(template.ParseFS(templatesFS,
+		"templates/partials/workspace.html",
+		"templates/partials/input_strip.html",
+	))
+	threadTmpl := template.Must(template.ParseFS(templatesFS,
+		"templates/thread.html",
 		"templates/partials/workspace.html",
 		"templates/partials/input_strip.html",
 	))
@@ -78,7 +84,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	}
 	web := &WebServer{
 		cfg: cfg, appTmpl: appTmpl, sidebarTmpl: sidebarTmpl,
-		workspaceTmpl: workspaceTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
+		workspaceTmpl: workspaceTmpl, threadTmpl: threadTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
 		projectSettingsTmpl: projectSettingsTmpl,
 		settingsTmpls:       settingsTmpls,
 		sources:             sources,
@@ -117,6 +123,7 @@ func (s *WebServer) Handler() http.Handler {
 	// Pages
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/s/", s.handleSession)
+	mux.HandleFunc("/thread/", s.handleThreadDocument)
 	mux.HandleFunc("/new", s.handleIndex)
 	mux.HandleFunc("/_partials/", s.handleInternalPartial)
 

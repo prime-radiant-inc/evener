@@ -102,18 +102,62 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *WebServer) renderWorkspacePartial(w http.ResponseWriter, r *http.Request, id string) {
-	data := s.workspaceData(id)
+	data := s.workspaceDataForRender(id)
 	if data.ID == "" {
 		http.NotFound(w, r)
 		return
+	}
+	data.ShowSidebarToggle = true
+	data.ThreadDocumentMode = false
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.workspaceTmpl.ExecuteTemplate(w, "workspace", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *WebServer) workspaceDataForRender(id string) WorkspaceData {
+	data := s.workspaceData(id)
+	if data.ID == "" {
+		return data
 	}
 	if data.HomeDir == "" {
 		if home, err := os.UserHomeDir(); err == nil {
 			data.HomeDir = home
 		}
 	}
+	return data
+}
+
+func (s *WebServer) handleThreadDocument(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/thread/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	id = canonicalRouteID(id)
+	s.renderThreadDocument(w, r, id)
+}
+
+func (s *WebServer) renderThreadDocument(w http.ResponseWriter, r *http.Request, id string) {
+	data := s.workspaceDataForRender(id)
+	if data.ID == "" {
+		data = WorkspaceData{
+			ID:           id,
+			SourceLabel:  sourceLabelFromRefText(appRefFromRouteID(id)),
+			Title:        id,
+			State:        "idle",
+			StateLabel:   stateLabel("idle"),
+			Capabilities: s.apiSessionCapabilities(id, false),
+		}
+	}
+	data.ShowSidebarToggle = false
+	data.ThreadDocumentMode = true
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.workspaceTmpl.ExecuteTemplate(w, "workspace", data); err != nil {
+	if err := s.threadTmpl.ExecuteTemplate(w, "thread_document", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }

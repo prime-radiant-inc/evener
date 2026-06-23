@@ -2478,6 +2478,64 @@ func TestWeb_SessionRoute_FullPage_ServesAppShell(t *testing.T) {
 	}
 }
 
+func TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/thread/anysession", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`<!DOCTYPE html>`,
+		`<body class="thread-document"`,
+		`id="conversation"`,
+		`data-input-form`,
+		`/assets/renderer.js`,
+		`/assets/appwire.js`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("thread document missing %q in %q", want, body)
+		}
+	}
+	for _, forbidden := range []string{
+		`id="sidebar"`,
+		`id="search-dialog"`,
+		`data-sidebar-toggle`,
+		`/_partials/sidebar`,
+		`settings-link`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("thread document should not contain %q in %q", forbidden, body)
+		}
+	}
+}
+
+func TestWeb_WorkspacePartial_RemainsHXGated(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/anysession/workspace", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("workspace partial without HX should remain hidden: status=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestWeb_SessionRoute_LocalRefCanonicalizesWorkspaceURL(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",

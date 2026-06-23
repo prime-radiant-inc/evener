@@ -1,0 +1,53 @@
+{{define "thread_document"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{if .Title}}{{.Title}} · {{end}}serf thread</title>
+  <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%237aa2f7'/></svg>">
+  <script>
+    (function () {
+      var pref = localStorage.getItem("serf-hub.theme");
+      if (pref === "light" || pref === "dark") {
+        document.documentElement.setAttribute("data-theme", pref);
+      }
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,100..900;1,100..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body class="thread-document" data-thread-document="true">
+  <main id="workspace" class="thread-document-workspace">
+    {{template "workspace" .}}
+  </main>
+  <div id="toast-region" aria-live="polite" aria-relevant="additions"></div>
+  <script src="/assets/htmx.min.js"></script>
+  <script src="/assets/toast.js"></script>
+  <script src="/assets/skeleton.js"></script>
+  <script src="/assets/appwire.js"></script>
+  <script src="/assets/focus-trap.js"></script>
+  <script src="/assets/theme.js"></script>
+  <script src="/assets/composer-attachments.js"></script>
+  <script src="/assets/marked.min.js"></script>
+  <script src="/assets/diagnostics.js"></script>
+  <script src="/assets/pending.js"></script>
+  <script src="/assets/renderer-format.js"></script>
+  <script src="/assets/renderer-tools.js"></script>
+  <script src="/assets/renderer-panels.js"></script>
+  <script src="/assets/renderer.js"></script>
+  <script>
+    document.body.addEventListener("htmx:responseError", function (e) {
+      if (!window.SerfToast) return;
+      var status = (e && e.detail && e.detail.xhr && e.detail.xhr.status) || 0;
+      window.SerfToast.show(status ? ("Request failed (" + status + ")") : "Request failed", "error");
+    });
+    document.body.addEventListener("htmx:sendError", function () {
+      if (window.SerfToast) window.SerfToast.show("Network error", "error");
+    });
+  </script>
+</body>
+</html>
+{{end}}

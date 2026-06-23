@@ -159,22 +159,24 @@ const liveModelsTTL = 5 * time.Minute
 
 // WorkspaceData is the template data for the workspace partial.
 type WorkspaceData struct {
-	ID             string
-	SourceLabel    string
-	Title          string
-	Branch         string
-	WorkingDir     string
-	HomeDir        string
-	State          string
-	StateLabel     string
-	TurnCount      int
-	Model          string
-	ContextWindow  int
-	ContextPercent int
-	ContextNumbers string
-	Cost           string
-	ActiveTurnID   string
-	RunningFor     string
+	ID                 string
+	SourceLabel        string
+	Title              string
+	Branch             string
+	WorkingDir         string
+	HomeDir            string
+	State              string
+	StateLabel         string
+	TurnCount          int
+	Model              string
+	ContextWindow      int
+	ContextPercent     int
+	ContextNumbers     string
+	Cost               string
+	ActiveTurnID       string
+	RunningFor         string
+	ShowSidebarToggle  bool
+	ThreadDocumentMode bool
 	// GoalStatus/GoalIterations mirror appwire.GoalState for the live goal
 	// status pill in the input strip. Empty/zero when no goal is set (e.g. past
 	// sessions). There is no iteration cap, so only status and turn count show.

@@ -14,7 +14,9 @@
   </nav>
   {{end}}
   <div class="workspace-title-row">
+    {{if .ShowSidebarToggle}}
     <button type="button" class="header-hamburger" data-sidebar-toggle title="open sidebar" aria-label="open sidebar">☰</button>
+    {{end}}
     <div class="workspace-title">
       <span id="workspace-session-title" class="title">{{.Title}}</span>
       <button class="btn btn-icon title-action" type="button" data-copy-id="{{.ID}}" title="copy session ID" aria-label="copy session ID">⧉</button>
