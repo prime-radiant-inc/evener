@@ -4661,9 +4661,9 @@ func waitForJobOutputContent(t *testing.T, s *Session, jobID, want string) jobRe
 	deadline := time.Now().Add(2 * time.Second)
 	var last string
 	for time.Now().Before(deadline) {
-		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-			ID:        "read-wait",
-			Name:      "job_read_output",
+		res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
+			ID: "read-wait",
+
 			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":65536}`, jobID)),
 		})
 		if res.IsError {
