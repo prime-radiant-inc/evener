@@ -52,6 +52,28 @@ pass(
   "rail-mode sidebar should hide the full-border resizer"
 );
 
+// Drag handles should present the same visual/click target thickness.
+const sidebarWidth = (css.match(/\.sidebar-resizer\s*\{[^}]*width:\s*([^;]+);/m) || [])[1];
+const paneWidth = (css.match(/\.pane-splitter\s*\{[^}]*width:\s*([^;]+);/m) || [])[1];
+pass(!!sidebarWidth && !!paneWidth && sidebarWidth.trim() === paneWidth.trim(), "left and right drag handles should use the same thickness");
+
+// The input metadata row should not be separated from the composer by an hr-like rule.
+pass(
+  ruleContains(".input-status", /border-top:\s*(0|none)\b/),
+  "input status below the main composer should not draw a horizontal rule"
+);
+
+// Standalone thread documents are body.thread-document, not body.app; the legacy
+// landing-page main padding must not apply to their <main> element.
+pass(
+  css.includes("body:not(.app):not(.thread-document) main"),
+  "legacy body:not(.app) main padding should exclude thread-document pages"
+);
+pass(
+  ruleContains(".thread-document main", /padding:\s*0\b/) && ruleContains(".thread-document main", /max-width:\s*none\b/),
+  "thread-document main should remove legacy page padding and max-width"
+);
+
 if (failures.length > 0) {
   for (const f of failures) console.log(f);
   process.exit(1);

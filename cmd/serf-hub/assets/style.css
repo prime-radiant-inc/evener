@@ -276,11 +276,16 @@ body {
 /* Legacy landing-page main padding. Scoped away from the app shell
  * (which uses #workspace flex layout); otherwise it injects 24/48px
  * padding into the workspace and the input form floats off the bottom. */
-body:not(.app) main {
+body:not(.app):not(.thread-document) main {
   padding: var(--space-6);
   padding-bottom: var(--space-8);
   max-width: 1400px;
   margin: 0 auto;
+}
+.thread-document main {
+  padding: 0;
+  max-width: none;
+  margin: 0;
 }
 .cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-6); }
 section.panel {
@@ -437,7 +442,7 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
   padding: var(--space-5); color: var(--text); border-top: 1px solid var(--rule);
   background: var(--bg-raised); }
 .pane-error-text { flex-basis: 100%; margin-bottom: var(--space-2); color: var(--text-muted); }
-.pane-splitter { width: 5px; flex-shrink: 0; cursor: col-resize; background: var(--rule); opacity: .4; }
+.pane-splitter { width: 6px; flex-shrink: 0; cursor: col-resize; background: var(--rule); opacity: .4; }
 .pane-splitter:hover { opacity: 1; }
 .pane-splitter[hidden] { display: none; }
 @media (max-width: 767px) { .side-panes, .pane-splitter { display: none !important; } }
@@ -1617,7 +1622,7 @@ button.composer-model-value:hover { text-decoration: underline; }
   gap: var(--space-5);
   padding: var(--space-3) 0 0;
   margin-top: var(--space-2);
-  border-top: 1px solid var(--rule);
+  border-top: 0;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--text);
