@@ -4092,13 +4092,20 @@ type jobListToolOutput struct {
 
 type jobListToolEntry struct {
 	JobID              string  `json:"job_id"`
+	Kind               string  `json:"kind"`
 	Type               string  `json:"type"`
+	Phase              string  `json:"phase"`
 	ParentJobID        *string `json:"parent_job_id"`
 	Resumable          *bool   `json:"resumable"`
 	NotResumableReason *string `json:"not_resumable_reason"`
 	StartedAt          string  `json:"started_at"`
 	EndedAt            *string `json:"ended_at"`
 	LastActivity       *string `json:"last_activity"`
+	RunningForMS       int64   `json:"running_for_ms"`
+	DurationMS         int64   `json:"duration_ms"`
+	QuietForMS         int64   `json:"quiet_for_ms"`
+	LastEventAt        string  `json:"last_event_at"`
+	TranscriptRef      *string `json:"transcript_ref"`
 }
 
 type jobListToolWatch struct {

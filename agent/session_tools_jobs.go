@@ -1168,8 +1168,10 @@ type recentWatchEntry struct {
 type jobListEntry struct {
 	JobID          string  `json:"job_id"`
 	DelegateID     string  `json:"delegate_id,omitempty"`
+	Kind           string  `json:"kind"`
 	Type           string  `json:"type"`
 	Status         string  `json:"status"`
+	Phase          string  `json:"phase,omitempty"`
 	Reason         *string `json:"reason,omitempty"`
 	Description    string  `json:"description"`
 	ParentJobID    *string `json:"parent_job_id,omitempty"`
@@ -1185,6 +1187,10 @@ type jobListEntry struct {
 	NotResumableReason *string `json:"not_resumable_reason,omitempty"`
 	StartedAt          string  `json:"started_at"`
 	EndedAt            *string `json:"ended_at,omitempty"`
+	RunningForMS       *int64  `json:"running_for_ms,omitempty"`
+	DurationMS         *int64  `json:"duration_ms,omitempty"`
+	QuietForMS         *int64  `json:"quiet_for_ms,omitempty"`
+	LastEventAt        *string `json:"last_event_at,omitempty"`
 	// LastActivity is the most recent parent-observable activity timestamp
 	// (output append or start) for a running job; for a terminal record with no
 	// live stamp it falls back to ended_at, then started_at. A quiet running
@@ -2232,6 +2238,11 @@ func projectJobRecordForViewer(viewer *Session, assessor *Session, rec *jobstore
 	if assessor == nil {
 		assessor = viewer
 	}
+	now := time.Now()
+	if assessor != nil && assessor.jobManager != nil {
+		now = assessor.jobManager.now()
+	}
+	statusView := projectJobStatus(now, rec)
 	if assessor != nil && isRuntimeLostDelegate(rec) {
 		assessment := assessor.assessDelegateResumability(rec, delegateResumabilityProjection)
 		resumableValue := assessment.Resumable
@@ -2245,18 +2256,24 @@ func projectJobRecordForViewer(viewer *Session, assessor *Session, rec *jobstore
 	return jobListEntry{
 		JobID:              rec.JobID,
 		DelegateID:         delegateID,
+		Kind:               statusView.Kind,
 		Type:               string(rec.Type),
 		Status:             string(rec.Status),
+		Phase:              statusView.Phase,
 		Reason:             stringPtrOrNil(rec.Reason),
 		Description:        rec.Description,
 		ParentJobID:        stringPtrOrNil(rec.ParentJobID),
 		OwnerSessionID:     rec.OwnerSessionID,
 		VisibleToSessionID: rec.VisibleToSession,
-		TranscriptRef:      stringPtrOrNil(rec.TranscriptRef),
+		TranscriptRef:      stringPtrOrNil(statusView.TranscriptRef),
 		Resumable:          resumable,
 		NotResumableReason: notResumableReason,
 		StartedAt:          rec.StartedAt.Format(time.RFC3339Nano),
 		EndedAt:            timePtrOrNil(rec.EndedAt),
+		RunningForMS:       statusView.RunningForMS,
+		DurationMS:         statusView.DurationMS,
+		QuietForMS:         statusView.QuietForMS,
+		LastEventAt:        statusView.LastEventAt,
 		LastActivity:       lastActivityProjection(rec),
 		ExitCode:           rec.ExitCode,
 		TotalBytes:         rec.OutputBytes,

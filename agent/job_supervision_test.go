@@ -136,6 +136,37 @@ func TestJobStatusRunningShellProjectsSupervisionFields(t *testing.T) {
 	}
 }
 
+func TestJobListRowsIncludeStatusSupervisionFields(t *testing.T) {
+	s := newTestSession(t)
+	jm := s.jobManager
+	clk := newMutableClock(time.Unix(6000, 0).UTC())
+	jm.now = clk.now
+
+	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+
+	clk.advance(3 * time.Second)
+	entry := readJobListEntry(t, s, rec.JobID)
+	if entry.Kind != "shell" {
+		t.Fatalf("kind = %q, want shell", entry.Kind)
+	}
+	if entry.Phase != "process_running" {
+		t.Fatalf("phase = %q, want process_running", entry.Phase)
+	}
+	if entry.RunningForMS != 3000 {
+		t.Fatalf("running_for_ms = %d, want 3000", entry.RunningForMS)
+	}
+	if entry.QuietForMS != 3000 {
+		t.Fatalf("quiet_for_ms = %d, want 3000", entry.QuietForMS)
+	}
+	if entry.TranscriptRef == nil || *entry.TranscriptRef != "job:"+rec.JobID {
+		t.Fatalf("transcript_ref = %v, want job:%s", entry.TranscriptRef, rec.JobID)
+	}
+}
+
 // TestJobListLastActivityAdvancesWithShellOutput proves last_activity is stamped
 // at the clock's value when output is appended for a running shell job.
 func TestJobListLastActivityAdvancesWithShellOutput(t *testing.T) {
