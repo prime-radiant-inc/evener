@@ -395,14 +395,27 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 /* Mono utility — for one-off mono spans that don't have a dedicated class. */
 .mono { font-family: var(--font-mono); }
 #sidebar {
-  width: 260px;
+  width: var(--sidebar-w, 260px);
   min-width: 180px;
   max-width: min(480px, 45vw);
   flex-shrink: 0;
   height: 100vh;
   border-right: 1px solid var(--rule);
   overflow: auto;
-  resize: horizontal;
+}
+.sidebar-resizer {
+  width: 6px;
+  height: 100vh;
+  flex-shrink: 0;
+  margin-left: -3px;
+  margin-right: -3px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 2;
+}
+.sidebar-resizer:hover,
+body.app[data-sidebar-resizing="true"] .sidebar-resizer {
+  background: color-mix(in srgb, var(--rule) 70%, transparent);
 }
 #workspace { position: relative; flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 /* Multi-pane: side panes sit as flex columns to the right of #workspace. */
@@ -418,6 +431,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   font-size: var(--text-md); line-height: 1; padding: var(--space-1) var(--space-2); }
 .pane-close:hover { color: var(--text); }
 .pane-frame { flex: 1; width: 100%; border: 0; min-height: 0; }
+body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 .pane[data-state="loading"] .pane-frame { opacity: 0.65; }
 .pane-error { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center;
   padding: var(--space-5); color: var(--text); border-top: 1px solid var(--rule);
@@ -704,7 +718,8 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 }
 
 /* Rail mode: collapse to 56px, hide text columns, hide most header actions. */
-body.app[data-sidebar-rail] #sidebar { width: 56px; min-width: 56px; max-width: 56px; resize: none; }
+body.app[data-sidebar-rail] #sidebar { width: 56px; min-width: 56px; max-width: 56px; }
+body.app[data-sidebar-rail] .sidebar-resizer { display: none; }
 body.app[data-sidebar-rail] .sidebar-header .sidebar-action { display: none; }
 body.app[data-sidebar-rail] .sidebar-header { padding: 0 var(--space-3) var(--space-3); justify-content: center; gap: 0; }
 body.app[data-sidebar-rail] .sidebar-rail-toggle::before { content: "⇥"; }
@@ -1555,14 +1570,14 @@ button.composer-model-value:hover { text-decoration: underline; }
   padding: var(--space-4);
 }
 .pane-compact .workspace-input {
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-1) var(--space-3);
   border-top: 0;
 }
 .pane-compact .input-card {
   padding: var(--space-2);
 }
 .pane-compact .message-input {
-  min-height: 30px;
+  min-height: 26px;
   font-size: var(--text-sm);
 }
 .pane-compact .input-card .input-controls {
@@ -1584,6 +1599,11 @@ button.composer-model-value:hover { text-decoration: underline; }
   margin-top: 0;
   border-top: 0;
   gap: var(--space-2);
+}
+.pane-compact .input-status .source,
+.pane-compact .input-status .cwd,
+.pane-compact .input-status .branch {
+  display: none;
 }
 
 .input-controls { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0 0; flex-wrap: wrap; }
@@ -3945,7 +3965,7 @@ body.doc-page {
 /* Trim and condense the workspace header in a pane: it dominates the narrow
    pane width and repeats information already visible in the pane header bar. */
 .pane-compact .workspace-header {
-  padding: var(--space-2) var(--space-4);
+  display: none;
 }
 .pane-compact .workspace-title-row {
   display: none;

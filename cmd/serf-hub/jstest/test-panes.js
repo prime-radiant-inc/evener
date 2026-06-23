@@ -146,6 +146,9 @@ console.log("test-panes width: ok");
   };
 
   split.dispatchEvent(mouse("mousedown", 700, 1));
+  if (dom3.window.document.body.dataset.paneDragging !== "true") {
+    throw new Error("splitter drag should mark body[data-pane-dragging=true] so iframes stop stealing shrink mousemove events");
+  }
   dom3.window.document.dispatchEvent(mouse("mousemove", 500, 1));
   var widened = storedWidth();
   if (widened !== 700) throw new Error("active splitter drag left should widen side panes to 700, got " + widened);
@@ -159,6 +162,9 @@ console.log("test-panes width: ok");
   if (afterReleasedMove !== shrunk) throw new Error("mousemove with no pressed button must not keep resizing after drag release; before=" + shrunk + " after=" + afterReleasedMove);
 
   dom3.window.document.dispatchEvent(mouse("mouseup", 450, 0));
+  if (dom3.window.document.body.dataset.paneDragging) {
+    throw new Error("splitter drag should clear body[data-pane-dragging] on mouseup");
+  }
   dom3.window.document.dispatchEvent(mouse("mousemove", 520, 0));
   var afterMouseupHover = storedWidth();
   if (afterMouseupHover !== shrunk) throw new Error("hover/contact after mouseup must not resize; before=" + shrunk + " after=" + afterMouseupHover);
@@ -174,6 +180,9 @@ console.log("test-panes width: ok");
   }
   if (!/\.pane\s*\{[^}]*min-width:\s*var\(--pane-min,/m.test(css)) {
     throw new Error("pane min-width must be driven by the shared --pane-min CSS variable");
+  }
+  if (!/body\.app\[data-pane-dragging="true"\]\s+\.pane-frame\s*\{[^}]*pointer-events:\s*none/m.test(css)) {
+    throw new Error("pane iframes must ignore pointer events while the host splitter is dragging");
   }
   console.log("test-panes width model CSS contract: ok");
 }());

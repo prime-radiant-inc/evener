@@ -10,6 +10,8 @@
 
   function region() { return document.getElementById("side-panes"); }
   function splitter() { return document.getElementById("pane-splitter"); }
+  function sidebar() { return document.getElementById("sidebar"); }
+  function sidebarResizer() { return document.getElementById("sidebar-resizer"); }
 
   function threadHref(ref) {
     ref = String(ref || "").trim();
@@ -302,9 +304,11 @@
     s.addEventListener("mousedown", function (e) {
       e.preventDefault();
       var dragging = true;
+      document.body.dataset.paneDragging = "true";
       function stop() {
         if (!dragging) return;
         dragging = false;
+        delete document.body.dataset.paneDragging;
         document.removeEventListener("mousemove", move);
         document.removeEventListener("mouseup", stop);
         window.removeEventListener("mouseup", stop);
@@ -316,6 +320,46 @@
         // splitter sits between #workspace and #side-panes; panes grow as the
         // pointer moves left. Width = distance from pointer to right viewport edge.
         setSidePanesWidth(window.innerWidth - ev.clientX);
+      }
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", stop);
+      window.addEventListener("mouseup", stop);
+      window.addEventListener("blur", stop);
+    });
+  }
+
+  function bindSidebarResizer() {
+    var s = sidebar(), h = sidebarResizer();
+    if (!s || !h || h.__bound) return;
+    h.__bound = true;
+    h.addEventListener("mousedown", function (e) {
+      if (document.body.dataset.sidebarRail !== undefined) return;
+      e.preventDefault();
+      var dragging = true;
+      document.body.dataset.sidebarResizing = "true";
+      function clamp(px) {
+        var min = 180;
+        var max = Math.min(480, Math.round(window.innerWidth * 0.45));
+        return Math.max(min, Math.min(max, Math.round(px)));
+      }
+      function setWidth(px) {
+        var w = clamp(px);
+        document.body.style.setProperty("--sidebar-w", w + "px");
+        return w;
+      }
+      function stop() {
+        if (!dragging) return;
+        dragging = false;
+        delete document.body.dataset.sidebarResizing;
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", stop);
+        window.removeEventListener("mouseup", stop);
+        window.removeEventListener("blur", stop);
+      }
+      function move(ev) {
+        if (!dragging) return;
+        if (ev.buttons === 0) { stop(); return; }
+        setWidth(ev.clientX);
       }
       document.addEventListener("mousemove", move);
       document.addEventListener("mouseup", stop);
@@ -390,7 +434,7 @@
   window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, isSuppressed: isSuppressed, setSidePanesWidth: setSidePanesWidth, threadHref: threadHref, normalizePaneHref: normalizePaneHref, openFromChild: openFromChild, isPaneSafeHref: isPaneSafeHref, markError: markError, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
   window.addEventListener("message", onMessage);
 
-  function onLoad() { restore(); bindSplitter(); restoreWidth(); }
+  function onLoad() { restore(); bindSplitter(); bindSidebarResizer(); restoreWidth(); }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", onLoad);
   } else { onLoad(); }
