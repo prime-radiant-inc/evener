@@ -4107,7 +4107,7 @@ func waitForJobOutput(t *testing.T, s *Session, jobID, want string) jobReadOutpu
 		res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
 			ID: "read",
 
-			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":65536,"grep":"ready"}`, jobID)),
+			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":65536,"grep":%q}`, jobID, want)),
 		})
 		if res.IsError {
 			t.Fatalf("job_read_output returned error: %s", res.Output)
@@ -4615,6 +4615,7 @@ func TestJobReadOutputZeroHeadTailTreatedAsUnset(t *testing.T) {
 	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
+	waitForJobOutput(t, s, shellOut.JobID, "ZERO_RULE_MARKER")
 	t.Cleanup(func() {
 		_, _ = s.jobManager.stop(shellOut.JobID)
 		waitForShellDone(t, s.jobManager, shellOut.JobID)
