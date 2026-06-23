@@ -59,6 +59,42 @@
     });
   }
 
+  function isKnownPaneSource(source) {
+    var r = region();
+    if (!r || !source) return false;
+    var frames = r.querySelectorAll(".pane-frame");
+    for (var i = 0; i < frames.length; i++) {
+      if (frames[i].contentWindow === source) return true;
+    }
+    return false;
+  }
+
+  function isPaneSafeHref(href) {
+    href = normalizePaneHref(href);
+    if (!href) return false;
+    try {
+      var u = new URL(href, window.location.origin);
+      if (u.origin !== window.location.origin) return false;
+      return u.pathname.indexOf("/thread/") === 0 || u.pathname.indexOf("/doc/") === 0;
+    } catch (e) {
+      return href.indexOf("/thread/") === 0 || href.indexOf("/doc/") === 0;
+    }
+  }
+
+  function openFromChild(source, href, title) {
+    href = normalizePaneHref(href);
+    if (!isKnownPaneSource(source)) return null;
+    if (!isPaneSafeHref(href)) return null;
+    return open(href, String(title || href));
+  }
+
+  function onMessage(e) {
+    if (!e || e.origin !== window.location.origin) return;
+    var data = e.data || {};
+    if (data.type !== "serf:open-beside") return;
+    openFromChild(e.source, data.href, data.title);
+  }
+
   function showRegion(show) {
     var r = region(), s = splitter();
     if (r) r.hidden = !show;
@@ -267,7 +303,8 @@
     data.forEach(function (p) { if (p && p.href) open(normalizePaneHref(p.href), p.title); });
   }
 
-  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, isSuppressed: isSuppressed, setSidePanesWidth: setSidePanesWidth, threadHref: threadHref, normalizePaneHref: normalizePaneHref, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
+  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, isSuppressed: isSuppressed, setSidePanesWidth: setSidePanesWidth, threadHref: threadHref, normalizePaneHref: normalizePaneHref, openFromChild: openFromChild, isPaneSafeHref: isPaneSafeHref, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
+  window.addEventListener("message", onMessage);
 
   function onLoad() { restore(); bindSplitter(); restoreWidth(); }
   if (document.readyState === "loading") {

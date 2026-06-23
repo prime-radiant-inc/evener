@@ -222,6 +222,17 @@
       return "/thread/" + encodeURIComponent(ref);
     },
 
+    openBeside(spec) {
+      if (!spec || !spec.href) return;
+      if (window.SerfPanes && window.SerfPanes.open) {
+        window.SerfPanes.open(spec.href, spec.title);
+        return;
+      }
+      if (this.isInPane && this.isInPane() && window.parent) {
+        window.parent.postMessage({ type: "serf:open-beside", href: spec.href, title: spec.title || spec.href }, window.location.origin);
+      }
+    },
+
     autoOpenObservers(conversationEl) {
       if (!window.SerfPanes || !conversationEl) return;
       var refs = (conversationEl.dataset.observers || "").split(/\s+/).filter(Boolean);
@@ -2491,10 +2502,10 @@
     // every "open beside" affordance (subagent rows, image cards, file-
     // referencing tool cards). `ariaLabel` names the specific action; `resolve`
     // returns {href, title} at click time so callers can defer the URL/label
-    // until the row's data is final. Returns null when SerfPanes is absent
-    // (e.g. this renderer is itself inside a pane iframe — panes must not nest).
+    // until the row's data is final. Returns null when SerfPanes is absent outside
+    // a pane iframe; framed renderers post a bridge request to the host instead.
     makeOpenBesideButton(ariaLabel, resolve) {
-      if (!window.SerfPanes) return null;
+      if (!window.SerfPanes && !(this.isInPane && this.isInPane())) return null;
       var beside = document.createElement("span");
       beside.className = "open-beside-btn";
       beside.setAttribute("role", "button");
@@ -2502,11 +2513,12 @@
       beside.setAttribute("aria-label", ariaLabel);
       beside.title = "open beside";
       beside.textContent = "⇲";
+      var self = this;
       function openBeside(e) {
         e.preventDefault();
         e.stopPropagation(); // do not trigger the host card's own click
         var spec = resolve();
-        if (spec && spec.href) window.SerfPanes.open(spec.href, spec.title);
+        if (spec && spec.href) self.openBeside(spec);
       }
       beside.addEventListener("click", openBeside);
       beside.addEventListener("keydown", function (e) {
