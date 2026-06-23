@@ -196,6 +196,7 @@ type JobRecord struct {
 	Resumable        *bool                      `json:"resumable,omitempty"`
 	NotResumableWhy  string                     `json:"not_resumable_reason,omitempty"`
 	StartedAt        time.Time                  `json:"started_at"`
+	Phase            string                     `json:"phase,omitempty"`
 	// LastActivity is the in-memory timestamp of the job's most recent
 	// parent-observable activity (output append or start). It is a supervision
 	// signal for RUNNING jobs and is intentionally NOT folded from a durable

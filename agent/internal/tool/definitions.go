@@ -223,6 +223,23 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 	}
 }
 
+func DefJobStatus() llm.ToolDefinition {
+	strictFalse := false
+	return llm.ToolDefinition{
+		Name:        "job_status",
+		Description: "Inspect one durable job by job_id. Use this for orientation: kind, lifecycle status, observable phase, running/quiet time, and transcript_ref. Completion is notification-driven; do not poll this waiting for completed. Read raw evidence with read_transcript(transcript_ref).",
+		Strict:      &strictFalse,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"job_id": map[string]any{"type": "string"},
+			},
+			"required": []string{"job_id"},
+		},
+	}
+}
+
 func DefJobReadOutput() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{

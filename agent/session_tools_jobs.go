@@ -41,6 +41,14 @@ const (
 	maxJobGrepPatternBytes      = 4096
 	maxJobWatchResultTextChars  = 128
 	maxJobWatchResultEvents     = 8
+	jobKindAgent                = "agent"
+	jobKindShell                = "shell"
+	jobPhaseStarting            = "starting"
+	jobPhaseAwaitingModel       = "awaiting_model"
+	jobPhaseModelStreaming      = "model_streaming"
+	jobPhaseToolRunning         = "tool_running"
+	jobPhaseProcessRunning      = "process_running"
+	jobPhaseStopping            = "stopping"
 	// grantedReadBlockUnsupportedErr is the rejection for max_wait_ms>0 on a
 	// cross-session read: a watch-granted read (spec §5.1) or a depth >= 2
 	// descendant read resolved through the recursive owner path (spec §2). Both
@@ -62,6 +70,17 @@ func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			return jobReadOutputTool(ctx, s, args, jobToolResultMaxChars(reg, "job_read_output"))
+		},
+	}); err != nil {
+		return err
+	}
+	if err := reg.Register(tool.RegisteredTool{
+		Tool:  llm.Tool{Definition: tool.DefJobStatus(), ReadOnly: true},
+		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			return jobStatusTool(s, args, jobToolResultMaxChars(reg, "job_status"))
 		},
 	}); err != nil {
 		return err
@@ -568,6 +587,23 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	return tool.StateResult{Output: formatJobReadOutput(&result, header, maxChars), State: result}, nil
 }
 
+func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
+	jobID := strings.TrimSpace(stringArg(args, "job_id"))
+	if jobID == "" {
+		return "", errors.New("invalid_request: job_id is required")
+	}
+	jm, rec, err := s.nestedOrLocalJobManager(jobID)
+	if err != nil {
+		return "", err
+	}
+	out := projectJobStatus(jm.now(), rec)
+	rendered, err := marshalBoundedJSON(out, maxChars)
+	if err != nil {
+		return "", err
+	}
+	return tool.StateResult{Output: rendered, State: out}, nil
+}
+
 // formatJobReadOutput renders a job_read_output result as plain text: an optional
 // line-range header, the output (or grep matches), then a bracketed footer with
 // job_id, status, exit code, output_status, and the retained/dropped byte counts.
@@ -1059,6 +1095,22 @@ type jobReadOutputResult struct {
 	// parent-observable activity timestamp, with the same EndedAt/StartedAt
 	// fallback for terminal records.
 	LastActivity *string `json:"last_activity"`
+}
+
+type jobStatusResult struct {
+	JobID         string  `json:"job_id"`
+	Kind          string  `json:"kind"`
+	Status        string  `json:"status"`
+	Phase         string  `json:"phase,omitempty"`
+	Reason        *string `json:"reason,omitempty"`
+	RunningForMS  *int64  `json:"running_for_ms,omitempty"`
+	DurationMS    *int64  `json:"duration_ms,omitempty"`
+	QuietForMS    *int64  `json:"quiet_for_ms,omitempty"`
+	StartedAt     string  `json:"started_at"`
+	EndedAt       *string `json:"ended_at,omitempty"`
+	LastEventAt   *string `json:"last_event_at,omitempty"`
+	TranscriptRef string  `json:"transcript_ref"`
+	ExitCode      *int    `json:"exit_code,omitempty"`
 }
 
 type jobOutputMatch struct {
@@ -2297,6 +2349,85 @@ func timePtrOrNil(value *time.Time) *string {
 	}
 	formatted := value.Format(time.RFC3339Nano)
 	return &formatted
+}
+
+func int64Ptr(value int64) *int64 {
+	return &value
+}
+
+func publicJobKind(t jobstore.JobType) string {
+	if t == jobstore.JobDelegate {
+		return jobKindAgent
+	}
+	return jobKindShell
+}
+
+func shellTranscriptRef(jobID string) string {
+	return "job:" + jobID
+}
+
+func defaultJobPhase(rec *jobstore.JobRecord) string {
+	if rec == nil || rec.Status.IsTerminal() {
+		return ""
+	}
+	if rec.Phase != "" {
+		return rec.Phase
+	}
+	switch rec.Type {
+	case jobstore.JobDelegate:
+		return jobPhaseStarting
+	case jobstore.JobShell:
+		return jobPhaseProcessRunning
+	default:
+		return ""
+	}
+}
+
+func jobTranscriptRef(rec *jobstore.JobRecord) string {
+	if rec == nil {
+		return ""
+	}
+	if rec.TranscriptRef != "" {
+		return rec.TranscriptRef
+	}
+	if rec.Type == jobstore.JobShell && rec.JobID != "" {
+		return shellTranscriptRef(rec.JobID)
+	}
+	return ""
+}
+
+func projectJobStatus(now time.Time, rec *jobstore.JobRecord) jobStatusResult {
+	last := rec.StartedAt
+	if rec.LastActivity != nil {
+		last = *rec.LastActivity
+	} else if rec.EndedAt != nil {
+		last = *rec.EndedAt
+	}
+
+	out := jobStatusResult{
+		JobID:         rec.JobID,
+		Kind:          publicJobKind(rec.Type),
+		Status:        string(rec.Status),
+		Phase:         defaultJobPhase(rec),
+		Reason:        stringPtrOrNil(rec.Reason),
+		StartedAt:     rec.StartedAt.Format(time.RFC3339Nano),
+		EndedAt:       timePtrOrNil(rec.EndedAt),
+		LastEventAt:   timePtrOrNil(&last),
+		TranscriptRef: jobTranscriptRef(rec),
+		ExitCode:      rec.ExitCode,
+	}
+	if rec.Status.IsTerminal() {
+		end := now
+		if rec.EndedAt != nil {
+			end = *rec.EndedAt
+		}
+		out.DurationMS = int64Ptr(end.Sub(rec.StartedAt).Milliseconds())
+		out.Phase = ""
+	} else {
+		out.RunningForMS = int64Ptr(now.Sub(rec.StartedAt).Milliseconds())
+		out.QuietForMS = int64Ptr(now.Sub(last).Milliseconds())
+	}
+	return out
 }
 
 // lastActivityProjection renders a record's last_activity timestamp. A running

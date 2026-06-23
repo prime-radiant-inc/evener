@@ -65,6 +65,77 @@ func readJobListEntry(t *testing.T, s *Session, jobID string) jobListToolEntry {
 	return *entry
 }
 
+type jobStatusToolOutput struct {
+	JobID              string `json:"job_id"`
+	Kind               string `json:"kind"`
+	Status             string `json:"status"`
+	Phase              string `json:"phase"`
+	Reason             string `json:"reason"`
+	RunningForMS       int64  `json:"running_for_ms"`
+	DurationMS         int64  `json:"duration_ms"`
+	QuietForMS         int64  `json:"quiet_for_ms"`
+	StartedAt          string `json:"started_at"`
+	EndedAt            string `json:"ended_at"`
+	LastEventAt        string `json:"last_event_at"`
+	TranscriptRef      string `json:"transcript_ref"`
+	NotificationStatus string `json:"notification_status"`
+}
+
+func TestJobStatusRunningShellProjectsSupervisionFields(t *testing.T) {
+	s := newTestSession(t)
+	jm := s.jobManager
+	clk := newMutableClock(time.Unix(5000, 0).UTC())
+	jm.now = clk.now
+
+	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+
+	clk.advance(90 * time.Second)
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "status",
+		Name:      "job_status",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, rec.JobID)),
+	})
+	if res.IsError {
+		t.Fatalf("job_status returned error: %s", res.Output)
+	}
+
+	var out jobStatusToolOutput
+	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
+		t.Fatalf("unmarshal job_status: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID != rec.JobID {
+		t.Fatalf("job_id = %q, want %q", out.JobID, rec.JobID)
+	}
+	if out.Kind != "shell" {
+		t.Fatalf("kind = %q, want shell", out.Kind)
+	}
+	if out.Status != "running" {
+		t.Fatalf("status = %q, want running", out.Status)
+	}
+	if out.Phase != "process_running" {
+		t.Fatalf("phase = %q, want process_running", out.Phase)
+	}
+	if out.RunningForMS != 90000 {
+		t.Fatalf("running_for_ms = %d, want 90000", out.RunningForMS)
+	}
+	if out.QuietForMS != 90000 {
+		t.Fatalf("quiet_for_ms = %d, want 90000", out.QuietForMS)
+	}
+	if out.TranscriptRef != "job:"+rec.JobID {
+		t.Fatalf("transcript_ref = %q, want job:%s", out.TranscriptRef, rec.JobID)
+	}
+	if out.StartedAt == "" || out.LastEventAt == "" {
+		t.Fatalf("missing timestamps: %+v", out)
+	}
+	if out.NotificationStatus != "" {
+		t.Fatalf("notification_status leaked into normal status: %+v", out)
+	}
+}
+
 // TestJobListLastActivityAdvancesWithShellOutput proves last_activity is stamped
 // at the clock's value when output is appended for a running shell job.
 func TestJobListLastActivityAdvancesWithShellOutput(t *testing.T) {
