@@ -681,8 +681,13 @@
     result: (data) => data.error ? "error" : "ok",
   };
 
+  const useSkillRenderer = Object.assign({}, defaultRenderer, {
+    target: (a) => a.skill_name || a.name || "",
+  });
+
   const toolRenderers = {
     __default__: defaultRenderer,
+    "use_skill": useSkillRenderer,
     "read_file": readRenderer,
     "grep_files": grepRenderer,
     "grep": grepRenderer,
