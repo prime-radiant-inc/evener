@@ -215,11 +215,18 @@
     // href the user has explicitly dismissed (panes.js suppression memory), so
     // auto-open never fights a user's close. SerfPanes.open dedups by href and
     // enforces the pane cap, so re-init and over-cap opens are safe no-ops.
+    threadHref(ref) {
+      ref = String(ref || "").trim();
+      if (!ref) return "";
+      if (window.SerfPanes && window.SerfPanes.threadHref) return window.SerfPanes.threadHref(ref);
+      return "/thread/" + encodeURIComponent(ref);
+    },
+
     autoOpenObservers(conversationEl) {
       if (!window.SerfPanes || !conversationEl) return;
       var refs = (conversationEl.dataset.observers || "").split(/\s+/).filter(Boolean);
       for (var i = 0; i < refs.length; i++) {
-        var href = "/s/" + encodeURIComponent(refs[i]);
+        var href = this.threadHref(refs[i]);
         if (window.SerfPanes.isSuppressed && window.SerfPanes.isSuppressed(href)) continue;
         window.SerfPanes.open(href, refs[i]);
       }
@@ -2514,10 +2521,11 @@
       row.onclick = () => { this.navigateTo("/s/" + encodeURIComponent(data.transcriptRef)); };
       // "Open beside" — opens the subagent in a side pane instead of navigating away.
       if (!row.querySelector(".open-beside-btn")) {
+        var renderer = this;
         var beside = this.makeOpenBesideButton("open subagent beside", function () {
           var ref = row.dataset.transcriptRef;
           var label = (row.querySelector(".nm") || {}).textContent || ref;
-          return { href: "/s/" + encodeURIComponent(ref), title: label };
+          return { href: renderer.threadHref(ref), title: label };
         });
         if (beside) row.appendChild(beside);
       }

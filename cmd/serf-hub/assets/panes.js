@@ -1,5 +1,5 @@
-// panes.js — host-side multi-pane manager. Each side pane is an <iframe> loading an
-// existing /s/<id> route, so the single-instance renderer runs unchanged per pane.
+// panes.js — host-side multi-pane manager. Each side pane is an <iframe> loading a
+// standalone thread document route, so pane chrome stays compact and isolated.
 (function () {
   "use strict";
   var MAX_SIDE_PANES = 3;
@@ -10,6 +10,36 @@
 
   function region() { return document.getElementById("side-panes"); }
   function splitter() { return document.getElementById("pane-splitter"); }
+
+  function threadHref(ref) {
+    ref = String(ref || "").trim();
+    return ref ? "/thread/" + encodeURIComponent(ref) : "";
+  }
+
+  function normalizePaneHref(href) {
+    href = String(href || "").trim();
+    if (!href) return "";
+    try {
+      var u = new URL(href, window.location.origin);
+      if (u.origin !== window.location.origin) return href;
+      if (u.pathname.indexOf("/thread/") === 0) return u.pathname + u.search + u.hash;
+      if (u.pathname.indexOf("/s/") === 0) {
+        var rest = u.pathname.slice(3);
+        if (rest && rest.indexOf("/") === -1) {
+          return threadHref(decodeURIComponent(rest));
+        }
+      }
+    } catch (e) {
+      if (href.indexOf("/thread/") === 0) return href;
+      if (href.indexOf("/s/") === 0) {
+        var id = href.slice(3);
+        if (id && id.indexOf("/") === -1 && id.indexOf("?") === -1 && id.indexOf("#") === -1) {
+          return threadHref(decodeURIComponent(id));
+        }
+      }
+    }
+    return href;
+  }
 
   function paneFor(href) {
     var r = region();
@@ -25,7 +55,7 @@
     var r = region();
     if (!r) return [];
     return Array.prototype.map.call(r.querySelectorAll(".pane-frame"), function (f) {
-      return f.getAttribute("src");
+      return normalizePaneHref(f.getAttribute("src"));
     });
   }
 
@@ -36,6 +66,7 @@
   }
 
   function open(href, title) {
+    href = normalizePaneHref(href);
     if (!href) return null;
     var r = region();
     if (!r) return null;
@@ -73,6 +104,7 @@
   }
 
   function close(href) {
+    href = normalizePaneHref(href);
     var pane = paneFor(href);
     if (pane) pane.remove();
     if (region() && region().querySelectorAll(".pane").length === 0) showRegion(false);
@@ -102,16 +134,19 @@
   }
 
   function isSuppressed(href) {
+    href = normalizePaneHref(href);
     return readClosed().indexOf(href) !== -1;
   }
 
   function suppress(href) {
+    href = normalizePaneHref(href);
     if (!href) return;
     var list = readClosed();
     if (list.indexOf(href) === -1) { list.push(href); writeClosed(list); }
   }
 
   function unsuppress(href) {
+    href = normalizePaneHref(href);
     if (!href) return;
     var list = readClosed();
     var i = list.indexOf(href);
@@ -194,7 +229,7 @@
     var data = Array.prototype.map.call(r.querySelectorAll(".pane"), function (p) {
       var f = p.querySelector(".pane-frame");
       var t = p.querySelector(".pane-title");
-      return { href: f.getAttribute("src"), title: t ? t.textContent : "" };
+      return { href: normalizePaneHref(f.getAttribute("src")), title: t ? t.textContent : "" };
     });
     try { window.localStorage.setItem(STORE_KEY, JSON.stringify(data)); } catch (e) { /* ignore */ }
     refreshURL();
@@ -213,6 +248,7 @@
       // URL-specified panes: open each, bypassing suppression (an explicit
       // share link is a deliberate request so local dismissals are overridden).
       urlPanes.forEach(function (href) {
+        href = normalizePaneHref(href);
         if (!href) return;
         // Clear any local suppression so the pane can open.
         unsuppress(href);
@@ -228,10 +264,10 @@
     var data;
     try { data = JSON.parse(raw); } catch (e) { return; }
     if (!Array.isArray(data)) return;
-    data.forEach(function (p) { if (p && p.href) open(p.href, p.title); });
+    data.forEach(function (p) { if (p && p.href) open(normalizePaneHref(p.href), p.title); });
   }
 
-  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, isSuppressed: isSuppressed, setSidePanesWidth: setSidePanesWidth, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
+  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, isSuppressed: isSuppressed, setSidePanesWidth: setSidePanesWidth, threadHref: threadHref, normalizePaneHref: normalizePaneHref, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
 
   function onLoad() { restore(); bindSplitter(); restoreWidth(); }
   if (document.readyState === "loading") {

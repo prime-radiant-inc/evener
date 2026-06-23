@@ -18,7 +18,7 @@ const pane = P.open("/s/sub-1", "Subagent 1");
 if (!pane) throw new Error("open returned null");
 const frames = () => document.querySelectorAll("#side-panes .pane-frame");
 if (frames().length !== 1) throw new Error("expected 1 frame, got " + frames().length);
-if (frames()[0].getAttribute("src") !== "/s/sub-1") throw new Error("wrong iframe src");
+if (frames()[0].getAttribute("src") !== "/thread/sub-1") throw new Error("wrong iframe src");
 if (document.getElementById("side-panes").hidden) throw new Error("region should be visible");
 
 // opening same href again does NOT duplicate
@@ -40,13 +40,13 @@ if (!document.getElementById("side-panes").hidden) throw new Error("region shoul
 // persistence: opening writes localStorage; a fresh load restores
 P.open("/s/keep-1", "Keep 1");
 const stored = JSON.parse(dom.window.localStorage.getItem("serf-hub.panes") || "[]");
-if (!stored.some(p => p.href === "/s/keep-1")) throw new Error("open not persisted");
+if (!stored.some(p => p.href === "/thread/keep-1")) throw new Error("open not persisted");
 
 // simulate reload: clear DOM panes, call restore()
 document.querySelectorAll("#side-panes .pane").forEach(n => n.remove());
 document.getElementById("side-panes").hidden = true;
 P.restore();
-if (!P.openHrefs().includes("/s/keep-1")) throw new Error("restore did not reopen pane");
+if (!P.openHrefs().includes("/thread/keep-1")) throw new Error("restore did not reopen pane");
 console.log("test-panes persistence: ok");
 
 // max = Math.min(1200, window.innerWidth - 360); jsdom innerWidth = 1024 → max = 664
