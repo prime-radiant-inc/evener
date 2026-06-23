@@ -1,6 +1,6 @@
 // Sidebar subagent open-beside ⇲ control:
 //   1. A subagent row renders an .open-beside-btn inside .subagent-row-wrap.
-//   2. Clicking it calls window.SerfPanes.open("/s/<ref>", title).
+//   2. Clicking it calls window.SerfPanes.open("/thread/<ref>", title).
 //   3. The click does NOT trigger the row's <a> navigation (stopPropagation).
 //   4. When window.SerfPanes is absent the click is a no-op (iframe guard).
 //   5. Ordinary session rows (.sb-row-wrap without .subagent-row-wrap) do NOT
@@ -89,7 +89,7 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms || 30));
     pass(btn && btn.textContent.trim() === "⇲", ".open-beside-btn should show ⇲ glyph");
   }
 
-  // ---- Test 2: clicking open-beside calls SerfPanes.open("/s/<ref>", title) -
+  // ---- Test 2: clicking open-beside calls SerfPanes.open("/thread/<ref>", title) -
   {
     const openCalls = [];
     const { window } = buildDom({ panesOpen: (href, title) => openCalls.push({ href, title }) });
@@ -104,8 +104,8 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms || 30));
 
     pass(openCalls.length === 1, "SerfPanes.open should be called once, got " + openCalls.length);
     pass(
-      openCalls[0] && openCalls[0].href === "/s/01SUBAGENT",
-      "SerfPanes.open href should be /s/01SUBAGENT, got " + JSON.stringify(openCalls[0] && openCalls[0].href)
+      openCalls[0] && openCalls[0].href === "/thread/01SUBAGENT",
+      "SerfPanes.open href should be /thread/01SUBAGENT, got " + JSON.stringify(openCalls[0] && openCalls[0].href)
     );
     pass(
       openCalls[0] && openCalls[0].title === "do some work",

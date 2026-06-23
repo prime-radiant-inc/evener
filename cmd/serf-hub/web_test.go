@@ -2519,6 +2519,49 @@ func TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument(t *testing.
 	}
 }
 
+func TestWeb_ThreadDocument_RouteEncoding(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
+	})
+
+	cases := []string{
+		"local%3Achild-A",
+		"codex%3Ath_active",
+		"bare-session",
+	}
+	for _, encoded := range cases {
+		t.Run(encoded, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/thread/"+encoded, nil)
+			req.Host = "127.0.0.1:9180"
+			rec := httptest.NewRecorder()
+			web.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK && rec.Code != http.StatusNotFound {
+				t.Fatalf("unexpected status for encoded route %s: %d", encoded, rec.Code)
+			}
+		})
+	}
+}
+
+func TestWeb_ThreadDocument_SecurityHeaders(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/thread/anysession", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	csp := rec.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "frame-ancestors 'self'") {
+		t.Fatalf("thread document should preserve same-origin frame policy, CSP=%q", csp)
+	}
+}
+
 func TestWeb_ThreadDocument_SubagentBreadcrumbUsesPaneSafeAttributes(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	data := WorkspaceData{
