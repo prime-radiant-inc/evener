@@ -394,12 +394,21 @@ html, body.app { height: 100vh; margin: 0; }
 body.app { display: flex; background: var(--bg); color: var(--text); font-family: var(--font-sans); overflow: hidden; }
 /* Mono utility — for one-off mono spans that don't have a dedicated class. */
 .mono { font-family: var(--font-mono); }
-#sidebar { width: 260px; flex-shrink: 0; height: 100vh; border-right: 1px solid var(--rule); overflow-y: auto; }
+#sidebar {
+  width: 260px;
+  min-width: 180px;
+  max-width: min(480px, 45vw);
+  flex-shrink: 0;
+  height: 100vh;
+  border-right: 1px solid var(--rule);
+  overflow: auto;
+  resize: horizontal;
+}
 #workspace { position: relative; flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 /* Multi-pane: side panes sit as flex columns to the right of #workspace. */
-.side-panes { display: flex; flex-direction: row; min-width: 0; height: 100vh; width: var(--side-panes-w, 420px); }
+.side-panes { --pane-min: 300px; display: flex; flex-direction: row; min-width: 0; height: 100vh; width: var(--side-panes-w, 420px); flex: 0 0 var(--side-panes-w, 420px); }
 .side-panes[hidden] { display: none; }
-.pane { display: flex; flex-direction: column; min-width: 300px; flex: 1;
+.pane { display: flex; flex-direction: column; min-width: var(--pane-min, 300px); flex: 1;
   border-left: 1px solid var(--rule); height: 100vh; overflow: hidden; }
 .pane-header { display: flex; align-items: center; gap: var(--space-2);
   padding: 0 var(--space-3); height: 38px; flex-shrink: 0; border-bottom: 1px solid var(--rule);
@@ -695,7 +704,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 }
 
 /* Rail mode: collapse to 56px, hide text columns, hide most header actions. */
-body.app[data-sidebar-rail] #sidebar { width: 56px; }
+body.app[data-sidebar-rail] #sidebar { width: 56px; min-width: 56px; max-width: 56px; resize: none; }
 body.app[data-sidebar-rail] .sidebar-header .sidebar-action { display: none; }
 body.app[data-sidebar-rail] .sidebar-header { padding: 0 var(--space-3) var(--space-3); justify-content: center; gap: 0; }
 body.app[data-sidebar-rail] .sidebar-rail-toggle::before { content: "⇥"; }
@@ -1544,6 +1553,37 @@ button.composer-model-value:hover { text-decoration: underline; }
 }
 .thread-document .conversation {
   padding: var(--space-4);
+}
+.pane-compact .workspace-input {
+  padding: var(--space-2) var(--space-3);
+  border-top: 0;
+}
+.pane-compact .input-card {
+  padding: var(--space-2);
+}
+.pane-compact .message-input {
+  min-height: 30px;
+  font-size: var(--text-sm);
+}
+.pane-compact .input-card .input-controls {
+  padding-top: var(--space-2);
+  margin-top: 0;
+  gap: var(--space-2);
+}
+.pane-compact .controls-left { gap: var(--space-2); }
+.pane-compact .controls-right {
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.pane-compact .send-btn {
+  min-height: 34px;
+  padding: var(--space-2) var(--space-4);
+}
+.pane-compact .input-status {
+  padding-top: var(--space-1);
+  margin-top: 0;
+  border-top: 0;
+  gap: var(--space-2);
 }
 
 .input-controls { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0 0; flex-wrap: wrap; }

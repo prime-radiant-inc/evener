@@ -165,5 +165,18 @@ console.log("test-panes width: ok");
   console.log("test-panes splitter drag lifecycle: ok");
 }());
 
+
+// ---- Width model contract ---------------------------------------------------
+(function () {
+  var css = fs.readFileSync(path.join(__dirname, "..", "assets", "style.css"), "utf8");
+  if (!/\.side-panes\s*\{[^}]*flex:\s*0\s+0\s+var\(--side-panes-w,\s*420px\)/m.test(css)) {
+    throw new Error("side-panes must use a non-shrinking/non-growing flex basis tied to --side-panes-w so splitter drags visibly resize it");
+  }
+  if (!/\.pane\s*\{[^}]*min-width:\s*var\(--pane-min,/m.test(css)) {
+    throw new Error("pane min-width must be driven by the shared --pane-min CSS variable");
+  }
+  console.log("test-panes width model CSS contract: ok");
+}());
+
 console.log("test-panes: ok");
 process.exit(0);
