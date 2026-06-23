@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"runtime"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,9 +80,6 @@ func TestStreamCommandSignalStops(t *testing.T) {
 // run on 2026-06-12 suspected an orphaned exec'd sleep after run_timeout; the
 // evidence was a pgrep -f self-match, but nothing pinned real group death.
 func TestStreamCommandSignalKillsWholeProcessGroup(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("requires /proc/<pid>/cmdline to observe exec replacement")
-	}
 	env := &LocalExecutionEnvironment{RootDir: t.TempDir()}
 	if err := env.Initialize(); err != nil {
 		t.Fatal(err)
@@ -120,8 +117,8 @@ func TestStreamCommandSignalKillsWholeProcessGroup(t *testing.T) {
 	// handle's pid has actually become the sleep before signaling.
 	execDeadline := time.Now().Add(5 * time.Second)
 	for {
-		cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", h.Pid))
-		if err == nil && strings.HasPrefix(string(cmdline), "sleep") {
+		cmdline, err := processCommandName(h.Pid)
+		if err == nil && strings.HasPrefix(cmdline, "sleep") {
 			break
 		}
 		if time.Now().After(execDeadline) {
@@ -150,6 +147,18 @@ func TestStreamCommandSignalKillsWholeProcessGroup(t *testing.T) {
 	}
 	t.Fatalf("process group member survived Signal: exec'd pid %d gone=%v, forked child pid %d gone=%v",
 		h.Pid, gone(h.Pid), childPID, gone(childPID))
+}
+
+func processCommandName(pid int) (string, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err == nil {
+		return strings.TrimRight(string(data), "\x00"), nil
+	}
+	out, psErr := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if psErr != nil {
+		return "", fmt.Errorf("%v; ps: %w", err, psErr)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func TestStreamCommandSignalAfterWaitNoops(t *testing.T) {
