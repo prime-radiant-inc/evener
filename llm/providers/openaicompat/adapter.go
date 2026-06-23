@@ -233,12 +233,13 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 	rawReqBody := string(jsonBody)
 
 	runner := &transport.StreamRunner{
-		Provider:      "openai-compatible",
-		Resp:          resp,
-		Stream:        s,
-		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
-		Finished:      &finished,
-		IncompleteMsg: "openai-compatible stream ended without completion",
+		Provider:       "openai-compatible",
+		Resp:           resp,
+		RawRequestBody: rawReqBody,
+		Stream:         s,
+		SSEOpts:        llm.StreamReadSSEOptions(req.AdapterTimeout),
+		Finished:       &finished,
+		IncompleteMsg:  "openai-compatible stream ended without completion",
 		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
 			data := string(ev.Data)
 			if data == "[DONE]" {

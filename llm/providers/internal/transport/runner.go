@@ -24,6 +24,9 @@ type StreamRunner struct {
 	Provider string
 	// Resp is the live HTTP response whose Body carries the SSE stream.
 	Resp *http.Response
+	// RawRequestBody is the serialized request body to attach to raw stream
+	// errors when RawBody capture is enabled.
+	RawRequestBody string
 	// Stream receives decoded events, including the terminal error event.
 	Stream *llm.ChanStream
 	// SSEOpts are passed through to ParseSSE (e.g. the stream-read timeout).
@@ -58,7 +61,15 @@ func (r *StreamRunner) Run(ctx context.Context) {
 		if err := ctx.Err(); err != nil {
 			r.Stream.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError(r.Provider, err)})
 		} else {
-			r.Stream.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamError(r.Provider, r.IncompleteMsg, parseErr)})
+			rawReqBody := ""
+			rawRespBody := ""
+			if llm.RawBodyEnabled() {
+				rawReqBody = r.RawRequestBody
+				if sseBuf != nil {
+					rawRespBody = sseBuf.String()
+				}
+			}
+			r.Stream.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamErrorWithRawBodies(r.Provider, r.IncompleteMsg, parseErr, rawReqBody, rawRespBody)})
 		}
 	}
 }

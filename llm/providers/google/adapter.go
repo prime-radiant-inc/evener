@@ -351,12 +351,13 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 	rawReqBody := string(b)
 
 	runner := &transport.StreamRunner{
-		Provider:      "google",
-		Resp:          resp,
-		Stream:        s,
-		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
-		Finished:      &finished,
-		IncompleteMsg: "google stream ended without completion",
+		Provider:       "google",
+		Resp:           resp,
+		RawRequestBody: rawReqBody,
+		Stream:         s,
+		SSEOpts:        llm.StreamReadSSEOptions(req.AdapterTimeout),
+		Finished:       &finished,
+		IncompleteMsg:  "google stream ended without completion",
 		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
 			if len(ev.Data) == 0 {
 				return nil

@@ -101,12 +101,13 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 	rawReqBody := string(jsonBody)
 
 	runner := &transport.StreamRunner{
-		Provider:      "openai",
-		Resp:          resp,
-		Stream:        s,
-		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
-		Finished:      &finished,
-		IncompleteMsg: fmt.Sprintf("chat.completions stream closed without [DONE] (model: %q)", req.Model),
+		Provider:       "openai",
+		Resp:           resp,
+		RawRequestBody: rawReqBody,
+		Stream:         s,
+		SSEOpts:        llm.StreamReadSSEOptions(req.AdapterTimeout),
+		Finished:       &finished,
+		IncompleteMsg:  fmt.Sprintf("chat.completions stream closed without [DONE] (model: %q)", req.Model),
 		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
 			data := string(ev.Data)
 			if data == "[DONE]" {

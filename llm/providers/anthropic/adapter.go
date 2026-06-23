@@ -343,12 +343,13 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 	rawReqBody := string(b) // captured above
 
 	runner := &transport.StreamRunner{
-		Provider:      "anthropic",
-		Resp:          resp,
-		Stream:        s,
-		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
-		Finished:      &finished,
-		IncompleteMsg: "anthropic stream ended without completion",
+		Provider:       "anthropic",
+		Resp:           resp,
+		RawRequestBody: rawReqBody,
+		Stream:         s,
+		SSEOpts:        llm.StreamReadSSEOptions(req.AdapterTimeout),
+		Finished:       &finished,
+		IncompleteMsg:  "anthropic stream ended without completion",
 		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
 			if len(ev.Data) == 0 {
 				return nil

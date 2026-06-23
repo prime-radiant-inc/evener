@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -163,6 +165,71 @@ func TestRun_EpilogueStreamErrorOnIncomplete(t *testing.T) {
 	}
 	if !strings.Contains(streamErr.Error(), "google stream ended without completion") {
 		t.Fatalf("StreamError message = %q, want IncompleteMsg embedded", streamErr.Error())
+	}
+}
+
+func TestRun_IncompleteErrorCarriesRawBodiesWhenEnabled(t *testing.T) {
+	if os.Getenv("SERF_TRANSPORT_RAW_INCOMPLETE_HELPER") == "1" {
+		runIncompleteRawBodyHelper(t)
+		return
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	cmd := exec.Command(exe, "-test.run=TestRun_IncompleteErrorCarriesRawBodiesWhenEnabled", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		"SERF_TRANSPORT_RAW_INCOMPLETE_HELPER=1",
+		"SERF_LOG_RAW_HTTP=1",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("raw incomplete stream helper failed: %v\n%s", err, out)
+	}
+}
+
+func runIncompleteRawBodyHelper(t *testing.T) {
+	t.Helper()
+	if !llm.RawBodyEnabled() {
+		t.Fatal("RawBodyEnabled is false in helper subprocess")
+	}
+
+	const requestBody = `{"model":"test"}`
+	const body = "data: {\"partial\":1}\n\n"
+	finished := false
+	r := &StreamRunner{
+		Provider:       "openai-compatible",
+		Resp:           respFrom(body),
+		RawRequestBody: requestBody,
+		Stream:         llm.NewChanStream(nil),
+		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
+			return nil
+		},
+		Finished:      &finished,
+		IncompleteMsg: "openai-compatible stream ended without completion",
+	}
+	got := drain(context.Background(), t, r)
+
+	var errEv *llm.StreamEvent
+	for i := range got {
+		if got[i].Type == llm.StreamEventError {
+			errEv = &got[i]
+		}
+	}
+	if errEv == nil {
+		t.Fatal("expected a terminal error event")
+	}
+	var rawErr llm.RawHTTPBodyError
+	if !errors.As(errEv.Err, &rawErr) {
+		t.Fatalf("error %T (%v) does not expose raw HTTP bodies", errEv.Err, errEv.Err)
+	}
+	gotRequestBody, responseBody := rawErr.RawHTTPBodies()
+	if gotRequestBody != requestBody {
+		t.Fatalf("raw request body = %q, want %q", gotRequestBody, requestBody)
+	}
+	if responseBody != body {
+		t.Fatalf("raw response body = %q, want %q", responseBody, body)
 	}
 }
 

@@ -13,6 +13,9 @@ type nonHTTPBaseError struct {
 	retryable   bool
 	retryAfter  *time.Duration
 	cause       error
+
+	rawRequestBody  string
+	rawResponseBody string
 }
 
 // Error returns the error message. It is prefixed with "<provider> error: "
@@ -54,6 +57,12 @@ func (e *nonHTTPBaseError) RetryAfter() *time.Duration { return e.retryAfter }
 // Raw returns nil; non-HTTP errors have no raw provider response.
 func (e *nonHTTPBaseError) Raw() any { return nil }
 
+// RawHTTPBodies returns raw request/response bodies captured around non-HTTP
+// provider failures, when available.
+func (e *nonHTTPBaseError) RawHTTPBodies() (requestBody, responseBody string) {
+	return e.rawRequestBody, e.rawResponseBody
+}
+
 // Unwrap returns the underlying cause, exposing it to errors.Is/errors.As.
 func (e *nonHTTPBaseError) Unwrap() error { return e.cause }
 
@@ -89,7 +98,20 @@ func NewAbortError(message string, cause error) error {
 // error (e.g. an SSE decode failure or a wrapped context error) and is exposed
 // via Unwrap; pass nil for a content-level stream sentinel with no cause.
 func NewStreamError(provider, message string, cause error) error {
-	return &StreamError{nonHTTPBaseError{provider: provider, message: message, retryable: true, cause: cause}}
+	return NewStreamErrorWithRawBodies(provider, message, cause, "", "")
+}
+
+// NewStreamErrorWithRawBodies reports a streaming failure and carries raw HTTP
+// bodies captured before the stream failed, when raw logging is enabled.
+func NewStreamErrorWithRawBodies(provider, message string, cause error, requestBody, responseBody string) error {
+	return &StreamError{nonHTTPBaseError{
+		provider:        provider,
+		message:         message,
+		retryable:       true,
+		cause:           cause,
+		rawRequestBody:  requestBody,
+		rawResponseBody: responseBody,
+	}}
 }
 
 // NewNoObjectGeneratedError reports that no valid object could be produced from
