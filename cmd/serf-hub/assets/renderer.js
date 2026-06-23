@@ -224,14 +224,16 @@
     },
 
     openBeside(spec) {
-      if (!spec || !spec.href) return;
+      if (!spec || !spec.href) return false;
       if (window.SerfPanes && window.SerfPanes.open) {
         window.SerfPanes.open(spec.href, spec.title);
-        return;
+        return true;
       }
       if (this.isInPane && this.isInPane() && window.parent) {
         window.parent.postMessage({ type: "serf:open-beside", href: spec.href, title: spec.title || spec.href }, window.location.origin);
+        return true;
       }
+      return false;
     },
 
     bindPaneParentLinks() {
@@ -240,10 +242,10 @@
       document.addEventListener("click", (e) => {
         const a = e.target && e.target.closest && e.target.closest("[data-open-parent-beside]");
         if (!a) return;
-        e.preventDefault();
         const href = a.getAttribute("data-open-parent-beside") || a.getAttribute("href") || "";
         const title = a.textContent || href;
-        this.openBeside({ href, title });
+        if (!this.openBeside({ href, title })) return;
+        e.preventDefault();
       });
     },
 

@@ -77,8 +77,17 @@ function pass(ok, msg) {
   installRendererHarness(breadcrumbChild);
   breadcrumbChild.SerfRenderer.isInPane = () => true;
   const parentLink = breadcrumbChild.document.querySelector("[data-open-parent-beside]");
-  parentLink.dispatchEvent(new breadcrumbChild.MouseEvent("click", { bubbles: true, cancelable: true }));
+  const framedNotCanceled = parentLink.dispatchEvent(new breadcrumbChild.MouseEvent("click", { bubbles: true, cancelable: true }));
+  pass(!framedNotCanceled, "framed thread breadcrumb click is canceled for host bridge handling");
   pass(!!posted && posted.origin === "http://127.0.0.1:9180" && posted.msg.type === "serf:open-beside" && posted.msg.href === "/thread/local%3Aparent", "framed thread breadcrumb posts parent open request to host bridge");
+
+  const standaloneDom = new JSDOM(`<!DOCTYPE html><html><body></body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://127.0.0.1:9180/thread/local%3Achild" });
+  const standalone = standaloneDom.window;
+  installRendererHarness(standalone);
+  standalone.SerfRenderer.isInPane = () => false;
+  const standaloneLink = standalone.document.querySelector("[data-open-parent-beside]");
+  const standaloneNotCanceled = standaloneLink.dispatchEvent(new standalone.MouseEvent("click", { bubbles: true, cancelable: true }));
+  pass(standaloneNotCanceled, "standalone thread breadcrumb click is not canceled so href navigation can proceed");
 
   if (!allPass) process.exit(1);
   console.log("OK\ttest-thread-document-bridge.js");
