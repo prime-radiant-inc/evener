@@ -4101,13 +4101,18 @@ func assertStructuredResultFieldsAbsent(t *testing.T, out string) {
 
 func waitForJobOutput(t *testing.T, s *Session, jobID, want string) jobReadOutputTestResult {
 	t.Helper()
+	return waitForJobOutputWithGrep(t, s, jobID, "ready", want)
+}
+
+func waitForJobOutputWithGrep(t *testing.T, s *Session, jobID, grep, want string) jobReadOutputTestResult {
+	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	var last string
 	for time.Now().Before(deadline) {
 		res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
 			ID: "read",
 
-			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":65536,"grep":%q}`, jobID, want)),
+			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_lines":65536,"grep":%q}`, jobID, grep)),
 		})
 		if res.IsError {
 			t.Fatalf("job_read_output returned error: %s", res.Output)
@@ -4615,7 +4620,7 @@ func TestJobReadOutputZeroHeadTailTreatedAsUnset(t *testing.T) {
 	if err := json.Unmarshal(toolResultJSON(shellRes), &shellOut); err != nil {
 		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
 	}
-	waitForJobOutput(t, s, shellOut.JobID, "ZERO_RULE_MARKER")
+	waitForJobOutputWithGrep(t, s, shellOut.JobID, "ZERO_RULE_MARKER", "ZERO_RULE_MARKER")
 	t.Cleanup(func() {
 		_, _ = s.jobManager.stop(shellOut.JobID)
 		waitForShellDone(t, s.jobManager, shellOut.JobID)
