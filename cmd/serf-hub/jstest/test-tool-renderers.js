@@ -130,6 +130,23 @@ await scenario("tool intent renders below header and above results", [
   return { ok: true };
 });
 
+await scenario("use_skill target omits purpose already shown as intent", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "s1", tool_name: "use_skill", arguments_json: JSON.stringify({ purpose: "Apply required debugging workflow before fixing the reported web UI rendering bug.", skill_name: "superpowers:systematic-debugging" }) }],
+  ["TOOL_CALL_END", { call_id: "s1", output: "Skill loaded", tool_name: "use_skill" }],
+], ({ conv }) => {
+  const card = conv.querySelector(".tool-call.use_skill");
+  if (!card) return { ok: false, detail: "no use_skill card" };
+  const target = card.querySelector(".target");
+  if (!target || target.textContent !== "superpowers:systematic-debugging") return { ok: false, detail: "target should show only skill name, got: " + (target && target.textContent) };
+  const intent = card.querySelector(".tool-intent");
+  if (!intent || intent.textContent !== "Apply required debugging workflow before fixing the reported web UI rendering bug.") return { ok: false, detail: "intent should show purpose once" };
+  const visible = card.textContent;
+  const purposeCount = (visible.match(/Apply required debugging workflow/g) || []).length;
+  if (purposeCount !== 1) return { ok: false, detail: "purpose rendered " + purposeCount + " times: " + visible };
+  return { ok: true };
+});
+
 await scenario("job_read_output renders status, truncation, and output preview", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "jr1", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_A" }) }],
