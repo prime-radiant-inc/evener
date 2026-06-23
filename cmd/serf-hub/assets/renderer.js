@@ -2714,7 +2714,15 @@
     },
 
     beginJobRef(data) {
+      if (!this.shouldRenderJobRefAsSubagent(data)) return;
       this.upsertJobRef(data);
+    },
+
+    shouldRenderJobRefAsSubagent(data) {
+      const norm = normalizedJobRefData(data);
+      const jobType = String(norm.jobType || "").trim().toLowerCase();
+      if (jobType) return jobType === "delegate";
+      return !!norm.transcriptRef;
     },
 
     finalizeJobRef(data) {
@@ -2722,13 +2730,14 @@
       const jobId = data.jobId || "";
       const status = data.status || "completed";
       // A standalone JOB_FINISHED (no preceding spawn row) still creates a row
-      // so the completion is visible; otherwise reconcile the existing row.
+      // for subagent jobs so the completion is visible; otherwise reconcile the
+      // existing row. Non-subagent jobs (shell, etc.) stay with their tool cards.
       if (this.findSubagentRow(jobId)) {
         this.reconcileSubagent({
           jobId, jobType: data.jobType, status, reason: data.reason,
           outputBytes: data.outputBytes, transcriptRef: data.transcriptRef,
         });
-      } else {
+      } else if (this.shouldRenderJobRefAsSubagent(data)) {
         this.upsertJobRef(Object.assign({}, data, { status }));
       }
       this.activeJobs.delete(jobId);

@@ -327,6 +327,21 @@ await scenario("orphan JOB_FINISHED creates a completed subagents-module row", [
   return { ok: true };
 });
 
+await scenario("shell job lifecycle events do not render as subagents", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "s1", tool_name: "shell", arguments_json: JSON.stringify({ command: "find cmd/serf-hub -maxdepth 3 -type f" }) }],
+  ["JOB_STARTED", { jobId: "job_SHELL", jobType: "shell", status: "running" }],
+  ["JOB_FINISHED", { jobId: "job_SHELL", jobType: "shell", status: "completed", outputBytes: 87157 }],
+  ["TOOL_CALL_END", { call_id: "s1", output: "cmd/serf-hub/web_workspace.go\n", tool_state: JSON.stringify({ exit_code: 0 }), tool_name: "shell" }],
+], ({ conv }) => {
+  if (conv.querySelector(".subs")) return { ok: false, detail: "shell job lifecycle created subagents module: " + conv.innerHTML };
+  const card = conv.querySelector(".tool-call.shell");
+  if (!card) return { ok: false, detail: "shell card disappeared" };
+  const output = card.querySelector(".shell-output");
+  if (!output || !output.textContent.includes("cmd/serf-hub/web_workspace.go")) return { ok: false, detail: "shell output missing" };
+  return { ok: true };
+});
+
 await scenario("a subagents module separates surrounding cheap tool clusters", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "r1", tool_name: "read_file", arguments_json: JSON.stringify({ file_path: "a.go" }) }],
