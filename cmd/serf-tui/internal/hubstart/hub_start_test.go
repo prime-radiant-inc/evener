@@ -13,6 +13,16 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
+const immediateExitHubHelperEnv = "SERF_TUI_HUBSTART_IMMEDIATE_EXIT_HELPER"
+
+func init() {
+	if os.Getenv(immediateExitHubHelperEnv) != "1" {
+		return
+	}
+	_, _ = os.Stderr.WriteString("listen tcp 127.0.0.1:9180: bind: address already in use\n")
+	os.Exit(1)
+}
+
 func TestHubAddressNormalization(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -366,12 +376,13 @@ func TestStartHubClientWritesStartupDiagnosticsToLogFile(t *testing.T) {
 }
 
 func TestStartLocalHubReportsImmediateExitOutput(t *testing.T) {
-	withLocalHubImmediateExitWindow(t, 5*time.Second)
-	bin := filepath.Join(t.TempDir(), "serf-hub")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho 'listen tcp 127.0.0.1:9180: bind: address already in use' >&2\nexit 1\n"), 0o755); err != nil {
+	withLocalHubImmediateExitWindow(t, 30*time.Second)
+	t.Setenv(immediateExitHubHelperEnv, "1")
+	bin, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
-	err := StartLocalHub(HubStartRequest{
+	err = StartLocalHub(HubStartRequest{
 		Binary:   bin,
 		BindAddr: "127.0.0.1:9180",
 		LogFile:  filepath.Join(t.TempDir(), "hub.log"),
