@@ -51,6 +51,61 @@
     return null;
   }
 
+  function clearPaneLoadTimer(pane) {
+    if (pane && pane.__loadTimer) {
+      window.clearTimeout(pane.__loadTimer);
+      pane.__loadTimer = null;
+    }
+  }
+
+  function markLoading(pane, href) {
+    if (!pane) return;
+    clearPaneLoadTimer(pane);
+    pane.dataset.state = "loading";
+    pane.__loadTimer = window.setTimeout(function () {
+      markError(href, "Pane did not finish loading");
+    }, 15000);
+  }
+
+  function markError(href, message) {
+    href = normalizePaneHref(href);
+    var pane = paneFor(href);
+    if (!pane) return null;
+    clearPaneLoadTimer(pane);
+    pane.dataset.state = "error";
+    var existing = pane.querySelector(".pane-error");
+    if (existing) existing.remove();
+    var err = document.createElement("div");
+    err.className = "pane-error";
+    var text = document.createElement("div");
+    text.className = "pane-error-text";
+    text.textContent = message || "Pane failed to load";
+    var retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "btn btn-secondary";
+    retry.dataset.paneRetry = "";
+    retry.textContent = "retry";
+    retry.addEventListener("click", function () {
+      var frame = pane.querySelector(".pane-frame");
+      if (frame) {
+        err.remove();
+        markLoading(pane, href);
+        frame.setAttribute("src", href);
+      }
+    });
+    var closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "btn btn-secondary";
+    closeBtn.dataset.paneErrorClose = "";
+    closeBtn.textContent = "close";
+    closeBtn.addEventListener("click", function () { close(href); });
+    err.appendChild(text);
+    err.appendChild(retry);
+    err.appendChild(closeBtn);
+    pane.appendChild(err);
+    return pane;
+  }
+
   function openHrefs() {
     var r = region();
     if (!r) return [];
@@ -120,6 +175,7 @@
 
     var pane = document.createElement("section");
     pane.className = "pane";
+    pane.dataset.state = "loading";
     var head = document.createElement("header");
     head.className = "pane-header";
     var t = document.createElement("span");
@@ -136,6 +192,14 @@
     frame.className = "pane-frame";
     frame.setAttribute("src", href);
     frame.setAttribute("title", title || href);
+    frame.addEventListener("load", function () {
+      clearPaneLoadTimer(pane);
+      if (pane.dataset.state !== "error") pane.dataset.state = "ready";
+    });
+    frame.addEventListener("error", function () {
+      markError(href, "Pane failed to load");
+    });
+    markLoading(pane, href);
     pane.appendChild(head); pane.appendChild(frame);
     r.appendChild(pane);
     showRegion(true);
@@ -147,7 +211,10 @@
   function close(href) {
     href = normalizePaneHref(href);
     var pane = paneFor(href);
-    if (pane) pane.remove();
+    if (pane) {
+      clearPaneLoadTimer(pane);
+      pane.remove();
+    }
     if (region() && region().querySelectorAll(".pane").length === 0) showRegion(false);
     // Remember the user's dismissal so auto-open does not re-open this href on
     // the next init/navigation. A later explicit open() clears the suppression.
@@ -308,7 +375,7 @@
     data.forEach(function (p) { if (p && p.href) open(normalizePaneHref(p.href), p.title); });
   }
 
-  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, isSuppressed: isSuppressed, setSidePanesWidth: setSidePanesWidth, threadHref: threadHref, normalizePaneHref: normalizePaneHref, openFromChild: openFromChild, isPaneSafeHref: isPaneSafeHref, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
+  window.SerfPanes = { open: open, close: close, openHrefs: openHrefs, restore: restore, isSuppressed: isSuppressed, setSidePanesWidth: setSidePanesWidth, threadHref: threadHref, normalizePaneHref: normalizePaneHref, openFromChild: openFromChild, isPaneSafeHref: isPaneSafeHref, markError: markError, MAX_SIDE_PANES: MAX_SIDE_PANES, PANE_MIN: PANE_MIN, _persist: persist };
   window.addEventListener("message", onMessage);
 
   function onLoad() { restore(); bindSplitter(); restoreWidth(); }
