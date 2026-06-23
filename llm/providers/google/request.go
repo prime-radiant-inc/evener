@@ -307,9 +307,12 @@ func toGeminiContents(msgs []llm.Message) (system string, contents []map[string]
 					if p.ToolCall == nil {
 						continue
 					}
-					var args any
+					args := map[string]any{}
 					if len(p.ToolCall.Arguments) > 0 {
 						_ = json.Unmarshal(p.ToolCall.Arguments, &args)
+						if args == nil {
+							args = map[string]any{}
+						}
 					}
 					part := map[string]any{
 						"functionCall": map[string]any{

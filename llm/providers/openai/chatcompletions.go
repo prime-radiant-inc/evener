@@ -347,7 +347,7 @@ func toChatMessages(msgs []llm.Message) ([]map[string]any, error) {
 						"type": "function",
 						"function": map[string]any{
 							"name":      p.ToolCall.Name,
-							"arguments": string(p.ToolCall.Arguments),
+							"arguments": openaichat.ToolArgumentsString(p.ToolCall.Arguments),
 						},
 					})
 				}

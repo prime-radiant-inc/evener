@@ -1661,6 +1661,73 @@ func TestToResponsesInput_WebSearch_ReplayedAsItem(t *testing.T) {
 	}
 }
 
+func TestToResponsesInput_SanitizesMalformedHistoricalToolCallArguments(t *testing.T) {
+	msgs := []llm.Message{{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_bad",
+				Name:      "task_list",
+				Arguments: json.RawMessage(`{"status": in_progresss"}`),
+				Type:      "function",
+			},
+		}},
+	}}
+
+	_, items, err := toResponsesInput(msgs, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+
+	var args string
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if ok && item["type"] == "function_call" && item["call_id"] == "call_bad" {
+			args, _ = item["arguments"].(string)
+			break
+		}
+	}
+	if args != "{}" {
+		t.Fatalf("tool call arguments = %q, want {}", args)
+	}
+	if !json.Valid([]byte(args)) {
+		t.Fatalf("tool call arguments are not valid JSON: %q", args)
+	}
+}
+
+func TestBuildChatCompletionsBody_SanitizesMalformedHistoricalToolCallArguments(t *testing.T) {
+	body, err := buildChatCompletionsBody(llm.Request{
+		Model: "m",
+		Messages: []llm.Message{{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{{
+				Kind: llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{
+					ID:        "call_bad",
+					Name:      "task_list",
+					Arguments: json.RawMessage(`{"status": in_progresss"}`),
+					Type:      "function",
+				},
+			}},
+		}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildChatCompletionsBody: %v", err)
+	}
+
+	msgs := body["messages"].([]map[string]any)
+	calls := msgs[0]["tool_calls"].([]map[string]any)
+	fn := calls[0]["function"].(map[string]any)
+	args := fn["arguments"].(string)
+	if args != "{}" {
+		t.Fatalf("tool call arguments = %q, want {}", args)
+	}
+	if !json.Valid([]byte(args)) {
+		t.Fatalf("tool call arguments are not valid JSON: %q", args)
+	}
+}
+
 func TestAdapter_Integration_PhaseAnnotation(t *testing.T) {
 	requireLiveOpenAIKey(t)
 	if testing.Short() {

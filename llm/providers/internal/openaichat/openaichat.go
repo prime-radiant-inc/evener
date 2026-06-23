@@ -5,6 +5,9 @@
 package openaichat
 
 import (
+	"bytes"
+	"encoding/json"
+
 	"primeradiant.com/serf/llm"
 )
 
@@ -52,6 +55,21 @@ func ToChatTools(tools []llm.ToolDefinition) []map[string]any {
 		}
 	}
 	return out
+}
+
+// ToolArgumentsString returns a provider-safe function arguments string.
+// OpenAI-family APIs carry arguments as a string, but strict compatibles still
+// validate that string as a JSON object when replaying tool-call history.
+func ToolArgumentsString(raw json.RawMessage) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return "{}"
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(trimmed, &obj); err != nil || obj == nil {
+		return "{}"
+	}
+	return string(trimmed)
 }
 
 // ParseChatUsage maps a Chat Completions "usage" object onto llm.Usage. OpenAI

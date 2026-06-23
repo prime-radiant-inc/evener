@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providers/internal/openaichat"
 )
 
 func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
@@ -865,7 +866,7 @@ func toResponsesInput(msgs []llm.Message, model string) (instructions string, it
 						"type":      "function_call",
 						"call_id":   p.ToolCall.ID,
 						"name":      p.ToolCall.Name,
-						"arguments": string(p.ToolCall.Arguments),
+						"arguments": openaichat.ToolArgumentsString(p.ToolCall.Arguments),
 					})
 				}
 			}

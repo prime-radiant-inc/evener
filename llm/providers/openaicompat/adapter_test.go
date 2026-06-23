@@ -220,6 +220,38 @@ func TestAdapter_Complete_ToolResults(t *testing.T) {
 	}
 }
 
+func TestBuildRequestBody_SanitizesMalformedHistoricalToolCallArguments(t *testing.T) {
+	body, err := buildRequestBody(llm.Request{
+		Model: "m",
+		Messages: []llm.Message{{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{{
+				Kind: llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{
+					ID:        "call_bad",
+					Name:      "task_list",
+					Arguments: json.RawMessage(`{"status": in_progresss"}`),
+					Type:      "function",
+				},
+			}},
+		}},
+	}, false, ProviderQuirks{})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+
+	msgs := body["messages"].([]map[string]any)
+	calls := msgs[0]["tool_calls"].([]map[string]any)
+	fn := calls[0]["function"].(map[string]any)
+	args := fn["arguments"].(string)
+	if args != "{}" {
+		t.Fatalf("tool call arguments = %q, want {}", args)
+	}
+	if !json.Valid([]byte(args)) {
+		t.Fatalf("tool call arguments are not valid JSON: %q", args)
+	}
+}
+
 func TestAdapter_Complete_HTTPError_MapsToErrorType(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

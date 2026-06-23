@@ -400,7 +400,7 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 					if p.ToolCall == nil {
 						continue
 					}
-					var in any
+					in := map[string]any{}
 					if len(p.ToolCall.Arguments) > 0 {
 						_ = json.Unmarshal(p.ToolCall.Arguments, &in)
 					}

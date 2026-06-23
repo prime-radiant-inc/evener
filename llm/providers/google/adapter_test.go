@@ -1131,6 +1131,34 @@ func TestAdapter_Complete_ReplaysFunctionCallThoughtSignature(t *testing.T) {
 	}
 }
 
+func TestToGeminiContents_SanitizesMalformedHistoricalToolCallArguments(t *testing.T) {
+	_, contents, err := toGeminiContents([]llm.Message{{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_bad",
+				Name:      "task_list",
+				Arguments: json.RawMessage(`{"status": in_progresss"}`),
+				Type:      "function",
+			},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("toGeminiContents: %v", err)
+	}
+
+	parts := contents[0]["parts"].([]map[string]any)
+	call := parts[0]["functionCall"].(map[string]any)
+	args, ok := call["args"].(map[string]any)
+	if !ok {
+		t.Fatalf("functionCall.args = %T %#v, want map[string]any", call["args"], call["args"])
+	}
+	if len(args) != 0 {
+		t.Fatalf("functionCall.args = %#v, want empty object", args)
+	}
+}
+
 func TestAdapter_Complete_ImageInput_URL_Data_AndFilePath(t *testing.T) {
 	var gotBody map[string]any
 

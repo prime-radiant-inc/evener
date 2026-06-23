@@ -286,7 +286,7 @@ func toolCallsFromParts(parts []llm.ContentPart) []map[string]any {
 				"type": "function",
 				"function": map[string]any{
 					"name":      p.ToolCall.Name,
-					"arguments": string(p.ToolCall.Arguments),
+					"arguments": openaichat.ToolArgumentsString(p.ToolCall.Arguments),
 				},
 			})
 		}
