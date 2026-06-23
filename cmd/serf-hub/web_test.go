@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/selfupdate"
@@ -3362,6 +3363,12 @@ func disableLiveOllamaForModelTest(t *testing.T) {
 	t.Setenv("OLLAMA_API_KEY", "")
 }
 
+func isolateProviderConfigForModelTest(t *testing.T) {
+	t.Helper()
+	t.Setenv(envvars.SERFProvidersConfig.Name, filepath.Join(t.TempDir(), "providers.toml"))
+	t.Setenv(envvars.SERFStateDir.Name, t.TempDir())
+}
+
 func disableStoredOpenAIAuthForModelTest(t *testing.T) {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -3381,6 +3388,7 @@ func TestWeb_ApiModels_ReturnsSerfLaunchContractWhenLiveUnavailable(t *testing.T
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	disableLiveOllamaForModelTest(t)
+	isolateProviderConfigForModelTest(t)
 
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
@@ -3461,6 +3469,7 @@ func TestWeb_ApiModels_DoesNotUseLiveProvidersWhenLaunchContractIsEmpty(t *testi
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	disableLiveOllamaForModelTest(t)
+	isolateProviderConfigForModelTest(t)
 	disableStoredOpenAIAuthForModelTest(t)
 
 	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3668,6 +3677,7 @@ func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	disableLiveOllamaForModelTest(t)
+	isolateProviderConfigForModelTest(t)
 	disableStoredOpenAIAuthForModelTest(t)
 
 	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3722,6 +3732,7 @@ func TestWeb_ApiModels_NoProvidersConfigured(t *testing.T) {
 	t.Setenv("MINIMAX_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 	disableLiveOllamaForModelTest(t)
+	isolateProviderConfigForModelTest(t)
 	disableStoredOpenAIAuthForModelTest(t)
 
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
