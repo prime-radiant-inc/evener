@@ -2,6 +2,8 @@ package launchconfig
 
 import (
 	"testing"
+
+	"primeradiant.com/serf/envvars"
 )
 
 type stubCreds struct {
@@ -111,6 +113,44 @@ func TestToEnv_NoProvidersConfigPathDoesNotSetEnvVar(t *testing.T) {
 	}))
 	if _, ok := got["SERF_PROVIDERS_CONFIG"]; ok {
 		t.Errorf("SERF_PROVIDERS_CONFIG should not be set when ProvidersConfigPath is empty, got %q", got["SERF_PROVIDERS_CONFIG"])
+	}
+}
+
+func TestToEnv_RawHTTPLoggingSetsRawLogEnv(t *testing.T) {
+	got := envSliceToMap(ToEnv(EnvInputs{
+		Resolved: Resolved{Effective: Layer{RawHTTPLogging: ptrBool(true)}},
+		ParentEnv: []string{
+			"PATH=/usr/bin",
+			envvars.SERFLogRawHTTP.Assignment("0"),
+		},
+	}))
+	if got[envvars.SERFLogRawHTTP.Name] != "1" {
+		t.Fatalf("%s = %q, want 1", envvars.SERFLogRawHTTP.Name, got[envvars.SERFLogRawHTTP.Name])
+	}
+}
+
+func TestToEnv_RawHTTPLoggingFalseOverridesInheritedEnv(t *testing.T) {
+	got := envSliceToMap(ToEnv(EnvInputs{
+		Resolved: Resolved{Effective: Layer{RawHTTPLogging: ptrBool(false)}},
+		ParentEnv: []string{
+			"PATH=/usr/bin",
+			envvars.SERFLogRawHTTP.Assignment("1"),
+		},
+	}))
+	if got[envvars.SERFLogRawHTTP.Name] != "0" {
+		t.Fatalf("%s = %q, want 0", envvars.SERFLogRawHTTP.Name, got[envvars.SERFLogRawHTTP.Name])
+	}
+}
+
+func TestToEnv_RawHTTPLoggingUnsetPreservesInheritedEnv(t *testing.T) {
+	got := envSliceToMap(ToEnv(EnvInputs{
+		ParentEnv: []string{
+			"PATH=/usr/bin",
+			envvars.SERFLogRawHTTP.Assignment("1"),
+		},
+	}))
+	if got[envvars.SERFLogRawHTTP.Name] != "1" {
+		t.Fatalf("%s = %q, want inherited value", envvars.SERFLogRawHTTP.Name, got[envvars.SERFLogRawHTTP.Name])
 	}
 }
 

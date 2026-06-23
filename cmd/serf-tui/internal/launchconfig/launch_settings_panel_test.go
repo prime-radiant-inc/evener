@@ -178,6 +178,10 @@ func TestApplyEdit_NewSchemaFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verbose: %v", err)
 	}
+	got, err = applyEdit(got, "raw_http_logging", "true")
+	if err != nil {
+		t.Fatalf("raw_http_logging: %v", err)
+	}
 	got, err = applyEdit(got, "trace_file", trace)
 	if err != nil {
 		t.Fatalf("trace_file: %v", err)
@@ -190,7 +194,7 @@ func TestApplyEdit_NewSchemaFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export_atif_path: %v", err)
 	}
-	if got.SystemPromptFile != prompt || got.SystemPromptText != "inline prompt" || len(got.ModelFallbacks) != 2 || got.Verbose == nil || !*got.Verbose || got.TraceFile != trace || got.CPUProfile == "" || got.ExportATIFPath == "" {
+	if got.SystemPromptFile != prompt || got.SystemPromptText != "inline prompt" || len(got.ModelFallbacks) != 2 || got.Verbose == nil || !*got.Verbose || got.RawHTTPLogging == nil || !*got.RawHTTPLogging || got.TraceFile != trace || got.CPUProfile == "" || got.ExportATIFPath == "" {
 		t.Fatalf("updated layer=%+v", got)
 	}
 }

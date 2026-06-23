@@ -52,6 +52,13 @@ func ToEnv(in EnvInputs) []string {
 	if in.ProvidersConfigPath != "" {
 		out = setEnv(out, envvars.SERFProvidersConfig.Name, in.ProvidersConfigPath)
 	}
+	if in.Resolved.Effective.RawHTTPLogging != nil {
+		if *in.Resolved.Effective.RawHTTPLogging {
+			out = setEnv(out, envvars.SERFLogRawHTTP.Name, "1")
+		} else {
+			out = setEnv(out, envvars.SERFLogRawHTTP.Name, "0")
+		}
+	}
 
 	// 2. Credentials store value.
 	if envKey, ok := envvars.InjectAPIKeyVar(strings.ToLower(in.Provider)); ok && in.Creds != nil {

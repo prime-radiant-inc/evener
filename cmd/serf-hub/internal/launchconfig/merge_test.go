@@ -38,14 +38,20 @@ func TestMerge_ScalarPrecedence(t *testing.T) {
 }
 
 func TestMerge_ScalarPointerSemantics(t *testing.T) {
-	g := Layer{MaxRounds: ptrInt(200), NonInteractive: ptrBool(true)}
-	l := Layer{NonInteractive: ptrBool(false)}
+	g := Layer{MaxRounds: ptrInt(200), NonInteractive: ptrBool(true), RawHTTPLogging: ptrBool(true)}
+	l := Layer{NonInteractive: ptrBool(false), RawHTTPLogging: ptrBool(false)}
 	got, _ := mergeLayers(map[LayerName]Layer{LayerGlobal: g, LayerLaunch: l})
 	if got.Effective.MaxRounds == nil || *got.Effective.MaxRounds != 200 {
 		t.Errorf("MaxRounds = %v, want 200 (launch did not override)", got.Effective.MaxRounds)
 	}
 	if got.Effective.NonInteractive == nil || *got.Effective.NonInteractive {
 		t.Errorf("NonInteractive = %v, want explicit launch false", got.Effective.NonInteractive)
+	}
+	if got.Effective.RawHTTPLogging == nil || *got.Effective.RawHTTPLogging {
+		t.Errorf("RawHTTPLogging = %v, want explicit launch false", got.Effective.RawHTTPLogging)
+	}
+	if got.Provenance["raw_http_logging"] != LayerLaunch {
+		t.Errorf("Provenance[raw_http_logging] = %q, want launch", got.Provenance["raw_http_logging"])
 	}
 }
 

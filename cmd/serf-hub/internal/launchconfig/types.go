@@ -36,6 +36,7 @@ type Layer struct {
 	MCPs                   []MCPServerSpec   `toml:"mcps,omitempty"`
 	Env                    map[string]string `toml:"env,omitempty"`
 	Verbose                *bool             `toml:"verbose,omitempty"`
+	RawHTTPLogging         *bool             `toml:"raw_http_logging,omitempty"`
 	TraceFile              string            `toml:"trace_file,omitempty"`
 	CPUProfile             string            `toml:"cpu_profile,omitempty"`
 	ExportATIFPath         string            `toml:"export_atif_path,omitempty"`

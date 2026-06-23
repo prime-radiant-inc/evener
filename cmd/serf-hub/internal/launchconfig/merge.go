@@ -143,6 +143,12 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			prov["verbose"] = name
 			nonEmpty = true
 		}
+		if l.RawHTTPLogging != nil {
+			v := *l.RawHTTPLogging
+			eff.RawHTTPLogging = &v
+			prov["raw_http_logging"] = name
+			nonEmpty = true
+		}
 		if l.TraceFile != "" {
 			eff.TraceFile = l.TraceFile
 			prov["trace_file"] = name

@@ -11,7 +11,7 @@ func TestSchemaRows_SettingsFiltersDefaultableLayerAndKeepsOrder(t *testing.T) {
 	schema := testLaunchSchema()
 	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{Agent: "serf", ReasoningEffort: "high", FastCheapModel: "mini"}, launchLayerProject, launchSchemaRowsSettings)
 	fields := rowFields(rows)
-	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "system_prompt_file", "mcps", "verbose"}
+	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "system_prompt_file", "mcps", "verbose", "raw_http_logging"}
 	if !reflect.DeepEqual(fields, want) {
 		t.Fatalf("fields=%v, want %v", fields, want)
 	}
@@ -21,7 +21,7 @@ func TestSchemaRows_OverrideFiltersPerLaunch(t *testing.T) {
 	schema := testLaunchSchema()
 	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{}, launchLayerLaunch, launchSchemaRowsOverride)
 	fields := rowFields(rows)
-	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "system_prompt_file", "mcps", "verbose"}
+	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "system_prompt_file", "mcps", "verbose", "raw_http_logging"}
 	if !reflect.DeepEqual(fields, want) {
 		t.Fatalf("fields=%v, want %v", fields, want)
 	}
@@ -70,6 +70,20 @@ func TestSchemaRows_MCPsExposeEditableRows(t *testing.T) {
 	}
 }
 
+func TestSchemaRows_RawHTTPLoggingUsesBooleanDisplay(t *testing.T) {
+	schema := []appwire.LaunchOption{
+		{Field: "raw_http_logging", Label: "Raw HTTP logging", Kind: "boolean", DefaultableLayers: []string{"global"}, PerLaunch: true},
+	}
+	rawHTTPLogging := true
+	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{RawHTTPLogging: &rawHTTPLogging}, launchLayerGlobal, launchSchemaRowsSettings)
+	if len(rows) != 1 {
+		t.Fatalf("rows=%+v, want one raw_http_logging row", rows)
+	}
+	if rows[0].value != "true" || rows[0].editValue != "true" {
+		t.Fatalf("row=%+v, want true boolean display", rows[0])
+	}
+}
+
 func rowFields(rows []layerRow) []string {
 	fields := make([]string, 0, len(rows))
 	for _, row := range rows {
@@ -90,5 +104,6 @@ func testLaunchSchema() []appwire.LaunchOption {
 		{Field: "system_prompt_file", Label: "System prompt file", Kind: "path", PathKind: "file", DefaultableLayers: defaultable, PerLaunch: true},
 		{Field: "mcps", Label: "MCP servers", Kind: "mcpServerList", DefaultableLayers: defaultable, PerLaunch: true},
 		{Field: "verbose", Label: "Verbose event log", Kind: "boolean", DefaultableLayers: all, PerLaunch: true},
+		{Field: "raw_http_logging", Label: "Raw HTTP logging", Kind: "boolean", DefaultableLayers: all, PerLaunch: true},
 	}
 }

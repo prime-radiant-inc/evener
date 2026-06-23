@@ -143,6 +143,8 @@ func launchOptionValue(opt appwire.LaunchOption, l appwire.LaunchConfigLayer) (s
 		return fmt.Sprintf("%d entries", len(l.Env)), envEditValue(l.Env)
 	case "verbose":
 		return ptrBoolStr(l.Verbose), ptrBoolStr(l.Verbose)
+	case "raw_http_logging":
+		return ptrBoolStr(l.RawHTTPLogging), ptrBoolStr(l.RawHTTPLogging)
 	case "trace_file":
 		return defaultString(l.TraceFile), l.TraceFile
 	case "cpu_profile":

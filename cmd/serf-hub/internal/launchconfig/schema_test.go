@@ -1,6 +1,10 @@
 package launchconfig
 
-import "testing"
+import (
+	"testing"
+
+	"primeradiant.com/serf/envvars"
+)
 
 func TestLaunchOptionSchema_FieldCoverage(t *testing.T) {
 	got := map[string]bool{}
@@ -15,12 +19,45 @@ func TestLaunchOptionSchema_FieldCoverage(t *testing.T) {
 		"system_prompt_append_mode", "system_prompt_append_file", "system_prompt_append_text",
 		"skills_dirs", "plugin_dirs", "mcp_configs", "mcps",
 		"model_fallbacks", "env",
-		"verbose", "trace_file", "cpu_profile", "export_atif_path",
+		"verbose", "raw_http_logging", "trace_file", "cpu_profile", "export_atif_path",
 	}
 	for _, field := range want {
 		if !got[field] {
 			t.Fatalf("schema missing field %q", field)
 		}
+	}
+}
+
+func TestLaunchOptionSchema_RawHTTPLoggingIsDebugLaunchSetting(t *testing.T) {
+	opts := LaunchOptionSchema()
+	idx := indexOption(opts, "raw_http_logging")
+	if idx < 0 {
+		t.Fatal("schema missing raw_http_logging")
+	}
+	opt := opts[idx]
+	if opt.WireField != "rawHTTPLogging" {
+		t.Fatalf("WireField = %q, want rawHTTPLogging", opt.WireField)
+	}
+	if opt.Group != LaunchGroupDebugLogging {
+		t.Fatalf("Group = %q, want %q", opt.Group, LaunchGroupDebugLogging)
+	}
+	if opt.Kind != LaunchControlBoolean {
+		t.Fatalf("Kind = %q, want %q", opt.Kind, LaunchControlBoolean)
+	}
+	if !opt.PerLaunch || !opt.DebugOnly {
+		t.Fatalf("PerLaunch/DebugOnly = %v/%v, want true/true", opt.PerLaunch, opt.DebugOnly)
+	}
+	wantLayers := []LaunchLayerSupport{LaunchLayerGlobal, LaunchLayerProject, LaunchLayerLaunch}
+	if len(opt.DefaultableLayers) != len(wantLayers) {
+		t.Fatalf("DefaultableLayers = %v, want %v", opt.DefaultableLayers, wantLayers)
+	}
+	for i := range wantLayers {
+		if opt.DefaultableLayers[i] != wantLayers[i] {
+			t.Fatalf("DefaultableLayers = %v, want %v", opt.DefaultableLayers, wantLayers)
+		}
+	}
+	if opt.EnvFallback == nil || opt.EnvFallback.Name != envvars.SERFLogRawHTTP.Name || opt.EnvFallback.Secret {
+		t.Fatalf("EnvFallback = %+v, want public %s", opt.EnvFallback, envvars.SERFLogRawHTTP.Name)
 	}
 }
 
