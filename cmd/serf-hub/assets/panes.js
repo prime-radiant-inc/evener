@@ -105,7 +105,12 @@
     href = normalizePaneHref(href);
     if (!href) return null;
     var r = region();
-    if (!r) return null;
+    if (!r) {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: "serf:open-beside", href: href, title: title || href }, window.location.origin);
+      }
+      return null;
+    }
     // An explicit open of a previously-dismissed href clears its suppression:
     // the user asked for it back, so auto-open may bring it back too.
     unsuppress(href);

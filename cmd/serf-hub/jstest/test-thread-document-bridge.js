@@ -5,6 +5,14 @@ function loadScript(window, path) {
   window.eval(fs.readFileSync(path, "utf8"));
 }
 
+function dispatchChildMessage(host, child, data) {
+  host.dispatchEvent(new host.MessageEvent("message", {
+    data,
+    origin: child.location.origin,
+    source: child,
+  }));
+}
+
 function newHostHarness() {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>
     <main id="workspace"></main>
@@ -38,6 +46,15 @@ function pass(ok, msg) {
   const unknown = { closed: false };
   const rejectedUnknown = host.SerfPanes.openFromChild(unknown, "/thread/local%3Aintruder", "intruder");
   pass(!rejectedUnknown, "host bridge rejects unknown source windows");
+
+  const child = frame.contentWindow;
+  const originalPostMessage = host.postMessage;
+  host.postMessage = function (data) { dispatchChildMessage(host, child, data); };
+  loadScript(child, "../assets/panes.js");
+  const localPane = child.SerfPanes.open("/thread/local%3Abridged", "bridged");
+  host.postMessage = originalPostMessage;
+  pass(!localPane, "framed child with no local pane host returns no local pane");
+  pass(host.SerfPanes.openHrefs().includes("/thread/local%3Abridged"), "framed child SerfPanes.open posts bridge request to host");
 
   if (!allPass) process.exit(1);
   console.log("OK\ttest-thread-document-bridge.js");
