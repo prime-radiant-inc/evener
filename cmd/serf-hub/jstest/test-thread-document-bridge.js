@@ -24,6 +24,20 @@ function newHostHarness() {
   return window;
 }
 
+function installRendererHarness(child) {
+  child.document.open();
+  child.document.write(`<!DOCTYPE html><html><body>
+    <a class="subagent-parent-up" href="/thread/local%3Aparent" data-open-parent-beside="/thread/local%3Aparent">↑ Parent</a>
+    <div id="conversation" data-session-id="local:child" data-state="active"></div>
+    <form data-input-form data-session-id="local:child"><textarea class="message-input"></textarea></form>
+  </body></html>`);
+  child.document.close();
+  child.marked = { parse: t => String(t || "") };
+  child.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
+  require("./load-renderer").evalRenderer(child);
+  child.SerfRenderer.init(child.document.getElementById("conversation"));
+}
+
 let allPass = true;
 function pass(ok, msg) {
   console.log((ok ? "PASS" : "FAIL") + " — " + msg);
@@ -56,6 +70,17 @@ function pass(ok, msg) {
   pass(!localPane, "framed child with no local pane host returns no local pane");
   pass(host.SerfPanes.openHrefs().includes("/thread/local%3Abridged"), "framed child SerfPanes.open posts bridge request to host");
 
+  const childDom = new JSDOM(`<!DOCTYPE html><html><body></body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://127.0.0.1:9180/thread/local%3Achild" });
+  const breadcrumbChild = childDom.window;
+  let posted = null;
+  breadcrumbChild.parent = { postMessage: (msg, origin) => { posted = { msg, origin }; } };
+  installRendererHarness(breadcrumbChild);
+  breadcrumbChild.SerfRenderer.isInPane = () => true;
+  const parentLink = breadcrumbChild.document.querySelector("[data-open-parent-beside]");
+  parentLink.dispatchEvent(new breadcrumbChild.MouseEvent("click", { bubbles: true, cancelable: true }));
+  pass(!!posted && posted.origin === "http://127.0.0.1:9180" && posted.msg.type === "serf:open-beside" && posted.msg.href === "/thread/local%3Aparent", "framed thread breadcrumb posts parent open request to host bridge");
+
   if (!allPass) process.exit(1);
   console.log("OK\ttest-thread-document-bridge.js");
+  process.exit(0);
 })();

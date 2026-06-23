@@ -5,8 +5,13 @@
   {{end}}
   {{if .ParentRouteID}}
   <nav class="subagent-parent-banner" aria-label="subagent breadcrumb">
+    {{if .ThreadDocumentMode}}
+    <a class="subagent-parent-up" href="/thread/{{.ParentRouteID | urlquery}}" data-open-parent-beside="/thread/{{.ParentRouteID | urlquery}}">↑ Parent</a>
+    <a class="subagent-parent-crumb" href="/thread/{{.ParentRouteID | urlquery}}" data-open-parent-beside="/thread/{{.ParentRouteID | urlquery}}">{{.ParentTitle}}</a>
+    {{else}}
     <a class="subagent-parent-up" href="/s/{{.ParentRouteID}}">↑ Parent</a>
     <a class="subagent-parent-crumb" href="/s/{{.ParentRouteID}}">{{.ParentTitle}}</a>
+    {{end}}
     <span class="subagent-parent-sep">/</span>
     <span class="subagent-parent-here">{{.Title}}</span>
     <span class="subagent-parent-rollup" data-subagent-rollup hidden></span>

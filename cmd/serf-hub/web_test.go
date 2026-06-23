@@ -2519,6 +2519,29 @@ func TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument(t *testing.
 	}
 }
 
+func TestWeb_ThreadDocument_SubagentBreadcrumbUsesPaneSafeAttributes(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
+	data := WorkspaceData{
+		ID:                 "local:child",
+		Title:              "child",
+		ParentRouteID:      "local:parent",
+		ParentTitle:        "parent",
+		ThreadDocumentMode: true,
+		ShowSidebarToggle:  false,
+	}
+	rec := httptest.NewRecorder()
+	if err := web.threadTmpl.ExecuteTemplate(rec, "thread_document", data); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-open-parent-beside="/thread/local%3Aparent"`) {
+		t.Fatalf("breadcrumb missing pane-safe parent target: %q", body)
+	}
+	if strings.Contains(body, `href="/s/local:parent"`) {
+		t.Fatalf("thread document breadcrumb must not target full app shell: %q", body)
+	}
+}
+
 func TestWeb_WorkspacePartial_RemainsHXGated(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",

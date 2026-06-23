@@ -183,6 +183,7 @@
 
       this.bindInputForm();
       this.bindScrollAffordance();
+      this.bindPaneParentLinks();
       this.syncTurnActionControls();
       this.bindKeyboard();
       this.ensureLivenessEl();
@@ -231,6 +232,19 @@
       if (this.isInPane && this.isInPane() && window.parent) {
         window.parent.postMessage({ type: "serf:open-beside", href: spec.href, title: spec.title || spec.href }, window.location.origin);
       }
+    },
+
+    bindPaneParentLinks() {
+      if (this.__paneParentLinksBound) return;
+      this.__paneParentLinksBound = true;
+      document.addEventListener("click", (e) => {
+        const a = e.target && e.target.closest && e.target.closest("[data-open-parent-beside]");
+        if (!a) return;
+        e.preventDefault();
+        const href = a.getAttribute("data-open-parent-beside") || a.getAttribute("href") || "";
+        const title = a.textContent || href;
+        this.openBeside({ href, title });
+      });
     },
 
     autoOpenObservers(conversationEl) {
