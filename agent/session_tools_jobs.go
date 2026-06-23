@@ -76,16 +76,6 @@ func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 		return err
 	}
 	if err := reg.Register(tool.RegisteredTool{
-		Tool:  llm.Tool{Definition: tool.DefWaitForTranscriptMatch(), ReadOnly: true},
-		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
-		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = env
-			return waitForTranscriptMatchTool(ctx, s, args, jobToolResultMaxChars(reg, "wait_for_transcript_match"))
-		},
-	}); err != nil {
-		return err
-	}
-	if err := reg.Register(tool.RegisteredTool{
 		Tool:  llm.Tool{Definition: tool.DefJobList(), ReadOnly: true},
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
@@ -610,68 +600,6 @@ func jobStatusTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	return tool.StateResult{Output: rendered, State: out}, nil
 }
 
-func waitForTranscriptMatchTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (any, error) {
-	ref := strings.TrimSpace(stringArg(args, "transcript_ref"))
-	if !strings.HasPrefix(ref, "job:") {
-		return "", errors.New("invalid_request: wait_for_transcript_match currently supports job:<job_id> transcript_ref only")
-	}
-	jobID := strings.TrimSpace(strings.TrimPrefix(ref, "job:"))
-	if jobID == "" {
-		return "", errors.New("invalid_request: transcript_ref must be job:<job_id>")
-	}
-	grep := stringArg(args, "grep")
-	if grep == "" {
-		return "", errors.New("invalid_request: grep is required")
-	}
-	if err := validateJobGrepPattern(grep, maxChars); err != nil {
-		return "", err
-	}
-	re, err := regexp.Compile(grep)
-	if err != nil {
-		return "", fmt.Errorf("invalid_request: invalid grep pattern: %w", err)
-	}
-	jm, err := sessionJobManager(s)
-	if err != nil {
-		return "", err
-	}
-	maxWaitMS := maxJobBlockTimeoutMS
-	if n, ok := shellIntArg(args, "max_wait_ms"); ok {
-		if n < 0 {
-			return "", errors.New("invalid_request: max_wait_ms must be non-negative")
-		}
-		if n > 0 {
-			maxWaitMS = n
-		}
-	}
-	if maxWaitMS < minJobBlockTimeoutMS {
-		maxWaitMS = minJobBlockTimeoutMS
-	}
-	if maxWaitMS > maxJobBlockTimeoutMS {
-		maxWaitMS = maxJobBlockTimeoutMS
-	}
-	waitForJobGrepMatch(ctx, jm, jobID, re, time.Duration(maxWaitMS)*time.Millisecond)
-	rec, err := findJobRecord(jm, jobID)
-	if err != nil {
-		return "", err
-	}
-	matches, err := jm.grepOutput(jobID, re)
-	if err != nil {
-		return "", err
-	}
-	out := waitForTranscriptMatchResult{
-		TranscriptRef: ref,
-		JobID:         jobID,
-		Status:        string(rec.Status),
-		Matched:       len(matches) > 0,
-		Matches:       projectJobOutputMatches(matches),
-	}
-	rendered, err := marshalBoundedJSON(out, maxChars)
-	if err != nil {
-		return "", err
-	}
-	return tool.StateResult{Output: rendered, State: out}, nil
-}
-
 // formatJobReadOutput renders a job_read_output result as plain text: an optional
 // line-range header, the output (or grep matches), then a bracketed footer with
 // job_id, status, exit code, output_status, and the retained/dropped byte counts.
@@ -1179,14 +1107,6 @@ type jobStatusResult struct {
 	LastEventAt   *string `json:"last_event_at,omitempty"`
 	TranscriptRef string  `json:"transcript_ref"`
 	ExitCode      *int    `json:"exit_code,omitempty"`
-}
-
-type waitForTranscriptMatchResult struct {
-	TranscriptRef string           `json:"transcript_ref"`
-	JobID         string           `json:"job_id"`
-	Status        string           `json:"status"`
-	Matched       bool             `json:"matched"`
-	Matches       []jobOutputMatch `json:"matches,omitempty"`
 }
 
 type jobOutputMatch struct {
@@ -2417,7 +2337,7 @@ func enforceJobToolJSONLimits(reg *tool.Registry) {
 		return
 	}
 	overrides := map[string]schema.ToolOutputLimit{}
-	for _, name := range []string{"job_status", "wait_for_transcript_match", "job_list", "job_stop", "delegate", "job_watch", "delegate_send"} {
+	for _, name := range []string{"job_status", "job_list", "job_stop", "delegate", "job_watch", "delegate_send"} {
 		registered := reg.Get(name)
 		if registered == nil || registered.Limit.MaxChars >= jobToolResultMinJSONChars {
 			continue

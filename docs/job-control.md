@@ -65,14 +65,14 @@ Several tools can wait, but they wait on different things. Pick by intent, and d
 | Launch a long command without waiting | `shell(background=true)` — returns a `job_id` immediately |
 | Start a delegate and wait up to N ms for its result | `delegate(max_wait_ms=N)` — a timeout leaves it running |
 | Learn when a backgrounded job finishes | the automatic terminal notification — nothing to call |
-| Wait until a job's output contains X | `job_read_output(grep=X, max_wait_ms=N)`, or `job_watch(operation="create", source=<job_id>, output_match=X)` to be notified |
+| Learn when a job's output contains X | `job_watch(operation="create", source=<job_id>, output_match=X)` to be notified |
 | Re-observe progress on a long job | `job_watch(operation="create", source=<job_id>, progress_interval_ms=N)` (running targets only) |
 | Resume an idle delegate and wait for its answer | `delegate_send(to=<delegate_id>, on_idle="start", max_wait_ms=N)` |
 | Steer a running delegate | `delegate_send(to=<delegate_id>)` — returns on delivery; `max_wait_ms` is ignored and reported as `wait_ignored_reason` |
 
 There is no "steer a running delegate and wait for its next reply" primitive: a live steer returns on delivery. To get an answer, let the delegate finish its turn (you are notified) and read `job_read_output`, or start its next turn with `delegate_send(on_idle="start", max_wait_ms=N)` once it is idle.
 
-Terminal targets differ by watch type: only an `output_match`-only `job_watch` supports terminal catch-up (a one-shot scan of retained output on an already-terminal job). `events`, `progress_interval_ms`, and `every` watches require a running target and reject a terminal one with `target_terminal`. `job_read_output(grep=...)` reads retained output of terminal jobs directly.
+Terminal targets differ by watch type: only an `output_match`-only `job_watch` supports terminal catch-up (a one-shot scan of retained output on an already-terminal job). `events`, `progress_interval_ms`, and `every` watches require a running target and reject a terminal one with `target_terminal`. Use transcript reads for retained terminal output evidence.
 
 ## Vocabulary
 
@@ -212,7 +212,7 @@ Defaults and timeout semantics:
 - `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Serf stops it and finalizes the job as `stopped` with reason `run_timeout`. It bounds how long the process may *run*, distinct from the foreground wait.
 - Omitted `max_runtime_ms` means implementation-defined shell runtime policy. Recommended policy: default finite runtime for foreground/promoted shell jobs, no default runtime limit for `background: true` shell jobs unless configured by the user/tool call.
 - A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the foreground wait expired; it never means the process hit `max_runtime_ms`.
-- To wait for a launch-and-return command to reach a state (e.g. a server printing "ready"), use `job_read_output(job_id, grep, max_wait_ms)` for a synchronous bounded wait, or `job_watch(operation="create", source=<job_id>, output_match=...)` to be notified — an output-match watch catch-up-scans a job's retained output even if it already finished.
+- To learn when a launch-and-return command reaches a state (e.g. a server printing "ready"), use `job_watch(operation="create", source=<job_id>, output_match=...)` and continue from the notification — an output-match watch catch-up-scans a job's retained output even if it already finished.
 
 Normative foreground-wait bounds:
 

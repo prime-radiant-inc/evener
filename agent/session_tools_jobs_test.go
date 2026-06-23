@@ -2945,53 +2945,6 @@ func appendManualJobOutput(jm *jobManager, jobID string, output string) {
 	}
 }
 
-func TestWaitForTranscriptMatchWaitsForShellOutput(t *testing.T) {
-	s := newTestSession(t)
-	jm := s.jobManager
-	rec, err := jm.createShell(createShellOpts{Command: "server"})
-	if err != nil {
-		t.Fatalf("createShell: %v", err)
-	}
-	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
-	run := runningJobByID(t, jm, rec.JobID)
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		time.Sleep(50 * time.Millisecond)
-		_, _ = jm.appendJobOutput(rec.JobID, run.output, []byte("server ready\n"))
-	}()
-
-	start := time.Now()
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "wait",
-		Name:      "wait_for_transcript_match",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"transcript_ref":"job:%s","grep":"ready","max_wait_ms":1000}`, rec.JobID)),
-	})
-	<-done
-	if res.IsError {
-		t.Fatalf("wait_for_transcript_match returned error: %s", res.Output)
-	}
-	if elapsed := time.Since(start); elapsed < 40*time.Millisecond {
-		t.Fatalf("wait returned before output append: elapsed=%s", elapsed)
-	}
-	var out struct {
-		TranscriptRef string           `json:"transcript_ref"`
-		Matched       bool             `json:"matched"`
-		Matches       []jobOutputMatch `json:"matches"`
-		Status        string           `json:"status"`
-	}
-	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-		t.Fatalf("unmarshal wait result: %v (output: %s)", err, res.Output)
-	}
-	if !out.Matched || len(out.Matches) == 0 {
-		t.Fatalf("wait result = %+v, want match", out)
-	}
-	if out.TranscriptRef != "job:"+rec.JobID {
-		t.Fatalf("transcript_ref = %q, want job:%s", out.TranscriptRef, rec.JobID)
-	}
-}
-
 func blockingGrepRead(t *testing.T, s *Session, jobID, grep string, timeoutMS int) (jobReadOutputTestResult, time.Duration) {
 	t.Helper()
 	started := time.Now()
@@ -3671,7 +3624,6 @@ func TestJobToolsDefinitions(t *testing.T) {
 	}
 
 	required(t, tooldefs.DefJobStatus(), "job_status", []string{"job_id"})
-	required(t, tooldefs.DefWaitForTranscriptMatch(), "wait_for_transcript_match", []string{"transcript_ref", "grep"})
 	required(t, tooldefs.DefJobStop(), "job_stop", []string{"job_id"})
 	required(t, tooldefs.DefJobList(), "job_list", nil)
 	required(t, tooldefs.DefReadTranscript(), "read_transcript", nil)
@@ -3679,12 +3631,6 @@ func TestJobToolsDefinitions(t *testing.T) {
 	required(t, tooldefs.DefJobWatch(WatchEventKindNames), "job_watch", []string{"operation"})
 	required(t, tooldefs.DefDelegateSend(), "delegate_send", []string{"to", "message"})
 
-	waitProps := tooldefs.DefWaitForTranscriptMatch().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"transcript_ref", "grep", "max_wait_ms"} {
-		if _, ok := waitProps[param]; !ok {
-			t.Fatalf("wait_for_transcript_match missing param %q", param)
-		}
-	}
 	readProps := tooldefs.DefReadTranscript().Parameters["properties"].(map[string]any)
 	for _, param := range []string{"transcript_ref", "format", "range", "expand_turn"} {
 		if _, ok := readProps[param]; !ok {
@@ -3877,17 +3823,16 @@ func TestJobReadOutputProjectionTooLargeDoesNotMutateDurableStructuredResult(t *
 func TestJobToolOutputLimitsHaveJSONMinimum(t *testing.T) {
 	s := newShellToolTestSession(t, SessionConfig{
 		ToolOutputLimits: map[string]schema.ToolOutputLimit{
-			"job_status":                {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"wait_for_transcript_match": {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"job_list":                  {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"job_stop":                  {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"delegate":                  {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"job_watch":                 {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"delegate_send":             {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_status":    {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_list":      {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_stop":      {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"delegate":      {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_watch":     {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"delegate_send": {MaxChars: 1, Strategy: schema.TruncHeadTail},
 		},
 	})
 
-	for _, name := range []string{"job_status", "wait_for_transcript_match", "job_list", "job_stop", "delegate", "job_watch", "delegate_send"} {
+	for _, name := range []string{"job_status", "job_list", "job_stop", "delegate", "job_watch", "delegate_send"} {
 		rt := s.reg.Get(name)
 		if rt == nil {
 			t.Fatalf("%s not registered", name)
@@ -3906,8 +3851,8 @@ func TestJobReadOutputIsNotModelFacing(t *testing.T) {
 	if got := s.reg.Get("job_status"); got == nil {
 		t.Fatalf("job_status is not registered")
 	}
-	if got := s.reg.Get("wait_for_transcript_match"); got == nil {
-		t.Fatalf("wait_for_transcript_match is not registered")
+	if got := s.reg.Get("wait_for_transcript_match"); got != nil {
+		t.Fatalf("wait_for_transcript_match is still registered: %+v", got.Tool.Definition.Name)
 	}
 }
 

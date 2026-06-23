@@ -78,7 +78,7 @@ func DefEditFile() llm.ToolDefinition {
 func DefShell() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "shell",
-		Description: "Run a shell command. By default it runs in the foreground and returns stdout, stderr, and exit code inline when it finishes (up to the session command timeout, ~120s; a command still running at that bound is promoted to a durable background job: you get its `job_id`, the process is not killed). Set `background: true` to start the command and return its `job_id` immediately (status `running` confirms it launched; an instant failure surfaces via the terminal notification, not here). `max_runtime_ms` separately caps total process runtime. Output is a navigable resource: output over ~8 KB returns a head+tail digest plus a `job_id` - read retained output with `read_transcript(transcript_ref=\"job:<job_id>\")`; wait for one readiness signal with `wait_for_transcript_match`. `total_bytes`/`dropped_bytes`/`output_status` say how much exists and whether any was evicted. A result with NO `job_id` is already complete: the inline output is the whole result, so do not call transcript tools for it (this includes a finished foreground command; if you only want more of its output, you piped it away yourself, e.g. through `tail`; re-run without the pipe). Serf notifies you when a background job finishes. Prefer `rg`/`rg --files` for searching.",
+		Description: "Run a shell command. By default it runs in the foreground and returns stdout, stderr, and exit code inline when it finishes (up to the session command timeout, ~120s; a command still running at that bound is promoted to a durable background job: you get its `job_id`, the process is not killed). Set `background: true` to start the command and return its `job_id` immediately (status `running` confirms it launched; an instant failure surfaces via the terminal notification, not here). `max_runtime_ms` separately caps total process runtime. Output is a navigable resource: output over ~8 KB returns a head+tail digest plus a `job_id` - read retained output with `read_transcript(transcript_ref=\"job:<job_id>\")`; use `job_watch(output_match=...)` when you need a future readiness notification. `total_bytes`/`dropped_bytes`/`output_status` say how much exists and whether any was evicted. A result with NO `job_id` is already complete: the inline output is the whole result, so do not call transcript tools for it (this includes a finished foreground command; if you only want more of its output, you piped it away yourself, e.g. through `tail`; re-run without the pipe). Serf notifies you when a background job finishes. Prefer `rg`/`rg --files` for searching.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -259,25 +259,6 @@ func DefJobReadOutput() llm.ToolDefinition {
 				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): snapshot now. >0: wait up to this many ms for a grep match (with grep), or for new output / terminal state."},
 			},
 			"required": []string{"job_id"},
-		},
-	}
-}
-
-func DefWaitForTranscriptMatch() llm.ToolDefinition {
-	strictFalse := false
-	return llm.ToolDefinition{
-		Name:        "wait_for_transcript_match",
-		Description: "One-shot readiness wait over a transcript_ref. Use this when you need one bounded signal such as a shell job printing \"ready\". This is not a polling loop and does not acknowledge completion. Currently supports job:<job_id> refs with grep and max_wait_ms.",
-		Strict:      &strictFalse,
-		Parameters: map[string]any{
-			"type":                 "object",
-			"additionalProperties": false,
-			"properties": map[string]any{
-				"transcript_ref": map[string]any{"type": "string", "description": "A job:<job_id> transcript_ref from job_status or job_list."},
-				"grep":           map[string]any{"type": "string", "description": "Regular expression to wait for in the retained transcript output."},
-				"max_wait_ms":    map[string]any{"type": "integer", "description": "Maximum wait in milliseconds. Values are clamped to Serf's job wait bounds."},
-			},
-			"required": []string{"transcript_ref", "grep"},
 		},
 	}
 }

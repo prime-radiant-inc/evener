@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace `job_read_output` as the primary job supervision surface with `job_status`, `read_transcript`, transcript refs for agent and shell jobs, and an explicit one-shot transcript wait.
+**Goal:** Replace `job_read_output` as the primary job supervision surface with `job_status`, `read_transcript`, transcript refs for agent and shell jobs, and readiness notifications through `job_watch`.
 
-**Architecture:** Add compact job supervision projection in `agent/session_tools_jobs.go`, with `kind/status/phase/running_for_ms/quiet_for_ms/transcript_ref` computed from live job records. Add a generic transcript reader in `agent/session_tools_transcript.go` that reads existing session transcripts and shell job output refs. Preserve server-readiness waiting through a narrow `wait_for_transcript_match` tool before removing `job_read_output` from the model-facing registry.
+**Architecture:** Add compact job supervision projection in `agent/session_tools_jobs.go`, with `kind/status/phase/running_for_ms/quiet_for_ms/transcript_ref` computed from live job records. Add a generic transcript reader in `agent/session_tools_transcript.go` that reads existing session transcripts and shell job output refs. Route server-readiness signals through the existing non-blocking `job_watch(output_match=...)` mechanism before removing `job_read_output` from the model-facing registry.
 
 **Tech Stack:** Go, Serf agent tool registry, jobstore event/output logs, scripted-provider tests, deterministic package tests.
 
@@ -30,18 +30,17 @@
   - Report observable child phases: `awaiting_model`, `model_streaming`, `tool_running`, and event-clock activity.
 - Modify `agent/session_tools_jobs.go`
   - Register `job_status`.
-  - Register `wait_for_transcript_match`.
   - Project richer `job_list` rows.
-  - Remove model-facing `job_read_output` registration after one-shot wait is covered.
+  - Remove model-facing `job_read_output` registration.
 - Modify `agent/session_tools_transcript.go`
   - Register `read_transcript`.
   - Resolve `job:<job_id>` refs to shell output logs.
 - Modify `agent/internal/tool/definitions.go`
-  - Add `DefJobStatus`, `DefWaitForTranscriptMatch`, and `DefReadTranscript`.
+  - Add `DefJobStatus` and `DefReadTranscript`.
   - Remove or stop advertising `DefJobReadOutput`.
   - Update `job_list` and transcript descriptions.
 - Modify `agent/prompts/sections/background-jobs.md`
-  - Route orientation to `job_status`, raw evidence to `read_transcript`, completion to notifications, and readiness checks to `wait_for_transcript_match`.
+  - Route orientation to `job_status`, raw evidence to `read_transcript`, completion to notifications, and readiness signals to `job_watch(output_match=...)`.
 - Modify tests in:
   - `agent/job_supervision_test.go`
   - `agent/session_tools_jobs_test.go`
@@ -782,62 +781,22 @@ git add agent/transcript_tools_test.go agent/session_tools_transcript.go agent/s
 git commit -m "Read shell jobs through transcript refs" -m "Introduce read_transcript as the raw evidence path and teach it to resolve job:<job_id> refs. Shell job status now points at the same transcript reader path as agent jobs."
 ```
 
-## Task 5: Add One-Shot Transcript Match Wait
+## Task 5: Use `job_watch` For Readiness Signals
 
 **Files:**
 - Modify: `agent/session_tools_jobs_test.go`
-- Modify: `agent/session_tools_jobs.go`
 - Modify: `agent/internal/tool/definitions.go`
+- Modify: `agent/prompts/sections/background-jobs.md`
 
-- [ ] **Step 1: Write failing test for readiness wait**
+- [ ] **Step 1: Write failing test for no blocking wait tool**
 
 Add to `agent/session_tools_jobs_test.go`:
 
 ```go
-func TestWaitForTranscriptMatchWaitsForShellOutput(t *testing.T) {
+func TestBlockingWaitToolsAreNotModelFacing(t *testing.T) {
 	s := newTestSession(t)
-	jm := s.jobManager
-	rec, err := jm.createShell(createShellOpts{Command: "server"})
-	if err != nil {
-		t.Fatalf("createShell: %v", err)
-	}
-	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
-	run := runningJobByID(t, jm, rec.JobID)
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		time.Sleep(50 * time.Millisecond)
-		_, _ = jm.appendJobOutput(rec.JobID, run.output, []byte("server ready\n"))
-	}()
-
-	start := time.Now()
-	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
-		ID:        "wait",
-		Name:      "wait_for_transcript_match",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"transcript_ref":"job:%s","grep":"ready","max_wait_ms":1000}`, rec.JobID)),
-	})
-	<-done
-	if res.IsError {
-		t.Fatalf("wait_for_transcript_match returned error: %s", res.Output)
-	}
-	if elapsed := time.Since(start); elapsed < 40*time.Millisecond {
-		t.Fatalf("wait returned before output append: elapsed=%s", elapsed)
-	}
-	var out struct {
-		TranscriptRef string           `json:"transcript_ref"`
-		Matched       bool             `json:"matched"`
-		Matches       []jobOutputMatch `json:"matches"`
-		Status        string           `json:"status"`
-	}
-	if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
-		t.Fatalf("unmarshal wait result: %v (output: %s)", err, res.Output)
-	}
-	if !out.Matched || len(out.Matches) == 0 {
-		t.Fatalf("wait result = %+v, want match", out)
-	}
-	if out.TranscriptRef != "job:"+rec.JobID {
-		t.Fatalf("transcript_ref = %q, want job:%s", out.TranscriptRef, rec.JobID)
+	if got := s.reg.Get("wait_for_transcript_match"); got != nil {
+		t.Fatalf("wait_for_transcript_match is still registered: %+v", got.Tool.Definition.Name)
 	}
 }
 ```
@@ -845,31 +804,22 @@ func TestWaitForTranscriptMatchWaitsForShellOutput(t *testing.T) {
 - [ ] **Step 2: Run test to verify RED**
 
 ```bash
-go test ./agent -run '^TestWaitForTranscriptMatchWaitsForShellOutput$' -count=1 -v
+go test ./agent -run '^TestBlockingWaitToolsAreNotModelFacing$' -count=1 -v
 ```
 
-Expected: FAIL because the tool is not registered.
+Expected: FAIL while the blocking wait tool is still registered.
 
-- [ ] **Step 3: Implement `wait_for_transcript_match` for shell refs**
+- [ ] **Step 3: Remove the blocking wait surface**
 
-Add `DefWaitForTranscriptMatch` with required `transcript_ref` and `grep`, optional `max_wait_ms`.
-
-Register it in `registerJobTools`.
-
-Handler behavior:
-
-- Accept only `job:<job_id>` in this first implementation.
-- Compile `grep` with the existing validation.
-- Clamp `max_wait_ms` using existing job wait bounds.
-- Reuse `waitForJobGrepMatch(ctx, jm, jobID, re, timeout)`.
-- Return `{transcript_ref, job_id, status, matched, matches}` using `jm.grepOutput`.
-
-Do not route this through `job_read_output`; the point is to preserve readiness waits without preserving the overloaded read tool.
+Do not add a new blocking wait primitive. Remove any registration, provider
+definition, prompt entry, and tests for `wait_for_transcript_match`. Teach
+readiness signals through `job_watch(operation="create", source=<job_id>,
+output_match=...)`.
 
 - [ ] **Step 4: Run test to verify GREEN**
 
 ```bash
-go test ./agent -run '^TestWaitForTranscriptMatchWaitsForShellOutput$' -count=1 -v
+go test ./agent -run '^TestBlockingWaitToolsAreNotModelFacing$' -count=1 -v
 ```
 
 Expected: PASS.
@@ -877,8 +827,8 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add agent/session_tools_jobs_test.go agent/session_tools_jobs.go agent/internal/tool/definitions.go
-git commit -m "Add one-shot transcript match wait" -m "Preserve the useful server-readiness behavior from job_read_output(max_wait_ms, grep) as a narrow wait_for_transcript_match tool over transcript refs."
+git add agent/session_tools_jobs_test.go agent/internal/tool/definitions.go agent/prompts/sections/background-jobs.md
+git commit -m "Use watches for job readiness signals" -m "Avoid adding a blocking transcript wait primitive. Readiness notifications flow through job_watch(output_match), while raw evidence stays on read_transcript."
 ```
 
 ## Task 6: Remove `job_read_output` From The Model-Facing Surface
@@ -902,8 +852,8 @@ func TestJobReadOutputIsNotModelFacing(t *testing.T) {
 	if got := s.reg.Get("job_status"); got == nil {
 		t.Fatalf("job_status is not registered")
 	}
-	if got := s.reg.Get("wait_for_transcript_match"); got == nil {
-		t.Fatalf("wait_for_transcript_match is not registered")
+	if got := s.reg.Get("wait_for_transcript_match"); got != nil {
+		t.Fatalf("wait_for_transcript_match is still registered: %+v", got.Tool.Definition.Name)
 	}
 }
 ```
@@ -920,14 +870,14 @@ Expected: FAIL because `job_read_output` is still registered.
 
 Remove the `DefJobReadOutput` registration from `registerJobTools`.
 
-Keep internal helpers only if tests or implementation still need them for `wait_for_transcript_match`; do not advertise `job_read_output`.
+Keep internal helpers only if tests still need them for retained-output behavior; do not advertise `job_read_output`.
 
 Update `background-jobs.md`:
 
 ```markdown
 - Need to know what a job is doing -> `job_status`.
 - Need raw evidence -> `read_transcript` with the `transcript_ref` from `job_status` or `job_list`.
-- One signal ("the server printed ready") -> `wait_for_transcript_match` with a bounded `max_wait_ms`.
+- One signal ("the server printed ready") -> `job_watch(output_match=...)`.
 - "Tell me when it finishes" -> the terminal notification is automatic.
 ```
 
@@ -939,7 +889,7 @@ For tests whose only purpose is `job_read_output` as the public surface, convert
 
 - `job_status` tests for status/timing/transcript refs.
 - `read_transcript` tests for raw evidence.
-- `wait_for_transcript_match` tests for one-shot grep readiness.
+- `job_watch(output_match)` tests for readiness notification behavior.
 
 Do not delete coverage for useful behavior; move it to the right tool.
 
@@ -956,7 +906,7 @@ Expected: PASS.
 
 ```bash
 git add agent/session_tools_jobs.go agent/internal/tool/definitions.go agent/prompts/sections/background-jobs.md agent/session_tools_jobs_test.go agent/job_supervision_test.go agent/transcript_tools_test.go agent/internal/tool/definitions_test.go
-git commit -m "Retire job_read_output from job supervision" -m "Remove job_read_output from the model-facing tool registry after replacing its supervision, evidence, and one-shot readiness roles with job_status, read_transcript, and wait_for_transcript_match."
+git commit -m "Retire job_read_output from job supervision" -m "Remove job_read_output from the model-facing tool registry after replacing its supervision and evidence roles with job_status and read_transcript. Readiness signals use job_watch(output_match)."
 ```
 
 ## Task 7: Final Verification

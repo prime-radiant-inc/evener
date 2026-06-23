@@ -62,7 +62,6 @@ var delegationPromptToolNames = []string{
 	"job_watch",
 	"read_transcript",
 	"shell",
-	"wait_for_transcript_match",
 }
 
 // resultToolName returns the effective name for the communicate tool.

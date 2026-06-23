@@ -341,12 +341,12 @@ matches a string". That is useful for dev servers and should survive, but it
 should not be attached to a tool named "read output" if the design goal is to
 teach notification-driven completion and status-driven supervision.
 
-Two acceptable replacements:
+Replacement:
 
-1. Keep `job_watch` as the recurring/notification primitive and add a one-shot
-   transcript match mode.
-2. Add a narrow `wait_for_transcript_match` tool that waits once and returns a
-   bounded match result.
+Use the existing `job_watch(output_match=...)` mechanism for readiness signals.
+Do not add a blocking transcript wait. If a caller needs raw evidence, it can
+read the `transcript_ref`; if it needs a future signal, it installs a watch and
+continues from the notification.
 
 Do not keep `job_read_output` merely because it currently carries this wait
 behavior. That is how the current abstraction became overloaded.

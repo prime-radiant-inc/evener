@@ -16,15 +16,13 @@ Pick the waiting primitive by how many answers you need:
   `transcript_ref`.
 - Raw evidence → `read_transcript` with the `transcript_ref` from `job_status`,
   `job_list`, or the notification.
-- One signal ("the server printed ready") → `wait_for_transcript_match` with
-  `grep` and `max_wait_ms`. One bounded wait, nothing to clean up afterward.
+- One future signal ("the server printed ready") → `job_watch` with
+  `output_match`. The watch notifies you; do not block waiting.
 - A recurring condition (every new match, periodic progress, event frames to an
   observer) → `job_watch`.
 - "Tell me when it finishes" → the terminal notification is automatic.
 
-Blocking waits are bounded conveniences measured in seconds, not parking: a
-timeout leaves the job running and you free. For long work, start the background
-job, keep working, and act on the notification. A
+For long work, start the background job, keep working, and act on the notification. A
 terminal notification can land after you have already read the job's output
 yourself; that is expected confirmation, not new work — act on whichever arrives
 first and process each result once. When a notification needs no action, a
