@@ -16,7 +16,7 @@
 - Create: `agent/session_openai_continuation_phase12_live_test.go`
 - Modify: `docs/superpowers/plans/2026-06-24-responses-continuation-phase-12-public-live-proof.md`
 
-- [ ] **Step 1: Write skipped-by-default live test**
+- [x] **Step 1: Write skipped-by-default live test**
 
 Add `TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof` in package `agent`.
 
@@ -28,14 +28,12 @@ os.Getenv("SERF_OPENAI_RESPONSES_PHASE12_E2E") == "1"
 
 It must also skip when `OPENAI_API_KEY` is empty.
 
-- [ ] **Step 2: Add harness setup**
+- [x] **Step 2: Add harness setup**
 
 Inside the test:
 
 ```go
 stateDir := t.TempDir()
-rawWas := os.Getenv(envvars.SERFLogRawHTTP.Name)
-t.Setenv(envvars.SERFLogRawHTTP.Name, "1")
 
 client := llm.NewClient()
 adapter, err := openai.NewFromEnv(openai.Config{StateHome: stateDir})
@@ -44,12 +42,14 @@ client.Register(adapter)
 apiLog, err := llm.NewAPILogger(filepath.Join(stateDir, "api.jsonl"))
 apiLog.EnableRawLogging(filepath.Join(stateDir, "api-raw.jsonl"))
 client.Use(apiLog)
-t.Cleanup(func() { _ = apiLog.Close(); _ = os.Setenv(envvars.SERFLogRawHTTP.Name, rawWas) })
+t.Cleanup(func() { _ = apiLog.Close() })
 ```
 
 Use a model from `SERF_OPENAI_RESPONSES_PHASE12_MODEL`, defaulting to the same public model used by discovery if unset.
 
-- [ ] **Step 3: Drive real Session anchor and delta**
+The live command must set `SERF_LOG_RAW_HTTP=1` before `go test` starts because `llm.RawBodyEnabled()` is initialized at process startup.
+
+- [x] **Step 3: Drive real Session anchor and delta**
 
 Create a real session with:
 
@@ -75,7 +75,7 @@ SessionConfig{
 
 Run two `ProcessInput` calls. The first creates an anchor; the second must produce a transcript `api_call` with `HistoryMode=responses_delta`, `PreviousResponseIDHash` set, and `Request.FullHistoryInputTokensEstimate > 0`.
 
-- [ ] **Step 4: Record raw request body metrics**
+- [x] **Step 4: Record raw request body metrics**
 
 Read `api-raw.jsonl`, find the full-history anchor request and the `responses_delta` request, and assert:
 
@@ -89,11 +89,11 @@ Log:
 t.Logf("phase12_public_live full_history_bytes=%d responses_delta_bytes=%d full_history_shadow_bytes=%d provider_input_tokens=%d full_history_shadow_tokens=%d", ...)
 ```
 
-- [ ] **Step 5: Record invalid-anchor behavior**
+- [x] **Step 5: Record invalid-anchor behavior**
 
 Use the same public adapter to send one direct invalid `PreviousResponseID` request. Assert the request fails and `openai.ClassifyResponsesError(err, true)` returns `llm.ResponsesErrorContinuationRejected`.
 
-- [ ] **Step 6: Run default skipped test**
+- [x] **Step 6: Run default skipped test**
 
 Run:
 
@@ -103,7 +103,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesConti
 
 Expected: PASS with skip when opt-in env or `OPENAI_API_KEY` is absent.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git status --short
