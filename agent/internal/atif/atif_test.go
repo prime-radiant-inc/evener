@@ -1223,6 +1223,61 @@ func TestConvertToATIF_ResponsesProviderHandlesRawLocal(t *testing.T) {
 	}
 }
 
+func TestConvertTranscriptToATIF_ResponsesRequestHandleHashes(t *testing.T) {
+	header := transcript.Header{SessionID: "sess-responses-request", Model: "gpt-5.3-codex"}
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.Turn{
+			Kind:           schema.TurnAssistant,
+			Message:        llm.Assistant("continued"),
+			ResponseID:     "resp_raw_phase11",
+			ResponseIDHash: "cont-handle-v1:response_id:phase11",
+			Timestamp:      time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC),
+		}},
+	}
+	apiCalls := []transcript.APICall{
+		{
+			Kind:                   "api_call",
+			Seq:                    1,
+			PreviousResponseIDHash: "cont-handle-v1:response_id:phase11",
+			ConversationIDHash:     "cont-handle-v1:conversation_id:phase11",
+			HistoryMode:            llm.HistoryModeResponsesDelta,
+			Request: llm.APILogRequest{
+				EndpointFamily:          string(llm.ResponsesEndpointFamilyOpenAIPublic),
+				HistoryMode:             llm.HistoryModeResponsesDelta,
+				RequestFingerprint:      "request-phase11",
+				ContextMarker:           "ctx-phase11",
+				StorageScopeFingerprint: "scope-phase11",
+			},
+		},
+	}
+
+	traj := ConvertTranscriptWithOptions(header, entries, apiCalls, Options{ProviderHandles: ProviderHandleModeRedacted})
+	if len(traj.Steps) != 1 {
+		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
+	}
+	extra := traj.Steps[0].Extra
+	if _, ok := extra["previous_response_id"]; ok {
+		t.Fatalf("redacted ATIF export leaked previous_response_id: %#v", extra["previous_response_id"])
+	}
+	if _, ok := extra["conversation_id"]; ok {
+		t.Fatalf("redacted ATIF export leaked conversation_id: %#v", extra["conversation_id"])
+	}
+	wantExtra := map[string]string{
+		"previous_response_id_hash":         "cont-handle-v1:response_id:phase11",
+		"conversation_id_hash":              "cont-handle-v1:conversation_id:phase11",
+		"request_history_mode":              string(llm.HistoryModeResponsesDelta),
+		"request_endpoint_family":           string(llm.ResponsesEndpointFamilyOpenAIPublic),
+		"request_fingerprint":               "request-phase11",
+		"request_context_marker":            "ctx-phase11",
+		"request_storage_scope_fingerprint": "scope-phase11",
+	}
+	for key, want := range wantExtra {
+		if got := extra[key]; got != want {
+			t.Fatalf("extra[%s] = %#v, want %q", key, got, want)
+		}
+	}
+}
+
 func TestConvertToATIF_TurnSystem(t *testing.T) {
 	header := transcript.Header{SessionID: "sess-sys", Model: "gpt-5.3-codex"}
 	entries := []transcript.Entry{

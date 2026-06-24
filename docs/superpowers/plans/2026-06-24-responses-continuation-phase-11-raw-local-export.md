@@ -139,7 +139,7 @@ git commit -m "feat(agent): add raw-local ATIF response handles"
 - Modify: `agent/internal/atif/atif.go`
 - Test: `agent/internal/atif/atif_test.go`
 
-- [ ] **Step 1: Write failing transcript API-call metadata test**
+- [x] **Step 1: Write failing transcript API-call metadata test**
 
 Add a test for:
 ```go
@@ -162,7 +162,7 @@ Request: llm.APILogRequest{
 
 Assert the assistant step includes `previous_response_id_hash`, `conversation_id_hash`, and the request metadata, but no raw `previous_response_id` or `conversation_id`.
 
-- [ ] **Step 2: Run red test**
+- [x] **Step 2: Run red test**
 
 Run:
 ```bash
@@ -170,7 +170,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent/internal/atif -run 'TestConvertTranscr
 ```
 Expected: FAIL because `Convert` ignores API calls.
 
-- [ ] **Step 3: Implement API-call metadata merge**
+- [x] **Step 3: Implement API-call metadata merge**
 
 Add:
 ```go
@@ -179,7 +179,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 
 Keep `ConvertWithOptions` delegating with `nil` API calls. While converting assistant turns, attach the next API call with OpenAI Responses continuation metadata to the next agent step. In redacted mode, emit only hashes and request metadata.
 
-- [ ] **Step 4: Run passing test**
+- [x] **Step 4: Run passing test**
 
 Run:
 ```bash
@@ -187,7 +187,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent/internal/atif -run 'TestConvertTranscr
 ```
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git status --short

@@ -109,6 +109,10 @@ func Convert(header transcript.Header, entries []transcript.Entry) Trajectory {
 }
 
 func ConvertWithOptions(header transcript.Header, entries []transcript.Entry, opts Options) Trajectory {
+	return ConvertTranscriptWithOptions(header, entries, nil, opts)
+}
+
+func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript.Entry, apiCalls []transcript.APICall, opts Options) Trajectory {
 	opts.ProviderHandles, _ = NormalizeProviderHandleMode(string(opts.ProviderHandles))
 	version := header.BuildVersion
 	if version == "" {
@@ -130,6 +134,8 @@ func ConvertWithOptions(header transcript.Header, entries []transcript.Entry, op
 	var steps []Step
 	stepID := 1
 	var totalPrompt, totalCompletion, totalCached int
+	apiCallIndex := 0
+	responseIDsByHash := responseIDsByHash(entries)
 
 	for i := 0; i < len(entries); i++ {
 		entry := entries[i]
@@ -149,6 +155,9 @@ func ConvertWithOptions(header transcript.Header, entries []transcript.Entry, op
 
 		case schema.TurnAssistant:
 			step := convertAssistantTurn(turn, stepID, opts)
+			if call, ok := nextResponsesAPICall(apiCalls, &apiCallIndex); ok {
+				attachResponsesAPICallMetadata(&step, call, opts, responseIDsByHash)
+			}
 
 			// Look ahead: if the next entry is TOOL_RESULTS, merge it as observation.
 			if i+1 < len(entries) && entries[i+1].Turn.Kind == schema.TurnToolResults {
@@ -253,6 +262,98 @@ func ConvertWithOptions(header transcript.Header, entries []transcript.Entry, op
 	}
 
 	return traj
+}
+
+func responseIDsByHash(entries []transcript.Entry) map[string]string {
+	ids := map[string]string{}
+	for _, entry := range entries {
+		turn := entry.Turn
+		if turn.Kind == schema.TurnAssistant && turn.ResponseIDHash != "" && turn.ResponseID != "" {
+			ids[turn.ResponseIDHash] = turn.ResponseID
+		}
+	}
+	return ids
+}
+
+func nextResponsesAPICall(apiCalls []transcript.APICall, index *int) (transcript.APICall, bool) {
+	for *index < len(apiCalls) {
+		call := apiCalls[*index]
+		*index++
+		if responsesAPICallHasMetadata(call) {
+			return call, true
+		}
+	}
+	return transcript.APICall{}, false
+}
+
+func responsesAPICallHasMetadata(call transcript.APICall) bool {
+	req := call.Request
+	return call.PreviousResponseIDHash != "" ||
+		call.ConversationIDHash != "" ||
+		req.PreviousResponseIDHash != "" ||
+		req.ConversationIDHash != "" ||
+		req.EndpointFamily != "" ||
+		req.RequestFingerprint != "" ||
+		req.ContextMarker != "" ||
+		req.StorageScopeFingerprint != "" ||
+		req.StoragePolicyLabel != "" ||
+		req.HistoryMode == llm.HistoryModeResponsesDelta ||
+		req.HistoryMode == llm.HistoryModeFullHistoryFallback ||
+		call.HistoryMode == llm.HistoryModeResponsesDelta ||
+		call.HistoryMode == llm.HistoryModeFullHistoryFallback
+}
+
+func attachResponsesAPICallMetadata(step *Step, call transcript.APICall, opts Options, responseIDsByHash map[string]string) {
+	req := call.Request
+	previousHash := firstNonEmpty(call.PreviousResponseIDHash, req.PreviousResponseIDHash)
+	if previousHash != "" {
+		step.Extra["previous_response_id_hash"] = previousHash
+		if opts.ProviderHandles == ProviderHandleModeRawLocal {
+			if raw := responseIDsByHash[previousHash]; raw != "" {
+				step.Extra["previous_response_id"] = raw
+			} else {
+				step.Extra["previous_response_id_unavailable"] = true
+			}
+		}
+	}
+	conversationHash := firstNonEmpty(call.ConversationIDHash, req.ConversationIDHash)
+	if conversationHash != "" {
+		step.Extra["conversation_id_hash"] = conversationHash
+		if opts.ProviderHandles == ProviderHandleModeRawLocal {
+			step.Extra["conversation_id_unavailable"] = true
+		}
+	}
+	historyMode := req.HistoryMode
+	if historyMode == "" {
+		historyMode = call.HistoryMode
+	}
+	if historyMode != "" {
+		step.Extra["request_history_mode"] = string(historyMode)
+	}
+	if req.EndpointFamily != "" {
+		step.Extra["request_endpoint_family"] = req.EndpointFamily
+	}
+	if req.RequestFingerprint != "" {
+		step.Extra["request_fingerprint"] = req.RequestFingerprint
+	}
+	if req.ContextMarker != "" {
+		step.Extra["request_context_marker"] = req.ContextMarker
+	}
+	if req.StorageScopeFingerprint != "" {
+		step.Extra["request_storage_scope_fingerprint"] = req.StorageScopeFingerprint
+	}
+	if req.StoragePolicyLabel != "" {
+		step.Extra["request_storage_policy_label"] = req.StoragePolicyLabel
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // convertAssistantTurn extracts text, tool calls, thinking, and metadata from an assistant turn.
