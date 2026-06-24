@@ -120,18 +120,18 @@ git commit -m "feat(openai): classify responses continuation errors"
 - Create: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-7.md`
 - Modify: `docs/superpowers/plans/2026-06-24-responses-continuation-phase-7-classifier.md`
 
-- [ ] **Step 1: Add proof artifact**
+- [x] **Step 1: Add proof artifact**
 
 Record Phase 0B dependency, RED, GREEN, `git diff --check`, and remaining Phase 8 retry work.
 
-- [ ] **Step 2: Run verification**
+- [x] **Step 2: Run verification**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_ClassifyResponsesError|TestAdapter_Stream_Continuation.*Fallback|TestAdapter_Stream_ModelEndpointContinuationFallback|TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_Stream_Records.*FallbackAttempts' -count=1 -v
 git diff --check
 ```
 
-- [ ] **Step 3: Commit proof**
+- [x] **Step 3: Commit proof**
 
 ```sh
 git add docs/superpowers/plans/2026-06-24-responses-continuation-phase-7-classifier.md docs/superpowers/proofs/2026-06-24-responses-continuation-phase-7.md
