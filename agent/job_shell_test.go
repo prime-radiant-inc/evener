@@ -38,7 +38,10 @@ func waitForShellDone(t *testing.T, jm *jobManager, jobID string) {
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
+		// Generous backstop: a finishing job returns immediately, so this only
+		// bounds a genuine hang. Sized so a delegate's real work isn't reported
+		// as a false hang when CPU-starved under -race on a slow/few-core box.
 		t.Fatalf("job %s did not finish", jobID)
 	}
 }

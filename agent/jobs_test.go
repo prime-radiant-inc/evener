@@ -16,10 +16,13 @@ import (
 )
 
 // Shrink the graceful-shutdown grace so tests whose jobs never naturally
-// terminate don't each pay the full production window at teardown. Still leaves
-// ample margin to exercise the timeout-and-abandon path under -race.
+// terminate don't each pay the full production window at teardown. The value is
+// build-tagged (see closegrace_{race,norace}_test.go): a generous window under
+// -race, where finalization is ~10x slower and a too-short grace would abandon a
+// still-finalizing job before its done channel closes (a false timeout on slow
+// CI), and a small one otherwise where teardown speed matters.
 func init() {
-	defaultCloseGrace = 200 * time.Millisecond
+	defaultCloseGrace = testCloseGrace
 }
 
 func newTestJM(t *testing.T) *jobManager {

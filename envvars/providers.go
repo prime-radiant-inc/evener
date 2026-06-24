@@ -144,10 +144,10 @@ var providers = []ProviderEnv{
 		RequiresBaseURL: true,
 	},
 	{
-		Name:        "ollama",
-		AuthModes:   []string{"none"},
-		APIKeyVars:  []Var{OllamaAPIKey},
-		BaseURLVars: []Var{OllamaBaseURL, OllamaHost},
-		DefaultBaseURL:  "http://localhost:11434/v1",
+		Name:           "ollama",
+		AuthModes:      []string{"none"},
+		APIKeyVars:     []Var{OllamaAPIKey},
+		BaseURLVars:    []Var{OllamaBaseURL, OllamaHost},
+		DefaultBaseURL: "http://localhost:11434/v1",
 	},
 }

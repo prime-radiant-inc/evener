@@ -84,9 +84,11 @@ test:
 test-short:
 	@MODULES="$(GO_MODULES)" scripts/run-module-tests.sh -short -count=1
 
-# The permanent -race gate (CI), across every module.
+# The permanent -race gate (CI), across every module. AGENT_PARALLEL= leaves the
+# agent wave at GOMAXPROCS: under -race (~10x slower) extra parallelism just
+# oversubscribes few-core CI and starves real per-test work past its timeouts.
 test-race:
-	@MODULES="$(GO_MODULES)" scripts/run-module-tests.sh -race -short -count=1
+	@MODULES="$(GO_MODULES)" AGENT_PARALLEL= scripts/run-module-tests.sh -race -short -count=1
 
 vet:
 	@for m in $(GO_MODULES); do (cd $$m && go vet ./...) || exit 1; done

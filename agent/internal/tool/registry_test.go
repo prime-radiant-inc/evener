@@ -620,6 +620,54 @@ func TestToolRegistry_Register_WarnsOnEmptyDescription(t *testing.T) {
 	}
 }
 
+func TestCompileSchemaCachedAcrossCalls(t *testing.T) {
+	params := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name": map[string]any{"type": "string"},
+		},
+		"required": []any{"name"},
+	}
+	s1, err := compileSchema(params)
+	if err != nil {
+		t.Fatalf("compile first: %v", err)
+	}
+	// A distinct map with identical content must reuse the cached compilation
+	// (same JSON key), so the returned schema is the very same instance.
+	s2, err := compileSchema(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name": map[string]any{"type": "string"},
+		},
+		"required": []any{"name"},
+	})
+	if err != nil {
+		t.Fatalf("compile second: %v", err)
+	}
+	if s1 != s2 {
+		t.Fatal("identical params should return the cached compiled schema")
+	}
+	// The cached schema validates exactly as a freshly compiled one would.
+	if err := s1.Validate(map[string]any{"name": "ok"}); err != nil {
+		t.Fatalf("valid input rejected: %v", err)
+	}
+	if err := s1.Validate(map[string]any{}); err == nil {
+		t.Fatal("input missing the required field should fail validation")
+	}
+
+	// A different schema must not collide with the cached one.
+	other, err := compileSchema(map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"age": map[string]any{"type": "integer"}},
+	})
+	if err != nil {
+		t.Fatalf("compile other: %v", err)
+	}
+	if other == s1 {
+		t.Fatal("distinct params must not share a cached schema")
+	}
+}
+
 func TestToolRegistry_Register_RecoversPanicInSchemaCompilation(t *testing.T) {
 	// compileSchema wraps the jsonschema library which has multiple panic()
 	// sites. A recover() in compileSchema must convert panics to errors so

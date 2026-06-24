@@ -13,6 +13,15 @@ import (
 // timeout, resolves symlinks, and sanity-checks that the reported root is a
 // prefix of cwd.
 func GitRootOrEmpty(env ExecutionEnvironment, cwd string) string {
+	// Memoize per environment: a session resolves the git root several times at
+	// init, all on the same env and cwd, so fork `git rev-parse` once.
+	if local, ok := env.(*LocalExecutionEnvironment); ok && local.gitRoots != nil {
+		return local.gitRoots.lookup(cwd, func() string { return gitRootUncached(env, cwd) })
+	}
+	return gitRootUncached(env, cwd)
+}
+
+func gitRootUncached(env ExecutionEnvironment, cwd string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 

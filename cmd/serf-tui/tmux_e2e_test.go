@@ -923,7 +923,7 @@ func requireTmux(t *testing.T) {
 var (
 	tuiBinaryOnce sync.Once
 	tuiBinaryPath string
-	tuiBinaryErr  error
+	errTUIBinary  error
 )
 
 // buildTUIBinary compiles the serf-tui binary once per test process and returns
@@ -935,25 +935,25 @@ func buildTUIBinary(t *testing.T) string {
 	tuiBinaryOnce.Do(func() {
 		repoRoot, err := filepath.Abs("../..")
 		if err != nil {
-			tuiBinaryErr = err
+			errTUIBinary = err
 			return
 		}
 		dir, err := os.MkdirTemp("", "serf-tui-e2e-bin-")
 		if err != nil {
-			tuiBinaryErr = err
+			errTUIBinary = err
 			return
 		}
 		bin := filepath.Join(dir, "serf-tui")
 		cmd := exec.Command("go", "build", "-o", bin, "./cmd/serf-tui")
 		cmd.Dir = repoRoot
 		if out, err := cmd.CombinedOutput(); err != nil {
-			tuiBinaryErr = fmt.Errorf("build serf-tui: %v\n%s", err, out)
+			errTUIBinary = fmt.Errorf("build serf-tui: %w\n%s", err, out)
 			return
 		}
 		tuiBinaryPath = bin
 	})
-	if tuiBinaryErr != nil {
-		t.Fatalf("build serf-tui: %v", tuiBinaryErr)
+	if errTUIBinary != nil {
+		t.Fatalf("build serf-tui: %v", errTUIBinary)
 	}
 	return tuiBinaryPath
 }

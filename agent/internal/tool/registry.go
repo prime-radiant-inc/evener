@@ -616,6 +616,17 @@ func defaultToolLimit(toolName string) schema.ToolOutputLimit {
 	}
 }
 
+// compiledSchemaCache memoizes compiled schemas across registries. Tool
+// parameter schemas are static (built-in tools are fixed; MCP/plugin tools are
+// fixed per server), so compilation — ~2.4ms of every session's registry build —
+// is pure repeated work. The compiled *jsonschema.Schema is read-only and safe
+// for concurrent validation, so it is shared. Keyed by the marshaled params, so
+// distinct schemas never collide; bounded by the number of distinct schemas.
+var (
+	compiledSchemaMu    sync.Mutex
+	compiledSchemaCache = map[string]*jsonschema.Schema{}
+)
+
 func compileSchema(params map[string]any) (schema *jsonschema.Schema, err error) {
 	// The jsonschema library has multiple panic() sites for malformed inputs.
 	// Recover so a bad MCP/plugin tool schema doesn't crash the process.
@@ -640,6 +651,14 @@ func compileSchema(params map[string]any) (schema *jsonschema.Schema, err error)
 	if err != nil {
 		return nil, err
 	}
+	key := string(b)
+	compiledSchemaMu.Lock()
+	if cached, ok := compiledSchemaCache[key]; ok {
+		compiledSchemaMu.Unlock()
+		return cached, nil
+	}
+	compiledSchemaMu.Unlock()
+
 	c := jsonschema.NewCompiler()
 	// Use an absolute URI so the library never calls filepath.Abs → os.Getwd().
 	// A relative URL like "schema.json" triggers os.Getwd() which can panic
@@ -648,7 +667,14 @@ func compileSchema(params map[string]any) (schema *jsonschema.Schema, err error)
 	if err := c.AddResource(schemaURI, bytes.NewReader(b)); err != nil {
 		return nil, err
 	}
-	return c.Compile(schemaURI)
+	compiled, err := c.Compile(schemaURI)
+	if err != nil {
+		return nil, err
+	}
+	compiledSchemaMu.Lock()
+	compiledSchemaCache[key] = compiled
+	compiledSchemaMu.Unlock()
+	return compiled, nil
 }
 
 func toolValueToString(v any) string {
