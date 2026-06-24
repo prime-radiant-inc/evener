@@ -43,7 +43,6 @@ func TestBuildAPILogRequest_IncludesContinuationMetadata(t *testing.T) {
 		Messages:    []Message{User("hi")},
 		HistoryMode: HistoryModeResponsesDelta,
 		Continuation: &ContinuationMetadata{
-			AttemptIndex:            1,
 			PreviousResponseIDHash:  "cont-handle-v1:response_id:abc",
 			ConversationIDHash:      "cont-handle-v1:conversation_id:def",
 			AnchorTurnIndex:         3,
@@ -61,8 +60,7 @@ func TestBuildAPILogRequest_IncludesContinuationMetadata(t *testing.T) {
 	if got.HistoryMode != HistoryModeResponsesDelta {
 		t.Fatalf("HistoryMode = %q", got.HistoryMode)
 	}
-	if got.AttemptIndex != 1 ||
-		got.PreviousResponseIDHash != "cont-handle-v1:response_id:abc" ||
+	if got.PreviousResponseIDHash != "cont-handle-v1:response_id:abc" ||
 		got.ConversationIDHash != "cont-handle-v1:conversation_id:def" ||
 		got.AnchorTurnIndex != 3 ||
 		got.DeltaTurnCount != 1 ||

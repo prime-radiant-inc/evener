@@ -45,7 +45,6 @@ func singleAttemptRequestMetadata(req llm.Request) (llm.Request, ModelAttemptMet
 		FinalAttemptCount: &finalCount,
 	}
 	if req.Continuation != nil {
-		req.Continuation.AttemptIndex = meta.AttemptIndex
 		meta.EndpointFamily = req.Continuation.EndpointFamily
 		meta.RequestFingerprint = req.Continuation.RequestFingerprint
 		meta.StorageScopeFingerprint = req.Continuation.StorageScopeFingerprint

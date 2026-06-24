@@ -1842,7 +1842,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	}
 }
 
-func TestSingleAttemptRequestMetadataStampsContinuationAttemptIndex(t *testing.T) {
+func TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest(t *testing.T) {
 	req, attempt := singleAttemptRequestMetadata(llm.Request{
 		Model:       "gpt-5.2",
 		Provider:    "openai",
@@ -1855,11 +1855,11 @@ func TestSingleAttemptRequestMetadataStampsContinuationAttemptIndex(t *testing.T
 	if attempt.AttemptIndex != 1 || attempt.AttemptCount != 1 {
 		t.Fatalf("attempt counters = %+v", attempt)
 	}
-	if req.Continuation == nil || req.Continuation.AttemptIndex != 1 {
+	if req.Continuation == nil || req.Continuation.PreviousResponseIDHash != "cont-handle-v1:response_id:abc" {
 		t.Fatalf("request continuation = %+v", req.Continuation)
 	}
-	if got := llm.BuildAPILogRequest(req); got.AttemptIndex != 1 {
-		t.Fatalf("APILogRequest.AttemptIndex = %d", got.AttemptIndex)
+	if got := llm.BuildAPILogRequest(req); got.PreviousResponseIDHash != "cont-handle-v1:response_id:abc" {
+		t.Fatalf("APILogRequest.PreviousResponseIDHash = %q", got.PreviousResponseIDHash)
 	}
 }
 

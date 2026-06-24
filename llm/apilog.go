@@ -74,7 +74,6 @@ type APILogRequest struct {
 	Tools                   []ToolDefinition `json:"tools,omitempty"`
 	ReasoningEffort         string           `json:"reasoning_effort,omitempty"`
 	HistoryMode             HistoryMode      `json:"history_mode,omitempty"`
-	AttemptIndex            int              `json:"attempt_index,omitempty"`
 	PreviousResponseIDHash  string           `json:"previous_response_id_hash,omitempty"`
 	ConversationIDHash      string           `json:"conversation_id_hash,omitempty"`
 	AnchorTurnIndex         int              `json:"anchor_turn_index,omitempty"`
@@ -369,7 +368,6 @@ func BuildAPILogRequest(req Request) APILogRequest {
 		lr.Tools = append([]ToolDefinition(nil), req.Tools...)
 	}
 	if req.Continuation != nil {
-		lr.AttemptIndex = req.Continuation.AttemptIndex
 		lr.PreviousResponseIDHash = req.Continuation.PreviousResponseIDHash
 		lr.ConversationIDHash = req.Continuation.ConversationIDHash
 		lr.AnchorTurnIndex = req.Continuation.AnchorTurnIndex
