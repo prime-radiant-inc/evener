@@ -4472,7 +4472,7 @@ func TestAdapter_PlanResponsesContinuation_FingerprintExcludesContinuationHandle
 		t.Fatalf("PlanResponsesContinuation: %v", err)
 	}
 	if plan.StorageScopeFingerprint != "" || plan.StoragePolicyLabel != "" || plan.ContinuationStorageAllowed {
-		t.Fatalf("storage scope fields populated before Phase 4A: %+v", plan)
+		t.Fatalf("storage scope fields populated before Phase 4A storage-scope task: %+v", plan)
 	}
 }
 
