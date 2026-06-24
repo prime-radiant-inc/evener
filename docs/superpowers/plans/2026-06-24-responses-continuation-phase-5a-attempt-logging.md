@@ -112,7 +112,7 @@ GOCACHE=/tmp/serf-gocache go test ./llm ./agent -run 'TestAPILogEntry_AttemptFie
 
 Expected: pass.
 
-- [ ] **Step 5: Commit implementation**
+- [x] **Step 5: Commit implementation**
 
 ```sh
 git status --short
@@ -128,18 +128,18 @@ git commit -m "feat(agent): add responses continuation attempt group logging"
 - Create: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-5a.md`
 - Modify: `docs/superpowers/plans/2026-06-24-responses-continuation-phase-5a-attempt-logging.md`
 
-- [ ] **Step 1: Add proof artifact**
+- [x] **Step 1: Add proof artifact**
 
 Record the focused test command, `git diff --check`, and the Phase 5A boundaries.
 
-- [ ] **Step 2: Run verification**
+- [x] **Step 2: Run verification**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm ./agent -run 'TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILogger.*Attempt|TestTranscriptContinuationMetadataRoundTrips|TestSessionRecordsAssistantResponseMetadata|TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest' -count=1 -v
 git diff --check
 ```
 
-- [ ] **Step 3: Commit proof**
+- [x] **Step 3: Commit proof**
 
 ```sh
 git add docs/superpowers/plans/2026-06-24-responses-continuation-phase-5a-attempt-logging.md docs/superpowers/proofs/2026-06-24-responses-continuation-phase-5a.md
