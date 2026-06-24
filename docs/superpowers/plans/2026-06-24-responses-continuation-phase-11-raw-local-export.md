@@ -84,7 +84,7 @@ git commit -m "feat(agent): redact ATIF provider handles by default"
 - Modify: `agent/internal/atif/atif.go`
 - Test: `agent/internal/atif/atif_test.go`
 
-- [ ] **Step 1: Write failing raw-local test**
+- [x] **Step 1: Write failing raw-local test**
 
 Add a test calling:
 ```go
@@ -97,7 +97,7 @@ step.Extra["response_id"] == "resp_raw_phase11"
 step.Extra["response_id_hash"] == "cont-handle-v1:response_id:phase11"
 ```
 
-- [ ] **Step 2: Run red test**
+- [x] **Step 2: Run red test**
 
 Run:
 ```bash
@@ -105,7 +105,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent/internal/atif -run 'TestConvertToATIF_
 ```
 Expected: FAIL until raw-local mode is wired through assistant conversion.
 
-- [ ] **Step 3: Implement raw-local response IDs**
+- [x] **Step 3: Implement raw-local response IDs**
 
 Thread `Options` through the assistant conversion path:
 ```go
@@ -117,7 +117,7 @@ Only emit raw `response_id` when:
 opts.ProviderHandles == ProviderHandleModeRawLocal && turn.ResponseID != ""
 ```
 
-- [ ] **Step 4: Run passing test**
+- [x] **Step 4: Run passing test**
 
 Run:
 ```bash
@@ -125,7 +125,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent/internal/atif -run 'TestConvertToATIF_
 ```
 Expected: PASS for both redacted and raw-local tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git status --short

@@ -1198,6 +1198,31 @@ func TestConvertToATIF_ResponsesProviderHandlesRedacted(t *testing.T) {
 	}
 }
 
+func TestConvertToATIF_ResponsesProviderHandlesRawLocal(t *testing.T) {
+	header := transcript.Header{SessionID: "sess-responses-raw-local", Model: "gpt-5.3-codex"}
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.Turn{
+			Kind:           schema.TurnAssistant,
+			Message:        llm.Assistant("done"),
+			ResponseID:     "resp_raw_phase11",
+			ResponseIDHash: "cont-handle-v1:response_id:phase11",
+			Timestamp:      time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC),
+		}},
+	}
+
+	traj := ConvertWithOptions(header, entries, Options{ProviderHandles: ProviderHandleModeRawLocal})
+	if len(traj.Steps) != 1 {
+		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
+	}
+	extra := traj.Steps[0].Extra
+	if got := extra["response_id"]; got != "resp_raw_phase11" {
+		t.Fatalf("extra[response_id] = %#v, want raw response id", got)
+	}
+	if got := extra["response_id_hash"]; got != "cont-handle-v1:response_id:phase11" {
+		t.Fatalf("extra[response_id_hash] = %#v, want hash", got)
+	}
+}
+
 func TestConvertToATIF_TurnSystem(t *testing.T) {
 	header := transcript.Header{SessionID: "sess-sys", Model: "gpt-5.3-codex"}
 	entries := []transcript.Entry{
