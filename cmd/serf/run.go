@@ -51,11 +51,12 @@ type runConfig struct {
 	stdout             io.Writer
 	stderr             io.Writer
 
-	skillsDirs         []string // extra skill directories
-	mcpServers         []string // --mcp inline specs
-	mcpConfigs         []string // --mcp-config file paths
-	pluginDirs         []string // --plugin-dir directories
-	systemPromptAsUser bool     // --system-prompt-as-user
+	skillsDirs                  []string // extra skill directories
+	mcpServers                  []string // --mcp inline specs
+	mcpConfigs                  []string // --mcp-config file paths
+	pluginDirs                  []string // --plugin-dir directories
+	systemPromptAsUser          bool     // --system-prompt-as-user
+	openAIResponsesContinuation string   // --openai-responses-continuation
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -167,23 +168,24 @@ func run(ctx context.Context, cfg runConfig) error {
 
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
-		MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(cfg.maxRounds),
-		ShareTasksWithChildren: cfg.shareTaskStore,
-		ResultToolName:         cfg.resultToolName,
-		StateDir:               stateDir,
-		SystemPromptFile:       cfg.systemPrompt,
-		SystemPromptAppend:     cfg.systemPromptAppend,
-		NoProjectPrompts:       cfg.noProjectPrompts,
-		AgentName:              cfg.agentName,
-		SkillsDirs:             cfg.skillsDirs,
-		MCPConfigFiles:         cfg.mcpConfigs,
-		MCPInline:              cfg.mcpServers,
-		PluginDirs:             cfg.pluginDirs,
-		ContextStrategy:        cfg.contextStrategy,
-		ExportATIFPath:         cfg.exportATIF,
-		NonInteractive:         true,
-		SystemPromptAsUser:     cfg.systemPromptAsUser,
-		ResolveProfile:         cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
+		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(cfg.maxRounds),
+		ShareTasksWithChildren:      cfg.shareTaskStore,
+		ResultToolName:              cfg.resultToolName,
+		StateDir:                    stateDir,
+		SystemPromptFile:            cfg.systemPrompt,
+		SystemPromptAppend:          cfg.systemPromptAppend,
+		NoProjectPrompts:            cfg.noProjectPrompts,
+		AgentName:                   cfg.agentName,
+		SkillsDirs:                  cfg.skillsDirs,
+		MCPConfigFiles:              cfg.mcpConfigs,
+		MCPInline:                   cfg.mcpServers,
+		PluginDirs:                  cfg.pluginDirs,
+		ContextStrategy:             cfg.contextStrategy,
+		ExportATIFPath:              cfg.exportATIF,
+		NonInteractive:              true,
+		SystemPromptAsUser:          cfg.systemPromptAsUser,
+		OpenAIResponsesContinuation: strings.TrimSpace(cfg.openAIResponsesContinuation),
+		ResolveProfile:              cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
 	}
 	if cfg.maxSubagentDepth >= 0 {
 		baseSessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth

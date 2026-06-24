@@ -23,34 +23,35 @@ import (
 type stringSliceFlag = cmdutil.StringSliceFlag
 
 type runCLIFlags struct {
-	model              *string
-	fastCheapModel     *string
-	workDir            *string
-	systemPrompt       *string
-	stateDir           *string
-	resume             *string
-	resumeWith         *string
-	resumeLast         *bool
-	listSessions       *bool
-	maxRounds          *int
-	maxSubagentDepth   *int
-	shareTaskStore     *bool
-	resultToolName     *string
-	reasoningEffort    *string
-	exportATIF         *string
-	contextStrategy    *string
-	outputSchema       *string
-	verbose            *bool
-	noProjectPrompts   *bool
-	agentName          *string
-	skillsDirs         stringSliceFlag
-	mcpServers         stringSliceFlag
-	mcpConfigs         stringSliceFlag
-	pluginDirs         stringSliceFlag
-	systemPromptAsUser *bool
-	cpuProfile         *string
-	traceFile          *string
-	systemPromptAppend stringSliceFlag
+	model                       *string
+	fastCheapModel              *string
+	workDir                     *string
+	systemPrompt                *string
+	stateDir                    *string
+	resume                      *string
+	resumeWith                  *string
+	resumeLast                  *bool
+	listSessions                *bool
+	maxRounds                   *int
+	maxSubagentDepth            *int
+	shareTaskStore              *bool
+	resultToolName              *string
+	reasoningEffort             *string
+	exportATIF                  *string
+	contextStrategy             *string
+	outputSchema                *string
+	verbose                     *bool
+	noProjectPrompts            *bool
+	agentName                   *string
+	skillsDirs                  stringSliceFlag
+	mcpServers                  stringSliceFlag
+	mcpConfigs                  stringSliceFlag
+	pluginDirs                  stringSliceFlag
+	systemPromptAsUser          *bool
+	openAIResponsesContinuation *string
+	cpuProfile                  *string
+	traceFile                   *string
+	systemPromptAppend          stringSliceFlag
 }
 
 func main() {
@@ -117,35 +118,36 @@ func main() {
 	defer cancel()
 
 	err := run(ctx, runConfig{
-		prompt:             prompt,
-		model:              *flags.model,
-		fastCheapModel:     *flags.fastCheapModel,
-		workDir:            *flags.workDir,
-		stateDir:           *flags.stateDir,
-		systemPrompt:       *flags.systemPrompt,
-		systemPromptAppend: []string(flags.systemPromptAppend),
-		maxRounds:          *flags.maxRounds,
-		maxSubagentDepth:   *flags.maxSubagentDepth,
-		shareTaskStore:     *flags.shareTaskStore,
-		resultToolName:     *flags.resultToolName,
-		reasoningEffort:    *flags.reasoningEffort,
-		contextStrategy:    *flags.contextStrategy,
-		exportATIF:         *flags.exportATIF,
-		outputSchema:       *flags.outputSchema,
-		verbose:            *flags.verbose,
-		noProjectPrompts:   *flags.noProjectPrompts,
-		agentName:          *flags.agentName,
-		skillsDirs:         []string(flags.skillsDirs),
-		mcpServers:         []string(flags.mcpServers),
-		mcpConfigs:         []string(flags.mcpConfigs),
-		pluginDirs:         []string(flags.pluginDirs),
-		systemPromptAsUser: *flags.systemPromptAsUser,
-		stdout:             os.Stdout,
-		stderr:             os.Stderr,
-		resume:             *flags.resume,
-		resumeWith:         *flags.resumeWith,
-		resumeLast:         *flags.resumeLast,
-		listSessions:       *flags.listSessions,
+		prompt:                      prompt,
+		model:                       *flags.model,
+		fastCheapModel:              *flags.fastCheapModel,
+		workDir:                     *flags.workDir,
+		stateDir:                    *flags.stateDir,
+		systemPrompt:                *flags.systemPrompt,
+		systemPromptAppend:          []string(flags.systemPromptAppend),
+		maxRounds:                   *flags.maxRounds,
+		maxSubagentDepth:            *flags.maxSubagentDepth,
+		shareTaskStore:              *flags.shareTaskStore,
+		resultToolName:              *flags.resultToolName,
+		reasoningEffort:             *flags.reasoningEffort,
+		contextStrategy:             *flags.contextStrategy,
+		exportATIF:                  *flags.exportATIF,
+		outputSchema:                *flags.outputSchema,
+		verbose:                     *flags.verbose,
+		noProjectPrompts:            *flags.noProjectPrompts,
+		agentName:                   *flags.agentName,
+		skillsDirs:                  []string(flags.skillsDirs),
+		mcpServers:                  []string(flags.mcpServers),
+		mcpConfigs:                  []string(flags.mcpConfigs),
+		pluginDirs:                  []string(flags.pluginDirs),
+		systemPromptAsUser:          *flags.systemPromptAsUser,
+		openAIResponsesContinuation: *flags.openAIResponsesContinuation,
+		stdout:                      os.Stdout,
+		stderr:                      os.Stderr,
+		resume:                      *flags.resume,
+		resumeWith:                  *flags.resumeWith,
+		resumeLast:                  *flags.resumeLast,
+		listSessions:                *flags.listSessions,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serf: %v\n", err)
@@ -184,6 +186,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	fs.Var(&flags.mcpConfigs, "mcp-config", "path to .mcp.json `file` (repeatable)")
 	fs.Var(&flags.pluginDirs, "plugin-dir", "plugin `directory` (repeatable)")
 	flags.systemPromptAsUser = fs.Bool("system-prompt-as-user", false, "deliver system prompt as first user message instead of system instructions")
+	flags.openAIResponsesContinuation = fs.String("openai-responses-continuation", "", "OpenAI Responses continuation `mode`: off|auto (default: off)")
 	flags.cpuProfile = fs.String("cpu-profile", "", "write CPU profile to this `file` path")
 	flags.traceFile = fs.String("trace", "", "write execution trace to this `file` path")
 	fs.Var(&flags.systemPromptAppend, "system-prompt-append", "path to append to system prompt `file` (repeatable)")

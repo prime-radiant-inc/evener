@@ -96,6 +96,7 @@ func runServe(args []string) error {
 	fs.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
 	var modelFallbacks cmdutil.StringSliceFlag
 	fs.Var(&modelFallbacks, "model-fallback", "fallback model (provider/model) tried on permanent provider errors (repeatable)")
+	openAIResponsesContinuation := fs.String("openai-responses-continuation", "", "OpenAI Responses continuation mode: off|auto (default: off)")
 	cpuProfile := fs.String("cpu-profile", "", "write CPU profile to file")
 	traceFile := fs.String("trace", "", "write execution trace to file")
 
@@ -196,24 +197,25 @@ func runServe(args []string) error {
 	}
 	env := execenv.NewLocalExecutionEnvironment(wd)
 	sessionCfg := agent.SessionConfig{
-		MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(*maxRounds),
-		ShareTasksWithChildren: *shareTaskStore,
-		ResultToolName:         *resultToolName,
-		StateDir:               sd,
-		SystemPromptFile:       *systemPrompt,
-		SystemPromptAppend:     []string(systemPromptAppend),
-		NoProjectPrompts:       *noProjectPrompts,
-		AgentName:              *agentName,
-		SkillsDirs:             []string(skillsDirs),
-		MCPConfigFiles:         []string(mcpConfigs),
-		MCPInline:              []string(mcpServers),
-		PluginDirs:             []string(pluginDirs),
-		ContextStrategy:        *contextStrategy,
-		ExportATIFPath:         *exportATIF,
-		NonInteractive:         *nonInteractive,
-		SystemPromptAsUser:     *systemPromptAsUser,
-		ModelFallbacks:         []string(modelFallbacks),
-		ResolveProfile:         cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
+		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(*maxRounds),
+		ShareTasksWithChildren:      *shareTaskStore,
+		ResultToolName:              *resultToolName,
+		StateDir:                    sd,
+		SystemPromptFile:            *systemPrompt,
+		SystemPromptAppend:          []string(systemPromptAppend),
+		NoProjectPrompts:            *noProjectPrompts,
+		AgentName:                   *agentName,
+		SkillsDirs:                  []string(skillsDirs),
+		MCPConfigFiles:              []string(mcpConfigs),
+		MCPInline:                   []string(mcpServers),
+		PluginDirs:                  []string(pluginDirs),
+		ContextStrategy:             *contextStrategy,
+		ExportATIFPath:              *exportATIF,
+		NonInteractive:              *nonInteractive,
+		SystemPromptAsUser:          *systemPromptAsUser,
+		ModelFallbacks:              []string(modelFallbacks),
+		OpenAIResponsesContinuation: strings.TrimSpace(*openAIResponsesContinuation),
+		ResolveProfile:              cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
 	}
 	if *maxSubagentDepth >= 0 {
 		sessionCfg.MaxSubagentDepth = *maxSubagentDepth
