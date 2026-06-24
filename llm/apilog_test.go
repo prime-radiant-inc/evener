@@ -43,7 +43,6 @@ func TestBuildAPILogRequest_IncludesContinuationMetadata(t *testing.T) {
 		Messages:    []Message{User("hi")},
 		HistoryMode: HistoryModeResponsesDelta,
 		Continuation: &ContinuationMetadata{
-			AttemptIndex:            1,
 			PreviousResponseIDHash:  "cont-handle-v1:response_id:abc",
 			ConversationIDHash:      "cont-handle-v1:conversation_id:def",
 			AnchorTurnIndex:         3,
@@ -87,7 +86,6 @@ func TestAPILogEntry_AttemptFieldsRoundTrip(t *testing.T) {
 	entry := APILogEntry{
 		SessionID:         "sess",
 		Round:             2,
-		AttemptGroupID:    "group-1",
 		AttemptIndex:      1,
 		AttemptCount:      1,
 		FinalAttemptCount: &finalCount,
@@ -111,7 +109,7 @@ func TestAPILogEntry_AttemptFieldsRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.AttemptGroupID != "group-1" || got.AttemptIndex != 1 || got.AttemptCount != 1 {
+	if got.AttemptIndex != 1 || got.AttemptCount != 1 {
 		t.Fatalf("attempt fields = %+v", got)
 	}
 	if got.FinalAttemptCount == nil || *got.FinalAttemptCount != 1 {

@@ -21,7 +21,6 @@ type apiLogKey struct{}
 type APILogContext struct {
 	SessionID         string
 	Round             int
-	AttemptGroupID    string
 	AttemptIndex      int
 	AttemptCount      int
 	FinalAttemptCount *int
@@ -34,6 +33,14 @@ func WithAPILogContext(ctx context.Context, sessionID string, round int) context
 }
 
 func WithAPILogAttemptContext(ctx context.Context, meta APILogContext) context.Context {
+	if existing, ok := getAPILogContext(ctx); ok {
+		if meta.SessionID == "" {
+			meta.SessionID = existing.SessionID
+		}
+		if meta.Round == 0 {
+			meta.Round = existing.Round
+		}
+	}
 	return context.WithValue(ctx, apiLogKey{}, meta)
 }
 
@@ -47,7 +54,6 @@ type APILogEntry struct {
 	Timestamp         string          `json:"ts"`
 	SessionID         string          `json:"session_id,omitempty"`
 	Round             int             `json:"round,omitempty"`
-	AttemptGroupID    string          `json:"attempt_group_id,omitempty"`
 	AttemptIndex      int             `json:"attempt_index,omitempty"`
 	AttemptCount      int             `json:"attempt_count,omitempty"`
 	FinalAttemptCount *int            `json:"final_attempt_count,omitempty"`
@@ -290,7 +296,6 @@ func buildAPILogEntry(ctx context.Context, req Request, start time.Time) APILogE
 	if lc, ok := getAPILogContext(ctx); ok {
 		entry.SessionID = lc.SessionID
 		entry.Round = lc.Round
-		entry.AttemptGroupID = lc.AttemptGroupID
 		entry.AttemptIndex = lc.AttemptIndex
 		entry.AttemptCount = lc.AttemptCount
 		entry.FinalAttemptCount = lc.FinalAttemptCount

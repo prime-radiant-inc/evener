@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add the optional transcript/API/control-plane schema and the single-attempt metadata thread required before OpenAI Responses continuation can persist anchors.
+**Goal:** Add optional continuation schema and single-attempt metadata plumbing without enabling Responses continuation at runtime.
 
-**Architecture:** This phase is schema-only plus single-attempt metadata plumbing. It must not select `responses_delta`, must not enable either endpoint-family registry entry, and must not generate HMAC hashes yet. New fields are optional, default-empty, and old transcripts remain readable and non-anchorable.
+**Architecture:** This phase is schema and metadata only. It adds typed `history_mode`, redacted provider-handle fields, and the single-attempt metadata path used by later retry/fallback phases, but it must not select `responses_delta`, enable any endpoint-family registry entry, generate HMACs, or add attempt-group logging. `attempt_group_id` and adapter fallback attempt records remain Phase 5A work.
 
-**Tech Stack:** Go structs/tests in `llm`, `agent/schema`, `agent/transcript`, and `agent`; deterministic fake-session/provider tests only.
+**Tech Stack:** Go structs and deterministic tests in `llm`, `agent/schema`, `agent/transcript`, and `agent`.
 
 ---
 
@@ -15,32 +15,32 @@
 - Modify `llm/responses_continuation.go`
   - Add `ContinuationMetadata`.
 - Modify `llm/types.go`
-  - Add `HistoryMode`, `Continuation`, and `FullHistoryFallbackMessages` request control-plane fields.
+  - Add out-of-band request control-plane fields: `HistoryMode`, `Continuation`, `FullHistoryFallbackMessages`.
 - Modify `llm/apilog.go`
-  - Add optional attempt/history/provider-handle fields to `APILogContext`, `APILogEntry`, `APILogRequest`, and `APILogResponse`.
+  - Add optional single-attempt/history/provider-handle fields to `APILogContext`, `APILogEntry`, `APILogRequest`, and `APILogResponse`.
   - Add `WithAPILogAttemptContext`.
 - Modify `llm/apilog_test.go`
-  - Add schema serialization tests for new optional fields.
+  - Add serialization/projection tests for continuation metadata.
 - Modify `agent/schema/turn.go`
   - Add optional assistant response metadata fields.
 - Modify `agent/transcript/transcript.go`
-  - Add optional attempt/history/provider-handle fields to transcript `APICall`.
+  - Add optional single-attempt/history/provider-handle fields to transcript `APICall`.
 - Modify `agent/transcript_test.go`
-  - Add round-trip tests for optional turn and api_call metadata.
+  - Add round-trip tests for optional turn and `api_call` metadata.
 - Modify `agent/session_model_call.go`
   - Add `ModelAttemptMetadata`.
-  - Create single-attempt metadata for the current no-retry/no-continuation path.
-  - Thread metadata through `logAPICall`.
+  - Stamp the existing no-retry/no-continuation dispatch path as attempt index/count 1.
+  - Thread single-attempt metadata into transcript API-call logging.
 - Modify `agent/session_lifecycle.go`
-  - Thread final attempt metadata into assistant persistence.
+  - Pass final attempt metadata into assistant persistence.
 - Modify `agent/session.go`
-  - Change `appendAssistantTurn` to accept final attempt metadata and persist optional fields from it.
-- Modify/add focused `agent/session_*_test.go`
-  - Prove single-attempt calls stamp `AttemptIndex=1` and assistant turns persist only available metadata.
+  - Change `appendAssistantTurn` to require final attempt metadata and persist optional response metadata.
+- Modify `agent/session_test.go`
+  - Add one focused real-session scripted-provider test proving attempt and assistant metadata are written.
 - Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-1a.md`
   - Record schema compatibility and append-assistant call-site audit.
 
-## Task 1: LLM Control-Plane And API Log Schema
+## Task 1: LLM Control Plane And API Log Schema
 
 **Files:**
 - Modify: `llm/responses_continuation.go`
@@ -60,32 +60,31 @@ func TestBuildAPILogRequest_IncludesContinuationMetadata(t *testing.T) {
 		Messages:    []Message{User("hi")},
 		HistoryMode: HistoryModeResponsesDelta,
 		Continuation: &ContinuationMetadata{
-			AttemptIndex:           1,
-			PreviousResponseIDHash: "cont-handle-v1:response_id:abc",
-			ConversationIDHash:     "cont-handle-v1:conversation_id:def",
-			AnchorTurnIndex:        3,
-			DeltaTurnCount:         1,
-			DeltaTurnKinds:         []string{"TOOL_RESULTS"},
-			EndpointFamily:         string(ResponsesEndpointFamilyOpenAIPublic),
-			RequestFingerprint:     "cont-req-v1:abc",
-			ContextMarker:          "cont-ctx-v1",
-			StoragePolicyLabel:     "public-openai-store",
+			PreviousResponseIDHash:  "cont-handle-v1:response_id:abc",
+			ConversationIDHash:      "cont-handle-v1:conversation_id:def",
+			AnchorTurnIndex:         3,
+			DeltaTurnCount:          1,
+			DeltaTurnKinds:          []string{"TOOL_RESULTS"},
+			EndpointFamily:          string(ResponsesEndpointFamilyOpenAIPublic),
+			RequestFingerprint:      "cont-req-v1:abc",
+			ContextMarker:           "cont-ctx-v1",
+			StoragePolicyLabel:      "public-openai-store",
 			StorageScopeFingerprint: "cont-scope-v1:abc",
 			ChatFallbackHistoryLen:  7,
 		},
 	}
+
 	got := BuildAPILogRequest(req)
+
 	if got.HistoryMode != HistoryModeResponsesDelta {
 		t.Fatalf("HistoryMode = %q", got.HistoryMode)
 	}
-	if got.PreviousResponseIDHash != "cont-handle-v1:response_id:abc" {
-		t.Fatalf("PreviousResponseIDHash = %q", got.PreviousResponseIDHash)
-	}
-	if got.ConversationIDHash != "cont-handle-v1:conversation_id:def" {
-		t.Fatalf("ConversationIDHash = %q", got.ConversationIDHash)
-	}
-	if got.AnchorTurnIndex != 3 || got.DeltaTurnCount != 1 || got.ChatFallbackHistoryLen != 7 {
-		t.Fatalf("continuation counters not copied: %+v", got)
+	if got.PreviousResponseIDHash != "cont-handle-v1:response_id:abc" ||
+		got.ConversationIDHash != "cont-handle-v1:conversation_id:def" ||
+		got.AnchorTurnIndex != 3 ||
+		got.DeltaTurnCount != 1 ||
+		got.ChatFallbackHistoryLen != 7 {
+		t.Fatalf("continuation counters/handles not copied: %+v", got)
 	}
 	if got.EndpointFamily != string(ResponsesEndpointFamilyOpenAIPublic) ||
 		got.RequestFingerprint != "cont-req-v1:abc" ||
@@ -104,7 +103,6 @@ func TestAPILogEntry_AttemptFieldsRoundTrip(t *testing.T) {
 	entry := APILogEntry{
 		SessionID:         "sess",
 		Round:             2,
-		AttemptGroupID:    "group-1",
 		AttemptIndex:      1,
 		AttemptCount:      1,
 		FinalAttemptCount: &finalCount,
@@ -120,6 +118,7 @@ func TestAPILogEntry_AttemptFieldsRoundTrip(t *testing.T) {
 			Model:  "gpt-5.2",
 		},
 	}
+
 	data, err := json.Marshal(entry)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -128,7 +127,8 @@ func TestAPILogEntry_AttemptFieldsRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.AttemptGroupID != "group-1" || got.AttemptIndex != 1 || got.AttemptCount != 1 {
+
+	if got.AttemptIndex != 1 || got.AttemptCount != 1 || got.HistoryMode != HistoryModeFullHistory {
 		t.Fatalf("attempt fields = %+v", got)
 	}
 	if got.FinalAttemptCount == nil || *got.FinalAttemptCount != 1 {
@@ -156,60 +156,63 @@ In `llm/responses_continuation.go`, add:
 
 ```go
 type ContinuationMetadata struct {
-	AttemptIndex             int
-	PreviousResponseIDHash   string
-	ConversationIDHash       string
-	AnchorTurnIndex          int
-	DeltaTurnCount           int
-	DeltaTurnKinds           []string
-	EndpointFamily           string
-	RequestFingerprint       string
-	ContextMarker            string
-	StoragePolicyLabel       string
+	PreviousResponseIDHash  string
+	ConversationIDHash      string
+	AnchorTurnIndex         int
+	DeltaTurnCount          int
+	DeltaTurnKinds          []string
+	EndpointFamily          string
+	RequestFingerprint      string
+	ContextMarker           string
+	StoragePolicyLabel      string
 	StorageScopeFingerprint string
-	ChatFallbackHistoryLen   int
+	ChatFallbackHistoryLen  int
 }
 ```
 
 In `llm/types.go`, add these fields near the end of `Request`, before `AdapterTimeout`:
 
 ```go
-	HistoryMode                 HistoryMode          `json:"-"`
+	HistoryMode                 HistoryMode           `json:"-"`
 	Continuation                *ContinuationMetadata `json:"-"`
-	FullHistoryFallbackMessages []Message            `json:"-"`
+	FullHistoryFallbackMessages []Message             `json:"-"`
 ```
 
-In `llm/apilog.go`:
-
-- Extend `APILogContext`:
+In `llm/apilog.go`, extend `APILogContext`:
 
 ```go
-	AttemptGroupID    string
 	AttemptIndex      int
 	AttemptCount      int
 	FinalAttemptCount *int
 	HistoryMode       HistoryMode
 ```
 
-- Add:
+Add:
 
 ```go
 func WithAPILogAttemptContext(ctx context.Context, meta APILogContext) context.Context {
+	if existing, ok := getAPILogContext(ctx); ok {
+		if meta.SessionID == "" {
+			meta.SessionID = existing.SessionID
+		}
+		if meta.Round == 0 {
+			meta.Round = existing.Round
+		}
+	}
 	return context.WithValue(ctx, apiLogKey{}, meta)
 }
 ```
 
-- Extend `APILogEntry`:
+Extend `APILogEntry`:
 
 ```go
-	AttemptGroupID    string       `json:"attempt_group_id,omitempty"`
-	AttemptIndex      int          `json:"attempt_index,omitempty"`
-	AttemptCount      int          `json:"attempt_count,omitempty"`
-	FinalAttemptCount *int         `json:"final_attempt_count,omitempty"`
-	HistoryMode       HistoryMode  `json:"history_mode,omitempty"`
+	AttemptIndex      int         `json:"attempt_index,omitempty"`
+	AttemptCount      int         `json:"attempt_count,omitempty"`
+	FinalAttemptCount *int        `json:"final_attempt_count,omitempty"`
+	HistoryMode       HistoryMode `json:"history_mode,omitempty"`
 ```
 
-- Extend `APILogRequest`:
+Extend `APILogRequest`:
 
 ```go
 	HistoryMode              HistoryMode `json:"history_mode,omitempty"`
@@ -222,19 +225,21 @@ func WithAPILogAttemptContext(ctx context.Context, meta APILogContext) context.C
 	RequestFingerprint       string      `json:"request_fingerprint,omitempty"`
 	ContextMarker            string      `json:"context_marker,omitempty"`
 	StoragePolicyLabel       string      `json:"storage_policy_label,omitempty"`
-	StorageScopeFingerprint string      `json:"storage_scope_fingerprint,omitempty"`
+	StorageScopeFingerprint  string      `json:"storage_scope_fingerprint,omitempty"`
 	ChatFallbackHistoryLen   int         `json:"chat_fallback_history_len,omitempty"`
 ```
 
-- Extend `APILogResponse`:
+Extend `APILogResponse`:
 
 ```go
 	IDHash string `json:"id_hash,omitempty"`
 ```
 
-- In `buildAPILogEntry`, after the existing session/round assignment, copy attempt fields from `APILogContext` onto `APILogEntry`.
-- In `BuildAPILogRequest`, copy `req.HistoryMode` and, when `req.Continuation != nil`, copy each continuation field into the request log. Copy `DeltaTurnKinds` with `append([]string(nil), ...)`.
-- In `buildLogResponse`, set `IDHash` from `resp.Raw["id_hash"]` only if that value is a string. Phase 1B will provide the real hash source; this phase only makes the field round-trip.
+In `buildAPILogEntry`, copy `AttemptIndex`, `AttemptCount`, `FinalAttemptCount`, and `HistoryMode` from `APILogContext`.
+
+In `BuildAPILogRequest`, copy `req.HistoryMode`. When `req.Continuation != nil`, copy every continuation field into the request log and copy `DeltaTurnKinds` with `append([]string(nil), ...)`.
+
+In `buildLogResponse`, set `IDHash` from `resp.Raw["id_hash"]` only when the value is a string. Phase 1B will provide real hashes; this phase only makes the field round-trip.
 
 - [ ] **Step 4: Run focused tests**
 
@@ -264,9 +269,9 @@ git commit -m "feat(llm): add continuation request and api log schema" -m "Add o
 - Modify: `agent/transcript/transcript.go`
 - Modify: `agent/transcript_test.go`
 
-- [ ] **Step 1: Add failing transcript round-trip tests**
+- [ ] **Step 1: Add failing transcript round-trip test**
 
-Append this test to `agent/transcript_test.go`:
+Append this test to `agent/transcript_test.go` near the existing `APICall` tests:
 
 ```go
 func TestTranscriptContinuationMetadataRoundTrips(t *testing.T) {
@@ -276,6 +281,7 @@ func TestTranscriptContinuationMetadataRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
+
 	finalCount := 1
 	turn := schema.Turn{
 		Kind:                            schema.TurnAssistant,
@@ -296,7 +302,6 @@ func TestTranscriptContinuationMetadataRoundTrips(t *testing.T) {
 	}
 	if err := w.AppendAPICall(transcript.APICall{
 		Round:                  1,
-		AttemptGroupID:         "group-1",
 		AttemptIndex:           1,
 		AttemptCount:           1,
 		FinalAttemptCount:      &finalCount,
@@ -319,6 +324,7 @@ func TestTranscriptContinuationMetadataRoundTrips(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
+
 	data, err := readTranscriptFull(path)
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
@@ -326,15 +332,17 @@ func TestTranscriptContinuationMetadataRoundTrips(t *testing.T) {
 	if len(data.Entries) != 1 || len(data.APICalls) != 1 {
 		t.Fatalf("entries/api_calls = %d/%d", len(data.Entries), len(data.APICalls))
 	}
+
 	gotTurn := data.Entries[0].Turn
 	if gotTurn.ResponseIDHash != "cont-handle-v1:response_id:abc" ||
 		gotTurn.ResponseContextMarker != "cont-ctx-v1" ||
 		gotTurn.ResponseRequestFingerprint != "cont-req-v1:abc" {
 		t.Fatalf("turn metadata = %+v", gotTurn)
 	}
+
 	gotCall := data.APICalls[0]
-	if gotCall.AttemptGroupID != "group-1" ||
-		gotCall.AttemptIndex != 1 ||
+	if gotCall.AttemptIndex != 1 ||
+		gotCall.AttemptCount != 1 ||
 		gotCall.HistoryMode != llm.HistoryModeFullHistory ||
 		gotCall.PreviousResponseIDHash != "cont-handle-v1:previous_response_id:def" ||
 		gotCall.ConversationIDHash != "cont-handle-v1:conversation_id:ghi" {
@@ -374,7 +382,6 @@ In `agent/schema/turn.go`, extend `Turn` after `ResponseID`:
 In `agent/transcript/transcript.go`, extend `APICall` after `Round`:
 
 ```go
-	AttemptGroupID         string          `json:"attempt_group_id,omitempty"`
 	AttemptIndex           int             `json:"attempt_index,omitempty"`
 	AttemptCount           int             `json:"attempt_count,omitempty"`
 	FinalAttemptCount      *int            `json:"final_attempt_count,omitempty"`
@@ -410,44 +417,41 @@ git commit -m "feat(agent): add continuation transcript schema fields" -m "Add o
 - Modify: `agent/session_model_call.go`
 - Modify: `agent/session_lifecycle.go`
 - Modify: `agent/session.go`
-- Modify/add focused `agent/session_*_test.go`
+- Modify: `agent/session_test.go`
 
-- [ ] **Step 1: Add failing session metadata tests**
+- [ ] **Step 1: Add failing session metadata test**
 
-Add a focused test near the existing transcript/API-call session tests:
+Append this test to `agent/session_test.go` near the existing transcript/API-call session tests:
 
 ```go
 func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	dir := t.TempDir()
-	client := llm.NewClient()
-	client.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					ID:       "resp_1",
-					Provider: "openai",
-					Model:    req.Model,
-					Message:  llm.Assistant("ok"),
-					Finish:   llm.FinishReason{Reason: "stop"},
-					Raw:      map[string]any{"endpoint_url": "https://api.openai.com/v1/responses"},
-				}
-			},
+	client := llm.NewClient(streamingAdapter{
+		completeFunc: func(ctx context.Context, req llm.Request) (llm.Response, error) {
+			if req.HistoryMode != llm.HistoryModeFullHistory {
+				t.Fatalf("HistoryMode = %q, want full_history", req.HistoryMode)
+			}
+			return llm.Response{
+				ID:       "resp_1",
+				Provider: "openai",
+				Model:    req.Model,
+				Message:  llm.Assistant("ok"),
+				Finish:   llm.FinishReason{Reason: "stop"},
+				Raw:      map[string]any{"endpoint_url": "https://api.openai.com/v1/responses"},
+			}, nil
 		},
 	})
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	defer sess.Close()
+
 	if _, err := sess.ProcessInput(context.Background(), "hi"); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
-	tpath := sess.TranscriptPath()
-	sess.Close()
-	if tpath == "" {
-		t.Fatal("TranscriptPath is empty")
-	}
-	data, err := readTranscriptFull(tpath)
+
+	data, err := readTranscriptFull(sess.TranscriptPath())
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -458,9 +462,13 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	if call.AttemptIndex != 1 || call.AttemptCount != 1 {
 		t.Fatalf("attempt fields = %+v", call)
 	}
-	if call.HistoryMode != llm.HistoryModeFullHistory {
-		t.Fatalf("HistoryMode = %q", call.HistoryMode)
+	if call.FinalAttemptCount == nil || *call.FinalAttemptCount != 1 {
+		t.Fatalf("FinalAttemptCount = %v", call.FinalAttemptCount)
 	}
+	if call.HistoryMode != llm.HistoryModeFullHistory || call.Request.HistoryMode != llm.HistoryModeFullHistory {
+		t.Fatalf("history modes = api_call:%q request:%q", call.HistoryMode, call.Request.HistoryMode)
+	}
+
 	if len(data.Entries) == 0 {
 		t.Fatalf("no transcript entries")
 	}
@@ -474,7 +482,8 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 		assistant.ResponseEndpoint != "https://api.openai.com/v1/responses" {
 		t.Fatalf("assistant response metadata = %+v", assistant)
 	}
-	if assistant.ResponseContextMarker != "" ||
+	if assistant.ResponseIDHash != "" ||
+		assistant.ResponseContextMarker != "" ||
 		assistant.ResponseRequestFingerprint != "" ||
 		assistant.ResponseStorageScopeFingerprint != "" {
 		t.Fatalf("anchor eligibility metadata should stay empty in Phase 1A: %+v", assistant)
@@ -490,43 +499,41 @@ Run:
 GOCACHE=/tmp/serf-gocache go test ./agent -run TestSession_SingleAttemptMetadataRecorded -count=1 -v
 ```
 
-Expected: FAIL because attempt fields and response metadata are not threaded.
+Expected: FAIL because history mode, attempt fields, and response metadata are not threaded.
 
-- [ ] **Step 3: Add `ModelAttemptMetadata` and single-attempt constructors**
+- [ ] **Step 3: Add `ModelAttemptMetadata` and single-attempt helpers**
 
 In `agent/session_model_call.go`, add:
 
 ```go
 type ModelAttemptMetadata struct {
-	HistoryMode                 llm.HistoryMode
-	EndpointFamily              string
-	EndpointURL                 string
-	RequestModel                string
-	RequestFingerprint          string
-	StorageScopeFingerprint     string
-	ContextMarker               string
-	AttemptGroupID              string
-	AttemptIndex                int
-	AttemptCount                int
-	FinalAttemptCount           *int
-	PreviousResponseIDHash      string
-	ConversationIDHash          string
-	ResponseIDHash              string
-	StoragePolicyLabel          string
+	HistoryMode             llm.HistoryMode
+	EndpointFamily          string
+	EndpointURL             string
+	RequestModel            string
+	RequestFingerprint      string
+	StorageScopeFingerprint string
+	ContextMarker           string
+	AttemptIndex            int
+	AttemptCount            int
+	FinalAttemptCount       *int
+	PreviousResponseIDHash  string
+	ConversationIDHash      string
+	ResponseIDHash          string
+	StoragePolicyLabel      string
 }
 
-func singleAttemptMetadata(round int, req llm.Request, resp llm.Response) ModelAttemptMetadata {
+func singleAttemptRequestMetadata(req llm.Request) (llm.Request, ModelAttemptMetadata) {
+	if req.HistoryMode == "" {
+		req.HistoryMode = llm.HistoryModeFullHistory
+	}
 	finalCount := 1
 	meta := ModelAttemptMetadata{
 		HistoryMode:       req.HistoryMode,
 		RequestModel:      req.Model,
-		AttemptGroupID:    fmt.Sprintf("round-%d", round),
 		AttemptIndex:      1,
 		AttemptCount:      1,
 		FinalAttemptCount: &finalCount,
-	}
-	if meta.HistoryMode == "" {
-		meta.HistoryMode = llm.HistoryModeFullHistory
 	}
 	if req.Continuation != nil {
 		meta.EndpointFamily = req.Continuation.EndpointFamily
@@ -537,6 +544,10 @@ func singleAttemptMetadata(round int, req llm.Request, resp llm.Response) ModelA
 		meta.ConversationIDHash = req.Continuation.ConversationIDHash
 		meta.StoragePolicyLabel = req.Continuation.StoragePolicyLabel
 	}
+	return req, meta
+}
+
+func completeAttemptMetadata(meta ModelAttemptMetadata, resp llm.Response) ModelAttemptMetadata {
 	if resp.Raw != nil {
 		if endpoint, _ := resp.Raw["endpoint_url"].(string); endpoint != "" {
 			meta.EndpointURL = endpoint
@@ -549,7 +560,31 @@ func singleAttemptMetadata(round int, req llm.Request, resp llm.Response) ModelA
 }
 ```
 
-- [ ] **Step 4: Thread metadata through API logging and assistant append**
+- [ ] **Step 4: Thread metadata through model calls, API logging, and assistant append**
+
+In `callModelWithFallback`, call `singleAttemptRequestMetadata(req)` before the first model call. Replace `llm.WithAPILogContext(ctx, s.id, round)` with `llm.WithAPILogAttemptContext` using the single-attempt metadata:
+
+```go
+	req, attempt := singleAttemptRequestMetadata(req)
+	callCtx := llm.WithAPILogAttemptContext(ctx, llm.APILogContext{
+		SessionID:         s.id,
+		Round:             round,
+		AttemptIndex:      attempt.AttemptIndex,
+		AttemptCount:      attempt.AttemptCount,
+		FinalAttemptCount: attempt.FinalAttemptCount,
+		HistoryMode:       attempt.HistoryMode,
+	})
+```
+
+When a configured model fallback succeeds in the existing fallback loop, keep the phase narrow: update `req = fbReq` as today, set `attempt.RequestModel = fbReq.Model`, and set `attempt.HistoryMode = llm.HistoryModeFullHistory`. Phase 5A owns separate attempt records for adapter/model fallback; Phase 1A only preserves the current single final-response path.
+
+Change the return signature to:
+
+```go
+func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.Profile, req llm.Request, requestedEffort string, round int) (sessionModelResponse, llm.Request, ModelAttemptMetadata, error)
+```
+
+Return `completeAttemptMetadata(attempt, modelResp.Response)` on success. Return the request-level `attempt` on error.
 
 Change `logAPICall` signature to:
 
@@ -557,7 +592,7 @@ Change `logAPICall` signature to:
 func (s *Session) logAPICall(round int, roundStart time.Time, llmLatency time.Duration, sys string, historyLen int, req llm.Request, resp llm.Response, err error, attempt ModelAttemptMetadata)
 ```
 
-Populate transcript `APICall` fields from `attempt`. Existing error behavior stays unchanged.
+Populate transcript `APICall` fields from `attempt`: `AttemptIndex`, `AttemptCount`, `FinalAttemptCount`, `HistoryMode`, `PreviousResponseIDHash`, and `ConversationIDHash`.
 
 Change `appendAssistantTurn` signature to:
 
@@ -578,22 +613,14 @@ ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
 ResponseContextMarker:           finalAttempt.ContextMarker,
 ```
 
-In `session_lifecycle.go`, compute:
-
-```go
-attempt := singleAttemptMetadata(round, req, resp)
-```
-
-after the model call returns and before `logAPICall`, then pass the same value to `emitAssistantResponse`. Change `emitAssistantResponse` to accept `finalAttempt ModelAttemptMetadata` and pass it to `appendAssistantTurn`.
-
-In `callModelWithFallback`, replace `llm.WithAPILogContext(ctx, s.id, round)` with the existing call for now. Phase 5A owns full `llm.APILogger` attempt identity; Phase 1A must not invent multi-attempt adapter fallback allocation.
+Change `emitAssistantResponse` to accept `finalAttempt ModelAttemptMetadata` and pass it to `appendAssistantTurn`.
 
 - [ ] **Step 5: Run focused tests**
 
 Run:
 
 ```sh
-gofmt -w agent/session_model_call.go agent/session_lifecycle.go agent/session.go
+gofmt -w agent/session_model_call.go agent/session_lifecycle.go agent/session.go agent/session_test.go
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_SingleAttemptMetadataRecorded|TestAssistantTurn_CapturesUsageAndResponseID|TestSession_TranscriptAPICallRecordsFullToolDefinitions' -count=1 -v
 ```
 
@@ -646,26 +673,26 @@ Verdict: old records are non-anchorable by default because anchor-eligibility fi
 
 ## Request And API Log Control Plane
 
-Checkable line: `llm.Request` carries continuation control-plane metadata out-of-band, and `BuildAPILogRequest` projects only redacted/structured metadata.
+Checkable line: `llm.Request` carries continuation control-plane metadata out-of-band, and `BuildAPILogRequest` projects only structured/redacted provider-state metadata.
 
 Evidence:
 - `llm/apilog_test.go:TestBuildAPILogRequest_IncludesContinuationMetadata`
 - `llm/apilog_test.go:TestAPILogEntry_AttemptFieldsRoundTrip`
 
-Verdict: Phase 1A adds schema and projection only; it does not generate hashes or select `responses_delta`.
+Verdict: Phase 1A adds schema and projection only; it does not generate hashes, add attempt groups, or select `responses_delta`.
 
 ## Single-Attempt Metadata
 
-Checkable line: ordinary single-attempt model calls stamp `AttemptIndex=1`, `AttemptCount=1`, `HistoryMode=full_history`, and assistant turns receive response metadata from the successful final attempt.
+Checkable line: ordinary single-attempt model calls stamp `AttemptIndex=1`, `AttemptCount=1`, `FinalAttemptCount=1`, `HistoryMode=full_history`, and assistant turns receive response metadata from the successful final attempt.
 
 Evidence:
 - `agent/session_test.go:TestSession_SingleAttemptMetadataRecorded`
 
 Append-assistant audit:
-- `agent/session_model_call.go:emitAssistantResponse` is the session path that calls `appendAssistantTurn`.
-- The direct append helper now requires `ModelAttemptMetadata`.
+- `agent/session_lifecycle.go:emitAssistantResponse` is the session path that calls `appendAssistantTurn`.
+- `appendAssistantTurn` requires `ModelAttemptMetadata`.
 
-Verdict: multi-attempt groups, final-count terminal attempt semantics, adapter fallback allocation, and real `responses_delta` attempts remain in later phases.
+Verdict: `attempt_group_id`, adapter fallback records, retry/fallback classifiers, HMAC generation, and real `responses_delta` attempts remain in later phases.
 ```
 
 - [ ] **Step 3: Run verification**
@@ -700,5 +727,6 @@ git commit -m "docs: record responses continuation phase 1a proof" -m "Record Ph
 - Phase 1A does not implement HMAC generation; `ResponseIDHash`, `PreviousResponseIDHash`, and `ConversationIDHash` are schema/projection fields only.
 - Phase 1A does not select `responses_delta`.
 - Phase 1A does not change public OpenAI from `store:false` to `store:true`.
-- Phase 1A does not enable the public OpenAI or Codex endpoint-family registry entries.
-- Explicit `ConversationID` remains a full-history-only V1 path per Phase 0B proof.
+- Phase 1A does not enable public OpenAI or Codex endpoint-family registry entries.
+- Phase 1A does not add `attempt_group_id`; Phase 5A owns attempt-group identity and adapter fallback attempt records.
+- Explicit `ConversationID` remains a full-history-only V1 path per the Phase 0B proof.
