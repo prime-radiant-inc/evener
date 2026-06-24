@@ -231,7 +231,7 @@ func TestValidateAPIStyleAcceptsEmpty(t *testing.T) {
 }
 
 func TestValidateAPIStyleAcceptsValidOpenAIStyles(t *testing.T) {
-	for _, style := range []APIStyle{StyleResponses, StyleChatCompletions} {
+	for _, style := range []APIStyle{StyleResponses, StyleChatCompletions, StyleAuto} {
 		if err := ValidateAPIStyle("openai", style); err != nil {
 			t.Errorf("expected nil for openai/%s, got %v", style, err)
 		}

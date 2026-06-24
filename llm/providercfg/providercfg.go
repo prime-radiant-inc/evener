@@ -10,6 +10,7 @@ type APIStyle string
 const (
 	StyleResponses       APIStyle = "responses"
 	StyleChatCompletions APIStyle = "chat-completions"
+	StyleAuto            APIStyle = "auto"
 )
 
 type InstanceConfig struct {

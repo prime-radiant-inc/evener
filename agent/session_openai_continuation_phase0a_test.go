@@ -16,11 +16,11 @@ import (
 	"primeradiant.com/serf/llm/providers/openai"
 )
 
-func TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory(t *testing.T) {
+func TestSession_OpenAIResponsesContinuationOffUsesFullHistory(t *testing.T) {
 	dir := t.TempDir()
 
 	decision := llm.DecideResponsesContinuation(
-		llm.ResponsesContinuationAuto,
+		llm.ResponsesContinuationOff,
 		llm.ResponsesContinuationSupportFor(
 			llm.DefaultResponsesContinuationSupportRegistry(),
 			llm.ResponsesEndpointFamilyOpenAIPublic,
@@ -72,7 +72,7 @@ func TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory(t *testing.T
 
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:                    dir,
-		OpenAIResponsesContinuation: "auto",
+		OpenAIResponsesContinuation: "off",
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -123,10 +123,10 @@ func TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory(t *testing.T
 
 	req := decodeResponsesRequest(t, bodies[0])
 	if _, ok := req["previous_response_id"]; ok {
-		t.Fatalf("disabled registry must not send previous_response_id: %s", string(bodies[0]))
+		t.Fatalf("off mode must not send previous_response_id: %s", string(bodies[0]))
 	}
 	if gotStore, ok := req["store"].(bool); !ok || gotStore {
-		t.Fatalf("disabled registry request store = %#v, want explicit false", req["store"])
+		t.Fatalf("off mode request store = %#v, want explicit false", req["store"])
 	}
 
 	input := responsesInputItems(t, req)

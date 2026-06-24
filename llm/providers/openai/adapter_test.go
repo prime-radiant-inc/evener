@@ -2308,6 +2308,78 @@ func TestStream_ResponsesAPI_404_FallsBackToChatCompletions(t *testing.T) {
 	}
 }
 
+func TestAdapter_Complete_ResponsesAPI404FallsBackToChatCompletions(t *testing.T) {
+	var chatBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"model not found","code":"model_not_found","type":"invalid_request_error"}}`))
+		case "/v1/chat/completions":
+			if err := json.NewDecoder(r.Body).Decode(&chatBody); err != nil {
+				t.Fatalf("decode chat body: %v", err)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			writeChatCompletionsTextStream(t, w, "fallback response")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := a.Complete(ctx, llm.Request{
+		Model:    "gpt-4.1-mini",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got := strings.TrimSpace(resp.Text()); got != "fallback response" {
+		t.Fatalf("fallback text = %q, want fallback response", got)
+	}
+	if chatBody == nil {
+		t.Fatal("chat fallback was not called")
+	}
+	if got, _ := chatBody["stream"].(bool); !got {
+		t.Fatalf("chat fallback body stream = %#v, want true", chatBody["stream"])
+	}
+}
+
+func TestAdapter_Complete_ContinuationRejectionBypassesChatFallback(t *testing.T) {
+	var chatCalled bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"Previous response not found","code":"previous_response_not_found","type":"invalid_request_error"}}`))
+		case "/v1/chat/completions":
+			chatCalled = true
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			writeChatCompletionsTextStream(t, w, "should not be used")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	_, err := a.Complete(context.Background(), phase6DeltaRequest())
+	if err == nil {
+		t.Fatal("Complete returned nil error for continuation rejection")
+	}
+	if chatCalled {
+		t.Fatal("chat fallback was called for continuation rejection")
+	}
+}
+
 func TestAdapter_Stream_RecordsImmediateFallbackAttempts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

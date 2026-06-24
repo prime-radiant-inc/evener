@@ -193,7 +193,7 @@ func init() {
 		}
 		return a, true, nil
 	})
-	// Register for config-driven construction: openai + responses (or empty) style.
+	// Register for config-driven construction: openai + responses/auto (or empty) style.
 	factory := func(inst providercfg.InstanceConfig, stateHome string) (llm.ProviderAdapter, error) {
 		params, err := instanceParamsFromConfig(inst.Name, inst.BaseURL, inst.APIKey, stateHome)
 		if err != nil {
@@ -202,6 +202,7 @@ func init() {
 		return NewForInstance(params)
 	}
 	llm.RegisterInstanceAdapterFactory("openai", "responses", factory)
+	llm.RegisterInstanceAdapterFactory("openai", "auto", factory)
 	llm.RegisterInstanceAdapterFactory("openai", "", factory)
 }
 
@@ -523,7 +524,12 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := fmt.Sprintf("responses.create failed: %v", raw)
-		return llm.Response{}, llm.ErrorFromHTTPStatusWithRawBodies("openai", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
+		responsesErr := llm.ErrorFromHTTPStatusWithRawBodies("openai", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
+		if a.shouldFallbackToChatCompletions(req, responsesErr) {
+			a.recordResponsesFallbackAttempt(ctx, req, responsesErr)
+			return a.completeViaChatCompletionsFallback(ctx, req, responsesErr)
+		}
+		return llm.Response{}, responsesErr
 	}
 
 	r := fromResponses(raw, req.Model)
@@ -576,6 +582,31 @@ func (a *Adapter) completeViaStream(ctx context.Context, req llm.Request) (llm.R
 	return *resp, nil
 }
 
+func (a *Adapter) completeViaChatCompletionsFallback(ctx context.Context, req llm.Request, responsesErr error) (llm.Response, error) {
+	stream, err := a.fallbackToChatCompletions(ctx, req, responsesErr)
+	if err != nil {
+		return llm.Response{}, err
+	}
+	defer func() { _ = stream.Close() }()
+
+	acc := llm.NewStreamAccumulator()
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventError {
+			if ev.Err != nil {
+				return llm.Response{}, ev.Err
+			}
+			return llm.Response{}, errors.New("openai chat completions fallback stream failed")
+		}
+		acc.Process(ev)
+	}
+
+	resp := acc.Response()
+	if resp == nil {
+		return llm.Response{}, errors.New("openai chat completions fallback stream completed without final response")
+	}
+	return *resp, nil
+}
+
 // Stream implements llm.ProviderAdapter. It tries the Responses API first; if
 // the stream closes with 200 OK but zero content events (a silent failure mode
 // observed for models that do not support /v1/responses), it automatically
@@ -590,12 +621,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	if err != nil {
 		// Hard error from Responses API (non-2xx, etc.) — fall through to Chat
 		// Completions only if it looks like a model-compatibility error.
-		if hasPreviousResponseID(req) {
-			if a.ClassifyResponsesError(req, err) != llm.ResponsesErrorModelEndpoint {
-				return nil, err
-			}
-		}
-		if isFallbackEligible(err) {
+		if a.shouldFallbackToChatCompletions(req, err) {
 			a.recordResponsesFallbackAttempt(ctx, req, err)
 			return a.fallbackToChatCompletions(ctx, req, err)
 		}
@@ -629,7 +655,7 @@ func (a *Adapter) decodeStream(out context.Context, proxy *llm.ChanStream, respo
 			sentContent = true
 		}
 		if ev.Type == llm.StreamEventError && errors.Is(ev.Err, errEmptyResponsesStream) && !sentContent {
-			if hasPreviousResponseID(req) {
+			if hasResponsesContinuationState(req) {
 				proxy.Send(ev)
 				return
 			}
@@ -722,8 +748,25 @@ func isFallbackEligible(err error) bool {
 	return errors.Is(err, errEmptyResponsesStream)
 }
 
+func (a *Adapter) shouldFallbackToChatCompletions(req llm.Request, err error) bool {
+	if !isFallbackEligible(err) {
+		return false
+	}
+	if !hasResponsesContinuationState(req) {
+		return true
+	}
+	if a.ClassifyResponsesError(req, err) != llm.ResponsesErrorModelEndpoint {
+		return false
+	}
+	return len(req.FullHistoryFallbackMessages) > 0
+}
+
 func hasPreviousResponseID(req llm.Request) bool {
 	return strings.TrimSpace(req.PreviousResponseID) != ""
+}
+
+func hasResponsesContinuationState(req llm.Request) bool {
+	return hasPreviousResponseID(req) || strings.TrimSpace(req.ConversationID) != "" || req.Continuation != nil
 }
 
 func (a *Adapter) ClassifyResponsesError(req llm.Request, err error) llm.ResponsesErrorClass {

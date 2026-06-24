@@ -78,8 +78,8 @@ func Load(data []byte) (Config, error) {
 		if inst.APIStyle != "" {
 			if inst.Type != "openai" {
 				errs = append(errs, fmt.Sprintf("instance %q: api_style is only valid for type \"openai\", not %q", name, inst.Type))
-			} else if inst.APIStyle != StyleResponses && inst.APIStyle != StyleChatCompletions {
-				errs = append(errs, fmt.Sprintf("instance %q: unknown api_style %q (must be %q or %q)", name, inst.APIStyle, StyleResponses, StyleChatCompletions))
+			} else if inst.APIStyle != StyleResponses && inst.APIStyle != StyleChatCompletions && inst.APIStyle != StyleAuto {
+				errs = append(errs, fmt.Sprintf("instance %q: unknown api_style %q (must be %q, %q, or %q)", name, inst.APIStyle, StyleResponses, StyleChatCompletions, StyleAuto))
 			}
 		}
 	}

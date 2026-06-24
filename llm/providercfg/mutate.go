@@ -115,7 +115,7 @@ func ValidateInstanceName(name string) error {
 
 // ValidateAPIStyle reports whether style is valid for typ. An empty style is
 // always valid. A non-empty style is only valid for typ "openai" and must be
-// StyleResponses or StyleChatCompletions.
+// StyleResponses, StyleChatCompletions, or StyleAuto.
 func ValidateAPIStyle(typ Type, style APIStyle) error {
 	if style == "" {
 		return nil
@@ -123,8 +123,8 @@ func ValidateAPIStyle(typ Type, style APIStyle) error {
 	if typ != "openai" {
 		return fmt.Errorf("api_style is only valid for type \"openai\", not %q", typ)
 	}
-	if style != StyleResponses && style != StyleChatCompletions {
-		return fmt.Errorf("unknown api_style %q (must be %q or %q)", style, StyleResponses, StyleChatCompletions)
+	if style != StyleResponses && style != StyleChatCompletions && style != StyleAuto {
+		return fmt.Errorf("unknown api_style %q (must be %q, %q, or %q)", style, StyleResponses, StyleChatCompletions, StyleAuto)
 	}
 	return nil
 }

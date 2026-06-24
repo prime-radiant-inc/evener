@@ -29,6 +29,9 @@ func setupFakeInstanceFactories(t *testing.T) {
 		{typ: "openai", apiStyle: "chat-completions"}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
+		{typ: "openai", apiStyle: "auto"}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
+			return &fakeAdapter{name: inst.Name}, nil
+		},
 		{typ: "anthropic", apiStyle: ""}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
@@ -215,6 +218,27 @@ func TestNewFromProviders_ChatCompletionsStyleIsOpenAICompat(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("my-compat not registered; names = %v", names)
+	}
+}
+
+func TestNewFromProviders_OpenAIAutoStyleKeepsOpenAIBehavior(t *testing.T) {
+	setupFakeInstanceFactories(t)
+
+	cfg := providercfg.Config{
+		Default: "adaptive",
+		Instances: []providercfg.InstanceConfig{
+			{Name: "adaptive", Type: "openai", APIStyle: providercfg.StyleAuto,
+				BaseURL: "https://example.com/v1", APIKey: "key-adaptive"},
+		},
+	}
+
+	c, err := NewFromProviders(cfg)
+	if err != nil {
+		t.Fatalf("NewFromProviders: %v", err)
+	}
+
+	if got := c.behaviorTagFor("adaptive"); got != "openai" {
+		t.Errorf("behaviorTagFor(adaptive) = %q, want %q", got, "openai")
 	}
 }
 

@@ -153,6 +153,27 @@ api_style = "responses"
 	}
 }
 
+func TestLoadAcceptsOpenAIAutoAPIStyle(t *testing.T) {
+	const adaptive = `
+schema = 1
+
+[instances.adaptive]
+type = "openai"
+api_style = "auto"
+api_key = "sk-adaptive"
+`
+	cfg, err := Load([]byte(adaptive))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Instances) != 1 {
+		t.Fatalf("len(Instances) = %d, want 1", len(cfg.Instances))
+	}
+	if got := cfg.Instances[0].APIStyle; got != StyleAuto {
+		t.Fatalf("APIStyle = %q, want %q", got, StyleAuto)
+	}
+}
+
 func TestLoadRejectsDefaultNamingAbsentInstance(t *testing.T) {
 	const badDefault = `
 schema = 1
