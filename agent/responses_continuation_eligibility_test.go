@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -99,6 +100,49 @@ func TestResponsesContinuationAnchorCandidateRejectsEmptyDelta(t *testing.T) {
 	_, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
 	if decision.HistoryMode != llm.HistoryModeFullHistory ||
 		decision.Reason != "continuation_delta_empty" {
+		t.Fatalf("decision = %+v", decision)
+	}
+}
+
+func TestResponsesContinuationAnchorCandidateUsesRestoredActiveBoundary(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	client := llm.NewClient()
+	meta := schema.SessionMeta{
+		ID:        "01JRESPONSES4B",
+		ProfileID: "openai",
+		Model:     "gpt-5.4",
+		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 200},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: dir},
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	restoredHistory := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("pre-restore user")),
+		responsesContinuationEligibleAssistantTurn("resp_before_restore_boundary"),
+		schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nrestored state")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("post-restore user")),
+	}
+
+	sess, err := RestoreSessionFromMetaWithConfig(
+		client,
+		NewOpenAIProfile("gpt-5.4"),
+		execenv.NewLocalExecutionEnvironment(dir),
+		meta,
+		RestoreSessionConfig{
+			StateDir:      stateDir,
+			resumeHistory: restoredHistory,
+		},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer sess.Close()
+
+	_, decision := selectResponsesContinuationAnchorCandidate(sess.cfg, sess.history)
+	if decision.HistoryMode != llm.HistoryModeFullHistory ||
+		decision.Reason != "continuation_no_active_anchor" {
 		t.Fatalf("decision = %+v", decision)
 	}
 }

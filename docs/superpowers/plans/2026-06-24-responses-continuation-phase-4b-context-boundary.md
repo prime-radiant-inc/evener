@@ -301,7 +301,7 @@ git commit -m "feat(agent): add responses continuation context-boundary eligibil
 **Files:**
 - Modify: `agent/responses_continuation_eligibility_test.go`
 
-- [ ] **Step 1: Write the failing restore test**
+- [x] **Step 1: Write the failing restore test**
 
 Append this test to `agent/responses_continuation_eligibility_test.go`:
 
@@ -356,7 +356,7 @@ Add the missing import:
 import "primeradiant.com/serf/agent/execenv"
 ```
 
-- [ ] **Step 2: Run the restore test**
+- [x] **Step 2: Run the restore test**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidateUsesRestoredActiveBoundary' -count=1 -v
@@ -364,7 +364,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorC
 
 Expected before Task 1 implementation: FAIL because the helper does not exist. Expected after Task 1: PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```sh
 git status --short
