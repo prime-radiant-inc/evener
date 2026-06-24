@@ -395,7 +395,7 @@ git commit -m "feat(agent): fall back when continuation shadow estimate is unava
 - Modify: `agent/session_model_call.go`
 - Modify: `agent/session_openai_continuation_phase10_test.go`
 
-- [ ] **Step 1: Add RED pressure test**
+- [x] **Step 1: Add RED pressure test**
 
 Add:
 
@@ -450,7 +450,7 @@ func TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadow
 }
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadowWhenLarger' -count=1 -v
@@ -458,7 +458,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesConti
 
 Expected: fail because `recordResponseUsage` records provider input usage `10`.
 
-- [ ] **Step 3: Pass request into pressure accounting**
+- [x] **Step 3: Pass request into pressure accounting**
 
 Change `recordResponseUsage` to:
 
@@ -476,7 +476,7 @@ if req.FullHistoryInputTokensEstimate > totalInput {
 
 Update the call site in `processOneInput` to pass the final request returned from `callModelWithFallback`.
 
-- [ ] **Step 4: Run focused test**
+- [x] **Step 4: Run focused test**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadowWhenLarger' -count=1 -v
@@ -484,7 +484,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesConti
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git status --short

@@ -133,3 +133,52 @@ func TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHist
 		t.Fatalf("ProcessInput: %v", err)
 	}
 }
+
+func TestSession_OpenAIResponsesContinuationPhase10PressureUsesFullHistoryShadowWhenLarger(t *testing.T) {
+	dir := t.TempDir()
+	adapter := &agenttest.FakeAdapter{
+		Provider:          "openai",
+		CanFallbackToChat: true,
+		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+			return phase4DIContinuationPlan(req), nil
+		},
+		Steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				resp := agenttest.FinalResponse("phase 10 pressure")
+				resp.Usage = llm.Usage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11}
+				return resp
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:                    dir,
+		OpenAIResponsesContinuation: "auto",
+		testOnly: testConfig{
+			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
+				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
+			},
+			responsesContinuationShadowEstimateFunc: func(llm.Request) (int, bool) {
+				return 900, true
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	drainSessionEvents(sess)
+	sess.history = append(sess.history,
+		schema.NewTurn(schema.TurnUserInput, llm.User("phase10 prior user marker")),
+		phase9MatchingAnchor("resp_phase10_pressure"),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "phase10 current user marker", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.contextMgr.LastInputTokens(); got != 900 {
+		t.Fatalf("LastInputTokens = %d, want shadow estimate 900", got)
+	}
+}

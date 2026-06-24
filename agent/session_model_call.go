@@ -523,10 +523,12 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 }
 
 // recordResponseUsage accumulates the response usage into the context manager and
-// records the exact input token count for pressure calculation. Anthropic makes
+// records the input token count for pressure calculation. For continuation delta
+// requests, pressure uses the larger full-history shadow estimate so local
+// compaction decisions still reflect the visible conversation. Anthropic makes
 // multiple forward passes for server-side web search, reporting combined usage
 // (~2x actual); that inflated baseline is skipped so the previous value stays valid.
-func (s *Session) recordResponseUsage(resp llm.Response) {
+func (s *Session) recordResponseUsage(resp llm.Response, req llm.Request) {
 	if s.contextMgr == nil {
 		return
 	}
@@ -546,6 +548,9 @@ func (s *Session) recordResponseUsage(resp llm.Response) {
 		}
 		if resp.Usage.CacheWriteTokens != nil {
 			totalInput += *resp.Usage.CacheWriteTokens
+		}
+		if req.FullHistoryInputTokensEstimate > totalInput {
+			totalInput = req.FullHistoryInputTokensEstimate
 		}
 		if totalInput > 0 {
 			s.mu.Lock()

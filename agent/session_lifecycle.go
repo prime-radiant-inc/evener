@@ -606,7 +606,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		// Accumulate usage and record exact input token count for pressure calculation.
-		s.recordResponseUsage(resp)
+		s.recordResponseUsage(resp, req)
 
 		// Context window awareness: emit a warning when we exceed ~80% of the profile's context window.
 		if !ctxWarned {
