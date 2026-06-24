@@ -15,6 +15,13 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
+// Shrink the graceful-shutdown grace so tests whose jobs never naturally
+// terminate don't each pay the full production window at teardown. Still leaves
+// ample margin to exercise the timeout-and-abandon path under -race.
+func init() {
+	defaultCloseGrace = 200 * time.Millisecond
+}
+
 func newTestJM(t *testing.T) *jobManager {
 	t.Helper()
 	jm, err := newJobManager(t.TempDir(), "S1", func(jobNotification) {})
