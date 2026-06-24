@@ -207,16 +207,55 @@ func TestScanWorkspace_NonexistentDir(t *testing.T) {
 	}
 }
 
-func TestScanWorkspace_GoModDetection(t *testing.T) {
+func TestScanWorkspace_BuildInfoDetection(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	touchFile(t, filepath.Join(dir, "go.mod"), "module example.com/app\n\ngo 1.21\n")
-	touchFile(t, filepath.Join(dir, "main.go"), "package main\n")
+	type file struct {
+		name, content string
+	}
+	cases := []struct {
+		name  string
+		files []file
+		want  string
+	}{
+		{
+			name: "GoMod",
+			files: []file{
+				{"go.mod", "module example.com/app\n\ngo 1.21\n"},
+				{"main.go", "package main\n"},
+			},
+			want: "go.mod",
+		},
+		{
+			name: "PytestIni",
+			files: []file{
+				{"pytest.ini", "[pytest]\ntestpaths = tests\n"},
+				{"main.py", "print('hi')\n"},
+			},
+			want: "pytest",
+		},
+		{
+			name: "Dockerfile",
+			files: []file{
+				{"Dockerfile", "FROM python:3.11\nRUN pip install flask\n"},
+				{"docker-compose.yml", "version: '3'\n"},
+			},
+			want: "Dockerfile",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			for _, f := range c.files {
+				touchFile(t, filepath.Join(dir, f.name), f.content)
+			}
 
-	ws := ScanWorkspace(dir)
+			ws := ScanWorkspace(dir)
 
-	if !strings.Contains(ws.BuildInfo, "go.mod") {
-		t.Errorf("build info should mention go.mod: %s", ws.BuildInfo)
+			if !strings.Contains(ws.BuildInfo, c.want) {
+				t.Errorf("build info should mention %s: %s", c.want, ws.BuildInfo)
+			}
+		})
 	}
 }
 
@@ -229,19 +268,6 @@ func TestScanWorkspace_CargoTomlDetection(t *testing.T) {
 
 	if !strings.Contains(ws.BuildInfo, "Cargo.toml") {
 		t.Errorf("build info should mention Cargo.toml: %s", ws.BuildInfo)
-	}
-}
-
-func TestScanWorkspace_PytestIniDetection(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	touchFile(t, filepath.Join(dir, "pytest.ini"), "[pytest]\ntestpaths = tests\n")
-	touchFile(t, filepath.Join(dir, "main.py"), "print('hi')\n")
-
-	ws := ScanWorkspace(dir)
-
-	if !strings.Contains(ws.BuildInfo, "pytest") {
-		t.Errorf("build info should mention pytest: %s", ws.BuildInfo)
 	}
 }
 
@@ -269,19 +295,6 @@ func TestScanWorkspace_TreeFormat_Indented(t *testing.T) {
 	}
 	if !strings.Contains(ws.Tree, "  README.md") {
 		t.Errorf("tree missing indented README.md: %s", ws.Tree)
-	}
-}
-
-func TestScanWorkspace_DockerfileDetection(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	touchFile(t, filepath.Join(dir, "Dockerfile"), "FROM python:3.11\nRUN pip install flask\n")
-	touchFile(t, filepath.Join(dir, "docker-compose.yml"), "version: '3'\n")
-
-	ws := ScanWorkspace(dir)
-
-	if !strings.Contains(ws.BuildInfo, "Dockerfile") {
-		t.Errorf("build info should mention Dockerfile: %s", ws.BuildInfo)
 	}
 }
 

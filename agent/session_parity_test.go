@@ -108,55 +108,71 @@ func TestParity_SimpleFileCreation(t *testing.T) {
 
 func TestParity_ReadFileThenEdit(t *testing.T) {
 	t.Parallel()
-	for _, pc := range providerCases {
-		t.Run(pc.name, func(t *testing.T) {
-			steps := []func(llm.Request) llm.Response{
-				func(req llm.Request) llm.Response {
-					return llm.Response{
-						Message: llm.Message{
-							Role: llm.RoleAssistant,
-							Content: []llm.ContentPart{
-								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-									ID: "c1", Name: canonicalReadFile(pc.name), Type: "function",
-									Arguments: json.RawMessage(`{"file_path":"target.txt"}`),
-								}},
-							},
+	cases := []struct {
+		name       string
+		file       string
+		oldContent string
+		newContent string
+		input      string
+		failPrefix string
+	}{
+		{"single", "target.txt", "foo", "bar", "edit target.txt", "edit failed: got "},
+		{"multistep", "config.txt", "debug=false", "debug=true", "update config", "multi-step edit failed: got "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, pc := range providerCases {
+				t.Run(pc.name, func(t *testing.T) {
+					steps := []func(llm.Request) llm.Response{
+						func(req llm.Request) llm.Response {
+							return llm.Response{
+								Message: llm.Message{
+									Role: llm.RoleAssistant,
+									Content: []llm.ContentPart{
+										{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+											ID: "c1", Name: canonicalReadFile(pc.name), Type: "function",
+											Arguments: json.RawMessage(fmt.Sprintf(`{"file_path":%q}`, tc.file)),
+										}},
+									},
+								},
+							}
+						},
+						func(req llm.Request) llm.Response {
+							return llm.Response{
+								Message: llm.Message{
+									Role: llm.RoleAssistant,
+									Content: []llm.ContentPart{
+										makeEditCall(pc.name, "c2", tc.file, tc.oldContent, tc.newContent),
+									},
+								},
+							}
+						},
+						func(req llm.Request) llm.Response {
+							return finalResponse("done")
 						},
 					}
-				},
-				func(req llm.Request) llm.Response {
-					return llm.Response{
-						Message: llm.Message{
-							Role: llm.RoleAssistant,
-							Content: []llm.ContentPart{
-								makeEditCall(pc.name, "c2", "target.txt", "foo", "bar"),
-							},
-						},
+					sess, _ := newParitySession(t, pc, steps)
+					defer sess.Close()
+
+					// Pre-create the file.
+					dir := sess.env.WorkingDirectory()
+					if err := os.WriteFile(filepath.Join(dir, tc.file), []byte(tc.oldContent), 0644); err != nil {
+						t.Fatal(err)
 					}
-				},
-				func(req llm.Request) llm.Response {
-					return finalResponse("done")
-				},
-			}
-			sess, _ := newParitySession(t, pc, steps)
-			defer sess.Close()
 
-			// Pre-create the file.
-			dir := sess.env.WorkingDirectory()
-			if err := os.WriteFile(filepath.Join(dir, "target.txt"), []byte("foo"), 0644); err != nil {
-				t.Fatal(err)
-			}
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					if _, err := sess.ProcessInput(ctx, tc.input, nil); err != nil {
+						t.Fatal(err)
+					}
+					sess.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "edit target.txt", nil); err != nil {
-				t.Fatal(err)
-			}
-			sess.Close()
-
-			data, _ := os.ReadFile(filepath.Join(dir, "target.txt"))
-			if string(data) != "bar" {
-				t.Fatalf("edit failed: got %q", string(data))
+					data, _ := os.ReadFile(filepath.Join(dir, tc.file))
+					if string(data) != tc.newContent {
+						t.Fatalf("%s%q", tc.failPrefix, string(data))
+					}
+				})
 			}
 		})
 	}
@@ -318,63 +334,6 @@ func TestParity_GrepAndGlob(t *testing.T) {
 				t.Fatal(err)
 			}
 			sess.Close()
-		})
-	}
-}
-
-func TestParity_MultiStepTask(t *testing.T) {
-	t.Parallel()
-	for _, pc := range providerCases {
-		t.Run(pc.name, func(t *testing.T) {
-			steps := []func(llm.Request) llm.Response{
-				// Step 1: Read file.
-				func(req llm.Request) llm.Response {
-					return llm.Response{
-						Message: llm.Message{
-							Role: llm.RoleAssistant,
-							Content: []llm.ContentPart{
-								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-									ID: "c1", Name: canonicalReadFile(pc.name), Type: "function",
-									Arguments: json.RawMessage(`{"file_path":"config.txt"}`),
-								}},
-							},
-						},
-					}
-				},
-				// Step 2: Analyze and edit.
-				func(req llm.Request) llm.Response {
-					return llm.Response{
-						Message: llm.Message{
-							Role: llm.RoleAssistant,
-							Content: []llm.ContentPart{
-								makeEditCall(pc.name, "c2", "config.txt", "debug=false", "debug=true"),
-							},
-						},
-					}
-				},
-				func(req llm.Request) llm.Response {
-					return finalResponse("done")
-				},
-			}
-			sess, _ := newParitySession(t, pc, steps)
-			defer sess.Close()
-
-			dir := sess.env.WorkingDirectory()
-			if err := os.WriteFile(filepath.Join(dir, "config.txt"), []byte("debug=false"), 0644); err != nil {
-				t.Fatal(err)
-			}
-
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if _, err := sess.ProcessInput(ctx, "update config", nil); err != nil {
-				t.Fatal(err)
-			}
-			sess.Close()
-
-			data, _ := os.ReadFile(filepath.Join(dir, "config.txt"))
-			if string(data) != "debug=true" {
-				t.Fatalf("multi-step edit failed: got %q", string(data))
-			}
 		})
 	}
 }

@@ -374,30 +374,108 @@ func testResolverFull(ref string) (*provider.Profile, error) {
 	return nil, nil
 }
 
-// TestSetModel_CrossProvider_ToOllama verifies SetModel("ollama/llama3.1:8b")
-// from an OpenAI session (with resolver) produces an ollama profile.
-func TestSetModel_CrossProvider_ToOllama(t *testing.T) {
+// TestSetModel_CrossProvider sweeps the basic cross-provider SetModel switches
+// that differ only by (registered target adapter, base profile, model ref, and
+// the expected resulting profile ID + model). Each row asserts only that the
+// profile swaps to the expected provider and model. Switches that assert extra
+// fields (catalog window, preserved slash model, web_search registration,
+// schema override) stay as dedicated tests.
+func TestSetModel_CrossProvider(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	c.Register(&fakeAdapter{name: "ollama"})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   testResolverFull,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
+	cases := []struct {
+		name          string
+		baseAdapter   string
+		baseProfile   *provider.Profile
+		targetAdapter string
+		ref           string
+		wantID        string
+		wantModel     string
+	}{
+		{
+			name:          "ToOllama",
+			baseAdapter:   "openai",
+			baseProfile:   NewOpenAIProfile("gpt-5.4"),
+			targetAdapter: "ollama",
+			ref:           "ollama/llama3.1:8b",
+			wantID:        "ollama",
+			wantModel:     "llama3.1:8b",
+		},
+		{
+			name:          "FromAnthropicToOllama",
+			baseAdapter:   "anthropic",
+			baseProfile:   newAnthropicProfile("claude-opus-4-6"),
+			targetAdapter: "ollama",
+			ref:           "ollama/qwen2.5-coder:7b",
+			wantID:        "ollama",
+			wantModel:     "qwen2.5-coder:7b",
+		},
+		{
+			name:          "ToMiniMax",
+			baseAdapter:   "openai",
+			baseProfile:   NewOpenAIProfile("gpt-5.2"),
+			targetAdapter: "minimax",
+			ref:           "minimax/MiniMax-M2.7",
+			wantID:        "minimax",
+			wantModel:     "MiniMax-M2.7",
+		},
+		{
+			name:          "FromMiniMax",
+			baseAdapter:   "minimax",
+			baseProfile:   newMiniMaxProfile("MiniMax-M2.7"),
+			targetAdapter: "anthropic",
+			ref:           "anthropic/claude-opus-4-6",
+			wantID:        "anthropic",
+			wantModel:     "claude-opus-4-6",
+		},
+		{
+			name:          "FromOpenRouterToOllama",
+			baseAdapter:   "openrouter",
+			baseProfile:   newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0),
+			targetAdapter: "ollama",
+			ref:           "ollama/llama3.1",
+			wantID:        "ollama",
+			wantModel:     "llama3.1",
+		},
+		{
+			name:          "ToAnthropicFromOpenAI",
+			baseAdapter:   "openai",
+			baseProfile:   NewOpenAIProfile("gpt-5.4"),
+			targetAdapter: "anthropic",
+			ref:           "anthropic/claude-opus-4-6",
+			wantID:        "anthropic",
+			wantModel:     "claude-opus-4-6",
+		},
+		{
+			name:          "FromAnthropicToOpenAI",
+			baseAdapter:   "anthropic",
+			baseProfile:   newAnthropicProfile("claude-opus-4-6"),
+			targetAdapter: "openai",
+			ref:           "openai/gpt-5.4-mini",
+			wantID:        "openai",
+			wantModel:     "gpt-5.4-mini",
+		},
 	}
-	defer sess.Close()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sess := newSession(t,
+				withProfile(tc.baseProfile),
+				withAdapter(&fakeAdapter{name: tc.baseAdapter}),
+				withAdapter(&fakeAdapter{name: tc.targetAdapter}),
+				withConfig(SessionConfig{
+					NoProjectPrompts: true,
+					ResolveProfile:   testResolverFull,
+				}),
+			)
 
-	sess.SetModel("ollama/llama3.1:8b")
-	if got := sess.profile.ID(); got != "ollama" {
-		t.Fatalf("ID() = %q, want ollama", got)
-	}
-	if got := sess.profile.Model(); got != "llama3.1:8b" {
-		t.Fatalf("Model() = %q, want llama3.1:8b", got)
+			sess.SetModel(tc.ref)
+			if got := sess.profile.ID(); got != tc.wantID {
+				t.Fatalf("ID() = %q, want %s", got, tc.wantID)
+			}
+			if got := sess.profile.Model(); got != tc.wantModel {
+				t.Fatalf("Model() = %q, want %s", got, tc.wantModel)
+			}
+		})
 	}
 }
 
@@ -426,87 +504,6 @@ func TestSetModel_CrossProvider_ToOllama_WithCatalog(t *testing.T) {
 	// llama3.1 is in the catalog with 8192 context window.
 	if got := sess.profile.ContextWindowSize(); got != 8192 {
 		t.Fatalf("ContextWindowSize() = %d, want 8192 (catalog metadata for ollama/llama3.1 must resolve)", got)
-	}
-}
-
-// TestSetModel_CrossProvider_FromAnthropicToOllama verifies SetModel from
-// an Anthropic session (with resolver) to an ollama profile.
-func TestSetModel_CrossProvider_FromAnthropicToOllama(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "anthropic"})
-	c.Register(&fakeAdapter{name: "ollama"})
-
-	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   testResolverFull,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	sess.SetModel("ollama/qwen2.5-coder:7b")
-	if got := sess.profile.ID(); got != "ollama" {
-		t.Fatalf("ID() = %q, want ollama", got)
-	}
-	if got := sess.profile.Model(); got != "qwen2.5-coder:7b" {
-		t.Fatalf("Model() = %q, want qwen2.5-coder:7b", got)
-	}
-}
-
-// TestSetModel_CrossProvider_ToMiniMax verifies SetModel from an OpenAI session
-// (with resolver) to a minimax profile.
-func TestSetModel_CrossProvider_ToMiniMax(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	c.Register(&fakeAdapter{name: "minimax"})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   testResolverFull,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	sess.SetModel("minimax/MiniMax-M2.7")
-	if got := sess.profile.ID(); got != "minimax" {
-		t.Fatalf("ID() = %q, want minimax", got)
-	}
-	if got := sess.profile.Model(); got != "MiniMax-M2.7" {
-		t.Fatalf("Model() = %q, want MiniMax-M2.7", got)
-	}
-}
-
-// TestSetModel_CrossProvider_FromMiniMax verifies SetModel from a minimax session
-// (with resolver) to an anthropic profile.
-func TestSetModel_CrossProvider_FromMiniMax(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "minimax"})
-	c.Register(&fakeAdapter{name: "anthropic"})
-
-	sess, err := NewSession(c, newMiniMaxProfile("MiniMax-M2.7"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   testResolverFull,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	sess.SetModel("anthropic/claude-opus-4-6")
-	if got := sess.profile.ID(); got != "anthropic" {
-		t.Fatalf("ID() = %q, want anthropic", got)
-	}
-	if got := sess.profile.Model(); got != "claude-opus-4-6" {
-		t.Fatalf("Model() = %q, want claude-opus-4-6", got)
 	}
 }
 
@@ -541,89 +538,5 @@ func TestSetModel_CrossProvider_ToOpenRouter_PreservesSlashModel(t *testing.T) {
 	// Catalog metadata should resolve via the openrouter profile constructor.
 	if got := sess.profile.ContextWindowSize(); got != 200000 {
 		t.Fatalf("ContextWindowSize() = %d, want 200000 (catalog metadata must resolve for openrouter model)", got)
-	}
-}
-
-// TestSetModel_CrossProvider_FromOpenRouterToOllama verifies that from an
-// openrouter session, SetModel("ollama/llama3.1") via resolver switches to ollama.
-func TestSetModel_CrossProvider_FromOpenRouterToOllama(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openrouter"})
-	c.Register(&fakeAdapter{name: "ollama"})
-
-	sess, err := NewSession(c, newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0),
-		execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-			NoProjectPrompts: true,
-			ResolveProfile:   testResolverFull,
-		})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	sess.SetModel("ollama/llama3.1")
-	if got := sess.profile.ID(); got != "ollama" {
-		t.Fatalf("ID() = %q, want ollama", got)
-	}
-	if got := sess.profile.Model(); got != "llama3.1" {
-		t.Fatalf("Model() = %q, want llama3.1", got)
-	}
-}
-
-// TestSetModel_CrossProvider_ToAnthropicFromOpenAI verifies the basic
-// openai→anthropic switch via SetModel with resolver (replaces
-// TestProviderProfile_WithModel_CrossProvider at session level).
-func TestSetModel_CrossProvider_ToAnthropicFromOpenAI(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	c.Register(&fakeAdapter{name: "anthropic"})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   testResolverFull,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	sess.SetModel("anthropic/claude-opus-4-6")
-	if got := sess.profile.ID(); got != "anthropic" {
-		t.Fatalf("ID() = %q, want anthropic", got)
-	}
-	if got := sess.profile.Model(); got != "claude-opus-4-6" {
-		t.Fatalf("Model() = %q, want claude-opus-4-6", got)
-	}
-}
-
-// TestSetModel_CrossProvider_FromAnthropicToOpenAI verifies the
-// anthropic→openai switch via SetModel (replaces
-// TestAnthropicProfile_WithModel_ResolvesProviderPrefix at session level).
-func TestSetModel_CrossProvider_FromAnthropicToOpenAI(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "anthropic"})
-	c.Register(&fakeAdapter{name: "openai"})
-
-	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		NoProjectPrompts: true,
-		ResolveProfile:   testResolverFull,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	sess.SetModel("openai/gpt-5.4-mini")
-	if got := sess.profile.ID(); got != "openai" {
-		t.Fatalf("ID() = %q, want openai", got)
-	}
-	if got := sess.profile.Model(); got != "gpt-5.4-mini" {
-		t.Fatalf("Model() = %q, want gpt-5.4-mini", got)
 	}
 }

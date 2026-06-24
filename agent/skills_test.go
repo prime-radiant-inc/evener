@@ -101,35 +101,40 @@ func TestDiscoverSkills_NoSkillsDir(t *testing.T) {
 	}
 }
 
-func TestDiscoverSkills_MissingName(t *testing.T) {
+func TestDiscoverSkills_MissingRequiredField(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	initGitRepo(t, root)
-
-	// SKILL.md without name field — should be skipped.
-	writeSkillMD(t, root, "bad", "---\ndescription: \"No name\"\n---\nBody.\n")
-
-	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := skill.DiscoverSkills(env)
-
-	if len(skills) != 0 {
-		t.Errorf("expected 0 skills (no name), got %d: %v", len(skills), skills)
+	cases := []struct {
+		name    string
+		content string
+		missing string
+	}{
+		{
+			name:    "MissingName",
+			content: "---\ndescription: \"No name\"\n---\nBody.\n",
+			missing: "no name",
+		},
+		{
+			name:    "MissingDescription",
+			content: "---\nname: bad\n---\nBody.\n",
+			missing: "no description",
+		},
 	}
-}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			initGitRepo(t, root)
 
-func TestDiscoverSkills_MissingDescription(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	initGitRepo(t, root)
+			// SKILL.md missing a required field — should be skipped.
+			writeSkillMD(t, root, "bad", c.content)
 
-	// SKILL.md without description field — should be skipped.
-	writeSkillMD(t, root, "bad", "---\nname: bad\n---\nBody.\n")
+			env := execenv.NewLocalExecutionEnvironment(root)
+			skills := skill.DiscoverSkills(env)
 
-	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := skill.DiscoverSkills(env)
-
-	if len(skills) != 0 {
-		t.Errorf("expected 0 skills (no description), got %d: %v", len(skills), skills)
+			if len(skills) != 0 {
+				t.Errorf("expected 0 skills (%s), got %d: %v", c.missing, len(skills), skills)
+			}
+		})
 	}
 }
 

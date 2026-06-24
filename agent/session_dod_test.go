@@ -2822,84 +2822,48 @@ func TestSession_ToolResults_SingleCallAlsoAggregated(t *testing.T) {
 }
 
 // WS2a: terminal communicate returns to IDLE.
-func TestSession_EndTurnQuestionResponseGoesIdle(t *testing.T) {
+func TestSession_EndTurnResponseGoesIdle(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return toolCallResponse(communicateCallArgs("ask1", map[string]any{
-					"end_turn": true,
-					"message":  "What file would you like me to edit?",
-				}))
-			},
-		},
+	cases := []struct {
+		name    string
+		callID  string
+		message string
+		input   string
+		desc    string
+	}{
+		{"question", "ask1", "What file would you like me to edit?", "hello", "question"},
+		{"declarative", "msg1", "I have completed the task.", "do something", "declarative response"},
 	}
-	c.Register(f)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sess := newSession(t,
+				withSteps(func(req llm.Request) llm.Response {
+					return toolCallResponse(communicateCallArgs(tc.callID, map[string]any{
+						"end_turn": true,
+						"message":  tc.message,
+					}))
+				}),
+				withConfig(SessionConfig{}),
+			)
+			go func() {
+				for range sess.Events() {
+				}
+			}()
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := sess.ProcessInput(ctx, tc.input, nil)
+			if err != nil {
+				t.Fatalf("ProcessInput: %v", err)
+			}
+
+			if got := sess.State(); got != SessionIdle {
+				t.Fatalf("state after %s: got %q want %q", tc.desc, got, SessionIdle)
+			}
+			sess.Close()
+		})
 	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err = sess.ProcessInput(ctx, "hello", nil)
-	if err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state after question: got %q want %q", got, SessionIdle)
-	}
-	sess.Close()
-}
-
-func TestSession_EndTurnDeclarativeResponseGoesIdle(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return toolCallResponse(communicateCallArgs("msg1", map[string]any{
-					"end_turn": true,
-					"message":  "I have completed the task.",
-				}))
-			},
-		},
-	}
-	c.Register(f)
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err = sess.ProcessInput(ctx, "do something", nil)
-	if err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-
-	if got := sess.State(); got != SessionIdle {
-		t.Fatalf("state after declarative response: got %q want %q", got, SessionIdle)
-	}
-	sess.Close()
 }
 
 func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {

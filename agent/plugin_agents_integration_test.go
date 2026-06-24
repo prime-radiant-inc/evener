@@ -166,111 +166,96 @@ func TestSpawnAgent_PluginAgentType_SystemPrompt(t *testing.T) {
 	}
 }
 
-func TestSpawnAgent_PluginAgentType_ModelOverride(t *testing.T) {
+func TestSpawnAgent_PluginAgentType_Model(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-
-	var subagentModel string
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				subagentModel = req.Model
-				return llm.Response{Message: llm.Assistant("done")}
-			},
+	cases := []struct {
+		name         string
+		agentKey     string
+		agentName    string
+		description  string
+		model        string
+		systemPrompt string
+		prompt       string
+		wantModel    string
+		wantPrefix   string
+	}{
+		{
+			name:         "override",
+			agentKey:     "my-plugin:fast-agent",
+			agentName:    "fast-agent",
+			description:  "Fast agent",
+			model:        "gpt-4.1-nano",
+			systemPrompt: "You are fast.",
+			prompt:       "do it fast",
+			wantModel:    "gpt-4.1-nano",
+			wantPrefix:   "",
+		},
+		{
+			name:         "inherit",
+			agentKey:     "my-plugin:helper",
+			agentName:    "helper",
+			description:  "Helper agent",
+			model:        "inherit",
+			systemPrompt: "You help.",
+			prompt:       "help me",
+			wantModel:    "gpt-5.2",
+			wantPrefix:   "parent model ",
 		},
 	}
-	c.Register(adapter)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			c := llm.NewClient()
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
+			var subagentModel string
+			adapter := &fakeAdapter{
+				name: "openai",
+				steps: []func(req llm.Request) llm.Response{
+					func(req llm.Request) llm.Response {
+						subagentModel = req.Model
+						return llm.Response{Message: llm.Assistant("done")}
+					},
+				},
+			}
+			c.Register(adapter)
 
-	sess.pluginAgents = map[string]plugin.Agent{
-		"my-plugin:fast-agent": {
-			Name:         "fast-agent",
-			Description:  "Fast agent",
-			Model:        "gpt-4.1-nano",
-			SystemPrompt: "You are fast.",
-			PluginName:   "my-plugin",
-		},
-	}
+			sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+				MaxSubagentDepth: 2,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+			sess.pluginAgents = map[string]plugin.Agent{
+				tc.agentKey: {
+					Name:         tc.agentName,
+					Description:  tc.description,
+					Model:        tc.model,
+					SystemPrompt: tc.systemPrompt,
+					PluginName:   "my-plugin",
+				},
+			}
 
-	result, err := sess.spawnAgent(ctx, "do it fast", "", "", 10, "my-plugin:fast-agent", "", nil, nil)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 
-	var parsed map[string]any
-	json.Unmarshal([]byte(result.(string)), &parsed)
-	agentID := parsed["agent_id"].(string)
-	waitForRuntimeSubagent(t, sess, agentID)
+			result, err := sess.spawnAgent(ctx, tc.prompt, "", "", 10, tc.agentKey, "", nil, nil)
+			if err != nil {
+				t.Fatalf("spawnAgent: %v", err)
+			}
 
-	// The subagent's LLM request should use the plugin agent's model
-	if subagentModel != "gpt-4.1-nano" {
-		t.Errorf("subagent model = %q, want %q", subagentModel, "gpt-4.1-nano")
-	}
-}
+			var parsed map[string]any
+			json.Unmarshal([]byte(result.(string)), &parsed)
+			agentID := parsed["agent_id"].(string)
+			waitForRuntimeSubagent(t, sess, agentID)
 
-func TestSpawnAgent_PluginAgentType_InheritModel(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-
-	var subagentModel string
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				subagentModel = req.Model
-				return llm.Response{Message: llm.Assistant("done")}
-			},
-		},
-	}
-	c.Register(adapter)
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	sess.pluginAgents = map[string]plugin.Agent{
-		"my-plugin:helper": {
-			Name:         "helper",
-			Description:  "Helper agent",
-			Model:        "inherit",
-			SystemPrompt: "You help.",
-			PluginName:   "my-plugin",
-		},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	result, err := sess.spawnAgent(ctx, "help me", "", "", 10, "my-plugin:helper", "", nil, nil)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
-	}
-
-	var parsed map[string]any
-	json.Unmarshal([]byte(result.(string)), &parsed)
-	agentID := parsed["agent_id"].(string)
-	waitForRuntimeSubagent(t, sess, agentID)
-
-	// With "inherit", the subagent should use the parent's model
-	if subagentModel != "gpt-5.2" {
-		t.Errorf("subagent model = %q, want parent model %q", subagentModel, "gpt-5.2")
+			// The subagent's LLM request should use the resolved model.
+			if subagentModel != tc.wantModel {
+				t.Errorf("subagent model = %q, want %s%q", subagentModel, tc.wantPrefix, tc.wantModel)
+			}
+		})
 	}
 }
 
