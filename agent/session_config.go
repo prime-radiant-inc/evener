@@ -145,6 +145,11 @@ type SessionConfig struct {
 	// parameter when given specific task delegations in user messages.
 	SystemPromptAsUser bool `json:"system_prompt_as_user,omitempty"`
 
+	// OpenAIResponsesContinuation controls whether OpenAI Responses continuation
+	// may be considered. Empty and "off" disable it; "auto" is still gated by
+	// endpoint support and continuation eligibility.
+	OpenAIResponsesContinuation string `json:"openai_responses_continuation,omitempty"`
+
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
 	// corresponding *provider.Profile. Injected by cmd/serf so that
 	// Session.SetModel can perform cross-provider switches without
@@ -308,30 +313,31 @@ func (c *SessionConfig) applyDefaults() {
 // round-trip test guards against any field being dropped or misrouted.
 func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 	return schema.ConfigSnapshot{
-		MaxToolRoundsPerInput:   c.MaxToolRoundsPerInput,
-		MaxTurns:                c.MaxTurns,
-		DefaultCommandTimeoutMS: c.DefaultCommandTimeoutMS,
-		MaxCommandTimeoutMS:     c.MaxCommandTimeoutMS,
-		MaxSubagentDepth:        c.MaxSubagentDepth,
-		ToolOutputLimits:        c.ToolOutputLimits,
-		UserInstructionOverride: c.UserInstructionOverride,
-		AgentName:               c.AgentName,
-		ReasoningEffort:         c.ReasoningEffort,
-		SkillsDirs:              c.SkillsDirs,
-		MCPConfigFiles:          c.MCPConfigFiles,
-		MCPInline:               c.MCPInline,
-		PluginDirs:              c.PluginDirs,
-		SystemPromptFile:        c.SystemPromptFile,
-		SystemPromptAppend:      c.SystemPromptAppend,
-		NoProjectPrompts:        c.NoProjectPrompts,
-		NonInteractive:          c.NonInteractive,
-		ContextStrategy:         c.ContextStrategy,
-		ShareTasksWithChildren:  c.ShareTasksWithChildren,
-		ResultToolName:          c.ResultToolName,
-		EnableLoopDetection:     c.EnableLoopDetection,
-		LoopDetectionWindow:     c.LoopDetectionWindow,
-		ModelFallbacks:          c.ModelFallbacks,
-		SystemPromptAsUser:      c.SystemPromptAsUser,
+		MaxToolRoundsPerInput:       c.MaxToolRoundsPerInput,
+		MaxTurns:                    c.MaxTurns,
+		DefaultCommandTimeoutMS:     c.DefaultCommandTimeoutMS,
+		MaxCommandTimeoutMS:         c.MaxCommandTimeoutMS,
+		MaxSubagentDepth:            c.MaxSubagentDepth,
+		ToolOutputLimits:            c.ToolOutputLimits,
+		UserInstructionOverride:     c.UserInstructionOverride,
+		AgentName:                   c.AgentName,
+		ReasoningEffort:             c.ReasoningEffort,
+		SkillsDirs:                  c.SkillsDirs,
+		MCPConfigFiles:              c.MCPConfigFiles,
+		MCPInline:                   c.MCPInline,
+		PluginDirs:                  c.PluginDirs,
+		SystemPromptFile:            c.SystemPromptFile,
+		SystemPromptAppend:          c.SystemPromptAppend,
+		NoProjectPrompts:            c.NoProjectPrompts,
+		NonInteractive:              c.NonInteractive,
+		ContextStrategy:             c.ContextStrategy,
+		ShareTasksWithChildren:      c.ShareTasksWithChildren,
+		ResultToolName:              c.ResultToolName,
+		EnableLoopDetection:         c.EnableLoopDetection,
+		LoopDetectionWindow:         c.LoopDetectionWindow,
+		ModelFallbacks:              c.ModelFallbacks,
+		SystemPromptAsUser:          c.SystemPromptAsUser,
+		OpenAIResponsesContinuation: c.OpenAIResponsesContinuation,
 	}
 }
 
@@ -342,29 +348,30 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 // after loading a meta.json or snapshot from disk.
 func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 	return SessionConfig{
-		MaxToolRoundsPerInput:   s.MaxToolRoundsPerInput,
-		MaxTurns:                s.MaxTurns,
-		DefaultCommandTimeoutMS: s.DefaultCommandTimeoutMS,
-		MaxCommandTimeoutMS:     s.MaxCommandTimeoutMS,
-		MaxSubagentDepth:        s.MaxSubagentDepth,
-		ToolOutputLimits:        s.ToolOutputLimits,
-		UserInstructionOverride: s.UserInstructionOverride,
-		AgentName:               s.AgentName,
-		ReasoningEffort:         s.ReasoningEffort,
-		SkillsDirs:              s.SkillsDirs,
-		MCPConfigFiles:          s.MCPConfigFiles,
-		MCPInline:               s.MCPInline,
-		PluginDirs:              s.PluginDirs,
-		SystemPromptFile:        s.SystemPromptFile,
-		SystemPromptAppend:      s.SystemPromptAppend,
-		NoProjectPrompts:        s.NoProjectPrompts,
-		NonInteractive:          s.NonInteractive,
-		ContextStrategy:         s.ContextStrategy,
-		ShareTasksWithChildren:  s.ShareTasksWithChildren,
-		ResultToolName:          s.ResultToolName,
-		EnableLoopDetection:     s.EnableLoopDetection,
-		LoopDetectionWindow:     s.LoopDetectionWindow,
-		ModelFallbacks:          s.ModelFallbacks,
-		SystemPromptAsUser:      s.SystemPromptAsUser,
+		MaxToolRoundsPerInput:       s.MaxToolRoundsPerInput,
+		MaxTurns:                    s.MaxTurns,
+		DefaultCommandTimeoutMS:     s.DefaultCommandTimeoutMS,
+		MaxCommandTimeoutMS:         s.MaxCommandTimeoutMS,
+		MaxSubagentDepth:            s.MaxSubagentDepth,
+		ToolOutputLimits:            s.ToolOutputLimits,
+		UserInstructionOverride:     s.UserInstructionOverride,
+		AgentName:                   s.AgentName,
+		ReasoningEffort:             s.ReasoningEffort,
+		SkillsDirs:                  s.SkillsDirs,
+		MCPConfigFiles:              s.MCPConfigFiles,
+		MCPInline:                   s.MCPInline,
+		PluginDirs:                  s.PluginDirs,
+		SystemPromptFile:            s.SystemPromptFile,
+		SystemPromptAppend:          s.SystemPromptAppend,
+		NoProjectPrompts:            s.NoProjectPrompts,
+		NonInteractive:              s.NonInteractive,
+		ContextStrategy:             s.ContextStrategy,
+		ShareTasksWithChildren:      s.ShareTasksWithChildren,
+		ResultToolName:              s.ResultToolName,
+		EnableLoopDetection:         s.EnableLoopDetection,
+		LoopDetectionWindow:         s.LoopDetectionWindow,
+		ModelFallbacks:              s.ModelFallbacks,
+		SystemPromptAsUser:          s.SystemPromptAsUser,
+		OpenAIResponsesContinuation: s.OpenAIResponsesContinuation,
 	}
 }
