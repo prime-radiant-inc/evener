@@ -244,11 +244,20 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		}
 		return req
 	}
+	req = s.applyResponsesContinuationShadowEstimate(req)
+	if req.ContinuationDiagnostic == "continuation_shadow_estimate_unavailable" {
+		req.HistoryMode = llm.HistoryModeFullHistory
+		req.PreviousResponseID = ""
+		req.ConversationID = ""
+		req.Continuation = nil
+		req.FullHistoryFallbackMessages = nil
+		return responsesContinuationWithInputEstimate(req)
+	}
 
 	plan, err := s.client.PlanResponsesContinuation(ctx, req)
 	if err != nil {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return req
+		return responsesContinuationWithInputEstimate(req)
 	}
 	support := llm.ResponsesContinuationSupportFor(registry, plan.EndpointFamily)
 	decision := llm.DecideResponsesContinuationForRequest(
@@ -258,7 +267,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	)
 	if decision.HistoryMode != llm.HistoryModeResponsesDelta {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return req
+		return responsesContinuationWithInputEstimate(req)
 	}
 	if !plan.ContinuationStorageAllowed &&
 		support.StorageShapeProven &&
@@ -272,7 +281,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	}
 	if !plan.ContinuationStorageAllowed {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return req
+		return responsesContinuationWithInputEstimate(req)
 	}
 	if s.responsesContinuationDisabledForPlan(req, plan, stream) {
 		return responsesContinuationFullHistoryRequestForPlan(req, plan)
@@ -281,7 +290,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	reservation := reserveResponsesContinuationHistoryBase(historyTurns)
 	if !responsesContinuationHistoryBaseStillCurrent(reservation, historyTurns) {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return req
+		return responsesContinuationWithInputEstimate(req)
 	}
 
 	candidate, anchorDecision := selectResponsesContinuationAnchorCandidate(s.cfg, historyTurns)
@@ -307,7 +316,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
 			ChatFallbackHistoryLen:  len(req.FullHistoryFallbackMessages),
 		}
-		return req
+		return responsesContinuationWithInputEstimate(req)
 	}
 
 	return responsesContinuationFullHistoryRequestForPlan(req, plan)
@@ -323,6 +332,36 @@ func responsesContinuationFullHistoryRequestForPlan(req llm.Request, plan llm.Re
 		StoragePolicyLabel:      plan.StoragePolicyLabel,
 		StorageScopeFingerprint: plan.StorageScopeFingerprint,
 	}
+	return responsesContinuationWithInputEstimate(req)
+}
+
+func (s *Session) applyResponsesContinuationShadowEstimate(req llm.Request) llm.Request {
+	shadowReq := req
+	shadowReq.HistoryMode = llm.HistoryModeFullHistory
+	shadowReq.PreviousResponseID = ""
+	shadowReq.ConversationID = ""
+	shadowReq.Continuation = nil
+	shadowReq.FullHistoryFallbackMessages = nil
+	tokens, ok := s.estimateResponsesContinuationShadow(shadowReq)
+	if !ok {
+		req.HistoryMode = llm.HistoryModeFullHistory
+		req.ContinuationDiagnostic = "continuation_shadow_estimate_unavailable"
+		return req
+	}
+	req.FullHistoryInputTokensEstimate = tokens
+	return responsesContinuationWithInputEstimate(req)
+}
+
+func (s *Session) estimateResponsesContinuationShadow(req llm.Request) (int, bool) {
+	if s.cfg.testOnly.responsesContinuationShadowEstimateFunc != nil {
+		return s.cfg.testOnly.responsesContinuationShadowEstimateFunc(req)
+	}
+	count := llm.EstimateInputTokens(req)
+	return count.Tokens, count.Tokens > 0
+}
+
+func responsesContinuationWithInputEstimate(req llm.Request) llm.Request {
+	req.InputTokensEstimate = llm.EstimateInputTokens(req).Tokens
 	return req
 }
 

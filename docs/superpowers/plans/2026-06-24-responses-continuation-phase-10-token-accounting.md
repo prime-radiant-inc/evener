@@ -140,7 +140,7 @@ git commit -m "feat(llm): expose responses continuation token estimates"
 - Modify: `agent/session_model_call.go`
 - Create: `agent/session_openai_continuation_phase10_test.go`
 
-- [ ] **Step 1: Add RED delta estimate test**
+- [x] **Step 1: Add RED delta estimate test**
 
 Create `agent/session_openai_continuation_phase10_test.go` with a fake adapter and this test:
 
@@ -212,7 +212,7 @@ func TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadow
 }
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadowEstimate' -count=1 -v
@@ -220,7 +220,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesConti
 
 Expected: compile failure for the test-only hook and missing request fields, or runtime failure because estimates are zero.
 
-- [ ] **Step 3: Implement estimate helper**
+- [x] **Step 3: Implement estimate helper**
 
 Add to `testConfig` in `agent/session_config.go`:
 
@@ -262,7 +262,7 @@ Call `applyResponsesContinuationShadowEstimate` immediately after `buildModelReq
 
 After delta shaping or full-history fallback planning, set `InputTokensEstimate = llm.EstimateInputTokens(req).Tokens` on the final request before dispatch.
 
-- [ ] **Step 4: Run focused test**
+- [x] **Step 4: Run focused test**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10DeltaCarriesFullHistoryShadowEstimate' -count=1 -v
@@ -270,7 +270,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesConti
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git status --short

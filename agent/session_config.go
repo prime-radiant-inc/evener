@@ -186,6 +186,10 @@ type testConfig struct {
 	// responsesContinuationSupportRegistry enables deterministic continuation
 	// slices without changing production endpoint-family defaults.
 	responsesContinuationSupportRegistry map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport
+
+	// responsesContinuationShadowEstimateFunc makes shadow-estimate failure
+	// deterministic in package-agent tests.
+	responsesContinuationShadowEstimateFunc func(llm.Request) (int, bool)
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the
