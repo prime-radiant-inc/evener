@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/llm"
@@ -133,4 +135,179 @@ func requestShapeMatrixRequest(base llm.Request, apply func(*llm.Request)) llm.R
 	req := base
 	apply(&req)
 	return req
+}
+
+func TestResponsesContinuationDiscovery_MalformedToolCallPayloadSizeProbe(t *testing.T) {
+	storeTrue := true
+	adapter := &Adapter{}
+	malformedCall := llm.Message{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_bad",
+				Name:      "my_strict_tool",
+				Arguments: json.RawMessage(`{"value": broken`),
+				Type:      "function",
+			},
+		}},
+	}
+	errorResult := llm.ToolResultNamed(
+		"call_bad",
+		"my_strict_tool",
+		map[string]any{
+			"is_error": true,
+			"message":  "invalid tool arguments JSON",
+		},
+		true,
+	)
+
+	fullBody, err := adapter.buildRequestBody(llm.Request{
+		Model: "gpt-5.2",
+		Messages: []llm.Message{
+			llm.System("stable system prompt"),
+			llm.User(strings.Repeat("prior context marker ", 40)),
+			malformedCall,
+			errorResult,
+			llm.User("recover now"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("full buildRequestBody: %v", err)
+	}
+	deltaBody, err := adapter.buildRequestBody(llm.Request{
+		Model:              "gpt-5.2",
+		Messages:           []llm.Message{errorResult},
+		PreviousResponseID: "resp_bad",
+		Store:              &storeTrue,
+	})
+	if err != nil {
+		t.Fatalf("delta buildRequestBody: %v", err)
+	}
+
+	fullInput := discoveryInputItems(t, fullBody)
+	deltaInput := discoveryInputItems(t, deltaBody)
+	if discoveryFindItem(fullInput, "function_call", "call_id", "call_bad") == nil {
+		t.Fatalf("full-history probe missing historical function_call: %#v", fullInput)
+	}
+	if discoveryFindItem(deltaInput, "function_call", "call_id", "call_bad") != nil {
+		t.Fatalf("delta probe must omit historical function_call: %#v", deltaInput)
+	}
+	if discoveryFindItem(deltaInput, "function_call_output", "call_id", "call_bad") == nil {
+		t.Fatalf("delta probe missing tool output for call_bad: %#v", deltaInput)
+	}
+	if deltaBody["previous_response_id"] != "resp_bad" {
+		t.Fatalf("delta previous_response_id = %#v", deltaBody["previous_response_id"])
+	}
+
+	result := discoveryPayloadSizeResult(t, fullBody, deltaBody)
+	if result.GrossOmittedHistoricalItemBytes <= 0 {
+		t.Fatalf("gross omitted historical item bytes = %d, want positive", result.GrossOmittedHistoricalItemBytes)
+	}
+	if result.AddedContinuationOverheadBytes <= 0 {
+		t.Fatalf("added continuation overhead bytes = %d, want positive", result.AddedContinuationOverheadBytes)
+	}
+	if result.NetBodySizeDeltaBytes <= 0 {
+		t.Fatalf("net body-size delta = %d, want positive; result=%+v", result.NetBodySizeDeltaBytes, result)
+	}
+	t.Logf("phase0b payload_size_result=%+v", result)
+}
+
+type discoveryPayloadSize struct {
+	FullHistoryBytes                int
+	ResponsesDeltaBytes             int
+	GrossOmittedHistoricalItemBytes int
+	AddedContinuationOverheadBytes  int
+	NetBodySizeDeltaBytes           int
+}
+
+func discoveryPayloadSizeResult(t *testing.T, fullBody, deltaBody map[string]any) discoveryPayloadSize {
+	t.Helper()
+	fullBytes := len(discoveryJSON(t, fullBody))
+	deltaBytes := len(discoveryJSON(t, deltaBody))
+	omitted := 0
+	for _, item := range discoveryInputItems(t, fullBody) {
+		itemMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if itemMap["type"] == "function_call" || discoveryItemContainsText(itemMap, "prior context marker") {
+			omitted += len(discoveryJSON(t, itemMap))
+		}
+	}
+	added := len(discoveryJSON(t, map[string]any{
+		"previous_response_id": deltaBody["previous_response_id"],
+		"store":                deltaBody["store"],
+	}))
+	return discoveryPayloadSize{
+		FullHistoryBytes:                fullBytes,
+		ResponsesDeltaBytes:             deltaBytes,
+		GrossOmittedHistoricalItemBytes: omitted,
+		AddedContinuationOverheadBytes:  added,
+		NetBodySizeDeltaBytes:           fullBytes - deltaBytes,
+	}
+}
+
+func discoveryInputItems(t *testing.T, body map[string]any) []any {
+	t.Helper()
+	input, ok := body["input"].([]map[string]any)
+	if ok {
+		items := make([]any, len(input))
+		for i := range input {
+			items[i] = input[i]
+		}
+		return items
+	}
+	anyInput, ok := body["input"].([]any)
+	if !ok {
+		t.Fatalf("input = %#v, want slice", body["input"])
+	}
+	return anyInput
+}
+
+func discoveryFindItem(items []any, itemType, key, value string) map[string]any {
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["type"] == itemType && item[key] == value {
+			return item
+		}
+	}
+	return nil
+}
+
+func discoveryItemContainsText(item map[string]any, needle string) bool {
+	content, ok := item["content"].([]map[string]any)
+	if ok {
+		for _, part := range content {
+			if text, _ := part["text"].(string); strings.Contains(text, needle) {
+				return true
+			}
+		}
+	}
+	contentAny, ok := item["content"].([]any)
+	if !ok {
+		return false
+	}
+	for _, partAny := range contentAny {
+		part, ok := partAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text, _ := part["text"].(string); strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func discoveryJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal discovery JSON: %v", err)
+	}
+	return data
 }
