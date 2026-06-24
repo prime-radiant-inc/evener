@@ -47,22 +47,22 @@ The appwire projector should correlate a skill activation with the closest prece
 - the tool name is `use_skill`,
 - the tool arguments identify the same skill name as the activation event,
 - the tool call is in the same turn, and
-- no later non-correlatable transcript item has made the relationship ambiguous.
+- the activation event is the next non-tool-output event after that `use_skill` completion, so the relationship is not inferred across assistant text, another tool call, a system message, or a user/steering event.
 
 When correlated, the projector should attach the activation detail to the `use_skill` command-execution item rather than emit a separate `systemMessage`.
 
-The projected item should preserve the existing tool-call identity (`callId` and item ID), and include enough structured data for clients to render an honest detail view without parsing prose. A suitable raw payload is:
+The projected item must preserve the existing tool-call identity (`callId` and item ID), and must carry this structured raw payload so clients can render the detail view without parsing prose:
 
 ```json
 {
-  "skillActivation": {
+  "skill_activation": {
     "name": "superpowers:using-superpowers",
     "text": "Activated skill: superpowers:using-superpowers"
   }
 }
 ```
 
-The exact JSON field names should follow existing appwire raw-field conventions where practical.
+Use the snake_case `skill_activation` key in `ThreadItem.Raw`; client code may normalize it to camelCase internally if needed.
 
 ### Frontend rendering
 
