@@ -206,7 +206,7 @@ Use a fake adapter with enabled continuation plan and fallback-capable path:
 
 Assert the request list is `[responses_delta, full_history_fallback]`.
 
-- [ ] **Step 2: Add RED sanitizer-on-fallback test**
+- [x] **Step 2: Add sanitizer-on-fallback proof test**
 
 Use an eligible anchor containing a malformed historical tool call and a linked tool-result delta. Force the first delta attempt to return `previous_response_not_found`, then inspect the full-history fallback request. Assert:
 
@@ -215,19 +215,19 @@ Use an eligible anchor containing a malformed historical tool call and a linked 
 - the fallback request has no `PreviousResponseID`;
 - the fallback request `HistoryMode == full_history_fallback`.
 
-- [ ] **Step 3: Run RED tests**
+- [x] **Step 3: Run focused retry and sanitizer tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9.*Retry|TestSession_OpenAIResponsesContinuationPhase9.*Sanitizer' -count=1 -v
 ```
 
-Expected: retry test passes after Phase 8 only if sidecar work is complete; sanitizer test fails until full-history fallback messages are verified on the real-session delta path.
+Observed: retry and sanitizer tests passed after the Phase 9 sidecar work because full-history fallback messages already flow through the existing OpenAI full-history serializer.
 
-- [ ] **Step 4: Implement only missing sanitizer glue**
+- [x] **Step 4: Implement only missing sanitizer glue**
 
 If fallback messages already use `req.Messages` before delta shaping, no code change is needed. If they bypass the existing OpenAI full-history sanitizer, route the same fallback message slice through the existing request serialization path rather than adding a parallel sanitizer.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9.*Retry|TestSession_OpenAIResponsesContinuationPhase9.*Sanitizer|TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay' -count=1 -v

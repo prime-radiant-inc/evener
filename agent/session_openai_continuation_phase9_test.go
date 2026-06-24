@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +13,7 @@ import (
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providers/openai"
 )
 
 func TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarriesFullHistorySidecar(t *testing.T) {
@@ -148,6 +152,140 @@ func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelectio
 	}
 }
 
+func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalformedToolCall(t *testing.T) {
+	dir := t.TempDir()
+	const malformedArgs = `{"value": broken`
+
+	var mu sync.Mutex
+	var requestBodies [][]byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+			http.NotFound(w, r)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		mu.Lock()
+		requestBodies = append(requestBodies, append([]byte(nil), body...))
+		requestIndex := len(requestBodies)
+		mu.Unlock()
+
+		switch requestIndex {
+		case 1:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"Previous response not found","code":"previous_response_not_found","type":"invalid_request_error"}}`))
+		case 2:
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, _ := w.(http.Flusher)
+			args := mustJSON(t, map[string]any{
+				"message":  "phase 9 sanitizer recovered",
+				"end_turn": true,
+				"output": map[string]any{
+					"message":   "",
+					"data":      map[string]any{},
+					"artifacts": []string{},
+				},
+			})
+			writeResponsesFunctionCall(t, w, flusher, "resp_phase9_done", "call_phase9_done", "communicate", args)
+		default:
+			t.Errorf("unexpected request %d body: %s", requestIndex, string(body))
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	client := llm.NewClient()
+	client.Register(&phase9PlanningOpenAIAdapter{
+		inner: &openai.Adapter{
+			APIKey:  "test-key",
+			BaseURL: srv.URL,
+			Client:  srv.Client(),
+		},
+	})
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:                    dir,
+		OpenAIResponsesContinuation: "auto",
+		testOnly: testConfig{
+			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
+				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	drainSessionEvents(sess)
+
+	anchor := phase9MatchingAnchor("resp_phase9_sanitizer")
+	anchor.Message = llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+		Kind: llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{
+			ID:        "call_phase9_bad",
+			Name:      "my_strict_tool",
+			Type:      "function",
+			Arguments: []byte(malformedArgs),
+		},
+	}}}
+	sess.history = append(sess.history,
+		schema.NewTurn(schema.TurnUserInput, llm.User("phase9 prior user marker")),
+		anchor,
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_phase9_bad", "my_strict_tool", map[string]any{
+			"is_error": true,
+			"message":  "invalid tool arguments JSON",
+		}, true)),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got, err := sess.ProcessInput(ctx, "phase9 current user marker", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got != "phase 9 sanitizer recovered" {
+		t.Fatalf("ProcessInput output = %q, want recovered message", got)
+	}
+
+	mu.Lock()
+	bodies := append([][]byte(nil), requestBodies...)
+	mu.Unlock()
+	if len(bodies) != 2 {
+		t.Fatalf("OpenAI Responses request count = %d, want 2", len(bodies))
+	}
+
+	first := decodeResponsesRequest(t, bodies[0])
+	if first["previous_response_id"] != "resp_phase9_sanitizer" {
+		t.Fatalf("first request previous_response_id = %#v, want resp_phase9_sanitizer", first["previous_response_id"])
+	}
+	if call := findResponsesItem(t, responsesInputItems(t, first), "function_call", "call_id", "call_phase9_bad"); call != nil {
+		t.Fatalf("delta request replayed pre-anchor malformed function_call: %#v", call)
+	}
+
+	second := decodeResponsesRequest(t, bodies[1])
+	if _, ok := second["previous_response_id"]; ok {
+		t.Fatalf("full-history fallback request must not carry previous_response_id: %s", string(bodies[1]))
+	}
+	input := responsesInputItems(t, second)
+	replayedCall := findResponsesItem(t, input, "function_call", "call_id", "call_phase9_bad")
+	if replayedCall == nil {
+		t.Fatalf("fallback request missing replayed function_call for call_phase9_bad: %#v", input)
+	}
+	if gotArgs, _ := replayedCall["arguments"].(string); gotArgs != "{}" {
+		t.Fatalf("fallback malformed function_call arguments = %q, want {}", gotArgs)
+	}
+	if output := findResponsesItem(t, input, "function_call_output", "call_id", "call_phase9_bad"); output == nil {
+		t.Fatalf("fallback request missing linked function_call_output for call_phase9_bad: %#v", input)
+	}
+}
+
 func TestSession_OpenAIResponsesContinuationPhase9OrphanedToolResultGateUsesFullHistory(t *testing.T) {
 	anchor := phase9MatchingAnchor("resp_phase9_orphan")
 	anchor.Message = llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
@@ -215,6 +353,26 @@ func (a *phase9RetryAdapter) Requests() []llm.Request {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]llm.Request(nil), a.requests...)
+}
+
+type phase9PlanningOpenAIAdapter struct {
+	inner *openai.Adapter
+}
+
+func (a *phase9PlanningOpenAIAdapter) Name() string { return a.inner.Name() }
+
+func (a *phase9PlanningOpenAIAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	return a.inner.Complete(ctx, req)
+}
+
+func (a *phase9PlanningOpenAIAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return a.inner.Stream(ctx, req)
+}
+
+func (a *phase9PlanningOpenAIAdapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+	plan := phase4DIContinuationPlan(req)
+	plan.CanFallbackToChat = true
+	return plan, nil
 }
 
 func TestSession_OpenAIResponsesContinuationPhase9MediaGateUsesFullHistory(t *testing.T) {
