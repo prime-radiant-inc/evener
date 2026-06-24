@@ -231,7 +231,7 @@ For Phase 4A, only `public-openai-store` changes request fields, and it changes 
 - Modify: `llm/providers/openai/adapter.go`
 - Modify: `llm/providers/openai/adapter_test.go`
 
-- [ ] **Step 1: Add failing OpenAI planner storage-scope tests**
+- [x] **Step 1: Add failing OpenAI planner storage-scope tests**
 
 Add tests proving:
 
@@ -239,7 +239,7 @@ Add tests proving:
 - public OpenAI `Store=true` plans use `public-openai-store` and `ContinuationStorageAllowed=true`;
 - public OpenAI `Store=false` or omitted store plans use `public-openai-no-store` and `ContinuationStorageAllowed=false`;
 - Codex backend plans use `codex-storage-unproven` and `ContinuationStorageAllowed=false`;
-- public OpenAI and Codex scopes differ even when model and request fingerprint match;
+- public OpenAI and Codex scopes differ by endpoint-family scope fields, independent of request fingerprint compatibility;
 - changing base URL, path, org hash, project hash, credential hash, account/workspace hash, conversation hash, or storage policy changes the storage-scope fingerprint;
 - raw API keys, bearer tokens, OAuth tokens, raw org/project IDs, raw account/workspace IDs, and raw conversation IDs do not appear in the plan dump.
 
@@ -251,7 +251,7 @@ GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanR
 
 Expected: FAIL because planner storage scope is empty.
 
-- [ ] **Step 2: Thread the continuation hasher into adapters**
+- [x] **Step 2: Thread the continuation hasher into adapters**
 
 Add `ContinuationHasher *llm.ContinuationHasher` to `Adapter`.
 
@@ -269,7 +269,7 @@ params.ContinuationHasher = hasher
 
 Do not auto-create a hasher from `NewForInstance` when tests call it with empty `StateHome` and nil `ContinuationHasher`; direct tests should pass a hasher explicitly.
 
-- [ ] **Step 3: Compute OpenAI storage scope in the planner**
+- [x] **Step 3: Compute OpenAI storage scope in the planner**
 
 In `PlanResponsesContinuation`:
 
@@ -288,7 +288,7 @@ If the hasher is missing or scope hashing fails, return the error so session cod
 
 ### Task 5: Proof, Verification, Commit
 
-- [ ] **Step 1: Add proof artifact**
+- [x] **Step 1: Add proof artifact**
 
 Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-4a.md` with:
 
@@ -297,20 +297,20 @@ Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-4a.md` w
 - contracts proven;
 - explicit statement that runtime continuation, anchor selection, persistence, and endpoint enablement remain deferred.
 
-- [ ] **Step 2: Run focused tests**
+- [x] **Step 2: Run focused tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestContinuationStorageScope|TestContinuationHasher_StorageScope|TestContinuationStoreOverride|TestPlanResponsesContinuation|TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields|TestClient_PlanResponsesContinuation' -count=1 -v
-GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation|TestNewForInstance_Continuation|TestNewFromEnv_Continuation|TestInstanceFactory_Continuation' -count=1 -v
+GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation|TestNewForInstance_Continuation|TestNewFromEnv_Continuation|TestInstanceParamsFromConfig|TestInstanceFactory_EnvTunables' -count=1 -v
 GOCACHE=/tmp/serf-gocache go test ./agent -run '^TestOpenAIResponsesContinuationFingerprint_' -count=1 -v
 git diff --check
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```sh
 git status --short
-git add llm/responses_continuation.go llm/responses_continuation_test.go llm/continuation_secret.go llm/continuation_secret_test.go llm/providers/openai/adapter.go llm/providers/openai/responses_continuation_fingerprint.go llm/providers/openai/adapter_test.go agent/responses_continuation_fingerprint_test.go docs/superpowers/proofs/2026-06-24-responses-continuation-phase-4a.md
+git add llm/providers/openai/adapter.go llm/providers/openai/adapter_test.go agent/responses_continuation_fingerprint_test.go docs/superpowers/plans/2026-06-24-responses-continuation-phase-4a-storage-scope.md docs/superpowers/proofs/2026-06-24-responses-continuation-phase-4a.md
 git commit -m "feat(llm): add responses continuation storage scope planning"
 ```
 

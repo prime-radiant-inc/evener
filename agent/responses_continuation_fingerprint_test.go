@@ -46,9 +46,10 @@ func openAIContinuationPromptDataForTest(today string) promptData {
 func openAIResponsesContinuationClientForTest(t *testing.T) *llm.Client {
 	t.Helper()
 	adapter, err := openaiadapter.NewForInstance(openaiadapter.OpenAIInstanceParams{
-		Name:      "openai",
-		APIKey:    "sk-test",
-		StateHome: t.TempDir(),
+		Name:               "openai",
+		APIKey:             "sk-test",
+		StateHome:          t.TempDir(),
+		ContinuationHasher: llm.NewContinuationHasher([]byte("01234567890123456789012345678901")),
 	})
 	if err != nil {
 		t.Fatalf("NewForInstance: %v", err)

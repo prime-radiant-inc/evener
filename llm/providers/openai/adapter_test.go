@@ -4240,18 +4240,37 @@ func TestNewForInstance_ContinuationAuthScope_APIKey(t *testing.T) {
 	if a.ProjectIDHash != wantProjectHash {
 		t.Fatalf("ProjectIDHash = %q, want %q", a.ProjectIDHash, wantProjectHash)
 	}
+	if a.ContinuationHasher != hasher {
+		t.Fatalf("ContinuationHasher was not retained on adapter")
+	}
 	if strings.Contains(a.AuthScopeIdentity.CredentialHash, "sk-test") {
 		t.Fatalf("CredentialHash leaks raw key: %q", a.AuthScopeIdentity.CredentialHash)
 	}
 }
 
+func TestNewForInstance_ContinuationHasherOptionalForDirectConstruction(t *testing.T) {
+	a, err := NewForInstance(OpenAIInstanceParams{
+		Name:   "work",
+		APIKey: "sk-test",
+	})
+	if err != nil {
+		t.Fatalf("NewForInstance: %v", err)
+	}
+	if a.ContinuationHasher != nil {
+		t.Fatalf("ContinuationHasher = %v, want nil without explicit test hasher", a.ContinuationHasher)
+	}
+}
+
 func TestAdapter_PlanResponsesContinuation_PublicUsesSanitizedScope(t *testing.T) {
+	hasher := openAIContinuationTestHasher()
 	a := &Adapter{
-		name:          "openai",
-		APIKey:        "sk-raw-secret",
-		ResponsesPath: defaultResponsesPath,
-		OrgID:         "org-raw",
-		ProjectID:     "proj-raw",
+		name:               "openai",
+		APIKey:             "sk-raw-secret",
+		BaseURL:            "https://api.openai.test/",
+		ResponsesPath:      defaultResponsesPath,
+		OrgID:              "org-raw",
+		ProjectID:          "proj-raw",
+		ContinuationHasher: hasher,
 		AuthScopeIdentity: llm.AuthScopeIdentity{
 			Version:        "cont-scope-v1",
 			AuthSource:     "api_key",
@@ -4274,15 +4293,44 @@ func TestAdapter_PlanResponsesContinuation_PublicUsesSanitizedScope(t *testing.T
 	if plan.OrgIDHash != a.OrgIDHash || plan.ProjectIDHash != a.ProjectIDHash {
 		t.Fatalf("org/project hashes = %q/%q, want %q/%q", plan.OrgIDHash, plan.ProjectIDHash, a.OrgIDHash, a.ProjectIDHash)
 	}
+	if plan.StoragePolicyLabel != llm.ResponsesStoragePolicyPublicOpenAINoStore {
+		t.Fatalf("StoragePolicyLabel = %q, want %q", plan.StoragePolicyLabel, llm.ResponsesStoragePolicyPublicOpenAINoStore)
+	}
+	if plan.ContinuationStorageAllowed {
+		t.Fatal("ContinuationStorageAllowed = true for public OpenAI no-store request")
+	}
+	if plan.StorageScopeFingerprint == "" || !strings.HasPrefix(plan.StorageScopeFingerprint, "cont-scope-v1:storage_scope:") {
+		t.Fatalf("StorageScopeFingerprint = %q, want cont-scope-v1 storage_scope prefix", plan.StorageScopeFingerprint)
+	}
+	if plan.StorageScope.Fingerprint != plan.StorageScopeFingerprint {
+		t.Fatalf("StorageScope.Fingerprint = %q, want %q", plan.StorageScope.Fingerprint, plan.StorageScopeFingerprint)
+	}
+	if plan.StorageScope.HashVersion != "cont-scope-v1" {
+		t.Fatalf("StorageScope.HashVersion = %q", plan.StorageScope.HashVersion)
+	}
+	if plan.StorageScope.Provider != "openai" ||
+		plan.StorageScope.EndpointFamily != string(llm.ResponsesEndpointFamilyOpenAIPublic) ||
+		plan.StorageScope.BaseURL != "https://api.openai.test" ||
+		plan.StorageScope.Path != defaultResponsesPath ||
+		plan.StorageScope.AuthSource != "api_key" ||
+		plan.StorageScope.CredentialHash != a.AuthScopeIdentity.CredentialHash ||
+		plan.StorageScope.OrgIDHash != a.OrgIDHash ||
+		plan.StorageScope.ProjectIDHash != a.ProjectIDHash ||
+		plan.StorageScope.StoragePolicy != llm.ResponsesStoragePolicyPublicOpenAINoStore {
+		t.Fatalf("StorageScope = %+v", plan.StorageScope)
+	}
 	assertPlanOmitsRawScopeValues(t, plan, "sk-raw-secret", "org-raw", "proj-raw")
 }
 
 func TestAdapter_PlanResponsesContinuation_CodexUsesSanitizedScope(t *testing.T) {
+	hasher := openAIContinuationTestHasher()
 	a := &Adapter{
-		name:             "openai",
-		APIKey:           "oauth-bearer-raw",
-		ResponsesPath:    defaultCodexResponses,
-		ChatGPTAccountID: "acct_raw",
+		name:               "openai",
+		APIKey:             "oauth-bearer-raw",
+		BaseURL:            "https://chatgpt.example.test/",
+		ResponsesPath:      defaultCodexResponses,
+		ChatGPTAccountID:   "acct_raw",
+		ContinuationHasher: hasher,
 		AuthScopeIdentity: llm.AuthScopeIdentity{
 			Version:        "cont-scope-v1",
 			AuthSource:     "oauth",
@@ -4302,11 +4350,148 @@ func TestAdapter_PlanResponsesContinuation_CodexUsesSanitizedScope(t *testing.T)
 	if plan.AuthScopeIdentity != a.AuthScopeIdentity {
 		t.Fatalf("AuthScopeIdentity = %+v, want %+v", plan.AuthScopeIdentity, a.AuthScopeIdentity)
 	}
+	if plan.StoragePolicyLabel != llm.ResponsesStoragePolicyCodexUnproven {
+		t.Fatalf("StoragePolicyLabel = %q, want %q", plan.StoragePolicyLabel, llm.ResponsesStoragePolicyCodexUnproven)
+	}
+	if plan.ContinuationStorageAllowed {
+		t.Fatal("ContinuationStorageAllowed = true for Codex storage-unproven request")
+	}
+	if plan.StorageScopeFingerprint == "" || !strings.HasPrefix(plan.StorageScopeFingerprint, "cont-scope-v1:storage_scope:") {
+		t.Fatalf("StorageScopeFingerprint = %q, want cont-scope-v1 storage_scope prefix", plan.StorageScopeFingerprint)
+	}
+	if plan.StorageScope.Provider != "openai" ||
+		plan.StorageScope.EndpointFamily != string(llm.ResponsesEndpointFamilyOpenAICodex) ||
+		plan.StorageScope.BaseURL != "https://chatgpt.example.test" ||
+		plan.StorageScope.Path != defaultCodexResponses ||
+		plan.StorageScope.AuthSource != "oauth" ||
+		plan.StorageScope.CredentialHash != a.AuthScopeIdentity.CredentialHash ||
+		plan.StorageScope.AccountHash != a.AuthScopeIdentity.AccountHash ||
+		plan.StorageScope.WorkspaceHash != a.AuthScopeIdentity.WorkspaceHash ||
+		plan.StorageScope.StoragePolicy != llm.ResponsesStoragePolicyCodexUnproven {
+		t.Fatalf("StorageScope = %+v", plan.StorageScope)
+	}
 	assertPlanOmitsRawScopeValues(t, plan, "oauth-bearer-raw", "acct_raw")
 }
 
-func TestAdapter_PlanResponsesContinuation_RequestFingerprintStableForEquivalentBody(t *testing.T) {
+func TestAdapter_PlanResponsesContinuation_PublicStorePolicyAllowsStorage(t *testing.T) {
+	a := openAIContinuationTestAdapter(defaultResponsesPath)
+	store := true
+
+	plan, err := a.PlanResponsesContinuation(llm.Request{Provider: "openai", Model: "gpt-5.4", Store: &store})
+	if err != nil {
+		t.Fatalf("PlanResponsesContinuation: %v", err)
+	}
+	if plan.StoragePolicyLabel != llm.ResponsesStoragePolicyPublicOpenAIStore {
+		t.Fatalf("StoragePolicyLabel = %q, want %q", plan.StoragePolicyLabel, llm.ResponsesStoragePolicyPublicOpenAIStore)
+	}
+	if !plan.ContinuationStorageAllowed {
+		t.Fatal("ContinuationStorageAllowed = false for public OpenAI store=true request")
+	}
+	if plan.StorageScope.StoragePolicy != llm.ResponsesStoragePolicyPublicOpenAIStore {
+		t.Fatalf("StorageScope.StoragePolicy = %q", plan.StorageScope.StoragePolicy)
+	}
+}
+
+func TestAdapter_PlanResponsesContinuation_PublicNoStorePoliciesDisallowStorage(t *testing.T) {
+	a := openAIContinuationTestAdapter(defaultResponsesPath)
+	for _, tc := range []struct {
+		name  string
+		store *bool
+	}{
+		{name: "omitted"},
+		{name: "false", store: boolPtr(false)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := a.PlanResponsesContinuation(llm.Request{Provider: "openai", Model: "gpt-5.4", Store: tc.store})
+			if err != nil {
+				t.Fatalf("PlanResponsesContinuation: %v", err)
+			}
+			if plan.StoragePolicyLabel != llm.ResponsesStoragePolicyPublicOpenAINoStore {
+				t.Fatalf("StoragePolicyLabel = %q, want %q", plan.StoragePolicyLabel, llm.ResponsesStoragePolicyPublicOpenAINoStore)
+			}
+			if plan.ContinuationStorageAllowed {
+				t.Fatal("ContinuationStorageAllowed = true for public OpenAI no-store request")
+			}
+		})
+	}
+}
+
+func TestAdapter_PlanResponsesContinuation_StorageScopeFingerprintChangesForScopeFields(t *testing.T) {
+	base := openAIContinuationStorageScopeFingerprintForTest(t, openAIContinuationTestAdapter(defaultResponsesPath), llm.Request{
+		Provider:       "openai",
+		Model:          "gpt-5.4",
+		ConversationID: "conv_1",
+	})
+
+	cases := []struct {
+		name string
+		a    *Adapter
+		req  llm.Request
+	}{
+		{name: "base url", a: openAIContinuationTestAdapterWithScope(defaultResponsesPath, "https://other.openai.test", openAIContinuationTestAuthScope(), "org_hash", "project_hash"), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_1"}},
+		{name: "path", a: openAIContinuationTestAdapter("/custom/responses"), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_1"}},
+		{name: "endpoint family", a: openAIContinuationTestAdapter(defaultCodexResponses), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_1"}},
+		{name: "auth source", a: openAIContinuationTestAdapterWithScope(defaultResponsesPath, "https://api.openai.test", llm.AuthScopeIdentity{Version: "cont-scope-v1", AuthSource: "oauth", CredentialHash: "credential_hash", AccountHash: "account_hash", WorkspaceHash: "workspace_hash"}, "", ""), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_1"}},
+		{name: "org hash", a: openAIContinuationTestAdapterWithScope(defaultResponsesPath, "https://api.openai.test", openAIContinuationTestAuthScope(), "other_org_hash", "project_hash"), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_1"}},
+		{name: "project hash", a: openAIContinuationTestAdapterWithScope(defaultResponsesPath, "https://api.openai.test", openAIContinuationTestAuthScope(), "org_hash", "other_project_hash"), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_1"}},
+		{name: "credential hash", a: openAIContinuationTestAdapterWithScope(defaultResponsesPath, "https://api.openai.test", llm.AuthScopeIdentity{Version: "cont-scope-v1", AuthSource: "api_key", CredentialHash: "other_credential_hash"}, "org_hash", "project_hash"), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_1"}},
+		{name: "account hash", a: openAIContinuationTestAdapterWithScope(defaultResponsesPath, "https://api.openai.test", llm.AuthScopeIdentity{Version: "cont-scope-v1", AuthSource: "api_key", CredentialHash: "credential_hash", AccountHash: "account_hash"}, "org_hash", "project_hash"), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_1"}},
+		{name: "workspace hash", a: openAIContinuationTestAdapterWithScope(defaultResponsesPath, "https://api.openai.test", llm.AuthScopeIdentity{Version: "cont-scope-v1", AuthSource: "api_key", CredentialHash: "credential_hash", WorkspaceHash: "workspace_hash"}, "org_hash", "project_hash"), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_1"}},
+		{name: "conversation hash", a: openAIContinuationTestAdapter(defaultResponsesPath), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_2"}},
+		{name: "storage policy", a: openAIContinuationTestAdapter(defaultResponsesPath), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_1", Store: boolPtr(true)}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := openAIContinuationStorageScopeFingerprintForTest(t, tc.a, tc.req)
+			if got == base {
+				t.Fatalf("storage scope fingerprint did not change for %s: %s", tc.name, got)
+			}
+		})
+	}
+}
+
+func TestAdapter_PlanResponsesContinuation_StorageScopeSeparatesEndpointFamilies(t *testing.T) {
+	req := llm.Request{Provider: "openai", Model: "gpt-5.4"}
+	publicPlan, err := openAIContinuationTestAdapter(defaultResponsesPath).PlanResponsesContinuation(req)
+	if err != nil {
+		t.Fatalf("public PlanResponsesContinuation: %v", err)
+	}
+	codexPlan, err := openAIContinuationTestAdapter(defaultCodexResponses).PlanResponsesContinuation(req)
+	if err != nil {
+		t.Fatalf("codex PlanResponsesContinuation: %v", err)
+	}
+
+	if publicPlan.StorageScopeFingerprint == codexPlan.StorageScopeFingerprint {
+		t.Fatalf("storage scope fingerprints match across endpoint families: %s", publicPlan.StorageScopeFingerprint)
+	}
+}
+
+func TestAdapter_PlanResponsesContinuation_ConversationIDHashedNotLeaked(t *testing.T) {
+	plan, err := openAIContinuationTestAdapter(defaultResponsesPath).PlanResponsesContinuation(llm.Request{
+		Provider:       "openai",
+		Model:          "gpt-5.4",
+		ConversationID: "conv_raw_secret",
+	})
+	if err != nil {
+		t.Fatalf("PlanResponsesContinuation: %v", err)
+	}
+	if plan.StorageScope.ConversationIDHash == "" {
+		t.Fatal("ConversationIDHash = empty")
+	}
+	assertPlanOmitsRawScopeValues(t, plan, "conv_raw_secret")
+}
+
+func TestAdapter_PlanResponsesContinuation_RequiresContinuationHasherForStorageScope(t *testing.T) {
 	a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: defaultResponsesPath}
+	_, err := a.PlanResponsesContinuation(llm.Request{Provider: "openai", Model: "gpt-5.4"})
+	if !errors.Is(err, llm.ErrContinuationSecretUnavailable) {
+		t.Fatalf("PlanResponsesContinuation error = %v, want ErrContinuationSecretUnavailable", err)
+	}
+}
+
+func TestAdapter_PlanResponsesContinuation_RequestFingerprintStableForEquivalentBody(t *testing.T) {
+	a := openAIContinuationTestAdapter(defaultResponsesPath)
 	first := openAIContinuationFingerprintForTest(t, a, llm.Request{
 		Model:    "gpt-5.4",
 		Messages: []llm.Message{llm.System("stable"), llm.User("hi")},
@@ -4341,7 +4526,7 @@ func TestAdapter_PlanResponsesContinuation_RequestFingerprintStableForEquivalent
 }
 
 func TestAdapter_PlanResponsesContinuation_RequestFingerprintChangesForRequestShape(t *testing.T) {
-	a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: defaultResponsesPath}
+	a := openAIContinuationTestAdapter(defaultResponsesPath)
 	base := openAIContinuationFingerprintRequestForTest()
 	baseFingerprint := openAIContinuationFingerprintForTest(t, a, base)
 
@@ -4407,7 +4592,7 @@ func TestAdapter_PlanResponsesContinuation_RequestFingerprintChangesForRequestSh
 }
 
 func TestAdapter_PlanResponsesContinuation_PublicFingerprintExcludesStore(t *testing.T) {
-	a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: defaultResponsesPath}
+	a := openAIContinuationTestAdapter(defaultResponsesPath)
 	base := openAIContinuationFingerprintRequestForTest()
 	want := openAIContinuationFingerprintForTest(t, a, base)
 
@@ -4427,7 +4612,7 @@ func TestAdapter_PlanResponsesContinuation_PublicFingerprintExcludesStore(t *tes
 }
 
 func TestAdapter_PlanResponsesContinuation_CodexFingerprintKeepsStoreUntilStorageShapeProven(t *testing.T) {
-	a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: defaultCodexResponses}
+	a := openAIContinuationTestAdapter(defaultCodexResponses)
 	base := openAIContinuationFingerprintRequestForTest()
 	baseFingerprint := openAIContinuationFingerprintForTest(t, a, base)
 
@@ -4449,7 +4634,7 @@ func TestAdapter_PlanResponsesContinuation_FingerprintExcludesContinuationHandle
 		{name: "codex", path: defaultCodexResponses},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: tc.path}
+			a := openAIContinuationTestAdapter(tc.path)
 			base := openAIContinuationFingerprintRequestForTest()
 			want := openAIContinuationFingerprintForTest(t, a, base)
 
@@ -4463,7 +4648,7 @@ func TestAdapter_PlanResponsesContinuation_FingerprintExcludesContinuationHandle
 		})
 	}
 
-	a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: defaultResponsesPath}
+	a := openAIContinuationTestAdapter(defaultResponsesPath)
 	req := openAIContinuationFingerprintRequestForTest()
 	req.PreviousResponseID = "resp_123"
 	req.ConversationID = "conv_456"
@@ -4471,13 +4656,13 @@ func TestAdapter_PlanResponsesContinuation_FingerprintExcludesContinuationHandle
 	if err != nil {
 		t.Fatalf("PlanResponsesContinuation: %v", err)
 	}
-	if plan.StorageScopeFingerprint != "" || plan.StoragePolicyLabel != "" || plan.ContinuationStorageAllowed {
-		t.Fatalf("storage scope fields populated before Phase 4A storage-scope task: %+v", plan)
+	if plan.StorageScopeFingerprint == "" || plan.StoragePolicyLabel == "" {
+		t.Fatalf("storage scope fields were not populated: %+v", plan)
 	}
 }
 
 func TestAdapter_PlanResponsesContinuation_CodexFingerprintUsesFilteredRequestShape(t *testing.T) {
-	a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: defaultCodexResponses}
+	a := openAIContinuationTestAdapter(defaultCodexResponses)
 	base := openAIContinuationFingerprintRequestForTest()
 	baseFingerprint := openAIContinuationFingerprintForTest(t, a, base)
 
@@ -4502,6 +4687,48 @@ func TestAdapter_PlanResponsesContinuation_CodexFingerprintUsesFilteredRequestSh
 	if got != baseFingerprint {
 		t.Fatalf("Codex fingerprint changed for fields filtered from request body:\nbase: %s\ngot:  %s", baseFingerprint, got)
 	}
+}
+
+func openAIContinuationTestHasher() *llm.ContinuationHasher {
+	return llm.NewContinuationHasher([]byte("01234567890123456789012345678901"))
+}
+
+func openAIContinuationTestAuthScope() llm.AuthScopeIdentity {
+	return llm.AuthScopeIdentity{
+		Version:        "cont-scope-v1",
+		AuthSource:     "api_key",
+		CredentialHash: "credential_hash",
+	}
+}
+
+func openAIContinuationTestAdapter(path string) *Adapter {
+	return openAIContinuationTestAdapterWithScope(path, "https://api.openai.test", openAIContinuationTestAuthScope(), "org_hash", "project_hash")
+}
+
+func openAIContinuationTestAdapterWithScope(path, baseURL string, authScope llm.AuthScopeIdentity, orgHash, projectHash string) *Adapter {
+	return &Adapter{
+		name:               "openai",
+		APIKey:             "sk-test",
+		BaseURL:            baseURL,
+		ResponsesPath:      path,
+		ContinuationHasher: openAIContinuationTestHasher(),
+		AuthScopeIdentity:  authScope,
+		OrgIDHash:          orgHash,
+		ProjectIDHash:      projectHash,
+	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+func openAIContinuationStorageScopeFingerprintForTest(t *testing.T, a *Adapter, req llm.Request) string {
+	t.Helper()
+	plan, err := a.PlanResponsesContinuation(req)
+	if err != nil {
+		t.Fatalf("PlanResponsesContinuation: %v", err)
+	}
+	return plan.StorageScopeFingerprint
 }
 
 func openAIContinuationFingerprintRequestForTest() llm.Request {
@@ -4553,12 +4780,32 @@ func assertPlanOmitsRawScopeValues(t *testing.T, plan llm.ResponsesContinuationP
 
 func TestNewFromEnv_OpenAI_Name(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-env")
-	a, err := NewFromEnv()
+	a, err := NewFromEnv(Config{StateHome: t.TempDir()})
 	if err != nil {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
 	if a.Name() != "openai" {
 		t.Fatalf("Name() = %q, want %q", a.Name(), "openai")
+	}
+}
+
+func TestNewFromEnv_ContinuationHasherFromStateHome(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-env")
+	stateHome := t.TempDir()
+
+	a, err := NewFromEnv(Config{StateHome: stateHome})
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	if a.ContinuationHasher == nil {
+		t.Fatal("ContinuationHasher = nil, want state-backed hasher")
+	}
+	plan, err := a.PlanResponsesContinuation(llm.Request{Provider: "openai", Model: "gpt-5.4"})
+	if err != nil {
+		t.Fatalf("PlanResponsesContinuation: %v", err)
+	}
+	if plan.StorageScopeFingerprint == "" {
+		t.Fatalf("StorageScopeFingerprint = empty")
 	}
 }
 
@@ -4673,12 +4920,15 @@ func TestInstanceParamsFromConfig_EnvTunables(t *testing.T) {
 	t.Setenv("OPENAI_CHATGPT_BASE_URL", "https://chatgpt.example.com")
 
 	// instanceParamsFromConfig is the helper extracted from the factory closure.
-	params := instanceParamsFromConfig(
-		"openai", // inst.Name
-		"",       // inst.BaseURL (not set)
-		"k",      // inst.APIKey (injected by loader)
-		"/tmp",   // stateHome
+	params, err := instanceParamsFromConfig(
+		"openai",    // inst.Name
+		"",          // inst.BaseURL (not set)
+		"k",         // inst.APIKey (injected by loader)
+		t.TempDir(), // stateHome
 	)
+	if err != nil {
+		t.Fatalf("instanceParamsFromConfig: %v", err)
+	}
 
 	if params.OrgID != "org-x" {
 		t.Fatalf("OrgID = %q, want %q", params.OrgID, "org-x")
@@ -4689,6 +4939,9 @@ func TestInstanceParamsFromConfig_EnvTunables(t *testing.T) {
 	if params.ChatGPTBaseURL != "https://chatgpt.example.com" {
 		t.Fatalf("ChatGPTBaseURL = %q, want %q", params.ChatGPTBaseURL, "https://chatgpt.example.com")
 	}
+	if params.ContinuationHasher == nil {
+		t.Fatal("ContinuationHasher = nil, want config state-backed hasher")
+	}
 }
 
 // TestInstanceFactory_EnvTunables_APIKeyPath verifies that an adapter built via
@@ -4698,7 +4951,10 @@ func TestInstanceFactory_EnvTunables_APIKeyPath(t *testing.T) {
 	t.Setenv("OPENAI_ORG_ID", "org-x")
 	t.Setenv("OPENAI_PROJECT_ID", "proj-y")
 
-	params := instanceParamsFromConfig("openai", "", "k", t.TempDir())
+	params, err := instanceParamsFromConfig("openai", "", "k", t.TempDir())
+	if err != nil {
+		t.Fatalf("instanceParamsFromConfig: %v", err)
+	}
 	a, err := NewForInstance(params)
 	if err != nil {
 		t.Fatalf("NewForInstance: %v", err)

@@ -49,18 +49,19 @@ type Config struct {
 }
 
 type Adapter struct {
-	name              string
-	APIKey            string
-	BaseURL           string
-	ResponsesPath     string
-	OrgID             string
-	ProjectID         string
-	ChatGPTAccountID  string
-	AuthScopeIdentity llm.AuthScopeIdentity
-	OrgIDHash         string
-	ProjectIDHash     string
-	Client            *http.Client
-	DefaultHeaders    map[string]string
+	name               string
+	APIKey             string
+	BaseURL            string
+	ResponsesPath      string
+	OrgID              string
+	ProjectID          string
+	ChatGPTAccountID   string
+	AuthScopeIdentity  llm.AuthScopeIdentity
+	OrgIDHash          string
+	ProjectIDHash      string
+	ContinuationHasher *llm.ContinuationHasher
+	Client             *http.Client
+	DefaultHeaders     map[string]string
 }
 
 // OpenAIInstanceParams holds the configuration for a single OpenAI adapter instance.
@@ -131,13 +132,14 @@ func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 			return nil, err
 		}
 		return &Adapter{
-			name:              params.Name,
-			APIKey:            creds.BearerToken,
-			BaseURL:           strings.TrimRight(base, "/"),
-			ResponsesPath:     defaultCodexResponses,
-			ChatGPTAccountID:  chatGPTAccountID,
-			AuthScopeIdentity: authScope,
-			Client:            &http.Client{Timeout: 0},
+			name:               params.Name,
+			APIKey:             creds.BearerToken,
+			BaseURL:            strings.TrimRight(base, "/"),
+			ResponsesPath:      defaultCodexResponses,
+			ChatGPTAccountID:   chatGPTAccountID,
+			AuthScopeIdentity:  authScope,
+			ContinuationHasher: params.ContinuationHasher,
+			Client:             &http.Client{Timeout: 0},
 		}, nil
 	}
 
@@ -162,15 +164,16 @@ func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 			return nil, err
 		}
 		return &Adapter{
-			name:              params.Name,
-			APIKey:            key,
-			BaseURL:           strings.TrimRight(base, "/"),
-			ResponsesPath:     defaultResponsesPath,
-			OrgID:             orgID,
-			ProjectID:         projectID,
-			AuthScopeIdentity: authScope,
-			OrgIDHash:         orgIDHash,
-			ProjectIDHash:     projectIDHash,
+			name:               params.Name,
+			APIKey:             key,
+			BaseURL:            strings.TrimRight(base, "/"),
+			ResponsesPath:      defaultResponsesPath,
+			OrgID:              orgID,
+			ProjectID:          projectID,
+			AuthScopeIdentity:  authScope,
+			OrgIDHash:          orgIDHash,
+			ProjectIDHash:      projectIDHash,
+			ContinuationHasher: params.ContinuationHasher,
 			// Avoid short client-level timeouts; rely on request context deadlines instead.
 			Client: &http.Client{Timeout: 0},
 		}, nil
@@ -192,7 +195,11 @@ func init() {
 	})
 	// Register for config-driven construction: openai + responses (or empty) style.
 	factory := func(inst providercfg.InstanceConfig, stateHome string) (llm.ProviderAdapter, error) {
-		return NewForInstance(instanceParamsFromConfig(inst.Name, inst.BaseURL, inst.APIKey, stateHome))
+		params, err := instanceParamsFromConfig(inst.Name, inst.BaseURL, inst.APIKey, stateHome)
+		if err != nil {
+			return nil, err
+		}
+		return NewForInstance(params)
 	}
 	llm.RegisterInstanceAdapterFactory("openai", "responses", factory)
 	llm.RegisterInstanceAdapterFactory("openai", "", factory)
@@ -202,16 +209,21 @@ func init() {
 // instance, threading OPENAI_ORG_ID, OPENAI_PROJECT_ID, and
 // OPENAI_CHATGPT_BASE_URL from the environment to mirror NewFromEnv. The API
 // key is injected by the loader (never read from env here).
-func instanceParamsFromConfig(name, baseURL, apiKey, stateHome string) OpenAIInstanceParams {
-	return OpenAIInstanceParams{
-		Name:           name,
-		BaseURL:        baseURL,
-		APIKey:         apiKey,
-		OrgID:          envvars.OpenAIOrgID.Trimmed(),
-		ProjectID:      envvars.OpenAIProjectID.Trimmed(),
-		ChatGPTBaseURL: envvars.OpenAIChatGPTBaseURL.Trimmed(),
-		StateHome:      stateHome,
+func instanceParamsFromConfig(name, baseURL, apiKey, stateHome string) (OpenAIInstanceParams, error) {
+	hasher, err := continuationHasherForStateHome(stateHome)
+	if err != nil {
+		return OpenAIInstanceParams{}, err
 	}
+	return OpenAIInstanceParams{
+		Name:               name,
+		BaseURL:            baseURL,
+		APIKey:             apiKey,
+		OrgID:              envvars.OpenAIOrgID.Trimmed(),
+		ProjectID:          envvars.OpenAIProjectID.Trimmed(),
+		ChatGPTBaseURL:     envvars.OpenAIChatGPTBaseURL.Trimmed(),
+		StateHome:          stateHome,
+		ContinuationHasher: hasher,
+	}, nil
 }
 
 func authScopeForAPIKey(hasher *llm.ContinuationHasher, apiKey string) (llm.AuthScopeIdentity, error) {
@@ -268,15 +280,24 @@ func NewFromEnv(cfgs ...Config) (*Adapter, error) {
 			cfg.StateHome = next.StateHome
 		}
 	}
+	hasher, err := continuationHasherForStateHome(cfg.StateHome)
+	if err != nil {
+		return nil, err
+	}
 	return NewForInstance(OpenAIInstanceParams{
-		Name:           "openai",
-		APIKey:         envvars.OpenAIAPIKey.Trimmed(),
-		BaseURL:        envvars.OpenAIBaseURL.Trimmed(),
-		OrgID:          envvars.OpenAIOrgID.Trimmed(),
-		ProjectID:      envvars.OpenAIProjectID.Trimmed(),
-		ChatGPTBaseURL: envvars.OpenAIChatGPTBaseURL.Trimmed(),
-		StateHome:      cfg.StateHome,
+		Name:               "openai",
+		APIKey:             envvars.OpenAIAPIKey.Trimmed(),
+		BaseURL:            envvars.OpenAIBaseURL.Trimmed(),
+		OrgID:              envvars.OpenAIOrgID.Trimmed(),
+		ProjectID:          envvars.OpenAIProjectID.Trimmed(),
+		ChatGPTBaseURL:     envvars.OpenAIChatGPTBaseURL.Trimmed(),
+		StateHome:          cfg.StateHome,
+		ContinuationHasher: hasher,
 	})
+}
+
+func continuationHasherForStateHome(stateHome string) (*llm.ContinuationHasher, error) {
+	return llm.ContinuationHasherForStateDir(authopenai.DefaultStateDirWithStateHome(stateHome))
 }
 
 func (a *Adapter) Name() string {
@@ -300,6 +321,37 @@ func (a *Adapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesConti
 	if err != nil {
 		return llm.ResponsesContinuationPlan{}, err
 	}
+	if a.ContinuationHasher == nil {
+		return llm.ResponsesContinuationPlan{}, fmt.Errorf("%w: missing OpenAI continuation hasher", llm.ErrContinuationSecretUnavailable)
+	}
+	storagePolicy, storageAllowed := responsesStoragePolicyForPlan(endpointFamily, body)
+	conversationIDHash := ""
+	if strings.TrimSpace(req.ConversationID) != "" {
+		conversationIDHash, err = a.ContinuationHasher.HashContinuationScopeValue("conversation_id", req.ConversationID)
+		if err != nil {
+			return llm.ResponsesContinuationPlan{}, err
+		}
+	}
+	storageScope := llm.ContinuationStorageScope{
+		HashVersion:        llm.ContinuationScopeHashVersion,
+		Provider:           "openai",
+		EndpointFamily:     string(endpointFamily),
+		BaseURL:            normalizedResponsesBaseURL(a.BaseURL, endpointFamily),
+		Path:               normalizedResponsesPath(a.ResponsesPath),
+		AuthSource:         a.AuthScopeIdentity.AuthSource,
+		OrgIDHash:          a.OrgIDHash,
+		ProjectIDHash:      a.ProjectIDHash,
+		AccountHash:        a.AuthScopeIdentity.AccountHash,
+		WorkspaceHash:      a.AuthScopeIdentity.WorkspaceHash,
+		CredentialHash:     a.AuthScopeIdentity.CredentialHash,
+		ConversationIDHash: conversationIDHash,
+		StoragePolicy:      storagePolicy,
+	}
+	storageScopeFingerprint, err := a.ContinuationHasher.HashContinuationStorageScope(storageScope)
+	if err != nil {
+		return llm.ResponsesContinuationPlan{}, err
+	}
+	storageScope.Fingerprint = storageScopeFingerprint
 
 	plan := llm.PlanResponsesContinuation(llm.ResponsesContinuationPlanInput{
 		EndpointFamily:    endpointFamily,
@@ -309,7 +361,41 @@ func (a *Adapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesConti
 		Request:           req,
 	})
 	plan.RequestFingerprint = requestFingerprint
+	plan.StorageScope = storageScope
+	plan.StorageScopeFingerprint = storageScopeFingerprint
+	plan.StoragePolicyLabel = storagePolicy
+	plan.ContinuationStorageAllowed = storageAllowed
 	return plan, nil
+}
+
+func responsesStoragePolicyForPlan(endpointFamily llm.ResponsesEndpointFamily, body map[string]any) (string, bool) {
+	if endpointFamily == llm.ResponsesEndpointFamilyOpenAICodex {
+		return llm.ResponsesStoragePolicyCodexUnproven, false
+	}
+	store, _ := body["store"].(bool)
+	if store {
+		return llm.ResponsesStoragePolicyPublicOpenAIStore, true
+	}
+	return llm.ResponsesStoragePolicyPublicOpenAINoStore, false
+}
+
+func normalizedResponsesBaseURL(baseURL string, endpointFamily llm.ResponsesEndpointFamily) string {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if base != "" {
+		return base
+	}
+	if endpointFamily == llm.ResponsesEndpointFamilyOpenAICodex {
+		return defaultChatGPTBaseURL
+	}
+	return defaultAPIBaseURL
+}
+
+func normalizedResponsesPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return defaultResponsesPath
+	}
+	return path
 }
 
 func (a *Adapter) setHeaders(req *http.Request) {
