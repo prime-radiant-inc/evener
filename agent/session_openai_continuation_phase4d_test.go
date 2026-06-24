@@ -2,7 +2,11 @@ package agent
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providers/openai"
 )
 
 func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnchor(t *testing.T) {
@@ -154,6 +159,178 @@ func TestSession_OpenAIResponsesContinuationPhase4DIFallbackCapablePathUsesFullH
 	}
 }
 
+func TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta(t *testing.T) {
+	dir := t.TempDir()
+	adapter := &agenttest.FakeAdapter{
+		Provider: "openai",
+		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+			return phase4DIContinuationPlan(req), nil
+		},
+		Steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return agenttest.FinalResponse("phase 4d delta consumed")
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:                    dir,
+		OpenAIResponsesContinuation: "auto",
+		testOnly: testConfig{
+			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
+				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	drainSessionEvents(sess)
+	anchor := responsesContinuationEligibleAssistantTurn("resp_phase4d_anchor")
+	anchor.ResponseIDHash = "cont-handle-v1:response_id:phase4d"
+	anchor.ResponseRequestFingerprint = "cont-req-v1:phase4d"
+	anchor.ResponseStorageScopeFingerprint = "cont-scope-v1:phase4d"
+	sess.history = append(sess.history,
+		schema.NewTurn(schema.TurnUserInput, llm.User("prior user marker")),
+		anchor,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "new delta user marker", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	req := requests[0]
+	if req.HistoryMode != llm.HistoryModeResponsesDelta {
+		t.Fatalf("HistoryMode = %q, want %q", req.HistoryMode, llm.HistoryModeResponsesDelta)
+	}
+	if req.PreviousResponseID != "resp_phase4d_anchor" {
+		t.Fatalf("PreviousResponseID = %q, want resp_phase4d_anchor", req.PreviousResponseID)
+	}
+	if req.Store == nil || !*req.Store {
+		t.Fatalf("Store = %v, want continuation-owned true", req.Store)
+	}
+	if req.Continuation == nil {
+		t.Fatal("Continuation metadata is nil")
+	}
+	if req.Continuation.PreviousResponseIDHash != "cont-handle-v1:response_id:phase4d" ||
+		req.Continuation.AnchorTurnIndex != 1 ||
+		req.Continuation.DeltaTurnCount != 1 ||
+		len(req.Continuation.DeltaTurnKinds) != 1 ||
+		req.Continuation.DeltaTurnKinds[0] != string(schema.TurnUserInput) ||
+		req.Continuation.EndpointFamily != string(llm.ResponsesEndpointFamilyOpenAIPublic) ||
+		req.Continuation.RequestFingerprint != "cont-req-v1:phase4d" ||
+		req.Continuation.StorageScopeFingerprint != "cont-scope-v1:phase4d" ||
+		req.Continuation.ContextMarker != responseContextMarkerV1 ||
+		req.Continuation.StoragePolicyLabel != llm.ResponsesStoragePolicyPublicOpenAIStore {
+		t.Fatalf("Continuation metadata = %+v", req.Continuation)
+	}
+	if !requestMessagesContainText(req.Messages, "new delta user marker") {
+		t.Fatalf("delta request missing new user marker: %+v", req.Messages)
+	}
+	for _, forbidden := range []string{"prior user marker", "phase 4d anchor stored"} {
+		if requestMessagesContainText(req.Messages, forbidden) {
+			t.Fatalf("delta request included pre-anchor text %q: %+v", forbidden, req.Messages)
+		}
+	}
+}
+
+func TestSession_OpenAIResponsesContinuationPhase4DIIRealOpenAIAdapterUsesFullHistoryUntilFallbackClone(t *testing.T) {
+	dir := t.TempDir()
+	var mu sync.Mutex
+	var requestBodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+			http.NotFound(w, r)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		mu.Lock()
+		requestBodies = append(requestBodies, append([]byte(nil), body...))
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		args := mustJSON(t, map[string]any{
+			"message":  "real openai stayed full history",
+			"end_turn": true,
+			"output": map[string]any{
+				"message":   "",
+				"data":      map[string]any{},
+				"artifacts": []string{},
+			},
+		})
+		writeResponsesFunctionCall(t, w, flusher, "resp_new", "call_done", "communicate", args)
+	}))
+	t.Cleanup(srv.Close)
+
+	client := llm.NewClient()
+	client.Register(&openai.Adapter{
+		APIKey:             "test-key",
+		BaseURL:            srv.URL,
+		Client:             srv.Client(),
+		ContinuationHasher: llm.NewContinuationHasher([]byte("01234567890123456789012345678901")),
+	})
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:                    dir,
+		OpenAIResponsesContinuation: "auto",
+		testOnly: testConfig{
+			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
+				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	drainSessionEvents(sess)
+	sess.history = append(sess.history,
+		schema.NewTurn(schema.TurnUserInput, llm.User("real openai prior user marker")),
+		responsesContinuationEligibleAssistantTurn("resp_existing_anchor"),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "real openai current user marker", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	mu.Lock()
+	bodies := append([][]byte(nil), requestBodies...)
+	mu.Unlock()
+	if len(bodies) != 1 {
+		t.Fatalf("OpenAI Responses request count = %d, want 1", len(bodies))
+	}
+	req := decodeResponsesRequest(t, bodies[0])
+	if _, ok := req["previous_response_id"]; ok {
+		t.Fatalf("fallback-capable real OpenAI path must not send previous_response_id: %s", string(bodies[0]))
+	}
+	if gotStore, ok := req["store"].(bool); !ok || gotStore {
+		t.Fatalf("fallback-capable real OpenAI request store = %#v, want explicit false", req["store"])
+	}
+	input := responsesInputItems(t, req)
+	for _, marker := range []string{"real openai prior user marker", "real openai current user marker"} {
+		if !responsesInputContainsText(input, marker) {
+			t.Fatalf("full-history request missing %q in input: %#v", marker, input)
+		}
+	}
+}
+
 func phase4DIContinuationPlan(req llm.Request) llm.ResponsesContinuationPlan {
 	return llm.ResponsesContinuationPlan{
 		EndpointFamily:             llm.ResponsesEndpointFamilyOpenAIPublic,
@@ -192,4 +369,13 @@ func drainSessionEvents(sess *Session) {
 		for range sess.Events() {
 		}
 	}()
+}
+
+func requestMessagesContainText(messages []llm.Message, want string) bool {
+	for _, msg := range messages {
+		if strings.Contains(msg.Text(), want) {
+			return true
+		}
+	}
+	return false
 }

@@ -226,6 +226,27 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		return req
 	}
 
+	candidate, anchorDecision := selectResponsesContinuationAnchorCandidate(s.cfg, historyTurns)
+	if anchorDecision.HistoryMode == llm.HistoryModeResponsesDelta &&
+		responsesContinuationCandidateMatchesPlan(candidate, plan) {
+		req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
+		req.HistoryMode = llm.HistoryModeResponsesDelta
+		req.PreviousResponseID = strings.TrimSpace(candidate.Turn.ResponseID)
+		req.Messages = responsesContinuationDeltaMessages(req.Messages, candidate.Delta)
+		req.Continuation = &llm.ContinuationMetadata{
+			PreviousResponseIDHash:  candidate.Turn.ResponseIDHash,
+			AnchorTurnIndex:         candidate.TurnIndex,
+			DeltaTurnCount:          len(candidate.Delta),
+			DeltaTurnKinds:          responsesContinuationTurnKinds(candidate.Delta),
+			EndpointFamily:          string(plan.EndpointFamily),
+			RequestFingerprint:      plan.RequestFingerprint,
+			ContextMarker:           responseContextMarkerV1,
+			StoragePolicyLabel:      plan.StoragePolicyLabel,
+			StorageScopeFingerprint: plan.StorageScopeFingerprint,
+		}
+		return req
+	}
+
 	req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
 	req.HistoryMode = llm.HistoryModeFullHistory
 	req.Continuation = &llm.ContinuationMetadata{
@@ -236,6 +257,33 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		StorageScopeFingerprint: plan.StorageScopeFingerprint,
 	}
 	return req
+}
+
+func responsesContinuationCandidateMatchesPlan(candidate responsesContinuationAnchorCandidate, plan llm.ResponsesContinuationPlan) bool {
+	return strings.TrimSpace(candidate.Turn.ResponseID) != "" &&
+		candidate.Turn.ResponseRequestFingerprint == plan.RequestFingerprint &&
+		candidate.Turn.ResponseStorageScopeFingerprint == plan.StorageScopeFingerprint &&
+		candidate.Turn.ResponseContextMarker == responseContextMarkerV1
+}
+
+func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.Turn) []llm.Message {
+	messages := make([]llm.Message, 0, len(base)+len(deltaTurns))
+	for _, msg := range base {
+		if msg.Role != llm.RoleSystem && msg.Role != llm.RoleDeveloper {
+			break
+		}
+		messages = append(messages, msg)
+	}
+	messages = append(messages, expandHistory(deltaTurns)...)
+	return messages
+}
+
+func responsesContinuationTurnKinds(turns []schema.Turn) []string {
+	kinds := make([]string, 0, len(turns))
+	for _, turn := range turns {
+		kinds = append(kinds, string(turn.Kind))
+	}
+	return kinds
 }
 
 func (s *Session) responsesContinuationSupportRegistry() map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport {
