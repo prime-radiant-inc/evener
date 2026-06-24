@@ -120,25 +120,28 @@ type APILogEntry struct {
 
 // APILogRequest captures request metadata and tool definitions.
 type APILogRequest struct {
-	Model                   string           `json:"model"`
-	Provider                string           `json:"provider"`
-	MessageCount            int              `json:"message_count"`
-	ToolCount               int              `json:"tool_count"`
-	ToolNames               []string         `json:"tool_names,omitempty"`
-	Tools                   []ToolDefinition `json:"tools,omitempty"`
-	ReasoningEffort         string           `json:"reasoning_effort,omitempty"`
-	HistoryMode             HistoryMode      `json:"history_mode,omitempty"`
-	PreviousResponseIDHash  string           `json:"previous_response_id_hash,omitempty"`
-	ConversationIDHash      string           `json:"conversation_id_hash,omitempty"`
-	AnchorTurnIndex         int              `json:"anchor_turn_index,omitempty"`
-	DeltaTurnCount          int              `json:"delta_turn_count,omitempty"`
-	DeltaTurnKinds          []string         `json:"delta_turn_kinds,omitempty"`
-	EndpointFamily          string           `json:"endpoint_family,omitempty"`
-	RequestFingerprint      string           `json:"request_fingerprint,omitempty"`
-	ContextMarker           string           `json:"context_marker,omitempty"`
-	StoragePolicyLabel      string           `json:"storage_policy_label,omitempty"`
-	StorageScopeFingerprint string           `json:"storage_scope_fingerprint,omitempty"`
-	ChatFallbackHistoryLen  int              `json:"chat_fallback_history_len,omitempty"`
+	Model                          string           `json:"model"`
+	Provider                       string           `json:"provider"`
+	MessageCount                   int              `json:"message_count"`
+	ToolCount                      int              `json:"tool_count"`
+	ToolNames                      []string         `json:"tool_names,omitempty"`
+	Tools                          []ToolDefinition `json:"tools,omitempty"`
+	ReasoningEffort                string           `json:"reasoning_effort,omitempty"`
+	HistoryMode                    HistoryMode      `json:"history_mode,omitempty"`
+	PreviousResponseIDHash         string           `json:"previous_response_id_hash,omitempty"`
+	ConversationIDHash             string           `json:"conversation_id_hash,omitempty"`
+	AnchorTurnIndex                int              `json:"anchor_turn_index,omitempty"`
+	DeltaTurnCount                 int              `json:"delta_turn_count,omitempty"`
+	DeltaTurnKinds                 []string         `json:"delta_turn_kinds,omitempty"`
+	EndpointFamily                 string           `json:"endpoint_family,omitempty"`
+	RequestFingerprint             string           `json:"request_fingerprint,omitempty"`
+	ContextMarker                  string           `json:"context_marker,omitempty"`
+	StoragePolicyLabel             string           `json:"storage_policy_label,omitempty"`
+	StorageScopeFingerprint        string           `json:"storage_scope_fingerprint,omitempty"`
+	ChatFallbackHistoryLen         int              `json:"chat_fallback_history_len,omitempty"`
+	InputTokensEstimate            int              `json:"input_tokens_estimate,omitempty"`
+	FullHistoryInputTokensEstimate int              `json:"full_history_input_tokens_estimate,omitempty"`
+	ContinuationDiagnostic         string           `json:"continuation_diagnostic,omitempty"`
 }
 
 // APILogResponse captures the full response including raw provider data.
@@ -533,11 +536,14 @@ func rawBodiesFromAttempt(rec AdapterAttemptRecord) (requestBody, responseBody s
 // logs and transcript api_call entries.
 func BuildAPILogRequest(req Request) APILogRequest {
 	lr := APILogRequest{
-		Model:        req.Model,
-		Provider:     req.Provider,
-		MessageCount: len(req.Messages),
-		ToolCount:    len(req.Tools),
-		HistoryMode:  req.HistoryMode,
+		Model:                          req.Model,
+		Provider:                       req.Provider,
+		MessageCount:                   len(req.Messages),
+		ToolCount:                      len(req.Tools),
+		HistoryMode:                    req.HistoryMode,
+		InputTokensEstimate:            req.InputTokensEstimate,
+		FullHistoryInputTokensEstimate: req.FullHistoryInputTokensEstimate,
+		ContinuationDiagnostic:         req.ContinuationDiagnostic,
 	}
 	if req.ReasoningEffort != nil {
 		lr.ReasoningEffort = *req.ReasoningEffort

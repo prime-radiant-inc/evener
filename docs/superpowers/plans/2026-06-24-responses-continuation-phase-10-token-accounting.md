@@ -59,7 +59,7 @@ Non-goals:
 - Modify: `llm/apilog.go`
 - Modify: `llm/apilog_test.go`
 
-- [ ] **Step 1: Add RED API-log projection test**
+- [x] **Step 1: Add RED API-log projection test**
 
 Add a test in `llm/apilog_test.go`:
 
@@ -87,7 +87,7 @@ func TestBuildAPILogRequest_RecordsContinuationTokenEstimates(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsContinuationTokenEstimates' -count=1 -v
@@ -95,7 +95,7 @@ GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsCont
 
 Expected: compile failure because the fields do not exist.
 
-- [ ] **Step 3: Add minimal fields**
+- [x] **Step 3: Add minimal fields**
 
 In `llm/types.go`, add to `Request`:
 
@@ -115,7 +115,7 @@ ContinuationDiagnostic         string `json:"continuation_diagnostic,omitempty"`
 
 In `BuildAPILogRequest`, copy those fields from `req`.
 
-- [ ] **Step 4: Run focused test**
+- [x] **Step 4: Run focused test**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsContinuationTokenEstimates' -count=1 -v
@@ -123,7 +123,7 @@ GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsCont
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git status --short

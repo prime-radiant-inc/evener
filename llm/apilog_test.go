@@ -79,6 +79,28 @@ func TestBuildAPILogRequest_IncludesContinuationMetadata(t *testing.T) {
 	}
 }
 
+func TestBuildAPILogRequest_RecordsContinuationTokenEstimates(t *testing.T) {
+	req := Request{
+		Model:                          "gpt-5.4",
+		Provider:                       "openai",
+		HistoryMode:                    HistoryModeResponsesDelta,
+		InputTokensEstimate:            42,
+		FullHistoryInputTokensEstimate: 420,
+		ContinuationDiagnostic:         "continuation_shadow_estimate_unavailable",
+	}
+
+	got := BuildAPILogRequest(req)
+	if got.InputTokensEstimate != 42 {
+		t.Fatalf("InputTokensEstimate = %d, want 42", got.InputTokensEstimate)
+	}
+	if got.FullHistoryInputTokensEstimate != 420 {
+		t.Fatalf("FullHistoryInputTokensEstimate = %d, want 420", got.FullHistoryInputTokensEstimate)
+	}
+	if got.ContinuationDiagnostic != "continuation_shadow_estimate_unavailable" {
+		t.Fatalf("ContinuationDiagnostic = %q", got.ContinuationDiagnostic)
+	}
+}
+
 func TestAPILogEntry_AttemptFieldsRoundTrip(t *testing.T) {
 	finalCount := 1
 	entry := APILogEntry{

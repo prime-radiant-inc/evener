@@ -271,9 +271,12 @@ type Request struct {
 
 	WebSearch bool `json:"web_search,omitempty"`
 
-	HistoryMode                 HistoryMode           `json:"-"`
-	Continuation                *ContinuationMetadata `json:"-"`
-	FullHistoryFallbackMessages []Message             `json:"-"`
+	HistoryMode                    HistoryMode           `json:"-"`
+	Continuation                   *ContinuationMetadata `json:"-"`
+	FullHistoryFallbackMessages    []Message             `json:"-"`
+	InputTokensEstimate            int                   `json:"-"`
+	FullHistoryInputTokensEstimate int                   `json:"-"`
+	ContinuationDiagnostic         string                `json:"-"`
 
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }
