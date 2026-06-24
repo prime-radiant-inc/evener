@@ -11,6 +11,7 @@ import (
 )
 
 func TestRegisteredTool_EmbedsLLMTool(t *testing.T) {
+	t.Parallel()
 	var execCalled bool
 	rt := tool.RegisteredTool{
 		Tool: llm.Tool{
@@ -61,6 +62,7 @@ func TestRegisteredTool_EmbedsLLMTool(t *testing.T) {
 }
 
 func TestRegisteredTool_ExecuteNotBridgedWhenAlreadySet(t *testing.T) {
+	t.Parallel()
 	var executeCalled bool
 	rt := tool.RegisteredTool{
 		Tool: llm.Tool{
@@ -100,6 +102,7 @@ func TestRegisteredTool_ExecuteNotBridgedWhenAlreadySet(t *testing.T) {
 }
 
 func TestRegisteredTool_BridgedExecute_RejectsNonMapArgs(t *testing.T) {
+	t.Parallel()
 	rt := tool.RegisteredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
@@ -125,6 +128,7 @@ func TestRegisteredTool_BridgedExecute_RejectsNonMapArgs(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_TextDelta(t *testing.T) {
+	t.Parallel()
 	e := events.SessionEvent{
 		Kind: events.EventAssistantTextDelta,
 		Data: events.AssistantTextDeltaData{Delta: "hello"},
@@ -142,6 +146,7 @@ func TestSessionEvent_ToStreamEvent_TextDelta(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_TextStart(t *testing.T) {
+	t.Parallel()
 	e := events.SessionEvent{Kind: events.EventAssistantTextStart}
 	se := e.ToStreamEvent()
 	if se == nil {
@@ -153,6 +158,7 @@ func TestSessionEvent_ToStreamEvent_TextStart(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_TextEnd(t *testing.T) {
+	t.Parallel()
 	e := events.SessionEvent{Kind: events.EventAssistantTextEnd}
 	se := e.ToStreamEvent()
 	if se == nil {
@@ -164,6 +170,7 @@ func TestSessionEvent_ToStreamEvent_TextEnd(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_ToolCallStart(t *testing.T) {
+	t.Parallel()
 	e := events.SessionEvent{
 		Kind: events.EventToolCallStart,
 		Data: events.ToolCallStartData{CallID: "c1", ToolName: "shell"},
@@ -187,6 +194,7 @@ func TestSessionEvent_ToStreamEvent_ToolCallStart(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_ToolCallEnd(t *testing.T) {
+	t.Parallel()
 	e := events.SessionEvent{
 		Kind: events.EventToolCallEnd,
 		Data: events.ToolCallEndData{CallID: "c2", ToolName: "read_file"},
@@ -210,6 +218,7 @@ func TestSessionEvent_ToStreamEvent_ToolCallEnd(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_SessionStart(t *testing.T) {
+	t.Parallel()
 	e := events.SessionEvent{Kind: events.EventSessionStart}
 	se := e.ToStreamEvent()
 	if se == nil {
@@ -221,6 +230,7 @@ func TestSessionEvent_ToStreamEvent_SessionStart(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_SessionEnd(t *testing.T) {
+	t.Parallel()
 	e := events.SessionEvent{Kind: events.EventSessionEnd}
 	se := e.ToStreamEvent()
 	if se == nil {
@@ -232,6 +242,7 @@ func TestSessionEvent_ToStreamEvent_SessionEnd(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_AgentOnlyEvent_ReturnsNil(t *testing.T) {
+	t.Parallel()
 	agentOnlyKinds := []events.EventKind{
 		events.EventSteeringInjected,
 		events.EventTurnLimit,

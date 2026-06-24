@@ -74,6 +74,7 @@ func drainEvents(sess *Session) func() []events.SessionEvent {
 }
 
 func TestIntegration_SimpleFileCreation(t *testing.T) {
+	t.Parallel()
 	skipWithoutAPIKey(t)
 	sess := integrationSession(t)
 	collectEvents := drainEvents(sess)
@@ -111,6 +112,7 @@ func TestIntegration_SimpleFileCreation(t *testing.T) {
 }
 
 func TestIntegration_FileReadAndEdit(t *testing.T) {
+	t.Parallel()
 	skipWithoutAPIKey(t)
 	sess := integrationSession(t)
 	_ = drainEvents(sess)
@@ -146,6 +148,7 @@ func TestIntegration_FileReadAndEdit(t *testing.T) {
 }
 
 func TestIntegration_ShellCommand(t *testing.T) {
+	t.Parallel()
 	skipWithoutAPIKey(t)
 	sess := integrationSession(t)
 	collectEvents := drainEvents(sess)
@@ -193,6 +196,7 @@ func TestIntegration_ShellCommand(t *testing.T) {
 }
 
 func TestIntegration_ToolOutputTruncation(t *testing.T) {
+	t.Parallel()
 	skipWithoutAPIKey(t)
 	sess := integrationSession(t)
 	_ = drainEvents(sess)
@@ -220,6 +224,7 @@ func TestIntegration_ToolOutputTruncation(t *testing.T) {
 }
 
 func TestIntegration_Steering(t *testing.T) {
+	t.Parallel()
 	skipWithoutAPIKey(t)
 	sess := integrationSession(t)
 	collectEvents := drainEvents(sess)
@@ -264,6 +269,7 @@ func TestIntegration_Steering(t *testing.T) {
 }
 
 func TestIntegration_Delegate(t *testing.T) {
+	t.Parallel()
 	skipWithoutAPIKey(t)
 
 	// Delegate flow needs more tool rounds: the parent calls delegate and may
@@ -345,6 +351,7 @@ func TestIntegration_Delegate(t *testing.T) {
 }
 
 func TestIntegration_Timeout(t *testing.T) {
+	t.Parallel()
 	skipWithoutAPIKey(t)
 	sess := integrationSession(t)
 	_ = drainEvents(sess)

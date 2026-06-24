@@ -16,6 +16,7 @@ import (
 // Negative case: a child with delegationAllowance == 0 still has delegate and
 // job_watch stripped (preserves today's leaf behaviour).
 func TestChildRegistryKeepsDelegateWithAllowance(t *testing.T) {
+	t.Parallel()
 	t.Run("allowance>0 retains delegate and job_watch", func(t *testing.T) {
 		dir := t.TempDir()
 		c := llm.NewClient()

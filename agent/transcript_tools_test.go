@@ -142,6 +142,7 @@ func matchesFromEnvelope(t *testing.T, env map[string]any) []map[string]any {
 //   - fields that were removed from the spec (session_id, model, profile_id,
 //     created_at, default_read, has_transcript) are absent from the wire JSON
 func TestFormatSessionFindings(t *testing.T) {
+	t.Parallel()
 	scanned := 42
 	env := findSessionsEnvelope{
 		ScopeApplied: "current_project",
@@ -175,6 +176,7 @@ func TestFormatSessionFindings(t *testing.T) {
 }
 
 func TestFind_CurrentSessionUsesLiveTurnCount(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
@@ -207,6 +209,7 @@ func TestFind_CurrentSessionUsesLiveTurnCount(t *testing.T) {
 }
 
 func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 
 	now := time.Now().UTC().Truncate(time.Second)
@@ -293,6 +296,7 @@ func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 //   - a query matching only transcript content returns that session with snippets
 //   - scanned is set when a content scan ran
 func TestFind_QuerySearch(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
@@ -352,6 +356,7 @@ func TestFind_QuerySearch(t *testing.T) {
 //   - children is metadata-only (no transcript files required for the parent or children)
 //   - unrelated sessions are excluded
 func TestFind_ChildrenOf(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
@@ -564,6 +569,7 @@ func readMetaMap(t *testing.T, env map[string]any) map[string]any {
 // >40 turns returns markdown whose meta has turns_total > turns_rendered and
 // whose content contains a self-announcing window line.
 func TestRead_DefaultMarkdownWindow(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	const sessionID = "WINDW001"
@@ -621,6 +627,7 @@ func TestRead_DefaultMarkdownWindow(t *testing.T) {
 // rendered, never the literal request — including an out-of-range N-M, the bug class
 // where "50-100" on a 10-turn session announced a fabricated, reversed "turns 50–9".
 func TestRead_WindowHonest(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	const sessionID = "WINHON01"
@@ -650,6 +657,7 @@ func TestRead_WindowHonest(t *testing.T) {
 
 // TestRead_ExplicitRange verifies that range:"2-4" renders exactly those turns.
 func TestRead_ExplicitRange(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	const sessionID = "RANGE001"
@@ -706,6 +714,7 @@ func TestRead_ExplicitRange(t *testing.T) {
 // TestRead_MalformedRangeWarns verifies that a bad range sets meta.range_warning
 // and surfaces a warning in content, while falling back to the default.
 func TestRead_MalformedRangeWarns(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	const sessionID = "BADRANGE"
@@ -742,6 +751,7 @@ func TestRead_MalformedRangeWarns(t *testing.T) {
 // TestRead_ExpandTurn verifies that expand_turn:<N> renders the tool result in
 // full (lines that would be elided by head+tail truncation are present).
 func TestRead_ExpandTurn(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	const sessionID = "EXPAND01"
@@ -796,6 +806,7 @@ func TestRead_ExpandTurn(t *testing.T) {
 // fields and does NOT contain the banned fields (redaction, raw_formats,
 // session_id).
 func TestRead_MetaTrimmed(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	const sessionID = "METATRIM"
@@ -833,6 +844,7 @@ func TestRead_MetaTrimmed(t *testing.T) {
 // TestRead_JSONL verifies the jsonl debug hatch: raw NDJSON content, the NDJSON
 // content type, and a meta hint that steers back to markdown for comprehension.
 func TestRead_JSONL(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	const sessionID = "JSONL001"
@@ -880,6 +892,7 @@ func firstLineOf(s string) string {
 //   - each line's leading number matches its absolute turn index
 //   - hint is present and non-empty
 func TestRead_OutlineBasic(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	const sessionID = "OUTLINE1"
@@ -943,6 +956,7 @@ func TestRead_OutlineBasic(t *testing.T) {
 //   - the leading numbers are the ABSOLUTE turns 7..11 (not 0..4)
 //   - turns_total is still 12 (the full session)
 func TestRead_OutlineRange(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	const sessionID = "OUTRANGE"
@@ -995,6 +1009,7 @@ func TestRead_OutlineRange(t *testing.T) {
 // project (proj: ref): the parent's bucket is resolved from the ref with no stat, and
 // the child comes back with a proj: ref into that bucket.
 func TestFind_ChildrenOf_ProjBucket(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	currentBucket := newBucketUnder(t, stateHome)
 	siblingBucket := newBucketUnder(t, stateHome)

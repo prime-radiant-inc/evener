@@ -53,6 +53,7 @@ func countGoalContinuations(evs []events.SessionEvent) int {
 // asserts the continuation turn entered history as schema.TurnSteering, not a
 // user turn.
 func TestGoalLoopRunsContinuationToComplete(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{

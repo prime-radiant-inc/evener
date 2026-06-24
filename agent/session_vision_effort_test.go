@@ -13,6 +13,7 @@ import (
 // reasoning effort to the model's supported levels — otherwise a top-tier alias
 // like "max" reaches a model that only accepts up to "high".
 func TestDescribeImage_ClampsEffortToProfileLevels(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	var gotEffort string
 	adapter := &fakeAdapter{

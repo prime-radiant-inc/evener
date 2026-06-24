@@ -16,6 +16,7 @@ import (
 )
 
 func TestSession_DetailedStatus_CoreTools(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -58,6 +59,7 @@ func TestSession_DetailedStatus_CoreTools(t *testing.T) {
 }
 
 func TestSession_DetailedStatus_CustomTool(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -97,6 +99,7 @@ func TestSession_DetailedStatus_CustomTool(t *testing.T) {
 }
 
 func TestSession_DetailedStatus_Skills(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// Create a skill directory.
@@ -139,6 +142,7 @@ description: A test skill
 }
 
 func TestSession_DetailedStatus_EmptySections(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -195,6 +199,7 @@ func TestSession_DetailedStatus_EmptySections(t *testing.T) {
 }
 
 func TestSession_DetailedStatus_ConfiguredWorkflowPlugin(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -232,6 +237,7 @@ func TestSession_DetailedStatus_ConfiguredWorkflowPlugin(t *testing.T) {
 }
 
 func TestSession_DetailedStatus_Jobs(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -294,6 +300,7 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 }
 
 func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -376,6 +383,7 @@ func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
 }
 
 func TestSession_DetailedStatus_ToolsSorted(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -408,6 +416,7 @@ func TestSession_DetailedStatus_ToolsSorted(t *testing.T) {
 // it must not be counted as a supported active hook. The legacy Hooks map (registered
 // hooks per event) still counts them (Fix 4).
 func TestDetailedStatus_HookEvents_ExcludesDeadHooks(t *testing.T) {
+	t.Parallel()
 	pluginDir := t.TempDir()
 	metaDir := filepath.Join(pluginDir, ".claude-plugin")
 	os.MkdirAll(metaDir, 0o755)
@@ -458,6 +467,7 @@ func TestDetailedStatus_HookEvents_ExcludesDeadHooks(t *testing.T) {
 // unsupported events with Supported=false, Count=0, Tier="reserved-placeholder".
 // The legacy Hooks map is preserved for backward compatibility.
 func TestDetailedStatus_HookEvents(t *testing.T) {
+	t.Parallel()
 	// Build a plugin dir with PreToolUse (supported) and "Setup" (recognized but
 	// not fired by serf — reserved-placeholder).
 	pluginDir := t.TempDir()

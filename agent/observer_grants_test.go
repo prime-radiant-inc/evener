@@ -43,6 +43,7 @@ func appendGrantLog(t *testing.T, stateDir, sessID, watchedJobID, workerRef, obs
 // A watch-read-grant on disk reverse-resolves the watched job to its worker
 // session, mapping worker -> observer from the durable log alone.
 func TestLoadSessionObserverGrants_ResolvesWorkerToObserver(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	appendGrantLog(t, stateDir, "PARENT", "job_watched", encodeRef("", "WORKER"), "OBSERVER")
 
@@ -57,6 +58,7 @@ func TestLoadSessionObserverGrants_ResolvesWorkerToObserver(t *testing.T) {
 
 // A session with no jobs.jsonl returns an empty map and creates no file.
 func TestLoadSessionObserverGrants_MissingLogIsEmptyNoCreate(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	got, err := LoadSessionObserverGrants(stateDir, "NOLOG")
 	if err != nil {
@@ -74,6 +76,7 @@ func TestLoadSessionObserverGrants_MissingLogIsEmptyNoCreate(t *testing.T) {
 // is skipped — the hub cannot read a cross-bucket worker's meta. Mirrors
 // watchedWorkerSessionID's bucketHash != "" -> ok=false handling.
 func TestLoadSessionObserverGrants_SkipsCrossProjectRef(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	appendGrantLog(t, stateDir, "PARENT", "job_watched", encodeRef("otherbucket", "WORKER"), "OBSERVER")
 
@@ -88,6 +91,7 @@ func TestLoadSessionObserverGrants_SkipsCrossProjectRef(t *testing.T) {
 
 // A grant for a watched job that is not a delegate (or has no record) is skipped.
 func TestLoadSessionObserverGrants_SkipsUnresolvableWatchedJob(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	dir := jobsDir(stateDir, "PARENT")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

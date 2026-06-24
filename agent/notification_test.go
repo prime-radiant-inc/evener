@@ -103,6 +103,7 @@ func completeBackgroundDelegateForNotification(t *testing.T, sess *Session) stri
 // contains the "<job-notification ...>" block, so the notification reached
 // the MODEL.
 func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -190,6 +191,7 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 // and suppresses the SESSION_END.  The session emits zero ends, causing the hub's
 // SetProcessing(false) to be skipped and leaving the session stuck.
 func TestNotification_EmptyNoOpDoesNotSuppressNextTurnEnd(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -238,6 +240,7 @@ func TestNotification_EmptyNoOpDoesNotSuppressNextTurnEnd(t *testing.T) {
 // sets s.sessionEndEmitted=true before returning false, so the drain loop's idle
 // tail skips the SESSION_END emit.
 func TestNotificationTurn_EmptyQueueIsNoOp(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -311,6 +314,7 @@ func TestNotificationTurn_EmptyQueueIsNoOp(t *testing.T) {
 // turn itself neither advanced nor terminated the goal); the goal completes once
 // (EventGoalEnded{complete}) within the single call.
 func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -541,6 +545,7 @@ func lastTextMessage(req llm.Request) string {
 // (surfaced as a prompt error / non-blocked status). This is the load-bearing
 // "goal loops forever under sustained notifications" guard.
 func TestNotification_BreakerFiresUnderSustainedNotifications(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &sustainedNotificationAdapter{name: "openai", t: t, ceil: 60}
@@ -602,6 +607,7 @@ func TestNotification_BreakerFiresUnderSustainedNotifications(t *testing.T) {
 // PRE-FIX this FAILS: the notification preempts the gate, settleGoalOnIdle no-ops
 // (kickFunc==nil), the call returns with the goal still active and Iterations 0.
 func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -678,6 +684,7 @@ func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
 }
 
 func TestNotificationNoOpDroppedDeferredGoalContinuationDoesNotSuppressSessionEnd(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -760,6 +767,7 @@ func TestNotificationNoOpDroppedDeferredGoalContinuationDoesNotSuppressSessionEn
 // no-notification path does not have this bug because its gate re-reads the (empty)
 // store; this test closes the gap the notification interleave opened.
 func TestNotification_GoalClearedDuringInterleaveStops(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -845,6 +853,7 @@ func TestNotification_GoalClearedDuringInterleaveStops(t *testing.T) {
 // PRE-FIX this FAILS: the inline site runs the cached OLD render, so the continuation
 // after the notification pursues the abandoned OLD objective.
 func TestNotification_GoalRetargetedDuringInterleaveUsesNewObjective(t *testing.T) {
+	t.Parallel()
 	const (
 		oldObjective = "OLD-abandoned-objective-zzz"
 		newObjective = "NEW-retargeted-objective-qqq"

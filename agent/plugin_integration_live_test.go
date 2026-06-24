@@ -178,6 +178,7 @@ func writeFile(t *testing.T, base, path, content string) {
 // ---------- Test: Full plugin loading (all components) ----------
 
 func TestLive_PluginLoad_AllComponents(t *testing.T) {
+	t.Parallel()
 	dir := buildLiveTestPlugin(t)
 
 	lp, err := plugin.Load(dir)
@@ -271,6 +272,7 @@ func TestLive_PluginLoad_AllComponents(t *testing.T) {
 // ---------- Test: MCP server through real stdio transport ----------
 
 func TestLive_MCP_StdioServer(t *testing.T) {
+	t.Parallel()
 	dir := buildLiveTestPlugin(t)
 
 	lp, err := plugin.Load(dir)
@@ -344,6 +346,7 @@ func TestLive_MCP_StdioServer(t *testing.T) {
 // ---------- Test: Command hooks with real execution ----------
 
 func TestLive_Hooks_CommandExecution(t *testing.T) {
+	t.Parallel()
 	dir := buildLiveTestPlugin(t)
 
 	lp, err := plugin.Load(dir)
@@ -447,6 +450,7 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 // ---------- Test: Prompt hook with real LLM ----------
 
 func TestLive_Hooks_PromptWithRealLLM(t *testing.T) {
+	t.Parallel()
 	skipWithoutAPIKey(t)
 
 	// Create a plugin with a prompt hook.
@@ -507,6 +511,7 @@ func TestLive_Hooks_PromptWithRealLLM(t *testing.T) {
 // ---------- Test: Full session with plugin (MCP + hooks + agents) ----------
 
 func TestLive_Session_WithPlugin(t *testing.T) {
+	t.Parallel()
 	skipWithoutAPIKey(t)
 
 	pluginDir := buildLiveTestPlugin(t)
@@ -631,6 +636,7 @@ func TestLive_Session_WithPlugin(t *testing.T) {
 // ---------- Test: Session with MCP tool call through real LLM ----------
 
 func TestLive_Session_MCPToolCall(t *testing.T) {
+	t.Parallel()
 	skipWithoutAPIKey(t)
 
 	pluginDir := buildLiveTestPlugin(t)
@@ -692,6 +698,7 @@ func TestLive_Session_MCPToolCall(t *testing.T) {
 // ---------- Test: Plugin agent prompt in system message ----------
 
 func TestLive_Session_PluginAgentsInSystemPrompt(t *testing.T) {
+	t.Parallel()
 	skipWithoutAPIKey(t)
 
 	pluginDir := buildLiveTestPlugin(t)
@@ -761,6 +768,7 @@ func TestLive_Session_PluginAgentsInSystemPrompt(t *testing.T) {
 // ---------- Test: Tool restriction for plugin agents ----------
 
 func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
+	t.Parallel()
 	dir := buildLiveTestPlugin(t)
 
 	lp, err := plugin.Load(dir)
@@ -829,6 +837,7 @@ func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 // ---------- Test: Real superpowers plugin through Session ----------
 
 func TestLive_Session_RealSuperpowersPlugin(t *testing.T) {
+	t.Parallel()
 	superpowersDir := filepath.Join(pluginCacheDir, "superpowers", "4.3.0")
 	if _, err := os.Stat(superpowersDir); err != nil {
 		t.Skip("superpowers plugin not installed")

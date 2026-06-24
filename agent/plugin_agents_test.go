@@ -10,6 +10,7 @@ import (
 )
 
 func TestParsePluginAgent(t *testing.T) {
+	t.Parallel()
 	content := `---
 name: code-reviewer
 description: Use this agent when reviewing code
@@ -60,6 +61,7 @@ You are a code review specialist.
 }
 
 func TestParsePluginAgent_MissingRequired(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		content string
@@ -78,6 +80,7 @@ func TestParsePluginAgent_MissingRequired(t *testing.T) {
 }
 
 func TestParsePluginAgent_OptionalModelAndColor(t *testing.T) {
+	t.Parallel()
 	// Model and color are optional — default to "inherit" and "blue".
 	content := "---\nname: test\ndescription: does things\n---\nbody"
 	agent, err := plugin.ParseAgent([]byte(content), "p")
@@ -93,6 +96,7 @@ func TestParsePluginAgent_OptionalModelAndColor(t *testing.T) {
 }
 
 func TestParsePluginAgent_NoTools(t *testing.T) {
+	t.Parallel()
 	content := "---\nname: test\ndescription: desc\nmodel: inherit\ncolor: green\n---\nbody"
 	agent, err := plugin.ParseAgent([]byte(content), "p")
 	if err != nil {
@@ -104,6 +108,7 @@ func TestParsePluginAgent_NoTools(t *testing.T) {
 }
 
 func TestParsePluginAgent_AllToolsScalar(t *testing.T) {
+	t.Parallel()
 	content := "---\nname: test\ndescription: desc\ntools: all\n---\nbody"
 	agent, err := plugin.ParseAgent([]byte(content), "p")
 	if err != nil {
@@ -118,6 +123,7 @@ func TestParsePluginAgent_AllToolsScalar(t *testing.T) {
 }
 
 func TestParsePluginAgent_AllToolsListFormsRejected(t *testing.T) {
+	t.Parallel()
 	cases := []string{
 		"---\nname: test\ndescription: desc\ntools: \"*\"\n---\nbody",
 		"---\nname: test\ndescription: desc\ntools: [all]\n---\nbody",
@@ -136,6 +142,7 @@ func TestParsePluginAgent_AllToolsListFormsRejected(t *testing.T) {
 }
 
 func TestParsePluginAgent_Skills(t *testing.T) {
+	t.Parallel()
 	data := []byte("---\nname: test-eng\ndescription: test engineer\nskills: [test-engineering, debugging]\n---\nYou write tests.\n")
 	agent, err := plugin.ParseAgent(data, "builtin")
 	if err != nil {
@@ -150,6 +157,7 @@ func TestParsePluginAgent_Skills(t *testing.T) {
 }
 
 func TestParsePluginAgent_NoSkills(t *testing.T) {
+	t.Parallel()
 	data := []byte("---\nname: explorer\ndescription: explore\n---\nRead-only.\n")
 	agent, err := plugin.ParseAgent(data, "builtin")
 	if err != nil {
@@ -161,6 +169,7 @@ func TestParsePluginAgent_NoSkills(t *testing.T) {
 }
 
 func TestDiscoverPluginAgents(t *testing.T) {
+	t.Parallel()
 	dir := makePluginDir(t, "my-plugin")
 	agentsDir := filepath.Join(dir, "agents")
 	os.MkdirAll(agentsDir, 0755)
@@ -182,6 +191,7 @@ func TestDiscoverPluginAgents(t *testing.T) {
 }
 
 func TestDiscoverPluginAgents_NoAgentsDir(t *testing.T) {
+	t.Parallel()
 	dir := makePluginDir(t, "no-agents")
 	plugin, err := plugin.Load(dir)
 	if err != nil {
@@ -193,6 +203,7 @@ func TestDiscoverPluginAgents_NoAgentsDir(t *testing.T) {
 }
 
 func TestDiscoverPluginAgents_SkipsNonMd(t *testing.T) {
+	t.Parallel()
 	dir := makePluginDir(t, "md-plugin")
 	agentsDir := filepath.Join(dir, "agents")
 	os.MkdirAll(agentsDir, 0755)
@@ -212,6 +223,7 @@ func TestDiscoverPluginAgents_SkipsNonMd(t *testing.T) {
 }
 
 func TestParsePluginAgent_WithTasks(t *testing.T) {
+	t.Parallel()
 	input := []byte("---\nname: test-agent\ndescription: \"Test agent\"\nmodel: inherit\ntasks:\n  - title: First step\n    prompt: \"Do the first thing\"\n    reasoning_effort: low\n  - title: Do work\n    insert: parent_tasks\n    prompt: \"Implement it\"\n    reasoning_effort: xhigh\n  - title: Verify\n    prompt: \"Check it\"\n---\n\nYou are a test agent.\n")
 	agent, err := plugin.ParseAgent(input, "test-plugin")
 	if err != nil {
@@ -235,6 +247,7 @@ func TestParsePluginAgent_WithTasks(t *testing.T) {
 }
 
 func TestParsePluginAgent_NoTasks(t *testing.T) {
+	t.Parallel()
 	input := []byte("---\nname: simple\ndescription: \"No tasks\"\n---\n\nJust a prompt.\n")
 	agent, err := plugin.ParseAgent(input, "builtin")
 	if err != nil {

@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 )
 
 var errDelegateStartForwardFailed = errors.New("delegate start forward failed")
@@ -60,7 +61,15 @@ const (
 	delegateResumabilityProjection
 )
 
-var delegateRestoreResumeHistory = ResumeHistory
+// resumeHistoryForRestore builds the resume history for a delegate restore,
+// using the session's override when set (tests) and the production ResumeHistory
+// otherwise.
+func (s *Session) resumeHistoryForRestore(entries []transcript.Entry) []schema.Turn {
+	if s != nil && s.delegateRestoreResumeHistory != nil {
+		return s.delegateRestoreResumeHistory(entries)
+	}
+	return ResumeHistory(entries)
+}
 
 type delegateArgs struct {
 	Task                string
@@ -548,9 +557,9 @@ func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode deleg
 	}
 	var transcriptData transcriptData
 	if mode == delegateResumabilityPreflight {
-		transcriptData, err = readStrictChildTranscript(transcriptPath, childID)
+		transcriptData, err = readStrictChildTranscript(transcriptPath, childID, s.strictTranscriptMaxLineBytes)
 	} else {
-		header, validateErr := validateStrictChildTranscript(transcriptPath, childID)
+		header, validateErr := validateStrictChildTranscript(transcriptPath, childID, s.strictTranscriptMaxLineBytes)
 		transcriptData.Header = header
 		err = validateErr
 	}
@@ -579,7 +588,7 @@ func (s *Session) assessDelegateResumability(rec *jobstore.JobRecord, mode deleg
 		result.Preflight = &delegateRestorePreflight{
 			Meta:       meta,
 			Transcript: transcriptData,
-			History:    delegateRestoreResumeHistory(transcriptData.Entries),
+			History:    s.resumeHistoryForRestore(transcriptData.Entries),
 			Profile:    profile,
 		}
 	}

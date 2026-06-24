@@ -6,6 +6,7 @@ import (
 )
 
 func TestCompactTool_PinsAndRequests(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rt := s.reg.Get("compact")
 	if rt == nil {
@@ -28,6 +29,7 @@ func TestCompactTool_PinsAndRequests(t *testing.T) {
 }
 
 func TestCompactTool_ClearNote_NoForce(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.setPinnedNote("old")
 	rt := s.reg.Get("compact")
@@ -46,6 +48,7 @@ func TestCompactTool_ClearNote_NoForce(t *testing.T) {
 }
 
 func TestCompactTool_DoubleCompact_Errors(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rt := s.reg.Get("compact")
 	if _, err := rt.Exec(context.Background(), nil, map[string]any{"note_to_self": "a"}); err != nil {

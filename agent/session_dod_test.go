@@ -40,6 +40,7 @@ func toolCallEndOutput(ev events.SessionEvent) string {
 }
 
 func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -87,6 +88,7 @@ func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {
 }
 
 func TestSession_MaxToolRoundsPerInput_EmitsTurnLimitEvent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -143,6 +145,7 @@ func TestSession_MaxToolRoundsPerInput_EmitsTurnLimitEvent(t *testing.T) {
 }
 
 func TestSession_MaxToolRoundsPerInput_NegativeMeansUnlimited(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -197,6 +200,7 @@ func TestSession_MaxToolRoundsPerInput_NegativeMeansUnlimited(t *testing.T) {
 }
 
 func TestSessionConfig_ApplyDefaults_MaxToolRounds(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input int
@@ -218,6 +222,7 @@ func TestSessionConfig_ApplyDefaults_MaxToolRounds(t *testing.T) {
 }
 
 func TestSession_LifecycleEvents_BracketSession(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -244,6 +249,7 @@ func TestSession_LifecycleEvents_BracketSession(t *testing.T) {
 }
 
 func TestSession_EventSystem_NaturalCompletion_EmitsUserAndAssistantTextEventsInOrder(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -292,6 +298,7 @@ func TestSession_EventSystem_NaturalCompletion_EmitsUserAndAssistantTextEventsIn
 }
 
 func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -352,6 +359,7 @@ func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 }
 
 func TestSession_EventSystem_ToolCall_EmitsStartDeltaEnd(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	call := llm.ToolCallData{
@@ -415,6 +423,7 @@ func TestSession_EventSystem_ToolCall_EmitsStartDeltaEnd(t *testing.T) {
 }
 
 func TestSession_MaxTurns_StopsAcrossInputsAndEmitsEvent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -462,6 +471,7 @@ func TestSession_MaxTurns_StopsAcrossInputsAndEmitsEvent(t *testing.T) {
 }
 
 func TestSession_MultipleSequentialInputs_Work(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{
@@ -493,6 +503,7 @@ func TestSession_MultipleSequentialInputs_Work(t *testing.T) {
 }
 
 func TestSession_Steer_IsInjectedAfterCurrentToolRound(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -620,6 +631,7 @@ func TestSession_Steer_IsInjectedAfterCurrentToolRound(t *testing.T) {
 }
 
 func TestSession_ReasoningEffort_PassedThroughAndCanChange(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -702,6 +714,7 @@ func TestSession_ReasoningEffort_PassedThroughAndCanChange(t *testing.T) {
 }
 
 func TestSession_PopulatesModelRequestMetadata(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 	c := llm.NewClient()
@@ -746,6 +759,7 @@ func TestSession_PopulatesModelRequestMetadata(t *testing.T) {
 }
 
 func TestSession_RetainsEncryptedReasoningAcrossToolRound(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
@@ -814,6 +828,7 @@ func TestSession_RetainsEncryptedReasoningAcrossToolRound(t *testing.T) {
 }
 
 func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{
@@ -856,6 +871,7 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 }
 
 func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{
@@ -890,6 +906,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 }
 
 func TestSession_ContextWindowAwareness_DoesNotWarnForLargeImageBytes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{
@@ -929,6 +946,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnForLargeImageBytes(t *testing
 // "interrupted" and Interrupted=true so consumers can render the turn as
 // canceled while the thread status returns to idle.
 func TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -1056,6 +1074,7 @@ func TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd(t *t
 // promise: after an interrupt the session is immediately ready to accept
 // another ProcessInput, and that follow-up turn runs to completion.
 func TestSession_AbortThenFollowup(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -1147,6 +1166,7 @@ func TestSession_AbortThenFollowup(t *testing.T) {
 }
 
 func TestSession_AbortDrainsQueuedInputWithFreshContext(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	started := make(chan struct{}, 1)
@@ -1253,6 +1273,7 @@ func TestSession_AbortDrainsQueuedInputWithFreshContext(t *testing.T) {
 }
 
 func TestSession_AbortErrorDrainsQueuedInputWithFreshContext(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	started := make(chan struct{}, 1)
@@ -1326,6 +1347,7 @@ func TestSession_AbortErrorDrainsQueuedInputWithFreshContext(t *testing.T) {
 }
 
 func TestQueuedInputDrainRootAcceptsAbortErrorForCanceledMarkedTurn(t *testing.T) {
+	t.Parallel()
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
 	turnCtx, cancelTurn := context.WithCancel(rootCtx)
@@ -1346,6 +1368,7 @@ func TestQueuedInputDrainRootAcceptsAbortErrorForCanceledMarkedTurn(t *testing.T
 // THIS turn's context was the one canceled — not when an abort surfaced from a
 // sub-operation while the turn is still live.
 func TestQueuedInputDrainRejectsAbortErrorWhenTurnLive(t *testing.T) {
+	t.Parallel()
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
 	turnCtx, cancelTurn := context.WithCancel(rootCtx)
@@ -1362,6 +1385,7 @@ func TestQueuedInputDrainRejectsAbortErrorWhenTurnLive(t *testing.T) {
 // context.DeadlineExceeded, but while the turn ctx is still alive it is a
 // retryable adapter-level timeout, NOT the turn being interrupted.
 func TestIsTurnCancellation_LiveTimeoutIsNotCancellation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background() // live: ctx.Err() == nil
 
 	timeout := llm.WrapContextError("openai", context.DeadlineExceeded)
@@ -1377,6 +1401,7 @@ func TestIsTurnCancellation_LiveTimeoutIsNotCancellation(t *testing.T) {
 }
 
 func TestQueuedInputDrainContextUsesFreshCancelableTurnContext(t *testing.T) {
+	t.Parallel()
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
 	turnCtx, cancelTurn := context.WithCancel(rootCtx)
@@ -1405,6 +1430,7 @@ func TestQueuedInputDrainContextUsesFreshCancelableTurnContext(t *testing.T) {
 }
 
 func TestSession_CustomToolRegistration_OverridesExistingTool(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -1489,6 +1515,7 @@ func (a *flaky429Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stre
 }
 
 func TestSession_AuthenticationError_ClosesSession(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	a := &errAdapter{name: "openai", err: llm.ErrorFromHTTPStatus("openai", 401, "bad key", nil, nil)}
@@ -1527,6 +1554,7 @@ func TestSession_AuthenticationError_ClosesSession(t *testing.T) {
 }
 
 func TestSession_ContextLengthError_EmitsWarningAndClosesSession(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	a := &errAdapter{name: "openai", err: llm.ErrorFromHTTPStatus("openai", 413, "too large", nil, nil)}
@@ -1565,6 +1593,7 @@ func TestSession_ContextLengthError_EmitsWarningAndClosesSession(t *testing.T) {
 }
 
 func TestSession_LLMError_EmitsErrorEvent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	a := &errAdapter{name: "openai", err: llm.ErrorFromHTTPStatus("openai", 500, "boom", nil, nil)}
@@ -1600,6 +1629,7 @@ func TestSession_LLMError_EmitsErrorEvent(t *testing.T) {
 }
 
 func TestSession_LLMError_WritesStructuredAPICallDiagnostic(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 	c := llm.NewClient()
@@ -1643,6 +1673,7 @@ func TestSession_LLMError_WritesStructuredAPICallDiagnostic(t *testing.T) {
 }
 
 func TestSession_ConfigurationError_EmitsSerfDiagnosticEvent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	a := &errAdapter{name: "openai", err: &llm.ConfigurationError{Message: "unknown provider: openrouter"}}
@@ -1677,6 +1708,7 @@ func TestSession_ConfigurationError_EmitsSerfDiagnosticEvent(t *testing.T) {
 }
 
 func TestSession_RuntimeError_EmitsSerfDiagnosticEvent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	a := &errAdapter{name: "openai", err: errors.New("session runtime exploded")}
@@ -1711,6 +1743,7 @@ func TestSession_RuntimeError_EmitsSerfDiagnosticEvent(t *testing.T) {
 }
 
 func TestSession_LLMTransientErrors_RetryWithBackoff(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	ad := &flaky429Adapter{name: "openai", failCount: 2}
@@ -1764,6 +1797,7 @@ func TestSession_LLMTransientErrors_RetryWithBackoff(t *testing.T) {
 }
 
 func TestSession_Subagent_AutoNudgeExplicitBuiltinSubagent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -1834,6 +1868,7 @@ func TestSession_Subagent_AutoNudgeExplicitBuiltinSubagent(t *testing.T) {
 	}
 }
 func TestSession_SpawnAgent_MaxTurns(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -1868,6 +1903,7 @@ func TestSession_SpawnAgent_MaxTurns(t *testing.T) {
 }
 
 func TestSubAgentStatus_Values(t *testing.T) {
+	t.Parallel()
 	if SubagentRunning != "running" {
 		t.Fatalf("SubagentRunning = %q, want 'running'", SubagentRunning)
 	}
@@ -1879,6 +1915,7 @@ func TestSubAgentStatus_Values(t *testing.T) {
 	}
 }
 func TestSession_ShellTool_UsesDefaultTimeout(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	f := &fakeAdapter{
 		name: "openai",
@@ -1921,6 +1958,7 @@ func TestSession_ShellTool_UsesDefaultTimeout(t *testing.T) {
 }
 
 func TestSession_ShellTool_CapsTimeoutToMaxCommandTimeoutMS(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	f := &fakeAdapter{
 		name: "openai",
@@ -1964,6 +2002,7 @@ func TestSession_ShellTool_CapsTimeoutToMaxCommandTimeoutMS(t *testing.T) {
 }
 
 func TestSession_ShellTool_TimeoutAppendsMessageToToolResult(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{
@@ -2147,6 +2186,7 @@ func (e *timeoutEnv) ExecCommand(ctx context.Context, command string, timeoutMS 
 }
 
 func TestProcessInput_ToolChoiceIsRequired(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	f := &fakeAdapter{
 		name: "openai",
@@ -2177,6 +2217,7 @@ func TestProcessInput_ToolChoiceIsRequired(t *testing.T) {
 }
 
 func TestProcessInput_DrainsSteeringBeforeFirstLLMCall(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	var firstReqMessages []llm.Message
 	f := &fakeAdapter{
@@ -2221,6 +2262,7 @@ func TestProcessInput_DrainsSteeringBeforeFirstLLMCall(t *testing.T) {
 }
 
 func TestLoopDetection_PatternLength2(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 
 	toolA := func(id string) llm.Response {
@@ -2304,6 +2346,7 @@ func TestLoopDetection_PatternLength2(t *testing.T) {
 }
 
 func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	f := &fakeAdapter{
 		name: "anthropic",
@@ -2355,6 +2398,7 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 }
 
 func TestMaxTurns_CountsConversationTurns(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	callNum := 0
 	var mu sync.Mutex
@@ -2433,6 +2477,7 @@ func TestMaxTurns_CountsConversationTurns(t *testing.T) {
 }
 
 func TestAssistantTurn_CapturesUsageAndResponseID(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	f := &fakeAdapter{
 		name: "openai",
@@ -2484,6 +2529,7 @@ func TestAssistantTurn_CapturesUsageAndResponseID(t *testing.T) {
 }
 
 func TestSession_GracefulShutdown_ClosesSubagents(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	f := &fakeAdapter{
 		name: "openai",
@@ -2536,6 +2582,7 @@ func TestSession_GracefulShutdown_ClosesSubagents(t *testing.T) {
 }
 
 func TestSession_GracefulShutdown_SessionEndIncludesStateAndTurns(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -2581,6 +2628,7 @@ func TestSession_GracefulShutdown_SessionEndIncludesStateAndTurns(t *testing.T) 
 }
 
 func TestSession_ToolResults_AggregatedIntoSingleTurn(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -2649,6 +2697,7 @@ func TestSession_ToolResults_AggregatedIntoSingleTurn(t *testing.T) {
 }
 
 func TestSession_ToolResults_ContainsAllCallIDs(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -2719,6 +2768,7 @@ func TestSession_ToolResults_ContainsAllCallIDs(t *testing.T) {
 }
 
 func TestSession_ToolResults_SingleCallAlsoAggregated(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -2773,6 +2823,7 @@ func TestSession_ToolResults_SingleCallAlsoAggregated(t *testing.T) {
 
 // WS2a: terminal communicate returns to IDLE.
 func TestSession_EndTurnQuestionResponseGoesIdle(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -2812,6 +2863,7 @@ func TestSession_EndTurnQuestionResponseGoesIdle(t *testing.T) {
 }
 
 func TestSession_EndTurnDeclarativeResponseGoesIdle(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -2851,6 +2903,7 @@ func TestSession_EndTurnDeclarativeResponseGoesIdle(t *testing.T) {
 }
 
 func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -2907,6 +2960,7 @@ func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 
 // WS2b: MaxTurns → IDLE transition
 func TestSession_MaxTurns_SetsStateToIdle(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -2948,6 +3002,7 @@ func TestSession_MaxTurns_SetsStateToIdle(t *testing.T) {
 
 // WS2c: SESSION_END after process_input
 func TestSession_SessionEnd_AfterProcessInput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -3003,6 +3058,7 @@ func TestSession_SessionEnd_AfterProcessInput(t *testing.T) {
 }
 
 func TestSession_ToolNameMapping_ReverseDispatch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -3099,6 +3155,7 @@ func TestSession_ToolNameMapping_ReverseDispatch(t *testing.T) {
 }
 
 func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -3176,6 +3233,7 @@ func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
 }
 
 func TestSession_ToolPurpose_IncludedInToolCallStartEvent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -3243,6 +3301,7 @@ func TestSession_ToolPurpose_IncludedInToolCallStartEvent(t *testing.T) {
 }
 
 func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	// Pre-create the file so it's not a new file.
@@ -3316,6 +3375,7 @@ func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
 }
 
 func TestSession_ReadBeforeWrite_NoWarningAfterRead(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	if err := os.WriteFile(filepath.Join(dir, "existing.txt"), []byte("original"), 0644); err != nil {
@@ -3400,6 +3460,7 @@ func TestSession_ReadBeforeWrite_NoWarningAfterRead(t *testing.T) {
 }
 
 func TestSession_ReadBeforeWrite_NewFileNoWarning(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	// Do NOT pre-create the file — it's a new file.
@@ -3467,6 +3528,7 @@ func TestSession_ReadBeforeWrite_NewFileNoWarning(t *testing.T) {
 }
 
 func TestSession_ReasoningEffort_MediumPassedThrough(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -3505,6 +3567,7 @@ func TestSession_ReasoningEffort_MediumPassedThrough(t *testing.T) {
 }
 
 func TestSession_TaskListUpdateEscalatesReasoningEffort(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -3575,6 +3638,7 @@ func TestSession_TaskListUpdateEscalatesReasoningEffort(t *testing.T) {
 }
 
 func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -3670,6 +3734,7 @@ func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
 }
 
 func TestSession_ReasoningEffort_EmptyMeansNoOverride(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -3708,6 +3773,7 @@ func TestSession_ReasoningEffort_EmptyMeansNoOverride(t *testing.T) {
 }
 
 func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
@@ -3737,6 +3803,7 @@ func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
 }
 
 func TestSession_Subagent_IndependentHistory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -3784,6 +3851,7 @@ func TestSession_Subagent_IndependentHistory(t *testing.T) {
 }
 
 func TestSession_Subagent_SharedFilesystem(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -3840,6 +3908,7 @@ func TestSession_Subagent_SharedFilesystem(t *testing.T) {
 }
 
 func TestSession_DelegateJobFinishedEvent_EmittedOnce(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -3892,6 +3961,7 @@ func TestSession_DelegateJobFinishedEvent_EmittedOnce(t *testing.T) {
 }
 
 func TestSendInput_SteersRunningAgent(t *testing.T) {
+	t.Parallel()
 	// Create a minimal subagent entry with a running session to verify
 	// sendInput uses Steer() on running agents instead of rejecting them.
 	c := llm.NewClient()
@@ -3948,6 +4018,7 @@ func TestSendInput_SteersRunningAgent(t *testing.T) {
 }
 
 func TestDetectLoop_Patterns(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		sigs   []string
@@ -3973,6 +4044,7 @@ func TestDetectLoop_Patterns(t *testing.T) {
 
 // GAP-2.16: Round limit returns nil error and accumulated text (not an error).
 func TestSession_RoundLimit_ReturnsNilError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -4026,6 +4098,7 @@ func TestSession_RoundLimit_ReturnsNilError(t *testing.T) {
 
 // GAP-2.17: Turn limit uses >= so MaxTurns=2 allows exactly 2 inputs.
 func TestSession_TurnLimit_UsesGreaterEqual(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -4079,6 +4152,7 @@ func TestSession_TurnLimit_UsesGreaterEqual(t *testing.T) {
 
 // GAP-2.04: Turn limit returns nil error (not an error).
 func TestSession_TurnLimit_ReturnsNilError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -4120,6 +4194,7 @@ func TestSession_TurnLimit_ReturnsNilError(t *testing.T) {
 	}
 }
 func TestSession_SetsGenerousRequestTimeout(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -4155,6 +4230,7 @@ func TestSession_SetsGenerousRequestTimeout(t *testing.T) {
 }
 
 func TestSession_Subagent_AutoNudgeOnEmptyResponseExhaustion(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 

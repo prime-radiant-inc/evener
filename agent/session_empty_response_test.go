@@ -14,6 +14,7 @@ import (
 )
 
 func TestEmptyResponse_RetriesWithSteering(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -68,6 +69,7 @@ func TestEmptyResponse_RetriesWithSteering(t *testing.T) {
 }
 
 func TestEmptyResponse_ExhaustsRetries(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -113,6 +115,7 @@ func TestEmptyResponse_ExhaustsRetries(t *testing.T) {
 }
 
 func TestEmptyResponse_ResetsOnProgress(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -161,6 +164,7 @@ func TestEmptyResponse_ResetsOnProgress(t *testing.T) {
 }
 
 func TestEmptyResponse_DoesNotConsumeToolRounds(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -211,6 +215,7 @@ func TestEmptyResponse_DoesNotConsumeToolRounds(t *testing.T) {
 }
 
 func TestBareText_DoesNotConsumeToolRounds(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -259,6 +264,7 @@ func TestBareText_DoesNotConsumeToolRounds(t *testing.T) {
 }
 
 func TestBareText_RedirectsToCommunicate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -320,6 +326,7 @@ func TestBareText_RedirectsToCommunicate(t *testing.T) {
 }
 
 func TestBareText_ExhaustsRetries(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -367,6 +374,7 @@ func TestBareText_ExhaustsRetries(t *testing.T) {
 // appended to history. This ensures the model sees its previous phase in context
 // so it can course-correct instead of repeating the empty final_answer.
 func TestEmptyResponse_PhasePreservedInHistory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 

@@ -40,6 +40,7 @@ func (a *snapshotFakeAdapter) Requests() []llm.Request {
 }
 
 func TestSession_AutoSave_WritesMetaAfterProcessInput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -102,6 +103,7 @@ func TestSession_AutoSave_WritesMetaAfterProcessInput(t *testing.T) {
 }
 
 func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -184,6 +186,7 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 }
 
 func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -297,6 +300,7 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 }
 
 func TestRestoreSession_AutoSaveContinues(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -401,6 +405,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 // reflects the number of model responses (LLM round-trips), not the number
 // of user input submissions.
 func TestRestoreSession_RestoresCheapModelRouting(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&snapshotFakeAdapter{name: "openai"})
@@ -440,6 +445,7 @@ func TestRestoreSession_RestoresCheapModelRouting(t *testing.T) {
 }
 
 func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	callNum := 0
 	var mu sync.Mutex
@@ -537,6 +543,7 @@ func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
 }
 
 func TestSessionMeta_OriginalPrompt_RoundTrip(t *testing.T) {
+	t.Parallel()
 	original := schema.SessionMeta{
 		ID:             "01TEST0001",
 		ProfileID:      "openai-gpt-5",
@@ -564,6 +571,7 @@ func TestSessionMeta_OriginalPrompt_RoundTrip(t *testing.T) {
 }
 
 func TestSessionMeta_NameFields_RoundTrip(t *testing.T) {
+	t.Parallel()
 	updatedAt := time.Date(2026, 5, 20, 14, 32, 11, 0, time.UTC)
 	original := schema.SessionMeta{
 		ID:            "01TEST0001",
@@ -597,6 +605,7 @@ func TestSessionMeta_NameFields_RoundTrip(t *testing.T) {
 }
 
 func TestSessionMeta_NameFields_OmitEmpty(t *testing.T) {
+	t.Parallel()
 	meta := schema.SessionMeta{ID: "01TEST0001"}
 	data, err := json.Marshal(meta)
 	if err != nil {
@@ -611,6 +620,7 @@ func TestSessionMeta_NameFields_OmitEmpty(t *testing.T) {
 }
 
 func TestSessionDisplayName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		meta schema.SessionMeta
@@ -652,6 +662,7 @@ func TestSessionDisplayName(t *testing.T) {
 }
 
 func TestSessionMeta_OriginalPrompt_ReadsLegacyOriginalTask(t *testing.T) {
+	t.Parallel()
 	data := []byte(`{"id":"01TEST0001","original_task":"fix the bug in handler"}`)
 	var got schema.SessionMeta
 	if err := json.Unmarshal(data, &got); err != nil {
@@ -663,6 +674,7 @@ func TestSessionMeta_OriginalPrompt_ReadsLegacyOriginalTask(t *testing.T) {
 }
 
 func TestSessionMeta_OriginalPrompt_OmitEmpty(t *testing.T) {
+	t.Parallel()
 	meta := schema.SessionMeta{ID: "01TEST0001"}
 	data, err := json.Marshal(meta)
 	if err != nil {
@@ -674,6 +686,7 @@ func TestSessionMeta_OriginalPrompt_OmitEmpty(t *testing.T) {
 }
 
 func TestSessionMeta_ForkFieldsRoundTrip(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	meta := schema.SessionMeta{
 		ID:              "01CHILD",

@@ -68,6 +68,7 @@ func assertNoShellJobArtifacts(t *testing.T, jm *jobManager) {
 }
 
 func TestRunShellForegroundEphemeral(t *testing.T) {
+	t.Parallel()
 	jm, se := newShellTestRig(t)
 	res := runShell(context.Background(), jm, se, shellArgs{Command: "printf done", BlockTimeoutMS: 5000})
 	// Within-bound results carry a settle closure; discard to exercise the
@@ -88,6 +89,7 @@ func TestRunShellForegroundEphemeral(t *testing.T) {
 }
 
 func TestRunShellForegroundEphemeralReturnsFullOutput(t *testing.T) {
+	t.Parallel()
 	jm, se := newShellTestRig(t)
 	res := runShell(context.Background(), jm, se, shellArgs{
 		Command:        "head -c 70000 </dev/zero | tr '\\0' 'x'",
@@ -196,6 +198,7 @@ func (e *signalCompletesStreamingExecutor) StreamCommand(_ context.Context, _ st
 }
 
 func TestRunShellForegroundWaitErrorFailsJob(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	res := runShell(context.Background(), jm, waitErrorStreamingExecutor{}, shellArgs{Command: "x", BlockTimeoutMS: 5000})
 	if res.Status != string(jobstore.StatusFailed) || res.Reason != "wait_failed" || res.RunningInBackground {
@@ -207,6 +210,7 @@ func TestRunShellForegroundWaitErrorFailsJob(t *testing.T) {
 }
 
 func TestRunShellBackgroundWaitErrorFinalizesFailed(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	res := runShell(context.Background(), jm, waitErrorStreamingExecutor{}, shellArgs{Command: "x", Background: true})
 	if res.JobID == "" || !res.RunningInBackground {
@@ -220,6 +224,7 @@ func TestRunShellBackgroundWaitErrorFinalizesFailed(t *testing.T) {
 }
 
 func TestRunShellBackgroundCloseDuringStartDoesNotCommitJob(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	se := newBlockingStartStreamingExecutor()
 
@@ -278,6 +283,7 @@ func TestRunShellBackgroundCloseDuringStartDoesNotCommitJob(t *testing.T) {
 }
 
 func TestCommitDelayedShellAfterCloseAbandonmentFails(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	run, err := jm.newDelayedShell(shellArgs{Command: "sleep 30", Background: true})
 	if err != nil {
@@ -299,6 +305,7 @@ func TestCommitDelayedShellAfterCloseAbandonmentFails(t *testing.T) {
 }
 
 func TestDiscardDelayedShellAfterAbandonDoesNotPanic(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	run, err := jm.newDelayedShell(shellArgs{Command: "sleep 30"})
 	if err != nil {
@@ -337,6 +344,7 @@ func waitForJobManagerClosing(t *testing.T, jm *jobManager) {
 }
 
 func TestRunShellPromotesOnTimeout(t *testing.T) {
+	t.Parallel()
 	jm, se := newShellTestRig(t)
 	res := runShell(context.Background(), jm, se, shellArgs{Command: "sleep 30", BlockTimeoutMS: 1000})
 	if res.JobID == "" {
@@ -357,6 +365,7 @@ func TestRunShellPromotesOnTimeout(t *testing.T) {
 }
 
 func TestRunShellForegroundMaxRuntimeCreatesDurableStoppedJob(t *testing.T) {
+	t.Parallel()
 	jm, se := newShellTestRig(t)
 	start := time.Now()
 	res := runShell(context.Background(), jm, se, shellArgs{
@@ -391,6 +400,7 @@ func TestRunShellForegroundMaxRuntimeCreatesDurableStoppedJob(t *testing.T) {
 }
 
 func TestRunShellForegroundMaxRuntimeFinalizerFailureConvergesDetached(t *testing.T) {
+	t.Parallel()
 	jm, se := newShellTestRig(t)
 	appendErr := errors.New("temporary append failure")
 	var finishAttempts atomic.Int32
@@ -444,6 +454,7 @@ func TestRunShellForegroundMaxRuntimeFinalizerFailureConvergesDetached(t *testin
 }
 
 func TestRunShellBackgroundReturnsImmediately(t *testing.T) {
+	t.Parallel()
 	jm, se := newShellTestRig(t)
 	start := time.Now()
 	res := runShell(context.Background(), jm, se, shellArgs{Command: "sleep 30", Background: true, BlockTimeoutMS: 120000})
@@ -462,6 +473,7 @@ func TestRunShellBackgroundReturnsImmediately(t *testing.T) {
 }
 
 func TestRunShellBackgroundStopWinsOverLaterRuntimeTimeout(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	se := newDelayedExitStreamingExecutor()
 	res := runShell(context.Background(), jm, se, shellArgs{
@@ -507,6 +519,7 @@ func waitForSignalCount(t *testing.T, se *delayedExitStreamingExecutor, want int
 }
 
 func TestRunShellBackgroundSurvivesToolContextCancellation(t *testing.T) {
+	t.Parallel()
 	jm, se := newShellTestRig(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	res := runShell(ctx, jm, se, shellArgs{Command: "sleep 1; printf survived", Background: true})
@@ -530,6 +543,7 @@ func TestRunShellBackgroundSurvivesToolContextCancellation(t *testing.T) {
 }
 
 func TestRunShellForegroundCancelsBeforePromotion(t *testing.T) {
+	t.Parallel()
 	jm, se := newShellTestRig(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -547,6 +561,7 @@ func TestRunShellForegroundCancelsBeforePromotion(t *testing.T) {
 }
 
 func TestStartOnlyContextSeesPreCanceledParent(t *testing.T) {
+	t.Parallel()
 	parent, cancel := context.WithCancel(context.Background())
 	cancel()
 	startCtx, detach := newStartOnlyContext(parent)
@@ -563,6 +578,7 @@ func TestStartOnlyContextSeesPreCanceledParent(t *testing.T) {
 }
 
 func TestStartOnlyContextIgnoresCancellationAfterDetach(t *testing.T) {
+	t.Parallel()
 	parent, cancel := context.WithCancel(context.Background())
 	startCtx, detach := newStartOnlyContext(parent)
 	detach()
@@ -579,6 +595,7 @@ func TestStartOnlyContextIgnoresCancellationAfterDetach(t *testing.T) {
 }
 
 func TestRunShellDetachedFinalizerRetriesUntilDurable(t *testing.T) {
+	t.Parallel()
 	jm, se := newShellTestRig(t)
 	appendErr := errors.New("temporary append failure")
 	var finishAttempts atomic.Int32

@@ -6,6 +6,7 @@ import (
 )
 
 func TestCoordinatorWorkflowUsesDelegateSend(t *testing.T) {
+	t.Parallel()
 	coord := coordinatorWorkflowAgentForTest(t, "coordinator")
 	if !hasString(coord.Tools, "delegate_send") {
 		t.Fatalf("coordinator tools = %+v, want delegate_send", coord.Tools)

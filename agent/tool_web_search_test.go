@@ -12,6 +12,7 @@ import (
 )
 
 func TestWebSearch_MakesGroundingCall(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// Track the grounding call request.
@@ -88,6 +89,7 @@ func TestWebSearch_MakesGroundingCall(t *testing.T) {
 }
 
 func TestWebSearch_DirectCall(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	fa := &fakeAdapter{

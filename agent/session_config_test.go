@@ -6,6 +6,7 @@ import "testing"
 // root session derives its delegation allowance from MaxSubagentDepth, so the
 // default of 2 lets a delegate itself delegate one level (grant allowance 1).
 func TestSessionConfigDefaultSubagentDepth(t *testing.T) {
+	t.Parallel()
 	var c SessionConfig
 	c.applyDefaults()
 	if c.MaxSubagentDepth != 2 {

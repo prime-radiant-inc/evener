@@ -25,6 +25,7 @@ func payloadJSONMap(t *testing.T, data events.EventData) map[string]any {
 }
 
 func TestPluginLoadedData_JSONShape(t *testing.T) {
+	t.Parallel()
 	data := events.PluginLoadedData{
 		Name: "test", Dir: "/tmp", SkillCount: 2, AgentCount: 1, MCPCount: 3,
 	}
@@ -47,6 +48,7 @@ func TestPluginLoadedData_JSONShape(t *testing.T) {
 }
 
 func TestHookStartData_JSONShape(t *testing.T) {
+	t.Parallel()
 	data := events.HookStartData{
 		Event: "PreToolUse", HookType: "command", Matcher: "Write", PluginName: "my-plugin",
 	}
@@ -66,6 +68,7 @@ func TestHookStartData_JSONShape(t *testing.T) {
 }
 
 func TestHookEndData_JSONShape(t *testing.T) {
+	t.Parallel()
 	data := events.HookEndData{
 		Event: "PostToolUse", HookType: "prompt", Matcher: "*",
 		PluginName: "test-plugin", ExitCode: 0, DurationMS: 150,
@@ -92,6 +95,7 @@ func TestHookEndData_JSONShape(t *testing.T) {
 }
 
 func TestHookEndData_NonZeroExitCode(t *testing.T) {
+	t.Parallel()
 	data := events.HookEndData{
 		Event: "PreToolUse", HookType: "command", Matcher: "Write",
 		PluginName: "err-plugin", ExitCode: 2, DurationMS: 50,
@@ -103,6 +107,7 @@ func TestHookEndData_NonZeroExitCode(t *testing.T) {
 }
 
 func TestEventKindConstants(t *testing.T) {
+	t.Parallel()
 	// Verify the new event kinds have the expected string values.
 	if events.EventJobStarted != "JOB_STARTED" {
 		t.Errorf("EventJobStarted = %q, want %q", events.EventJobStarted, "JOB_STARTED")

@@ -78,6 +78,12 @@ type jobManager struct {
 	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
 	// construction so tests can shrink the graceful-shutdown window.
 	closeGrace time.Duration
+	// quietWindow and quietCheckInterval govern the delegate quiet watchdog.
+	// Seeded from the package defaults at construction; per-manager so tests can
+	// scale them on their own jobManager without mutating a shared global that
+	// concurrently-running watchdogs would race on.
+	quietWindow        time.Duration
+	quietCheckInterval time.Duration
 }
 
 // defaultCloseGrace is the graceful-shutdown window closeRuntimeState gives a
@@ -310,9 +316,11 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 		lastFedOffset: make(map[string]int64),
 		appendEvent:   store.Append,
 		appendEvents:  store.AppendBatch,
-		enqueue:       enqueue,
-		now:           time.Now,
-		closeGrace:    defaultCloseGrace,
+		enqueue:            enqueue,
+		now:                time.Now,
+		closeGrace:         defaultCloseGrace,
+		quietWindow:        delegateQuietWindow,
+		quietCheckInterval: delegateQuietCheckInterval,
 	}
 	if err := jm.restoreWatchSendPending(); err != nil {
 		_ = store.Close()

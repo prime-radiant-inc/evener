@@ -11,6 +11,7 @@ import (
 )
 
 func TestLoadProjectDocs_WalksFromGitRootToWorkingDir_InDepthOrder(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -45,6 +46,7 @@ func TestLoadProjectDocs_WalksFromGitRootToWorkingDir_InDepthOrder(t *testing.T)
 }
 
 func TestLoadProjectDocs_TruncatesTo32KBAndAddsMarker(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 

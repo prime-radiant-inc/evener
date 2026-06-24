@@ -52,6 +52,7 @@ func (e *readBeforeWriteEnv) ExecCommand(ctx context.Context, command string, ti
 // its timeout policy from deps.cmdTimeouts and clamps an over-long request to the
 // max, with the clamped value reaching the environment's ExecCommand.
 func TestToolDeps_ShellTimeoutClamp(t *testing.T) {
+	t.Parallel()
 	// Shell has no per-call wait knob (its wait knob is `background`), so the
 	// session default command timeout is the value clamped to maxTimeout.
 	run := func(t *testing.T, defTimeout, maxTimeout, want int) {
@@ -88,6 +89,7 @@ func TestToolDeps_ShellTimeoutClamp(t *testing.T) {
 // proves the guardrail flows through the seam: an existing-but-unread file warns,
 // and once tracked as read the warning disappears — no real *Session involved.
 func TestToolDeps_ReadBeforeWriteWarning(t *testing.T) {
+	t.Parallel()
 	const target = "/work/existing.txt"
 
 	env := &readBeforeWriteEnv{existing: map[string]bool{target: true}}

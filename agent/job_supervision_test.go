@@ -68,6 +68,7 @@ func readJobListEntry(t *testing.T, s *Session, jobID string) jobListToolEntry {
 // TestJobListLastActivityAdvancesWithShellOutput proves last_activity is stamped
 // at the clock's value when output is appended for a running shell job.
 func TestJobListLastActivityAdvancesWithShellOutput(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	jm := s.jobManager
 	clk := newMutableClock(time.Unix(1000, 0).UTC())
@@ -110,6 +111,7 @@ func TestJobListLastActivityAdvancesWithShellOutput(t *testing.T) {
 // TestJobListDelegateLastActivitySeededAtStart proves a running delegate row
 // carries last_activity (at least the StartedAt seed).
 func TestJobListDelegateLastActivitySeededAtStart(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	clk := newMutableClock(time.Unix(2000, 0).UTC())
@@ -141,6 +143,7 @@ func TestJobListDelegateLastActivitySeededAtStart(t *testing.T) {
 // TestJobReadOutputCarriesLastActivity proves job_read_output results carry
 // last_activity for a running job.
 func TestJobReadOutputCarriesLastActivity(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	jm := s.jobManager
 	clk := newMutableClock(time.Unix(3000, 0).UTC())
@@ -177,6 +180,7 @@ func TestJobReadOutputCarriesLastActivity(t *testing.T) {
 // record reloaded from the store (no live LastActivity stamp) falls back to
 // EndedAt in the projection.
 func TestJobListTerminalLastActivityFallsBackToEndedAt(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	jm := s.jobManager
 	clk := newMutableClock(time.Unix(4000, 0).UTC())
@@ -213,6 +217,7 @@ func TestJobListTerminalLastActivityFallsBackToEndedAt(t *testing.T) {
 // wording: the default 10-minute window must read "quiet for 10m" (not
 // "10m0s"), and the message carries the last-activity timestamp.
 func TestQuietWatchdogMessageNamesProductionWindow(t *testing.T) {
+	t.Parallel()
 	last := time.Unix(1000, 0).UTC()
 	msg := quietWatchdogMessage(10*time.Minute, last)
 	if !strings.HasPrefix(msg, "quiet for 10m;") {
@@ -223,18 +228,12 @@ func TestQuietWatchdogMessageNamesProductionWindow(t *testing.T) {
 	}
 }
 
-// withQuietWatchdogScaling sets small watchdog timing vars for the duration of a
-// test and restores them on cleanup.
-func withQuietWatchdogScaling(t *testing.T, window, check time.Duration) {
-	t.Helper()
-	origWindow := delegateQuietWindow
-	origCheck := delegateQuietCheckInterval
-	delegateQuietWindow = window
-	delegateQuietCheckInterval = check
-	t.Cleanup(func() {
-		delegateQuietWindow = origWindow
-		delegateQuietCheckInterval = origCheck
-	})
+// scaleQuietWatchdog shrinks a job manager's quiet-watchdog timing so a test
+// exercises the watchdog in milliseconds. Per-manager (not a shared global), so
+// it is safe under parallel tests whose own watchdogs read their own values.
+func scaleQuietWatchdog(jm *jobManager, window, check time.Duration) {
+	jm.quietWindow = window
+	jm.quietCheckInterval = check
 }
 
 // quietCapture records quiet notifications enqueued for a job id.
@@ -289,6 +288,7 @@ func startRunningDelegateForWatchdog(t *testing.T, clk *mutableClock) (*Session,
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	parent.jobManager.now = clk.now
+	scaleQuietWatchdog(parent.jobManager, 50*time.Millisecond, 5*time.Millisecond)
 
 	qc := newQuietCapture()
 	// Wire enqueue + kick capture without touching delivery (spec §3).
@@ -310,7 +310,7 @@ func startRunningDelegateForWatchdog(t *testing.T, clk *mutableClock) (*Session,
 }
 
 func TestQuietWatchdogFiresOnceForQuietDelegate(t *testing.T) {
-	withQuietWatchdogScaling(t, 50*time.Millisecond, 5*time.Millisecond)
+	t.Parallel()
 	clk := newMutableClock(time.Unix(5000, 0).UTC())
 	parent, jobID, qc, cleanup := startRunningDelegateForWatchdog(t, clk)
 	defer cleanup()
@@ -342,7 +342,7 @@ func TestQuietWatchdogFiresOnceForQuietDelegate(t *testing.T) {
 }
 
 func TestQuietWatchdogResetsOnActivity(t *testing.T) {
-	withQuietWatchdogScaling(t, 50*time.Millisecond, 5*time.Millisecond)
+	t.Parallel()
 	clk := newMutableClock(time.Unix(6000, 0).UTC())
 	parent, jobID, qc, cleanup := startRunningDelegateForWatchdog(t, clk)
 	defer cleanup()
@@ -372,7 +372,7 @@ func TestQuietWatchdogResetsOnActivity(t *testing.T) {
 }
 
 func TestQuietWatchdogIgnoresShellJobs(t *testing.T) {
-	withQuietWatchdogScaling(t, 50*time.Millisecond, 5*time.Millisecond)
+	t.Parallel()
 	s := newTestSession(t)
 	jm := s.jobManager
 	clk := newMutableClock(time.Unix(7000, 0).UTC())
@@ -394,7 +394,7 @@ func TestQuietWatchdogIgnoresShellJobs(t *testing.T) {
 }
 
 func TestQuietWatchdogStopsOnFinalize(t *testing.T) {
-	withQuietWatchdogScaling(t, 50*time.Millisecond, 5*time.Millisecond)
+	t.Parallel()
 	clk := newMutableClock(time.Unix(8000, 0).UTC())
 	parent, jobID, qc, cleanup := startRunningDelegateForWatchdog(t, clk)
 
@@ -414,7 +414,7 @@ func TestQuietWatchdogStopsOnFinalize(t *testing.T) {
 // notification and never steers/delivers to the delegate (spec §3): the child
 // session must receive no injected input from the watchdog firing.
 func TestQuietWatchdogDoesNotDeliver(t *testing.T) {
-	withQuietWatchdogScaling(t, 50*time.Millisecond, 5*time.Millisecond)
+	t.Parallel()
 	clk := newMutableClock(time.Unix(9000, 0).UTC())
 	parent, jobID, qc, cleanup := startRunningDelegateForWatchdog(t, clk)
 	defer cleanup()

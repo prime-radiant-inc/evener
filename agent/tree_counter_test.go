@@ -33,6 +33,7 @@ func waitForTreeCount(t *testing.T, c *treeCounter, want int64) {
 //
 // Red today: type treeCounter does not exist.
 func TestTreeCounterReserveRelease(t *testing.T) {
+	t.Parallel()
 	c := newTreeCounter()
 
 	// Reserve up to cap (16) — all must succeed.
@@ -68,6 +69,7 @@ func TestTreeCounterReserveRelease(t *testing.T) {
 //
 // Red today: treeCounter field does not exist on Session or spawnConfig.
 func TestTreeCounterSharedAcrossTree(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	workDir := t.TempDir()
 	c := llm.NewClient()
@@ -124,6 +126,7 @@ func TestTreeCounterSharedAcrossTree(t *testing.T) {
 // launch a running delegate turn reserves a tree-counter slot while its turn
 // runs, and that terminal finalize AND the abandon path release it.
 func TestCounterReservesOnSpawnResumeDrive(t *testing.T) {
+	t.Parallel()
 	t.Run("spawn reserves and terminal finalize releases", func(t *testing.T) {
 		release := make(chan struct{})
 		var releaseOnce sync.Once
@@ -258,6 +261,7 @@ func TestCounterReservesOnSpawnResumeDrive(t *testing.T) {
 // returns false), does NOT settle, and the child's durable signal persists so the
 // next loop boundary retries (spec §3: the ledger is durable; no retry daemon).
 func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -330,6 +334,7 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 // delegate turns holding reservations, the 17th spawn returns the exact
 // tree_at_capacity error and does NOT launch.
 func TestCounter17thFails(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	c := llm.NewClient()
@@ -385,6 +390,7 @@ func TestCounter17thFails(t *testing.T) {
 //   - a restart rebuilds the counter from the post-reconciliation state (zero),
 //     and a descendant re-reserves as it re-attaches/resumes.
 func TestCounterIdleFreesAndRestartRebuild(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	c := llm.NewClient()
@@ -451,6 +457,7 @@ func TestCounterIdleFreesAndRestartRebuild(t *testing.T) {
 // (TestCounterIdleFreesAndRestartRebuild only MODELS restart via a manual
 // assignment; it never exercises the real restore path, which is this gap.)
 func TestRestoredRootMintsTreeCounter(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 

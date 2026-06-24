@@ -16,6 +16,7 @@ import (
 )
 
 func TestTaskStore_AppendAndView(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -49,6 +50,7 @@ func TestTaskStore_AppendAndView(t *testing.T) {
 }
 
 func TestTaskStore_UpdateStatus(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -77,6 +79,7 @@ func TestTaskStore_UpdateStatus(t *testing.T) {
 }
 
 func TestTaskStore_UpdateRejectsUnknownID(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -91,6 +94,7 @@ func TestTaskStore_UpdateRejectsUnknownID(t *testing.T) {
 }
 
 func TestTaskStore_UpdateInProgress(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -110,6 +114,7 @@ func TestTaskStore_UpdateInProgress(t *testing.T) {
 }
 
 func TestTaskStore_UpdateRejectsInvalidStatus(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -124,6 +129,7 @@ func TestTaskStore_UpdateRejectsInvalidStatus(t *testing.T) {
 }
 
 func TestTaskStore_UpdateRejectsMultipleInProgressInBatch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -155,6 +161,7 @@ func TestTaskStore_UpdateRejectsMultipleInProgressInBatch(t *testing.T) {
 }
 
 func TestTaskStore_UpdateRejectsInProgressWhenOneAlreadyExists(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -188,6 +195,7 @@ func TestTaskStore_UpdateRejectsInProgressWhenOneAlreadyExists(t *testing.T) {
 }
 
 func TestTaskStore_UpdateAllowsMovingInProgressToDoneThenStartingAnother(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -220,6 +228,7 @@ func TestTaskStore_UpdateAllowsMovingInProgressToDoneThenStartingAnother(t *test
 }
 
 func TestTaskStore_IDsAreMonotonic(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -242,6 +251,7 @@ func TestTaskStore_IDsAreMonotonic(t *testing.T) {
 }
 
 func TestTaskStore_PersistsAcrossLoads(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// Create and populate store.
@@ -280,6 +290,7 @@ func TestTaskStore_PersistsAcrossLoads(t *testing.T) {
 }
 
 func TestTaskStore_UpdateOnlyChangesStatus(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -303,6 +314,7 @@ func TestTaskStore_UpdateOnlyChangesStatus(t *testing.T) {
 }
 
 func TestTaskStore_LoadNonexistentFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -316,6 +328,7 @@ func TestTaskStore_LoadNonexistentFile(t *testing.T) {
 }
 
 func TestTaskStore_FileExistsOnDisk(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -330,6 +343,7 @@ func TestTaskStore_FileExistsOnDisk(t *testing.T) {
 }
 
 func TestTaskStore_ViewReturnsCopy(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -353,6 +367,7 @@ func TestTaskStore_ViewReturnsCopy(t *testing.T) {
 }
 
 func TestTaskStore_ScopedBySessionID(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	s1 := taskpkg.NewTaskStore(dir, "session-aaa")
@@ -387,6 +402,7 @@ func TestTaskStore_ScopedBySessionID(t *testing.T) {
 }
 
 func TestTaskStore_UpdateWithNotes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -431,6 +447,7 @@ func TestTaskStore_UpdateWithNotes(t *testing.T) {
 }
 
 func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		profile *provider.Profile
@@ -494,6 +511,7 @@ func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
 }
 
 func TestTaskStore_CurrentInProgressReflectsReasoningEffortUpdate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -521,6 +539,7 @@ func TestTaskStore_CurrentInProgressReflectsReasoningEffortUpdate(t *testing.T) 
 }
 
 func TestTaskStore_UpdateReasoningEffort(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -558,6 +577,7 @@ func TestTaskStore_UpdateReasoningEffort(t *testing.T) {
 }
 
 func TestTaskStore_NotesPersistAcrossLoads(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -580,6 +600,7 @@ func TestTaskStore_NotesPersistAcrossLoads(t *testing.T) {
 }
 
 func TestTaskStore_PopulateFromTemplates(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "test-populate")
 	store.Load()
@@ -615,6 +636,7 @@ func TestTaskStore_PopulateFromTemplates(t *testing.T) {
 }
 
 func TestTaskStore_PopulateFromTemplates_WithParentTasks(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "test-parent")
 	store.Load()
@@ -660,6 +682,7 @@ func TestTaskStore_PopulateFromTemplates_WithParentTasks(t *testing.T) {
 }
 
 func TestTaskStore_PopulateFromTemplates_Idempotent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "test-idempotent")
 	store.Load()
@@ -678,6 +701,7 @@ func TestTaskStore_PopulateFromTemplates_Idempotent(t *testing.T) {
 }
 
 func TestTaskListTool_UpdateWithNotes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -723,6 +747,7 @@ func TestTaskListTool_UpdateWithNotes(t *testing.T) {
 }
 
 func TestTaskListTool_UpdateReasoningEffort(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -776,6 +801,7 @@ func TestTaskListTool_UpdateReasoningEffort(t *testing.T) {
 }
 
 func TestTaskListTool_AppendPreservesReasoningEffortAndType(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -811,6 +837,7 @@ func TestTaskListTool_AppendPreservesReasoningEffortAndType(t *testing.T) {
 }
 
 func TestTaskListTool_AppendViewUpdate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -883,6 +910,7 @@ func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 }
 
 func TestTaskStore_AppendWithDependsOn(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -914,6 +942,7 @@ func TestTaskStore_AppendWithDependsOn(t *testing.T) {
 }
 
 func TestTaskStore_DependsOnPersistsAcrossLoads(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -944,6 +973,7 @@ func TestTaskStore_DependsOnPersistsAcrossLoads(t *testing.T) {
 }
 
 func TestTaskStore_UpdateDependsOn(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -978,6 +1008,7 @@ func TestTaskStore_UpdateDependsOn(t *testing.T) {
 // Task 4: Dependency validation tests
 
 func TestTaskStore_AppendRejectsNonexistentDependency(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -990,6 +1021,7 @@ func TestTaskStore_AppendRejectsNonexistentDependency(t *testing.T) {
 }
 
 func TestTaskStore_UpdateRejectsNonexistentDependency(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -1007,6 +1039,7 @@ func TestTaskStore_UpdateRejectsNonexistentDependency(t *testing.T) {
 }
 
 func TestTaskStore_RejectsCyclicDependency(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -1027,6 +1060,7 @@ func TestTaskStore_RejectsCyclicDependency(t *testing.T) {
 }
 
 func TestTaskStore_RejectsTransitiveCycle(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -1048,6 +1082,7 @@ func TestTaskStore_RejectsTransitiveCycle(t *testing.T) {
 }
 
 func TestTaskStore_RejectsSelfDependency(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -1060,6 +1095,7 @@ func TestTaskStore_RejectsSelfDependency(t *testing.T) {
 }
 
 func TestTaskStore_RejectsIntraBatchCycle(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -1075,6 +1111,7 @@ func TestTaskStore_RejectsIntraBatchCycle(t *testing.T) {
 }
 
 func TestTaskStore_AppendRestoresNextIDOnFailure(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -1113,6 +1150,7 @@ func ids(tasks []taskpkg.Task) []int {
 // Task 5: NextEligible tests
 
 func TestTaskStore_NextEligible(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -1161,6 +1199,7 @@ func TestTaskStore_NextEligible(t *testing.T) {
 }
 
 func TestTaskStore_NextEligibleSkipsInProgress(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -1189,6 +1228,7 @@ func TestTaskStore_NextEligibleSkipsInProgress(t *testing.T) {
 }
 
 func TestTaskStore_NextEligibleCancelledSatisfiesDeps(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -1214,6 +1254,7 @@ func TestTaskStore_NextEligibleCancelledSatisfiesDeps(t *testing.T) {
 // Task 6: Progress summary tests
 
 func TestTaskStore_Progress(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -1246,6 +1287,7 @@ func TestTaskStore_Progress(t *testing.T) {
 }
 
 func TestTaskStore_UpdateOmittedDependsOnPreserves(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := taskpkg.NewTaskStore(dir, "test-session")
 
@@ -1270,6 +1312,7 @@ func TestTaskStore_UpdateOmittedDependsOnPreserves(t *testing.T) {
 // Task 8: Tool handler tests
 
 func TestTaskListTool_AppendWithDependsOn(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -1324,6 +1367,7 @@ func TestTaskListTool_AppendWithDependsOn(t *testing.T) {
 }
 
 func TestTaskListTool_UpdateAutoAdvanceFiresSteeringNotOutput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -1401,6 +1445,7 @@ func TestTaskListTool_UpdateAutoAdvanceFiresSteeringNotOutput(t *testing.T) {
 }
 
 func TestTaskListTool_ManualInProgressFiresSteering(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -1464,6 +1509,7 @@ func TestTaskListTool_ManualInProgressFiresSteering(t *testing.T) {
 }
 
 func TestTaskListTool_UpdateRejectsMultipleInProgress(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -1503,6 +1549,7 @@ func TestTaskListTool_UpdateRejectsMultipleInProgress(t *testing.T) {
 }
 
 func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -1559,6 +1606,7 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 }
 
 func TestTaskListTool_UpdateStaysMinimalWhenBlocked(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -1610,6 +1658,7 @@ func TestTaskListTool_UpdateStaysMinimalWhenBlocked(t *testing.T) {
 }
 
 func TestSharedTaskStore_ChildUsesParentStore(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -1658,6 +1707,7 @@ func TestSharedTaskStore_ChildUsesParentStore(t *testing.T) {
 }
 
 func TestSharedTaskStore_ShareTasksWithChildrenConfig(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -1699,6 +1749,7 @@ func TestSharedTaskStore_ShareTasksWithChildrenConfig(t *testing.T) {
 }
 
 func TestSharedTaskStore_IsolatedByDefault(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -1730,6 +1781,7 @@ func TestSharedTaskStore_IsolatedByDefault(t *testing.T) {
 }
 
 func TestTaskListTool_AppendResponseIsMinimal(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -1774,6 +1826,7 @@ func TestTaskListTool_AppendResponseIsMinimal(t *testing.T) {
 }
 
 func TestTask_ReasoningEffort_RoundTrips(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "test-effort")
 	store.Load()
@@ -1801,6 +1854,7 @@ func TestTask_ReasoningEffort_RoundTrips(t *testing.T) {
 }
 
 func TestTask_Insert_RoundTrips(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "test-insert")
 	store.Load()
@@ -1820,6 +1874,7 @@ func TestTask_Insert_RoundTrips(t *testing.T) {
 }
 
 func TestTaskStore_CurrentInProgress(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "test-current")
 	store.Load()

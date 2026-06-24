@@ -2645,11 +2645,12 @@ func (jm *jobManager) startQuietWatchdog(jobID string, stop <-chan struct{}) {
 		return
 	}
 	// Snapshot the watchdog timing synchronously in the caller's goroutine so the
-	// spawned goroutine reads no mutable package global. Tests scale these vars
-	// from the test goroutine before the watchdog starts; capturing here gives a
-	// happens-before edge. In production the values are effectively constants.
-	window := delegateQuietWindow
-	checkInterval := delegateQuietCheckInterval
+	// spawned goroutine reads no field that could change under it. These are
+	// per-jobManager (seeded from the package defaults); tests scale them on
+	// their own manager before the watchdog starts. In production they are
+	// effectively constants.
+	window := jm.quietWindow
+	checkInterval := jm.quietCheckInterval
 	go func() {
 		ticker := time.NewTicker(checkInterval)
 		defer ticker.Stop()

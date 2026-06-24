@@ -23,6 +23,7 @@ import (
 // a renamed instance has req.Provider = s.profile.ID() = "work", so the cache
 // was never activated.
 func TestBehaviorTag_PromptCache_RenamedOpenAI(t *testing.T) {
+	t.Parallel()
 	// WithProviderID(NewOpenAIProfile("gpt-5.5"), "work") → id="work", tag="openai"
 	renamedProfile := WithProviderID(NewOpenAIProfile("gpt-5.5"), "work")
 	if renamedProfile.ID() != "work" {
@@ -51,6 +52,7 @@ func TestBehaviorTag_PromptCache_RenamedOpenAI(t *testing.T) {
 // TestBehaviorTag_PromptCache_OpenAICompatible verifies that a chat-completions
 // instance (tag="openai-compatible") does NOT get prompt-cache set.
 func TestBehaviorTag_PromptCache_OpenAICompatible(t *testing.T) {
+	t.Parallel()
 	compatProfile := testOpenAICompatProfile("openai", "gpt-5.5", 0)
 	if compatProfile.BehaviorTag() != "openai-compatible" {
 		t.Fatalf("pre-condition: BehaviorTag() = %q, want openai-compatible", compatProfile.BehaviorTag())
@@ -106,6 +108,7 @@ func webSearchExecIsReal(t *testing.T, reg *tool.Registry) (isReal bool) {
 // Before the fix, the check was s.profile.ID() == "gemini", so a renamed
 // instance (id="myai") would retain only the placeholder executor.
 func TestBehaviorTag_Gemini_RenamedGoogleRegistersWebSearch(t *testing.T) {
+	t.Parallel()
 	// newGeminiProfile has id="gemini", tag="google".
 	// WithProviderID renames the id to "myai" while preserving tag="google".
 	renamedGemini := WithProviderID(newGeminiProfile("gemini-2.5-pro"), "myai")
@@ -136,6 +139,7 @@ func TestBehaviorTag_Gemini_RenamedGoogleRegistersWebSearch(t *testing.T) {
 // existing baseline: an unmodified gemini profile (id="gemini", tag="google")
 // still gets the real web_search executor.
 func TestBehaviorTag_Gemini_OriginalGeminiRegistersWebSearch(t *testing.T) {
+	t.Parallel()
 	geminiProfile := newGeminiProfile("gemini-2.5-pro")
 
 	dir := t.TempDir()
@@ -158,6 +162,7 @@ func TestBehaviorTag_Gemini_OriginalGeminiRegistersWebSearch(t *testing.T) {
 // registerCoreTools does NOT wire a real web_search executor for OpenAI
 // (it uses native web search via req.WebSearch instead).
 func TestBehaviorTag_Gemini_OpenAIDoesNotRegisterWebSearch(t *testing.T) {
+	t.Parallel()
 	openaiProfile := NewOpenAIProfile("gpt-5.5")
 
 	dir := t.TempDir()
@@ -185,6 +190,7 @@ func TestBehaviorTag_Gemini_OpenAIDoesNotRegisterWebSearch(t *testing.T) {
 // Before the fix, sectionResolver.provider = s.profile.ID() = "work", so no
 // openai-specific section would be loaded.
 func TestBehaviorTag_SectionResolver_RenamedOpenAILoadsOpenAISection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "work", steps: []func(req llm.Request) llm.Response{
@@ -216,6 +222,7 @@ func TestBehaviorTag_SectionResolver_RenamedOpenAILoadsOpenAISection(t *testing.
 // verifies that a chat-completions instance (tag="openai-compatible") does
 // NOT render the tools.provider-openai_append.md section.
 func TestBehaviorTag_SectionResolver_OpenAICompatibleDoesNotLoadOpenAISection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai-compatible", steps: []func(req llm.Request) llm.Response{

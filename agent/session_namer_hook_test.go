@@ -13,6 +13,7 @@ import (
 )
 
 func TestSessionNameFromPrompt_UpdatesMetaAndAdvisoryLog(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -75,6 +76,7 @@ func TestSessionNameFromPrompt_UpdatesMetaAndAdvisoryLog(t *testing.T) {
 }
 
 func TestSessionNameFromPrompt_LogsAdvisoryFailureWithoutFailingSession(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(`{"name":"!!!"}`)} },
@@ -110,6 +112,7 @@ func TestSessionNameFromPrompt_LogsAdvisoryFailureWithoutFailingSession(t *testi
 }
 
 func TestSessionLaunchesInitialPromptNamerAsynchronously(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
@@ -144,6 +147,7 @@ func TestSessionLaunchesInitialPromptNamerAsynchronously(t *testing.T) {
 }
 
 func TestSessionInitialPromptNamerSkipsWhilePending(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
@@ -182,6 +186,7 @@ func TestSessionInitialPromptNamerSkipsWhilePending(t *testing.T) {
 }
 
 func TestSessionProcessInput_LaunchesInitialPromptNamer(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
@@ -219,6 +224,7 @@ func TestSessionProcessInput_LaunchesInitialPromptNamer(t *testing.T) {
 }
 
 func TestSessionNameFromCompactionTurn_RefreshesPromptName(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
@@ -265,6 +271,7 @@ func TestSessionNameFromCompactionTurn_RefreshesPromptName(t *testing.T) {
 }
 
 func TestSessionNameFromCompactionTurn_SkipsNonCompactionAndManualName(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
@@ -305,6 +312,7 @@ func TestSessionNameFromCompactionTurn_SkipsNonCompactionAndManualName(t *testin
 }
 
 func TestSessionLaunchesCompactionNamerAsynchronously(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
@@ -339,6 +347,7 @@ func TestSessionLaunchesCompactionNamerAsynchronously(t *testing.T) {
 }
 
 func TestRestoreSessionFromMeta_PreservesManualNameAgainstCompaction(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})

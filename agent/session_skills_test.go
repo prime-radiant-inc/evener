@@ -29,6 +29,7 @@ func useSkillCall(id, skillName string) llm.ToolCallData {
 // use_skill tests exercise provider profiles that expose the use_skill tool.
 
 func TestUseSkill_ReturnsBody(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nGreet people warmly.\n")
@@ -85,6 +86,7 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 }
 
 func TestUseSkill_NotFound_ReturnsError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 	// No skills directory — use_skill("nonexistent") should return error.
@@ -108,6 +110,7 @@ func TestUseSkill_NotFound_ReturnsError(t *testing.T) {
 }
 
 func TestUseSkill_EmitsEvent(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 	writeSkillMD(t, root, "deploy", "---\nname: deploy\ndescription: \"Deploy skill\"\n---\nDeploy instructions.\n")
@@ -163,6 +166,7 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 }
 
 func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
@@ -203,6 +207,7 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 }
 
 func TestOpenAI_SkillsSectionUsesUseSkill(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
@@ -248,6 +253,7 @@ func TestOpenAI_SkillsSectionUsesUseSkill(t *testing.T) {
 }
 
 func TestOpenAI_PluginSkillCatalogUsesNamespacedName(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -295,6 +301,7 @@ func TestOpenAI_PluginSkillCatalogUsesNamespacedName(t *testing.T) {
 }
 
 func TestOpenAI_IncludesUseSkillTool(t *testing.T) {
+	t.Parallel()
 	p := NewOpenAIProfile("gpt-5.2")
 	for _, td := range p.ToolDefinitions() {
 		if td.Name == "use_skill" {
@@ -305,6 +312,7 @@ func TestOpenAI_IncludesUseSkillTool(t *testing.T) {
 }
 
 func TestOpenAIUseSkillToolExecutes(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nUse greeting style.\n")
@@ -338,6 +346,7 @@ func TestOpenAIUseSkillToolExecutes(t *testing.T) {
 }
 
 func TestDiscoverSkills_PopulatedOnSession(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")

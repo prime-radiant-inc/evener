@@ -20,6 +20,7 @@ import (
 // --- builtinAgents() ---
 
 func TestBuiltinAgents_LoadsCoreRoles(t *testing.T) {
+	t.Parallel()
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
@@ -41,6 +42,7 @@ func TestBuiltinAgents_LoadsCoreRoles(t *testing.T) {
 }
 
 func TestBuiltinAgents_LoadsDoctor(t *testing.T) {
+	t.Parallel()
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
@@ -79,6 +81,7 @@ func TestBuiltinAgents_LoadsDoctor(t *testing.T) {
 }
 
 func TestWorkflowPlugin_LoadWorkflowRoles(t *testing.T) {
+	t.Parallel()
 	agents := coordinatorWorkflowPublicAgentsForTest(t)
 	want := []string{"coordinator", "planner", "implementer", "reviewer", "verifier", "worker", "test-engineer"}
 	for _, name := range want {
@@ -97,6 +100,7 @@ func TestWorkflowPlugin_LoadWorkflowRoles(t *testing.T) {
 }
 
 func TestBuiltinAgents_DefaultUsesAllToolsShorthand(t *testing.T) {
+	t.Parallel()
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
@@ -114,6 +118,7 @@ func TestBuiltinAgents_DefaultUsesAllToolsShorthand(t *testing.T) {
 }
 
 func TestBuiltinAgents_DefaultHasNoTaskWorkflow(t *testing.T) {
+	t.Parallel()
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
@@ -128,6 +133,7 @@ func TestBuiltinAgents_DefaultHasNoTaskWorkflow(t *testing.T) {
 }
 
 func TestSession_DefaultFallbackUsesDefaultAgentPrompt(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -154,6 +160,7 @@ func TestSession_DefaultFallbackUsesDefaultAgentPrompt(t *testing.T) {
 }
 
 func TestBuiltinAgents_LoadsExplorer(t *testing.T) {
+	t.Parallel()
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
@@ -180,6 +187,7 @@ func TestBuiltinAgents_LoadsExplorer(t *testing.T) {
 }
 
 func TestBuiltinAgents_ExplorerTools(t *testing.T) {
+	t.Parallel()
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
@@ -211,6 +219,7 @@ func TestBuiltinAgents_ExplorerTools(t *testing.T) {
 }
 
 func TestBuiltinAgents_ExplorerIsReadOnly(t *testing.T) {
+	t.Parallel()
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
@@ -223,6 +232,7 @@ func TestBuiltinAgents_ExplorerIsReadOnly(t *testing.T) {
 }
 
 func TestBuiltinAgents_ToolNamesAreCanonical(t *testing.T) {
+	t.Parallel()
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
@@ -241,6 +251,7 @@ func TestBuiltinAgents_ToolNamesAreCanonical(t *testing.T) {
 // --- builtinAgents in session ---
 
 func TestSession_HasBuiltinExplorerAgent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -261,6 +272,7 @@ func TestSession_HasBuiltinExplorerAgent(t *testing.T) {
 }
 
 func TestSession_DoesNotLoadWorkflowPluginByDefault(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -277,6 +289,7 @@ func TestSession_DoesNotLoadWorkflowPluginByDefault(t *testing.T) {
 }
 
 func TestSession_LoadsWorkflowReviewerAgentFromConfiguredPlugin(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -297,6 +310,7 @@ func TestSession_LoadsWorkflowReviewerAgentFromConfiguredPlugin(t *testing.T) {
 }
 
 func TestSession_PluginAgentOverridesBuiltin(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -325,6 +339,7 @@ func TestSession_PluginAgentOverridesBuiltin(t *testing.T) {
 // --- available-agents section tag ---
 
 func TestAvailableAgentsSection_UsesAvailableAgentsTag(t *testing.T) {
+	t.Parallel()
 	agents := map[string]plugin.Agent{
 		"explorer": {Name: "explorer", Description: "Explores code"},
 	}
@@ -371,6 +386,7 @@ func (a *releaseAdapter) Stream(ctx context.Context, req llm.Request) (llm.Strea
 }
 
 func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &releaseAdapter{
@@ -420,6 +436,7 @@ func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *test
 }
 
 func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -457,6 +474,7 @@ func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 }
 
 func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -497,6 +515,7 @@ func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
 }
 
 func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -540,6 +559,7 @@ func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 }
 
 func TestSpawnAgent_SystemPromptFileDoesNotOverrideSubagentPrompt(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	promptFile := filepath.Join(dir, "root-system-prompt.md")
 	if err := os.WriteFile(promptFile, []byte("ROOT ONLY CUSTOM PROMPT"), 0644); err != nil {
@@ -589,6 +609,7 @@ func TestSpawnAgent_SystemPromptFileDoesNotOverrideSubagentPrompt(t *testing.T) 
 }
 
 func TestSpawnAgent_ReasoningEffortApplied(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -626,6 +647,7 @@ func TestSpawnAgent_ReasoningEffortApplied(t *testing.T) {
 // --- stuck escalation ---
 
 func TestStuckEscalation_BumpsReasoning(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -659,6 +681,7 @@ func TestStuckEscalation_BumpsReasoning(t *testing.T) {
 }
 
 func TestStuckEscalation_BumpsFromHighToXhigh(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -680,6 +703,7 @@ func TestStuckEscalation_BumpsFromHighToXhigh(t *testing.T) {
 // --- reviewer agent is read-only ---
 
 func TestWorkflowPlugin_ReviewerIsReadOnly(t *testing.T) {
+	t.Parallel()
 	agents := coordinatorWorkflowPublicAgentsForTest(t)
 	reviewer := agents["reviewer"]
 	for _, tool := range reviewer.Tools {
@@ -692,6 +716,7 @@ func TestWorkflowPlugin_ReviewerIsReadOnly(t *testing.T) {
 // --- task_list preserved for all subagents ---
 
 func TestSpawnAgent_TaskListPreservedForNamedAgent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -735,6 +760,7 @@ func TestSpawnAgent_TaskListPreservedForNamedAgent(t *testing.T) {
 }
 
 func TestSpawnAgent_BuiltinSubagentKeepsDelegateSendTool(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -778,6 +804,7 @@ func TestSpawnAgent_BuiltinSubagentKeepsDelegateSendTool(t *testing.T) {
 }
 
 func TestSpawnAgent_AllToolsAgentStripsAgentManagementTools(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -828,6 +855,7 @@ func TestSpawnAgent_AllToolsAgentStripsAgentManagementTools(t *testing.T) {
 }
 
 func TestSpawnAgent_GrantTools_RejectsRootOnlyTool(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -855,6 +883,7 @@ func TestSpawnAgent_GrantTools_RejectsRootOnlyTool(t *testing.T) {
 }
 
 func TestSpawnAgent_DirectNestedCallRejected(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -899,6 +928,7 @@ func TestSpawnAgent_DirectNestedCallRejected(t *testing.T) {
 // --- subagent.md leaf callback tools ---
 
 func TestBuiltinAgents_SubagentHasLeafCallbackTools(t *testing.T) {
+	t.Parallel()
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)

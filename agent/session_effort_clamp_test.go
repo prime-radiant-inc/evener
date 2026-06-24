@@ -12,6 +12,7 @@ import (
 // exceed what the model accepts (e.g. "xhigh" to a model topping out at "high")
 // don't reach the provider and 400.
 func TestBuildModelRequest_ClampsEffortToProfileLevels(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	profile := provider.NewOpenAIProfile("kimi-for-coding").
 		WithLiveModelInfo(llm.ModelInfo{ReasoningEffortLevels: []string{"minimal", "low", "medium", "high"}})
@@ -27,6 +28,7 @@ func TestBuildModelRequest_ClampsEffortToProfileLevels(t *testing.T) {
 }
 
 func TestBuildModelRequest_KeepsSupportedEffort(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	profile := provider.NewOpenAIProfile("m").
 		WithLiveModelInfo(llm.ModelInfo{ReasoningEffortLevels: []string{"low", "medium", "high"}})

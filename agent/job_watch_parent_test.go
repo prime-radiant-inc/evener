@@ -12,6 +12,7 @@ import (
 )
 
 func TestJobWatchParentSourceRequiresGrant(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	childCfg := parent.cfg
 	childCfg.spawn.parentSessionID = parent.ID()
@@ -35,6 +36,7 @@ func TestJobWatchParentSourceRequiresGrant(t *testing.T) {
 }
 
 func TestJobWatchParentSourceInstallsOnParentWithChildReceiver(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	sub, delegateID := createParentWatchChild(t, parent, "observe parent")
 
@@ -60,6 +62,7 @@ func TestJobWatchParentSourceInstallsOnParentWithChildReceiver(t *testing.T) {
 }
 
 func TestJobWatchParentSourceIsDistinctPerChildReceiver(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	first, firstDelegateID := createParentWatchChild(t, parent, "first observer")
 	second, secondDelegateID := createParentWatchChild(t, parent, "second observer")
@@ -106,6 +109,7 @@ func TestJobWatchParentSourceIsDistinctPerChildReceiver(t *testing.T) {
 }
 
 func TestJobWatchParentSourceReceiverScopedClearLeavesOtherReceivers(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	first, firstDelegateID := createParentWatchChild(t, parent, "first observer")
 	second, secondDelegateID := createParentWatchChild(t, parent, "second observer")
@@ -141,6 +145,7 @@ func TestJobWatchParentSourceReceiverScopedClearLeavesOtherReceivers(t *testing.
 }
 
 func TestJobWatchParentSourcePublicClearRoutesToParent(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	first, firstDelegateID := createParentWatchChild(t, parent, "first observer")
 	second, secondDelegateID := createParentWatchChild(t, parent, "second observer")
@@ -181,6 +186,7 @@ func TestJobWatchParentSourcePublicClearRoutesToParent(t *testing.T) {
 }
 
 func TestParentSourceWatchFrameDeliveredToChildWatcher(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	sub, delegateID := createParentWatchChild(t, parent, "observe parent")
 
@@ -235,6 +241,7 @@ func TestParentSourceWatchFrameDeliveredToChildWatcher(t *testing.T) {
 }
 
 func TestRestoredParentSourcePendingSendPreservesReceiverRouting(t *testing.T) {
+	t.Parallel()
 	const (
 		parentSessionID    = "PARENT"
 		receiverSessionID  = "child_observer"
@@ -322,6 +329,7 @@ func TestRestoredParentSourcePendingSendPreservesReceiverRouting(t *testing.T) {
 }
 
 func TestWatchOriginCommunicateEndTurnResumesParentOnce(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return communicateWithDefaultOutput("observer ready") },

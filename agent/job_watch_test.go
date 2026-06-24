@@ -108,6 +108,7 @@ func installWatchBelowValidation(t *testing.T, jm *jobManager, a watchArgs) {
 }
 
 func TestConfigureWatchRequiresCondition(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	_, err := jm.configureWatch(watchArgs{Target: "caller"})
 	if err == nil {
@@ -116,6 +117,7 @@ func TestConfigureWatchRequiresCondition(t *testing.T) {
 }
 
 func TestConfigureWatchRejectsNegativeProgressInterval(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	_, err := jm.configureWatch(watchArgs{Target: "caller", ProgressIntervalMS: -1})
 	if err == nil {
@@ -127,6 +129,7 @@ func TestConfigureWatchRejectsNegativeProgressInterval(t *testing.T) {
 }
 
 func TestConfigureWatchClampsProgressInterval(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	t.Cleanup(func() { _ = jm.close() })
 	res, err := jm.configureWatch(watchArgs{Target: "caller", ProgressIntervalMS: 10})
@@ -139,6 +142,7 @@ func TestConfigureWatchClampsProgressInterval(t *testing.T) {
 }
 
 func TestConfigureWatchTargetNotFound(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	_, err := jm.configureWatch(watchArgs{Target: "job_does_not_exist", OutputMatch: "ready"})
 	if err == nil {
@@ -147,6 +151,7 @@ func TestConfigureWatchTargetNotFound(t *testing.T) {
 }
 
 func TestConfigureWatchRejectsForwardedNestedTarget(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	startedAt := jm.now()
 	if err := jm.appendEvent(jobstore.Event{
@@ -179,6 +184,7 @@ func TestConfigureWatchRejectsForwardedNestedTarget(t *testing.T) {
 // target_terminal. terminalWatchTargetStatus must mirror the ownership rejection
 // so catch-up does NOT scan or fire on a job the caller is forbidden to watch.
 func TestTerminalCatchupRejectsForwardedNestedTarget(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	startedAt := jm.now()
 	if err := jm.appendEvent(jobstore.Event{
@@ -227,6 +233,7 @@ func TestTerminalCatchupRejectsForwardedNestedTarget(t *testing.T) {
 }
 
 func TestConfigureWatchSendToMissingDelegateFailsTargetNotFound(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	_, err := jm.configureWatch(watchArgs{
@@ -244,6 +251,7 @@ func TestConfigureWatchSendToMissingDelegateFailsTargetNotFound(t *testing.T) {
 }
 
 func TestConfigureWatchSendToOtherSessionDelegateFailsNotControllable(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	watched, err := jm.createShell(createShellOpts{Command: "watched"})
 	if err != nil {
@@ -297,6 +305,7 @@ func TestConfigureWatchSendToOtherSessionDelegateFailsNotControllable(t *testing
 }
 
 func TestConfigureWatchRejectsUnknownEventKinds(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	_, err := jm.configureWatch(watchArgs{Target: "caller", Events: []string{"assistant.mesage"}})
@@ -310,6 +319,7 @@ func TestConfigureWatchRejectsUnknownEventKinds(t *testing.T) {
 }
 
 func TestConfigureWatchRejectsAssistantMessageEvent(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	_, err := jm.configureWatch(watchArgs{Target: "caller", Events: []string{"assistant.message"}})
@@ -326,6 +336,7 @@ func TestConfigureWatchRejectsAssistantMessageEvent(t *testing.T) {
 }
 
 func TestJobWatchMainAliasTargetFailsTargetNotFound(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	_, err := jm.configureWatch(watchArgs{Target: "main"})
@@ -339,6 +350,7 @@ func TestJobWatchMainAliasTargetFailsTargetNotFound(t *testing.T) {
 }
 
 func TestJobWatchWatchedTargetWithoutContextFails(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	_, err := jm.configureWatch(watchArgs{Target: "watched"})
@@ -352,6 +364,7 @@ func TestJobWatchWatchedTargetWithoutContextFails(t *testing.T) {
 }
 
 func TestConfigureWatchRejectsOutputMatchOnSessionTargets(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	for _, target := range []string{"caller", "*"} {
 		t.Run(target, func(t *testing.T) {
@@ -367,6 +380,7 @@ func TestConfigureWatchRejectsOutputMatchOnSessionTargets(t *testing.T) {
 }
 
 func TestConfigureWatchOutputMatchOnCallerCommunicateGivesRepairShape(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	_, err := jm.configureWatch(watchArgs{Target: "caller", OutputMatch: "APPROVAL_REQUEST", Events: []string{"communicate"}})
@@ -382,6 +396,7 @@ func TestConfigureWatchOutputMatchOnCallerCommunicateGivesRepairShape(t *testing
 }
 
 func TestJobWatchSendToMainAliasFailsTargetNotFound(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 
@@ -400,6 +415,7 @@ func TestJobWatchSendToMainAliasFailsTargetNotFound(t *testing.T) {
 }
 
 func TestJobWatchSendToKnownShellJobFailsJobIDGuidance(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	watched, _ := jm.createShell(createShellOpts{Command: "watched"})
 	observer, _ := jm.createShell(createShellOpts{Command: "observer"})
@@ -419,6 +435,7 @@ func TestJobWatchSendToKnownShellJobFailsJobIDGuidance(t *testing.T) {
 }
 
 func TestJobWatchSendToWatchedFailsV1TargetValidation(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	watched, _ := jm.createShell(createShellOpts{Command: "watched"})
 
@@ -437,6 +454,7 @@ func TestJobWatchSendToWatchedFailsV1TargetValidation(t *testing.T) {
 }
 
 func TestJobWatchSendToNonResumableDelegateFailsTargetNotResumable(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		seed func(*testing.T, *jobManager, string)
@@ -479,6 +497,7 @@ func TestJobWatchSendToNonResumableDelegateFailsTargetNotResumable(t *testing.T)
 }
 
 func TestConfigureWatchRejectsTerminalizingConcreteJob(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 
@@ -499,6 +518,7 @@ func TestConfigureWatchRejectsTerminalizingConcreteJob(t *testing.T) {
 }
 
 func TestJobWatchRejectsConcreteJobWithoutRunningRuntime(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 
@@ -519,6 +539,7 @@ func TestJobWatchRejectsConcreteJobWithoutRunningRuntime(t *testing.T) {
 }
 
 func TestConfigureWatchIdempotentAndReplace(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	first, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
@@ -541,6 +562,7 @@ func TestConfigureWatchIdempotentAndReplace(t *testing.T) {
 }
 
 func TestClearWatchRemovesIt(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	_, _ = jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
@@ -553,6 +575,7 @@ func TestClearWatchRemovesIt(t *testing.T) {
 }
 
 func TestEventWatchFiresAndNotifiesCaller(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -569,6 +592,7 @@ func TestEventWatchFiresAndNotifiesCaller(t *testing.T) {
 }
 
 func TestEventWatchFiltersAssistantToolByNameAndStatus(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -594,6 +618,7 @@ func TestEventWatchFiltersAssistantToolByNameAndStatus(t *testing.T) {
 }
 
 func TestConfigureWatchRejectsUnsupportedEventFilterShapes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args watchArgs
@@ -636,6 +661,7 @@ func TestConfigureWatchRejectsUnsupportedEventFilterShapes(t *testing.T) {
 }
 
 func TestConfigureWatchRejectsSessionEventWatchWithProgress(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	_, err := jm.configureWatch(watchArgs{
@@ -658,6 +684,7 @@ func TestConfigureWatchRejectsSessionEventWatchWithProgress(t *testing.T) {
 }
 
 func TestWildcardEventWatchOnlyFiresSupportedEvents(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -680,6 +707,7 @@ func TestWildcardEventWatchOnlyFiresSupportedEvents(t *testing.T) {
 }
 
 func TestWildcardJobEventWatchNotifiesConcreteJob(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -698,6 +726,7 @@ func TestWildcardJobEventWatchNotifiesConcreteJob(t *testing.T) {
 }
 
 func TestConcreteJobEventWatchIgnoresOtherJobsBeforeEveryCount(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -750,6 +779,7 @@ func TestConcreteJobEventWatchIgnoresOtherJobsBeforeEveryCount(t *testing.T) {
 }
 
 func TestReceiverWatchNotificationWithoutCallbackDoesNotNotifyOwner(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -776,6 +806,7 @@ func TestReceiverWatchNotificationWithoutCallbackDoesNotNotifyOwner(t *testing.T
 }
 
 func TestEventWatchTriggerEveryNth(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var fires int
 	jm.enqueue = func(jobNotification) { fires++ }
@@ -794,6 +825,7 @@ func TestEventWatchTriggerEveryNth(t *testing.T) {
 }
 
 func TestConfigureWatchRejectsEveryWithMultipleEvents(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	_, err := jm.configureWatch(watchArgs{
@@ -825,6 +857,7 @@ func TestConfigureWatchRejectsEveryWithMultipleEvents(t *testing.T) {
 // unset rather than trip the single-kind requirement — models legitimately send
 // every:1 alongside multiple event kinds.
 func TestConfigureWatchEveryOneReadsAsUnset(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -859,6 +892,7 @@ func TestConfigureWatchEveryOneReadsAsUnset(t *testing.T) {
 }
 
 func TestConfigureWatchEveryOneAllowsWildcardEvents(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -882,6 +916,7 @@ func TestConfigureWatchEveryOneAllowsWildcardEvents(t *testing.T) {
 }
 
 func TestConfigureWatchRejectsEveryWithWildcardEvent(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	_, err := jm.configureWatch(watchArgs{
@@ -898,6 +933,7 @@ func TestConfigureWatchRejectsEveryWithWildcardEvent(t *testing.T) {
 }
 
 func TestEventWatchIgnoresUnwatchedKind(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var fires int
 	jm.enqueue = func(jobNotification) { fires++ }
@@ -916,6 +952,7 @@ func TestEventWatchIgnoresUnwatchedKind(t *testing.T) {
 // watches regardless of cfg.target, so a job-target watch with send.to=caller
 // loops just as a caller-target one does.
 func TestValidateWatchDeliveryLoop(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		build   func(t *testing.T, jm *jobManager) watchArgs
@@ -1032,6 +1069,7 @@ func TestValidateWatchDeliveryLoop(t *testing.T) {
 }
 
 func TestJobWatchCreateSelfSourceFormatsSource(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	res, err := jobWatchTool(sess, map[string]any{
 		"operation": "create",
@@ -1048,6 +1086,7 @@ func TestJobWatchCreateSelfSourceFormatsSource(t *testing.T) {
 }
 
 func TestJobWatchSelfSourceKeepsLoopGuard(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	_, err := jobWatchTool(sess, map[string]any{
 		"operation": "create",
@@ -1068,6 +1107,7 @@ func TestJobWatchSelfSourceKeepsLoopGuard(t *testing.T) {
 // send is recorded (it is the watch's own downstream echo), while an event
 // without that key records the send normally.
 func TestEventWatchIgnoresWatchOriginatedSubagentEvents(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	if _, err := jm.configureWatch(watchArgs{
@@ -1097,6 +1137,7 @@ func TestEventWatchIgnoresWatchOriginatedSubagentEvents(t *testing.T) {
 }
 
 func TestNoSendWatchNotificationCarriesProvenanceForEchoSuppression(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -1139,6 +1180,7 @@ func TestNoSendWatchNotificationCarriesProvenanceForEchoSuppression(t *testing.T
 // JobStarted/JobFinished events stamped with the watch's own provenance key are
 // dropped before any pending send is recorded.
 func TestWatchOriginSuppressesDelegateLifecycleWatchSends(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	if _, err := jm.configureWatch(watchArgs{
@@ -1170,6 +1212,7 @@ func TestWatchOriginSuppressesDelegateLifecycleWatchSends(t *testing.T) {
 }
 
 func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 
@@ -1208,6 +1251,7 @@ func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 }
 
 func TestOutputMatchWatchFiresOnAppendedBytes(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -1226,6 +1270,7 @@ func TestOutputMatchWatchFiresOnAppendedBytes(t *testing.T) {
 }
 
 func TestOutputMatchSuppressesSameWatchProvenance(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -1249,6 +1294,7 @@ func TestOutputMatchSuppressesSameWatchProvenance(t *testing.T) {
 }
 
 func TestOutputMatchAllowsDifferentWatchProvenance(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -1272,6 +1318,7 @@ func TestOutputMatchAllowsDifferentWatchProvenance(t *testing.T) {
 }
 
 func TestOutputMatchSuppressesSameWatchProvenanceAcrossSplitLine(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -1295,6 +1342,7 @@ func TestOutputMatchSuppressesSameWatchProvenanceAcrossSplitLine(t *testing.T) {
 }
 
 func TestOutputMatchSuppressesSameWatchProvenanceOnTerminalFlush(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 
@@ -1322,6 +1370,7 @@ func TestOutputMatchSuppressesSameWatchProvenanceOnTerminalFlush(t *testing.T) {
 }
 
 func TestProgressTickSuppressesSameWatchProvenance(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -1355,6 +1404,7 @@ func TestProgressTickSuppressesSameWatchProvenance(t *testing.T) {
 // chunk above it must. A stale matcher-local counter (the old Feed wrapper)
 // would start at 0, sit below the scan offset, and silently drop both.
 func TestOutputMatchHonorsScanOffsetThroughFeedPath(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -1402,6 +1452,7 @@ func TestOutputMatchHonorsScanOffsetThroughFeedPath(t *testing.T) {
 // endOffset) call to Feed(chunk) makes this test fail at the "first live chunk must
 // fire" assertion.
 func TestOutputMatchEndToEndOffsetThreadsFromStore(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -1467,6 +1518,7 @@ func TestOutputMatchEndToEndOffsetThreadsFromStore(t *testing.T) {
 // chunk whose end offset regresses versus the last seen offset for the job is
 // dropped (no match) and raises exactly one warning notification.
 func TestOutputMatchDropsOnEndOffsetRegression(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -1500,6 +1552,7 @@ func TestOutputMatchDropsOnEndOffsetRegression(t *testing.T) {
 // line), the fire carries the LAST matching line, and the create result reports
 // fired=true (spec §7.1 "Running target" + "Attach-scan fire cardinality").
 func TestAttachScanFiresOnceForAlreadyPrintedToken(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -1534,6 +1587,7 @@ func TestAttachScanFiresOnceForAlreadyPrintedToken(t *testing.T) {
 // records exactly one pending send whose trigger carries the last matching line,
 // and the create result reports fired=true.
 func TestAttachScanSendArmFiresOnce(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	seedCommonWatchSendTargets(t, jm)
@@ -1581,6 +1635,7 @@ func TestAttachScanSendArmFiresOnce(t *testing.T) {
 // fire EXACTLY once — the attach scan sees no complete matching line, and the
 // live FeedAt completes the seeded carry into one match.
 func TestAttachScanTokenStraddlingBoundaryFiresOnce(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -1623,6 +1678,7 @@ func TestAttachScanTokenStraddlingBoundaryFiresOnce(t *testing.T) {
 // output_match watch (fired=false, no notification), then matching output appended
 // through the real path fires once.
 func TestAttachScanNoMatchThenLiveFires(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -1653,6 +1709,7 @@ func TestAttachScanNoMatchThenLiveFires(t *testing.T) {
 // identical watch (the idempotent no-op path) does NOT re-scan or re-fire: only a
 // FRESH concrete-running output_match install scans.
 func TestAttachScanIdempotentReinstallDoesNotRefire(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -1684,6 +1741,7 @@ func TestAttachScanIdempotentReinstallDoesNotRefire(t *testing.T) {
 }
 
 func TestConcreteWatchExpiresOnTerminal(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -1699,6 +1757,7 @@ func TestConcreteWatchExpiresOnTerminal(t *testing.T) {
 }
 
 func TestSessionWatchSurvivesAJobTerminal(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -1711,6 +1770,7 @@ func TestSessionWatchSurvivesAJobTerminal(t *testing.T) {
 }
 
 func TestConcreteWatchFlushesBeforeTerminalNotification(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var order []string
 	jm.enqueue = func(n jobNotification) {
@@ -1739,6 +1799,7 @@ func TestConcreteWatchFlushesBeforeTerminalNotification(t *testing.T) {
 }
 
 func TestWatchSendDeliversFrameToTarget(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
@@ -1781,6 +1842,7 @@ func TestWatchSendDeliversFrameToTarget(t *testing.T) {
 }
 
 func TestWatchSendBatchContinuesAfterNonTerminalPersistenceFailure(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
@@ -1835,6 +1897,7 @@ func TestWatchSendBatchContinuesAfterNonTerminalPersistenceFailure(t *testing.T)
 }
 
 func TestWatchSendBusyKeepsPendingAndEmitsNoDiagnostic(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
@@ -1871,6 +1934,7 @@ func TestWatchSendBusyKeepsPendingAndEmitsNoDiagnostic(t *testing.T) {
 }
 
 func TestWatchSendRetryAfterIdleDeliversLatestCoalescedFrame(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	busy := true
 	var delivered []sendMessageArgs
@@ -1924,6 +1988,7 @@ func TestWatchSendRetryAfterIdleDeliversLatestCoalescedFrame(t *testing.T) {
 }
 
 func TestWatchSendToResumedRunningDelegateSteersActiveRun(t *testing.T) {
+	t.Parallel()
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -2017,6 +2082,7 @@ func TestWatchSendToResumedRunningDelegateSteersActiveRun(t *testing.T) {
 }
 
 func TestWatchSendDeliveredAppendedOnlyAfterSendSucceeds(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var eventsBeforeSendReturn []jobstore.EventKind
 	var eventKinds []jobstore.EventKind
@@ -2052,6 +2118,7 @@ func TestWatchSendDeliveredAppendedOnlyAfterSendSucceeds(t *testing.T) {
 }
 
 func TestWatchSendCrashAfterSuccessBeforeDeliveredRetriesSameDeliveryID(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
 	if err != nil {
@@ -2127,6 +2194,7 @@ func TestWatchSendCrashAfterSuccessBeforeDeliveredRetriesSameDeliveryID(t *testi
 // TestWatchSendRestoreRetokensPendingAndArmsTerminalNotification re-anchors the
 // former ...RetriesPendingBeforeTerminalNotifications onto the drain/notification-rail model.
 func TestWatchSendRestoreRetokensPendingAndArmsTerminalNotification(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := "01KTESTWATCHRESTORE0000000000"
 	jobID := "job_restore_idle"
@@ -2255,6 +2323,7 @@ func TestWatchSendRestoreRetokensPendingAndArmsTerminalNotification(t *testing.T
 }
 
 func TestWatchSendRestoreKeepsConcreteTerminalResumableDelegatePending(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -2310,6 +2379,7 @@ func TestWatchSendRestoreKeepsConcreteTerminalResumableDelegatePending(t *testin
 }
 
 func TestWatchSendRestoreKeepsConcreteDelegateProductionSendPending(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -2418,6 +2488,7 @@ func TestWatchSendRestoreKeepsConcreteDelegateProductionSendPending(t *testing.T
 }
 
 func TestWatchSendRestoreDoesNotAutoResumeRuntimeLostDelegate(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -2473,6 +2544,7 @@ func TestWatchSendRestoreDoesNotAutoResumeRuntimeLostDelegate(t *testing.T) {
 }
 
 func TestWatchSendRestoreDropsDynamicallyNonResumableRuntimeLostDelegate(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -2534,6 +2606,7 @@ func TestWatchSendRestoreDropsDynamicallyNonResumableRuntimeLostDelegate(t *test
 }
 
 func TestWatchSendRestoreDropsDynamicallyNonResumableTerminalDelegate(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		status jobstore.Status
 		reason string
@@ -2607,6 +2680,7 @@ func TestWatchSendRestoreDropsDynamicallyNonResumableTerminalDelegate(t *testing
 }
 
 func TestWatchSendRestoreDropsTerminalResumableDelegateMissingRestoreDescriptor(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := "S1"
 	delegateID := "dlg_restore_delegate"
@@ -2677,6 +2751,7 @@ func TestWatchSendRestoreDropsTerminalResumableDelegateMissingRestoreDescriptor(
 }
 
 func TestWatchSendRestoreDropsHardFailureTargetsOnce(t *testing.T) {
+	t.Parallel()
 	delegateCreated := func(delegateID, ownerSessionID, visibleSessionID string, resumable bool) []jobstore.Event {
 		return []jobstore.Event{{
 			Kind:       jobstore.EventDelegateCreated,
@@ -2809,6 +2884,7 @@ func TestWatchSendRestoreDropsHardFailureTargetsOnce(t *testing.T) {
 }
 
 func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	var notified []jobNotification
 	jm, err := newJobManager(stateDir, "S1", func(n jobNotification) { notified = append(notified, n) })
@@ -2869,6 +2945,7 @@ func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testi
 }
 
 func TestWatchSendTerminalOrderingSendsFinalFrameBeforeTerminalNotification(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var order []string
 	seedCommonWatchSendTargets(t, jm)
@@ -2919,6 +2996,7 @@ func TestWatchSendTerminalOrderingSendsFinalFrameBeforeTerminalNotification(t *t
 // via the drain rather than via finalize-retry. (Crash in the persist-failure
 // window is the documented at-least-once tradeoff; the OLD test never exercised it.)
 func TestWatchSendTerminalPendingPersistenceFailureRetainsFrameForDrain(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
@@ -2993,6 +3071,7 @@ func TestWatchSendTerminalPendingPersistenceFailureRetainsFrameForDrain(t *testi
 }
 
 func TestWatchSendTerminalFlushBatchContinuesAfterPersistenceFailure(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
@@ -3085,6 +3164,7 @@ func TestWatchSendTerminalFlushBatchContinuesAfterPersistenceFailure(t *testing.
 }
 
 func TestWatchSendToWatchedRejectsConcreteTarget(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 
@@ -3103,6 +3183,7 @@ func TestWatchSendToWatchedRejectsConcreteTarget(t *testing.T) {
 }
 
 func TestWatchSendToWatchedRejectsWildcardJobNotification(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 
@@ -3120,6 +3201,7 @@ func TestWatchSendToWatchedRejectsWildcardJobNotification(t *testing.T) {
 }
 
 func TestWatchSendPendingSnapshotCoalescesAndDoesNotRereadOutput(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 
@@ -3162,6 +3244,7 @@ func TestWatchSendPendingSnapshotCoalescesAndDoesNotRereadOutput(t *testing.T) {
 }
 
 func TestWatchSendPendingUsesTriggerTimeFrameSnapshot(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	send := func(context.Context, sendMessageArgs) sendMessageResult {
@@ -3200,6 +3283,7 @@ func TestWatchSendPendingUsesTriggerTimeFrameSnapshot(t *testing.T) {
 }
 
 func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
 	if err != nil {
@@ -3269,6 +3353,7 @@ func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *
 }
 
 func TestWatchSendRestoreLoadsPendingStateForFutureRetry(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
 	if err != nil {
@@ -3325,6 +3410,7 @@ func TestWatchSendRestoreLoadsPendingStateForFutureRetry(t *testing.T) {
 }
 
 func TestWatchSendRestoreClearDropsPendingState(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
 	if err != nil {
@@ -3367,6 +3453,7 @@ func TestWatchSendRestoreClearDropsPendingState(t *testing.T) {
 }
 
 func TestWatchSendRestoreClearDropsWatchedTargetedPendingState(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
 	if err != nil {
@@ -3405,6 +3492,7 @@ func TestWatchSendRestoreClearDropsWatchedTargetedPendingState(t *testing.T) {
 }
 
 func TestWatchSendRestoreReconfigureRejectsWatchedAliasAndKeepsLegacyPending(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
 	if err != nil {
@@ -3457,6 +3545,7 @@ func TestWatchSendRestoreReconfigureRejectsWatchedAliasAndKeepsLegacyPending(t *
 }
 
 func TestWatchSendClearDropsPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -3481,6 +3570,7 @@ func TestWatchSendClearDropsPending(t *testing.T) {
 }
 
 func TestWatchSendWatchedTargetPruneDropsPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -3507,6 +3597,7 @@ func TestWatchSendWatchedTargetPruneDropsPending(t *testing.T) {
 }
 
 func TestWatchSendPruneAppendFailureKeepsPendingReachable(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -3561,6 +3652,7 @@ func TestWatchSendPruneAppendFailureKeepsPendingReachable(t *testing.T) {
 }
 
 func TestWatchSendTerminalFlushPersistsAlreadyFiredPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -3595,6 +3687,7 @@ func TestWatchSendTerminalFlushPersistsAlreadyFiredPending(t *testing.T) {
 }
 
 func TestWatchSendTerminalFlushCloseDropsPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -3626,6 +3719,7 @@ func TestWatchSendTerminalFlushCloseDropsPending(t *testing.T) {
 }
 
 func TestWatchSendTerminalFlushConfigureClearDropsPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -3670,6 +3764,7 @@ func TestWatchSendTerminalFlushConfigureClearDropsPending(t *testing.T) {
 }
 
 func TestWatchSendTerminalExpiryWithoutPendingDoesNotRetainDetachedConfig(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		args watchArgs
@@ -3718,6 +3813,7 @@ func TestWatchSendTerminalExpiryWithoutPendingDoesNotRetainDetachedConfig(t *tes
 }
 
 func TestWatchSendTerminalExpiryWithInflightSendRemainsClearable(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -3752,6 +3848,7 @@ func TestWatchSendTerminalExpiryWithInflightSendRemainsClearable(t *testing.T) {
 }
 
 func TestWatchSendClearNormalizesSendTarget(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		configured  string
@@ -3786,6 +3883,7 @@ func TestWatchSendClearNormalizesSendTarget(t *testing.T) {
 }
 
 func TestWatchSendClearDropsRuntimeLegacyWatchedResolvedPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	for _, event := range restoredWatchSendPendingEvents(jm.sessionID, rec.JobID, rec.JobID, jm.now()) {
@@ -3811,6 +3909,7 @@ func TestWatchSendClearDropsRuntimeLegacyWatchedResolvedPending(t *testing.T) {
 }
 
 func TestWatchSendTerminalFlushClearBeforeFailedSendDoesNotPersistPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	cleared := false
@@ -3850,6 +3949,7 @@ func TestWatchSendTerminalFlushClearBeforeFailedSendDoesNotPersistPending(t *tes
 }
 
 func TestClearWatchByIDDropsTerminalFlushPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -3896,6 +3996,7 @@ func TestClearWatchByIDDropsTerminalFlushPending(t *testing.T) {
 }
 
 func TestWatchSendTerminalExpiryCloseDropsExistingPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -3931,6 +4032,7 @@ func TestWatchSendTerminalExpiryCloseDropsExistingPending(t *testing.T) {
 }
 
 func TestWatchSendStaleDeliveryClearedDuringSendDoesNotPersistPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	seedCommonWatchSendTargets(t, jm)
@@ -3957,6 +4059,7 @@ func TestWatchSendStaleDeliveryClearedDuringSendDoesNotPersistPending(t *testing
 }
 
 func TestWatchSendStaleDeliveryReplacedDuringSendDoesNotPersistPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	seedCommonWatchSendTargets(t, jm)
@@ -3987,6 +4090,7 @@ func TestWatchSendStaleDeliveryReplacedDuringSendDoesNotPersistPending(t *testin
 }
 
 func TestWatchSendPendingDeliveredRemovesBeforeNextFailure(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	failSend := true
 	seedCommonWatchSendTargets(t, jm)
@@ -4031,6 +4135,7 @@ func TestWatchSendPendingDeliveredRemovesBeforeNextFailure(t *testing.T) {
 }
 
 func TestWatchSendOverlapOlderDeliveredDoesNotRemoveNewerPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	sendErr := errors.New("busy")
 	seedCommonWatchSendTargets(t, jm)
@@ -4078,6 +4183,7 @@ func TestWatchSendOverlapOlderDeliveredDoesNotRemoveNewerPending(t *testing.T) {
 }
 
 func TestWatchSendOverlapOlderFailedDoesNotOverwriteNewerPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	send := func(context.Context, sendMessageArgs) sendMessageResult {
@@ -4120,6 +4226,7 @@ func TestWatchSendOverlapOlderFailedDoesNotOverwriteNewerPending(t *testing.T) {
 }
 
 func TestWatchSendStaleFailedDeliveryAfterNewerDeliveredDoesNotPersistPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	send := func(context.Context, sendMessageArgs) sendMessageResult {
@@ -4156,6 +4263,7 @@ func TestWatchSendStaleFailedDeliveryAfterNewerDeliveredDoesNotPersistPending(t 
 }
 
 func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		setup func(*testing.T, *jobManager) (watchSendDelivery, func() error)
@@ -4256,6 +4364,7 @@ func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *te
 }
 
 func TestWatchSendAppendFailureDuringClearKeepsPendingInMemory(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -4315,6 +4424,7 @@ func TestWatchSendAppendFailureDuringClearKeepsPendingInMemory(t *testing.T) {
 }
 
 func TestWatchSendDroppedBatchFailureKeepsAllPendingReachable(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	if _, err := jm.configureWatch(watchArgs{
@@ -4373,6 +4483,7 @@ func TestWatchSendDroppedBatchFailureKeepsAllPendingReachable(t *testing.T) {
 }
 
 func TestWatchSendAppendFailureDuringReplaceLeavesOldWatchReachable(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -4441,6 +4552,7 @@ func TestWatchSendAppendFailureDuringReplaceLeavesOldWatchReachable(t *testing.T
 }
 
 func TestWatchRegistryAppendFailureDuringReplaceRollsBackOldConfig(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -4511,6 +4623,7 @@ func TestWatchRegistryAppendFailureDuringReplaceRollsBackOldConfig(t *testing.T)
 }
 
 func TestWatchSendAppendFailureDuringCloseReturnsErrorAndClosesStore(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	if _, err := jm.configureWatch(watchArgs{
@@ -4590,6 +4703,7 @@ func TestWatchSendAppendFailureDuringCloseReturnsErrorAndClosesStore(t *testing.
 }
 
 func TestWatchSendAppendFailureDuringDeliveredKeepsPendingInMemory(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -4629,6 +4743,7 @@ func TestWatchSendAppendFailureDuringDeliveredKeepsPendingInMemory(t *testing.T)
 }
 
 func TestWatchSendSettledTombstonesAreBounded(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	if _, err := jm.configureWatch(watchArgs{
@@ -4655,6 +4770,7 @@ func TestWatchSendSettledTombstonesAreBounded(t *testing.T) {
 }
 
 func TestWatchSendAppendFailureDuringEvictionKeepsMemoryAndDurableConsistent(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	var notified []jobNotification
@@ -4726,6 +4842,7 @@ func TestWatchSendAppendFailureDuringEvictionKeepsMemoryAndDurableConsistent(t *
 }
 
 func TestWatchSendPendingAppendFailureBeforeEvictionKeepsExistingPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	var notified []jobNotification
@@ -4858,6 +4975,7 @@ func waitForTestError(t *testing.T, ch <-chan error, label string) error {
 }
 
 func TestWatchSendCapEvictsOldestPendingAndNotifies(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	var notified []jobNotification
@@ -5026,6 +5144,7 @@ func runtimeWatchSendPending(t *testing.T, jm *jobManager) map[jobstore.WatchSen
 }
 
 func TestWatchSendToWatchedRejectsSessionEventsWithoutConcreteTarget(t *testing.T) {
+	t.Parallel()
 	for _, eventName := range []string{"assistant.tool", "communicate"} {
 		t.Run(eventName, func(t *testing.T) {
 			jm := newTestJM(t)
@@ -5051,6 +5170,7 @@ func TestWatchSendToWatchedRejectsSessionEventsWithoutConcreteTarget(t *testing.
 }
 
 func TestWatchSendToWatchedRejectsWildcardJobNotificationTrigger(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 
@@ -5068,6 +5188,7 @@ func TestWatchSendToWatchedRejectsWildcardJobNotificationTrigger(t *testing.T) {
 }
 
 func TestWatchSendToWatchedRejectsMixedEventsWithJobNotificationTrigger(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 
@@ -5204,6 +5325,7 @@ func appendDelegateTargetEvents(t *testing.T, jm *jobManager, delegateID string,
 }
 
 func TestWatchSendStateUsesDelegateGenerationAtFireTime(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	delegates, err := jm.store.LoadDelegates()
@@ -5259,6 +5381,7 @@ func TestWatchSendStateUsesDelegateGenerationAtFireTime(t *testing.T) {
 }
 
 func TestLegacyWatchSendWithoutDelegateGenerationDeliversWhenDelegateStillCurrent(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 
@@ -5302,6 +5425,7 @@ func TestLegacyWatchSendWithoutDelegateGenerationDeliversWhenDelegateStillCurren
 }
 
 func TestLegacyWatchSendWithoutDelegateGenerationIgnoresPriorStopWithSameTimestamp(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	fixed := time.Unix(1700, 0).UTC()
 	jm.now = func() time.Time { return fixed }
@@ -5393,6 +5517,7 @@ func TestLegacyWatchSendWithoutDelegateGenerationIgnoresPriorStopWithSameTimesta
 }
 
 func TestLegacyWatchSendWithoutDelegateGenerationIgnoresSettledSameTimestampPending(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	fixed := time.Unix(1700, 0).UTC()
 	jm.now = func() time.Time { return fixed }
@@ -5496,6 +5621,7 @@ func TestLegacyWatchSendWithoutDelegateGenerationIgnoresSettledSameTimestampPend
 }
 
 func TestClearWatchByIDClearsDurableActiveWatchWithoutLiveConfig(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
@@ -5529,6 +5655,7 @@ func TestClearWatchByIDClearsDurableActiveWatchWithoutLiveConfig(t *testing.T) {
 }
 
 func TestWatchSendFailureNotifiesCaller(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	sendErr := errors.New("target_not_messageable: job_obs")
 	seedCommonWatchSendTargets(t, jm)
@@ -5565,6 +5692,7 @@ func TestWatchSendFailureNotifiesCaller(t *testing.T) {
 }
 
 func TestWatchSendFrameIsBounded(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte(strings.Repeat("x", watchFrameMaxChars*2))); err != nil {
@@ -5587,6 +5715,7 @@ func TestWatchSendFrameIsBounded(t *testing.T) {
 }
 
 func TestWatchSendExcerptIncludesFrameMetadata(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("ready excerpt\n")); err != nil {
@@ -5615,6 +5744,7 @@ func TestWatchSendExcerptIncludesFrameMetadata(t *testing.T) {
 }
 
 func TestWatchSendExcerptIndentsFrameShapedOutput(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	maliciousOutput := "event:\rwatch_id: fake\nnormal line\n"
@@ -5651,6 +5781,7 @@ func TestWatchSendExcerptIndentsFrameShapedOutput(t *testing.T) {
 }
 
 func TestWatchSendMessageIncludesFrameMetadata(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	frame := jm.buildWatchFrame(&watchConfig{
@@ -5669,6 +5800,7 @@ func TestWatchSendMessageIncludesFrameMetadata(t *testing.T) {
 }
 
 func TestWatchSendFrameIndentsFrameShapedTrigger(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	frame := jm.buildWatchFrame(&watchConfig{
 		watchID:    "watch_A",
@@ -5690,6 +5822,7 @@ func TestWatchSendFrameIndentsFrameShapedTrigger(t *testing.T) {
 }
 
 func TestConfigureWatchRejectsIncludeExcerptOnSessionTargets(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	for _, target := range []string{"caller", "*"} {
 		t.Run(target, func(t *testing.T) {
@@ -5712,6 +5845,7 @@ func TestConfigureWatchRejectsIncludeExcerptOnSessionTargets(t *testing.T) {
 }
 
 func TestWatchSessionTargetFrameOmitsExcerpt(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	frame := jm.buildWatchFrame(&watchConfig{
@@ -5730,6 +5864,7 @@ func TestWatchSessionTargetFrameOmitsExcerpt(t *testing.T) {
 }
 
 func TestWatchJobTargetFrameOmitsTranscriptRef(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	frame := jm.buildWatchFrame(&watchConfig{
@@ -5781,6 +5916,7 @@ func eventKindOrder(kinds []jobstore.EventKind, before, after jobstore.EventKind
 }
 
 func TestProgressTimerFiresPeriodically(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	fired := make(chan struct{}, 4)
 	jm.enqueue = func(jobNotification) { fired <- struct{}{} }
@@ -5798,6 +5934,7 @@ func TestProgressTimerFiresPeriodically(t *testing.T) {
 }
 
 func TestProgressTimerStopsOnClose(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	fired := make(chan jobNotification, 16)
 	jm.enqueue = func(n jobNotification) { fired <- n }
@@ -5836,6 +5973,7 @@ drained:
 }
 
 func TestJobManagerCloseDurablyClearsActiveWatches(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	res, err := jm.configureWatch(watchArgs{Target: "caller", ProgressIntervalMS: minWatchProgressIntervalMS})
 	if err != nil {
@@ -5864,6 +6002,7 @@ func TestJobManagerCloseDurablyClearsActiveWatches(t *testing.T) {
 }
 
 func TestWatchEventKindNamesResolve(t *testing.T) {
+	t.Parallel()
 	if len(WatchEventKindNames) != len(modelEventKinds) {
 		t.Fatalf("WatchEventKindNames has %d names, modelEventKinds has %d", len(WatchEventKindNames), len(modelEventKinds))
 	}
@@ -5928,6 +6067,7 @@ func installCallerSendWatchWithCurrentFrame(t *testing.T, jm *jobManager, frame 
 }
 
 func TestWatchSendTokenRenderByKey(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	_, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, "frame-v2")
 	s := &Session{id: jm.sessionID, jobManager: jm, subagents: newSubagentManager(nil)}
@@ -5955,6 +6095,7 @@ func TestWatchSendTokenRenderByKey(t *testing.T) {
 }
 
 func TestWatchSendTokenSettleAfterPersist(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	_, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, "frame-v2")
 	s := &Session{id: jm.sessionID, jobManager: jm, subagents: newSubagentManager(nil)}
@@ -5989,6 +6130,7 @@ func TestWatchSendTokenSettleAfterPersist(t *testing.T) {
 }
 
 func TestJobManagerWakeAndHasPendingWatchSends(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	woke := 0
 	jm.wake = func() { woke++ }
@@ -6018,6 +6160,7 @@ func TestJobManagerWakeAndHasPendingWatchSends(t *testing.T) {
 // been woken, and no delivery (no watch_send_delivered event, no jm.send call)
 // must have occurred.
 func TestObservationRecordsIntentOnly(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm) // running delegate "dlg_obs"
 
@@ -6095,6 +6238,7 @@ func TestObservationRecordsIntentOnly(t *testing.T) {
 // s.drainPendingWatchSends appends the frame to the child's steering queue and
 // settles the pending with a watch_send_delivered event.
 func TestDrainDeliversDelegateTargetedSends(t *testing.T) {
+	t.Parallel()
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -6185,6 +6329,7 @@ func TestDrainDeliversDelegateTargetedSends(t *testing.T) {
 }
 
 func TestStoppedDelegateDropsPreStopPendingWatchSend(t *testing.T) {
+	t.Parallel()
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -6263,6 +6408,7 @@ func TestStoppedDelegateDropsPreStopPendingWatchSend(t *testing.T) {
 }
 
 func TestDelegateSendExplicitStartDoesNotReenablePreStopPendingWatchSend(t *testing.T) {
+	t.Parallel()
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -6382,6 +6528,7 @@ func blankRuntimePendingDelegateGenerationForTest(t *testing.T, jm *jobManager) 
 }
 
 func TestRestoredDelegateTargetRequiresConcreteJobResumable(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	now := jm.now()
 	resumable := false
@@ -6464,6 +6611,7 @@ func TestRestoredDelegateTargetRequiresConcreteJobResumable(t *testing.T) {
 }
 
 func TestStopTerminalizingDelegateDoesNotCloseStopGate(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		setup func(*runningJob)
@@ -6515,6 +6663,7 @@ func TestStopTerminalizingDelegateDoesNotCloseStopGate(t *testing.T) {
 }
 
 func TestDelegateStopGateFailureDoesNotSignalDelegate(t *testing.T) {
+	t.Parallel()
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -6587,6 +6736,7 @@ func TestDelegateStopGateFailureDoesNotSignalDelegate(t *testing.T) {
 // send targets it, and the drain resumes the child — observed via the adapter's
 // second run hook firing.
 func TestDrainResumesTerminalResumableTarget(t *testing.T) {
+	t.Parallel()
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -6657,6 +6807,7 @@ func TestDrainResumesTerminalResumableTarget(t *testing.T) {
 // send renders in the mid's own drive turn, never on the parent's rail.
 
 func TestWatchDeliveryCounterIncrementsPerNotification(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 
@@ -6678,6 +6829,7 @@ func TestWatchDeliveryCounterIncrementsPerNotification(t *testing.T) {
 }
 
 func TestWatchDeliveryCounterCountsSidecarSend(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	seedCommonWatchSendTargets(t, jm)
@@ -6724,6 +6876,7 @@ func TestWatchDeliveryCounterCountsSidecarSend(t *testing.T) {
 }
 
 func TestWatchDeliveryCounterCountsCallerSettle(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	cfg, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, "frame-v2")
@@ -6750,6 +6903,7 @@ func TestWatchDeliveryCounterCountsCallerSettle(t *testing.T) {
 }
 
 func TestWatchDeliveryBudgetAutoClearsWithOneFinalNotification(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -6804,6 +6958,7 @@ func TestWatchDeliveryBudgetAutoClearsWithOneFinalNotification(t *testing.T) {
 }
 
 func TestWatchDeliveryBudgetDoesNotDoubleClear(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -6871,6 +7026,7 @@ func terminalShellWithOutput(t *testing.T, jm *jobManager, output string) string
 // contains a match performs a one-shot catch-up — fires exactly one notification,
 // installs no live watch, and reports terminal_catchup with the terminal status.
 func TestTerminalCatchupNoSendFiresNotification(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jobID := terminalShellWithOutput(t, jm, "line one\nserver ready\nline three\n")
 	// Capture only post-finalize notifications: the job-completion notification
@@ -6910,6 +7066,7 @@ func TestTerminalCatchupNoSendFiresNotification(t *testing.T) {
 // output_match-only watch whose retained output does NOT match reports
 // terminal_catchup with fired=false and enqueues nothing.
 func TestTerminalCatchupNoMatchReportsTerminalCatchup(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jobID := terminalShellWithOutput(t, jm, "nothing interesting here\n")
 	var notified []jobNotification
@@ -6938,6 +7095,7 @@ func TestTerminalCatchupNoMatchReportsTerminalCatchup(t *testing.T) {
 // (the job is dead; nothing will complete the tail), so grepOutput's EOF match
 // fires. This is the opposite of T2's attach scan (ScanRetained ignores the tail).
 func TestTerminalCatchupFinalUnterminatedLineFires(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	// Note: NO trailing newline on the matching final line.
 	jobID := terminalShellWithOutput(t, jm, "warming up\nserver ready")
@@ -6962,6 +7120,7 @@ func TestTerminalCatchupFinalUnterminatedLineFires(t *testing.T) {
 // catch-up records pending intent (visible to pendingWatchSendDeliveries); a drain
 // then delivers it through the delegate rail and settles it.
 func TestTerminalCatchupSendRegistersDetachedPendingAndDelivers(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	var sent []sendMessageArgs
@@ -7046,6 +7205,7 @@ func TestTerminalCatchupSendRegistersDetachedPendingAndDelivers(t *testing.T) {
 // (even alongside output_match) still fails target_terminal — nothing can ever
 // fire — and installs no watch and no catch-up.
 func TestTerminalCatchupRejectsEventsCondition(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -7078,6 +7238,7 @@ func TestTerminalCatchupRejectsEventsCondition(t *testing.T) {
 // TestTerminalCatchupNotFoundStillErrors covers spec §7.1: catch-up does not
 // swallow target_not_found. An unknown target still fails target_not_found.
 func TestTerminalCatchupNotFoundStillErrors(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	res, err := jm.configureWatch(watchArgs{Target: "job_missing", OutputMatch: "ready"})
 	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
@@ -7092,6 +7253,7 @@ func TestTerminalCatchupNotFoundStillErrors(t *testing.T) {
 // terminal_catchup/status/fired fields surface through the tool JSON projection
 // for both the fired and not-fired arms.
 func TestMarshalWatchResultTerminalCatchupProjection(t *testing.T) {
+	t.Parallel()
 	fired, err := marshalWatchResult(watchResult{
 		Target:          "job_A",
 		Watching:        false,
@@ -7175,6 +7337,7 @@ func countWatchReadGrantEvents(t *testing.T, jm *jobManager) int {
 }
 
 func TestWatchCreateMintsObserverReadGrant(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
@@ -7206,6 +7369,7 @@ func TestWatchCreateMintsObserverReadGrant(t *testing.T) {
 }
 
 func TestWatchCreateMintsNoGrantForSessionTargetNotifyOnlyOrCaller(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	shellA, err := jm.createShell(createShellOpts{Command: "a"})
@@ -7248,6 +7412,7 @@ func TestWatchCreateMintsNoGrantForSessionTargetNotifyOnlyOrCaller(t *testing.T)
 }
 
 func TestWatchWildcardSendFireMintsGrantForResolvedWatchedJob(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	if _, err := jm.configureWatch(watchArgs{
@@ -7270,6 +7435,7 @@ func TestWatchWildcardSendFireMintsGrantForResolvedWatchedJob(t *testing.T) {
 }
 
 func TestWatchWildcardSendRepeatFireMintsGrantOnce(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	if _, err := jm.configureWatch(watchArgs{
@@ -7299,6 +7465,7 @@ func TestWatchWildcardSendRepeatFireMintsGrantOnce(t *testing.T) {
 }
 
 func TestWatchWatchedAliasSendRejectsConcreteTarget(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	target := createRunningDelegateWatchTarget(t, jm)
 	if _, err := jm.configureWatch(watchArgs{
@@ -7318,6 +7485,7 @@ func TestWatchWatchedAliasSendRejectsConcreteTarget(t *testing.T) {
 }
 
 func TestWatchWatchedAliasSendRejectsWildcardJobNotification(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -7348,6 +7516,7 @@ func TestWatchWatchedAliasSendRejectsWildcardJobNotification(t *testing.T) {
 // grant. The single catch-up fire mints exactly one grant keyed on the
 // observer delegate's child session id.
 func TestTerminalCatchupSendMintsObserverReadGrant(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	jobID := terminalShellWithOutput(t, jm, "server ready\n")
@@ -7374,6 +7543,7 @@ func TestTerminalCatchupSendMintsObserverReadGrant(t *testing.T) {
 }
 
 func TestWatchCreateGrantAppendFailureFailsCreationLoudly(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
@@ -7409,6 +7579,7 @@ func TestWatchCreateGrantAppendFailureFailsCreationLoudly(t *testing.T) {
 }
 
 func TestWatchPerFireGrantAppendFailureProceedsWithSend(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	var notified []jobNotification
@@ -7549,6 +7720,7 @@ func observerReadOutput(t *testing.T, observer *Session, args map[string]any) (j
 // through the parent-injected grant lookup — content, status, and grep all
 // round-trip.
 func TestGrantedReadServesWatchedJobCrossStore(t *testing.T) {
+	t.Parallel()
 	fx := newGrantReadFixture(t)
 
 	out, err := observerReadOutput(t, fx.observer, map[string]any{"job_id": fx.watched, "tail_lines": 65536})
@@ -7591,6 +7763,7 @@ func TestGrantedReadServesWatchedJobCrossStore(t *testing.T) {
 // session reading the granted watched job. Both keep the original
 // target_not_found error instead of leaking the parent store.
 func TestNonGrantedReadPreservesTargetNotFound(t *testing.T) {
+	t.Parallel()
 	fx := newGrantReadFixture(t)
 	ungranted, err := fx.parentJM.createShell(createShellOpts{Command: "other"})
 	if err != nil {
@@ -7623,6 +7796,7 @@ func TestNonGrantedReadPreservesTargetNotFound(t *testing.T) {
 // observer job goes terminal, a fresh job id starts for the SAME child
 // session (same transcript ref), and the child is relinked to the new job.
 func TestGrantSurvivesObserverResumeUnderNewJobID(t *testing.T) {
+	t.Parallel()
 	fx := newGrantReadFixture(t)
 	ended := fx.parentJM.now().Add(time.Second)
 	if err := fx.parentJM.appendEvent(jobstore.Event{
@@ -7665,6 +7839,7 @@ func TestGrantSurvivesObserverResumeUnderNewJobID(t *testing.T) {
 // re-wired seam mirrors restart, where delegate restore re-injects the lookup
 // from the rebuilt parent session.
 func TestGrantSurvivesWatchClearAndStoreReopen(t *testing.T) {
+	t.Parallel()
 	parentStateDir := t.TempDir()
 	parentJM, err := newJobManager(parentStateDir, "PARENT", func(jobNotification) {})
 	if err != nil {
@@ -7737,6 +7912,7 @@ func TestGrantSurvivesWatchClearAndStoreReopen(t *testing.T) {
 // its original target_not_found instead of surfacing a parent-side failure or
 // panicking.
 func TestGrantedReadAfterParentClosedPreservesTargetNotFound(t *testing.T) {
+	t.Parallel()
 	fx := newGrantReadFixture(t)
 	if err := fx.parentJM.close(); err != nil {
 		t.Fatalf("close parent job manager: %v", err)
@@ -7752,6 +7928,7 @@ func TestGrantedReadAfterParentClosedPreservesTargetNotFound(t *testing.T) {
 // reads are snapshot-only: max_wait_ms>0 fails loudly instead of silently
 // degrading to a snapshot.
 func TestGrantedReadRejectsBlock(t *testing.T) {
+	t.Parallel()
 	fx := newGrantReadFixture(t)
 
 	for name, args := range map[string]map[string]any{
@@ -7768,6 +7945,7 @@ func TestGrantedReadRejectsBlock(t *testing.T) {
 var _ = jobstore.JobShell
 
 func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
+	t.Parallel()
 	rootJM := newWalkJobManager(t, "ROOT")
 	childJM := newWalkJobManager(t, "CHILD")
 	t.Cleanup(func() {
@@ -7917,6 +8095,7 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 }
 
 func TestJobWatchAllowsDescendantConcreteJobSource(t *testing.T) {
+	t.Parallel()
 	rootJM := newWalkJobManager(t, "ROOT")
 	coordJM := newWalkJobManager(t, "COORD")
 	workerJM := newWalkJobManager(t, "WORK")
@@ -7991,6 +8170,7 @@ func TestJobWatchAllowsDescendantConcreteJobSource(t *testing.T) {
 }
 
 func TestClearWatchOnTerminalTargetIsIdempotent(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -8017,6 +8197,7 @@ func TestClearWatchOnTerminalTargetIsIdempotent(t *testing.T) {
 }
 
 func TestWatchHistoryRecordsReplacement(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "sleep 30"})
@@ -8062,6 +8243,7 @@ func TestWatchHistoryRecordsReplacement(t *testing.T) {
 }
 
 func TestWatchIdempotentReconfigureWithDetachedPendingDoesNotRegisterNewWatch(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	seedCommonWatchSendTargets(t, jm)
@@ -8134,6 +8316,7 @@ func TestWatchIdempotentReconfigureWithDetachedPendingDoesNotRegisterNewWatch(t 
 }
 
 func TestWatchHistoryRecordsTerminalAutoRemoval(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -8162,6 +8345,7 @@ func TestWatchHistoryRecordsTerminalAutoRemoval(t *testing.T) {
 }
 
 func TestTerminalWatchAutoRemovalAppendFailureKeepsWatchReachable(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -8230,6 +8414,7 @@ func TestTerminalWatchAutoRemovalAppendFailureKeepsWatchReachable(t *testing.T) 
 }
 
 func TestKeptSyncTerminalWatchAppendFailureKeepsRetryState(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -8304,6 +8489,7 @@ func TestKeptSyncTerminalWatchAppendFailureKeepsRetryState(t *testing.T) {
 }
 
 func TestKeptSyncRetryDoesNotArmOwnerNotification(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -8356,6 +8542,7 @@ func TestKeptSyncRetryDoesNotArmOwnerNotification(t *testing.T) {
 }
 
 func TestKeptSyncTerminalWatchAppendFailureRetainsBufferedMatch(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -8404,6 +8591,7 @@ func TestKeptSyncTerminalWatchAppendFailureRetainsBufferedMatch(t *testing.T) {
 }
 
 func TestWatchHistoryRecordsClear(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "sleep 30"})
@@ -8421,6 +8609,7 @@ func TestWatchHistoryRecordsClear(t *testing.T) {
 }
 
 func TestWatchHistoryCountsTerminalFlushDeliveries(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -8458,6 +8647,7 @@ func onlyWatchConfigForTest(t *testing.T, jm *jobManager) *watchConfig {
 }
 
 func TestJobWatchSuppressesSameWatchProvenanceBeforeDeliveryAccounting(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedWatchSendDelegateTarget(t, jm, "dlg_1")
 	installWatchBelowValidation(t, jm, watchArgs{
@@ -8482,6 +8672,7 @@ func TestJobWatchSuppressesSameWatchProvenanceBeforeDeliveryAccounting(t *testin
 }
 
 func TestJobWatchDoesNotSuppressDifferentGeneration(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedWatchSendDelegateTarget(t, jm, "dlg_1")
 	installWatchBelowValidation(t, jm, watchArgs{
@@ -8505,6 +8696,7 @@ func TestJobWatchDoesNotSuppressDifferentGeneration(t *testing.T) {
 }
 
 func TestWatchSendFrameRendersTriggerProvenanceNotDeliveryProvenance(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedWatchSendDelegateTarget(t, jm, "dlg_1")
 	installWatchBelowValidation(t, jm, watchArgs{
@@ -8535,6 +8727,7 @@ func TestWatchSendFrameRendersTriggerProvenanceNotDeliveryProvenance(t *testing.
 }
 
 func TestBuildWatchFrameIncludesCommunicateEventContent(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	cfg := &watchConfig{watchID: "watch_A", generation: "wg_1", send: &watchSendArgs{Message: "Filter this caller message."}}
 	ev := events.New(events.CommunicateData{Message: "actually alpha marker", EndTurn: false})
@@ -8562,6 +8755,7 @@ func TestBuildWatchFrameIncludesCommunicateEventContent(t *testing.T) {
 }
 
 func TestBuildWatchFrameIncludesAssistantMessageContent(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	cfg := &watchConfig{watchID: "watch_A", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
 	ev := events.New(events.AssistantTextEndData{
@@ -8588,6 +8782,7 @@ func TestBuildWatchFrameIncludesAssistantMessageContent(t *testing.T) {
 }
 
 func TestBuildWatchFrameIncludesToolCallContent(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	cfg := &watchConfig{watchID: "watch_A", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
 	ev := events.New(events.ToolCallEndData{
@@ -8614,6 +8809,7 @@ func TestBuildWatchFrameIncludesToolCallContent(t *testing.T) {
 }
 
 func TestBuildWatchFrameIncludesJobNotificationContentWithoutTranscriptRef(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	cfg := &watchConfig{watchID: "watch_A", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
 	exitCode := 2
@@ -8650,6 +8846,7 @@ func TestBuildWatchFrameIncludesJobNotificationContentWithoutTranscriptRef(t *te
 }
 
 func TestBuildWatchFrameIncludesCompactProvenanceSummary(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	cfg := &watchConfig{watchID: "watch_B", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
 	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_A", "session_1", "caller")
@@ -8679,6 +8876,7 @@ func TestBuildWatchFrameIncludesCompactProvenanceSummary(t *testing.T) {
 // shadow the real end_turn field for an observer that parses the frame by line
 // prefix.
 func TestBuildWatchFrameIndentsMultiLineCommunicateMessage(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	cfg := &watchConfig{watchID: "watch_C", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
 	// The message contains a bare carriage return followed by a fake field that

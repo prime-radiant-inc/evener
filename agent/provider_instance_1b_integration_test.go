@@ -76,6 +76,7 @@ func buildPhase1bClient() *llm.Client {
 // lists all five instance names and routes each explicit req.Provider to the
 // correct adapter.
 func TestPhase1b_ClientRouting_AllFiveInstances(t *testing.T) {
+	t.Parallel()
 	c := buildPhase1bClient()
 
 	// All five names must be present.
@@ -114,6 +115,7 @@ func TestPhase1b_ClientRouting_AllFiveInstances(t *testing.T) {
 // in the fixture resolves to the correct behavior tag and its own instance name
 // as ID.
 func TestPhase1b_ResolveProfileFromConfig_BehaviorTags(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		ref       string
 		wantID    string
@@ -149,6 +151,7 @@ func TestPhase1b_ResolveProfileFromConfig_BehaviorTags(t *testing.T) {
 // instance to the right behavior tag — which is what NewFromProviders passes to
 // c.SetNameToTag for error stamping and BehaviorTagOf lookups.
 func TestPhase1b_NameToTag_AllFive(t *testing.T) {
+	t.Parallel()
 	m := providercfg.NameToTag(phase1bCfg)
 	want := map[string]string{
 		"work":        "openai",
@@ -173,6 +176,7 @@ func TestPhase1b_NameToTag_AllFive(t *testing.T) {
 // (tag "openai-compatible") does NOT get the openai prompt section or 24h cache,
 // while work (tag "openai") does.
 func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "work"})
@@ -249,6 +253,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 // TestPhase1b_PerInstanceOAuth_RoundTrip verifies that SaveAuth("work", rec)
 // writes auth/work.json and can be loaded back independently of auth/openai.json.
 func TestPhase1b_PerInstanceOAuth_RoundTrip(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 
 	workRec := openai.AuthRecord{
@@ -304,6 +309,7 @@ func isAuthNotFound(err error) bool {
 // resolver injected, SetModel("work2/<model>") from a "work" session swaps to
 // ID()=="work2" while preserving a WithCommunicateOutputSchema override.
 func TestPhase1b_SetModel_Work2_PreservesOutputSchema(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "work"})
@@ -384,6 +390,7 @@ func TestPhase1b_SetModel_Work2_PreservesOutputSchema(t *testing.T) {
 // SaveSessionMeta/LoadSessionMeta round-trips the instance name correctly
 // (so the hub can reconstruct the work/<model> ref on resume).
 func TestPhase1b_Resume_ProfileIDPreserved(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "work"})

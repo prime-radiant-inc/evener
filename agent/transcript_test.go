@@ -46,6 +46,7 @@ func readTranscriptLines(t *testing.T, path string) []string {
 }
 
 func TestTranscriptJSONLMaxLineCoversMaxImagePayload(t *testing.T) {
+	t.Parallel()
 	const (
 		maxImages     = 8
 		maxImageBytes = 8 * 1024 * 1024
@@ -59,6 +60,7 @@ func TestTranscriptJSONLMaxLineCoversMaxImagePayload(t *testing.T) {
 }
 
 func TestTranscriptWriter_CreatesFileAndWritesHeader(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nested", "transcript.jsonl")
 
@@ -106,6 +108,7 @@ func TestTranscriptWriter_CreatesFileAndWritesHeader(t *testing.T) {
 }
 
 func TestTranscriptWriter_AppendWritesEntries(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -175,6 +178,7 @@ func TestTranscriptWriter_AppendWritesEntries(t *testing.T) {
 }
 
 func TestTranscriptWriter_SeqMonotonicallyIncreasing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -214,6 +218,7 @@ func TestTranscriptWriter_SeqMonotonicallyIncreasing(t *testing.T) {
 }
 
 func TestTranscriptWriter_CloseClosesFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -249,6 +254,7 @@ func TestTranscriptWriter_CloseClosesFile(t *testing.T) {
 }
 
 func TestTranscriptWriter_NilWriterSafe(t *testing.T) {
+	t.Parallel()
 	var w *transcript.Writer
 
 	// Append on nil should not panic and should return nil.
@@ -263,6 +269,7 @@ func TestTranscriptWriter_NilWriterSafe(t *testing.T) {
 }
 
 func TestTranscriptWriter_ConcurrentAppend(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -329,6 +336,7 @@ func TestTranscriptWriter_ConcurrentAppend(t *testing.T) {
 }
 
 func TestTranscriptWriter_ValidJSONL(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -420,6 +428,7 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 }
 
 func TestTranscriptWriter_LargeEntry(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "large.transcript.jsonl")
 
@@ -469,6 +478,7 @@ func TestTranscriptWriter_LargeEntry(t *testing.T) {
 // --- readTranscript tests ---
 
 func TestReadTranscript_ReturnsHeaderAndEntries(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -529,6 +539,7 @@ func TestReadTranscript_ReturnsHeaderAndEntries(t *testing.T) {
 }
 
 func TestReadTranscript_PartialLastLine(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -580,6 +591,7 @@ func TestReadTranscript_PartialLastLine(t *testing.T) {
 }
 
 func TestReadTranscript_EmptyFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.jsonl")
 
@@ -594,6 +606,7 @@ func TestReadTranscript_EmptyFile(t *testing.T) {
 }
 
 func TestReadTranscript_HeaderOnly(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -627,6 +640,7 @@ func TestReadTranscript_HeaderOnly(t *testing.T) {
 // --- transcript.OpenWriter tests ---
 
 func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -681,6 +695,7 @@ func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 }
 
 func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -741,6 +756,7 @@ func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
 }
 
 func TestOpenTranscriptWriter_HeaderOnlyFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -791,6 +807,7 @@ func TestOpenTranscriptWriter_HeaderOnlyFile(t *testing.T) {
 // --- ResumeHistory tests ---
 
 func TestResumeHistoryFromTranscript_NoCompaction(t *testing.T) {
+	t.Parallel()
 	entries := []transcript.Entry{
 		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("Hello"))},
 		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("Hi"))},
@@ -814,6 +831,7 @@ func TestResumeHistoryFromTranscript_NoCompaction(t *testing.T) {
 }
 
 func TestResumeHistoryFromTranscript_WithCheckpoint(t *testing.T) {
+	t.Parallel()
 	entries := make([]transcript.Entry, 10)
 	for i := 0; i < 10; i++ {
 		kind := schema.TurnAssistant
@@ -856,6 +874,7 @@ func TestResumeHistoryFromTranscript_WithCheckpoint(t *testing.T) {
 }
 
 func TestResumeHistoryFromTranscript_WithSummary(t *testing.T) {
+	t.Parallel()
 	entries := make([]transcript.Entry, 10)
 	for i := 0; i < 10; i++ {
 		kind := schema.TurnAssistant
@@ -900,6 +919,7 @@ func TestResumeHistoryFromTranscript_WithSummary(t *testing.T) {
 // --- Session-integration tests ---
 
 func TestSession_TranscriptCreatedOnNewSession(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 
@@ -949,6 +969,7 @@ func TestSession_TranscriptCreatedOnNewSession(t *testing.T) {
 }
 
 func TestSession_NoTranscriptWithoutStateDir(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -967,6 +988,7 @@ func TestSession_NoTranscriptWithoutStateDir(t *testing.T) {
 }
 
 func TestSession_TranscriptRecordsTurns(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 
@@ -1046,6 +1068,7 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 }
 
 func TestSession_ContextDiagnosticsRecordedOnAPICall(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 
@@ -1095,6 +1118,7 @@ func TestSession_ContextDiagnosticsRecordedOnAPICall(t *testing.T) {
 }
 
 func TestSession_TranscriptClosedOnSessionClose(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 
@@ -1123,6 +1147,7 @@ func TestSession_TranscriptClosedOnSessionClose(t *testing.T) {
 }
 
 func TestSubagent_TranscriptHasParentLinkage(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 
 	c := llm.NewClient()
@@ -1169,6 +1194,7 @@ func TestSubagent_TranscriptHasParentLinkage(t *testing.T) {
 }
 
 func TestRootSession_TranscriptHasEmptyParentFields(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 
 	c := llm.NewClient()
@@ -1208,6 +1234,7 @@ func TestRootSession_TranscriptHasEmptyParentFields(t *testing.T) {
 }
 
 func TestSubagent_DepthSetFromConfig(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
@@ -1231,6 +1258,7 @@ func TestSubagent_DepthSetFromConfig(t *testing.T) {
 // --- Full lifecycle integration test ---
 
 func TestSession_TranscriptFullLifecycle(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 
@@ -1450,6 +1478,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 
 // --- Sub-agent transcript persistence ---
 func TestSession_StateDirSessionsPathConflictFailsJobManager(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 
 	if err := os.WriteFile(filepath.Join(stateDir, sessionsSubdir), []byte("not a directory"), 0o644); err != nil {
@@ -1481,6 +1510,7 @@ func TestSession_StateDirSessionsPathConflictFailsJobManager(t *testing.T) {
 // --- Fix 2: readTranscript returns corrupt line count ---
 
 func TestReadTranscript_ReturnsCorruptLineCount(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -1531,6 +1561,7 @@ func TestReadTranscript_ReturnsCorruptLineCount(t *testing.T) {
 }
 
 func TestReadTranscript_ZeroCorruptLinesOnCleanFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -1561,6 +1592,7 @@ func TestReadTranscript_ZeroCorruptLinesOnCleanFile(t *testing.T) {
 // --- Fix 3: transcript.OpenWriter single file handle ---
 
 func TestOpenTranscriptWriter_SingleFileHandle(t *testing.T) {
+	t.Parallel()
 	// This test verifies that transcript.OpenWriter uses a single file handle
 	// for read-truncate-append, not separate open calls. We do this by
 	// verifying that a partial-line truncation + append works correctly
@@ -1618,6 +1650,7 @@ func TestOpenTranscriptWriter_SingleFileHandle(t *testing.T) {
 }
 
 func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 
@@ -1659,6 +1692,7 @@ func truncStr(s string, n int) string {
 // --- Periodic sync tests ---
 
 func TestTranscriptWriter_PeriodicSync_CloseFlushesDirtyWrites(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -1703,6 +1737,7 @@ func TestTranscriptWriter_PeriodicSync_CloseFlushesDirtyWrites(t *testing.T) {
 }
 
 func TestTranscriptWriter_PeriodicSync_ConcurrentAppendWithInterval(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -1763,6 +1798,7 @@ func TestTranscriptWriter_PeriodicSync_ConcurrentAppendWithInterval(t *testing.T
 // --- transcript.APICall tests ---
 
 func TestTranscriptWriter_AppendAPICallWritesValidLine(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -1852,6 +1888,7 @@ func TestTranscriptWriter_AppendAPICallWritesValidLine(t *testing.T) {
 }
 
 func TestTranscriptWriter_AppendAPICallWithError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -1902,6 +1939,7 @@ func TestTranscriptWriter_AppendAPICallWithError(t *testing.T) {
 }
 
 func TestTranscriptWriter_InterleavedSeqNumbers(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -1960,6 +1998,7 @@ func TestTranscriptWriter_InterleavedSeqNumbers(t *testing.T) {
 }
 
 func TestTranscriptWriter_NilAppendAPICallSafe(t *testing.T) {
+	t.Parallel()
 	var w *transcript.Writer
 
 	// AppendAPICall on nil should not panic and should return nil.
@@ -1969,6 +2008,7 @@ func TestTranscriptWriter_NilAppendAPICallSafe(t *testing.T) {
 }
 
 func TestReadTranscriptFull_ParsesAllLineTypes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -2063,6 +2103,7 @@ func TestReadTranscriptFull_ParsesAllLineTypes(t *testing.T) {
 }
 
 func TestReadTranscriptFull_SkipsCorruptLines(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -2099,6 +2140,7 @@ func TestReadTranscriptFull_SkipsCorruptLines(t *testing.T) {
 }
 
 func TestReadTranscript_SkipsAPICallLines(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -2138,6 +2180,7 @@ func TestReadTranscript_SkipsAPICallLines(t *testing.T) {
 }
 
 func TestOpenTranscriptWriter_ResumesWithAPICallSeq(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
@@ -2186,6 +2229,7 @@ func TestOpenTranscriptWriter_ResumesWithAPICallSeq(t *testing.T) {
 }
 
 func TestStrictChildTranscriptRejectsCorruptNonFinalLineAndLenientReadStillSkips(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "child-session",
@@ -2218,7 +2262,7 @@ func TestStrictChildTranscriptRejectsCorruptNonFinalLineAndLenientReadStillSkips
 		t.Fatalf("close append handle: %v", err)
 	}
 
-	if _, err := readStrictChildTranscript(path, "child-session"); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
+	if _, err := readStrictChildTranscript(path, "child-session", 0); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
 		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 	}
 	_, entries, skipped, err := readTranscript(path)
@@ -2231,6 +2275,7 @@ func TestStrictChildTranscriptRejectsCorruptNonFinalLineAndLenientReadStillSkips
 }
 
 func TestStrictChildTranscriptSessionMismatch(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "other-session",
@@ -2243,12 +2288,13 @@ func TestStrictChildTranscriptSessionMismatch(t *testing.T) {
 		t.Fatalf("close transcript: %v", err)
 	}
 
-	if _, err := readStrictChildTranscript(path, "child-session"); err == nil || !strings.Contains(err.Error(), "transcript_session_mismatch") {
+	if _, err := readStrictChildTranscript(path, "child-session", 0); err == nil || !strings.Contains(err.Error(), "transcript_session_mismatch") {
 		t.Fatalf("strict read error = %v, want transcript_session_mismatch", err)
 	}
 }
 
 func TestStrictChildTranscriptCorruptBodyPrecedesSessionMismatch(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "other-session",
@@ -2271,7 +2317,7 @@ func TestStrictChildTranscriptCorruptBodyPrecedesSessionMismatch(t *testing.T) {
 		t.Fatalf("rewrite transcript: %v", err)
 	}
 
-	if _, err := readStrictChildTranscript(path, "child-session"); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
+	if _, err := readStrictChildTranscript(path, "child-session", 0); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
 		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 	}
 	_, entries, skipped, err := readTranscript(path)
@@ -2284,6 +2330,7 @@ func TestStrictChildTranscriptCorruptBodyPrecedesSessionMismatch(t *testing.T) {
 }
 
 func TestStrictChildTranscriptRejectsMalformedHeaderShape(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		line string
@@ -2303,7 +2350,7 @@ func TestStrictChildTranscriptRejectsMalformedHeaderShape(t *testing.T) {
 				t.Fatalf("write transcript: %v", err)
 			}
 
-			if _, err := readStrictChildTranscript(path, "child-session"); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
+			if _, err := readStrictChildTranscript(path, "child-session", 0); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
 				t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 			}
 			if _, _, _, err := readTranscript(path); err != nil {
@@ -2313,30 +2360,20 @@ func TestStrictChildTranscriptRejectsMalformedHeaderShape(t *testing.T) {
 	}
 }
 
-func setStrictTranscriptMaxLineBytesForTest(limit int) func() {
-	previous := strictTranscriptMaxLineBytes
-	strictTranscriptMaxLineBytes = limit
-	return func() {
-		strictTranscriptMaxLineBytes = previous
-	}
-}
-
 func TestStrictChildTranscriptRejectsOversizedHeaderLine(t *testing.T) {
-	restore := setStrictTranscriptMaxLineBytesForTest(64)
-	defer restore()
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
 	if err := os.WriteFile(path, []byte(strings.Repeat("x", 65)+"\n"), 0o644); err != nil {
 		t.Fatalf("write transcript: %v", err)
 	}
 
-	if _, err := readStrictChildTranscript(path, "child-session"); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
+	if _, err := readStrictChildTranscript(path, "child-session", 64); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
 		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 	}
 }
 
 func TestStrictChildTranscriptRejectsOversizedBodyLine(t *testing.T) {
-	restore := setStrictTranscriptMaxLineBytesForTest(64)
-	defer restore()
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "child-session",
@@ -2359,7 +2396,7 @@ func TestStrictChildTranscriptRejectsOversizedBodyLine(t *testing.T) {
 		t.Fatalf("close append handle: %v", err)
 	}
 
-	if _, err := readStrictChildTranscript(path, "child-session"); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
+	if _, err := readStrictChildTranscript(path, "child-session", 64); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
 		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 	}
 	_, _, _, err = readTranscript(path)

@@ -19,6 +19,7 @@ import (
 // in-process MCP server -> mcp.Manager -> Session tool registry -> fakeAdapter
 // calls the MCP tool -> result flows back through the session.
 func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
+	t.Parallel()
 	// Create a minimal MCP server with a "greet" tool.
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "test-server",

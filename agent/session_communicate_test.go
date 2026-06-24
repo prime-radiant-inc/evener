@@ -65,6 +65,7 @@ func communicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 // toolCallResponse is defined in tool_web_fetch_test.go (same package).
 
 func TestCommunicate_ToolChoiceRequired_SetOnRequest(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -106,6 +107,7 @@ func TestCommunicate_ToolChoiceRequired_SetOnRequest(t *testing.T) {
 }
 
 func TestCommunicate_ResultExitsLoop(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -147,6 +149,7 @@ func TestCommunicate_ResultExitsLoop(t *testing.T) {
 }
 
 func TestCommunicate_StatusMessageContinuesTurn(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -189,6 +192,7 @@ func TestCommunicate_StatusMessageContinuesTurn(t *testing.T) {
 }
 
 func TestCommunicateRejectsLegacyAwaitReply(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -220,6 +224,7 @@ func TestCommunicateRejectsLegacyAwaitReply(t *testing.T) {
 }
 
 func TestCommunicate_StructuredOutputExitsLoop(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -269,6 +274,7 @@ func TestCommunicate_StructuredOutputExitsLoop(t *testing.T) {
 }
 
 func TestCommunicate_FirstTerminalResultWins(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -326,6 +332,7 @@ func TestCommunicate_FirstTerminalResultWins(t *testing.T) {
 }
 
 func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -382,6 +389,7 @@ func TestCommunicate_StatusBatchedWithDelegateDoesNotEndTurn(t *testing.T) {
 }
 
 func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
+	t.Parallel()
 	var captured any
 	deps := &toolDeps{
 		emit: func(events.EventKind, events.EventData) {},
@@ -425,6 +433,7 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 }
 
 func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T) {
+	t.Parallel()
 	var captured any
 	deps := &toolDeps{
 		emit: func(events.EventKind, events.EventData) {},
@@ -482,6 +491,7 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 }
 
 func TestCommunicate_BareTextFallback(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -518,6 +528,7 @@ func TestCommunicate_BareTextFallback(t *testing.T) {
 }
 
 func TestCommunicate_InboxDrainsSteering(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -559,6 +570,7 @@ func TestCommunicate_InboxDrainsSteering(t *testing.T) {
 }
 
 func TestCommunicate_DrainedImageSteeringRequeuesForPostToolInjection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -600,6 +612,7 @@ func TestCommunicate_DrainedImageSteeringRequeuesForPostToolInjection(t *testing
 }
 
 func TestCommunicate_SchemaRejectsMalformedOutput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -632,6 +645,7 @@ func TestCommunicate_SchemaRejectsMalformedOutput(t *testing.T) {
 }
 
 func TestCommunicate_SchemaRejectsPurposeInsideOutput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -667,6 +681,7 @@ func TestCommunicate_SchemaRejectsPurposeInsideOutput(t *testing.T) {
 }
 
 func TestCommunicate_SchemaRejectsTopLevelPurpose(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -702,6 +717,7 @@ func TestCommunicate_SchemaRejectsTopLevelPurpose(t *testing.T) {
 }
 
 func TestCommunicate_ModelFacingSchemaOmitsPurpose(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -744,6 +760,7 @@ func TestCommunicate_ModelFacingSchemaOmitsPurpose(t *testing.T) {
 }
 
 func TestCommunicate_ModelFacingSchemaOmitsPurposeForResultAlias(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -773,6 +790,7 @@ func TestCommunicate_ModelFacingSchemaOmitsPurposeForResultAlias(t *testing.T) {
 }
 
 func TestCommunicate_EmitsEvent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -833,6 +851,7 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 }
 
 func TestCommunicate_AvailableImmediately(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 

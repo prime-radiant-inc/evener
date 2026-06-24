@@ -11,6 +11,7 @@ import (
 )
 
 func TestDelegateAdvertisesAgentTypeEnum(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -61,6 +62,7 @@ func TestDelegateAdvertisesAgentTypeEnum(t *testing.T) {
 // are included in the roster when the session has grantable allowance (> 0) and
 // filtered out when allowance is 0 (leaf/dark behavior).
 func TestAgentTypeRosterKeyedOnAllowance(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})

@@ -22,6 +22,7 @@ func (a *liveModelMetadataAdapter) ListModels(ctx context.Context) ([]llm.ModelI
 }
 
 func TestNewSessionAppliesLiveOpenAIModelContextWindow(t *testing.T) {
+	t.Parallel()
 	adapter := &liveModelMetadataAdapter{
 		fakeAdapter: fakeAdapter{name: "openai"},
 		models: []llm.ModelInfo{{
@@ -50,6 +51,7 @@ func TestNewSessionAppliesLiveOpenAIModelContextWindow(t *testing.T) {
 }
 
 func TestSessionSetModelAppliesLiveOpenAIModelContextWindow(t *testing.T) {
+	t.Parallel()
 	adapter := &liveModelMetadataAdapter{
 		fakeAdapter: fakeAdapter{name: "openai"},
 		models: []llm.ModelInfo{

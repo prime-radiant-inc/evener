@@ -30,6 +30,7 @@ func stateDirForJM(jm *jobManager) string {
 // stamps the observer's session id onto the watched WORKER's SessionMeta, so the
 // hub can later auto-open the observer beside the worker.
 func TestMintWatchCreateReadGrantStampsObservedBy(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	stateDir := stateDirForJM(jm)
 
@@ -68,6 +69,7 @@ func TestMintWatchCreateReadGrantStampsObservedBy(t *testing.T) {
 // the same (worker, observer) pair do not duplicate the observer id on the
 // worker's meta — the set is append-only and deduped, mirroring the grant log.
 func TestMintWatchCreateReadGrantObservedByDedups(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	stateDir := stateDirForJM(jm)
 	var signals atomic.Int32
@@ -100,6 +102,7 @@ func TestMintWatchCreateReadGrantObservedByDedups(t *testing.T) {
 // target of any watch never gains an ObservedBy entry — the stamp is confined to
 // the watch-install seam.
 func TestOrdinaryWorkerHasNoObservedBy(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	stateDir := stateDirForJM(jm)
 	var signals atomic.Int32
@@ -118,6 +121,7 @@ func TestOrdinaryWorkerHasNoObservedBy(t *testing.T) {
 }
 
 func TestWatchSendBuildsObserverFrame(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -168,6 +172,7 @@ func TestWatchSendBuildsObserverFrame(t *testing.T) {
 }
 
 func TestJobWatchSendsToObserverDelegateIDAcrossResume(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return communicateWithDefaultOutput("observer ready") },
@@ -255,6 +260,7 @@ func captureWatchSends(t *testing.T, jm *jobManager) func() []sendMessageArgs {
 // onto the persisted WatchSendState, so a downstream event that this send causes
 // can be recognized as the watch's own echo.
 func TestWatchSendStateCarriesDeliveryProvenance(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	cfg := &watchConfig{
 		target:           runtimeMessageAliasCaller,
@@ -289,6 +295,7 @@ func TestWatchSendStateCarriesDeliveryProvenance(t *testing.T) {
 // skips watchSendSnapshot entirely. If shouldSuppressWatch were removed, the ack
 // emit would re-fire the watch and nextUpdateSeq would be 2.
 func TestObserverInjectionDoesNotRetriggerSameWatch(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	observer := newTestSession(t)
 	// Wire the observer's caller route to the parent so delegate_send(to=caller)
@@ -349,6 +356,7 @@ func TestObserverInjectionDoesNotRetriggerSameWatch(t *testing.T) {
 }
 
 func TestWatchOriginatedDelegateCanFinishWithNoToolBareText(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("nothing to do")}
@@ -390,6 +398,7 @@ func TestWatchOriginatedDelegateCanFinishWithNoToolBareText(t *testing.T) {
 }
 
 func TestScenarioPassiveObserverIgnoresWatchFrameWithoutNoopTool(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return communicateWithDefaultOutput("observer ready") },
 		func(llm.Request) llm.Response {
@@ -446,6 +455,7 @@ func TestScenarioPassiveObserverIgnoresWatchFrameWithoutNoopTool(t *testing.T) {
 }
 
 func TestScenarioAssistantToolEventFilterAvoidsPassiveObserverWakeups(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return communicateWithDefaultOutput("observer ready") },
 		func(llm.Request) llm.Response {
@@ -530,6 +540,7 @@ func TestScenarioAssistantToolEventFilterAvoidsPassiveObserverWakeups(t *testing
 }
 
 func TestIdleWatchSendObserverCallerSendCarriesProvenance(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return communicateWithDefaultOutput("observer ready") },
@@ -625,6 +636,7 @@ func TestIdleWatchSendObserverCallerSendCarriesProvenance(t *testing.T) {
 }
 
 func TestNotificationTurnDrainsSteeringOnlyCallback(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return communicateWithDefaultOutput("callback handled") },
@@ -642,6 +654,7 @@ func TestNotificationTurnDrainsSteeringOnlyCallback(t *testing.T) {
 }
 
 func TestParentYieldsAfterObserverHandoffInsteadOfPolling(t *testing.T) {
+	t.Parallel()
 	memoryPath := filepath.Join(t.TempDir(), "memory.md")
 	if err := os.WriteFile(memoryPath, []byte("rule: no-force-push\n"), 0o600); err != nil {
 		t.Fatalf("write memory fixture: %v", err)
@@ -777,6 +790,7 @@ func TestParentYieldsAfterObserverHandoffInsteadOfPolling(t *testing.T) {
 }
 
 func TestRunningDelegateSendFallsBackToActiveProvenance(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	sub := &subagent{id: child.ID(), sess: child, running: true, done: make(chan struct{})}
@@ -814,6 +828,7 @@ func TestRunningDelegateSendFallsBackToActiveProvenance(t *testing.T) {
 // communicate emit. If shouldSuppressWatch were removed, the ack communicate
 // would fire the watch and nextUpdateSeq would be 1.
 func TestObserverNotificationAcknowledgementDoesNotRetriggerSameWatch(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	// Seed the watch send target (dlg_observer / job_observer).
 	seedWatchSendDelegateTarget(t, parent.jobManager, "dlg_observer")
@@ -854,6 +869,7 @@ func TestObserverNotificationAcknowledgementDoesNotRetriggerSameWatch(t *testing
 }
 
 func TestWatchDrivenDelegateJobNotificationDoesNotRetriggerSameWatch(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	seedWatchSendDelegateTarget(t, parent.jobManager, "dlg_observer")
@@ -898,6 +914,7 @@ func TestWatchDrivenDelegateJobNotificationDoesNotRetriggerSameWatch(t *testing.
 }
 
 func TestDelegateOutputCausedByWatchDoesNotRetriggerOutputMatchWatch(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	sub := completedDelegateSubagent(child, "server READY")
@@ -934,6 +951,7 @@ func TestDelegateOutputCausedByWatchDoesNotRetriggerOutputMatchWatch(t *testing.
 }
 
 func TestDelegateOutputCausedByCompletedWatchTurnDoesNotRetriggerOutputMatchWatch(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	sub := completedDelegateSubagent(child, "server READY")
@@ -1007,6 +1025,7 @@ func TestDelegateOutputCausedByCompletedWatchTurnDoesNotRetriggerOutputMatchWatc
 }
 
 func TestDelegateJobNotificationCausedByCompletedWatchTurnDoesNotRetriggerSameWatch(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	seedWatchSendDelegateTarget(t, parent.jobManager, "dlg_observer")

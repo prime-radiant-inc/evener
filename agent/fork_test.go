@@ -69,6 +69,7 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 // the child gets the first (divergenceTurn-1) USER_INPUT turns from the parent
 // followed by the edited message, and meta is wired up correctly on both sides.
 func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
+	t.Parallel()
 	stateDir, parentID := buildParentSession(t)
 
 	childID, err := ForkSession(stateDir, parentID, 3, "second task, table-driven", "before TDD")
@@ -156,6 +157,7 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 }
 
 func TestForkSession_ChildLineagePreservedAcrossMetaRewrite(t *testing.T) {
+	t.Parallel()
 	stateDir, parentID := buildParentSession(t)
 	childID, err := ForkSession(stateDir, parentID, 3, "second task, table-driven", "before TDD")
 	if err != nil {
@@ -186,6 +188,7 @@ func TestForkSession_ChildLineagePreservedAcrossMetaRewrite(t *testing.T) {
 }
 
 func TestForkSession_ParentForkLabelPreservedAcrossMetaRewrite(t *testing.T) {
+	t.Parallel()
 	stateDir, parentID := buildParentSession(t)
 	if _, err := ForkSession(stateDir, parentID, 3, "second task, table-driven", "before TDD"); err != nil {
 		t.Fatalf("ForkSession: %v", err)
@@ -211,6 +214,7 @@ func TestForkSession_ParentForkLabelPreservedAcrossMetaRewrite(t *testing.T) {
 // TestForkSession_RejectsOutOfRangeDivergence verifies that divergenceTurn=0
 // and divergenceTurn exceeding the parent's USER_INPUT count both return errors.
 func TestForkSession_RejectsOutOfRangeDivergence(t *testing.T) {
+	t.Parallel()
 	stateDir, parentID := buildParentSession(t)
 
 	// divergenceTurn=0 must error.
@@ -229,6 +233,7 @@ func TestForkSession_RejectsOutOfRangeDivergence(t *testing.T) {
 // TestForkSession_RejectsMissingParent verifies that a missing parent transcript
 // causes ForkSession to return an error.
 func TestForkSession_RejectsMissingParent(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 
 	_, err := ForkSession(stateDir, "NONEXISTENT_SESSION", 1, "hello", "")

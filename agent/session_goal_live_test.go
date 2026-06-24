@@ -58,6 +58,7 @@ func goalEndedEvents(evs []events.SessionEvent) []events.GoalEndedData {
 // important assertion), exactly one EventGoalEnded{Status:"complete"}, both files
 // exist with the right contents, and the terminal report reached the stream.
 func TestGoalLive_MultiTurnCompletion(t *testing.T) {
+	t.Parallel()
 	skipWithoutAPIKey(t)
 	sess := integrationSession(t)
 	workDir := sess.env.WorkingDirectory()
@@ -117,6 +118,7 @@ func TestGoalLive_MultiTurnCompletion(t *testing.T) {
 // The error output the failing turns may produce is captured to keep go test
 // output pristine.
 func TestGoalLive_ImpossibleAutoBlocks(t *testing.T) {
+	t.Parallel()
 	skipWithoutAPIKey(t)
 	sess := integrationSession(t)
 

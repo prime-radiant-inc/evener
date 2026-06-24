@@ -20,6 +20,7 @@ import (
 // "high" (per the embedded catalog). A "max" request must reach the fallback as
 // "high".
 func TestFallbackChain_ClampsToFallbackModelLevels(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	var fbEffort string
@@ -78,6 +79,7 @@ func TestFallbackChain_ClampsToFallbackModelLevels(t *testing.T) {
 // which must be stripped before the catalog lookup so the clamp still finds the
 // fallback model's levels.
 func TestFallbackChain_ClampsToFallbackModelLevels_1MSuffix(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	var fbEffort string
@@ -138,6 +140,7 @@ func TestFallbackChain_ClampsToFallbackModelLevels_1MSuffix(t *testing.T) {
 // that inheritance the lookup misses and a "max" request reaches the 4.5
 // fallback unclamped.
 func TestFallbackChain_ClampsDatedFallbackToFamilyLevels(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	var fbEffort string
@@ -197,6 +200,7 @@ func TestFallbackChain_ClampsDatedFallbackToFamilyLevels(t *testing.T) {
 // provider namespace AND the dated/[1m] suffixes to resolve the opus-4-5 family
 // levels — otherwise a "max" request reaches the 4.5 fallback unclamped.
 func TestFallbackChain_ClampsQualifiedDatedFallbackToFamilyLevels(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	var fbEffort, fbModel string

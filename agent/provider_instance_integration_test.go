@@ -67,6 +67,7 @@ func instanceTestResolver(ref string) (*provider.Profile, error) {
 //  4. renderSystemPrompt contains the openai section (behavior by tag).
 //  5. applyModelRequestMetadata sets 24h prompt-cache (behavior by tag).
 func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	// The fake adapter must be registered under the instance NAME ("work")
@@ -145,6 +146,7 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 //   - the OpenAI prompt section in the system prompt
 //   - 24h prompt-cache eligibility
 func TestProviderInstance_OpenAICompatible_NoOpenAIBehavior(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai-compatible"})
@@ -188,6 +190,7 @@ func TestProviderInstance_OpenAICompatible_NoOpenAIBehavior(t *testing.T) {
 //   - preserves a WithCommunicateOutputSchema override applied before the switch
 //   - keeps the instance identity ID()=="work2" after the switch
 func TestProviderInstance_CrossInstanceSwitch_PreservesOverrideAndIdentity(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "work"})
@@ -261,6 +264,7 @@ func TestProviderInstance_CrossInstanceSwitch_PreservesOverrideAndIdentity(t *te
 // that switching from a renamed openai instance ("work") to a google instance
 // wires the real web_search function tool, and switching away removes it.
 func TestProviderInstance_ProviderConditionalTool_GoogleSwitchWiresWebSearch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "work"})

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // ModelInfo is the normalized model metadata entry, primarily sourced from the LiteLLM catalog
@@ -45,7 +46,11 @@ type ModelInfo struct {
 // lookup by model ID or alias.
 type ModelCatalog struct {
 	Models []ModelInfo
-	byID   map[string]ModelInfo
+	// indexOnce guards the lazy byID build so concurrent first-use lookups (e.g.
+	// parallel profile construction) don't race on the write. A catalog is
+	// pointer-shared and never copied after construction.
+	indexOnce sync.Once
+	byID      map[string]ModelInfo
 }
 
 // GetModelInfo returns a copy of the ModelInfo registered under modelID (after
@@ -55,9 +60,7 @@ func (c *ModelCatalog) GetModelInfo(modelID string) *ModelInfo {
 	if c == nil {
 		return nil
 	}
-	if c.byID == nil {
-		c.buildIndex()
-	}
+	c.indexOnce.Do(c.buildIndex)
 	if mi, ok := c.byID[strings.TrimSpace(modelID)]; ok {
 		out := mi
 		return &out

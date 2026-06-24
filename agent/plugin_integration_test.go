@@ -17,6 +17,7 @@ import (
 // --- initPlugins tests ---
 
 func TestInitPlugins_MergesSkills(t *testing.T) {
+	t.Parallel()
 	dir := makePluginDir(t, "skill-plugin")
 	skillDir := filepath.Join(dir, "skills", "my-skill")
 	if err := os.MkdirAll(skillDir, 0755); err != nil {
@@ -38,6 +39,7 @@ func TestInitPlugins_MergesSkills(t *testing.T) {
 }
 
 func TestInitPlugins_BuildsHookRunner(t *testing.T) {
+	t.Parallel()
 	dir := makePluginDir(t, "hook-plugin")
 	hooksDir := filepath.Join(dir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0755); err != nil {
@@ -77,6 +79,7 @@ func TestInitPlugins_BuildsHookRunner(t *testing.T) {
 }
 
 func TestRestoreSessionFromMeta_DoesNotMatchStartupSessionStartHooks(t *testing.T) {
+	t.Parallel()
 	dir := makePluginDir(t, "session-start-plugin")
 	hooksDir := filepath.Join(dir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0755); err != nil {
@@ -130,6 +133,7 @@ func TestRestoreSessionFromMeta_DoesNotMatchStartupSessionStartHooks(t *testing.
 }
 
 func TestInitPlugins_MergesAgents(t *testing.T) {
+	t.Parallel()
 	dir := makePluginDir(t, "agent-plugin")
 	agentsDir := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agentsDir, 0755); err != nil {
@@ -150,6 +154,7 @@ func TestInitPlugins_MergesAgents(t *testing.T) {
 }
 
 func TestInitPlugins_NoPlugins(t *testing.T) {
+	t.Parallel()
 	// Simulates initPlugins with empty PluginDirs — should be a no-op
 	plugins, err := plugin.LoadAll(nil)
 	if err != nil {
@@ -161,6 +166,7 @@ func TestInitPlugins_NoPlugins(t *testing.T) {
 }
 
 func TestInitPlugins_CombinesMultiplePlugins(t *testing.T) {
+	t.Parallel()
 	// Plugin A: provides a skill
 	dirA := makePluginDir(t, "plugin-a")
 	skillDir := filepath.Join(dirA, "skills", "alpha")
@@ -212,6 +218,7 @@ func TestInitPlugins_CombinesMultiplePlugins(t *testing.T) {
 // --- Event types ---
 
 func TestEventPluginLoaded_Exists(t *testing.T) {
+	t.Parallel()
 	// Verify the constant is defined and has the expected value
 	if events.EventPluginLoaded != "PLUGIN_LOADED" {
 		t.Errorf("EventPluginLoaded = %q, want %q", events.EventPluginLoaded, "PLUGIN_LOADED")
@@ -219,6 +226,7 @@ func TestEventPluginLoaded_Exists(t *testing.T) {
 }
 
 func TestPluginLoadedData_Fields(t *testing.T) {
+	t.Parallel()
 	data := events.PluginLoadedData{
 		Name:       "test-plugin",
 		Dir:        "/some/path",

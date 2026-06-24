@@ -18,6 +18,7 @@ func testProvenance(watchID, generation string) *provenance.Causal {
 }
 
 func TestEmitAttachesActiveProvenance(t *testing.T) {
+	t.Parallel()
 	s := &Session{id: "session_1", events: make(chan events.SessionEvent, 1)}
 	s.replaceActiveProvenance(testProvenance("watch_A", "wg_1"))
 
@@ -30,6 +31,7 @@ func TestEmitAttachesActiveProvenance(t *testing.T) {
 }
 
 func TestActiveProvenanceResetsForExternalInput(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	s.replaceActiveProvenance(testProvenance("watch_A", "wg_1"))
 	s.replaceActiveProvenance(nil)
@@ -40,6 +42,7 @@ func TestActiveProvenanceResetsForExternalInput(t *testing.T) {
 }
 
 func TestFinishProcessingAtBoundaryClearsActiveProvenance(t *testing.T) {
+	t.Parallel()
 	s := &Session{state: SessionProcessing}
 	s.replaceActiveProvenance(testProvenance("watch_A", "wg_1"))
 
@@ -51,6 +54,7 @@ func TestFinishProcessingAtBoundaryClearsActiveProvenance(t *testing.T) {
 }
 
 func TestFinishProcessingAtBoundaryCapturesCompletedProvenance(t *testing.T) {
+	t.Parallel()
 	s := &Session{state: SessionProcessing}
 	s.replaceActiveProvenance(testProvenance("watch_A", "wg_1"))
 	s.unionActiveProvenance(testProvenance("watch_B", "wg_1"))
@@ -64,6 +68,7 @@ func TestFinishProcessingAtBoundaryCapturesCompletedProvenance(t *testing.T) {
 }
 
 func TestProcessInputErrorClearsActiveProvenance(t *testing.T) {
+	t.Parallel()
 	s := newProvenanceErrorSession(t, errors.New("llm failed"))
 
 	_, err := s.processInputWithProvenance(context.Background(), "trigger failure", nil, testProvenance("watch_A", "wg_1"))
@@ -76,6 +81,7 @@ func TestProcessInputErrorClearsActiveProvenance(t *testing.T) {
 }
 
 func TestNonRetryableModelErrorClearsActiveProvenanceBeforeClose(t *testing.T) {
+	t.Parallel()
 	s := newProvenanceErrorSession(t, llm.ErrorFromHTTPStatus("openai", 401, "bad key", nil, nil))
 
 	_, err := s.processInputWithProvenance(context.Background(), "trigger auth failure", nil, testProvenance("watch_A", "wg_1"))
@@ -110,6 +116,7 @@ func newProvenanceErrorSession(t *testing.T, modelErr error) *Session {
 }
 
 func TestReplaceActiveProvenanceClearsCompletedProvenance(t *testing.T) {
+	t.Parallel()
 	s := &Session{state: SessionProcessing}
 	s.replaceActiveProvenance(testProvenance("watch_A", "wg_1"))
 	s.finishProcessingAtBoundary(context.Background(), SessionIdle)
@@ -122,6 +129,7 @@ func TestReplaceActiveProvenanceClearsCompletedProvenance(t *testing.T) {
 }
 
 func TestDrainSteeringForTurnUnionsMessageProvenance(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	s.steeringQueue = []steeringMessage{
 		{Text: "from A", Provenance: testProvenance("watch_A", "wg_1")},
@@ -139,6 +147,7 @@ func TestDrainSteeringForTurnUnionsMessageProvenance(t *testing.T) {
 }
 
 func TestPrependSteeringPreservesProvenanceForDeferredImages(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	p := testProvenance("watch_A", "wg_1")
 	s.prependSteering([]steeringMessage{{Text: "image reminder", Provenance: p}})
@@ -156,6 +165,7 @@ func TestPrependSteeringPreservesProvenanceForDeferredImages(t *testing.T) {
 }
 
 func TestCommunicateInboxDrainUnionsProvenance(t *testing.T) {
+	t.Parallel()
 	s := &Session{id: "session_1", profile: NewOpenAIProfile("gpt-5.2"), events: make(chan events.SessionEvent, 4)}
 	deps := newToolDeps(s)
 	s.steeringQueue = []steeringMessage{{Text: "observer steering", Provenance: testProvenance("watch_A", "wg_1")}}
@@ -170,6 +180,7 @@ func TestCommunicateInboxDrainUnionsProvenance(t *testing.T) {
 }
 
 func TestAcceptNotificationInputAdoptsNotificationProvenance(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.events = make(chan events.SessionEvent, 4)
 	// The notification turn rebuilds the delivered notification from the durable
@@ -200,6 +211,7 @@ func TestAcceptNotificationInputAdoptsNotificationProvenance(t *testing.T) {
 }
 
 func TestAcceptNotificationInputAdoptsCallerWatchSendStateProvenance(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.events = make(chan events.SessionEvent, 8)
 	cfg, _, _ := installCallerSendWatchWithCurrentFrame(t, s.jobManager, "frame-v2")
@@ -226,6 +238,7 @@ func TestAcceptNotificationInputAdoptsCallerWatchSendStateProvenance(t *testing.
 }
 
 func TestAcceptNotificationInputAdoptsRestoredCallerWatchSendProvenance(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.events = make(chan events.SessionEvent, 8)
 	p := testProvenance("watch_restore", "wg_restore")
@@ -273,6 +286,7 @@ func TestAcceptNotificationInputAdoptsRestoredCallerWatchSendProvenance(t *testi
 }
 
 func TestDrainAsSteerCreatesExternalSteering(t *testing.T) {
+	t.Parallel()
 	s := &Session{state: SessionProcessing}
 	if err := s.DrainAsSteerWithInput(context.Background(), "human queued text", nil); err != nil {
 		t.Fatalf("DrainAsSteerWithInput: %v", err)

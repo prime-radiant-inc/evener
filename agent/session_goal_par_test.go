@@ -32,6 +32,7 @@ func newStateGoalSession(t *testing.T) (*Session, string, func()) {
 // so only the gate's own maybeAutoSave can persist it. Without that save the goal
 // would be saved as still-active and wrongly resume on restart.
 func TestGoalGateBlockIsPersisted(t *testing.T) {
+	t.Parallel()
 	sess, stateDir, stop := newStateGoalSession(t)
 	defer stop()
 
@@ -58,6 +59,7 @@ func TestGoalGateBlockIsPersisted(t *testing.T) {
 // TestGoalErrorBlockIsPersisted pins /par A4 for the error path: terminateGoalOnError
 // runs after the defer-save too, so its block must be persisted by its own save.
 func TestGoalErrorBlockIsPersisted(t *testing.T) {
+	t.Parallel()
 	sess, stateDir, stop := newStateGoalSession(t)
 	defer stop()
 
@@ -82,6 +84,7 @@ func TestGoalErrorBlockIsPersisted(t *testing.T) {
 // goalRootShutdown discriminator, A4's persist would write a permanent block on
 // every shutdown.
 func TestGoalRootShutdownLeavesGoalActive(t *testing.T) {
+	t.Parallel()
 	sess, _, stop := newStateGoalSession(t)
 	defer stop()
 
@@ -104,6 +107,7 @@ func TestGoalRootShutdownLeavesGoalActive(t *testing.T) {
 // active goal. A complete/blocked goal is dropped — re-restoring it would re-emit
 // its terminal report (the once-gate resets on load) and leave a stale chip.
 func TestGoalRestoreOnlyActive(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	now := time.Now()

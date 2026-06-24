@@ -11,6 +11,7 @@ import (
 )
 
 func TestOpenAIPromptCacheDefaults_RequestCapture(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
@@ -42,6 +43,7 @@ func TestOpenAIPromptCacheDefaults_RequestCapture(t *testing.T) {
 }
 
 func Test_openAIModelSupports24hPromptCache(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		model string
 		want  bool
@@ -65,6 +67,7 @@ func Test_openAIModelSupports24hPromptCache(t *testing.T) {
 }
 
 func TestOpenAIPromptCacheDefaults_FallbackUnsupportedModelClearsRetention(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	permErr := llm.ErrorFromHTTPStatus("openai", 403, "denied", nil, nil)
@@ -118,6 +121,7 @@ func TestOpenAIPromptCacheDefaults_FallbackUnsupportedModelClearsRetention(t *te
 }
 
 func TestOpenAIPromptCacheDefaults_PreserveExplicitRequestValues(t *testing.T) {
+	t.Parallel()
 	sess := &Session{id: "session-123", profile: NewOpenAIProfile("gpt-5.5")}
 	req := llm.Request{
 		Model:                "gpt-5.5",

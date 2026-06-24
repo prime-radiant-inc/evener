@@ -74,6 +74,7 @@ func setupFullTestPlugin(t *testing.T) string {
 }
 
 func TestPlugin_EndToEnd(t *testing.T) {
+	t.Parallel()
 	pluginDir := setupFullTestPlugin(t)
 	workDir := t.TempDir()
 	workDir, _ = filepath.EvalSymlinks(workDir)
@@ -198,6 +199,7 @@ func TestPlugin_EndToEnd(t *testing.T) {
 }
 
 func TestPlugin_EndToEnd_HookExecution(t *testing.T) {
+	t.Parallel()
 	pluginDir := setupFullTestPlugin(t)
 
 	lp, err := plugin.Load(pluginDir)

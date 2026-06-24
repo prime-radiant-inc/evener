@@ -10,6 +10,7 @@ import (
 )
 
 func TestDefCommunicate_DefaultSchema_NoDecisionField(t *testing.T) {
+	t.Parallel()
 	// Default communicate schema should NOT include the decision field.
 	// Decision is only needed for orchestration (toil) and gives the model
 	// an escape hatch to rationalize giving up in standalone mode.
@@ -32,6 +33,7 @@ func TestDefCommunicate_DefaultSchema_NoDecisionField(t *testing.T) {
 }
 
 func TestWithAllowedDecisions_AddsDecisionWithEnum(t *testing.T) {
+	t.Parallel()
 	p := WithAllowedDecisions(NewOpenAIProfile("gpt-5.2"), []string{"approved", "changes_requested"})
 
 	for _, td := range p.ToolDefinitions() {
@@ -71,6 +73,7 @@ func TestWithAllowedDecisions_AddsDecisionWithEnum(t *testing.T) {
 }
 
 func TestWithAllowedDecisions_MakesOutputRequired(t *testing.T) {
+	t.Parallel()
 	p := WithAllowedDecisions(NewOpenAIProfile("gpt-5.2"), []string{"pass", "fail"})
 
 	for _, td := range p.ToolDefinitions() {
@@ -96,6 +99,7 @@ func TestWithAllowedDecisions_MakesOutputRequired(t *testing.T) {
 }
 
 func TestWithAllowedDecisions_NilDecisions_NoOp(t *testing.T) {
+	t.Parallel()
 	base := NewOpenAIProfile("gpt-5.2")
 	p := WithAllowedDecisions(base, nil)
 
@@ -106,6 +110,7 @@ func TestWithAllowedDecisions_NilDecisions_NoOp(t *testing.T) {
 }
 
 func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
+	t.Parallel()
 	// Regression test: tool.NewRegistry registers the profile's communicate
 	// definition (with decision). Then re-registering with the base definition
 	// but checking for an existing entry first should preserve decision.
@@ -150,6 +155,7 @@ func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 }
 
 func TestWithCommunicateOutputSchema_ReplacesOutput(t *testing.T) {
+	t.Parallel()
 	schema := map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
@@ -198,6 +204,7 @@ func TestWithCommunicateOutputSchema_ReplacesOutput(t *testing.T) {
 }
 
 func TestWithCommunicateOutputSchema_MakesOutputRequired(t *testing.T) {
+	t.Parallel()
 	schema := map[string]any{
 		"type":       "object",
 		"properties": map[string]any{"x": map[string]any{"type": "string"}},
@@ -224,6 +231,7 @@ func TestWithCommunicateOutputSchema_MakesOutputRequired(t *testing.T) {
 }
 
 func TestWithCommunicateOutputSchema_NilOrEmpty_NoOp(t *testing.T) {
+	t.Parallel()
 	base := NewOpenAIProfile("gpt-5.2")
 
 	if got := WithCommunicateOutputSchema(base, nil); got != base {
@@ -235,6 +243,7 @@ func TestWithCommunicateOutputSchema_NilOrEmpty_NoOp(t *testing.T) {
 }
 
 func TestWithCommunicateOutputSchema_Anthropic(t *testing.T) {
+	t.Parallel()
 	base := newAnthropicProfile("claude-opus-4-6")
 	schema := map[string]any{
 		"type":       "object",
@@ -273,6 +282,7 @@ func TestWithCommunicateOutputSchema_Anthropic(t *testing.T) {
 // user-supplied output schema must already have a properties map that can
 // accept the new field. Document this in a comment near the function.
 func TestWithAllowedDecisions_WithOutputSchema_BothApplied(t *testing.T) {
+	t.Parallel()
 	base := NewOpenAIProfile("gpt-5.2")
 	schema := map[string]any{
 		"type": "object",
@@ -324,6 +334,7 @@ func TestWithAllowedDecisions_WithOutputSchema_BothApplied(t *testing.T) {
 }
 
 func TestWithContextWindow_OverridesWhenPositive(t *testing.T) {
+	t.Parallel()
 	base := newOpenAICompatProfile("kimi", "kimi-k2", 0)
 	original := base.ContextWindowSize()
 
@@ -338,6 +349,7 @@ func TestWithContextWindow_OverridesWhenPositive(t *testing.T) {
 }
 
 func TestWithContextWindow_NonPositiveIsNoOp(t *testing.T) {
+	t.Parallel()
 	base := newOpenAICompatProfile("kimi", "kimi-k2", 0)
 	want := base.ContextWindowSize()
 
@@ -350,6 +362,7 @@ func TestWithContextWindow_NonPositiveIsNoOp(t *testing.T) {
 }
 
 func TestWithContextWindow_PreservesAnthropicBehaviorTag(t *testing.T) {
+	t.Parallel()
 	base := newAnthropicProfile("claude-opus-4-6")
 	p := WithContextWindow(base, 500_000)
 	if p.BehaviorTag() != "anthropic" {

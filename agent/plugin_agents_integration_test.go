@@ -17,6 +17,7 @@ import (
 )
 
 func TestToolRegistry_Restrict(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	for _, name := range []string{"read_file", "write_file", "grep", "shell", "communicate"} {
 		_ = reg.Register(tool.RegisteredTool{
@@ -42,6 +43,7 @@ func TestToolRegistry_Restrict(t *testing.T) {
 }
 
 func TestToolRegistry_Restrict_KeepsCommunicate(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	_ = reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "communicate", Description: "communicate"}},
@@ -68,6 +70,7 @@ func TestToolRegistry_Restrict_KeepsCommunicate(t *testing.T) {
 }
 
 func TestSpawnAgent_UnknownPluginAgentType(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -93,6 +96,7 @@ func TestSpawnAgent_UnknownPluginAgentType(t *testing.T) {
 }
 
 func TestSpawnAgent_PluginAgentType_SystemPrompt(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -163,6 +167,7 @@ func TestSpawnAgent_PluginAgentType_SystemPrompt(t *testing.T) {
 }
 
 func TestSpawnAgent_PluginAgentType_ModelOverride(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -216,6 +221,7 @@ func TestSpawnAgent_PluginAgentType_ModelOverride(t *testing.T) {
 }
 
 func TestSpawnAgent_PluginAgentType_InheritModel(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -269,6 +275,7 @@ func TestSpawnAgent_PluginAgentType_InheritModel(t *testing.T) {
 }
 
 func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -347,6 +354,7 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 }
 
 func TestSpawnAgent_PluginAgentType_AllowanceGated(t *testing.T) {
+	t.Parallel()
 	coordinatorAgent := plugin.Agent{
 		Name:         "coordinator",
 		Description:  "Delegates to agents",
@@ -426,6 +434,7 @@ func TestSpawnAgent_PluginAgentType_AllowanceGated(t *testing.T) {
 }
 
 func TestSpawnAgent_PluginAgentType_GrantTools_AddsProviderVisibleTool(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -497,6 +506,7 @@ func TestSpawnAgent_PluginAgentType_GrantTools_AddsProviderVisibleTool(t *testin
 }
 
 func TestSpawnAgent_GrantTools_RejectsUnavailableParentTool(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -531,6 +541,7 @@ func TestSpawnAgent_GrantTools_RejectsUnavailableParentTool(t *testing.T) {
 }
 
 func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 

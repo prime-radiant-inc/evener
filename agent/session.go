@@ -40,6 +40,16 @@ type Session struct {
 	env            execenv.ExecutionEnvironment
 	stateDir       string
 	installID      string
+	// strictTranscriptMaxLineBytes caps a child transcript line during resumability
+	// checks. Zero means the production default (transcriptJSONLMaxLineBytes); tests
+	// set a small value on their own session to exercise the oversized-line path
+	// without mutating a shared global.
+	strictTranscriptMaxLineBytes int
+	// delegateRestoreResumeHistory builds the resume history for a delegate
+	// restore preflight. Nil means the production default (ResumeHistory); tests
+	// set it on their own session to observe/shape the strict-preflight entries
+	// without mutating a shared global that concurrent restores would invoke.
+	delegateRestoreResumeHistory func([]transcript.Entry) []schema.Turn
 
 	events       chan events.SessionEvent
 	eventsMu     sync.RWMutex // guards send-vs-close on events; all sends go through emit()

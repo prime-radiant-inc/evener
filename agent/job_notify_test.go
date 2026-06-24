@@ -16,6 +16,7 @@ import (
 )
 
 func TestFormatJobNotification(t *testing.T) {
+	t.Parallel()
 	code := 0
 	block := formatJobNotificationBlock(jobNotification{
 		JobID: "job_X", JobType: "shell", Status: "completed", Reason: "exit_zero",
@@ -132,6 +133,7 @@ func appendPendingJobNotificationRecordWithProvenance(t *testing.T, jm *jobManag
 }
 
 func TestNotificationTurnBareTextAckIsNotScolded(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -174,6 +176,7 @@ func TestNotificationTurnBareTextAckIsNotScolded(t *testing.T) {
 }
 
 func TestJobNotificationTurnDeliversPendingDurableRecord(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -223,6 +226,7 @@ func TestJobNotificationTurnDeliversPendingDurableRecord(t *testing.T) {
 }
 
 func TestJobNotificationTurnDeliversWatchNotification(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -259,6 +263,7 @@ func TestJobNotificationTurnDeliversWatchNotification(t *testing.T) {
 }
 
 func TestWatchNotificationHistoryDoesNotSuppressDurableTerminalNotification(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -302,6 +307,7 @@ func TestWatchNotificationHistoryDoesNotSuppressDurableTerminalNotification(t *t
 }
 
 func TestJobNotificationTurnRequeuesWhenDeliveredMarkFails(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -375,6 +381,7 @@ func TestJobNotificationTurnRequeuesWhenDeliveredMarkFails(t *testing.T) {
 }
 
 func TestJobNotificationTurnRequeuesWhenJobManagerMissing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -408,6 +415,7 @@ func TestJobNotificationTurnRequeuesWhenJobManagerMissing(t *testing.T) {
 }
 
 func TestJobNotificationTurnRequeuesWhenStoreLoadFailsThenDelivers(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -485,6 +493,7 @@ func TestJobNotificationTurnRequeuesWhenStoreLoadFailsThenDelivers(t *testing.T)
 }
 
 func TestJobNotificationRetryResetInvalidatesActiveTimer(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	sess.pendingJobNotifsMu.Lock()
 	sess.jobNotifyRetry.delay = 10 * time.Millisecond
@@ -508,6 +517,7 @@ func TestJobNotificationRetryResetInvalidatesActiveTimer(t *testing.T) {
 }
 
 func TestJobNotificationRetryResetDoesNotCancelPendingRetry(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	sess.pendingJobNotifsMu.Lock()
 	sess.jobNotifyRetry.delay = 10 * time.Millisecond
@@ -629,6 +639,7 @@ func deliveredNotificationText(t *testing.T, adapter *fakeAdapter) string {
 }
 
 func TestTerminalNotificationShellExcerptIsTail(t *testing.T) {
+	t.Parallel()
 	sess, adapter := newNotificationExcerptSession(t)
 	head := "HEAD_MARKER_" + strings.Repeat("h", 600)
 	tail := strings.Repeat("t", 600) + "_TAIL_MARKER"
@@ -654,6 +665,7 @@ func TestTerminalNotificationShellExcerptIsTail(t *testing.T) {
 }
 
 func TestTerminalNotificationDelegateExcerptIsHead(t *testing.T) {
+	t.Parallel()
 	sess, adapter := newNotificationExcerptSession(t)
 	head := "HEAD_MARKER_" + strings.Repeat("h", 600)
 	tail := strings.Repeat("t", 600) + "_TAIL_MARKER"
@@ -679,6 +691,7 @@ func TestTerminalNotificationDelegateExcerptIsHead(t *testing.T) {
 }
 
 func TestTerminalNotificationShortOutputHasNoTruncationMarker(t *testing.T) {
+	t.Parallel()
 	sess, adapter := newNotificationExcerptSession(t)
 	writeFinishedJobWithOutput(t, sess.jobManager, "job_S", jobstore.JobShell, "all done\n")
 
@@ -703,6 +716,7 @@ func TestTerminalNotificationShortOutputHasNoTruncationMarker(t *testing.T) {
 // instead of instructing a read (live finding 2026-06-12: the template nudged
 // a wasted tool call while carrying the full result).
 func TestTerminalNotificationCompleteExcerptOmitsReadInstruction(t *testing.T) {
+	t.Parallel()
 	sess, adapter := newNotificationExcerptSession(t)
 	writeFinishedJobWithOutput(t, sess.jobManager, "job_C", jobstore.JobShell, "all done\n")
 
@@ -725,6 +739,7 @@ func TestTerminalNotificationCompleteExcerptOmitsReadInstruction(t *testing.T) {
 // A truncated excerpt still has more to read, so the notification advertises
 // the read affordance without making it the next required action.
 func TestTerminalNotificationTruncatedExcerptAdvertisesReadAffordance(t *testing.T) {
+	t.Parallel()
 	sess, adapter := newNotificationExcerptSession(t)
 	writeFinishedJobWithOutput(t, sess.jobManager, "job_T", jobstore.JobShell,
 		strings.Repeat("x", 600)+"_TAIL_MARKER")
@@ -743,6 +758,7 @@ func TestTerminalNotificationTruncatedExcerptAdvertisesReadAffordance(t *testing
 }
 
 func TestTerminalNotificationEmptyOutputHasNoExcerptSection(t *testing.T) {
+	t.Parallel()
 	sess, adapter := newNotificationExcerptSession(t)
 	writeFinishedJobWithOutput(t, sess.jobManager, "job_E", jobstore.JobShell, "")
 
@@ -760,6 +776,7 @@ func TestTerminalNotificationEmptyOutputHasNoExcerptSection(t *testing.T) {
 }
 
 func TestTerminalNotificationExcerptReReadsAtRenderFromDurableRecord(t *testing.T) {
+	t.Parallel()
 	// The enqueued notification carries no output; the excerpt must be fetched
 	// from the durable record/output at render time (the durable-replay path).
 	sess, adapter := newNotificationExcerptSession(t)
@@ -781,6 +798,7 @@ func TestTerminalNotificationExcerptReReadsAtRenderFromDurableRecord(t *testing.
 }
 
 func TestTerminalNotificationWatchBranchesUnaffectedByExcerpt(t *testing.T) {
+	t.Parallel()
 	// Watch-send token block: no excerpt.
 	sendBlock := formatJobNotificationBlock(func() jobNotification {
 		n := watchSendTokenNotification("", jobstore.WatchSendState{
@@ -803,6 +821,7 @@ func TestTerminalNotificationWatchBranchesUnaffectedByExcerpt(t *testing.T) {
 }
 
 func TestJobNotificationFromRecordUsesNotificationProvenance(t *testing.T) {
+	t.Parallel()
 	jobProv := provenance.WithWatch(nil, "watch_job", "wg_1", "wd_job", "session_1", "caller")
 	notificationProv := provenance.WithWatch(nil, "watch_note", "wg_1", "wd_note", "session_1", "caller")
 	n := jobNotificationFromRecord(&jobstore.JobRecord{
@@ -821,6 +840,7 @@ func TestJobNotificationFromRecordUsesNotificationProvenance(t *testing.T) {
 }
 
 func TestJobNotificationFromRecordFallsBackToJobProvenance(t *testing.T) {
+	t.Parallel()
 	jobProv := provenance.WithWatch(nil, "watch_job", "wg_1", "wd_job", "session_1", "caller")
 	n := jobNotificationFromRecord(&jobstore.JobRecord{
 		JobID:      "job_A",
@@ -834,6 +854,7 @@ func TestJobNotificationFromRecordFallsBackToJobProvenance(t *testing.T) {
 }
 
 func TestFormatWatchSendNotificationBlock(t *testing.T) {
+	t.Parallel()
 	n := watchSendTokenNotification("", jobstore.WatchSendState{
 		Key:           jobstore.WatchSendKey{ResolvedWatchedIdentity: "job_w", ResolvedSendTo: "caller"},
 		DeliveryID:    "dlv_1",

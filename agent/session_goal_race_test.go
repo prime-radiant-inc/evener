@@ -22,6 +22,7 @@ import (
 // is in one of its legal states (no goal, active, complete, or blocked) and that
 // nothing panicked or deadlocked.
 func TestGoal_NoRaceSetClearVsGate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	// Each turn finishes immediately via the result tool, so the ProcessInput
