@@ -117,7 +117,7 @@ git commit -m "test(agent): add public responses continuation phase 12 live harn
 - Create: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-12a-public.md`
 - Modify: `docs/superpowers/plans/2026-06-24-responses-continuation-phase-12-public-live-proof.md`
 
-- [ ] **Step 1: Run live proof command**
+- [x] **Step 1: Run live proof command**
 
 Run only with explicit credentials:
 
@@ -125,10 +125,10 @@ Run only with explicit credentials:
 set -a
 . ../../.env
 set +a
-SERF_OPENAI_RESPONSES_PHASE12_E2E=1 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof' -count=1 -v
+SERF_LOG_RAW_HTTP=1 SERF_OPENAI_RESPONSES_PHASE12_E2E=1 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof' -count=1 -v
 ```
 
-- [ ] **Step 2: Record proof artifact**
+- [x] **Step 2: Record proof artifact**
 
 The proof must include:
 

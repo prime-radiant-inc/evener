@@ -527,6 +527,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 
 	r := fromResponses(raw, req.Model)
+	a.stampResponseIDHash(&r)
 	llm.StampEndpointURL(&r, a.responsesURL())
 	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
 	if llm.RawBodyEnabled() {
@@ -534,6 +535,20 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		r.RawResponseBody = string(rawBytes)
 	}
 	return r, nil
+}
+
+func (a *Adapter) stampResponseIDHash(resp *llm.Response) {
+	if a == nil || resp == nil || a.ContinuationHasher == nil || strings.TrimSpace(resp.ID) == "" {
+		return
+	}
+	idHash, err := a.ContinuationHasher.HashContinuationHandle("response_id", resp.ID)
+	if err != nil {
+		return
+	}
+	if resp.Raw == nil {
+		resp.Raw = map[string]any{}
+	}
+	resp.Raw["id_hash"] = idHash
 }
 
 func (a *Adapter) completeViaStream(ctx context.Context, req llm.Request) (llm.Response, error) {

@@ -478,6 +478,7 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 				rawResp = payload
 			}
 			r := fromResponses(rawResp, req.Model)
+			a.stampResponseIDHash(&r)
 			llm.StampEndpointURL(&r, a.responsesURL())
 			// Ensure text segment is closed.
 			if textStarted {

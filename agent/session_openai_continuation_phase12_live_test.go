@@ -14,6 +14,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providers/openai"
@@ -92,7 +93,7 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 
 	deltaReq, ok := capture.firstRequestWithHistoryMode(llm.HistoryModeResponsesDelta)
 	if !ok {
-		t.Fatalf("captured requests did not include responses_delta: %+v", capture.historyModes())
+		t.Fatalf("captured requests did not include responses_delta: requests=%+v assistant_metadata=%+v", capture.requestSummaries(), phase12AssistantMetadataSummaries(sess.history))
 	}
 	if strings.TrimSpace(deltaReq.PreviousResponseID) == "" {
 		t.Fatal("delta request missing PreviousResponseID")
@@ -186,10 +187,19 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 	if len(deltaRaw.RequestBody) >= len(shadowRaw.RequestBody) {
 		t.Fatalf("delta raw request bytes = %d, want smaller than full-history shadow bytes %d", len(deltaRaw.RequestBody), len(shadowRaw.RequestBody))
 	}
-	t.Logf("phase12_public_live model=%s delta_bytes=%d full_history_shadow_bytes=%d provider_input_tokens=%d full_history_shadow_tokens=%d",
+	omittedInputItemBytes := phase12OmittedInputItemBytes(t, shadowRaw.RequestBody, deltaRaw.RequestBody)
+	continuationOverheadBytes := phase12ContinuationOverheadBytes(t, deltaRaw.RequestBody)
+	netBodyByteSaving := len(shadowRaw.RequestBody) - len(deltaRaw.RequestBody)
+	if omittedInputItemBytes <= continuationOverheadBytes {
+		t.Fatalf("omitted input item bytes = %d, want greater than continuation overhead bytes %d", omittedInputItemBytes, continuationOverheadBytes)
+	}
+	t.Logf("phase12_public_live model=%s delta_bytes=%d full_history_shadow_bytes=%d omitted_input_item_bytes=%d continuation_overhead_bytes=%d net_body_byte_saving=%d provider_input_tokens=%d full_history_shadow_tokens=%d",
 		model,
 		len(deltaRaw.RequestBody),
 		len(shadowRaw.RequestBody),
+		omittedInputItemBytes,
+		continuationOverheadBytes,
+		netBodyByteSaving,
 		providerInputTokens,
 		deltaCall.FullHistoryInputTokensEstimate,
 	)
@@ -211,6 +221,10 @@ func (a *phase12PublicOpenAIAdapter) Complete(ctx context.Context, req llm.Reque
 func (a *phase12PublicOpenAIAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	a.record(req)
 	return a.inner.Stream(ctx, req)
+}
+
+func (a *phase12PublicOpenAIAdapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+	return a.inner.PlanResponsesContinuation(req)
 }
 
 func (a *phase12PublicOpenAIAdapter) record(req llm.Request) {
@@ -240,6 +254,20 @@ func (a *phase12PublicOpenAIAdapter) historyModes() []llm.HistoryMode {
 	return modes
 }
 
+func (a *phase12PublicOpenAIAdapter) requestSummaries() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	summaries := make([]string, 0, len(a.reqs))
+	for _, req := range a.reqs {
+		diag := req.ContinuationDiagnostic
+		if diag == "" && req.Continuation != nil {
+			diag = req.Continuation.EndpointFamily + "/" + req.Continuation.StoragePolicyLabel
+		}
+		summaries = append(summaries, string(req.HistoryMode)+":"+diag)
+	}
+	return summaries
+}
+
 func phase12CloneRequest(req llm.Request) llm.Request {
 	out := req
 	out.Messages = append([]llm.Message(nil), req.Messages...)
@@ -249,6 +277,31 @@ func phase12CloneRequest(req llm.Request) llm.Request {
 		out.Store = &store
 	}
 	return out
+}
+
+func phase12AssistantMetadataSummaries(history []schema.Turn) []string {
+	summaries := []string{}
+	for _, turn := range history {
+		if turn.Kind != schema.TurnAssistant {
+			continue
+		}
+		summaries = append(summaries,
+			"response_hash="+emptyMarker(turn.ResponseIDHash)+
+				" endpoint="+emptyMarker(turn.ResponseEndpoint)+
+				" request_fp="+emptyMarker(turn.ResponseRequestFingerprint)+
+				" storage_fp="+emptyMarker(turn.ResponseStorageScopeFingerprint)+
+				" context="+emptyMarker(turn.ResponseContextMarker)+
+				" request_model="+emptyMarker(turn.ResponseRequestModel),
+		)
+	}
+	return summaries
+}
+
+func emptyMarker(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "<empty>"
+	}
+	return value
 }
 
 func phase12ReadRawLogEntries(t *testing.T, path string) []llm.APIRawLogEntry {
@@ -261,6 +314,7 @@ func phase12ReadRawLogEntries(t *testing.T, path string) []llm.APIRawLogEntry {
 
 	var entries []llm.APIRawLogEntry
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		var entry llm.APIRawLogEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
@@ -294,4 +348,63 @@ func phase12FindRawRequestWithSession(t *testing.T, entries []llm.APIRawLogEntry
 	}
 	t.Fatalf("raw log has no request for session %q; entries=%d", sessionID, len(entries))
 	return llm.APIRawLogEntry{}
+}
+
+func phase12OmittedInputItemBytes(t *testing.T, fullHistoryBody, deltaBody string) int {
+	t.Helper()
+	deltaItems := map[string]int{}
+	for _, item := range phase12InputItemJSON(t, deltaBody) {
+		deltaItems[item]++
+	}
+	total := 0
+	for _, item := range phase12InputItemJSON(t, fullHistoryBody) {
+		if deltaItems[item] > 0 {
+			deltaItems[item]--
+			continue
+		}
+		total += len(item)
+	}
+	return total
+}
+
+func phase12InputItemJSON(t *testing.T, body string) []string {
+	t.Helper()
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		t.Fatalf("parse request body: %v", err)
+	}
+	items, ok := raw["input"].([]any)
+	if !ok {
+		t.Fatalf("request body input is not an array: %#v", raw["input"])
+	}
+	encoded := make([]string, 0, len(items))
+	for _, item := range items {
+		b, err := json.Marshal(item)
+		if err != nil {
+			t.Fatalf("marshal input item: %v", err)
+		}
+		encoded = append(encoded, string(b))
+	}
+	return encoded
+}
+
+func phase12ContinuationOverheadBytes(t *testing.T, body string) int {
+	t.Helper()
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		t.Fatalf("parse request body: %v", err)
+	}
+	if _, ok := raw["previous_response_id"]; !ok {
+		t.Fatalf("request body missing previous_response_id")
+	}
+	withContinuation, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("marshal request body with continuation: %v", err)
+	}
+	delete(raw, "previous_response_id")
+	withoutContinuation, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("marshal request body without continuation: %v", err)
+	}
+	return len(withContinuation) - len(withoutContinuation)
 }

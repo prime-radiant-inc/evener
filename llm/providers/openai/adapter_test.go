@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,7 +45,8 @@ func TestAdapter_Complete_MapsToResponsesAPI(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	hasher := llm.NewContinuationHasher(bytes.Repeat([]byte{12}, 32))
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client(), ContinuationHasher: hasher}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -70,6 +72,13 @@ func TestAdapter_Complete_MapsToResponsesAPI(t *testing.T) {
 	}
 	if strings.TrimSpace(resp.Text()) != "Hello" {
 		t.Fatalf("resp text: %q", resp.Text())
+	}
+	wantIDHash, err := hasher.HashContinuationHandle("response_id", "resp_1")
+	if err != nil {
+		t.Fatalf("HashContinuationHandle: %v", err)
+	}
+	if got, _ := resp.Raw["id_hash"].(string); got != wantIDHash {
+		t.Fatalf("response id_hash = %q, want %q", got, wantIDHash)
 	}
 
 	// Assert request mapping.
@@ -4953,6 +4962,18 @@ func TestAdapter_PlanResponsesContinuation_RequestFingerprintStableForEquivalent
 	}
 	if first != second {
 		t.Fatalf("fingerprints differ for equivalent request bodies:\nfirst:  %s\nsecond: %s", first, second)
+	}
+}
+
+func TestAdapter_PlanResponsesContinuation_RequestFingerprintExcludesInput(t *testing.T) {
+	a := openAIContinuationTestAdapter(defaultResponsesPath)
+	base := openAIContinuationFingerprintRequestForTest()
+	want := openAIContinuationFingerprintForTest(t, a, base)
+
+	req := openAIContinuationFingerprintRequestForTest()
+	req.Messages[1] = llm.User("different turn input")
+	if got := openAIContinuationFingerprintForTest(t, a, req); got != want {
+		t.Fatalf("fingerprint changed for input-only request change:\nwant: %s\ngot:  %s", want, got)
 	}
 }
 

@@ -31,6 +31,7 @@ func requestFingerprintForResponsesBody(family llm.ResponsesEndpointFamily, body
 
 func responsesRequestFingerprintExcludedFields(family llm.ResponsesEndpointFamily) map[string]bool {
 	excluded := map[string]bool{
+		"input":                true,
 		"previous_response_id": true,
 		"conversation":         true,
 	}
