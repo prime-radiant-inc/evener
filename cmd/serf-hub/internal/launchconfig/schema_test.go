@@ -13,7 +13,7 @@ func TestLaunchOptionSchema_FieldCoverage(t *testing.T) {
 	}
 	want := []string{
 		"agent", "model", "reasoning_effort", "fast_cheap_model",
-		"context_strategy", "max_rounds", "max_subagent_depth",
+		"context_strategy", "openai_responses_continuation", "max_rounds", "max_subagent_depth",
 		"no_project_prompts", "non_interactive", "app_replay_size",
 		"system_prompt_mode", "system_prompt_file", "system_prompt_text",
 		"system_prompt_append_mode", "system_prompt_append_file", "system_prompt_append_text",
@@ -24,6 +24,36 @@ func TestLaunchOptionSchema_FieldCoverage(t *testing.T) {
 	for _, field := range want {
 		if !got[field] {
 			t.Fatalf("schema missing field %q", field)
+		}
+	}
+}
+
+func TestLaunchOptionSchema_OpenAIResponsesContinuation(t *testing.T) {
+	opts := LaunchOptionSchema()
+	idx := indexOption(opts, "openai_responses_continuation")
+	if idx < 0 {
+		t.Fatal("schema missing openai_responses_continuation")
+	}
+	opt := opts[idx]
+	if opt.WireField != "openAIResponsesContinuation" {
+		t.Fatalf("WireField = %q, want openAIResponsesContinuation", opt.WireField)
+	}
+	if opt.Group != LaunchGroupLimits {
+		t.Fatalf("Group = %q, want %q", opt.Group, LaunchGroupLimits)
+	}
+	if opt.Kind != LaunchControlSelect {
+		t.Fatalf("Kind = %q, want %q", opt.Kind, LaunchControlSelect)
+	}
+	if !opt.PerLaunch || opt.DebugOnly {
+		t.Fatalf("PerLaunch/DebugOnly = %v/%v, want true/false", opt.PerLaunch, opt.DebugOnly)
+	}
+	wantChoices := []string{"", "off", "auto"}
+	if len(opt.Choices) != len(wantChoices) {
+		t.Fatalf("Choices = %+v, want values %v", opt.Choices, wantChoices)
+	}
+	for i, want := range wantChoices {
+		if opt.Choices[i].Value != want {
+			t.Fatalf("Choices = %+v, want values %v", opt.Choices, wantChoices)
 		}
 	}
 }

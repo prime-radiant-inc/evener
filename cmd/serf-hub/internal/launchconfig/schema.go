@@ -85,6 +85,7 @@ func LaunchOptionSchema() []LaunchOption {
 		{Field: "reasoning_effort", WireField: "reasoningEffort", Label: "Reasoning effort", Description: "Extended thinking budget for models that support it. Higher effort increases cost and latency.", Group: LaunchGroupModel, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.SERFReasoningEffort.Name}, Choices: reasoningChoices(), DriverSupport: serfOnly},
 		{Field: "fast_cheap_model", WireField: "fastCheapModel", Label: "Fast cheap model", Description: "Lightweight model for quick sub-tasks like file triage. Falls back to the primary model if unset.", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
 		{Field: "context_strategy", WireField: "contextStrategy", Label: "Context strategy", Description: "How serf manages context window pressure. compact prunes aggressively; session-log and ooda use alternative strategies.", Group: LaunchGroupLimits, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: contextChoices(), DriverSupport: serfOnly},
+		{Field: "openai_responses_continuation", WireField: "openAIResponsesContinuation", Label: "OpenAI Responses continuation", Description: "Controls whether eligible OpenAI Responses sessions may use provider-side continuation. off preserves full-history behavior.", Group: LaunchGroupLimits, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: openAIResponsesContinuationChoices(), DriverSupport: serfOnly},
 		{Field: "max_rounds", WireField: "maxRounds", Label: "Max rounds", Description: "Hard cap on the number of model turns per session. The session ends with an error if the limit is reached.", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
 		{Field: "max_subagent_depth", WireField: "maxSubagentDepth", Label: "Max subagent depth", Description: "How many levels of nested subagent spawns are allowed. 0 disables subagents entirely.", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
 		{Field: "no_project_prompts", WireField: "noProjectPrompts", Label: "Suppress .serf/prompts loading", Description: "When true, serf ignores any .serf/prompts directory in the working tree. Useful for sandboxed or audited runs.", Group: LaunchGroupLimits, Kind: LaunchControlBoolean, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: serfOnly},
@@ -120,6 +121,10 @@ func reasoningChoices() []LaunchOptionChoice {
 
 func contextChoices() []LaunchOptionChoice {
 	return []LaunchOptionChoice{{Value: "", Label: "(default)"}, {Value: "compact", Label: "compact"}, {Value: "session-log", Label: "session-log"}, {Value: "ooda", Label: "ooda"}}
+}
+
+func openAIResponsesContinuationChoices() []LaunchOptionChoice {
+	return []LaunchOptionChoice{{Value: "", Label: "(default: off)"}, {Value: "off", Label: "off"}, {Value: "auto", Label: "auto"}}
 }
 
 func systemPromptModeChoices() []LaunchOptionChoice {

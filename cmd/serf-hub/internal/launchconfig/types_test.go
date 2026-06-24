@@ -15,6 +15,7 @@ fast_cheap_model = "openai/gpt-5-mini"
 agent = "default"
 reasoning_effort = "medium"
 context_strategy = "compact"
+openai_responses_continuation = "auto"
 max_rounds = 200
 max_subagent_depth = 1
 no_project_prompts = false
@@ -47,6 +48,9 @@ FOO = "bar"
 	}
 	if got.MaxRounds == nil || *got.MaxRounds != 200 {
 		t.Errorf("MaxRounds = %v, want 200", got.MaxRounds)
+	}
+	if got.OpenAIResponsesContinuation != "auto" {
+		t.Errorf("OpenAIResponsesContinuation = %q, want auto", got.OpenAIResponsesContinuation)
 	}
 	if got.NoProjectPrompts == nil || *got.NoProjectPrompts != false {
 		t.Errorf("NoProjectPrompts = %v, want false set", got.NoProjectPrompts)

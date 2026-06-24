@@ -10,10 +10,10 @@ func ptrInt(v int) *int    { return &v }
 func ptrBool(v bool) *bool { return &v }
 
 func TestMerge_ScalarPrecedence(t *testing.T) {
-	g := Layer{Model: "g-model", FastCheapModel: "g-fast", ReasoningEffort: "low"}
+	g := Layer{Model: "g-model", FastCheapModel: "g-fast", ReasoningEffort: "low", OpenAIResponsesContinuation: "off"}
 	r := Layer{Model: "r-model", FastCheapModel: "r-fast"}
 	p := Layer{}
-	l := Layer{Model: "l-model", FastCheapModel: "l-fast"}
+	l := Layer{Model: "l-model", FastCheapModel: "l-fast", OpenAIResponsesContinuation: "auto"}
 	got, _ := mergeLayers(map[LayerName]Layer{
 		LayerGlobal: g, LayerRepo: r, LayerProject: p, LayerLaunch: l,
 	})
@@ -26,6 +26,9 @@ func TestMerge_ScalarPrecedence(t *testing.T) {
 	if got.Effective.FastCheapModel != "l-fast" {
 		t.Errorf("FastCheapModel = %q, want l-fast (per-launch wins)", got.Effective.FastCheapModel)
 	}
+	if got.Effective.OpenAIResponsesContinuation != "auto" {
+		t.Errorf("OpenAIResponsesContinuation = %q, want auto (per-launch wins)", got.Effective.OpenAIResponsesContinuation)
+	}
 	if got.Provenance["model"] != LayerLaunch {
 		t.Errorf("Provenance[model] = %q, want launch", got.Provenance["model"])
 	}
@@ -34,6 +37,9 @@ func TestMerge_ScalarPrecedence(t *testing.T) {
 	}
 	if got.Provenance["reasoning_effort"] != LayerGlobal {
 		t.Errorf("Provenance[reasoning_effort] = %q, want global", got.Provenance["reasoning_effort"])
+	}
+	if got.Provenance["openai_responses_continuation"] != LayerLaunch {
+		t.Errorf("Provenance[openai_responses_continuation] = %q, want launch", got.Provenance["openai_responses_continuation"])
 	}
 }
 

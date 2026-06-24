@@ -10,36 +10,37 @@ import "time"
 // scalar value fields are pointer-typed so the merge logic can
 // distinguish "not set at this layer" from "explicitly zero."
 type Layer struct {
-	Schema                 int               `toml:"schema,omitempty"`
-	Model                  string            `toml:"model,omitempty"`
-	FastCheapModel         string            `toml:"fast_cheap_model,omitempty"`
-	Agent                  string            `toml:"agent,omitempty"`
-	ReasoningEffort        string            `toml:"reasoning_effort,omitempty"`
-	ContextStrategy        string            `toml:"context_strategy,omitempty"`
-	MaxRounds              *int              `toml:"max_rounds,omitempty"`
-	MaxSubagentDepth       *int              `toml:"max_subagent_depth,omitempty"`
-	NoProjectPrompts       *bool             `toml:"no_project_prompts,omitempty"`
-	NonInteractive         *bool             `toml:"non_interactive,omitempty"`
-	AppReplaySize          *int              `toml:"app_replay_size,omitempty"`
-	SkillsDirs             []string          `toml:"skills_dirs,omitempty"`
-	PluginDirs             []string          `toml:"plugin_dirs,omitempty"`
-	MCPConfigs             []string          `toml:"mcp_configs,omitempty"`
-	SystemPromptMode       string            `toml:"system_prompt_mode,omitempty"`
-	SystemPromptFile       string            `toml:"system_prompt_file,omitempty"`
-	SystemPromptText       string            `toml:"system_prompt_text,omitempty"`
-	SystemPromptAppendMode string            `toml:"system_prompt_append_mode,omitempty"`
-	SystemPromptAppendFile string            `toml:"system_prompt_append_file,omitempty"`
-	SystemPromptAppendText string            `toml:"system_prompt_append_text,omitempty"`
-	SystemPromptAppend     []string          `toml:"system_prompt_append,omitempty"`
-	ModelFallbacks         []string          `toml:"model_fallbacks,omitempty"`
-	ModelFallbacksSet      bool              `toml:"-" json:"-"`
-	MCPs                   []MCPServerSpec   `toml:"mcps,omitempty"`
-	Env                    map[string]string `toml:"env,omitempty"`
-	Verbose                *bool             `toml:"verbose,omitempty"`
-	RawHTTPLogging         *bool             `toml:"raw_http_logging,omitempty"`
-	TraceFile              string            `toml:"trace_file,omitempty"`
-	CPUProfile             string            `toml:"cpu_profile,omitempty"`
-	ExportATIFPath         string            `toml:"export_atif_path,omitempty"`
+	Schema                      int               `toml:"schema,omitempty"`
+	Model                       string            `toml:"model,omitempty"`
+	FastCheapModel              string            `toml:"fast_cheap_model,omitempty"`
+	Agent                       string            `toml:"agent,omitempty"`
+	ReasoningEffort             string            `toml:"reasoning_effort,omitempty"`
+	ContextStrategy             string            `toml:"context_strategy,omitempty"`
+	OpenAIResponsesContinuation string            `toml:"openai_responses_continuation,omitempty"`
+	MaxRounds                   *int              `toml:"max_rounds,omitempty"`
+	MaxSubagentDepth            *int              `toml:"max_subagent_depth,omitempty"`
+	NoProjectPrompts            *bool             `toml:"no_project_prompts,omitempty"`
+	NonInteractive              *bool             `toml:"non_interactive,omitempty"`
+	AppReplaySize               *int              `toml:"app_replay_size,omitempty"`
+	SkillsDirs                  []string          `toml:"skills_dirs,omitempty"`
+	PluginDirs                  []string          `toml:"plugin_dirs,omitempty"`
+	MCPConfigs                  []string          `toml:"mcp_configs,omitempty"`
+	SystemPromptMode            string            `toml:"system_prompt_mode,omitempty"`
+	SystemPromptFile            string            `toml:"system_prompt_file,omitempty"`
+	SystemPromptText            string            `toml:"system_prompt_text,omitempty"`
+	SystemPromptAppendMode      string            `toml:"system_prompt_append_mode,omitempty"`
+	SystemPromptAppendFile      string            `toml:"system_prompt_append_file,omitempty"`
+	SystemPromptAppendText      string            `toml:"system_prompt_append_text,omitempty"`
+	SystemPromptAppend          []string          `toml:"system_prompt_append,omitempty"`
+	ModelFallbacks              []string          `toml:"model_fallbacks,omitempty"`
+	ModelFallbacksSet           bool              `toml:"-" json:"-"`
+	MCPs                        []MCPServerSpec   `toml:"mcps,omitempty"`
+	Env                         map[string]string `toml:"env,omitempty"`
+	Verbose                     *bool             `toml:"verbose,omitempty"`
+	RawHTTPLogging              *bool             `toml:"raw_http_logging,omitempty"`
+	TraceFile                   string            `toml:"trace_file,omitempty"`
+	CPUProfile                  string            `toml:"cpu_profile,omitempty"`
+	ExportATIFPath              string            `toml:"export_atif_path,omitempty"`
 }
 
 // MCPServerSpec describes one MCP server entry. Matches the shape passed

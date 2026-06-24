@@ -30,6 +30,9 @@ func ToArgs(r Resolved) []string {
 	if e.ContextStrategy != "" {
 		add("--context-strategy", e.ContextStrategy)
 	}
+	if e.OpenAIResponsesContinuation != "" {
+		add("--openai-responses-continuation", e.OpenAIResponsesContinuation)
+	}
 	if e.MaxRounds != nil {
 		add("--max-rounds", strconv.Itoa(*e.MaxRounds))
 	}

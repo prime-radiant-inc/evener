@@ -73,6 +73,11 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			prov["context_strategy"] = name
 			nonEmpty = true
 		}
+		if l.OpenAIResponsesContinuation != "" {
+			eff.OpenAIResponsesContinuation = l.OpenAIResponsesContinuation
+			prov["openai_responses_continuation"] = name
+			nonEmpty = true
+		}
 		if l.MaxRounds != nil {
 			v := *l.MaxRounds
 			eff.MaxRounds = &v
