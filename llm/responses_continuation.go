@@ -41,6 +41,7 @@ type ResponsesContinuationDecision struct {
 }
 
 type ContinuationMetadata struct {
+	AttemptIndex            int
 	PreviousResponseIDHash  string
 	ConversationIDHash      string
 	AnchorTurnIndex         int

@@ -43,6 +43,7 @@ func TestBuildAPILogRequest_IncludesContinuationMetadata(t *testing.T) {
 		Messages:    []Message{User("hi")},
 		HistoryMode: HistoryModeResponsesDelta,
 		Continuation: &ContinuationMetadata{
+			AttemptIndex:            1,
 			PreviousResponseIDHash:  "cont-handle-v1:response_id:abc",
 			ConversationIDHash:      "cont-handle-v1:conversation_id:def",
 			AnchorTurnIndex:         3,
@@ -60,14 +61,13 @@ func TestBuildAPILogRequest_IncludesContinuationMetadata(t *testing.T) {
 	if got.HistoryMode != HistoryModeResponsesDelta {
 		t.Fatalf("HistoryMode = %q", got.HistoryMode)
 	}
-	if got.PreviousResponseIDHash != "cont-handle-v1:response_id:abc" {
-		t.Fatalf("PreviousResponseIDHash = %q", got.PreviousResponseIDHash)
-	}
-	if got.ConversationIDHash != "cont-handle-v1:conversation_id:def" {
-		t.Fatalf("ConversationIDHash = %q", got.ConversationIDHash)
-	}
-	if got.AnchorTurnIndex != 3 || got.DeltaTurnCount != 1 || got.ChatFallbackHistoryLen != 7 {
-		t.Fatalf("continuation counters not copied: %+v", got)
+	if got.AttemptIndex != 1 ||
+		got.PreviousResponseIDHash != "cont-handle-v1:response_id:abc" ||
+		got.ConversationIDHash != "cont-handle-v1:conversation_id:def" ||
+		got.AnchorTurnIndex != 3 ||
+		got.DeltaTurnCount != 1 ||
+		got.ChatFallbackHistoryLen != 7 {
+		t.Fatalf("continuation counters/handles not copied: %+v", got)
 	}
 	if got.EndpointFamily != string(ResponsesEndpointFamilyOpenAIPublic) ||
 		got.RequestFingerprint != "cont-req-v1:abc" ||
@@ -109,7 +109,7 @@ func TestAPILogEntry_AttemptFieldsRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.AttemptIndex != 1 || got.AttemptCount != 1 {
+	if got.AttemptIndex != 1 || got.AttemptCount != 1 || got.HistoryMode != HistoryModeFullHistory {
 		t.Fatalf("attempt fields = %+v", got)
 	}
 	if got.FinalAttemptCount == nil || *got.FinalAttemptCount != 1 {
