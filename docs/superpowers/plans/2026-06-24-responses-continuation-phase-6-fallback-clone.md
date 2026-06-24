@@ -89,7 +89,7 @@ GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_Strea
 
 Expected: pass.
 
-- [ ] **Step 4: Commit implementation**
+- [x] **Step 4: Commit implementation**
 
 ```sh
 git status --short
@@ -105,18 +105,18 @@ git commit -m "feat(openai): clone full history for chat fallback"
 - Create: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-6.md`
 - Modify: `docs/superpowers/plans/2026-06-24-responses-continuation-phase-6-fallback-clone.md`
 
-- [ ] **Step 1: Add proof artifact**
+- [x] **Step 1: Add proof artifact**
 
 Record RED, GREEN, `git diff --check`, and the fact that real-session delta selection remains unchanged.
 
-- [ ] **Step 2: Run verification**
+- [x] **Step 2: Run verification**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_Stream_Records.*FallbackAttempts|TestStream_ResponsesAPI_404_FallsBackToChatCompletions|TestAdapter_Stream_StampsEndpointURL_ChatCompletionsFallback' -count=1 -v
 git diff --check
 ```
 
-- [ ] **Step 3: Commit proof**
+- [x] **Step 3: Commit proof**
 
 ```sh
 git add docs/superpowers/plans/2026-06-24-responses-continuation-phase-6-fallback-clone.md docs/superpowers/proofs/2026-06-24-responses-continuation-phase-6.md
