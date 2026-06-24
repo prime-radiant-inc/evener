@@ -71,7 +71,8 @@ func TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory(t *testing.T
 	})
 
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir: dir,
+		StateDir:                    dir,
+		OpenAIResponsesContinuation: "auto",
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

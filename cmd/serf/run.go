@@ -195,8 +195,9 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 	if meta != nil {
 		sess, err = agent.RestoreSessionFromMetaWithConfig(client, profile, env, *meta, agent.RestoreSessionConfig{
-			StateDir:       stateDir,
-			ResolveProfile: baseSessionCfg.ResolveProfile,
+			StateDir:                    stateDir,
+			ResolveProfile:              baseSessionCfg.ResolveProfile,
+			OpenAIResponsesContinuation: strings.TrimSpace(cfg.openAIResponsesContinuation),
 		})
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)

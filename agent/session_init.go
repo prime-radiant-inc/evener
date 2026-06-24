@@ -245,14 +245,15 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 // persisted session. Persisted fields still come from SessionMeta.Config; this
 // struct layers non-serialized values such as StateDir and ResolveProfile.
 type RestoreSessionConfig struct {
-	StateDir                string
-	ResolveProfile          func(ref string) (*provider.Profile, error)
-	ModelFallbacks          []string
-	LLMRetryPolicy          *llm.RetryPolicy
-	LLMSleep                llm.SleepFunc
-	spawn                   spawnConfig
-	resumeHistory           []schema.Turn
-	deferRestoreSideEffects bool
+	StateDir                    string
+	ResolveProfile              func(ref string) (*provider.Profile, error)
+	ModelFallbacks              []string
+	OpenAIResponsesContinuation string
+	LLMRetryPolicy              *llm.RetryPolicy
+	LLMSleep                    llm.SleepFunc
+	spawn                       spawnConfig
+	resumeHistory               []schema.Turn
+	deferRestoreSideEffects     bool
 }
 
 // RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
@@ -273,6 +274,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	if restoreCfg.ModelFallbacks != nil {
 		cfg.ModelFallbacks = append([]string(nil), restoreCfg.ModelFallbacks...)
+	}
+	if strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation) != "" {
+		cfg.OpenAIResponsesContinuation = strings.TrimSpace(restoreCfg.OpenAIResponsesContinuation)
 	}
 	cfg.LLMRetryPolicy = restoreCfg.LLMRetryPolicy
 	cfg.LLMSleep = restoreCfg.LLMSleep

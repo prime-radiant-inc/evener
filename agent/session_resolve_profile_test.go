@@ -206,6 +206,45 @@ func TestRestoreSessionFromMetaWithConfig_LayersModelFallbacks(t *testing.T) {
 	}
 }
 
+func TestRestoreSessionFromMetaWithConfig_LayersOpenAIResponsesContinuation(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	tests := []struct {
+		name      string
+		persisted string
+		override  string
+		want      string
+	}{
+		{name: "global auto overrides persisted off", persisted: "off", override: "auto", want: "auto"},
+		{name: "global off overrides persisted auto", persisted: "auto", override: "off", want: "off"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			meta := schema.SessionMeta{
+				ID:        "01JRESTORECONTINUATION000000001",
+				ProfileID: "openai",
+				Model:     "gpt-5.4",
+				Config: (SessionConfig{
+					OpenAIResponsesContinuation: tc.persisted,
+				}).toSnapshot(),
+			}
+			sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
+				StateDir:                    dir,
+				OpenAIResponsesContinuation: tc.override,
+			})
+			if err != nil {
+				t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+			}
+			defer sess.Close()
+			if got := sess.Meta().Config.OpenAIResponsesContinuation; got != tc.want {
+				t.Fatalf("OpenAIResponsesContinuation = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestSetModel_SameProvider_WithResolver_UsesWithModel verifies that a
 // same-provider SetModel ("openai/gpt-4.1") uses the WithModel path
 // (not the resolver) even when a resolver is present.

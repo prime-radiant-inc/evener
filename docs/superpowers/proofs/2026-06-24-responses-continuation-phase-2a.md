@@ -15,6 +15,7 @@ Runtime continuation remains disabled. This phase does not send `previous_respon
 - `GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/launchconfig -run '^(TestLaunchOptionSchema|TestMerge_ScalarPrecedence|TestLayerTOMLRoundTrip|TestFromWire|TestToWire|TestToArgs_AllFields)$' -count=1 -v`
 - `GOCACHE=/tmp/serf-gocache go test ./cmd/serf-tui/internal/launchconfig -run '^(TestApplyEdit_NewSchemaFields|TestLaunchSettingsPanel_UsesSchemaRowsWhenAvailable)$' -count=1 -v`
 - `GOCACHE=/tmp/serf-gocache go test ./cmd/serf-tui/internal/launchconfig -run '^TestSchemaRows' -count=1 -v`
+- `GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestRestoreSessionFromMetaWithConfig_LayersOpenAIResponsesContinuation|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory' -count=1 -v`
 - `git diff --check`
 
 ## Contracts Proven
@@ -23,4 +24,6 @@ Runtime continuation remains disabled. This phase does not send `previous_respon
 - Direct CLI and `serf serve` compile with `--openai-responses-continuation`.
 - Hub launch config merges, serializes, deserializes, and projects the setting to `--openai-responses-continuation auto`.
 - TUI launch settings display and edit the setting through the schema-driven rows.
+- Resumed sessions layer launch-time restore overrides over persisted snapshots, including persisted `off` overridden to `auto` and persisted `auto` overridden to `off`.
+- Configured `auto` still sends full-history OpenAI Responses requests with no `previous_response_id` and explicit `store:false` while the default endpoint support registry is disabled.
 - Default empty value remains equivalent to off until later runtime phases consume it.

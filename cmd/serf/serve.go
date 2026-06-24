@@ -227,9 +227,10 @@ func runServe(args []string) error {
 	var sess *agent.Session
 	if resuming {
 		sess, err = agent.RestoreSessionFromMetaWithConfig(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
-			StateDir:       sd,
-			ResolveProfile: sessionCfg.ResolveProfile,
-			ModelFallbacks: sessionCfg.ModelFallbacks,
+			StateDir:                    sd,
+			ResolveProfile:              sessionCfg.ResolveProfile,
+			ModelFallbacks:              sessionCfg.ModelFallbacks,
+			OpenAIResponsesContinuation: strings.TrimSpace(*openAIResponsesContinuation),
 		})
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)
