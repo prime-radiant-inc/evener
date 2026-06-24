@@ -62,6 +62,23 @@ type AuthScopeIdentity struct {
 	WorkspaceHash  string
 }
 
+type ContinuationStorageScope struct {
+	Fingerprint        string
+	HashVersion        string
+	Provider           string
+	EndpointFamily     string
+	BaseURL            string
+	Path               string
+	AuthSource         string
+	OrgIDHash          string
+	ProjectIDHash      string
+	AccountHash        string
+	WorkspaceHash      string
+	CredentialHash     string
+	ConversationIDHash string
+	StoragePolicy      string
+}
+
 type ResponsesContinuationPlanInput struct {
 	EndpointFamily    ResponsesEndpointFamily
 	AuthScopeIdentity AuthScopeIdentity
@@ -76,6 +93,7 @@ type ResponsesContinuationPlan struct {
 	OrgIDHash                  string
 	ProjectIDHash              string
 	RequestFingerprint         string
+	StorageScope               ContinuationStorageScope
 	StorageScopeFingerprint    string
 	StoragePolicyLabel         string
 	ContinuationStorageAllowed bool

@@ -117,7 +117,7 @@ Update `(*Adapter).PlanResponsesContinuation` to call the helper with the alread
 - Modify: `llm/continuation_secret.go`
 - Modify: `llm/continuation_secret_test.go`
 
-- [ ] **Step 1: Add failing pure storage-scope tests**
+- [x] **Step 1: Add failing pure storage-scope tests**
 
 Add a `ContinuationStorageScope` value type:
 
@@ -156,7 +156,7 @@ GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestContinuationStorageScope|TestC
 
 Expected: FAIL because the type and hash helper do not exist.
 
-- [ ] **Step 2: Implement storage scope HMAC helper**
+- [x] **Step 2: Implement storage scope HMAC helper**
 
 Add an exported method:
 

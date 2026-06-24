@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,8 @@ import (
 )
 
 var ErrContinuationSecretUnavailable = errors.New("continuation secret unavailable")
+
+const ContinuationScopeHashVersion = "cont-scope-v1"
 
 type ContinuationHasher struct {
 	redactionKey []byte
@@ -45,7 +48,32 @@ func (h *ContinuationHasher) HashContinuationScopeValue(kind, value string) (str
 	if !validContinuationScopeKind(kind) {
 		return "", fmt.Errorf("%w: unknown scope kind %q", ErrContinuationSecretUnavailable, kind)
 	}
-	return versionedContinuationHMAC("cont-scope-v1", kind, h.scopeKey, value), nil
+	return versionedContinuationHMAC(ContinuationScopeHashVersion, kind, h.scopeKey, value), nil
+}
+
+func (h *ContinuationHasher) HashContinuationStorageScope(scope ContinuationStorageScope) (string, error) {
+	if h == nil {
+		return "", fmt.Errorf("%w: missing continuation hasher", ErrContinuationSecretUnavailable)
+	}
+	input := continuationStorageScopeFingerprintInput{
+		Provider:           strings.TrimSpace(scope.Provider),
+		EndpointFamily:     strings.TrimSpace(scope.EndpointFamily),
+		BaseURL:            strings.TrimSpace(scope.BaseURL),
+		Path:               strings.TrimSpace(scope.Path),
+		AuthSource:         strings.TrimSpace(scope.AuthSource),
+		OrgIDHash:          strings.TrimSpace(scope.OrgIDHash),
+		ProjectIDHash:      strings.TrimSpace(scope.ProjectIDHash),
+		AccountHash:        strings.TrimSpace(scope.AccountHash),
+		WorkspaceHash:      strings.TrimSpace(scope.WorkspaceHash),
+		CredentialHash:     strings.TrimSpace(scope.CredentialHash),
+		ConversationIDHash: strings.TrimSpace(scope.ConversationIDHash),
+		StoragePolicy:      strings.TrimSpace(scope.StoragePolicy),
+	}
+	b, err := json.Marshal(input)
+	if err != nil {
+		return "", fmt.Errorf("%w: marshal storage scope: %v", ErrContinuationSecretUnavailable, err)
+	}
+	return versionedContinuationHMAC(ContinuationScopeHashVersion, "storage_scope", h.scopeKey, string(b)), nil
 }
 
 func ContinuationSecretPath(stateDir string) string {
@@ -115,6 +143,21 @@ func deriveContinuationSubkey(secret []byte, label string) []byte {
 	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte(label)) //nolint:errcheck
 	return mac.Sum(nil)
+}
+
+type continuationStorageScopeFingerprintInput struct {
+	Provider           string `json:"provider,omitempty"`
+	EndpointFamily     string `json:"endpoint_family,omitempty"`
+	BaseURL            string `json:"base_url,omitempty"`
+	Path               string `json:"path,omitempty"`
+	AuthSource         string `json:"auth_source,omitempty"`
+	OrgIDHash          string `json:"org_id_hash,omitempty"`
+	ProjectIDHash      string `json:"project_id_hash,omitempty"`
+	AccountHash        string `json:"account_hash,omitempty"`
+	WorkspaceHash      string `json:"workspace_hash,omitempty"`
+	CredentialHash     string `json:"credential_hash,omitempty"`
+	ConversationIDHash string `json:"conversation_id_hash,omitempty"`
+	StoragePolicy      string `json:"storage_policy,omitempty"`
 }
 
 func versionedContinuationHMAC(prefix, kind string, key []byte, value string) string {

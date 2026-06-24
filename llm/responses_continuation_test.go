@@ -204,6 +204,23 @@ func TestPlanResponsesContinuationCopiesSanitizedScopeOnly(t *testing.T) {
 	}
 }
 
+func TestContinuationStorageScopeDoesNotExposeRawScopeFields(t *testing.T) {
+	typ := reflect.TypeOf(ContinuationStorageScope{})
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Name
+		for _, sensitive := range []string{"APIKey", "Bearer", "Token", "Raw"} {
+			if strings.Contains(name, sensitive) {
+				t.Fatalf("storage scope field %s exposes raw/sensitive scope data", name)
+			}
+		}
+		for _, identifier := range []string{"OrgID", "ProjectID", "Account", "Workspace", "Credential", "ConversationID"} {
+			if strings.Contains(name, identifier) && !strings.HasSuffix(name, "Hash") {
+				t.Fatalf("storage scope field %s exposes raw %s instead of a hash", name, identifier)
+			}
+		}
+	}
+}
+
 func enabledResponsesContinuationSupport() ResponsesContinuationSupport {
 	return ResponsesContinuationSupport{
 		EndpointFamily:        ResponsesEndpointFamilyOpenAIPublic,

@@ -117,6 +117,92 @@ func TestContinuationScopeHashUsesSeparateSubkey(t *testing.T) {
 	}
 }
 
+func TestContinuationHasher_StorageScopeFingerprintFormatStabilityAndSecret(t *testing.T) {
+	hasher := NewContinuationHasher(bytes.Repeat([]byte{8}, 32))
+	scope := continuationStorageScopeForTest()
+
+	first, err := hasher.HashContinuationStorageScope(scope)
+	if err != nil {
+		t.Fatalf("HashContinuationStorageScope: %v", err)
+	}
+	second, err := hasher.HashContinuationStorageScope(scope)
+	if err != nil {
+		t.Fatalf("second HashContinuationStorageScope: %v", err)
+	}
+	if first != second {
+		t.Fatalf("storage scope fingerprint changed: %q vs %q", first, second)
+	}
+	if !strings.HasPrefix(first, "cont-scope-v1:storage_scope:") {
+		t.Fatalf("storage scope fingerprint = %q, want cont-scope-v1:storage_scope prefix", first)
+	}
+
+	handleHash, err := hasher.HashContinuationHandle("conversation_id", "conversation-hash")
+	if err != nil {
+		t.Fatalf("HashContinuationHandle: %v", err)
+	}
+	if first == handleHash {
+		t.Fatalf("storage scope fingerprint must not use provider-handle redaction hash")
+	}
+
+	otherHasher := NewContinuationHasher(bytes.Repeat([]byte{9}, 32))
+	other, err := otherHasher.HashContinuationStorageScope(scope)
+	if err != nil {
+		t.Fatalf("other HashContinuationStorageScope: %v", err)
+	}
+	if other == first {
+		t.Fatalf("storage scope fingerprint did not change after root secret changed: %s", first)
+	}
+}
+
+func TestContinuationHasher_StorageScopeFingerprintChangesForScopeFields(t *testing.T) {
+	hasher := NewContinuationHasher(bytes.Repeat([]byte{8}, 32))
+	base := continuationStorageScopeForTest()
+	wantDifferentFrom, err := hasher.HashContinuationStorageScope(base)
+	if err != nil {
+		t.Fatalf("HashContinuationStorageScope: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		edit func(*ContinuationStorageScope)
+	}{
+		{name: "provider", edit: func(s *ContinuationStorageScope) { s.Provider = "other" }},
+		{name: "endpoint family", edit: func(s *ContinuationStorageScope) { s.EndpointFamily = "openai_codex" }},
+		{name: "base url", edit: func(s *ContinuationStorageScope) { s.BaseURL = "https://proxy.example.com" }},
+		{name: "path", edit: func(s *ContinuationStorageScope) { s.Path = "/other/responses" }},
+		{name: "auth source", edit: func(s *ContinuationStorageScope) { s.AuthSource = "oauth" }},
+		{name: "org hash", edit: func(s *ContinuationStorageScope) { s.OrgIDHash = "cont-scope-v1:org_id:other" }},
+		{name: "project hash", edit: func(s *ContinuationStorageScope) { s.ProjectIDHash = "cont-scope-v1:project_id:other" }},
+		{name: "account hash", edit: func(s *ContinuationStorageScope) { s.AccountHash = "cont-scope-v1:account:other" }},
+		{name: "workspace hash", edit: func(s *ContinuationStorageScope) { s.WorkspaceHash = "cont-scope-v1:workspace:other" }},
+		{name: "credential hash", edit: func(s *ContinuationStorageScope) { s.CredentialHash = "cont-scope-v1:credential:other" }},
+		{name: "conversation hash", edit: func(s *ContinuationStorageScope) { s.ConversationIDHash = "cont-scope-v1:conversation_id:other" }},
+		{name: "storage policy", edit: func(s *ContinuationStorageScope) { s.StoragePolicy = "public-openai-no-store" }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			scope := continuationStorageScopeForTest()
+			tc.edit(&scope)
+			got, err := hasher.HashContinuationStorageScope(scope)
+			if err != nil {
+				t.Fatalf("HashContinuationStorageScope: %v", err)
+			}
+			if got == wantDifferentFrom {
+				t.Fatalf("storage scope fingerprint did not change for %s: %s", tc.name, got)
+			}
+		})
+	}
+}
+
+func TestContinuationHasher_StorageScopeFingerprintRequiresHasher(t *testing.T) {
+	var hasher *ContinuationHasher
+	_, err := hasher.HashContinuationStorageScope(continuationStorageScopeForTest())
+	if !errors.Is(err, ErrContinuationSecretUnavailable) {
+		t.Fatalf("error = %v, want ErrContinuationSecretUnavailable", err)
+	}
+}
+
 func TestContinuationHashDoesNotLeakRawValue(t *testing.T) {
 	hasher := NewContinuationHasher(bytes.Repeat([]byte{9}, 32))
 	raw := "resp_sensitive_handle"
@@ -164,5 +250,23 @@ func TestContinuationHasherForStateDirLoadsSecret(t *testing.T) {
 	}
 	if _, err := os.Stat(ContinuationSecretPath(stateDir)); err != nil {
 		t.Fatalf("secret was not persisted: %v", err)
+	}
+}
+
+func continuationStorageScopeForTest() ContinuationStorageScope {
+	return ContinuationStorageScope{
+		HashVersion:        "cont-scope-v1",
+		Provider:           "openai",
+		EndpointFamily:     "openai_public",
+		BaseURL:            "https://api.openai.com",
+		Path:               "/v1/responses",
+		AuthSource:         "api_key",
+		OrgIDHash:          "cont-scope-v1:org_id:abc",
+		ProjectIDHash:      "cont-scope-v1:project_id:def",
+		AccountHash:        "cont-scope-v1:account:ghi",
+		WorkspaceHash:      "cont-scope-v1:workspace:jkl",
+		CredentialHash:     "cont-scope-v1:credential:mno",
+		ConversationIDHash: "cont-scope-v1:conversation_id:pqr",
+		StoragePolicy:      "public-openai-store",
 	}
 }
