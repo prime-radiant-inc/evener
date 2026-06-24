@@ -72,7 +72,11 @@ func run() error {
 // exported symbol that names a serf-internal type. Empty result means clean.
 func findLeaks() ([]string, error) {
 	cfg := &packages.Config{
-		Mode: packages.NeedName | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports,
+		// NeedDeps and NeedTypesInfo are intentionally omitted: the walk only
+		// inspects root package scopes and reads each referenced *types.Named's
+		// Obj().Pkg().Path() to detect "/internal/", which dependency export
+		// data (resolved by NeedTypes) already provides.
+		Mode: packages.NeedName | packages.NeedTypes | packages.NeedImports,
 	}
 	pkgs, err := packages.Load(cfg, libraryPackages...)
 	if err != nil {

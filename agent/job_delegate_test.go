@@ -2778,6 +2778,7 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			c := llm.NewClient()
 			adapter := &fakeAdapter{name: "openai"}
 			c.Register(adapter)

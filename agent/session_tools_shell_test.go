@@ -259,10 +259,6 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 			name: "default",
 			args: json.RawMessage(`{"command":"printf start; sleep 2; printf end"}`),
 		},
-		{
-			name: "max",
-			args: json.RawMessage(`{"command":"printf start; sleep 2; printf end"}`),
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{

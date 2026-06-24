@@ -316,7 +316,11 @@ func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
 	base := time.Now().UTC()
 	runningStartedAt := base.Add(-time.Hour)
 	const runningJobID = "job_running_old"
-	if err := sess.jobManager.store.Append(jobstore.Event{
+
+	// Build every event up front and append it as one batch so the store fsyncs
+	// once instead of ~105 times. AppendBatch assigns contiguous Seq in slice
+	// order, identical to sequential Append, so Fold/sort order is unchanged.
+	events := []jobstore.Event{{
 		Kind:             jobstore.EventJobStarted,
 		TS:               runningStartedAt,
 		JobID:            runningJobID,
@@ -325,15 +329,13 @@ func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
 		OwnerSessionID:   sess.ID(),
 		VisibleToSession: sess.ID(),
 		StartedAt:        &runningStartedAt,
-	}); err != nil {
-		t.Fatalf("append running job: %v", err)
-	}
+	}}
 
 	for i := 0; i < detailedStatusTerminalJobsLimit+2; i++ {
 		startedAt := base.Add(time.Duration(i) * time.Second)
 		endedAt := startedAt.Add(time.Second)
 		jobID := fmt.Sprintf("job_terminal_%02d", i)
-		if err := sess.jobManager.store.Append(jobstore.Event{
+		events = append(events, jobstore.Event{
 			Kind:             jobstore.EventJobStarted,
 			TS:               startedAt,
 			JobID:            jobID,
@@ -342,10 +344,7 @@ func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
 			OwnerSessionID:   sess.ID(),
 			VisibleToSession: sess.ID(),
 			StartedAt:        &startedAt,
-		}); err != nil {
-			t.Fatalf("append started %s: %v", jobID, err)
-		}
-		if err := sess.jobManager.store.Append(jobstore.Event{
+		}, jobstore.Event{
 			Kind:        jobstore.EventJobFinished,
 			TS:          endedAt,
 			JobID:       jobID,
@@ -353,9 +352,11 @@ func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
 			Reason:      "exit_zero",
 			EndedAt:     &endedAt,
 			OutputBytes: int64(i),
-		}); err != nil {
-			t.Fatalf("append finished %s: %v", jobID, err)
-		}
+		})
+	}
+
+	if err := sess.jobManager.store.AppendBatch(events); err != nil {
+		t.Fatalf("append job events: %v", err)
 	}
 
 	ds := sess.DetailedStatus()

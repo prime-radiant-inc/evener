@@ -1651,6 +1651,7 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			c := llm.NewClient()
 			c.Register(&fakeAdapter{name: "openai"})
 			s := newDelegateRestorePreflightSession(t, c)
@@ -2161,7 +2162,7 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 1; echo 'WATCH_OUTPUT_TOKEN_ONCE'; sleep 1","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 0.3; echo 'WATCH_OUTPUT_TOKEN_ONCE'; sleep 0.3","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)

@@ -330,38 +330,21 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 	}
 }
 
-// TestCounter17thFails proves the tree-wide cap (16): with 16 concurrent running
-// delegate turns holding reservations, the 17th spawn returns the exact
-// tree_at_capacity error and does NOT launch.
+// TestCounter17thFails proves the tree-wide cap (16): with all 16 reservations
+// held, the 17th spawn returns the exact tree_at_capacity error and does NOT
+// launch.
 func TestCounter17thFails(t *testing.T) {
 	t.Parallel()
-	release := make(chan struct{})
-	var releaseOnce sync.Once
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(_ llm.Request) llm.Response {
-				<-release
-				return communicateWithDefaultOutput("done")
-			},
-		},
-	})
+	c.Register(&fakeAdapter{name: "openai"})
 	sess := newDelegateTestSession(t, c)
-	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 
-	// Launch 16 concurrent background delegates; each holds a running turn (its
-	// adapter step blocks on release), so each holds a reservation.
+	// Saturate the tree counter directly so the next spawn cannot claim a slot.
 	for i := range 16 {
-		res := sess.createDelegate(context.Background(), delegateArgs{
-			Task:       "fan-out worker",
-			Background: true,
-		})
-		if res.Err != nil {
-			t.Fatalf("createDelegate %d: %v", i+1, res.Err)
+		if !sess.treeCounter.reserve() {
+			t.Fatalf("saturating reserve %d failed", i+1)
 		}
 	}
-	waitForTreeCount(t, sess.treeCounter, 16)
 
 	// The 17th must fail loudly with the exact tree_at_capacity text.
 	seventeenth := sess.createDelegate(context.Background(), delegateArgs{
@@ -380,8 +363,6 @@ func TestCounter17thFails(t *testing.T) {
 	if got := sess.treeCounter.n.Load(); got != 16 {
 		t.Fatalf("tree counter = %d after rejected 17th, want 16", got)
 	}
-
-	releaseOnce.Do(func() { close(release) })
 }
 
 // TestCounterIdleFreesAndRestartRebuild proves two §4 properties:

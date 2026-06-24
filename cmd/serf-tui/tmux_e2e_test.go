@@ -30,6 +30,11 @@ const tuiE2EProjectDir = "/tmp/serf-tui-e2e/serf"
 // suite runs concurrently and CPU is oversubscribed.
 const tuiE2EWaitTimeout = 60 * time.Second
 
+// tuiE2EPollInterval is how often WaitFor re-checks the rendered pane. Small
+// so render-driven round-trips aren't rounded up; capture-pane is ~2.6ms so
+// this does not oversubscribe CPU under the 6-way session cap.
+var tuiE2EPollInterval = 10 * time.Millisecond
+
 // tmuxSessionCounter makes tmux session names unique even when parallel tests
 // start within the same nanosecond.
 var tmuxSessionCounter atomic.Int64
@@ -1064,7 +1069,7 @@ func (a *tmuxTUI) WaitFor(wants ...string) string {
 		if ok {
 			return screen
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(tuiE2EPollInterval)
 	}
 	a.t.Fatalf("timed out waiting for %q\nvisible pane:\n%s\nrecent history:\n%s", wants, screen, a.CaptureHistory())
 	return ""
@@ -1095,7 +1100,7 @@ func (a *tmuxTUI) WaitForExit() {
 		if err := exec.Command("tmux", "has-session", "-t", a.session).Run(); err != nil {
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(tuiE2EPollInterval)
 	}
 	a.t.Fatalf("tmux session did not exit\nvisible pane:\n%s\nrecent history:\n%s", a.Capture(), a.CaptureHistory())
 }

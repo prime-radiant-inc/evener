@@ -284,6 +284,12 @@ func TestTranscriptWriter_ConcurrentAppend(t *testing.T) {
 	}
 	defer w.Close()
 
+	// Batch fsync so 100 concurrent appends don't each pay durability cost.
+	// Close() flushes; read-back goes through the page cache while the writer
+	// is open, so the line-count/JSON/seq assertions (mutex-serialized
+	// write+seq, not fsync durability) are unaffected.
+	w.SyncInterval = time.Hour
+
 	const numGoroutines = 10
 	const turnsPerGoroutine = 10
 
