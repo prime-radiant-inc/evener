@@ -286,7 +286,7 @@ git commit -m "feat(agent): compute responses continuation shadow estimates"
 - Modify: `agent/session_openai_continuation_phase10_test.go`
 - Modify: `agent/session_model_call.go`
 
-- [ ] **Step 1: Add RED unavailable-shadow test**
+- [x] **Step 1: Add unavailable-shadow proof test**
 
 Add:
 
@@ -349,15 +349,15 @@ func TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHist
 }
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run focused test**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHistory' -count=1 -v
 ```
 
-Expected: fail until planning short-circuits on unavailable shadow estimates.
+Observed: passed after Task 2 because the short-circuit was implemented with the estimate helper.
 
-- [ ] **Step 3: Implement short-circuit**
+- [x] **Step 3: Implement short-circuit**
 
 In `applyResponsesContinuationAnchorPlanning`, before calling `PlanResponsesContinuation`, add:
 
@@ -370,7 +370,7 @@ if req.ContinuationDiagnostic == "continuation_shadow_estimate_unavailable" {
 
 Ensure `PreviousResponseID`, `ConversationID`, `Continuation`, and `FullHistoryFallbackMessages` are empty on that request.
 
-- [ ] **Step 4: Run focused test**
+- [x] **Step 4: Run focused test**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase10ShadowUnavailableUsesFullHistory' -count=1 -v
@@ -378,7 +378,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesConti
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git status --short
