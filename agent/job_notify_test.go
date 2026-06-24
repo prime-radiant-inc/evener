@@ -525,7 +525,11 @@ func TestJobNotificationRetryResetDoesNotCancelPendingRetry(t *testing.T) {
 
 	sess.requeueJobNotifications([]jobNotification{{JobID: "job_X"}})
 	sess.resetJobNotificationRetry()
-	time.Sleep(50 * time.Millisecond)
+	waitForCondition(t, 3*time.Second, "pending retry timer to fire and advance the delay", func() bool {
+		sess.pendingJobNotifsMu.Lock()
+		defer sess.pendingJobNotifsMu.Unlock()
+		return !sess.jobNotifyRetry.active && sess.jobNotifyRetry.delay == 20*time.Millisecond
+	})
 
 	sess.pendingJobNotifsMu.Lock()
 	delay := sess.jobNotifyRetry.delay

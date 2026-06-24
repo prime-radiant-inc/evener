@@ -158,7 +158,9 @@ func TestDriveDownDeafCoordinator(t *testing.T) {
 	// Allow time for the async drive turn to run: notify → parent drives the
 	// coordinator → coordinator's EntryNotification turn drains both worker
 	// notifications and makes its model request within this window.
-	time.Sleep(100 * time.Millisecond)
+	waitForCondition(t, 3*time.Second, "coordinator's model to receive its notification turn", func() bool {
+		return len(adapter.Requests()) >= 2
+	})
 
 	// === ASSERTION 1 — parent drives the coordinator (RED today) ===
 	//
@@ -356,7 +358,22 @@ func TestDriveAtDepth3WithIdleMiddle(t *testing.T) {
 	midSess.notify()
 
 	// Allow the recursive drive cascade to run: root → mid → grandchild.
-	time.Sleep(300 * time.Millisecond)
+	waitForCondition(t, 6*time.Second, "both mid-job and gc-job notifications to reach the model", func() bool {
+		foundMid := false
+		foundGC := false
+		for _, req := range adapter.Requests() {
+			for _, msg := range req.Messages {
+				text := msg.Text()
+				if strings.Contains(text, "mid-job") {
+					foundMid = true
+				}
+				if strings.Contains(text, "gc-job") {
+					foundGC = true
+				}
+			}
+		}
+		return foundMid && foundGC
+	})
 
 	reqs := adapter.Requests()
 	foundMidJob := false
@@ -454,7 +471,16 @@ func TestMidOwnerCallerFramesRenderMidSide(t *testing.T) {
 	// on the pending-watch-send signal.
 	midSess.notify()
 
-	time.Sleep(300 * time.Millisecond)
+	waitForCondition(t, 6*time.Second, "the mid's caller watch-send frame to reach the mid's model turn", func() bool {
+		for _, req := range adapter.Requests() {
+			for _, msg := range req.Messages {
+				if strings.Contains(msg.Text(), "delivery_restore_pending") {
+					return true
+				}
+			}
+		}
+		return false
+	})
 
 	// === ASSERTION 1 — the caller frame reaches the mid's own model turn. ===
 	foundFrame := false
