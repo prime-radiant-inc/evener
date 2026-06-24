@@ -25,7 +25,22 @@ func TestAdapter_E2E_PublicResponsesContinuationDiscovery(t *testing.T) {
 	if model == "" {
 		model = "gpt-5.2"
 	}
-	runResponsesContinuationDiscovery(t, &Adapter{APIKey: apiKey}, model, "public_openai", true)
+	runResponsesContinuationDiscovery(t, publicResponsesContinuationDiscoveryAdapter(apiKey), model, "public_openai", true)
+}
+
+func TestPublicResponsesContinuationDiscoveryAdapterUsesPublicResponsesDefaults(t *testing.T) {
+	a := publicResponsesContinuationDiscoveryAdapter("sk-test")
+	if got, want := a.responsesURL(), defaultAPIBaseURL+defaultResponsesPath; got != want {
+		t.Fatalf("responsesURL() = %q, want %q", got, want)
+	}
+}
+
+func publicResponsesContinuationDiscoveryAdapter(apiKey string) *Adapter {
+	return &Adapter{
+		APIKey:        apiKey,
+		BaseURL:       defaultAPIBaseURL,
+		ResponsesPath: defaultResponsesPath,
+	}
 }
 
 func TestAdapter_E2E_CodexResponsesContinuationDiscovery(t *testing.T) {
