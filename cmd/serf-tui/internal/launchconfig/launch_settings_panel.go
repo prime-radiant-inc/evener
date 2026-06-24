@@ -222,6 +222,7 @@ func layerRows(l appwire.LaunchConfigLayer) []layerRow {
 		{"agent", "agent", l.Agent, l.Agent, false},
 		{"reasoning_effort", "reasoning_effort", l.ReasoningEffort, l.ReasoningEffort, false},
 		{"context_strategy", "context_strategy", l.ContextStrategy, l.ContextStrategy, false},
+		{"openai_responses_continuation", "openai_responses_continuation", l.OpenAIResponsesContinuation, l.OpenAIResponsesContinuation, false},
 		{"max_rounds", "max_rounds", ptrIntStr(l.MaxRounds), ptrIntStr(l.MaxRounds), false},
 		{"max_subagent_depth", "max_subagent_depth", ptrIntStr(l.MaxSubagentDepth), ptrIntStr(l.MaxSubagentDepth), false},
 		{"no_project_prompts", "no_project_prompts", ptrBoolStr(l.NoProjectPrompts), ptrBoolStr(l.NoProjectPrompts), false},
@@ -331,6 +332,8 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 		layer.ReasoningEffort = strings.TrimSpace(value)
 	case "context_strategy":
 		layer.ContextStrategy = strings.TrimSpace(value)
+	case "openai_responses_continuation":
+		layer.OpenAIResponsesContinuation = strings.TrimSpace(value)
 	case "max_rounds":
 		v, err := parseOptionalInt(value)
 		if err != nil {

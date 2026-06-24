@@ -11,7 +11,7 @@ func TestSchemaRows_SettingsFiltersDefaultableLayerAndKeepsOrder(t *testing.T) {
 	schema := testLaunchSchema()
 	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{Agent: "serf", ReasoningEffort: "high", FastCheapModel: "mini"}, launchLayerProject, launchSchemaRowsSettings)
 	fields := rowFields(rows)
-	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "system_prompt_file", "mcps", "verbose", "raw_http_logging"}
+	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "system_prompt_file", "mcps", "verbose", "raw_http_logging"}
 	if !reflect.DeepEqual(fields, want) {
 		t.Fatalf("fields=%v, want %v", fields, want)
 	}
@@ -21,7 +21,7 @@ func TestSchemaRows_OverrideFiltersPerLaunch(t *testing.T) {
 	schema := testLaunchSchema()
 	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{}, launchLayerLaunch, launchSchemaRowsOverride)
 	fields := rowFields(rows)
-	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "system_prompt_file", "mcps", "verbose", "raw_http_logging"}
+	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "system_prompt_file", "mcps", "verbose", "raw_http_logging"}
 	if !reflect.DeepEqual(fields, want) {
 		t.Fatalf("fields=%v, want %v", fields, want)
 	}
@@ -84,6 +84,19 @@ func TestSchemaRows_RawHTTPLoggingUsesBooleanDisplay(t *testing.T) {
 	}
 }
 
+func TestSchemaRows_OpenAIResponsesContinuationUsesStringDisplay(t *testing.T) {
+	schema := []appwire.LaunchOption{
+		{Field: "openai_responses_continuation", Label: "OpenAI Responses continuation", Kind: "select", DefaultableLayers: []string{"global"}, PerLaunch: true},
+	}
+	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{OpenAIResponsesContinuation: "auto"}, launchLayerGlobal, launchSchemaRowsSettings)
+	if len(rows) != 1 {
+		t.Fatalf("rows=%+v, want one openai_responses_continuation row", rows)
+	}
+	if rows[0].value != "auto" || rows[0].editValue != "auto" {
+		t.Fatalf("row=%+v, want auto display", rows[0])
+	}
+}
+
 func rowFields(rows []layerRow) []string {
 	fields := make([]string, 0, len(rows))
 	for _, row := range rows {
@@ -100,6 +113,7 @@ func testLaunchSchema() []appwire.LaunchOption {
 		{Field: "model", Label: "Model", Kind: "modelPicker", DefaultableLayers: defaultable, PerLaunch: true},
 		{Field: "reasoning_effort", Label: "Reasoning effort", Kind: "select", DefaultableLayers: defaultable, PerLaunch: true},
 		{Field: "fast_cheap_model", Label: "Fast cheap model", Kind: "modelPicker", DefaultableLayers: defaultable, PerLaunch: true},
+		{Field: "openai_responses_continuation", Label: "OpenAI Responses continuation", Kind: "select", DefaultableLayers: defaultable, PerLaunch: true},
 		{Field: "app_replay_size", Label: "App replay size", Kind: "integer", DefaultableLayers: []string{"global"}, PerLaunch: false},
 		{Field: "system_prompt_file", Label: "System prompt file", Kind: "path", PathKind: "file", DefaultableLayers: defaultable, PerLaunch: true},
 		{Field: "mcps", Label: "MCP servers", Kind: "mcpServerList", DefaultableLayers: defaultable, PerLaunch: true},
