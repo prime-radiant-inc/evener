@@ -1,12 +1,42 @@
 package transcript
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
 	"primeradiant.com/serf/appwire"
 )
+
+func TestReducerGroupedUseSkillActivationDoesNotCreateSystemDuplicate(t *testing.T) {
+	thread := appwire.Thread{Turns: []appwire.Turn{{
+		ID:     "turn_1",
+		Status: appwire.TurnStatusCompleted,
+		Items: []appwire.ThreadItem{{
+			Type:          "commandExecution",
+			ID:            "tool_1",
+			TurnID:        "turn_1",
+			ToolName:      "use_skill",
+			CallID:        "call_skill",
+			ArgumentsJSON: `{"skill_name":"superpowers:using-superpowers"}`,
+			Output:        "Skill loaded",
+			Status:        appwire.TurnStatusCompleted,
+			Raw:           json.RawMessage(`{"skill_activation":{"name":"superpowers:using-superpowers","text":"Activated skill: superpowers:using-superpowers"}}`),
+		}},
+	}}}
+
+	messages := MessagesFromThread(thread)
+	if len(messages) != 1 {
+		t.Fatalf("messages len=%d, want 1: %+v", len(messages), messages)
+	}
+	if messages[0].Kind != MsgTool || messages[0].Tool == nil || messages[0].Tool.Name != "use_skill" {
+		t.Fatalf("message should be one use_skill tool: %+v", messages[0])
+	}
+	if messages[0].Tool.Raw == "" {
+		t.Fatalf("grouped raw metadata should be carried for TUI renderers")
+	}
+}
 
 func TestHubTranscriptReducerReconcilesUserEchoWithReplay(t *testing.T) {
 	reducer := NewTranscriptReducer([]ChatMessage{{Kind: MsgUser, Text: "please inspect this"}}, nil, nil)

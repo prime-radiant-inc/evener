@@ -22,6 +22,7 @@ type ToolCallInfo struct {
 	Description string // compact one-liner header
 	Detail      string // rich multi-line body shown when expanded
 	RawArgs     string // raw JSON arguments string; preferred over Description for arg parsing
+	Raw         string // raw JSON metadata from appwire ThreadItem.Raw
 	Output      string
 	Error       string
 	Duration    time.Duration
