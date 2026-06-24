@@ -36,6 +36,7 @@ func writeSkillMD(t *testing.T, dir, name, content string) {
 }
 
 func TestDiscoverSkills_FindsSkillsDir(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -60,6 +61,7 @@ func TestDiscoverSkills_FindsSkillsDir(t *testing.T) {
 }
 
 func TestDiscoverSkills_DeeperShadows(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -87,6 +89,7 @@ func TestDiscoverSkills_DeeperShadows(t *testing.T) {
 }
 
 func TestDiscoverSkills_NoSkillsDir(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -99,6 +102,7 @@ func TestDiscoverSkills_NoSkillsDir(t *testing.T) {
 }
 
 func TestDiscoverSkills_MissingName(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -114,6 +118,7 @@ func TestDiscoverSkills_MissingName(t *testing.T) {
 }
 
 func TestDiscoverSkills_MissingDescription(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -129,6 +134,7 @@ func TestDiscoverSkills_MissingDescription(t *testing.T) {
 }
 
 func TestLoadSkillBody_ReturnsBody(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -152,6 +158,7 @@ func TestLoadSkillBody_ReturnsBody(t *testing.T) {
 }
 
 func TestDiscoverSkills_AllowedTools(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -173,6 +180,7 @@ func TestDiscoverSkills_AllowedTools(t *testing.T) {
 }
 
 func TestDiscoverSkills_ExtraDirs(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -193,6 +201,7 @@ func TestDiscoverSkills_ExtraDirs(t *testing.T) {
 }
 
 func TestDiscoverSkills_ExtraDirShadows(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -214,6 +223,7 @@ func TestDiscoverSkills_ExtraDirShadows(t *testing.T) {
 }
 
 func TestDiscoverSkills_ExtraDirMissing(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -232,6 +242,7 @@ func TestDiscoverSkills_ExtraDirMissing(t *testing.T) {
 }
 
 func TestDiscoverSkills_MultipleSkills(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 

@@ -74,7 +74,22 @@ type jobManager struct {
 	// persisting watch-send intent; they never deliver (spec §3).
 	wake func()
 	now  func() time.Time
+	// closeGrace bounds how long closeRuntimeState waits for each still-running
+	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
+	// construction so tests can shrink the graceful-shutdown window.
+	closeGrace time.Duration
+	// quietWindow and quietCheckInterval govern the delegate quiet watchdog.
+	// Seeded from the package defaults at construction; per-manager so tests can
+	// scale them on their own jobManager without mutating a shared global that
+	// concurrently-running watchdogs would race on.
+	quietWindow        time.Duration
+	quietCheckInterval time.Duration
 }
+
+// defaultCloseGrace is the graceful-shutdown window closeRuntimeState gives a
+// still-running job to finalize before abandoning it. Tests override it to keep
+// teardown of jobs that never naturally terminate from costing real seconds.
+var defaultCloseGrace = 5 * time.Second
 
 func (jm *jobManager) setParentJobID(jobID string) {
 	jm.mu.Lock()
@@ -308,18 +323,21 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 		return nil, err
 	}
 	jm := &jobManager{
-		dir:           dir,
-		stateDir:      stateDir,
-		sessionID:     sessionID,
-		transcriptRef: encodeRef("", sessionID),
-		store:         store,
-		running:       make(map[string]*runningJob),
-		watches:       make(map[watchKey]*watchConfig),
-		lastFedOffset: make(map[string]int64),
-		appendEvent:   store.Append,
-		appendEvents:  store.AppendBatch,
-		enqueue:       enqueue,
-		now:           time.Now,
+		dir:                dir,
+		stateDir:           stateDir,
+		sessionID:          sessionID,
+		transcriptRef:      encodeRef("", sessionID),
+		store:              store,
+		running:            make(map[string]*runningJob),
+		watches:            make(map[watchKey]*watchConfig),
+		lastFedOffset:      make(map[string]int64),
+		appendEvent:        store.Append,
+		appendEvents:       store.AppendBatch,
+		enqueue:            enqueue,
+		now:                time.Now,
+		closeGrace:         defaultCloseGrace,
+		quietWindow:        delegateQuietWindow,
+		quietCheckInterval: delegateQuietCheckInterval,
 	}
 	if err := jm.restoreWatchSendPending(); err != nil {
 		_ = store.Close()
@@ -391,7 +409,7 @@ func (jm *jobManager) closeRuntimeState() error {
 			run.signal()
 		}
 	}
-	deadline := time.NewTimer(5 * time.Second)
+	deadline := time.NewTimer(jm.closeGrace)
 	defer deadline.Stop()
 	var waitErr error
 waitLoop:

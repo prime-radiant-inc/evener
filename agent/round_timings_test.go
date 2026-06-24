@@ -56,6 +56,7 @@ func shellToolCall(id string) llm.ToolCallData {
 }
 
 func TestRoundTimings_Emitted(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -132,6 +133,7 @@ func TestRoundTimings_Emitted(t *testing.T) {
 }
 
 func TestRoundTimings_SerializesToJSON(t *testing.T) {
+	t.Parallel()
 	rt := events.RoundTimings{
 		Round:        3,
 		SystemPrompt: 5 * time.Millisecond,

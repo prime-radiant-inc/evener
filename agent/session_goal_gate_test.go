@@ -67,6 +67,7 @@ func lastGoalEnded(t *testing.T, evs []events.SessionEvent) events.GoalEndedData
 // armGoalContinuation returns ("", false) and the gate emits one
 // EventGoalEnded{Status:"complete"}.
 func TestArmGoalContinuation(t *testing.T) {
+	t.Parallel()
 	sess, stop := newGateSession(t)
 
 	store := sess.getOrCreateGoalStore()
@@ -103,6 +104,7 @@ func TestArmGoalContinuation(t *testing.T) {
 // turn, NoProgressLimit consecutive no-progress continuations flip it to blocked
 // with StopReason "no progress" and emit exactly one EventGoalEnded.
 func TestArmGoalContinuationNoProgressBlocks(t *testing.T) {
+	t.Parallel()
 	sess, stop := newGateSession(t)
 
 	store := sess.getOrCreateGoalStore()
@@ -149,6 +151,7 @@ func TestArmGoalContinuationNoProgressBlocks(t *testing.T) {
 // no-progress breaker is the sole automatic stop, so a progressing goal never
 // terminates on its own. Iterations keep incrementing for display/persistence.
 func TestArmGoalContinuationNoIterationCap(t *testing.T) {
+	t.Parallel()
 	sess, stop := newGateSession(t)
 	defer stop()
 
@@ -183,6 +186,7 @@ func TestArmGoalContinuationNoIterationCap(t *testing.T) {
 // queuedInputDrainContext classifies as a genuine user interrupt leaves the goal
 // active and emits no EventGoalEnded.
 func TestTerminateGoalOnErrorClassification(t *testing.T) {
+	t.Parallel()
 	// userInterruptCtx constructs a context exactly as production does for a
 	// genuine user /interrupt: a marked, cancelled turn context. Paired with a
 	// bare context.Canceled error, queuedInputDrainContext reports ok=true.
@@ -250,6 +254,7 @@ func TestTerminateGoalOnErrorClassification(t *testing.T) {
 // GoalTurnMaxRounds; a config already <= the cap is left untouched; user-input
 // turns are never clamped.
 func TestRoundCapSelection(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		cfg  int

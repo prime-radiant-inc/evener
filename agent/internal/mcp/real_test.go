@@ -14,6 +14,14 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// The everything server does not exit on stdin-EOF, so each manager teardown
+// would otherwise pay the SDK's full 5s terminate timer before SIGTERM. Shrink
+// it for tests; the server is being killed anyway and assertions run before
+// Close. (Production keeps the SDK default — commandTerminateDuration stays 0.)
+func init() {
+	commandTerminateDuration = 200 * time.Millisecond
+}
+
 func requireNpx(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("npx"); err != nil {
@@ -44,6 +52,7 @@ func newEverythingManager(t *testing.T) *Manager {
 }
 
 func TestRealMCP_ToolDiscovery(t *testing.T) {
+	t.Parallel()
 	mgr := newEverythingManager(t)
 
 	defs := mgr.ToolDefinitions()
@@ -85,6 +94,7 @@ func TestRealMCP_ToolDiscovery(t *testing.T) {
 }
 
 func TestRealMCP_Echo(t *testing.T) {
+	t.Parallel()
 	mgr := newEverythingManager(t)
 
 	reg := tool.NewRegistry()
@@ -107,6 +117,7 @@ func TestRealMCP_Echo(t *testing.T) {
 }
 
 func TestRealMCP_GetSum(t *testing.T) {
+	t.Parallel()
 	mgr := newEverythingManager(t)
 
 	reg := tool.NewRegistry()
@@ -129,6 +140,7 @@ func TestRealMCP_GetSum(t *testing.T) {
 }
 
 func TestRealMCP_ImageContent(t *testing.T) {
+	t.Parallel()
 	mgr := newEverythingManager(t)
 
 	reg := tool.NewRegistry()
@@ -160,6 +172,7 @@ func TestRealMCP_ImageContent(t *testing.T) {
 }
 
 func TestRealMCP_EnvPassing(t *testing.T) {
+	t.Parallel()
 	requireNpx(t)
 	// 60s instead of 30s: npx startup is fork+exec heavy and load-sensitive.
 	// These are correctness tests, not perf budgets — give them headroom so
@@ -202,6 +215,7 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 }
 
 func TestRealMCP_AnnotatedMessage(t *testing.T) {
+	t.Parallel()
 	mgr := newEverythingManager(t)
 
 	reg := tool.NewRegistry()

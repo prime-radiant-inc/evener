@@ -40,6 +40,7 @@ func drainWarnings(t *testing.T, sess *Session) []events.WarningData {
 // asserts NewSession completes and Close drains a finite stream — both impossible
 // if the recursion were still present.
 func TestNewSession_InvalidMatcherNotificationHookDoesNotRecurse(t *testing.T) {
+	t.Parallel()
 	dir := writePluginHooks(t, "recur-plugin", `{
 		"hooks": {
 			"Notification": [
@@ -88,6 +89,7 @@ func TestNewSession_InvalidMatcherNotificationHookDoesNotRecurse(t *testing.T) {
 // writes a marker file; the marker must not exist after the session starts,
 // because config diagnostics are emitted via the non-Notification-firing path.
 func TestNewSession_HookConfigWarningDoesNotRunNotificationHook(t *testing.T) {
+	t.Parallel()
 	marker := filepath.Join(t.TempDir(), "notification-ran")
 	dir := writePluginHooks(t, "marker-plugin", `{
 		"hooks": {
@@ -135,6 +137,7 @@ func TestNewSession_HookConfigWarningDoesNotRunNotificationHook(t *testing.T) {
 // runs only once. The hook sleeps briefly so the two runs genuinely overlap, then
 // appends a line; the file must end with exactly two lines.
 func TestEmitWarning_ConcurrentIndependentWarningsEachFireNotificationHook(t *testing.T) {
+	t.Parallel()
 	counter := filepath.Join(t.TempDir(), "ran.log")
 	// The sleep makes the first hook run hold any session-wide guard long enough
 	// for the concurrent second emit to collide with it.
@@ -183,6 +186,7 @@ func TestEmitWarning_ConcurrentIndependentWarningsEachFireNotificationHook(t *te
 // produces exactly one diagnostic warning at session start, regardless of how many
 // dispatches occur, and that the matcher diagnostic names the plugin.
 func TestNewSession_InvalidMatcherWarnsOnce(t *testing.T) {
+	t.Parallel()
 	dir := writePluginHooks(t, "badmatch-plugin", `{
 		"hooks": {
 			"PreToolUse": [
@@ -227,6 +231,7 @@ func TestNewSession_InvalidMatcherWarnsOnce(t *testing.T) {
 // recurse. The hook appends to a counter and prints a systemMessage; firing one
 // warning must run the hook exactly once.
 func TestNotificationHook_SystemMessageOutputDoesNotRecurse(t *testing.T) {
+	t.Parallel()
 	counter := filepath.Join(t.TempDir(), "ran.log")
 	dir := writePluginHooks(t, "notif-sysmsg-plugin", `{
 		"hooks": {

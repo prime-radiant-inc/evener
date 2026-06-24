@@ -99,6 +99,7 @@ func renderSubagentPromptWithAllowanceAndTools(t *testing.T, allowance int, allo
 // delegation + background-jobs sections and is told its allowance; a leaf
 // (allowance 0) child sees the leaf limits block and no delegation text.
 func TestSubagentPromptStatesAllowance(t *testing.T) {
+	t.Parallel()
 	// Allowance > 0: delegation surface present, allowance stated, no "only you".
 	granting := renderSubagentPromptWithAllowance(t, 2)
 	if !strings.Contains(granting, "## Delegation") {
@@ -125,6 +126,7 @@ func TestSubagentPromptStatesAllowance(t *testing.T) {
 }
 
 func TestSubagentPromptUsesDelegateSendForFollowup(t *testing.T) {
+	t.Parallel()
 	prompt := renderSubagentPromptWithAllowance(t, 2)
 	if !strings.Contains(prompt, "delegate_send") {
 		t.Fatalf("delegating subagent prompt should mention delegate_send:\n%s", prompt)
@@ -138,6 +140,7 @@ func TestSubagentPromptUsesDelegateSendForFollowup(t *testing.T) {
 }
 
 func TestSubagentPromptSuppressesDelegationWhenToolsUnavailable(t *testing.T) {
+	t.Parallel()
 	prompt := renderSubagentPromptWithAllowanceAndTools(t, 1, []string{"communicate", "delegate", "job_watch"})
 	if strings.Contains(prompt, "## Delegation") {
 		t.Fatalf("subagent prompt must not contain delegation guidance when delegate tools are unavailable:\n%s", prompt)
@@ -151,6 +154,7 @@ func TestSubagentPromptSuppressesDelegationWhenToolsUnavailable(t *testing.T) {
 }
 
 func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	var childPrompt string
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
@@ -192,6 +196,7 @@ func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 }
 
 func TestAvailableAgentsSection_NoAgents(t *testing.T) {
+	t.Parallel()
 	result := renderAvailableAgentsSectionForTest(t, nil)
 	if result != "" {
 		t.Errorf("expected empty string for nil, got %q", result)
@@ -203,6 +208,7 @@ func TestAvailableAgentsSection_NoAgents(t *testing.T) {
 }
 
 func TestAvailableAgentsSection_WithAgents(t *testing.T) {
+	t.Parallel()
 	agents := map[string]plugin.Agent{
 		"my-plugin:reviewer": {
 			Name:        "reviewer",
@@ -244,6 +250,7 @@ func TestAvailableAgentsSection_WithAgents(t *testing.T) {
 }
 
 func TestAvailableAgentsSection_Sorted(t *testing.T) {
+	t.Parallel()
 	agents := map[string]plugin.Agent{
 		"z-plugin:agent": {Name: "agent", Description: "Z agent", PluginName: "z-plugin"},
 		"a-plugin:agent": {Name: "agent", Description: "A agent", PluginName: "a-plugin"},
@@ -260,6 +267,7 @@ func TestAvailableAgentsSection_Sorted(t *testing.T) {
 }
 
 func TestAvailableAgentsSection_OmitsTopLevelOnlyAgents(t *testing.T) {
+	t.Parallel()
 	agents := map[string]plugin.Agent{
 		"coordinator": {Name: "coordinator", Description: "Delegates to agents", Tools: []string{"read_file", "delegate"}},
 		"reviewer":    {Name: "reviewer", Description: "Reviews work", Tools: []string{"read_file"}},
@@ -282,6 +290,7 @@ func TestAvailableAgentsSection_OmitsTopLevelOnlyAgents(t *testing.T) {
 }
 
 func TestAvailableAgentsSectionSuppressedWhenDelegationSurfaceUnavailable(t *testing.T) {
+	t.Parallel()
 	agents := map[string]plugin.Agent{
 		"reviewer": {Name: "reviewer", Description: "Reviews work", Tools: []string{"read_file"}},
 	}

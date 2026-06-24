@@ -13,6 +13,7 @@ import (
 // on every subsequent turn. Simulates update_goal("complete") followed by three
 // further turn tails.
 func TestGoalTerminalReportEmittedOnce(t *testing.T) {
+	t.Parallel()
 	sess, stop := newGateSession(t)
 	store := sess.getOrCreateGoalStore()
 	store.Set("obj", time.Now())
@@ -34,6 +35,7 @@ func TestGoalTerminalReportEmittedOnce(t *testing.T) {
 // must be kicked at the idle transition rather than stranded active-but-idle until
 // the next user message (spec §7).
 func TestSettleGoalOnIdleKicksWindowGoal(t *testing.T) {
+	t.Parallel()
 	sess, stop := newGateSession(t)
 	defer stop()
 
@@ -62,6 +64,7 @@ func TestSettleGoalOnIdleKicksWindowGoal(t *testing.T) {
 // TestSettleGoalOnIdleNoKickWhenTerminal confirms the idle settle does not kick a
 // goal that already finished (only a fresh active goal set in the window is kicked).
 func TestSettleGoalOnIdleNoKickWhenTerminal(t *testing.T) {
+	t.Parallel()
 	sess, stop := newGateSession(t)
 	defer stop()
 

@@ -3,6 +3,7 @@ package agent
 import "testing"
 
 func TestTranscriptRef_RoundTripLocal(t *testing.T) {
+	t.Parallel()
 	ref := encodeRef("", "01JABC")
 	if ref != "local:01JABC" {
 		t.Fatalf("got %q", ref)
@@ -14,6 +15,7 @@ func TestTranscriptRef_RoundTripLocal(t *testing.T) {
 }
 
 func TestTranscriptRef_RoundTripCrossBucket(t *testing.T) {
+	t.Parallel()
 	ref := encodeRef("a1b2c3d4e5f60718", "01JABC")
 	if ref != "proj:a1b2c3d4e5f60718:01JABC" {
 		t.Fatalf("got %q", ref)
@@ -25,6 +27,7 @@ func TestTranscriptRef_RoundTripCrossBucket(t *testing.T) {
 }
 
 func TestTranscriptRef_RejectsMalformed(t *testing.T) {
+	t.Parallel()
 	for _, bad := range []string{"", "01JABC", "local:", "local:../etc", "proj:onlyonepart", "weird:01J"} {
 		if _, _, err := decodeRef(bad); err == nil {
 			t.Errorf("expected error for %q", bad)

@@ -7,6 +7,7 @@ import (
 )
 
 func TestShellInlineDigestWholeLines(t *testing.T) {
+	t.Parallel()
 	// Lines whose boundaries do not align with the per-side byte budget, so a naive
 	// byte cut would leave a partial line fragment at the head's end / tail's start.
 	var lines []string
@@ -38,6 +39,7 @@ func TestShellInlineDigestWholeLines(t *testing.T) {
 }
 
 func TestAssembleOutputDigest(t *testing.T) {
+	t.Parallel()
 	head := []byte("h1\nh2\n")
 	tail := []byte("t1\nt2\n")
 
@@ -73,6 +75,7 @@ func TestAssembleOutputDigest(t *testing.T) {
 }
 
 func TestFirstLineBytes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		in       string
@@ -98,6 +101,7 @@ func TestFirstLineBytes(t *testing.T) {
 }
 
 func TestLastLineBytes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		in       string

@@ -31,6 +31,7 @@ func realPluginDir(t *testing.T, subpath string) string {
 // ---------- 1. superpowers ----------
 
 func TestRealPlugin_Superpowers_Load(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "superpowers/4.3.0")
 
 	lp, err := plugin.Load(dir)
@@ -57,6 +58,7 @@ func TestRealPlugin_Superpowers_Load(t *testing.T) {
 }
 
 func TestRealPlugin_Superpowers_Skills(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "superpowers/4.3.0")
 
 	lp, err := plugin.Load(dir)
@@ -117,6 +119,7 @@ func TestRealPlugin_Superpowers_Skills(t *testing.T) {
 }
 
 func TestRealPlugin_Superpowers_Agents(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "superpowers/4.3.0")
 
 	lp, err := plugin.Load(dir)
@@ -148,6 +151,7 @@ func TestRealPlugin_Superpowers_Agents(t *testing.T) {
 }
 
 func TestRealPlugin_Superpowers_Hooks(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "superpowers/4.3.0")
 
 	lp, err := plugin.Load(dir)
@@ -190,6 +194,7 @@ func TestRealPlugin_Superpowers_Hooks(t *testing.T) {
 }
 
 func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "superpowers/4.3.0")
 
 	lp, err := plugin.Load(dir)
@@ -234,6 +239,7 @@ func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
 }
 
 func TestRealPlugin_Superpowers_PromptFormatting(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "superpowers/4.3.0")
 
 	lp, err := plugin.Load(dir)
@@ -253,6 +259,7 @@ func TestRealPlugin_Superpowers_PromptFormatting(t *testing.T) {
 // ---------- 2. security-guidance ----------
 
 func TestRealPlugin_SecurityGuidance_Load(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "security-guidance/2cd88e7947b7")
 
 	lp, err := plugin.Load(dir)
@@ -277,6 +284,7 @@ func TestRealPlugin_SecurityGuidance_Load(t *testing.T) {
 }
 
 func TestRealPlugin_SecurityGuidance_Hooks(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "security-guidance/2cd88e7947b7")
 
 	lp, err := plugin.Load(dir)
@@ -316,6 +324,7 @@ func TestRealPlugin_SecurityGuidance_Hooks(t *testing.T) {
 }
 
 func TestRealPlugin_SecurityGuidance_HookMatching(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "security-guidance/2cd88e7947b7")
 
 	lp, err := plugin.Load(dir)
@@ -343,6 +352,7 @@ func TestRealPlugin_SecurityGuidance_HookMatching(t *testing.T) {
 }
 
 func TestRealPlugin_SecurityGuidance_HookExecution(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "security-guidance/2cd88e7947b7")
 
 	lp, err := plugin.Load(dir)
@@ -386,6 +396,7 @@ func TestRealPlugin_SecurityGuidance_HookExecution(t *testing.T) {
 // ---------- 3. code-simplifier ----------
 
 func TestRealPlugin_CodeSimplifier_Load(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "code-simplifier/1.0.0")
 
 	lp, err := plugin.Load(dir)
@@ -425,6 +436,7 @@ func TestRealPlugin_CodeSimplifier_Load(t *testing.T) {
 }
 
 func TestRealPlugin_CodeSimplifier_NoHooks(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "code-simplifier/1.0.0")
 
 	lp, err := plugin.Load(dir)
@@ -445,6 +457,7 @@ func TestRealPlugin_CodeSimplifier_NoHooks(t *testing.T) {
 // ---------- 4. agent-sdk-dev ----------
 
 func TestRealPlugin_AgentSDKDev_Load(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "agent-sdk-dev/2cd88e7947b7")
 
 	lp, err := plugin.Load(dir)
@@ -469,6 +482,7 @@ func TestRealPlugin_AgentSDKDev_Load(t *testing.T) {
 }
 
 func TestRealPlugin_AgentSDKDev_Agents(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "agent-sdk-dev/2cd88e7947b7")
 
 	lp, err := plugin.Load(dir)
@@ -511,6 +525,7 @@ func TestRealPlugin_AgentSDKDev_Agents(t *testing.T) {
 // This tests that plugin.Load returns an appropriate error.
 
 func TestRealPlugin_PluginDev_NoManifest(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "plugin-dev/2cd88e7947b7")
 
 	_, err := plugin.Load(dir)
@@ -525,6 +540,7 @@ func TestRealPlugin_PluginDev_NoManifest(t *testing.T) {
 // ---------- Cross-Plugin Tests ----------
 
 func TestRealPlugin_LoadMultiple(t *testing.T) {
+	t.Parallel()
 	// Load superpowers, security-guidance, code-simplifier, agent-sdk-dev together
 	dirs := []string{
 		realPluginDir(t, "superpowers/4.3.0"),
@@ -555,6 +571,7 @@ func TestRealPlugin_LoadMultiple(t *testing.T) {
 }
 
 func TestRealPlugin_AggregateAgents(t *testing.T) {
+	t.Parallel()
 	dirs := []string{
 		realPluginDir(t, "superpowers/4.3.0"),
 		realPluginDir(t, "code-simplifier/1.0.0"),
@@ -600,6 +617,7 @@ func TestRealPlugin_AggregateAgents(t *testing.T) {
 }
 
 func TestRealPlugin_AggregateHooks(t *testing.T) {
+	t.Parallel()
 	dirs := []string{
 		realPluginDir(t, "superpowers/4.3.0"),
 		realPluginDir(t, "security-guidance/2cd88e7947b7"),
@@ -626,6 +644,7 @@ func TestRealPlugin_AggregateHooks(t *testing.T) {
 }
 
 func TestRealPlugin_AggregateSkills(t *testing.T) {
+	t.Parallel()
 	dirs := []string{
 		realPluginDir(t, "superpowers/4.3.0"),
 		realPluginDir(t, "security-guidance/2cd88e7947b7"),
@@ -657,6 +676,7 @@ func TestRealPlugin_AggregateSkills(t *testing.T) {
 }
 
 func TestRealPlugin_ToolNameMapping_AgentTools(t *testing.T) {
+	t.Parallel()
 	dir := realPluginDir(t, "superpowers/4.3.0")
 
 	lp, err := plugin.Load(dir)
@@ -672,6 +692,7 @@ func TestRealPlugin_ToolNameMapping_AgentTools(t *testing.T) {
 }
 
 func TestRealPlugin_ToolNameMapping_BidirectionalComplete(t *testing.T) {
+	t.Parallel()
 	// Verify all Claude Code tool names map correctly
 	mappings := map[string]string{
 		"Read":         "read_file",
@@ -705,6 +726,7 @@ func TestRealPlugin_ToolNameMapping_BidirectionalComplete(t *testing.T) {
 }
 
 func TestRealPlugin_Settings_NotPresent(t *testing.T) {
+	t.Parallel()
 	workDir := t.TempDir()
 
 	// No settings file exists for any plugin
@@ -718,6 +740,7 @@ func TestRealPlugin_Settings_NotPresent(t *testing.T) {
 }
 
 func TestRealPlugin_Settings_WithFile(t *testing.T) {
+	t.Parallel()
 	workDir := t.TempDir()
 
 	// Create a settings file for the superpowers plugin

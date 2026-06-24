@@ -27,6 +27,7 @@ var sessionPngSig = []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
 // subsequent appendTurn(TurnSteering, ...) produces a message with
 // ContentImage parts (kata t5j6 path 4).
 func TestSession_DrainAsSteer_CarriesImagesIntoSteeringMessage(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
@@ -87,6 +88,7 @@ func TestSession_DrainAsSteer_CarriesImagesIntoSteeringMessage(t *testing.T) {
 }
 
 func TestSession_DrainAsSteerWithInput_AppendsAndDrainsAtomically(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
@@ -132,6 +134,7 @@ func TestSession_DrainAsSteerWithInput_AppendsAndDrainsAtomically(t *testing.T) 
 // when the queue is drained as a fresh turn after the active turn finishes
 // (kata t5j6 path 3).
 func TestSession_Enqueue_DrainCarriesImagesIntoUserTurn(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{

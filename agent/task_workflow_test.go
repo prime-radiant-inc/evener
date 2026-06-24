@@ -11,6 +11,7 @@ import (
 )
 
 func TestFormatTaskList(t *testing.T) {
+	t.Parallel()
 	tasks := []taskpkg.Task{
 		{ID: 1, Type: taskpkg.TaskTypeImplement, Description: "Set up parser", Status: taskpkg.TaskDone},
 		{ID: 2, Type: taskpkg.TaskTypeImplement, Description: "Wire the lexer", Status: taskpkg.TaskInProgress, DependsOn: []int{1}, ReasoningEffort: "high"},
@@ -33,6 +34,7 @@ func TestFormatTaskList(t *testing.T) {
 }
 
 func TestTaskWorkflow_PopulateAndAutoStart(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "workflow-test")
 	store.Load()
@@ -61,6 +63,7 @@ func TestTaskWorkflow_PopulateAndAutoStart(t *testing.T) {
 }
 
 func TestTaskWorkflow_AdvanceSequence(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "advance-test")
 	store.Load()
@@ -91,6 +94,7 @@ func TestTaskWorkflow_AdvanceSequence(t *testing.T) {
 }
 
 func TestTaskWorkflow_ParentTaskInsertion(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "parent-test")
 	store.Load()
@@ -123,6 +127,7 @@ func TestTaskWorkflow_ParentTaskInsertion(t *testing.T) {
 }
 
 func TestTaskWorkflow_AgentDefinitionWithTasks(t *testing.T) {
+	t.Parallel()
 	// Parse a coordinator-like agent definition.
 	input := []byte("---\nname: test-coord\ndescription: \"Test coordinator\"\nmodel: inherit\ntools: [read_file, delegate]\ntasks:\n  - title: Inventory\n    prompt: \"List files\"\n    reasoning_effort: low\n  - title: Plan\n    prompt: \"Analyze task\"\n    reasoning_effort: xhigh\n  - title: Delegate\n    prompt: \"Delegate work\"\n    reasoning_effort: low\n---\n\nYou coordinate.\n")
 
@@ -150,6 +155,7 @@ func TestTaskWorkflow_AgentDefinitionWithTasks(t *testing.T) {
 }
 
 func TestTaskWorkflow_AllTasksComplete(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "complete-test")
 	store.Load()
@@ -175,6 +181,7 @@ func TestTaskWorkflow_AllTasksComplete(t *testing.T) {
 }
 
 func TestTaskWorkflow_ImplementerGetsOwnTasks(t *testing.T) {
+	t.Parallel()
 	// When a coordinator spawns an implementer, the implementer must get
 	// its own task list (Understand, Do the work, Verify, Clean up) —
 	// NOT the coordinator's (Inventory, Plan, Delegate, Verify, Fix, Submit).
@@ -246,6 +253,7 @@ func TestTaskWorkflow_ImplementerGetsOwnTasks(t *testing.T) {
 }
 
 func TestTaskWorkflow_ImplementerGetsOwnRolePrompt(t *testing.T) {
+	t.Parallel()
 	// The implementer's system prompt must say "You implement code" —
 	// NOT "You are a coordinator" or "You delegate, verify, and iterate."
 	agents := coordinatorWorkflowPublicAgentsForTest(t)
@@ -273,6 +281,7 @@ func TestTaskWorkflow_ImplementerGetsOwnRolePrompt(t *testing.T) {
 }
 
 func TestTaskWorkflow_ParentTasksNotClobberedByNewSession(t *testing.T) {
+	t.Parallel()
 	// Regression test: NewSession was calling PopulateFromTemplates(agent.Tasks, nil)
 	// for ALL NonInteractive sessions, including subagents. This populated the
 	// implementer's task store with the parent_tasks placeholder unexpanded.
@@ -317,6 +326,7 @@ func TestTaskWorkflow_ParentTasksNotClobberedByNewSession(t *testing.T) {
 }
 
 func TestTaskWorkflow_RootSessionPopulatesTasks(t *testing.T) {
+	t.Parallel()
 	// Root sessions (no parent) should still get tasks from NewSession.
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -350,6 +360,7 @@ func TestTaskWorkflow_RootSessionPopulatesTasks(t *testing.T) {
 }
 
 func TestTaskWorkflow_DefaultRootSessionDoesNotPopulateTasks(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -375,6 +386,7 @@ func TestTaskWorkflow_DefaultRootSessionDoesNotPopulateTasks(t *testing.T) {
 }
 
 func TestTaskWorkflow_NewSessionPopulatesCorrectTasks(t *testing.T) {
+	t.Parallel()
 	// Simulates what happens when spawnAgent creates a subagent with
 	// AgentName="implementer" and NonInteractive=true. The task store
 	// should get implementer tasks, not coordinator tasks.

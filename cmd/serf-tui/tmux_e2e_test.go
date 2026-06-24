@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,11 +23,46 @@ import (
 )
 
 const tuiE2EProjectDir = "/tmp/serf-tui-e2e/serf"
-const tuiE2EWaitTimeout = 20 * time.Second
+
+// Generous backstop, not a target: WaitFor returns the instant the expected text
+// appears, so a large timeout costs nothing on the happy path. It is sized to
+// tolerate the real-time rendering stalls these tmux+TUI tests see when the full
+// suite runs concurrently and CPU is oversubscribed.
+const tuiE2EWaitTimeout = 60 * time.Second
+
+// tuiE2EPollInterval is how often WaitFor re-checks the rendered pane. Small
+// so render-driven round-trips aren't rounded up; capture-pane is ~2.6ms so
+// this does not oversubscribe CPU under the 6-way session cap.
+var tuiE2EPollInterval = 10 * time.Millisecond
+
+// tmuxSessionCounter makes tmux session names unique even when parallel tests
+// start within the same nanosecond.
+var tmuxSessionCounter atomic.Int64
+
+func uniqueTmuxSessionName() string {
+	return fmt.Sprintf("serf-tui-e2e-%d-%d", time.Now().UnixNano(), tmuxSessionCounter.Add(1))
+}
+
+// tmuxSessionSlots bounds how many tmux+TUI sessions run concurrently. The TUI
+// renders in real time; with every E2E test marked t.Parallel(), too many live
+// sessions at once starve each other's render and (especially) alt-screen exit
+// sequences, intermittently failing timing-sensitive scrollback assertions. The
+// cap keeps most of the parallel speedup while leaving each session enough CPU
+// to render promptly. Only one test opens two sessions, so a cap of 6 cannot
+// deadlock on a single test's acquisitions.
+var tmuxSessionSlots = make(chan struct{}, 6)
+
+// acquireTmuxSlot blocks until a session slot is free and releases it when the
+// test ends.
+func acquireTmuxSlot(t *testing.T) {
+	tmuxSessionSlots <- struct{}{}
+	t.Cleanup(func() { <-tmuxSessionSlots })
+}
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[\x20-\x2f]*[\x40-\x7e]`)
 
 func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -117,6 +154,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 }
 
 func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -149,6 +187,7 @@ func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 }
 
 func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -186,6 +225,7 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 }
 
 func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -207,6 +247,7 @@ func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
 }
 
 func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -231,6 +272,7 @@ func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 }
 
 func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -259,6 +301,7 @@ func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
 }
 
 func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -292,6 +335,7 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 }
 
 func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -419,6 +463,7 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 }
 
 func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	// Browse-mode fork: k/j move the selection cursor across turns (auto-
 	// scrolling to keep it visible) so a user turn can be reached and forked.
@@ -466,6 +511,7 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 }
 
 func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -496,6 +542,7 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 }
 
 func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -565,6 +612,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 }
 
 func TestTUITmuxE2E_SessionCommandPalettePreservesDraft(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -587,6 +635,7 @@ func TestTUITmuxE2E_SessionCommandPalettePreservesDraft(t *testing.T) {
 }
 
 func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -600,6 +649,7 @@ func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
 }
 
 func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -621,6 +671,7 @@ func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
 }
 
 func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -645,6 +696,7 @@ func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 }
 
 func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -666,6 +718,7 @@ func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 }
 
 func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -739,6 +792,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 }
 
 func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -762,6 +816,7 @@ func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 }
 
 func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -785,6 +840,7 @@ func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
 }
 
 func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -864,19 +920,42 @@ func requireTmux(t *testing.T) {
 	}
 }
 
+var (
+	tuiBinaryOnce sync.Once
+	tuiBinaryPath string
+	tuiBinaryErr  error
+)
+
+// buildTUIBinary compiles the serf-tui binary once per test process and returns
+// the shared path. The E2E tests only execute the binary (never mutate it), so a
+// single build is safe — and it avoids ~20 redundant compiles competing for CPU
+// with the latency-sensitive tmux render loop when the suite runs in parallel.
 func buildTUIBinary(t *testing.T) string {
 	t.Helper()
-	repoRoot, err := filepath.Abs("../..")
-	if err != nil {
-		t.Fatalf("resolve repo root: %v", err)
+	tuiBinaryOnce.Do(func() {
+		repoRoot, err := filepath.Abs("../..")
+		if err != nil {
+			tuiBinaryErr = err
+			return
+		}
+		dir, err := os.MkdirTemp("", "serf-tui-e2e-bin-")
+		if err != nil {
+			tuiBinaryErr = err
+			return
+		}
+		bin := filepath.Join(dir, "serf-tui")
+		cmd := exec.Command("go", "build", "-o", bin, "./cmd/serf-tui")
+		cmd.Dir = repoRoot
+		if out, err := cmd.CombinedOutput(); err != nil {
+			tuiBinaryErr = fmt.Errorf("build serf-tui: %v\n%s", err, out)
+			return
+		}
+		tuiBinaryPath = bin
+	})
+	if tuiBinaryErr != nil {
+		t.Fatalf("build serf-tui: %v", tuiBinaryErr)
 	}
-	bin := filepath.Join(t.TempDir(), "serf-tui")
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/serf-tui")
-	cmd.Dir = repoRoot
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build serf-tui: %v\n%s", err, out)
-	}
-	return bin
+	return tuiBinaryPath
 }
 
 type tmuxTUI struct {
@@ -891,7 +970,8 @@ func startTUITmux(t *testing.T, bin, hubURL string) *tmuxTUI {
 
 func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
 	t.Helper()
-	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
+	acquireTmuxSlot(t)
+	session := uniqueTmuxSessionName()
 	command := shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
@@ -903,7 +983,8 @@ func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmu
 
 func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
 	t.Helper()
-	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
+	acquireTmuxSlot(t)
+	session := uniqueTmuxSessionName()
 	command := shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
@@ -988,7 +1069,7 @@ func (a *tmuxTUI) WaitFor(wants ...string) string {
 		if ok {
 			return screen
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(tuiE2EPollInterval)
 	}
 	a.t.Fatalf("timed out waiting for %q\nvisible pane:\n%s\nrecent history:\n%s", wants, screen, a.CaptureHistory())
 	return ""
@@ -1019,7 +1100,7 @@ func (a *tmuxTUI) WaitForExit() {
 		if err := exec.Command("tmux", "has-session", "-t", a.session).Run(); err != nil {
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(tuiE2EPollInterval)
 	}
 	a.t.Fatalf("tmux session did not exit\nvisible pane:\n%s\nrecent history:\n%s", a.Capture(), a.CaptureHistory())
 }

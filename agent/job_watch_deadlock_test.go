@@ -112,12 +112,14 @@ func driveWithWatchdog(t *testing.T, sess *Session) {
 }
 
 func TestCallerSendWatchDoesNotDeadlockOnCommunicateEvents(t *testing.T) {
+	t.Parallel()
 	sess := newCallerSendWatchSession(t, "communicate")
 	driveWithWatchdog(t, sess)
 	assertToolRoundPersisted(t, sess)
 }
 
 func TestCallerSendWatchDoesNotDeadlockOnToolEvents(t *testing.T) {
+	t.Parallel()
 	sess := newCallerSendWatchSession(t, "assistant.tool")
 	driveWithWatchdog(t, sess)
 	assertToolRoundPersisted(t, sess)

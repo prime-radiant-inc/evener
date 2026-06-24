@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -242,6 +243,13 @@ func mcpResultToString(result *mcpsdk.CallToolResult) string {
 	return strings.Join(parts, "\n")
 }
 
+// commandTerminateDuration bounds how long a stdio MCP transport's Close waits
+// for the server to exit (after closing its stdin) before escalating to SIGTERM.
+// Zero means the SDK default (5s). It is the dominant cost of tearing down a
+// stdio server that does not exit promptly on stdin-EOF, so tests shrink it to
+// avoid paying ~5s per server on cleanup.
+var commandTerminateDuration time.Duration
+
 // transportForConfig creates the appropriate MCP transport for a config.
 func transportForConfig(cfg mcpconfig.ServerConfig) (mcpsdk.Transport, error) {
 	switch cfg.Type {
@@ -254,7 +262,7 @@ func transportForConfig(cfg mcpconfig.ServerConfig) (mcpsdk.Transport, error) {
 		if len(cfg.Env) > 0 {
 			cmd.Env = mergeEnv(cfg.Env)
 		}
-		return &mcpsdk.CommandTransport{Command: cmd}, nil
+		return &mcpsdk.CommandTransport{Command: cmd, TerminateDuration: commandTerminateDuration}, nil
 
 	case "sse":
 		if cfg.URL == "" {

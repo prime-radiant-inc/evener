@@ -47,6 +47,7 @@ func (f *fakeEmit) count() int {
 }
 
 func TestSubagentManager_TrackGetRemove(t *testing.T) {
+	t.Parallel()
 	fe := &fakeEmit{}
 	m := newSubagentManager(fe.emit)
 
@@ -76,6 +77,7 @@ func TestSubagentManager_TrackGetRemove(t *testing.T) {
 }
 
 func TestSubagentManager_BeginReconstructionWaitsForPendingBeforePublishedChild(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(nil)
 	childID := "child"
 	published := &subagent{id: childID}
@@ -99,6 +101,7 @@ func TestSubagentManager_BeginReconstructionWaitsForPendingBeforePublishedChild(
 }
 
 func TestSubagentManager_DrainForCloseReturnsAllAndClears(t *testing.T) {
+	t.Parallel()
 	fe := &fakeEmit{}
 	m := newSubagentManager(fe.emit)
 
@@ -141,6 +144,7 @@ func TestSubagentManager_DrainForCloseReturnsAllAndClears(t *testing.T) {
 }
 
 func TestSubagentManager_EmitClosureIsCaptured(t *testing.T) {
+	t.Parallel()
 	fe := &fakeEmit{}
 	m := newSubagentManager(fe.emit)
 	m.emit(events.EventJobStarted, nil)
@@ -201,6 +205,7 @@ func trackSyntheticChild(t *testing.T, sess *Session, id string, status Subagent
 // count would grow; if the error did not name the remedy, the message assertion
 // fails.
 func TestRetention_FailLoudAtCap(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -249,6 +254,7 @@ func TestRetention_FailLoudAtCap(t *testing.T) {
 // the cap; the assertions on the consumed record being gone and the new child being
 // present both break if reclamation is wrong.
 func TestRetention_GCReclaimsConsumedFirst(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -307,6 +313,7 @@ func TestRetention_GCReclaimsConsumedFirst(t *testing.T) {
 // Load-bearing: if close_timed_out records were counted, the count (3) would exceed
 // the cap (2) and the spawn would fail.
 func TestRetention_ClosingDoesNotCountTowardCap(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -343,6 +350,7 @@ func TestRetention_ClosingDoesNotCountTowardCap(t *testing.T) {
 // Load-bearing: if drainForClose left retained records behind, the post-close map
 // would be non-empty.
 func TestParentClose_DrainsAll(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -394,6 +402,7 @@ func TestParentClose_DrainsAll(t *testing.T) {
 // Trigger: one additional spawn drives reserveSlot to evict exactly one slot.
 // Assert: "cls" gone, "cns" still tracked — class priority dominates endedAt order.
 func TestRetention_GCEvictsClosedBeforeConsumed(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -441,6 +450,7 @@ func TestRetention_GCEvictsClosedBeforeConsumed(t *testing.T) {
 // Trigger: one spawn drives reserveSlot to evict exactly one slot.
 // Assert: the older-endedAt record is gone; the newer-endedAt record is retained.
 func TestRetention_GCEvictsOldestWithinClass(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{

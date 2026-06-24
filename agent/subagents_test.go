@@ -34,6 +34,7 @@ func newTestSession(t *testing.T) *Session {
 }
 
 func TestSubagentFollowUpProvenanceUnionsLaunchActiveAndCompleted(t *testing.T) {
+	t.Parallel()
 	child := &Session{state: SessionProcessing}
 	child.replaceActiveProvenance(testProvenance("watch_completed", "wg_1"))
 	child.finishProcessingAtBoundary(context.Background(), SessionIdle)
@@ -50,6 +51,7 @@ func TestSubagentFollowUpProvenanceUnionsLaunchActiveAndCompleted(t *testing.T) 
 }
 
 func TestSubagentRunSnapshotsFinalProvenance(t *testing.T) {
+	t.Parallel()
 	child := newTestSession(t)
 	sub := &subagent{
 		id:      child.ID(),
@@ -112,6 +114,7 @@ func waitForRuntimeSubagent(t *testing.T, sess *Session, agentID string) subagen
 
 // TestResultSnapshot_CurrentShape verifies baseline snapshot fields for a completed subagent.
 func TestResultSnapshot_CurrentShape(t *testing.T) {
+	t.Parallel()
 	a := &subagent{id: "01CHILD", status: SubagentCompleted, result: "done", turnsUsed: 3, sess: newTestSession(t)}
 	snap := a.resultSnapshotLocked()
 	if snap.Status != SubagentCompleted || snap.Output != "done" || !snap.Success || snap.TurnsUsed != 3 {
@@ -125,6 +128,7 @@ func TestResultSnapshot_CurrentShape(t *testing.T) {
 // TestResultSnapshot_CarriesAgentIDAndStatus verifies that agent_id and the run
 // outcome (status) are stamped on the snapshot, and success derives from status.
 func TestResultSnapshot_CarriesAgentIDAndStatus(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		status      SubagentStatus
@@ -149,6 +153,7 @@ func TestResultSnapshot_CarriesAgentIDAndStatus(t *testing.T) {
 
 // TestBlockingSpawn_SnapshotHasAgentID verifies that a blocking spawn result carries agent_id directly from the snapshot.
 func TestDelegateForeground_SnapshotHasJobID(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -190,6 +195,7 @@ func TestDelegateForeground_SnapshotHasJobID(t *testing.T) {
 // the delegate job appears in the event stream, and that it precedes
 // JOB_FINISHED in program order.
 func TestDelegateJobStartedEmittedBeforeJobFinished(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -257,6 +263,7 @@ func TestDelegateJobStartedEmittedBeforeJobFinished(t *testing.T) {
 // TestJobFinishedData_JSONShape verifies JOB_FINISHED carries the job terminal
 // notification fields under the wire keys used by appwire/UI consumers.
 func TestJobFinishedData_JSONShape(t *testing.T) {
+	t.Parallel()
 	code := 0
 	d := events.JobFinishedData{
 		JobID:         "job_X",
@@ -322,6 +329,7 @@ func (a *cancelBlockAdapter) Stream(ctx context.Context, req llm.Request) (llm.S
 // runs to completion. Timing is controlled by the adapter's `blocked` channel and
 // the context cancel — no sleeps.
 func TestCancelAgent_RunningChildBecomesCancelledAndResumable(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	blocked := make(chan struct{})
@@ -391,6 +399,7 @@ func TestCancelAgent_RunningChildBecomesCancelledAndResumable(t *testing.T) {
 // exactly one attempt and returns the injected error verbatim regardless of its
 // retryability class (the loop exits when attempt==maxRetries). No sleeps occur.
 func TestCancelAgent_GenuineFailureRacingCancelStaysFailed(t *testing.T) {
+	t.Parallel()
 	const wantErrMarker = "provider boom 500"
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -442,6 +451,7 @@ func TestCancelAgent_GenuineFailureRacingCancelStaysFailed(t *testing.T) {
 // TestCancelAgent_NotRunning asserts cancelling an idle/terminal child returns the
 // "is not running" error rather than fabricating a cancelled outcome.
 func TestCancelAgent_NotRunning(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	// The child's sess is a distinct session (as in production), so the parent's
 	// teardown closes a different session rather than re-entering its own Close.
@@ -518,6 +528,7 @@ func (a *resumeBlockAdapter) Stream(ctx context.Context, req llm.Request) (llm.S
 // the adapter's second step) so the assertions see the reset state before finalize
 // re-sets the fields. This makes the test fail if either reset line is removed.
 func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -630,6 +641,7 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 // TestSubagentCannotCallRootOnlyControlTools asserts depth>0 subagents keep
 // delegate_send for caller-route messages while root-only controls stay unavailable.
 func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
+	t.Parallel()
 	if len(rootOnlyJobPresenceTools) != 2 || rootOnlyJobPresenceTools[0] != "delegate" || rootOnlyJobPresenceTools[1] != "job_watch" {
 		t.Fatalf("rootOnlyJobPresenceTools = %v, want exactly [delegate job_watch]", rootOnlyJobPresenceTools)
 	}
@@ -688,6 +700,7 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 }
 
 func TestWatchParentChildGetsJobWatchButNotDelegate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -717,6 +730,7 @@ func TestWatchParentChildGetsJobWatchButNotDelegate(t *testing.T) {
 }
 
 func TestWatchParentGrantIsNotInheritedByGrandchild(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -784,6 +798,7 @@ func hasCachedCallableToolDefinition(s *Session, name string) bool {
 // Today this fails with "subagent management is top-level only" because the gate
 // checks depth > 0 instead of checking allowance.
 func TestPrepareSubagentRunAllowsRecursionWithAllowance(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -821,6 +836,7 @@ func TestPrepareSubagentRunAllowsRecursionWithAllowance(t *testing.T) {
 // (spec §1 seam 2). Before the implementation the gate returns the old depth
 // string, not the allowance string, so this test is red today.
 func TestPrepareSubagentRunRejectsZeroAllowance(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -862,6 +878,7 @@ func TestPrepareSubagentRunRejectsZeroAllowance(t *testing.T) {
 // denies delegate and job_watch.
 // Typed cases: allowance NEVER injects tools into a typed agent's surface.
 func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
+	t.Parallel()
 	t.Run("default child with canDelegate=true: delegate and job_watch not denied", func(t *testing.T) {
 		allTools, allowed, denied := baseSubagentToolPolicy(nil, true)
 		if allTools {
@@ -944,6 +961,7 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 // ("delegation_allowance") rather than the old "top-level only" string, so the
 // error is truthful about the actual constraint.
 func TestGrantRejectionAllowanceTruthful(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{

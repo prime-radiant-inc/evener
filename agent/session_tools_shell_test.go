@@ -18,6 +18,7 @@ import (
 )
 
 func TestPaginateDirEntries(t *testing.T) {
+	t.Parallel()
 	entries := []execenv.DirEntry{
 		{Name: "a"}, {Name: "b"}, {Name: "c"}, {Name: "d"}, {Name: "e"},
 	}
@@ -58,6 +59,7 @@ func TestPaginateDirEntries(t *testing.T) {
 }
 
 func TestFormatDirListing(t *testing.T) {
+	t.Parallel()
 	entries := []execenv.DirEntry{
 		{Name: "alpha", Size: 10},
 		{Name: "sub", IsDir: true},
@@ -101,6 +103,7 @@ func TestFormatDirListing(t *testing.T) {
 }
 
 func TestPaginateDirEntriesStaysUnderToolCap(t *testing.T) {
+	t.Parallel()
 	// list_dir's tool-output cap (registry defaultToolLimit) — the marshalled page
 	// must stay under it so the generic char truncator never guts the entries array.
 	const toolCap = 20_000
@@ -148,6 +151,7 @@ func (e *bufferedShellEnv) ExecCommand(_ context.Context, _ string, timeoutMS in
 }
 
 func TestShellToolBackgroundReturnsJobID(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -188,6 +192,7 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 }
 
 func TestShellToolClampsSmallMaxRuntime(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -221,6 +226,7 @@ func TestShellToolClampsSmallMaxRuntime(t *testing.T) {
 }
 
 func TestBufferedShellHonorsMaxRuntime(t *testing.T) {
+	t.Parallel()
 	env := &bufferedShellEnv{}
 	out, err := runBufferedShell(context.Background(), env, nil, shellArgs{
 		Command:        "sleep 30",
@@ -239,6 +245,7 @@ func TestBufferedShellHonorsMaxRuntime(t *testing.T) {
 }
 
 func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
+	t.Parallel()
 	s := newShellToolTestSession(t, SessionConfig{
 		DefaultCommandTimeoutMS: 1000,
 		MaxCommandTimeoutMS:     1000,
@@ -250,10 +257,6 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 	}{
 		{
 			name: "default",
-			args: json.RawMessage(`{"command":"printf start; sleep 2; printf end"}`),
-		},
-		{
-			name: "max",
 			args: json.RawMessage(`{"command":"printf start; sleep 2; printf end"}`),
 		},
 	} {
@@ -288,6 +291,7 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 }
 
 func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newShellToolTestSession(t, SessionConfig{StateDir: stateDir})
 	sessionID := s.ID()
@@ -331,6 +335,7 @@ func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T)
 }
 
 func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	workDir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(workDir)
@@ -395,6 +400,7 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 }
 
 func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	workDir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(workDir)
@@ -507,6 +513,7 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 // param is gone from the schema, so additionalProperties:false rejects it at the
 // registry (the wait knob on shell is `background`).
 func TestShellRejectsMaxWaitMS(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -523,6 +530,7 @@ func TestShellRejectsMaxWaitMS(t *testing.T) {
 // boundary: `background` decodes to shellArgs.Background; absent is false
 // (strict-provider safe). max_runtime_ms keeps its negative check.
 func TestParseShellToolArgsBackground(t *testing.T) {
+	t.Parallel()
 	args, err := parseShellToolArgs(map[string]any{
 		"command":    "echo hi",
 		"background": true,
@@ -556,6 +564,7 @@ func TestParseShellToolArgsBackground(t *testing.T) {
 // finishes within its max_wait_ms bound and returns complete output inline
 // with no job_id and no durable record.
 func TestCompleteOrHandleEphemeral(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -590,6 +599,7 @@ func TestCompleteOrHandleEphemeral(t *testing.T) {
 // returns a kept result with job_id + truncated:true, and job_read_output
 // returns the full retained bytes.
 func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	// yes produces >64KB output quickly; max_wait_ms:5000 gives it ample room.
@@ -645,6 +655,7 @@ func TestCompleteOrHandleKeptLargeOutput(t *testing.T) {
 // rather than being auto-injected inline. A ~9 KiB command must return a job_id;
 // under the old 64 KiB threshold it rode whole with no job_id.
 func TestShellRideWholeThresholdIs8KiB(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -674,6 +685,7 @@ func TestShellRideWholeThresholdIs8KiB(t *testing.T) {
 // result reports total_bytes (lifetime output) so the agent knows how much
 // exists beyond the peek, and dropped_bytes=0 when nothing was evicted.
 func TestShellResultReportsOutputBytes(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -707,6 +719,7 @@ func TestShellResultReportsOutputBytes(t *testing.T) {
 // that rides whole is "complete"; a handle whose full log is retained but only
 // peeked is "windowed".
 func TestShellOutputStatus(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	r1 := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -753,6 +766,7 @@ func TestShellOutputStatus(t *testing.T) {
 // peek tail (shellDefaultTailBytes = 1 KiB), not the whole output — the full
 // bytes stay retrievable via job_read_output.
 func TestShellHandlePeekTailIsSmall(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -801,6 +815,7 @@ func TestShellHandlePeekTailIsSmall(t *testing.T) {
 // whose output fits in the ride-whole budget but exceeds the tool-result char
 // bound still gets a durable job_id.
 func TestCompleteOrHandleKeptToolResultOverflow(t *testing.T) {
+	t.Parallel()
 	// Use MaxChars:1 so even a tiny output overflows the tool-result bound.
 	s := newShellToolTestSession(t, SessionConfig{
 		ToolOutputLimits: map[string]schema.ToolOutputLimit{
@@ -838,6 +853,7 @@ func TestCompleteOrHandleKeptToolResultOverflow(t *testing.T) {
 // job that finishes and is kept (large output) has NotifyState "not_armed" —
 // synchronous completion needs no duplicate terminal notification.
 func TestCompleteOrHandleKeptNoNotification(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{

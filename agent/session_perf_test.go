@@ -20,6 +20,7 @@ import (
 // --- Issue 1: allToolDefinitions caching ---
 
 func TestCachedToolDefs_MatchUncached(t *testing.T) {
+	t.Parallel()
 	// Verify that cached tool definitions produce the same result as
 	// building them from scratch each round.
 	dir := t.TempDir()
@@ -59,6 +60,7 @@ func TestCachedToolDefs_MatchUncached(t *testing.T) {
 }
 
 func TestCachedToolDefs_AlwaysIncludesCommunicate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
@@ -85,6 +87,7 @@ func TestCachedToolDefs_AlwaysIncludesCommunicate(t *testing.T) {
 }
 
 func TestCachedToolDefs_IncludesMCPTools(t *testing.T) {
+	t.Parallel()
 	// MCP tools should be included in the cached list.
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -128,6 +131,7 @@ func TestCachedToolDefs_IncludesMCPTools(t *testing.T) {
 }
 
 func TestCachedToolDefs_IncludesRegistryOnlyTools(t *testing.T) {
+	t.Parallel()
 	// Tools registered directly on the registry should be included.
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -174,6 +178,7 @@ func TestCachedToolDefs_IncludesRegistryOnlyTools(t *testing.T) {
 // --- web_search tool dedup (Anthropic duplicate tool names) ---
 
 func TestToolDefs_WebSearchExcludedForNonGemini(t *testing.T) {
+	t.Parallel()
 	// The web_search function tool is a shim for Gemini only (see tool_web_search.go).
 	// For Anthropic and OpenAI, native web search is used via req.WebSearch.
 	// Including the web_search function tool for Anthropic causes a duplicate
@@ -220,6 +225,7 @@ func TestToolDefs_WebSearchExcludedForNonGemini(t *testing.T) {
 }
 
 func TestToolDefs_NoDuplicateNames(t *testing.T) {
+	t.Parallel()
 	// Verify that no provider profile produces duplicate tool names in
 	// allToolDefinitions, which would be rejected by APIs like Anthropic.
 	for _, tc := range []struct {
@@ -255,6 +261,7 @@ func TestToolDefs_NoDuplicateNames(t *testing.T) {
 }
 
 func TestToolDefs_MCPToolSameNameAsProfileTool_NoDuplicate(t *testing.T) {
+	t.Parallel()
 	// If an MCP tool has the same name as a profile tool (unlikely due to
 	// namespacing, but possible), it should not produce a duplicate in the
 	// tool definitions sent to the API.
@@ -293,6 +300,7 @@ func TestToolDefs_MCPToolSameNameAsProfileTool_NoDuplicate(t *testing.T) {
 // --- Issue 2: History copy reduction ---
 
 func TestHistoryCopyReduction_ContextAndExpansionShareCopy(t *testing.T) {
+	t.Parallel()
 	// Verify that context management and history expansion produce
 	// correct results when sharing a single history copy.
 	dir := t.TempDir()
@@ -348,6 +356,7 @@ func TestHistoryCopyReduction_ContextAndExpansionShareCopy(t *testing.T) {
 }
 
 func TestAfterAction_ReceivesCurrentHistory(t *testing.T) {
+	t.Parallel()
 	// Verify that AfterAction sees the full history including the latest tool results.
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -435,6 +444,7 @@ func (a *afterActionCapture) AfterAction(ctx context.Context, history []schema.T
 // --- Issue 3: System prompt caching ---
 
 func TestCachedSystemPromptComponents_SkillList(t *testing.T) {
+	t.Parallel()
 	// Verify that prompt data reflects the discovered skills.
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -453,6 +463,7 @@ func TestCachedSystemPromptComponents_SkillList(t *testing.T) {
 }
 
 func TestCachedSystemPromptComponents_DoesNotDuplicateMCPToolDescriptions(t *testing.T) {
+	t.Parallel()
 	// Verify MCP tool descriptions stay in provider tool definitions, not duplicated in the cached prompt.
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -499,6 +510,7 @@ func TestCachedSystemPromptComponents_DoesNotDuplicateMCPToolDescriptions(t *tes
 }
 
 func TestCachedSystemPromptComponents_NonInteractiveGuidance(t *testing.T) {
+	t.Parallel()
 	// NonInteractive guidance should be included in the rendered system prompt.
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -520,6 +532,7 @@ func TestCachedSystemPromptComponents_NonInteractiveGuidance(t *testing.T) {
 }
 
 func TestCachedSystemPromptComponents_AgentSection(t *testing.T) {
+	t.Parallel()
 	// Available subagent types should be rendered into the cached system prompt.
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -550,6 +563,7 @@ func TestCachedSystemPromptComponents_AgentSection(t *testing.T) {
 }
 
 func TestCachedSystemPromptComponents_UsesProviderVisibleToolNames(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
@@ -576,6 +590,7 @@ func TestCachedSystemPromptComponents_UsesProviderVisibleToolNames(t *testing.T)
 }
 
 func TestSystemPromptConsistency_WithAndWithoutCache(t *testing.T) {
+	t.Parallel()
 	// The system prompt produced with caching should match the prompt that is
 	// actually sent to the model.
 	dir := t.TempDir()
@@ -653,6 +668,7 @@ func safeSubstring(s string, start, end int) string {
 // ---------------------------------------------------------------------------
 
 func TestSession_ProjectDocsLoadedOnceAtInit(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// Create a project doc file so LoadProjectDocs has something to find.
@@ -678,6 +694,7 @@ func TestSession_ProjectDocsLoadedOnceAtInit(t *testing.T) {
 }
 
 func TestSession_CachedProjectDocsUsedInSystemPrompt(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// Create a project doc.
@@ -749,6 +766,7 @@ func testSessionMeta() schema.SessionMeta {
 }
 
 func TestSessionMeta_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	orig := testSessionMeta()
 	data, err := json.Marshal(orig)
 	if err != nil {
@@ -776,6 +794,7 @@ func TestSessionMeta_JSONRoundTrip(t *testing.T) {
 }
 
 func TestSaveSessionMeta_CreatesMetaFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	meta := testSessionMeta()
 
@@ -805,6 +824,7 @@ func TestSaveSessionMeta_CreatesMetaFile(t *testing.T) {
 }
 
 func TestLoadSessionMeta(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	meta := testSessionMeta()
 
@@ -825,6 +845,7 @@ func TestLoadSessionMeta(t *testing.T) {
 }
 
 func TestLoadSessionMeta_NotFound(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, err := schema.LoadSessionMeta(dir, "NONEXISTENT")
 	if err == nil {
@@ -833,6 +854,7 @@ func TestLoadSessionMeta_NotFound(t *testing.T) {
 }
 
 func TestListSessionMetas_SortedByUpdatedAt(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	meta1 := testSessionMeta()
@@ -873,6 +895,7 @@ func TestListSessionMetas_SortedByUpdatedAt(t *testing.T) {
 }
 
 func TestListSessionMetas_EmptyDir(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	list, err := schema.ListSessionMetas(dir)
 	if err != nil {
@@ -884,6 +907,7 @@ func TestListSessionMetas_EmptyDir(t *testing.T) {
 }
 
 func TestSession_MaybeAutoSave_WritesMetaNotSnapshot(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -937,6 +961,7 @@ func TestSession_MaybeAutoSave_WritesMetaNotSnapshot(t *testing.T) {
 }
 
 func TestSession_Meta_ReturnsLightweightMeta(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -964,6 +989,7 @@ func TestSession_Meta_ReturnsLightweightMeta(t *testing.T) {
 }
 
 func TestRestoreSession_FromMetaAndTranscript(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 
@@ -1042,6 +1068,7 @@ func TestRestoreSession_FromMetaAndTranscript(t *testing.T) {
 }
 
 func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 
@@ -1080,6 +1107,7 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 }
 
 func TestRestoreSessionFromMeta_TranscriptWithCompaction(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 

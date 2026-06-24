@@ -63,6 +63,7 @@ func collectEvents(sess *Session) (*[]events.SessionEvent, *sync.Mutex, <-chan s
 }
 
 func TestParity_SimpleFileCreation(t *testing.T) {
+	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
 			steps := []func(llm.Request) llm.Response{
@@ -106,6 +107,7 @@ func TestParity_SimpleFileCreation(t *testing.T) {
 }
 
 func TestParity_ReadFileThenEdit(t *testing.T) {
+	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
 			steps := []func(llm.Request) llm.Response{
@@ -161,6 +163,7 @@ func TestParity_ReadFileThenEdit(t *testing.T) {
 }
 
 func TestParity_ShellCommandExecution(t *testing.T) {
+	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
 			steps := []func(llm.Request) llm.Response{
@@ -211,6 +214,7 @@ func TestParity_ShellCommandExecution(t *testing.T) {
 }
 
 func TestParity_ShellBackgroundLaunch(t *testing.T) {
+	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
 			steps := []func(llm.Request) llm.Response{
@@ -265,6 +269,7 @@ func TestParity_ShellBackgroundLaunch(t *testing.T) {
 }
 
 func TestParity_GrepAndGlob(t *testing.T) {
+	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
 			steps := []func(llm.Request) llm.Response{
@@ -318,6 +323,7 @@ func TestParity_GrepAndGlob(t *testing.T) {
 }
 
 func TestParity_MultiStepTask(t *testing.T) {
+	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
 			steps := []func(llm.Request) llm.Response{
@@ -374,6 +380,7 @@ func TestParity_MultiStepTask(t *testing.T) {
 }
 
 func TestParity_ParallelToolCalls(t *testing.T) {
+	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
 			steps := []func(llm.Request) llm.Response{
@@ -429,6 +436,7 @@ func TestParity_ParallelToolCalls(t *testing.T) {
 }
 
 func TestParity_ErrorRecovery(t *testing.T) {
+	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
 			step := 0
@@ -481,8 +489,10 @@ func TestParity_ErrorRecovery(t *testing.T) {
 }
 
 func TestParity_LoopDetectionWarning(t *testing.T) {
+	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			// Deliberately create a repeating pattern to trigger loop detection.
 			callNum := 0
 			steps := []func(llm.Request) llm.Response{
@@ -541,6 +551,7 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 }
 
 func TestParity_SteeringMidTask(t *testing.T) {
+	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
 			started := make(chan struct{}, 1)
@@ -607,6 +618,7 @@ func TestParity_SteeringMidTask(t *testing.T) {
 }
 
 func TestParity_MultiFileEdit(t *testing.T) {
+	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
 			steps := []func(llm.Request) llm.Response{
@@ -682,6 +694,7 @@ func TestParity_MultiFileEdit(t *testing.T) {
 }
 
 func TestParity_ToolOutputTruncation(t *testing.T) {
+	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
 			steps := []func(llm.Request) llm.Response{
@@ -740,6 +753,7 @@ func TestParity_ToolOutputTruncation(t *testing.T) {
 }
 
 func TestParity_ReasoningEffort(t *testing.T) {
+	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
 			steps := []func(llm.Request) llm.Response{
@@ -781,6 +795,7 @@ func TestParity_ReasoningEffort(t *testing.T) {
 }
 
 func TestParity_SubagentNoMCPInheritance(t *testing.T) {
+	t.Parallel()
 	pc := providerCases[0]
 	steps := []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
@@ -811,6 +826,7 @@ func TestParity_SubagentNoMCPInheritance(t *testing.T) {
 }
 
 func TestParity_WorkingDirRemovedFromSchema(t *testing.T) {
+	t.Parallel()
 	// working_dir is not model-configurable; delegated jobs always use the parent's working dir.
 	pc := providerCases[0]
 	for _, td := range pc.profile("test-model").ToolDefinitions() {

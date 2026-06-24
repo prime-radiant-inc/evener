@@ -36,6 +36,7 @@ func (a *stubProbeAdapter) Stream(_ context.Context, _ llm.Request) (llm.Stream,
 }
 
 func TestRunRetentionProbes_SingleQuestion_Correct(t *testing.T) {
+	t.Parallel()
 	// For a single probe question, there are 2 LLM calls:
 	// 1. Agent responds to the probe question
 	// 2. Judge says YES or NO
@@ -78,6 +79,7 @@ func TestRunRetentionProbes_SingleQuestion_Correct(t *testing.T) {
 }
 
 func TestRunRetentionProbes_SingleQuestion_Incorrect(t *testing.T) {
+	t.Parallel()
 	adapter := &stubProbeAdapter{
 		name: "openai",
 		responses: []llm.Response{
@@ -108,6 +110,7 @@ func TestRunRetentionProbes_SingleQuestion_Incorrect(t *testing.T) {
 }
 
 func TestRunRetentionProbes_MultipleQuestions(t *testing.T) {
+	t.Parallel()
 	adapter := &stubProbeAdapter{
 		name: "openai",
 		responses: []llm.Response{
@@ -155,6 +158,7 @@ func TestRunRetentionProbes_MultipleQuestions(t *testing.T) {
 }
 
 func TestRunRetentionProbes_NoQuestions(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	profile := NewOpenAIProfile("gpt-5.2")
 
@@ -174,6 +178,7 @@ func TestRunRetentionProbes_NoQuestions(t *testing.T) {
 }
 
 func TestRunRetentionProbes_AgentCallFails(t *testing.T) {
+	t.Parallel()
 	adapter := &stubProbeAdapter{
 		name:   "openai",
 		errors: []error{errors.New("rate limited")},
@@ -192,6 +197,7 @@ func TestRunRetentionProbes_AgentCallFails(t *testing.T) {
 }
 
 func TestRunRetentionProbes_JudgeCallFails(t *testing.T) {
+	t.Parallel()
 	adapter := &stubProbeAdapter{
 		name: "openai",
 		responses: []llm.Response{
@@ -213,6 +219,7 @@ func TestRunRetentionProbes_JudgeCallFails(t *testing.T) {
 }
 
 func TestParseBinaryJudge(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input string
 		want  bool
@@ -241,6 +248,7 @@ func TestParseBinaryJudge(t *testing.T) {
 }
 
 func TestBuildBinaryJudgePrompt(t *testing.T) {
+	t.Parallel()
 	prompt := buildBinaryJudgePrompt("What repo?", "django/django", "I was working on django")
 	if !probeContainsAll(prompt, "What repo?", "django/django", "I was working on django", "YES or NO") {
 		t.Errorf("judge prompt missing expected content: %s", prompt)
@@ -261,6 +269,7 @@ func probeContains(s, sub string) bool {
 }
 
 func TestRunRetentionProbes_DistractorScoring(t *testing.T) {
+	t.Parallel()
 	// A distractor question where the expected answer is "no" —
 	// if the agent correctly says "no", the judge should say YES.
 	adapter := &stubProbeAdapter{

@@ -16,6 +16,7 @@ import (
 // session wiring (the manager itself is unit-tested in agent/internal/contextmgr).
 
 func TestSession_ContextManager_Created(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -39,6 +40,7 @@ func TestSession_ContextManager_Created(t *testing.T) {
 }
 
 func TestSession_ContextManager_AccumulatesUsage(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -82,6 +84,7 @@ func TestSession_ContextManager_AccumulatesUsage(t *testing.T) {
 }
 
 func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -147,6 +150,7 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 }
 
 func TestSession_ContextManager_EmitsEvents(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -221,6 +225,7 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 // the CompactionMeta. The companion contextmgr test
 // (TestCheckpoint_RendersOnlyFromMetaAndHistory) covers the rendering side.
 func TestBuildCompactionMeta_ExcludesTaskState(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -252,6 +257,7 @@ func TestBuildCompactionMeta_ExcludesTaskState(t *testing.T) {
 // TestBuildCompactionMeta_SessionID verifies that buildCompactionMeta sets
 // SessionID when the session has a stateDir, and leaves it empty otherwise.
 func TestBuildCompactionMeta_SessionID(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 

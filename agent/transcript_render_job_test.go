@@ -38,6 +38,7 @@ func renderToolCardForStateResult(toolName, callID string, content any, toolStat
 // status line surfacing status and the transcript_ref before the output, then
 // the output with real newlines.
 func TestRenderMarkdown_JobDelegateResult(t *testing.T) {
+	t.Parallel()
 	childRef := "local:01CHILDJOB000000000000"
 	output := "First line of the report.\nSECOND_LINE_NEEDLE summarizing findings.\nThird line with a conclusion."
 	body, err := json.Marshal(map[string]any{
@@ -100,6 +101,7 @@ func TestRenderMarkdown_JobDelegateResult(t *testing.T) {
 // TestRenderMarkdown_JobSendMessageResult verifies the gated render also applies
 // to job_send_message results that resume a delegate and return a transcript ref.
 func TestRenderMarkdown_JobSendMessageResult(t *testing.T) {
+	t.Parallel()
 	childRef := "local:01RESUMEDJOB0000000000"
 	body, err := json.Marshal(map[string]any{
 		"target":                "job_old",
@@ -142,6 +144,7 @@ func TestRenderMarkdown_JobSendMessageResult(t *testing.T) {
 }
 
 func TestRenderMarkdown_DelegateSendResult(t *testing.T) {
+	t.Parallel()
 	childRef := "local:01DELEGATESEND000000"
 	body, err := json.Marshal(map[string]any{
 		"delegate_id":           "dlg_01J",
@@ -180,6 +183,7 @@ func TestRenderMarkdown_DelegateSendResult(t *testing.T) {
 }
 
 func TestRenderMarkdown_DelegateSendStateResult(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("first complete") },
@@ -246,6 +250,7 @@ func TestRenderMarkdown_DelegateSendStateResult(t *testing.T) {
 }
 
 func TestRenderMarkdown_UnpairedDelegateSendUsesToolState(t *testing.T) {
+	t.Parallel()
 	state := []byte(`{"delegate_id":"dlg_unpaired","current_job_id":"job_unpaired","type":"delegate","status":"completed","running_in_background":false,"action":"started","transcript_ref":"local:01UNPAIRED","output":"done","truncated":false}`)
 	res := result("send", "delegate_send", "done\n[delegate footer without lifecycle JSON]", false)
 	res.ToolState = state
@@ -270,6 +275,7 @@ func TestRenderMarkdown_UnpairedDelegateSendUsesToolState(t *testing.T) {
 // very long output is still bounded, and the ref stays visible before the
 // truncated output.
 func TestRenderMarkdown_JobResultHugeOutputBounded(t *testing.T) {
+	t.Parallel()
 	childRef := "local:01HUGEJOB00000000000000"
 	// Far more than resultBodyWholeMax non-empty lines so truncation kicks in.
 	output := makeNumberedLines(resultBodyWholeMax + 100)
@@ -316,6 +322,7 @@ func TestRenderMarkdown_JobResultHugeOutputBounded(t *testing.T) {
 // result body carries keys beyond the known job-result fields, the render falls
 // back to the general JSON pretty-print rather than hiding the extra evidence.
 func TestRenderMarkdown_JobResultWithExtraKeysFallsBack(t *testing.T) {
+	t.Parallel()
 	bodyStr := `{"job_id":"job_extra","type":"delegate","status":"completed","running_in_background":false,"timed_out":false,"transcript_ref":"local:01X","output":"did stuff","truncated":false,"artifacts":["a.txt","b.txt"]}`
 
 	out := renderToolCardForResult("delegate", "call_delegate", bodyStr)
@@ -330,6 +337,7 @@ func TestRenderMarkdown_JobResultWithExtraKeysFallsBack(t *testing.T) {
 }
 
 func TestRenderMarkdown_JobResultPreservesStructuredResultNumbers(t *testing.T) {
+	t.Parallel()
 	bodyStr := `{"job_id":"job_structured","type":"delegate","status":"completed","running_in_background":false,"timed_out":false,"transcript_ref":"local:01STRUCTURED","output":"done","truncated":false,"structured_result":{"large_id":9007199254740993}}`
 
 	out := renderToolCardForResult("delegate", "call_delegate", bodyStr)
@@ -343,6 +351,7 @@ func TestRenderMarkdown_JobResultPreservesStructuredResultNumbers(t *testing.T) 
 }
 
 func TestRenderMarkdown_JobResultMetadataVisible(t *testing.T) {
+	t.Parallel()
 	bodyStr := `{"target":"job_old","job_id":"job_new","type":"delegate","status":"running","reason":"foreground_timeout","running_in_background":true,"timed_out":true,"action":"resumed","resumed_from_job_id":"job_old","transcript_ref":"local:01META","output":"partial","truncated":true,"structured_result":{"ok":false},"structured_result_valid":false}`
 
 	out := renderToolCardForResult("job_send_message", "call_send", bodyStr)
@@ -367,6 +376,7 @@ func TestRenderMarkdown_JobResultMetadataVisible(t *testing.T) {
 // from a non-job tool is pretty-printed (indented) but NOT given the job
 // status-line treatment — the no-false-positive case.
 func TestRenderMarkdown_GenericJSONResultPrettyPrinted(t *testing.T) {
+	t.Parallel()
 	// A read_file result whose content is compact JSON.
 	out := renderToolCardForResult("read_file", "call_read", `{"a":1,"b":[2,3]}`)
 
@@ -390,6 +400,7 @@ func TestRenderMarkdown_GenericJSONResultPrettyPrinted(t *testing.T) {
 }
 
 func TestPrettyJSONRejectsTrailingData(t *testing.T) {
+	t.Parallel()
 	if _, ok := prettyJSON(`{"a":1} {"b":2}`); ok {
 		t.Fatal("prettyJSON must reject trailing data")
 	}
@@ -398,6 +409,7 @@ func TestPrettyJSONRejectsTrailingData(t *testing.T) {
 // TestRenderMarkdown_NonJSONResultUnchanged verifies a plain-text (non-JSON)
 // result renders exactly as before: no pretty-print, no status line.
 func TestRenderMarkdown_NonJSONResultUnchanged(t *testing.T) {
+	t.Parallel()
 	plain := "ok  primeradiant.com/serf/agent  1.20s\nPASS"
 	out := renderToolCardForResult("shell", "call_shell", plain)
 
@@ -416,6 +428,7 @@ func TestRenderMarkdown_NonJSONResultUnchanged(t *testing.T) {
 // TestRenderMarkdown_JobResultUnparseableFallsBack verifies that a job-named
 // result whose body is not a job result falls back to normal/plain rendering.
 func TestRenderMarkdown_JobResultUnparseableFallsBack(t *testing.T) {
+	t.Parallel()
 	plain := "delegate timeout"
 	out := renderToolCardForResult("delegate", "call_delegate", plain)
 
@@ -431,6 +444,7 @@ func TestRenderMarkdown_JobResultUnparseableFallsBack(t *testing.T) {
 // result decodes, while empty and non-matching bodies report false so callers
 // fall back.
 func TestDecodeJobResult(t *testing.T) {
+	t.Parallel()
 	t.Run("full struct decodes with all fields", func(t *testing.T) {
 		body := `{"job_id":"job_decode","type":"delegate","status":"completed","running_in_background":false,"timed_out":false,"transcript_ref":"local:01Z","output":"line one\nline two","truncated":false}`
 		r, ok := decodeJobResult(body)
@@ -503,6 +517,7 @@ func TestDecodeJobResult(t *testing.T) {
 }
 
 func TestRenderOutline_JobLifecycleBrackets(t *testing.T) {
+	t.Parallel()
 	childRef := "local:01OUTLINEJOB000000000"
 	body := `{"job_id":"job_outline","type":"delegate","status":"completed","running_in_background":false,"timed_out":false,"transcript_ref":"` + childRef + `","output":"done","truncated":false}`
 	entries := []transcript.Entry{
@@ -522,6 +537,7 @@ func TestRenderOutline_JobLifecycleBrackets(t *testing.T) {
 }
 
 func TestRenderOutline_DelegateSendLifecycleBrackets(t *testing.T) {
+	t.Parallel()
 	childRef := "local:01OUTLINEDELEGATESEND"
 	body := `{"delegate_id":"dlg_outline","started_job_id":"job_started","current_job_id":"job_started","latest_job_id":"job_started","type":"delegate","status":"running","running_in_background":true,"timed_out":false,"action":"started","transcript_ref":"` + childRef + `","truncated":false}`
 	entries := []transcript.Entry{
@@ -540,6 +556,7 @@ func TestRenderOutline_DelegateSendLifecycleBrackets(t *testing.T) {
 // TestRenderMarkdown_GenericJSONArrayResult verifies a top-level JSON array body
 // (not just objects) is also pretty-printed.
 func TestRenderMarkdown_GenericJSONArrayResult(t *testing.T) {
+	t.Parallel()
 	out := renderToolCardForResult("read_file", "call_read", `[1,2,3]`)
 	// Pretty-printed arrays put each element on its own line.
 	if !strings.Contains(out, "1,\n") {
@@ -552,6 +569,7 @@ func TestRenderMarkdown_GenericJSONArrayResult(t *testing.T) {
 // digits (float64 decoding would silently mangle it to the nearest
 // representable value).
 func TestPrettyJSON_PreservesBigInt(t *testing.T) {
+	t.Parallel()
 	// 2^53 + 1 — the smallest integer that cannot be represented exactly as
 	// float64 (which would round it down to 9007199254740992).
 	out := renderToolCardForResult("read_file", "call_read", `{"id":9007199254740993}`)
@@ -564,6 +582,7 @@ func TestPrettyJSON_PreservesBigInt(t *testing.T) {
 // metacharacters and angle brackets is rendered with literal & and < > rather
 // than the \u-escaped forms produced by the default json.MarshalIndent.
 func TestPrettyJSON_NoHTMLEscaping(t *testing.T) {
+	t.Parallel()
 	out := renderToolCardForResult("read_file", "call_read", `{"url":"https://x/?a=1&b=2","tag":"<x>"}`)
 	if !strings.Contains(out, "&") {
 		t.Errorf("expected literal & in output (not \\u0026), got:\n%s", out)

@@ -12,6 +12,7 @@ import (
 // GoalSnapshot when a goal has been set and advanced (non-zero Iterations and
 // NoProgressStreak).
 func TestGoalPersist_MetaPopulated(t *testing.T) {
+	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 
@@ -54,6 +55,7 @@ func TestGoalPersist_MetaPopulated(t *testing.T) {
 
 // TestGoalPersist_NoGoalIsNil verifies that Meta().Goal is nil when no goal is set.
 func TestGoalPersist_NoGoalIsNil(t *testing.T) {
+	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 
@@ -67,6 +69,7 @@ func TestGoalPersist_NoGoalIsNil(t *testing.T) {
 // Meta(), restores it into a fresh store, and asserts the reconstructed
 // Snapshot matches in all observable fields.
 func TestGoalPersist_RestoreRoundTrip(t *testing.T) {
+	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 
@@ -109,6 +112,7 @@ func TestGoalPersist_RestoreRoundTrip(t *testing.T) {
 // Restore, the madeProgressOnce grace flag is correctly reinstated: a
 // no-progress turn AFTER restore accrues the streak (not the grace period).
 func TestGoalPersist_RestorePreservesMadeProgressOnce(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
 
 	// Build snapshot with madeProgressOnce=true via the schema wire type.

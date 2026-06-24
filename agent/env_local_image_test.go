@@ -14,6 +14,7 @@ import (
 )
 
 func TestParseImageResult_ExtractsImageData(t *testing.T) {
+	t.Parallel()
 	// Simulate what ReadFile returns for an image.
 	pngHeader := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01}
 	encoded := base64.StdEncoding.EncodeToString(pngHeader)
@@ -35,6 +36,7 @@ func TestParseImageResult_ExtractsImageData(t *testing.T) {
 }
 
 func TestParseImageResult_ReturnsNilForNonImage(t *testing.T) {
+	t.Parallel()
 	got := tool.ParseImageResult("code.go", "1 | package main\n2 | func main() {}\n")
 	if got != nil {
 		t.Fatal("expected nil for non-image content")
@@ -42,6 +44,7 @@ func TestParseImageResult_ReturnsNilForNonImage(t *testing.T) {
 }
 
 func TestReadFile_Image_EndToEnd_ToolExecResult(t *testing.T) {
+	t.Parallel()
 	// End-to-end: read_file on a real PNG → env returns base64 → tool.ParseImageResult
 	// extracts bytes → tool.ExecResult has ImageData set. This is the path that
 	// sends images to the model for visual inspection.
@@ -77,6 +80,7 @@ func TestReadFile_Image_EndToEnd_ToolExecResult(t *testing.T) {
 }
 
 func TestParseDocumentResult_ExtractsPDFData(t *testing.T) {
+	t.Parallel()
 	pdfContent := []byte("%PDF-1.4 content\x00\x01")
 	encoded := base64.StdEncoding.EncodeToString(pdfContent)
 	readOutput := fmt.Sprintf("[document: pdf, %d bytes, base64 data follows]\n%s", len(pdfContent), encoded)
@@ -97,6 +101,7 @@ func TestParseDocumentResult_ExtractsPDFData(t *testing.T) {
 }
 
 func TestParseDocumentResult_ReturnsNilForNonDocument(t *testing.T) {
+	t.Parallel()
 	got := tool.ParseDocumentResult("code.go", "1 | package main\n2 | func main() {}\n")
 	if got != nil {
 		t.Fatal("expected nil for non-document content")
@@ -104,6 +109,7 @@ func TestParseDocumentResult_ReturnsNilForNonDocument(t *testing.T) {
 }
 
 func TestReadFile_PDF_EndToEnd_ToolExecResult(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)
 

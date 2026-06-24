@@ -15,6 +15,7 @@ import (
 )
 
 func TestTurn_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	orig := schema.Turn{
 		Kind:    schema.TurnAssistant,
 		Message: llm.Assistant("hello world"),
@@ -51,6 +52,7 @@ func TestTurn_JSONRoundTrip(t *testing.T) {
 }
 
 func TestTurn_JSONRoundTrip_ToolResult(t *testing.T) {
+	t.Parallel()
 	orig := schema.Turn{
 		Kind:    schema.TurnTool,
 		Message: llm.ToolResultNamed("call-123", "read_file", "file contents here", false),
@@ -72,6 +74,7 @@ func TestTurn_JSONRoundTrip_ToolResult(t *testing.T) {
 }
 
 func TestTurn_JSONRoundTrip_ToolResults(t *testing.T) {
+	t.Parallel()
 	orig := schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{
@@ -105,6 +108,7 @@ func TestTurn_JSONRoundTrip_ToolResults(t *testing.T) {
 }
 
 func TestToolOutputLimit_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	orig := schema.ToolOutputLimit{
 		MaxChars: 50000,
 		MaxLines: 200,
@@ -139,6 +143,7 @@ func TestToolOutputLimit_JSONRoundTrip(t *testing.T) {
 }
 
 func TestEnvironmentInfo_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	orig := schema.EnvironmentInfo{
 		WorkingDir:            "/home/user/project",
 		Platform:              "linux",
@@ -185,6 +190,7 @@ func TestEnvironmentInfo_JSONRoundTrip(t *testing.T) {
 }
 
 func TestSessionConfig_JSONOmitsFunctionFields(t *testing.T) {
+	t.Parallel()
 	cfg := SessionConfig{
 		MaxToolRoundsPerInput:   200,
 		MaxTurns:                50,
@@ -240,6 +246,7 @@ func TestSessionConfig_JSONOmitsFunctionFields(t *testing.T) {
 // subagent-management-is-top-level guards stay correct. If this test fails,
 // someone likely added json tags to spawnConfig; do not do that.
 func TestSessionConfig_SpawnFieldsDropOnPersist(t *testing.T) {
+	t.Parallel()
 	cfg := SessionConfig{
 		MaxToolRoundsPerInput: 200,
 		spawn: spawnConfig{
@@ -292,6 +299,7 @@ func TestSessionConfig_SpawnFieldsDropOnPersist(t *testing.T) {
 }
 
 func TestSession_ID_ReturnsULID(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})

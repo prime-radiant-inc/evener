@@ -21,6 +21,7 @@ func makeEntry(turn schema.Turn) transcript.Entry {
 
 // TestRenderMarkdown_DocumentHeader verifies the document header section.
 func TestRenderMarkdown_DocumentHeader(t *testing.T) {
+	t.Parallel()
 	t.Run("title from meta display name", func(t *testing.T) {
 		meta := schema.SessionMeta{
 			Name:           "My Session Title",
@@ -77,6 +78,7 @@ func TestRenderMarkdown_DocumentHeader(t *testing.T) {
 
 // TestRenderMarkdown_ConversationGrouping verifies heading seq and Role labels.
 func TestRenderMarkdown_ConversationGrouping(t *testing.T) {
+	t.Parallel()
 	entries := []transcript.Entry{
 		makeEntry(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("hello")}),
 		makeEntry(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("world")}),
@@ -103,6 +105,7 @@ func TestRenderMarkdown_ConversationGrouping(t *testing.T) {
 
 // TestRenderMarkdown_StartSeqOffset verifies that startSeq shifts seq numbers.
 func TestRenderMarkdown_StartSeqOffset(t *testing.T) {
+	t.Parallel()
 	entries := []transcript.Entry{
 		makeEntry(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("hello")}),
 		makeEntry(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("world")}),
@@ -124,6 +127,7 @@ func TestRenderMarkdown_StartSeqOffset(t *testing.T) {
 
 // TestRenderMarkdown_AssistantThinkingAndText verifies thinking/text order and labels.
 func TestRenderMarkdown_AssistantThinkingAndText(t *testing.T) {
+	t.Parallel()
 	thinkingPart := llm.ContentPart{
 		Kind:     llm.ContentThinking,
 		Thinking: &llm.ThinkingData{Text: "I need to think about this carefully."},
@@ -166,6 +170,7 @@ func TestRenderMarkdown_AssistantThinkingAndText(t *testing.T) {
 // TestRenderMarkdown_AssistantRedactedThinking verifies that a redacted-thinking
 // content block renders the honest placeholder marker and not a silent omission.
 func TestRenderMarkdown_AssistantRedactedThinking(t *testing.T) {
+	t.Parallel()
 	redactedPart := llm.ContentPart{
 		Kind: llm.ContentRedThinking,
 		// No Thinking field — the encrypted blob has no readable text.
@@ -206,6 +211,7 @@ func TestRenderMarkdown_AssistantRedactedThinking(t *testing.T) {
 // renders as assistant text, not a tool card, for both the default "communicate"
 // name and a custom result tool name.
 func TestRenderMarkdown_ResultToolAsAssistantText(t *testing.T) {
+	t.Parallel()
 	resultMsg := `{"message": "Task complete!"}`
 	makeResultToolEntry := func(toolName string) transcript.Entry {
 		part := llm.ContentPart{
@@ -265,6 +271,7 @@ func TestRenderMarkdown_ResultToolAsAssistantText(t *testing.T) {
 
 // TestRenderMarkdown_UnknownAndSystemTurns verifies labeled blockquote notes, not silence.
 func TestRenderMarkdown_UnknownAndSystemTurns(t *testing.T) {
+	t.Parallel()
 	t.Run("SYSTEM turn renders as labeled note", func(t *testing.T) {
 		entries := []transcript.Entry{
 			makeEntry(schema.Turn{Kind: schema.TurnSystem, Message: llm.System("injected")}),
@@ -351,6 +358,7 @@ func buildRawTestTranscript(t *testing.T) (path string, lines []string) {
 //   - the api_call within the span is included
 //   - a corrupt trailing line increments skipped, does not error
 func TestRawLinesForRange(t *testing.T) {
+	t.Parallel()
 	t.Run("range [1,2] returns header+entry1+api_call+entry2 verbatim", func(t *testing.T) {
 		path, verbatim := buildRawTestTranscript(t)
 		// verbatim[0]=header, [1]=entry0, [2]=entry1, [3]=api_call, [4]=entry2, [5]=entry3, [6]=corrupt
@@ -526,6 +534,7 @@ func buildOvercapTranscript(t *testing.T) (path string, firstEntryLine string) {
 //   - the content is a contiguous prefix: entry0 is present, later entries dropped
 //   - rune length of returned content is <= hardCapChars
 func TestRawLinesForRange_HardCapTruncation(t *testing.T) {
+	t.Parallel()
 	path, firstEntryLine := buildOvercapTranscript(t)
 
 	content, _, _, truncated, err := rawLinesForRange(path, 0, 4)
@@ -570,6 +579,7 @@ func TestRawLinesForRange_HardCapTruncation(t *testing.T) {
 
 // TestRenderMarkdown_SteeringCompact verifies compact one-line rendering for STEERING/SUMMARY/CHECKPOINT.
 func TestRenderMarkdown_SteeringCompact(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		kind        schema.TurnKind
@@ -667,6 +677,7 @@ func TestRenderMarkdown_SteeringCompact(t *testing.T) {
 // TestRenderMarkdown_ResultToolNameFromMeta verifies that opt.meta.Config.ResultToolName
 // is used when opt.resultToolName is empty.
 func TestRenderMarkdown_ResultToolNameFromMeta(t *testing.T) {
+	t.Parallel()
 	resultMsg := `{"message": "Done via meta!"}`
 	makeTCEntry := func(toolName string) transcript.Entry {
 		part := llm.ContentPart{
@@ -715,6 +726,7 @@ func TestRenderMarkdown_ResultToolNameFromMeta(t *testing.T) {
 // TestRenderMarkdown_CompactNoteUTF8Safety verifies that truncation at compactNoteMaxLen
 // does not corrupt a multibyte UTF-8 rune straddling the byte boundary.
 func TestRenderMarkdown_CompactNoteUTF8Safety(t *testing.T) {
+	t.Parallel()
 	// Build a first line that is exactly 119 ASCII chars followed by a 2-byte rune ("é"),
 	// making it 121 bytes total but only 120 runes. The truncation point (120) falls
 	// inside the multibyte rune when using byte slicing — byte-slicing would produce
@@ -741,6 +753,7 @@ func TestRenderMarkdown_CompactNoteUTF8Safety(t *testing.T) {
 // TestRenderMarkdown_UnknownTurnKind verifies that a future/unknown TurnKind
 // renders as a labeled blockquote note and is not silently dropped.
 func TestRenderMarkdown_UnknownTurnKind(t *testing.T) {
+	t.Parallel()
 	entries := []transcript.Entry{
 		makeEntry(schema.Turn{Kind: schema.TurnKind("FUTURE_KIND")}),
 	}
@@ -753,6 +766,7 @@ func TestRenderMarkdown_UnknownTurnKind(t *testing.T) {
 // TestRenderMarkdown_ResultToolFallbackToRawArgs verifies that a result-tool call
 // whose arguments JSON lacks a "message" key falls back to emitting the raw arguments.
 func TestRenderMarkdown_ResultToolFallbackToRawArgs(t *testing.T) {
+	t.Parallel()
 	rawArgs := `{"result":"ok"}`
 	part := llm.ContentPart{
 		Kind: llm.ContentToolCall,
@@ -805,6 +819,7 @@ func result(callID, name string, content any, isErr bool) *llm.ToolResultData {
 // TestRenderMarkdown_ToolCallPairingByID verifies a call and its result pair by
 // ID even when separated by an intervening turn (proves ID-pairing, not adjacency).
 func TestRenderMarkdown_ToolCallPairingByID(t *testing.T) {
+	t.Parallel()
 	entries := []transcript.Entry{
 		// seq 0: assistant turn with a shell call.
 		toolCallEntry(call("c1", "shell", `{"command":"go test ./..."}`)),
@@ -843,6 +858,7 @@ func TestRenderMarkdown_ToolCallPairingByID(t *testing.T) {
 // TestRenderMarkdown_ParallelToolCalls verifies two parallel calls in one turn
 // both render, in recorded order.
 func TestRenderMarkdown_ParallelToolCalls(t *testing.T) {
+	t.Parallel()
 	entries := []transcript.Entry{
 		toolCallEntry(
 			call("a", "read_file", `{"file_path":"first.go"}`),
@@ -869,6 +885,7 @@ func TestRenderMarkdown_ParallelToolCalls(t *testing.T) {
 
 // TestRenderMarkdown_PendingToolCall verifies a call with no result is [pending].
 func TestRenderMarkdown_PendingToolCall(t *testing.T) {
+	t.Parallel()
 	entries := []transcript.Entry{
 		toolCallEntry(call("p1", "shell", `{"command":"sleep 100"}`)),
 	}
@@ -881,6 +898,7 @@ func TestRenderMarkdown_PendingToolCall(t *testing.T) {
 // TestRenderMarkdown_OrphanedToolResult verifies a result with no matching call
 // renders under a "Tool results without a shown call" subsection as [call not shown].
 func TestRenderMarkdown_OrphanedToolResult(t *testing.T) {
+	t.Parallel()
 	entries := []transcript.Entry{
 		makeEntry(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("some text")}),
 		toolResultEntry(result("ghost", "shell", "result with no call", false)),
@@ -899,6 +917,7 @@ func TestRenderMarkdown_OrphanedToolResult(t *testing.T) {
 
 // TestRenderMarkdown_ErrorToolResult verifies an error result is [error].
 func TestRenderMarkdown_ErrorToolResult(t *testing.T) {
+	t.Parallel()
 	entries := []transcript.Entry{
 		toolCallEntry(call("e1", "shell", `{"command":"false"}`)),
 		toolResultEntry(result("e1", "shell", "command failed: exit_code=1", true)),
@@ -924,6 +943,7 @@ func makeNumberedLines(n int) string {
 // TestRenderMarkdown_ResultHeadTailTruncation verifies a large result is
 // head+tail truncated with the EXACT elided count.
 func TestRenderMarkdown_ResultHeadTailTruncation(t *testing.T) {
+	t.Parallel()
 	const total = 45
 	body := makeNumberedLines(total) // 45 non-empty lines
 	entries := []transcript.Entry{
@@ -954,6 +974,7 @@ func TestRenderMarkdown_ResultHeadTailTruncation(t *testing.T) {
 
 // TestRenderMarkdown_SmallResultNotTruncated verifies a small result renders whole.
 func TestRenderMarkdown_SmallResultNotTruncated(t *testing.T) {
+	t.Parallel()
 	body := makeNumberedLines(10)
 	entries := []transcript.Entry{
 		toolCallEntry(call("s1", "shell", `{"command":"seq 10"}`)),
@@ -971,6 +992,7 @@ func TestRenderMarkdown_SmallResultNotTruncated(t *testing.T) {
 // TestRenderMarkdown_FullResultFor verifies full_result_for expands ALL of the
 // owning turn's results in full (no elision), including parallel calls.
 func TestRenderMarkdown_FullResultFor(t *testing.T) {
+	t.Parallel()
 	bigA := makeNumberedLines(45)
 	bigB := makeNumberedLines(50)
 	entries := []transcript.Entry{
@@ -1015,6 +1037,7 @@ func TestRenderMarkdown_FullResultFor(t *testing.T) {
 // is consumed by the text-rendered result-tool call and never surfaces as a
 // call-not-shown result.
 func TestRenderMarkdown_ResultToolResultNotOrphaned(t *testing.T) {
+	t.Parallel()
 	entries := []transcript.Entry{
 		// Result-tool call (rendered as assistant text).
 		toolCallEntry(call("comm-1", "communicate", `{"message":"All done."}`)),
@@ -1041,6 +1064,7 @@ func TestRenderMarkdown_ResultToolResultNotOrphaned(t *testing.T) {
 // TestRenderMarkdown_PurposeField verifies purpose: appears only when an explicit
 // purpose/intent/description argument is present.
 func TestRenderMarkdown_PurposeField(t *testing.T) {
+	t.Parallel()
 	t.Run("purpose present when explicit purpose arg given", func(t *testing.T) {
 		entries := []transcript.Entry{
 			toolCallEntry(call("c1", "shell", `{"command":"ls","purpose":"list the directory"}`)),
@@ -1077,6 +1101,7 @@ func TestRenderMarkdown_PurposeField(t *testing.T) {
 
 // TestToolInputSummary verifies per-tool input summaries.
 func TestToolInputSummary(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		tool    string
@@ -1137,6 +1162,7 @@ func TestToolInputSummary(t *testing.T) {
 // run in the body (CommonMark fenced-code rule), and the body's own fences must
 // survive verbatim.
 func TestRenderMarkdown_ResultBodyFenceCollision(t *testing.T) {
+	t.Parallel()
 	// The result body is itself fenced Markdown (e.g. read_file of a .md file or
 	// shell output of fenced source). The inner fences are runs of three backticks.
 	innerBody := "intro\n```go\nfunc x(){}\n```\noutro"
@@ -1173,6 +1199,7 @@ func TestRenderMarkdown_ResultBodyFenceCollision(t *testing.T) {
 // TestRenderMarkdown_ResultBodyFenceLongestRun verifies the fence grows past the
 // LONGEST backtick run in the body, not merely past 3.
 func TestRenderMarkdown_ResultBodyFenceLongestRun(t *testing.T) {
+	t.Parallel()
 	// Body contains a four-backtick run, so the wrapper must use at least five.
 	innerBody := "before\n````\nnested ``` triple\n````\nafter"
 	entries := []transcript.Entry{
@@ -1197,6 +1224,7 @@ func TestRenderMarkdown_ResultBodyFenceLongestRun(t *testing.T) {
 // resultBodyWholeMax: total=30 renders whole (no marker); total=31 truncates
 // with exactly one elided line so that shown + elided == total.
 func TestRenderMarkdown_TruncationBoundary(t *testing.T) {
+	t.Parallel()
 	t.Run("total at boundary renders whole", func(t *testing.T) {
 		body := makeNumberedLines(resultBodyWholeMax) // 30
 		entries := []transcript.Entry{
@@ -1247,6 +1275,7 @@ func TestRenderMarkdown_TruncationBoundary(t *testing.T) {
 // TestToolInputSummary_ReadFilePartialRange verifies read_file emits only the
 // present offset/limit field(s), never a dangling empty field.
 func TestToolInputSummary_ReadFilePartialRange(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		args    string
@@ -1276,6 +1305,7 @@ func TestToolInputSummary_ReadFilePartialRange(t *testing.T) {
 // TestParseRange covers every range grammar form, the smart default, clamping,
 // and the empty-entry-list case. Spec §"read defaults" + Task 5 grammar.
 func TestParseRange(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		spec       string
@@ -1332,6 +1362,7 @@ func TestParseRange(t *testing.T) {
 // the same bounds as parseRange; malformed input returns an error. An empty
 // entry list is not itself malformed.
 func TestParseRangeErr(t *testing.T) {
+	t.Parallel()
 	valid := []string{"", "last:40", "start:10", "12-40", "0-83", "100-200"}
 	for _, spec := range valid {
 		t.Run("valid/"+spec, func(t *testing.T) {
@@ -1388,6 +1419,7 @@ func textTurns(n int, body func(i int) string) []transcript.Entry {
 // "last:40" → 40 rendered, 44 elided, truncated, first heading is turn 44, and
 // the top marker reports exactly 44 earlier turns elided.
 func TestRenderTranscript_LastDefault(t *testing.T) {
+	t.Parallel()
 	entries := textTurns(84, func(i int) string {
 		return fmt.Sprintf("assistant turn %d body", i)
 	})
@@ -1451,6 +1483,7 @@ func TestRenderTranscript_LastDefault(t *testing.T) {
 // TestRenderTranscript_NoMarkerWhenAllShown verifies the top marker is absent
 // when nothing is elided from the front (firstRendered == 0).
 func TestRenderTranscript_NoMarkerWhenAllShown(t *testing.T) {
+	t.Parallel()
 	entries := textTurns(5, func(i int) string { return fmt.Sprintf("turn %d", i) })
 	content, m := renderTranscript(transcript.Header{}, entries, "", renderOpts{})
 
@@ -1472,6 +1505,7 @@ func TestRenderTranscript_NoMarkerWhenAllShown(t *testing.T) {
 // count matches firstRendered exactly, and the body fits within the budget (plus
 // header+marker overhead).
 func TestRenderTranscript_BudgetDropsFrontTurns(t *testing.T) {
+	t.Parallel()
 	// 40 turns each ~2,000 chars → ~80k of body, well over the 24k budget, forcing
 	// the front to be dropped until the tail fits.
 	const big = 2000
@@ -1526,6 +1560,7 @@ func TestRenderTranscript_BudgetDropsFrontTurns(t *testing.T) {
 // turn exceeds the conversation budget, a tail-anchored render keeps that one
 // turn (does not drop everything) and stays within the hard cap.
 func TestRenderTranscript_BudgetKeepsAtLeastOneTurn(t *testing.T) {
+	t.Parallel()
 	// Each turn alone exceeds the 24k budget.
 	const huge = convBudgetChars + 5000
 	entries := textTurns(3, func(i int) string {
@@ -1556,6 +1591,7 @@ func TestRenderTranscript_BudgetKeepsAtLeastOneTurn(t *testing.T) {
 // exempt from the 24k conversation budget, so content may exceed 24k (up to the
 // 200k hard cap) and the pinned full body is present.
 func TestRenderTranscript_FullResultForExemptFromBudget(t *testing.T) {
+	t.Parallel()
 	// A pinned tool result whose full body (~60k) exceeds the conversation budget.
 	const lines = 6000 // 6000 numbered lines ≈ 60k chars when rendered
 	bigResult := makeNumberedLines(lines)
@@ -1609,6 +1645,7 @@ func TestRenderTranscript_FullResultForExemptFromBudget(t *testing.T) {
 // content exceeds the 200k hard cap, the whole content is truncated rune-safe
 // with an honest note, and Truncated is set.
 func TestRenderTranscript_HardCapTruncates(t *testing.T) {
+	t.Parallel()
 	// A single pinned result far larger than the hard cap.
 	const lines = 40000 // ≈ 400k chars rendered, well past the 200k cap
 	bigResult := makeNumberedLines(lines)
@@ -1640,6 +1677,7 @@ func TestRenderTranscript_HardCapTruncates(t *testing.T) {
 // Result Truncation ("pins the turn into the output even when it falls outside
 // range") + §Acceptance ("pins an out-of-range turn into the output").
 func TestRenderTranscript_FullResultForOutOfRange(t *testing.T) {
+	t.Parallel()
 	// A pinned tool result big enough that head+tail truncation would elide its
 	// deep middle line. 200 lines → 170 elided by default head+tail; full keeps all.
 	const lines = 200
@@ -1728,6 +1766,7 @@ func TestRenderTranscript_FullResultForOutOfRange(t *testing.T) {
 
 // TestFirstLineClamp exercises the shared firstLineClamp helper.
 func TestFirstLineClamp(t *testing.T) {
+	t.Parallel()
 	t.Run("short single-line input returned unchanged", func(t *testing.T) {
 		got := firstLineClamp("hello world", 120)
 		if got != "hello world" {
@@ -1799,6 +1838,7 @@ func TestFirstLineClamp(t *testing.T) {
 // does not dump the full multi-paragraph OriginalPrompt into the # Transcript
 // line or the Task: line.
 func TestRenderMarkdown_HeaderClamped(t *testing.T) {
+	t.Parallel()
 	para1 := strings.Repeat("b", 100)
 	longPrompt := para1 + "\n\nSecond paragraph: HEADERNEEDLE should not appear.\n\nThird para."
 	meta := schema.SessionMeta{OriginalPrompt: longPrompt}
@@ -1824,6 +1864,7 @@ func TestRenderMarkdown_HeaderClamped(t *testing.T) {
 // (N-M) range keeps the front and drops from the tail when the budget is exceeded,
 // and appends a bottom continue-pointer naming the exact next range call.
 func TestRenderTranscript_FrontAnchoredKeepsFront(t *testing.T) {
+	t.Parallel()
 	// 40 turns each ~2000 chars → ~80k, well over the 24k budget.
 	const big = 2000
 	entries := textTurns(40, func(i int) string {
@@ -1873,6 +1914,7 @@ func TestRenderTranscript_FrontAnchoredKeepsFront(t *testing.T) {
 // lands one turn later (out of range). The budget must still trim the window, AND the
 // pinned result must be recovered via the out-of-range pin append — never lost.
 func TestRenderTranscript_PinnedResultPastRangeEnd(t *testing.T) {
+	t.Parallel()
 	const big = 5000
 	// Turns 0..5: big text, forcing the [0,6] window well over the 24k budget.
 	entries := textTurns(6, func(i int) string {
@@ -1910,6 +1952,7 @@ func TestRenderTranscript_PinnedResultPastRangeEnd(t *testing.T) {
 // view (an ellipsis is present), but rendered verbatim under a full result
 // (renderOpts{fullResultFor}).
 func TestRenderMarkdown_LongResultLineClamped(t *testing.T) {
+	t.Parallel()
 	// One line of 5000 'A' runes — well over resultLineMaxRunes (300).
 	wideLine := strings.Repeat("A", 5000)
 	entries := []transcript.Entry{

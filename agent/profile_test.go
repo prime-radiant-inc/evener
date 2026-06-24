@@ -55,6 +55,7 @@ func renderPromptForTest(t *testing.T, p *provider.Profile, data promptData) str
 }
 
 func TestProviderProfiles_ToolsetsAndDocSelection(t *testing.T) {
+	t.Parallel()
 	openai := NewOpenAIProfile("gpt-5.2")
 	if openai.ID() != "openai" {
 		t.Fatalf("openai id: %q", openai.ID())
@@ -91,6 +92,7 @@ func TestProviderProfiles_ToolsetsAndDocSelection(t *testing.T) {
 }
 
 func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
+	t.Parallel()
 	t.Run("openai", func(t *testing.T) {
 		p := NewOpenAIProfile("gpt-5.2")
 		// ToolDefinitions returns canonical names; provider-specific renaming
@@ -165,6 +167,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 }
 
 func TestProviderProfiles_AllIncludeUseSkill(t *testing.T) {
+	t.Parallel()
 	profiles := []*provider.Profile{
 		NewOpenAIProfile("gpt-5.2"),
 		newAnthropicProfile("claude-test"),
@@ -184,6 +187,7 @@ func TestProviderProfiles_AllIncludeUseSkill(t *testing.T) {
 }
 
 func TestProviderProfiles_AddPurposeToWorkToolSchemas(t *testing.T) {
+	t.Parallel()
 	profiles := []*provider.Profile{
 		NewOpenAIProfile("gpt-5.2"),
 		newAnthropicProfile("claude-test"),
@@ -214,6 +218,7 @@ func TestProviderProfiles_AddPurposeToWorkToolSchemas(t *testing.T) {
 }
 
 func TestSystemPrompt_ImplementerWarnsOnUnavailableTools(t *testing.T) {
+	t.Parallel()
 	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), promptData{
 		Agent:                       "implementer",
 		CallableToolNames:           []string{"read_file", "exec_command", "communicate"},
@@ -229,6 +234,7 @@ func TestSystemPrompt_ImplementerWarnsOnUnavailableTools(t *testing.T) {
 }
 
 func TestSystemPrompt_CoordinatorHasImpossibleDelegationException(t *testing.T) {
+	t.Parallel()
 	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), promptData{
 		Agent: "coordinator",
 	})
@@ -242,6 +248,7 @@ func TestSystemPrompt_CoordinatorHasImpossibleDelegationException(t *testing.T) 
 }
 
 func TestBuildSystemPrompt_IncludesBackgroundJobsSection(t *testing.T) {
+	t.Parallel()
 	prompt := renderPromptForTest(t, newAnthropicProfile("claude-test"), promptData{})
 
 	if !strings.Contains(prompt, "## Background jobs") {
@@ -256,6 +263,7 @@ func TestBuildSystemPrompt_IncludesBackgroundJobsSection(t *testing.T) {
 }
 
 func TestSubagentPrompt_DoesNotIncludeBackgroundJobsSection(t *testing.T) {
+	t.Parallel()
 	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "implementer",
@@ -279,6 +287,7 @@ func TestSubagentPrompt_DoesNotIncludeBackgroundJobsSection(t *testing.T) {
 }
 
 func TestSystemPrompt_DefaultAgentDoesNotUseCoordinatorRole(t *testing.T) {
+	t.Parallel()
 	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), promptData{})
 
 	if strings.Contains(prompt, "You are a coordinator. You delegate, verify, and iterate. You do not implement.") {
@@ -290,6 +299,7 @@ func TestSystemPrompt_DefaultAgentDoesNotUseCoordinatorRole(t *testing.T) {
 }
 
 func TestProviderProfiles_BuildSystemPrompt_IncludesEnvironment(t *testing.T) {
+	t.Parallel()
 	data := promptData{
 		WorkingDir:      "/tmp",
 		Platform:        "linux",
@@ -314,6 +324,7 @@ func TestProviderProfiles_BuildSystemPrompt_IncludesEnvironment(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_DoesNotDuplicateProviderToolDescriptions(t *testing.T) {
+	t.Parallel()
 	p := NewOpenAIProfile("gpt-5.2")
 	data := promptData{
 		WorkingDir: "/tmp",
@@ -335,6 +346,7 @@ func TestBuildSystemPrompt_DoesNotDuplicateProviderToolDescriptions(t *testing.T
 }
 
 func TestBuildSystemPrompt_DoesNotDuplicateMCPOrCustomToolDescriptions(t *testing.T) {
+	t.Parallel()
 	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.2"), promptData{
 		WorkingDir: "/tmp",
 		Platform:   "linux",
@@ -361,6 +373,7 @@ func TestBuildSystemPrompt_DoesNotDuplicateMCPOrCustomToolDescriptions(t *testin
 }
 
 func TestProviderProfile_CheapModel(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		profile *provider.Profile
 		want    string
@@ -378,6 +391,7 @@ func TestProviderProfile_CheapModel(t *testing.T) {
 }
 
 func TestProviderProfile_WithModel(t *testing.T) {
+	t.Parallel()
 	orig := NewOpenAIProfile("gpt-5.2")
 	cloned := orig.WithModel("gpt-4.1-mini")
 
@@ -401,6 +415,7 @@ func TestProviderProfile_WithModel(t *testing.T) {
 }
 
 func TestProviderProfile_WithModel_EmptyStringKeepsOriginal(t *testing.T) {
+	t.Parallel()
 	orig := newAnthropicProfile("claude-opus-4-6")
 	cloned := orig.WithModel("")
 	if cloned.Model() != "claude-opus-4-6" {
@@ -409,6 +424,7 @@ func TestProviderProfile_WithModel_EmptyStringKeepsOriginal(t *testing.T) {
 }
 
 func TestProviderProfile_WithModel_ResolvesProviderPrefix(t *testing.T) {
+	t.Parallel()
 	// WithModel("openai/gpt-5.4-mini") on an OpenAI profile should strip
 	// the prefix and use the bare model name.
 	orig := NewOpenAIProfile("gpt-5.4")
@@ -426,6 +442,7 @@ func TestProviderProfile_WithModel_ResolvesProviderPrefix(t *testing.T) {
 // Cross-provider switching is now the responsibility of the Session resolver.
 
 func TestNewOpenAIProfile_UnknownModelUsesModernContextFallback(t *testing.T) {
+	t.Parallel()
 	p := NewOpenAIProfile("gpt-6-preview")
 	if got := p.ContextWindowSize(); got == 128_000 {
 		t.Fatalf("ContextWindowSize() = %d, want modern fallback larger than 128000", got)
@@ -441,6 +458,7 @@ func TestNewOpenAIProfile_UnknownModelUsesModernContextFallback(t *testing.T) {
 // instead of falling back to the 128K generic default. ollama/llama3.1
 // has max_input_tokens=8192 in the embedded litellm catalog.
 func TestNewOpenAICompatProfile_OllamaResolvesCatalogMetadata(t *testing.T) {
+	t.Parallel()
 	p := newOpenAICompatProfile("ollama", "llama3.1", 0)
 	if got := p.ContextWindowSize(); got != 8192 {
 		t.Fatalf("ContextWindowSize() = %d, want 8192 (from ollama/llama3.1 catalog entry)", got)
@@ -455,6 +473,7 @@ func TestNewOpenAICompatProfile_OllamaResolvesCatalogMetadata(t *testing.T) {
 // including the tag-stripped form) falls back to the 128K generic default
 // rather than failing.
 func TestNewOpenAICompatProfile_OllamaUnknownModelFallsBack(t *testing.T) {
+	t.Parallel()
 	p := newOpenAICompatProfile("ollama", "definitely-not-a-real-model:9999b", 0)
 	if got := p.ContextWindowSize(); got != 128_000 {
 		t.Fatalf("ContextWindowSize() = %d, want 128000 fallback", got)
@@ -468,6 +487,7 @@ func TestNewOpenAICompatProfile_OllamaUnknownModelFallsBack(t *testing.T) {
 // "ollama/llama3.1" (no tag), so without this fallback every typical
 // tagged Ollama model would silently miss its catalog entry.
 func TestNewOpenAICompatProfile_OllamaTaggedModelFallsBackToBase(t *testing.T) {
+	t.Parallel()
 	p := newOpenAICompatProfile("ollama", "llama3.1:8b", 0)
 	if got := p.ContextWindowSize(); got != 8192 {
 		t.Fatalf("ContextWindowSize() = %d, want 8192 (from ollama/llama3.1 via tag-stripped lookup)", got)
@@ -483,6 +503,7 @@ func TestNewOpenAICompatProfile_OllamaTaggedModelFallsBackToBase(t *testing.T) {
 // Without the skip, asking ollama for that name would silently inherit
 // Anthropic's window. Asserts the catalog miss falls back to 128K.
 func TestNewOpenAICompatProfile_OllamaDoesNotPickUpAnthropicCatalog(t *testing.T) {
+	t.Parallel()
 	p := newOpenAICompatProfile("ollama", "claude-3-haiku-20240307", 0)
 	if got := p.ContextWindowSize(); got != 128_000 {
 		t.Fatalf("ContextWindowSize() = %d, want 128000 generic fallback — bare-key lookup leaked anthropic catalog metadata into ollama", got)
@@ -506,6 +527,7 @@ func TestNewOpenAICompatProfile_OllamaDoesNotPickUpAnthropicCatalog(t *testing.T
 //   - openrouter-anthropic profile + WithModel(prefixed) similarly
 //     loses the OpenRouter-Anthropic routing
 func TestBaseProfile_WithModel_PreservesSlashOnMetaProviders(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		startProfile func() *provider.Profile
 		startID      string
@@ -547,6 +569,7 @@ func TestBaseProfile_WithModel_PreservesSlashOnMetaProviders(t *testing.T) {
 // "<provider>/<model>" convention would send the doubly-prefixed
 // string on the wire instead of the canonical bare form.
 func TestBaseProfile_WithModel_StripsRedundantSelfPrefixOnMetaProviders(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		startProfile func() *provider.Profile
 		startID      string
@@ -578,6 +601,7 @@ func TestBaseProfile_WithModel_StripsRedundantSelfPrefixOnMetaProviders(t *testi
 // truncation when SetModel switches between OpenRouter-routed models
 // with different real context windows.
 func TestBaseProfile_WithModel_RecomputesCatalogStateOnMetaProviders(t *testing.T) {
+	t.Parallel()
 	// Start with a known small-context model under openrouter
 	// ("anthropic/claude-3-haiku-20240307" → 200000 in the catalog).
 	orig := newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
@@ -613,6 +637,7 @@ func TestBaseProfile_WithModel_RecomputesCatalogStateOnMetaProviders(t *testing.
 // the model changes within the same provider — the constructor must
 // re-derive metadata for the new model, not just inherit defaults.
 func TestNewOpenRouterAnthropicProfile_ResolvesOpenRouterPrefixedCatalog(t *testing.T) {
+	t.Parallel()
 	p := newOpenRouterAnthropicProfile("anthropic/claude-3-haiku-20240307")
 	if got := p.ContextWindowSize(); got != 200_000 {
 		t.Fatalf("ContextWindowSize() = %d, want 200000 from openrouter/anthropic/claude-3-haiku-20240307 catalog entry — bare lookup missed and OpenRouter prefix was not tried", got)
@@ -627,6 +652,7 @@ func TestNewOpenRouterAnthropicProfile_ResolvesOpenRouterPrefixedCatalog(t *test
 // `ws = mi.SupportsWebSearch` unconditionally, which silently flipped
 // web search off for matched OpenRouter Anthropic models.
 func TestNewOpenRouterAnthropicProfile_PreservesWebSearchDefault(t *testing.T) {
+	t.Parallel()
 	// claude-3-haiku-20240307 is in the catalog as
 	// "openrouter/anthropic/claude-3-haiku-20240307" with NO
 	// supports_web_search field. Constructor default should win.
@@ -644,6 +670,7 @@ func TestNewOpenRouterAnthropicProfile_PreservesWebSearchDefault(t *testing.T) {
 // anthropic/claude-sonnet-4-5 entry, but bare "claude-sonnet-4-5" has
 // max_input_tokens=200000.
 func TestNewOpenRouterAnthropicProfile_StripsBareUpstreamCtxFallback(t *testing.T) {
+	t.Parallel()
 	p := newOpenRouterAnthropicProfile("anthropic/claude-sonnet-4-5")
 	if got := p.ContextWindowSize(); got != 200_000 {
 		t.Fatalf("ContextWindowSize() = %d, want 200000 from bare upstream catalog entry — step 3 ctx fallback missing", got)
@@ -660,6 +687,7 @@ func TestNewOpenRouterAnthropicProfile_StripsBareUpstreamCtxFallback(t *testing.
 // OpenRouter upstreams (anthropic, openai, google, gemini, minimax)
 // stay as model namespaces and don't trigger a provider switch.
 func TestBaseProfile_WithModel_OpenRouterKeepsUpstreamNamespace(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		startProfile func() *provider.Profile
 		startID      string
@@ -700,6 +728,7 @@ func TestBaseProfile_WithModel_OpenRouterKeepsUpstreamNamespace(t *testing.T) {
 // false on bare-direct matches, falsely advertising web search support
 // for models that don't have it.
 func TestNewOpenRouterAnthropicProfile_HonorsExplicitWebSearchFalse(t *testing.T) {
+	t.Parallel()
 	p := newOpenRouterAnthropicProfile("minimax/minimax-m2.7")
 	if p.SupportsWebSearch() {
 		t.Fatal("SupportsWebSearch() = true, want false — bare entry's explicit supports_web_search:false must be respected on the MiniMax-via-OpenRouter-Anthropic path")
@@ -715,6 +744,7 @@ func TestNewOpenRouterAnthropicProfile_HonorsExplicitWebSearchFalse(t *testing.T
 // constructor's MiniMax-style default ["low","medium","high","max"]
 // — incorrectly advertising a "max" tier these models don't support.
 func TestNewOpenRouterAnthropicProfile_PicksUpBareUpstreamEffortOverrides(t *testing.T) {
+	t.Parallel()
 	// "anthropic/claude-sonnet-4-5" — the openrouter prefix in the
 	// catalog has no reasoning_effort_levels; the bare "claude-sonnet-4-5"
 	// override entry sets ["low","medium","high"].
@@ -746,6 +776,7 @@ func equalStringSlices(a, b []string) bool {
 // choose a different backend — silently revert the communicate
 // contract to the new provider's default.
 func TestBaseProfile_WithModel_PreservesToolDefOverridesAcrossProviderSwitch(t *testing.T) {
+	t.Parallel()
 	customSchema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -803,6 +834,7 @@ func TestBaseProfile_WithModel_PreservesToolDefOverridesAcrossProviderSwitch(t *
 // and later calls Session.SetModel(...) (or a subagent override
 // arrives), the new profile must still carry the custom schema.
 func TestBaseProfile_WithModel_PreservesToolDefOverrides(t *testing.T) {
+	t.Parallel()
 	customSchema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -862,6 +894,7 @@ func TestBaseProfile_WithModel_PreservesToolDefOverrides(t *testing.T) {
 // switching to a different one via WithModel must surface the new
 // model's OpenRouter-prefixed catalog metadata, not stale state.
 func TestBaseProfile_WithModel_RecomputesOpenRouterAnthropicCatalog(t *testing.T) {
+	t.Parallel()
 	orig := newOpenRouterAnthropicProfile("anthropic/claude-3-5-sonnet")
 	cloned := orig.WithModel("anthropic/claude-3-haiku-20240307")
 	if cloned.ID() != "openrouter-anthropic" {
@@ -882,6 +915,7 @@ func TestBaseProfile_WithModel_RecomputesOpenRouterAnthropicCatalog(t *testing.T
 // the other way must drop it. A shallow clone would leave whichever
 // option was set at original-profile construction time.
 func TestBaseProfile_WithModel_RecomputesProviderOptsOnMetaProviders(t *testing.T) {
+	t.Parallel()
 	// Start without minimax/* — providerOpts should be nil.
 	orig := newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
 	if orig.ProviderOptions() != nil {
@@ -914,6 +948,7 @@ func TestBaseProfile_WithModel_RecomputesProviderOptsOnMetaProviders(t *testing.
 // prefixes. kimi/glm catalog keys are unprefixed so the stripped form
 // is the canonical wire model.
 func TestBaseProfile_WithModel_SameProviderStripStillWorksForKimiGlm(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		startID   string
 		input     string
@@ -943,6 +978,7 @@ func TestBaseProfile_WithModel_SameProviderStripStillWorksForKimiGlm(t *testing.
 // those metadata must still be inherited. Otherwise OpenRouter would
 // regress to the 128K generic fallback for many real models.
 func TestNewOpenAICompatProfile_OpenRouterUpstreamBareEntry(t *testing.T) {
+	t.Parallel()
 	p := newOpenAICompatProfile("openrouter", "minimax/minimax-m2.7", 0)
 	if got := p.ContextWindowSize(); got != 204800 {
 		t.Fatalf("ContextWindowSize() = %d, want 204800 from bare minimax catalog entry — bare-key fallback was over-suppressed for openrouter", got)
@@ -955,6 +991,7 @@ func TestNewOpenAICompatProfile_OpenRouterUpstreamBareEntry(t *testing.T) {
 // even when the model name starts with "minimax/". A user could
 // legitimately have a custom Ollama model named under that namespace.
 func TestNewOpenAICompatProfile_MinimaxOptOnlyForOpenRouter(t *testing.T) {
+	t.Parallel()
 	openrouter := newOpenAICompatProfile("openrouter", "minimax/minimax-m2.7", 0)
 	if openrouter.ProviderOptions() == nil {
 		t.Fatal("openrouter+minimax/* profile is missing the reasoning provider option")
@@ -975,6 +1012,7 @@ func TestNewOpenAICompatProfile_MinimaxOptOnlyForOpenRouter(t *testing.T) {
 // comes back. Detailed precedence is covered by
 // TestResolveOpenAICompatCatalogModel against a fake catalog.
 func TestNewOpenAICompatProfile_OllamaTaggedModelEndToEnd(t *testing.T) {
+	t.Parallel()
 	p := newOpenAICompatProfile("ollama", "llama3:8b", 0)
 	if got := p.ContextWindowSize(); got == 128_000 {
 		t.Fatalf("ContextWindowSize() = 128000 (generic fallback) — helper not wired into newOpenAICompatProfile")
@@ -994,6 +1032,7 @@ func TestNewOpenAICompatProfile_OllamaTaggedModelEndToEnd(t *testing.T) {
 // refactor that broke the prefixed-key fallback for the non-Ollama path
 // would otherwise go unnoticed.
 func TestNewOpenAICompatProfile_OpenRouterResolvesCatalogMetadata(t *testing.T) {
+	t.Parallel()
 	p := newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
 	if got := p.ContextWindowSize(); got != 200000 {
 		t.Fatalf("ContextWindowSize() = %d, want 200000 (from openrouter/anthropic/claude-3-haiku-20240307 catalog entry)", got)
@@ -1033,6 +1072,7 @@ func assertMissingTool(t *testing.T, p *provider.Profile, name string) {
 // profiles include skills guidance when skills are provided.
 // All provider profiles use the use_skill tool with directory paths.
 func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
+	t.Parallel()
 	profiles := map[string]*provider.Profile{
 		"openai":    NewOpenAIProfile("gpt-5.2"),
 		"anthropic": newAnthropicProfile("claude-test"),
@@ -1066,6 +1106,7 @@ func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_IncludesSkillsList(t *testing.T) {
+	t.Parallel()
 	// Anthropic profile has use_skill, so skills are rendered with directory paths.
 	p := newAnthropicProfile("claude-test")
 	skills := []skillEntry{
@@ -1098,6 +1139,7 @@ func TestBuildSystemPrompt_IncludesSkillsList(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_OpenAI_SkillsWithUseSkill(t *testing.T) {
+	t.Parallel()
 	p := NewOpenAIProfile("gpt-5.2")
 	skills := []skillEntry{
 		{Name: "greet", Description: "Greeting skill", Dir: "/tmp/skills/greet", SkillFile: "/tmp/skills/greet/SKILL.md"},
@@ -1122,6 +1164,7 @@ func TestBuildSystemPrompt_OpenAI_SkillsWithUseSkill(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_NoSkills_NoSkillsSection(t *testing.T) {
+	t.Parallel()
 	p := NewOpenAIProfile("gpt-5.2")
 	prompt := renderPromptForTest(t, p, promptData{
 		WorkingDir: "/tmp",
@@ -1136,12 +1179,14 @@ func TestBuildSystemPrompt_NoSkills_NoSkillsSection(t *testing.T) {
 }
 
 func TestGeminiProfile_IncludesWebSearch(t *testing.T) {
+	t.Parallel()
 	assertHasTool(t, newGeminiProfile("gemini-test"), "web_search")
 	assertMissingTool(t, NewOpenAIProfile("gpt-5.2"), "web_search")
 	assertMissingTool(t, newAnthropicProfile("claude-test"), "web_search")
 }
 
 func TestProviderProfile_ProviderOptions(t *testing.T) {
+	t.Parallel()
 	p := newAnthropicProfile("claude-opus-4-6")
 	opts := p.ProviderOptions()
 	if opts == nil {
@@ -1150,6 +1195,7 @@ func TestProviderProfile_ProviderOptions(t *testing.T) {
 }
 
 func TestOpenAIProfile_ProviderOptions_ParallelToolCalls(t *testing.T) {
+	t.Parallel()
 	p := NewOpenAIProfile("gpt-5.2")
 	opts := p.ProviderOptions()
 	if opts == nil {
@@ -1169,6 +1215,7 @@ func TestOpenAIProfile_ProviderOptions_ParallelToolCalls(t *testing.T) {
 }
 
 func TestAnthropicProfile_ProviderOptions_MaxTokens(t *testing.T) {
+	t.Parallel()
 	p := newAnthropicProfile("claude-opus-4-6")
 	opts := p.ProviderOptions()
 	anth, ok := opts["anthropic"].(map[string]any)
@@ -1185,6 +1232,7 @@ func TestAnthropicProfile_ProviderOptions_MaxTokens(t *testing.T) {
 }
 
 func TestAnthropicProfile_ProviderOptions_NoBetaHeadersByDefault(t *testing.T) {
+	t.Parallel()
 	p := newAnthropicProfile("test-model")
 	opts := p.ProviderOptions()
 	anth, ok := opts["anthropic"].(map[string]any)
@@ -1198,6 +1246,7 @@ func TestAnthropicProfile_ProviderOptions_NoBetaHeadersByDefault(t *testing.T) {
 }
 
 func TestProviderProfile_SupportsReasoning(t *testing.T) {
+	t.Parallel()
 	if !NewOpenAIProfile("gpt-5.2").SupportsReasoning() {
 		t.Fatal("OpenAI should support reasoning")
 	}
@@ -1207,12 +1256,14 @@ func TestProviderProfile_SupportsReasoning(t *testing.T) {
 }
 
 func TestProviderProfile_SupportsStreaming(t *testing.T) {
+	t.Parallel()
 	if !NewOpenAIProfile("gpt-5.2").SupportsStreaming() {
 		t.Fatal("OpenAI should support streaming")
 	}
 }
 
 func TestProviderProfile_DefaultCommandTimeout(t *testing.T) {
+	t.Parallel()
 	if got := NewOpenAIProfile("gpt-5.2").DefaultCommandTimeoutMS(); got != 120_000 {
 		t.Fatalf("OpenAI timeout = %d, want 120000", got)
 	}
@@ -1225,6 +1276,7 @@ func TestProviderProfile_DefaultCommandTimeout(t *testing.T) {
 }
 
 func TestProviderProfile_KnowledgeCutoff(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		p    *provider.Profile
@@ -1257,6 +1309,7 @@ func wiredToolNames(p *provider.Profile) map[string]bool {
 }
 
 func TestToolNameMapping_OpenAI(t *testing.T) {
+	t.Parallel()
 	toolNames := wiredToolNames(NewOpenAIProfile("gpt-5.2"))
 	// OpenAI advertises provider-specific names to the model.
 	if !toolNames["exec_command"] {
@@ -1281,6 +1334,7 @@ func TestToolNameMapping_OpenAI(t *testing.T) {
 }
 
 func TestToolNameMapping_Gemini(t *testing.T) {
+	t.Parallel()
 	toolNames := wiredToolNames(newGeminiProfile("gemini-test"))
 	if !toolNames["run_shell_command"] {
 		t.Fatal("Gemini wire defs should contain run_shell_command (mapped from shell)")
@@ -1294,6 +1348,7 @@ func TestToolNameMapping_Gemini(t *testing.T) {
 }
 
 func TestToolNameMapping_Anthropic_NoMapping(t *testing.T) {
+	t.Parallel()
 	p := newAnthropicProfile("claude-test")
 	toolNames := map[string]bool{}
 	for _, td := range p.ToolDefinitions() {
@@ -1312,6 +1367,7 @@ func TestToolNameMapping_Anthropic_NoMapping(t *testing.T) {
 }
 
 func TestGeminiProfile_ProviderOptions_HasSafetySettings(t *testing.T) {
+	t.Parallel()
 	p := newGeminiProfile("gemini-2.5-flash")
 	opts := p.ProviderOptions()
 	if opts == nil {
@@ -1342,6 +1398,7 @@ func TestGeminiProfile_ProviderOptions_HasSafetySettings(t *testing.T) {
 }
 
 func TestAnthropicProfile_ContextWindow_Default200K(t *testing.T) {
+	t.Parallel()
 	p := newAnthropicProfile("claude-sonnet-4-5-20250929")
 	if p.ContextWindowSize() != 200_000 {
 		t.Errorf("expected 200000, got %d", p.ContextWindowSize())
@@ -1349,6 +1406,7 @@ func TestAnthropicProfile_ContextWindow_Default200K(t *testing.T) {
 }
 
 func TestAnthropicProfile_ContextWindow_1MSuffix(t *testing.T) {
+	t.Parallel()
 	p := newAnthropicProfile("claude-opus-4-6[1m]")
 	if p.ContextWindowSize() != 1_000_000 {
 		t.Errorf("expected 1000000, got %d", p.ContextWindowSize())
@@ -1360,6 +1418,7 @@ func TestAnthropicProfile_ContextWindow_1MSuffix(t *testing.T) {
 }
 
 func TestAnthropicProfile_WithModel_RoundTrip(t *testing.T) {
+	t.Parallel()
 	// Start at 200K, switch to 1M model.
 	orig := newAnthropicProfile("claude-opus-4-6")
 	if orig.ContextWindowSize() != 200_000 {
@@ -1387,6 +1446,7 @@ func TestAnthropicProfile_WithModel_RoundTrip(t *testing.T) {
 }
 
 func TestAnthropicProfile_WithModel_NoProviderOptsAliasing(t *testing.T) {
+	t.Parallel()
 	orig := newAnthropicProfile("claude-opus-4-6")
 	cloned := orig.WithModel("claude-opus-4-6[1m]")
 
@@ -1412,6 +1472,7 @@ func TestAnthropicProfile_WithModel_NoProviderOptsAliasing(t *testing.T) {
 }
 
 func TestAnthropicProfile_1M_BetaHeader(t *testing.T) {
+	t.Parallel()
 	p := newAnthropicProfile("claude-opus-4-6[1m]")
 	opts := p.ProviderOptions()
 	anth, ok := opts["anthropic"].(map[string]any)
@@ -1429,6 +1490,7 @@ func TestAnthropicProfile_1M_BetaHeader(t *testing.T) {
 }
 
 func TestAnthropicProfile_Default_NoBeta1MHeader(t *testing.T) {
+	t.Parallel()
 	p := newAnthropicProfile("claude-opus-4-6")
 	opts := p.ProviderOptions()
 	anth, ok := opts["anthropic"].(map[string]any)
@@ -1442,6 +1504,7 @@ func TestAnthropicProfile_Default_NoBeta1MHeader(t *testing.T) {
 }
 
 func TestGeminiProfile_ContextWindow_Is1M(t *testing.T) {
+	t.Parallel()
 	p := newGeminiProfile("gemini-2.5-flash")
 	if p.ContextWindowSize() != 1_000_000 {
 		t.Errorf("expected 1000000, got %d", p.ContextWindowSize())
@@ -1449,6 +1512,7 @@ func TestGeminiProfile_ContextWindow_Is1M(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_ToolUsageBeforeProjectDocs(t *testing.T) {
+	t.Parallel()
 	p := NewOpenAIProfile("gpt-5.2")
 	prompt := renderPromptForTest(t, p, promptData{
 		WorkingDir:  "/tmp",
@@ -1473,6 +1537,7 @@ func TestBuildSystemPrompt_ToolUsageBeforeProjectDocs(t *testing.T) {
 }
 
 func TestApplyPatch_DescriptionIncludesCapabilities(t *testing.T) {
+	t.Parallel()
 	d := tool.DefApplyPatch()
 	if !strings.Contains(d.Description, "creating") || !strings.Contains(d.Description, "deleting") || !strings.Contains(d.Description, "modifying") {
 		t.Fatalf("apply_patch description missing capability summary: %q", d.Description)
@@ -1480,6 +1545,7 @@ func TestApplyPatch_DescriptionIncludesCapabilities(t *testing.T) {
 }
 
 func TestProviderProfile_NewToolRegistry_ContainsProfileTools(t *testing.T) {
+	t.Parallel()
 	profiles := []*provider.Profile{
 		NewOpenAIProfile("gpt-5.2"),
 		newAnthropicProfile("claude-test"),
@@ -1528,6 +1594,7 @@ func TestProviderProfile_NewToolRegistry_ContainsProfileTools(t *testing.T) {
 }
 
 func TestProviderProfile_NewToolRegistry_PlaceholderExecReturnsError(t *testing.T) {
+	t.Parallel()
 	p := newAnthropicProfile("claude-test")
 	reg := newProfileToolRegistry(p)
 	tool := reg.Get("read_file")
@@ -1555,6 +1622,7 @@ func assertToolListExact(t *testing.T, p *provider.Profile, want []string) {
 }
 
 func TestBuildSystemPrompt_WorkspaceSection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// Create a realistic workspace.
@@ -1630,6 +1698,7 @@ func TestBuildSystemPrompt_WorkspaceSection(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_EmptyWorkspace(t *testing.T) {
+	t.Parallel()
 	env := schema.EnvironmentInfo{
 		WorkingDir: "/tmp",
 		Platform:   "linux",
@@ -1651,6 +1720,7 @@ func TestBuildSystemPrompt_EmptyWorkspace(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_WorkspaceAnnotation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	touchFile(t, filepath.Join(dir, "main.py"), "print('hello')\n")
 
@@ -1678,6 +1748,7 @@ func TestBuildSystemPrompt_WorkspaceAnnotation(t *testing.T) {
 // --- MiniMax profile tests ---
 
 func TestMiniMaxProfile_BasicProperties(t *testing.T) {
+	t.Parallel()
 	p := newMiniMaxProfile("MiniMax-M2.7")
 	if p.ID() != "minimax" {
 		t.Fatalf("ID() = %q, want minimax", p.ID())
@@ -1697,6 +1768,7 @@ func TestMiniMaxProfile_BasicProperties(t *testing.T) {
 }
 
 func TestMiniMaxProfile_AnthropicStyleTools(t *testing.T) {
+	t.Parallel()
 	// MiniMax direct platform uses Anthropic API, so it should have
 	// Anthropic-style tools (edit_file, use_skill, no apply_patch).
 	p := newMiniMaxProfile("MiniMax-M2.7")
@@ -1706,6 +1778,7 @@ func TestMiniMaxProfile_AnthropicStyleTools(t *testing.T) {
 }
 
 func TestMiniMaxProfile_ToolListExact(t *testing.T) {
+	t.Parallel()
 	p := newMiniMaxProfile("MiniMax-M2.7")
 	assertToolListExact(t, p, []string{
 		"read_file",
@@ -1732,6 +1805,7 @@ func TestMiniMaxProfile_ToolListExact(t *testing.T) {
 // is now handled by the Session resolver.
 
 func TestResolveEffortLevels_CatalogHit(t *testing.T) {
+	t.Parallel()
 	// claude-opus-4-6 is in the catalog with [low, medium, high, max]
 	p := newAnthropicProfile("claude-opus-4-6")
 	levels := p.ReasoningEffortLevels()
@@ -1741,6 +1815,7 @@ func TestResolveEffortLevels_CatalogHit(t *testing.T) {
 }
 
 func TestResolveEffortLevels_CatalogMiss(t *testing.T) {
+	t.Parallel()
 	// A model not in the catalog should fall back to provider defaults.
 	p := newAnthropicProfile("claude-unknown-model")
 	levels := p.ReasoningEffortLevels()
@@ -1751,6 +1826,7 @@ func TestResolveEffortLevels_CatalogMiss(t *testing.T) {
 }
 
 func TestResolveEffortLevels_MiniMaxCatalog(t *testing.T) {
+	t.Parallel()
 	// minimax/minimax-m2.7 is in the catalog with [low, medium, high] (no max)
 	p := newMiniMaxProfile("minimax/minimax-m2.7")
 	levels := p.ReasoningEffortLevels()
@@ -1760,6 +1836,7 @@ func TestResolveEffortLevels_MiniMaxCatalog(t *testing.T) {
 }
 
 func TestTaskListSchema_EffortEnum_MatchesCatalog(t *testing.T) {
+	t.Parallel()
 	// Verify that the task_list tool's reasoning_effort enum matches the
 	// catalog entry across different profile paths.
 	model := "minimax/minimax-m2.7"
@@ -1852,6 +1929,7 @@ func stringSliceEqual(a, b []string) bool {
 // TestProviderProfile_BehaviorTag verifies that each constructor stamps the
 // correct behavior tag on the profile.
 func TestProviderProfile_BehaviorTag(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		profile *provider.Profile
@@ -1880,6 +1958,7 @@ func TestProviderProfile_BehaviorTag(t *testing.T) {
 // TestWithProviderID verifies that WithProviderID overrides the id but preserves
 // the behavior tag and all other profile state.
 func TestWithProviderID(t *testing.T) {
+	t.Parallel()
 	orig := NewOpenAIProfile("gpt-5.2")
 	renamed := WithProviderID(orig, "work")
 	if renamed.ID() != "work" {
@@ -1897,6 +1976,7 @@ func TestWithProviderID(t *testing.T) {
 // TestRenamedInstance_CheapModel verifies that CheapModel uses behaviorTag (not
 // id) so a renamed instance keeps the right cheap model.
 func TestRenamedInstance_CheapModel(t *testing.T) {
+	t.Parallel()
 	// kimi renamed to "work" → cheap model should be the kimi default (p.model).
 	kimiWork := WithProviderID(newOpenAICompatProfile("kimi", "kimi-k2", 0), "work")
 	// CheapModel for kimi falls through to p.model (no explicit case for kimi in
@@ -1929,6 +2009,7 @@ func TestRenamedInstance_CheapModel(t *testing.T) {
 // path called newOpenAICompatProfile(p.id, model, 0) which would derive the tag
 // from "work" instead of "kimi".
 func TestRenamedInstance_RebuildPreservesTag(t *testing.T) {
+	t.Parallel()
 	kimiWork := WithProviderID(newOpenAICompatProfile("kimi", "kimi-k2", 0), "work")
 	if kimiWork.BehaviorTag() != "kimi" {
 		t.Fatalf("pre-condition: BehaviorTag() = %q, want kimi", kimiWork.BehaviorTag())
@@ -1955,6 +2036,7 @@ func TestRenamedInstance_RebuildPreservesTag(t *testing.T) {
 // logic keys on behaviorTag, not id. An instance with id=="work" but
 // behaviorTag=="ollama" must suppress bare catalog lookups.
 func TestRenamedInstance_CatalogLookup(t *testing.T) {
+	t.Parallel()
 	// An ollama instance renamed to "work" must still get catalog metadata
 	// resolved under the "ollama/..." prefixed key (not "work/...").
 	// If the catalog key is prefixed with id ("work/llama3.1") we get
@@ -1978,6 +2060,7 @@ func TestRenamedInstance_CatalogLookup(t *testing.T) {
 // renamed to "work" still keeps upstream namespaces (prefixActionKeep) and that
 // the minimax/ providerOpts gate uses behaviorTag.
 func TestRenamedInstance_OpenRouterMetaNamespace(t *testing.T) {
+	t.Parallel()
 	// openrouter renamed to "work"
 	orWork := WithProviderID(newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0), "work")
 	if orWork.BehaviorTag() != "openrouter" {

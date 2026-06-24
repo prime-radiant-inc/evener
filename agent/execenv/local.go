@@ -89,6 +89,12 @@ func (e *LocalExecutionEnvironment) Initialize() error {
 	return nil
 }
 
+// terminateGrace bounds how long a SIGTERM'd process group is given to exit
+// before it is escalated to SIGKILL. Production keeps the 2s default; tests
+// shrink it so teardown of processes that ignore SIGTERM does not cost real
+// seconds.
+var terminateGrace = 2 * time.Second
+
 // Cleanup terminates any tracked processes by sending SIGTERM to each process
 // group, waiting two seconds for graceful shutdown, then sending SIGKILL to
 // every tracked process group (a no-op for those that already exited).
@@ -106,7 +112,7 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 		terminateProcessGroup(pid)
 	}
 	// Wait for graceful shutdown, then SIGKILL survivors.
-	time.Sleep(2 * time.Second)
+	time.Sleep(terminateGrace)
 	for _, pid := range pids {
 		killProcessGroup(pid)
 	}
@@ -715,12 +721,12 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 		select {
 		case <-done:
 			// exited on SIGTERM
-		case <-time.After(2 * time.Second):
+		case <-time.After(terminateGrace):
 			killProcessGroup(cmd.Process.Pid)
 			// Best-effort: wait a bit for Wait() to return so we don't leak the goroutine.
 			select {
 			case <-done:
-			case <-time.After(2 * time.Second):
+			case <-time.After(terminateGrace):
 			}
 		}
 	}
@@ -810,7 +816,7 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 			}
 			terminateProcessGroup(pid)
 			go func() {
-				timer := time.NewTimer(2 * time.Second)
+				timer := time.NewTimer(terminateGrace)
 				defer timer.Stop()
 				select {
 				case <-done:

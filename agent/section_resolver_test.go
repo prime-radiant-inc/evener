@@ -12,6 +12,7 @@ import (
 )
 
 func TestDiskSource_ReadFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	content := "I am serf"
 	if err := os.WriteFile(filepath.Join(dir, "identity.md"), []byte(content), 0644); err != nil {
@@ -39,6 +40,7 @@ func TestDiskSource_ReadFile(t *testing.T) {
 }
 
 func TestDiskSource_EmptyDir(t *testing.T) {
+	t.Parallel()
 	src := diskSource{dir: ""}
 	data, ok := src.ReadFile("anything.md")
 	if ok {
@@ -50,6 +52,7 @@ func TestDiskSource_EmptyDir(t *testing.T) {
 }
 
 func TestEmbedSource_ReadFile(t *testing.T) {
+	t.Parallel()
 	src := embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}
 
 	data, ok := src.ReadFile("identity.md")
@@ -94,6 +97,7 @@ func mustWorkflowAgent(t *testing.T, name string) plugin.Agent {
 }
 
 func TestSectionResolver_BaseOnly(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeSection(t, dir, "identity.md", "I am serf")
 
@@ -105,6 +109,7 @@ func TestSectionResolver_BaseOnly(t *testing.T) {
 }
 
 func TestSectionResolver_ProviderOverride(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeSection(t, dir, "tools.md", "generic tools")
 	writeSection(t, dir, "tools.provider-openai.md", "openai tools")
@@ -117,6 +122,7 @@ func TestSectionResolver_ProviderOverride(t *testing.T) {
 }
 
 func TestSectionResolver_ProviderFallsBackToBase(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeSection(t, dir, "tools.md", "generic tools")
 
@@ -128,6 +134,7 @@ func TestSectionResolver_ProviderFallsBackToBase(t *testing.T) {
 }
 
 func TestSectionResolver_PrependAppend(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeSection(t, dir, "tools.provider-openai_prepend.md", "before")
 	writeSection(t, dir, "tools.md", "base")
@@ -142,6 +149,7 @@ func TestSectionResolver_PrependAppend(t *testing.T) {
 }
 
 func TestSectionResolver_AgentBodyReplaces(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeSection(t, dir, "communicate.md", "call communicate")
 	writeSection(t, dir, "communicate.agent-reviewer.md", "call approve or reject")
@@ -154,6 +162,7 @@ func TestSectionResolver_AgentBodyReplaces(t *testing.T) {
 }
 
 func TestSectionResolver_AgentAppendIsAdditive(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeSection(t, dir, "tools.md", "base tools")
 	writeSection(t, dir, "tools.agent-implementer_append.md", "impl tips")
@@ -167,6 +176,7 @@ func TestSectionResolver_AgentAppendIsAdditive(t *testing.T) {
 }
 
 func TestSectionResolver_MissingSectionReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	r := newTestResolver(t, dir, "openai", "coordinator")
@@ -177,6 +187,7 @@ func TestSectionResolver_MissingSectionReturnsEmpty(t *testing.T) {
 }
 
 func TestSectionResolver_SourcePriority(t *testing.T) {
+	t.Parallel()
 	dir1 := t.TempDir()
 	dir2 := t.TempDir()
 	writeSection(t, dir1, "identity.md", "project identity")
@@ -194,6 +205,7 @@ func TestSectionResolver_SourcePriority(t *testing.T) {
 }
 
 func TestSectionResolver_TmplRendering(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeSection(t, dir, "identity.md.tmpl", "Hello {{ .Provider }}")
 
@@ -205,6 +217,7 @@ func TestSectionResolver_TmplRendering(t *testing.T) {
 }
 
 func TestSectionResolver_TmplPriorityOverMd(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeSection(t, dir, "identity.md.tmpl", "Template {{ .Provider }}")
 	writeSection(t, dir, "identity.md", "Static")
@@ -217,6 +230,7 @@ func TestSectionResolver_TmplPriorityOverMd(t *testing.T) {
 }
 
 func TestSectionResolver_Render(t *testing.T) {
+	t.Parallel()
 	// Section files.
 	sectionDir := t.TempDir()
 	writeSection(t, sectionDir, "identity.md", "I am serf")
@@ -241,6 +255,7 @@ func TestSectionResolver_Render(t *testing.T) {
 }
 
 func TestSectionResolver_RenderConditional(t *testing.T) {
+	t.Parallel()
 	sectionDir := t.TempDir()
 	writeSection(t, sectionDir, "identity.md", "I am serf")
 	writeSection(t, sectionDir, "non-interactive.md", "headless mode")
@@ -274,6 +289,7 @@ func TestSectionResolver_RenderConditional(t *testing.T) {
 }
 
 func TestCollapseBlankLines(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		in, want string
 	}{
@@ -293,6 +309,7 @@ func TestCollapseBlankLines(t *testing.T) {
 }
 
 func TestSectionResolver_RoleSection(t *testing.T) {
+	t.Parallel()
 	r := &sectionResolver{
 		provider: "openai",
 		agent:    "coordinator",
@@ -315,6 +332,7 @@ func TestSectionResolver_RoleSection(t *testing.T) {
 }
 
 func TestSectionResolver_RoleDiskOverride(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeSection(t, dir, "role.agent-coordinator.md", "Custom coordinator role")
 
@@ -332,6 +350,7 @@ func TestSectionResolver_RoleDiskOverride(t *testing.T) {
 }
 
 func TestSectionResolver_SourceTracking(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	writeSection(t, dir, "identity.md", "I am serf")
 
@@ -358,6 +377,7 @@ func TestSectionResolver_SourceTracking(t *testing.T) {
 }
 
 func TestMasterTemplates_Parse(t *testing.T) {
+	t.Parallel()
 	funcMap := template.FuncMap{"section": func(string) string { return "" }}
 	for _, name := range []string{"system", "subagent"} {
 		content, err := embeddedPrompts.ReadFile("prompts/templates/" + name + ".md.tmpl")
@@ -372,6 +392,7 @@ func TestMasterTemplates_Parse(t *testing.T) {
 }
 
 func TestSystemTemplate_StructuralRegression(t *testing.T) {
+	t.Parallel()
 	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "coordinator",
@@ -454,6 +475,7 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 // directory is not a repository. The system prompt is cached, so an unlabeled
 // snapshot would be read as live.
 func TestGitSection_SingleSourceAndLabeled(t *testing.T) {
+	t.Parallel()
 	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "coordinator",
@@ -487,6 +509,7 @@ func TestGitSection_SingleSourceAndLabeled(t *testing.T) {
 // section — it is their only source of git state, so it must be present and
 // labeled rather than confined to the root system prompt.
 func TestSubagentTemplate_IncludesGitSection(t *testing.T) {
+	t.Parallel()
 	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "implementer",
@@ -515,6 +538,7 @@ func TestSubagentTemplate_IncludesGitSection(t *testing.T) {
 }
 
 func TestSubagentTemplate_StructuralRegression(t *testing.T) {
+	t.Parallel()
 	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "implementer",
@@ -557,6 +581,7 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 // guidance section instructs agents to use the transcript tools and does not
 // tell them to read raw transcript files with read_file.
 func TestTranscriptsSection_TeachesToolsNotRawRead(t *testing.T) {
+	t.Parallel()
 	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "coordinator",
@@ -587,6 +612,7 @@ func TestTranscriptsSection_TeachesToolsNotRawRead(t *testing.T) {
 }
 
 func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
+	t.Parallel()
 	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "reviewer",
@@ -630,6 +656,7 @@ func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 }
 
 func TestAnthropicProvider_UsesEditFile(t *testing.T) {
+	t.Parallel()
 	resolver := &sectionResolver{
 		provider: "anthropic",
 		agent:    "coordinator",

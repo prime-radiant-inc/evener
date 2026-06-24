@@ -15,8 +15,6 @@ import (
 
 const transcriptJSONLMaxLineBytes = 128 << 20
 
-var strictTranscriptMaxLineBytes = transcriptJSONLMaxLineBytes
-
 // readTranscript reads a transcript JSONL file, returning the header, all valid entries,
 // and the count of skipped (corrupt/partial) lines. Callers can use the skipped count
 // to decide whether to warn about data loss from crash recovery.
@@ -150,16 +148,16 @@ func readTranscriptFull(path string) (transcriptData, error) {
 	return data, nil
 }
 
-func readStrictChildTranscript(path, expectedSessionID string) (transcriptData, error) {
-	return readStrictChildTranscriptWithOptions(path, expectedSessionID, true)
+func readStrictChildTranscript(path, expectedSessionID string, maxLineBytes int) (transcriptData, error) {
+	return readStrictChildTranscriptWithOptions(path, expectedSessionID, true, maxLineBytes)
 }
 
-func validateStrictChildTranscript(path, expectedSessionID string) (transcript.Header, error) {
-	data, err := readStrictChildTranscriptWithOptions(path, expectedSessionID, false)
+func validateStrictChildTranscript(path, expectedSessionID string, maxLineBytes int) (transcript.Header, error) {
+	data, err := readStrictChildTranscriptWithOptions(path, expectedSessionID, false, maxLineBytes)
 	return data.Header, err
 }
 
-func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retainLines bool) (transcriptData, error) {
+func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retainLines bool, maxLineBytes int) (transcriptData, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return transcriptData{}, fmt.Errorf("open transcript: %w", err)
@@ -167,7 +165,7 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 	defer func() { _ = f.Close() }()
 
 	reader := bufio.NewReaderSize(f, 64*1024)
-	headerLine, err := readStrictTranscriptLine(reader)
+	headerLine, err := readStrictTranscriptLine(reader, maxLineBytes)
 	if err != nil && (!errors.Is(err, io.EOF) || len(headerLine) == 0) {
 		if errors.Is(err, io.EOF) {
 			return transcriptData{}, fmt.Errorf("%w: transcript file is empty", errStrictChildTranscriptCorrupt)
@@ -187,7 +185,7 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 	}
 
 	for {
-		line, readErr := readStrictTranscriptLine(reader)
+		line, readErr := readStrictTranscriptLine(reader, maxLineBytes)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			if errors.Is(readErr, errStrictChildTranscriptCorrupt) {
 				return transcriptData{}, readErr
@@ -254,12 +252,15 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 	return data, nil
 }
 
-func readStrictTranscriptLine(reader *bufio.Reader) ([]byte, error) {
+func readStrictTranscriptLine(reader *bufio.Reader, maxLineBytes int) ([]byte, error) {
+	if maxLineBytes <= 0 {
+		maxLineBytes = transcriptJSONLMaxLineBytes
+	}
 	var line []byte
 	for {
 		fragment, err := reader.ReadSlice('\n')
-		if len(line)+len(fragment) > strictTranscriptMaxLineBytes {
-			return nil, fmt.Errorf("%w: transcript line exceeds %d bytes", errStrictChildTranscriptCorrupt, strictTranscriptMaxLineBytes)
+		if len(line)+len(fragment) > maxLineBytes {
+			return nil, fmt.Errorf("%w: transcript line exceeds %d bytes", errStrictChildTranscriptCorrupt, maxLineBytes)
 		}
 		line = append(line, fragment...)
 		if errors.Is(err, bufio.ErrBufferFull) {

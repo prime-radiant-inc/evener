@@ -67,6 +67,7 @@ import (
 //
 // RED until Task 14 — drive-down; tracks spec §9 headline.
 func TestDriveDownDeafCoordinator(t *testing.T) {
+	t.Parallel()
 	// Single client/adapter shared by root and coordinator. The coordinator session
 	// inherits root's LLM client via prepareSubagentRun → NewSession(s.client, ...).
 	//
@@ -157,7 +158,9 @@ func TestDriveDownDeafCoordinator(t *testing.T) {
 	// Allow time for the async drive turn to run: notify → parent drives the
 	// coordinator → coordinator's EntryNotification turn drains both worker
 	// notifications and makes its model request within this window.
-	time.Sleep(100 * time.Millisecond)
+	waitForCondition(t, 3*time.Second, "coordinator's model to receive its notification turn", func() bool {
+		return len(adapter.Requests()) >= 2
+	})
 
 	// === ASSERTION 1 — parent drives the coordinator (RED today) ===
 	//
@@ -280,6 +283,7 @@ func (a *alwaysAckAdapter) Requests() []llm.Request {
 // mid's own boundary. The grandchild reaching the model requires the recursion;
 // a single-level drive would deliver only the mid's notification.
 func TestDriveAtDepth3WithIdleMiddle(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	adapter := &alwaysAckAdapter{name: "openai"}
 	c.Register(adapter)
@@ -354,7 +358,22 @@ func TestDriveAtDepth3WithIdleMiddle(t *testing.T) {
 	midSess.notify()
 
 	// Allow the recursive drive cascade to run: root → mid → grandchild.
-	time.Sleep(300 * time.Millisecond)
+	waitForCondition(t, 6*time.Second, "both mid-job and gc-job notifications to reach the model", func() bool {
+		foundMid := false
+		foundGC := false
+		for _, req := range adapter.Requests() {
+			for _, msg := range req.Messages {
+				text := msg.Text()
+				if strings.Contains(text, "mid-job") {
+					foundMid = true
+				}
+				if strings.Contains(text, "gc-job") {
+					foundGC = true
+				}
+			}
+		}
+		return foundMid && foundGC
+	})
 
 	reqs := adapter.Requests()
 	foundMidJob := false
@@ -397,6 +416,7 @@ func TestDriveAtDepth3WithIdleMiddle(t *testing.T) {
 // RED before T15: the re-route puts the token on the parent's rail and the mid is
 // never driven on the watch-send signal, so the mid's model never sees the frame.
 func TestMidOwnerCallerFramesRenderMidSide(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	adapter := &alwaysAckAdapter{name: "openai"}
 	c.Register(adapter)
@@ -451,7 +471,16 @@ func TestMidOwnerCallerFramesRenderMidSide(t *testing.T) {
 	// on the pending-watch-send signal.
 	midSess.notify()
 
-	time.Sleep(300 * time.Millisecond)
+	waitForCondition(t, 6*time.Second, "the mid's caller watch-send frame to reach the mid's model turn", func() bool {
+		for _, req := range adapter.Requests() {
+			for _, msg := range req.Messages {
+				if strings.Contains(msg.Text(), "delivery_restore_pending") {
+					return true
+				}
+			}
+		}
+		return false
+	})
 
 	// === ASSERTION 1 — the caller frame reaches the mid's own model turn. ===
 	foundFrame := false
@@ -489,6 +518,7 @@ func TestMidOwnerCallerFramesRenderMidSide(t *testing.T) {
 // leaves a child's caller pending alone (no token on the parent's rail), and the
 // child's own drain renders it on the child's own rail.
 func TestDrainDoesNotReRouteChildCallerPendings(t *testing.T) {
+	t.Parallel()
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
@@ -567,6 +597,7 @@ func TestDrainDoesNotReRouteChildCallerPendings(t *testing.T) {
 }
 
 func TestParentDrainDeliversChildWatchSendThroughChildSession(t *testing.T) {
+	t.Parallel()
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
@@ -704,6 +735,7 @@ func appendDelegateRecordForChild(t *testing.T, jm *jobManager, jobID, childSess
 // RED before T15: there is no gate, so a stopped child with queued pre-stop
 // attention is still selected for a drive.
 func TestStopGatingNoResurrection(t *testing.T) {
+	t.Parallel()
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
@@ -746,6 +778,7 @@ func TestStopGatingNoResurrection(t *testing.T) {
 // record appended AFTER a stop clears the gate even when its wall-clock stamp is
 // earlier than the stop's (a clock-skew / frozen-clock race).
 func TestStopGateUsesAppendOrderNotWallClock(t *testing.T) {
+	t.Parallel()
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
@@ -846,6 +879,7 @@ func childPendingNotifyState(t *testing.T, jm *jobManager, jobID string) jobstor
 // restore re-arm enqueues every terminal record including forwarded child-owned
 // ones (the wake-storm).
 func TestDriveHandoffSettleAndCrashReArm(t *testing.T) {
+	t.Parallel()
 	parentDir := t.TempDir()
 	childDir := t.TempDir()
 
@@ -930,6 +964,7 @@ func TestDriveHandoffSettleAndCrashReArm(t *testing.T) {
 // rail — spec §3 / contract :1054 "still renders its OWN direct delegates'
 // terminals"), while filtering out forwarded child-owned terminals.
 func TestRestoreReArmKeepsOwnedTerminals(t *testing.T) {
+	t.Parallel()
 	var enqueued []jobNotification
 	jm, err := newJobManager(t.TempDir(), "PARENT", func(n jobNotification) {
 		enqueued = append(enqueued, n)
@@ -980,6 +1015,7 @@ func TestRestoreReArmKeepsOwnedTerminals(t *testing.T) {
 // RED before T15: there is no fallback; an unreachable child's pending vanishes
 // (the parent does not render it).
 func TestFallbackRenderNonResumableChild(t *testing.T) {
+	t.Parallel()
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
@@ -1030,6 +1066,7 @@ func TestFallbackRenderNonResumableChild(t *testing.T) {
 // survives the filter, and is rendered (then settled post-render by the normal
 // markJobNotificationsDelivered path).
 func TestFallbackRenderNonResumableChildSurvivesDeliveryFilter(t *testing.T) {
+	t.Parallel()
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
@@ -1068,6 +1105,7 @@ func TestFallbackRenderNonResumableChildSurvivesDeliveryFilter(t *testing.T) {
 }
 
 func TestFallbackRenderNonResumableChildCallerWatchSend(t *testing.T) {
+	t.Parallel()
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
 		t.Fatalf("new parent jobManager: %v", err)
@@ -1141,6 +1179,7 @@ func TestFallbackRenderNonResumableChildCallerWatchSend(t *testing.T) {
 // markJobNotificationsDelivered also forwards the Delivered up, settling the
 // parent's copy so no false escalation fires.
 func TestSelfDeliverySettlesParentForwardedPending(t *testing.T) {
+	t.Parallel()
 	parentDir := t.TempDir()
 	childDir := t.TempDir()
 
@@ -1308,6 +1347,7 @@ func (a *driveBlockingSecondTurnAdapter) Requests() []llm.Request {
 // GREEN after the fix: the send is steered into the drive turn -> Action=="steered",
 // no second turn, no race. Run under -race.
 func TestSendMessageMidDriveSteersNoSecondTurn(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	adapter := &driveBlockingSecondTurnAdapter{
@@ -1412,6 +1452,7 @@ func TestSendMessageMidDriveSteersNoSecondTurn(t *testing.T) {
 // — or, if trySteer ever declined, returns watchSendBusy so the frame stays pending
 // for A6 re-delivery — never a hard failure.
 func TestWatchResumeMidDriveSteersNotDropped(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	adapter := &driveBlockingSecondTurnAdapter{
@@ -1571,6 +1612,7 @@ func (a *driveReDriveAdapter) Requests() []llm.Request {
 // RED at HEAD: the deferred cleanup only clears sub.driving with no re-check, so the
 // re-drive never happens and "late-job" never appears in the adapter's requests.
 func TestDriveWakeDuringInflightDriveReDrives(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	adapter := &driveReDriveAdapter{

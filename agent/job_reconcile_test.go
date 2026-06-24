@@ -13,6 +13,7 @@ import (
 )
 
 func TestReconcileOnRestoreFinalizesLostJob(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.MkdirAll(dir+"/sessions/S1/jobs", 0o755); err != nil {
 		t.Fatal(err)
@@ -59,6 +60,7 @@ func TestReconcileOnRestoreFinalizesLostJob(t *testing.T) {
 }
 
 func TestNewJobManagerClearsUnrestoredActiveWatches(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.MkdirAll(dir+"/sessions/S1/jobs", 0o755); err != nil {
 		t.Fatal(err)
@@ -119,6 +121,7 @@ func TestNewJobManagerClearsUnrestoredActiveWatches(t *testing.T) {
 }
 
 func TestReconcileOnRestoreSkipsForwardedChildOwnedJob(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.MkdirAll(dir+"/sessions/PARENT/jobs", 0o755); err != nil {
 		t.Fatal(err)
@@ -167,6 +170,7 @@ func TestReconcileOnRestoreSkipsForwardedChildOwnedJob(t *testing.T) {
 }
 
 func TestReconcileOnRestoreUsesPrunedOutputLifetimeBytes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	if err := os.MkdirAll(dir+"/sessions/S1/jobs", 0o755); err != nil {
 		t.Fatal(err)
@@ -221,6 +225,7 @@ func TestReconcileOnRestoreUsesPrunedOutputLifetimeBytes(t *testing.T) {
 }
 
 func TestReconcileOnRestoreRequeuesTerminalNotifications(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name           string
 		alreadyPending bool
@@ -290,6 +295,7 @@ func TestReconcileOnRestoreRequeuesTerminalNotifications(t *testing.T) {
 }
 
 func TestJobManagerNotificationCallbackWakesSession(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -312,6 +318,7 @@ func TestJobManagerNotificationCallbackWakesSession(t *testing.T) {
 }
 
 func TestJobManagerNotificationCallbackRegistrationRace(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -336,6 +343,7 @@ func TestJobManagerNotificationCallbackRegistrationRace(t *testing.T) {
 }
 
 func TestSessionCloseClosesJobStore(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})

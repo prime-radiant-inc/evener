@@ -28,6 +28,7 @@ import (
 )
 
 func TestCreateDelegateForegroundCompletesWithStructuredResult(t *testing.T) {
+	t.Parallel()
 	var sawSchema bool
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -98,6 +99,7 @@ func TestCreateDelegateForegroundCompletesWithStructuredResult(t *testing.T) {
 }
 
 func TestDelegateResultIncludesDurableDelegateAndStartedJobIDs(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
@@ -132,6 +134,7 @@ func TestDelegateResultIncludesDurableDelegateAndStartedJobIDs(t *testing.T) {
 }
 
 func TestDelegateReadyResultSurfacesWatching(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
@@ -196,6 +199,7 @@ func TestDelegateReadyResultSurfacesWatching(t *testing.T) {
 }
 
 func TestForegroundDelegateCompletionDoesNotArmTerminalNotification(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
@@ -221,6 +225,7 @@ func TestForegroundDelegateCompletionDoesNotArmTerminalNotification(t *testing.T
 }
 
 func TestCreateDelegateEmptyResultSchemaIsNoSchema(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -261,6 +266,7 @@ func TestCreateDelegateEmptyResultSchemaIsNoSchema(t *testing.T) {
 // with allowance 2 may grant 1 (succeeds) but not 2 (rejected with the exact
 // invalid_request message naming its own allowance).
 func TestDelegateRejectsAllowanceGEOwn(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -304,6 +310,7 @@ func TestDelegateRejectsAllowanceGEOwn(t *testing.T) {
 }
 
 func TestCreateDelegateBackgroundReturnsRunningJob(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	c := llm.NewClient()
@@ -343,6 +350,7 @@ func TestCreateDelegateBackgroundReturnsRunningJob(t *testing.T) {
 }
 
 func TestCreateDelegateStartupDoesNotLeaveUnreturnedRunningJob(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	sess := newDelegateTestSession(t, c)
@@ -394,6 +402,7 @@ func TestCreateDelegateStartupDoesNotLeaveUnreturnedRunningJob(t *testing.T) {
 }
 
 func TestCreateDelegateStartupBatchFailureDoesNotLeavePhantomDelegate(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	sess := newDelegateTestSession(t, c)
@@ -431,6 +440,7 @@ func TestCreateDelegateStartupBatchFailureDoesNotLeavePhantomDelegate(t *testing
 }
 
 func TestCreateDelegateDescriptorDurableBeforeFirstModelRequest(t *testing.T) {
+	t.Parallel()
 	var (
 		sess                 *Session
 		recAtFirstModel      *jobstore.JobRecord
@@ -616,6 +626,7 @@ func TestCreateDelegateDescriptorDurableBeforeFirstModelRequest(t *testing.T) {
 }
 
 func TestCreateDelegateDescriptorOmitsOptionalLaunchDefaults(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	c := llm.NewClient()
@@ -655,6 +666,7 @@ func TestCreateDelegateDescriptorOmitsOptionalLaunchDefaults(t *testing.T) {
 }
 
 func TestCreateDelegateForegroundTimeoutLeavesChildRunning(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	c := llm.NewClient()
@@ -715,6 +727,7 @@ func TestCreateDelegateForegroundTimeoutLeavesChildRunning(t *testing.T) {
 }
 
 func TestDelegateStopMapsToCancelled(t *testing.T) {
+	t.Parallel()
 	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -770,6 +783,7 @@ func TestDelegateStopMapsToCancelled(t *testing.T) {
 }
 
 func TestCreateDelegateSignalCancelsChildAfterSubagentDrain(t *testing.T) {
+	t.Parallel()
 	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -823,6 +837,7 @@ func TestCreateDelegateSignalCancelsChildAfterSubagentDrain(t *testing.T) {
 }
 
 func TestCreateDelegateDurableRecordKeepsOutputPathAndTranscriptRef(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -860,6 +875,7 @@ func TestCreateDelegateDurableRecordKeepsOutputPathAndTranscriptRef(t *testing.T
 }
 
 func TestCreateDelegateDurableRecordKeepsStructuredResult(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -907,6 +923,7 @@ func TestCreateDelegateDurableRecordKeepsStructuredResult(t *testing.T) {
 }
 
 func TestCreateDelegateDropsOversizedStructuredResultBeforePersistence(t *testing.T) {
+	t.Parallel()
 	large := strings.Repeat("x", maxPersistedStructuredResultJSONBytes+1)
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -963,6 +980,7 @@ func TestCreateDelegateDropsOversizedStructuredResultBeforePersistence(t *testin
 }
 
 func TestFinalizeDelegatePersistsSchemaValidationFailedReason(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	child.mu.Lock()
@@ -998,6 +1016,7 @@ func TestFinalizeDelegatePersistsSchemaValidationFailedReason(t *testing.T) {
 }
 
 func TestCreateDelegateMarksChildConsumedAfterDurableFinish(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -1052,6 +1071,7 @@ func TestCreateDelegateMarksChildConsumedAfterDurableFinish(t *testing.T) {
 }
 
 func TestDelegateNotificationCarriesTranscriptRef(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -1113,6 +1133,7 @@ func TestDelegateNotificationCarriesTranscriptRef(t *testing.T) {
 }
 
 func TestCreateDelegateForegroundFinalizeFailureRetriesUntilDurable(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -1161,6 +1182,7 @@ func TestCreateDelegateForegroundFinalizeFailureRetriesUntilDurable(t *testing.T
 }
 
 func TestFinalizeDelegateRetryAfterDurableFailureDoesNotDuplicateOutput(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	sub := &subagent{
@@ -1208,6 +1230,7 @@ func TestFinalizeDelegateRetryAfterDurableFailureDoesNotDuplicateOutput(t *testi
 }
 
 func TestFinalizeDelegateRetriesJobFinishedAppendUntilDurable(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	child.mu.Lock()
@@ -1250,6 +1273,7 @@ func TestFinalizeDelegateRetriesJobFinishedAppendUntilDurable(t *testing.T) {
 }
 
 func TestFinalizeDelegateRetriesOutputAppendWithoutClosingDone(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	sub := completedDelegateSubagent(child, "retry output append")
@@ -1294,6 +1318,7 @@ func TestFinalizeDelegateRetriesOutputAppendWithoutClosingDone(t *testing.T) {
 }
 
 func TestFinalizeDelegateOutputPostWriteFailureDoesNotDuplicateOutput(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	prose := "post-write append failure"
@@ -1357,6 +1382,7 @@ func TestFinalizeDelegateOutputPostWriteFailureDoesNotDuplicateOutput(t *testing
 }
 
 func TestFinalizeDelegateRetriesNotificationPendingAppendKeepsTerminalResult(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	sub := completedDelegateSubagent(child, "retry notification append")
@@ -1396,6 +1422,7 @@ func TestFinalizeDelegateRetriesNotificationPendingAppendKeepsTerminalResult(t *
 }
 
 func TestFinalizeDelegateDuringManagerCloseDoesNotLeaveDoneOpen(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	sub := completedDelegateSubagent(child, "close finalization")
@@ -1464,6 +1491,7 @@ func TestFinalizeDelegateDuringManagerCloseDoesNotLeaveDoneOpen(t *testing.T) {
 }
 
 func TestFinalizeDelegateDuplicateTerminalNotificationsAreIdempotent(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	sub := completedDelegateSubagent(child, "duplicate terminal")
@@ -1507,6 +1535,7 @@ func TestFinalizeDelegateDuplicateTerminalNotificationsAreIdempotent(t *testing.
 }
 
 func TestCreateDelegateForegroundOutputAppendFailureReturns(t *testing.T) {
+	t.Parallel()
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var startedOnce sync.Once
@@ -1577,6 +1606,7 @@ func TestCreateDelegateForegroundOutputAppendFailureReturns(t *testing.T) {
 }
 
 func TestSendDelegateMessageTerminalDelegateResumeCreatesNewJob(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -1663,6 +1693,7 @@ func TestSendDelegateMessageTerminalDelegateResumeCreatesNewJob(t *testing.T) {
 }
 
 func TestDelegateResumeKeepsDelegateIDAndUpdatesLatestJob(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("first") },
@@ -1694,6 +1725,7 @@ func TestDelegateResumeKeepsDelegateIDAndUpdatesLatestJob(t *testing.T) {
 }
 
 func TestDelegateIDResumeFinalizesObservedTerminalRunningJob(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("resumed") },
@@ -1738,6 +1770,7 @@ func TestDelegateIDResumeFinalizesObservedTerminalRunningJob(t *testing.T) {
 }
 
 func TestDelegateSendJobIDDoesNotRevealDescendantDelegateID(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	started := time.Unix(400, 0).UTC()
 	if err := parent.jobManager.appendEvent(jobstore.Event{
@@ -1797,6 +1830,7 @@ func TestDelegateSendJobIDDoesNotRevealDescendantDelegateID(t *testing.T) {
 // concrete delegate target as "root-only"; the coordinator's own worker delegate
 // must instead resume.
 func TestSendDelegateMessageOwnDirectDelegatesAtDepth(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -1855,6 +1889,7 @@ func TestSendDelegateMessageOwnDirectDelegatesAtDepth(t *testing.T) {
 }
 
 func TestSendDelegateMessageResumedJobCopiesCompleteDelegateDescriptor(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -2004,6 +2039,7 @@ func TestSendDelegateMessageResumedJobCopiesCompleteDelegateDescriptor(t *testin
 }
 
 func TestSendDelegateMessageTerminalDelegateForegroundResumeTimeoutLeavesChildRunning(t *testing.T) {
+	t.Parallel()
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -2069,6 +2105,7 @@ func TestSendDelegateMessageTerminalDelegateForegroundResumeTimeoutLeavesChildRu
 }
 
 func TestSendDelegateMessageTerminalDelegateDefaultIdleFails(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -2102,6 +2139,7 @@ func TestSendDelegateMessageTerminalDelegateDefaultIdleFails(t *testing.T) {
 }
 
 func TestSendDelegateMessageObservedTerminalRunningRecordDefaultIdleFails(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	sub := &subagent{
@@ -2142,6 +2180,7 @@ func TestSendDelegateMessageObservedTerminalRunningRecordDefaultIdleFails(t *tes
 }
 
 func TestWatchOriginatedRunningSendDoesNotMarkNonLiveDelegateFromWatch(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	sub := &subagent{
@@ -2174,6 +2213,7 @@ func TestWatchOriginatedRunningSendDoesNotMarkNonLiveDelegateFromWatch(t *testin
 }
 
 func TestWatchOriginatedRunningSendRejectedByClosingChildStaysBusy(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	sub := &subagent{
@@ -2219,6 +2259,7 @@ func TestWatchOriginatedRunningSendRejectedByClosingChildStaysBusy(t *testing.T)
 }
 
 func TestWatchOriginatedResumeMarksJobStartedFromWatch(t *testing.T) {
+	t.Parallel()
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -2282,6 +2323,7 @@ gotStart:
 }
 
 func TestSendDelegateMessageTerminalDelegateResumeSteersActiveRun(t *testing.T) {
+	t.Parallel()
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -2357,6 +2399,7 @@ func TestSendDelegateMessageTerminalDelegateResumeSteersActiveRun(t *testing.T) 
 }
 
 func TestSendDelegateMessageTerminalResumeWaitsForDelegateJobAttachment(t *testing.T) {
+	t.Parallel()
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -2469,6 +2512,7 @@ func TestSendDelegateMessageTerminalResumeWaitsForDelegateJobAttachment(t *testi
 }
 
 func TestSendDelegateMessageTerminalTargetFailDoesNotSteerLaterRun(t *testing.T) {
+	t.Parallel()
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -2534,6 +2578,7 @@ func TestSendDelegateMessageTerminalTargetFailDoesNotSteerLaterRun(t *testing.T)
 }
 
 func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		breakState func(*testing.T, *Session, *jobstore.JobRecord)
@@ -2733,6 +2778,7 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			c := llm.NewClient()
 			adapter := &fakeAdapter{name: "openai"}
 			c.Register(adapter)
@@ -2765,6 +2811,7 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 }
 
 func TestReconstructDelegateRuntimeCollisionDoesNotCleanupSharedEnv(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -2808,6 +2855,7 @@ func TestReconstructDelegateRuntimeCollisionDoesNotCleanupSharedEnv(t *testing.T
 }
 
 func TestSendDelegateMessageRuntimeLostRestoreUsesDescriptorPreflightProfile(t *testing.T) {
+	t.Parallel()
 	openAIAdapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -2877,6 +2925,7 @@ func TestSendDelegateMessageRuntimeLostRestoreUsesDescriptorPreflightProfile(t *
 }
 
 func TestRestoreRuntimeLostDelegateNoAutoResumeNoModel(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -2906,6 +2955,7 @@ func TestRestoreRuntimeLostDelegateNoAutoResumeNoModel(t *testing.T) {
 }
 
 func TestJobSendMessageReconstructsRestoredDelegateRuntimeFromDescriptor(t *testing.T) {
+	t.Parallel()
 	var request llm.Request
 	workAdapter := &fakeAdapter{
 		name: "work",
@@ -3024,6 +3074,7 @@ func TestJobSendMessageReconstructsRestoredDelegateRuntimeFromDescriptor(t *test
 }
 
 func TestJobSendMessageRestoresWatchParentLeafObserverJobWatch(t *testing.T) {
+	t.Parallel()
 	var request llm.Request
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -3133,6 +3184,7 @@ func TestJobSendMessageRestoresWatchParentLeafObserverJobWatch(t *testing.T) {
 }
 
 func TestRuntimeLostDelegateResumeAfterRestoreCreatesNewJobFromRetainedState(t *testing.T) {
+	t.Parallel()
 	const originalTask = "original runtime-lost delegate task"
 	const firstOutput = "old retained delegate output"
 	const resumedOutput = "new retained delegate output"
@@ -3260,6 +3312,7 @@ func TestRuntimeLostDelegateResumeAfterRestoreCreatesNewJobFromRetainedState(t *
 }
 
 func TestRuntimeLostDelegateResumeRelinksNestedJobsToNewJob(t *testing.T) {
+	t.Parallel()
 	const firstOutput = "old nested-link delegate output"
 	const resumedOutput = "new nested-link delegate output"
 	const nestedDescription = "runtime-lost resumed nested shell"
@@ -3385,6 +3438,7 @@ func TestRuntimeLostDelegateResumeRelinksNestedJobsToNewJob(t *testing.T) {
 }
 
 func TestReconstructDelegateRuntimeCollisionReusesTrackedChild(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -3416,6 +3470,7 @@ func TestReconstructDelegateRuntimeCollisionReusesTrackedChild(t *testing.T) {
 }
 
 func TestJobSendMessageReconstructsDelegateFrozenSkills(t *testing.T) {
+	t.Parallel()
 	var request llm.Request
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -3479,6 +3534,7 @@ func TestJobSendMessageReconstructsDelegateFrozenSkills(t *testing.T) {
 }
 
 func TestJobSendMessageReconstructsDelegateFrozenSkillBodiesFromDescriptor(t *testing.T) {
+	t.Parallel()
 	var request llm.Request
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -3550,6 +3606,7 @@ func TestJobSendMessageReconstructsDelegateFrozenSkillBodiesFromDescriptor(t *te
 }
 
 func TestFailedPreflightDoesNotReconstructDelegateRuntime(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -3584,6 +3641,7 @@ func TestFailedPreflightDoesNotReconstructDelegateRuntime(t *testing.T) {
 }
 
 func TestReconstructDelegateRuntimeMissingRequiredToolsFailsBeforeTracking(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		mutate func(*jobstore.DelegateRestoreDescriptor)
@@ -3645,6 +3703,7 @@ func TestReconstructDelegateRuntimeMissingRequiredToolsFailsBeforeTracking(t *te
 }
 
 func TestReconstructDelegateMissingToolsDoesNotRunChildRestoreWatchRetry(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -3696,6 +3755,7 @@ func TestReconstructDelegateMissingToolsDoesNotRunChildRestoreWatchRetry(t *test
 }
 
 func TestReconstructDelegateChildRegistryMismatchDoesNotRunRestoreSideEffects(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -3755,6 +3815,7 @@ func TestReconstructDelegateChildRegistryMismatchDoesNotRunRestoreSideEffects(t 
 }
 
 func TestReconstructDelegateChildRegistryMismatchDoesNotReconcileChildJobs(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -3818,6 +3879,7 @@ func TestReconstructDelegateChildRegistryMismatchDoesNotReconcileChildJobs(t *te
 }
 
 func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -3897,6 +3959,7 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 }
 
 func TestDelegateReconstructionRacingParentCloseDoesNotTrackOrRunSideEffects(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -3985,6 +4048,7 @@ func TestDelegateReconstructionRacingParentCloseDoesNotTrackOrRunSideEffects(t *
 }
 
 func TestParentCloseWaitsForInFlightDelegateReconstructionClaim(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -4060,6 +4124,7 @@ func TestParentCloseWaitsForInFlightDelegateReconstructionClaim(t *testing.T) {
 }
 
 func TestDelegateReconstructionParentCloseBeforeDeferredSideEffectsDoesNotRunThem(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -4123,6 +4188,7 @@ func TestDelegateReconstructionParentCloseBeforeDeferredSideEffectsDoesNotRunThe
 // pending-survives; the runtime-retained / no-orphan-notification / no-model-call
 // assertions are preserved verbatim.
 func TestDelegateReconstructionSideEffectFailureAfterWatchSendKeepsRuntime(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -4195,6 +4261,7 @@ func TestDelegateReconstructionSideEffectFailureAfterWatchSendKeepsRuntime(t *te
 // (no watch_send_delivered, pending unchanged, nothing on parent steering, parent
 // jobstore unchanged, no model call).
 func TestDelegateReconstructionWatchSendToCallerDuringParentCloseStaysPending(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai"}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -4250,6 +4317,7 @@ func TestDelegateReconstructionWatchSendToCallerDuringParentCloseStaysPending(t 
 // "nothing lands on steering mid-processing; the frame renders at the accept turn".
 // Both original assertions survive: suppressed-during-processing AND delivered-when-idle.
 func TestWatchCallerDeliverySuppressedDuringProcessingDeliversAtAcceptBoundary(t *testing.T) {
+	t.Parallel()
 	s := newPersistentTestSession(t)
 	now := time.Unix(4300, 0).UTC()
 	if err := s.jobManager.appendWatchSendEvents(restoredWatchSendPendingEvents(s.ID(), "job_child_observed", "caller", now)); err != nil {
@@ -4313,6 +4381,7 @@ func TestWatchCallerDeliverySuppressedDuringProcessingDeliversAtAcceptBoundary(t
 // durable pending's identity, which is how the frame reaches the owner). The
 // preserved intent: a non-persistent session still surfaces the caller frame.
 func TestWatchCallerDeliverySurfacesAsTokenForNonPersistentSession(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	if s.transcript != nil {
 		t.Fatal("newTestSession unexpectedly persistent; test needs a no-transcript session")
@@ -4353,6 +4422,7 @@ func TestWatchCallerDeliverySurfacesAsTokenForNonPersistentSession(t *testing.T)
 // caller wake token DOES trigger notify. This asserts the new truth: a drained
 // caller send enqueues a token and fires the wake callback.
 func TestWatchCallerDeliveryRidesJobNotificationWake(t *testing.T) {
+	t.Parallel()
 	s := newPersistentTestSession(t)
 	var notifyCalled bool
 	s.SetNotifyFunc(func() { notifyCalled = true })
@@ -4376,6 +4446,7 @@ func TestWatchCallerDeliveryRidesJobNotificationWake(t *testing.T) {
 }
 
 func TestOrphanToolRepairRetriesPendingCallerWatchSends(t *testing.T) {
+	t.Parallel()
 	s := newPersistentTestSession(t)
 	s.appendTurn(schema.TurnAssistant, llm.Message{
 		Role: llm.RoleAssistant,
@@ -4412,6 +4483,7 @@ func TestOrphanToolRepairRetriesPendingCallerWatchSends(t *testing.T) {
 }
 
 func TestProcessingExitRetriesPendingCallerWatchSends(t *testing.T) {
+	t.Parallel()
 	s := newPersistentTestSession(t)
 	s.mu.Lock()
 	s.state = SessionProcessing
@@ -4442,6 +4514,7 @@ func TestProcessingExitRetriesPendingCallerWatchSends(t *testing.T) {
 }
 
 func TestTerminalDelegateRestoreRequiresStrictPreflightBeforeReconstruction(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		status jobstore.Status
 		reason string
@@ -4491,6 +4564,7 @@ func TestTerminalDelegateRestoreRequiresStrictPreflightBeforeReconstruction(t *t
 }
 
 func TestTerminalDelegateRestoreUsesStrictPreflightHistory(t *testing.T) {
+	t.Parallel()
 	var request llm.Request
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -4510,14 +4584,12 @@ func TestTerminalDelegateRestoreUsesStrictPreflightHistory(t *testing.T) {
 	rec = loadShellRecord(t, s.jobManager, rec.JobID)
 	childID := rec.DelegateRestore.ChildSessionID
 	appendChildTranscriptTurn(t, s, rec, schema.NewTurn(schema.TurnUserInput, llm.User("retained transcript source")))
-	original := delegateRestoreResumeHistory
-	delegateRestoreResumeHistory = func(entries []transcript.Entry) []schema.Turn {
+	s.delegateRestoreResumeHistory = func(entries []transcript.Entry) []schema.Turn {
 		if len(entries) != 1 {
-			t.Fatalf("strict preflight entries = %d, want 1", len(entries))
+			t.Errorf("strict preflight entries = %d, want 1", len(entries))
 		}
 		return []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("strict preflight history marker"))}
 	}
-	defer func() { delegateRestoreResumeHistory = original }()
 
 	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:         rec.DelegateID,
@@ -4544,6 +4616,7 @@ func TestTerminalDelegateRestoreUsesStrictPreflightHistory(t *testing.T) {
 }
 
 func TestSendDelegateMessageRunningDelegateTargetSteersWithoutNewJob(t *testing.T) {
+	t.Parallel()
 	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -4599,6 +4672,7 @@ func TestSendDelegateMessageRunningDelegateTargetSteersWithoutNewJob(t *testing.
 }
 
 func TestWatchOriginatedSendToRunningDelegateSteersAndMarksLifecycleFromWatch(t *testing.T) {
+	t.Parallel()
 	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -4685,6 +4759,7 @@ gotEnd:
 }
 
 func TestSendDelegateMessageRunningTargetHoldsRunLockThroughSteer(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	sub := &subagent{
@@ -4741,6 +4816,7 @@ func TestSendDelegateMessageRunningTargetHoldsRunLockThroughSteer(t *testing.T) 
 }
 
 func TestFindRunningDelegateByTranscriptRefRejectsAmbiguousMatches(t *testing.T) {
+	t.Parallel()
 	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -4786,6 +4862,7 @@ func TestFindRunningDelegateByTranscriptRefRejectsAmbiguousMatches(t *testing.T)
 }
 
 func TestSendDelegateMessageRootCallerTargetFails(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	sess := newDelegateTestSession(t, c)
@@ -4804,6 +4881,7 @@ func TestSendDelegateMessageRootCallerTargetFails(t *testing.T) {
 }
 
 func TestDelegateSendToolRejectsCallerAliasPublicly(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 
 	_, err := delegateSendTool(context.Background(), sess, map[string]any{
@@ -4819,6 +4897,7 @@ func TestDelegateSendToolRejectsCallerAliasPublicly(t *testing.T) {
 }
 
 func TestDelegateSendMainAliasFailsInvalidRequest(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	called := false
 	sess.cfg.spawn.parentSteer = func(string, *provenance.Causal) { called = true }
@@ -4849,6 +4928,7 @@ func TestDelegateSendMainAliasFailsInvalidRequest(t *testing.T) {
 }
 
 func TestDelegateSendWatchedWithoutWatchContextFails(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
@@ -4865,6 +4945,7 @@ func TestDelegateSendWatchedWithoutWatchContextFails(t *testing.T) {
 }
 
 func TestSendDelegateMessageAliasFromSubagentSteersCaller(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -4899,6 +4980,7 @@ func TestSendDelegateMessageAliasFromSubagentSteersCaller(t *testing.T) {
 }
 
 func TestSendDelegateMessageUnsupportedAliasesFromSubagentFailTargetNotFound(t *testing.T) {
+	t.Parallel()
 	for _, target := range []string{"main", "watched"} {
 		t.Run(target, func(t *testing.T) {
 			parent := newTestSession(t)
@@ -5603,6 +5685,7 @@ func findJobByDescription(t *testing.T, jm *jobManager, description string) *job
 // tools regardless of allowance, so the frozen requirement fails and the delegate
 // cannot resume).
 func TestCoordinatorTypeDelegateResumes(t *testing.T) {
+	t.Parallel()
 	// Part A-positive: allowance > 0, FrozenToolNames includes "delegate" → must pass.
 	t.Run("allowance>0 coordinator resumes with delegate in frozen tools", func(t *testing.T) {
 		c := llm.NewClient()
@@ -5670,6 +5753,7 @@ func TestCoordinatorTypeDelegateResumes(t *testing.T) {
 }
 
 func TestDelegateGrantErrorEnumeratesValidRange(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		ownAllowance int
 		wantContains string
@@ -5694,6 +5778,7 @@ func TestDelegateGrantErrorEnumeratesValidRange(t *testing.T) {
 }
 
 func TestDelegateSendCallerCarriesActiveProvenanceToParentSteering(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_1", parent.ID(), "caller")
@@ -5719,6 +5804,7 @@ func TestDelegateSendCallerCarriesActiveProvenanceToParentSteering(t *testing.T)
 }
 
 func TestRunningDelegateWatchSendCarriesProvenanceToObserverSteering(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	childID := child.ID()
@@ -5750,6 +5836,7 @@ func TestRunningDelegateWatchSendCarriesProvenanceToObserverSteering(t *testing.
 // watch that first drove the observer (watch_X) — otherwise the current watch's
 // terminal notification is mis-attributed and not suppressed (the loop reopens).
 func TestCrossWatchObserverResumeAdoptsDrivingWatchProvenance(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	parent := newDelegateTestSession(t, c)

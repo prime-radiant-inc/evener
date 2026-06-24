@@ -12,6 +12,7 @@ import (
 // allowance 1) — a single legal value is a no-op knob. With allowance >= 2 the
 // param is offered.
 func TestDelegateAllowanceParamElidedWhenNoOp(t *testing.T) {
+	t.Parallel()
 	delegateProps := func(t *testing.T, depth int) map[string]any {
 		t.Helper()
 		c := llm.NewClient()

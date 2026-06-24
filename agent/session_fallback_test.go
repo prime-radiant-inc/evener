@@ -19,6 +19,7 @@ import (
 // TestFallbackChain_PermanentErrorTriesNextModel: primary returns 403, the
 // first fallback succeeds, the second fallback is never called.
 func TestFallbackChain_PermanentErrorTriesNextModel(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -79,6 +80,7 @@ func TestFallbackChain_PermanentErrorTriesNextModel(t *testing.T) {
 }
 
 func TestFallbackChain_EndpointFallbackErrorTriesNextModel(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -140,6 +142,7 @@ func TestFallbackChain_EndpointFallbackErrorTriesNextModel(t *testing.T) {
 // to the fallback model's levels), NOT from a runtime effort change that races in
 // during the primary call.
 func TestFallbackChain_UsesSnapshotEffortClampedToFallback(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -206,6 +209,7 @@ func TestFallbackChain_UsesSnapshotEffortClampedToFallback(t *testing.T) {
 // TestFallbackChain_ExhaustionReturnsLastError: primary + all fallbacks return
 // 403; the error returned to the caller is the LAST attempt's error.
 func TestFallbackChain_ExhaustionReturnsLastError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -271,6 +275,7 @@ func TestFallbackChain_ExhaustionReturnsLastError(t *testing.T) {
 // TestFallbackChain_RetryableSkipsFallback: primary returns 429 (Retryable).
 // The retry budget is burned on the primary; fallbacks are never touched.
 func TestFallbackChain_RetryableSkipsFallback(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -323,6 +328,7 @@ func TestFallbackChain_RetryableSkipsFallback(t *testing.T) {
 }
 
 func TestFallbackChain_RejectsCrossProviderFallbacks(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -351,6 +357,7 @@ func TestFallbackChain_RejectsCrossProviderFallbacks(t *testing.T) {
 // TestFallbackChain_EmptyFallbacksNoEffect: primary returns 403, fallbacks
 // empty — behavior matches today: single attempt, error returned.
 func TestFallbackChain_EmptyFallbacksNoEffect(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 

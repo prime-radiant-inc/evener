@@ -120,8 +120,8 @@ func applyOverrides(cat *ModelCatalog, data []byte) {
 		cat.Models = append(cat.Models, m)
 	}
 
-	// Rebuild index after modifications.
-	cat.byID = nil
+	// The byID index is built lazily (and exactly once) on first lookup, after
+	// these override mutations land, so there is nothing to invalidate here.
 }
 
 // applyOverlayFields applies the Serf overlay fields (effort levels, capability

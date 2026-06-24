@@ -15,6 +15,13 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
+// Shrink the graceful-shutdown grace so tests whose jobs never naturally
+// terminate don't each pay the full production window at teardown. Still leaves
+// ample margin to exercise the timeout-and-abandon path under -race.
+func init() {
+	defaultCloseGrace = 200 * time.Millisecond
+}
+
 func newTestJM(t *testing.T) *jobManager {
 	t.Helper()
 	jm, err := newJobManager(t.TempDir(), "S1", func(jobNotification) {})
@@ -50,6 +57,7 @@ func feedJob(jm *jobManager, jobID string, chunk []byte) {
 }
 
 func TestJobManagerCreateAndList(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "make test", Description: "tests"})
 	if err != nil {
@@ -68,6 +76,7 @@ func TestJobManagerCreateAndList(t *testing.T) {
 // not stay 0 until the job finishes — the contract's job_list example shows a
 // running job with a non-zero count.
 func TestJobListReportsLiveOutputBytesForRunningJob(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -98,6 +107,7 @@ func TestJobListReportsLiveOutputBytesForRunningJob(t *testing.T) {
 // completion) must find the notification already queued, or a notification turn
 // driven right after the wake drains an empty queue.
 func TestFinalizeEnqueuesNotificationBeforeDoneCloses(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -129,6 +139,7 @@ func TestFinalizeEnqueuesNotificationBeforeDoneCloses(t *testing.T) {
 }
 
 func TestAbandonRunningJobsClosesCapturedDoneChannels(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -152,6 +163,7 @@ func TestAbandonRunningJobsClosesCapturedDoneChannels(t *testing.T) {
 }
 
 func TestJobManagerReadOutput(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	_, _ = jm.running[rec.JobID].output.Append([]byte("hello\n"))
@@ -165,6 +177,7 @@ func TestJobManagerReadOutput(t *testing.T) {
 }
 
 func TestJobManagerReadOutputTerminalLog(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
@@ -187,6 +200,7 @@ func TestJobManagerReadOutputTerminalLog(t *testing.T) {
 }
 
 func TestJobManagerReadOutputMissingTerminalLogReturnsError(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
@@ -212,6 +226,7 @@ func TestJobManagerReadOutputMissingTerminalLogReturnsError(t *testing.T) {
 }
 
 func TestJobManagerTerminalOutputValidatesRetainedSidecar(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jobID := "job_terminal"
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
@@ -267,6 +282,7 @@ func TestJobManagerTerminalOutputValidatesRetainedSidecar(t *testing.T) {
 }
 
 func TestJobManagerRunningRecordOutputUsesSidecarTotal(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jobID := "job_running_forwarded"
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
@@ -312,6 +328,7 @@ func TestJobManagerRunningRecordOutputUsesSidecarTotal(t *testing.T) {
 }
 
 func TestJobOutputReadLimitRemainsModelFacingCap(t *testing.T) {
+	t.Parallel()
 	if maxJobOutputBytes != 1024*1024 {
 		t.Fatalf("maxJobOutputBytes = %d, want 1 MiB", maxJobOutputBytes)
 	}
@@ -332,6 +349,7 @@ func TestJobOutputReadLimitRemainsModelFacingCap(t *testing.T) {
 }
 
 func TestJobOutputShellStoreEnforcesRetentionCap(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	t.Cleanup(func() { _ = jm.close() })
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
@@ -343,6 +361,7 @@ func TestJobOutputShellStoreEnforcesRetentionCap(t *testing.T) {
 }
 
 func TestJobOutputDelegateStoreEnforcesRetentionCap(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	sub := &subagent{
@@ -389,6 +408,7 @@ func assertJobOutputRetentionCap(t *testing.T, run *runningJob) {
 }
 
 func TestJobManagerStopMarksLiveJobCancelled(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -419,6 +439,7 @@ func TestJobManagerStopMarksLiveJobCancelled(t *testing.T) {
 }
 
 func TestJobManagerCloseMarksRunningJobsCancelled(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -450,6 +471,7 @@ func TestJobManagerCloseMarksRunningJobsCancelled(t *testing.T) {
 }
 
 func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	seedCommonWatchSendTargets(t, jm)
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
@@ -526,6 +548,7 @@ func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
 }
 
 func TestGrepOutputFileSkipsOverlongLine(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "job_A.log")
 	overlong := strings.Repeat("x", maxJobGrepLineBytes+1024) + "ready\n"
@@ -546,6 +569,7 @@ func TestGrepOutputFileSkipsOverlongLine(t *testing.T) {
 }
 
 func TestJobManagerCreateDoesNotPersistWhenOutputOpenFails(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	outputDir := filepath.Join(jm.dir, "jobs")
 	if err := os.RemoveAll(outputDir); err != nil {
@@ -568,6 +592,7 @@ func TestJobManagerCreateDoesNotPersistWhenOutputOpenFails(t *testing.T) {
 }
 
 func TestJobManagerListWithErrorSurfacesLoadFailure(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	if err := jm.store.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
@@ -582,6 +607,7 @@ func TestJobManagerListWithErrorSurfacesLoadFailure(t *testing.T) {
 }
 
 func TestJobManagerFinalize(t *testing.T) {
+	t.Parallel()
 	var queued []jobNotification
 	jm, err := newJobManager(t.TempDir(), "S1", func(n jobNotification) {
 		queued = append(queued, n)
@@ -627,6 +653,7 @@ func TestJobManagerFinalize(t *testing.T) {
 }
 
 func TestJobManagerFinalizeFinishAppendFailureKeepsRuntime(t *testing.T) {
+	t.Parallel()
 	var queued []jobNotification
 	jm, err := newJobManager(t.TempDir(), "S1", func(n jobNotification) {
 		queued = append(queued, n)
@@ -679,6 +706,7 @@ func TestJobManagerFinalizeFinishAppendFailureKeepsRuntime(t *testing.T) {
 }
 
 func TestJobManagerFinalizePendingAppendFailureCanRetryWithSameGeneration(t *testing.T) {
+	t.Parallel()
 	var queued []jobNotification
 	jm, err := newJobManager(t.TempDir(), "S1", func(n jobNotification) {
 		queued = append(queued, n)
@@ -764,6 +792,7 @@ func TestJobManagerFinalizePendingAppendFailureCanRetryWithSameGeneration(t *tes
 }
 
 func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
+	t.Parallel()
 	var queued int32
 	jm, err := newJobManager(t.TempDir(), "S1", func(jobNotification) {
 		atomic.AddInt32(&queued, 1)
@@ -856,6 +885,7 @@ func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 }
 
 func TestJobManagerFinalizeConcurrentArmWaitsForPendingFailure(t *testing.T) {
+	t.Parallel()
 	var queued int32
 	jm, err := newJobManager(t.TempDir(), "S1", func(jobNotification) {
 		atomic.AddInt32(&queued, 1)
@@ -940,6 +970,7 @@ func TestJobManagerFinalizeConcurrentArmWaitsForPendingFailure(t *testing.T) {
 }
 
 func TestJobManagerArmPendingTerminalNotificationsRecoversAfterRestart(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
 	if err != nil {
@@ -1000,6 +1031,7 @@ func TestJobManagerArmPendingTerminalNotificationsRecoversAfterRestart(t *testin
 }
 
 func TestJobManagerArmPendingTerminalNotificationsEnqueuesAlreadyPending(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
 	if err != nil {
@@ -1044,6 +1076,7 @@ func TestJobManagerArmPendingTerminalNotificationsEnqueuesAlreadyPending(t *test
 }
 
 func TestJobManagerArmPendingTerminalNotificationsSkipsDelivered(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
 	if err != nil {
@@ -1086,6 +1119,7 @@ func TestJobManagerArmPendingTerminalNotificationsSkipsDelivered(t *testing.T) {
 }
 
 func TestJobManagerCloseClosesStoreAfterRuntimeWaitTimeout(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	run := &runningJob{
 		rec:  &jobstore.JobRecord{JobID: "job_hung"},

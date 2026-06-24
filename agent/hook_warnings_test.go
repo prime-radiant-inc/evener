@@ -54,6 +54,7 @@ func sessionWarnings(t *testing.T, pluginDir string) []events.WarningData {
 // saying the hook will never fire. Silent non-execution is the failure mode this
 // guards against.
 func TestInitPlugins_UnknownHookEventWarnsLoudly(t *testing.T) {
+	t.Parallel()
 	dir := writePluginHooks(t, "typo-plugin", `{
 		"hooks": {
 			"PreToolUze": [
@@ -88,6 +89,7 @@ func TestInitPlugins_UnknownHookEventWarnsLoudly(t *testing.T) {
 // yet, e.g. PostToolUseFailure) produces a visible WARNING that the hook is
 // declared for a reserved event serf does not yet fire, so it will not run.
 func TestInitPlugins_UnsupportedHookEventWarns(t *testing.T) {
+	t.Parallel()
 	dir := writePluginHooks(t, "reserved-plugin", `{
 		"hooks": {
 			"PostToolUseFailure": [
@@ -124,6 +126,7 @@ func TestInitPlugins_UnsupportedHookEventWarns(t *testing.T) {
 // handler will not run. Today such a handler is a silent no-op at dispatch; this
 // guards the docs' claim that these are "reserved and skipped WITH A DIAGNOSTIC".
 func TestInitPlugins_UnsupportedHandlerTypeWarns(t *testing.T) {
+	t.Parallel()
 	dir := writePluginHooks(t, "http-plugin", `{
 		"hooks": {
 			"PreToolUse": [
@@ -160,6 +163,7 @@ func TestInitPlugins_UnsupportedHandlerTypeWarns(t *testing.T) {
 // command and prompt handlers must NOT trigger an unsupported-handler-type
 // warning (Fix 4 must not over-warn on the supported types).
 func TestInitPlugins_SupportedHandlerTypesNoTypeWarning(t *testing.T) {
+	t.Parallel()
 	dir := writePluginHooks(t, "typed-plugin", `{
 		"hooks": {
 			"PreToolUse": [
@@ -183,6 +187,7 @@ func TestInitPlugins_SupportedHandlerTypesNoTypeWarning(t *testing.T) {
 // hook-misconfiguration warning (this is purely additive diagnostics; it must
 // not warn on healthy configs).
 func TestInitPlugins_ValidHooksProduceNoWarning(t *testing.T) {
+	t.Parallel()
 	dir := writePluginHooks(t, "good-plugin", `{
 		"hooks": {
 			"PreToolUse": [

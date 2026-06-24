@@ -24,6 +24,7 @@ import (
 // the resumed session received the granted allowance. The test fails if the
 // descriptor stops carrying allowance into the reconstructed session.
 func TestDelegationAllowancePersistsAcrossResume(t *testing.T) {
+	t.Parallel()
 	const grantedAllowance = 1
 
 	c := llm.NewClient()
@@ -67,6 +68,7 @@ func TestDelegationAllowancePersistsAcrossResume(t *testing.T) {
 //
 // Red today: the delegationAllowance field does not exist.
 func TestRootAllowanceFromConfig(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 
 	tests := []struct {
@@ -113,6 +115,7 @@ func TestRootAllowanceFromConfig(t *testing.T) {
 // zero-valued spawn carrier, so a restored root gets allowance 0 and every
 // delegate spawn is rejected by the allowance gate.
 func TestRestoredRootAllowanceFromConfig(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 

@@ -52,6 +52,7 @@ func (s *spyStrategy) AfterActionCount() int {
 }
 
 func TestSession_ContextStrategy_SpyHooks(t *testing.T) {
+	t.Parallel()
 	// Verify that ManageContext is called before LLM requests and
 	// AfterAction is called after tool execution rounds.
 	dir := t.TempDir()
@@ -115,6 +116,7 @@ func TestSession_ContextStrategy_SpyHooks(t *testing.T) {
 }
 
 func TestSession_ContextStrategy_UnknownStrategyError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -128,6 +130,7 @@ func TestSession_ContextStrategy_UnknownStrategyError(t *testing.T) {
 }
 
 func TestCompactionThresholdScale(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -170,6 +173,7 @@ func TestCompactionThresholdScale(t *testing.T) {
 }
 
 func TestSession_ContextStrategy_DefaultIsCompact(t *testing.T) {
+	t.Parallel()
 	// When no strategy is specified, default to compactStrategy.
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -190,6 +194,7 @@ func TestSession_ContextStrategy_DefaultIsCompact(t *testing.T) {
 }
 
 func TestSession_ContextStrategy_RecallAliasesCompact(t *testing.T) {
+	t.Parallel()
 	// "recall" is a legacy alias for "compact"; verify it selects the compact
 	// strategy so that existing configs naming "recall" keep working after the
 	// recall tool was removed.

@@ -79,14 +79,14 @@ test-install:
 GO_MODULES := . agent llm auth
 
 test:
-	@for m in $(GO_MODULES); do (cd $$m && go test -count=1 ./...) || exit 1; done
+	@MODULES="$(GO_MODULES)" scripts/run-module-tests.sh -count=1
 
 test-short:
-	@for m in $(GO_MODULES); do (cd $$m && go test -short -count=1 ./...) || exit 1; done
+	@MODULES="$(GO_MODULES)" scripts/run-module-tests.sh -short -count=1
 
 # The permanent -race gate (CI), across every module.
 test-race:
-	@for m in $(GO_MODULES); do (cd $$m && go test -race -short -count=1 ./...) || exit 1; done
+	@MODULES="$(GO_MODULES)" scripts/run-module-tests.sh -race -short -count=1
 
 vet:
 	@for m in $(GO_MODULES); do (cd $$m && go vet ./...) || exit 1; done

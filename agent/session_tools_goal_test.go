@@ -30,6 +30,7 @@ func testGoalSession(t *testing.T) *Session {
 func testGoalNow() time.Time { return time.Unix(0, 0).UTC() }
 
 func TestUpdateGoalTool_Complete(t *testing.T) {
+	t.Parallel()
 	sess := testGoalSession(t)
 	sess.getOrCreateGoalStore().Set("write a test", testGoalNow())
 
@@ -51,6 +52,7 @@ func TestUpdateGoalTool_Complete(t *testing.T) {
 }
 
 func TestUpdateGoalTool_Blocked(t *testing.T) {
+	t.Parallel()
 	sess := testGoalSession(t)
 	sess.getOrCreateGoalStore().Set("do something impossible", testGoalNow())
 
@@ -72,6 +74,7 @@ func TestUpdateGoalTool_Blocked(t *testing.T) {
 }
 
 func TestUpdateGoalTool_InvalidStatus(t *testing.T) {
+	t.Parallel()
 	sess := testGoalSession(t)
 	sess.getOrCreateGoalStore().Set("obj", testGoalNow())
 
@@ -86,6 +89,7 @@ func TestUpdateGoalTool_InvalidStatus(t *testing.T) {
 }
 
 func TestUpdateGoalTool_MissingStatus(t *testing.T) {
+	t.Parallel()
 	sess := testGoalSession(t)
 	sess.getOrCreateGoalStore().Set("obj", testGoalNow())
 
@@ -100,6 +104,7 @@ func TestUpdateGoalTool_MissingStatus(t *testing.T) {
 }
 
 func TestUpdateGoalTool_NoActiveGoal(t *testing.T) {
+	t.Parallel()
 	sess := testGoalSession(t)
 	// Explicitly ensure no goal is set (store is empty on creation, but be explicit).
 	sess.getOrCreateGoalStore().Clear()

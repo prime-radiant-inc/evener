@@ -2046,7 +2046,7 @@ func TestWeb_ApiSpawn_WaitsForSlowSpawnerAndReturnsSession(t *testing.T) {
 	workDir := t.TempDir()
 	spawner := &delayedRosterSpawner{
 		runDir: runDir,
-		delay:  1500 * time.Millisecond,
+		delay:  20 * time.Millisecond,
 		entry: rendezvous.Entry{
 			PID:        54,
 			Address:    "127.0.0.1:4054",

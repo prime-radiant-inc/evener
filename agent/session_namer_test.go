@@ -9,6 +9,7 @@ import (
 )
 
 func TestNameSession_UsesCheapModelAndStructuredOutput(t *testing.T) {
+	t.Parallel()
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -59,6 +60,7 @@ func TestNameSession_UsesCheapModelAndStructuredOutput(t *testing.T) {
 }
 
 func TestNameSession_RoutesToCheapProvider(t *testing.T) {
+	t.Parallel()
 	// A cross-provider cheap model ("anthropic/...") must route the namer's call
 	// to the cheap provider, not the active provider.
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "anthropic/claude-haiku-4-5-20251001")
@@ -99,6 +101,7 @@ func TestNameSession_RoutesToCheapProvider(t *testing.T) {
 }
 
 func TestNameSession_FallsBackToActiveModel(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -123,6 +126,7 @@ func TestNameSession_FallsBackToActiveModel(t *testing.T) {
 }
 
 func TestSessionNamerEnabledRequiresConfiguredCheapModel(t *testing.T) {
+	t.Parallel()
 	if sessionNamerEnabled(NewOpenAIProfile("gpt-5.2")) {
 		t.Fatal("session namer should not auto-enable from active model")
 	}
@@ -132,6 +136,7 @@ func TestSessionNamerEnabledRequiresConfiguredCheapModel(t *testing.T) {
 }
 
 func TestNameSession_SanitizesGeneratedName(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -156,6 +161,7 @@ func TestNameSession_SanitizesGeneratedName(t *testing.T) {
 }
 
 func TestNameSession_RejectsEmptySourceText(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	_, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "   ")

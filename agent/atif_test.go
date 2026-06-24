@@ -14,6 +14,7 @@ import (
 )
 
 func TestExportATIF_WritesFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	transcriptPath := filepath.Join(dir, "sessions", "test-sess.transcript.jsonl")
 

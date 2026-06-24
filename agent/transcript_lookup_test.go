@@ -50,6 +50,7 @@ func writeTranscript(t *testing.T, bucketDir, sessionID string) {
 // --- stateHomeFor ---
 
 func TestStateHomeFor_ProjectBucket(t *testing.T) {
+	t.Parallel()
 	sh := newStateHome(t)
 	bucket := newBucketUnder(t, sh)
 	got := stateHomeFor(bucket)
@@ -59,6 +60,7 @@ func TestStateHomeFor_ProjectBucket(t *testing.T) {
 }
 
 func TestStateHomeFor_FlatDir(t *testing.T) {
+	t.Parallel()
 	flat := filepath.Join(t.TempDir(), "flat")
 	if err := os.MkdirAll(flat, 0o755); err != nil {
 		t.Fatal(err)
@@ -72,6 +74,7 @@ func TestStateHomeFor_FlatDir(t *testing.T) {
 // --- enumerateBuckets ---
 
 func TestEnumerateBuckets_ReturnsBucketRoots(t *testing.T) {
+	t.Parallel()
 	sh := newStateHome(t)
 	a := newBucketUnder(t, sh)
 	b := newBucketUnder(t, sh)
@@ -104,6 +107,7 @@ func TestEnumerateBuckets_ReturnsBucketRoots(t *testing.T) {
 }
 
 func TestEnumerateBuckets_EmptyStaleHome(t *testing.T) {
+	t.Parallel()
 	sh := newStateHome(t)
 	buckets, err := enumerateBuckets(sh)
 	if err != nil {
@@ -117,6 +121,7 @@ func TestEnumerateBuckets_EmptyStaleHome(t *testing.T) {
 // --- resolveTranscript ---
 
 func TestResolveTranscript_Current(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	writeTranscript(t, dir, "01CUR")
 	path, ref, err := resolveTranscript("", dir, "01CUR")
@@ -126,6 +131,7 @@ func TestResolveTranscript_Current(t *testing.T) {
 }
 
 func TestResolveTranscript_CurrentKeyword(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	writeTranscript(t, dir, "01CUR")
 	path, ref, err := resolveTranscript("current", dir, "01CUR")
@@ -135,6 +141,7 @@ func TestResolveTranscript_CurrentKeyword(t *testing.T) {
 }
 
 func TestResolveTranscript_ExplicitLocalRef(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	writeTranscript(t, dir, "01ABC")
 	path, ref, err := resolveTranscript("local:01ABC", dir, "01CUR")
@@ -150,6 +157,7 @@ func TestResolveTranscript_ExplicitLocalRef(t *testing.T) {
 }
 
 func TestResolveTranscript_BareIDInCurrentBucket(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	writeTranscript(t, dir, "01BARE")
 	path, ref, err := resolveTranscript("01BARE", dir, "01CUR")
@@ -165,6 +173,7 @@ func TestResolveTranscript_BareIDInCurrentBucket(t *testing.T) {
 }
 
 func TestResolveTranscript_BareIDInOtherBucket(t *testing.T) {
+	t.Parallel()
 	sh := newStateHome(t)
 	a := newBucketUnder(t, sh)
 	b := newBucketUnder(t, sh)
@@ -186,6 +195,7 @@ func TestResolveTranscript_BareIDInOtherBucket(t *testing.T) {
 }
 
 func TestResolveTranscript_AmbiguousBareID(t *testing.T) {
+	t.Parallel()
 	sh := newStateHome(t)
 	a := newBucketUnder(t, sh)
 	b := newBucketUnder(t, sh)
@@ -198,6 +208,7 @@ func TestResolveTranscript_AmbiguousBareID(t *testing.T) {
 }
 
 func TestResolveTranscript_UnknownBareID(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	_, _, err := resolveTranscript("01NOTEXIST", dir, "01CUR")
 	if err == nil {
@@ -209,6 +220,7 @@ func TestResolveTranscript_UnknownBareID(t *testing.T) {
 }
 
 func TestResolveTranscript_TraversalSelector(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	_, _, err := resolveTranscript("../etc/passwd", dir, "01CUR")
 	if err == nil {
@@ -217,6 +229,7 @@ func TestResolveTranscript_TraversalSelector(t *testing.T) {
 }
 
 func TestResolveTranscript_ExplicitLocalRefMissing(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	// local: ref for a session that doesn't exist
 	_, _, err := resolveTranscript("local:01NOTEXIST", dir, "01CUR")
@@ -226,6 +239,7 @@ func TestResolveTranscript_ExplicitLocalRefMissing(t *testing.T) {
 }
 
 func TestResolveTranscript_ExplicitProjRef(t *testing.T) {
+	t.Parallel()
 	sh := newStateHome(t)
 	a := newBucketUnder(t, sh)
 	b := newBucketUnder(t, sh)
@@ -245,6 +259,7 @@ func TestResolveTranscript_ExplicitProjRef(t *testing.T) {
 }
 
 func TestResolveTranscript_ProjRefFlatStateDir(t *testing.T) {
+	t.Parallel()
 	// A flat state dir (not under serf/projects/<hash>) has no project root,
 	// so a proj:<hash>:<id> ref must return the "no project root" error.
 	flat := filepath.Join(t.TempDir(), "flatstate")
@@ -258,6 +273,7 @@ func TestResolveTranscript_ProjRefFlatStateDir(t *testing.T) {
 }
 
 func TestResolveTranscript_FlatStateDirBareIDOnly(t *testing.T) {
+	t.Parallel()
 	// A flat dir (not under serf/projects/<hash>) means stateHomeFor returns "".
 	// Bare ID search should only look in the current bucket.
 	flat := filepath.Join(t.TempDir(), "flatstate")

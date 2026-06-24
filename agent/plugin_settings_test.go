@@ -9,6 +9,7 @@ import (
 )
 
 func TestLoadPluginSettings_Valid(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	claudeDir := filepath.Join(dir, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
@@ -38,6 +39,7 @@ func TestLoadPluginSettings_Valid(t *testing.T) {
 }
 
 func TestLoadPluginSettings_MissingFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	ps, err := plugin.LoadSettings(dir, "nonexistent")
@@ -50,6 +52,7 @@ func TestLoadPluginSettings_MissingFile(t *testing.T) {
 }
 
 func TestLoadPluginSettings_FrontmatterOnly(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	claudeDir := filepath.Join(dir, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
@@ -76,6 +79,7 @@ func TestLoadPluginSettings_FrontmatterOnly(t *testing.T) {
 }
 
 func TestLoadPluginSettings_BodyOnly(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	claudeDir := filepath.Join(dir, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
@@ -102,6 +106,7 @@ func TestLoadPluginSettings_BodyOnly(t *testing.T) {
 }
 
 func TestLoadPluginSettings_InvalidYAML(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	claudeDir := filepath.Join(dir, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {

@@ -10,6 +10,7 @@ import (
 )
 
 func TestFormatCurrentTaskSteering(t *testing.T) {
+	t.Parallel()
 	task := taskpkg.Task{
 		ID:              3,
 		Description:     "Note what must be preserved",
@@ -48,6 +49,7 @@ func TestFormatCurrentTaskSteering(t *testing.T) {
 }
 
 func TestFormatCurrentTaskSteering_NoPrompt(t *testing.T) {
+	t.Parallel()
 	task := taskpkg.Task{
 		ID:          1,
 		Description: "Bare task",
@@ -66,6 +68,7 @@ func TestFormatCurrentTaskSteering_NoPrompt(t *testing.T) {
 }
 
 func TestTaskReminderFull(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "test")
 	store.Append([]taskpkg.TaskInput{
@@ -93,6 +96,7 @@ func TestTaskReminderFull(t *testing.T) {
 }
 
 func TestTaskReminderFull_Empty(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "test")
 	msg := taskReminderFull(store)
@@ -102,6 +106,7 @@ func TestTaskReminderFull_Empty(t *testing.T) {
 }
 
 func TestTaskReminderForInactivity_InProgressReFiresCurrentTaskSteering(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "test")
 	store.Append([]taskpkg.TaskInput{
@@ -127,6 +132,7 @@ func TestTaskReminderForInactivity_InProgressReFiresCurrentTaskSteering(t *testi
 }
 
 func TestTaskReminderForInactivity_NoInProgressReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "test")
 	store.Append([]taskpkg.TaskInput{
@@ -140,6 +146,7 @@ func TestTaskReminderForInactivity_NoInProgressReturnsEmpty(t *testing.T) {
 }
 
 func TestTaskReminderForInactivity_Empty(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store := taskpkg.NewTaskStore(dir, "test")
 	msg := taskReminderForInactivity(store)
@@ -149,6 +156,7 @@ func TestTaskReminderForInactivity_Empty(t *testing.T) {
 }
 
 func TestTaskReminderNudge(t *testing.T) {
+	t.Parallel()
 	msg := taskReminderNudge()
 	if msg == "" {
 		t.Fatal("expected non-empty nudge")
@@ -165,6 +173,7 @@ func TestTaskReminderNudge(t *testing.T) {
 }
 
 func TestTaskReminderAllDone(t *testing.T) {
+	t.Parallel()
 	msg := taskReminderAllDone()
 	if !strings.HasPrefix(msg, "<SYSTEM-REMINDER>") {
 		t.Fatalf("should start with <SYSTEM-REMINDER>: %s", msg)
@@ -181,6 +190,7 @@ func TestTaskReminderAllDone(t *testing.T) {
 }
 
 func TestMaybeInjectTaskReminder_NudgeAfter10Rounds(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -212,6 +222,7 @@ func TestMaybeInjectTaskReminder_NudgeAfter10Rounds(t *testing.T) {
 }
 
 func TestMaybeInjectTaskReminder_InactivityAfter25Rounds(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -248,6 +259,7 @@ func TestMaybeInjectTaskReminder_InactivityAfter25Rounds(t *testing.T) {
 }
 
 func TestMaybeInjectTaskReminder_NoNudgeIfEverUsed(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})

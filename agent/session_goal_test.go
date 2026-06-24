@@ -31,6 +31,7 @@ func newGoalMethodSession(t *testing.T) *Session {
 // TestSetGoalRejectsEmpty: SetGoal rejects an empty or whitespace objective and
 // does not store a goal.
 func TestSetGoalRejectsEmpty(t *testing.T) {
+	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 
@@ -52,6 +53,7 @@ func TestSetGoalRejectsEmpty(t *testing.T) {
 // stores the goal, kicks with the rendered first continuation prompt, and reports
 // started=true.
 func TestSetGoalIdleKicks(t *testing.T) {
+	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 
@@ -93,6 +95,7 @@ func TestSetGoalIdleKicks(t *testing.T) {
 // stores the goal but does NOT kick — the running drain-loop gate will pick it up
 // — and reports started=false.
 func TestSetGoalInTurnDefersToGate(t *testing.T) {
+	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 
@@ -123,6 +126,7 @@ func TestSetGoalInTurnDefersToGate(t *testing.T) {
 // stores the goal but reports started=false (there is no way to start it
 // immediately; a later turn's gate is the backstop).
 func TestSetGoalNoKickFuncDoesNotStart(t *testing.T) {
+	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 
@@ -140,6 +144,7 @@ func TestSetGoalNoKickFuncDoesNotStart(t *testing.T) {
 
 // TestClearGoalRemovesGoal: ClearGoal removes a previously set goal.
 func TestClearGoalRemovesGoal(t *testing.T) {
+	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 
@@ -196,6 +201,7 @@ func compactSession(t *testing.T) *Session {
 // compaction must append a trailing TurnSteering turn carrying the rendered
 // objective so the goal survives mid-turn compaction erosion.
 func TestCompactionReInjectsActiveGoalObjective(t *testing.T) {
+	t.Parallel()
 	const objective = "REINJECTMARKER ship the payments refactor end to end"
 	sess := compactSession(t)
 	defer sess.Close()
@@ -222,6 +228,7 @@ func TestCompactionReInjectsActiveGoalObjective(t *testing.T) {
 // TestCompactionNoSteeringWithoutActiveGoal: with no goal set, forcing a
 // compaction must NOT append a goal steering turn.
 func TestCompactionNoSteeringWithoutActiveGoal(t *testing.T) {
+	t.Parallel()
 	sess := compactSession(t)
 	defer sess.Close()
 
@@ -237,6 +244,7 @@ func TestCompactionNoSteeringWithoutActiveGoal(t *testing.T) {
 // TestCompactionNoSteeringForTerminalGoal: a terminal (complete/blocked) goal
 // must NOT be re-injected on compaction — only an active goal is.
 func TestCompactionNoSteeringForTerminalGoal(t *testing.T) {
+	t.Parallel()
 	sess := compactSession(t)
 	defer sess.Close()
 
@@ -258,6 +266,7 @@ func TestCompactionNoSteeringForTerminalGoal(t *testing.T) {
 // TestGoalCompactionSteering covers the helper directly: it returns the rendered
 // objective for an active goal, and nil for no-goal and terminal-goal states.
 func TestGoalCompactionSteering(t *testing.T) {
+	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 
@@ -285,6 +294,7 @@ func TestGoalCompactionSteering(t *testing.T) {
 // (i.e. it delegates with kind=EntryUserInput). The model is scripted to finish
 // the turn immediately via the result tool.
 func TestProcessInputDelegatesAsUserInput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -321,6 +331,7 @@ func TestProcessInputDelegatesAsUserInput(t *testing.T) {
 // appends a TurnSteering turn (not TurnUserInput), does not bump s.turns, emits
 // EventGoalContinuation, and does NOT emit EventUserInput.
 func TestAcceptContinuationIsSteeringNotUser(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -384,6 +395,7 @@ func TestAcceptContinuationIsSteeringNotUser(t *testing.T) {
 // the thread every iteration. The model still gets the full prompt via the steering
 // turn (asserted by the last-history check).
 func TestContinuationEventOmitsFullPrompt(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})

@@ -6,6 +6,7 @@ import (
 )
 
 func TestPermissionDeniedError(t *testing.T) {
+	t.Parallel()
 	err := &PermissionDeniedError{
 		Tool:    "shell",
 		Message: "command not allowed by policy",

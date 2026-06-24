@@ -8,6 +8,7 @@ import (
 )
 
 func TestNewEvalCollector_SetsInitialFields(t *testing.T) {
+	t.Parallel()
 	c := newEvalCollector("compact", "gpt-4", "write tests")
 	m := c.Metrics()
 	if m.Strategy != "compact" {
@@ -25,6 +26,7 @@ func TestNewEvalCollector_SetsInitialFields(t *testing.T) {
 }
 
 func TestEvalCollector_CountsTurns(t *testing.T) {
+	t.Parallel()
 	c := newEvalCollector("compact", "gpt-4", "task")
 
 	// Two assistant text end events = 2 turns.
@@ -50,6 +52,7 @@ func TestEvalCollector_CountsTurns(t *testing.T) {
 }
 
 func TestEvalCollector_AccumulatesTokens(t *testing.T) {
+	t.Parallel()
 	c := newEvalCollector("compact", "gpt-4", "task")
 
 	c.ProcessEvent(events.SessionEvent{
@@ -75,6 +78,7 @@ func TestEvalCollector_AccumulatesTokens(t *testing.T) {
 }
 
 func TestEvalCollector_AccumulatesCacheTokens(t *testing.T) {
+	t.Parallel()
 	c := newEvalCollector("compact", "gpt-4", "task")
 
 	// Two events with cache pointers set: both should accumulate.
@@ -117,6 +121,7 @@ func TestEvalCollector_AccumulatesCacheTokens(t *testing.T) {
 }
 
 func TestEvalCollector_CountsCompactionEvents(t *testing.T) {
+	t.Parallel()
 	c := newEvalCollector("compact", "gpt-4", "task")
 
 	c.ProcessEvent(events.SessionEvent{
@@ -144,6 +149,7 @@ func TestEvalCollector_CountsCompactionEvents(t *testing.T) {
 }
 
 func TestEvalCollector_IgnoresUnrelatedEvents(t *testing.T) {
+	t.Parallel()
 	c := newEvalCollector("compact", "gpt-4", "task")
 
 	c.ProcessEvent(events.SessionEvent{Kind: events.EventSessionStart, Data: events.SessionStartData{Profile: "openai", Model: "gpt-4"}})
@@ -161,6 +167,7 @@ func TestEvalCollector_IgnoresUnrelatedEvents(t *testing.T) {
 }
 
 func TestEvalCollector_TotalTokensComputed(t *testing.T) {
+	t.Parallel()
 	c := newEvalCollector("compact", "gpt-4", "task")
 
 	c.ProcessEvent(events.SessionEvent{
@@ -190,6 +197,7 @@ func TestEvalCollector_TotalTokensComputed(t *testing.T) {
 }
 
 func TestEvalCollector_CountsForkSummaryCalls(t *testing.T) {
+	t.Parallel()
 	c := newEvalCollector("session-log", "gpt-4", "task")
 
 	c.ProcessEvent(events.SessionEvent{
@@ -208,6 +216,7 @@ func TestEvalCollector_CountsForkSummaryCalls(t *testing.T) {
 }
 
 func TestEvalCollector_RetentionScoreDefaultsToZero(t *testing.T) {
+	t.Parallel()
 	c := newEvalCollector("compact", "gpt-4", "task")
 	m := c.Metrics()
 	if m.RetentionScore != 0.0 {
@@ -216,6 +225,7 @@ func TestEvalCollector_RetentionScoreDefaultsToZero(t *testing.T) {
 }
 
 func TestEvalCollector_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
 	c := newEvalCollector("compact", "gpt-4", "task")
 
 	done := make(chan struct{})

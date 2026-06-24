@@ -16,6 +16,7 @@ import (
 )
 
 func TestSession_DetailedStatus_CoreTools(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -58,6 +59,7 @@ func TestSession_DetailedStatus_CoreTools(t *testing.T) {
 }
 
 func TestSession_DetailedStatus_CustomTool(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -97,6 +99,7 @@ func TestSession_DetailedStatus_CustomTool(t *testing.T) {
 }
 
 func TestSession_DetailedStatus_Skills(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// Create a skill directory.
@@ -139,6 +142,7 @@ description: A test skill
 }
 
 func TestSession_DetailedStatus_EmptySections(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -195,6 +199,7 @@ func TestSession_DetailedStatus_EmptySections(t *testing.T) {
 }
 
 func TestSession_DetailedStatus_ConfiguredWorkflowPlugin(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -232,6 +237,7 @@ func TestSession_DetailedStatus_ConfiguredWorkflowPlugin(t *testing.T) {
 }
 
 func TestSession_DetailedStatus_Jobs(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -294,6 +300,7 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 }
 
 func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -309,7 +316,11 @@ func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
 	base := time.Now().UTC()
 	runningStartedAt := base.Add(-time.Hour)
 	const runningJobID = "job_running_old"
-	if err := sess.jobManager.store.Append(jobstore.Event{
+
+	// Build every event up front and append it as one batch so the store fsyncs
+	// once instead of ~105 times. AppendBatch assigns contiguous Seq in slice
+	// order, identical to sequential Append, so Fold/sort order is unchanged.
+	events := []jobstore.Event{{
 		Kind:             jobstore.EventJobStarted,
 		TS:               runningStartedAt,
 		JobID:            runningJobID,
@@ -318,15 +329,13 @@ func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
 		OwnerSessionID:   sess.ID(),
 		VisibleToSession: sess.ID(),
 		StartedAt:        &runningStartedAt,
-	}); err != nil {
-		t.Fatalf("append running job: %v", err)
-	}
+	}}
 
 	for i := 0; i < detailedStatusTerminalJobsLimit+2; i++ {
 		startedAt := base.Add(time.Duration(i) * time.Second)
 		endedAt := startedAt.Add(time.Second)
 		jobID := fmt.Sprintf("job_terminal_%02d", i)
-		if err := sess.jobManager.store.Append(jobstore.Event{
+		events = append(events, jobstore.Event{
 			Kind:             jobstore.EventJobStarted,
 			TS:               startedAt,
 			JobID:            jobID,
@@ -335,10 +344,7 @@ func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
 			OwnerSessionID:   sess.ID(),
 			VisibleToSession: sess.ID(),
 			StartedAt:        &startedAt,
-		}); err != nil {
-			t.Fatalf("append started %s: %v", jobID, err)
-		}
-		if err := sess.jobManager.store.Append(jobstore.Event{
+		}, jobstore.Event{
 			Kind:        jobstore.EventJobFinished,
 			TS:          endedAt,
 			JobID:       jobID,
@@ -346,9 +352,11 @@ func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
 			Reason:      "exit_zero",
 			EndedAt:     &endedAt,
 			OutputBytes: int64(i),
-		}); err != nil {
-			t.Fatalf("append finished %s: %v", jobID, err)
-		}
+		})
+	}
+
+	if err := sess.jobManager.store.AppendBatch(events); err != nil {
+		t.Fatalf("append job events: %v", err)
 	}
 
 	ds := sess.DetailedStatus()
@@ -376,6 +384,7 @@ func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
 }
 
 func TestSession_DetailedStatus_ToolsSorted(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
@@ -408,6 +417,7 @@ func TestSession_DetailedStatus_ToolsSorted(t *testing.T) {
 // it must not be counted as a supported active hook. The legacy Hooks map (registered
 // hooks per event) still counts them (Fix 4).
 func TestDetailedStatus_HookEvents_ExcludesDeadHooks(t *testing.T) {
+	t.Parallel()
 	pluginDir := t.TempDir()
 	metaDir := filepath.Join(pluginDir, ".claude-plugin")
 	os.MkdirAll(metaDir, 0o755)
@@ -458,6 +468,7 @@ func TestDetailedStatus_HookEvents_ExcludesDeadHooks(t *testing.T) {
 // unsupported events with Supported=false, Count=0, Tier="reserved-placeholder".
 // The legacy Hooks map is preserved for backward compatibility.
 func TestDetailedStatus_HookEvents(t *testing.T) {
+	t.Parallel()
 	// Build a plugin dir with PreToolUse (supported) and "Setup" (recognized but
 	// not fired by serf — reserved-placeholder).
 	pluginDir := t.TempDir()

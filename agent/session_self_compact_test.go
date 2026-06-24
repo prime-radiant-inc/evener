@@ -14,6 +14,7 @@ import (
 )
 
 func TestSetPinnedNote_AndClear(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.setPinnedNote("remember the API signature")
 	if got := s.PinnedNote(); got != "remember the API signature" {
@@ -26,6 +27,7 @@ func TestSetPinnedNote_AndClear(t *testing.T) {
 }
 
 func TestRequestForceCompact_OnePerRound(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	if err := s.requestForceCompact("drop logs"); err != nil {
 		t.Fatalf("first request should succeed: %v", err)
@@ -79,6 +81,7 @@ func countSteering(history []schema.Turn, substr string) int {
 // steering turn that (a) is present, and (b) precedes the goal objective turn
 // so the objective stays in the trailing/strongest-recency position.
 func TestRunPreCompactHook_HandsOffNoteBeforeObjective(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.setPinnedNote("REMEMBER: do X")
 	s.getOrCreateGoalStore().Set("Ship the feature", time.Now())
@@ -103,6 +106,7 @@ func TestRunPreCompactHook_HandsOffNoteBeforeObjective(t *testing.T) {
 // compaction it rides on: a second hook pass (no new note set) injects nothing,
 // leaving exactly one handoff turn.
 func TestRunPreCompactHook_HandoffIsOneShot(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.setPinnedNote("REMEMBER: do X")
 	hist := makeSteeringSeed(4)
@@ -134,6 +138,7 @@ func currentHistory(t *testing.T, s *Session) []schema.Turn {
 }
 
 func TestApplyPendingForceCompact_CompactsWithNote(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	seedSessionHistory(t, s, 14) // >PreserveRecentTurns ordinary turns
 	s.setPinnedNote("REMEMBER: API is Foo(ctx, id)")
@@ -156,6 +161,7 @@ func TestApplyPendingForceCompact_CompactsWithNote(t *testing.T) {
 }
 
 func TestApplyPendingForceCompact_NoRequest_NoOp(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	seedSessionHistory(t, s, 14)
 	before := len(currentHistory(t, s))
@@ -186,6 +192,7 @@ func forcePressureAbove(t *testing.T, s *Session, frac float64) {
 }
 
 func TestNudge_FiresOnceUntilCompaction(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	forcePressureAbove(t, s, s.contextMgr.WarnThreshold)
 
@@ -216,6 +223,7 @@ func TestNudge_FiresOnceUntilCompaction(t *testing.T) {
 // path, distinct from applyPendingForceCompact) also clears the latch so the
 // nudge can fire again afterward.
 func TestNudge_ResetsOnSessionCompact(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	forcePressureAbove(t, s, s.contextMgr.WarnThreshold)
 	if !s.maybeNudgeSelfCompact(0) {
@@ -236,6 +244,7 @@ func TestNudge_ResetsOnSessionCompact(t *testing.T) {
 // Driving the shared emit site directly is the correct test: it proves the reset
 // is wired to the mechanism that every path flows through, not just the force paths.
 func TestNudge_ResetsOnAutomaticCompaction(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	// Arm the latch as if a nudge already fired.
@@ -262,6 +271,7 @@ func TestNudge_ResetsOnAutomaticCompaction(t *testing.T) {
 // TestNudge_SilentBelowThreshold verifies no nudge fires when pressure is below
 // WarnThreshold and the latch stays clear.
 func TestNudge_SilentBelowThreshold(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	if s.maybeNudgeSelfCompact(0) {
 		t.Fatal("nudge must not fire below WarnThreshold")
@@ -278,6 +288,7 @@ func TestNudge_SilentBelowThreshold(t *testing.T) {
 // and survives a JSON marshal/unmarshal round-trip (the wire format used by
 // SaveSessionMeta/LoadSessionMeta).
 func TestPinnedNote_MetaRoundTrip(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.setPinnedNote("REMEMBER: resume me")
 	meta := s.Meta()
@@ -303,6 +314,7 @@ func TestPinnedNote_MetaRoundTrip(t *testing.T) {
 // SessionMeta carrying PinnedNote set directly (mirroring how
 // LoadSessionMeta would return it after SaveSessionMeta wrote it).
 func TestPinnedNote_SurvivesResume(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	stateDir := t.TempDir()
@@ -326,6 +338,7 @@ func TestPinnedNote_SurvivesResume(t *testing.T) {
 }
 
 func TestMaybeElicitNoteBeforeCompaction_FiresWhenEnabledAndHighPressure(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	// on by default (no flag needed)
 	s.elicitNoteFn = func(ctx context.Context, h []schema.Turn) (string, error) { return "STUB elicited note", nil }
@@ -339,6 +352,7 @@ func TestMaybeElicitNoteBeforeCompaction_FiresWhenEnabledAndHighPressure(t *test
 }
 
 func TestMaybeElicitNoteBeforeCompaction_NoopWhenLowPressure(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.elicitNoteFn = func(ctx context.Context, h []schema.Turn) (string, error) { return "SHOULD NOT FIRE", nil }
 	seedSessionHistory(t, s, 10)
@@ -356,6 +370,7 @@ func TestMaybeElicitNoteBeforeCompaction_NoopWhenLowPressure(t *testing.T) {
 // note), high pressure must NOT trigger elicitation — the agent's note wins, and
 // the side LLM call is skipped (the per-compaction latch).
 func TestMaybeElicitNoteBeforeCompaction_SkipsWhenNoteAlreadySet(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	called := false
 	s.elicitNoteFn = func(ctx context.Context, h []schema.Turn) (string, error) {

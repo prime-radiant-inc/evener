@@ -15,6 +15,7 @@ import (
 const embeddedDoctoringSkill = "doctoring-serf"
 
 func TestExtractEmbeddedSkills_CreatesDir(t *testing.T) {
+	t.Parallel()
 	dir, err := skill.ExtractEmbeddedSkills()
 	if err != nil {
 		t.Fatalf("extractEmbeddedSkills: %v", err)
@@ -32,6 +33,7 @@ func TestExtractEmbeddedSkills_CreatesDir(t *testing.T) {
 }
 
 func TestExtractEmbeddedSkills_IncludesDoctoringSkill(t *testing.T) {
+	t.Parallel()
 	dir, err := skill.ExtractEmbeddedSkills()
 	if err != nil {
 		t.Fatalf("extractEmbeddedSkills: %v", err)
@@ -50,6 +52,7 @@ func TestExtractEmbeddedSkills_IncludesDoctoringSkill(t *testing.T) {
 }
 
 func TestExtractEmbeddedSkills_DiscoverableByDiscoverSkills(t *testing.T) {
+	t.Parallel()
 	dir, err := skill.ExtractEmbeddedSkills()
 	if err != nil {
 		t.Fatalf("extractEmbeddedSkills: %v", err)
@@ -69,6 +72,7 @@ func TestExtractEmbeddedSkills_DiscoverableByDiscoverSkills(t *testing.T) {
 }
 
 func TestExtractEmbeddedSkills_FilesystemShadowsEmbedded(t *testing.T) {
+	t.Parallel()
 	dir, err := skill.ExtractEmbeddedSkills()
 	if err != nil {
 		t.Fatalf("extractEmbeddedSkills: %v", err)
@@ -94,6 +98,7 @@ func TestExtractEmbeddedSkills_FilesystemShadowsEmbedded(t *testing.T) {
 }
 
 func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -133,6 +138,7 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 }
 
 func TestOpenAI_SkillsWithUseSkillInSystemPrompt(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -178,6 +184,7 @@ func TestOpenAI_SkillsWithUseSkillInSystemPrompt(t *testing.T) {
 }
 
 func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -218,6 +225,7 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 }
 
 func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -271,6 +279,7 @@ func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
 }
 
 func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -317,6 +326,7 @@ func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 }
 
 func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
+	t.Parallel()
 	// Verify every embedded skill can be discovered and its body loaded.
 	dir, err := skill.ExtractEmbeddedSkills()
 	if err != nil {
@@ -342,6 +352,7 @@ func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
 }
 
 func TestNonInteractive_SystemPromptContainsGuidance(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 
@@ -382,6 +393,7 @@ func TestNonInteractive_SystemPromptContainsGuidance(t *testing.T) {
 }
 
 func TestNonInteractive_NotPresentWhenFalse(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	initGitRepo(t, root)
 

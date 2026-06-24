@@ -1998,7 +1998,7 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 		gotSpawn = params
-		time.Sleep(1500 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 		return appwire.ThreadStartResponse{Thread: appwireThread(hubTreeNode{
 			Ref: "local:02SLOW", SessionID: "02SLOW", Title: "spawned session", State: "idle", Project: "serf", Live: true,
 		}, "/tmp/serf")}, nil

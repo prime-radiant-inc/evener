@@ -23,6 +23,7 @@ func touchFile(t *testing.T, path string, content ...string) {
 }
 
 func TestScanWorkspace_EmptyDir(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	ws := ScanWorkspace(dir)
 
@@ -35,6 +36,7 @@ func TestScanWorkspace_EmptyDir(t *testing.T) {
 }
 
 func TestScanWorkspace_BasicTree(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	touchFile(t, filepath.Join(dir, "main.py"), "print('hello')\n")
 	touchFile(t, filepath.Join(dir, "utils.py"), "def foo(): pass\n")
@@ -61,6 +63,7 @@ func TestScanWorkspace_BasicTree(t *testing.T) {
 }
 
 func TestScanWorkspace_DepthLimit(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	// Walk depths: level1=0, level2=1, level3=2, level4=3
 	touchFile(t, filepath.Join(dir, "level1", "level2", "shallow.txt"), "shallow")              // walk depth 2 — visible (maxFileDepth=2)
@@ -88,6 +91,7 @@ func TestScanWorkspace_DepthLimit(t *testing.T) {
 }
 
 func TestScanWorkspace_MaxEntries(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	// Create more files than maxEntries (200).
 	for i := 0; i < 250; i++ {
@@ -103,6 +107,7 @@ func TestScanWorkspace_MaxEntries(t *testing.T) {
 }
 
 func TestScanWorkspace_MakefileTargets(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	makefile := `CC=gcc
 CFLAGS=-Wall
@@ -140,6 +145,7 @@ install: all
 }
 
 func TestScanWorkspace_PackageJsonScripts(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	pkg := `{
   "name": "myapp",
@@ -165,6 +171,7 @@ func TestScanWorkspace_PackageJsonScripts(t *testing.T) {
 }
 
 func TestScanWorkspace_HiddenDirsExcluded(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	touchFile(t, filepath.Join(dir, ".git", "config"), "git config")
 	touchFile(t, filepath.Join(dir, ".hidden", "secret.txt"), "secret")
@@ -192,6 +199,7 @@ func TestScanWorkspace_HiddenDirsExcluded(t *testing.T) {
 }
 
 func TestScanWorkspace_NonexistentDir(t *testing.T) {
+	t.Parallel()
 	ws := ScanWorkspace("/nonexistent/path/12345")
 
 	if ws.Tree != "" {
@@ -200,6 +208,7 @@ func TestScanWorkspace_NonexistentDir(t *testing.T) {
 }
 
 func TestScanWorkspace_GoModDetection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	touchFile(t, filepath.Join(dir, "go.mod"), "module example.com/app\n\ngo 1.21\n")
 	touchFile(t, filepath.Join(dir, "main.go"), "package main\n")
@@ -212,6 +221,7 @@ func TestScanWorkspace_GoModDetection(t *testing.T) {
 }
 
 func TestScanWorkspace_CargoTomlDetection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	touchFile(t, filepath.Join(dir, "Cargo.toml"), "[package]\nname = \"myapp\"\nversion = \"0.1.0\"\n")
 
@@ -223,6 +233,7 @@ func TestScanWorkspace_CargoTomlDetection(t *testing.T) {
 }
 
 func TestScanWorkspace_PytestIniDetection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	touchFile(t, filepath.Join(dir, "pytest.ini"), "[pytest]\ntestpaths = tests\n")
 	touchFile(t, filepath.Join(dir, "main.py"), "print('hi')\n")
@@ -235,6 +246,7 @@ func TestScanWorkspace_PytestIniDetection(t *testing.T) {
 }
 
 func TestScanWorkspace_TreeFormat_Indented(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	touchFile(t, filepath.Join(dir, "README.md"), "# Hello\n")
 	touchFile(t, filepath.Join(dir, "src", "main.py"), "print('hello')\n")
@@ -261,6 +273,7 @@ func TestScanWorkspace_TreeFormat_Indented(t *testing.T) {
 }
 
 func TestScanWorkspace_DockerfileDetection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	touchFile(t, filepath.Join(dir, "Dockerfile"), "FROM python:3.11\nRUN pip install flask\n")
 	touchFile(t, filepath.Join(dir, "docker-compose.yml"), "version: '3'\n")
@@ -273,6 +286,7 @@ func TestScanWorkspace_DockerfileDetection(t *testing.T) {
 }
 
 func TestScanWorkspace_CMakeDetection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	touchFile(t, filepath.Join(dir, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.10)\nproject(myapp)\n")
 

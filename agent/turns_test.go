@@ -9,6 +9,7 @@ import (
 )
 
 func TestTurn_HasTimestamp(t *testing.T) {
+	t.Parallel()
 	before := time.Now().UTC()
 	turn := schema.NewTurn(schema.TurnUserInput, llm.User("hello"))
 	after := time.Now().UTC()
@@ -22,6 +23,7 @@ func TestTurn_HasTimestamp(t *testing.T) {
 }
 
 func TestTurnKind_CheckpointAndSummary(t *testing.T) {
+	t.Parallel()
 	if schema.TurnCheckpoint != "CHECKPOINT" {
 		t.Fatalf("TurnCheckpoint = %q, want CHECKPOINT", schema.TurnCheckpoint)
 	}

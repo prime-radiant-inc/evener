@@ -41,6 +41,7 @@ func testResolver(ref string) (*provider.Profile, error) {
 // (with a ResolveProfile resolver) swaps the profile and preserves any
 // communicate-output-schema override applied before the switch.
 func TestSetModel_CrossProvider_SwapsProfileAndPreservesOverride(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	// Register both providers so the session can query live model metadata.
@@ -109,6 +110,7 @@ func TestSetModel_CrossProvider_SwapsProfileAndPreservesOverride(t *testing.T) {
 // After removing the prefixActionSwitch arm, WithModel will keep the
 // openai profile for unknown cross-provider prefixes.
 func TestSetModel_CrossProvider_WithoutResolver_NoSwap(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -131,6 +133,7 @@ func TestSetModel_CrossProvider_WithoutResolver_NoSwap(t *testing.T) {
 }
 
 func TestRestoreSessionFromMetaWithConfig_InstallsResolveProfile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -174,6 +177,7 @@ func TestRestoreSessionFromMetaWithConfig_InstallsResolveProfile(t *testing.T) {
 }
 
 func TestRestoreSessionFromMetaWithConfig_LayersModelFallbacks(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -206,6 +210,7 @@ func TestRestoreSessionFromMetaWithConfig_LayersModelFallbacks(t *testing.T) {
 // same-provider SetModel ("openai/gpt-4.1") uses the WithModel path
 // (not the resolver) even when a resolver is present.
 func TestSetModel_SameProvider_WithResolver_UsesWithModel(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -242,6 +247,7 @@ func TestSetModel_SameProvider_WithResolver_UsesWithModel(t *testing.T) {
 // switching from an openai profile to a google/gemini profile via SetModel
 // (with resolver) re-registers the real web_search function tool.
 func TestSetModel_CrossProvider_SwitchToGoogle_RegistersWebSearch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -272,6 +278,7 @@ func TestSetModel_CrossProvider_SwitchToGoogle_RegistersWebSearch(t *testing.T) 
 // switching from a google profile to openai via SetModel removes the web_search
 // function tool (or at least it is no longer the real executor).
 func TestSetModel_CrossProvider_SwitchAwayFromGoogle_RemovesWebSearch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "gemini"})
@@ -303,6 +310,7 @@ func TestSetModel_CrossProvider_SwitchAwayFromGoogle_RemovesWebSearch(t *testing
 // returns an error when a resolver-resolved fallback has a different BehaviorTag
 // from the primary profile.
 func TestValidateModelFallbacks_CrossTag_Errors(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -324,6 +332,7 @@ func TestValidateModelFallbacks_CrossTag_Errors(t *testing.T) {
 // TestValidateModelFallbacks_SameTag_Allowed verifies that same-tag fallbacks
 // (different model, same provider family) are allowed when a resolver is present.
 func TestValidateModelFallbacks_SameTag_Allowed(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -368,6 +377,7 @@ func testResolverFull(ref string) (*provider.Profile, error) {
 // TestSetModel_CrossProvider_ToOllama verifies SetModel("ollama/llama3.1:8b")
 // from an OpenAI session (with resolver) produces an ollama profile.
 func TestSetModel_CrossProvider_ToOllama(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -394,6 +404,7 @@ func TestSetModel_CrossProvider_ToOllama(t *testing.T) {
 // TestSetModel_CrossProvider_ToOllama_WithCatalog verifies that SetModel via
 // resolver to an ollama profile picks up the catalog-derived context window.
 func TestSetModel_CrossProvider_ToOllama_WithCatalog(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -421,6 +432,7 @@ func TestSetModel_CrossProvider_ToOllama_WithCatalog(t *testing.T) {
 // TestSetModel_CrossProvider_FromAnthropicToOllama verifies SetModel from
 // an Anthropic session (with resolver) to an ollama profile.
 func TestSetModel_CrossProvider_FromAnthropicToOllama(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "anthropic"})
@@ -447,6 +459,7 @@ func TestSetModel_CrossProvider_FromAnthropicToOllama(t *testing.T) {
 // TestSetModel_CrossProvider_ToMiniMax verifies SetModel from an OpenAI session
 // (with resolver) to a minimax profile.
 func TestSetModel_CrossProvider_ToMiniMax(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -473,6 +486,7 @@ func TestSetModel_CrossProvider_ToMiniMax(t *testing.T) {
 // TestSetModel_CrossProvider_FromMiniMax verifies SetModel from a minimax session
 // (with resolver) to an anthropic profile.
 func TestSetModel_CrossProvider_FromMiniMax(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "minimax"})
@@ -500,6 +514,7 @@ func TestSetModel_CrossProvider_FromMiniMax(t *testing.T) {
 // SetModel("openrouter/anthropic/claude-3-haiku-20240307") via resolver
 // produces an openrouter profile with the slash-containing model preserved.
 func TestSetModel_CrossProvider_ToOpenRouter_PreservesSlashModel(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -532,6 +547,7 @@ func TestSetModel_CrossProvider_ToOpenRouter_PreservesSlashModel(t *testing.T) {
 // TestSetModel_CrossProvider_FromOpenRouterToOllama verifies that from an
 // openrouter session, SetModel("ollama/llama3.1") via resolver switches to ollama.
 func TestSetModel_CrossProvider_FromOpenRouterToOllama(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openrouter"})
@@ -560,6 +576,7 @@ func TestSetModel_CrossProvider_FromOpenRouterToOllama(t *testing.T) {
 // openai→anthropic switch via SetModel with resolver (replaces
 // TestProviderProfile_WithModel_CrossProvider at session level).
 func TestSetModel_CrossProvider_ToAnthropicFromOpenAI(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -587,6 +604,7 @@ func TestSetModel_CrossProvider_ToAnthropicFromOpenAI(t *testing.T) {
 // anthropic→openai switch via SetModel (replaces
 // TestAnthropicProfile_WithModel_ResolvesProviderPrefix at session level).
 func TestSetModel_CrossProvider_FromAnthropicToOpenAI(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "anthropic"})

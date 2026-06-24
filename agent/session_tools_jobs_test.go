@@ -111,6 +111,7 @@ func handlerJSON(t *testing.T, v any) []byte {
 // window of a fully-retained log reports output_status="windowed" with
 // dropped_bytes=0, so the model knows the rest is reachable, not lost.
 func TestJobReadOutputReportsStatus(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -153,6 +154,7 @@ func TestJobReadOutputReportsStatus(t *testing.T) {
 }
 
 func TestJobListIncludesDelegatesRecoverySurface(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
@@ -202,6 +204,7 @@ func TestJobListIncludesDelegatesRecoverySurface(t *testing.T) {
 }
 
 func TestJobListHidesDescendantDelegateHandles(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	now := time.Unix(100, 0).UTC()
 	ownedStart := now.Add(time.Second)
@@ -303,6 +306,7 @@ func TestJobListHidesDescendantDelegateHandles(t *testing.T) {
 }
 
 func TestJobListDelegatesFollowReturnedJobs(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	now := time.Unix(200, 0).UTC()
 	appendDelegateJob := func(delegateID, jobID string, started time.Time) {
@@ -372,6 +376,7 @@ func TestJobListDelegatesFollowReturnedJobs(t *testing.T) {
 }
 
 func TestJobListDelegatesDoNotExposeFilteredCurrentJob(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	now := time.Unix(300, 0).UTC()
 	if err := s.jobManager.appendEvent(jobstore.Event{
@@ -451,6 +456,7 @@ func TestJobListDelegatesDoNotExposeFilteredCurrentJob(t *testing.T) {
 }
 
 func TestJobToolsRejectDelegateIDWithActionableGuidance(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
@@ -492,6 +498,7 @@ func TestJobToolsRejectDelegateIDWithActionableGuidance(t *testing.T) {
 // output rode inline and kept no durable job), the error must redirect the model
 // to job_list rather than dead-ending on a bare "not found".
 func TestJobReadOutputUnknownIDPointsToJobList(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	res := executeJobReadOutputForTest(t, s, llm.ToolCallData{
@@ -511,6 +518,7 @@ func TestJobReadOutputUnknownIDPointsToJobList(t *testing.T) {
 // head_lines/tail_lines) returns a small bounded default window, not up to the
 // full retention. The agent pages with an explicit tail_lines for more.
 func TestJobReadOutputDefaultWindowIsBounded(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -555,6 +563,7 @@ func TestJobReadOutputDefaultWindowIsBounded(t *testing.T) {
 // call returns a custom-sized head+tail digest (not an error): the first N + last
 // M lines with the middle elided.
 func TestJobReadOutputHeadAndTailTogether(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
@@ -593,6 +602,7 @@ func TestJobReadOutputHeadAndTailTogether(t *testing.T) {
 // + line_count returns exactly that line range, marked windowed (lines exist on
 // both sides).
 func TestJobReadOutputFromLineMiddleSlice(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "c1",
@@ -633,6 +643,7 @@ func TestJobReadOutputFromLineMiddleSlice(t *testing.T) {
 // and null/empty fields: no transcript_ref/resumable/visible_to_session_id, no
 // explicit nulls, and no empty recent_watches array.
 func TestJobListRowIsLean(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -685,6 +696,7 @@ func TestJobListRowIsLean(t *testing.T) {
 }
 
 func TestJobToolsControlBackgroundShellJob(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -807,6 +819,7 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 }
 
 func TestJobListToolIncludeNestedSurfacesForwardedRecords(t *testing.T) {
+	t.Parallel()
 	parent := newTestSession(t)
 	child := newTestSession(t)
 	child.jobManager.forward = parent.jobManager.forwardEvent
@@ -865,6 +878,7 @@ func TestJobListToolIncludeNestedSurfacesForwardedRecords(t *testing.T) {
 // (only walkDescendantJobs does for include_descendants), so a zero Depth must be
 // omitted, not emitted as "depth":0.
 func TestJobListDefaultListingOmitsDepth(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 1", Description: "job"})
 	if err != nil {
@@ -909,6 +923,7 @@ func findDescendantRow(rows []jobListDescendantEntry, jobID string) *jobListDesc
 }
 
 func TestJobListIncludeDescendantsHidesChildDelegateHandles(t *testing.T) {
+	t.Parallel()
 	rootJM := newWalkJobManager(t, "ROOT")
 	childJM := newWalkJobManager(t, "CHILD")
 	t.Cleanup(func() {
@@ -1024,6 +1039,7 @@ func newWalkJobManager(t *testing.T, sessionID string) *jobManager {
 // terminal forwarded copy for a dead coordinator (no recursion into the gone
 // session), and leaves default + include_nested semantics unchanged.
 func TestJobListIncludeDescendantsWalksLiveTree(t *testing.T) {
+	t.Parallel()
 	rootJM := newWalkJobManager(t, "ROOT")
 	coordJM := newWalkJobManager(t, "COORD")
 	workerJM := newWalkJobManager(t, "WORK")
@@ -1176,6 +1192,7 @@ func TestJobListIncludeDescendantsWalksLiveTree(t *testing.T) {
 // Before the fix the descendant walk swallowed the depth-0 error and returned an
 // empty list with success — a silent regression from the plain path.
 func TestJobListIncludeDescendantsSurfacesOwnStoreError(t *testing.T) {
+	t.Parallel()
 	rootJM := newWalkJobManager(t, "ROOT")
 	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
 
@@ -1208,6 +1225,7 @@ func TestJobListIncludeDescendantsSurfacesOwnStoreError(t *testing.T) {
 // the owner projection clears it and reports a different, downstream reason. The
 // list row must match the owner projection.
 func TestJobListIncludeDescendantsProjectsRuntimeLostViaOwner(t *testing.T) {
+	t.Parallel()
 	rootJM := newWalkJobManager(t, "ROOT")
 	coordJM := newWalkJobManager(t, "COORD")
 	workerJM := newWalkJobManager(t, "WORK")
@@ -1310,6 +1328,7 @@ func runJobListTool(t *testing.T, s *Session) jobListToolOutput {
 }
 
 func TestJobListWatchesOmittedWhenNoneConfigured(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	out := runJobListTool(t, s)
 	if len(out.Watches) != 0 {
@@ -1326,6 +1345,7 @@ func TestJobListWatchesOmittedWhenNoneConfigured(t *testing.T) {
 }
 
 func TestJobListEnumeratesActiveWatches(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	jm := s.jobManager
 
@@ -1376,6 +1396,7 @@ func TestJobListEnumeratesActiveWatches(t *testing.T) {
 }
 
 func TestJobListWatchConditionSummaryFormats(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	jm := s.jobManager
 	jm.enqueue = func(jobNotification) {}
@@ -1421,6 +1442,7 @@ func TestJobListWatchConditionSummaryFormats(t *testing.T) {
 }
 
 func TestJobListWatchReflectsDeliveries(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	jm := s.jobManager
 	jm.enqueue = func(jobNotification) {}
@@ -1442,6 +1464,7 @@ func TestJobListWatchReflectsDeliveries(t *testing.T) {
 }
 
 func TestJobListExcludesTerminalFlushWatches(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	jm := s.jobManager
 
@@ -1465,6 +1488,7 @@ func TestJobListExcludesTerminalFlushWatches(t *testing.T) {
 }
 
 func TestDefJobListDescriptionMentionsActiveWatches(t *testing.T) {
+	t.Parallel()
 	desc := tooldefs.DefJobList().Description
 	if !strings.Contains(desc, "The result also includes your active watches.") {
 		t.Fatalf("DefJobList description = %q, want it to mention active watches", desc)
@@ -1472,6 +1496,7 @@ func TestDefJobListDescriptionMentionsActiveWatches(t *testing.T) {
 }
 
 func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		breakState func(*testing.T, *Session, *jobstore.JobRecord)
@@ -1590,8 +1615,7 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 		{
 			name: "oversized transcript line",
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
-				restoreLimit := setStrictTranscriptMaxLineBytesForTest(512)
-				t.Cleanup(restoreLimit)
+				s.strictTranscriptMaxLineBytes = 512
 				appendChildTranscript(t, s, rec, "\n"+strings.Repeat("x", 513)+"\n")
 			},
 			wantReason: "corrupt_child_transcript",
@@ -1682,6 +1706,7 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			c := llm.NewClient()
 			c.Register(&fakeAdapter{name: "openai"})
 			s := newDelegateRestorePreflightSession(t, c)
@@ -1723,16 +1748,15 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 }
 
 func TestJobListStoppedDelegateResumabilityDoesNotBuildResumeHistory(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	s := newDelegateRestorePreflightSession(t, c)
 	rec := seedStoppedDelegateRestoreRecord(t, s)
-	original := delegateRestoreResumeHistory
-	delegateRestoreResumeHistory = func(entries []transcript.Entry) []schema.Turn {
-		t.Fatalf("job_list built resume history from %d entries", len(entries))
+	s.delegateRestoreResumeHistory = func(entries []transcript.Entry) []schema.Turn {
+		t.Errorf("job_list built resume history from %d entries", len(entries))
 		return nil
 	}
-	defer func() { delegateRestoreResumeHistory = original }()
 
 	raw, err := jobListTool(s, map[string]any{"type": []any{"delegate"}}, jobToolResultDefaultMaxChar)
 	if err != nil {
@@ -1752,6 +1776,7 @@ func TestJobListStoppedDelegateResumabilityDoesNotBuildResumeHistory(t *testing.
 }
 
 func TestJobWatchToolConfiguresWatch(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -1799,6 +1824,7 @@ func TestJobWatchToolConfiguresWatch(t *testing.T) {
 }
 
 func TestJobWatchToolTreatsNullOptionalIntegersAsOmitted(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30"})
@@ -1829,6 +1855,7 @@ func TestJobWatchToolTreatsNullOptionalIntegersAsOmitted(t *testing.T) {
 }
 
 func TestWatchArgsFromToolArgsUsesSource(t *testing.T) {
+	t.Parallel()
 	got, err := watchArgsFromToolArgs(map[string]any{
 		"operation": "create",
 		"source":    "parent",
@@ -1845,6 +1872,7 @@ func TestWatchArgsFromToolArgsUsesSource(t *testing.T) {
 }
 
 func TestWatchArgsFromToolArgsRejectsLegacyTargetAndSend(t *testing.T) {
+	t.Parallel()
 	for name, args := range map[string]map[string]any{
 		"target": {
 			"operation": "create",
@@ -1869,6 +1897,7 @@ func TestWatchArgsFromToolArgsRejectsLegacyTargetAndSend(t *testing.T) {
 }
 
 func TestJobWatchCreateReturnsIDAndClearUsesIDOnly(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -1958,6 +1987,7 @@ func TestJobWatchCreateReturnsIDAndClearUsesIDOnly(t *testing.T) {
 }
 
 func TestJobWatchRejectsRemovedPublicShapes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		args string
@@ -1993,6 +2023,7 @@ func TestJobWatchRejectsRemovedPublicShapes(t *testing.T) {
 }
 
 func TestJobWatchValidationGuidesObserversToParentSource(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		args string
@@ -2038,6 +2069,7 @@ func TestJobWatchValidationGuidesObserversToParentSource(t *testing.T) {
 }
 
 func TestJobWatchDuplicateCreateReturnsSameIDAndChangedConfigReturnsNewID(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -2097,6 +2129,7 @@ func TestJobWatchDuplicateCreateReturnsSameIDAndChangedConfigReturnsNewID(t *tes
 }
 
 func TestJobWatchListAndInspectReturnWatchIDs(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -2177,13 +2210,14 @@ func TestJobWatchListAndInspectReturnWatchIDs(t *testing.T) {
 }
 
 func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
+	t.Parallel()
 	s := newPersistentTestSession(t)
 	const token = "WATCH_OUTPUT_TOKEN_ONCE"
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 1; echo 'WATCH_OUTPUT_TOKEN_ONCE'; sleep 1","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 0.3; echo 'WATCH_OUTPUT_TOKEN_ONCE'; sleep 0.3","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -2244,6 +2278,7 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 // JSON. A non-matching catch-up reports terminal_catchup with an explicit
 // fired=false — contract §7.1 promises "fired=false on none", not omission.
 func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	// Use a manual job so we have a durable record with known output. Fast
@@ -2299,6 +2334,7 @@ func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 }
 
 func TestJobWatchNoConditionErrors(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -2320,6 +2356,7 @@ func TestJobWatchNoConditionErrors(t *testing.T) {
 }
 
 func TestJobWatchToolMainAliasTargetFailsTargetNotFound(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -2340,6 +2377,7 @@ func TestJobWatchToolMainAliasTargetFailsTargetNotFound(t *testing.T) {
 }
 
 func TestJobWatchToolWatchedTargetWithoutContextFailsTargetNotFound(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -2360,6 +2398,7 @@ func TestJobWatchToolWatchedTargetWithoutContextFailsTargetNotFound(t *testing.T
 }
 
 func TestJobWatchToolSendToMainAliasFailsTargetNotFound(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -2382,6 +2421,7 @@ func TestJobWatchToolSendToMainAliasFailsTargetNotFound(t *testing.T) {
 }
 
 func TestDelegateSendToolMainAliasFailsInvalidRequestWithoutSideEffects(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	called := false
 	s.cfg.spawn.parentSteer = func(string, *provenance.Causal) { called = true }
@@ -2416,6 +2456,7 @@ func TestDelegateSendToolMainAliasFailsInvalidRequestWithoutSideEffects(t *testi
 }
 
 func TestJobWatchSendToRequired(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		send string
@@ -2444,6 +2485,7 @@ func TestJobWatchSendToRequired(t *testing.T) {
 }
 
 func TestJobWatchEmptySendPlaceholderIsOmitted(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
@@ -2459,6 +2501,7 @@ func TestJobWatchEmptySendPlaceholderIsOmitted(t *testing.T) {
 }
 
 func TestMarshalWatchResultSurfacesEventFilter(t *testing.T) {
+	t.Parallel()
 	res, err := marshalWatchResult(watchResult{
 		Target:   runtimeMessageAliasCaller,
 		Watching: true,
@@ -2488,6 +2531,7 @@ func TestMarshalWatchResultSurfacesEventFilter(t *testing.T) {
 }
 
 func TestMarshalWatchResultSurfacesWatchIDInModelOutput(t *testing.T) {
+	t.Parallel()
 	created, err := marshalWatchResult(watchResult{
 		WatchID:  "watch_visible",
 		Target:   runtimeMessageAliasCaller,
@@ -2527,6 +2571,7 @@ func TestMarshalWatchResultSurfacesWatchIDInModelOutput(t *testing.T) {
 // Fired=false omits the field (omitempty), so the agent learns its condition was
 // already true without waiting a turn (spec §7.1).
 func TestMarshalWatchResultSurfacesFired(t *testing.T) {
+	t.Parallel()
 	firedOut, err := marshalWatchResult(watchResult{
 		Target:      "job_1",
 		Watching:    true,
@@ -2570,6 +2615,7 @@ func TestMarshalWatchResultSurfacesFired(t *testing.T) {
 }
 
 func TestJobWatchAdvertisedDefinitionUsesCanonicalEventKinds(t *testing.T) {
+	t.Parallel()
 	want := tooldefs.DefJobWatch(WatchEventKindNames)
 	var got *llm.ToolDefinition
 	for _, def := range NewOpenAIProfile("gpt-5.2").ToolDefinitions() {
@@ -2587,6 +2633,7 @@ func TestJobWatchAdvertisedDefinitionUsesCanonicalEventKinds(t *testing.T) {
 }
 
 func TestJobStopDefaultReturnsRequestedCancellation(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -2631,6 +2678,7 @@ func TestJobStopDefaultReturnsRequestedCancellation(t *testing.T) {
 }
 
 func TestJobStopBlockTimeoutReturnsStopPending(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -2666,6 +2714,7 @@ func TestJobStopBlockTimeoutReturnsStopPending(t *testing.T) {
 }
 
 func TestDelegateToolForegroundReturnsStructuredResult(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -2718,6 +2767,7 @@ func TestDelegateToolForegroundReturnsStructuredResult(t *testing.T) {
 }
 
 func TestDelegateToolForegroundSchemaResultMissingProjectsReason(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -2749,6 +2799,7 @@ func TestDelegateToolForegroundSchemaResultMissingProjectsReason(t *testing.T) {
 }
 
 func TestDelegateToolForegroundNoSchemaNoStructuredOmitsStructuredFields(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -2772,6 +2823,7 @@ func TestDelegateToolForegroundNoSchemaNoStructuredOmitsStructuredFields(t *test
 }
 
 func TestJobReadOutputReturnsBackgroundDelegateStructuredResult(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -2832,6 +2884,7 @@ func TestJobReadOutputReturnsBackgroundDelegateStructuredResult(t *testing.T) {
 }
 
 func TestJobReadOutputReturnsBackgroundDelegateSchemaResultMissingReason(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -2882,6 +2935,7 @@ func TestJobReadOutputReturnsBackgroundDelegateSchemaResultMissingReason(t *test
 }
 
 func TestJobReadOutputBlockReturnsOnNewOutput(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec, err := s.jobManager.createShell(createShellOpts{Command: "manual running job"})
 	if err != nil {
@@ -2965,6 +3019,7 @@ func blockingGrepRead(t *testing.T, s *Session, jobID, grep string, timeoutMS in
 }
 
 func TestJobReadOutputBlockGrepReturnsImmediatelyOnExistingMatch(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec := newManualRunningJob(t, s)
 	appendManualJobOutput(s.jobManager, rec.JobID, "boot log\nready to serve\n")
@@ -2982,6 +3037,7 @@ func TestJobReadOutputBlockGrepReturnsImmediatelyOnExistingMatch(t *testing.T) {
 }
 
 func TestJobReadOutputBlockGrepWaitsForMatchNotJustNewOutput(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec := newManualRunningJob(t, s)
 	appendManualJobOutput(s.jobManager, rec.JobID, "starting up\n")
@@ -3006,6 +3062,7 @@ func TestJobReadOutputBlockGrepWaitsForMatchNotJustNewOutput(t *testing.T) {
 }
 
 func TestJobReadOutputBlockGrepTimesOutWithoutMatch(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec := newManualRunningJob(t, s)
 	appendManualJobOutput(s.jobManager, rec.JobID, "no signal here\n")
@@ -3026,6 +3083,7 @@ func TestJobReadOutputBlockGrepTimesOutWithoutMatch(t *testing.T) {
 }
 
 func TestJobReadOutputBlockGrepReturnsWhenJobGoesTerminal(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec := newManualRunningJob(t, s)
 	appendManualJobOutput(s.jobManager, rec.JobID, "working\n")
@@ -3048,6 +3106,7 @@ func TestJobReadOutputBlockGrepReturnsWhenJobGoesTerminal(t *testing.T) {
 }
 
 func TestJobGrepScanCarriesPartialLineAcrossSteps(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec := newManualRunningJob(t, s)
 	re := regexp.MustCompile("ready")
@@ -3064,6 +3123,7 @@ func TestJobGrepScanCarriesPartialLineAcrossSteps(t *testing.T) {
 }
 
 func TestJobGrepScanMatchesUnterminatedTrailingLine(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec := newManualRunningJob(t, s)
 	re := regexp.MustCompile("ready")
@@ -3076,6 +3136,7 @@ func TestJobGrepScanMatchesUnterminatedTrailingLine(t *testing.T) {
 }
 
 func TestJobGrepScanSkipsUnchangedOutput(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec := newManualRunningJob(t, s)
 	re := regexp.MustCompile("ready")
@@ -3095,6 +3156,7 @@ func TestJobGrepScanSkipsUnchangedOutput(t *testing.T) {
 }
 
 func TestJobGrepScanNeverMatchesOverlongLines(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec := newManualRunningJob(t, s)
 	re := regexp.MustCompile("ready")
@@ -3127,6 +3189,7 @@ func TestJobGrepScanNeverMatchesOverlongLines(t *testing.T) {
 // not the retry-exhausted path), so it is independent of the not-ok-on-race
 // change.
 func TestReadJobOutputFromWidensPastStaleTotal(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec := newManualRunningJob(t, s)
 	appendManualJobOutput(s.jobManager, rec.JobID, strings.Repeat("a", 100))
@@ -3148,6 +3211,7 @@ func TestReadJobOutputFromWidensPastStaleTotal(t *testing.T) {
 // that block+grep on an already-terminal job returns at once (not after the
 // full timeout) and delivers matches from the terminal snapshot.
 func TestJobReadOutputBlockGrepReturnsImmediatelyOnTerminalJobWithMatch(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec := newManualRunningJob(t, s)
 	appendManualJobOutput(s.jobManager, rec.JobID, "boot\nall ready now\n")
@@ -3174,6 +3238,7 @@ func TestJobReadOutputBlockGrepReturnsImmediatelyOnTerminalJobWithMatch(t *testi
 }
 
 func TestDelegateSendForegroundStartReturnsTerminalResult(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -3247,6 +3312,7 @@ func TestDelegateSendForegroundStartReturnsTerminalResult(t *testing.T) {
 }
 
 func TestDelegateSendRejectsJobIDTargetWithGuidance(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -3281,6 +3347,7 @@ func TestDelegateSendRejectsJobIDTargetWithGuidance(t *testing.T) {
 }
 
 func TestDelegateSendIdleDefaultFailsAndOnIdleStartResumes(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -3350,6 +3417,7 @@ func TestDelegateSendIdleDefaultFailsAndOnIdleStartResumes(t *testing.T) {
 }
 
 func TestJobSendMessageRestoreRuntimeLostStructuredInvalidResult(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -3455,6 +3523,7 @@ func TestJobSendMessageRestoreRuntimeLostStructuredInvalidResult(t *testing.T) {
 }
 
 func TestMarshalDelegateResultsBoundLargeOutput(t *testing.T) {
+	t.Parallel()
 	largeOutput := strings.Repeat("prefix-", 200) + "delegate-tail"
 	out, err := marshalDelegateResult(delegateResult{
 		JobID:               "job_delegate",
@@ -3489,6 +3558,7 @@ func TestMarshalDelegateResultsBoundLargeOutput(t *testing.T) {
 }
 
 func TestDelegateSendNegativeBlockTimeoutDoesNotStart(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
@@ -3537,6 +3607,7 @@ func TestDelegateSendNegativeBlockTimeoutDoesNotStart(t *testing.T) {
 }
 
 func TestDelegateSendToShellJobIDRejectsJobHandle(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -3575,6 +3646,7 @@ func TestDelegateSendToShellJobIDRejectsJobHandle(t *testing.T) {
 }
 
 func TestDelegateSendCallerTargetRejectsPublicAlias(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.cfg.spawn.parentSteer = s.SteerWithProvenance
 
@@ -3596,6 +3668,7 @@ func TestDelegateSendCallerTargetRejectsPublicAlias(t *testing.T) {
 }
 
 func TestJobToolsDefinitions(t *testing.T) {
+	t.Parallel()
 	required := func(t *testing.T, def llm.ToolDefinition, name string, want []string) {
 		t.Helper()
 		if def.Name != name {
@@ -3685,6 +3758,7 @@ func TestJobToolsDefinitions(t *testing.T) {
 }
 
 func TestJobReadOutputRejectsInvalidArgs(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -3727,6 +3801,7 @@ func TestJobReadOutputRejectsInvalidArgs(t *testing.T) {
 }
 
 func TestJobReadOutputGrepSearchesRetainedOutputBeyondTail(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -3758,6 +3833,7 @@ func TestJobReadOutputGrepSearchesRetainedOutputBeyondTail(t *testing.T) {
 }
 
 func TestJobReadOutputProjectionTooLargeDoesNotMutateDurableStructuredResult(t *testing.T) {
+	t.Parallel()
 	// Payload must exceed the registry default cap (jobToolResultDefaultMaxChar) so the
 	// projected job_read_output result overflows and yields projection_too_large.
 	payload := strings.Repeat("x", jobToolResultDefaultMaxChar+10000)
@@ -3821,6 +3897,7 @@ func TestJobReadOutputProjectionTooLargeDoesNotMutateDurableStructuredResult(t *
 }
 
 func TestJobToolOutputLimitsHaveJSONMinimum(t *testing.T) {
+	t.Parallel()
 	s := newShellToolTestSession(t, SessionConfig{
 		ToolOutputLimits: map[string]schema.ToolOutputLimit{
 			"job_status":    {MaxChars: 1, Strategy: schema.TruncHeadTail},
@@ -3857,6 +3934,7 @@ func TestJobReadOutputIsNotModelFacing(t *testing.T) {
 }
 
 func TestJobReadOutputGrepSearchesTerminalOutputFileBeyondTail(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	// Build a durable completed job whose output exceeds the tail budget:
@@ -3895,6 +3973,7 @@ func TestJobReadOutputGrepSearchesTerminalOutputFileBeyondTail(t *testing.T) {
 // reached; under full-scan all 31 lines are scanned (31 < 100-match cap) and
 // FINAL-NEEDLE is present.
 func TestJobReadOutputGrepScansFullRetainedOutputBeyondOldBudget(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec := newManualRunningJob(t, s)
 
@@ -3933,6 +4012,7 @@ func TestJobReadOutputGrepScansFullRetainedOutputBeyondOldBudget(t *testing.T) {
 }
 
 func TestJobStopSchemaRejectsUnsupportedSignal(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -3969,6 +4049,7 @@ func TestJobStopSchemaRejectsUnsupportedSignal(t *testing.T) {
 }
 
 func TestJobStopAcceptsIncludeChildrenThroughRegistry(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -4001,6 +4082,7 @@ func TestJobStopAcceptsIncludeChildrenThroughRegistry(t *testing.T) {
 }
 
 func TestJobReadOutputRejectsLargeGrepBeforeRegistryTruncation(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	// Use a manual job; fast small-output shell commands return ephemeral (no
@@ -4022,6 +4104,7 @@ func TestJobReadOutputRejectsLargeGrepBeforeRegistryTruncation(t *testing.T) {
 }
 
 func TestJobReadOutputRejectsJSONExpandedGrepBeforeRegistryTruncation(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	// Use a manual job; fast small-output shell commands return ephemeral (no
@@ -4223,6 +4306,7 @@ func containsString(values []string, want string) bool {
 // max_wait_ms is rejected; the old background+block_timeout_ms combo rejection
 // is gone (spec §3 — combo is inexpressible).
 func TestDelegateMaxWaitMSDecodeTable(t *testing.T) {
+	t.Parallel()
 	s := newDelegateTestSession(t, llm.NewClient())
 
 	// Negative max_wait_ms → invalid_request.
@@ -4242,6 +4326,7 @@ func TestDelegateMaxWaitMSDecodeTable(t *testing.T) {
 // TestDelegateSendMaxWaitMSDecodeTable pins spec §2 delegate_send decode:
 // negative max_wait_ms is rejected. The old combo rejection is gone (spec §3).
 func TestDelegateSendMaxWaitMSDecodeTable(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -4280,6 +4365,7 @@ func TestDelegateSendMaxWaitMSDecodeTable(t *testing.T) {
 // TestDelegateAndDelegateSendAcceptZeroMaxWaitMS pins spec §2: max_wait_ms=0 is
 // accepted (strict-provider safe — zero reads as unset on all five tools).
 func TestDelegateAndDelegateSendAcceptZeroMaxWaitMS(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -4332,6 +4418,7 @@ func TestDelegateAndDelegateSendAcceptZeroMaxWaitMS(t *testing.T) {
 // delegate_send, job_read_output, and job_stop: negative max_wait_ms must
 // return invalid_request; 0/absent must succeed with unset behavior.
 func TestMaxWaitMSDecoders(t *testing.T) {
+	t.Parallel()
 	const wantNegErr = "invalid_request: max_wait_ms must be non-negative"
 
 	t.Run("delegate_negative", func(t *testing.T) {
@@ -4490,6 +4577,7 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 // (spec §2). The message generalizes to "cross-session reads" so it is truthful
 // for both.
 func TestGrantedReadBlockUnsupportedErrReword(t *testing.T) {
+	t.Parallel()
 	const want = "invalid_request: max_wait_ms is not supported for cross-session reads"
 	if grantedReadBlockUnsupportedErr != want {
 		t.Fatalf("grantedReadBlockUnsupportedErr = %q, want %q", grantedReadBlockUnsupportedErr, want)
@@ -4501,6 +4589,7 @@ func TestGrantedReadBlockUnsupportedErrReword(t *testing.T) {
 // A job whose head output was pushed out of the default tail window is only
 // reachable by grep or by head_lines; this test closes that gap.
 func TestJobReadOutputHeadLinesReadsFromStart(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -4579,6 +4668,7 @@ func TestJobReadOutputHeadLinesReadsFromStart(t *testing.T) {
 // TestJobReadOutputHeadAndTailMutuallyExclusive verifies that supplying both
 // head_lines and tail_lines in the same call fails with invalid_request.
 func TestJobReadOutputFromLineExclusiveWithHeadTail(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -4604,6 +4694,7 @@ func TestJobReadOutputFromLineExclusiveWithHeadTail(t *testing.T) {
 // behavior. Regression: gpt-5.5 sent both as 0 on every call, causing
 // invalid_request loops.
 func TestJobReadOutputZeroHeadTailTreatedAsUnset(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -4686,6 +4777,7 @@ func waitForJobOutputContent(t *testing.T, s *Session, jobID, want string) jobRe
 // TestJobReadOutputNegativeHeadBytesRejected verifies that head_lines:-1
 // returns invalid_request with a non-negative message.
 func TestJobReadOutputNegativeHeadBytesRejected(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -4715,6 +4807,7 @@ func TestJobReadOutputNegativeHeadBytesRejected(t *testing.T) {
 // allowance is rejected through the tool; a negative value is rejected as
 // non-negative.
 func TestDelegateToolParsesDelegationAllowance(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	s := newDelegateTestSession(t, c)
@@ -4751,6 +4844,7 @@ func TestDelegateToolParsesDelegationAllowance(t *testing.T) {
 }
 
 func TestDelegateToolParsesWatchParent(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{
 		"task":         "observe my work",
 		"watch_parent": true,
@@ -4783,6 +4877,7 @@ func requiredParams(t *testing.T, name string, raw any) []string {
 }
 
 func TestJobListReportsDelegationAllowance(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.delegationAllowance = 2
 
@@ -4802,6 +4897,7 @@ func TestJobListReportsDelegationAllowance(t *testing.T) {
 }
 
 func TestLiveSteerWaitIgnoredReason(t *testing.T) {
+	t.Parallel()
 	const want = "live steer returns on delivery; max_wait_ms applies only to started jobs"
 	cases := []struct {
 		name    string
@@ -4826,6 +4922,7 @@ func TestLiveSteerWaitIgnoredReason(t *testing.T) {
 }
 
 func TestMarshalDelegateSendResultCarriesWaitIgnoredReason(t *testing.T) {
+	t.Parallel()
 	const reason = "live steer returns on delivery; max_wait_ms applies only to started jobs"
 	res := sendMessageResult{
 		Target:              "dlg_x",
@@ -4862,6 +4959,7 @@ func TestMarshalDelegateSendResultCarriesWaitIgnoredReason(t *testing.T) {
 }
 
 func TestClassifyStopOutcome(t *testing.T) {
+	t.Parallel()
 	run := jobstore.StatusRunning
 	cases := []struct {
 		name string
@@ -4884,6 +4982,7 @@ func TestClassifyStopOutcome(t *testing.T) {
 }
 
 func TestJobStopReportsOutcomeAndPreviousStatus(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
@@ -4927,6 +5026,7 @@ func TestJobStopReportsOutcomeAndPreviousStatus(t *testing.T) {
 }
 
 func TestJobToolRequiredArgErrorsCarryInvalidRequestPrefix(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 
 	if res := s.createDelegate(context.Background(), delegateArgs{Task: ""}); res.Err == nil ||
@@ -4952,6 +5052,7 @@ func TestJobToolRequiredArgErrorsCarryInvalidRequestPrefix(t *testing.T) {
 }
 
 func TestJobReadOutputInvalidGrepCarriesPrefix(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	rec, err := s.jobManager.createShell(createShellOpts{Command: "sleep 30"})
 	if err != nil {
@@ -4966,6 +5067,7 @@ func TestJobReadOutputInvalidGrepCarriesPrefix(t *testing.T) {
 }
 
 func TestJobListSurfacesRecentWatches(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	jm := s.jobManager
 	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})

@@ -16,6 +16,7 @@ import (
 )
 
 func TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	var validationErr error
@@ -102,6 +103,7 @@ func TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest
 }
 
 func TestResumeHistoryRepairsOrphanedAssistantToolCallsBeforeLaterUserInput(t *testing.T) {
+	t.Parallel()
 	entries := []transcript.Entry{
 		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("start"))},
 		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{
