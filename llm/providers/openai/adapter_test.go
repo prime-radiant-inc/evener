@@ -4305,6 +4305,196 @@ func TestAdapter_PlanResponsesContinuation_CodexUsesSanitizedScope(t *testing.T)
 	assertPlanOmitsRawScopeValues(t, plan, "oauth-bearer-raw", "acct_raw")
 }
 
+func TestAdapter_PlanResponsesContinuation_RequestFingerprintStableForEquivalentBody(t *testing.T) {
+	a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: defaultResponsesPath}
+	first := openAIContinuationFingerprintForTest(t, a, llm.Request{
+		Model:    "gpt-5.4",
+		Messages: []llm.Message{llm.System("stable"), llm.User("hi")},
+		Metadata: map[string]string{
+			"alpha": "1",
+			"beta":  "2",
+		},
+		ProviderOptions: map[string]any{"openai": map[string]any{
+			"zeta":  map[string]any{"b": "2", "a": "1"},
+			"alpha": []any{"one", "two"},
+		}},
+	})
+	second := openAIContinuationFingerprintForTest(t, a, llm.Request{
+		Model:    "gpt-5.4",
+		Messages: []llm.Message{llm.System("stable"), llm.User("hi")},
+		Metadata: map[string]string{
+			"beta":  "2",
+			"alpha": "1",
+		},
+		ProviderOptions: map[string]any{"openai": map[string]any{
+			"alpha": []any{"one", "two"},
+			"zeta":  map[string]any{"a": "1", "b": "2"},
+		}},
+	})
+
+	if first == "" || !strings.HasPrefix(first, "cont-req-v1:") {
+		t.Fatalf("RequestFingerprint = %q, want cont-req-v1 prefix", first)
+	}
+	if first != second {
+		t.Fatalf("fingerprints differ for equivalent request bodies:\nfirst:  %s\nsecond: %s", first, second)
+	}
+}
+
+func TestAdapter_PlanResponsesContinuation_RequestFingerprintChangesForRequestShape(t *testing.T) {
+	a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: defaultResponsesPath}
+	base := openAIContinuationFingerprintRequestForTest()
+	baseFingerprint := openAIContinuationFingerprintForTest(t, a, base)
+
+	cases := []struct {
+		name string
+		edit func(*llm.Request)
+	}{
+		{
+			name: "instructions",
+			edit: func(req *llm.Request) {
+				req.Messages[0] = llm.System("changed system")
+			},
+		},
+		{
+			name: "tools",
+			edit: func(req *llm.Request) {
+				req.Tools[0].Description = "changed tool"
+			},
+		},
+		{
+			name: "tool choice",
+			edit: func(req *llm.Request) {
+				req.ToolChoice = &llm.ToolChoice{Mode: "none"}
+			},
+		},
+		{
+			name: "reasoning",
+			edit: func(req *llm.Request) {
+				effort := "high"
+				req.ReasoningEffort = &effort
+			},
+		},
+		{
+			name: "provider options",
+			edit: func(req *llm.Request) {
+				req.ProviderOptions = map[string]any{"openai": map[string]any{"parallel_tool_calls": false}}
+			},
+		},
+		{
+			name: "prompt cache key",
+			edit: func(req *llm.Request) {
+				req.PromptCacheKey = "other-cache"
+			},
+		},
+		{
+			name: "prompt cache retention",
+			edit: func(req *llm.Request) {
+				req.PromptCacheRetention = "1h"
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := openAIContinuationFingerprintRequestForTest()
+			tc.edit(&req)
+			got := openAIContinuationFingerprintForTest(t, a, req)
+			if got == baseFingerprint {
+				t.Fatalf("fingerprint did not change for %s: %s", tc.name, got)
+			}
+		})
+	}
+}
+
+func TestAdapter_PlanResponsesContinuation_RequestFingerprintExcludesContinuationHandles(t *testing.T) {
+	a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: defaultResponsesPath}
+	base := openAIContinuationFingerprintRequestForTest()
+	want := openAIContinuationFingerprintForTest(t, a, base)
+
+	req := openAIContinuationFingerprintRequestForTest()
+	req.PreviousResponseID = "resp_123"
+	req.ConversationID = "conv_456"
+	store := true
+	req.Store = &store
+	got := openAIContinuationFingerprintForTest(t, a, req)
+	if got != want {
+		t.Fatalf("fingerprint changed for continuation handles:\nwant: %s\ngot:  %s", want, got)
+	}
+
+	plan, err := a.PlanResponsesContinuation(req)
+	if err != nil {
+		t.Fatalf("PlanResponsesContinuation: %v", err)
+	}
+	if plan.StorageScopeFingerprint != "" || plan.StoragePolicyLabel != "" || plan.ContinuationStorageAllowed {
+		t.Fatalf("storage scope fields populated before Phase 4A: %+v", plan)
+	}
+}
+
+func TestAdapter_PlanResponsesContinuation_CodexFingerprintUsesFilteredRequestShape(t *testing.T) {
+	a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: defaultCodexResponses}
+	base := openAIContinuationFingerprintRequestForTest()
+	baseFingerprint := openAIContinuationFingerprintForTest(t, a, base)
+
+	req := openAIContinuationFingerprintRequestForTest()
+	temp := 0.1
+	maxTokens := 123
+	background := true
+	req.Temperature = &temp
+	req.MaxTokens = &maxTokens
+	req.ServiceTier = "auto"
+	req.SafetyIdentifier = "safe"
+	req.PromptCacheRetention = "1h"
+	req.Truncation = "auto"
+	req.Background = &background
+	req.ProviderOptions = map[string]any{"openai": map[string]any{
+		"temperature":            0.2,
+		"service_tier":           "flex",
+		"prompt_cache_retention": "24h",
+	}}
+
+	got := openAIContinuationFingerprintForTest(t, a, req)
+	if got != baseFingerprint {
+		t.Fatalf("Codex fingerprint changed for fields filtered from request body:\nbase: %s\ngot:  %s", baseFingerprint, got)
+	}
+}
+
+func openAIContinuationFingerprintRequestForTest() llm.Request {
+	effort := "low"
+	toolChoice := &llm.ToolChoice{Mode: "named", Name: "lookup"}
+	return llm.Request{
+		Model: "gpt-5.4",
+		Messages: []llm.Message{
+			llm.System("stable system"),
+			llm.User("hi"),
+		},
+		Tools: []llm.ToolDefinition{
+			{
+				Name:        "lookup",
+				Description: "look up data",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+		ToolChoice:           toolChoice,
+		ReasoningEffort:      &effort,
+		PromptCacheKey:       "cache-key",
+		PromptCacheRetention: "24h",
+	}
+}
+
+func openAIContinuationFingerprintForTest(t *testing.T, a *Adapter, req llm.Request) string {
+	t.Helper()
+	plan, err := a.PlanResponsesContinuation(req)
+	if err != nil {
+		t.Fatalf("PlanResponsesContinuation: %v", err)
+	}
+	return plan.RequestFingerprint
+}
+
 func assertPlanOmitsRawScopeValues(t *testing.T, plan llm.ResponsesContinuationPlan, raws ...string) {
 	t.Helper()
 	dump := fmt.Sprintf("%+v", plan)

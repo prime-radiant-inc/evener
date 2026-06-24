@@ -291,13 +291,25 @@ func (a *Adapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesConti
 	if a.usesCodexBackend() {
 		endpointFamily = llm.ResponsesEndpointFamilyOpenAICodex
 	}
-	return llm.PlanResponsesContinuation(llm.ResponsesContinuationPlanInput{
+
+	body, err := a.buildRequestBody(req)
+	if err != nil {
+		return llm.ResponsesContinuationPlan{}, err
+	}
+	requestFingerprint, err := requestFingerprintForResponsesBody(body)
+	if err != nil {
+		return llm.ResponsesContinuationPlan{}, err
+	}
+
+	plan := llm.PlanResponsesContinuation(llm.ResponsesContinuationPlanInput{
 		EndpointFamily:    endpointFamily,
 		AuthScopeIdentity: a.AuthScopeIdentity,
 		OrgIDHash:         a.OrgIDHash,
 		ProjectIDHash:     a.ProjectIDHash,
 		Request:           req,
-	}), nil
+	})
+	plan.RequestFingerprint = requestFingerprint
+	return plan, nil
 }
 
 func (a *Adapter) setHeaders(req *http.Request) {

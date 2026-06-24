@@ -50,7 +50,7 @@ Use canonical JSON over the filtered body so map ordering cannot affect fingerpr
 **Files:**
 - Modify: `llm/providers/openai/adapter_test.go`
 
-- [ ] **Step 1: Add failing request fingerprint tests**
+- [x] **Step 1: Add failing request fingerprint tests**
 
 Add deterministic tests proving:
 
@@ -75,7 +75,7 @@ GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanR
 
 Expected: FAIL because `RequestFingerprint` is still empty.
 
-- [ ] **Step 2: Keep assertions on contracts, not full rendered JSON**
+- [x] **Step 2: Keep assertions on contracts, not full rendered JSON**
 
 Tests should compare fingerprint equality/inequality and prefixes. Do not snapshot the full request body or large rendered JSON.
 
@@ -85,7 +85,7 @@ Tests should compare fingerprint equality/inequality and prefixes. Do not snapsh
 - Modify: `llm/providers/openai/adapter.go`
 - Add or modify: `llm/providers/openai/responses_continuation_fingerprint.go`
 
-- [ ] **Step 1: Add canonical hash helper**
+- [x] **Step 1: Add canonical hash helper**
 
 Add a helper in the OpenAI provider package:
 
@@ -102,7 +102,7 @@ The helper should:
 
 Keep the helper provider-local unless another provider needs it later.
 
-- [ ] **Step 2: Compute the fingerprint in the adapter planner**
+- [x] **Step 2: Compute the fingerprint in the adapter planner**
 
 Update `(*Adapter).PlanResponsesContinuation(req)` to:
 
@@ -119,7 +119,7 @@ Do not call `Complete`, `Stream`, middleware, raw logging, or provider network p
 **Files:**
 - Add: `agent/responses_continuation_fingerprint_test.go`
 
-- [ ] **Step 1: Add production prompt determinism tests**
+- [x] **Step 1: Add production prompt determinism tests**
 
 Use the real embedded system prompt renderer with fixed environment data:
 
@@ -148,7 +148,7 @@ Expected: FAIL because `RequestFingerprint` is empty.
 
 ### Task 4: Proof, Verification, Commit
 
-- [ ] **Step 1: Add proof artifact**
+- [x] **Step 1: Add proof artifact**
 
 Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-3b.md` with:
 
@@ -157,7 +157,7 @@ Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-3b.md` w
 - contracts proven;
 - explicit statement that storage-scope, anchor selection, persistence, and runtime continuation remain deferred.
 
-- [ ] **Step 2: Run focused tests**
+- [x] **Step 2: Run focused tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanResponsesContinuation_.*Fingerprint' -count=1 -v
@@ -165,7 +165,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run '^TestOpenAIResponsesContinuation
 git diff --check
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```sh
 git status --short
