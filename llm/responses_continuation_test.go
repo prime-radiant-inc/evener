@@ -52,15 +52,7 @@ func TestResponsesContinuationSupportForUnknownFamilyDisabled(t *testing.T) {
 }
 
 func TestDecideResponsesContinuationRequiresAutoEnabledAndAnchorAge(t *testing.T) {
-	enabled := ResponsesContinuationSupport{
-		EndpointFamily:        ResponsesEndpointFamilyOpenAIPublic,
-		StorageShapeProven:    true,
-		ProductionPathProven:  true,
-		Enabled:               true,
-		MaxAnchorAgeSeconds:   3600,
-		StorageShapeProofID:   "phase-0b-public",
-		ProductionPathProofID: "phase-12a-public",
-	}
+	enabled := enabledResponsesContinuationSupport()
 
 	tests := []struct {
 		name    string
@@ -121,5 +113,50 @@ func TestDecideResponsesContinuationRequiresAutoEnabledAndAnchorAge(t *testing.T
 				t.Fatalf("decision = %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDecideResponsesContinuationForRequestDisablesExplicitConversationID(t *testing.T) {
+	enabled := enabledResponsesContinuationSupport()
+
+	got := DecideResponsesContinuationForRequest(ResponsesContinuationAuto, enabled, Request{
+		Model:          "gpt-5.2",
+		ConversationID: " conv_public ",
+	})
+
+	want := ResponsesContinuationDecision{
+		HistoryMode: HistoryModeFullHistory,
+		Reason:      "continuation_conversation_id_present",
+	}
+	if got != want {
+		t.Fatalf("decision = %+v, want %+v", got, want)
+	}
+}
+
+func TestDecideResponsesContinuationForRequestAllowsNoConversationID(t *testing.T) {
+	enabled := enabledResponsesContinuationSupport()
+
+	got := DecideResponsesContinuationForRequest(ResponsesContinuationAuto, enabled, Request{
+		Model: "gpt-5.2",
+	})
+
+	want := ResponsesContinuationDecision{
+		HistoryMode: HistoryModeResponsesDelta,
+		Reason:      "continuation_enabled",
+	}
+	if got != want {
+		t.Fatalf("decision = %+v, want %+v", got, want)
+	}
+}
+
+func enabledResponsesContinuationSupport() ResponsesContinuationSupport {
+	return ResponsesContinuationSupport{
+		EndpointFamily:        ResponsesEndpointFamilyOpenAIPublic,
+		StorageShapeProven:    true,
+		ProductionPathProven:  true,
+		Enabled:               true,
+		MaxAnchorAgeSeconds:   3600,
+		StorageShapeProofID:   "phase-0b-public",
+		ProductionPathProofID: "phase-12a-public",
 	}
 }

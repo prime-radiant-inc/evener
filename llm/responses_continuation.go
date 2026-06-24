@@ -1,5 +1,7 @@
 package llm
 
+import "strings"
+
 type HistoryMode string
 
 const (
@@ -75,6 +77,20 @@ func DecideResponsesContinuation(mode ResponsesContinuationMode, support Respons
 		HistoryMode: HistoryModeResponsesDelta,
 		Reason:      "continuation_enabled",
 	}
+}
+
+func DecideResponsesContinuationForRequest(mode ResponsesContinuationMode, support ResponsesContinuationSupport, req Request) ResponsesContinuationDecision {
+	decision := DecideResponsesContinuation(mode, support)
+	if decision.HistoryMode != HistoryModeResponsesDelta {
+		return decision
+	}
+	if strings.TrimSpace(req.ConversationID) != "" {
+		return ResponsesContinuationDecision{
+			HistoryMode: HistoryModeFullHistory,
+			Reason:      "continuation_conversation_id_present",
+		}
+	}
+	return decision
 }
 
 func disabledResponsesContinuationSupport(family ResponsesEndpointFamily) ResponsesContinuationSupport {

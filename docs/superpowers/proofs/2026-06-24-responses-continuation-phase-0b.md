@@ -9,12 +9,16 @@ Checkable line: public OpenAI and Codex backend adapter fixtures cover `previous
 
 Evidence:
 - `llm/providers/openai/responses_continuation_discovery_test.go:TestResponsesContinuationDiscovery_RequestShapeMatrix`
+- `llm/responses_continuation_test.go:TestDecideResponsesContinuationForRequestDisablesExplicitConversationID`
+- `llm/responses_continuation_test.go:TestDecideResponsesContinuationForRequestAllowsNoConversationID`
 
 Current deterministic matrix:
 - Public OpenAI default emits `store:false` and no provider-state handles.
 - Public OpenAI serializes trimmed `previous_response_id`.
 - Public OpenAI serializes trimmed `conversation`.
 - Public OpenAI serializes both handles together and preserves explicit `store:true`.
+- Request-level continuation selection keeps explicit `ConversationID` traffic on `full_history` even when the endpoint family otherwise supports `responses_delta`.
+- Request-level continuation selection permits `responses_delta` for public OpenAI traffic without an explicit `ConversationID` when endpoint support is enabled and bounded by max anchor age.
 - Codex backend serializes trimmed `previous_response_id`, trimmed `conversation`, and both handles together.
 - Codex backend preserves explicit `store:true` in deterministic adapter body construction; live discovery must decide whether that shape is accepted by the backend.
 - Codex backend streaming is a dispatch-layer behavior and is covered by existing adapter tests, not by this `buildRequestBody` matrix.
