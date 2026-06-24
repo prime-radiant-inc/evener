@@ -380,7 +380,7 @@ git commit -m "test(agent): cover restored continuation active boundary"
 - Create: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-4b.md`
 - Modify: `docs/superpowers/plans/2026-06-24-responses-continuation-phase-4b-context-boundary.md`
 
-- [ ] **Step 1: Add proof artifact**
+- [x] **Step 1: Add proof artifact**
 
 Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-4b.md`:
 
@@ -416,14 +416,14 @@ Result: pass.
 - Empty deltas force `full_history`.
 ```
 
-- [ ] **Step 2: Run focused verification**
+- [x] **Step 2: Run focused verification**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate' -count=1 -v
 git diff --check
 ```
 
-- [ ] **Step 3: Mark this plan complete and commit**
+- [x] **Step 3: Mark this plan complete and commit**
 
 Update all completed checkboxes in this plan, then:
 
