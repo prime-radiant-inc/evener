@@ -4406,21 +4406,67 @@ func TestAdapter_PlanResponsesContinuation_RequestFingerprintChangesForRequestSh
 	}
 }
 
-func TestAdapter_PlanResponsesContinuation_RequestFingerprintExcludesContinuationHandles(t *testing.T) {
+func TestAdapter_PlanResponsesContinuation_PublicFingerprintExcludesStore(t *testing.T) {
 	a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: defaultResponsesPath}
 	base := openAIContinuationFingerprintRequestForTest()
 	want := openAIContinuationFingerprintForTest(t, a, base)
 
+	storeTrue := openAIContinuationFingerprintRequestForTest()
+	store := true
+	storeTrue.Store = &store
+	if got := openAIContinuationFingerprintForTest(t, a, storeTrue); got != want {
+		t.Fatalf("public fingerprint changed for store=true:\nwant: %s\ngot:  %s", want, got)
+	}
+
+	storeFalse := openAIContinuationFingerprintRequestForTest()
+	store = false
+	storeFalse.Store = &store
+	if got := openAIContinuationFingerprintForTest(t, a, storeFalse); got != want {
+		t.Fatalf("public fingerprint changed for store=false:\nwant: %s\ngot:  %s", want, got)
+	}
+}
+
+func TestAdapter_PlanResponsesContinuation_CodexFingerprintKeepsStoreUntilStorageShapeProven(t *testing.T) {
+	a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: defaultCodexResponses}
+	base := openAIContinuationFingerprintRequestForTest()
+	baseFingerprint := openAIContinuationFingerprintForTest(t, a, base)
+
 	req := openAIContinuationFingerprintRequestForTest()
-	req.PreviousResponseID = "resp_123"
-	req.ConversationID = "conv_456"
 	store := true
 	req.Store = &store
 	got := openAIContinuationFingerprintForTest(t, a, req)
-	if got != want {
-		t.Fatalf("fingerprint changed for continuation handles:\nwant: %s\ngot:  %s", want, got)
+	if got == baseFingerprint {
+		t.Fatalf("Codex fingerprint did not change for store=true before Codex storage shape is proven: %s", got)
+	}
+}
+
+func TestAdapter_PlanResponsesContinuation_FingerprintExcludesContinuationHandlesByEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "public", path: defaultResponsesPath},
+		{name: "codex", path: defaultCodexResponses},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: tc.path}
+			base := openAIContinuationFingerprintRequestForTest()
+			want := openAIContinuationFingerprintForTest(t, a, base)
+
+			req := openAIContinuationFingerprintRequestForTest()
+			req.PreviousResponseID = "resp_123"
+			req.ConversationID = "conv_456"
+			got := openAIContinuationFingerprintForTest(t, a, req)
+			if got != want {
+				t.Fatalf("%s fingerprint changed for continuation handles:\nwant: %s\ngot:  %s", tc.name, want, got)
+			}
+		})
 	}
 
+	a := &Adapter{name: "openai", APIKey: "sk-test", ResponsesPath: defaultResponsesPath}
+	req := openAIContinuationFingerprintRequestForTest()
+	req.PreviousResponseID = "resp_123"
+	req.ConversationID = "conv_456"
 	plan, err := a.PlanResponsesContinuation(req)
 	if err != nil {
 		t.Fatalf("PlanResponsesContinuation: %v", err)

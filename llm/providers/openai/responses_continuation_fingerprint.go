@@ -5,19 +5,20 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+
+	"primeradiant.com/serf/llm"
 )
 
 const responsesRequestFingerprintPrefix = "cont-req-v1"
 
-func requestFingerprintForResponsesBody(body map[string]any) (string, error) {
+func requestFingerprintForResponsesBody(family llm.ResponsesEndpointFamily, body map[string]any) (string, error) {
+	excluded := responsesRequestFingerprintExcludedFields(family)
 	filtered := make(map[string]any, len(body))
 	for k, v := range body {
-		switch k {
-		case "previous_response_id", "conversation", "store":
+		if excluded[k] {
 			continue
-		default:
-			filtered[k] = v
 		}
+		filtered[k] = v
 	}
 
 	b, err := json.Marshal(filtered)
@@ -26,4 +27,15 @@ func requestFingerprintForResponsesBody(body map[string]any) (string, error) {
 	}
 	sum := sha256.Sum256(b)
 	return responsesRequestFingerprintPrefix + ":" + base64.RawURLEncoding.EncodeToString(sum[:]), nil
+}
+
+func responsesRequestFingerprintExcludedFields(family llm.ResponsesEndpointFamily) map[string]bool {
+	excluded := map[string]bool{
+		"previous_response_id": true,
+		"conversation":         true,
+	}
+	if family == llm.ResponsesEndpointFamilyOpenAIPublic {
+		excluded["store"] = true
+	}
+	return excluded
 }

@@ -296,7 +296,7 @@ func (a *Adapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesConti
 	if err != nil {
 		return llm.ResponsesContinuationPlan{}, err
 	}
-	requestFingerprint, err := requestFingerprintForResponsesBody(body)
+	requestFingerprint, err := requestFingerprintForResponsesBody(endpointFamily, body)
 	if err != nil {
 		return llm.ResponsesContinuationPlan{}, err
 	}
