@@ -55,7 +55,7 @@ Phase 4D-i entry requirements are present:
 - Modify: `agent/internal/agenttest/agenttest.go`
 - Modify: `llm/responses_continuation.go`
 
-- [ ] **Step 1: Extend test fake capabilities**
+- [x] **Step 1: Extend test fake capabilities**
 
 Add optional fields and methods to `agent/internal/agenttest/agenttest.go`:
 
@@ -87,7 +87,7 @@ type ResponsesChatFallbackCapable interface {
 }
 ```
 
-- [ ] **Step 2: Write failing anchor-production test**
+- [x] **Step 2: Write failing anchor-production test**
 
 Create `agent/session_openai_continuation_phase4d_test.go` with:
 
@@ -130,7 +130,7 @@ The test must:
   - `ResponseContextMarker == responseContextMarkerV1`;
   - `ResponseRequestModel == "gpt-5.4"`.
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnchor -count=1 -v
@@ -138,7 +138,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run TestSession_OpenAIResponsesContin
 
 Expected: fail because `SessionConfig` cannot inject an enabled continuation registry and `prepareModelRequest` does not stamp continuation metadata.
 
-- [ ] **Step 4: Write failing fallback-capability guard test**
+- [x] **Step 4: Write failing fallback-capability guard test**
 
 Add:
 
@@ -153,7 +153,7 @@ The test must use the same enabled registry and planner but set `CanFallbackToCh
 - `Continuation == nil`;
 - `PreviousResponseID == ""`.
 
-- [ ] **Step 5: Run fallback guard test to verify it fails**
+- [x] **Step 5: Run fallback guard test to verify it fails**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run TestSession_OpenAIResponsesContinuationPhase4DI -count=1 -v
@@ -169,7 +169,7 @@ Expected: anchor-production still fails before implementation.
 - Modify: `agent/session_config.go`
 - Modify: `agent/session_model_call.go`
 
-- [ ] **Step 1: Add private injected registry config**
+- [x] **Step 1: Add private injected registry config**
 
 Add a private field to `SessionConfig`:
 
@@ -179,7 +179,7 @@ responsesContinuationSupportRegistry map[llm.ResponsesEndpointFamily]llm.Respons
 
 Keep it `json:"-"` if the surrounding config fields use tags. Do not expose it through public CLI/config restore paths.
 
-- [ ] **Step 2: Add request planning helper**
+- [x] **Step 2: Add request planning helper**
 
 Add a private helper in `agent/session_model_call.go`:
 
@@ -212,7 +212,7 @@ req.Continuation = &llm.ContinuationMetadata{
 
 Do not set `PreviousResponseID`.
 
-- [ ] **Step 3: Wire helper into `prepareModelRequest`**
+- [x] **Step 3: Wire helper into `prepareModelRequest`**
 
 After `buildModelRequest`, call:
 
@@ -220,7 +220,7 @@ After `buildModelRequest`, call:
 req = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns)
 ```
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4DI|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
@@ -228,7 +228,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesConti
 
 Expected: pass.
 
-- [ ] **Step 5: Commit implementation**
+- [x] **Step 5: Commit implementation**
 
 ```sh
 git status --short
@@ -244,7 +244,7 @@ git commit -m "feat(agent): prove responses continuation anchor production"
 - Create: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-4d-i.md`
 - Modify: `docs/superpowers/plans/2026-06-24-responses-continuation-phase-4d-i-anchor-production.md`
 
-- [ ] **Step 1: Add proof artifact**
+- [x] **Step 1: Add proof artifact**
 
 Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-4d-i.md`:
 
@@ -279,14 +279,14 @@ Result: pass.
 - No live provider calls are made.
 ```
 
-- [ ] **Step 2: Run verification**
+- [x] **Step 2: Run verification**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4DI|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
 git diff --check
 ```
 
-- [ ] **Step 3: Mark this plan complete and commit**
+- [x] **Step 3: Mark this plan complete and commit**
 
 Update all completed checkboxes in this plan, then:
 
