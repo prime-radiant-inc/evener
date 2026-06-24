@@ -16,7 +16,8 @@ That is too rigid for real OpenAI-compatible deployments. Some providers only ex
 
 ## Goals
 
-- Allow OpenAI-shaped providers to change runtime wire protocol between Responses and Chat Completions.
+- Allow explicitly adaptive OpenAI-shaped providers to change runtime wire protocol between Responses and Chat Completions.
+- Make first-party OpenAI API-key traffic Responses-preferred with model/feature auto-detection by default.
 - Detect Responses availability and feature support per endpoint, auth scope, model, and relevant request shape.
 - Prefer Responses when it is proven usable for the requested operation; fall back to Chat Completions when the provider clearly does not support it.
 - Detect second-level Responses features separately: `previous_response_id`, continuation storage semantics, encrypted reasoning replay, prompt-cache controls, service tier, hosted tools, and other Responses-only fields.
@@ -39,7 +40,9 @@ Extend the existing OpenAI provider `api_style` field with an explicit adaptive 
 - `api_style = "chat-completions"`: force Chat Completions.
 - `api_style = "auto"`: prefer Responses, detect support, and fall back to Chat Completions when safe.
 
-The legacy env-seeded `openai-compatible` provider keeps the existing Chat Completions behavior for compatibility. Adaptive behavior requires a config-driven OpenAI-shaped instance with `api_style = "auto"` or a future explicit env flag that seeds that same config shape. Existing deployments must not unexpectedly hit `/responses`.
+First-party OpenAI API-key profiles without an explicit style should behave as Responses-preferred with model/feature auto-detection. That is not a symmetric protocol guess: `/v1/responses` remains the primary wire protocol, and Chat Completions is only a safe fallback for models or request shapes that clearly cannot use Responses.
+
+The legacy env-seeded `openai-compatible` provider keeps the existing Chat Completions behavior for compatibility. Adaptive protocol switching for compatible/custom endpoints requires a config-driven OpenAI-shaped instance with `api_style = "auto"` or a future explicit env flag that seeds that same config shape. Existing compatible deployments must not unexpectedly hit `/responses`.
 
 ## Capability Scope
 
@@ -57,7 +60,7 @@ The cache should live under Serf state, not the repo or provider config. It shou
 
 ## Runtime Flow
 
-For adaptive `auto` profiles:
+For first-party OpenAI API-key profiles and adaptive `auto` profiles:
 
 1. Build the Responses candidate request using the existing OpenAI Responses request builder.
 2. Check the capability cache for a matching positive or negative result.
@@ -96,7 +99,14 @@ Until that proof exists, adaptive providers may use Responses for ordinary reque
 
 ## First-Party OpenAI
 
-First-party API-key OpenAI should still default to Responses, because that is the already-proven path for public OpenAI continuation. Adaptive detection is still useful for:
+First-party API-key OpenAI should default to Responses-preferred model/feature auto-detection, because `/v1/responses` is the already-proven path for public OpenAI continuation. This means:
+
+- `/v1/responses` is the primary protocol.
+- Model-specific and feature-specific unsupported results are detected and cached.
+- Safe Chat Completions fallback is allowed when the selected model or request shape clearly cannot use Responses.
+- Explicit `api_style = "chat-completions"` still forces Chat Completions for legacy models, debugging, or user choice.
+
+Adaptive detection is useful for:
 
 - model-specific unsupported Responses behavior;
 - newly added Responses fields;
@@ -128,7 +138,7 @@ Live tests:
 
 ## Rollout
 
-Start with adaptive detection disabled by default for legacy `openai-compatible` env registration. Add explicit config-driven adaptive mode first, then consider opt-in env wiring after the behavior is proven.
+Start with first-party OpenAI API-key model/feature auto-detection and keep adaptive protocol switching disabled by default for legacy `openai-compatible` env registration. Add explicit config-driven `api_style = "auto"` for compatible/custom endpoints first, then consider opt-in env wiring after the behavior is proven.
 
 The first production-safe slice should support:
 
