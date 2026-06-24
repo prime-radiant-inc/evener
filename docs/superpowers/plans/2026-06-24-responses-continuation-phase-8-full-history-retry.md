@@ -377,7 +377,7 @@ git commit -m "feat(agent): retry responses continuation with full history"
 - Create: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-8.md`
 - Modify: `docs/superpowers/plans/2026-06-24-responses-continuation-phase-8-full-history-retry.md`
 
-- [ ] **Step 1: Add proof artifact**
+- [x] **Step 1: Add proof artifact**
 
 Record:
 
@@ -387,14 +387,14 @@ Record:
 - `git diff --check` pass.
 - Remaining Phase 9 real-session retry repetition.
 
-- [ ] **Step 2: Run verification**
+- [x] **Step 2: Run verification**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestFallbackChain_Continuation|TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry|TestFallbackChain_PermanentErrorTriesNextModel|TestFallbackChain_EndpointFallbackErrorTriesNextModel' -count=1 -v
 git diff --check
 ```
 
-- [ ] **Step 3: Commit proof**
+- [x] **Step 3: Commit proof**
 
 ```sh
 git add docs/superpowers/plans/2026-06-24-responses-continuation-phase-8-full-history-retry.md docs/superpowers/proofs/2026-06-24-responses-continuation-phase-8.md
