@@ -12,7 +12,7 @@ The feature currently sends model-facing reminders such as:
 - `You have spent several turns reading without writing or running anything...`
 - `You have been reading for 10 turns without acting...`
 
-Those reminders should no longer be appended to the transcript, emitted as steering events, or surfaced through human-facing projections.
+Those reminders should no longer be appended to the transcript, emitted as steering events, or surfaced through human-facing projections. No replacement status banner, projection row, or other UX affordance is needed.
 
 ## Scope
 
@@ -21,7 +21,7 @@ In scope:
 - Remove read-only streak tracking from post-tool steering.
 - Remove both read-only streak reminder messages.
 - Remove the session state dedicated only to this feature (`readOnlyStreak`) and related comments.
-- Remove human-facing UX for this feature by eliminating the underlying `EventSteeringInjected` emissions for these reminders.
+- Remove human-facing UX for this feature by eliminating the underlying `appendTurn(schema.TurnSteering, ...)` transcript entries and `EventSteeringInjected` emissions for these reminders.
 
 Out of scope:
 
@@ -59,7 +59,7 @@ If another mechanism injects steering, that mechanism still works. For example, 
    - appends the two read-only `SYSTEM-REMINDER` turns,
    - emits corresponding `EventSteeringInjected` events.
 2. Delete `readOnlyStreak` from `Session` in `agent/session.go`.
-3. Update comments near post-tool steering and session loop state so they no longer mention read-only streak tracking.
+3. Update comments near post-tool steering and session loop state so they no longer mention read-only streak tracking. In particular, update the lock-discipline comment in `agent/session.go` that mentions `readOnlyStreak`.
 4. Search for the removed reminder strings and `readOnlyStreak` to ensure no references remain.
 
 ## Tests and verification
@@ -70,7 +70,7 @@ Verification should still include:
 
 - Search checks confirming `readOnlyStreak` and the two removed reminder strings are gone.
 - Targeted Go tests for the touched package, at minimum `go test ./agent`.
-- Full repository test suite, `go test ./...`, before declaring completion.
+- Prefer the full repository test suite, `go test ./...`, before declaring completion. If full-suite failures are unrelated to this removal or environment-sensitive, report the exact failures and the passing targeted coverage instead of treating unrelated failures as part of this change.
 
 Existing tests that assert adjacent steering behavior must continue passing. If tests fail because they expected the removed read-only nudge, update or delete only those expectations; do not weaken unrelated coverage.
 
