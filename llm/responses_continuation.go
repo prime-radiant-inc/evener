@@ -18,6 +18,12 @@ const (
 	ResponsesContinuationAuto ResponsesContinuationMode = "auto"
 )
 
+const (
+	ResponsesStoragePolicyPublicOpenAIStore   = "public-openai-store"
+	ResponsesStoragePolicyPublicOpenAINoStore = "public-openai-no-store"
+	ResponsesStoragePolicyCodexUnproven       = "codex-storage-unproven"
+)
+
 type ResponsesEndpointFamily string
 
 const (
@@ -79,6 +85,13 @@ type ContinuationStorageScope struct {
 	StoragePolicy      string
 }
 
+type ContinuationStoreOverride struct {
+	StoreSetByContinuation           bool
+	OriginalStore                    *bool
+	ProviderOptionKeysByContinuation []string
+	StoragePolicy                    string
+}
+
 type ResponsesContinuationPlanInput struct {
 	EndpointFamily    ResponsesEndpointFamily
 	AuthScopeIdentity AuthScopeIdentity
@@ -106,6 +119,39 @@ func PlanResponsesContinuation(input ResponsesContinuationPlanInput) ResponsesCo
 		OrgIDHash:         strings.TrimSpace(input.OrgIDHash),
 		ProjectIDHash:     strings.TrimSpace(input.ProjectIDHash),
 	}
+}
+
+func ApplyResponsesContinuationStoreOverride(req Request, policy string) (Request, ContinuationStoreOverride) {
+	owned := cloneRequestForContinuationStore(req)
+	override := ContinuationStoreOverride{StoragePolicy: policy}
+	if policy != ResponsesStoragePolicyPublicOpenAIStore {
+		return owned, override
+	}
+	if req.Store != nil && *req.Store {
+		return owned, override
+	}
+	override.StoreSetByContinuation = true
+	if req.Store != nil {
+		original := *req.Store
+		override.OriginalStore = &original
+	}
+	store := true
+	owned.Store = &store
+	return owned, override
+}
+
+func ClearResponsesContinuationStoreOverride(req Request, override ContinuationStoreOverride) Request {
+	cleared := cloneRequestForContinuationStore(req)
+	if !override.StoreSetByContinuation {
+		return cleared
+	}
+	if override.OriginalStore == nil {
+		cleared.Store = nil
+		return cleared
+	}
+	original := *override.OriginalStore
+	cleared.Store = &original
+	return cleared
 }
 
 func DefaultResponsesContinuationSupportRegistry() map[ResponsesEndpointFamily]ResponsesContinuationSupport {
@@ -163,4 +209,54 @@ func DecideResponsesContinuationForRequest(mode ResponsesContinuationMode, suppo
 
 func disabledResponsesContinuationSupport(family ResponsesEndpointFamily) ResponsesContinuationSupport {
 	return ResponsesContinuationSupport{EndpointFamily: family}
+}
+
+func cloneRequestForContinuationStore(req Request) Request {
+	out := req
+	if req.Store != nil {
+		store := *req.Store
+		out.Store = &store
+	}
+	out.ProviderOptions = cloneProviderOptions(req.ProviderOptions)
+	return out
+}
+
+func cloneProviderOptions(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = cloneProviderOptionValue(v)
+	}
+	return out
+}
+
+func cloneProviderOptionValue(v any) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for k, item := range typed {
+			out[k] = cloneProviderOptionValue(item)
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(typed))
+		for k, item := range typed {
+			out[k] = item
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneProviderOptionValue(item)
+		}
+		return out
+	case []string:
+		out := make([]string, len(typed))
+		copy(out, typed)
+		return out
+	default:
+		return v
+	}
 }

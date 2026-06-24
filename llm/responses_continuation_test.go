@@ -221,6 +221,105 @@ func TestContinuationStorageScopeDoesNotExposeRawScopeFields(t *testing.T) {
 	}
 }
 
+func TestContinuationStoreOverrideSetsAndClearsNilStore(t *testing.T) {
+	base := Request{Model: "gpt-5.4"}
+
+	owned, override := ApplyResponsesContinuationStoreOverride(base, ResponsesStoragePolicyPublicOpenAIStore)
+	if base.Store != nil {
+		t.Fatalf("base request mutated: Store = %v", *base.Store)
+	}
+	if owned.Store == nil || !*owned.Store {
+		t.Fatalf("owned Store = %v, want true", owned.Store)
+	}
+	if !override.StoreSetByContinuation || override.OriginalStore != nil {
+		t.Fatalf("override = %+v, want continuation-owned nil original", override)
+	}
+	if override.StoragePolicy != ResponsesStoragePolicyPublicOpenAIStore {
+		t.Fatalf("StoragePolicy = %q", override.StoragePolicy)
+	}
+
+	cleared := ClearResponsesContinuationStoreOverride(owned, override)
+	if cleared.Store != nil {
+		t.Fatalf("cleared Store = %v, want nil", *cleared.Store)
+	}
+}
+
+func TestContinuationStoreOverrideRestoresExplicitFalse(t *testing.T) {
+	explicitFalse := false
+	base := Request{Model: "gpt-5.4", Store: &explicitFalse}
+
+	owned, override := ApplyResponsesContinuationStoreOverride(base, ResponsesStoragePolicyPublicOpenAIStore)
+	if base.Store == nil || *base.Store {
+		t.Fatalf("base Store mutated: %v", base.Store)
+	}
+	if owned.Store == nil || !*owned.Store {
+		t.Fatalf("owned Store = %v, want true", owned.Store)
+	}
+	if !override.StoreSetByContinuation || override.OriginalStore == nil || *override.OriginalStore {
+		t.Fatalf("override = %+v, want original false", override)
+	}
+
+	cleared := ClearResponsesContinuationStoreOverride(owned, override)
+	if cleared.Store == nil || *cleared.Store {
+		t.Fatalf("cleared Store = %v, want explicit false", cleared.Store)
+	}
+}
+
+func TestContinuationStoreOverridePreservesExplicitTrue(t *testing.T) {
+	explicitTrue := true
+	base := Request{Model: "gpt-5.4", Store: &explicitTrue}
+
+	owned, override := ApplyResponsesContinuationStoreOverride(base, ResponsesStoragePolicyPublicOpenAIStore)
+	if owned.Store == nil || !*owned.Store {
+		t.Fatalf("owned Store = %v, want explicit true", owned.Store)
+	}
+	if override.StoreSetByContinuation {
+		t.Fatalf("override = %+v, want no continuation-owned store field", override)
+	}
+
+	cleared := ClearResponsesContinuationStoreOverride(owned, override)
+	if cleared.Store == nil || !*cleared.Store {
+		t.Fatalf("cleared Store = %v, want explicit true", cleared.Store)
+	}
+}
+
+func TestContinuationStoreOverrideClonesProviderOptions(t *testing.T) {
+	base := Request{
+		Model: "gpt-5.4",
+		ProviderOptions: map[string]any{
+			"openai": map[string]any{
+				"metadata": map[string]any{"trace": "base"},
+			},
+		},
+	}
+
+	owned, _ := ApplyResponsesContinuationStoreOverride(base, ResponsesStoragePolicyPublicOpenAIStore)
+	ownedOpenAI := owned.ProviderOptions["openai"].(map[string]any)
+	ownedMetadata := ownedOpenAI["metadata"].(map[string]any)
+	ownedMetadata["trace"] = "owned"
+
+	baseOpenAI := base.ProviderOptions["openai"].(map[string]any)
+	baseMetadata := baseOpenAI["metadata"].(map[string]any)
+	if baseMetadata["trace"] != "base" {
+		t.Fatalf("base provider options mutated: %+v", base.ProviderOptions)
+	}
+}
+
+func TestContinuationStoreOverrideIgnoresNonStoragePolicy(t *testing.T) {
+	base := Request{Model: "gpt-5.4"}
+
+	owned, override := ApplyResponsesContinuationStoreOverride(base, ResponsesStoragePolicyPublicOpenAINoStore)
+	if owned.Store != nil {
+		t.Fatalf("owned Store = %v, want nil for no-store policy", *owned.Store)
+	}
+	if override.StoreSetByContinuation {
+		t.Fatalf("override = %+v, want no continuation-owned store field", override)
+	}
+	if override.StoragePolicy != ResponsesStoragePolicyPublicOpenAINoStore {
+		t.Fatalf("StoragePolicy = %q", override.StoragePolicy)
+	}
+}
+
 func enabledResponsesContinuationSupport() ResponsesContinuationSupport {
 	return ResponsesContinuationSupport{
 		EndpointFamily:        ResponsesEndpointFamilyOpenAIPublic,

@@ -178,7 +178,7 @@ Implementation requirements:
 - Modify: `llm/responses_continuation.go`
 - Modify: `llm/responses_continuation_test.go`
 
-- [ ] **Step 1: Add failing storage override tests**
+- [x] **Step 1: Add failing storage override tests**
 
 Add:
 
@@ -208,7 +208,7 @@ GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestContinuationStoreOverride' -co
 
 Expected: FAIL because the helpers do not exist.
 
-- [ ] **Step 2: Implement storage override helpers**
+- [x] **Step 2: Implement storage override helpers**
 
 Add:
 
