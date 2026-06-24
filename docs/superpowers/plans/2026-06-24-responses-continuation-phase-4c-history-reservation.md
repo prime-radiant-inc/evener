@@ -77,7 +77,7 @@ Validation rules:
 **Files:**
 - Modify: `agent/responses_continuation_eligibility_test.go`
 
-- [ ] **Step 1: Add failing tests**
+- [x] **Step 1: Add failing tests**
 
 Add tests:
 
@@ -99,18 +99,18 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationHistory
 
 Expected: FAIL because the reservation helper does not exist.
 
-- [ ] **Step 2: Implement the reservation helper**
+- [x] **Step 2: Implement the reservation helper**
 
 Add the helper to `agent/responses_continuation_eligibility.go`. Keep it private and pure.
 
-- [ ] **Step 3: Verify Task 1**
+- [x] **Step 3: Verify Task 1**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationHistoryReservation|TestResponsesContinuationAnchorCandidate' -count=1 -v
 git diff --check
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```sh
 git status --short

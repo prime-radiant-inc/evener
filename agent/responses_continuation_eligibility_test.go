@@ -147,6 +147,78 @@ func TestResponsesContinuationAnchorCandidateUsesRestoredActiveBoundary(t *testi
 	}
 }
 
+func TestResponsesContinuationHistoryReservationStillCurrentForSameBase(t *testing.T) {
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+		responsesContinuationEligibleAssistantTurn("resp_1"),
+	}
+
+	reservation := reserveResponsesContinuationHistoryBase(history)
+	if !responsesContinuationHistoryBaseStillCurrent(reservation, history) {
+		t.Fatalf("reservation should still match unchanged history: %+v", reservation)
+	}
+}
+
+func TestResponsesContinuationHistoryReservationRejectsAppendedTurn(t *testing.T) {
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+		responsesContinuationEligibleAssistantTurn("resp_1"),
+	}
+	reservation := reserveResponsesContinuationHistoryBase(history)
+
+	history = append(history, schema.NewTurn(schema.TurnUserInput, llm.User("new input")))
+	if responsesContinuationHistoryBaseStillCurrent(reservation, history) {
+		t.Fatalf("reservation should be stale after appended turn: %+v", reservation)
+	}
+}
+
+func TestResponsesContinuationHistoryReservationRejectsCompactedOrShortenedHistory(t *testing.T) {
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+		responsesContinuationEligibleAssistantTurn("resp_1"),
+	}
+	reservation := reserveResponsesContinuationHistoryBase(history)
+
+	compacted := []schema.Turn{
+		schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]")),
+	}
+	if responsesContinuationHistoryBaseStillCurrent(reservation, compacted) {
+		t.Fatalf("reservation should be stale after compaction: %+v", reservation)
+	}
+	if responsesContinuationHistoryBaseStillCurrent(reservation, history[:1]) {
+		t.Fatalf("reservation should be stale after shortened history: %+v", reservation)
+	}
+}
+
+func TestResponsesContinuationHistoryReservationRejectsSameLengthDifferentLastTurn(t *testing.T) {
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+		responsesContinuationEligibleAssistantTurn("resp_1"),
+	}
+	reservation := reserveResponsesContinuationHistoryBase(history)
+
+	replaced := append([]schema.Turn(nil), history...)
+	replacement := responsesContinuationEligibleAssistantTurn("resp_replacement")
+	replacement.Timestamp = time.Date(2026, 6, 24, 13, 0, 0, 0, time.UTC)
+	replaced[len(replaced)-1] = replacement
+	if responsesContinuationHistoryBaseStillCurrent(reservation, replaced) {
+		t.Fatalf("reservation should be stale after same-length replacement: %+v", reservation)
+	}
+}
+
+func TestResponsesContinuationHistoryReservationAllowsEmptyHistoryUntilChanged(t *testing.T) {
+	var history []schema.Turn
+	reservation := reserveResponsesContinuationHistoryBase(history)
+	if !responsesContinuationHistoryBaseStillCurrent(reservation, history) {
+		t.Fatalf("empty reservation should match empty history: %+v", reservation)
+	}
+
+	history = append(history, schema.NewTurn(schema.TurnUserInput, llm.User("first")))
+	if responsesContinuationHistoryBaseStillCurrent(reservation, history) {
+		t.Fatalf("empty reservation should be stale after appended turn: %+v", reservation)
+	}
+}
+
 func responsesContinuationEligibleAssistantTurn(responseID string) schema.Turn {
 	turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("assistant"))
 	turn.Timestamp = time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)

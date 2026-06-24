@@ -2,6 +2,7 @@ package agent
 
 import (
 	"strings"
+	"time"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -13,6 +14,12 @@ type responsesContinuationAnchorCandidate struct {
 	TurnIndex int
 	Turn      schema.Turn
 	Delta     []schema.Turn
+}
+
+type responsesContinuationHistoryReservation struct {
+	TurnCount int
+	LastKind  schema.TurnKind
+	LastStamp time.Time
 }
 
 func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []schema.Turn) (responsesContinuationAnchorCandidate, llm.ResponsesContinuationDecision) {
@@ -62,6 +69,28 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 			HistoryMode: llm.HistoryModeResponsesDelta,
 			Reason:      "continuation_anchor_candidate",
 		}
+}
+
+func reserveResponsesContinuationHistoryBase(history []schema.Turn) responsesContinuationHistoryReservation {
+	reservation := responsesContinuationHistoryReservation{TurnCount: len(history)}
+	if len(history) == 0 {
+		return reservation
+	}
+	last := history[len(history)-1]
+	reservation.LastKind = last.Kind
+	reservation.LastStamp = last.Timestamp
+	return reservation
+}
+
+func responsesContinuationHistoryBaseStillCurrent(reservation responsesContinuationHistoryReservation, history []schema.Turn) bool {
+	if reservation.TurnCount != len(history) {
+		return false
+	}
+	if len(history) == 0 {
+		return reservation.LastKind == "" && reservation.LastStamp.IsZero()
+	}
+	last := history[len(history)-1]
+	return reservation.LastKind == last.Kind && reservation.LastStamp.Equal(last.Timestamp)
 }
 
 func latestContextBoundaryIndex(history []schema.Turn) int {
