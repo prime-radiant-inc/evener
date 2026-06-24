@@ -201,7 +201,7 @@ Run:
 GOCACHE=/tmp/serf-gocache go test ./llm ./agent -run 'TestDefaultResponsesContinuationSupportRegistry|TestDecideResponsesContinuation|TestSession_OpenAIResponsesContinuationPhase9|TestSession_OpenAIResponsesContinuationPhase10' -count=1 -v
 ```
 
-- [ ] **Step 5: Record 12B proof and commit**
+- [x] **Step 5: Record 12B proof and commit**
 
 Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-12b-public.md` referencing the exact 12A artifact and registry values, then commit:
 
