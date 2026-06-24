@@ -15,6 +15,60 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+type ModelAttemptMetadata struct {
+	HistoryMode             llm.HistoryMode
+	EndpointFamily          string
+	EndpointURL             string
+	RequestModel            string
+	RequestFingerprint      string
+	StorageScopeFingerprint string
+	ContextMarker           string
+	AttemptIndex            int
+	AttemptCount            int
+	FinalAttemptCount       *int
+	PreviousResponseIDHash  string
+	ConversationIDHash      string
+	ResponseIDHash          string
+	StoragePolicyLabel      string
+}
+
+func singleAttemptRequestMetadata(req llm.Request) (llm.Request, ModelAttemptMetadata) {
+	if req.HistoryMode == "" {
+		req.HistoryMode = llm.HistoryModeFullHistory
+	}
+	finalCount := 1
+	meta := ModelAttemptMetadata{
+		HistoryMode:       req.HistoryMode,
+		RequestModel:      req.Model,
+		AttemptIndex:      1,
+		AttemptCount:      1,
+		FinalAttemptCount: &finalCount,
+	}
+	if req.Continuation != nil {
+		req.Continuation.AttemptIndex = meta.AttemptIndex
+		meta.EndpointFamily = req.Continuation.EndpointFamily
+		meta.RequestFingerprint = req.Continuation.RequestFingerprint
+		meta.StorageScopeFingerprint = req.Continuation.StorageScopeFingerprint
+		meta.ContextMarker = req.Continuation.ContextMarker
+		meta.PreviousResponseIDHash = req.Continuation.PreviousResponseIDHash
+		meta.ConversationIDHash = req.Continuation.ConversationIDHash
+		meta.StoragePolicyLabel = req.Continuation.StoragePolicyLabel
+	}
+	return req, meta
+}
+
+func completeAttemptMetadata(meta ModelAttemptMetadata, resp llm.Response) ModelAttemptMetadata {
+	if resp.Raw != nil {
+		if endpoint, _ := resp.Raw["endpoint_url"].(string); endpoint != "" {
+			meta.EndpointURL = endpoint
+		}
+		if idHash, _ := resp.Raw["id_hash"].(string); idHash != "" {
+			meta.ResponseIDHash = idHash
+		}
+	}
+	return meta
+}
+
 func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Request) bool {
 	if s == nil || profile == nil {
 		return false
@@ -223,7 +277,7 @@ func (s *Session) recordResponseUsage(resp llm.Response) {
 // /delta/end, skipping start/delta when the assistant already streamed) and appends
 // the assistant turn to history unless the response was empty without phase metadata.
 // It runs under withResponseSideEffects and returns its abort error.
-func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool) error {
+func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata) error {
 	return s.withResponseSideEffects(ctx, func() {
 		if !modelResp.StreamedAssistant {
 			s.emit(events.EventAssistantTextStart, events.AssistantTextStartData{
@@ -231,7 +285,7 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 			})
 		}
 		if !skipHistory {
-			s.appendAssistantTurn(resp)
+			s.appendAssistantTurn(resp, finalAttempt)
 		}
 		if !modelResp.StreamedAssistant && strings.TrimSpace(txt) != "" {
 			s.emit(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: txt})
@@ -303,12 +357,20 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 // fallback-eligible permanent error, retries each configured fallback model in
 // order. It returns the (possibly fallback-updated) request actually used so
 // downstream logging reflects the model that answered.
-func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.Profile, req llm.Request, requestedEffort string, round int) (sessionModelResponse, llm.Request, error) {
+func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.Profile, req llm.Request, requestedEffort string, round int) (sessionModelResponse, llm.Request, ModelAttemptMetadata, error) {
 	policy := llm.DefaultRetryPolicy()
 	if s.cfg.LLMRetryPolicy != nil {
 		policy = *s.cfg.LLMRetryPolicy
 	}
-	callCtx := llm.WithAPILogContext(ctx, s.id, round)
+	req, attempt := singleAttemptRequestMetadata(req)
+	callCtx := llm.WithAPILogAttemptContext(ctx, llm.APILogContext{
+		SessionID:         s.id,
+		Round:             round,
+		AttemptIndex:      attempt.AttemptIndex,
+		AttemptCount:      attempt.AttemptCount,
+		FinalAttemptCount: attempt.FinalAttemptCount,
+		HistoryMode:       attempt.HistoryMode,
+	})
 	modelResp, err := s.callModel(callCtx, policy, profile, req)
 	// Fallback chain: when the primary model returns a Permanent-class
 	// provider error (403/404/422/...) or an endpoint-fallback signal,
@@ -364,24 +426,35 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				// request used for downstream logging (transcript,
 				// EventAssistantTextStart fallback path, etc).
 				req = fbReq
+				attempt.RequestModel = fbReq.Model
+				attempt.HistoryMode = llm.HistoryModeFullHistory
 				break
 			}
 		}
 	}
-	return modelResp, req, err
+	if err != nil {
+		return modelResp, req, attempt, err
+	}
+	return modelResp, req, completeAttemptMetadata(attempt, modelResp.Response), nil
 }
 
 // logAPICall records one round's request/response (or error) to the transcript.
-func (s *Session) logAPICall(round int, roundStart time.Time, llmLatency time.Duration, sys string, historyLen int, req llm.Request, resp llm.Response, err error) {
+func (s *Session) logAPICall(round int, roundStart time.Time, llmLatency time.Duration, sys string, historyLen int, req llm.Request, resp llm.Response, err error, attempt ModelAttemptMetadata) {
 	if s.transcript != nil {
 		apiCall := transcript.APICall{
-			Round:               round,
-			Timestamp:           roundStart.UTC().Format(time.RFC3339),
-			LatencyMs:           llmLatency.Milliseconds(),
-			SystemPrompt:        sys,
-			ContextHistoryTurns: historyLen,
-			SystemPromptBytes:   len(sys),
-			Request:             llm.BuildAPILogRequest(req),
+			Round:                  round,
+			AttemptIndex:           attempt.AttemptIndex,
+			AttemptCount:           attempt.AttemptCount,
+			FinalAttemptCount:      attempt.FinalAttemptCount,
+			HistoryMode:            attempt.HistoryMode,
+			PreviousResponseIDHash: attempt.PreviousResponseIDHash,
+			ConversationIDHash:     attempt.ConversationIDHash,
+			Timestamp:              roundStart.UTC().Format(time.RFC3339),
+			LatencyMs:              llmLatency.Milliseconds(),
+			SystemPrompt:           sys,
+			ContextHistoryTurns:    historyLen,
+			SystemPromptBytes:      len(sys),
+			Request:                llm.BuildAPILogRequest(req),
 		}
 		if err != nil {
 			apiCall.Error = err.Error()
@@ -395,6 +468,7 @@ func (s *Session) logAPICall(round int, roundStart time.Time, llmLatency time.Du
 			}
 			apiCall.Response = &llm.APILogResponse{
 				ID:            resp.ID,
+				IDHash:        attempt.ResponseIDHash,
 				Model:         resp.Model,
 				FinishReason:  resp.Finish.Reason,
 				TextLength:    len(resp.Text()),

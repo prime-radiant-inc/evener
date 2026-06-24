@@ -580,7 +580,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		tPhaseStart := time.Now()
 
 		s.noteParentJobActivity(jobPhaseAwaitingModel)
-		modelResp, req, err := s.callModelWithFallback(ctx, profile, req, reqEffort, round)
+		modelResp, req, attempt, err := s.callModelWithFallback(ctx, profile, req, reqEffort, round)
 		resp := modelResp.Response
 
 		timings.LLMCall = time.Since(tPhaseStart)
@@ -591,7 +591,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 		}
 
-		s.logAPICall(round, roundStart, timings.LLMCall, sys, len(history), req, resp, err)
+		s.logAPICall(round, roundStart, timings.LLMCall, sys, len(history), req, resp, err, attempt)
 
 		if err != nil {
 			retry, ferr := s.handleModelError(ctx, err, req, &contentFilterRetried)
@@ -646,7 +646,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 		skipHistory := noContent && !hasPhase
 
-		if abortErr := s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory); abortErr != nil {
+		if abortErr := s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory, attempt); abortErr != nil {
 			return "", progressed, abortErr
 		}
 		// pause_turn: model needs another turn (e.g. server-side web search still running).

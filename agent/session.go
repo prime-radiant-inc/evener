@@ -658,13 +658,21 @@ func (s *Session) appendTurnDurably(kind schema.TurnKind, m llm.Message) error {
 
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
-func (s *Session) appendAssistantTurn(resp llm.Response) {
+func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata) {
 	t := schema.Turn{
-		Kind:       schema.TurnAssistant,
-		Message:    resp.Message,
-		Timestamp:  time.Now().UTC(),
-		Usage:      resp.Usage,
-		ResponseID: resp.ID,
+		Kind:                            schema.TurnAssistant,
+		Message:                         resp.Message,
+		Timestamp:                       time.Now().UTC(),
+		Usage:                           resp.Usage,
+		ResponseID:                      resp.ID,
+		ResponseIDHash:                  finalAttempt.ResponseIDHash,
+		ResponseProvider:                resp.Provider,
+		ResponseModel:                   resp.Model,
+		ResponseRequestModel:            finalAttempt.RequestModel,
+		ResponseEndpoint:                finalAttempt.EndpointURL,
+		ResponseStorageScopeFingerprint: finalAttempt.StorageScopeFingerprint,
+		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,
+		ResponseContextMarker:           finalAttempt.ContextMarker,
 	}
 	s.mu.Lock()
 	s.history = append(s.history, t)

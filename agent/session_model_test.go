@@ -1761,6 +1761,108 @@ func TestSession_TranscriptAPICallRecordsFullToolDefinitions(t *testing.T) {
 	}
 }
 
+func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
+	dir := t.TempDir()
+	client := llm.NewClient()
+	comm := communicateCall("c1", "ok")
+	client.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				resp := toolCallResponse(comm)
+				resp.ID = "resp_1"
+				resp.Provider = "openai"
+				resp.Model = req.Model
+				resp.Raw = map[string]any{"endpoint_url": "https://api.openai.com/v1/responses"}
+				return resp
+			},
+		},
+	})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	if _, err := sess.ProcessInput(context.Background(), "hi", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	tpath := sess.TranscriptPath()
+	sess.Close()
+	if tpath == "" {
+		t.Fatal("TranscriptPath is empty")
+	}
+	data, err := readTranscriptFull(tpath)
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	if len(data.APICalls) != 1 {
+		t.Fatalf("api_calls = %d", len(data.APICalls))
+	}
+	call := data.APICalls[0]
+	if call.AttemptIndex != 1 || call.AttemptCount != 1 {
+		t.Fatalf("attempt fields = %+v", call)
+	}
+	if call.FinalAttemptCount == nil || *call.FinalAttemptCount != 1 {
+		t.Fatalf("FinalAttemptCount = %v", call.FinalAttemptCount)
+	}
+	if call.HistoryMode != llm.HistoryModeFullHistory {
+		t.Fatalf("HistoryMode = %q", call.HistoryMode)
+	}
+	if call.Request.HistoryMode != llm.HistoryModeFullHistory {
+		t.Fatalf("request HistoryMode = %q", call.Request.HistoryMode)
+	}
+	if len(data.Entries) == 0 {
+		t.Fatalf("no transcript entries")
+	}
+	var assistant schema.Turn
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnAssistant {
+			assistant = entry.Turn
+		}
+	}
+	if assistant.Kind == "" {
+		t.Fatalf("no assistant transcript entry")
+	}
+	if assistant.ResponseID != "resp_1" {
+		t.Fatalf("ResponseID = %q", assistant.ResponseID)
+	}
+	if assistant.ResponseProvider != "openai" ||
+		assistant.ResponseModel != "gpt-5.2" ||
+		assistant.ResponseRequestModel != "gpt-5.2" ||
+		assistant.ResponseEndpoint != "https://api.openai.com/v1/responses" {
+		t.Fatalf("assistant response metadata = %+v", assistant)
+	}
+	if assistant.ResponseContextMarker != "" ||
+		assistant.ResponseRequestFingerprint != "" ||
+		assistant.ResponseStorageScopeFingerprint != "" {
+		t.Fatalf("anchor eligibility metadata should stay empty in Phase 1A: %+v", assistant)
+	}
+}
+
+func TestSingleAttemptRequestMetadataStampsContinuationAttemptIndex(t *testing.T) {
+	req, attempt := singleAttemptRequestMetadata(llm.Request{
+		Model:       "gpt-5.2",
+		Provider:    "openai",
+		HistoryMode: llm.HistoryModeResponsesDelta,
+		Continuation: &llm.ContinuationMetadata{
+			PreviousResponseIDHash: "cont-handle-v1:response_id:abc",
+		},
+	})
+
+	if attempt.AttemptIndex != 1 || attempt.AttemptCount != 1 {
+		t.Fatalf("attempt counters = %+v", attempt)
+	}
+	if req.Continuation == nil || req.Continuation.AttemptIndex != 1 {
+		t.Fatalf("request continuation = %+v", req.Continuation)
+	}
+	if got := llm.BuildAPILogRequest(req); got.AttemptIndex != 1 {
+		t.Fatalf("APILogRequest.AttemptIndex = %d", got.AttemptIndex)
+	}
+}
+
 // kata ts0x: when the agent loop terminates a turn because of a provider
 // failure (HTTP error from an adapter), the EventError it emits must carry a
 // structured Cause field. Downstream consumers (toil, hub, debug-run) today
