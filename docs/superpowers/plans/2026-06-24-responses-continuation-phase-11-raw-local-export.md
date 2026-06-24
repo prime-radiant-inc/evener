@@ -16,7 +16,7 @@
 - Modify: `agent/internal/atif/atif.go`
 - Test: `agent/internal/atif/atif_test.go`
 
-- [ ] **Step 1: Write failing ATIF default redaction test**
+- [x] **Step 1: Write failing ATIF default redaction test**
 
 Add a test that builds one assistant turn with:
 - `ResponseID: "resp_raw_phase11"`
@@ -34,7 +34,7 @@ wantExtra := map[string]any{
 }
 ```
 
-- [ ] **Step 2: Run red test**
+- [x] **Step 2: Run red test**
 
 Run:
 ```bash
@@ -42,7 +42,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent/internal/atif -run 'TestConvertToATIF_
 ```
 Expected: FAIL because `Convert` currently emits raw `response_id` and does not emit the hash/metadata.
 
-- [ ] **Step 3: Implement redacted default**
+- [x] **Step 3: Implement redacted default**
 
 Add:
 ```go
@@ -62,7 +62,7 @@ Add `NormalizeProviderHandleMode(mode string) (ProviderHandleMode, error)` accep
 
 Make `Convert` call `ConvertWithOptions(header, entries, Options{ProviderHandles: ProviderHandleModeRedacted})`. Make assistant conversion put hashed response metadata in `step.Extra` and only add raw `response_id` when mode is `raw-local`.
 
-- [ ] **Step 4: Run passing test**
+- [x] **Step 4: Run passing test**
 
 Run:
 ```bash
@@ -70,7 +70,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent/internal/atif -run 'TestConvertToATIF_
 ```
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git status --short

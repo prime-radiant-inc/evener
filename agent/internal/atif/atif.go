@@ -5,6 +5,7 @@ package atif
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -80,8 +81,35 @@ type FinalMetrics struct {
 	Extra                 map[string]any `json:"extra,omitempty"`
 }
 
+type ProviderHandleMode string
+
+const (
+	ProviderHandleModeRedacted ProviderHandleMode = "redacted"
+	ProviderHandleModeRawLocal ProviderHandleMode = "raw-local"
+)
+
+type Options struct {
+	ProviderHandles ProviderHandleMode
+}
+
+func NormalizeProviderHandleMode(mode string) (ProviderHandleMode, error) {
+	switch strings.TrimSpace(mode) {
+	case "", string(ProviderHandleModeRedacted):
+		return ProviderHandleModeRedacted, nil
+	case string(ProviderHandleModeRawLocal):
+		return ProviderHandleModeRawLocal, nil
+	default:
+		return "", fmt.Errorf("invalid provider handle export mode %q", mode)
+	}
+}
+
 // Convert converts a serf transcript (header + entries) into an ATIF v1.7 trajectory.
 func Convert(header transcript.Header, entries []transcript.Entry) Trajectory {
+	return ConvertWithOptions(header, entries, Options{ProviderHandles: ProviderHandleModeRedacted})
+}
+
+func ConvertWithOptions(header transcript.Header, entries []transcript.Entry, opts Options) Trajectory {
+	opts.ProviderHandles, _ = NormalizeProviderHandleMode(string(opts.ProviderHandles))
 	version := header.BuildVersion
 	if version == "" {
 		version = "unknown"
@@ -120,7 +148,7 @@ func Convert(header transcript.Header, entries []transcript.Entry) Trajectory {
 			stepID++
 
 		case schema.TurnAssistant:
-			step := convertAssistantTurn(turn, stepID)
+			step := convertAssistantTurn(turn, stepID, opts)
 
 			// Look ahead: if the next entry is TOOL_RESULTS, merge it as observation.
 			if i+1 < len(entries) && entries[i+1].Turn.Kind == schema.TurnToolResults {
@@ -228,7 +256,7 @@ func Convert(header transcript.Header, entries []transcript.Entry) Trajectory {
 }
 
 // convertAssistantTurn extracts text, tool calls, thinking, and metadata from an assistant turn.
-func convertAssistantTurn(turn schema.Turn, stepID int) Step {
+func convertAssistantTurn(turn schema.Turn, stepID int, opts Options) Step {
 	step := Step{
 		StepID:    stepID,
 		Source:    "agent",
@@ -308,7 +336,31 @@ func convertAssistantTurn(turn schema.Turn, stepID int) Step {
 	if len(phases) > 0 {
 		step.Extra["phases"] = phases
 	}
-	if turn.ResponseID != "" {
+	if turn.ResponseIDHash != "" {
+		step.Extra["response_id_hash"] = turn.ResponseIDHash
+	}
+	if turn.ResponseProvider != "" {
+		step.Extra["response_provider"] = turn.ResponseProvider
+	}
+	if turn.ResponseModel != "" {
+		step.Extra["response_model"] = turn.ResponseModel
+	}
+	if turn.ResponseRequestModel != "" {
+		step.Extra["response_request_model"] = turn.ResponseRequestModel
+	}
+	if turn.ResponseEndpoint != "" {
+		step.Extra["response_endpoint"] = turn.ResponseEndpoint
+	}
+	if turn.ResponseStorageScopeFingerprint != "" {
+		step.Extra["response_storage_scope_fingerprint"] = turn.ResponseStorageScopeFingerprint
+	}
+	if turn.ResponseRequestFingerprint != "" {
+		step.Extra["response_request_fingerprint"] = turn.ResponseRequestFingerprint
+	}
+	if turn.ResponseContextMarker != "" {
+		step.Extra["response_context_marker"] = turn.ResponseContextMarker
+	}
+	if opts.ProviderHandles == ProviderHandleModeRawLocal && turn.ResponseID != "" {
 		step.Extra["response_id"] = turn.ResponseID
 	}
 

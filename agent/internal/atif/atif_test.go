@@ -1160,6 +1160,44 @@ func TestConvertToATIF_WebSearchRaw(t *testing.T) {
 	}
 }
 
+func TestConvertToATIF_ResponsesProviderHandlesRedacted(t *testing.T) {
+	header := transcript.Header{SessionID: "sess-responses-redacted", Model: "gpt-5.3-codex"}
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.Turn{
+			Kind:                            schema.TurnAssistant,
+			Message:                         llm.Assistant("done"),
+			ResponseID:                      "resp_raw_phase11",
+			ResponseIDHash:                  "cont-handle-v1:response_id:phase11",
+			ResponseEndpoint:                "openai_responses",
+			ResponseStorageScopeFingerprint: "scope-phase11",
+			ResponseRequestFingerprint:      "request-phase11",
+			ResponseContextMarker:           "ctx-phase11",
+			Timestamp:                       time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC),
+		}},
+	}
+
+	traj := Convert(header, entries)
+	if len(traj.Steps) != 1 {
+		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
+	}
+	extra := traj.Steps[0].Extra
+	if _, ok := extra["response_id"]; ok {
+		t.Fatalf("default ATIF export leaked raw response_id: %#v", extra["response_id"])
+	}
+	wantExtra := map[string]string{
+		"response_id_hash":                   "cont-handle-v1:response_id:phase11",
+		"response_endpoint":                  "openai_responses",
+		"response_storage_scope_fingerprint": "scope-phase11",
+		"response_request_fingerprint":       "request-phase11",
+		"response_context_marker":            "ctx-phase11",
+	}
+	for key, want := range wantExtra {
+		if got := extra[key]; got != want {
+			t.Fatalf("extra[%s] = %#v, want %q", key, got, want)
+		}
+	}
+}
+
 func TestConvertToATIF_TurnSystem(t *testing.T) {
 	header := transcript.Header{SessionID: "sess-sys", Model: "gpt-5.3-codex"}
 	entries := []transcript.Entry{
