@@ -195,7 +195,7 @@ git commit -m "feat(agent): gate responses continuation delta inputs"
 - Modify: `agent/session_openai_continuation_phase9_test.go`
 - Modify: `agent/session_openai_malformed_tool_call_test.go` if sanitizer assertions need sharing.
 
-- [ ] **Step 1: Add RED retry-through-anchor-selection test**
+- [x] **Step 1: Add RED retry-through-anchor-selection test**
 
 Use a fake adapter with enabled continuation plan and fallback-capable path:
 
