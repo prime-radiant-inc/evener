@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmdutil"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
@@ -126,6 +127,14 @@ func TestRunServe_MissingModel(t *testing.T) {
 	}
 	if got := err.Error(); got != "no model: use --model provider/model or set SERF_MODEL=provider/model" {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation(t *testing.T) {
+	var b strings.Builder
+	printServeEnvVars(&b)
+	if !strings.Contains(b.String(), envvars.SERFOpenAIResponsesContinuation.Name) {
+		t.Fatalf("serve env help missing %s: %s", envvars.SERFOpenAIResponsesContinuation.Name, b.String())
 	}
 }
 

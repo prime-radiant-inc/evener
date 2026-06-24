@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent/provider"
 	authopenai "primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/auth/openai/oaitest"
+	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/openai"
 )
@@ -166,6 +167,32 @@ func TestOpenAIHelpShowsCommands(t *testing.T) {
 	}
 	if !strings.Contains(usage, "login") || !strings.Contains(usage, "logout") || !strings.Contains(usage, "status") {
 		t.Fatalf("usage = %q, want listed commands", usage)
+	}
+}
+
+func TestResolveOpenAIResponsesContinuation(t *testing.T) {
+	getenv := func(name string) string {
+		if name == envvars.SERFOpenAIResponsesContinuation.Name {
+			return " auto "
+		}
+		return ""
+	}
+	if got := resolveOpenAIResponsesContinuation(" off ", getenv); got != "off" {
+		t.Fatalf("CLI value = %q, want off", got)
+	}
+	if got := resolveOpenAIResponsesContinuation("", getenv); got != "auto" {
+		t.Fatalf("env fallback = %q, want auto", got)
+	}
+	if got := resolveOpenAIResponsesContinuation("  ", func(string) string { return " off " }); got != "off" {
+		t.Fatalf("blank CLI env fallback = %q, want off", got)
+	}
+}
+
+func TestPrintRunEnvVars_IncludesOpenAIResponsesContinuation(t *testing.T) {
+	var b strings.Builder
+	printRunEnvVars(&b)
+	if !strings.Contains(b.String(), envvars.SERFOpenAIResponsesContinuation.Name) {
+		t.Fatalf("run env help missing %s: %s", envvars.SERFOpenAIResponsesContinuation.Name, b.String())
 	}
 }
 

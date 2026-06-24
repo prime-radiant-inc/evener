@@ -58,24 +58,25 @@ func (v Var) Assignment(value string) string {
 }
 
 var (
-	SERFAllowedDecisions     = Var{Name: "SERF_ALLOWED_DECISIONS", Summary: "Restricts tool-decision modes allowed by the active profile.", Visibility: Public}
-	SERFFluencyModel         = Var{Name: "SERF_FLUENCY_MODEL", Summary: "Default model for the tool-fluency development harness.", Visibility: Tooling}
-	SERFHubAddr              = Var{Name: "SERF_HUB_ADDR", Summary: "Default hub address for serf-tui.", Visibility: Public}
-	SERFHubAuthToken         = Var{Name: "SERF_HUB_AUTH_TOKEN", Summary: "Hub capability token for serf-tui.", Secret: true, Visibility: Public}
-	SERFHubBin               = Var{Name: "SERF_HUB_BIN", Summary: "Path to the serf-hub binary used by serf-tui autostart.", Visibility: Public}
-	SERFHubEditorURLTemplate = Var{Name: "SERF_HUB_EDITOR_URL_TEMPLATE", Summary: "Open-in-editor URL template; use {path} for the encoded path.", Visibility: Public}
-	SERFHubSpawned           = Var{Name: "SERF_HUB_SPAWNED", Summary: "Set by serf-hub for spawned serf serve daemons.", Visibility: Internal}
-	SERFHubSpawnedCodex      = Var{Name: "SERF_HUB_SPAWNED_CODEX", Summary: "Set by serf-hub for spawned Codex app-server processes.", Visibility: Internal}
-	SERFHubToken             = Var{Name: "SERF_HUB_TOKEN", Summary: "Per-hub bearer token passed to spawned serf serve daemons.", Secret: true, Visibility: Internal}
-	SERFLoginHeadless        = Var{Name: "SERF_LOGIN_HEADLESS", Summary: "Overrides OpenAI login flow detection: 1 for device-code, 0 for browser.", Visibility: Public}
-	SERFLogRawHTTP           = Var{Name: "SERF_LOG_RAW_HTTP", Summary: "Includes raw provider HTTP bodies in API logs when set to 1/true/yes/on.", Visibility: Public}
-	SERFModel                = Var{Name: "SERF_MODEL", Summary: "Default model as provider/model when --model is omitted.", Visibility: Public}
-	SERFProvider             = Var{Name: "SERF_PROVIDER", Summary: "Fallback provider for llmcall when --provider and LLM_PROVIDER are unset.", Visibility: Public}
-	SERFProvidersConfig      = Var{Name: "SERF_PROVIDERS_CONFIG", Summary: "Path to providers.toml.", Visibility: Public}
-	SERFReasoningEffort      = Var{Name: "SERF_REASONING_EFFORT", Summary: "Default reasoning effort: minimal|low|medium|high|xhigh|max|none.", Visibility: Public}
-	SERFRunDir               = Var{Name: "SERF_RUN_DIR", Summary: "Rendezvous directory passed by serf-hub to spawned daemons.", Visibility: Internal}
-	SERFStateDir             = Var{Name: "SERF_STATE_DIR", Summary: "Overrides the Serf state root.", Visibility: Public}
-	SERFTUILogFile           = Var{Name: "SERF_TUI_LOG_FILE", Summary: "Writes serf-tui startup diagnostics to this file.", Visibility: Public}
+	SERFAllowedDecisions            = Var{Name: "SERF_ALLOWED_DECISIONS", Summary: "Restricts tool-decision modes allowed by the active profile.", Visibility: Public}
+	SERFFluencyModel                = Var{Name: "SERF_FLUENCY_MODEL", Summary: "Default model for the tool-fluency development harness.", Visibility: Tooling}
+	SERFHubAddr                     = Var{Name: "SERF_HUB_ADDR", Summary: "Default hub address for serf-tui.", Visibility: Public}
+	SERFHubAuthToken                = Var{Name: "SERF_HUB_AUTH_TOKEN", Summary: "Hub capability token for serf-tui.", Secret: true, Visibility: Public}
+	SERFHubBin                      = Var{Name: "SERF_HUB_BIN", Summary: "Path to the serf-hub binary used by serf-tui autostart.", Visibility: Public}
+	SERFHubEditorURLTemplate        = Var{Name: "SERF_HUB_EDITOR_URL_TEMPLATE", Summary: "Open-in-editor URL template; use {path} for the encoded path.", Visibility: Public}
+	SERFHubSpawned                  = Var{Name: "SERF_HUB_SPAWNED", Summary: "Set by serf-hub for spawned serf serve daemons.", Visibility: Internal}
+	SERFHubSpawnedCodex             = Var{Name: "SERF_HUB_SPAWNED_CODEX", Summary: "Set by serf-hub for spawned Codex app-server processes.", Visibility: Internal}
+	SERFHubToken                    = Var{Name: "SERF_HUB_TOKEN", Summary: "Per-hub bearer token passed to spawned serf serve daemons.", Secret: true, Visibility: Internal}
+	SERFLoginHeadless               = Var{Name: "SERF_LOGIN_HEADLESS", Summary: "Overrides OpenAI login flow detection: 1 for device-code, 0 for browser.", Visibility: Public}
+	SERFLogRawHTTP                  = Var{Name: "SERF_LOG_RAW_HTTP", Summary: "Includes raw provider HTTP bodies in API logs when set to 1/true/yes/on.", Visibility: Public}
+	SERFModel                       = Var{Name: "SERF_MODEL", Summary: "Default model as provider/model when --model is omitted.", Visibility: Public}
+	SERFOpenAIResponsesContinuation = Var{Name: "SERF_OPENAI_RESPONSES_CONTINUATION", Summary: "Default OpenAI Responses continuation mode: off|auto. CLI and launch config override it.", Visibility: Public}
+	SERFProvider                    = Var{Name: "SERF_PROVIDER", Summary: "Fallback provider for llmcall when --provider and LLM_PROVIDER are unset.", Visibility: Public}
+	SERFProvidersConfig             = Var{Name: "SERF_PROVIDERS_CONFIG", Summary: "Path to providers.toml.", Visibility: Public}
+	SERFReasoningEffort             = Var{Name: "SERF_REASONING_EFFORT", Summary: "Default reasoning effort: minimal|low|medium|high|xhigh|max|none.", Visibility: Public}
+	SERFRunDir                      = Var{Name: "SERF_RUN_DIR", Summary: "Rendezvous directory passed by serf-hub to spawned daemons.", Visibility: Internal}
+	SERFStateDir                    = Var{Name: "SERF_STATE_DIR", Summary: "Overrides the Serf state root.", Visibility: Public}
+	SERFTUILogFile                  = Var{Name: "SERF_TUI_LOG_FILE", Summary: "Writes serf-tui startup diagnostics to this file.", Visibility: Public}
 
 	LLMModel    = Var{Name: "LLM_MODEL", Summary: "Model for llmcall when --model is unset; checked before SERF_MODEL.", Visibility: Public}
 	LLMProvider = Var{Name: "LLM_PROVIDER", Summary: "Provider for llmcall when --provider is unset; checked before SERF_PROVIDER.", Visibility: Public}
@@ -169,6 +170,7 @@ var allVars = []Var{
 	SERFLoginHeadless,
 	SERFLogRawHTTP,
 	SERFModel,
+	SERFOpenAIResponsesContinuation,
 	SERFProvider,
 	SERFProvidersConfig,
 	SERFReasoningEffort,

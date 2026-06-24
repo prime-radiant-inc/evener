@@ -87,6 +87,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err := cmdutil.EnsureUserConfigDirs(); err != nil {
 		return err
 	}
+	openAIResponsesContinuation := resolveOpenAIResponsesContinuation(cfg.openAIResponsesContinuation, nil)
 
 	// Compute runtime state directory.
 	// Priority: --state-dir flag > SERF_STATE_DIR env > XDG-computed default.
@@ -184,7 +185,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		ExportATIFPath:              cfg.exportATIF,
 		NonInteractive:              true,
 		SystemPromptAsUser:          cfg.systemPromptAsUser,
-		OpenAIResponsesContinuation: strings.TrimSpace(cfg.openAIResponsesContinuation),
+		OpenAIResponsesContinuation: openAIResponsesContinuation,
 		ResolveProfile:              cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
 	}
 	if cfg.maxSubagentDepth >= 0 {
@@ -197,7 +198,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		sess, err = agent.RestoreSessionFromMetaWithConfig(client, profile, env, *meta, agent.RestoreSessionConfig{
 			StateDir:                    stateDir,
 			ResolveProfile:              baseSessionCfg.ResolveProfile,
-			OpenAIResponsesContinuation: strings.TrimSpace(cfg.openAIResponsesContinuation),
+			OpenAIResponsesContinuation: openAIResponsesContinuation,
 		})
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)

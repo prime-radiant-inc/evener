@@ -242,6 +242,7 @@ func printRunEnvVars(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, v := range []envvars.Var{
 		envvars.SERFModel,
+		envvars.SERFOpenAIResponsesContinuation,
 		envvars.SERFReasoningEffort,
 		envvars.SERFStateDir,
 		envvars.SERFProvidersConfig,

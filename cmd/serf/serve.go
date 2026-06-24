@@ -110,6 +110,7 @@ func runServe(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	resolvedOpenAIResponsesContinuation := resolveOpenAIResponsesContinuation(*openAIResponsesContinuation, nil)
 
 	if *cpuProfile != "" {
 		stop, err := cmdutil.StartCPUProfile(*cpuProfile)
@@ -214,7 +215,7 @@ func runServe(args []string) error {
 		NonInteractive:              *nonInteractive,
 		SystemPromptAsUser:          *systemPromptAsUser,
 		ModelFallbacks:              []string(modelFallbacks),
-		OpenAIResponsesContinuation: strings.TrimSpace(*openAIResponsesContinuation),
+		OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
 		ResolveProfile:              cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
 	}
 	if *maxSubagentDepth >= 0 {
@@ -230,7 +231,7 @@ func runServe(args []string) error {
 			StateDir:                    sd,
 			ResolveProfile:              sessionCfg.ResolveProfile,
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
-			OpenAIResponsesContinuation: strings.TrimSpace(*openAIResponsesContinuation),
+			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
 		})
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)
@@ -489,6 +490,7 @@ func printServeEnvVars(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, v := range []envvars.Var{
 		envvars.SERFModel,
+		envvars.SERFOpenAIResponsesContinuation,
 		envvars.SERFReasoningEffort,
 		envvars.SERFStateDir,
 		envvars.SERFRunDir,

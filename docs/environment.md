@@ -15,6 +15,7 @@ help text, and tests should refer to those rows instead of hard-coding names.
 | `SERF_LOGIN_HEADLESS` | Overrides OpenAI login flow detection: `1` for device-code, `0` for browser. |
 | `SERF_LOG_RAW_HTTP` | Includes raw provider HTTP bodies in API logs when set to `1`, `true`, `yes`, or `on`. |
 | `SERF_MODEL` | Default model as `provider/model` when `--model` is omitted. |
+| `SERF_OPENAI_RESPONSES_CONTINUATION` | Default OpenAI Responses continuation mode: `off` or `auto`. The default is `off`; `--openai-responses-continuation` and hub launch settings override it. On resume, an explicit launch value layers over the persisted session snapshot. `auto` is reserved for future continuation enablement and may allow provider-side storage/retention and affect provider-token/cost behavior. |
 | `SERF_PROVIDER` | Fallback provider for `llmcall` when `--provider` and `LLM_PROVIDER` are unset. |
 | `SERF_PROVIDERS_CONFIG` | Path to `providers.toml`. |
 | `SERF_REASONING_EFFORT` | Default reasoning effort: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `none`. |
