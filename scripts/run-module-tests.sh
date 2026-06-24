@@ -9,14 +9,14 @@
 # CPU-heavy agent suite hogs the cores).
 #
 # The compromise is two waves:
-#   WAVE1 — the root module (tmux E2E) plus the small modules (llm, auth). The
-#           root module dominates this wave; llm/auth finish in its shadow.
-#   WAVE2 — the agent module, which is CPU-heavy and benefits from extra
-#           in-package parallelism (AGENT_PARALLEL) once it has the machine to
-#           itself.
+#   WAVE1 — the root module ALONE. Its tmux/TUI tests are so timing-sensitive
+#           that even the small llm/auth suites running alongside can starve a
+#           session enough to fail; it gets the machine to itself.
+#   WAVE2 — the agent module (CPU-heavy, extra in-package parallelism via
+#           AGENT_PARALLEL) plus the small llm/auth modules in its shadow.
 # Waves run one after another; modules WITHIN a wave run concurrently. This keeps
-# the tmux suite and the agent suite from fighting over cores, so the run is both
-# fast and flake-free.
+# the tmux suite from fighting any other suite for cores, so the run is both fast
+# and flake-free.
 #
 # Usage:
 #   scripts/run-module-tests.sh <go-test-flags...>
@@ -30,9 +30,9 @@
 # the agent wave's -parallel.
 set -uo pipefail
 
-WAVE1=${WAVE1:-". llm auth"}
-WAVE2=${WAVE2:-"agent"}
-AGENT_PARALLEL=${AGENT_PARALLEL:-32}
+WAVE1=${WAVE1:-"."}
+WAVE2=${WAVE2:-"agent llm auth"}
+AGENT_PARALLEL=${AGENT_PARALLEL:-16}
 flags="$*"
 logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
 fail=0

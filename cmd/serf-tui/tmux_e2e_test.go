@@ -38,6 +38,22 @@ func uniqueTmuxSessionName() string {
 	return fmt.Sprintf("serf-tui-e2e-%d-%d", time.Now().UnixNano(), tmuxSessionCounter.Add(1))
 }
 
+// tmuxSessionSlots bounds how many tmux+TUI sessions run concurrently. The TUI
+// renders in real time; with every E2E test marked t.Parallel(), too many live
+// sessions at once starve each other's render and (especially) alt-screen exit
+// sequences, intermittently failing timing-sensitive scrollback assertions. The
+// cap keeps most of the parallel speedup while leaving each session enough CPU
+// to render promptly. Only one test opens two sessions, so a cap of 6 cannot
+// deadlock on a single test's acquisitions.
+var tmuxSessionSlots = make(chan struct{}, 6)
+
+// acquireTmuxSlot blocks until a session slot is free and releases it when the
+// test ends.
+func acquireTmuxSlot(t *testing.T) {
+	tmuxSessionSlots <- struct{}{}
+	t.Cleanup(func() { <-tmuxSessionSlots })
+}
+
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[\x20-\x2f]*[\x40-\x7e]`)
 
 func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
@@ -949,6 +965,7 @@ func startTUITmux(t *testing.T, bin, hubURL string) *tmuxTUI {
 
 func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
 	t.Helper()
+	acquireTmuxSlot(t)
 	session := uniqueTmuxSessionName()
 	command := shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
@@ -961,6 +978,7 @@ func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmu
 
 func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
 	t.Helper()
+	acquireTmuxSlot(t)
 	session := uniqueTmuxSessionName()
 	command := shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
