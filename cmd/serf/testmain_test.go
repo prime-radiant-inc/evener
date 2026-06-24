@@ -2,6 +2,8 @@ package main
 
 import (
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -20,6 +22,18 @@ func TestMain(m *testing.M) {
 	envRoot, err := os.MkdirTemp("", "serf-cli-test-env-*")
 	if err != nil {
 		panic(err)
+	}
+	// Pin the Go build/module caches to their real locations before redirecting
+	// HOME/XDG below. Tests that shell out to `go run`/`go build` inherit this
+	// env; redirecting HOME moves GOPATH/GOMODCACHE (and GOCACHE) to the throwaway
+	// dirs, so without pinning them the subprocess recompiles the whole binary
+	// from cold module + build caches on every run (~8s vs ~0.1s warm).
+	for _, key := range []string{"GOCACHE", "GOPATH", "GOMODCACHE"} {
+		if out, err := exec.Command("go", "env", key).Output(); err == nil {
+			if v := strings.TrimSpace(string(out)); v != "" {
+				os.Setenv(key, v)
+			}
+		}
 	}
 	os.Setenv("SERF_STATE_DIR", stateDir)
 	os.Setenv("HOME", envRoot)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -22,7 +23,12 @@ import (
 )
 
 const tuiE2EProjectDir = "/tmp/serf-tui-e2e/serf"
-const tuiE2EWaitTimeout = 20 * time.Second
+
+// Generous backstop, not a target: WaitFor returns the instant the expected text
+// appears, so a large timeout costs nothing on the happy path. It is sized to
+// tolerate the real-time rendering stalls these tmux+TUI tests see when the full
+// suite runs concurrently and CPU is oversubscribed.
+const tuiE2EWaitTimeout = 60 * time.Second
 
 // tmuxSessionCounter makes tmux session names unique even when parallel tests
 // start within the same nanosecond.
@@ -893,19 +899,42 @@ func requireTmux(t *testing.T) {
 	}
 }
 
+var (
+	tuiBinaryOnce sync.Once
+	tuiBinaryPath string
+	tuiBinaryErr  error
+)
+
+// buildTUIBinary compiles the serf-tui binary once per test process and returns
+// the shared path. The E2E tests only execute the binary (never mutate it), so a
+// single build is safe — and it avoids ~20 redundant compiles competing for CPU
+// with the latency-sensitive tmux render loop when the suite runs in parallel.
 func buildTUIBinary(t *testing.T) string {
 	t.Helper()
-	repoRoot, err := filepath.Abs("../..")
-	if err != nil {
-		t.Fatalf("resolve repo root: %v", err)
+	tuiBinaryOnce.Do(func() {
+		repoRoot, err := filepath.Abs("../..")
+		if err != nil {
+			tuiBinaryErr = err
+			return
+		}
+		dir, err := os.MkdirTemp("", "serf-tui-e2e-bin-")
+		if err != nil {
+			tuiBinaryErr = err
+			return
+		}
+		bin := filepath.Join(dir, "serf-tui")
+		cmd := exec.Command("go", "build", "-o", bin, "./cmd/serf-tui")
+		cmd.Dir = repoRoot
+		if out, err := cmd.CombinedOutput(); err != nil {
+			tuiBinaryErr = fmt.Errorf("build serf-tui: %v\n%s", err, out)
+			return
+		}
+		tuiBinaryPath = bin
+	})
+	if tuiBinaryErr != nil {
+		t.Fatalf("build serf-tui: %v", tuiBinaryErr)
 	}
-	bin := filepath.Join(t.TempDir(), "serf-tui")
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/serf-tui")
-	cmd.Dir = repoRoot
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build serf-tui: %v\n%s", err, out)
-	}
-	return bin
+	return tuiBinaryPath
 }
 
 type tmuxTUI struct {

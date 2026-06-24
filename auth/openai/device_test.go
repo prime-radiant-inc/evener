@@ -394,6 +394,14 @@ func TestLoginWithDeviceEndToEnd(t *testing.T) {
 	}
 
 	svc := NewService(m.cfg(), m.server.Client())
+	// Drive the real poll loop but skip the inter-poll sleep; the mock's
+	// "interval":"0" would otherwise clamp to the production 5s default (the
+	// clamp itself is covered by the interval-parsing tests).
+	svc.pollDeviceAuth = func(ctx context.Context, client *http.Client, cfg Config, dc DeviceCode) (DeviceCodeSuccess, error) {
+		return pollDeviceAuth(ctx, client, cfg, dc, pollOptions{
+			sleep: func(context.Context, time.Duration) error { return nil },
+		})
+	}
 
 	var captured DeviceCode
 	status, err := svc.LoginWithDevice(context.Background(), stateDir, "openai", func(dc DeviceCode) {
