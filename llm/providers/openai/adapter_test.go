@@ -2444,6 +2444,133 @@ func TestAdapter_Stream_RecordsEmptyStreamFallbackAttempts(t *testing.T) {
 	}
 }
 
+func TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessagesOnImmediateFallback(t *testing.T) {
+	var chatBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"model not found","code":"model_not_found","type":"invalid_request_error"}}`))
+		case "/v1/chat/completions":
+			if err := json.NewDecoder(r.Body).Decode(&chatBody); err != nil {
+				t.Fatalf("decode chat body: %v", err)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			writeChatCompletionsTextStream(t, w, "fallback response")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), phase6DeltaRequest())
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	drainOpenAIStream(t, stream)
+
+	assertChatFallbackUsedFullHistoryMessages(t, chatBody)
+}
+
+func TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessagesOnEmptyStreamFallback(t *testing.T) {
+	var chatBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+		case "/v1/chat/completions":
+			if err := json.NewDecoder(r.Body).Decode(&chatBody); err != nil {
+				t.Fatalf("decode chat body: %v", err)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			writeChatCompletionsTextStream(t, w, "fallback response")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), phase6DeltaRequest())
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	drainOpenAIStream(t, stream)
+
+	assertChatFallbackUsedFullHistoryMessages(t, chatBody)
+}
+
+func phase6DeltaRequest() llm.Request {
+	return llm.Request{
+		Model:              "gpt-4.1-mini",
+		HistoryMode:        llm.HistoryModeResponsesDelta,
+		PreviousResponseID: "resp_phase6_anchor",
+		Continuation: &llm.ContinuationMetadata{
+			PreviousResponseIDHash: "cont-handle-v1:response_id:phase6",
+		},
+		Messages: []llm.Message{
+			llm.System("phase6 system"),
+			llm.User("PHASE6_DELTA_ONLY_MARKER"),
+		},
+		FullHistoryFallbackMessages: []llm.Message{
+			llm.System("phase6 system"),
+			llm.User("PHASE6_FULL_HISTORY_MARKER"),
+			llm.Assistant("prior assistant"),
+			llm.User("current user"),
+		},
+	}
+}
+
+func assertChatFallbackUsedFullHistoryMessages(t *testing.T, chatBody map[string]any) {
+	t.Helper()
+	if chatBody == nil {
+		t.Fatal("chat fallback body was not captured")
+	}
+	data, err := json.Marshal(chatBody)
+	if err != nil {
+		t.Fatalf("marshal chat body: %v", err)
+	}
+	body := string(data)
+	if !strings.Contains(body, "PHASE6_FULL_HISTORY_MARKER") {
+		t.Fatalf("chat body missing full-history marker: %s", body)
+	}
+	if strings.Contains(body, "PHASE6_DELTA_ONLY_MARKER") {
+		t.Fatalf("chat body used delta marker: %s", body)
+	}
+	if strings.Contains(body, "previous_response_id") || strings.Contains(body, "resp_phase6_anchor") {
+		t.Fatalf("chat body leaked Responses continuation handle: %s", body)
+	}
+}
+
+func writeChatCompletionsTextStream(t *testing.T, w http.ResponseWriter, text string) {
+	t.Helper()
+	chunks := []string{
+		fmt.Sprintf(`data: {"id":"cc_phase6","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{"content":%q},"finish_reason":null}]}`, text),
+		`data: {"id":"cc_phase6","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+		`data: [DONE]`,
+	}
+	for _, c := range chunks {
+		_, _ = fmt.Fprintln(w, c)
+		_, _ = fmt.Fprintln(w)
+	}
+}
+
+func drainOpenAIStream(t *testing.T, stream llm.Stream) {
+	t.Helper()
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("unexpected stream error: %v", ev.Err)
+		}
+	}
+}
+
 func TestStream_ResponsesAPI_404_FallbackPreservesChatRequestSemantics(t *testing.T) {
 	var chatBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

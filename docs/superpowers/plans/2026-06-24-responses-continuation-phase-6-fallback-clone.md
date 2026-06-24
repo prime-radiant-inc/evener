@@ -43,7 +43,7 @@ Phase 6 depends on:
 **Files:**
 - Modify: `llm/providers/openai/adapter_test.go`
 
-- [ ] **Step 1: Immediate fallback test**
+- [x] **Step 1: Immediate fallback test**
 
 Drive a test-only `responses_delta` request with:
 
@@ -54,11 +54,11 @@ Drive a test-only `responses_delta` request with:
 
 Make `/v1/responses` return fallback-eligible 404 and `/v1/chat/completions` succeed. Assert the captured Chat request contains the full-history marker, omits the delta marker, and has no `previous_response_id`.
 
-- [ ] **Step 2: Empty-stream fallback test**
+- [x] **Step 2: Empty-stream fallback test**
 
 Repeat the same assertion when `/v1/responses` returns an empty 200 stream.
 
-- [ ] **Step 3: Run RED tests**
+- [x] **Step 3: Run RED tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages' -count=1 -v
@@ -73,15 +73,15 @@ Expected: fail because Chat fallback currently builds from the delta request.
 **Files:**
 - Modify: `llm/providers/openai/adapter.go`
 
-- [ ] **Step 1: Add `chatFallbackRequest`**
+- [x] **Step 1: Add `chatFallbackRequest`**
 
 Clone the request, set `HistoryMode=chat_completions_fallback`, clear Responses-only continuation fields, and replace `Messages` with `FullHistoryFallbackMessages` when present.
 
-- [ ] **Step 2: Use the clone in both fallback sites**
+- [x] **Step 2: Use the clone in both fallback sites**
 
 Call `streamViaChatCompletions` and `recordChatFallbackAttempt` with the clone for immediate and empty-stream fallback.
 
-- [ ] **Step 3: Run focused tests**
+- [x] **Step 3: Run focused tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_Stream_Records.*FallbackAttempts|TestStream_ResponsesAPI_404_FallsBackToChatCompletions|TestAdapter_Stream_StampsEndpointURL_ChatCompletionsFallback' -count=1 -v

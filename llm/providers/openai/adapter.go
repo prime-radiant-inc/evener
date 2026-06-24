@@ -612,9 +612,10 @@ func (a *Adapter) decodeStream(out context.Context, proxy *llm.ChanStream, respo
 			// Responses API gave us nothing. Fall back to Chat Completions.
 			a.recordResponsesFallbackAttempt(out, req, ev.Err)
 			responsesStream.Close() //nolint:errcheck
-			ccStream, ccErr := a.streamViaChatCompletions(out, req)
+			fallbackReq := chatFallbackRequest(req)
+			ccStream, ccErr := a.streamViaChatCompletions(out, fallbackReq)
 			if ccErr != nil {
-				a.recordChatFallbackAttempt(out, req, nil, ccErr)
+				a.recordChatFallbackAttempt(out, fallbackReq, nil, ccErr)
 				combinedMsg := fmt.Sprintf(
 					"openai: model %q failed on both endpoints — "+
 						"/v1/responses: empty stream (model not supported); "+
@@ -630,10 +631,10 @@ func (a *Adapter) decodeStream(out context.Context, proxy *llm.ChanStream, respo
 			// Forward all events from the Chat Completions stream.
 			for ccEv := range ccStream.Events() {
 				if ccEv.Type == llm.StreamEventFinish && ccEv.Response != nil {
-					a.recordChatFallbackAttempt(out, req, ccEv.Response, nil)
+					a.recordChatFallbackAttempt(out, fallbackReq, ccEv.Response, nil)
 				}
 				if ccEv.Type == llm.StreamEventError && ccEv.Err != nil {
-					a.recordChatFallbackAttempt(out, req, nil, ccEv.Err)
+					a.recordChatFallbackAttempt(out, fallbackReq, nil, ccEv.Err)
 				}
 				proxy.Send(ccEv)
 			}
@@ -701,16 +702,30 @@ func isFallbackEligible(err error) bool {
 // It attempts /v1/chat/completions and, if that also fails, returns a combined
 // error naming the model and both endpoints.
 func (a *Adapter) fallbackToChatCompletions(ctx context.Context, req llm.Request, responsesErr error) (llm.Stream, error) {
-	ccStream, ccErr := a.streamViaChatCompletions(ctx, req)
+	fallbackReq := chatFallbackRequest(req)
+	ccStream, ccErr := a.streamViaChatCompletions(ctx, fallbackReq)
 	if ccErr != nil {
-		a.recordChatFallbackAttempt(ctx, req, nil, ccErr)
+		a.recordChatFallbackAttempt(ctx, fallbackReq, nil, ccErr)
 		return nil, fmt.Errorf(
 			"openai: model %q failed on both endpoints — "+
 				"/v1/responses: %w; /v1/chat/completions: %w",
 			req.Model, responsesErr, ccErr,
 		)
 	}
-	return a.recordChatFallbackStream(ctx, req, ccStream), nil
+	return a.recordChatFallbackStream(ctx, fallbackReq, ccStream), nil
+}
+
+func chatFallbackRequest(req llm.Request) llm.Request {
+	fallbackReq := req
+	fallbackReq.HistoryMode = llm.HistoryModeChatFallback
+	if len(req.FullHistoryFallbackMessages) > 0 {
+		fallbackReq.Messages = append([]llm.Message(nil), req.FullHistoryFallbackMessages...)
+	}
+	fallbackReq.PreviousResponseID = ""
+	fallbackReq.ConversationID = ""
+	fallbackReq.Continuation = nil
+	fallbackReq.FullHistoryFallbackMessages = nil
+	return fallbackReq
 }
 
 func (a *Adapter) recordChatFallbackStream(ctx context.Context, req llm.Request, inner llm.Stream) llm.Stream {
