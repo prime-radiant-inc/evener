@@ -207,7 +207,7 @@ git commit -m "feat(agent): include ATIF continuation request hashes"
 - Modify: `cmd/serf/serve.go`
 - Test: `agent/atif_test.go`
 
-- [ ] **Step 1: Write failing export mode test**
+- [x] **Step 1: Write failing export mode test**
 
 In `agent/atif_test.go`, create a transcript with an assistant response ID and call:
 ```go
@@ -216,7 +216,7 @@ err := exportATIF(transcriptPath, outputPath, "raw-local")
 
 Assert output JSON contains `response_id`. Add a second assertion for default/redacted mode that omits raw `response_id`.
 
-- [ ] **Step 2: Run red test**
+- [x] **Step 2: Run red test**
 
 Run:
 ```bash
@@ -224,7 +224,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestExportATIF_ProviderHandleMod
 ```
 Expected: FAIL because `exportATIF` has no mode argument and does not read API calls.
 
-- [ ] **Step 3: Implement export mode plumbing**
+- [x] **Step 3: Implement export mode plumbing**
 
 Change `exportATIF` to:
 ```go
@@ -238,7 +238,7 @@ traj := atif.ConvertTranscriptWithOptions(data.Header, data.Entries, data.APICal
 
 Add `ExportATIFProviderHandles string` to `agent.SessionConfig`, pass it from session close, add `--export-atif-provider-handles` to direct CLI and `serve`, and propagate it into `SessionConfig`.
 
-- [ ] **Step 4: Run passing tests**
+- [x] **Step 4: Run passing tests**
 
 Run:
 ```bash
@@ -247,7 +247,7 @@ GOCACHE=/tmp/serf-gocache go test ./cmd/serf -run 'Test' -count=1
 ```
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git status --short

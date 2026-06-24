@@ -79,6 +79,7 @@ func runServe(args []string) error {
 	resultToolName := fs.String("result-tool-name", "", "override the result tool name")
 	reasoningEffort := fs.String("reasoning-effort", "", "reasoning effort: minimal|low|medium|high|xhigh|max|none")
 	exportATIF := fs.String("export-atif", "", "export ATIF trajectory to this path")
+	exportATIFProviderHandles := fs.String("export-atif-provider-handles", "", "ATIF provider handle export mode: redacted|raw-local (default: redacted)")
 	contextStrategy := fs.String("context-strategy", "", "context management strategy")
 	outputSchema := fs.String("output-schema", "", "inline JSON Schema applied to the communicate tool's output field")
 	verbose := fs.Bool("verbose", false, "emit NDJSON events to stderr")
@@ -212,6 +213,7 @@ func runServe(args []string) error {
 		PluginDirs:                  []string(pluginDirs),
 		ContextStrategy:             *contextStrategy,
 		ExportATIFPath:              *exportATIF,
+		ExportATIFProviderHandles:   *exportATIFProviderHandles,
 		NonInteractive:              *nonInteractive,
 		SystemPromptAsUser:          *systemPromptAsUser,
 		ModelFallbacks:              []string(modelFallbacks),

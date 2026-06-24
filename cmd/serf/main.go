@@ -38,6 +38,7 @@ type runCLIFlags struct {
 	resultToolName              *string
 	reasoningEffort             *string
 	exportATIF                  *string
+	exportATIFProviderHandles   *string
 	contextStrategy             *string
 	outputSchema                *string
 	verbose                     *bool
@@ -132,6 +133,7 @@ func main() {
 		reasoningEffort:             *flags.reasoningEffort,
 		contextStrategy:             *flags.contextStrategy,
 		exportATIF:                  *flags.exportATIF,
+		exportATIFProviderHandles:   *flags.exportATIFProviderHandles,
 		outputSchema:                *flags.outputSchema,
 		verbose:                     *flags.verbose,
 		noProjectPrompts:            *flags.noProjectPrompts,
@@ -176,6 +178,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.resultToolName = fs.String("result-tool-name", "", "override the result tool `name` (default: communicate)")
 	flags.reasoningEffort = fs.String("reasoning-effort", "", "reasoning effort `level`: minimal|low|medium|high|xhigh|max|none")
 	flags.exportATIF = fs.String("export-atif", "", "export ATIF v1.7 trajectory to this `path` on session close")
+	flags.exportATIFProviderHandles = fs.String("export-atif-provider-handles", "", "ATIF provider handle export `mode`: redacted|raw-local (default: redacted)")
 	flags.contextStrategy = fs.String("context-strategy", "", "context management `strategy`: compact|session-log|ooda (default: compact)")
 	flags.outputSchema = fs.String("output-schema", "", "inline JSON Schema `document` applied to the communicate tool's output field (replaces the default schema)")
 	flags.verbose = fs.Bool("verbose", false, "emit NDJSON events to stderr")

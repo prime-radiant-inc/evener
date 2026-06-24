@@ -30,26 +30,27 @@ import (
 )
 
 type runConfig struct {
-	prompt             string
-	model              string
-	fastCheapModel     string // --fast-cheap-model override for auxiliary side calls
-	workDir            string
-	stateDir           string   // --state-dir override
-	systemPrompt       string   // --system-prompt file path
-	systemPromptAppend []string // --system-prompt-append file paths
-	maxRounds          int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
-	maxSubagentDepth   int      // --max-subagent-depth (-1=default)
-	shareTaskStore     bool     // --share-task-store
-	resultToolName     string   // --result-tool-name override
-	reasoningEffort    string   // --reasoning-effort override (or SERF_REASONING_EFFORT)
-	contextStrategy    string   // --context-strategy
-	exportATIF         string   // --export-atif path
-	outputSchema       string   // --output-schema: raw JSON schema applied to communicate.output
-	verbose            bool
-	noProjectPrompts   bool
-	agentName          string // --agent persona name (default: default)
-	stdout             io.Writer
-	stderr             io.Writer
+	prompt                    string
+	model                     string
+	fastCheapModel            string // --fast-cheap-model override for auxiliary side calls
+	workDir                   string
+	stateDir                  string   // --state-dir override
+	systemPrompt              string   // --system-prompt file path
+	systemPromptAppend        []string // --system-prompt-append file paths
+	maxRounds                 int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
+	maxSubagentDepth          int      // --max-subagent-depth (-1=default)
+	shareTaskStore            bool     // --share-task-store
+	resultToolName            string   // --result-tool-name override
+	reasoningEffort           string   // --reasoning-effort override (or SERF_REASONING_EFFORT)
+	contextStrategy           string   // --context-strategy
+	exportATIF                string   // --export-atif path
+	exportATIFProviderHandles string   // --export-atif-provider-handles
+	outputSchema              string   // --output-schema: raw JSON schema applied to communicate.output
+	verbose                   bool
+	noProjectPrompts          bool
+	agentName                 string // --agent persona name (default: default)
+	stdout                    io.Writer
+	stderr                    io.Writer
 
 	skillsDirs                  []string // extra skill directories
 	mcpServers                  []string // --mcp inline specs
@@ -183,6 +184,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		PluginDirs:                  cfg.pluginDirs,
 		ContextStrategy:             cfg.contextStrategy,
 		ExportATIFPath:              cfg.exportATIF,
+		ExportATIFProviderHandles:   cfg.exportATIFProviderHandles,
 		NonInteractive:              true,
 		SystemPromptAsUser:          cfg.systemPromptAsUser,
 		OpenAIResponsesContinuation: openAIResponsesContinuation,

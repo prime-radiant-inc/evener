@@ -139,6 +139,10 @@ type SessionConfig struct {
 	// trajectory JSON file to this path. Only root sessions (spawn.depth==0) export.
 	ExportATIFPath string `json:"-"`
 
+	// ExportATIFProviderHandles controls whether ATIF export redacts provider
+	// handles or includes raw local diagnostic handles. Empty means redacted.
+	ExportATIFProviderHandles string `json:"-"`
+
 	// SystemPromptAsUser, when true, combines the system prompt into the first
 	// user message instead of sending it as a separate system/developer message.
 	// Workaround for models (e.g. GPT-5.4) that ignore the instructions

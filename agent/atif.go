@@ -11,12 +11,16 @@ import (
 
 // exportATIF reads a transcript JSONL file, converts it to an ATIF v1.7
 // trajectory, and writes the result to outPath.
-func exportATIF(transcriptPath, outPath string) error {
-	header, entries, _, err := readTranscript(transcriptPath)
+func exportATIF(transcriptPath, outPath, providerHandleMode string) error {
+	mode, err := atif.NormalizeProviderHandleMode(providerHandleMode)
+	if err != nil {
+		return err
+	}
+	transcriptData, err := readTranscriptFull(transcriptPath)
 	if err != nil {
 		return fmt.Errorf("read transcript: %w", err)
 	}
-	traj := atif.Convert(header, entries)
+	traj := atif.ConvertTranscriptWithOptions(transcriptData.Header, transcriptData.Entries, transcriptData.APICalls, atif.Options{ProviderHandles: mode})
 	data, err := json.MarshalIndent(traj, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal ATIF: %w", err)
