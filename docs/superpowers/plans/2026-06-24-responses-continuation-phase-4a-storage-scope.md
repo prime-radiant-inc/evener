@@ -59,7 +59,7 @@ Any future Codex storage/retention field requires a table update, deterministic 
 - Modify: `llm/providers/openai/adapter.go`
 - Modify: `llm/providers/openai/adapter_test.go`
 
-- [ ] **Step 1: Add failing exclusion-table tests**
+- [x] **Step 1: Add failing exclusion-table tests**
 
 Add tests proving:
 
@@ -84,7 +84,7 @@ GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_PlanR
 
 Expected: FAIL because Codex currently also drops `store`.
 
-- [ ] **Step 2: Implement endpoint-family exclusion table**
+- [x] **Step 2: Implement endpoint-family exclusion table**
 
 Change the helper signature to accept the endpoint family:
 
