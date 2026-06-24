@@ -14,6 +14,14 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// The everything server does not exit on stdin-EOF, so each manager teardown
+// would otherwise pay the SDK's full 5s terminate timer before SIGTERM. Shrink
+// it for tests; the server is being killed anyway and assertions run before
+// Close. (Production keeps the SDK default — commandTerminateDuration stays 0.)
+func init() {
+	commandTerminateDuration = 200 * time.Millisecond
+}
+
 func requireNpx(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("npx"); err != nil {
