@@ -92,6 +92,304 @@ func TestAdapter_Complete_MapsToChatCompletionsAPI(t *testing.T) {
 	}
 }
 
+func TestNewFromEnv_CompleteAutoPrefersResponsesAPI(t *testing.T) {
+	var responsesCalled bool
+	var chatCalled bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/responses":
+			responsesCalled = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+  "id": "resp_compat",
+  "model": "gpt-4o",
+  "output": [
+    {"type": "message", "content": [{"type":"output_text", "text":"responses ok"}]}
+  ],
+  "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+}`))
+		case "/chat/completions":
+			chatCalled = true
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", srv.URL)
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "envkey")
+	t.Setenv("OPENAI_COMPATIBLE_PROVIDER_QUIRKS", "")
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	a.Client = srv.Client()
+
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-4o",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got := strings.TrimSpace(resp.Text()); got != "responses ok" {
+		t.Fatalf("response text = %q, want responses ok", got)
+	}
+	if resp.Provider != "openai-compatible" {
+		t.Fatalf("provider = %q, want openai-compatible", resp.Provider)
+	}
+	if !responsesCalled {
+		t.Fatal("Responses API was not called")
+	}
+	if chatCalled {
+		t.Fatal("Chat Completions should not be called when Responses succeeds")
+	}
+}
+
+func TestNewFromEnv_CompleteAutoFallsBackToChatCompletions(t *testing.T) {
+	var responsesCalled bool
+	var chatCalled bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/responses":
+			responsesCalled = true
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"model not found","code":"model_not_found","type":"invalid_request_error"}}`))
+		case "/chat/completions":
+			chatCalled = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-compat",
+  "model": "gpt-4o",
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "content": "chat fallback ok"},
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", srv.URL)
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "envkey")
+	t.Setenv("OPENAI_COMPATIBLE_PROVIDER_QUIRKS", "")
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	a.Client = srv.Client()
+
+	resp, err := a.Complete(context.Background(), llm.Request{
+		Model:    "gpt-4o",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got := strings.TrimSpace(resp.Text()); got != "chat fallback ok" {
+		t.Fatalf("response text = %q, want chat fallback ok", got)
+	}
+	if !responsesCalled {
+		t.Fatal("Responses API was not called before fallback")
+	}
+	if !chatCalled {
+		t.Fatal("Chat Completions fallback was not called")
+	}
+}
+
+func TestNewFromEnv_CompleteAutoFallbackPreservesOpenAICompatibleQuirks(t *testing.T) {
+	var chatBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/responses":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"model not found","code":"model_not_found","type":"invalid_request_error"}}`))
+		case "/chat/completions":
+			if err := json.NewDecoder(r.Body).Decode(&chatBody); err != nil {
+				t.Fatalf("decode chat body: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+  "id": "chatcmpl-compat",
+  "model": "gpt-4o",
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "content": "chat fallback ok"},
+    "finish_reason": "stop"
+  }]
+}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", srv.URL)
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "envkey")
+	t.Setenv("OPENAI_COMPATIBLE_PROVIDER_QUIRKS", "openrouter")
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	a.Client = srv.Client()
+
+	effort := "max"
+	_, err = a.Complete(context.Background(), llm.Request{
+		Model:           "gpt-4o",
+		Messages:        []llm.Message{llm.User("hi")},
+		ReasoningEffort: &effort,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got := chatBody["reasoning_effort"]; got != "xhigh" {
+		t.Fatalf("chat fallback reasoning_effort = %#v, want xhigh", got)
+	}
+}
+
+func TestNewFromEnv_StreamAutoPrefersResponsesAPI(t *testing.T) {
+	var responsesCalled bool
+	var chatCalled bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/responses":
+			responsesCalled = true
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprintln(w, `event: response.output_text.delta`)
+			_, _ = fmt.Fprintln(w, `data: {"type":"response.output_text.delta","delta":"responses stream"}`)
+			_, _ = fmt.Fprintln(w)
+			_, _ = fmt.Fprintln(w, `event: response.completed`)
+			_, _ = fmt.Fprintln(w, `data: {"type":"response.completed","response":{"id":"resp_stream","model":"gpt-4o","output":[{"type":"message","content":[{"type":"output_text","text":"responses stream"}]}],"status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}`)
+			_, _ = fmt.Fprintln(w)
+		case "/chat/completions":
+			chatCalled = true
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", srv.URL)
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "envkey")
+	t.Setenv("OPENAI_COMPATIBLE_PROVIDER_QUIRKS", "")
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	a.Client = srv.Client()
+
+	st, err := a.Stream(context.Background(), llm.Request{
+		Model:    "gpt-4o",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close() //nolint:errcheck
+
+	var text strings.Builder
+	var finish *llm.Response
+	for ev := range st.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		if ev.Type == llm.StreamEventTextDelta {
+			text.WriteString(ev.Delta)
+		}
+		if ev.Type == llm.StreamEventFinish {
+			finish = ev.Response
+		}
+	}
+	if text.String() != "responses stream" {
+		t.Fatalf("stream text = %q, want responses stream", text.String())
+	}
+	if finish == nil || finish.Provider != "openai-compatible" {
+		t.Fatalf("finish response = %+v, want openai-compatible provider", finish)
+	}
+	if !responsesCalled {
+		t.Fatal("Responses API was not called")
+	}
+	if chatCalled {
+		t.Fatal("Chat Completions should not be called when Responses succeeds")
+	}
+}
+
+func TestNewFromEnv_StreamAutoFallsBackToChatCompletions(t *testing.T) {
+	var responsesCalled bool
+	var chatCalled bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/responses":
+			responsesCalled = true
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"model not found","code":"model_not_found","type":"invalid_request_error"}}`))
+		case "/chat/completions":
+			chatCalled = true
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprintln(w, `data: {"id":"chatcmpl-stream","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"chat stream"},"finish_reason":null}]}`)
+			_, _ = fmt.Fprintln(w)
+			_, _ = fmt.Fprintln(w, `data: {"id":"chatcmpl-stream","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`)
+			_, _ = fmt.Fprintln(w)
+			_, _ = fmt.Fprintln(w, `data: [DONE]`)
+			_, _ = fmt.Fprintln(w)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", srv.URL)
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "envkey")
+	t.Setenv("OPENAI_COMPATIBLE_PROVIDER_QUIRKS", "")
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	a.Client = srv.Client()
+
+	st, err := a.Stream(context.Background(), llm.Request{
+		Model:    "gpt-4o",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close() //nolint:errcheck
+
+	var text strings.Builder
+	for ev := range st.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		if ev.Type == llm.StreamEventTextDelta {
+			text.WriteString(ev.Delta)
+		}
+	}
+	if text.String() != "chat stream" {
+		t.Fatalf("stream text = %q, want chat stream", text.String())
+	}
+	if !responsesCalled {
+		t.Fatal("Responses API was not called before fallback")
+	}
+	if !chatCalled {
+		t.Fatal("Chat Completions fallback was not called")
+	}
+}
+
 func TestAdapter_Complete_ToolCalling(t *testing.T) {
 	var gotBody map[string]any
 

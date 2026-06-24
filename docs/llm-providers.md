@@ -103,7 +103,7 @@ default = "work"          # optional; the default instance (else first by sorted
 
 [instances.work]          # the table key IS the instance NAME — routing/identity
 type      = "openai"      # the provider TYPE — drives the behavior tag
-api_style = "responses"   # openai only: "responses" → openai tag; "chat-completions" → openai-compatible
+api_style = "responses"   # openai only: "responses"/"auto" → openai tag; "chat-completions" → openai-compatible
 base_url  = "..."         # optional override (captured from env when seeded)
 quirks    = "..."         # optional; selects a quirks preset (openai-compatible types)
 # no api_key — credentials are resolved separately and injected in memory only
@@ -258,7 +258,7 @@ rewrite is gone — the Gemini profile's id is `google`).
 | Tag | Adapter pkg | Endpoint | Notes |
 |---|---|---|---|
 | `openai` | `openai` | `/v1/responses`, or `/backend-api/codex/responses` at `chatgpt.com` for OAuth | OAuth → Codex backend; API key → standard API |
-| `openai-compatible` | `openaicompat` | `/chat/completions` | vLLM/LiteLLM/Ollama-style; **not** the Responses API |
+| `openai-compatible` | `openaicompat` | env provider: `/responses` preferred, `/chat/completions` fallback; explicit `api_style="chat-completions"`: `/chat/completions` | vLLM/LiteLLM/Ollama-style |
 | `anthropic` | `anthropic` | `/v1/messages` | base URL overridable |
 | `google` | `google` | Gemini API | its own protocol |
 | `kimi`, `glm`, `openrouter` | thin wrappers → `openaicompat` | `/chat/completions` | own base URL + `QuirksPreset(...)` (by type) |
@@ -275,12 +275,11 @@ adapter `DefaultHeaders`, sourced from the shared constant in
 `llm/providers/internal/kimicoding`. So either Kimi route is accepted; the
 default Go User-Agent is not.
 
-Because `openai` (Responses) and `openai-compatible` (Chat Completions) are
-**different protocols**, you can't reach a vLLM box by pointing the `openai`
-adapter at it; that's what the openaicompat adapter is for. (Finish-reason
-normalization lives *inside* each adapter, called with the adapter's own static
-literal — it keys on the wire protocol, not on `req.Provider`, so it needed no
-change.)
+`openai-compatible` remains the compatibility adapter because it owns provider
+quirks and the `openai-compatible` option namespace. Env-seeded compatible
+instances now try `/responses` first and fall back to `/chat/completions` on
+endpoint/model mismatch; explicit `api_style="chat-completions"` remains forced
+Chat Completions.
 
 ## Reasoning effort
 

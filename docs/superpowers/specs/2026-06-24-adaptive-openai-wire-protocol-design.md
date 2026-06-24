@@ -42,7 +42,7 @@ Extend the existing OpenAI provider `api_style` field with an explicit adaptive 
 
 First-party OpenAI API-key profiles without an explicit style should behave as Responses-preferred with model/feature auto-detection. That is not a symmetric protocol guess: `/v1/responses` remains the primary wire protocol, and Chat Completions is only a safe fallback for models or request shapes that clearly cannot use Responses.
 
-The legacy env-seeded `openai-compatible` provider keeps the existing Chat Completions behavior for compatibility. Adaptive protocol switching for compatible/custom endpoints requires a config-driven OpenAI-shaped instance with `api_style = "auto"` or a future explicit env flag that seeds that same config shape. Existing compatible deployments must not unexpectedly hit `/responses`.
+The env-seeded `openai-compatible` provider uses the compatible adapter but is adaptive: it prefers `/responses` and falls back to `/chat/completions` on endpoint/model mismatch, preserving compatible-provider quirks and the `openai-compatible` option namespace. Explicit `api_style = "chat-completions"` remains the forced Chat Completions path.
 
 ## Capability Scope
 
@@ -138,7 +138,7 @@ Live tests:
 
 ## Rollout
 
-Start with first-party OpenAI API-key model/feature auto-detection and keep adaptive protocol switching disabled by default for legacy `openai-compatible` env registration. Add explicit config-driven `api_style = "auto"` for compatible/custom endpoints first, then consider opt-in env wiring after the behavior is proven.
+Start with first-party OpenAI API-key model/feature auto-detection, explicit config-driven `api_style = "auto"` for custom endpoints, and env-seeded `openai-compatible` protocol switching through the compatible adapter.
 
 The first production-safe slice should support:
 

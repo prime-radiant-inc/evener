@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/openaichat"
 	"primeradiant.com/serf/llm/providers/internal/transport"
+	openairesponses "primeradiant.com/serf/llm/providers/openai"
 )
 
 type Adapter struct {
@@ -27,24 +29,27 @@ type Adapter struct {
 	Client         *http.Client
 	DefaultHeaders map[string]string
 	Quirks         ProviderQuirks
+	Adaptive       bool
 }
 
 // OpenAICompatInstanceParams holds the configuration for a single openai-compatible adapter instance.
 type OpenAICompatInstanceParams struct {
-	Name    string
-	BaseURL string
-	APIKey  string
-	Quirks  ProviderQuirks
+	Name     string
+	BaseURL  string
+	APIKey   string
+	Quirks   ProviderQuirks
+	Adaptive bool
 }
 
 // NewForInstance constructs an Adapter from explicit parameters.
 func NewForInstance(params OpenAICompatInstanceParams) *Adapter {
 	return &Adapter{
-		name:    params.Name,
-		APIKey:  params.APIKey,
-		BaseURL: strings.TrimRight(params.BaseURL, "/"),
-		Client:  &http.Client{Timeout: 0},
-		Quirks:  params.Quirks,
+		name:     params.Name,
+		APIKey:   params.APIKey,
+		BaseURL:  strings.TrimRight(params.BaseURL, "/"),
+		Client:   &http.Client{Timeout: 0},
+		Quirks:   params.Quirks,
+		Adaptive: params.Adaptive,
 	}
 }
 
@@ -85,10 +90,11 @@ func NewFromEnv() (*Adapter, error) {
 	}
 
 	return NewForInstance(OpenAICompatInstanceParams{
-		Name:    "openai-compatible",
-		BaseURL: base,
-		APIKey:  key,
-		Quirks:  quirks,
+		Name:     "openai-compatible",
+		BaseURL:  base,
+		APIKey:   key,
+		Quirks:   quirks,
+		Adaptive: true,
 	}), nil
 }
 
@@ -119,6 +125,19 @@ func (a *Adapter) ChatCompletionsBody(req llm.Request, stream bool) (map[string]
 
 // Complete sends a non-streaming Chat Completions request.
 func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if a.Adaptive {
+		resp, err := a.completeViaResponses(ctx, req)
+		if err == nil {
+			return resp, nil
+		}
+		if !canFallbackFromResponses(req, err) {
+			return llm.Response{}, err
+		}
+	}
+	return a.completeViaChatCompletions(ctx, req)
+}
+
+func (a *Adapter) completeViaChatCompletions(ctx context.Context, req llm.Request) (llm.Response, error) {
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
 	}
@@ -156,6 +175,19 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 
 // Stream sends a streaming Chat Completions request.
 func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	if a.Adaptive {
+		stream, err := a.streamViaResponses(ctx, req)
+		if err == nil {
+			return stream, nil
+		}
+		if !canFallbackFromResponses(req, err) {
+			return nil, err
+		}
+	}
+	return a.streamViaChatCompletions(ctx, req)
+}
+
+func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
 	}
@@ -203,6 +235,74 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	go a.decodeStream(sctx, resp, s, req, jsonBody, rl)
 
 	return s, nil
+}
+
+func (a *Adapter) completeViaResponses(ctx context.Context, req llm.Request) (llm.Response, error) {
+	resp, err := a.responsesAdapter().Complete(ctx, req)
+	if err != nil {
+		return llm.Response{}, llm.RewriteErrorProvider(err, "openai-compatible")
+	}
+	resp.Provider = "openai-compatible"
+	return resp, nil
+}
+
+func (a *Adapter) streamViaResponses(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	stream, err := a.responsesAdapter().Stream(ctx, req)
+	if err != nil {
+		return nil, llm.RewriteErrorProvider(err, "openai-compatible")
+	}
+	return restampResponsesStream(stream), nil
+}
+
+func (a *Adapter) responsesAdapter() *openairesponses.Adapter {
+	client := a.Client
+	if client == nil {
+		client = &http.Client{Timeout: 0}
+	}
+	return &openairesponses.Adapter{
+		APIKey:              a.APIKey,
+		BaseURL:             a.BaseURL,
+		ResponsesPath:       "/responses",
+		Client:              client,
+		DefaultHeaders:      a.DefaultHeaders,
+		DisableChatFallback: true,
+	}
+}
+
+func canFallbackFromResponses(req llm.Request, err error) bool {
+	if err == nil || hasResponsesContinuationState(req) {
+		return false
+	}
+	var status interface{ StatusCode() int }
+	if !errors.As(err, &status) {
+		return false
+	}
+	code := status.StatusCode()
+	return code == http.StatusNotFound || code == http.StatusUnprocessableEntity
+}
+
+func hasResponsesContinuationState(req llm.Request) bool {
+	return strings.TrimSpace(req.PreviousResponseID) != "" ||
+		strings.TrimSpace(req.ConversationID) != "" ||
+		req.Continuation != nil
+}
+
+func restampResponsesStream(inner llm.Stream) llm.Stream {
+	proxy := llm.NewChanStream(func() { _ = inner.Close() })
+	go func() {
+		defer proxy.CloseSend()
+		defer inner.Close() //nolint:errcheck
+		for ev := range inner.Events() {
+			if ev.Response != nil {
+				ev.Response.Provider = "openai-compatible"
+			}
+			if ev.Err != nil {
+				ev.Err = llm.RewriteErrorProvider(ev.Err, "openai-compatible")
+			}
+			proxy.Send(ev)
+		}
+	}()
+	return proxy
 }
 
 // decodeStream consumes the Chat Completions SSE stream in its own goroutine: it

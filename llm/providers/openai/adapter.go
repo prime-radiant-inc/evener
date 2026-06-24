@@ -49,19 +49,20 @@ type Config struct {
 }
 
 type Adapter struct {
-	name               string
-	APIKey             string
-	BaseURL            string
-	ResponsesPath      string
-	OrgID              string
-	ProjectID          string
-	ChatGPTAccountID   string
-	AuthScopeIdentity  llm.AuthScopeIdentity
-	OrgIDHash          string
-	ProjectIDHash      string
-	ContinuationHasher *llm.ContinuationHasher
-	Client             *http.Client
-	DefaultHeaders     map[string]string
+	name                string
+	APIKey              string
+	BaseURL             string
+	ResponsesPath       string
+	OrgID               string
+	ProjectID           string
+	ChatGPTAccountID    string
+	AuthScopeIdentity   llm.AuthScopeIdentity
+	OrgIDHash           string
+	ProjectIDHash       string
+	ContinuationHasher  *llm.ContinuationHasher
+	Client              *http.Client
+	DefaultHeaders      map[string]string
+	DisableChatFallback bool
 }
 
 // OpenAIInstanceParams holds the configuration for a single OpenAI adapter instance.
@@ -749,6 +750,9 @@ func isFallbackEligible(err error) bool {
 }
 
 func (a *Adapter) shouldFallbackToChatCompletions(req llm.Request, err error) bool {
+	if a.DisableChatFallback {
+		return false
+	}
 	if !isFallbackEligible(err) {
 		return false
 	}
