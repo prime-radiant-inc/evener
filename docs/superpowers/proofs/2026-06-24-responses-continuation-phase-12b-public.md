@@ -45,8 +45,10 @@ That artifact records:
 - omitted serialized input-item bytes: `406`;
 - continuation overhead bytes: `81`;
 - net request-body byte saving: `313`;
-- delta provider input tokens: `372`;
-- full-history shadow input-token estimate: `13197`;
+- first-run delta provider input tokens: `372`;
+- first-run full-history shadow input-token estimate: `13197`;
+- completion-audit delta provider input tokens: `11127`;
+- completion-audit full-history shadow input-token estimate: `13196`;
 - proposed `MaxAnchorAgeSeconds`: `3600`;
 - numeric rollout thresholds for hit rate, prompt cache telemetry, storage/continuation errors, provider token cost, and rate limits.
 
