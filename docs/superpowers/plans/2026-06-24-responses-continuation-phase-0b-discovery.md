@@ -121,7 +121,6 @@ func TestResponsesContinuationDiscovery_RequestShapeMatrix(t *testing.T) {
 			want: map[string]any{
 				"store":                false,
 				"previous_response_id": "resp_codex",
-				"stream":               true,
 			},
 			wantAbsent: []string{"conversation"},
 		},
@@ -138,7 +137,6 @@ func TestResponsesContinuationDiscovery_RequestShapeMatrix(t *testing.T) {
 			want: map[string]any{
 				"store":        false,
 				"conversation": "conv_codex",
-				"stream":       true,
 			},
 			wantAbsent: []string{"previous_response_id"},
 		},
@@ -158,7 +156,6 @@ func TestResponsesContinuationDiscovery_RequestShapeMatrix(t *testing.T) {
 				"store":                true,
 				"previous_response_id": "resp_codex",
 				"conversation":         "conv_codex",
-				"stream":               true,
 			},
 		},
 	}
@@ -201,7 +198,7 @@ Run:
 ```sh
 git status --short
 git add llm/providers/openai/responses_continuation_discovery_test.go
-git commit -m "test(openai): record responses continuation request-shape matrix" -m "Add Phase 0B deterministic adapter fixtures for public OpenAI and Codex Responses request shapes. The matrix records previous_response_id, conversation, store, and Codex stream behavior without enabling session runtime continuation or relying on provider credentials."
+git commit -m "test(openai): record responses continuation request-shape matrix" -m "Add Phase 0B deterministic adapter fixtures for public OpenAI and Codex Responses request body shapes. The matrix records previous_response_id, conversation, and store behavior without enabling session runtime continuation or relying on provider credentials."
 ```
 
 ## Task 2: Deterministic Payload-Size Probe
@@ -596,7 +593,7 @@ Current deterministic matrix:
 - Public OpenAI serializes both handles together and preserves explicit `store:true`.
 - Codex backend serializes trimmed `previous_response_id`, trimmed `conversation`, and both handles together.
 - Codex backend preserves explicit `store:true` in deterministic adapter body construction; live discovery must decide whether that shape is accepted by the backend.
-- Codex backend sets `stream:true`.
+- Codex backend streaming is a dispatch-layer behavior and is covered by existing adapter tests, not by this `buildRequestBody` matrix.
 
 ## Deterministic Payload-Size Probe
 
