@@ -11,9 +11,10 @@ Pick the waiting primitive by how many answers you need:
 - The result of a quick command now → plain `shell` (foreground). To launch long
   work without waiting → `shell` with `background: true` (returns a `job_id`
   immediately; you are notified when it finishes).
-- Orientation ("what is it doing?") → `job_status`, or `job_list` when you need
-  the current set. Rows include `phase`, `running_for_ms`, `quiet_for_ms`, and
-  `transcript_ref`.
+- Orientation ("what is it doing?") → `job_status` for one look, or `job_list`
+  when you need the current set. Rows include `phase`, `running_for_ms`,
+  `quiet_for_ms`, and `transcript_ref`. This is a single check, never a wait
+  loop.
 - Raw evidence → `read_transcript` with the `transcript_ref` from `job_status`,
   `job_list`, or the notification.
 - One future signal ("the server printed ready") → `job_watch` with
@@ -27,6 +28,14 @@ terminal notification can land after you have already read the job's output
 yourself; that is expected confirmation, not new work — act on whichever arrives
 first and process each result once. When a notification needs no action, a
 one-line acknowledgment is enough.
+
+When you have no independent work to advance — for example, you delegated the
+whole task and are only waiting on its result — end your turn. The completion
+notification resumes you; waiting costs nothing and is the correct move, not a
+gap to fill. Do not call `job_status` in a loop to pass the time: polling neither
+speeds the job nor changes its result, and a running job is no reason to keep
+your turn alive. To block on one specific future signal, create a `job_watch`;
+never spin on `job_status`.
 
 `job_list` is always current. If you have waited unusually long with no
 notification, list jobs to re-orient before re-running anything.

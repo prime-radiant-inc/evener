@@ -201,6 +201,10 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   delegate and ends its turn; when the child reaches a terminal state later,
   Serf wakes the parent with `<job-notification ...>` and the woken model
   reads the result with `job_read_output`.
+- `job-delegate-wait-no-poll.md` — a parent that delegated its whole task
+  and has no independent work ends its turn and waits for the notification
+  instead of looping `job_status`; falsifies the polling-loop regression from
+  session `01KVXFMMY1QD5CPP6C55V851NQ`.
 - `recursion-coordinator-fanout.md` — recursion behind the double
   opt-in (`maxSubagentDepth=2` + per-spawn `delegation_allowance`): a
   granted coordinator (allowance 1) fans out workers (allowance 0,
