@@ -40,6 +40,21 @@ type ResponsesContinuationDecision struct {
 	Reason      string
 }
 
+type ContinuationMetadata struct {
+	AttemptIndex            int
+	PreviousResponseIDHash  string
+	ConversationIDHash      string
+	AnchorTurnIndex         int
+	DeltaTurnCount          int
+	DeltaTurnKinds          []string
+	EndpointFamily          string
+	RequestFingerprint      string
+	ContextMarker           string
+	StoragePolicyLabel      string
+	StorageScopeFingerprint string
+	ChatFallbackHistoryLen  int
+}
+
 func DefaultResponsesContinuationSupportRegistry() map[ResponsesEndpointFamily]ResponsesContinuationSupport {
 	return map[ResponsesEndpointFamily]ResponsesContinuationSupport{
 		ResponsesEndpointFamilyOpenAIPublic: disabledResponsesContinuationSupport(ResponsesEndpointFamilyOpenAIPublic),

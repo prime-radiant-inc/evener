@@ -36,6 +36,92 @@ func TestRawHTTPLogEnabled(t *testing.T) {
 	}
 }
 
+func TestBuildAPILogRequest_IncludesContinuationMetadata(t *testing.T) {
+	req := Request{
+		Model:       "gpt-5.2",
+		Provider:    "openai",
+		Messages:    []Message{User("hi")},
+		HistoryMode: HistoryModeResponsesDelta,
+		Continuation: &ContinuationMetadata{
+			AttemptIndex:            1,
+			PreviousResponseIDHash:  "cont-handle-v1:response_id:abc",
+			ConversationIDHash:      "cont-handle-v1:conversation_id:def",
+			AnchorTurnIndex:         3,
+			DeltaTurnCount:          1,
+			DeltaTurnKinds:          []string{"TOOL_RESULTS"},
+			EndpointFamily:          string(ResponsesEndpointFamilyOpenAIPublic),
+			RequestFingerprint:      "cont-req-v1:abc",
+			ContextMarker:           "cont-ctx-v1",
+			StoragePolicyLabel:      "public-openai-store",
+			StorageScopeFingerprint: "cont-scope-v1:abc",
+			ChatFallbackHistoryLen:  7,
+		},
+	}
+	got := BuildAPILogRequest(req)
+	if got.HistoryMode != HistoryModeResponsesDelta {
+		t.Fatalf("HistoryMode = %q", got.HistoryMode)
+	}
+	if got.PreviousResponseIDHash != "cont-handle-v1:response_id:abc" {
+		t.Fatalf("PreviousResponseIDHash = %q", got.PreviousResponseIDHash)
+	}
+	if got.ConversationIDHash != "cont-handle-v1:conversation_id:def" {
+		t.Fatalf("ConversationIDHash = %q", got.ConversationIDHash)
+	}
+	if got.AnchorTurnIndex != 3 || got.DeltaTurnCount != 1 || got.ChatFallbackHistoryLen != 7 {
+		t.Fatalf("continuation counters not copied: %+v", got)
+	}
+	if got.EndpointFamily != string(ResponsesEndpointFamilyOpenAIPublic) ||
+		got.RequestFingerprint != "cont-req-v1:abc" ||
+		got.ContextMarker != "cont-ctx-v1" ||
+		got.StoragePolicyLabel != "public-openai-store" ||
+		got.StorageScopeFingerprint != "cont-scope-v1:abc" {
+		t.Fatalf("continuation metadata not copied: %+v", got)
+	}
+	if len(got.DeltaTurnKinds) != 1 || got.DeltaTurnKinds[0] != "TOOL_RESULTS" {
+		t.Fatalf("DeltaTurnKinds = %#v", got.DeltaTurnKinds)
+	}
+}
+
+func TestAPILogEntry_AttemptFieldsRoundTrip(t *testing.T) {
+	finalCount := 1
+	entry := APILogEntry{
+		SessionID:         "sess",
+		Round:             2,
+		AttemptGroupID:    "group-1",
+		AttemptIndex:      1,
+		AttemptCount:      1,
+		FinalAttemptCount: &finalCount,
+		HistoryMode:       HistoryModeFullHistory,
+		Request: APILogRequest{
+			Model:       "gpt-5.2",
+			Provider:    "openai",
+			HistoryMode: HistoryModeFullHistory,
+		},
+		Response: &APILogResponse{
+			ID:     "resp_raw_local",
+			IDHash: "cont-handle-v1:response_id:abc",
+			Model:  "gpt-5.2",
+		},
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got APILogEntry
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.AttemptGroupID != "group-1" || got.AttemptIndex != 1 || got.AttemptCount != 1 {
+		t.Fatalf("attempt fields = %+v", got)
+	}
+	if got.FinalAttemptCount == nil || *got.FinalAttemptCount != 1 {
+		t.Fatalf("FinalAttemptCount = %v", got.FinalAttemptCount)
+	}
+	if got.Response == nil || got.Response.IDHash != "cont-handle-v1:response_id:abc" {
+		t.Fatalf("response = %+v", got.Response)
+	}
+}
+
 func TestAPILoggerWritesJSONL(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "api.jsonl")

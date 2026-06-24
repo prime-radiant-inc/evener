@@ -19,13 +19,22 @@ type apiLogKey struct{}
 
 // APILogContext carries session-level metadata into the API logger middleware.
 type APILogContext struct {
-	SessionID string
-	Round     int
+	SessionID         string
+	Round             int
+	AttemptGroupID    string
+	AttemptIndex      int
+	AttemptCount      int
+	FinalAttemptCount *int
+	HistoryMode       HistoryMode
 }
 
 // WithAPILogContext returns a context carrying API log metadata.
 func WithAPILogContext(ctx context.Context, sessionID string, round int) context.Context {
 	return context.WithValue(ctx, apiLogKey{}, APILogContext{SessionID: sessionID, Round: round})
+}
+
+func WithAPILogAttemptContext(ctx context.Context, meta APILogContext) context.Context {
+	return context.WithValue(ctx, apiLogKey{}, meta)
 }
 
 func getAPILogContext(ctx context.Context) (APILogContext, bool) {
@@ -35,29 +44,47 @@ func getAPILogContext(ctx context.Context) (APILogContext, bool) {
 
 // APILogEntry is a single JSONL line in the API log.
 type APILogEntry struct {
-	Timestamp string          `json:"ts"`
-	SessionID string          `json:"session_id,omitempty"`
-	Round     int             `json:"round,omitempty"`
-	Request   APILogRequest   `json:"request"`
-	Response  *APILogResponse `json:"response,omitempty"`
-	Error     string          `json:"error,omitempty"`
-	LatencyMs int64           `json:"latency_ms"`
+	Timestamp         string          `json:"ts"`
+	SessionID         string          `json:"session_id,omitempty"`
+	Round             int             `json:"round,omitempty"`
+	AttemptGroupID    string          `json:"attempt_group_id,omitempty"`
+	AttemptIndex      int             `json:"attempt_index,omitempty"`
+	AttemptCount      int             `json:"attempt_count,omitempty"`
+	FinalAttemptCount *int            `json:"final_attempt_count,omitempty"`
+	HistoryMode       HistoryMode     `json:"history_mode,omitempty"`
+	Request           APILogRequest   `json:"request"`
+	Response          *APILogResponse `json:"response,omitempty"`
+	Error             string          `json:"error,omitempty"`
+	LatencyMs         int64           `json:"latency_ms"`
 }
 
 // APILogRequest captures request metadata and tool definitions.
 type APILogRequest struct {
-	Model           string           `json:"model"`
-	Provider        string           `json:"provider"`
-	MessageCount    int              `json:"message_count"`
-	ToolCount       int              `json:"tool_count"`
-	ToolNames       []string         `json:"tool_names,omitempty"`
-	Tools           []ToolDefinition `json:"tools,omitempty"`
-	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
+	Model                   string           `json:"model"`
+	Provider                string           `json:"provider"`
+	MessageCount            int              `json:"message_count"`
+	ToolCount               int              `json:"tool_count"`
+	ToolNames               []string         `json:"tool_names,omitempty"`
+	Tools                   []ToolDefinition `json:"tools,omitempty"`
+	ReasoningEffort         string           `json:"reasoning_effort,omitempty"`
+	HistoryMode             HistoryMode      `json:"history_mode,omitempty"`
+	PreviousResponseIDHash  string           `json:"previous_response_id_hash,omitempty"`
+	ConversationIDHash      string           `json:"conversation_id_hash,omitempty"`
+	AnchorTurnIndex         int              `json:"anchor_turn_index,omitempty"`
+	DeltaTurnCount          int              `json:"delta_turn_count,omitempty"`
+	DeltaTurnKinds          []string         `json:"delta_turn_kinds,omitempty"`
+	EndpointFamily          string           `json:"endpoint_family,omitempty"`
+	RequestFingerprint      string           `json:"request_fingerprint,omitempty"`
+	ContextMarker           string           `json:"context_marker,omitempty"`
+	StoragePolicyLabel      string           `json:"storage_policy_label,omitempty"`
+	StorageScopeFingerprint string           `json:"storage_scope_fingerprint,omitempty"`
+	ChatFallbackHistoryLen  int              `json:"chat_fallback_history_len,omitempty"`
 }
 
 // APILogResponse captures the full response including raw provider data.
 type APILogResponse struct {
 	ID            string `json:"id,omitempty"`
+	IDHash        string `json:"id_hash,omitempty"`
 	Model         string `json:"model"`
 	FinishReason  string `json:"finish_reason"`
 	TextLength    int    `json:"text_length"`
@@ -263,6 +290,11 @@ func buildAPILogEntry(ctx context.Context, req Request, start time.Time) APILogE
 	if lc, ok := getAPILogContext(ctx); ok {
 		entry.SessionID = lc.SessionID
 		entry.Round = lc.Round
+		entry.AttemptGroupID = lc.AttemptGroupID
+		entry.AttemptIndex = lc.AttemptIndex
+		entry.AttemptCount = lc.AttemptCount
+		entry.FinalAttemptCount = lc.FinalAttemptCount
+		entry.HistoryMode = lc.HistoryMode
 	}
 	return entry
 }
@@ -317,6 +349,7 @@ func BuildAPILogRequest(req Request) APILogRequest {
 		Provider:     req.Provider,
 		MessageCount: len(req.Messages),
 		ToolCount:    len(req.Tools),
+		HistoryMode:  req.HistoryMode,
 	}
 	if req.ReasoningEffort != nil {
 		lr.ReasoningEffort = *req.ReasoningEffort
@@ -328,6 +361,19 @@ func BuildAPILogRequest(req Request) APILogRequest {
 		}
 		lr.ToolNames = names
 		lr.Tools = append([]ToolDefinition(nil), req.Tools...)
+	}
+	if req.Continuation != nil {
+		lr.PreviousResponseIDHash = req.Continuation.PreviousResponseIDHash
+		lr.ConversationIDHash = req.Continuation.ConversationIDHash
+		lr.AnchorTurnIndex = req.Continuation.AnchorTurnIndex
+		lr.DeltaTurnCount = req.Continuation.DeltaTurnCount
+		lr.DeltaTurnKinds = append([]string(nil), req.Continuation.DeltaTurnKinds...)
+		lr.EndpointFamily = req.Continuation.EndpointFamily
+		lr.RequestFingerprint = req.Continuation.RequestFingerprint
+		lr.ContextMarker = req.Continuation.ContextMarker
+		lr.StoragePolicyLabel = req.Continuation.StoragePolicyLabel
+		lr.StorageScopeFingerprint = req.Continuation.StorageScopeFingerprint
+		lr.ChatFallbackHistoryLen = req.Continuation.ChatFallbackHistoryLen
 	}
 	return lr
 }
@@ -351,13 +397,18 @@ func StampEndpointURL(resp *Response, endpoint string) {
 
 func buildLogResponse(resp Response) *APILogResponse {
 	var endpoint string
+	var idHash string
 	if resp.Raw != nil {
 		if v, ok := resp.Raw["endpoint_url"].(string); ok {
 			endpoint = v
 		}
+		if v, ok := resp.Raw["id_hash"].(string); ok {
+			idHash = v
+		}
 	}
 	return &APILogResponse{
 		ID:            resp.ID,
+		IDHash:        idHash,
 		Model:         resp.Model,
 		FinishReason:  resp.Finish.Reason,
 		TextLength:    len(resp.Text()),
