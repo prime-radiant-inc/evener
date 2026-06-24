@@ -76,8 +76,6 @@ type Session struct {
 	//   loopDetectionCount, the task* reminder counters, depth, the goalInTurn
 	//   flag and kickFunc callback, and the naming name-state. It does NOT guard
 	//   reg — the tool.Registry self-synchronizes.
-	//   (readOnlyStreak is mutated only by the loop and is intentionally
-	//   lock-free / loop-private; loopDetectionCount is taken under mu.)
 	mu sync.Mutex
 
 	// responseSideEffectsMu serializes a response's user-visible side-effect
@@ -246,7 +244,6 @@ type Session struct {
 
 	// stuck detection
 	loopDetectionCount int // how many times loop detection has fired
-	readOnlyStreak     int // consecutive rounds with only read-only tool calls
 
 	// transcript writer (nil when StateDir is empty)
 	transcript *transcript.Writer

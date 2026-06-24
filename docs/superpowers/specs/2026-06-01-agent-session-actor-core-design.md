@@ -39,8 +39,8 @@ Partition `Session` state into three tiers by *who may touch it*:
    `sessionEndEmitted`, `closing`, `profile` (+ derived `cachedSystemPrompt`,
    `cachedToolDefs`), the mutable `cfg` knobs (`ReasoningEffort`, command
    timeouts, `MaxToolRoundsPerInput`), the `communicate*` transient fields, the
-   `name*` fields, the task-reminder counters, `loopDetectionCount`,
-   `readOnlyStreak`, `depth`. → **`mu` and `responseSideEffectsMu` are deleted.**
+   `name*` fields, the task-reminder counters, `loopDetectionCount`, `depth`. →
+   **`mu` and `responseSideEffectsMu` are deleted.**
 2. **Concurrent queues (small, local lock — kept honestly).** `inputQueue` and
    `steeringQueue` are genuine producer/consumer structures: external callers
    push (and `Enqueue` must return "closed?" *immediately*, even while the loop
