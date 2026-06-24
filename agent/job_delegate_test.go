@@ -5020,32 +5020,19 @@ func TestSendDelegateMessageUnsupportedAliasesFromSubagentFailTargetNotFound(t *
 
 func newDelegateTestSession(t *testing.T, c *llm.Client) *Session {
 	t.Helper()
-	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	return newSession(t, withClient(c), withConfig(SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { sess.Close() })
-	return sess
+	}))
 }
 
 func newDelegateRestorePreflightSession(t *testing.T, c *llm.Client) *Session {
 	t.Helper()
-	workDir := t.TempDir()
-	stateDir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
-		StateDir:         stateDir,
+	return newSession(t, withClient(c), withConfig(SessionConfig{
+		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { sess.Close() })
-	return sess
+	}))
 }
 
 func seedStoppedDelegateRestoreRecord(t *testing.T, s *Session) *jobstore.JobRecord {

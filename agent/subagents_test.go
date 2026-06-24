@@ -17,20 +17,10 @@ import (
 )
 
 // newTestSession creates a minimal *Session backed by a no-op fakeAdapter.
-// The caller must defer sess.Close().
+// Close is registered via t.Cleanup.
 func newTestSession(t *testing.T) *Session {
 	t.Helper()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 1,
-	})
-	if err != nil {
-		t.Fatalf("newTestSession: %v", err)
-	}
-	t.Cleanup(func() { sess.Close() })
-	return sess
+	return newSession(t)
 }
 
 func TestSubagentFollowUpProvenanceUnionsLaunchActiveAndCompleted(t *testing.T) {
