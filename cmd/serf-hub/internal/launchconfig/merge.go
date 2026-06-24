@@ -169,6 +169,11 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			prov["export_atif_path"] = name
 			nonEmpty = true
 		}
+		if l.ExportATIFProviderHandles != "" {
+			eff.ExportATIFProviderHandles = l.ExportATIFProviderHandles
+			prov["export_atif_provider_handles"] = name
+			nonEmpty = true
+		}
 
 		// Lists: append in layer order.
 		if len(l.SkillsDirs) > 0 {

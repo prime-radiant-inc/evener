@@ -11,7 +11,7 @@ func TestSchemaRows_SettingsFiltersDefaultableLayerAndKeepsOrder(t *testing.T) {
 	schema := testLaunchSchema()
 	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{Agent: "serf", ReasoningEffort: "high", FastCheapModel: "mini"}, launchLayerProject, launchSchemaRowsSettings)
 	fields := rowFields(rows)
-	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "system_prompt_file", "mcps", "verbose", "raw_http_logging"}
+	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "system_prompt_file", "mcps", "verbose", "raw_http_logging", "export_atif_provider_handles"}
 	if !reflect.DeepEqual(fields, want) {
 		t.Fatalf("fields=%v, want %v", fields, want)
 	}
@@ -21,7 +21,7 @@ func TestSchemaRows_OverrideFiltersPerLaunch(t *testing.T) {
 	schema := testLaunchSchema()
 	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{}, launchLayerLaunch, launchSchemaRowsOverride)
 	fields := rowFields(rows)
-	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "system_prompt_file", "mcps", "verbose", "raw_http_logging"}
+	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "system_prompt_file", "mcps", "verbose", "raw_http_logging", "export_atif_provider_handles"}
 	if !reflect.DeepEqual(fields, want) {
 		t.Fatalf("fields=%v, want %v", fields, want)
 	}
@@ -97,6 +97,19 @@ func TestSchemaRows_OpenAIResponsesContinuationUsesStringDisplay(t *testing.T) {
 	}
 }
 
+func TestSchemaRows_ExportATIFProviderHandlesUsesStringDisplay(t *testing.T) {
+	schema := []appwire.LaunchOption{
+		{Field: "export_atif_provider_handles", Label: "ATIF provider handles", Kind: "select", DefaultableLayers: []string{"global"}, PerLaunch: true},
+	}
+	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{ExportATIFProviderHandles: "raw-local"}, launchLayerGlobal, launchSchemaRowsSettings)
+	if len(rows) != 1 {
+		t.Fatalf("rows=%+v, want one export_atif_provider_handles row", rows)
+	}
+	if rows[0].value != "raw-local" || rows[0].editValue != "raw-local" {
+		t.Fatalf("row=%+v, want raw-local display", rows[0])
+	}
+}
+
 func rowFields(rows []layerRow) []string {
 	fields := make([]string, 0, len(rows))
 	for _, row := range rows {
@@ -119,5 +132,6 @@ func testLaunchSchema() []appwire.LaunchOption {
 		{Field: "mcps", Label: "MCP servers", Kind: "mcpServerList", DefaultableLayers: defaultable, PerLaunch: true},
 		{Field: "verbose", Label: "Verbose event log", Kind: "boolean", DefaultableLayers: all, PerLaunch: true},
 		{Field: "raw_http_logging", Label: "Raw HTTP logging", Kind: "boolean", DefaultableLayers: all, PerLaunch: true},
+		{Field: "export_atif_provider_handles", Label: "ATIF provider handles", Kind: "select", DefaultableLayers: all, PerLaunch: true},
 	}
 }

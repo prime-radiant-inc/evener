@@ -198,7 +198,11 @@ func TestApplyEdit_NewSchemaFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export_atif_path: %v", err)
 	}
-	if got.SystemPromptFile != prompt || got.SystemPromptText != "inline prompt" || len(got.ModelFallbacks) != 2 || got.Verbose == nil || !*got.Verbose || got.RawHTTPLogging == nil || !*got.RawHTTPLogging || got.OpenAIResponsesContinuation != "auto" || got.TraceFile != trace || got.CPUProfile == "" || got.ExportATIFPath == "" {
+	got, err = applyEdit(got, "export_atif_provider_handles", " raw-local ")
+	if err != nil {
+		t.Fatalf("export_atif_provider_handles: %v", err)
+	}
+	if got.SystemPromptFile != prompt || got.SystemPromptText != "inline prompt" || len(got.ModelFallbacks) != 2 || got.Verbose == nil || !*got.Verbose || got.RawHTTPLogging == nil || !*got.RawHTTPLogging || got.OpenAIResponsesContinuation != "auto" || got.TraceFile != trace || got.CPUProfile == "" || got.ExportATIFPath == "" || got.ExportATIFProviderHandles != "raw-local" {
 		t.Fatalf("updated layer=%+v", got)
 	}
 }

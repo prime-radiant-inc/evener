@@ -108,6 +108,7 @@ func LaunchOptionSchema() []LaunchOption {
 		{Field: "trace_file", WireField: "traceFile", Label: "Trace file", Description: "Write a structured execution trace to this file. Suitable for post-mortem analysis with serf trace tooling.", Group: LaunchGroupDebugLogging, Kind: LaunchControlPath, PathKind: LaunchPathOutputFile, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: serfOnly},
 		{Field: "cpu_profile", WireField: "cpuProfile", Label: "CPU profile", Description: "Write a Go pprof CPU profile to this path. Only useful when profiling serf itself.", Group: LaunchGroupDebugLogging, Kind: LaunchControlPath, PathKind: LaunchPathOutputFile, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: serfOnly},
 		{Field: "export_atif_path", WireField: "exportATIFPath", Label: "Export ATIF path", Description: "Write the session's agent-tool interaction format (ATIF) log to this file after the session ends.", Group: LaunchGroupDebugLogging, Kind: LaunchControlPath, PathKind: LaunchPathOutputFile, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: serfOnly},
+		{Field: "export_atif_provider_handles", WireField: "exportATIFProviderHandles", Label: "ATIF provider handles", Description: "Controls whether ATIF export redacts provider handles or includes raw local diagnostic handles.", Group: LaunchGroupDebugLogging, Kind: LaunchControlSelect, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, Choices: atifProviderHandleChoices(), DriverSupport: serfOnly},
 	}
 }
 
@@ -125,6 +126,10 @@ func contextChoices() []LaunchOptionChoice {
 
 func openAIResponsesContinuationChoices() []LaunchOptionChoice {
 	return []LaunchOptionChoice{{Value: "", Label: "(default: off)"}, {Value: "off", Label: "off"}, {Value: "auto", Label: "auto"}}
+}
+
+func atifProviderHandleChoices() []LaunchOptionChoice {
+	return []LaunchOptionChoice{{Value: "", Label: "(default: redacted)"}, {Value: "redacted", Label: "redacted"}, {Value: "raw-local", Label: "raw-local"}}
 }
 
 func systemPromptModeChoices() []LaunchOptionChoice {

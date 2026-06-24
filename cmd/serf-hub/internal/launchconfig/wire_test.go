@@ -75,16 +75,17 @@ func TestWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
 	rawHTTPLogging := true
 	nonInteractive := true
 	in := Layer{
-		SystemPromptMode:       "inline",
-		SystemPromptText:       "base",
-		SystemPromptAppendMode: "file",
-		SystemPromptAppendFile: "/append.md",
-		NonInteractive:         &nonInteractive,
-		Verbose:                &verbose,
-		RawHTTPLogging:         &rawHTTPLogging,
-		TraceFile:              "/trace",
-		CPUProfile:             "/cpu",
-		ExportATIFPath:         "/atif",
+		SystemPromptMode:          "inline",
+		SystemPromptText:          "base",
+		SystemPromptAppendMode:    "file",
+		SystemPromptAppendFile:    "/append.md",
+		NonInteractive:            &nonInteractive,
+		Verbose:                   &verbose,
+		RawHTTPLogging:            &rawHTTPLogging,
+		TraceFile:                 "/trace",
+		CPUProfile:                "/cpu",
+		ExportATIFPath:            "/atif",
+		ExportATIFProviderHandles: "raw-local",
 	}
 	got := FromWire(ToWire(in))
 	if got.SystemPromptMode != in.SystemPromptMode || got.SystemPromptText != in.SystemPromptText {
@@ -93,7 +94,7 @@ func TestWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
 	if got.NonInteractive == nil || *got.NonInteractive != true {
 		t.Fatalf("non_interactive round trip = %#v", got.NonInteractive)
 	}
-	if got.Verbose == nil || *got.Verbose != true || got.TraceFile != "/trace" || got.CPUProfile != "/cpu" || got.ExportATIFPath != "/atif" {
+	if got.Verbose == nil || *got.Verbose != true || got.TraceFile != "/trace" || got.CPUProfile != "/cpu" || got.ExportATIFPath != "/atif" || got.ExportATIFProviderHandles != "raw-local" {
 		t.Fatalf("debug round trip = %#v", got)
 	}
 	if got.RawHTTPLogging == nil || *got.RawHTTPLogging != true {

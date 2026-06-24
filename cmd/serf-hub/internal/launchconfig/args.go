@@ -66,6 +66,9 @@ func ToArgs(r Resolved) []string {
 	if e.ExportATIFPath != "" {
 		add("--export-atif", e.ExportATIFPath)
 	}
+	if e.ExportATIFProviderHandles != "" {
+		add("--export-atif-provider-handles", e.ExportATIFProviderHandles)
+	}
 	for _, d := range e.SkillsDirs {
 		add("--skills-dir", d)
 	}

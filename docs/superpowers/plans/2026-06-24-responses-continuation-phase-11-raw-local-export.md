@@ -268,7 +268,7 @@ git commit -m "feat(agent): plumb ATIF provider handle export mode"
 - Modify: `cmd/serf-tui/internal/launchconfig/launch_settings_panel.go`
 - Modify: `cmd/serf-tui/internal/launchconfig/*_test.go`
 
-- [ ] **Step 1: Write failing launch config tests**
+- [x] **Step 1: Write failing launch config tests**
 
 Add assertions that `ExportATIFProviderHandles: "raw-local"`:
 - survives hub wire round trips,
@@ -276,7 +276,7 @@ Add assertions that `ExportATIFProviderHandles: "raw-local"`:
 - appears in launch schema rows with choices `redacted` and `raw-local`,
 - can be edited in the TUI launch settings panel.
 
-- [ ] **Step 2: Run red tests**
+- [x] **Step 2: Run red tests**
 
 Run:
 ```bash
@@ -284,7 +284,7 @@ GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/launchconfig ./cmd/ser
 ```
 Expected: FAIL until the field is wired.
 
-- [ ] **Step 3: Implement launch config plumbing**
+- [x] **Step 3: Implement launch config plumbing**
 
 Add `ExportATIFProviderHandles string` with TOML field `export_atif_provider_handles`. Add a debug select schema option with choices:
 ```go
@@ -296,7 +296,7 @@ Add `ExportATIFProviderHandles string` with TOML field `export_atif_provider_han
 
 Merge non-empty launch-layer values, include it in wire structs, emit the CLI flag only when non-empty, and add TUI schema/panel handling matching the existing string-select fields.
 
-- [ ] **Step 4: Run passing launch tests**
+- [x] **Step 4: Run passing launch tests**
 
 Run:
 ```bash
@@ -304,7 +304,7 @@ GOCACHE=/tmp/serf-gocache go test ./cmd/serf-hub/internal/launchconfig ./cmd/ser
 ```
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git status --short

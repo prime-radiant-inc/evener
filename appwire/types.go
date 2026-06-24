@@ -911,6 +911,7 @@ type LaunchConfigLayer struct {
 	TraceFile                   string            `json:"traceFile,omitempty"`
 	CPUProfile                  string            `json:"cpuProfile,omitempty"`
 	ExportATIFPath              string            `json:"exportATIFPath,omitempty"`
+	ExportATIFProviderHandles   string            `json:"exportATIFProviderHandles,omitempty"`
 }
 
 func (l LaunchConfigLayer) MarshalJSON() ([]byte, error) {

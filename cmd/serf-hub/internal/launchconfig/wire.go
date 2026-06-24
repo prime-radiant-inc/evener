@@ -34,6 +34,7 @@ func FromWire(in appwire.LaunchConfigLayer) Layer {
 		TraceFile:                   in.TraceFile,
 		CPUProfile:                  in.CPUProfile,
 		ExportATIFPath:              in.ExportATIFPath,
+		ExportATIFProviderHandles:   in.ExportATIFProviderHandles,
 	}
 	if in.Schema != nil {
 		out.Schema = *in.Schema
@@ -75,6 +76,7 @@ func ToWire(in Layer) appwire.LaunchConfigLayer {
 		TraceFile:                   in.TraceFile,
 		CPUProfile:                  in.CPUProfile,
 		ExportATIFPath:              in.ExportATIFPath,
+		ExportATIFProviderHandles:   in.ExportATIFProviderHandles,
 	}
 	if in.ModelFallbacksSet && out.ModelFallbacks == nil {
 		out.ModelFallbacks = []string{}

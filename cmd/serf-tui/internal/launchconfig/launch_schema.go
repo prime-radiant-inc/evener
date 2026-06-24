@@ -153,6 +153,8 @@ func launchOptionValue(opt appwire.LaunchOption, l appwire.LaunchConfigLayer) (s
 		return defaultString(l.CPUProfile), l.CPUProfile
 	case "export_atif_path":
 		return defaultString(l.ExportATIFPath), l.ExportATIFPath
+	case "export_atif_provider_handles":
+		return defaultString(l.ExportATIFProviderHandles), l.ExportATIFProviderHandles
 	default:
 		return "(unsupported)", ""
 	}

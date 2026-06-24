@@ -19,7 +19,7 @@ func TestLaunchOptionSchema_FieldCoverage(t *testing.T) {
 		"system_prompt_append_mode", "system_prompt_append_file", "system_prompt_append_text",
 		"skills_dirs", "plugin_dirs", "mcp_configs", "mcps",
 		"model_fallbacks", "env",
-		"verbose", "raw_http_logging", "trace_file", "cpu_profile", "export_atif_path",
+		"verbose", "raw_http_logging", "trace_file", "cpu_profile", "export_atif_path", "export_atif_provider_handles",
 	}
 	for _, field := range want {
 		if !got[field] {
@@ -58,6 +58,36 @@ func TestLaunchOptionSchema_OpenAIResponsesContinuation(t *testing.T) {
 	}
 	if opt.EnvFallback == nil || opt.EnvFallback.Name != envvars.SERFOpenAIResponsesContinuation.Name || opt.EnvFallback.Secret {
 		t.Fatalf("EnvFallback = %+v, want public %s", opt.EnvFallback, envvars.SERFOpenAIResponsesContinuation.Name)
+	}
+}
+
+func TestLaunchOptionSchema_ExportATIFProviderHandles(t *testing.T) {
+	opts := LaunchOptionSchema()
+	idx := indexOption(opts, "export_atif_provider_handles")
+	if idx < 0 {
+		t.Fatal("schema missing export_atif_provider_handles")
+	}
+	opt := opts[idx]
+	if opt.WireField != "exportATIFProviderHandles" {
+		t.Fatalf("WireField = %q, want exportATIFProviderHandles", opt.WireField)
+	}
+	if opt.Group != LaunchGroupDebugLogging {
+		t.Fatalf("Group = %q, want %q", opt.Group, LaunchGroupDebugLogging)
+	}
+	if opt.Kind != LaunchControlSelect {
+		t.Fatalf("Kind = %q, want %q", opt.Kind, LaunchControlSelect)
+	}
+	if !opt.PerLaunch || !opt.DebugOnly {
+		t.Fatalf("PerLaunch/DebugOnly = %v/%v, want true/true", opt.PerLaunch, opt.DebugOnly)
+	}
+	wantChoices := []string{"", "redacted", "raw-local"}
+	if len(opt.Choices) != len(wantChoices) {
+		t.Fatalf("Choices = %+v, want values %v", opt.Choices, wantChoices)
+	}
+	for i, want := range wantChoices {
+		if opt.Choices[i].Value != want {
+			t.Fatalf("Choices = %+v, want values %v", opt.Choices, wantChoices)
+		}
 	}
 }
 

@@ -232,6 +232,7 @@ func layerRows(l appwire.LaunchConfigLayer) []layerRow {
 		{"mcps", "mcps", fmt.Sprintf("%d entries", len(l.MCPs)), mcpEditValue(l.MCPs), false},
 		{"env", "env", fmt.Sprintf("%d entries", len(l.Env)), "", false},
 		{"raw_http_logging", "raw_http_logging", ptrBoolStr(l.RawHTTPLogging), ptrBoolStr(l.RawHTTPLogging), false},
+		{"export_atif_provider_handles", "export_atif_provider_handles", l.ExportATIFProviderHandles, l.ExportATIFProviderHandles, false},
 	}
 }
 
@@ -334,6 +335,8 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 		layer.ContextStrategy = strings.TrimSpace(value)
 	case "openai_responses_continuation":
 		layer.OpenAIResponsesContinuation = strings.TrimSpace(value)
+	case "export_atif_provider_handles":
+		layer.ExportATIFProviderHandles = strings.TrimSpace(value)
 	case "max_rounds":
 		v, err := parseOptionalInt(value)
 		if err != nil {

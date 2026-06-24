@@ -41,6 +41,7 @@ type Layer struct {
 	TraceFile                   string            `toml:"trace_file,omitempty"`
 	CPUProfile                  string            `toml:"cpu_profile,omitempty"`
 	ExportATIFPath              string            `toml:"export_atif_path,omitempty"`
+	ExportATIFProviderHandles   string            `toml:"export_atif_provider_handles,omitempty"`
 }
 
 // MCPServerSpec describes one MCP server entry. Matches the shape passed
