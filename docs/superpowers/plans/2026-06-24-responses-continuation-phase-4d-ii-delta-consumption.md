@@ -45,7 +45,7 @@ Phase 4D-ii entry requirements are present:
 **Files:**
 - Modify: `agent/session_openai_continuation_phase4d_test.go`
 
-- [ ] **Step 1: Write the fake-provider delta consumption test**
+- [x] **Step 1: Write the fake-provider delta consumption test**
 
 Add:
 
@@ -70,7 +70,7 @@ The test should:
   - matching `RequestFingerprint`, `StorageScopeFingerprint`, `EndpointFamily`, `ContextMarker`, and `StoragePolicyLabel`;
 - assert the second request messages contain the new user marker and do not contain the prior user marker or the prior assistant response text.
 
-- [ ] **Step 2: Write the real OpenAI fallback-capable regression**
+- [x] **Step 2: Write the real OpenAI fallback-capable regression**
 
 Add:
 
@@ -97,7 +97,7 @@ Run one `ProcessInput` through an injected enabled public OpenAI registry. Asser
 - includes both prior and current user markers in `input`;
 - keeps `store:false` rather than continuation-owned `store:true`.
 
-- [ ] **Step 3: Run RED tests**
+- [x] **Step 3: Run RED tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4DII' -count=1 -v
@@ -112,7 +112,7 @@ Expected: fail because the second fake-provider request remains `full_history` a
 **Files:**
 - Modify: `agent/session_model_call.go`
 
-- [ ] **Step 1: Extend anchor planning to select candidates**
+- [x] **Step 1: Extend anchor planning to select candidates**
 
 Inside `applyResponsesContinuationAnchorPlanning`, after the support/fallback/storage checks and reservation validation:
 
@@ -124,7 +124,7 @@ Inside `applyResponsesContinuationAnchorPlanning`, after the support/fallback/st
   - `candidate.Turn.ResponseContextMarker == responseContextMarkerV1`;
   - non-empty `candidate.Turn.ResponseID`.
 
-- [ ] **Step 2: Add delta message shaping helper**
+- [x] **Step 2: Add delta message shaping helper**
 
 Add:
 
@@ -134,7 +134,7 @@ func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.
 
 The helper should preserve leading system/developer messages from `base`, then append `expandHistory(deltaTurns)`.
 
-- [ ] **Step 3: Set delta request fields**
+- [x] **Step 3: Set delta request fields**
 
 For an eligible candidate, apply storage override, then set:
 
@@ -155,7 +155,7 @@ req.Continuation = &llm.ContinuationMetadata{
 }
 ```
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4D|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
@@ -163,7 +163,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesConti
 
 Expected: pass.
 
-- [ ] **Step 5: Commit implementation**
+- [x] **Step 5: Commit implementation**
 
 ```sh
 git status --short
@@ -179,7 +179,7 @@ git commit -m "feat(agent): consume responses continuation anchors in fake slice
 - Create: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-4d-ii.md`
 - Modify: `docs/superpowers/plans/2026-06-24-responses-continuation-phase-4d-ii-delta-consumption.md`
 
-- [ ] **Step 1: Add proof artifact**
+- [x] **Step 1: Add proof artifact**
 
 Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-4d-ii.md`:
 
@@ -214,14 +214,14 @@ Result: pass.
 - No production registry entry is enabled and no live provider calls are made.
 ```
 
-- [ ] **Step 2: Run verification**
+- [x] **Step 2: Run verification**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase4D|TestSession_OpenAIResponsesContinuationDisabledUsesFullHistory|TestResponsesContinuationAnchorCandidate|TestResponsesContinuationHistoryReservation' -count=1 -v
 git diff --check
 ```
 
-- [ ] **Step 3: Mark this plan complete and commit**
+- [x] **Step 3: Mark this plan complete and commit**
 
 Update all completed checkboxes in this plan, then:
 
