@@ -318,7 +318,7 @@ git commit -m "feat(hub): expose ATIF provider handle export mode"
 - Modify: `docs/superpowers/plans/2026-06-24-responses-continuation-phase-11-raw-local-export.md`
 - Create: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-11.md`
 
-- [ ] **Step 1: Run focused verification**
+- [x] **Step 1: Run focused verification**
 
 Run:
 ```bash
@@ -326,15 +326,15 @@ GOCACHE=/tmp/serf-gocache go test ./agent/internal/atif ./agent ./cmd/serf ./cmd
 git diff --check
 ```
 
-- [ ] **Step 2: Record proof**
+- [x] **Step 2: Record proof**
 
 Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-11.md` with the commands, pass/fail outcome, and any explicit limits, especially that raw `conversation_id` is not emitted unless a future transcript field persists it.
 
-- [ ] **Step 3: Check off plan**
+- [x] **Step 3: Check off plan**
 
 Mark completed steps in this plan.
 
-- [ ] **Step 4: Commit proof**
+- [x] **Step 4: Commit proof**
 
 ```bash
 git status --short
