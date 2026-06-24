@@ -4245,6 +4245,76 @@ func TestNewForInstance_ContinuationAuthScope_APIKey(t *testing.T) {
 	}
 }
 
+func TestAdapter_PlanResponsesContinuation_PublicUsesSanitizedScope(t *testing.T) {
+	a := &Adapter{
+		name:          "openai",
+		APIKey:        "sk-raw-secret",
+		ResponsesPath: defaultResponsesPath,
+		OrgID:         "org-raw",
+		ProjectID:     "proj-raw",
+		AuthScopeIdentity: llm.AuthScopeIdentity{
+			Version:        "cont-scope-v1",
+			AuthSource:     "api_key",
+			CredentialHash: "cont-scope-v1:credential:abc",
+		},
+		OrgIDHash:     "cont-scope-v1:org_id:def",
+		ProjectIDHash: "cont-scope-v1:project_id:ghi",
+	}
+
+	plan, err := a.PlanResponsesContinuation(llm.Request{Provider: "openai", Model: "gpt-5.4"})
+	if err != nil {
+		t.Fatalf("PlanResponsesContinuation: %v", err)
+	}
+	if plan.EndpointFamily != llm.ResponsesEndpointFamilyOpenAIPublic {
+		t.Fatalf("EndpointFamily = %q, want %q", plan.EndpointFamily, llm.ResponsesEndpointFamilyOpenAIPublic)
+	}
+	if plan.AuthScopeIdentity != a.AuthScopeIdentity {
+		t.Fatalf("AuthScopeIdentity = %+v, want %+v", plan.AuthScopeIdentity, a.AuthScopeIdentity)
+	}
+	if plan.OrgIDHash != a.OrgIDHash || plan.ProjectIDHash != a.ProjectIDHash {
+		t.Fatalf("org/project hashes = %q/%q, want %q/%q", plan.OrgIDHash, plan.ProjectIDHash, a.OrgIDHash, a.ProjectIDHash)
+	}
+	assertPlanOmitsRawScopeValues(t, plan, "sk-raw-secret", "org-raw", "proj-raw")
+}
+
+func TestAdapter_PlanResponsesContinuation_CodexUsesSanitizedScope(t *testing.T) {
+	a := &Adapter{
+		name:             "openai",
+		APIKey:           "oauth-bearer-raw",
+		ResponsesPath:    defaultCodexResponses,
+		ChatGPTAccountID: "acct_raw",
+		AuthScopeIdentity: llm.AuthScopeIdentity{
+			Version:        "cont-scope-v1",
+			AuthSource:     "oauth",
+			CredentialHash: "cont-scope-v1:credential:abc",
+			AccountHash:    "cont-scope-v1:account:def",
+			WorkspaceHash:  "cont-scope-v1:workspace:ghi",
+		},
+	}
+
+	plan, err := a.PlanResponsesContinuation(llm.Request{Provider: "openai", Model: "gpt-5.4"})
+	if err != nil {
+		t.Fatalf("PlanResponsesContinuation: %v", err)
+	}
+	if plan.EndpointFamily != llm.ResponsesEndpointFamilyOpenAICodex {
+		t.Fatalf("EndpointFamily = %q, want %q", plan.EndpointFamily, llm.ResponsesEndpointFamilyOpenAICodex)
+	}
+	if plan.AuthScopeIdentity != a.AuthScopeIdentity {
+		t.Fatalf("AuthScopeIdentity = %+v, want %+v", plan.AuthScopeIdentity, a.AuthScopeIdentity)
+	}
+	assertPlanOmitsRawScopeValues(t, plan, "oauth-bearer-raw", "acct_raw")
+}
+
+func assertPlanOmitsRawScopeValues(t *testing.T, plan llm.ResponsesContinuationPlan, raws ...string) {
+	t.Helper()
+	dump := fmt.Sprintf("%+v", plan)
+	for _, raw := range raws {
+		if strings.Contains(dump, raw) {
+			t.Fatalf("plan leaks raw scope value %q: %+v", raw, plan)
+		}
+	}
+}
+
 func TestNewFromEnv_OpenAI_Name(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	a, err := NewFromEnv()

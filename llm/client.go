@@ -180,6 +180,28 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newProviderStampStream(st, prov, tag), nil
 }
 
+func (c *Client) PlanResponsesContinuation(ctx context.Context, req Request) (ResponsesContinuationPlan, error) {
+	_ = ctx
+	prov := req.Provider
+	if prov == "" {
+		prov = c.defaultProvider
+	}
+	if prov == "" {
+		return ResponsesContinuationPlan{}, &ConfigurationError{Message: "no provider specified and no default provider configured"}
+	}
+	prov = normalizeProviderName(prov)
+	adapter, ok := c.providers[prov]
+	if !ok {
+		return ResponsesContinuationPlan{}, &ConfigurationError{Message: "unknown provider: " + prov}
+	}
+	planner, ok := adapter.(ResponsesContinuationPlanner)
+	if !ok {
+		return ResponsesContinuationPlan{}, &ConfigurationError{Message: "provider does not support responses continuation planning: " + prov}
+	}
+	req.Provider = prov
+	return planner.PlanResponsesContinuation(req)
+}
+
 // Use appends middleware to the client. Middleware is applied in registration order
 // for the request phase and in reverse order for the response/event phases.
 func (c *Client) Use(mw ...Middleware) {
@@ -212,6 +234,10 @@ type ToolChoiceSupporter interface {
 // the provider API.
 type ModelLister interface {
 	ListModels(ctx context.Context) ([]ModelInfo, error)
+}
+
+type ResponsesContinuationPlanner interface {
+	PlanResponsesContinuation(req Request) (ResponsesContinuationPlan, error)
 }
 
 // Close closes all registered adapters that implement the Closer interface.

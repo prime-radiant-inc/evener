@@ -62,6 +62,34 @@ type AuthScopeIdentity struct {
 	WorkspaceHash  string
 }
 
+type ResponsesContinuationPlanInput struct {
+	EndpointFamily    ResponsesEndpointFamily
+	AuthScopeIdentity AuthScopeIdentity
+	OrgIDHash         string
+	ProjectIDHash     string
+	Request           Request
+}
+
+type ResponsesContinuationPlan struct {
+	EndpointFamily             ResponsesEndpointFamily
+	AuthScopeIdentity          AuthScopeIdentity
+	OrgIDHash                  string
+	ProjectIDHash              string
+	RequestFingerprint         string
+	StorageScopeFingerprint    string
+	StoragePolicyLabel         string
+	ContinuationStorageAllowed bool
+}
+
+func PlanResponsesContinuation(input ResponsesContinuationPlanInput) ResponsesContinuationPlan {
+	return ResponsesContinuationPlan{
+		EndpointFamily:    input.EndpointFamily,
+		AuthScopeIdentity: input.AuthScopeIdentity,
+		OrgIDHash:         strings.TrimSpace(input.OrgIDHash),
+		ProjectIDHash:     strings.TrimSpace(input.ProjectIDHash),
+	}
+}
+
 func DefaultResponsesContinuationSupportRegistry() map[ResponsesEndpointFamily]ResponsesContinuationSupport {
 	return map[ResponsesEndpointFamily]ResponsesContinuationSupport{
 		ResponsesEndpointFamilyOpenAIPublic: disabledResponsesContinuationSupport(ResponsesEndpointFamilyOpenAIPublic),

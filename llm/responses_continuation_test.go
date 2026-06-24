@@ -1,6 +1,10 @@
 package llm
 
-import "testing"
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
 
 func TestDefaultResponsesContinuationSupportRegistryDisabled(t *testing.T) {
 	registry := DefaultResponsesContinuationSupportRegistry()
@@ -146,6 +150,57 @@ func TestDecideResponsesContinuationForRequestAllowsNoConversationID(t *testing.
 	}
 	if got != want {
 		t.Fatalf("decision = %+v, want %+v", got, want)
+	}
+}
+
+func TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields(t *testing.T) {
+	inputType := reflect.TypeOf(ResponsesContinuationPlanInput{})
+	for i := 0; i < inputType.NumField(); i++ {
+		name := inputType.Field(i).Name
+		for _, sensitive := range []string{"APIKey", "Bearer", "Token", "Raw"} {
+			if strings.Contains(name, sensitive) {
+				t.Fatalf("planner input field %s exposes raw/sensitive scope data", name)
+			}
+		}
+		for _, identifier := range []string{"OrgID", "ProjectID"} {
+			if strings.Contains(name, identifier) && !strings.HasSuffix(name, "Hash") {
+				t.Fatalf("planner input field %s exposes raw %s instead of a hash", name, identifier)
+			}
+		}
+	}
+}
+
+func TestPlanResponsesContinuationCopiesSanitizedScopeOnly(t *testing.T) {
+	input := ResponsesContinuationPlanInput{
+		EndpointFamily: ResponsesEndpointFamilyOpenAIPublic,
+		AuthScopeIdentity: AuthScopeIdentity{
+			Version:        "cont-scope-v1",
+			AuthSource:     "api_key",
+			CredentialHash: "cont-scope-v1:credential:abc",
+		},
+		OrgIDHash:     " cont-scope-v1:org_id:def ",
+		ProjectIDHash: " cont-scope-v1:project_id:ghi ",
+		Request: Request{
+			Provider: "openai",
+			Model:    "gpt-5.4",
+		},
+	}
+
+	plan := PlanResponsesContinuation(input)
+	if plan.EndpointFamily != ResponsesEndpointFamilyOpenAIPublic {
+		t.Fatalf("EndpointFamily = %q, want %q", plan.EndpointFamily, ResponsesEndpointFamilyOpenAIPublic)
+	}
+	if plan.AuthScopeIdentity != input.AuthScopeIdentity {
+		t.Fatalf("AuthScopeIdentity = %+v, want %+v", plan.AuthScopeIdentity, input.AuthScopeIdentity)
+	}
+	if plan.OrgIDHash != "cont-scope-v1:org_id:def" {
+		t.Fatalf("OrgIDHash = %q", plan.OrgIDHash)
+	}
+	if plan.ProjectIDHash != "cont-scope-v1:project_id:ghi" {
+		t.Fatalf("ProjectIDHash = %q", plan.ProjectIDHash)
+	}
+	if plan.RequestFingerprint != "" || plan.StorageScopeFingerprint != "" || plan.StoragePolicyLabel != "" || plan.ContinuationStorageAllowed {
+		t.Fatalf("later-phase planner fields must remain zero, got %+v", plan)
 	}
 }
 

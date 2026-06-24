@@ -54,6 +54,41 @@ func (a *recordReqAdapter) Stream(ctx context.Context, req Request) (Stream, err
 	return s, nil
 }
 
+type planReqAdapter struct {
+	name          string
+	lastReq       Request
+	planCalls     int
+	completeCalls int
+	streamCalls   int
+}
+
+func (a *planReqAdapter) Name() string { return a.name }
+func (a *planReqAdapter) Complete(ctx context.Context, req Request) (Response, error) {
+	_ = ctx
+	_ = req
+	a.completeCalls++
+	return Response{Provider: a.name, Model: req.Model, Message: Assistant("ok")}, nil
+}
+func (a *planReqAdapter) Stream(ctx context.Context, req Request) (Stream, error) {
+	_ = ctx
+	_ = req
+	a.streamCalls++
+	return nil, ErrStreamUnsupported
+}
+func (a *planReqAdapter) PlanResponsesContinuation(req Request) (ResponsesContinuationPlan, error) {
+	a.lastReq = req
+	a.planCalls++
+	return PlanResponsesContinuation(ResponsesContinuationPlanInput{
+		EndpointFamily: ResponsesEndpointFamilyOpenAIPublic,
+		AuthScopeIdentity: AuthScopeIdentity{
+			Version:        "cont-scope-v1",
+			AuthSource:     "api_key",
+			CredentialHash: "cont-scope-v1:credential:abc",
+		},
+		Request: req,
+	}), nil
+}
+
 type stepAdapter struct {
 	name  string
 	i     int
@@ -176,6 +211,72 @@ func TestClient_NoProviderConfiguredError(t *testing.T) {
 	_, err := c.Complete(ctx, Request{Model: "m", Messages: []Message{User("hi")}})
 	if err == nil {
 		t.Fatalf("expected error, got nil")
+	}
+	var ce *ConfigurationError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ConfigurationError, got %T", err)
+	}
+}
+
+func TestClient_PlanResponsesContinuation_RoutesExplicitProvider(t *testing.T) {
+	c := NewClient()
+	a := &planReqAdapter{name: "openai"}
+	c.Register(a)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	plan, err := c.PlanResponsesContinuation(ctx, Request{Provider: "openai", Model: "gpt-5.4"})
+	if err != nil {
+		t.Fatalf("PlanResponsesContinuation: %v", err)
+	}
+	if plan.EndpointFamily != ResponsesEndpointFamilyOpenAIPublic {
+		t.Fatalf("EndpointFamily = %q", plan.EndpointFamily)
+	}
+	if a.planCalls != 1 || a.completeCalls != 0 || a.streamCalls != 0 {
+		t.Fatalf("calls plan/complete/stream = %d/%d/%d, want 1/0/0", a.planCalls, a.completeCalls, a.streamCalls)
+	}
+	if a.lastReq.Provider != "openai" || a.lastReq.Model != "gpt-5.4" {
+		t.Fatalf("lastReq = %+v", a.lastReq)
+	}
+}
+
+func TestClient_PlanResponsesContinuation_UsesDefaultProvider(t *testing.T) {
+	c := NewClient()
+	a := &planReqAdapter{name: "openai"}
+	c.Register(a)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := c.PlanResponsesContinuation(ctx, Request{Model: "gpt-5.4"}); err != nil {
+		t.Fatalf("PlanResponsesContinuation: %v", err)
+	}
+	if a.lastReq.Provider != "openai" {
+		t.Fatalf("lastReq.Provider = %q, want openai", a.lastReq.Provider)
+	}
+}
+
+func TestClient_PlanResponsesContinuation_UnknownProvider(t *testing.T) {
+	c := NewClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := c.PlanResponsesContinuation(ctx, Request{Provider: "missing", Model: "m"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var ce *ConfigurationError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ConfigurationError, got %T", err)
+	}
+}
+
+func TestClient_PlanResponsesContinuation_UnsupportedProvider(t *testing.T) {
+	c := NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := c.PlanResponsesContinuation(ctx, Request{Provider: "openai", Model: "m"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
 	var ce *ConfigurationError
 	if !errors.As(err, &ce) {

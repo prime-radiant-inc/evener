@@ -286,6 +286,20 @@ func (a *Adapter) Name() string {
 	return "openai"
 }
 
+func (a *Adapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+	endpointFamily := llm.ResponsesEndpointFamilyOpenAIPublic
+	if a.usesCodexBackend() {
+		endpointFamily = llm.ResponsesEndpointFamilyOpenAICodex
+	}
+	return llm.PlanResponsesContinuation(llm.ResponsesContinuationPlanInput{
+		EndpointFamily:    endpointFamily,
+		AuthScopeIdentity: a.AuthScopeIdentity,
+		OrgIDHash:         a.OrgIDHash,
+		ProjectIDHash:     a.ProjectIDHash,
+		Request:           req,
+	}), nil
+}
+
 func (a *Adapter) setHeaders(req *http.Request) {
 	// Apply default headers first so provider-specific headers take precedence.
 	for k, v := range a.DefaultHeaders {
