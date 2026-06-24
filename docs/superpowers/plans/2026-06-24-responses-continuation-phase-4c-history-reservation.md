@@ -126,7 +126,7 @@ git commit -m "feat(agent): add responses continuation history reservation"
 - Create: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-4c.md`
 - Modify: `docs/superpowers/plans/2026-06-24-responses-continuation-phase-4c-history-reservation.md`
 
-- [ ] **Step 1: Add proof artifact**
+- [x] **Step 1: Add proof artifact**
 
 Create `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-4c.md`:
 
@@ -165,14 +165,14 @@ Result: pass.
 - Runtime continuation remains disabled; no request-shaping path calls the reservation helper.
 ```
 
-- [ ] **Step 2: Run focused verification**
+- [x] **Step 2: Run focused verification**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationHistoryReservation|TestResponsesContinuationAnchorCandidate' -count=1 -v
 git diff --check
 ```
 
-- [ ] **Step 3: Mark this plan complete and commit**
+- [x] **Step 3: Mark this plan complete and commit**
 
 Update all completed checkboxes in this plan, then:
 
