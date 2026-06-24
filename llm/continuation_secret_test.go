@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -75,5 +76,67 @@ func TestContinuationSecretRejectsWrongPermissions(t *testing.T) {
 	_, err := LoadOrCreateContinuationSecret(stateDir)
 	if !errors.Is(err, ErrContinuationSecretUnavailable) {
 		t.Fatalf("error = %v, want ErrContinuationSecretUnavailable", err)
+	}
+}
+
+func TestContinuationHandleHashFormatAndStability(t *testing.T) {
+	hasher := NewContinuationHasher(bytes.Repeat([]byte{7}, 32))
+
+	first, err := hasher.HashContinuationHandle("response_id", " resp_123 ")
+	if err != nil {
+		t.Fatalf("HashContinuationHandle: %v", err)
+	}
+	second, err := hasher.HashContinuationHandle("response_id", "resp_123")
+	if err != nil {
+		t.Fatalf("second HashContinuationHandle: %v", err)
+	}
+	if first != second {
+		t.Fatalf("hash changed for normalized input: %q vs %q", first, second)
+	}
+	if !strings.HasPrefix(first, "cont-handle-v1:response_id:") {
+		t.Fatalf("hash = %q, want cont-handle-v1 prefix", first)
+	}
+}
+
+func TestContinuationScopeHashUsesSeparateSubkey(t *testing.T) {
+	hasher := NewContinuationHasher(bytes.Repeat([]byte{8}, 32))
+
+	handleHash, err := hasher.HashContinuationHandle("conversation_id", "shared-value")
+	if err != nil {
+		t.Fatalf("HashContinuationHandle: %v", err)
+	}
+	scopeHash, err := hasher.HashContinuationScopeValue("conversation_id", "shared-value")
+	if err != nil {
+		t.Fatalf("HashContinuationScopeValue: %v", err)
+	}
+	if handleHash == scopeHash {
+		t.Fatalf("handle and scope hashes must use distinct subkeys")
+	}
+	if !strings.HasPrefix(scopeHash, "cont-scope-v1:conversation_id:") {
+		t.Fatalf("scope hash = %q, want cont-scope-v1 prefix", scopeHash)
+	}
+}
+
+func TestContinuationHashDoesNotLeakRawValue(t *testing.T) {
+	hasher := NewContinuationHasher(bytes.Repeat([]byte{9}, 32))
+	raw := "resp_sensitive_handle"
+
+	hash, err := hasher.HashContinuationHandle("previous_response_id", raw)
+	if err != nil {
+		t.Fatalf("HashContinuationHandle: %v", err)
+	}
+	if strings.Contains(hash, raw) || strings.Contains(hash, "sensitive") {
+		t.Fatalf("hash leaked raw value: %q", hash)
+	}
+}
+
+func TestContinuationHashRejectsUnknownKind(t *testing.T) {
+	hasher := NewContinuationHasher(bytes.Repeat([]byte{10}, 32))
+
+	if _, err := hasher.HashContinuationHandle("api_key", "secret"); !errors.Is(err, ErrContinuationSecretUnavailable) {
+		t.Fatalf("handle error = %v, want ErrContinuationSecretUnavailable", err)
+	}
+	if _, err := hasher.HashContinuationScopeValue("api_key", "secret"); !errors.Is(err, ErrContinuationSecretUnavailable) {
+		t.Fatalf("scope error = %v, want ErrContinuationSecretUnavailable", err)
 	}
 }

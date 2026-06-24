@@ -1,14 +1,44 @@
 package llm
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 var ErrContinuationSecretUnavailable = errors.New("continuation secret unavailable")
+
+type ContinuationHasher struct {
+	redactionKey []byte
+	scopeKey     []byte
+}
+
+func NewContinuationHasher(secret []byte) *ContinuationHasher {
+	return &ContinuationHasher{
+		redactionKey: deriveContinuationSubkey(secret, "serf-continuation-redaction-v1"),
+		scopeKey:     deriveContinuationSubkey(secret, "serf-continuation-scope-v1"),
+	}
+}
+
+func (h *ContinuationHasher) HashContinuationHandle(kind, value string) (string, error) {
+	if !validContinuationHandleKind(kind) {
+		return "", fmt.Errorf("%w: unknown handle kind %q", ErrContinuationSecretUnavailable, kind)
+	}
+	return versionedContinuationHMAC("cont-handle-v1", kind, h.redactionKey, value), nil
+}
+
+func (h *ContinuationHasher) HashContinuationScopeValue(kind, value string) (string, error) {
+	if !validContinuationScopeKind(kind) {
+		return "", fmt.Errorf("%w: unknown scope kind %q", ErrContinuationSecretUnavailable, kind)
+	}
+	return versionedContinuationHMAC("cont-scope-v1", kind, h.scopeKey, value), nil
+}
 
 func ContinuationSecretPath(stateDir string) string {
 	if stateDir == "" {
@@ -71,4 +101,35 @@ func readContinuationSecret(path string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: secret length %d", ErrContinuationSecretUnavailable, len(secret))
 	}
 	return secret, nil
+}
+
+func deriveContinuationSubkey(secret []byte, label string) []byte {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(label)) //nolint:errcheck
+	return mac.Sum(nil)
+}
+
+func versionedContinuationHMAC(prefix, kind string, key []byte, value string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(strings.TrimSpace(value))) //nolint:errcheck
+	sum := mac.Sum(nil)
+	return prefix + ":" + kind + ":" + base64.RawURLEncoding.EncodeToString(sum)
+}
+
+func validContinuationHandleKind(kind string) bool {
+	switch kind {
+	case "response_id", "previous_response_id", "conversation_id":
+		return true
+	default:
+		return false
+	}
+}
+
+func validContinuationScopeKind(kind string) bool {
+	switch kind {
+	case "credential", "account", "workspace", "org_id", "project_id", "conversation_id":
+		return true
+	default:
+		return false
+	}
 }
