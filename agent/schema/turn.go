@@ -39,7 +39,15 @@ type Turn struct {
 	Usage llm.Usage `json:"usage,omitempty"`
 	// ResponseID is the provider's response identifier (from llm.Response.ID),
 	// recorded on assistant turns and surfaced in ATIF trajectory export.
-	ResponseID string `json:"response_id,omitempty"`
+	ResponseID                      string `json:"response_id,omitempty"`
+	ResponseIDHash                  string `json:"response_id_hash,omitempty"`
+	ResponseProvider                string `json:"response_provider,omitempty"`
+	ResponseModel                   string `json:"response_model,omitempty"`
+	ResponseRequestModel            string `json:"response_request_model,omitempty"`
+	ResponseEndpoint                string `json:"response_endpoint,omitempty"`
+	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
+	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`
+	ResponseContextMarker           string `json:"response_context_marker,omitempty"`
 }
 
 // NewTurn creates a Turn with the current UTC time.

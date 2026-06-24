@@ -59,17 +59,23 @@ type Entry struct {
 
 // APICall records an LLM API call in the transcript JSONL file.
 type APICall struct {
-	Kind                string              `json:"kind"`                            // Always "api_call"
-	Seq                 int                 `json:"seq"`                             // line sequence number in the transcript
-	Round               int                 `json:"round"`                           // tool-call round within the turn
-	Timestamp           string              `json:"ts"`                              // RFC3339 time the round started
-	LatencyMs           int64               `json:"latency_ms"`                      // LLM call latency in milliseconds
-	SystemPrompt        string              `json:"system_prompt"`                   // system prompt sent on this call
-	ContextHistoryTurns int                 `json:"context_history_turns,omitempty"` // number of history turns in the request
-	SystemPromptBytes   int                 `json:"system_prompt_bytes,omitempty"`   // byte length of SystemPrompt
-	Request             llm.APILogRequest   `json:"request"`                         // sanitized request log
-	Response            *llm.APILogResponse `json:"response,omitempty"`              // sanitized response log; nil on error
-	Error               string              `json:"error,omitempty"`                 // error message when the call failed
+	Kind                   string              `json:"kind"`  // Always "api_call"
+	Seq                    int                 `json:"seq"`   // line sequence number in the transcript
+	Round                  int                 `json:"round"` // tool-call round within the turn
+	AttemptIndex           int                 `json:"attempt_index,omitempty"`
+	AttemptCount           int                 `json:"attempt_count,omitempty"`
+	FinalAttemptCount      *int                `json:"final_attempt_count,omitempty"`
+	HistoryMode            llm.HistoryMode     `json:"history_mode,omitempty"`
+	PreviousResponseIDHash string              `json:"previous_response_id_hash,omitempty"`
+	ConversationIDHash     string              `json:"conversation_id_hash,omitempty"`
+	Timestamp              string              `json:"ts"`                              // RFC3339 time the round started
+	LatencyMs              int64               `json:"latency_ms"`                      // LLM call latency in milliseconds
+	SystemPrompt           string              `json:"system_prompt"`                   // system prompt sent on this call
+	ContextHistoryTurns    int                 `json:"context_history_turns,omitempty"` // number of history turns in the request
+	SystemPromptBytes      int                 `json:"system_prompt_bytes,omitempty"`   // byte length of SystemPrompt
+	Request                llm.APILogRequest   `json:"request"`                         // sanitized request log
+	Response               *llm.APILogResponse `json:"response,omitempty"`              // sanitized response log; nil on error
+	Error                  string              `json:"error,omitempty"`                 // error message when the call failed
 	// Source, Title, and Hint are the diagnostic classification of Error
 	// (provider/model/etc.), populated only on failed calls.
 	Source string `json:"source,omitempty"`

@@ -1893,6 +1893,81 @@ func TestTranscriptWriter_AppendAPICallWritesValidLine(t *testing.T) {
 	}
 }
 
+func TestTranscriptContinuationMetadataRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "sess"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	finalCount := 1
+	turn := schema.Turn{
+		Kind:                            schema.TurnAssistant,
+		Message:                         llm.Assistant("ok"),
+		Timestamp:                       time.Unix(1, 0).UTC(),
+		ResponseID:                      "resp_raw_local",
+		ResponseIDHash:                  "cont-handle-v1:response_id:abc",
+		ResponseProvider:                "openai",
+		ResponseModel:                   "gpt-5.2",
+		ResponseRequestModel:            "gpt-5.2",
+		ResponseEndpoint:                "https://api.openai.com/v1/responses",
+		ResponseStorageScopeFingerprint: "cont-scope-v1:abc",
+		ResponseRequestFingerprint:      "cont-req-v1:abc",
+		ResponseContextMarker:           "cont-ctx-v1",
+	}
+	if err := w.Append(turn); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := w.AppendAPICall(transcript.APICall{
+		Round:                  1,
+		AttemptIndex:           1,
+		AttemptCount:           1,
+		FinalAttemptCount:      &finalCount,
+		HistoryMode:            llm.HistoryModeFullHistory,
+		PreviousResponseIDHash: "cont-handle-v1:previous_response_id:def",
+		ConversationIDHash:     "cont-handle-v1:conversation_id:ghi",
+		Request: llm.APILogRequest{
+			Model:       "gpt-5.2",
+			Provider:    "openai",
+			HistoryMode: llm.HistoryModeFullHistory,
+		},
+		Response: &llm.APILogResponse{
+			ID:     "resp_raw_local",
+			IDHash: "cont-handle-v1:response_id:abc",
+			Model:  "gpt-5.2",
+		},
+	}); err != nil {
+		t.Fatalf("AppendAPICall: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	data, err := readTranscriptFull(path)
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	if len(data.Entries) != 1 || len(data.APICalls) != 1 {
+		t.Fatalf("entries/api_calls = %d/%d", len(data.Entries), len(data.APICalls))
+	}
+	gotTurn := data.Entries[0].Turn
+	if gotTurn.ResponseIDHash != "cont-handle-v1:response_id:abc" ||
+		gotTurn.ResponseContextMarker != "cont-ctx-v1" ||
+		gotTurn.ResponseRequestFingerprint != "cont-req-v1:abc" {
+		t.Fatalf("turn metadata = %+v", gotTurn)
+	}
+	gotCall := data.APICalls[0]
+	if gotCall.AttemptIndex != 1 ||
+		gotCall.AttemptCount != 1 ||
+		gotCall.HistoryMode != llm.HistoryModeFullHistory ||
+		gotCall.PreviousResponseIDHash != "cont-handle-v1:previous_response_id:def" ||
+		gotCall.ConversationIDHash != "cont-handle-v1:conversation_id:ghi" {
+		t.Fatalf("api_call metadata = %+v", gotCall)
+	}
+	if gotCall.FinalAttemptCount == nil || *gotCall.FinalAttemptCount != 1 {
+		t.Fatalf("FinalAttemptCount = %v", gotCall.FinalAttemptCount)
+	}
+}
+
 func TestTranscriptWriter_AppendAPICallWithError(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
