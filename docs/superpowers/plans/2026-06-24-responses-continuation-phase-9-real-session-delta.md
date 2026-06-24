@@ -291,7 +291,7 @@ git commit -m "feat(agent): add session-local responses continuation disablement
 - Create: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-9.md`
 - Modify: `docs/superpowers/plans/2026-06-24-responses-continuation-phase-9-real-session-delta.md`
 
-- [ ] **Step 1: Run full focused Phase 9 verification**
+- [x] **Step 1: Run full focused Phase 9 verification**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9|TestResponsesContinuationAnchorCandidate|TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay|TestFallbackChain_Continuation' -count=1 -v
@@ -299,11 +299,11 @@ GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_Strea
 git diff --check
 ```
 
-- [ ] **Step 2: Add proof artifact**
+- [x] **Step 2: Add proof artifact**
 
 Record RED/GREEN for each Phase 9 task, list committed hashes, and state that runtime registry entries remain disabled until Phase 12.
 
-- [ ] **Step 3: Commit proof**
+- [x] **Step 3: Commit proof**
 
 ```sh
 git add docs/superpowers/plans/2026-06-24-responses-continuation-phase-9-real-session-delta.md docs/superpowers/proofs/2026-06-24-responses-continuation-phase-9.md
