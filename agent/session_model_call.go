@@ -260,9 +260,15 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		req.HistoryMode = llm.HistoryModeFullHistory
 		return req
 	}
-	if plan.CanFallbackToChat && len(req.FullHistoryFallbackMessages) == 0 {
-		req.HistoryMode = llm.HistoryModeFullHistory
-		return req
+	if !plan.ContinuationStorageAllowed &&
+		support.StorageShapeProven &&
+		plan.StoragePolicyLabel == llm.ResponsesStoragePolicyPublicOpenAINoStore {
+		storedReq, _ := llm.ApplyResponsesContinuationStoreOverride(req, llm.ResponsesStoragePolicyPublicOpenAIStore)
+		storedPlan, err := s.client.PlanResponsesContinuation(ctx, storedReq)
+		if err == nil && storedPlan.ContinuationStorageAllowed {
+			req = storedReq
+			plan = storedPlan
+		}
 	}
 	if !plan.ContinuationStorageAllowed {
 		req.HistoryMode = llm.HistoryModeFullHistory
@@ -278,10 +284,14 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	candidate, anchorDecision := selectResponsesContinuationAnchorCandidate(s.cfg, historyTurns)
 	if anchorDecision.HistoryMode == llm.HistoryModeResponsesDelta &&
 		responsesContinuationCandidateMatchesPlan(candidate, plan) {
+		fullHistoryFallbackMessages := append([]llm.Message(nil), req.Messages...)
 		req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
 		req.HistoryMode = llm.HistoryModeResponsesDelta
 		req.PreviousResponseID = strings.TrimSpace(candidate.Turn.ResponseID)
 		req.Messages = responsesContinuationDeltaMessages(req.Messages, candidate.Delta)
+		if plan.CanFallbackToChat {
+			req.FullHistoryFallbackMessages = fullHistoryFallbackMessages
+		}
 		req.Continuation = &llm.ContinuationMetadata{
 			PreviousResponseIDHash:  candidate.Turn.ResponseIDHash,
 			AnchorTurnIndex:         candidate.TurnIndex,
@@ -292,6 +302,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 			ContextMarker:           responseContextMarkerV1,
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
+			ChatFallbackHistoryLen:  len(req.FullHistoryFallbackMessages),
 		}
 		return req
 	}

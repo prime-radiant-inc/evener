@@ -58,9 +58,9 @@ Non-goals:
 - Modify: `agent/session_openai_continuation_phase4d_test.go`
 - Modify: `agent/session_model_call.go`
 
-- [ ] **Step 1: Write RED regression for fallback-capable path**
+- [x] **Step 1: Write RED regression for fallback-capable path**
 
-Change `TestSession_OpenAIResponsesContinuationPhase4DIIRealOpenAIAdapterUsesFullHistoryUntilFallbackClone` into `TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesDeltaWithFallbackSidecar`.
+Change `TestSession_OpenAIResponsesContinuationPhase4DIIRealOpenAIAdapterUsesFullHistoryUntilFallbackClone` into `TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesFullHistoryWhenAnchorFingerprintMismatches` and add the fake-adapter sidecar test. The real OpenAI fixture uses a helper anchor with intentionally mismatched planner fingerprints, so it must remain full history while still proving continuation-owned storage can produce the next anchor.
 
 Expected assertions:
 
@@ -83,15 +83,15 @@ Also add a package-agent fake-adapter test in `agent/session_openai_continuation
 - `FullHistoryFallbackMessages` contains both prior and current markers;
 - `Messages` contains only system/developer prefix plus the current delta marker.
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesDeltaWithFallbackSidecar|TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarriesFullHistorySidecar' -count=1 -v
 ```
 
-Expected: fail because fallback-capable paths still use full history when `FullHistoryFallbackMessages` is empty.
+Expected: fake-adapter sidecar test fails because fallback-capable paths still use full history when `FullHistoryFallbackMessages` is empty.
 
-- [ ] **Step 3: Implement sidecar attachment**
+- [x] **Step 3: Implement sidecar attachment**
 
 In `applyResponsesContinuationAnchorPlanning`, preserve the original full-history messages before replacing request messages with delta:
 
@@ -104,15 +104,15 @@ if plan.CanFallbackToChat && len(fullHistoryMessages) > 0 {
 
 Remove the old fallback-capable early return that forced full history only because the sidecar was empty.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 ```sh
-GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesDeltaWithFallbackSidecar|TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarriesFullHistorySidecar|TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta|TestSession_OpenAIResponsesContinuationPhase4DIFallbackCapablePathUsesFullHistory' -count=1 -v
+GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9FallbackCapablePathProducesFullHistoryAnchor|TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesFullHistoryWhenAnchorFingerprintMismatches|TestSession_OpenAIResponsesContinuationPhase9FallbackCapableFakePathCarriesFullHistorySidecar|TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta' -count=1 -v
 ```
 
 Update the old Phase 4D fallback-capable fake test name/expectations if the test now belongs to Phase 9.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git status --short

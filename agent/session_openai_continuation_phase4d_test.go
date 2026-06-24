@@ -102,7 +102,7 @@ func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnc
 	}
 }
 
-func TestSession_OpenAIResponsesContinuationPhase4DIFallbackCapablePathUsesFullHistory(t *testing.T) {
+func TestSession_OpenAIResponsesContinuationPhase9FallbackCapablePathProducesFullHistoryAnchor(t *testing.T) {
 	dir := t.TempDir()
 	adapter := &agenttest.FakeAdapter{
 		Provider:          "openai",
@@ -148,11 +148,15 @@ func TestSession_OpenAIResponsesContinuationPhase4DIFallbackCapablePathUsesFullH
 	if req.HistoryMode != llm.HistoryModeFullHistory {
 		t.Fatalf("HistoryMode = %q, want %q", req.HistoryMode, llm.HistoryModeFullHistory)
 	}
-	if req.Store != nil && *req.Store {
-		t.Fatalf("Store = true, want no continuation-owned storage")
+	if req.Store == nil || !*req.Store {
+		t.Fatalf("Store = %v, want continuation-owned true", req.Store)
 	}
-	if req.Continuation != nil {
-		t.Fatalf("Continuation = %+v, want nil", req.Continuation)
+	if req.Continuation == nil {
+		t.Fatal("Continuation metadata is nil")
+	}
+	if req.Continuation.StoragePolicyLabel != llm.ResponsesStoragePolicyPublicOpenAIStore ||
+		req.Continuation.StorageScopeFingerprint != "cont-scope-v1:phase4d" {
+		t.Fatalf("Continuation = %+v", req.Continuation)
 	}
 	if req.PreviousResponseID != "" {
 		t.Fatalf("PreviousResponseID = %q, want empty", req.PreviousResponseID)
@@ -243,7 +247,7 @@ func TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta
 	}
 }
 
-func TestSession_OpenAIResponsesContinuationPhase4DIIRealOpenAIAdapterUsesFullHistoryUntilFallbackClone(t *testing.T) {
+func TestSession_OpenAIResponsesContinuationPhase9RealOpenAIAdapterUsesFullHistoryWhenAnchorFingerprintMismatches(t *testing.T) {
 	dir := t.TempDir()
 	var mu sync.Mutex
 	var requestBodies [][]byte
@@ -318,10 +322,10 @@ func TestSession_OpenAIResponsesContinuationPhase4DIIRealOpenAIAdapterUsesFullHi
 	}
 	req := decodeResponsesRequest(t, bodies[0])
 	if _, ok := req["previous_response_id"]; ok {
-		t.Fatalf("fallback-capable real OpenAI path must not send previous_response_id: %s", string(bodies[0]))
+		t.Fatalf("fingerprint-mismatched real OpenAI path must not send previous_response_id: %s", string(bodies[0]))
 	}
-	if gotStore, ok := req["store"].(bool); !ok || gotStore {
-		t.Fatalf("fallback-capable real OpenAI request store = %#v, want explicit false", req["store"])
+	if gotStore, ok := req["store"].(bool); !ok || !gotStore {
+		t.Fatalf("fallback-capable real OpenAI request store = %#v, want continuation-owned true", req["store"])
 	}
 	input := responsesInputItems(t, req)
 	for _, marker := range []string{"real openai prior user marker", "real openai current user marker"} {
