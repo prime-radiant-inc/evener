@@ -20,11 +20,12 @@ type AppNotification struct {
 }
 
 type skillActivationCandidate struct {
-	turnID string
-	itemID string
-	callID string
-	skill  string
-	valid  bool
+	turnID         string
+	itemID         string
+	callID         string
+	skill          string
+	valid          bool
+	activationName string
 }
 
 type AppEventProjector struct {
@@ -311,6 +312,16 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		itemID := p.nextItemID("tool")
 		p.toolItemsByKey[data.CallID] = itemID
 		p.toolArgsByKey[data.CallID] = data.ArgumentsJSON
+		if data.ToolName == "use_skill" {
+			skill := useSkillNameFromArgs(data.ArgumentsJSON)
+			p.skillCandidate = skillActivationCandidate{
+				turnID: p.activeTurnID,
+				itemID: itemID,
+				callID: data.CallID,
+				skill:  skill,
+				valid:  skill != "",
+			}
+		}
 		return []AppNotification{p.notification(appwire.NotifyItemStarted, map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
@@ -345,6 +356,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			delete(p.suppressedTools, data.CallID)
 			return nil
 		}
+		raw := data.ToolState
+		if p.skillCandidate.valid && p.skillCandidate.callID == data.CallID && p.skillCandidate.activationName != "" {
+			raw = skillActivationRaw(p.skillCandidate.activationName)
+		}
 		item := appwire.ThreadItem{
 			Type:     "commandExecution",
 			ID:       p.toolItemID(data.CallID),
@@ -354,17 +369,22 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Output:   data.Output,
 			Error:    data.Error,
 			Status:   "completed",
-			Raw:      data.ToolState,
+			Raw:      raw,
 		}
 		argsJSON := p.toolArgsByKey[data.CallID]
 		if data.ToolName == "use_skill" && data.Error == "" {
 			skill := useSkillNameFromArgs(argsJSON)
+			activationName := ""
+			if p.skillCandidate.callID == data.CallID {
+				activationName = p.skillCandidate.activationName
+			}
 			p.skillCandidate = skillActivationCandidate{
-				turnID: p.activeTurnID,
-				itemID: item.ID,
-				callID: data.CallID,
-				skill:  skill,
-				valid:  skill != "",
+				turnID:         p.activeTurnID,
+				itemID:         item.ID,
+				callID:         data.CallID,
+				skill:          skill,
+				valid:          skill != "",
+				activationName: activationName,
 			}
 		} else {
 			p.skillCandidate = skillActivationCandidate{}
@@ -484,6 +504,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		name := strings.TrimSpace(data.Name)
 		if p.skillCandidate.valid && p.skillCandidate.turnID == p.activeTurnID && p.skillCandidate.skill == name {
 			candidate := p.skillCandidate
+			if _, inFlight := p.toolItemsByKey[candidate.callID]; inFlight {
+				p.skillCandidate.activationName = name
+				return nil
+			}
 			p.skillCandidate = skillActivationCandidate{}
 			item := appwire.ThreadItem{
 				Type:     "commandExecution",

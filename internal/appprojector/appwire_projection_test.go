@@ -716,6 +716,57 @@ func TestAppEventProjectorProjectsCompactionTurnInActiveTurn(t *testing.T) {
 	}
 }
 
+func TestAppEventProjectorGroupsSkillActivationBeforeUseSkillEnd(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	started := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	turnID := notificationTurnID(t, started, appwire.NotifyTurnStarted)
+
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
+		ToolName:      "use_skill",
+		CallID:        "call_skill",
+		ArgumentsJSON: `{"skill_name":"superpowers:using-superpowers"}`,
+	}})
+
+	activationOut := projector.Project(events.SessionEvent{Kind: events.EventSkillActivated, SessionID: "th_1", Data: events.SkillActivatedData{Name: "superpowers:using-superpowers"}})
+	if len(activationOut) != 0 {
+		t.Fatalf("in-flight skill activation should be stashed until tool completion, got %+v", activationOut)
+	}
+
+	deltaOut := projector.Project(events.SessionEvent{Kind: events.EventToolCallOutputDelta, SessionID: "th_1", Data: events.ToolCallOutputDeltaData{
+		ToolName: "use_skill",
+		CallID:   "call_skill",
+		Delta:    "Skill loaded",
+	}})
+	if len(deltaOut) != 1 || deltaOut[0].Method != appwire.NotifyToolOutputDelta {
+		t.Fatalf("tool output delta should still stream normally: %+v", deltaOut)
+	}
+
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "use_skill",
+		CallID:   "call_skill",
+		Output:   "Skill loaded",
+	}})
+	if len(out) != 1 || out[0].Method != appwire.NotifyItemCompleted {
+		t.Fatalf("notifications=%+v", out)
+	}
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Type != "commandExecution" || item.TurnID != turnID || item.ToolName != "use_skill" || item.CallID != "call_skill" {
+		t.Fatalf("completed item has wrong identity: %+v", item)
+	}
+	var raw struct {
+		SkillActivation *struct {
+			Name string `json:"name"`
+			Text string `json:"text"`
+		} `json:"skill_activation"`
+	}
+	if err := json.Unmarshal(item.Raw, &raw); err != nil {
+		t.Fatalf("Raw is not valid JSON: %v (%s)", err, item.Raw)
+	}
+	if raw.SkillActivation == nil || raw.SkillActivation.Name != "superpowers:using-superpowers" || raw.SkillActivation.Text != "Activated skill: superpowers:using-superpowers" {
+		t.Fatalf("wrong skill activation raw: %+v raw=%s", raw.SkillActivation, item.Raw)
+	}
+}
+
 func TestAppEventProjectorGroupsSkillActivationWithUseSkill(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	started := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
