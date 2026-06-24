@@ -266,10 +266,9 @@ func (s *Session) notifyStrategyAfterAction(ctx context.Context) error {
 
 // injectPostToolSteering runs the post-tool-round bookkeeping that may inject
 // steering before the next model call: it appends the round's tool-call signatures
-// to toolSigs and runs loop detection, tracks the read-only streak (nudging at 5 and
-// 10 consecutive read-only rounds), drains queued steering messages, and injects any
-// task reminder. The bool return asks the turn loop to yield after a watch frame is
-// handed to an observer and no callback steering is ready yet.
+// to toolSigs and runs loop detection, drains queued steering messages, and injects
+// any task reminder. The bool return asks the turn loop to yield after a watch frame
+// is handed to an observer and no callback steering is ready yet.
 func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCallData, toolSigs *[]string) (bool, error) {
 	// Loop detection: track per-call signatures and check for repeating patterns.
 	for _, call := range calls {
@@ -290,39 +289,6 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 			}); abortErr != nil {
 				return false, abortErr
 			}
-		}
-	}
-
-	// Read-only streak detection: nudge agent if stuck in analysis paralysis.
-	allReadOnly := len(calls) > 0
-	for _, call := range calls {
-		t := s.reg.Get(call.Name)
-		if t == nil || !t.ReadOnly {
-			allReadOnly = false
-			break
-		}
-	}
-	if allReadOnly {
-		s.readOnlyStreak++
-	} else {
-		s.readOnlyStreak = 0
-	}
-	switch s.readOnlyStreak {
-	case 5:
-		nudge := "<SYSTEM-REMINDER>You have spent several turns reading without writing or running anything. Review your current task. If you have enough context to make progress, write code or run a command now. A first attempt you can test and fix is more valuable than more reading.</SYSTEM-REMINDER>"
-		if abortErr := s.withResponseSideEffects(ctx, func() {
-			s.appendTurn(schema.TurnSteering, llm.User(nudge))
-			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: nudge})
-		}); abortErr != nil {
-			return false, abortErr
-		}
-	case 10:
-		nudge := "<SYSTEM-REMINDER>You have been reading for 10 turns without acting. Stop reading. Write the deliverable file now, even if incomplete. You can iterate after you have something to test.</SYSTEM-REMINDER>"
-		if abortErr := s.withResponseSideEffects(ctx, func() {
-			s.appendTurn(schema.TurnSteering, llm.User(nudge))
-			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: nudge})
-		}); abortErr != nil {
-			return false, abortErr
 		}
 	}
 
