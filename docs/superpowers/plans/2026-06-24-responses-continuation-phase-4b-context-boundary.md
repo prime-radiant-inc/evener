@@ -140,7 +140,7 @@ Later phases may add endpoint-family/model/fingerprint/storage-age checks around
 **Files:**
 - Create: `agent/responses_continuation_eligibility_test.go`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `agent/responses_continuation_eligibility_test.go` with:
 
@@ -266,7 +266,7 @@ func responsesContinuationEligibleAssistantTurn(responseID string) schema.Turn {
 }
 ```
 
-- [ ] **Step 2: Run the failing tests**
+- [x] **Step 2: Run the failing tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate' -count=1 -v
@@ -274,11 +274,11 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorC
 
 Expected: FAIL because `selectResponsesContinuationAnchorCandidate` and `responseContextMarkerV1` do not exist.
 
-- [ ] **Step 3: Implement the helper**
+- [x] **Step 3: Implement the helper**
 
 Create `agent/responses_continuation_eligibility.go` with the complete helper from "Required Helper Shape".
 
-- [ ] **Step 4: Verify the tests pass**
+- [x] **Step 4: Verify the tests pass**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate' -count=1 -v
@@ -286,7 +286,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorC
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git status --short
