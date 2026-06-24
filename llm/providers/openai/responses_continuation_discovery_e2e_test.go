@@ -59,7 +59,7 @@ func TestAdapter_E2E_CodexResponsesContinuationDiscovery(t *testing.T) {
 	}
 	model := strings.TrimSpace(os.Getenv("SERF_OPENAI_CODEX_DISCOVERY_MODEL"))
 	if model == "" {
-		model = "gpt-5.2"
+		model = "gpt-5.4"
 	}
 	runResponsesContinuationDiscovery(t, a, model, "codex_backend", false)
 }

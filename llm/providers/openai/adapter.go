@@ -538,10 +538,6 @@ func (a *Adapter) requiresStreamingComplete() bool {
 	return a.ChatGPTAccountID != "" || a.ResponsesPath == defaultCodexResponses
 }
 
-func responseHasAssistantContent(r llm.Response) bool {
-	return strings.TrimSpace(r.Text()) != "" || len(r.ToolCalls()) > 0
-}
-
 // isUnconfigured reports whether err means "no usable OpenAI credentials" — the
 // no-credentials sentinel, or an auth-not-found error surfaced through the OAuth
 // resolution path (login required). The env-adapter factory uses it to skip the

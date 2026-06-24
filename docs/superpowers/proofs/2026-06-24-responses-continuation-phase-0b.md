@@ -42,12 +42,13 @@ Commands:
 - Codex backend: `SERF_OPENAI_CODEX_DISCOVERY_E2E=1 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
 
 Observed status:
-- Public OpenAI: not run in default test suite.
-- Codex backend: not run in default test suite.
+- Public OpenAI: not run; `OPENAI_API_KEY` was not present in the local shell.
+- Codex backend: run with stored OAuth. `gpt-5.2` failed before anchor creation with `The 'gpt-5.2' model is not supported when using Codex with a ChatGPT account.`
+- Codex backend: rerun with `gpt-5.4` after preserving streaming response metadata. Anchor creation returned a response ID, but the valid continuation request failed with `Unsupported parameter: previous_response_id`.
 
 Go/no-go:
 - Public OpenAI remains blocked for runtime enablement until its live discovery command is run and this artifact records accepted valid anchor behavior plus clear invalid-anchor behavior.
-- Codex backend remains blocked for runtime enablement until its live discovery command is run and this artifact records accepted valid anchor behavior plus clear invalid-anchor behavior.
+- Codex backend is blocked for runtime enablement because the live endpoint rejected `previous_response_id`.
 
 ## SystemPromptAsUser Inventory
 

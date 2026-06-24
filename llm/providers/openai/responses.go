@@ -485,16 +485,12 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 				textStarted = false
 			}
 			sentContent = true
-			if responseHasAssistantContent(r) {
-				rp := r
-				if sseBuf != nil {
-					rp.RawRequestBody = rawReqBody
-					rp.RawResponseBody = sseBuf.String()
-				}
-				s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
-			} else {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage})
+			rp := r
+			if sseBuf != nil {
+				rp.RawRequestBody = rawReqBody
+				rp.RawResponseBody = sseBuf.String()
 			}
+			s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
 			// Stop parsing after finish.
 			finished = true
 			cancel()

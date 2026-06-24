@@ -56,6 +56,39 @@ func TestStreamAccumulator_NoFinishResponse_BuildsFromText(t *testing.T) {
 	}
 }
 
+func TestStreamAccumulator_FinishWithMetadataOnlyResponse_PreservesAccumulatedContent(t *testing.T) {
+	acc := NewStreamAccumulator()
+	acc.Process(StreamEvent{Type: StreamEventStreamStart})
+	acc.Process(StreamEvent{Type: StreamEventTextStart, TextID: "t1"})
+	acc.Process(StreamEvent{Type: StreamEventTextDelta, TextID: "t1", Delta: "Hello"})
+	acc.Process(StreamEvent{Type: StreamEventTextEnd, TextID: "t1"})
+
+	final := Response{
+		ID:       "resp_1",
+		Provider: "openai",
+		Model:    "gpt-5.4",
+		Raw:      map[string]any{"id": "resp_1"},
+	}
+	acc.Process(StreamEvent{Type: StreamEventFinish, Response: &final})
+
+	got := acc.Response()
+	if got == nil {
+		t.Fatalf("expected response")
+	}
+	if got.ID != "resp_1" {
+		t.Fatalf("ID = %q, want resp_1", got.ID)
+	}
+	if got.Provider != "openai" || got.Model != "gpt-5.4" {
+		t.Fatalf("provider/model = %q/%q", got.Provider, got.Model)
+	}
+	if got.Text() != "Hello" {
+		t.Fatalf("text = %q, want Hello", got.Text())
+	}
+	if got.Raw["id"] != "resp_1" {
+		t.Fatalf("raw = %#v", got.Raw)
+	}
+}
+
 func TestStreamAccumulator_ReasoningEvents_AccumulatedInResponse(t *testing.T) {
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})

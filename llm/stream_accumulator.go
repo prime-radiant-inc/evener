@@ -114,6 +114,10 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 		a.usage = ev.Usage
 		if ev.Response != nil {
 			cp := *ev.Response
+			if !responseHasContent(cp) {
+				cp = *a.buildResponse()
+				copyResponseMetadata(&cp, ev.Response)
+			}
 			a.final = &cp
 			a.partial = &cp
 			return
@@ -198,4 +202,61 @@ func (a *StreamAccumulator) buildResponse() *Response {
 		r.Usage = *a.usage
 	}
 	return r
+}
+
+func responseHasContent(r Response) bool {
+	if len(r.Message.Content) == 0 {
+		return false
+	}
+	if len(r.Message.Content) == 1 {
+		part := r.Message.Content[0]
+		return part.Kind != ContentText || part.Text != "" || part.Phase != ""
+	}
+	return true
+}
+
+func copyResponseMetadata(dst *Response, src *Response) {
+	if src == nil {
+		return
+	}
+	dst.ID = src.ID
+	if src.Model != "" {
+		dst.Model = src.Model
+	}
+	if src.Provider != "" {
+		dst.Provider = src.Provider
+	}
+	if src.Raw != nil {
+		dst.Raw = src.Raw
+	}
+	if src.Finish.Reason != "" || src.Finish.Raw != "" {
+		dst.Finish = src.Finish
+	}
+	if usageHasValue(src.Usage) {
+		dst.Usage = src.Usage
+	}
+	if len(src.Warnings) > 0 {
+		dst.Warnings = append([]Warning(nil), src.Warnings...)
+	}
+	if src.RateLimit != nil {
+		dst.RateLimit = src.RateLimit
+	}
+	if src.RawRequestBody != "" {
+		dst.RawRequestBody = src.RawRequestBody
+	}
+	if src.RawResponseBody != "" {
+		dst.RawResponseBody = src.RawResponseBody
+	}
+}
+
+func usageHasValue(u Usage) bool {
+	return u.InputTokens != 0 ||
+		u.OutputTokens != 0 ||
+		u.TotalTokens != 0 ||
+		u.ReasoningTokens != nil ||
+		u.ReasoningTokensEstimated != nil ||
+		u.CacheReadTokens != nil ||
+		u.CacheWriteTokens != nil ||
+		u.CacheWrite1hTokens != nil ||
+		u.Raw != nil
 }
