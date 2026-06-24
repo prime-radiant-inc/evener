@@ -110,6 +110,7 @@ type ResponsesContinuationPlan struct {
 	StorageScopeFingerprint    string
 	StoragePolicyLabel         string
 	ContinuationStorageAllowed bool
+	CanFallbackToChat          bool
 }
 
 func PlanResponsesContinuation(input ResponsesContinuationPlanInput) ResponsesContinuationPlan {

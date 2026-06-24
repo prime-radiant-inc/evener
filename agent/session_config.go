@@ -182,6 +182,10 @@ type testConfig struct {
 	// factor. 1.0 = defaults, 0.1 = trigger at 10% of normal pressure. 0 means
 	// use defaults.
 	compactionThresholdScale float64
+
+	// responsesContinuationSupportRegistry enables deterministic continuation
+	// slices without changing production endpoint-family defaults.
+	responsesContinuationSupportRegistry map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the

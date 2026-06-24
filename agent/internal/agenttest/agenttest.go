@@ -24,8 +24,10 @@ import (
 // next function in Steps (recording every request for later assertions); once
 // Steps is exhausted it returns a generic "done" assistant message.
 type FakeAdapter struct {
-	Provider string
-	Steps    []func(req llm.Request) llm.Response
+	Provider                      string
+	Steps                         []func(req llm.Request) llm.Response
+	PlanResponsesContinuationFunc func(req llm.Request) (llm.ResponsesContinuationPlan, error)
+	CanFallbackToChat             bool
 
 	mu       sync.Mutex
 	requests []llm.Request
@@ -59,6 +61,19 @@ func (a *FakeAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, 
 	_ = ctx
 	_ = req
 	return nil, llm.ErrStreamUnsupported
+}
+
+// PlanResponsesContinuation delegates to the configured planner hook.
+func (a *FakeAdapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+	if a.PlanResponsesContinuationFunc == nil {
+		return llm.ResponsesContinuationPlan{}, fmt.Errorf("fake adapter missing PlanResponsesContinuationFunc")
+	}
+	plan, err := a.PlanResponsesContinuationFunc(req)
+	if err != nil {
+		return plan, err
+	}
+	plan.CanFallbackToChat = a.CanFallbackToChat
+	return plan, nil
 }
 
 // Requests returns a copy of every request the adapter has seen.

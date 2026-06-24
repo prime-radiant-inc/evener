@@ -176,7 +176,82 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.
 
 	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
+	req = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns)
 	return profile, sys, history, req, reasoningEffort
+}
+
+func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, req llm.Request, historyTurns []schema.Turn) llm.Request {
+	if llm.ResponsesContinuationMode(strings.TrimSpace(s.cfg.OpenAIResponsesContinuation)) != llm.ResponsesContinuationAuto {
+		if req.HistoryMode == "" {
+			req.HistoryMode = llm.HistoryModeFullHistory
+		}
+		return req
+	}
+
+	registry := s.responsesContinuationSupportRegistry()
+	if !responsesContinuationRegistryHasEnabledSupport(registry) {
+		if req.HistoryMode == "" {
+			req.HistoryMode = llm.HistoryModeFullHistory
+		}
+		return req
+	}
+
+	plan, err := s.client.PlanResponsesContinuation(ctx, req)
+	if err != nil {
+		req.HistoryMode = llm.HistoryModeFullHistory
+		return req
+	}
+	support := llm.ResponsesContinuationSupportFor(registry, plan.EndpointFamily)
+	decision := llm.DecideResponsesContinuationForRequest(
+		llm.ResponsesContinuationAuto,
+		support,
+		req,
+	)
+	if decision.HistoryMode != llm.HistoryModeResponsesDelta {
+		req.HistoryMode = llm.HistoryModeFullHistory
+		return req
+	}
+	if plan.CanFallbackToChat && len(req.FullHistoryFallbackMessages) == 0 {
+		req.HistoryMode = llm.HistoryModeFullHistory
+		return req
+	}
+	if !plan.ContinuationStorageAllowed {
+		req.HistoryMode = llm.HistoryModeFullHistory
+		return req
+	}
+
+	reservation := reserveResponsesContinuationHistoryBase(historyTurns)
+	if !responsesContinuationHistoryBaseStillCurrent(reservation, historyTurns) {
+		req.HistoryMode = llm.HistoryModeFullHistory
+		return req
+	}
+
+	req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
+	req.HistoryMode = llm.HistoryModeFullHistory
+	req.Continuation = &llm.ContinuationMetadata{
+		EndpointFamily:          string(plan.EndpointFamily),
+		RequestFingerprint:      plan.RequestFingerprint,
+		ContextMarker:           responseContextMarkerV1,
+		StoragePolicyLabel:      plan.StoragePolicyLabel,
+		StorageScopeFingerprint: plan.StorageScopeFingerprint,
+	}
+	return req
+}
+
+func (s *Session) responsesContinuationSupportRegistry() map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport {
+	if s.cfg.testOnly.responsesContinuationSupportRegistry != nil {
+		return s.cfg.testOnly.responsesContinuationSupportRegistry
+	}
+	return llm.DefaultResponsesContinuationSupportRegistry()
+}
+
+func responsesContinuationRegistryHasEnabledSupport(registry map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport) bool {
+	for _, support := range registry {
+		if support.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 // handleModelError reacts to a failed model call. It returns retry=true when the

@@ -365,6 +365,7 @@ func (a *Adapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesConti
 	plan.StorageScopeFingerprint = storageScopeFingerprint
 	plan.StoragePolicyLabel = storagePolicy
 	plan.ContinuationStorageAllowed = storageAllowed
+	plan.CanFallbackToChat = true
 	return plan, nil
 }
 
