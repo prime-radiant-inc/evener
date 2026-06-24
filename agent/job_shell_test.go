@@ -177,17 +177,19 @@ func (e *delayedExitStreamingExecutor) StreamCommand(_ context.Context, _ string
 }
 
 type signalCompletesStreamingExecutor struct {
+	started chan struct{}
 	done    chan struct{}
 	once    sync.Once
 	signals atomic.Int32
 }
 
 func newSignalCompletesStreamingExecutor() *signalCompletesStreamingExecutor {
-	return &signalCompletesStreamingExecutor{done: make(chan struct{})}
+	return &signalCompletesStreamingExecutor{started: make(chan struct{}), done: make(chan struct{})}
 }
 
 func (e *signalCompletesStreamingExecutor) StreamCommand(_ context.Context, _ string, _ string, _ map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
 	_, _ = out.Write([]byte("running"))
+	close(e.started)
 	return &execenv.StreamHandle{
 		Wait: func() (int, error) {
 			<-e.done
@@ -547,15 +549,33 @@ func TestRunShellBackgroundSurvivesToolContextCancellation(t *testing.T) {
 
 func TestRunShellForegroundCancelsBeforePromotion(t *testing.T) {
 	t.Parallel()
-	jm, se := newShellTestRig(t)
+	jm := newTestJM(t)
+	se := newSignalCompletesStreamingExecutor()
 	ctx, cancel := context.WithCancel(context.Background())
+
+	resultCh := make(chan shellResult, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
+		resultCh <- runShell(ctx, jm, se, shellArgs{Command: "sleep 30", BlockTimeoutMS: 5000})
 	}()
-	res := runShell(ctx, jm, se, shellArgs{Command: "sleep 30", BlockTimeoutMS: 5000})
+
+	select {
+	case <-se.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("streaming executor did not start")
+	}
+	cancel()
+
+	var res shellResult
+	select {
+	case res = <-resultCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runShell did not return after cancellation")
+	}
 	if res.Status != string(jobstore.StatusStopped) || res.Reason != "cancelled" || res.RunningInBackground {
 		t.Fatalf("res = %+v, want stopped/cancelled foreground", res)
+	}
+	if se.signals.Load() == 0 {
+		t.Fatal("foreground cancellation did not signal the shell")
 	}
 	if jobs := jm.list(listFilter{}); len(jobs) != 0 {
 		t.Fatalf("cancelled foreground job must not be durable, got %+v", jobs)

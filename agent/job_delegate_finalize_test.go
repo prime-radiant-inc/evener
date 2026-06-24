@@ -310,6 +310,7 @@ func TestFinalizeDelegateRetriesNotificationPendingAppendKeepsTerminalResult(t *
 func TestFinalizeDelegateDuringManagerCloseDoesNotLeaveDoneOpen(t *testing.T) {
 	t.Parallel()
 	parent := newTestSession(t)
+	parent.jobManager.closeGrace = 5 * time.Second
 	child := newTestSession(t)
 	sub := completedDelegateSubagent(child, "close finalization")
 	sub.running = true
@@ -349,10 +350,10 @@ func TestFinalizeDelegateDuringManagerCloseDoesNotLeaveDoneOpen(t *testing.T) {
 		if err != nil {
 			t.Fatalf("jobManager.close: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("jobManager.close waited for abandoned delegate timeout")
 	}
-	if elapsed := time.Since(start); elapsed >= 2*time.Second {
+	if elapsed := time.Since(start); elapsed >= parent.jobManager.closeGrace {
 		t.Fatalf("jobManager.close took %s, want no abandonment timeout", elapsed)
 	}
 	select {
