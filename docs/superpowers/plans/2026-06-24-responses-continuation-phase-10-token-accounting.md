@@ -575,7 +575,7 @@ git commit -m "feat(agent): summarize responses continuation history modes"
 - Create: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-10.md`
 - Modify: `docs/superpowers/plans/2026-06-24-responses-continuation-phase-10-token-accounting.md`
 
-- [ ] **Step 1: Run full focused Phase 10 verification**
+- [x] **Step 1: Run full focused Phase 10 verification**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm -run 'TestBuildAPILogRequest_RecordsContinuationTokenEstimates' -count=1 -v
@@ -584,11 +584,11 @@ GOCACHE=/tmp/serf-gocache go test ./agent/doctor -run 'TestAPILogContinuationCou
 git diff --check
 ```
 
-- [ ] **Step 2: Add proof artifact**
+- [x] **Step 2: Add proof artifact**
 
 Record RED/GREEN evidence for each task, list committed hashes, and state that runtime registry entries remain disabled until Phase 12.
 
-- [ ] **Step 3: Commit proof**
+- [x] **Step 3: Commit proof**
 
 ```sh
 git add docs/superpowers/plans/2026-06-24-responses-continuation-phase-10-token-accounting.md docs/superpowers/proofs/2026-06-24-responses-continuation-phase-10.md
