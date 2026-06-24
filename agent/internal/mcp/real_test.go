@@ -44,6 +44,7 @@ func newEverythingManager(t *testing.T) *Manager {
 }
 
 func TestRealMCP_ToolDiscovery(t *testing.T) {
+	t.Parallel()
 	mgr := newEverythingManager(t)
 
 	defs := mgr.ToolDefinitions()
@@ -85,6 +86,7 @@ func TestRealMCP_ToolDiscovery(t *testing.T) {
 }
 
 func TestRealMCP_Echo(t *testing.T) {
+	t.Parallel()
 	mgr := newEverythingManager(t)
 
 	reg := tool.NewRegistry()
@@ -107,6 +109,7 @@ func TestRealMCP_Echo(t *testing.T) {
 }
 
 func TestRealMCP_GetSum(t *testing.T) {
+	t.Parallel()
 	mgr := newEverythingManager(t)
 
 	reg := tool.NewRegistry()
@@ -129,6 +132,7 @@ func TestRealMCP_GetSum(t *testing.T) {
 }
 
 func TestRealMCP_ImageContent(t *testing.T) {
+	t.Parallel()
 	mgr := newEverythingManager(t)
 
 	reg := tool.NewRegistry()
@@ -160,6 +164,7 @@ func TestRealMCP_ImageContent(t *testing.T) {
 }
 
 func TestRealMCP_EnvPassing(t *testing.T) {
+	t.Parallel()
 	requireNpx(t)
 	// 60s instead of 30s: npx startup is fork+exec heavy and load-sensitive.
 	// These are correctness tests, not perf budgets — give them headroom so
@@ -202,6 +207,7 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 }
 
 func TestRealMCP_AnnotatedMessage(t *testing.T) {
+	t.Parallel()
 	mgr := newEverythingManager(t)
 
 	reg := tool.NewRegistry()

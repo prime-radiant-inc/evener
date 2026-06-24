@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,9 +24,18 @@ import (
 const tuiE2EProjectDir = "/tmp/serf-tui-e2e/serf"
 const tuiE2EWaitTimeout = 20 * time.Second
 
+// tmuxSessionCounter makes tmux session names unique even when parallel tests
+// start within the same nanosecond.
+var tmuxSessionCounter atomic.Int64
+
+func uniqueTmuxSessionName() string {
+	return fmt.Sprintf("serf-tui-e2e-%d-%d", time.Now().UnixNano(), tmuxSessionCounter.Add(1))
+}
+
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[\x20-\x2f]*[\x40-\x7e]`)
 
 func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -117,6 +127,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 }
 
 func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -149,6 +160,7 @@ func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 }
 
 func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -186,6 +198,7 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 }
 
 func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -207,6 +220,7 @@ func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
 }
 
 func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -231,6 +245,7 @@ func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 }
 
 func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -259,6 +274,7 @@ func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
 }
 
 func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -292,6 +308,7 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 }
 
 func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -419,6 +436,7 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 }
 
 func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	// Browse-mode fork: k/j move the selection cursor across turns (auto-
 	// scrolling to keep it visible) so a user turn can be reached and forked.
@@ -466,6 +484,7 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 }
 
 func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -496,6 +515,7 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 }
 
 func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -565,6 +585,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 }
 
 func TestTUITmuxE2E_SessionCommandPalettePreservesDraft(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -587,6 +608,7 @@ func TestTUITmuxE2E_SessionCommandPalettePreservesDraft(t *testing.T) {
 }
 
 func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -600,6 +622,7 @@ func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
 }
 
 func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -621,6 +644,7 @@ func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
 }
 
 func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -645,6 +669,7 @@ func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 }
 
 func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -666,6 +691,7 @@ func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 }
 
 func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -739,6 +765,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 }
 
 func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -762,6 +789,7 @@ func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 }
 
 func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -785,6 +813,7 @@ func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
 }
 
 func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
+	t.Parallel()
 	requireTmux(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
@@ -891,7 +920,7 @@ func startTUITmux(t *testing.T, bin, hubURL string) *tmuxTUI {
 
 func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
 	t.Helper()
-	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
+	session := uniqueTmuxSessionName()
 	command := shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
@@ -903,7 +932,7 @@ func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmu
 
 func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
 	t.Helper()
-	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
+	session := uniqueTmuxSessionName()
 	command := shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
