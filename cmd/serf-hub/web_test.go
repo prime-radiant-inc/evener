@@ -2634,7 +2634,8 @@ func TestWeb_ThreadDocument_ComposerControlsLiveInsideInputCard(t *testing.T) {
 	if taskStatus < 0 || inputCard < 0 || messageInput < 0 || composerModel < 0 || inputControls < 0 || inputStatus < 0 {
 		t.Fatalf("missing composer structure: taskStatus=%d inputCard=%d messageInput=%d composerModel=%d inputControls=%d inputStatus=%d", taskStatus, inputCard, messageInput, composerModel, inputControls, inputStatus)
 	}
-	if !(taskStatus < inputCard && inputCard < messageInput && messageInput < inputControls && inputControls < composerModel && composerModel < inputStatus) {
+	ordered := taskStatus < inputCard && inputCard < messageInput && messageInput < inputControls && inputControls < composerModel && composerModel < inputStatus
+	if !ordered {
 		t.Fatalf("composer should render task status above input, then textarea, then controls/model row before input status")
 	}
 	if strings.Contains(body, `send as steer`) {

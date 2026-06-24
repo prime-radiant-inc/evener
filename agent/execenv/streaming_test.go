@@ -156,7 +156,7 @@ func processCommandName(pid int) (string, error) {
 	}
 	out, psErr := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
 	if psErr != nil {
-		return "", fmt.Errorf("%v; ps: %w", err, psErr)
+		return "", fmt.Errorf("%w; ps: %w", err, psErr)
 	}
 	return strings.TrimSpace(string(out)), nil
 }

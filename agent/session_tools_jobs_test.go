@@ -3923,13 +3923,13 @@ func TestJobToolOutputLimitsHaveJSONMinimum(t *testing.T) {
 func TestJobReadOutputIsNotModelFacing(t *testing.T) {
 	s := newTestSession(t)
 	if got := s.reg.Get("job_read_output"); got != nil {
-		t.Fatalf("job_read_output is still registered: %+v", got.Tool.Definition.Name)
+		t.Fatalf("job_read_output is still registered: %+v", got.Definition.Name)
 	}
 	if got := s.reg.Get("job_status"); got == nil {
 		t.Fatalf("job_status is not registered")
 	}
 	if got := s.reg.Get("wait_for_transcript_match"); got != nil {
-		t.Fatalf("wait_for_transcript_match is still registered: %+v", got.Tool.Definition.Name)
+		t.Fatalf("wait_for_transcript_match is still registered: %+v", got.Definition.Name)
 	}
 }
 

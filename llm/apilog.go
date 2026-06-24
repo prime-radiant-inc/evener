@@ -186,7 +186,7 @@ func (l *APILogger) WrapStream(next StreamFunc) StreamFunc {
 		if st == nil {
 			return nil, nil
 		}
-		return newAPILogStream(st, l, ctx, req, start), nil
+		return newAPILogStream(ctx, st, l, req, start), nil
 	}
 }
 
@@ -381,7 +381,7 @@ type apiLogStream struct {
 	closing chan struct{}
 }
 
-func newAPILogStream(inner Stream, logger *APILogger, ctx context.Context, req Request, start time.Time) *apiLogStream {
+func newAPILogStream(ctx context.Context, inner Stream, logger *APILogger, req Request, start time.Time) *apiLogStream {
 	s := &apiLogStream{
 		inner:   inner,
 		logger:  logger,
