@@ -2299,6 +2299,151 @@ func TestStream_ResponsesAPI_404_FallsBackToChatCompletions(t *testing.T) {
 	}
 }
 
+func TestAdapter_Stream_RecordsImmediateFallbackAttempts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"model not found","code":"model_not_found","type":"invalid_request_error"}}`))
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			chunks := []string{
+				`data: {"id":"cc2","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{"content":"fallback response"},"finish_reason":null}]}`,
+				`data: {"id":"cc2","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+				`data: [DONE]`,
+			}
+			for _, c := range chunks {
+				_, _ = fmt.Fprintln(w, c)
+				_, _ = fmt.Fprintln(w)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	var records []llm.AdapterAttemptRecord
+	ctx := llm.WithAPILogAttemptContext(context.Background(), llm.APILogContext{
+		AttemptGroupID: "ag_01KOPENAIIMMEDIATE",
+		AttemptRecorder: func(ctx context.Context, rec llm.AdapterAttemptRecord) llm.AdapterAttemptRecord {
+			_ = ctx
+			rec.AttemptGroupID = "ag_01KOPENAIIMMEDIATE"
+			rec.AttemptIndex = len(records) + 1
+			records = append(records, rec)
+			return rec
+		},
+	})
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:       "gpt-4.1-mini",
+		HistoryMode: llm.HistoryModeFullHistory,
+		Messages:    []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("unexpected error: %v", ev.Err)
+		}
+	}
+
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want 2: %+v", len(records), records)
+	}
+	if records[0].AttemptIndex != 1 ||
+		records[0].HistoryMode != llm.HistoryModeFullHistory ||
+		records[0].EndpointURL != srv.URL+"/v1/responses" ||
+		records[0].Error == nil {
+		t.Fatalf("responses attempt = %+v", records[0])
+	}
+	if records[1].AttemptIndex != 2 ||
+		records[1].HistoryMode != llm.HistoryModeChatFallback ||
+		records[1].EndpointURL != srv.URL+"/v1/chat/completions" ||
+		records[1].Response == nil ||
+		!records[1].Terminal {
+		t.Fatalf("chat fallback attempt = %+v", records[1])
+	}
+}
+
+func TestAdapter_Stream_RecordsEmptyStreamFallbackAttempts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			chunks := []string{
+				`data: {"id":"cc1","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}`,
+				`data: {"id":"cc1","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`,
+				`data: [DONE]`,
+			}
+			for _, c := range chunks {
+				_, _ = fmt.Fprintln(w, c)
+				_, _ = fmt.Fprintln(w)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	var records []llm.AdapterAttemptRecord
+	ctx := llm.WithAPILogAttemptContext(context.Background(), llm.APILogContext{
+		AttemptGroupID: "ag_01KOPENAIEMPTY",
+		AttemptRecorder: func(ctx context.Context, rec llm.AdapterAttemptRecord) llm.AdapterAttemptRecord {
+			_ = ctx
+			rec.AttemptGroupID = "ag_01KOPENAIEMPTY"
+			rec.AttemptIndex = len(records) + 1
+			records = append(records, rec)
+			return rec
+		},
+	})
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{
+		Model:       "gpt-4.1-mini",
+		HistoryMode: llm.HistoryModeFullHistory,
+		Messages:    []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("unexpected error: %v", ev.Err)
+		}
+	}
+
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want 2: %+v", len(records), records)
+	}
+	if records[0].AttemptIndex != 1 ||
+		records[0].HistoryMode != llm.HistoryModeFullHistory ||
+		records[0].EndpointURL != srv.URL+"/v1/responses" ||
+		records[0].Error == nil {
+		t.Fatalf("responses empty-stream attempt = %+v", records[0])
+	}
+	if records[1].AttemptIndex != 2 ||
+		records[1].HistoryMode != llm.HistoryModeChatFallback ||
+		records[1].EndpointURL != srv.URL+"/v1/chat/completions" ||
+		records[1].Response == nil ||
+		!records[1].Terminal {
+		t.Fatalf("chat fallback attempt = %+v", records[1])
+	}
+}
+
 func TestStream_ResponsesAPI_404_FallbackPreservesChatRequestSemantics(t *testing.T) {
 	var chatBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

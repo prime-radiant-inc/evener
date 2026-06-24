@@ -26,6 +26,7 @@ type APILogContext struct {
 	AttemptCount      int
 	FinalAttemptCount *int
 	HistoryMode       HistoryMode
+	AttemptRecorder   AdapterAttemptRecorder
 }
 
 // WithAPILogContext returns a context carrying API log metadata.
@@ -44,6 +45,9 @@ func WithAPILogAttemptContext(ctx context.Context, meta APILogContext) context.C
 		if meta.AttemptGroupID == "" {
 			meta.AttemptGroupID = existing.AttemptGroupID
 		}
+		if meta.AttemptRecorder == nil {
+			meta.AttemptRecorder = existing.AttemptRecorder
+		}
 	}
 	return context.WithValue(ctx, apiLogKey{}, meta)
 }
@@ -51,6 +55,51 @@ func WithAPILogAttemptContext(ctx context.Context, meta APILogContext) context.C
 func getAPILogContext(ctx context.Context) (APILogContext, bool) {
 	v, ok := ctx.Value(apiLogKey{}).(APILogContext)
 	return v, ok
+}
+
+type AdapterAttemptRecorder func(context.Context, AdapterAttemptRecord) AdapterAttemptRecord
+
+type AdapterAttemptRecord struct {
+	Request           Request
+	Response          *Response
+	Error             error
+	Mode              string
+	HistoryMode       HistoryMode
+	EndpointURL       string
+	EndpointFamily    string
+	RawRequestBody    string
+	RawResponseBody   string
+	Terminal          bool
+	AttemptGroupID    string
+	AttemptIndex      int
+	AttemptCount      int
+	FinalAttemptCount *int
+}
+
+func RecordAdapterAttempt(ctx context.Context, rec AdapterAttemptRecord) AdapterAttemptRecord {
+	if rec.HistoryMode == "" {
+		rec.HistoryMode = rec.Request.HistoryMode
+	}
+	if rec.Request.HistoryMode == "" {
+		rec.Request.HistoryMode = rec.HistoryMode
+	}
+	if rec.Mode == "" {
+		rec.Mode = "stream"
+	}
+	if rec.RawRequestBody == "" || rec.RawResponseBody == "" {
+		reqBody, respBody := rawBodiesFromAttempt(rec)
+		if rec.RawRequestBody == "" {
+			rec.RawRequestBody = reqBody
+		}
+		if rec.RawResponseBody == "" {
+			rec.RawResponseBody = respBody
+		}
+	}
+	lc, ok := getAPILogContext(ctx)
+	if !ok || lc.AttemptRecorder == nil {
+		return rec
+	}
+	return lc.AttemptRecorder(ctx, rec)
 }
 
 // APILogEntry is a single JSONL line in the API log.
@@ -159,6 +208,23 @@ type APILogger struct {
 	lastSync time.Time
 }
 
+type apiLogAdapterAttemptState struct {
+	mu    sync.Mutex
+	count int
+}
+
+func (s *apiLogAdapterAttemptState) mark() {
+	s.mu.Lock()
+	s.count++
+	s.mu.Unlock()
+}
+
+func (s *apiLogAdapterAttemptState) recorded() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.count > 0
+}
+
 // NewAPILogger creates an API logger that writes to the given path.
 // Creates the parent directory if it doesn't exist.
 func NewAPILogger(path string) (*APILogger, error) {
@@ -217,9 +283,14 @@ func (l *APILogger) WrapComplete(next CompleteFunc) CompleteFunc {
 func (l *APILogger) WrapStream(next StreamFunc) StreamFunc {
 	return func(ctx context.Context, req Request) (Stream, error) {
 		start := time.Now()
+		attemptState := &apiLogAdapterAttemptState{}
+		ctx = l.withAdapterAttemptLogging(ctx, attemptState)
 
 		st, err := next(ctx, req)
 		if err != nil {
+			if attemptState.recorded() {
+				return nil, err
+			}
 			entry := buildAPILogEntry(ctx, req, start)
 			entry.Error = err.Error()
 			l.write(entry)
@@ -229,8 +300,34 @@ func (l *APILogger) WrapStream(next StreamFunc) StreamFunc {
 		if st == nil {
 			return nil, nil
 		}
-		return newAPILogStream(ctx, st, l, req, start), nil
+		return newAPILogStream(ctx, st, l, req, start, attemptState), nil
 	}
+}
+
+func (l *APILogger) withAdapterAttemptLogging(ctx context.Context, state *apiLogAdapterAttemptState) context.Context {
+	lc, ok := getAPILogContext(ctx)
+	if !ok {
+		lc = APILogContext{}
+	}
+	previous := lc.AttemptRecorder
+	lc.AttemptRecorder = func(ctx context.Context, rec AdapterAttemptRecord) AdapterAttemptRecord {
+		if previous != nil {
+			rec = previous(ctx, rec)
+		}
+		if rec.AttemptGroupID == "" {
+			rec.AttemptGroupID = lc.AttemptGroupID
+		}
+		if rec.HistoryMode == "" {
+			rec.HistoryMode = rec.Request.HistoryMode
+		}
+		if rec.Request.HistoryMode == "" {
+			rec.Request.HistoryMode = rec.HistoryMode
+		}
+		state.mark()
+		l.writeAdapterAttempt(lc, rec)
+		return rec
+	}
+	return context.WithValue(ctx, apiLogKey{}, lc)
 }
 
 // Close flushes and closes the log file(s).
@@ -367,6 +464,71 @@ func (l *APILogger) writeRawError(entry APILogEntry, req Request, mode string, e
 	})
 }
 
+func (l *APILogger) writeAdapterAttempt(lc APILogContext, rec AdapterAttemptRecord) {
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	entry := APILogEntry{
+		Timestamp:         timestamp,
+		SessionID:         lc.SessionID,
+		Round:             lc.Round,
+		AttemptGroupID:    rec.AttemptGroupID,
+		AttemptIndex:      rec.AttemptIndex,
+		AttemptCount:      rec.AttemptCount,
+		FinalAttemptCount: rec.FinalAttemptCount,
+		HistoryMode:       rec.HistoryMode,
+		Request:           BuildAPILogRequest(rec.Request),
+	}
+	if rec.Error != nil {
+		entry.Error = rec.Error.Error()
+	} else if rec.Response != nil {
+		resp := *rec.Response
+		if rec.EndpointURL != "" {
+			StampEndpointURL(&resp, rec.EndpointURL)
+		}
+		entry.Response = buildLogResponse(resp)
+	}
+	l.write(entry)
+
+	if l.rawFile == nil || (rec.RawRequestBody == "" && rec.RawResponseBody == "") {
+		return
+	}
+	l.writeRaw(APIRawLogEntry{
+		Timestamp:         entry.Timestamp,
+		SessionID:         entry.SessionID,
+		Round:             entry.Round,
+		AttemptGroupID:    entry.AttemptGroupID,
+		AttemptIndex:      entry.AttemptIndex,
+		AttemptCount:      entry.AttemptCount,
+		FinalAttemptCount: entry.FinalAttemptCount,
+		HistoryMode:       entry.HistoryMode,
+		Provider:          rec.Request.Provider,
+		Model:             rec.Request.Model,
+		Mode:              rec.Mode,
+		RequestBody:       rec.RawRequestBody,
+		ResponseBody:      rec.RawResponseBody,
+		LatencyMs:         entry.LatencyMs,
+	})
+}
+
+func rawBodiesFromAttempt(rec AdapterAttemptRecord) (requestBody, responseBody string) {
+	if rec.Response != nil {
+		requestBody = rec.Response.RawRequestBody
+		responseBody = rec.Response.RawResponseBody
+	}
+	if (requestBody == "" || responseBody == "") && rec.Error != nil {
+		var rawErr RawHTTPBodyError
+		if errors.As(rec.Error, &rawErr) {
+			errReq, errResp := rawErr.RawHTTPBodies()
+			if requestBody == "" {
+				requestBody = errReq
+			}
+			if responseBody == "" {
+				responseBody = errResp
+			}
+		}
+	}
+	return requestBody, responseBody
+}
+
 // BuildAPILogRequest projects an LLM request into the metadata recorded in API
 // logs and transcript api_call entries.
 func BuildAPILogRequest(req Request) APILogRequest {
@@ -446,28 +608,30 @@ func buildLogResponse(resp Response) *APILogResponse {
 }
 
 type apiLogStream struct {
-	inner   Stream
-	logger  *APILogger
-	ctx     context.Context
-	req     Request
-	start   time.Time
-	out     chan StreamEvent
-	once    sync.Once
-	logOnce sync.Once
-	done    chan struct{}
-	closing chan struct{}
+	inner    Stream
+	logger   *APILogger
+	ctx      context.Context
+	req      Request
+	start    time.Time
+	out      chan StreamEvent
+	once     sync.Once
+	logOnce  sync.Once
+	done     chan struct{}
+	closing  chan struct{}
+	attempts *apiLogAdapterAttemptState
 }
 
-func newAPILogStream(ctx context.Context, inner Stream, logger *APILogger, req Request, start time.Time) *apiLogStream {
+func newAPILogStream(ctx context.Context, inner Stream, logger *APILogger, req Request, start time.Time, attempts *apiLogAdapterAttemptState) *apiLogStream {
 	s := &apiLogStream{
-		inner:   inner,
-		logger:  logger,
-		ctx:     ctx,
-		req:     req,
-		start:   start,
-		out:     make(chan StreamEvent, 128),
-		done:    make(chan struct{}),
-		closing: make(chan struct{}),
+		inner:    inner,
+		logger:   logger,
+		ctx:      ctx,
+		req:      req,
+		start:    start,
+		out:      make(chan StreamEvent, 128),
+		done:     make(chan struct{}),
+		closing:  make(chan struct{}),
+		attempts: attempts,
 	}
 	go s.pump()
 	return s
@@ -515,6 +679,9 @@ func (s *apiLogStream) pump() {
 
 func (s *apiLogStream) logFinish(resp Response) {
 	s.logOnce.Do(func() {
+		if s.attempts != nil && s.attempts.recorded() {
+			return
+		}
 		entry := buildAPILogEntry(s.ctx, s.req, s.start)
 		entry.Response = buildLogResponse(resp)
 		s.logger.write(entry)
@@ -524,6 +691,9 @@ func (s *apiLogStream) logFinish(resp Response) {
 
 func (s *apiLogStream) logError(err error) {
 	s.logOnce.Do(func() {
+		if s.attempts != nil && s.attempts.recorded() {
+			return
+		}
 		entry := buildAPILogEntry(s.ctx, s.req, s.start)
 		entry.Error = err.Error()
 		s.logger.write(entry)

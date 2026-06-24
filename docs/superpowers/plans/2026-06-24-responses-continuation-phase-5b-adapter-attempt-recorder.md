@@ -57,26 +57,26 @@ Phase 5B depends on:
 - Modify: `llm/providers/openai/adapter_test.go`
 - Create: `agent/session_openai_continuation_phase5b_test.go`
 
-- [ ] **Step 1: Prove APILogger writes adapter attempt records**
+- [x] **Step 1: Prove APILogger writes adapter attempt records**
 
 Add a stream test with an adapter recorder callback that records two attempts and asserts `api.jsonl` and `api-raw.jsonl` contain two lines with matching `attempt_group_id`, ordered indexes, history modes, endpoint URLs, and raw bodies.
 
-- [ ] **Step 2: Prove OpenAI adapter invokes the recorder for immediate fallback**
+- [x] **Step 2: Prove OpenAI adapter invokes the recorder for immediate fallback**
 
 Use the existing 404 Responses-to-Chat fallback fixture and assert the callback receives:
 
 - attempt 1: `history_mode=full_history`, Responses endpoint URL, error, raw Responses body;
 - attempt 2: `history_mode=chat_completions_fallback`, Chat endpoint URL, final response, raw Chat body.
 
-- [ ] **Step 3: Prove OpenAI adapter invokes the recorder for empty-stream fallback**
+- [x] **Step 3: Prove OpenAI adapter invokes the recorder for empty-stream fallback**
 
 Use the existing empty Responses stream fallback fixture and assert the same ordered callback shape.
 
-- [ ] **Step 4: Prove session transcript emits separate fallback attempts**
+- [x] **Step 4: Prove session transcript emits separate fallback attempts**
 
 Run a real `Session` against a local OpenAI `httptest` fallback fixture. Assert transcript `api_call` records contain exactly two provider attempts in order under the same `attempt_group_id`, with attempt indexes `1` and `2`, the second terminal record carrying `final_attempt_count=2`, and the final assistant response still persisted once.
 
-- [ ] **Step 5: Run RED tests**
+- [x] **Step 5: Run RED tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai ./agent -run 'TestAPILoggerWritesAdapterAttemptRecords|TestAdapter_Stream_Records.*FallbackAttempts|TestSession_OpenAIResponsesContinuationPhase5B' -count=1 -v
@@ -93,23 +93,23 @@ Expected: fail because no adapter attempt recorder exists.
 - Modify: `llm/providers/openai/adapter.go`
 - Modify: `agent/session_model_call.go`
 
-- [ ] **Step 1: Add `llm.AdapterAttemptRecord` and recorder helpers**
+- [x] **Step 1: Add `llm.AdapterAttemptRecord` and recorder helpers**
 
 The record carries request, optional response, optional error, mode, history mode, endpoint URL/family, assigned attempt metadata, terminal flag, and timing/raw body metadata derived from response/error.
 
-- [ ] **Step 2: Compose APILogger with the recorder**
+- [x] **Step 2: Compose APILogger with the recorder**
 
 When adapter records exist, write per-attempt API/raw entries and suppress the outer stream log line to avoid duplicate final attempts.
 
-- [ ] **Step 3: Add session-owned index allocation and transcript storage**
+- [x] **Step 3: Add session-owned index allocation and transcript storage**
 
 The first adapter-reported attempt gets index `1`; terminal fallback attempts get `final_attempt_count` equal to the number of recorded attempts. Transcript emission happens at the existing `logAPICall` boundary.
 
-- [ ] **Step 4: Record OpenAI fallback attempts**
+- [x] **Step 4: Record OpenAI fallback attempts**
 
 Report immediate Responses errors, empty Responses stream errors, successful Chat fallback completion, and failed Chat fallback errors.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai ./agent -run 'TestAPILoggerWritesAdapterAttemptRecords|TestAdapter_Stream_Records.*FallbackAttempts|TestSession_OpenAIResponsesContinuationPhase5B' -count=1 -v

@@ -186,6 +186,141 @@ func TestAPILoggerWritesRawAttemptMetadata(t *testing.T) {
 	}
 }
 
+func TestAPILoggerWritesAdapterAttemptRecords(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.jsonl")
+	rawPath := filepath.Join(dir, "api-raw.jsonl")
+	finalCount := 2
+	var nextIndex int
+
+	logger, err := NewAPILogger(path)
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	if err := logger.EnableRawLogging(rawPath); err != nil {
+		t.Fatalf("EnableRawLogging: %v", err)
+	}
+
+	wrapped := logger.WrapStream(func(ctx context.Context, req Request) (Stream, error) {
+		responsesReq := req
+		responsesReq.HistoryMode = HistoryModeResponsesDelta
+		RecordAdapterAttempt(ctx, AdapterAttemptRecord{
+			Request:     responsesReq,
+			Mode:        "stream",
+			HistoryMode: HistoryModeResponsesDelta,
+			EndpointURL: "https://api.example.test/v1/responses",
+			Error: NewStreamErrorWithRawBodies(
+				"openai",
+				"continuation rejected",
+				errors.New("invalid previous_response_id"),
+				`{"previous_response_id":"resp_missing"}`,
+				`{"error":{"type":"invalid_request_error"}}`,
+			),
+		})
+
+		chatReq := req
+		chatReq.HistoryMode = HistoryModeChatFallback
+		RecordAdapterAttempt(ctx, AdapterAttemptRecord{
+			Request:     chatReq,
+			Mode:        "stream",
+			HistoryMode: HistoryModeChatFallback,
+			EndpointURL: "https://api.example.test/v1/chat/completions",
+			Response: &Response{
+				Model:           req.Model,
+				Provider:        req.Provider,
+				Message:         Assistant("fallback ok"),
+				Finish:          FinishReason{Reason: FinishReasonStop},
+				Raw:             map[string]any{"endpoint_url": "https://api.example.test/v1/chat/completions"},
+				RawRequestBody:  `{"messages":[{"role":"user","content":"hi"}]}`,
+				RawResponseBody: `{"id":"chat_ok"}`,
+			},
+			Terminal: true,
+		})
+
+		st := NewChanStream(nil)
+		go func() {
+			defer st.CloseSend()
+			resp := Response{
+				Model:    req.Model,
+				Provider: req.Provider,
+				Message:  Assistant("fallback ok"),
+				Finish:   FinishReason{Reason: FinishReasonStop},
+			}
+			st.Send(StreamEvent{Type: StreamEventFinish, Response: &resp})
+		}()
+		return st, nil
+	})
+
+	ctx := WithAPILogAttemptContext(context.Background(), APILogContext{
+		SessionID:      "sess-adapter-attempts",
+		Round:          4,
+		AttemptGroupID: "ag_01KADAPTERGROUP",
+		AttemptRecorder: func(ctx context.Context, rec AdapterAttemptRecord) AdapterAttemptRecord {
+			_ = ctx
+			nextIndex++
+			rec.AttemptGroupID = "ag_01KADAPTERGROUP"
+			rec.AttemptIndex = nextIndex
+			if rec.Terminal {
+				rec.AttemptCount = nextIndex
+				rec.FinalAttemptCount = &finalCount
+			}
+			return rec
+		},
+	})
+	st, err := wrapped(ctx, Request{
+		Model:       "gpt-5.2",
+		Provider:    "openai",
+		HistoryMode: HistoryModeResponsesDelta,
+		Messages:    []Message{User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range st.Events() {
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("stream Close: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("logger Close: %v", err)
+	}
+
+	apiEntries := readAPILogEntries(t, path)
+	if len(apiEntries) != 2 {
+		t.Fatalf("api entries = %d, want 2: %+v", len(apiEntries), apiEntries)
+	}
+	if apiEntries[0].AttemptGroupID != "ag_01KADAPTERGROUP" ||
+		apiEntries[0].AttemptIndex != 1 ||
+		apiEntries[0].HistoryMode != HistoryModeResponsesDelta ||
+		apiEntries[0].Error == "" {
+		t.Fatalf("responses attempt = %+v", apiEntries[0])
+	}
+	if apiEntries[1].AttemptGroupID != "ag_01KADAPTERGROUP" ||
+		apiEntries[1].AttemptIndex != 2 ||
+		apiEntries[1].AttemptCount != 2 ||
+		apiEntries[1].FinalAttemptCount == nil ||
+		*apiEntries[1].FinalAttemptCount != 2 ||
+		apiEntries[1].HistoryMode != HistoryModeChatFallback ||
+		apiEntries[1].Response == nil {
+		t.Fatalf("chat fallback attempt = %+v", apiEntries[1])
+	}
+
+	rawEntries := readRawLogEntries(t, rawPath)
+	if len(rawEntries) != 2 {
+		t.Fatalf("raw entries = %d, want 2: %+v", len(rawEntries), rawEntries)
+	}
+	if rawEntries[0].AttemptIndex != 1 ||
+		rawEntries[0].HistoryMode != HistoryModeResponsesDelta ||
+		rawEntries[0].RequestBody != `{"previous_response_id":"resp_missing"}` {
+		t.Fatalf("raw responses attempt = %+v", rawEntries[0])
+	}
+	if rawEntries[1].AttemptIndex != 2 ||
+		rawEntries[1].HistoryMode != HistoryModeChatFallback ||
+		rawEntries[1].RequestBody != `{"messages":[{"role":"user","content":"hi"}]}` {
+		t.Fatalf("raw chat fallback attempt = %+v", rawEntries[1])
+	}
+}
+
 func TestAPILoggerWritesJSONL(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "api.jsonl")
@@ -957,6 +1092,48 @@ func TestAPILogger_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
 	if dirty {
 		t.Error("expected dirty=false after sync interval elapsed")
 	}
+}
+
+func readAPILogEntries(t *testing.T, path string) []APILogEntry {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read api log: %v", err)
+	}
+	var entries []APILogEntry
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		var entry APILogEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			t.Fatalf("unmarshal api log: %v\n%s", err, scanner.Text())
+		}
+		entries = append(entries, entry)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan api log: %v", err)
+	}
+	return entries
+}
+
+func readRawLogEntries(t *testing.T, path string) []APIRawLogEntry {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read raw api log: %v", err)
+	}
+	var entries []APIRawLogEntry
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		var entry APIRawLogEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			t.Fatalf("unmarshal raw api log: %v\n%s", err, scanner.Text())
+		}
+		entries = append(entries, entry)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan raw api log: %v", err)
+	}
+	return entries
 }
 
 // TestStampEndpointURL pins the shared write-side helper that every provider
