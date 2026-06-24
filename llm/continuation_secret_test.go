@@ -140,3 +140,29 @@ func TestContinuationHashRejectsUnknownKind(t *testing.T) {
 		t.Fatalf("scope error = %v, want ErrContinuationSecretUnavailable", err)
 	}
 }
+
+func TestContinuationHasherForStateDirUnavailableWithoutState(t *testing.T) {
+	_, err := ContinuationHasherForStateDir("")
+	if !errors.Is(err, ErrContinuationSecretUnavailable) {
+		t.Fatalf("error = %v, want ErrContinuationSecretUnavailable", err)
+	}
+}
+
+func TestContinuationHasherForStateDirLoadsSecret(t *testing.T) {
+	stateDir := t.TempDir()
+
+	hasher, err := ContinuationHasherForStateDir(stateDir)
+	if err != nil {
+		t.Fatalf("ContinuationHasherForStateDir: %v", err)
+	}
+	hash, err := hasher.HashContinuationHandle("response_id", "resp_123")
+	if err != nil {
+		t.Fatalf("HashContinuationHandle: %v", err)
+	}
+	if !strings.HasPrefix(hash, "cont-handle-v1:response_id:") {
+		t.Fatalf("hash = %q, want handle prefix", hash)
+	}
+	if _, err := os.Stat(ContinuationSecretPath(stateDir)); err != nil {
+		t.Fatalf("secret was not persisted: %v", err)
+	}
+}

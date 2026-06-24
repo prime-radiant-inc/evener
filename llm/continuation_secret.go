@@ -26,6 +26,14 @@ func NewContinuationHasher(secret []byte) *ContinuationHasher {
 	}
 }
 
+func ContinuationHasherForStateDir(stateDir string) (*ContinuationHasher, error) {
+	secret, err := LoadOrCreateContinuationSecret(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	return NewContinuationHasher(secret), nil
+}
+
 func (h *ContinuationHasher) HashContinuationHandle(kind, value string) (string, error) {
 	if !validContinuationHandleKind(kind) {
 		return "", fmt.Errorf("%w: unknown handle kind %q", ErrContinuationSecretUnavailable, kind)
