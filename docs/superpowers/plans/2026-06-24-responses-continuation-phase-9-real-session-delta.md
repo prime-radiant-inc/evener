@@ -129,7 +129,7 @@ git commit -m "feat(agent): enable fallback-capable responses delta sidecar"
 - Modify: `agent/responses_continuation_eligibility_test.go`
 - Modify: `agent/session_openai_continuation_phase9_test.go`
 
-- [ ] **Step 1: Add RED pure eligibility tests**
+- [x] **Step 1: Add RED pure eligibility tests**
 
 Add tests proving:
 
@@ -146,7 +146,7 @@ Use exact reason strings:
 - `continuation_delta_orphaned_tool_result`
 - `continuation_delta_unsafe_content`
 
-- [ ] **Step 2: Implement eligibility helper**
+- [x] **Step 2: Implement eligibility helper**
 
 Add:
 
@@ -163,7 +163,7 @@ Rules:
 
 Call the helper from `selectResponsesContinuationAnchorCandidate` after `delta` is non-empty.
 
-- [ ] **Step 3: Add real-session gate tests**
+- [x] **Step 3: Add real-session gate tests**
 
 In `agent/session_openai_continuation_phase9_test.go`, add fake-adapter tests where the enabled registry and eligible anchor are present but the post-anchor history includes:
 
@@ -173,13 +173,13 @@ In `agent/session_openai_continuation_phase9_test.go`, add fake-adapter tests wh
 
 Assert each request uses `HistoryModeFullHistory`, has no `PreviousResponseID`, and has no continuation metadata with `PreviousResponseIDHash`.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestResponsesContinuationAnchorCandidate|TestSession_OpenAIResponsesContinuationPhase9.*Gate' -count=1 -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git status --short

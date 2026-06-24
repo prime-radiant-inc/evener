@@ -104,6 +104,100 @@ func TestResponsesContinuationAnchorCandidateRejectsEmptyDelta(t *testing.T) {
 	}
 }
 
+func TestResponsesContinuationAnchorCandidateRejectsUnsupportedDeltaTurnKind(t *testing.T) {
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+		responsesContinuationEligibleAssistantTurn("resp_1"),
+		schema.NewTurn(schema.TurnSteering, llm.User("steer")),
+	}
+
+	_, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
+	if decision.HistoryMode != llm.HistoryModeFullHistory ||
+		decision.Reason != "continuation_delta_unsupported_turn_kind" {
+		t.Fatalf("decision = %+v", decision)
+	}
+}
+
+func TestResponsesContinuationAnchorCandidateAllowsLinkedToolResultDelta(t *testing.T) {
+	anchor := responsesContinuationEligibleAssistantTurn("resp_1")
+	anchor.Message = llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+		Kind: llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{
+			ID:   "call_anchor",
+			Name: "shell",
+			Type: "function",
+		},
+	}}}
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+		anchor,
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_anchor", "shell", "ok", false)),
+	}
+
+	candidate, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
+	if decision.HistoryMode != llm.HistoryModeResponsesDelta ||
+		decision.Reason != "continuation_anchor_candidate" {
+		t.Fatalf("decision = %+v", decision)
+	}
+	if len(candidate.Delta) != 1 || candidate.Delta[0].Kind != schema.TurnToolResults {
+		t.Fatalf("candidate = %+v", candidate)
+	}
+}
+
+func TestResponsesContinuationAnchorCandidateRejectsOrphanedToolResultDelta(t *testing.T) {
+	anchor := responsesContinuationEligibleAssistantTurn("resp_1")
+	anchor.Message = llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+		Kind: llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{
+			ID:   "call_anchor",
+			Name: "shell",
+			Type: "function",
+		},
+	}}}
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+		anchor,
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_other", "shell", "ok", false)),
+	}
+
+	_, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
+	if decision.HistoryMode != llm.HistoryModeFullHistory ||
+		decision.Reason != "continuation_delta_orphaned_tool_result" {
+		t.Fatalf("decision = %+v", decision)
+	}
+}
+
+func TestResponsesContinuationAnchorCandidateRejectsUnsafeDeltaContent(t *testing.T) {
+	tests := []struct {
+		name string
+		part llm.ContentPart
+	}{
+		{
+			name: "image",
+			part: llm.ContentPart{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.test/image.png"}},
+		},
+		{
+			name: "thinking",
+			part: llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "hidden"}},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			history := []schema.Turn{
+				schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+				responsesContinuationEligibleAssistantTurn("resp_1"),
+				schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{tc.part}}),
+			}
+
+			_, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
+			if decision.HistoryMode != llm.HistoryModeFullHistory ||
+				decision.Reason != "continuation_delta_unsafe_content" {
+				t.Fatalf("decision = %+v", decision)
+			}
+		})
+	}
+}
+
 func TestResponsesContinuationAnchorCandidateUsesRestoredActiveBoundary(t *testing.T) {
 	dir := t.TempDir()
 	stateDir := t.TempDir()
