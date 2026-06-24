@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oklog/ulid/v2"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
@@ -23,6 +25,7 @@ type ModelAttemptMetadata struct {
 	RequestFingerprint      string
 	StorageScopeFingerprint string
 	ContextMarker           string
+	AttemptGroupID          string
 	AttemptIndex            int
 	AttemptCount            int
 	FinalAttemptCount       *int
@@ -40,6 +43,7 @@ func singleAttemptRequestMetadata(req llm.Request) (llm.Request, ModelAttemptMet
 	meta := ModelAttemptMetadata{
 		HistoryMode:       req.HistoryMode,
 		RequestModel:      req.Model,
+		AttemptGroupID:    newAttemptGroupID(),
 		AttemptIndex:      1,
 		AttemptCount:      1,
 		FinalAttemptCount: &finalCount,
@@ -54,6 +58,10 @@ func singleAttemptRequestMetadata(req llm.Request) (llm.Request, ModelAttemptMet
 		meta.StoragePolicyLabel = req.Continuation.StoragePolicyLabel
 	}
 	return req, meta
+}
+
+func newAttemptGroupID() string {
+	return "ag_" + ulid.Make().String()
 }
 
 func completeAttemptMetadata(meta ModelAttemptMetadata, resp llm.Response) ModelAttemptMetadata {
@@ -488,6 +496,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	callCtx := llm.WithAPILogAttemptContext(ctx, llm.APILogContext{
 		SessionID:         s.id,
 		Round:             round,
+		AttemptGroupID:    attempt.AttemptGroupID,
 		AttemptIndex:      attempt.AttemptIndex,
 		AttemptCount:      attempt.AttemptCount,
 		FinalAttemptCount: attempt.FinalAttemptCount,
@@ -565,6 +574,7 @@ func (s *Session) logAPICall(round int, roundStart time.Time, llmLatency time.Du
 	if s.transcript != nil {
 		apiCall := transcript.APICall{
 			Round:                  round,
+			AttemptGroupID:         attempt.AttemptGroupID,
 			AttemptIndex:           attempt.AttemptIndex,
 			AttemptCount:           attempt.AttemptCount,
 			FinalAttemptCount:      attempt.FinalAttemptCount,

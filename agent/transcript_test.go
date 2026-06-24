@@ -1920,6 +1920,7 @@ func TestTranscriptContinuationMetadataRoundTrips(t *testing.T) {
 	}
 	if err := w.AppendAPICall(transcript.APICall{
 		Round:                  1,
+		AttemptGroupID:         "ag_01KTRANSCRIPTGROUP",
 		AttemptIndex:           1,
 		AttemptCount:           1,
 		FinalAttemptCount:      &finalCount,
@@ -1956,7 +1957,8 @@ func TestTranscriptContinuationMetadataRoundTrips(t *testing.T) {
 		t.Fatalf("turn metadata = %+v", gotTurn)
 	}
 	gotCall := data.APICalls[0]
-	if gotCall.AttemptIndex != 1 ||
+	if gotCall.AttemptGroupID != "ag_01KTRANSCRIPTGROUP" ||
+		gotCall.AttemptIndex != 1 ||
 		gotCall.AttemptCount != 1 ||
 		gotCall.HistoryMode != llm.HistoryModeFullHistory ||
 		gotCall.PreviousResponseIDHash != "cont-handle-v1:previous_response_id:def" ||

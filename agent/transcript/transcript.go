@@ -62,6 +62,7 @@ type APICall struct {
 	Kind                   string              `json:"kind"`  // Always "api_call"
 	Seq                    int                 `json:"seq"`   // line sequence number in the transcript
 	Round                  int                 `json:"round"` // tool-call round within the turn
+	AttemptGroupID         string              `json:"attempt_group_id,omitempty"`
 	AttemptIndex           int                 `json:"attempt_index,omitempty"`
 	AttemptCount           int                 `json:"attempt_count,omitempty"`
 	FinalAttemptCount      *int                `json:"final_attempt_count,omitempty"`

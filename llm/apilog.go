@@ -21,6 +21,7 @@ type apiLogKey struct{}
 type APILogContext struct {
 	SessionID         string
 	Round             int
+	AttemptGroupID    string
 	AttemptIndex      int
 	AttemptCount      int
 	FinalAttemptCount *int
@@ -40,6 +41,9 @@ func WithAPILogAttemptContext(ctx context.Context, meta APILogContext) context.C
 		if meta.Round == 0 {
 			meta.Round = existing.Round
 		}
+		if meta.AttemptGroupID == "" {
+			meta.AttemptGroupID = existing.AttemptGroupID
+		}
 	}
 	return context.WithValue(ctx, apiLogKey{}, meta)
 }
@@ -54,6 +58,7 @@ type APILogEntry struct {
 	Timestamp         string          `json:"ts"`
 	SessionID         string          `json:"session_id,omitempty"`
 	Round             int             `json:"round,omitempty"`
+	AttemptGroupID    string          `json:"attempt_group_id,omitempty"`
 	AttemptIndex      int             `json:"attempt_index,omitempty"`
 	AttemptCount      int             `json:"attempt_count,omitempty"`
 	FinalAttemptCount *int            `json:"final_attempt_count,omitempty"`
@@ -106,15 +111,20 @@ type APILogResponse struct {
 
 // APIRawLogEntry is a JSONL line in the raw HTTP body log.
 type APIRawLogEntry struct {
-	Timestamp    string `json:"ts"`
-	SessionID    string `json:"session_id,omitempty"`
-	Round        int    `json:"round,omitempty"`
-	Provider     string `json:"provider"`
-	Model        string `json:"model"`
-	Mode         string `json:"mode"` // "complete" or "stream"
-	RequestBody  string `json:"request_body,omitempty"`
-	ResponseBody string `json:"response_body,omitempty"`
-	LatencyMs    int64  `json:"latency_ms"`
+	Timestamp         string      `json:"ts"`
+	SessionID         string      `json:"session_id,omitempty"`
+	Round             int         `json:"round,omitempty"`
+	AttemptGroupID    string      `json:"attempt_group_id,omitempty"`
+	AttemptIndex      int         `json:"attempt_index,omitempty"`
+	AttemptCount      int         `json:"attempt_count,omitempty"`
+	FinalAttemptCount *int        `json:"final_attempt_count,omitempty"`
+	HistoryMode       HistoryMode `json:"history_mode,omitempty"`
+	Provider          string      `json:"provider"`
+	Model             string      `json:"model"`
+	Mode              string      `json:"mode"` // "complete" or "stream"
+	RequestBody       string      `json:"request_body,omitempty"`
+	ResponseBody      string      `json:"response_body,omitempty"`
+	LatencyMs         int64       `json:"latency_ms"`
 }
 
 // RawBodyEnabled returns true when SERF_LOG_RAW_HTTP is set.
@@ -296,6 +306,7 @@ func buildAPILogEntry(ctx context.Context, req Request, start time.Time) APILogE
 	if lc, ok := getAPILogContext(ctx); ok {
 		entry.SessionID = lc.SessionID
 		entry.Round = lc.Round
+		entry.AttemptGroupID = lc.AttemptGroupID
 		entry.AttemptIndex = lc.AttemptIndex
 		entry.AttemptCount = lc.AttemptCount
 		entry.FinalAttemptCount = lc.FinalAttemptCount
@@ -309,15 +320,20 @@ func (l *APILogger) writeRawResponse(entry APILogEntry, req Request, mode string
 		return
 	}
 	l.writeRaw(APIRawLogEntry{
-		Timestamp:    entry.Timestamp,
-		SessionID:    entry.SessionID,
-		Round:        entry.Round,
-		Provider:     req.Provider,
-		Model:        req.Model,
-		Mode:         mode,
-		RequestBody:  resp.RawRequestBody,
-		ResponseBody: resp.RawResponseBody,
-		LatencyMs:    entry.LatencyMs,
+		Timestamp:         entry.Timestamp,
+		SessionID:         entry.SessionID,
+		Round:             entry.Round,
+		AttemptGroupID:    entry.AttemptGroupID,
+		AttemptIndex:      entry.AttemptIndex,
+		AttemptCount:      entry.AttemptCount,
+		FinalAttemptCount: entry.FinalAttemptCount,
+		HistoryMode:       entry.HistoryMode,
+		Provider:          req.Provider,
+		Model:             req.Model,
+		Mode:              mode,
+		RequestBody:       resp.RawRequestBody,
+		ResponseBody:      resp.RawResponseBody,
+		LatencyMs:         entry.LatencyMs,
 	})
 }
 
@@ -334,15 +350,20 @@ func (l *APILogger) writeRawError(entry APILogEntry, req Request, mode string, e
 		return
 	}
 	l.writeRaw(APIRawLogEntry{
-		Timestamp:    entry.Timestamp,
-		SessionID:    entry.SessionID,
-		Round:        entry.Round,
-		Provider:     req.Provider,
-		Model:        req.Model,
-		Mode:         mode,
-		RequestBody:  requestBody,
-		ResponseBody: responseBody,
-		LatencyMs:    entry.LatencyMs,
+		Timestamp:         entry.Timestamp,
+		SessionID:         entry.SessionID,
+		Round:             entry.Round,
+		AttemptGroupID:    entry.AttemptGroupID,
+		AttemptIndex:      entry.AttemptIndex,
+		AttemptCount:      entry.AttemptCount,
+		FinalAttemptCount: entry.FinalAttemptCount,
+		HistoryMode:       entry.HistoryMode,
+		Provider:          req.Provider,
+		Model:             req.Model,
+		Mode:              mode,
+		RequestBody:       requestBody,
+		ResponseBody:      responseBody,
+		LatencyMs:         entry.LatencyMs,
 	})
 }
 

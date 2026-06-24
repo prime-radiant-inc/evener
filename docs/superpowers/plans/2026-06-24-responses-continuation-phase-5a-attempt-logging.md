@@ -53,11 +53,11 @@ Phase 5A depends on the following current substrate:
 - Modify: `agent/transcript_test.go`
 - Modify: `agent/session_test.go`
 
-- [ ] **Step 1: Extend API log attempt round-trip coverage**
+- [x] **Step 1: Extend API log attempt round-trip coverage**
 
 Update the API log attempt test to assert `AttemptGroupID` round-trips alongside the existing attempt fields.
 
-- [ ] **Step 2: Add raw log attempt metadata coverage**
+- [x] **Step 2: Add raw log attempt metadata coverage**
 
 Add a raw-log test proving a complete response raw entry includes:
 
@@ -67,15 +67,15 @@ Add a raw-log test proving a complete response raw entry includes:
 - `final_attempt_count`
 - `history_mode`
 
-- [ ] **Step 3: Add stream-error raw log coverage**
+- [x] **Step 3: Add stream-error raw log coverage**
 
 Add a stream test that sends `StreamEventError` with `NewStreamErrorWithRawBodies` and asserts the raw log entry carries the same attempt metadata. This covers continuation-style rejections delivered after stream setup.
 
-- [ ] **Step 4: Extend transcript round-trip and session transcript coverage**
+- [x] **Step 4: Extend transcript round-trip and session transcript coverage**
 
 Assert transcript `api_call` records persist a non-empty attempt group id and that a real single-attempt session emits it with the existing 1-based attempt index.
 
-- [ ] **Step 5: Run RED tests**
+- [x] **Step 5: Run RED tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm ./agent -run 'TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILogger.*Attempt|TestTranscriptContinuationMetadataRoundTrips|TestSessionRecordsAssistantResponseMetadata|TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest' -count=1 -v
@@ -92,19 +92,19 @@ Expected: fail because `attempt_group_id` and raw attempt fields are missing.
 - Modify: `agent/transcript/transcript.go`
 - Modify: `llm/apilog.go`
 
-- [ ] **Step 1: Generate attempt group ids in the existing stamping path**
+- [x] **Step 1: Generate attempt group ids in the existing stamping path**
 
 Add a small private helper returning `"ag_" + ulid.Make().String()` and assign it in `singleAttemptRequestMetadata`.
 
-- [ ] **Step 2: Thread group id into session logging**
+- [x] **Step 2: Thread group id into session logging**
 
 Add `AttemptGroupID` to `ModelAttemptMetadata`, copy it into `llm.APILogContext`, and persist it in transcript `APICall`.
 
-- [ ] **Step 3: Thread group id and attempt fields into API/raw logs**
+- [x] **Step 3: Thread group id and attempt fields into API/raw logs**
 
 Add `AttemptGroupID` to `APILogContext`, `APILogEntry`, and `APIRawLogEntry`; copy API-log attempt fields into both raw response and raw error entries.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm ./agent -run 'TestAPILogEntry_AttemptFieldsRoundTrip|TestAPILogger.*Attempt|TestTranscriptContinuationMetadataRoundTrips|TestSessionRecordsAssistantResponseMetadata|TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest' -count=1 -v

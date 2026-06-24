@@ -1805,6 +1805,9 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	if call.AttemptIndex != 1 || call.AttemptCount != 1 {
 		t.Fatalf("attempt fields = %+v", call)
 	}
+	if !strings.HasPrefix(call.AttemptGroupID, "ag_") {
+		t.Fatalf("AttemptGroupID = %q", call.AttemptGroupID)
+	}
 	if call.FinalAttemptCount == nil || *call.FinalAttemptCount != 1 {
 		t.Fatalf("FinalAttemptCount = %v", call.FinalAttemptCount)
 	}
@@ -1854,6 +1857,9 @@ func TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest(t *testing.T
 
 	if attempt.AttemptIndex != 1 || attempt.AttemptCount != 1 {
 		t.Fatalf("attempt counters = %+v", attempt)
+	}
+	if !strings.HasPrefix(attempt.AttemptGroupID, "ag_") {
+		t.Fatalf("AttemptGroupID = %q", attempt.AttemptGroupID)
 	}
 	if req.Continuation == nil || req.Continuation.PreviousResponseIDHash != "cont-handle-v1:response_id:abc" {
 		t.Fatalf("request continuation = %+v", req.Continuation)

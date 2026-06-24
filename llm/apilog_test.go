@@ -84,6 +84,7 @@ func TestAPILogEntry_AttemptFieldsRoundTrip(t *testing.T) {
 	entry := APILogEntry{
 		SessionID:         "sess",
 		Round:             2,
+		AttemptGroupID:    "ag_01KTESTATTEMPTGROUP",
 		AttemptIndex:      1,
 		AttemptCount:      1,
 		FinalAttemptCount: &finalCount,
@@ -110,11 +111,78 @@ func TestAPILogEntry_AttemptFieldsRoundTrip(t *testing.T) {
 	if got.AttemptIndex != 1 || got.AttemptCount != 1 || got.HistoryMode != HistoryModeFullHistory {
 		t.Fatalf("attempt fields = %+v", got)
 	}
+	if got.AttemptGroupID != "ag_01KTESTATTEMPTGROUP" {
+		t.Fatalf("AttemptGroupID = %q", got.AttemptGroupID)
+	}
 	if got.FinalAttemptCount == nil || *got.FinalAttemptCount != 1 {
 		t.Fatalf("FinalAttemptCount = %v", got.FinalAttemptCount)
 	}
 	if got.Response == nil || got.Response.IDHash != "cont-handle-v1:response_id:abc" {
 		t.Fatalf("response = %+v", got.Response)
+	}
+}
+
+func TestAPILoggerWritesRawAttemptMetadata(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.jsonl")
+	rawPath := filepath.Join(dir, "api-raw.jsonl")
+	finalCount := 1
+
+	logger, err := NewAPILogger(path)
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	if err := logger.EnableRawLogging(rawPath); err != nil {
+		t.Fatalf("EnableRawLogging: %v", err)
+	}
+
+	wrapped := logger.WrapComplete(func(ctx context.Context, req Request) (Response, error) {
+		return Response{
+			Model:           req.Model,
+			Provider:        req.Provider,
+			Finish:          FinishReason{Reason: FinishReasonStop},
+			RawRequestBody:  `{"previous_response_id":"resp_raw"}`,
+			RawResponseBody: `{"id":"resp_next"}`,
+		}, nil
+	})
+
+	ctx := WithAPILogAttemptContext(context.Background(), APILogContext{
+		SessionID:         "sess-raw",
+		Round:             7,
+		AttemptGroupID:    "ag_01KRAWATTEMPTGROUP",
+		AttemptIndex:      1,
+		AttemptCount:      1,
+		FinalAttemptCount: &finalCount,
+		HistoryMode:       HistoryModeResponsesDelta,
+	})
+	if _, err := wrapped(ctx, Request{
+		Model:       "gpt-5.2",
+		Provider:    "openai",
+		HistoryMode: HistoryModeResponsesDelta,
+		Messages:    []Message{User("hi")},
+	}); err != nil {
+		t.Fatalf("wrapped: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("logger Close: %v", err)
+	}
+
+	rawData, err := os.ReadFile(rawPath)
+	if err != nil {
+		t.Fatalf("read api-raw.jsonl: %v", err)
+	}
+	var rawEntry APIRawLogEntry
+	if err := json.Unmarshal(bytes.TrimSpace(rawData), &rawEntry); err != nil {
+		t.Fatalf("unmarshal api-raw.jsonl: %v\n%s", err, string(rawData))
+	}
+	if rawEntry.AttemptGroupID != "ag_01KRAWATTEMPTGROUP" ||
+		rawEntry.AttemptIndex != 1 ||
+		rawEntry.AttemptCount != 1 ||
+		rawEntry.HistoryMode != HistoryModeResponsesDelta {
+		t.Fatalf("raw attempt metadata = %+v", rawEntry)
+	}
+	if rawEntry.FinalAttemptCount == nil || *rawEntry.FinalAttemptCount != 1 {
+		t.Fatalf("raw FinalAttemptCount = %v", rawEntry.FinalAttemptCount)
 	}
 }
 
@@ -457,6 +525,86 @@ func TestAPILoggerWrapStreamWritesRawLogOnFinish(t *testing.T) {
 	}
 	if rawEntry.RequestBody != `{"input":"hi"}` || rawEntry.ResponseBody != "data: done\n\n" {
 		t.Fatalf("raw bodies = %q / %q", rawEntry.RequestBody, rawEntry.ResponseBody)
+	}
+}
+
+func TestAPILoggerWrapStreamWritesRawAttemptMetadataOnError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.jsonl")
+	rawPath := filepath.Join(dir, "api-raw.jsonl")
+	finalCount := 1
+
+	logger, err := NewAPILogger(path)
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	if err := logger.EnableRawLogging(rawPath); err != nil {
+		t.Fatalf("EnableRawLogging: %v", err)
+	}
+
+	wrapped := logger.WrapStream(func(ctx context.Context, req Request) (Stream, error) {
+		_ = ctx
+		st := NewChanStream(nil)
+		go func() {
+			defer st.CloseSend()
+			st.Send(StreamEvent{Type: StreamEventError, Err: NewStreamErrorWithRawBodies(
+				"openai",
+				"continuation rejected",
+				errors.New("invalid previous_response_id"),
+				`{"previous_response_id":"resp_missing"}`,
+				`{"error":{"type":"invalid_request_error"}}`,
+			)})
+		}()
+		return st, nil
+	})
+
+	ctx := WithAPILogAttemptContext(context.Background(), APILogContext{
+		SessionID:         "sess-stream-raw",
+		Round:             8,
+		AttemptGroupID:    "ag_01KSTREAMERRORGROUP",
+		AttemptIndex:      1,
+		AttemptCount:      1,
+		FinalAttemptCount: &finalCount,
+		HistoryMode:       HistoryModeResponsesDelta,
+	})
+	st, err := wrapped(ctx, Request{
+		Model:       "gpt-5.2",
+		Provider:    "openai",
+		HistoryMode: HistoryModeResponsesDelta,
+		Messages:    []Message{User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range st.Events() {
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("stream Close: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("logger Close: %v", err)
+	}
+
+	rawData, err := os.ReadFile(rawPath)
+	if err != nil {
+		t.Fatalf("read api-raw.jsonl: %v", err)
+	}
+	var rawEntry APIRawLogEntry
+	if err := json.Unmarshal(bytes.TrimSpace(rawData), &rawEntry); err != nil {
+		t.Fatalf("unmarshal api-raw.jsonl: %v\n%s", err, string(rawData))
+	}
+	if rawEntry.Mode != "stream" ||
+		rawEntry.AttemptGroupID != "ag_01KSTREAMERRORGROUP" ||
+		rawEntry.AttemptIndex != 1 ||
+		rawEntry.AttemptCount != 1 ||
+		rawEntry.HistoryMode != HistoryModeResponsesDelta {
+		t.Fatalf("raw stream-error metadata = %+v", rawEntry)
+	}
+	if rawEntry.FinalAttemptCount == nil || *rawEntry.FinalAttemptCount != 1 {
+		t.Fatalf("raw stream-error FinalAttemptCount = %v", rawEntry.FinalAttemptCount)
+	}
+	if rawEntry.RequestBody != `{"previous_response_id":"resp_missing"}` {
+		t.Fatalf("raw request body = %q", rawEntry.RequestBody)
 	}
 }
 
