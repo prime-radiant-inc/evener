@@ -286,6 +286,169 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalform
 	}
 }
 
+func TestSession_OpenAIResponsesContinuationPhase9DisabledStateUsesFullHistoryAfterRejection(t *testing.T) {
+	dir := t.TempDir()
+	continuationErr := llm.ErrorFromHTTPStatus("openai", 404, "Previous response not found", map[string]any{
+		"error": map[string]any{
+			"code":    "previous_response_not_found",
+			"message": "Previous response not found",
+			"type":    "invalid_request_error",
+		},
+	}, nil)
+	adapter := &phase9RetryAdapter{
+		provider:          "openai",
+		canFallbackToChat: true,
+		steps: []func(req llm.Request) (llm.Response, error){
+			func(req llm.Request) (llm.Response, error) {
+				return llm.Response{}, continuationErr
+			},
+			func(req llm.Request) (llm.Response, error) {
+				return agenttest.FinalResponse("phase 9 disabled state recovered"), nil
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:                    dir,
+		OpenAIResponsesContinuation: "auto",
+		testOnly: testConfig{
+			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
+				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	drainSessionEvents(sess)
+	setPhase9ContinuationHistory(sess, phase9MatchingAnchor("resp_phase9_disabled_first"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "phase9 first current user marker", nil); err != nil {
+		t.Fatalf("first ProcessInput: %v", err)
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("first request count = %d, want 2", len(requests))
+	}
+	if requests[0].HistoryMode != llm.HistoryModeResponsesDelta ||
+		requests[1].HistoryMode != llm.HistoryModeFullHistoryFallback {
+		t.Fatalf("first requests = %+v", requests)
+	}
+
+	setPhase9ContinuationHistory(sess, phase9MatchingAnchor("resp_phase9_disabled_second"))
+	if _, err := sess.ProcessInput(ctx, "phase9 second current user marker", nil); err != nil {
+		t.Fatalf("second ProcessInput: %v", err)
+	}
+	requests = adapter.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("second request count = %d, want 3", len(requests))
+	}
+	if requests[2].HistoryMode != llm.HistoryModeFullHistory ||
+		requests[2].PreviousResponseID != "" {
+		t.Fatalf("disabled same-scope request = %+v, want full history without previous response", requests[2])
+	}
+
+	adapter.storageScopeFingerprint = "cont-scope-v1:phase9-other"
+	otherScopeAnchor := phase9MatchingAnchor("resp_phase9_disabled_other_scope")
+	otherScopeAnchor.ResponseStorageScopeFingerprint = adapter.storageScopeFingerprint
+	setPhase9ContinuationHistory(sess, otherScopeAnchor)
+	if _, err := sess.ProcessInput(ctx, "phase9 other scope current user marker", nil); err != nil {
+		t.Fatalf("other-scope ProcessInput: %v", err)
+	}
+	requests = adapter.Requests()
+	if len(requests) != 4 {
+		t.Fatalf("other-scope request count = %d, want 4", len(requests))
+	}
+	if requests[3].HistoryMode != llm.HistoryModeResponsesDelta ||
+		requests[3].PreviousResponseID != "resp_phase9_disabled_other_scope" {
+		t.Fatalf("other-scope request = %+v, want fresh delta", requests[3])
+	}
+
+	adapter.storageScopeFingerprint = "cont-scope-v1:phase4d"
+	adapter.storagePolicyLabel = llm.ResponsesStoragePolicyPublicOpenAINoStore
+	setPhase9ContinuationHistory(sess, phase9MatchingAnchor("resp_phase9_disabled_other_policy"))
+	if _, err := sess.ProcessInput(ctx, "phase9 other policy current user marker", nil); err != nil {
+		t.Fatalf("other-policy ProcessInput: %v", err)
+	}
+	requests = adapter.Requests()
+	if len(requests) != 5 {
+		t.Fatalf("other-policy request count = %d, want 5", len(requests))
+	}
+	if requests[4].HistoryMode != llm.HistoryModeResponsesDelta ||
+		requests[4].PreviousResponseID != "resp_phase9_disabled_other_policy" {
+		t.Fatalf("other-policy request = %+v, want fresh delta", requests[4])
+	}
+}
+
+func TestSession_OpenAIResponsesContinuationPhase9DisabledStateDoesNotLeakToNewSession(t *testing.T) {
+	dir := t.TempDir()
+	continuationErr := llm.ErrorFromHTTPStatus("openai", 404, "Previous response not found", map[string]any{
+		"error": map[string]any{
+			"code":    "previous_response_not_found",
+			"message": "Previous response not found",
+			"type":    "invalid_request_error",
+		},
+	}, nil)
+	firstAdapter := &phase9RetryAdapter{
+		provider:          "openai",
+		canFallbackToChat: true,
+		steps: []func(req llm.Request) (llm.Response, error){
+			func(req llm.Request) (llm.Response, error) {
+				return llm.Response{}, continuationErr
+			},
+			func(req llm.Request) (llm.Response, error) {
+				return agenttest.FinalResponse("phase 9 disabled state recovered"), nil
+			},
+		},
+	}
+	firstClient := llm.NewClient()
+	firstClient.Register(firstAdapter)
+	firstSess := newPhase9ContinuationSession(t, dir, firstClient)
+	defer firstSess.Close()
+	drainSessionEvents(firstSess)
+	setPhase9ContinuationHistory(firstSess, phase9MatchingAnchor("resp_phase9_disabled_original"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := firstSess.ProcessInput(ctx, "phase9 original current user marker", nil); err != nil {
+		t.Fatalf("first ProcessInput: %v", err)
+	}
+
+	nextAdapter := &phase9RetryAdapter{
+		provider:          "openai",
+		canFallbackToChat: true,
+		steps: []func(req llm.Request) (llm.Response, error){
+			func(req llm.Request) (llm.Response, error) {
+				return agenttest.FinalResponse("phase 9 new session delta"), nil
+			},
+		},
+	}
+	nextClient := llm.NewClient()
+	nextClient.Register(nextAdapter)
+	nextSess := newPhase9ContinuationSession(t, dir, nextClient)
+	defer nextSess.Close()
+	drainSessionEvents(nextSess)
+	setPhase9ContinuationHistory(nextSess, phase9MatchingAnchor("resp_phase9_disabled_new_session"))
+	if _, err := nextSess.ProcessInput(ctx, "phase9 new session current user marker", nil); err != nil {
+		t.Fatalf("new-session ProcessInput: %v", err)
+	}
+
+	requests := nextAdapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("new-session request count = %d, want 1", len(requests))
+	}
+	if requests[0].HistoryMode != llm.HistoryModeResponsesDelta ||
+		requests[0].PreviousResponseID != "resp_phase9_disabled_new_session" {
+		t.Fatalf("new-session request = %+v, want fresh delta", requests[0])
+	}
+}
+
 func TestSession_OpenAIResponsesContinuationPhase9OrphanedToolResultGateUsesFullHistory(t *testing.T) {
 	anchor := phase9MatchingAnchor("resp_phase9_orphan")
 	anchor.Message = llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
@@ -305,9 +468,11 @@ func TestSession_OpenAIResponsesContinuationPhase9OrphanedToolResultGateUsesFull
 }
 
 type phase9RetryAdapter struct {
-	provider          string
-	canFallbackToChat bool
-	steps             []func(req llm.Request) (llm.Response, error)
+	provider                string
+	canFallbackToChat       bool
+	storageScopeFingerprint string
+	storagePolicyLabel      string
+	steps                   []func(req llm.Request) (llm.Response, error)
 
 	mu       sync.Mutex
 	requests []llm.Request
@@ -345,6 +510,12 @@ func (a *phase9RetryAdapter) Stream(ctx context.Context, req llm.Request) (llm.S
 
 func (a *phase9RetryAdapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 	plan := phase4DIContinuationPlan(req)
+	if a.storageScopeFingerprint != "" {
+		plan.StorageScopeFingerprint = a.storageScopeFingerprint
+	}
+	if a.storagePolicyLabel != "" {
+		plan.StoragePolicyLabel = a.storagePolicyLabel
+	}
 	plan.CanFallbackToChat = a.canFallbackToChat
 	return plan, nil
 }
@@ -448,6 +619,30 @@ func phase9MatchingAnchor(responseID string) schema.Turn {
 	anchor.ResponseRequestFingerprint = "cont-req-v1:phase4d"
 	anchor.ResponseStorageScopeFingerprint = "cont-scope-v1:phase4d"
 	return anchor
+}
+
+func setPhase9ContinuationHistory(sess *Session, anchor schema.Turn) {
+	sess.history = []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("phase9 prior user marker")),
+		anchor,
+	}
+}
+
+func newPhase9ContinuationSession(t *testing.T, dir string, client *llm.Client) *Session {
+	t.Helper()
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:                    dir,
+		OpenAIResponsesContinuation: "auto",
+		testOnly: testConfig{
+			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
+				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	return sess
 }
 
 func assertPhase9GateUsedFullHistory(t *testing.T, req llm.Request) {

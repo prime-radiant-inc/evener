@@ -83,14 +83,15 @@ type Session struct {
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.
 	// LOCK ORDER: responseSideEffectsMu > mu (Close acquires it before mu).
-	responseSideEffectsMu sync.Mutex
-	toolEventsWG          sync.WaitGroup // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
-	sendersWG             sync.WaitGroup // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
-	state                 SessionState
-	closing               bool
-	turns                 int // user input count (for MaxTurns enforcement)
-	modelResponses        int // LLM round-trip count (for meta.json turn_count)
-	history               []schema.Turn
+	responseSideEffectsMu         sync.Mutex
+	toolEventsWG                  sync.WaitGroup // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
+	sendersWG                     sync.WaitGroup // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
+	state                         SessionState
+	closing                       bool
+	turns                         int // user input count (for MaxTurns enforcement)
+	modelResponses                int // LLM round-trip count (for meta.json turn_count)
+	history                       []schema.Turn
+	responsesContinuationDisabled map[responsesContinuationDisabledKey]bool
 
 	fork forkInfo
 

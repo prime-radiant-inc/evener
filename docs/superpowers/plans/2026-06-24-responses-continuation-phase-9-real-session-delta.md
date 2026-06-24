@@ -245,7 +245,7 @@ git commit -m "test(agent): prove responses continuation retry real path"
 - Modify: `agent/session_config.go` or the nearest session state file containing unexported runtime-only fields.
 - Modify: `agent/session_openai_continuation_phase9_test.go`
 
-- [ ] **Step 1: Add RED disabled-state tests**
+- [x] **Step 1: Add RED disabled-state tests**
 
 Add tests proving:
 
@@ -253,7 +253,7 @@ Add tests proving:
 - restore/new session does not inherit disabled state;
 - changing storage scope or storage policy does not consult the old disabled entry.
 
-- [ ] **Step 2: Implement disabled key and state**
+- [x] **Step 2: Implement disabled key and state**
 
 Add a private key type:
 
@@ -270,11 +270,11 @@ type responsesContinuationDisabledKey struct {
 
 Store disabled keys on `Session`, initialized in `NewSession`/restore construction as an empty map. The map is runtime-only and must not enter snapshots.
 
-- [ ] **Step 3: Consult and mark disabled state**
+- [x] **Step 3: Consult and mark disabled state**
 
 Before selecting a delta, if the key is disabled, use full history. When `callModelWithFallback` sees a continuation rejection for a delta request, mark the key disabled before issuing full-history recovery.
 
-- [ ] **Step 4: Run focused tests and commit**
+- [x] **Step 4: Run focused tests and commit**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestSession_OpenAIResponsesContinuationPhase9.*Disabled' -count=1 -v

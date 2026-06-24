@@ -225,11 +225,11 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.
 
 	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
-	req = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns)
+	req = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
 	return profile, sys, history, req, reasoningEffort
 }
 
-func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, req llm.Request, historyTurns []schema.Turn) llm.Request {
+func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, req llm.Request, historyTurns []schema.Turn, stream bool) llm.Request {
 	if llm.ResponsesContinuationMode(strings.TrimSpace(s.cfg.OpenAIResponsesContinuation)) != llm.ResponsesContinuationAuto {
 		if req.HistoryMode == "" {
 			req.HistoryMode = llm.HistoryModeFullHistory
@@ -274,6 +274,9 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		req.HistoryMode = llm.HistoryModeFullHistory
 		return req
 	}
+	if s.responsesContinuationDisabledForPlan(req, plan, stream) {
+		return responsesContinuationFullHistoryRequestForPlan(req, plan)
+	}
 
 	reservation := reserveResponsesContinuationHistoryBase(historyTurns)
 	if !responsesContinuationHistoryBaseStillCurrent(reservation, historyTurns) {
@@ -307,6 +310,10 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		return req
 	}
 
+	return responsesContinuationFullHistoryRequestForPlan(req, plan)
+}
+
+func responsesContinuationFullHistoryRequestForPlan(req llm.Request, plan llm.ResponsesContinuationPlan) llm.Request {
 	req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
 	req.HistoryMode = llm.HistoryModeFullHistory
 	req.Continuation = &llm.ContinuationMetadata{
@@ -351,6 +358,61 @@ func (s *Session) responsesContinuationSupportRegistry() map[llm.ResponsesEndpoi
 		return s.cfg.testOnly.responsesContinuationSupportRegistry
 	}
 	return llm.DefaultResponsesContinuationSupportRegistry()
+}
+
+type responsesContinuationDisabledKey struct {
+	Provider                string
+	Model                   string
+	EndpointFamily          string
+	StorageScopeFingerprint string
+	StoragePolicyLabel      string
+	Stream                  bool
+}
+
+func responsesContinuationDisabledKeyForPlan(req llm.Request, plan llm.ResponsesContinuationPlan, stream bool) responsesContinuationDisabledKey {
+	return responsesContinuationDisabledKey{
+		Provider:                strings.TrimSpace(req.Provider),
+		Model:                   strings.TrimSpace(req.Model),
+		EndpointFamily:          strings.TrimSpace(string(plan.EndpointFamily)),
+		StorageScopeFingerprint: strings.TrimSpace(plan.StorageScopeFingerprint),
+		StoragePolicyLabel:      strings.TrimSpace(plan.StoragePolicyLabel),
+		Stream:                  stream,
+	}
+}
+
+func responsesContinuationDisabledKeyForMetadata(req llm.Request, meta *llm.ContinuationMetadata, stream bool) responsesContinuationDisabledKey {
+	if meta == nil {
+		return responsesContinuationDisabledKey{}
+	}
+	return responsesContinuationDisabledKey{
+		Provider:                strings.TrimSpace(req.Provider),
+		Model:                   strings.TrimSpace(req.Model),
+		EndpointFamily:          strings.TrimSpace(meta.EndpointFamily),
+		StorageScopeFingerprint: strings.TrimSpace(meta.StorageScopeFingerprint),
+		StoragePolicyLabel:      strings.TrimSpace(meta.StoragePolicyLabel),
+		Stream:                  stream,
+	}
+}
+
+func (s *Session) responsesContinuationDisabledForPlan(req llm.Request, plan llm.ResponsesContinuationPlan, stream bool) bool {
+	key := responsesContinuationDisabledKeyForPlan(req, plan, stream)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.responsesContinuationDisabled[key]
+}
+
+func (s *Session) disableResponsesContinuationForRequest(req llm.Request, stream bool) {
+	key := responsesContinuationDisabledKeyForMetadata(req, req.Continuation, stream)
+	if key.Provider == "" || key.Model == "" || key.EndpointFamily == "" ||
+		key.StorageScopeFingerprint == "" || key.StoragePolicyLabel == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.responsesContinuationDisabled == nil {
+		s.responsesContinuationDisabled = map[responsesContinuationDisabledKey]bool{}
+	}
+	s.responsesContinuationDisabled[key] = true
 }
 
 func responsesContinuationRegistryHasEnabledSupport(registry map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport) bool {
@@ -558,6 +620,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	})
 	modelResp, err := s.callModel(callCtx, policy, profile, req)
 	if err != nil && shouldRetryResponsesContinuationAsFullHistory(req, err) {
+		s.disableResponsesContinuationForRequest(req, profile.SupportsStreaming())
 		retryReq := responsesContinuationFullHistoryFallbackRequest(req)
 		modelResp, err = s.callModel(callCtx, policy, profile, retryReq)
 		if err == nil {
