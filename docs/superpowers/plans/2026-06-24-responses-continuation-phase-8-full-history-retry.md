@@ -52,7 +52,7 @@ Non-continuation permanent provider errors must skip the same-model history-mode
 **Files:**
 - Create: `agent/session_model_call_phase8_test.go`
 
-- [ ] **Step 1: Add continuation retry ordering test**
+- [x] **Step 1: Add continuation retry ordering test**
 
 Add this test near the existing fallback-chain tests:
 
@@ -133,7 +133,7 @@ func TestFallbackChain_ContinuationRejectionRetriesFullHistoryBeforeModelFallbac
 }
 ```
 
-- [ ] **Step 2: Add model fallback ordering test**
+- [x] **Step 2: Add model fallback ordering test**
 
 Add this test after the first Phase 8 test:
 
@@ -204,7 +204,7 @@ func TestFallbackChain_ContinuationRecoveryFailureThenModelFallback(t *testing.T
 }
 ```
 
-- [ ] **Step 3: Add non-continuation guard test and helper**
+- [x] **Step 3: Add non-continuation guard test and helper**
 
 Add this test and helper:
 
@@ -282,7 +282,7 @@ func phase8DeltaRequest() llm.Request {
 }
 ```
 
-- [ ] **Step 4: Run RED tests**
+- [x] **Step 4: Run RED tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestFallbackChain_Continuation|TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry' -count=1 -v
@@ -297,7 +297,7 @@ Expected: fail because continuation rejection goes directly to configured model 
 **Files:**
 - Modify: `agent/session_model_call.go`
 
-- [ ] **Step 1: Add helper functions**
+- [x] **Step 1: Add helper functions**
 
 Add these helpers near `callModelWithFallback`:
 
@@ -337,7 +337,7 @@ func responsesContinuationFullHistoryFallbackRequest(req llm.Request) llm.Reques
 }
 ```
 
-- [ ] **Step 2: Call the helper before model fallback**
+- [x] **Step 2: Call the helper before model fallback**
 
 In `callModelWithFallback`, immediately after the primary `s.callModel(...)`, insert:
 
@@ -355,13 +355,13 @@ In `callModelWithFallback`, immediately after the primary `s.callModel(...)`, in
 
 The existing configured model fallback block stays after this new block and sees the retry error if same-model recovery failed.
 
-- [ ] **Step 3: Run focused tests**
+- [x] **Step 3: Run focused tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent -run 'TestFallbackChain_Continuation|TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry|TestFallbackChain_PermanentErrorTriesNextModel|TestFallbackChain_EndpointFallbackErrorTriesNextModel' -count=1 -v
 ```
 
-- [ ] **Step 4: Commit implementation**
+- [x] **Step 4: Commit implementation**
 
 ```sh
 git status --short

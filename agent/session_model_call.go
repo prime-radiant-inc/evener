@@ -546,6 +546,15 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		AttemptRecorder:   adapterRecorder.record,
 	})
 	modelResp, err := s.callModel(callCtx, policy, profile, req)
+	if err != nil && shouldRetryResponsesContinuationAsFullHistory(req, err) {
+		retryReq := responsesContinuationFullHistoryFallbackRequest(req)
+		modelResp, err = s.callModel(callCtx, policy, profile, retryReq)
+		if err == nil {
+			req = retryReq
+			attempt.RequestModel = retryReq.Model
+			attempt.HistoryMode = llm.HistoryModeFullHistoryFallback
+		}
+	}
 	// Fallback chain: when the primary model returns a Permanent-class
 	// provider error (403/404/422/...) or an endpoint-fallback signal,
 	// try each configured fallback in literal order. Stops at the first
@@ -567,7 +576,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			// here. We call it anyway so the fallback always uses the same
 			// resolution logic as SetModel.
 			fbProfile, _, _ := s.resolveProfileForRef(profile, fbModel)
-			fbReq := req
+			fbReq := responsesContinuationModelFallbackRequest(req)
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
 			if origEffort != "" {
@@ -613,6 +622,55 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
 	attempt.AdapterAttempts = adapterRecorder.attempts()
 	return modelResp, req, attempt, nil
+}
+
+func shouldRetryResponsesContinuationAsFullHistory(req llm.Request, err error) bool {
+	if req.HistoryMode != llm.HistoryModeResponsesDelta {
+		return false
+	}
+	if strings.TrimSpace(req.PreviousResponseID) == "" {
+		return false
+	}
+	if len(req.FullHistoryFallbackMessages) == 0 {
+		return false
+	}
+	var llmErr llm.Error
+	if !errors.As(err, &llmErr) {
+		return false
+	}
+	code := strings.ToLower(strings.TrimSpace(llmErr.ErrorCode()))
+	if code == "previous_response_not_found" {
+		return true
+	}
+	message := strings.ToLower(strings.TrimSpace(llmErr.Error()))
+	return (strings.Contains(message, "previous_response") && strings.Contains(message, "not found")) ||
+		(strings.Contains(message, "previous response") && (strings.Contains(message, "not found") || strings.Contains(message, "expired")))
+}
+
+func responsesContinuationFullHistoryFallbackRequest(req llm.Request) llm.Request {
+	fallbackReq := req
+	fallbackReq.HistoryMode = llm.HistoryModeFullHistoryFallback
+	fallbackReq.Messages = append([]llm.Message(nil), req.FullHistoryFallbackMessages...)
+	fallbackReq.PreviousResponseID = ""
+	fallbackReq.ConversationID = ""
+	fallbackReq.Continuation = nil
+	fallbackReq.FullHistoryFallbackMessages = nil
+	return fallbackReq
+}
+
+func responsesContinuationModelFallbackRequest(req llm.Request) llm.Request {
+	fallbackReq := req
+	if req.HistoryMode == llm.HistoryModeResponsesDelta {
+		fallbackReq.HistoryMode = llm.HistoryModeFullHistory
+		if len(req.FullHistoryFallbackMessages) > 0 {
+			fallbackReq.Messages = append([]llm.Message(nil), req.FullHistoryFallbackMessages...)
+		}
+		fallbackReq.PreviousResponseID = ""
+		fallbackReq.ConversationID = ""
+		fallbackReq.Continuation = nil
+		fallbackReq.FullHistoryFallbackMessages = nil
+	}
+	return fallbackReq
 }
 
 // logAPICall records one round's request/response (or error) to the transcript.
