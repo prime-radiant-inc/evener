@@ -514,6 +514,23 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 		t.Fatalf("%s branch response was empty", endpointFamily)
 	}
 
+	copresent, copresentErr := a.Complete(ctx, llm.Request{
+		Model:              model,
+		Messages:           []llm.Message{llm.User("Reply exactly: serf continuation discovery co-present")},
+		PreviousResponseID: anchor.ID,
+		ConversationID:     "conv_serf_discovery_" + id,
+		Store:              &store,
+	})
+	copresentStatus := "accepted"
+	if copresentErr != nil {
+		if strings.TrimSpace(copresentErr.Error()) == "" {
+			t.Fatalf("%s co-present previous_response_id plus conversation failed without an explicit error", endpointFamily)
+		}
+		copresentStatus = "rejected: " + copresentErr.Error()
+	} else if strings.TrimSpace(copresent.Text()) == "" {
+		t.Fatalf("%s co-present previous_response_id plus conversation response was empty", endpointFamily)
+	}
+
 	_, invalidErr := a.Complete(ctx, llm.Request{
 		Model:              model,
 		Messages:           []llm.Message{llm.User("This invalid anchor request should fail clearly.")},
@@ -524,11 +541,11 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 		t.Fatalf("%s invalid previous_response_id was accepted; cannot enable continuation without silent-drop design", endpointFamily)
 	}
 
-	t.Logf("%s discovery: anchor_id=%q delta_text=%q branch_text=%q invalid_anchor_error=%q",
+	t.Logf("%s discovery: delta_text=%q branch_text=%q copresent_status=%q invalid_anchor_error=%q",
 		endpointFamily,
-		anchor.ID,
 		strings.TrimSpace(delta.Text()),
 		strings.TrimSpace(branch.Text()),
+		copresentStatus,
 		fmt.Sprint(invalidErr),
 	)
 }
@@ -619,12 +636,12 @@ Commands:
 - Codex backend model override example: `SERF_OPENAI_CODEX_DISCOVERY_E2E=1 SERF_OPENAI_CODEX_DISCOVERY_MODEL=gpt-5.4 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
 
 Observed status:
-- Public OpenAI: not run in default test suite.
-- Codex backend: not run in default test suite.
+- Public OpenAI: run with an explicit key; valid `previous_response_id` and branch reuse passed, invalid anchor rejected explicitly, and co-present `previous_response_id` plus `conversation` was rejected as mutually exclusive.
+- Codex backend: run with stored OAuth; `gpt-5.4` reached anchor creation but rejected `previous_response_id` as unsupported.
 
 Go/no-go:
-- Public OpenAI remains blocked for runtime enablement until its live discovery command is run and this artifact records accepted valid anchor behavior plus clear invalid-anchor behavior.
-- Codex backend remains blocked for runtime enablement until its live discovery command is run and this artifact records accepted valid anchor behavior plus clear invalid-anchor behavior.
+- Public OpenAI may proceed into deterministic Phases 1A-11 for the no-explicit-conversation V1 path, with runtime continuation still disabled until Phase 12A-public/12B-public.
+- Codex backend remains blocked for runtime enablement because the live endpoint rejected `previous_response_id`.
 
 ## SystemPromptAsUser Inventory
 
@@ -653,7 +670,9 @@ Known blockers from the design:
 Current Phase 0B verdict:
 - Deterministic adapter fixtures can land.
 - Runtime continuation remains disabled.
-- Phases 1A-11 must not be treated as a committed implementation path for an endpoint family until that endpoint family's live discovery findings are recorded here.
+- Public OpenAI no-explicit-conversation Phases 1A-11 can proceed.
+- Public OpenAI requests with explicit `ConversationID` must use `full_history` in V1.
+- Codex backend continuation remains blocked.
 ```
 
 - [ ] **Step 3: Verify proof artifact records integers and has no template markers**

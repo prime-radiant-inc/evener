@@ -42,12 +42,14 @@ Commands:
 - Codex backend: `SERF_OPENAI_CODEX_DISCOVERY_E2E=1 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run TestAdapter_E2E_CodexResponsesContinuationDiscovery -count=1 -v`
 
 Observed status:
-- Public OpenAI: not run; `OPENAI_API_KEY` was not present in the local shell.
+- Public OpenAI: run with an SSM-loaded API key and `SERF_OPENAI_RESPONSES_DISCOVERY_E2E=1`.
+- Public OpenAI: valid `previous_response_id` was accepted, a second branch from the same anchor was accepted, and an invalid anchor returned an explicit `previous_response_not_found` error.
+- Public OpenAI: co-present `previous_response_id` plus `conversation` was rejected with `mutually_exclusive_parameters`; the selected V1 runtime resolution is to use `full_history` whenever an explicit `ConversationID` is present.
 - Codex backend: run with stored OAuth. `gpt-5.2` failed before anchor creation with `The 'gpt-5.2' model is not supported when using Codex with a ChatGPT account.`
 - Codex backend: rerun with `gpt-5.4` after preserving streaming response metadata. Anchor creation returned a response ID, but the valid continuation request failed with `Unsupported parameter: previous_response_id`.
 
 Go/no-go:
-- Public OpenAI remains blocked for runtime enablement until its live discovery command is run and this artifact records accepted valid anchor behavior plus clear invalid-anchor behavior.
+- Public OpenAI may proceed into deterministic Phases 1A-11 for the no-explicit-conversation V1 path, with runtime continuation still disabled until Phase 12A-public/12B-public.
 - Codex backend is blocked for runtime enablement because the live endpoint rejected `previous_response_id`.
 
 ## SystemPromptAsUser Inventory
@@ -77,4 +79,6 @@ Known blockers from the design:
 Current Phase 0B verdict:
 - Deterministic adapter fixtures can land.
 - Runtime continuation remains disabled.
-- Phases 1A-11 must not be treated as a committed implementation path for an endpoint family until that endpoint family's live discovery findings are recorded here.
+- Public OpenAI no-explicit-conversation Phases 1A-11 can proceed.
+- Public OpenAI requests with explicit `ConversationID` must use `full_history` in V1.
+- Codex backend continuation remains blocked.

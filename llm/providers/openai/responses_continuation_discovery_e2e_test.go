@@ -112,6 +112,23 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 		t.Fatalf("%s branch response was empty", endpointFamily)
 	}
 
+	copresent, copresentErr := a.Complete(ctx, llm.Request{
+		Model:              model,
+		Messages:           []llm.Message{llm.User("Reply exactly: serf continuation discovery co-present")},
+		PreviousResponseID: anchor.ID,
+		ConversationID:     "conv_serf_discovery_" + id,
+		Store:              &store,
+	})
+	copresentStatus := "accepted"
+	if copresentErr != nil {
+		if strings.TrimSpace(copresentErr.Error()) == "" {
+			t.Fatalf("%s co-present previous_response_id plus conversation failed without an explicit error", endpointFamily)
+		}
+		copresentStatus = "rejected: " + copresentErr.Error()
+	} else if strings.TrimSpace(copresent.Text()) == "" {
+		t.Fatalf("%s co-present previous_response_id plus conversation response was empty", endpointFamily)
+	}
+
 	_, invalidErr := a.Complete(ctx, llm.Request{
 		Model:              model,
 		Messages:           []llm.Message{llm.User("This invalid anchor request should fail clearly.")},
@@ -122,11 +139,11 @@ func runResponsesContinuationDiscovery(t *testing.T, a *Adapter, model, endpoint
 		t.Fatalf("%s invalid previous_response_id was accepted; cannot enable continuation without silent-drop design", endpointFamily)
 	}
 
-	t.Logf("%s discovery: anchor_id=%q delta_text=%q branch_text=%q invalid_anchor_error=%q",
+	t.Logf("%s discovery: delta_text=%q branch_text=%q copresent_status=%q invalid_anchor_error=%q",
 		endpointFamily,
-		anchor.ID,
 		strings.TrimSpace(delta.Text()),
 		strings.TrimSpace(branch.Text()),
+		copresentStatus,
 		fmt.Sprint(invalidErr),
 	)
 }
