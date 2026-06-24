@@ -32,7 +32,7 @@ set -uo pipefail
 
 WAVE1=${WAVE1:-"."}
 WAVE2=${WAVE2:-"agent llm auth"}
-AGENT_PARALLEL=${AGENT_PARALLEL:-16}
+AGENT_PARALLEL=${AGENT_PARALLEL:-32}
 flags="$*"
 logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
 fail=0
