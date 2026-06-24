@@ -18,7 +18,7 @@ Phase 12 endpoint-family outcomes:
 | Public OpenAI 12A includes numeric rollout thresholds. | `phase-12a-public.md` has eligible-hit-rate, prompt-cache, storage/error, provider-token/cost, and rate-limit thresholds. | Satisfied |
 | Public OpenAI 12B flips only the public registry row. | `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-12b-public.md`; `llm/responses_continuation.go`. | Satisfied |
 | Codex 12A is not treated as passing without accepted `previous_response_id`. | `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-12a-codex.md` records the current live rejection. | Satisfied |
-| Codex 12B does not enable the Codex registry row after the failed 12A gate. | `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-12b-codex.md`; registry test covers public enabled plus Codex disabled. | Satisfied |
+| Codex 12B does not enable the Codex registry row after the failed 12A gate. | `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-12b-codex.md`; registry test covers public enabled plus Codex disabled; upstream Codex source shows `previous_response_id` is WebSocket-only, not an HTTP `/backend-api/codex/responses` field. | Satisfied |
 | Default tests do not require provider credentials. | Phase 12 live harness skips unless explicit opt-in env vars are set. | Satisfied |
 
 ## Current Live Evidence
@@ -56,7 +56,7 @@ FAIL	primeradiant.com/serf/llm/providers/openai	2.039s
 FAIL
 ```
 
-The Codex command is expected to fail until the provider accepts `previous_response_id` or a separate endpoint-specific continuation design is approved.
+The Codex command is expected to fail on the HTTP backend shape. Upstream Codex source confirms `previous_response_id` is only used on Responses WebSocket `response.create`, so Codex continuation would require a separate endpoint-specific WebSocket design.
 
 ## Decision
 

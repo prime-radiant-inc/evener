@@ -2960,6 +2960,8 @@ func TestAdapter_Complete_OAuthTransportOmitsUnsupportedPublicResponsesFields(t 
 		MaxTokens:            &maxTokens,
 		StopSequences:        []string{"STOP"},
 		ReasoningEffort:      &reasoning,
+		PreviousResponseID:   "resp_ignored_for_codex_http",
+		ConversationID:       "conv_ignored_for_codex_http",
 		Metadata:             map[string]string{"trace": "abc"},
 		ClientMetadata:       map[string]string{"x-codex-installation-id": "install_123"},
 		PromptCacheKey:       "thread_456",
@@ -2999,6 +3001,8 @@ func TestAdapter_Complete_OAuthTransportOmitsUnsupportedPublicResponsesFields(t 
 		"max_tool_calls",
 		"background",
 		"service_tier",
+		"previous_response_id",
+		"conversation",
 	} {
 		if _, ok := gotBody[key]; ok {
 			t.Fatalf("%s should be omitted for Codex backend: %#v", key, gotBody)

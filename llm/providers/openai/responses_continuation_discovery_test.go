@@ -72,31 +72,29 @@ func TestResponsesContinuationDiscovery_RequestShapeMatrix(t *testing.T) {
 			},
 		},
 		{
-			name:    "codex previous response only",
+			name:    "codex http omits previous response",
 			adapter: &Adapter{ResponsesPath: "/backend-api/codex/responses"},
 			req: requestShapeMatrixRequest(baseReq, func(req *llm.Request) {
 				req.PreviousResponseID = " resp_codex "
 			}),
 			want: map[string]any{
-				"store":                false,
-				"previous_response_id": "resp_codex",
+				"store": false,
 			},
-			wantAbsent: []string{"conversation"},
+			wantAbsent: []string{"previous_response_id", "conversation"},
 		},
 		{
-			name:    "codex conversation only",
+			name:    "codex http omits conversation",
 			adapter: &Adapter{ResponsesPath: "/backend-api/codex/responses"},
 			req: requestShapeMatrixRequest(baseReq, func(req *llm.Request) {
 				req.ConversationID = " conv_codex "
 			}),
 			want: map[string]any{
-				"store":        false,
-				"conversation": "conv_codex",
+				"store": false,
 			},
-			wantAbsent: []string{"previous_response_id"},
+			wantAbsent: []string{"previous_response_id", "conversation"},
 		},
 		{
-			name:    "codex previous response plus conversation plus explicit store true",
+			name:    "codex http omits continuation handles with explicit store true",
 			adapter: &Adapter{ResponsesPath: "/backend-api/codex/responses"},
 			req: requestShapeMatrixRequest(baseReq, func(req *llm.Request) {
 				req.PreviousResponseID = " resp_codex "
@@ -104,10 +102,9 @@ func TestResponsesContinuationDiscovery_RequestShapeMatrix(t *testing.T) {
 				req.Store = &storeTrue
 			}),
 			want: map[string]any{
-				"store":                true,
-				"previous_response_id": "resp_codex",
-				"conversation":         "conv_codex",
+				"store": true,
 			},
+			wantAbsent: []string{"previous_response_id", "conversation"},
 		},
 	}
 

@@ -62,10 +62,10 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	if strings.TrimSpace(req.PromptCacheKey) != "" {
 		body["prompt_cache_key"] = strings.TrimSpace(req.PromptCacheKey)
 	}
-	if strings.TrimSpace(req.PreviousResponseID) != "" {
+	if strings.TrimSpace(req.PreviousResponseID) != "" && !a.usesCodexBackend() {
 		body["previous_response_id"] = strings.TrimSpace(req.PreviousResponseID)
 	}
-	if strings.TrimSpace(req.ConversationID) != "" {
+	if strings.TrimSpace(req.ConversationID) != "" && !a.usesCodexBackend() {
 		body["conversation"] = strings.TrimSpace(req.ConversationID)
 	}
 	if strings.TrimSpace(req.ServiceTier) != "" && !a.usesCodexBackend() {
