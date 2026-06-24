@@ -117,7 +117,7 @@ GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai ./agent -run 'Tes
 
 Expected: pass.
 
-- [ ] **Step 6: Commit implementation**
+- [x] **Step 6: Commit implementation**
 
 ```sh
 git status --short
@@ -133,18 +133,18 @@ git commit -m "feat(agent): record openai endpoint fallback attempts"
 - Create: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-5b.md`
 - Modify: `docs/superpowers/plans/2026-06-24-responses-continuation-phase-5b-adapter-attempt-recorder.md`
 
-- [ ] **Step 1: Add proof artifact**
+- [x] **Step 1: Add proof artifact**
 
 Record RED, GREEN, `git diff --check`, and the boundaries left for Phases 6-8.
 
-- [ ] **Step 2: Run verification**
+- [x] **Step 2: Run verification**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm ./llm/providers/openai ./agent -run 'TestAPILoggerWritesAdapterAttemptRecords|TestAdapter_Stream_Records.*FallbackAttempts|TestSession_OpenAIResponsesContinuationPhase5B' -count=1 -v
 git diff --check
 ```
 
-- [ ] **Step 3: Commit proof**
+- [x] **Step 3: Commit proof**
 
 ```sh
 git add docs/superpowers/plans/2026-06-24-responses-continuation-phase-5b-adapter-attempt-recorder.md docs/superpowers/proofs/2026-06-24-responses-continuation-phase-5b.md
