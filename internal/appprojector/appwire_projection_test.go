@@ -716,6 +716,99 @@ func TestAppEventProjectorProjectsCompactionTurnInActiveTurn(t *testing.T) {
 	}
 }
 
+func TestAppEventProjectorGroupsSkillActivationWithUseSkill(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	started := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	turnID := notificationTurnID(t, started, appwire.NotifyTurnStarted)
+
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
+		ToolName:      "use_skill",
+		CallID:        "call_skill",
+		ArgumentsJSON: `{"skill_name":"superpowers:using-superpowers"}`,
+	}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "use_skill",
+		CallID:   "call_skill",
+		Output:   "Skill loaded",
+	}})
+
+	out := projector.Project(events.SessionEvent{Kind: events.EventSkillActivated, SessionID: "th_1", Data: events.SkillActivatedData{Name: "superpowers:using-superpowers"}})
+	if len(out) != 1 || out[0].Method != appwire.NotifyItemCompleted {
+		t.Fatalf("notifications=%+v", out)
+	}
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Type != "commandExecution" || item.TurnID != turnID || item.ToolName != "use_skill" || item.CallID != "call_skill" {
+		t.Fatalf("grouped item has wrong identity: %+v", item)
+	}
+	if item.Description == "Skill activated" {
+		t.Fatalf("skill activation should not be projected as system message: %+v", item)
+	}
+	var raw struct {
+		SkillActivation *struct {
+			Name string `json:"name"`
+			Text string `json:"text"`
+		} `json:"skill_activation"`
+	}
+	if err := json.Unmarshal(item.Raw, &raw); err != nil {
+		t.Fatalf("Raw is not valid JSON: %v (%s)", err, item.Raw)
+	}
+	if raw.SkillActivation == nil || raw.SkillActivation.Name != "superpowers:using-superpowers" || raw.SkillActivation.Text != "Activated skill: superpowers:using-superpowers" {
+		t.Fatalf("wrong skill activation raw: %+v raw=%s", raw.SkillActivation, item.Raw)
+	}
+}
+
+func TestAppEventProjectorLeavesUnmatchedSkillActivationStandalone(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
+		ToolName:      "use_skill",
+		CallID:        "call_skill",
+		ArgumentsJSON: `{"skill_name":"superpowers:other"}`,
+	}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{ToolName: "use_skill", CallID: "call_skill", Output: "Skill loaded"}})
+
+	out := projector.Project(events.SessionEvent{Kind: events.EventSkillActivated, SessionID: "th_1", Data: events.SkillActivatedData{Name: "superpowers:using-superpowers"}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Type != "systemMessage" || item.Description != "Skill activated" || !strings.Contains(item.Text, "superpowers:using-superpowers") {
+		t.Fatalf("unmatched activation should remain standalone system message: %+v", item)
+	}
+}
+
+func TestAppEventProjectorGroupsSkillActivationWithLegacyUseSkillNameArg(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
+		ToolName:      "use_skill",
+		CallID:        "call_skill",
+		ArgumentsJSON: `{"name":"legacy-skill"}`,
+	}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{ToolName: "use_skill", CallID: "call_skill", Output: "Skill loaded"}})
+
+	out := projector.Project(events.SessionEvent{Kind: events.EventSkillActivated, SessionID: "th_1", Data: events.SkillActivatedData{Name: "legacy-skill"}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Type != "commandExecution" || item.CallID != "call_skill" || len(item.Raw) == 0 {
+		t.Fatalf("legacy use_skill name arg should correlate: %+v", item)
+	}
+}
+
+func TestAppEventProjectorDoesNotInferSkillActivationAcrossAssistantText(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
+		ToolName:      "use_skill",
+		CallID:        "call_skill",
+		ArgumentsJSON: `{"skill_name":"superpowers:using-superpowers"}`,
+	}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{ToolName: "use_skill", CallID: "call_skill", Output: "Skill loaded"}})
+	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "I will continue."}})
+
+	out := projector.Project(events.SessionEvent{Kind: events.EventSkillActivated, SessionID: "th_1", Data: events.SkillActivatedData{Name: "superpowers:using-superpowers"}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Type != "systemMessage" || item.Description != "Skill activated" {
+		t.Fatalf("activation after intervening assistant text should remain standalone: %+v", item)
+	}
+}
+
 func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testing.T) {
 	tests := []struct {
 		name        string

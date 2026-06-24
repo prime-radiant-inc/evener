@@ -19,6 +19,14 @@ type AppNotification struct {
 	Params   any
 }
 
+type skillActivationCandidate struct {
+	turnID string
+	itemID string
+	callID string
+	skill  string
+	valid  bool
+}
+
 type AppEventProjector struct {
 	threadID string
 	ref      string
@@ -31,7 +39,9 @@ type AppEventProjector struct {
 	assistantText   string
 	reasoningItem   string
 	toolItemsByKey  map[string]string
+	toolArgsByKey   map[string]string
 	suppressedTools map[string]struct{}
+	skillCandidate  skillActivationCandidate
 
 	lastAssistantTurnID string
 	lastAssistantText   string
@@ -42,8 +52,13 @@ func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 		threadID:        threadID,
 		ref:             ref,
 		toolItemsByKey:  map[string]string{},
+		toolArgsByKey:   map[string]string{},
 		suppressedTools: map[string]struct{}{},
 	}
+}
+
+func (p *AppEventProjector) clearSkillCandidate() {
+	p.skillCandidate = skillActivationCandidate{}
 }
 
 func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification {
@@ -81,6 +96,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.assistantText = ""
 			p.reasoningItem = ""
 			p.toolItemsByKey = map[string]string{}
+			p.toolArgsByKey = map[string]string{}
 			p.suppressedTools = map[string]struct{}{}
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
@@ -115,6 +131,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		)
 		return out
 	case events.EventGoalContinuation:
+		p.clearSkillCandidate()
 		// A goal continuation opens a fresh turn just like a user input
 		// (close the prior turn, start a new one), but renders its prompt as
 		// a systemMessage rather than a userMessage so continuations don't
@@ -127,6 +144,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.assistantText = ""
 			p.reasoningItem = ""
 			p.toolItemsByKey = map[string]string{}
+			p.toolArgsByKey = map[string]string{}
 			p.suppressedTools = map[string]struct{}{}
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
@@ -160,6 +178,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		)
 		return out
 	case events.EventAssistantTextStart:
+		p.skillCandidate = skillActivationCandidate{}
 		p.ensureTurn()
 		p.assistantItem = p.nextItemID("assistant")
 		p.assistantText = ""
@@ -213,6 +232,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}))
 		return out
 	case events.EventAssistantTextEnd:
+		p.skillCandidate = skillActivationCandidate{}
 		p.ensureAssistantItem()
 		data := eventData[events.AssistantTextEndData](event.Data)
 		text := data.Text
@@ -254,6 +274,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			ItemID:   itemID,
 		})}
 	case events.EventCommunicate:
+		p.skillCandidate = skillActivationCandidate{}
 		data := eventData[events.CommunicateData](event.Data)
 		text := strings.TrimSpace(data.Message)
 		if text == "" {
@@ -280,12 +301,16 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventToolCallStart:
 		p.ensureTurn()
 		data := eventData[events.ToolCallStartData](event.Data)
+		if data.ToolName != "use_skill" {
+			p.skillCandidate = skillActivationCandidate{}
+		}
 		if data.ToolName == "communicate" {
 			p.suppressedTools[data.CallID] = struct{}{}
 			return nil
 		}
 		itemID := p.nextItemID("tool")
 		p.toolItemsByKey[data.CallID] = itemID
+		p.toolArgsByKey[data.CallID] = data.ArgumentsJSON
 		return []AppNotification{p.notification(appwire.NotifyItemStarted, map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
@@ -331,7 +356,21 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Status:   "completed",
 			Raw:      data.ToolState,
 		}
+		argsJSON := p.toolArgsByKey[data.CallID]
+		if data.ToolName == "use_skill" && data.Error == "" {
+			skill := useSkillNameFromArgs(argsJSON)
+			p.skillCandidate = skillActivationCandidate{
+				turnID: p.activeTurnID,
+				itemID: item.ID,
+				callID: data.CallID,
+				skill:  skill,
+				valid:  skill != "",
+			}
+		} else {
+			p.skillCandidate = skillActivationCandidate{}
+		}
 		delete(p.toolItemsByKey, data.CallID)
+		delete(p.toolArgsByKey, data.CallID)
 		return []AppNotification{p.notification(appwire.NotifyItemCompleted, map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
@@ -339,6 +378,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			"item":     item,
 		})}
 	case events.EventWarning:
+		p.clearSkillCandidate()
 		data := eventData[events.WarningData](event.Data)
 		info := diagnostic.FromFields(data.Source, data.Title, data.Hint, data.Message)
 		return []AppNotification{p.notification(appwire.NotifyWarning, map[string]any{
@@ -351,6 +391,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			"warning":  event.Data,
 		})}
 	case events.EventError:
+		p.clearSkillCandidate()
 		data := eventData[events.ErrorData](event.Data)
 		message := strings.TrimSpace(data.Error)
 		if message == "" {
@@ -409,6 +450,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			}),
 		}
 	case events.EventSteeringInjected:
+		p.clearSkillCandidate()
 		data := eventData[events.SteeringInjectedData](event.Data)
 		images := projectUserInputImages(data.Images)
 		text := data.Text
@@ -422,41 +464,73 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			"images":   images,
 		})}
 	case events.EventCompactionTurn:
+		p.clearSkillCandidate()
 		data := eventData[events.CompactionTurnData](event.Data)
 		return p.systemAnnouncement("compaction", apptranscript.CompactionDescription(data.Kind), data.Text)
 	case events.EventTurnLimit:
+		p.clearSkillCandidate()
 		data := eventData[events.TurnLimitData](event.Data)
 		return p.systemAnnouncement("turn_limit", "Turn limit", turnLimitAnnouncement(data))
 	case events.EventLoopDetection:
+		p.clearSkillCandidate()
 		data := eventData[events.LoopDetectionData](event.Data)
 		return p.systemAnnouncement("loop_detection", "Loop detection", data.Message)
 	case events.EventGoalEnded:
+		p.clearSkillCandidate()
 		data := eventData[events.GoalEndedData](event.Data)
 		return p.systemAnnouncement("goal", "Goal", goalEndText(data))
 	case events.EventSkillActivated:
 		data := eventData[events.SkillActivatedData](event.Data)
+		name := strings.TrimSpace(data.Name)
+		if p.skillCandidate.valid && p.skillCandidate.turnID == p.activeTurnID && p.skillCandidate.skill == name {
+			candidate := p.skillCandidate
+			p.skillCandidate = skillActivationCandidate{}
+			item := appwire.ThreadItem{
+				Type:     "commandExecution",
+				ID:       candidate.itemID,
+				TurnID:   candidate.turnID,
+				ToolName: "use_skill",
+				CallID:   candidate.callID,
+				Status:   "completed",
+				Raw:      skillActivationRaw(name),
+			}
+			return []AppNotification{p.notification(appwire.NotifyItemCompleted, map[string]any{
+				"threadId": p.threadID,
+				"ref":      p.ref,
+				"turnId":   candidate.turnID,
+				"item":     item,
+			})}
+		}
+		p.skillCandidate = skillActivationCandidate{}
 		return p.systemAnnouncement("skill", "Skill activated", "Activated skill: "+data.Name)
 	case events.EventContextCompaction:
+		p.clearSkillCandidate()
 		data := eventData[events.ContextCompactionData](event.Data)
 		return p.systemAnnouncementWithRaw("context_compaction", "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))
 	case events.EventPluginLoaded:
+		p.clearSkillCandidate()
 		data := eventData[events.PluginLoadedData](event.Data)
 		return p.systemAnnouncement("plugin", "Plugin loaded", pluginLoadedAnnouncement(data))
 	case events.EventHookStart:
 		return nil
 	case events.EventHookEnd:
+		p.clearSkillCandidate()
 		data := eventData[events.HookEndData](event.Data)
 		return p.systemAnnouncement("hook", "Hook", hookEndAnnouncement(data))
 	case events.EventForkSummary:
+		p.clearSkillCandidate()
 		data := eventData[events.ForkSummaryData](event.Data)
 		return p.systemAnnouncement("fork_summary", "Fork summary", forkSummaryAnnouncement(data))
 	case events.EventPromptLoaded:
+		p.clearSkillCandidate()
 		data := eventData[events.PromptLoadedData](event.Data)
 		return p.systemAnnouncement("prompt", "Prompt loaded", promptLoadedAnnouncement(data))
 	case events.EventRoundTimings:
+		p.clearSkillCandidate()
 		data := eventData[events.RoundTimings](event.Data)
 		return p.systemAnnouncement("round_timings", "Round timings", roundTimingsAnnouncement(data))
 	case events.EventQueueChanged:
+		p.clearSkillCandidate()
 		data := eventData[events.QueueChangedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
 			ThreadID: p.threadID,
@@ -464,6 +538,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Queue:    appwire.QueueState{Depth: data.Depth, Preview: append([]string(nil), data.Preview...)},
 		})}
 	case events.EventJobStarted:
+		p.clearSkillCandidate()
 		data := eventData[events.JobStartedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifySerfJobStarted, map[string]any{
 			"threadId": p.threadID,
@@ -476,6 +551,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			},
 		})}
 	case events.EventJobFinished:
+		p.clearSkillCandidate()
 		data := eventData[events.JobFinishedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifySerfJobFinished, map[string]any{
 			"threadId": p.threadID,
@@ -492,6 +568,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			},
 		})}
 	case events.EventSessionEnd:
+		p.clearSkillCandidate()
 		data := eventData[events.SessionEndData](event.Data)
 		state := appwire.ThreadStatusClosed
 		switch data.State {
@@ -514,6 +591,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.assistantText = ""
 			p.reasoningItem = ""
 			p.toolItemsByKey = map[string]string{}
+			p.toolArgsByKey = map[string]string{}
 			p.suppressedTools = map[string]struct{}{}
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
@@ -533,6 +611,32 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	default:
 		return nil
 	}
+}
+
+func useSkillNameFromArgs(raw string) string {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return ""
+	}
+	for _, key := range []string{"skill_name", "name"} {
+		if v, ok := args[key].(string); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func skillActivationRaw(name string) json.RawMessage {
+	payload := struct {
+		SkillActivation struct {
+			Name string `json:"name"`
+			Text string `json:"text"`
+		} `json:"skill_activation"`
+	}{}
+	payload.SkillActivation.Name = name
+	payload.SkillActivation.Text = "Activated skill: " + name
+	raw, _ := json.Marshal(payload)
+	return raw
 }
 
 func (p *AppEventProjector) notification(method string, params any) AppNotification {

@@ -683,6 +683,26 @@
 
   const useSkillRenderer = Object.assign({}, defaultRenderer, {
     target: (a) => a.skill_name || a.name || "",
+    body: (args, conversation) => {
+      const div = document.createElement("div");
+      div.className = "tool-body use-skill-body";
+      div.style.display = "none";
+      conversation.appendChild(div);
+      return { div };
+    },
+    bodyEnd: (state, data) => {
+      if (!state.body || !state.body.div) return;
+      const st = parseToolState(data.tool_state);
+      const activation = st && (st.skill_activation || st.skillActivation);
+      const text = activation && (activation.text || (activation.name && ("Activated skill: " + activation.name)));
+      if (!text) {
+        state.body.div.textContent = "";
+        state.body.div.style.display = "none";
+        return;
+      }
+      state.body.div.style.display = "";
+      state.body.div.textContent = text;
+    },
   });
 
   const toolRenderers = {

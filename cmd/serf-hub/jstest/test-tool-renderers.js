@@ -147,6 +147,32 @@ await scenario("use_skill target omits purpose already shown as intent", [
   return { ok: true };
 });
 
+await scenario("use_skill grouped activation renders inside tool card", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "s1", tool_name: "use_skill", arguments_json: JSON.stringify({ skill_name: "superpowers:using-superpowers" }) }],
+  ["TOOL_CALL_END", { call_id: "s1", tool_name: "use_skill", output: "Skill loaded", tool_state: JSON.stringify({ skill_activation: { name: "superpowers:using-superpowers", text: "Activated skill: superpowers:using-superpowers" } }) }],
+], ({ conv }) => {
+  const card = conv.querySelector(".tool-call.use_skill");
+  if (!card) return { ok: false, detail: "no use_skill card" };
+  if (conv.querySelector(".system-message")) return { ok: false, detail: "grouped activation rendered standalone system message" };
+  if (!card.textContent.includes("superpowers:using-superpowers")) return { ok: false, detail: "skill name missing from card" };
+  card.dataset.expanded = "true";
+  const body = card.querySelector(".tool-body");
+  if (!body || !body.textContent.includes("Activated skill: superpowers:using-superpowers")) return { ok: false, detail: "activation detail missing from body" };
+  return { ok: true };
+});
+
+await scenario("standalone skill activation system message still renders", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["SYSTEM_MESSAGE", { title: "Skill activated", text: "Activated skill: standalone" }],
+], ({ conv }) => {
+  const msg = conv.querySelector(".system-message");
+  if (!msg) return { ok: false, detail: "missing standalone system message" };
+  if (!msg.textContent.includes("Skill activated")) return { ok: false, detail: "missing title" };
+  if (!msg.textContent.includes("Activated skill: standalone")) return { ok: false, detail: "missing activation text" };
+  return { ok: true };
+});
+
 await scenario("job_read_output renders status, truncation, and output preview", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "jr1", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_A" }) }],
