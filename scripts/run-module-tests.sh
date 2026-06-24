@@ -32,7 +32,12 @@ set -uo pipefail
 
 WAVE1=${WAVE1:-"."}
 WAVE2=${WAVE2:-"agent llm auth"}
-AGENT_PARALLEL=${AGENT_PARALLEL:-32}
+# Extra -parallel for the agent wave. Defaults to 32 (helps overlap the few
+# remaining timer waits on multi-core dev machines). An explicit empty value
+# (note: -, not :-) means "don't pass -parallel" so go test uses GOMAXPROCS —
+# the -race gate sets this to avoid oversubscribing few-core CI, which starves
+# real per-test work past its timeouts.
+AGENT_PARALLEL=${AGENT_PARALLEL-32}
 flags="$*"
 logdir="$(mktemp -d -t serf-module-tests.XXXXXX)"
 fail=0
@@ -63,8 +68,10 @@ run_wave() {
 	done
 }
 
+agentExtra=""
+[ -n "$AGENT_PARALLEL" ] && agentExtra="-parallel $AGENT_PARALLEL"
 run_wave "" $WAVE1
-run_wave "-parallel $AGENT_PARALLEL" $WAVE2
+run_wave "$agentExtra" $WAVE2
 
 if [ "$fail" -ne 0 ]; then
 	echo
