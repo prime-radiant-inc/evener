@@ -492,6 +492,7 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 	t.Parallel()
 	for _, pc := range providerCases {
 		t.Run(pc.name, func(t *testing.T) {
+			t.Parallel()
 			// Deliberately create a repeating pattern to trigger loop detection.
 			callNum := 0
 			steps := []func(llm.Request) llm.Response{

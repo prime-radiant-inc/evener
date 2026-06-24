@@ -801,9 +801,11 @@ func TestOutputGrepLimitCapsZeroLengthMatches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	for i := 0; i < 100; i++ {
-		appendOutput(t, o, "\n")
-	}
+	// One append of 100 newlines, not 100 appends: identical on-disk content and
+	// the same 100 zero-length-match lines for the cap to clamp, but a single
+	// fsync round instead of ~300 (each Append fsyncs the log, re-hashes it, and
+	// fsyncs the meta file + parent dir).
+	appendOutput(t, o, strings.Repeat("\n", 100))
 	re := regexp.MustCompile(`^`)
 
 	matches, err := o.GrepLimit(re, 1<<16, 5)
