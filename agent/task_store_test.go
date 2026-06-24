@@ -1007,16 +1007,29 @@ func TestTaskStore_UpdateDependsOn(t *testing.T) {
 
 // Task 4: Dependency validation tests
 
-func TestTaskStore_AppendRejectsNonexistentDependency(t *testing.T) {
+func TestTaskStore_AppendRejectsInvalidDependency(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	s := taskpkg.NewTaskStore(dir, "test-session")
+	cases := []struct {
+		name      string
+		dependsOn []int
+		failMsg   string
+	}{
+		{"nonexistent dependency", []int{99}, "expected error for nonexistent dependency 99, got nil"},
+		{"self dependency", []int{1}, "expected error for self-dependency (ID 1 depends on 1), got nil"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			s := taskpkg.NewTaskStore(dir, "test-session")
 
-	_, err := s.Append([]taskpkg.TaskInput{
-		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A", DependsOn: []int{99}},
-	})
-	if err == nil {
-		t.Fatalf("expected error for nonexistent dependency 99, got nil")
+			_, err := s.Append([]taskpkg.TaskInput{
+				{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A", DependsOn: tc.dependsOn},
+			})
+			if err == nil {
+				t.Fatal(tc.failMsg)
+			}
+		})
 	}
 }
 
@@ -1078,19 +1091,6 @@ func TestTaskStore_RejectsTransitiveCycle(t *testing.T) {
 	err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskOpen, DependsOn: &deps}})
 	if err == nil {
 		t.Fatalf("expected error for transitive cycle A→C→B→A, got nil")
-	}
-}
-
-func TestTaskStore_RejectsSelfDependency(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	s := taskpkg.NewTaskStore(dir, "test-session")
-
-	_, err := s.Append([]taskpkg.TaskInput{
-		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A", DependsOn: []int{1}},
-	})
-	if err == nil {
-		t.Fatalf("expected error for self-dependency (ID 1 depends on 1), got nil")
 	}
 }
 

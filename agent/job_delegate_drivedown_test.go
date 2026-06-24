@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/llm"
 )
@@ -93,20 +92,11 @@ func TestDriveDownDeafCoordinator(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	root, err := NewSession(
-		c,
-		NewOpenAIProfile("gpt-5.2"),
-		execenv.NewLocalExecutionEnvironment(t.TempDir()),
-		SessionConfig{
-			StateDir:         t.TempDir(),
-			MaxSubagentDepth: 3,
-			NoProjectPrompts: true,
-		},
-	)
-	if err != nil {
-		t.Fatalf("NewSession (root): %v", err)
-	}
-	t.Cleanup(func() { root.Close() })
+	root := newSession(t, withClient(c), withConfig(SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 3,
+		NoProjectPrompts: true,
+	}))
 
 	// Background a coordinator delegate from root. The coordinator's session runs
 	// in a goroutine: subagent.run → sess.ProcessInput → adapter step 0.
@@ -288,20 +278,11 @@ func TestDriveAtDepth3WithIdleMiddle(t *testing.T) {
 	adapter := &alwaysAckAdapter{name: "openai"}
 	c.Register(adapter)
 
-	root, err := NewSession(
-		c,
-		NewOpenAIProfile("gpt-5.2"),
-		execenv.NewLocalExecutionEnvironment(t.TempDir()),
-		SessionConfig{
-			StateDir:         t.TempDir(),
-			MaxSubagentDepth: 3,
-			NoProjectPrompts: true,
-		},
-	)
-	if err != nil {
-		t.Fatalf("NewSession (root): %v", err)
-	}
-	t.Cleanup(func() { root.Close() })
+	root := newSession(t, withClient(c), withConfig(SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 3,
+		NoProjectPrompts: true,
+	}))
 
 	// Background the mid delegate (depth 1). It communicates ("ack") and idles.
 	midRes := root.createDelegate(context.Background(), delegateArgs{
@@ -421,20 +402,11 @@ func TestMidOwnerCallerFramesRenderMidSide(t *testing.T) {
 	adapter := &alwaysAckAdapter{name: "openai"}
 	c.Register(adapter)
 
-	root, err := NewSession(
-		c,
-		NewOpenAIProfile("gpt-5.2"),
-		execenv.NewLocalExecutionEnvironment(t.TempDir()),
-		SessionConfig{
-			StateDir:         t.TempDir(),
-			MaxSubagentDepth: 3,
-			NoProjectPrompts: true,
-		},
-	)
-	if err != nil {
-		t.Fatalf("NewSession (root): %v", err)
-	}
-	t.Cleanup(func() { root.Close() })
+	root := newSession(t, withClient(c), withConfig(SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 3,
+		NoProjectPrompts: true,
+	}))
 
 	midRes := root.createDelegate(context.Background(), delegateArgs{
 		Task:       "mid watch owner",
@@ -788,8 +760,7 @@ func TestStopGateUsesAppendOrderNotWallClock(t *testing.T) {
 
 	// Freeze the clock so wall-clock CANNOT disambiguate: the stop and the later
 	// resume share an identical TS. Only append order separates them.
-	frozen := time.Unix(9000, 0).UTC()
-	parentJM.now = func() time.Time { return frozen }
+	freezeClockAt(parentJM, time.Unix(9000, 0).UTC())
 
 	appendDelegateRecordForChild(t, parentJM, "job_stop_a", "CHILD", jobstore.StatusCancelled, "stopped_by_parent")
 	appendDelegateRecordForChild(t, parentJM, "job_resume_b", "CHILD", "", "")

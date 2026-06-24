@@ -140,35 +140,43 @@ func TestResolveTranscript_CurrentKeyword(t *testing.T) {
 	}
 }
 
-func TestResolveTranscript_ExplicitLocalRef(t *testing.T) {
+func TestResolveTranscript_LocalRefVariants(t *testing.T) {
 	t.Parallel()
-	dir := newBucket(t)
-	writeTranscript(t, dir, "01ABC")
-	path, ref, err := resolveTranscript("local:01ABC", dir, "01CUR")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	cases := []struct {
+		name      string
+		sessionID string
+		selector  string
+		wantRef   string
+	}{
+		{
+			name:      "ExplicitLocalRef",
+			sessionID: "01ABC",
+			selector:  "local:01ABC",
+			wantRef:   "local:01ABC",
+		},
+		{
+			name:      "BareIDInCurrentBucket",
+			sessionID: "01BARE",
+			selector:  "01BARE",
+			wantRef:   "local:01BARE",
+		},
 	}
-	if ref != "local:01ABC" {
-		t.Fatalf("expected ref local:01ABC, got %q", ref)
-	}
-	if !strings.HasSuffix(path, "01ABC.transcript.jsonl") {
-		t.Fatalf("unexpected path %q", path)
-	}
-}
-
-func TestResolveTranscript_BareIDInCurrentBucket(t *testing.T) {
-	t.Parallel()
-	dir := newBucket(t)
-	writeTranscript(t, dir, "01BARE")
-	path, ref, err := resolveTranscript("01BARE", dir, "01CUR")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if ref != "local:01BARE" {
-		t.Fatalf("expected local ref, got %q", ref)
-	}
-	if !strings.HasSuffix(path, "01BARE.transcript.jsonl") {
-		t.Fatalf("unexpected path %q", path)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			dir := newBucket(t)
+			writeTranscript(t, dir, c.sessionID)
+			path, ref, err := resolveTranscript(c.selector, dir, "01CUR")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if ref != c.wantRef {
+				t.Fatalf("expected ref %q, got %q", c.wantRef, ref)
+			}
+			if !strings.HasSuffix(path, c.sessionID+".transcript.jsonl") {
+				t.Fatalf("unexpected path %q", path)
+			}
+		})
 	}
 }
 

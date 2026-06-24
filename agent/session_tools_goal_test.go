@@ -73,33 +73,32 @@ func TestUpdateGoalTool_Blocked(t *testing.T) {
 	}
 }
 
-func TestUpdateGoalTool_InvalidStatus(t *testing.T) {
+func TestUpdateGoalTool_RejectsBadStatus(t *testing.T) {
 	t.Parallel()
-	sess := testGoalSession(t)
-	sess.getOrCreateGoalStore().Set("obj", testGoalNow())
-
-	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "g3",
-		Name:      "update_goal",
-		Arguments: json.RawMessage(`{"status":"frobnicate"}`),
-	})
-	if !res.IsError {
-		t.Fatalf("invalid status should produce IsError=true, got output: %s", res.Output)
+	cases := []struct {
+		name string
+		id   string
+		args string
+		kind string
+	}{
+		{"invalid status", "g3", `{"status":"frobnicate"}`, "invalid"},
+		{"missing status", "g4", `{}`, "missing"},
 	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sess := testGoalSession(t)
+			sess.getOrCreateGoalStore().Set("obj", testGoalNow())
 
-func TestUpdateGoalTool_MissingStatus(t *testing.T) {
-	t.Parallel()
-	sess := testGoalSession(t)
-	sess.getOrCreateGoalStore().Set("obj", testGoalNow())
-
-	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "g4",
-		Name:      "update_goal",
-		Arguments: json.RawMessage(`{}`),
-	})
-	if !res.IsError {
-		t.Fatalf("missing status should produce IsError=true, got output: %s", res.Output)
+			res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+				ID:        tc.id,
+				Name:      "update_goal",
+				Arguments: json.RawMessage(tc.args),
+			})
+			if !res.IsError {
+				t.Fatalf("%s status should produce IsError=true, got output: %s", tc.kind, res.Output)
+			}
+		})
 	}
 }
 

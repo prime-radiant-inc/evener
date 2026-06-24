@@ -96,40 +96,101 @@ func mustWorkflowAgent(t *testing.T, name string) plugin.Agent {
 	return coordinatorWorkflowAgentForTest(t, name)
 }
 
-func TestSectionResolver_BaseOnly(t *testing.T) {
+func TestSectionResolver_ResolvesToBase(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	writeSection(t, dir, "identity.md", "I am serf")
+	cases := []struct {
+		name     string
+		section  string
+		content  string
+		provider string
+		agent    string
+		query    string
+		want     string
+	}{
+		{
+			name:     "BaseOnly",
+			section:  "identity.md",
+			content:  "I am serf",
+			provider: "openai",
+			agent:    "coordinator",
+			query:    "identity",
+			want:     "I am serf",
+		},
+		{
+			name:     "ProviderFallsBackToBase",
+			section:  "tools.md",
+			content:  "generic tools",
+			provider: "anthropic",
+			agent:    "",
+			query:    "tools",
+			want:     "generic tools",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			writeSection(t, dir, c.section, c.content)
 
-	r := newTestResolver(t, dir, "openai", "coordinator")
-	got := r.Section("identity", promptData{})
-	if got != "I am serf" {
-		t.Errorf("got %q, want %q", got, "I am serf")
+			r := newTestResolver(t, dir, c.provider, c.agent)
+			got := r.Section(c.query, promptData{})
+			if got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
 	}
 }
 
-func TestSectionResolver_ProviderOverride(t *testing.T) {
+func TestSectionResolver_VariantOverridesBase(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	writeSection(t, dir, "tools.md", "generic tools")
-	writeSection(t, dir, "tools.provider-openai.md", "openai tools")
-
-	r := newTestResolver(t, dir, "openai", "")
-	got := r.Section("tools", promptData{})
-	if got != "openai tools" {
-		t.Errorf("got %q, want %q", got, "openai tools")
+	type section struct {
+		name, content string
 	}
-}
+	cases := []struct {
+		name     string
+		sections []section
+		provider string
+		agent    string
+		query    string
+		want     string
+	}{
+		{
+			name: "ProviderOverride",
+			sections: []section{
+				{"tools.md", "generic tools"},
+				{"tools.provider-openai.md", "openai tools"},
+			},
+			provider: "openai",
+			agent:    "",
+			query:    "tools",
+			want:     "openai tools",
+		},
+		{
+			name: "AgentBodyReplaces",
+			sections: []section{
+				{"communicate.md", "call communicate"},
+				{"communicate.agent-reviewer.md", "call approve or reject"},
+			},
+			provider: "openai",
+			agent:    "reviewer",
+			query:    "communicate",
+			want:     "call approve or reject",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			for _, s := range c.sections {
+				writeSection(t, dir, s.name, s.content)
+			}
 
-func TestSectionResolver_ProviderFallsBackToBase(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	writeSection(t, dir, "tools.md", "generic tools")
-
-	r := newTestResolver(t, dir, "anthropic", "")
-	got := r.Section("tools", promptData{})
-	if got != "generic tools" {
-		t.Errorf("got %q, want %q", got, "generic tools")
+			r := newTestResolver(t, dir, c.provider, c.agent)
+			got := r.Section(c.query, promptData{})
+			if got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
 	}
 }
 
@@ -145,19 +206,6 @@ func TestSectionResolver_PrependAppend(t *testing.T) {
 	want := "before\n\nbase\n\nafter"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestSectionResolver_AgentBodyReplaces(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	writeSection(t, dir, "communicate.md", "call communicate")
-	writeSection(t, dir, "communicate.agent-reviewer.md", "call approve or reject")
-
-	r := newTestResolver(t, dir, "openai", "reviewer")
-	got := r.Section("communicate", promptData{})
-	if got != "call approve or reject" {
-		t.Errorf("got %q, want %q", got, "call approve or reject")
 	}
 }
 
