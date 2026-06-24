@@ -60,6 +60,28 @@ type LocalExecutionEnvironment struct {
 	RootDir     string       // directory that file operations and commands are rooted at
 	EnvPolicy   EnvVarPolicy // which env vars child processes inherit
 	runningPIDs *sync.Map    // pid (int) → struct{}
+	gitRoots    *gitRootCache
+}
+
+// gitRootCache memoizes git-root lookups per working dir. A session resolves the
+// git root ~4 times at init (skills, project docs, mcp config, system prompt);
+// without this each forks `git rev-parse`, which is roughly half of session
+// construction latency. Keyed by cwd so distinct directories stay correct; the
+// root of a fixed cwd is stable for the life of the environment.
+type gitRootCache struct {
+	mu sync.Mutex
+	m  map[string]string
+}
+
+func (c *gitRootCache) lookup(cwd string, compute func() string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if v, ok := c.m[cwd]; ok {
+		return v
+	}
+	v := compute()
+	c.m[cwd] = v
+	return v
 }
 
 // NewLocalExecutionEnvironment returns a LocalExecutionEnvironment rooted at
@@ -68,6 +90,7 @@ func NewLocalExecutionEnvironment(rootDir string) *LocalExecutionEnvironment {
 	return &LocalExecutionEnvironment{
 		RootDir:     rootDir,
 		runningPIDs: &sync.Map{},
+		gitRoots:    &gitRootCache{m: map[string]string{}},
 	}
 }
 
@@ -78,6 +101,7 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 		RootDir:     dir,
 		EnvPolicy:   e.EnvPolicy,
 		runningPIDs: e.runningPIDs,
+		gitRoots:    &gitRootCache{m: map[string]string{}},
 	}
 }
 
@@ -85,6 +109,9 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 func (e *LocalExecutionEnvironment) Initialize() error {
 	if e.runningPIDs == nil {
 		e.runningPIDs = &sync.Map{}
+	}
+	if e.gitRoots == nil {
+		e.gitRoots = &gitRootCache{m: map[string]string{}}
 	}
 	return nil
 }
@@ -134,10 +161,21 @@ func (e *LocalExecutionEnvironment) Platform() string {
 	}
 }
 
+var (
+	osVersionOnce  sync.Once
+	osVersionValue string
+)
+
 // OSVersion returns the OS version string. On darwin and linux it shells out to
 // "uname -rs"; on windows it runs "ver". If the command fails it falls back to
-// "GOOS/GOARCH".
+// "GOOS/GOARCH". The host OS version is constant for the process, so it is
+// resolved once and shared rather than forking a subprocess per session.
 func (e *LocalExecutionEnvironment) OSVersion() string {
+	osVersionOnce.Do(func() { osVersionValue = resolveOSVersion() })
+	return osVersionValue
+}
+
+func resolveOSVersion() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	switch runtime.GOOS {
