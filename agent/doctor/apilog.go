@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/llm"
 )
 
 // APILogOpts selects which calls to display. Filters narrow the rows shown; the
@@ -42,14 +43,21 @@ type APICallRow struct {
 
 // APILogTotals aggregates every call in the session, regardless of row filter.
 type APILogTotals struct {
-	Calls           int   `json:"calls"`
-	Empties         int   `json:"empties"`
-	Errors          int   `json:"errors"`
-	InputTokens     int   `json:"input_tokens"`
-	OutputTokens    int   `json:"output_tokens"`
-	CacheReadTokens int   `json:"cache_read_tokens"`
-	TotalTokens     int   `json:"total_tokens"`
-	AvgLatencyMs    int64 `json:"avg_latency_ms"`
+	Calls                        int                                      `json:"calls"`
+	Empties                      int                                      `json:"empties"`
+	Errors                       int                                      `json:"errors"`
+	InputTokens                  int                                      `json:"input_tokens"`
+	OutputTokens                 int                                      `json:"output_tokens"`
+	CacheReadTokens              int                                      `json:"cache_read_tokens"`
+	TotalTokens                  int                                      `json:"total_tokens"`
+	AvgLatencyMs                 int64                                    `json:"avg_latency_ms"`
+	ContinuationByEndpointFamily map[string]ContinuationHistoryModeCounts `json:"continuation_by_endpoint_family,omitempty"`
+}
+
+type ContinuationHistoryModeCounts struct {
+	ResponsesDelta      int `json:"responses_delta,omitempty"`
+	FullHistory         int `json:"full_history,omitempty"`
+	FullHistoryFallback int `json:"full_history_fallback,omitempty"`
 }
 
 // APILogResult is the apilog command's output: the (filtered) per-call rows and
@@ -97,6 +105,7 @@ func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
 		if row.Empty {
 			res.Totals.Empties++
 		}
+		recordContinuationHistoryMode(&res.Totals, call.Request.EndpointFamily, call.Request.HistoryMode)
 		if !rowMatchesFilter(row, opts, threshold) {
 			continue
 		}
@@ -107,6 +116,30 @@ func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
 		res.Totals.AvgLatencyMs = latencySum / int64(res.Totals.Calls)
 	}
 	return res, nil
+}
+
+func recordContinuationHistoryMode(totals *APILogTotals, endpointFamily string, mode llm.HistoryMode) {
+	endpointFamily = strings.TrimSpace(endpointFamily)
+	if endpointFamily == "" {
+		return
+	}
+	counts := totals.ContinuationByEndpointFamily
+	if counts == nil {
+		counts = map[string]ContinuationHistoryModeCounts{}
+		totals.ContinuationByEndpointFamily = counts
+	}
+	next := counts[endpointFamily]
+	switch mode {
+	case llm.HistoryModeResponsesDelta:
+		next.ResponsesDelta++
+	case llm.HistoryModeFullHistory:
+		next.FullHistory++
+	case llm.HistoryModeFullHistoryFallback:
+		next.FullHistoryFallback++
+	default:
+		return
+	}
+	counts[endpointFamily] = next
 }
 
 func rowFromCall(call transcript.APICall) APICallRow {

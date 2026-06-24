@@ -500,7 +500,7 @@ git commit -m "feat(agent): account continuation shadow pressure"
 - Modify: `agent/doctor/apilog.go`
 - Modify: `agent/doctor/apilog_test.go`
 
-- [ ] **Step 1: Add RED doctor summary test**
+- [x] **Step 1: Add RED doctor summary test**
 
 Add a test in `agent/doctor/apilog_test.go` that builds transcript API calls with:
 
@@ -523,7 +523,7 @@ FullHistory:         1
 FullHistoryFallback: 1
 ```
 
-- [ ] **Step 2: Run RED test**
+- [x] **Step 2: Run RED test**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent/doctor -run 'TestAPILogContinuationCountsByEndpointFamily' -count=1 -v
@@ -531,7 +531,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent/doctor -run 'TestAPILogContinuationCou
 
 Expected: compile failure because the summary fields do not exist.
 
-- [ ] **Step 3: Add narrow aggregate fields**
+- [x] **Step 3: Add narrow aggregate fields**
 
 In `agent/doctor/apilog.go`, add:
 
@@ -551,7 +551,7 @@ ContinuationByEndpointFamily map[string]ContinuationHistoryModeCounts `json:"con
 
 In `APILog`, increment counts using only `call.Request.EndpointFamily` and `call.Request.HistoryMode`. Do not include attempt IDs, response hashes, storage-scope fingerprints, or raw provider handles in the key.
 
-- [ ] **Step 4: Run focused test**
+- [x] **Step 4: Run focused test**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./agent/doctor -run 'TestAPILogContinuationCountsByEndpointFamily' -count=1 -v
@@ -559,7 +559,7 @@ GOCACHE=/tmp/serf-gocache go test ./agent/doctor -run 'TestAPILogContinuationCou
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```sh
 git status --short

@@ -94,6 +94,56 @@ func TestAPILog_Totals(t *testing.T) {
 	}
 }
 
+func TestAPILogContinuationCountsByEndpointFamily(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidA
+	apiCalls := []transcript.APICall{
+		{
+			Round: 0,
+			Request: llm.APILogRequest{
+				Model:          "gpt-5.4",
+				Provider:       "openai",
+				HistoryMode:    llm.HistoryModeResponsesDelta,
+				EndpointFamily: "openai_public",
+			},
+			Response: &llm.APILogResponse{Usage: llm.Usage{InputTokens: 10}},
+		},
+		{
+			Round: 1,
+			Request: llm.APILogRequest{
+				Model:          "gpt-5.4",
+				Provider:       "openai",
+				HistoryMode:    llm.HistoryModeFullHistory,
+				EndpointFamily: "openai_public",
+			},
+			Response: &llm.APILogResponse{Usage: llm.Usage{InputTokens: 20}},
+		},
+		{
+			Round: 2,
+			Request: llm.APILogRequest{
+				Model:          "gpt-5.4",
+				Provider:       "openai",
+				HistoryMode:    llm.HistoryModeFullHistoryFallback,
+				EndpointFamily: "openai_public",
+			},
+			Response: &llm.APILogResponse{Usage: llm.Usage{InputTokens: 30}},
+		},
+	}
+	writeRichSession(t, bucket, sid, nil, apiCalls, schema.SessionMeta{})
+
+	res, err := APILog(base, sid, APILogOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := res.Totals.ContinuationByEndpointFamily["openai_public"]
+	if got.ResponsesDelta != 1 ||
+		got.FullHistory != 1 ||
+		got.FullHistoryFallback != 1 {
+		t.Fatalf("openai_public counts = %+v", got)
+	}
+}
+
 func TestAPILog_EmptyFilter(t *testing.T) {
 	base, sid := apilogFixture(t)
 	res, err := APILog(base, sid, APILogOpts{EmptyOnly: true})
