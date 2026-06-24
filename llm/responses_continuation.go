@@ -54,6 +54,14 @@ type ContinuationMetadata struct {
 	ChatFallbackHistoryLen  int
 }
 
+type AuthScopeIdentity struct {
+	Version        string
+	AuthSource     string
+	CredentialHash string
+	AccountHash    string
+	WorkspaceHash  string
+}
+
 func DefaultResponsesContinuationSupportRegistry() map[ResponsesEndpointFamily]ResponsesContinuationSupport {
 	return map[ResponsesEndpointFamily]ResponsesContinuationSupport{
 		ResponsesEndpointFamilyOpenAIPublic: disabledResponsesContinuationSupport(ResponsesEndpointFamilyOpenAIPublic),

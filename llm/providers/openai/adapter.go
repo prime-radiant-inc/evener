@@ -49,26 +49,30 @@ type Config struct {
 }
 
 type Adapter struct {
-	name             string
-	APIKey           string
-	BaseURL          string
-	ResponsesPath    string
-	OrgID            string
-	ProjectID        string
-	ChatGPTAccountID string
-	Client           *http.Client
-	DefaultHeaders   map[string]string
+	name              string
+	APIKey            string
+	BaseURL           string
+	ResponsesPath     string
+	OrgID             string
+	ProjectID         string
+	ChatGPTAccountID  string
+	AuthScopeIdentity llm.AuthScopeIdentity
+	OrgIDHash         string
+	ProjectIDHash     string
+	Client            *http.Client
+	DefaultHeaders    map[string]string
 }
 
 // OpenAIInstanceParams holds the configuration for a single OpenAI adapter instance.
 type OpenAIInstanceParams struct {
-	Name           string
-	APIKey         string
-	BaseURL        string
-	OrgID          string
-	ProjectID      string
-	ChatGPTBaseURL string
-	StateHome      string
+	Name               string
+	APIKey             string
+	BaseURL            string
+	OrgID              string
+	ProjectID          string
+	ChatGPTBaseURL     string
+	StateHome          string
+	ContinuationHasher *llm.ContinuationHasher
 }
 
 // NewForInstance constructs an Adapter from explicit parameters.
@@ -100,27 +104,40 @@ func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 			base = defaultChatGPTBaseURL
 		}
 		accountID := strings.TrimSpace(status.AccountID)
-		if accountID == "" {
-			accountID = strings.TrimSpace(status.WorkspaceID)
+		workspaceID := strings.TrimSpace(status.WorkspaceID)
+		chatGPTAccountID := accountID
+		if chatGPTAccountID == "" {
+			chatGPTAccountID = workspaceID
 		}
-		if accountID == "" {
+		if chatGPTAccountID == "" {
 			record, loadErr := authopenai.LoadAuth(authStateDir, instanceName)
 			if loadErr == nil {
 				if claims, parseErr := authopenai.ParseIDTokenClaims(record.IDToken); parseErr == nil {
-					accountID = strings.TrimSpace(claims.AccountID)
 					if accountID == "" {
-						accountID = strings.TrimSpace(claims.WorkspaceID)
+						accountID = strings.TrimSpace(claims.AccountID)
+					}
+					if workspaceID == "" {
+						workspaceID = strings.TrimSpace(claims.WorkspaceID)
+					}
+					chatGPTAccountID = accountID
+					if chatGPTAccountID == "" {
+						chatGPTAccountID = workspaceID
 					}
 				}
 			}
 		}
+		authScope, err := authScopeForOAuth(params.ContinuationHasher, accountID, workspaceID)
+		if err != nil {
+			return nil, err
+		}
 		return &Adapter{
-			name:             params.Name,
-			APIKey:           creds.BearerToken,
-			BaseURL:          strings.TrimRight(base, "/"),
-			ResponsesPath:    defaultCodexResponses,
-			ChatGPTAccountID: accountID,
-			Client:           &http.Client{Timeout: 0},
+			name:              params.Name,
+			APIKey:            creds.BearerToken,
+			BaseURL:           strings.TrimRight(base, "/"),
+			ResponsesPath:     defaultCodexResponses,
+			ChatGPTAccountID:  chatGPTAccountID,
+			AuthScopeIdentity: authScope,
+			Client:            &http.Client{Timeout: 0},
 		}, nil
 	}
 
@@ -130,13 +147,30 @@ func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 		if base == "" {
 			base = defaultAPIBaseURL
 		}
+		orgID := strings.TrimSpace(params.OrgID)
+		projectID := strings.TrimSpace(params.ProjectID)
+		authScope, err := authScopeForAPIKey(params.ContinuationHasher, key)
+		if err != nil {
+			return nil, err
+		}
+		orgIDHash, err := hashOpenAIScopeIdentifier(params.ContinuationHasher, "org_id", orgID)
+		if err != nil {
+			return nil, err
+		}
+		projectIDHash, err := hashOpenAIScopeIdentifier(params.ContinuationHasher, "project_id", projectID)
+		if err != nil {
+			return nil, err
+		}
 		return &Adapter{
-			name:          params.Name,
-			APIKey:        key,
-			BaseURL:       strings.TrimRight(base, "/"),
-			ResponsesPath: defaultResponsesPath,
-			OrgID:         strings.TrimSpace(params.OrgID),
-			ProjectID:     strings.TrimSpace(params.ProjectID),
+			name:              params.Name,
+			APIKey:            key,
+			BaseURL:           strings.TrimRight(base, "/"),
+			ResponsesPath:     defaultResponsesPath,
+			OrgID:             orgID,
+			ProjectID:         projectID,
+			AuthScopeIdentity: authScope,
+			OrgIDHash:         orgIDHash,
+			ProjectIDHash:     projectIDHash,
 			// Avoid short client-level timeouts; rely on request context deadlines instead.
 			Client: &http.Client{Timeout: 0},
 		}, nil
@@ -178,6 +212,53 @@ func instanceParamsFromConfig(name, baseURL, apiKey, stateHome string) OpenAIIns
 		ChatGPTBaseURL: envvars.OpenAIChatGPTBaseURL.Trimmed(),
 		StateHome:      stateHome,
 	}
+}
+
+func authScopeForAPIKey(hasher *llm.ContinuationHasher, apiKey string) (llm.AuthScopeIdentity, error) {
+	if hasher == nil {
+		return llm.AuthScopeIdentity{}, nil
+	}
+	hash, err := hasher.HashContinuationScopeValue("credential", apiKey)
+	if err != nil {
+		return llm.AuthScopeIdentity{}, err
+	}
+	return llm.AuthScopeIdentity{
+		Version:        "cont-scope-v1",
+		AuthSource:     "api_key",
+		CredentialHash: hash,
+	}, nil
+}
+
+func authScopeForOAuth(hasher *llm.ContinuationHasher, accountID, workspaceID string) (llm.AuthScopeIdentity, error) {
+	if hasher == nil {
+		return llm.AuthScopeIdentity{}, nil
+	}
+	accountHash, err := hashOpenAIScopeIdentifier(hasher, "account", accountID)
+	if err != nil {
+		return llm.AuthScopeIdentity{}, err
+	}
+	workspaceHash, err := hashOpenAIScopeIdentifier(hasher, "workspace", workspaceID)
+	if err != nil {
+		return llm.AuthScopeIdentity{}, err
+	}
+	credentialHash, err := hasher.HashContinuationScopeValue("credential", "oauth:"+strings.TrimSpace(accountID)+":"+strings.TrimSpace(workspaceID))
+	if err != nil {
+		return llm.AuthScopeIdentity{}, err
+	}
+	return llm.AuthScopeIdentity{
+		Version:        "cont-scope-v1",
+		AuthSource:     "oauth",
+		CredentialHash: credentialHash,
+		AccountHash:    accountHash,
+		WorkspaceHash:  workspaceHash,
+	}, nil
+}
+
+func hashOpenAIScopeIdentifier(hasher *llm.ContinuationHasher, kind, value string) (string, error) {
+	if hasher == nil || strings.TrimSpace(value) == "" {
+		return "", nil
+	}
+	return hasher.HashContinuationScopeValue(kind, value)
 }
 
 func NewFromEnv(cfgs ...Config) (*Adapter, error) {

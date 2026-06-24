@@ -4200,6 +4200,51 @@ func TestNewForInstance_OpenAI_Name(t *testing.T) {
 	}
 }
 
+func TestNewForInstance_ContinuationAuthScope_APIKey(t *testing.T) {
+	hasher := llm.NewContinuationHasher([]byte("01234567890123456789012345678901"))
+	wantCredentialHash, err := hasher.HashContinuationScopeValue("credential", "sk-test")
+	if err != nil {
+		t.Fatalf("HashContinuationScopeValue credential: %v", err)
+	}
+	wantOrgHash, err := hasher.HashContinuationScopeValue("org_id", "org-123")
+	if err != nil {
+		t.Fatalf("HashContinuationScopeValue org: %v", err)
+	}
+	wantProjectHash, err := hasher.HashContinuationScopeValue("project_id", "proj-456")
+	if err != nil {
+		t.Fatalf("HashContinuationScopeValue project: %v", err)
+	}
+
+	a, err := NewForInstance(OpenAIInstanceParams{
+		Name:               "work",
+		APIKey:             " sk-test ",
+		OrgID:              " org-123 ",
+		ProjectID:          " proj-456 ",
+		ContinuationHasher: hasher,
+	})
+	if err != nil {
+		t.Fatalf("NewForInstance: %v", err)
+	}
+	if a.AuthScopeIdentity.Version != "cont-scope-v1" {
+		t.Fatalf("Version = %q", a.AuthScopeIdentity.Version)
+	}
+	if a.AuthScopeIdentity.AuthSource != "api_key" {
+		t.Fatalf("AuthSource = %q", a.AuthScopeIdentity.AuthSource)
+	}
+	if a.AuthScopeIdentity.CredentialHash != wantCredentialHash {
+		t.Fatalf("CredentialHash = %q, want %q", a.AuthScopeIdentity.CredentialHash, wantCredentialHash)
+	}
+	if a.OrgIDHash != wantOrgHash {
+		t.Fatalf("OrgIDHash = %q, want %q", a.OrgIDHash, wantOrgHash)
+	}
+	if a.ProjectIDHash != wantProjectHash {
+		t.Fatalf("ProjectIDHash = %q, want %q", a.ProjectIDHash, wantProjectHash)
+	}
+	if strings.Contains(a.AuthScopeIdentity.CredentialHash, "sk-test") {
+		t.Fatalf("CredentialHash leaks raw key: %q", a.AuthScopeIdentity.CredentialHash)
+	}
+}
+
 func TestNewFromEnv_OpenAI_Name(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	a, err := NewFromEnv()
@@ -4208,6 +4253,107 @@ func TestNewFromEnv_OpenAI_Name(t *testing.T) {
 	}
 	if a.Name() != "openai" {
 		t.Fatalf("Name() = %q, want %q", a.Name(), "openai")
+	}
+}
+
+func TestNewFromEnv_ContinuationAuthScope_OAuth(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	hasher := llm.NewContinuationHasher([]byte("01234567890123456789012345678901"))
+	userStateDir := authopenai.DefaultStateDir()
+	if err := authopenai.SaveAuth(userStateDir, "openai", authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Minute).UTC(),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email offline_access",
+		AccessToken:  "oauth-token",
+		RefreshToken: "refresh-token",
+		Expiry:       time.Now().Add(time.Hour).UTC(),
+		AccountID:    "acct_123",
+		WorkspaceID:  "ws_456",
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	wantAccountHash, err := hasher.HashContinuationScopeValue("account", "acct_123")
+	if err != nil {
+		t.Fatalf("HashContinuationScopeValue account: %v", err)
+	}
+	wantWorkspaceHash, err := hasher.HashContinuationScopeValue("workspace", "ws_456")
+	if err != nil {
+		t.Fatalf("HashContinuationScopeValue workspace: %v", err)
+	}
+	wantCredentialHash, err := hasher.HashContinuationScopeValue("credential", "oauth:acct_123:ws_456")
+	if err != nil {
+		t.Fatalf("HashContinuationScopeValue credential: %v", err)
+	}
+
+	a, err := NewForInstance(OpenAIInstanceParams{
+		Name:               "openai",
+		StateHome:          os.Getenv("XDG_STATE_HOME"),
+		ContinuationHasher: hasher,
+	})
+	if err != nil {
+		t.Fatalf("NewForInstance: %v", err)
+	}
+	if a.AuthScopeIdentity.AuthSource != "oauth" {
+		t.Fatalf("AuthSource = %q", a.AuthScopeIdentity.AuthSource)
+	}
+	if a.AuthScopeIdentity.AccountHash != wantAccountHash {
+		t.Fatalf("AccountHash = %q, want %q", a.AuthScopeIdentity.AccountHash, wantAccountHash)
+	}
+	if a.AuthScopeIdentity.WorkspaceHash != wantWorkspaceHash {
+		t.Fatalf("WorkspaceHash = %q, want %q", a.AuthScopeIdentity.WorkspaceHash, wantWorkspaceHash)
+	}
+	if a.AuthScopeIdentity.CredentialHash != wantCredentialHash {
+		t.Fatalf("CredentialHash = %q, want %q", a.AuthScopeIdentity.CredentialHash, wantCredentialHash)
+	}
+	for _, raw := range []string{"oauth-token", "refresh-token", "acct_123", "ws_456"} {
+		if strings.Contains(a.AuthScopeIdentity.CredentialHash, raw) {
+			t.Fatalf("CredentialHash leaks %q: %q", raw, a.AuthScopeIdentity.CredentialHash)
+		}
+	}
+}
+
+func TestNewFromEnv_ContinuationAuthScope_OAuthWorkspaceOnly(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	hasher := llm.NewContinuationHasher([]byte("01234567890123456789012345678901"))
+	userStateDir := authopenai.DefaultStateDir()
+	if err := authopenai.SaveAuth(userStateDir, "openai", authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Minute).UTC(),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email offline_access",
+		AccessToken:  "oauth-token",
+		RefreshToken: "refresh-token",
+		Expiry:       time.Now().Add(time.Hour).UTC(),
+		WorkspaceID:  "ws_456",
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	wantWorkspaceHash, err := hasher.HashContinuationScopeValue("workspace", "ws_456")
+	if err != nil {
+		t.Fatalf("HashContinuationScopeValue workspace: %v", err)
+	}
+
+	a, err := NewForInstance(OpenAIInstanceParams{
+		Name:               "openai",
+		StateHome:          os.Getenv("XDG_STATE_HOME"),
+		ContinuationHasher: hasher,
+	})
+	if err != nil {
+		t.Fatalf("NewForInstance: %v", err)
+	}
+	if a.ChatGPTAccountID != "ws_456" {
+		t.Fatalf("ChatGPTAccountID = %q, want workspace fallback", a.ChatGPTAccountID)
+	}
+	if a.AuthScopeIdentity.AccountHash != "" {
+		t.Fatalf("AccountHash = %q, want empty when no account id is known", a.AuthScopeIdentity.AccountHash)
+	}
+	if a.AuthScopeIdentity.WorkspaceHash != wantWorkspaceHash {
+		t.Fatalf("WorkspaceHash = %q, want %q", a.AuthScopeIdentity.WorkspaceHash, wantWorkspaceHash)
 	}
 }
 
