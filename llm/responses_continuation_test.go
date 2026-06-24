@@ -6,38 +6,41 @@ import (
 	"testing"
 )
 
-func TestDefaultResponsesContinuationSupportRegistryDisabled(t *testing.T) {
+func TestDefaultResponsesContinuationSupportRegistryPublicEnabledCodexDisabled(t *testing.T) {
 	registry := DefaultResponsesContinuationSupportRegistry()
 
-	for _, family := range []ResponsesEndpointFamily{
-		ResponsesEndpointFamilyOpenAIPublic,
-		ResponsesEndpointFamilyOpenAICodex,
-	} {
-		support, ok := registry[family]
-		if !ok {
-			t.Fatalf("registry missing endpoint family %q", family)
-		}
-		if support.EndpointFamily != family {
-			t.Fatalf("support.EndpointFamily = %q, want %q", support.EndpointFamily, family)
-		}
-		if support.Enabled {
-			t.Fatalf("%s Enabled = true, want false", family)
-		}
-		if support.StorageShapeProven {
-			t.Fatalf("%s StorageShapeProven = true, want false", family)
-		}
-		if support.ProductionPathProven {
-			t.Fatalf("%s ProductionPathProven = true, want false", family)
-		}
-		if support.MaxAnchorAgeSeconds != 0 {
-			t.Fatalf("%s MaxAnchorAgeSeconds = %d, want 0", family, support.MaxAnchorAgeSeconds)
-		}
-		if support.StorageShapeProofID != "" {
-			t.Fatalf("%s StorageShapeProofID = %q, want empty", family, support.StorageShapeProofID)
-		}
-		if support.ProductionPathProofID != "" {
-			t.Fatalf("%s ProductionPathProofID = %q, want empty", family, support.ProductionPathProofID)
-		}
+	public, ok := registry[ResponsesEndpointFamilyOpenAIPublic]
+	if !ok {
+		t.Fatalf("registry missing endpoint family %q", ResponsesEndpointFamilyOpenAIPublic)
+	}
+	if public.EndpointFamily != ResponsesEndpointFamilyOpenAIPublic {
+		t.Fatalf("public EndpointFamily = %q, want %q", public.EndpointFamily, ResponsesEndpointFamilyOpenAIPublic)
+	}
+	if !public.Enabled || !public.StorageShapeProven || !public.ProductionPathProven {
+		t.Fatalf("public support = %+v, want enabled with proven storage and production path", public)
+	}
+	if public.MaxAnchorAgeSeconds != 3600 {
+		t.Fatalf("public MaxAnchorAgeSeconds = %d, want 3600", public.MaxAnchorAgeSeconds)
+	}
+	if public.StorageShapeProofID != "2026-06-24-responses-continuation-phase-0b" {
+		t.Fatalf("public StorageShapeProofID = %q", public.StorageShapeProofID)
+	}
+	if public.ProductionPathProofID != "2026-06-24-responses-continuation-phase-12a-public" {
+		t.Fatalf("public ProductionPathProofID = %q", public.ProductionPathProofID)
+	}
+
+	codex, ok := registry[ResponsesEndpointFamilyOpenAICodex]
+	if !ok {
+		t.Fatalf("registry missing endpoint family %q", ResponsesEndpointFamilyOpenAICodex)
+	}
+	if codex.EndpointFamily != ResponsesEndpointFamilyOpenAICodex {
+		t.Fatalf("codex EndpointFamily = %q, want %q", codex.EndpointFamily, ResponsesEndpointFamilyOpenAICodex)
+	}
+	if codex.Enabled {
+		t.Fatalf("codex support = %+v, want disabled", codex)
+	}
+	if codex.StorageShapeProven || codex.ProductionPathProven || codex.MaxAnchorAgeSeconds != 0 || codex.StorageShapeProofID != "" || codex.ProductionPathProofID != "" {
+		t.Fatalf("codex support = %+v, want unproven disabled defaults", codex)
 	}
 }
 
@@ -74,15 +77,27 @@ func TestDecideResponsesContinuationRequiresAutoEnabledAndAnchorAge(t *testing.T
 			},
 		},
 		{
-			name: "auto with default disabled public support uses full history",
+			name: "auto with default disabled codex support uses full history",
+			mode: ResponsesContinuationAuto,
+			support: ResponsesContinuationSupportFor(
+				DefaultResponsesContinuationSupportRegistry(),
+				ResponsesEndpointFamilyOpenAICodex,
+			),
+			want: ResponsesContinuationDecision{
+				HistoryMode: HistoryModeFullHistory,
+				Reason:      "continuation_endpoint_not_enabled",
+			},
+		},
+		{
+			name: "auto with default enabled public support allows responses delta",
 			mode: ResponsesContinuationAuto,
 			support: ResponsesContinuationSupportFor(
 				DefaultResponsesContinuationSupportRegistry(),
 				ResponsesEndpointFamilyOpenAIPublic,
 			),
 			want: ResponsesContinuationDecision{
-				HistoryMode: HistoryModeFullHistory,
-				Reason:      "continuation_endpoint_not_enabled",
+				HistoryMode: HistoryModeResponsesDelta,
+				Reason:      "continuation_enabled",
 			},
 		},
 		{

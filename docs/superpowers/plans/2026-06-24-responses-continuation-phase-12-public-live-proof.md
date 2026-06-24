@@ -142,7 +142,7 @@ The proof must include:
 - proposed `MaxAnchorAgeSeconds`;
 - numeric rollout thresholds for eligible-hit-rate floor, prompt-cache hit-rate floor, storage-quota/error ceiling, provider-token/cost ceiling, and rate-limit ceiling.
 
-- [ ] **Step 3: Commit proof**
+- [x] **Step 3: Commit proof**
 
 ```bash
 git add docs/superpowers/proofs/2026-06-24-responses-continuation-phase-12a-public.md docs/superpowers/plans/2026-06-24-responses-continuation-phase-12-public-live-proof.md
@@ -156,11 +156,11 @@ git commit -m "docs: record responses continuation phase 12a public proof"
 - Modify: `llm/responses_continuation_test.go`
 - Create: `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-12b-public.md`
 
-- [ ] **Step 1: Verify 12A artifact is complete**
+- [x] **Step 1: Verify 12A artifact is complete**
 
 Before code changes, inspect `docs/superpowers/proofs/2026-06-24-responses-continuation-phase-12a-public.md` and confirm it includes all numeric thresholds.
 
-- [ ] **Step 2: Write failing registry test**
+- [x] **Step 2: Write failing registry test**
 
 Update `TestDefaultResponsesContinuationSupportRegistryDisabled` or add a new public-specific test asserting public OpenAI is enabled and Codex remains disabled:
 
@@ -175,7 +175,7 @@ if codex.Enabled {
 }
 ```
 
-- [ ] **Step 3: Flip only public OpenAI**
+- [x] **Step 3: Flip only public OpenAI**
 
 Change only the public registry row to:
 
@@ -193,7 +193,7 @@ ResponsesEndpointFamilyOpenAIPublic: {
 
 Do not change the Codex row.
 
-- [ ] **Step 4: Run deterministic registry/session tests**
+- [x] **Step 4: Run deterministic registry/session tests**
 
 Run:
 

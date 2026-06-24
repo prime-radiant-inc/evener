@@ -166,7 +166,15 @@ func ClearResponsesContinuationStoreOverride(req Request, override ContinuationS
 
 func DefaultResponsesContinuationSupportRegistry() map[ResponsesEndpointFamily]ResponsesContinuationSupport {
 	return map[ResponsesEndpointFamily]ResponsesContinuationSupport{
-		ResponsesEndpointFamilyOpenAIPublic: disabledResponsesContinuationSupport(ResponsesEndpointFamilyOpenAIPublic),
+		ResponsesEndpointFamilyOpenAIPublic: {
+			EndpointFamily:        ResponsesEndpointFamilyOpenAIPublic,
+			StorageShapeProven:    true,
+			ProductionPathProven:  true,
+			Enabled:               true,
+			MaxAnchorAgeSeconds:   3600,
+			StorageShapeProofID:   "2026-06-24-responses-continuation-phase-0b",
+			ProductionPathProofID: "2026-06-24-responses-continuation-phase-12a-public",
+		},
 		ResponsesEndpointFamilyOpenAICodex:  disabledResponsesContinuationSupport(ResponsesEndpointFamilyOpenAICodex),
 	}
 }
