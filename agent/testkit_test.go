@@ -122,16 +122,12 @@ func freezeClockAt(jm *jobManager, at time.Time) {
 // failAppendN makes the next n appends of the given event kind fail before the
 // seam heals and delegates to the real store, exercising the durable-retry
 // paths. It returns the attempt counter (incremented once per matching-kind
-// append) so callers can assert the retry actually happened. Use failAppendNErr
-// when the test asserts on the injected error's identity.
+// append) so callers can assert the retry actually happened. Sites that assert
+// on the injected error's identity keep their own closure instead.
 func failAppendN(jm *jobManager, kind jobstore.EventKind, n int) *atomic.Int32 {
-	return failAppendNErr(jm, kind, n, fmt.Errorf("injected %s append failure", kind))
-}
-
-// failAppendNErr is failAppendN with a caller-supplied error value.
-func failAppendNErr(jm *jobManager, kind jobstore.EventKind, n int, err error) *atomic.Int32 {
 	var attempts atomic.Int32
 	orig := jm.appendEvent
+	err := fmt.Errorf("injected %s append failure", kind)
 	jm.appendEvent = func(e jobstore.Event) error {
 		if e.Kind == kind && attempts.Add(1) <= int32(n) {
 			return err

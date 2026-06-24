@@ -1144,15 +1144,7 @@ func TestCreateDelegateForegroundFinalizeFailureRetriesUntilDurable(t *testing.T
 		},
 	})
 	sess := newDelegateTestSession(t, c)
-	var finishAttempts atomic.Int32
-	origAppend := sess.jobManager.appendEvent
-	defer func() { sess.jobManager.appendEvent = origAppend }()
-	sess.jobManager.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventJobFinished && finishAttempts.Add(1) <= 2 {
-			return errors.New("append failed")
-		}
-		return origAppend(e)
-	}
+	finishAttempts := failAppendN(sess.jobManager, jobstore.EventJobFinished, 2)
 
 	done := make(chan delegateResult, 1)
 	go func() {
@@ -1199,17 +1191,7 @@ func TestFinalizeDelegateRetryAfterDurableFailureDoesNotDuplicateOutput(t *testi
 		t.Fatalf("attachDelegateJob: %v", err)
 	}
 
-	appendErr := errors.New("job_finished failed")
-	var finishAttempts atomic.Int32
-	origAppend := parent.jobManager.appendEvent
-	parent.jobManager.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventJobFinished {
-			if finishAttempts.Add(1) == 1 {
-				return appendErr
-			}
-		}
-		return origAppend(e)
-	}
+	failAppendN(parent.jobManager, jobstore.EventJobFinished, 1)
 	err = parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
 	if err != nil {
 		t.Fatalf("finalizeDelegate after retry: %v", err)
@@ -1243,14 +1225,7 @@ func TestFinalizeDelegateRetriesJobFinishedAppendUntilDurable(t *testing.T) {
 		t.Fatalf("attachDelegateJob: %v", err)
 	}
 
-	var finishAttempts atomic.Int32
-	origAppend := parent.jobManager.appendEvent
-	parent.jobManager.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventJobFinished && finishAttempts.Add(1) <= 2 {
-			return errors.New("job_finished failed")
-		}
-		return origAppend(e)
-	}
+	finishAttempts := failAppendN(parent.jobManager, jobstore.EventJobFinished, 2)
 
 	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
 		t.Fatalf("finalizeDelegate: %v", err)
@@ -1392,14 +1367,7 @@ func TestFinalizeDelegateRetriesNotificationPendingAppendKeepsTerminalResult(t *
 		t.Fatalf("attachDelegateJob: %v", err)
 	}
 
-	var pendingAttempts atomic.Int32
-	origAppend := parent.jobManager.appendEvent
-	parent.jobManager.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventJobNotificationPending && pendingAttempts.Add(1) <= 2 {
-			return errors.New("notification pending failed")
-		}
-		return origAppend(e)
-	}
+	pendingAttempts := failAppendN(parent.jobManager, jobstore.EventJobNotificationPending, 2)
 
 	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
 		t.Fatalf("finalizeDelegate: %v", err)
@@ -4954,11 +4922,7 @@ func TestSendDelegateMessageAliasFromSubagentSteersCaller(t *testing.T) {
 	subCfg.spawn.depth = 1
 	subCfg.spawn.parentSessionID = parent.ID()
 	subCfg.spawn.parentSteer = parent.SteerWithProvenance
-	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
-	if err != nil {
-		t.Fatalf("NewSession child: %v", err)
-	}
-	t.Cleanup(func() { child.Close() })
+	child := newSession(t, withClient(c), withDir(dir), withConfig(subCfg))
 
 	res := child.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  "caller",
@@ -4991,11 +4955,7 @@ func TestSendDelegateMessageUnsupportedAliasesFromSubagentFailTargetNotFound(t *
 			subCfg.spawn.depth = 1
 			subCfg.spawn.parentSessionID = parent.ID()
 			subCfg.spawn.parentSteer = parent.SteerWithProvenance
-			child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
-			if err != nil {
-				t.Fatalf("NewSession child: %v", err)
-			}
-			t.Cleanup(func() { child.Close() })
+			child := newSession(t, withClient(c), withDir(dir), withConfig(subCfg))
 
 			res := child.sendDelegateMessage(context.Background(), sendMessageArgs{
 				Target:  target,
@@ -5379,19 +5339,11 @@ func countSteeringEntriesContaining(s *Session, text string) int {
 
 func newPersistentTestSession(t *testing.T) *Session {
 	t.Helper()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+	return newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
-		StateDir:         dir,
-	})
-	if err != nil {
-		t.Fatalf("new persistent test session: %v", err)
-	}
-	t.Cleanup(func() { sess.Close() })
-	return sess
+		StateDir:         t.TempDir(),
+	}))
 }
 
 func waitForSteeringEntryContaining(t *testing.T, s *Session, text string) string {

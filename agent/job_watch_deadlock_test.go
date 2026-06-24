@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -27,22 +26,18 @@ func shellExecCall(id string) llm.ToolCallData {
 // caller-send watch on the given event kind BEFORE the turn is driven.
 func newCallerSendWatchSession(t *testing.T, watchEvent string) *Session {
 	t.Helper()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(shellExecCall("s1")) },
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-	}})
 	// StateDir mirrors the persisted-session incident shape: in the pre-mailbox
 	// design a caller watch-send on a transcript-backed session re-locked
 	// responseSideEffectsMu under the emit and wedged the loop. Observation is now
 	// persist-only (it enqueues a wake token, never delivers), so this drives the
 	// same firing path and proves the wedge is gone.
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: t.TempDir()})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { sess.Close() })
+	sess := newSession(t,
+		withSteps(
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(shellExecCall("s1")) },
+			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+		),
+		withConfig(SessionConfig{StateDir: t.TempDir()}),
+	)
 
 	// Install the caller-send watch BELOW the validation layer. configureWatch
 	// (and the job_watch tool) now reject this exact shape as a feedback loop

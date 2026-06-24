@@ -31,7 +31,7 @@ func newTestJM(t *testing.T) *jobManager {
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	return jm
 }
 
@@ -618,7 +618,7 @@ func TestJobManagerFinalize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
@@ -664,7 +664,7 @@ func TestJobManagerFinalizeFinishAppendFailureKeepsRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -717,7 +717,7 @@ func TestJobManagerFinalizePendingAppendFailureCanRetryWithSameGeneration(t *tes
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -803,7 +803,7 @@ func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -896,7 +896,7 @@ func TestJobManagerFinalizeConcurrentArmWaitsForPendingFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -979,7 +979,7 @@ func TestJobManagerArmPendingTerminalNotificationsRecoversAfterRestart(t *testin
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -1012,7 +1012,7 @@ func TestJobManagerArmPendingTerminalNotificationsRecoversAfterRestart(t *testin
 	if err != nil {
 		t.Fatalf("restart newJobManager: %v", err)
 	}
-	restarted.now = func() time.Time { return time.Unix(1001, 0).UTC() }
+	freezeClockAt(restarted, time.Unix(1001, 0).UTC())
 
 	if err := restarted.armPendingTerminalNotifications(); err != nil {
 		t.Fatalf("arm pending: %v", err)
@@ -1040,7 +1040,7 @@ func TestJobManagerArmPendingTerminalNotificationsEnqueuesAlreadyPending(t *test
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -1085,7 +1085,7 @@ func TestJobManagerArmPendingTerminalNotificationsSkipsDelivered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newJobManager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
 	if err != nil {
 		t.Fatalf("create: %v", err)

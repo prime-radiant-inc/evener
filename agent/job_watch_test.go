@@ -335,31 +335,28 @@ func TestConfigureWatchRejectsAssistantMessageEvent(t *testing.T) {
 	}
 }
 
-func TestJobWatchMainAliasTargetFailsTargetNotFound(t *testing.T) {
+func TestJobWatchAliasTargetWithoutContextFailsTargetNotFound(t *testing.T) {
 	t.Parallel()
-	jm := newTestJM(t)
+	for _, tc := range []struct {
+		name   string
+		target string
+	}{
+		{name: "main alias", target: "main"},
+		{name: "watched without context", target: "watched"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			jm := newTestJM(t)
 
-	_, err := jm.configureWatch(watchArgs{Target: "main"})
+			_, err := jm.configureWatch(watchArgs{Target: tc.target})
 
-	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
-		t.Fatalf("error = %v, want target_not_found", err)
-	}
-	if jm.watchCount() != 0 {
-		t.Fatalf("watch count = %d, want 0", jm.watchCount())
-	}
-}
-
-func TestJobWatchWatchedTargetWithoutContextFails(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-
-	_, err := jm.configureWatch(watchArgs{Target: "watched"})
-
-	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
-		t.Fatalf("error = %v, want target_not_found", err)
-	}
-	if jm.watchCount() != 0 {
-		t.Fatalf("watch count = %d, want 0", jm.watchCount())
+			if err == nil || !strings.Contains(err.Error(), "target_not_found") {
+				t.Fatalf("error = %v, want target_not_found", err)
+			}
+			if jm.watchCount() != 0 {
+				t.Fatalf("watch count = %d, want 0", jm.watchCount())
+			}
+		})
 	}
 }
 
@@ -2124,7 +2121,7 @@ func TestWatchSendCrashAfterSuccessBeforeDeliveredRetriesSameDeliveryID(t *testi
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	var sent []sendMessageArgs
 	seedCommonWatchSendTargets(t, jm)
 	send := func(_ context.Context, a sendMessageArgs) sendMessageResult {
@@ -2891,7 +2888,7 @@ func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testi
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	seedCommonWatchSendTargets(t, jm)
 	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		return hardWatchSendResult(errors.New("target_not_messageable"))
@@ -3184,19 +3181,30 @@ func TestWatchSendToWatchedRejectsConcreteTarget(t *testing.T) {
 
 func TestWatchSendToWatchedRejectsWildcardJobNotification(t *testing.T) {
 	t.Parallel()
-	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
+	for _, tc := range []struct {
+		name   string
+		events []string
+	}{
+		{name: "job notification event", events: []string{"job.notification"}},
+		{name: "wildcard event", events: []string{"*"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			jm := newTestJM(t)
+			seedCommonWatchSendTargets(t, jm)
 
-	_, err := jm.configureWatch(watchArgs{
-		Target: "*",
-		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "watched", Message: "observe"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
-		t.Fatalf("error = %v, want watched alias rejection", err)
-	}
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
-		t.Fatalf("rejected watched send recorded pending: %+v", pending)
+			_, err := jm.configureWatch(watchArgs{
+				Target: "*",
+				Events: tc.events,
+				Send:   &watchSendArgs{To: "watched", Message: "observe"},
+			})
+			if err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
+				t.Fatalf("error = %v, want watched alias rejection", err)
+			}
+			if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+				t.Fatalf("rejected watched send recorded pending: %+v", pending)
+			}
+		})
 	}
 }
 
@@ -3289,7 +3297,7 @@ func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	seedCommonWatchSendTargets(t, jm)
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -3317,7 +3325,7 @@ func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *
 	if err != nil {
 		t.Fatalf("reopen job manager: %v", err)
 	}
-	reopened.now = func() time.Time { return time.Unix(1001, 0).UTC() }
+	freezeClockAt(reopened, time.Unix(1001, 0).UTC())
 	output, err := jobstore.OpenOutput(reopened.outputPathForJob(rec, rec.JobID), maxJobOutputRetentionBytes)
 	if err != nil {
 		t.Fatalf("reopen output: %v", err)
@@ -3359,7 +3367,7 @@ func TestWatchSendRestoreLoadsPendingStateForFutureRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	seedCommonWatchSendTargets(t, jm)
 	send := func(context.Context, sendMessageArgs) sendMessageResult {
 		return sendMessageResult{Err: errors.New("busy")}
@@ -3416,7 +3424,7 @@ func TestWatchSendRestoreClearDropsPendingState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	seedCommonWatchSendTargets(t, jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
@@ -3459,7 +3467,7 @@ func TestWatchSendRestoreClearDropsWatchedTargetedPendingState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	for _, event := range restoredWatchSendPendingEvents(jm.sessionID, rec.JobID, rec.JobID, jm.now()) {
 		if err := jm.appendEvent(event); err != nil {
@@ -3498,7 +3506,7 @@ func TestWatchSendRestoreReconfigureRejectsWatchedAliasAndKeepsLegacyPending(t *
 	if err != nil {
 		t.Fatalf("new job manager: %v", err)
 	}
-	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	freezeClock(jm)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	for _, event := range restoredWatchSendPendingEvents(jm.sessionID, rec.JobID, rec.JobID, jm.now()) {
 		if err := jm.appendEvent(event); err != nil {
@@ -3521,7 +3529,7 @@ func TestWatchSendRestoreReconfigureRejectsWatchedAliasAndKeepsLegacyPending(t *
 	if err != nil {
 		t.Fatalf("reopen job manager: %v", err)
 	}
-	reopened.now = func() time.Time { return time.Unix(1001, 0).UTC() }
+	freezeClockAt(reopened, time.Unix(1001, 0).UTC())
 	t.Cleanup(func() { _ = reopened.store.Close() })
 	if restored := runtimeWatchSendPending(t, reopened); len(restored) != 1 {
 		t.Fatalf("runtime pending after restore = %d, want 1", len(restored))
@@ -5169,24 +5177,6 @@ func TestWatchSendToWatchedRejectsSessionEventsWithoutConcreteTarget(t *testing.
 	}
 }
 
-func TestWatchSendToWatchedRejectsWildcardJobNotificationTrigger(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	seedCommonWatchSendTargets(t, jm)
-
-	_, err := jm.configureWatch(watchArgs{
-		Target: "*",
-		Events: []string{"*"},
-		Send:   &watchSendArgs{To: "watched", Message: "observe"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
-		t.Fatalf("error = %v, want watched alias rejection", err)
-	}
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
-		t.Fatalf("rejected watched send recorded pending: %+v", pending)
-	}
-}
-
 func TestWatchSendToWatchedRejectsMixedEventsWithJobNotificationTrigger(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -5428,7 +5418,7 @@ func TestLegacyWatchSendWithoutDelegateGenerationIgnoresPriorStopWithSameTimesta
 	t.Parallel()
 	jm := newTestJM(t)
 	fixed := time.Unix(1700, 0).UTC()
-	jm.now = func() time.Time { return fixed }
+	freezeClockAt(jm, fixed)
 	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 	delegates, err := jm.store.LoadDelegates()
 	if err != nil {
@@ -5520,7 +5510,7 @@ func TestLegacyWatchSendWithoutDelegateGenerationIgnoresSettledSameTimestampPend
 	t.Parallel()
 	jm := newTestJM(t)
 	fixed := time.Unix(1700, 0).UTC()
-	jm.now = func() time.Time { return fixed }
+	freezeClockAt(jm, fixed)
 	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})

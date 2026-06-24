@@ -1467,7 +1467,7 @@ func TestForwardedNestedDoesNotReconcileRuntimeLostOnParentRestart(t *testing.T)
 	t.Cleanup(func() {
 		_ = jm.store.Close()
 	})
-	jm.now = func() time.Time { return time.Unix(100, 0).UTC() }
+	freezeClockAt(jm, time.Unix(100, 0).UTC())
 
 	if err := jm.reconcileLostJobs(); err != nil {
 		t.Fatalf("reconcile lost jobs: %v", err)
@@ -1601,7 +1601,7 @@ func TestRestoreSessionDoesNotInstallNestedForwardHook(t *testing.T) {
 		t.Fatalf("parent record after child restore = %+v, want still running/not_armed", got)
 	}
 
-	parentJM.now = func() time.Time { return time.Unix(100, 0).UTC() }
+	freezeClockAt(parentJM, time.Unix(100, 0).UTC())
 	if err := parentJM.reconcileLostJobs(); err != nil {
 		t.Fatalf("parent reconcile lost jobs: %v", err)
 	}
