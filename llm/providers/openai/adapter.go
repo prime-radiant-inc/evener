@@ -575,6 +575,11 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	if err != nil {
 		// Hard error from Responses API (non-2xx, etc.) — fall through to Chat
 		// Completions only if it looks like a model-compatibility error.
+		if hasPreviousResponseID(req) {
+			if a.ClassifyResponsesError(req, err) != llm.ResponsesErrorModelEndpoint {
+				return nil, err
+			}
+		}
 		if isFallbackEligible(err) {
 			a.recordResponsesFallbackAttempt(ctx, req, err)
 			return a.fallbackToChatCompletions(ctx, req, err)
@@ -609,6 +614,10 @@ func (a *Adapter) decodeStream(out context.Context, proxy *llm.ChanStream, respo
 			sentContent = true
 		}
 		if ev.Type == llm.StreamEventError && errors.Is(ev.Err, errEmptyResponsesStream) && !sentContent {
+			if hasPreviousResponseID(req) {
+				proxy.Send(ev)
+				return
+			}
 			// Responses API gave us nothing. Fall back to Chat Completions.
 			a.recordResponsesFallbackAttempt(out, req, ev.Err)
 			responsesStream.Close() //nolint:errcheck
@@ -696,6 +705,47 @@ func isFallbackEligible(err error) bool {
 		return sc == 404 || sc == 422
 	}
 	return errors.Is(err, errEmptyResponsesStream)
+}
+
+func hasPreviousResponseID(req llm.Request) bool {
+	return strings.TrimSpace(req.PreviousResponseID) != ""
+}
+
+func (a *Adapter) ClassifyResponsesError(req llm.Request, err error) llm.ResponsesErrorClass {
+	_ = a
+	if err == nil {
+		return llm.ResponsesErrorPermanentOther
+	}
+	var llmErr llm.Error
+	if errors.As(err, &llmErr) {
+		if llmErr.Retryable() {
+			return llm.ResponsesErrorTransient
+		}
+		code := strings.ToLower(strings.TrimSpace(llmErr.ErrorCode()))
+		message := strings.ToLower(strings.TrimSpace(llmErr.Error()))
+		if hasPreviousResponseID(req) {
+			if code == "previous_response_not_found" ||
+				(strings.Contains(message, "previous_response") && strings.Contains(message, "not found")) ||
+				(strings.Contains(message, "previous response") && (strings.Contains(message, "not found") || strings.Contains(message, "expired"))) {
+				return llm.ResponsesErrorContinuationRejected
+			}
+		}
+		switch code {
+		case "model_not_found", "unsupported_model":
+			return llm.ResponsesErrorModelEndpoint
+		}
+		if strings.Contains(message, "model") &&
+			(strings.Contains(message, "not found") ||
+				strings.Contains(message, "not supported") ||
+				strings.Contains(message, "unsupported")) {
+			return llm.ResponsesErrorModelEndpoint
+		}
+		return llm.ResponsesErrorPermanentOther
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return llm.ResponsesErrorTransient
+	}
+	return llm.ResponsesErrorPermanentOther
 }
 
 // fallbackToChatCompletions wraps a Responses API error with fallback context.

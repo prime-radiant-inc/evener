@@ -23,8 +23,6 @@ Phase 7 depends on:
 
 - Modify: `llm/responses_continuation.go`
   - Add `ResponsesErrorClass` constants.
-- Modify: `llm/client.go`
-  - Add optional classifier interface and client access helper if needed by later phases.
 - Modify: `llm/providers/openai/adapter.go`
   - Add `ClassifyResponsesError`.
   - Apply classification before Chat fallback when `PreviousResponseID` is present.
@@ -47,7 +45,7 @@ Phase 7 depends on:
 **Files:**
 - Modify: `llm/providers/openai/adapter_test.go`
 
-- [ ] **Step 1: Classifier fixtures**
+- [x] **Step 1: Classifier fixtures**
 
 Assert:
 
@@ -56,19 +54,19 @@ Assert:
 - `model_not_found` with `PreviousResponseID` -> `model_endpoint`;
 - `previous_response_not_found` without `PreviousResponseID` -> not continuation rejection.
 
-- [ ] **Step 2: Immediate fallback ordering**
+- [x] **Step 2: Immediate fallback ordering**
 
 Use an httptest server where `/v1/responses` returns `previous_response_not_found` and `/v1/chat/completions` would succeed. Assert `Stream` returns the Responses error and Chat is not called.
 
-- [ ] **Step 3: Model endpoint fallback still works**
+- [x] **Step 3: Model endpoint fallback still works**
 
 Use a request with `PreviousResponseID` and a `model_not_found` Responses error. Assert Chat fallback still runs.
 
-- [ ] **Step 4: Empty-stream continuation does not fallback**
+- [x] **Step 4: Empty-stream continuation does not fallback**
 
 Use a request with `PreviousResponseID` and an empty 200 Responses stream. Assert the adapter returns an error and Chat is not called.
 
-- [ ] **Step 5: Run RED tests**
+- [x] **Step 5: Run RED tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_ClassifyResponsesError|TestAdapter_Stream_Continuation.*Fallback|TestAdapter_Stream_ModelEndpointContinuationFallback' -count=1 -v
@@ -82,18 +80,17 @@ Expected: fail because the classifier does not exist and continuation attempts s
 
 **Files:**
 - Modify: `llm/responses_continuation.go`
-- Modify: `llm/client.go`
 - Modify: `llm/providers/openai/adapter.go`
 
-- [ ] **Step 1: Add classifier enum and interface**
+- [x] **Step 1: Add classifier enum**
 
 Add `ResponsesErrorContinuationRejected`, `ResponsesErrorModelEndpoint`, `ResponsesErrorTransient`, and `ResponsesErrorPermanentOther`.
 
-- [ ] **Step 2: Implement OpenAI classifier**
+- [x] **Step 2: Implement OpenAI classifier**
 
 Use structured `llm.ErrorCode()` first. Use substring matching only for the exact continuation relationship if structured data is absent.
 
-- [ ] **Step 3: Apply fallback ordering**
+- [x] **Step 3: Apply fallback ordering**
 
 When `PreviousResponseID` is present:
 
@@ -101,13 +98,13 @@ When `PreviousResponseID` is present:
 - `model_endpoint`: allow Chat fallback;
 - empty stream: surface the empty-stream error.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 ```sh
 GOCACHE=/tmp/serf-gocache go test ./llm/providers/openai -run 'TestAdapter_ClassifyResponsesError|TestAdapter_Stream_Continuation.*Fallback|TestAdapter_Stream_ModelEndpointContinuationFallback|TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessages|TestAdapter_Stream_Records.*FallbackAttempts' -count=1 -v
 ```
 
-- [ ] **Step 5: Commit implementation**
+- [x] **Step 5: Commit implementation**
 
 ```sh
 git status --short

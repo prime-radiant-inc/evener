@@ -2497,7 +2497,7 @@ func TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessagesOnEmptyStream
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
-	stream, err := a.Stream(context.Background(), phase6DeltaRequest())
+	stream, err := a.Stream(context.Background(), phase6FallbackCloneRequestWithoutAnchor())
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -2505,6 +2505,153 @@ func TestAdapter_Stream_ChatFallbackUsesFullHistoryFallbackMessagesOnEmptyStream
 	drainOpenAIStream(t, stream)
 
 	assertChatFallbackUsedFullHistoryMessages(t, chatBody)
+}
+
+func TestAdapter_ClassifyResponsesError(t *testing.T) {
+	a := &Adapter{}
+	continuationReq := phase6DeltaRequest()
+	noContinuationReq := continuationReq
+	noContinuationReq.PreviousResponseID = ""
+
+	tests := []struct {
+		name string
+		req  llm.Request
+		err  error
+		want llm.ResponsesErrorClass
+	}{
+		{
+			name: "previous response not found with continuation",
+			req:  continuationReq,
+			err:  openAITestHTTPError(http.StatusNotFound, "previous_response_not_found", "Previous response not found"),
+			want: llm.ResponsesErrorContinuationRejected,
+		},
+		{
+			name: "generic invalid request with continuation",
+			req:  continuationReq,
+			err:  openAITestHTTPError(http.StatusUnprocessableEntity, "invalid_request_error", "input item is invalid"),
+			want: llm.ResponsesErrorPermanentOther,
+		},
+		{
+			name: "model endpoint mismatch with continuation",
+			req:  continuationReq,
+			err:  openAITestHTTPError(http.StatusNotFound, "model_not_found", "model not found"),
+			want: llm.ResponsesErrorModelEndpoint,
+		},
+		{
+			name: "previous response not found without continuation",
+			req:  noContinuationReq,
+			err:  openAITestHTTPError(http.StatusNotFound, "previous_response_not_found", "Previous response not found"),
+			want: llm.ResponsesErrorPermanentOther,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := a.ClassifyResponsesError(tc.req, tc.err); got != tc.want {
+				t.Fatalf("ClassifyResponsesError = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAdapter_Stream_ContinuationRejectionBypassesChatFallback(t *testing.T) {
+	var chatCalled bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"Previous response not found","code":"previous_response_not_found","type":"invalid_request_error"}}`))
+		case "/v1/chat/completions":
+			chatCalled = true
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			writeChatCompletionsTextStream(t, w, "should not be used")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), phase6DeltaRequest())
+	if err == nil {
+		if stream != nil {
+			stream.Close() //nolint:errcheck
+		}
+		t.Fatal("Stream returned nil error for continuation rejection")
+	}
+	if chatCalled {
+		t.Fatal("chat fallback was called for continuation rejection")
+	}
+}
+
+func TestAdapter_Stream_ModelEndpointContinuationFallbackStillUsesChat(t *testing.T) {
+	var chatCalled bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"model not found","code":"model_not_found","type":"invalid_request_error"}}`))
+		case "/v1/chat/completions":
+			chatCalled = true
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			writeChatCompletionsTextStream(t, w, "fallback response")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), phase6DeltaRequest())
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	drainOpenAIStream(t, stream)
+	if !chatCalled {
+		t.Fatal("chat fallback was not called for model endpoint mismatch")
+	}
+}
+
+func TestAdapter_Stream_ContinuationEmptyStreamBypassesChatFallback(t *testing.T) {
+	var chatCalled bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+		case "/v1/chat/completions":
+			chatCalled = true
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			writeChatCompletionsTextStream(t, w, "should not be used")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), phase6DeltaRequest())
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close()
+	var gotErr error
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventError {
+			gotErr = ev.Err
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("expected empty-stream continuation error")
+	}
+	if chatCalled {
+		t.Fatal("chat fallback was called for empty continuation stream")
+	}
 }
 
 func phase6DeltaRequest() llm.Request {
@@ -2526,6 +2673,18 @@ func phase6DeltaRequest() llm.Request {
 			llm.User("current user"),
 		},
 	}
+}
+
+func phase6FallbackCloneRequestWithoutAnchor() llm.Request {
+	req := phase6DeltaRequest()
+	req.PreviousResponseID = ""
+	req.Continuation = nil
+	return req
+}
+
+func openAITestHTTPError(status int, code, message string) error {
+	raw := map[string]any{"error": map[string]any{"code": code, "message": message, "type": "invalid_request_error"}}
+	return llm.ErrorFromHTTPStatus("openai", status, message, raw, nil)
 }
 
 func assertChatFallbackUsedFullHistoryMessages(t *testing.T, chatBody map[string]any) {

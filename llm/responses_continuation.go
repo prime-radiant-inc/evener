@@ -18,6 +18,15 @@ const (
 	ResponsesContinuationAuto ResponsesContinuationMode = "auto"
 )
 
+type ResponsesErrorClass string
+
+const (
+	ResponsesErrorContinuationRejected ResponsesErrorClass = "continuation_rejected"
+	ResponsesErrorModelEndpoint        ResponsesErrorClass = "model_endpoint"
+	ResponsesErrorTransient            ResponsesErrorClass = "transient"
+	ResponsesErrorPermanentOther       ResponsesErrorClass = "permanent_other"
+)
+
 const (
 	ResponsesStoragePolicyPublicOpenAIStore   = "public-openai-store"
 	ResponsesStoragePolicyPublicOpenAINoStore = "public-openai-no-store"
