@@ -40,6 +40,8 @@ func (r *TranscriptReducer) ApplyAgentMessageDelta(turnID, itemID, delta string)
 	if delta == "" {
 		return
 	}
+	// The agent answering means any live thought is no longer the current turn.
+	r.finalizeLiveReasoning()
 	turnIndex := TurnIndexFromID(turnID)
 	item := appwire.ThreadItem{ID: itemID, TurnID: turnID}
 	if idx, ok := r.activeMessageIndex(item); ok {
@@ -83,6 +85,63 @@ func (r *TranscriptReducer) ResetAgentMessage(turnID, itemID string) {
 	r.messages = append(r.messages[:idx], r.messages[idx+1:]...)
 	delete(r.activeMessages, itemID)
 	r.shiftActiveIndicesAfterRemoval(idx)
+}
+
+// ApplyReasoningSummaryDelta streams an incremental chunk of the model's
+// reasoning summary ("thinking") into the live thought for itemID, creating the
+// thought on the first chunk. A chunk for a new reasoning item collapses the
+// previous live thought, so at most one thought streams open at a time.
+func (r *TranscriptReducer) ApplyReasoningSummaryDelta(turnID, itemID, delta string) {
+	if delta == "" {
+		return
+	}
+	turnIndex := TurnIndexFromID(turnID)
+	if idx, ok := r.activeReasoningIndex(itemID); ok {
+		r.messages[idx].Text += delta
+		return
+	}
+	r.finalizeLiveReasoning()
+	idx := len(r.messages)
+	r.messages = append(r.messages, ChatMessage{Kind: MsgReasoning, Text: delta, TurnID: turnID, TurnIndex: turnIndex, ItemID: itemID})
+	if itemID != "" {
+		r.activeMessages[itemID] = idx
+	}
+}
+
+// FinalizeReasoning collapses the live thought, if any, to its one-line gist.
+// Called when the turn completes so a finished turn never leaves a thought
+// streaming open.
+func (r *TranscriptReducer) FinalizeReasoning() {
+	r.finalizeLiveReasoning()
+}
+
+// finalizeLiveReasoning marks the single live (still-streaming) reasoning
+// thought Done so the renderer collapses it, and drops it from the active map.
+func (r *TranscriptReducer) finalizeLiveReasoning() {
+	for i := range r.messages {
+		if r.messages[i].Kind == MsgReasoning && !r.messages[i].Done {
+			r.messages[i].Done = true
+			if id := r.messages[i].ItemID; id != "" {
+				delete(r.activeMessages, id)
+			}
+		}
+	}
+}
+
+// activeReasoningIndex returns the index of the live reasoning thought for
+// itemID, if it is still streaming.
+func (r *TranscriptReducer) activeReasoningIndex(itemID string) (int, bool) {
+	if itemID == "" {
+		return 0, false
+	}
+	idx, ok := r.activeMessages[itemID]
+	if !ok || idx < 0 || idx >= len(r.messages) {
+		return 0, false
+	}
+	if r.messages[idx].Kind != MsgReasoning || r.messages[idx].Done {
+		return 0, false
+	}
+	return idx, true
 }
 
 // shiftActiveIndicesAfterRemoval decrements the cached active-item indices that
@@ -166,7 +225,23 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 			}
 			r.messages = append(r.messages, ChatMessage{Kind: MsgUser, Text: text, TurnID: item.TurnID, TurnIndex: turnIndex, ItemID: item.ID})
 		}
+	case "reasoning":
+		if idx, ok := r.activeReasoningIndex(item.ID); ok {
+			if completed {
+				r.messages[idx].Done = true
+				r.clearActiveMessage(item)
+			}
+			return
+		}
+		r.finalizeLiveReasoning()
+		idx := len(r.messages)
+		r.messages = append(r.messages, ChatMessage{Kind: MsgReasoning, TurnID: item.TurnID, TurnIndex: turnIndex, ItemID: item.ID, Done: completed})
+		if item.ID != "" && !completed {
+			r.activeMessages[item.ID] = idx
+		}
 	case "agentMessage":
+		// The agent answering means any live thought is no longer the current turn.
+		r.finalizeLiveReasoning()
 		if strings.TrimSpace(item.Text) != "" {
 			if idx, ok := r.messageIndexByItemID(item.ID, MsgAssistant, item.TurnID, turnIndex); ok {
 				r.messages[idx].Text = item.Text
@@ -196,6 +271,8 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 			}
 		}
 	case "commandExecution":
+		// The agent calling a tool means any live thought is no longer current.
+		r.finalizeLiveReasoning()
 		done := threadItemToolDone(item, completed)
 		if idx, ok := r.toolIndex(item, turnIndex); ok {
 			if item.ID != "" {

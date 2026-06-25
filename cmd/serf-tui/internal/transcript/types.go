@@ -10,11 +10,12 @@ type MessageKind int
 
 const (
 	MsgUser        MessageKind = iota
-	MsgAssistant               // LLM thinking/reasoning text
+	MsgAssistant               // agent's streamed preamble/narration text
 	MsgCommunicate             // agent's communicate output (the actual response)
 	MsgTool
 	MsgSystem
-	MsgSteering // user-initiated steering placeholder + authoritative steering chip
+	MsgSteering  // user-initiated steering placeholder + authoritative steering chip
+	MsgReasoning // the model's reasoning summary ("thinking"), streamed live
 )
 
 type ToolCallInfo struct {
@@ -46,6 +47,10 @@ type ChatMessage struct {
 	// created in response to a user click before the authoritative event
 	// arrives. It matches the PendingEntry.ID from the pending coordinator (pendingpkg).
 	PendingID int64
+	// Done marks a MsgReasoning thought whose turn has moved on (the agent began
+	// answering or the turn completed), so the renderer collapses it to a
+	// one-line gist instead of the whole streaming block.
+	Done bool
 	// Pending is true while the optimistic call is in flight. The renderer
 	// prefixes the row with a spinner glyph and dims the color while true.
 	Pending bool

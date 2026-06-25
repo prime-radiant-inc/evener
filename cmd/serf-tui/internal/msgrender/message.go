@@ -143,6 +143,23 @@ func isOrderedMarkdownListItem(line string) bool {
 	return i > 0 && i+1 < len(line) && line[i] == '.' && line[i+1] == ' '
 }
 
+// reasoningGist distills a collapsed thought to its first content line, clipped
+// to a scannable length so a stack of finished thoughts stays legible.
+func reasoningGist(text string) string {
+	const maxLen = 72
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			continue
+		}
+		if len(line) > maxLen {
+			line = strings.TrimRight(line[:maxLen], " ") + "…"
+		}
+		return line
+	}
+	return ""
+}
+
 func RenderMessage(msg transcript.ChatMessage, width int, focused bool) string {
 	messageWidth := width
 	if focused {
@@ -184,6 +201,22 @@ func RenderMessage(msg transcript.ChatMessage, width int, focused bool) string {
 		barW := lipgloss.Width(bar)
 		rendered := tuitheme.ThinkingStyle.Width(max(1, messageWidth-barW-1)).Render(renderMarkdown(text, max(1, messageWidth-barW-1)))
 		return bar + " " + RenderSelectedMessage(rendered, focused)
+	case transcript.MsgReasoning:
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			return ""
+		}
+		th := tuitheme.ActiveTheme()
+		spark := lipgloss.NewStyle().Foreground(th.TextDim).Render("✦")
+		// Collapsed once the turn moves on: a single quiet line of gist. While it
+		// is the current turn the whole thought streams open, plain (not markdown)
+		// so it stays the quietest entry and never reflows on heading syntax.
+		if msg.Done {
+			return RenderSelectedMessage(spark+" "+tuitheme.ThinkingStyle.Render(reasoningGist(text)), focused)
+		}
+		bodyWidth := max(1, messageWidth-lipgloss.Width(spark)-1)
+		rendered := tuitheme.ThinkingStyle.Width(bodyWidth).Render(text)
+		return spark + " " + RenderSelectedMessage(rendered, focused)
 	case transcript.MsgCommunicate:
 		return RenderSelectedMessage(tuitheme.CommunicateStyle.Width(messageWidth).Render(renderMarkdown(msg.Text, messageWidth)), focused)
 	case transcript.MsgTool:

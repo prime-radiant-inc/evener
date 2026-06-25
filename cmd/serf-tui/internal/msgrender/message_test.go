@@ -154,6 +154,39 @@ func TestRenderMessage_KeepsPlainAssistantTextSearchable(t *testing.T) {
 	}
 }
 
+func TestRenderMessage_StreamingReasoningShowsWholeBlock(t *testing.T) {
+	body := "weighing the cache eviction options\nthen the retry path"
+	got := RenderMessage(transcript.ChatMessage{Kind: transcript.MsgReasoning, Text: body}, 80, false)
+
+	if !strings.Contains(got, "✦") {
+		t.Fatalf("live reasoning should carry the ✦ thinking marker:\n%q", got)
+	}
+	if !strings.Contains(got, "weighing the cache eviction options") || !strings.Contains(got, "then the retry path") {
+		t.Fatalf("live reasoning must show the whole thinking block:\n%q", got)
+	}
+}
+
+func TestRenderMessage_CollapsedReasoningIsAOneLineGist(t *testing.T) {
+	body := "weighing the cache eviction options\nthen the retry path\nand a third line"
+	got := RenderMessage(transcript.ChatMessage{Kind: transcript.MsgReasoning, Text: body, Done: true}, 80, false)
+
+	if !strings.Contains(got, "✦") {
+		t.Fatalf("collapsed reasoning should carry the ✦ marker:\n%q", got)
+	}
+	if strings.Count(strings.TrimRight(got, "\n"), "\n") != 0 {
+		t.Fatalf("collapsed reasoning must be a single line:\n%q", got)
+	}
+	if strings.Contains(got, "and a third line") {
+		t.Fatalf("collapsed reasoning must not show the full body:\n%q", got)
+	}
+}
+
+func TestRenderMessage_EmptyReasoningRendersNothing(t *testing.T) {
+	if got := RenderMessage(transcript.ChatMessage{Kind: transcript.MsgReasoning, Text: "   "}, 80, false); got != "" {
+		t.Fatalf("empty reasoning should render nothing, got %q", got)
+	}
+}
+
 func TestRenderToolCallUsesRegistry(t *testing.T) {
 	tc := transcript.ToolCallInfo{
 		Name:        "read_file",
