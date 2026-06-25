@@ -784,6 +784,17 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	s.mu.Lock()
 	userInputTurn := len(s.history) + 1
 	s.mu.Unlock()
+	// Resume SessionStart hooks are intentionally lazy: they are recorded during
+	// restore, but their model-facing output must join the first accepted real user
+	// turn, never an autonomous notification/continuation/watch turn. Drain them
+	// before recording the user turn so their model context precedes the prompt it
+	// applies to in the first resumed model request.
+	s.drainPendingSessionStartHooks(ctx)
+	for _, msg := range s.drainSteeringForTurn() {
+		s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
+		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+	}
+
 	s.emit(events.EventUserInput, events.UserInputData{
 		Text:   input,
 		Images: userInputImagesFromAttachments(images),
@@ -791,11 +802,6 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	})
 	s.appendTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
 	s.launchInitialPromptNamer(s.sessionCtx, input)
-
-	// Resume SessionStart hooks are intentionally lazy: they are recorded during
-	// restore, but their model-facing output must join the first accepted real user
-	// turn, never an autonomous notification/continuation/watch turn.
-	s.drainPendingSessionStartHooks(ctx)
 
 	// UserPromptSubmit hooks
 	if s.hookRunner != nil {
