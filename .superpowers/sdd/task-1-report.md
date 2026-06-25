@@ -1,177 +1,173 @@
-# Task 1 Report: Hover/focus reveal for tool timing metadata
+Status: DONE
 
-## Status
-DONE_WITH_CONCERNS
+Commit hash(es):
+- 7acecf1d3b92c5ed5dda666248db3071db38f5be
 
-## Summary
-Implemented CSS-only hover/focus reveal behavior for transcript tool timing metadata.
+Commands run and relevant output:
 
-- `cmd/serf-hub/assets/style.css`
-  - `.tool-call .tool-meta` now remains in the DOM but is visually hidden by default with `opacity: 0` and `visibility: hidden`.
-  - `.tool-call:hover .tool-meta` and `.tool-call:focus-within .tool-meta` reveal timing metadata with `opacity: 1` and `visibility: visible`.
-  - Preserved existing layout/typography declarations and added the required transition.
-- `cmd/serf-hub/jstest/test-pane-and-sidebar-css.js`
-  - Added the required CSS contract assertions for hidden-by-default, hover reveal, and focus-within reveal behavior.
-  - Updated `ruleContains` so the test helper recognizes selectors in comma-separated selector lists. This was necessary because the required CSS implementation uses a combined hover/focus selector list.
-
-## TDD Evidence
-
-### Failing test before implementation
-Command:
-
+1. Read requirements and testing guidance:
 ```bash
-node cmd/serf-hub/jstest/test-pane-and-sidebar-css.js
+# via read_file
+.superpowers/sdd/task-1-brief.md
+docs/testing.md
 ```
 
+2. RED: new scaffold fails before implementation:
+```bash
+node cmd/serf-hub/jstest/test-renderer-notifications.js
+```
 Output:
-
 ```text
-FAIL: tool timing metadata should be visually hidden by default
-FAIL: tool timing metadata should reveal on row hover
-FAIL: tool timing metadata should reveal on keyboard focus within the row
+FAIL — delegate completion notification parses
+  detail: missing notification card
+  HTML: <div class="cold-start-welcome"><div class="cold-start-intro">Describe a task and the agent gets to work — you'll watch it think, run tools, and spawn subagents in real time.</div><div class="cold-start-try">Try</div><div class="cold-start-examples"><button type="button" class="cold-start-example" data-prompt="Find and fix the root cause of a flaky test"><span class="cold-start-example-arrow">→</span><span>Find and fix the root cause of a flaky test</span></button><button type="button" class="cold-start-example" data-prompt="Audit error handling across this package"><span class="cold-start-example-arrow">→</span><span>Audit error handling across this package</span></button><button type="button" class="cold-start-example" data-prompt="Explain how a request flows from router to handler"><span class="cold-start-example-arrow">→</span><span>Explain how a request flows from router to handler</span></button></div></div><details class="steering"><summary><span class="steering-verb">↻ steering injected</span></summary><pre class="steering-body">&lt;job-notification job_id="job_delegate" event="completed" job_type="delegate" status="completed" reason="" output_bytes="402" transcript_ref="local:delegate"&gt;
+Job job_delegate completed. Output is available through read_transcript(transcript_ref="local:delegate") if needed.
+excerpt:
+{"message":"Status: DONE\nCommit hash(es): 3fbe7256\nOne-line test summary: node test passed; go test passed.\nConcerns: None","data":{"status":"DONE","commit_hashes":["3fbe7256"],"test_summary":"node test passed; go test passed.","concerns":[]},"artifacts":[]}
+&lt;/job-notification&gt;</pre></details>
 [exit 1]
 ```
 
-### Passing CSS contract test after implementation
-Command:
-
+3. PASS: focused test after implementation:
 ```bash
-node cmd/serf-hub/jstest/test-pane-and-sidebar-css.js
+node cmd/serf-hub/jstest/test-renderer-notifications.js
 ```
-
-Output:
-
+First run passed but timed out because renderer pollers kept the Node event loop alive:
 ```text
-PASS: pane compact and full-border sidebar resize CSS contracts
+PASS — delegate completion notification parses
+PASS: notification renderer assertions
+[timed out · running in background as job_01KVYHSB77FX34Z9ZJHM119DQC]
+```
+I added the same deterministic `process.exit(0)` pattern used by nearby renderer JS tests.
+
+Final focused run:
+```bash
+node cmd/serf-hub/jstest/test-renderer-notifications.js
+```
+Output:
+```text
+PASS — delegate completion notification parses
+PASS: notification renderer assertions
 [exit 0]
 ```
 
-### Hub package tests
-Command:
-
+4. Self-review checks:
 ```bash
-go test ./cmd/serf-hub -count=1
+git diff --check -- cmd/serf-hub/assets/renderer-format.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-notifications.js
 ```
-
 Output:
-
 ```text
-ok  	primeradiant.com/serf/cmd/serf-hub	4.861s
 [exit 0]
 ```
 
-## Diff Scope
-Reviewed with:
+```bash
+git status --short
+```
+Before commit output:
+```text
+ M cmd/serf-hub/assets/renderer-format.js
+ M cmd/serf-hub/assets/renderer.js
+?? cmd/serf-hub/jstest/test-renderer-notifications.js
+[exit 0]
+```
+
+5. Commit:
+```bash
+git add cmd/serf-hub/assets/renderer-format.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-notifications.js && git commit -m "feat(web): parse notification steering"
+```
+Output:
+```text
+[instrument-sessionstart-refire 7acecf1d] feat(web): parse notification steering
+ 3 files changed, 225 insertions(+)
+ create mode 100644 cmd/serf-hub/jstest/test-renderer-notifications.js
+[exit 0]
+```
+
+6. Post-commit verification:
+```bash
+git rev-parse HEAD
+```
+Output:
+```text
+7acecf1d3b92c5ed5dda666248db3071db38f5be
+[exit 0]
+```
 
 ```bash
-git diff -- cmd/serf-hub/assets/style.css cmd/serf-hub/jstest/test-pane-and-sidebar-css.js
+git status --short
 ```
-
-Changed files:
-
+Output:
 ```text
-cmd/serf-hub/assets/style.css                    | 16 +++++++++++++-
-cmd/serf-hub/jstest/test-pane-and-sidebar-css.js | 28 ++++++++++++++++++++----
-2 files changed, 39 insertions(+), 5 deletions(-)
+[exit 0]
 ```
 
-The implementation commit stages only:
+Self-review notes:
+- Implemented only Task 1 files:
+  - `cmd/serf-hub/assets/renderer-format.js`
+  - `cmd/serf-hub/assets/renderer.js`
+  - `cmd/serf-hub/jstest/test-renderer-notifications.js`
+- Added client-side deterministic parsing helpers for notification-shaped steering and observer callbacks as specified.
+- Inserted notification classification before the final unknown return, preserving existing task/current-task/full-list steering priority.
+- Added the temporary minimal renderer branch after `full-list` and before generic `.steering` rendering.
+- Renderer branch uses DOM creation and `textContent`, not HTML injection.
+- Did not add transcript fetch behavior, transcript links, action buttons, or structured Task 2 card styling.
+- Raw notification text remains represented in `summary.cleanText` / `notification.rawText` for inspectability by parser consumers, though the temporary minimal visual branch does not display it because Task 1 requested only the minimal renderer snippet.
+- Added `process.exit(0)` to the new JS test after the PASS output because this renderer harness starts pollers; this matches the pattern in existing renderer JS tests and makes the focused test deterministic.
 
-- `cmd/serf-hub/assets/style.css`
-- `cmd/serf-hub/jstest/test-pane-and-sidebar-css.js`
-
-## Concerns
-The `superpowers:test-driven-development` skill could not be invoked through a native skill-loading tool because `use_skill` is unavailable in this session. I followed the required TDD workflow from the task brief directly: write failing test, observe failure, implement, observe pass, run package tests, review diff.
-
-I made one small test-helper change beyond inserting the exact assertions: `ruleContains` now supports comma-separated selector lists. Without that, the required verbatim combined CSS selector rule would not satisfy the hover assertion even though the CSS behavior was correct.
+Concerns:
+- None.
 
 ---
 
-# Final-review Important finding fix: accessible hidden tool timing metadata
+## Task 1 Review Fix Report
 
-## Status
-DONE
+Fix status: DONE
 
-## Summary
-Fixed the final-review accessibility finding by changing transcript tool timing metadata from `visibility: hidden` hiding to opacity-only visual hiding. The metadata remains in the DOM and is not hidden with `visibility: hidden`, so it remains available to assistive technology while staying visually quiet until row hover or `:focus-within`.
+Commit hash(es):
+- 9bd1544cd896ea1674e8ce5b4c667c552e294fa0
 
-Changed files:
+Exact commands and outputs:
 
-- `cmd/serf-hub/assets/style.css`
-  - `.tool-call .tool-meta` now uses `opacity: 0` with `transition: opacity var(--motion-fast)`.
-  - Removed `visibility: hidden` from the default state.
-  - Removed `visibility: visible` from reveal state.
-  - Hover/focus reveal remains CSS-only through `.tool-call:hover .tool-meta` and `.tool-call:focus-within .tool-meta` with `opacity: 1`.
-- `cmd/serf-hub/jstest/test-pane-and-sidebar-css.js`
-  - Updated CSS contract to require default `opacity: 0`.
-  - Updated CSS contract to assert the default rule does not contain `visibility: hidden`.
-  - Updated hover/focus reveal assertions to require `opacity: 1` without requiring visibility toggles.
-- `docs/superpowers/specs/2026-06-25-hover-only-turn-timing-metadata-design.md`
-  - Updated design/accessibility text to require opacity-only visual hiding and avoid hiding that removes metadata from assistive technology.
-- `docs/superpowers/plans/2026-06-25-hover-only-turn-timing-metadata.md`
-  - Updated implementation plan and deterministic CSS contract examples to remove the `visibility:hidden`/assistive-technology contradiction.
-
-## TDD Evidence
-
-### Failing test before implementation
-Command:
-
+1. Focused notification renderer test:
 ```bash
-node cmd/serf-hub/jstest/test-pane-and-sidebar-css.js
+node cmd/serf-hub/jstest/test-renderer-notifications.js
 ```
-
 Output:
-
 ```text
-FAIL: tool timing metadata should be visually hidden by default without visibility:hidden
-[exit 1]
-```
-
-### Passing CSS contract test after implementation
-Command:
-
-```bash
-node cmd/serf-hub/jstest/test-pane-and-sidebar-css.js
-```
-
-Output:
-
-```text
-PASS: pane compact and full-border sidebar resize CSS contracts
+PASS — delegate completion notification parses
+PASS — watch notification parses as warning with non-json excerpt
+PASS — watch notification renders minimal warning card
+PASS — watch-send notification parses concerns and warning tone
+PASS — watch-send notification renders minimal warning card
+PASS — observer callback coerces success tone to warning
+PASS — observer callback renders minimal warning card
+PASS — malformed excerpt remains raw inspectable text
+PASS — malformed excerpt is not injected as HTML
+PASS — nonzero exit code gives error tone
+PASS — nonzero exit code renders minimal error card
+PASS: notification renderer assertions
 [exit 0]
 ```
 
-### Hub package tests
-Command:
-
+2. Requested diff whitespace check:
 ```bash
-go test ./cmd/serf-hub -count=1
+git diff --check -- cmd/serf-hub/assets/renderer-format.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-notifications.js
 ```
-
 Output:
-
 ```text
-ok  	primeradiant.com/serf/cmd/serf-hub	4.620s
 [exit 0]
 ```
 
-## Additional checks
+What changed:
+- Added deterministic focused assertions in `cmd/serf-hub/jstest/test-renderer-notifications.js` for:
+  - watch notification parsing and warning minimal card rendering;
+  - watch-send parsing/rendering, including communicate concerns;
+  - observer-callback parsing/rendering and success-to-warning tone coercion;
+  - malformed/non-JSON excerpts remaining parser-inspectable without HTML injection;
+  - nonzero exit code error tone parsing/rendering.
+- Updated `cmd/serf-hub/assets/renderer-format.js` so `parseObserverCallback` computes `notificationTone({ event: "observer_callback" }, communicate)` once, stores it in `observerTone`, then coerces success to warning.
+- Updated the `classifySteering` comment to list the `notification` kind.
+- Did not change daemon notification formats, transcript storage/delivery, job/watch semantics, model-facing steering content, transcript fetching/actions/links, or the temporary Task 1 minimal renderer behavior.
 
-Command:
-
-```bash
-rg -n "visibility: hidden|visibility:hidden|assistive technology|opacity" docs/superpowers -g '*.md'
-```
-
-Relevant output confirmed the hover-only timing metadata spec/plan now describe `opacity: 0`, explicitly prohibit `visibility: hidden`, and state metadata remains available to assistive technology.
-
-Command:
-
-```bash
-rg -n "tool-meta|visibility" cmd/serf-hub/assets/style.css
-```
-
-Relevant output confirmed the `.tool-call .tool-meta` rules no longer include `visibility` declarations.
-
-## Concerns
-None.
+Concerns:
+- None.

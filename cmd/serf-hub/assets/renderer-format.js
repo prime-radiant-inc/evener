@@ -361,10 +361,11 @@
     message = message.replace(/^message: /, "").trim();
     output = output.trim();
     const communicate = parseCommunicateEnvelope(output);
+    const observerTone = notificationTone({ event: "observer_callback" }, communicate);
     return {
       type: "observer-callback",
       title: "Observer callback",
-      tone: notificationTone({ event: "observer_callback" }, communicate) === "success" ? "warning" : notificationTone({ event: "observer_callback" }, communicate),
+      tone: observerTone === "success" ? "warning" : observerTone,
       attrs: {},
       bodyText: withoutHeader.trim(),
       prose: message,
@@ -384,6 +385,7 @@
   //   - "loop"         (kept)
   //   - "read-only"    (kept)
   //   - "transcript"   (kept)
+  //   - "notification" (rendered as temporary minimal notification card)
   //   - "unknown"      (kept)
   function classifySteering(text) {
     const stripped = text
