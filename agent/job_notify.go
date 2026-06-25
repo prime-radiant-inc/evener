@@ -23,8 +23,8 @@ const jobNotificationEventWatch = "watch"
 // notification excerpt (shell tail / delegate head). terminalExcerptMaxChars
 // rune-bounds the rendered excerpt with the shared watch-text discipline.
 const (
-	terminalExcerptBytes    = 400
-	terminalExcerptMaxChars = 400
+	terminalExcerptBytes    = 8000
+	terminalExcerptMaxChars = 8000
 )
 
 // recordNotificationProvenance is the causal provenance a record's notification

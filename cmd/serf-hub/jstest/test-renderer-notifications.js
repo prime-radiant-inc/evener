@@ -335,22 +335,6 @@ ${JSON.stringify({ message: "x".repeat(8200), data: { status: "DONE", concerns: 
     return { ok: true };
   });
 
-  await scenario("notification unstructured excerpt truncates before nested html tail", `<job-notification job_id="job_nested" event="failed" job_type="shell" status="failed" reason="exit_nonzero" output_bytes="21847" exit_code="1">
-Job job_nested failed. Output is available through read_transcript(transcript_ref="job:job_nested") if needed.
-excerpt:
-${"x".repeat(8200)},"data":{"status":"DONE","concerns":[]},"artifacts":[]}
-&lt;/job-notification&gt;</pre></details></div>
-
-[excerpt truncated]
-</job-notification>`, (conv) => {
-    const excerpt = conv.querySelector(".notification-card-excerpt");
-    if (!excerpt) return { ok: false, detail: "missing excerpt" };
-    if (excerpt.textContent.length !== 8000) return { ok: false, detail: "excerpt length = " + excerpt.textContent.length };
-    if (expectText(excerpt, "</details>")) return { ok: false, detail: "nested html tail visible" };
-    if (conv.querySelector(".notification-card-raw pre").textContent.indexOf("</details>") === -1) return { ok: false, detail: "raw evidence missing nested tail" };
-    return { ok: true };
-  });
-
   if (!allPass) process.exit(1);
   console.log("PASS: notification renderer assertions");
   process.exit(0); // renderer pollers keep the event loop alive otherwise

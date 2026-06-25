@@ -2928,12 +2928,6 @@
       return el;
     },
 
-    appendNotificationDisplayText(parent, className, text) {
-      text = String(text || "").trim();
-      if (!text) return null;
-      return this.appendNotificationText(parent, className, text.slice(0, 8000));
-    },
-
     appendNotificationMarkdown(parent, className, text) {
       text = String(text || "").trim();
       if (!text) return null;
@@ -2979,7 +2973,7 @@
 
       const summaryEl = document.createElement("div");
       summaryEl.className = "notification-card-summary";
-      this.appendNotificationDisplayText(summaryEl, "notification-card-prose", n.prose);
+      this.appendNotificationText(summaryEl, "notification-card-prose", n.prose);
       if (n.communicate) {
         this.appendNotificationMarkdown(summaryEl, "notification-card-message", n.communicate.message);
         this.appendNotificationText(summaryEl, "notification-card-status", n.communicate.status ? "status " + n.communicate.status : "");
@@ -2988,7 +2982,7 @@
         this.appendNotificationText(summaryEl, "notification-card-concerns", (n.communicate.concerns || []).length ? "concerns " + n.communicate.concerns.join("; ") : "concerns none");
         this.appendNotificationText(summaryEl, "notification-card-artifacts", (n.communicate.artifacts || []).length ? "artifacts " + n.communicate.artifacts.join(", ") : "");
       } else {
-        this.appendNotificationDisplayText(summaryEl, "notification-card-excerpt", n.excerpt);
+        this.appendNotificationText(summaryEl, "notification-card-excerpt", n.excerpt);
       }
       if (summaryEl.childNodes.length) card.appendChild(summaryEl);
 

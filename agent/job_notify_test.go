@@ -645,7 +645,7 @@ func deliveredNotificationText(t *testing.T, adapter *fakeAdapter) string {
 func TestTerminalNotificationShellExcerptIsTail(t *testing.T) {
 	t.Parallel()
 	sess, adapter := newNotificationExcerptSession(t)
-	head := "HEAD_MARKER_" + strings.Repeat("h", 600)
+	head := "HEAD_MARKER_" + strings.Repeat("h", 9000)
 	tail := strings.Repeat("t", 600) + "_TAIL_MARKER"
 	writeFinishedJobWithOutput(t, sess.jobManager, "job_X", jobstore.JobShell, head+tail)
 
@@ -668,11 +668,33 @@ func TestTerminalNotificationShellExcerptIsTail(t *testing.T) {
 	}
 }
 
+func TestTerminalNotificationShellExcerptPreservesEightKBeforeTruncation(t *testing.T) {
+	t.Parallel()
+	sess, adapter := newNotificationExcerptSession(t)
+	content := strings.Repeat("h", 1000) + "EIGHT_K_MARKER" + strings.Repeat("x", 7600) + "_TAIL_MARKER"
+	writeFinishedJobWithOutput(t, sess.jobManager, "job_8k", jobstore.JobShell, content)
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	text := deliveredNotificationText(t, adapter)
+	if !strings.Contains(text, "_TAIL_MARKER") {
+		t.Fatalf("shell excerpt must contain the tail of the output:\n%s", text)
+	}
+	if !strings.Contains(text, "EIGHT_K_MARKER") {
+		t.Fatalf("shell excerpt must preserve content within the 8k tail budget:\n%s", text)
+	}
+	if !strings.Contains(text, "[excerpt truncated]") {
+		t.Fatalf("shell excerpt over 8k must carry truncation marker:\n%s", text)
+	}
+}
+
 func TestTerminalNotificationDelegateExcerptIsHead(t *testing.T) {
 	t.Parallel()
 	sess, adapter := newNotificationExcerptSession(t)
 	head := "HEAD_MARKER_" + strings.Repeat("h", 600)
-	tail := strings.Repeat("t", 600) + "_TAIL_MARKER"
+	tail := strings.Repeat("t", 9000) + "_TAIL_MARKER"
 	writeFinishedJobWithOutput(t, sess.jobManager, "job_D", jobstore.JobDelegate, head+tail)
 
 	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
@@ -746,7 +768,7 @@ func TestTerminalNotificationTruncatedExcerptAdvertisesReadAffordance(t *testing
 	t.Parallel()
 	sess, adapter := newNotificationExcerptSession(t)
 	writeFinishedJobWithOutput(t, sess.jobManager, "job_T", jobstore.JobShell,
-		strings.Repeat("x", 600)+"_TAIL_MARKER")
+		strings.Repeat("x", 9000)+"_TAIL_MARKER")
 
 	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
