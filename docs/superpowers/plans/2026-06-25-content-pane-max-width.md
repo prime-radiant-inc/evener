@@ -49,7 +49,7 @@ func TestWebWorkspaceContentColumnCSSContract(t *testing.T) {
 	css := string(data)
 
 	checks := []string{
-		"--workspace-content-max-w: 1040px;",
+		"--workspace-content-max-w: 832px;",
 		".workspace-header,\n.conversation,\n.workspace-input",
 		"width: min(100%, var(--workspace-content-max-w));",
 		"margin-inline: auto;",
@@ -70,7 +70,7 @@ Run:
 go test ./cmd/serf-hub -run TestWebWorkspaceContentColumnCSSContract -count=1
 ```
 
-Expected: FAIL with a message like `style.css missing "--workspace-content-max-w: 1040px;"`.
+Expected: FAIL with a message like `style.css missing "--workspace-content-max-w: 832px;"`.
 
 - [ ] **Step 3: Add the CSS custom property and shared rule**
 
@@ -84,7 +84,7 @@ with this expanded rule and shared content-column rule immediately after it:
 
 ```css
 #workspace {
-  --workspace-content-max-w: 1040px;
+  --workspace-content-max-w: 832px;
   position: relative;
   flex: 1;
   min-width: 0;

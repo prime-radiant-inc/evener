@@ -423,7 +423,7 @@ body.app[data-sidebar-resizing="true"] .sidebar-resizer {
   background: color-mix(in srgb, var(--rule) 70%, transparent);
 }
 #workspace {
-  --workspace-content-max-w: 1040px;
+  --workspace-content-max-w: 832px;
   position: relative;
   flex: 1;
   min-width: 0;

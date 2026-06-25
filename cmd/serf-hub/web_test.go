@@ -65,7 +65,7 @@ func TestWebWorkspaceContentColumnCSSContract(t *testing.T) {
 	css := string(data)
 
 	checks := []string{
-		"--workspace-content-max-w: 1040px;",
+		"--workspace-content-max-w: 832px;",
 		".workspace-header,\n.conversation,\n.workspace-input",
 		"width: min(100%, var(--workspace-content-max-w));",
 		"margin-inline: auto;",

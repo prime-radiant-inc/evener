@@ -24,7 +24,7 @@ Introduce a named CSS custom property for the cap, for example:
 
 ```css
 #workspace {
-  --workspace-content-max-w: 1040px;
+  --workspace-content-max-w: 832px;
 }
 ```
 
