@@ -778,11 +778,50 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 	return nil
 }
 
+func (s *Session) deferSessionStartHooks(kind plugin.SessionStartKind) {
+	if s == nil || kind == "" {
+		return
+	}
+	k := kind
+	s.mu.Lock()
+	s.pendingSessionStartKind = &k
+	s.mu.Unlock()
+}
+
+func (s *Session) takePendingSessionStartKind() (plugin.SessionStartKind, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingSessionStartKind == nil {
+		return "", false
+	}
+	kind := *s.pendingSessionStartKind
+	s.pendingSessionStartKind = nil
+	return kind, true
+}
+
+func (s *Session) drainPendingSessionStartHooks(ctx context.Context) {
+	kind, ok := s.takePendingSessionStartKind()
+	if !ok {
+		return
+	}
+	s.runSessionStartHooksWithContext(ctx, kind)
+}
+
 func (s *Session) runSessionStartHooks(sessionStartKind plugin.SessionStartKind) {
+	s.runSessionStartHooksWithContext(context.Background(), sessionStartKind)
+}
+
+func (s *Session) runSessionStartHooksWithContext(ctx context.Context, sessionStartKind plugin.SessionStartKind) {
 	if s == nil || s.hookRunner == nil {
 		return
 	}
-	result := s.hookRunner.RunSessionStartFor(context.Background(), s.hookInput(plugin.HookSessionStart), sessionStartKind)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	result := s.hookRunner.RunSessionStartFor(ctx, s.hookInput(plugin.HookSessionStart), sessionStartKind)
 	s.logSessionStartHookDispatch(sessionStartKind, len(result.ModelContext)+len(result.UserMessages))
 	for _, m := range result.ModelContext {
 		s.deliverHookContext(m)

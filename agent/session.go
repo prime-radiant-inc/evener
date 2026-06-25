@@ -172,8 +172,11 @@ type Session struct {
 	pendingPluginEvents []events.PluginLoadedData
 	pendingHookWarnings []events.WarningData
 	hookRunner          *hooks.Runner
-	pluginAgents        map[string]plugin.Agent
-	pluginMCPConfigs    []mcpconfig.ServerConfig
+	// pendingSessionStartKind defers restore SessionStart hook execution until the
+	// first accepted real user turn. Guarded by mu.
+	pendingSessionStartKind *plugin.SessionStartKind
+	pluginAgents            map[string]plugin.Agent
+	pluginMCPConfigs        []mcpconfig.ServerConfig
 	// unsupportedPluginHookEvents accumulates all Claude-recognized events
 	// declared by loaded plugins that serf does not currently fire.
 	// Populated by initPlugins; used by DetailedStatus for diagnostics.
