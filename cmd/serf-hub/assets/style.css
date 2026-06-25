@@ -873,13 +873,12 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .subagent-row-wrap:hover > .open-beside-btn,
 .subagent-row-wrap:focus-within > .open-beside-btn { opacity: 1; color: var(--text-muted); }
 
-/* Overflow subagents (past 3) hide until the parent's "+N subagents"
-   toggle expands them. JS flips data-subagents-expanded on the children
-   container. */
+/* Completed subagents hide until the parent's "Completed (N)" disclosure
+   expands them. JS flips data-subagents-expanded on the children container. */
 .subagent-overflow { display: none; }
 .project-children[data-subagents-expanded] .subagent-overflow { display: flex; }
 
-/* "+N subagents" fold toggle — dim, indented to match subagent rows. */
+/* "Completed (N)" disclosure toggle — dim, indented to match subagent rows. */
 .subagent-toggle {
   display: block;
   width: calc(100% - var(--space-7));
@@ -895,7 +894,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 }
 .subagent-toggle:hover { color: var(--text); }
 /* When expanded the label flips to "− hide" via JS textContent; no glyph
-   prefix is added here so the "+N subagents" text stands on its own. */
+   prefix is added here so the "Completed (N)" text stands on its own. */
 
 /* Rail mode: hide tier headers, age, and subagent rows along with the
    rest of the text-bearing chrome. */

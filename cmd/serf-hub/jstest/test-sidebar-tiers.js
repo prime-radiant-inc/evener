@@ -1,7 +1,7 @@
 // Verify the tiered sidebar's two interactive behaviors:
 //   1. Active-tier projects (data-default-expanded) start expanded and stay
 //      expanded across re-init, while still honoring an explicit user collapse.
-//   2. The "+N subagents" fold toggle reveals/hides the overflow subagent rows
+//   2. The "Completed (N)" disclosure reveals/hides the completed subagent rows
 //      and updates its own label + aria-expanded.
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
@@ -26,7 +26,7 @@ function buildDom() {
             <a class="sb-row sub subagent-row" href="/s/01S3"><span class="subagent-glyph">✓</span><span class="subagent-title">s3</span></a>
             <a class="sb-row sub subagent-row subagent-overflow" href="/s/01S4"><span class="subagent-glyph">✓</span><span class="subagent-title">s4</span></a>
             <a class="sb-row sub subagent-row subagent-overflow" href="/s/01S5"><span class="subagent-glyph">✓</span><span class="subagent-title">s5</span></a>
-            <button class="subagent-toggle" aria-expanded="false">+2 subagents</button>
+            <button class="subagent-toggle" aria-expanded="false">Completed (2)</button>
           </div>
         </section>
       </section>
@@ -78,7 +78,7 @@ const wait = () => new Promise(r => setTimeout(r, 30));
   alpha = window.document.querySelector('[data-project-key="alpha"]');
   pass(alpha.classList.contains("collapsed"), "explicit collapse of active project should persist across re-init");
 
-  // --- Round 3: "+N subagents" toggle reveals overflow rows.
+  // --- Round 3: "Completed (N)" disclosure reveals completed rows.
   dom = buildDom();
   window = dom.window;
   window.eval(sidebarSrc);
@@ -96,7 +96,7 @@ const wait = () => new Promise(r => setTimeout(r, 30));
   toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
   pass(!children.hasAttribute("data-subagents-expanded"), "overflow hidden again after second click");
   pass(toggle.getAttribute("aria-expanded") === "false", "toggle aria-expanded flips back to false");
-  pass(/\+2 subagents/.test(toggle.textContent), "collapsed toggle label restores +N subagents");
+  pass(/Completed \(2\)/.test(toggle.textContent), "collapsed toggle label restores Completed (N)");
 
   if (failures.length === 0) {
     console.log("PASS: sidebar tiers — default-expand + subagent fold");

@@ -284,12 +284,12 @@
   }
   document.addEventListener("click", onArchiveBtnClick);
 
-  // "+N subagents" fold toggle — reveals/hides the overflow subagent rows
-  // (those past the first 3) within a project. The toggle flips
-  // data-subagents-expanded on the .project-children container (CSS reveals
-  // .subagent-overflow rows) and swaps its own label between "+N subagents"
-  // and "− hide". Not persisted: subagent rows are ephemeral and the parent
-  // project's collapse state already governs visibility across re-renders.
+  // "Completed (N)" disclosure — reveals/hides the completed subagent rows
+  // within a project. The toggle flips data-subagents-expanded on the
+  // .project-children container (CSS reveals .subagent-overflow rows) and swaps
+  // its own label between "Completed (N)" and "− hide". Not persisted: subagent
+  // rows are ephemeral and the parent project's collapse state already governs
+  // visibility across re-renders.
   function onSubagentToggle(e) {
     var toggle = e.target.closest(".subagent-toggle");
     if (!toggle) return;
@@ -303,7 +303,7 @@
       toggle.setAttribute("aria-expanded", "false");
       if (toggle.dataset.collapsedLabel) toggle.textContent = toggle.dataset.collapsedLabel;
     } else {
-      // Remember the "+N subagents" label so we can restore it on collapse.
+      // Remember the "Completed (N)" label so we can restore it on collapse.
       toggle.dataset.collapsedLabel = toggle.textContent;
       children.setAttribute("data-subagents-expanded", "");
       toggle.setAttribute("aria-expanded", "true");
