@@ -792,6 +792,11 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	s.appendTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
 	s.launchInitialPromptNamer(s.sessionCtx, input)
 
+	// Resume SessionStart hooks are intentionally lazy: they are recorded during
+	// restore, but their model-facing output must join the first accepted real user
+	// turn, never an autonomous notification/continuation/watch turn.
+	s.drainPendingSessionStartHooks(ctx)
+
 	// UserPromptSubmit hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookUserPromptSubmit)
