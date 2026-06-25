@@ -155,6 +155,7 @@ func TestDelegateResumeJobStartedKeepsOriginalOriginLinkage(t *testing.T) {
 	}})
 	parent := newDelegateTestSession(t, c)
 	ctx := context.WithValue(context.Background(), ctxToolCallID, "call_original_delegate")
+	ctx = context.WithValue(ctx, ctxToolItemID, "item_original_delegate")
 	first := parent.createDelegate(ctx, delegateArgs{Task: "finish first", Background: false, BlockTimeoutMS: 5000})
 	if first.Err != nil {
 		t.Fatalf("first delegate: %v", first.Err)
@@ -190,7 +191,7 @@ drain:
 		t.Fatalf("starts=%+v, want initial and resumed delegate starts", starts)
 	}
 	resumed := starts[len(starts)-1]
-	if resumed.JobID == first.JobID || resumed.DelegateID != first.DelegateID || resumed.Task != "finish first" || resumed.OriginToolCallID != "call_original_delegate" || resumed.TranscriptRef == "" {
+	if resumed.JobID == first.JobID || resumed.DelegateID != first.DelegateID || resumed.Task != "finish first" || resumed.OriginToolCallID != "call_original_delegate" || resumed.OriginItemID != "item_original_delegate" || resumed.TranscriptRef == "" {
 		t.Fatalf("resumed JOB_STARTED linkage = %+v", resumed)
 	}
 }

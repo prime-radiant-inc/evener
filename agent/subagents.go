@@ -98,6 +98,7 @@ type preparedSubagentRun struct {
 	parentSessionID    string
 	parentJobID        string
 	originToolCallID   string
+	originItemID       string
 	task               string
 	agentType          string
 	requestedModel     string
@@ -389,6 +390,9 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	if callID, ok := ctx.Value(ctxToolCallID).(string); ok {
 		subCfg.spawn.parentToolCallID = callID
 	}
+	if itemID, ok := ctx.Value(ctxToolItemID).(string); ok {
+		subCfg.spawn.parentItemID = itemID
+	}
 	if parentJobID, ok := ctx.Value(ctxParentJobID).(string); ok && parentJobID != "" {
 		subCfg.spawn.parentJobID = parentJobID
 		if s.jobManager != nil {
@@ -615,6 +619,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		parentSessionID:    subCfg.spawn.parentSessionID,
 		parentJobID:        subCfg.spawn.parentJobID,
 		originToolCallID:   subCfg.spawn.parentToolCallID,
+		originItemID:       subCfg.spawn.parentItemID,
 		task:               task,
 		agentType:          agentType,
 		requestedModel:     model,

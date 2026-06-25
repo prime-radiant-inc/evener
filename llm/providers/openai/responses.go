@@ -367,10 +367,10 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 			if !st.started {
 				sentContent = true
 				st.started = true
-				tc := llm.ToolCallData{ID: st.id, Name: st.name, Type: "function"}
+				tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
 			}
-			tc := llm.ToolCallData{ID: st.id, Name: st.name, Arguments: []byte(delta), Type: "function"}
+			tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: []byte(delta), Type: "function"}
 			s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
 		case "response.function_call_arguments.done":
 			argsStr, _ := payload["arguments"].(string)
@@ -451,10 +451,10 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 						if !st.started {
 							sentContent = true
 							st.started = true
-							tc := llm.ToolCallData{ID: st.id, Name: st.name, Type: "function"}
+							tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
 							s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
 						}
-						tc := llm.ToolCallData{ID: st.id, Name: st.name, Arguments: json.RawMessage(argsStr), Type: "function"}
+						tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: json.RawMessage(argsStr), Type: "function"}
 						s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
 					} else {
 						s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})

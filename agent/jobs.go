@@ -672,6 +672,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 	transcriptRef := e.TranscriptRef
 	originTurnID := e.OriginTurnID
 	originToolCallID := e.OriginToolCallID
+	originItemID := e.OriginItemID
 	if run != nil {
 		fromWatch = run.fromWatch.Load()
 		if run.rec != nil {
@@ -683,6 +684,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 			transcriptRef = firstNonEmptyJobString(run.rec.TranscriptRef, transcriptRef)
 			originTurnID = firstNonEmptyJobString(run.rec.OriginTurnID, originTurnID)
 			originToolCallID = firstNonEmptyJobString(run.rec.OriginToolCallID, originToolCallID, delegateRestoreOriginToolCallID(run.rec))
+			originItemID = firstNonEmptyJobString(run.rec.OriginItemID, originItemID, delegateRestoreOriginItemID(run.rec))
 		}
 	}
 	jm.emit(events.EventJobStarted, events.JobStartedData{
@@ -695,6 +697,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 		TranscriptRef:    transcriptRef,
 		OriginTurnID:     originTurnID,
 		OriginToolCallID: originToolCallID,
+		OriginItemID:     originItemID,
 	}, e.Provenance)
 }
 
@@ -711,6 +714,8 @@ func delegateRestoreTask(rec *jobstore.JobRecord) string {
 	if rec == nil || rec.DelegateRestore == nil {
 		return ""
 	}
+	// Restored/resumed delegate jobs keep the original launch task for run linkage;
+	// run.rec.Task is the resume message for the concrete job activation.
 	return rec.DelegateRestore.Task
 }
 
@@ -719,6 +724,13 @@ func delegateRestoreOriginToolCallID(rec *jobstore.JobRecord) string {
 		return ""
 	}
 	return rec.DelegateRestore.OriginToolCallID
+}
+
+func delegateRestoreOriginItemID(rec *jobstore.JobRecord) string {
+	if rec == nil || rec.DelegateRestore == nil {
+		return ""
+	}
+	return rec.DelegateRestore.OriginItemID
 }
 
 func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
@@ -731,6 +743,7 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 	task := e.Task
 	originTurnID := e.OriginTurnID
 	originToolCallID := e.OriginToolCallID
+	originItemID := e.OriginItemID
 	fromWatch := false
 	if run != nil && run.rec != nil {
 		if run.rec.Type != "" {
@@ -741,6 +754,7 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		task = firstNonEmptyJobString(delegateRestoreTask(run.rec), run.rec.Task, task)
 		originTurnID = firstNonEmptyJobString(run.rec.OriginTurnID, originTurnID)
 		originToolCallID = firstNonEmptyJobString(run.rec.OriginToolCallID, originToolCallID, delegateRestoreOriginToolCallID(run.rec))
+		originItemID = firstNonEmptyJobString(run.rec.OriginItemID, originItemID, delegateRestoreOriginItemID(run.rec))
 		fromWatch = run.fromWatch.Load()
 	}
 	jm.emit(events.EventJobFinished, events.JobFinishedData{
@@ -756,6 +770,7 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		Task:             task,
 		OriginTurnID:     originTurnID,
 		OriginToolCallID: originToolCallID,
+		OriginItemID:     originItemID,
 	}, e.Provenance)
 }
 

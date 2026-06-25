@@ -26,6 +26,7 @@ func TestDelegateJobEventsCarrySubagentRunLinkage(t *testing.T) {
 	sess := newDelegateTestSession(t, c)
 
 	ctx := context.WithValue(context.Background(), ctxToolCallID, "call_delegate_linkage")
+	ctx = context.WithValue(ctx, ctxToolItemID, "item_delegate_linkage")
 	res := sess.createDelegate(ctx, delegateArgs{
 		Task:           "inspect linkage",
 		Background:     false,
@@ -55,8 +56,8 @@ drain:
 		t.Fatalf("no delegate JOB_STARTED events captured")
 	}
 	got := started[len(started)-1]
-	if got.JobID != res.JobID || got.DelegateID != res.DelegateID || got.Task != "inspect linkage" || got.TranscriptRef == "" || got.OriginToolCallID != "call_delegate_linkage" {
-		t.Fatalf("JOB_STARTED linkage = %+v, want job/delegate/task/transcript/origin call", got)
+	if got.JobID != res.JobID || got.DelegateID != res.DelegateID || got.Task != "inspect linkage" || got.TranscriptRef == "" || got.OriginToolCallID != "call_delegate_linkage" || got.OriginItemID != "item_delegate_linkage" {
+		t.Fatalf("JOB_STARTED linkage = %+v, want job/delegate/task/transcript/origin call/origin item", got)
 	}
 }
 

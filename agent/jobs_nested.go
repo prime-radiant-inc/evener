@@ -597,6 +597,7 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 			DelegateID:       rec.DelegateID,
 			OriginTurnID:     rec.OriginTurnID,
 			OriginToolCallID: rec.OriginToolCallID,
+			OriginItemID:     rec.OriginItemID,
 			DelegateRestore:  rec.DelegateRestore,
 			StartedAt:        &startedAt,
 			OutputPath:       rec.OutputPath,

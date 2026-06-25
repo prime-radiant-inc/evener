@@ -212,6 +212,9 @@ type spawnConfig struct {
 	// parentToolCallID is the tool call ID that spawned this sub-agent session.
 	parentToolCallID string
 
+	// parentItemID is the provider/tool item ID that spawned this sub-agent session.
+	parentItemID string
+
 	// parentJobID is the delegate job ID that spawned this sub-agent session.
 	parentJobID string
 
