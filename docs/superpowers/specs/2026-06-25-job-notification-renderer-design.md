@@ -32,7 +32,7 @@ The renderer should prioritize the information a user or assistant needs to deci
 
 This change does not alter daemon notification formats, transcript storage, appwire delivery, job/watch semantics, or model-facing steering content.
 
-This change does not require new transcript-fetching behavior or new action buttons. If implementation can safely reuse an existing thread/transcript route helper, the card may display or link transcript references, but the minimum requirement is readable rendering.
+This change does not require new transcript-fetching behavior, transcript action buttons, or transcript links. Render `transcript_ref` as readable text metadata; adding navigation actions is outside this design and requires a separate decision.
 
 This change does not redesign unrelated steering messages. Task-list steering, current-task suppression, loop/read-only nudges, and unknown steering keep their existing behavior unless they match one of the notification shapes below.
 
