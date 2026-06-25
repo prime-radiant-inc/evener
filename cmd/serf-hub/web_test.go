@@ -1414,14 +1414,15 @@ func TestWeb_Sidebar_ArchivedSessionsInCollapsedDisclosure(t *testing.T) {
 	}
 }
 
-func TestWeb_Sidebar_FoldsExcessSubagents(t *testing.T) {
+func TestWeb_Sidebar_HidesCompletedSubagents(t *testing.T) {
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01PARENT", UpdatedAt: now, OriginalPrompt: "parent",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/p"}},
 	}
-	// Five subagents under the parent — past 3 should be marked overflow and a
-	// "+2 subagents" toggle should render.
+	// Five subagents under the parent. Completed (terminal-state) subagents fold
+	// behind a "Completed (N)" disclosure; working ones stay visible regardless
+	// of count.
 	for i := 0; i < 5; i++ {
 		metas = append(metas, schema.SessionMeta{
 			ID:              "01SUB" + string(rune('A'+i)),
@@ -1432,17 +1433,39 @@ func TestWeb_Sidebar_FoldsExcessSubagents(t *testing.T) {
 			EnvInfo:         schema.EnvironmentInfo{WorkingDir: "/projects/p"},
 		})
 	}
-	// Subagent fold lives in the (expanded) project's children.
-	body := renderProjectChildren(t, metas, nil, "p")
-
-	if got := strings.Count(body, "subagent-overflow"); got != 2 {
-		t.Errorf("expected 2 overflow subagents, got %d:\n%s", got, body)
+	// Parent plus the first two subagents are live/active; the remaining three
+	// have no live entry and resolve to the terminal "ended" state.
+	live := []hubcore.LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01PARENT", Status: appwire.ThreadStatusActive},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01SUBA", Status: appwire.ThreadStatusActive},
+		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01SUBB", Status: appwire.ThreadStatusActive},
 	}
-	if !strings.Contains(body, "+2 subagents") {
-		t.Errorf("expected '+2 subagents' toggle:\n%s", body)
+	// Subagent fold lives in the (expanded) project's children.
+	body := renderProjectChildren(t, metas, live, "p")
+
+	// The three ended subagents fold; the two active ones do not.
+	if got := strings.Count(body, "subagent-overflow"); got != 3 {
+		t.Errorf("expected 3 completed subagents folded, got %d:\n%s", got, body)
+	}
+	if !strings.Contains(body, "Completed (3)") {
+		t.Errorf("expected 'Completed (3)' disclosure:\n%s", body)
 	}
 	if got := strings.Count(body, `class="sb-row sub subagent-row"`); got != 5 {
 		t.Errorf("expected 5 subagent rows total, got %d", got)
+	}
+	// No active subagent should carry the overflow (hidden) class.
+	for _, id := range []string{"01SUBA", "01SUBB"} {
+		idx := strings.Index(body, "/s/"+id)
+		if idx < 0 {
+			t.Fatalf("active subagent %s row missing:\n%s", id, body)
+		}
+		wrapStart := strings.LastIndex(body[:idx], "subagent-row-wrap")
+		if wrapStart < 0 {
+			t.Fatalf("could not locate wrapper for %s", id)
+		}
+		if strings.Contains(body[wrapStart:idx], "subagent-overflow") {
+			t.Errorf("active subagent %s must not be folded as completed:\n%s", id, body)
+		}
 	}
 }
 

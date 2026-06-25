@@ -196,29 +196,21 @@
         title="archive session" aria-label="archive session"><svg class="archive-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2.2" y="3" width="11.6" height="3" rx="0.6"></rect><path d="M3.3 6.2v6.3c0 .28.22.5.5.5h8.4c.28 0 .5-.22.5-.5V6.2"></path><path d="M6.4 9h3.2"></path></svg></button>
       </div>
       {{/* Subagents are de-weighted: dim, single-line, indented, terminal-state
-           glyph. Past 3 they fold behind a "+N subagents" toggle so a busy
-           parent doesn't flood the sidebar. Forks stay full rows. */}}
-      {{$subagentCount := 0}}
-      {{range .Children}}{{if eq .Kind "subagent"}}{{$subagentCount = add $subagentCount 1}}{{end}}{{end}}
-      {{$subagentIdx := 0}}
-      {{range .Children}}
-        {{if eq .Kind "subagent"}}
-        {{$subagentIdx = add $subagentIdx 1}}
-        <div class="subagent-row-wrap{{if gt $subagentIdx 3}} subagent-overflow{{end}}"
-             data-ref="{{.ID}}" data-title="{{.Title}}">
-        <a class="sb-row sub subagent-row"
-           data-state="{{.State}}"
-           href="/s/{{.ID}}"
-           hx-get="/_partials/s/{{.ID}}/workspace"
-           hx-target="#workspace"
-           hx-swap="innerHTML"
-           hx-push-url="/s/{{.ID}}">
-          <span class="subagent-glyph" data-state="{{.State}}" aria-hidden="true">{{if eq .State "active"}}⟳{{else if eq .State "awaiting"}}◆{{else if eq .State "warning"}}✕{{else}}✓{{end}}</span>
-          <span class="subagent-title">{{.Title}}</span>
-        </a>
-        <span role="button" tabindex="0" class="open-beside-btn" aria-label="open subagent beside" title="open beside">⇲</span>
-        </div>
-        {{else if eq .Kind "fork"}}
+           glyph. Completed (terminal-state) subagents fold behind a
+           "Completed (N)" disclosure so a parent's finished workers don't
+           clutter the sidebar; working subagents stay visible. Forks stay full
+           rows. */}}
+      {{$completedCount := 0}}
+      {{range .Children}}{{if and (eq .Kind "subagent") (subagentDone .State)}}{{$completedCount = add $completedCount 1}}{{end}}{{end}}
+      {{/* Working subagents first, always visible. */}}
+      {{range .Children}}{{if and (eq .Kind "subagent") (not (subagentDone .State))}}{{template "subagentRow" .}}{{end}}{{end}}
+      {{if gt $completedCount 0}}
+      <button type="button" class="subagent-toggle" aria-expanded="false">Completed ({{$completedCount}})</button>
+      {{end}}
+      {{/* Completed subagents, hidden until the disclosure expands. */}}
+      {{range .Children}}{{if and (eq .Kind "subagent") (subagentDone .State)}}{{template "subagentRow" .}}{{end}}{{end}}
+      {{/* Forks stay full rows. */}}
+      {{range .Children}}{{if eq .Kind "fork"}}
         <a class="sb-row fork"
            data-state="{{.State}}"
            href="/s/{{.ID}}"
@@ -232,10 +224,26 @@
             <div class="meta"><span>fork</span><span>{{.Age}}</span></div>
           </div>
         </a>
-        {{end}}
+      {{end}}{{end}}
       {{end}}
-      {{if gt $subagentCount 3}}
-      <button type="button" class="subagent-toggle" aria-expanded="false">+{{sub $subagentCount 3}} subagents</button>
-      {{end}}
-      {{end}}
+{{end}}
+
+{{/* subagentRow renders one indented subagent row (context: a child TreeNode).
+     Completed subagents carry .subagent-overflow so the "Completed (N)"
+     disclosure can hide them until expanded. */}}
+{{define "subagentRow"}}
+        <div class="subagent-row-wrap{{if subagentDone .State}} subagent-overflow{{end}}"
+             data-ref="{{.ID}}" data-title="{{.Title}}">
+        <a class="sb-row sub subagent-row"
+           data-state="{{.State}}"
+           href="/s/{{.ID}}"
+           hx-get="/_partials/s/{{.ID}}/workspace"
+           hx-target="#workspace"
+           hx-swap="innerHTML"
+           hx-push-url="/s/{{.ID}}">
+          <span class="subagent-glyph" data-state="{{.State}}" aria-hidden="true">{{if eq .State "active"}}⟳{{else if eq .State "awaiting"}}◆{{else if eq .State "warning"}}✕{{else}}✓{{end}}</span>
+          <span class="subagent-title">{{.Title}}</span>
+        </a>
+        <span role="button" tabindex="0" class="open-beside-btn" aria-label="open subagent beside" title="open beside">⇲</span>
+        </div>
 {{end}}

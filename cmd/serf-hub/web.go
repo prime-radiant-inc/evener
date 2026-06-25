@@ -45,10 +45,23 @@ type WebServer struct {
 }
 
 // sidebarTemplateFuncs supplies small helpers the sidebar template needs:
-// integer math to fold subagent rows ("+N subagents").
+// integer math plus the terminal-state test used to fold completed subagent
+// rows behind the "Completed (N)" disclosure.
 var sidebarTemplateFuncs = template.FuncMap{
 	"add": func(a, b int) int { return a + b },
 	"sub": func(a, b int) int { return a - b },
+	// subagentDone reports whether a subagent's display state is terminal — it
+	// has finished and no longer needs attention. Working states (running,
+	// awaiting input, warning) are not done. The sidebar folds done subagents
+	// behind a "Completed (N)" disclosure.
+	"subagentDone": func(state string) bool {
+		switch state {
+		case "active", "awaiting", "warning":
+			return false
+		default:
+			return true
+		}
+	},
 }
 
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
