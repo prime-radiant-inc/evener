@@ -58,7 +58,7 @@ Existing methods remain:
 
 Existing required fields remain valid. New clients use optional linkage fields; older clients ignore them.
 
-Prefer enriching existing `SerfJobInfo` first. Add a dedicated Serf-only `serf/delegate/updated` notification only if enriched job notifications prove insufficient for updating the originating tool item cleanly.
+Prefer enriching existing `SerfJobInfo` first. Do not add a new notification method in the initial implementation. A dedicated Serf-only `serf/delegate/updated` notification is a fallback for a later design revision only if implementation proves that enriched `SerfJobInfo` cannot target the originating tool item reliably.
 
 ## AppWire and backend data model
 
