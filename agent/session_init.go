@@ -783,6 +783,15 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 	return nil
 }
 
+// Pending resume SessionStart hook state has two valid paths:
+//
+//   - ordinary resume: pending kind -> user-turn hook run/delivery -> clear;
+//   - deferred restore side effects: pending kind -> in-flight restore run ->
+//     captured result -> user-turn delivery -> clear.
+//
+// While restore execution is in flight, user turns wait for the captured result
+// instead of running the same hook again. Cancellation while waiting leaves the
+// pending state intact for a later accepted user turn.
 func (s *Session) deferSessionStartHooks(kind plugin.SessionStartKind) {
 	if s == nil || kind == "" {
 		return
