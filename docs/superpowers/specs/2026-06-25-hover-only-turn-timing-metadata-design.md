@@ -4,7 +4,7 @@ Date: 2026-06-25
 
 ## Goal
 
-Reduce visual noise in the Serf web transcript by hiding task/tool timing metadata until the user shows interest in the relevant row. Time and runtime details should remain available on hover and keyboard focus.
+Reduce visual noise in the Serf web transcript by visually hiding task/tool timing metadata until the user shows interest in the relevant row. Time and runtime details should remain available to assistive technology at all times, and visually revealed on hover and keyboard focus.
 
 ## Context
 
@@ -21,11 +21,11 @@ The existing visible metadata styling includes selectors such as `.tool-call .to
 
 ## Design
 
-Keep timing metadata in the rendered DOM, but make it visually quiet by default. Use CSS-only hover/focus reveal behavior instead of adding JavaScript state.
+Keep timing metadata in the rendered DOM, but make it visually quiet by default without removing it from the accessibility tree. Use CSS-only hover/focus reveal behavior instead of adding JavaScript state.
 
 For rows that display time/runtime metadata:
 
-- Default state: metadata is hidden visually with `opacity: 0` and `visibility: hidden`.
+- Default state: metadata is hidden visually with `opacity: 0`; do not use `visibility: hidden`, `display: none`, or other hiding that removes it from assistive technology.
 - Hover state: metadata becomes visible when the relevant row is hovered.
 - Keyboard state: metadata becomes visible when the relevant row contains focus via `:focus-within`.
 - Layout should remain stable: preserve the metadata element's space where practical so hovering does not shift row content.
@@ -43,7 +43,7 @@ If implementation finds equivalent task timing metadata selectors, apply the sam
 
 ## Accessibility
 
-The metadata remains in the DOM so assistive technology can still access it. Keyboard users get parity through `:focus-within`; if a row has no focusable descendant, the implementation should not add unnecessary tab stops just for this hover affordance unless testing shows keyboard access is otherwise impossible for interactive metadata.
+The metadata remains in the DOM and must not be hidden with CSS that removes it from the accessibility tree. Keyboard users get visual parity through `:focus-within`; if a row has no focusable descendant, the implementation should not add unnecessary tab stops just for this hover affordance unless testing shows keyboard access is otherwise impossible for interactive metadata.
 
 ## Verification
 

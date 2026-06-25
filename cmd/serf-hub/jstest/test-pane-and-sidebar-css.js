@@ -76,21 +76,19 @@ pass(
   "thread-document main should remove legacy page padding and max-width"
 );
 
-// Transcript tool timing metadata should stay out of the scan path until the
-// user shows row-level intent with hover or keyboard focus.
+// Transcript tool timing metadata should stay out of the visual scan path until
+// the user shows row-level intent, while remaining available to assistive tech.
 pass(
   ruleContains(".tool-call .tool-meta", /opacity:\s*0\b/) &&
-    ruleContains(".tool-call .tool-meta", /visibility:\s*hidden\b/),
-  "tool timing metadata should be visually hidden by default"
+    !ruleContains(".tool-call .tool-meta", /visibility:\s*hidden\b/),
+  "tool timing metadata should be visually hidden by default without visibility:hidden"
 );
 pass(
-  ruleContains(".tool-call:hover .tool-meta", /opacity:\s*1\b/) &&
-    ruleContains(".tool-call:hover .tool-meta", /visibility:\s*visible\b/),
+  ruleContains(".tool-call:hover .tool-meta", /opacity:\s*1\b/),
   "tool timing metadata should reveal on row hover"
 );
 pass(
-  ruleContains(".tool-call:focus-within .tool-meta", /opacity:\s*1\b/) &&
-    ruleContains(".tool-call:focus-within .tool-meta", /visibility:\s*visible\b/),
+  ruleContains(".tool-call:focus-within .tool-meta", /opacity:\s*1\b/),
   "tool timing metadata should reveal on keyboard focus within the row"
 );
 
