@@ -147,6 +147,25 @@ func (m hubModel) selectedBrowseMessage() (int, transcript.ChatMessage, bool) {
 	return m.browseSelected, m.session.messages[m.browseSelected], true
 }
 
+// toggleSelectedBrowseDetail expands or collapses the detail body of just the
+// selected entry — a finished tool call or a collapsed thought. A no-op when
+// the selection has no collapsible body.
+func (m *hubModel) toggleSelectedBrowseDetail() {
+	idx, msg, ok := m.selectedBrowseMessage()
+	if !ok {
+		return
+	}
+	switch {
+	case msg.Kind == transcript.MsgTool && msg.Tool != nil && msg.Tool.Done:
+		m.session.messages[idx].Tool.Expanded = !msg.Tool.Expanded
+	case msg.Kind == transcript.MsgReasoning && msg.Done:
+		m.session.messages[idx].Expanded = !msg.Expanded
+	default:
+		return
+	}
+	m.session.refreshViewport()
+}
+
 // toggleAllBrowseDetails expands or collapses every finished detail body — tool
 // calls and the model's collapsed thoughts — in one keystroke. If anything is
 // still collapsed it expands all; otherwise it collapses all.
