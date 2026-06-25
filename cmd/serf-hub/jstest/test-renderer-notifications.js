@@ -15,7 +15,7 @@ function newHarness() {
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "https://test.local/" });
 
   const { window } = dom;
-  window.marked = { parse: (t) => t };
+  window.marked = { parse: (t) => String(t || "").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>") };
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
   require("./load-renderer").evalRenderer(window);
   const conv = window.document.getElementById("conversation");
@@ -304,6 +304,34 @@ excerpt:
     if (!card) return { ok: false, detail: "missing card" };
     if (card.querySelector("img")) return { ok: false, detail: "notification inserted HTML" };
     if (!expectText(card, "<img src=x")) return { ok: false, detail: "escaped text not visible" };
+    return { ok: true };
+  });
+
+  const markdownEnvelope = JSON.stringify({
+    message: "Status: **DONE**\nFull message is markdown.",
+    data: { status: "DONE", concerns: [] },
+    artifacts: []
+  });
+  await scenario("notification communicate message renders markdown", `<job-notification job_id="job_markdown" event="completed" job_type="delegate" status="completed" reason="" output_bytes="0">
+Job job_markdown completed. Complete output below.
+excerpt:
+${markdownEnvelope}
+</job-notification>`, (conv) => {
+    const message = conv.querySelector(".notification-card-message");
+    if (!message) return { ok: false, detail: "missing message" };
+    if (!message.querySelector("strong")) return { ok: false, detail: "message markdown not rendered" };
+    if (!expectText(message, "Status: DONE")) return { ok: false, detail: "message text missing" };
+    return { ok: true };
+  });
+
+  await scenario("notification communicate message truncates at 8k", `<job-notification job_id="job_long" event="completed" job_type="delegate" status="completed" reason="" output_bytes="0">
+Job job_long completed. Complete output below.
+excerpt:
+${JSON.stringify({ message: "x".repeat(8200), data: { status: "DONE", concerns: [] }, artifacts: [] })}
+</job-notification>`, (conv) => {
+    const message = conv.querySelector(".notification-card-message");
+    if (!message) return { ok: false, detail: "missing message" };
+    if (message.textContent.length !== 8000) return { ok: false, detail: "message length = " + message.textContent.length };
     return { ok: true };
   });
 

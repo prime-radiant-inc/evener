@@ -2928,6 +2928,18 @@
       return el;
     },
 
+    appendNotificationMarkdown(parent, className, text) {
+      text = String(text || "").trim();
+      if (!text) return null;
+      const el = document.createElement("div");
+      el.className = className;
+      text = text.slice(0, 8000);
+      try { el.innerHTML = window.marked.parse(text); }
+      catch (e) { el.textContent = text; }
+      parent.appendChild(el);
+      return el;
+    },
+
     appendNotificationCard(summary) {
       const n = summary.notification || {};
       const card = document.createElement("div");
@@ -2963,7 +2975,7 @@
       summaryEl.className = "notification-card-summary";
       this.appendNotificationText(summaryEl, "notification-card-prose", n.prose);
       if (n.communicate) {
-        this.appendNotificationText(summaryEl, "notification-card-message", n.communicate.message);
+        this.appendNotificationMarkdown(summaryEl, "notification-card-message", n.communicate.message);
         this.appendNotificationText(summaryEl, "notification-card-status", n.communicate.status ? "status " + n.communicate.status : "");
         this.appendNotificationText(summaryEl, "notification-card-commits", (n.communicate.commitHashes || []).length ? "commits " + n.communicate.commitHashes.join(", ") : "");
         this.appendNotificationText(summaryEl, "notification-card-tests", n.communicate.testSummary ? "tests " + n.communicate.testSummary : "");
