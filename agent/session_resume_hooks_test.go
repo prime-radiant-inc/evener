@@ -234,6 +234,59 @@ func TestRestoreSessionStartHooksDrainOnlyOnce(t *testing.T) {
 	}
 }
 
+func TestRestoreSessionMaxTurnsRejectedUserInputKeepsPendingResumeHooks(t *testing.T) {
+	t.Parallel()
+	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			text := requestText(req)
+			if strings.Contains(text, "rejected by max turns") {
+				t.Fatalf("MaxTurns-rejected prompt leaked into accepted request; text:\n%s", text)
+			}
+			requireRequestContainsInOrder(t, req,
+				"prior user task",
+				"prior assistant answer",
+				"RESUME_HOOK_CONTEXT",
+				"accepted after max turns",
+			)
+			return finalResponse("done")
+		},
+	}}
+	sess := restoredSessionWithResumeHook(t, adapter)
+	eventsPtr, mu, doneCh := collectEvents(sess)
+
+	sess.mu.Lock()
+	sess.cfg.MaxTurns = 1
+	sess.turns = 1
+	sess.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "rejected by max turns", nil); err != nil {
+		t.Fatalf("MaxTurns-rejected ProcessInput returned error: %v", err)
+	}
+	if got := len(adapter.Requests()); got != 0 {
+		t.Fatalf("adapter requests after MaxTurns rejection = %d, want 0", got)
+	}
+	rejectedHistory := sessionHistoryText(sess)
+	if strings.Contains(rejectedHistory, "RESUME_HOOK_CONTEXT") || strings.Contains(rejectedHistory, "rejected by max turns") {
+		t.Fatalf("MaxTurns-rejected input consumed resume hooks or appended prompt; history:\n%s", rejectedHistory)
+	}
+
+	sess.mu.Lock()
+	sess.cfg.MaxTurns = 0
+	sess.mu.Unlock()
+
+	if _, err := sess.ProcessInput(ctx, "accepted after max turns", nil); err != nil {
+		t.Fatalf("accepted ProcessInput: %v", err)
+	}
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("adapter requests after accepted input = %d, want 1", got)
+	}
+	if got := closeAndCountSessionStartHooks(t, sess, eventsPtr, mu, doneCh); got != 1 {
+		t.Fatalf("SessionStart hook starts after MaxTurns rejection plus accepted input = %d, want 1", got)
+	}
+}
+
 func TestRestoreSessionRejectedUserInputKeepsPendingResumeHooks(t *testing.T) {
 	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{

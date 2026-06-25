@@ -769,11 +769,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 }
 
 // acceptUserInput records a new user input at the start of an input turn: it
-// repairs any orphaned tool results, emits EventUserInput, appends the user turn,
-// launches the session namer, and runs UserPromptSubmit hooks. It enforces
-// MaxTurns, returning proceed=false (the caller returns "", nil) when the turn
-// limit is already reached; otherwise it increments the turn counter, drains any
-// pending steering, and returns proceed=true.
+// repairs any orphaned tool results, enforces MaxTurns, and returns proceed=false
+// (the caller returns "", nil) when the turn limit is already reached. Once the
+// turn is accepted, it increments the turn counter, drains any pending resume
+// SessionStart hook output before appending the user turn, then emits
+// EventUserInput, appends the user turn, launches the session namer, runs
+// UserPromptSubmit hooks, drains any pending steering, and returns proceed=true.
 func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal) (proceed bool) {
 	// A new top-level input starts a fresh causal context: replace active
 	// provenance with the input's provenance, or empty provenance for ordinary
@@ -781,19 +782,30 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	s.replaceActiveProvenance(inputProvenance)
 	s.repairOrphanedToolResults("before accepting new input")
 
+	// Count conversation turns (user input -> model response pairs), not LLM round-trips.
+	// Check the limit before incrementing so MaxTurns=N allows exactly N inputs.
 	s.mu.Lock()
+	turns := s.turns
+	s.mu.Unlock()
+
+	if s.cfg.MaxTurns > 0 && turns >= s.cfg.MaxTurns {
+		s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
+		s.finishProcessingAtBoundary(ctx, SessionIdle)
+		return false
+	}
+
+	s.mu.Lock()
+	s.turns++
 	userInputTurn := len(s.history) + 1
 	s.mu.Unlock()
+
 	// Resume SessionStart hooks are intentionally lazy: they are recorded during
 	// restore, but their model-facing output must join the first accepted real user
-	// turn, never an autonomous notification/continuation/watch turn. Drain them
-	// before recording the user turn so their model context precedes the prompt it
-	// applies to in the first resumed model request.
-	s.drainPendingSessionStartHooks(ctx)
-	for _, msg := range s.drainSteeringForTurn() {
-		s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
-		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
-	}
+	// turn, never a MaxTurns-rejected input or an autonomous notification,
+	// continuation, or watch turn. Drain them after the proceed gate accepts the
+	// turn and before recording the user turn so their model context precedes the
+	// prompt it applies to in the first resumed model request.
+	s.drainPendingSessionStartHooksForUserTurn(ctx)
 
 	s.emit(events.EventUserInput, events.UserInputData{
 		Text:   input,
@@ -818,22 +830,6 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 			s.deliverHookUserMessage(m)
 		}
 	}
-
-	// Count conversation turns (user input -> model response pairs), not LLM round-trips.
-	// Check the limit before incrementing so MaxTurns=N allows exactly N inputs.
-	s.mu.Lock()
-	turns := s.turns
-	s.mu.Unlock()
-
-	if s.cfg.MaxTurns > 0 && turns >= s.cfg.MaxTurns {
-		s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
-		s.finishProcessingAtBoundary(ctx, SessionIdle)
-		return false
-	}
-
-	s.mu.Lock()
-	s.turns++
-	s.mu.Unlock()
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	for _, msg := range s.drainSteeringForTurn() {

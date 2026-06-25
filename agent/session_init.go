@@ -811,28 +811,48 @@ func (s *Session) drainPendingSessionStartHooks(ctx context.Context) {
 	if !ok {
 		return
 	}
-	s.runSessionStartHooksWithContext(ctx, kind)
+	s.deliverSessionStartHookResult(s.runSessionStartHooksWithContext(ctx, kind))
+}
+
+func (s *Session) drainPendingSessionStartHooksForUserTurn(ctx context.Context) {
+	kind, ok := s.takePendingSessionStartKind()
+	if !ok {
+		return
+	}
+	result := s.runSessionStartHooksWithContext(ctx, kind)
+	for _, m := range result.ModelContext {
+		wrapped := wrapHookContext(m)
+		s.appendTurn(schema.TurnSteering, llm.User(wrapped))
+		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: wrapped})
+	}
+	for _, m := range result.UserMessages {
+		s.deliverHookUserMessage(m)
+	}
 }
 
 func (s *Session) runSessionStartHooks(sessionStartKind plugin.SessionStartKind) {
-	s.runSessionStartHooksWithContext(context.Background(), sessionStartKind)
+	s.deliverSessionStartHookResult(s.runSessionStartHooksWithContext(context.Background(), sessionStartKind))
 }
 
-func (s *Session) runSessionStartHooksWithContext(ctx context.Context, sessionStartKind plugin.SessionStartKind) {
-	if s == nil || s.hookRunner == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	result := s.hookRunner.RunSessionStartFor(ctx, s.hookInput(plugin.HookSessionStart), sessionStartKind)
-	s.logSessionStartHookDispatch(sessionStartKind, len(result.ModelContext)+len(result.UserMessages))
+func (s *Session) deliverSessionStartHookResult(result hooks.RunResult) {
 	for _, m := range result.ModelContext {
 		s.deliverHookContext(m)
 	}
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessage(m)
 	}
+}
+
+func (s *Session) runSessionStartHooksWithContext(ctx context.Context, sessionStartKind plugin.SessionStartKind) hooks.RunResult {
+	if s == nil || s.hookRunner == nil {
+		return hooks.RunResult{}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	result := s.hookRunner.RunSessionStartFor(ctx, s.hookInput(plugin.HookSessionStart), sessionStartKind)
+	s.logSessionStartHookDispatch(sessionStartKind, len(result.ModelContext)+len(result.UserMessages))
+	return result
 }
 
 // logPluginLoadDiag records, per loaded plugin, which manifest flavor was
