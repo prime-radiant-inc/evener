@@ -23,9 +23,14 @@ func useTranscriptTurns(transcriptTurns, notificationTurns []appwire.Turn) bool 
 	return notificationTurns[0].ID != "turn_1"
 }
 
+// transcriptTurnCache memoizes transcript-file parsing by file identity so the
+// repeated reads driven by lazy turn paging don't re-parse the whole transcript
+// each page. One daemon serves one session, so a small cache suffices.
+var transcriptTurnCache = apptranscript.NewTurnCache()
+
 func appTurnsFromTranscriptFile(path string) []appwire.Turn {
 	toolNames := map[string]string{}
-	return apptranscript.TurnsFromFile(path, 128<<20, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
+	return transcriptTurnCache.TurnsFromFile(path, 128<<20, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
 		var entry transcript.Entry
 		if err := json.Unmarshal(raw, &entry); err != nil {
 			return nil
