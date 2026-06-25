@@ -2940,6 +2940,39 @@
       return el;
     },
 
+    // decodeNotificationEntities unescapes one HTML-entity layer so the reader
+    // sees the job's real output text — the daemon escapes < & > in the excerpt
+    // to keep them from breaking the <job-notification> wrapper. &amp; is undone
+    // last so double-escaped content (&amp;lt;) unwraps just one level. Safe:
+    // the result is only ever assigned to textContent, never parsed as HTML.
+    decodeNotificationEntities(text) {
+      return String(text || "")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, "\"")
+        .replace(/&#0*39;|&#x0*27;/gi, "'")
+        .replace(/&amp;/g, "&");
+    },
+
+    appendNotificationExcerpt(parent, text) {
+      text = this.decodeNotificationEntities(String(text || "").trim());
+      if (!text) return null;
+      if (text.length <= 500) {
+        return this.appendNotificationText(parent, "notification-card-excerpt", text);
+      }
+      const preview = this.appendNotificationText(parent, "notification-card-excerpt", text.slice(0, 500) + "…");
+      const details = document.createElement("details");
+      details.className = "notification-card-excerpt-full";
+      const summary = document.createElement("summary");
+      summary.textContent = "full excerpt";
+      details.appendChild(summary);
+      const pre = document.createElement("pre");
+      pre.textContent = text;
+      details.appendChild(pre);
+      parent.appendChild(details);
+      return preview;
+    },
+
     appendNotificationCard(summary) {
       const n = summary.notification || {};
       const card = document.createElement("div");
@@ -2982,7 +3015,7 @@
         this.appendNotificationText(summaryEl, "notification-card-concerns", (n.communicate.concerns || []).length ? "concerns " + n.communicate.concerns.join("; ") : "concerns none");
         this.appendNotificationText(summaryEl, "notification-card-artifacts", (n.communicate.artifacts || []).length ? "artifacts " + n.communicate.artifacts.join(", ") : "");
       } else {
-        this.appendNotificationText(summaryEl, "notification-card-excerpt", n.excerpt);
+        this.appendNotificationExcerpt(summaryEl, n.excerpt);
       }
       if (summaryEl.childNodes.length) card.appendChild(summaryEl);
 

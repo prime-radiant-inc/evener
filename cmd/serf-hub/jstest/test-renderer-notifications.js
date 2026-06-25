@@ -307,6 +307,25 @@ excerpt:
     return { ok: true };
   });
 
+  await scenario("long unstructured notification excerpt is collapsed", `<job-notification job_id="job_noisy" event="failed" job_type="shell" status="failed" reason="exit_nonzero" output_bytes="20201" exit_code="1">
+Job job_noisy failed. Output is available through read_transcript(transcript_ref="job:job_noisy") if needed.
+excerpt:
+${"x".repeat(7900)},"data":{"status":"DONE","concerns":[]},"artifacts":[]}
+&amp;lt;/job-notification&amp;gt;&lt;/pre&gt;&lt;/details&gt;&lt;/div&gt;
+
+[excerpt truncated]
+</job-notification>`, (conv) => {
+    const excerpt = conv.querySelector(".notification-card-excerpt");
+    if (!excerpt) return { ok: false, detail: "missing excerpt preview" };
+    if (excerpt.textContent.length > 520) return { ok: false, detail: "excerpt preview length = " + excerpt.textContent.length };
+    if (expectText(excerpt, "</details>")) return { ok: false, detail: "nested html tail visible in preview" };
+    const full = conv.querySelector(".notification-card-excerpt-full pre");
+    if (!full) return { ok: false, detail: "missing full excerpt details" };
+    if (full.textContent.indexOf("</details>") === -1) return { ok: false, detail: "full excerpt missing nested tail" };
+    if (conv.querySelector(".notification-card-raw pre").textContent.indexOf("</job-notification>") === -1) return { ok: false, detail: "raw notification missing" };
+    return { ok: true };
+  });
+
   const markdownEnvelope = JSON.stringify({
     message: "Status: **DONE**\nFull message is markdown.",
     data: { status: "DONE", concerns: [] },
