@@ -71,7 +71,7 @@ func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 	}
 }
 
-func TestHubRPCDoesNotAdvertiseUnsupportedTurnLists(t *testing.T) {
+func TestHubRPCAdvertisesTurnListsWithHandlers(t *testing.T) {
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 
@@ -82,8 +82,10 @@ func TestHubRPCDoesNotAdvertiseUnsupportedTurnLists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if init.Features.ThreadTurnsList {
-		t.Fatalf("ThreadTurnsList advertised without Hub handlers: %+v", init.Features)
+	// thread/turns/list is implemented (lazy transcript loading), so the hub
+	// must advertise the capability.
+	if !init.Features.ThreadTurnsList {
+		t.Fatalf("ThreadTurnsList not advertised despite Hub handlers: %+v", init.Features)
 	}
 }
 
@@ -1887,6 +1889,10 @@ type listThreadSource struct {
 
 func (s *listThreadSource) ID() string { return s.id }
 
+func (s *listThreadSource) ListTurns(context.Context, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	return appwire.ThreadTurnsListResponse{}, nil
+}
+
 func (s *listThreadSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	if s.listErr != nil {
 		return appwire.ThreadListResponse{}, s.listErr
@@ -1895,6 +1901,10 @@ func (s *listThreadSource) ListThreads(context.Context, appwire.ThreadListParams
 }
 
 func (s *relayLifecycleSource) ID() string { return "codex" }
+
+func (s *relayLifecycleSource) ListTurns(context.Context, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	return appwire.ThreadTurnsListResponse{}, nil
+}
 
 func (s *relayLifecycleSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	return appwire.ThreadListResponse{Data: []appwire.Thread{s.thread}}, nil
@@ -2093,6 +2103,10 @@ func (s *relayBroadcastSource) ID() string {
 		return s.id
 	}
 	return "codex"
+}
+
+func (s *relayBroadcastSource) ListTurns(context.Context, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	return appwire.ThreadTurnsListResponse{}, nil
 }
 
 func (s *relayBroadcastSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {

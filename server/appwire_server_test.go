@@ -531,7 +531,7 @@ func TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage(t *testing.T) 
 	}
 }
 
-func TestServerAppWireInitializeDoesNotAdvertiseUnsupportedTurnList(t *testing.T) {
+func TestServerAppWireInitializeAdvertisesTurnList(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	conn := srv.AppServer().NewConnection("test")
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
@@ -542,8 +542,9 @@ func TestServerAppWireInitializeDoesNotAdvertiseUnsupportedTurnList(t *testing.T
 	if !ok {
 		t.Fatalf("result=%T", resp.Response.Result)
 	}
-	if data.Features.ThreadTurnsList {
-		t.Fatalf("ThreadTurnsList advertised without handlers: %+v", data.Features)
+	// thread/turns/list is implemented (lazy transcript loading).
+	if !data.Features.ThreadTurnsList {
+		t.Fatalf("ThreadTurnsList not advertised despite handlers: %+v", data.Features)
 	}
 }
 

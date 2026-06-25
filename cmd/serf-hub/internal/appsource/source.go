@@ -10,6 +10,7 @@ type Source interface {
 	ID() string
 	ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error)
 	ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error)
+	ListTurns(context.Context, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error)
 	StartThread(context.Context, appwire.ThreadStartParams) (appwire.ThreadStartResponse, error)
 	ResumeThread(context.Context, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error)
 	ForkThread(context.Context, appwire.ThreadForkParams) (appwire.ThreadForkResponse, error)

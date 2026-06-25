@@ -89,7 +89,7 @@ no router (reserved).
 | `ping` | connection | `EmptyParams` | `EmptyResponse` | Connection keepalive, answered directly before the initialize gate (the browser's app-level heartbeat). |
 | `thread/list` | both | `ThreadListParams` | `ThreadListResponse` | Lists threads; the daemon returns its single session. |
 | `thread/read` | both | `ThreadReadParams` | `ThreadReadResponse` | Reads one thread and optionally subscribes to its live updates. |
-| `thread/turns/list` | unimplemented | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Codex-parity: paginated turn list for transcript browsing. Defined for protocol shape but served by no serf router (serf loads transcripts via thread/read). |
+| `thread/turns/list` | both | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Pages turns backward (older) for lazy transcript loading; the cold load seeds the latest window via thread/read(turnLimit). |
 | `thread/turns/items/list` | unimplemented | `ThreadTurnItemsListParams` | `ThreadTurnItemsListResponse` | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no serf router. |
 | `thread/start` | hub | `ThreadStartParams` | `ThreadStartResponse` | Starts a new thread and attaches a live-update relay. |
 | `thread/resume` | hub | `ThreadResumeParams` | `ThreadResumeResponse` | Resumes an existing session and attaches its relay. |
@@ -660,6 +660,7 @@ _(no fields)_
 | `itemsView` | `string` | yes |  |
 | `subscribe` | `bool` | yes |  |
 | `replaceSubscription` | `bool` | yes |  |
+| `turnLimit` | `int` | yes |  |
 
 
 ### `ThreadReadResponse`
@@ -667,6 +668,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `thread` | `appwire.Thread` |  |  |
+| `olderCursor` | `string` | yes |  |
 
 
 ### `ThreadReasoningEffortSetParams`

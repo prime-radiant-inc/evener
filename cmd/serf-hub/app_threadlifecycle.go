@@ -236,7 +236,7 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, err
 	}
-	return appwire.ThreadResumeResponse(threadResp), nil
+	return appwire.ThreadResumeResponse{Thread: threadResp.Thread}, nil
 }
 
 func resumeRequestForConfig(cfg hubcore.WebConfig, id string) (hubcore.ResumeRequest, error) {

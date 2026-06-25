@@ -79,6 +79,20 @@ func (s *LocalDaemonSource) ReadThread(ctx context.Context, params appwire.Threa
 	return out, err
 }
 
+func (s *LocalDaemonSource) ListTurns(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	entry, err := s.entryForRef(params.Ref, params.ThreadID)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	var out appwire.ThreadTurnsListResponse
+	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+		var callErr error
+		out, callErr = client.ThreadTurnsList(ctx, params)
+		return callErr
+	})
+	return out, err
+}
+
 func (s *LocalDaemonSource) StartThread(context.Context, appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 	return appwire.ThreadStartResponse{}, appwire.Unavailable("local daemon source cannot start threads directly")
 }

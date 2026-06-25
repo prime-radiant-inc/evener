@@ -71,7 +71,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 		SourceID:   "local",
 		Features: appwire.FeatureSet{
 			ThreadList:        true,
-			ThreadTurnsList:   false,
+			ThreadTurnsList:   true,
 			TurnStart:         true,
 			TurnSteer:         true,
 			ThreadClear:       true,
@@ -289,25 +289,52 @@ func registerThreadHandlers(
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
 			if thread, ok := pastThreadForRead(cfg, params); ok {
-				return appwire.ThreadReadResponse{Thread: thread}, nil
+				return windowedReadResponse(thread, params.TurnLimit), nil
 			}
 			return appwire.ThreadReadResponse{}, err
 		}
 		resp, err := source.ReadThread(ctx, params)
 		if err != nil {
 			if thread, ok := pastThreadForRead(cfg, params); ok {
-				return appwire.ThreadReadResponse{Thread: thread}, nil
+				return windowedReadResponse(thread, params.TurnLimit), nil
 			}
 			return appwire.ThreadReadResponse{}, err
 		}
 		resp.Thread = mergePastThreadForRead(cfg, params, resp.Thread)
 		resp.Thread = sanitizeStaleProcessingStatus(cfg, resp.Thread)
+		// Window any turns the source itself didn't (Codex thread/read and the
+		// past-merge return the full transcript); a daemon read already set
+		// OlderCursor, so this is a no-op there.
+		if params.TurnLimit > 0 && resp.OlderCursor == "" {
+			resp.Thread.Turns, resp.OlderCursor = appwire.WindowTurns(resp.Thread.Turns, params.TurnLimit)
+		}
 		if params.Subscribe || relayOnThreadRead(source) {
 			if err := startRelay(ctx, source, params, resp.Thread); err != nil {
 				return appwire.ThreadReadResponse{}, err
 			}
 		}
 		return resp, nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+		// Live source first; fall back to the saved transcript (paged on the
+		// hub) for past/not-loaded sessions.
+		source, srcErr := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
+		var live appwire.ThreadTurnsListResponse
+		var liveErr error
+		if srcErr == nil {
+			live, liveErr = source.ListTurns(ctx, params)
+			if liveErr == nil && len(live.Data) > 0 {
+				return live, nil
+			}
+		}
+		readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: true}
+		if thread, ok := pastThreadForRead(cfg, readParams); ok {
+			return appwire.PageTurns(thread.Turns, params.Cursor, params.Limit), nil
+		}
+		if srcErr != nil {
+			return appwire.ThreadTurnsListResponse{}, srcErr
+		}
+		return live, liveErr
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 		resp, err := hubThreadStart(ctx, cfg, sources, params)

@@ -166,6 +166,15 @@ func pastEntryThread(entry hubcore.PastEntry, includeTurns bool) appwire.Thread 
 	return thread
 }
 
+// windowedReadResponse bounds a thread's turns to the latest TurnLimit for a
+// lazy initial load, setting OlderCursor when it truncates. TurnLimit <= 0
+// returns the full transcript (legacy behavior).
+func windowedReadResponse(thread appwire.Thread, turnLimit int) appwire.ThreadReadResponse {
+	turns, cursor := appwire.WindowTurns(thread.Turns, turnLimit)
+	thread.Turns = turns
+	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: cursor}
+}
+
 func pastEntryTurns(entry hubcore.PastEntry) []appwire.Turn {
 	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 	toolNames := map[string]string{}

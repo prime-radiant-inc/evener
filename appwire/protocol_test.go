@@ -57,7 +57,6 @@ func TestConnectionAndReservedMethodsCataloged(t *testing.T) {
 	for name, want := range map[string]MethodScope{
 		MethodInitialize:          ScopeConnection,
 		MethodPing:                ScopeConnection,
-		MethodThreadTurnsList:     ScopeUnimplemented,
 		MethodThreadTurnItemsList: ScopeUnimplemented,
 	} {
 		if got, ok := scope[name]; !ok {
