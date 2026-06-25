@@ -208,10 +208,11 @@ func RenderMessage(msg transcript.ChatMessage, width int, focused bool) string {
 		}
 		th := tuitheme.ActiveTheme()
 		spark := lipgloss.NewStyle().Foreground(th.TextDim).Render("✦")
-		// Collapsed once the turn moves on: a single quiet line of gist. While it
-		// is the current turn the whole thought streams open, plain (not markdown)
-		// so it stays the quietest entry and never reflows on heading syntax.
-		if msg.Done {
+		// Collapsed once the turn moves on: a single quiet line of gist, until the
+		// reader re-opens it with ctrl+t. While it is the current turn the whole
+		// thought streams open, plain (not markdown) so it stays the quietest
+		// entry and never reflows on heading syntax.
+		if msg.Done && !msg.Expanded {
 			return RenderSelectedMessage(spark+" "+tuitheme.ThinkingStyle.Render(reasoningGist(text)), focused)
 		}
 		bodyWidth := max(1, messageWidth-lipgloss.Width(spark)-1)

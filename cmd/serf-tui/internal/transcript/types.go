@@ -51,6 +51,9 @@ type ChatMessage struct {
 	// answering or the turn completed), so the renderer collapses it to a
 	// one-line gist instead of the whole streaming block.
 	Done bool
+	// Expanded re-opens a Done MsgReasoning thought to its whole block (the
+	// ctrl+t browse toggle), overriding the default collapsed gist.
+	Expanded bool
 	// Pending is true while the optimistic call is in flight. The renderer
 	// prefixes the row with a spinner glyph and dims the color while true.
 	Pending bool

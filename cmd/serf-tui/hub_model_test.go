@@ -1118,6 +1118,36 @@ func TestHubModelBrowseCtrlTTogglesAllToolEntries(t *testing.T) {
 	}
 }
 
+func TestHubModelBrowseCtrlTExpandsReasoning(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 100
+	m.session.width = 100
+	m.session.messages = []transcript.ChatMessage{
+		{Kind: transcript.MsgReasoning, Text: "weighing the cache options\nthen the retry path", Done: true},
+		{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "shell", Description: "run", Output: "out", Done: true}},
+	}
+	m.session.scrollMode = true
+	m.browseSelected = 0
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	got := updated.(hubModel)
+	if !got.session.messages[0].Expanded {
+		t.Fatalf("ctrl+t should expand the finished thought: %+v", got.session.messages[0])
+	}
+	if !got.session.messages[1].Tool.Expanded {
+		t.Fatalf("ctrl+t should still expand tools alongside thoughts: %+v", got.session.messages[1].Tool)
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	got = updated.(hubModel)
+	if got.session.messages[0].Expanded {
+		t.Fatalf("ctrl+t should collapse the finished thought again: %+v", got.session.messages[0])
+	}
+	if got.session.messages[1].Tool.Expanded {
+		t.Fatalf("ctrl+t should collapse tools again: %+v", got.session.messages[1].Tool)
+	}
+}
+
 func TestHubModelSessionBrowseExitKeysReturnToCompose(t *testing.T) {
 	for _, tc := range []struct {
 		name string

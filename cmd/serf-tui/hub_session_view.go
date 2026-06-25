@@ -240,7 +240,7 @@ func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 	case m.transcriptView != nil:
 		footer = tuiprim.ActionBarForWidth(m.width, "esc/i/q: return to chat", "ctrl+o: dashboard")
 	case m.session.scrollMode:
-		keys := []string{"esc/i/q: compose", "ctrl+t: expand tools"}
+		keys := []string{"esc/i/q: compose", "ctrl+t: expand tools/thinking"}
 		if m.detail.Capabilities.Fork {
 			keys = append(keys, "f: fork selected user turn")
 		}

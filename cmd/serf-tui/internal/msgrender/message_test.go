@@ -181,6 +181,15 @@ func TestRenderMessage_CollapsedReasoningIsAOneLineGist(t *testing.T) {
 	}
 }
 
+func TestRenderMessage_ExpandedReasoningShowsWholeBlock(t *testing.T) {
+	body := "weighing the cache eviction options\nthen the retry path"
+	got := RenderMessage(transcript.ChatMessage{Kind: transcript.MsgReasoning, Text: body, Done: true, Expanded: true}, 80, false)
+
+	if !strings.Contains(got, "then the retry path") {
+		t.Fatalf("a finished thought re-expanded must show the whole block:\n%q", got)
+	}
+}
+
 func TestRenderMessage_EmptyReasoningRendersNothing(t *testing.T) {
 	if got := RenderMessage(transcript.ChatMessage{Kind: transcript.MsgReasoning, Text: "   "}, 80, false); got != "" {
 		t.Fatalf("empty reasoning should render nothing, got %q", got)

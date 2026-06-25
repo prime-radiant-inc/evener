@@ -147,20 +147,29 @@ func (m hubModel) selectedBrowseMessage() (int, transcript.ChatMessage, bool) {
 	return m.browseSelected, m.session.messages[m.browseSelected], true
 }
 
-func (m *hubModel) toggleAllBrowseToolEntries() {
+// toggleAllBrowseDetails expands or collapses every finished detail body — tool
+// calls and the model's collapsed thoughts — in one keystroke. If anything is
+// still collapsed it expands all; otherwise it collapses all.
+func (m *hubModel) toggleAllBrowseDetails() {
 	expand := false
 	for _, msg := range m.session.messages {
 		if msg.Kind == transcript.MsgTool && msg.Tool != nil && msg.Tool.Done && !msg.Tool.Expanded {
 			expand = true
 			break
 		}
+		if msg.Kind == transcript.MsgReasoning && msg.Done && !msg.Expanded {
+			expand = true
+			break
+		}
 	}
 	for i := range m.session.messages {
 		msg := &m.session.messages[i]
-		if msg.Kind != transcript.MsgTool || msg.Tool == nil || !msg.Tool.Done {
-			continue
+		switch {
+		case msg.Kind == transcript.MsgTool && msg.Tool != nil && msg.Tool.Done:
+			msg.Tool.Expanded = expand
+		case msg.Kind == transcript.MsgReasoning && msg.Done:
+			msg.Expanded = expand
 		}
-		msg.Tool.Expanded = expand
 	}
 	m.session.refreshViewport()
 }
