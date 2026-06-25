@@ -833,6 +833,13 @@ func (s *Session) pendingSessionStartForUserTurn(ctx context.Context) (hooks.Run
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var stopAfterFunc func() bool
+	// Cleanup runs once at return; the AfterFunc itself is registered lazily on
+	// the first wait below. Hoisted out of the loop so the defer can't accumulate.
+	defer func() {
+		if stopAfterFunc != nil {
+			stopAfterFunc()
+		}
+	}()
 	for s.pendingSessionStartInFlight && s.pendingSessionStartKind != nil && s.pendingSessionStartResult == nil {
 		if err := ctx.Err(); err != nil {
 			return hooks.RunResult{}, "", false, false
@@ -845,7 +852,6 @@ func (s *Session) pendingSessionStartForUserTurn(ctx context.Context) (hooks.Run
 				}
 				s.mu.Unlock()
 			})
-			defer stopAfterFunc()
 		}
 		if s.pendingSessionStartWaitEntered != nil {
 			s.pendingSessionStartWaitEntered()

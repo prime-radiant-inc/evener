@@ -2458,7 +2458,7 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	if err != nil {
 		t.Fatalf("open hook-release fifo: %v", err)
 	}
-	if _, err := releaseWriter.Write([]byte("release")); err != nil {
+	if _, err := releaseWriter.WriteString("release"); err != nil {
 		releaseWriter.Close()
 		t.Fatalf("write hook-release fifo: %v", err)
 	}
