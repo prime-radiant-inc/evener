@@ -2,10 +2,12 @@ package hubcore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -38,10 +40,14 @@ type Roster struct {
 	runDir string
 	prober Prober
 
-	mu        sync.RWMutex
-	bySess    map[string]LiveEntry // session_id -> entry
-	byPID     map[int]LiveEntry    // pid -> entry (for fsnotify event correlation)
-	failCount map[int]int          // pid -> consecutive prober failures
+	mu     sync.RWMutex
+	bySess map[string]LiveEntry // session_id -> entry
+	byPID  map[int]LiveEntry    // pid -> entry (for fsnotify event correlation)
+
+	// procAlive reports whether a daemon PID is still running. A failed /status
+	// probe to a live process means the daemon is busy, not gone, so its session
+	// is kept; injectable for tests.
+	procAlive func(pid int) bool
 }
 
 // NewRoster returns a Roster that scans runDir on demand.
@@ -53,8 +59,20 @@ func NewRoster(runDir string, prober Prober) *Roster {
 		prober:    prober,
 		bySess:    make(map[string]LiveEntry),
 		byPID:     make(map[int]LiveEntry),
-		failCount: make(map[int]int),
+		procAlive: processAlive,
 	}
+}
+
+// processAlive reports whether a process with the given PID currently exists.
+// Hub-spawned daemons run on the same host, so signal 0 is a reliable presence
+// check; EPERM (the process exists but is owned by another user) counts as
+// alive.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // NewRosterWithEntries returns a Roster pre-seeded with the given live entries,
@@ -74,8 +92,10 @@ func NewRosterWithEntries(entries ...LiveEntry) *Roster {
 }
 
 // Refresh re-scans the rendezvous dir and updates the in-memory roster.
-// An entry is only pruned after two consecutive prober failures, giving
-// transient blips a chance to recover without dropping the daemon from the UI.
+// A daemon that fails its liveness probe is kept as long as its process is
+// still alive — a transient probe miss (busy daemon, overloaded host) must not
+// blank the session from the UI. It is dropped only when its process is gone
+// (a stale rendezvous file).
 func (r *Roster) Refresh() {
 	entries, err := rendezvous.List(r.runDir)
 	if err != nil {
@@ -87,32 +107,28 @@ func (r *Roster) Refresh() {
 
 	bySess := make(map[string]LiveEntry, len(entries))
 	byPID := make(map[int]LiveEntry, len(entries))
-	seen := make(map[int]bool, len(entries))
 
 	for _, e := range entries {
-		seen[e.PID] = true
 		var sessID, status string
 		ok := true
 		if r.prober != nil {
 			sessID, status, ok = r.prober.Probe(e)
 		}
 		if !ok {
-			r.failCount[e.PID]++
-			if r.failCount[e.PID] < 2 {
-				// First failure: keep the previous entry if we had one.
-				if prev, had := r.byPID[e.PID]; had {
-					byPID[e.PID] = prev
-					if prev.SessionID != "" {
-						bySess[prev.SessionID] = prev
-					}
+			// The probe failed, but the rendezvous file plus a live PID are the
+			// authoritative "this session exists" signal: a transient miss (a
+			// busy daemon, a briefly overloaded host) must not blank the sidebar.
+			// Keep the previously-seen entry while its process is alive; prune
+			// only when the process is gone (a stale rendezvous file left by a
+			// crashed daemon).
+			if prev, had := r.byPID[e.PID]; had && r.procAlive(e.PID) {
+				byPID[e.PID] = prev
+				if prev.SessionID != "" {
+					bySess[prev.SessionID] = prev
 				}
-				continue
 			}
-			// Second consecutive failure: prune.
-			delete(r.failCount, e.PID)
 			continue
 		}
-		r.failCount[e.PID] = 0
 		live := LiveEntry{Entry: e, SessionID: sessID, Status: status}
 		if sessID != "" {
 			if prev, ok := bySess[sessID]; !ok || preferLiveEntry(live, prev) {
@@ -120,13 +136,6 @@ func (r *Roster) Refresh() {
 			}
 		}
 		byPID[e.PID] = live
-	}
-
-	// Reap fail-counts for PIDs whose rendezvous file is gone.
-	for pid := range r.failCount {
-		if !seen[pid] {
-			delete(r.failCount, pid)
-		}
 	}
 
 	r.bySess = bySess

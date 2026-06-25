@@ -117,21 +117,56 @@ func TestRosterListDedupesSessionIDPreferringAppWireEntry(t *testing.T) {
 	}
 }
 
-func TestRoster_PrunesUnreachable(t *testing.T) {
+func TestRoster_PrunesUnreachableDeadProcess(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{
 		PID:     1001,
 		Address: "127.0.0.1:50001",
 	})
-	r := NewRoster(dir, fakeProber{
-		shouldFail: true,
-	})
-	// First failure keeps the entry (no previous entry, so list is empty but not pruned yet).
-	r.Refresh()
-	// Second consecutive failure prunes the entry.
+	r := NewRoster(dir, fakeProber{shouldFail: true})
+	r.procAlive = func(int) bool { return false } // process is gone → stale file
 	r.Refresh()
 	if got := r.List(); len(got) != 0 {
-		t.Fatalf("expected unreachable entries to be pruned after two failures, got %d", len(got))
+		t.Fatalf("expected a dead daemon's stale rendezvous entry to be pruned, got %d", len(got))
+	}
+}
+
+// TestRoster_KeepsAliveDaemonThroughProbeFailures is the regression test for the
+// "flash of no sessions" bug: a live daemon that transiently fails its /status
+// probe (busy daemon / overloaded host) must stay in the roster, not blank the
+// sidebar.
+func TestRoster_KeepsAliveDaemonThroughProbeFailures(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID:       1001,
+		Address:   "127.0.0.1:50001",
+		SessionID: "01ALIVE",
+	})
+
+	// First, a successful probe seeds the entry.
+	prober := &flakyProber{sessionID: "01ALIVE"}
+	r := NewRoster(dir, prober)
+	r.procAlive = func(int) bool { return true } // process stays alive throughout
+	r.Refresh()
+	if _, ok := r.Find("01ALIVE"); !ok {
+		t.Fatal("entry should be present after a successful probe")
+	}
+
+	// Now the daemon goes unresponsive for several consecutive refreshes. It
+	// must remain in the roster the entire time (the bug pruned it after two).
+	prober.fail = true
+	for i := 0; i < 5; i++ {
+		r.Refresh()
+		if got := r.List(); len(got) != 1 {
+			t.Fatalf("refresh %d: live daemon dropped on probe failure (flash), got %d entries", i, len(got))
+		}
+	}
+
+	// When the process actually dies, the next failed probe prunes it.
+	r.procAlive = func(int) bool { return false }
+	r.Refresh()
+	if got := r.List(); len(got) != 0 {
+		t.Fatalf("a dead daemon should be pruned, got %d entries", len(got))
 	}
 }
 
@@ -186,6 +221,21 @@ type fakeProber struct {
 
 func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, ok bool) {
 	if p.shouldFail {
+		return "", "", false
+	}
+	return p.sessionID, p.status, true
+}
+
+// flakyProber can be flipped from succeeding to failing mid-test (pointer
+// receiver), to simulate a daemon that goes transiently unresponsive.
+type flakyProber struct {
+	sessionID string
+	status    string
+	fail      bool
+}
+
+func (p *flakyProber) Probe(rendezvous.Entry) (sessionID, status string, ok bool) {
+	if p.fail {
 		return "", "", false
 	}
 	return p.sessionID, p.status, true
