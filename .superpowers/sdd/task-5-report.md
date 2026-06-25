@@ -254,3 +254,87 @@ ok  	primeradiant.com/serf/agent	0.163s
 - An initial focused test run failed to build because the new helper in `job_delegate_test.go` needed the `events` import; fixed before final verification.
 - An initial version of the regression hook emitted plain stdout after `additionalContext`, which the hook runner correctly treated as model context rather than `UserMessages`; changed the hook fixture to emit JSON `systemMessage` plus `additionalContext` so the test covers both channels.
 - The pre-existing unrelated `.superpowers/sdd/task-1-report.md` modification remains unstaged and uncommitted.
+
+## Task 5 Fix Report 3
+
+Status: DONE
+
+Fixed the latest Task 5 re-review race: deferred delegate restore-side-effect resume `SessionStart` hook execution and first real post-resume user-turn delivery are now mutually exclusive. A user turn arriving while restore-side-effect hook execution is in flight waits for the captured restore result instead of running the same hook again, so resume hook output is not lost and is delivered exactly once with the first accepted real user input.
+
+## Files changed
+
+- `agent/session.go`
+  - Added `pendingSessionStartInFlight` and `pendingSessionStartCond` to the pending resume hook state.
+  - Updated the state comment to document in-flight restore execution and first-user-turn wait semantics.
+- `agent/session_init.go`
+  - Added condition-variable coordination around pending resume `SessionStart` hooks.
+  - `runPendingSessionStartHooksForRestoreSideEffects` now marks hook execution in flight before releasing `s.mu`, stores the captured `hooks.RunResult`, clears the in-flight flag, and broadcasts waiters when execution completes.
+  - `drainPendingSessionStartHooksForUserTurn` now waits when restore-side-effect hook execution is in flight, then consumes the captured result exactly once; if no restore execution is in flight, it still runs and delivers the pending hook directly.
+  - Clearing semantics now clear pending kind/result/in-flight state when user-turn delivery consumes the result.
+- `agent/job_delegate_send_test.go`
+  - Made `TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce` cover the racing first-user-turn case deterministically.
+  - The test uses FIFO blocking primitives in the hook command: it proves the hook has started and is blocked, starts the first delegate user turn while restore side effects are still in flight, asserts no premature model request and no second hook execution, releases the hook, then verifies captured context/user-message output is delivered exactly once on that user turn.
+
+## Review findings fixed
+
+### Critical finding
+
+The restore side-effect hook runner no longer has a check/run/store race with the first real user turn. Restore side effects claim the pending resume hook by setting `pendingSessionStartInFlight` under `s.mu` before running it. If `drainPendingSessionStartHooksForUserTurn` enters during that unlocked hook run, it waits on `pendingSessionStartCond` until restore execution finishes, then consumes `pendingSessionStartResult`. It does not take/clear `pendingSessionStartKind` or run the hook itself while restore execution is in flight.
+
+### Important finding
+
+Added deterministic regression coverage for the exact racing first-user-turn scenario. The test no longer relies on sleeps: FIFO handshakes prove the restore hook is in progress before the first user turn starts, and release it only after assertions show the user turn has not completed, no adapter request was made, and hook execution count is still one. After release, the first user turn receives the resume hook context, the hook user message is emitted exactly once, and the hook marker remains at one execution.
+
+## Tests run
+
+1. New racing regression test:
+
+```bash
+go test ./agent -run TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce -count=1
+```
+
+Result: PASS
+
+```text
+ok  	primeradiant.com/serf/agent	0.164s
+```
+
+2. Delegate reconstruction side-effect focused tests:
+
+```bash
+go test ./agent -run 'TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce|TestDelegateReconstructionRacingParentCloseDoesNotTrackOrRunSideEffects|TestDelegateReconstructionParentCloseBeforeDeferredSideEffectsDoesNotRunThem' -count=1
+```
+
+Result: PASS
+
+```text
+ok  	primeradiant.com/serf/agent	0.253s
+```
+
+3. Task 4 resume-hook regressions, including MaxTurns:
+
+```bash
+go test ./agent -run 'TestRestoreSessionDefersResumeSessionStartHooksUntilUserInput|TestRestoreSessionNotificationDoesNotDrainResumeSessionStartHooks|TestRestoreSessionStartHooksDrainOnlyOnce|TestRestoreSessionMaxTurnsRejectedUserInputKeepsPendingResumeHooks|TestRestoreSessionRejectedUserInputKeepsPendingResumeHooks' -count=1
+```
+
+Result: PASS
+
+```text
+ok  	primeradiant.com/serf/agent	0.096s
+```
+
+4. Focused affected tests for touched session lifecycle/delegate code:
+
+```bash
+go test ./agent -run 'TestRestoreSession|TestSession_Notification|TestSession_PreCompactHook|TestSession_Compact|TestSendDelegateMessage|TestDelegateReconstruction' -count=1
+```
+
+Result: PASS
+
+```text
+ok  	primeradiant.com/serf/agent	1.357s
+```
+
+## Notes
+
+- The pre-existing unrelated `.superpowers/sdd/task-1-report.md` modification remains unstaged and uncommitted.

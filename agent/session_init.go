@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -790,7 +791,16 @@ func (s *Session) deferSessionStartHooks(kind plugin.SessionStartKind) {
 	s.mu.Lock()
 	s.pendingSessionStartKind = &k
 	s.pendingSessionStartResult = nil
+	s.pendingSessionStartInFlight = false
+	s.ensurePendingSessionStartCondLocked()
 	s.mu.Unlock()
+}
+
+func (s *Session) ensurePendingSessionStartCondLocked() *sync.Cond {
+	if s.pendingSessionStartCond == nil {
+		s.pendingSessionStartCond = sync.NewCond(&s.mu)
+	}
+	return s.pendingSessionStartCond
 }
 
 func (s *Session) takePendingSessionStartKind() (plugin.SessionStartKind, bool) {
@@ -804,6 +814,7 @@ func (s *Session) takePendingSessionStartKind() (plugin.SessionStartKind, bool) 
 	}
 	kind := *s.pendingSessionStartKind
 	s.pendingSessionStartKind = nil
+	s.pendingSessionStartResult = nil
 	return kind, true
 }
 
@@ -819,6 +830,7 @@ func (s *Session) takePendingSessionStartResult() (hooks.RunResult, bool) {
 	result := *s.pendingSessionStartResult
 	s.pendingSessionStartResult = nil
 	s.pendingSessionStartKind = nil
+	s.pendingSessionStartInFlight = false
 	return result, true
 }
 
@@ -831,16 +843,40 @@ func (s *Session) drainPendingSessionStartHooks(ctx context.Context) {
 }
 
 func (s *Session) drainPendingSessionStartHooksForUserTurn(ctx context.Context) {
-	if result, ok := s.takePendingSessionStartResult(); ok {
-		s.deliverSessionStartHookResultForUserTurn(result)
+	result, kind, haveResult, shouldRun := s.pendingSessionStartForUserTurn()
+	if !haveResult && !shouldRun {
 		return
 	}
-	kind, ok := s.takePendingSessionStartKind()
-	if !ok {
-		return
+	if shouldRun {
+		result = s.runSessionStartHooksWithContext(ctx, kind)
 	}
-	result := s.runSessionStartHooksWithContext(ctx, kind)
 	s.deliverSessionStartHookResultForUserTurn(result)
+}
+
+func (s *Session) pendingSessionStartForUserTurn() (hooks.RunResult, plugin.SessionStartKind, bool, bool) {
+	if s == nil {
+		return hooks.RunResult{}, "", false, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for s.pendingSessionStartInFlight && s.pendingSessionStartKind != nil && s.pendingSessionStartResult == nil {
+		s.ensurePendingSessionStartCondLocked().Wait()
+	}
+	if s.pendingSessionStartResult != nil {
+		result := *s.pendingSessionStartResult
+		s.pendingSessionStartResult = nil
+		s.pendingSessionStartKind = nil
+		s.pendingSessionStartInFlight = false
+		return result, "", true, false
+	}
+	if s.pendingSessionStartKind == nil {
+		return hooks.RunResult{}, "", false, false
+	}
+	kind := *s.pendingSessionStartKind
+	s.pendingSessionStartKind = nil
+	s.pendingSessionStartResult = nil
+	s.pendingSessionStartInFlight = false
+	return hooks.RunResult{}, kind, false, true
 }
 
 func (s *Session) deliverSessionStartHookResultForUserTurn(result hooks.RunResult) {
@@ -855,29 +891,42 @@ func (s *Session) deliverSessionStartHookResultForUserTurn(result hooks.RunResul
 }
 
 func (s *Session) runPendingSessionStartHooksForRestoreSideEffects(ctx context.Context) {
-	kind, ok := s.pendingSessionStartKindForRestoreSideEffects()
+	kind, ok := s.beginPendingSessionStartHooksForRestoreSideEffects()
 	if !ok {
 		return
 	}
 	result := s.runSessionStartHooksWithContext(ctx, kind)
-	s.mu.Lock()
-	if s.pendingSessionStartKind != nil && *s.pendingSessionStartKind == kind && s.pendingSessionStartResult == nil {
-		stored := result
-		s.pendingSessionStartResult = &stored
-	}
-	s.mu.Unlock()
+	s.finishPendingSessionStartHooksForRestoreSideEffects(kind, result)
 }
 
-func (s *Session) pendingSessionStartKindForRestoreSideEffects() (plugin.SessionStartKind, bool) {
+func (s *Session) beginPendingSessionStartHooksForRestoreSideEffects() (plugin.SessionStartKind, bool) {
 	if s == nil {
 		return "", false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.pendingSessionStartKind == nil || s.pendingSessionStartResult != nil {
+	if s.pendingSessionStartKind == nil || s.pendingSessionStartResult != nil || s.pendingSessionStartInFlight {
 		return "", false
 	}
+	s.pendingSessionStartInFlight = true
+	s.ensurePendingSessionStartCondLocked()
 	return *s.pendingSessionStartKind, true
+}
+
+func (s *Session) finishPendingSessionStartHooksForRestoreSideEffects(kind plugin.SessionStartKind, result hooks.RunResult) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.pendingSessionStartKind != nil && *s.pendingSessionStartKind == kind && s.pendingSessionStartResult == nil {
+		stored := result
+		s.pendingSessionStartResult = &stored
+	}
+	s.pendingSessionStartInFlight = false
+	if s.pendingSessionStartCond != nil {
+		s.pendingSessionStartCond.Broadcast()
+	}
+	s.mu.Unlock()
 }
 
 func (s *Session) runSessionStartHooks(sessionStartKind plugin.SessionStartKind) {

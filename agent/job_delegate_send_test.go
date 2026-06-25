@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -2325,8 +2326,20 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	markStoredDelegateResumable(t, s, rec)
 	rec = loadShellRecord(t, s.jobManager, rec.JobID)
 	childID := rec.DelegateRestore.ChildSessionID
-	hookMarker := filepath.Join(t.TempDir(), "session-start-hook")
-	hookCommand := "printf '{\"systemMessage\":\"DELEGATE_RESUME_USER_MESSAGE\",\"hookSpecificOutput\":{\"additionalContext\":\"DELEGATE_RESUME_CONTEXT\"}}\\n'; echo hook >> " + shellQuote(hookMarker) + "; sleep 0.2"
+	hookDir := t.TempDir()
+	hookMarker := filepath.Join(hookDir, "session-start-hook")
+	hookStartedFIFO := filepath.Join(hookDir, "hook-started")
+	hookReleaseFIFO := filepath.Join(hookDir, "hook-release")
+	if err := syscall.Mkfifo(hookStartedFIFO, 0o600); err != nil {
+		t.Fatalf("mkfifo hook-started: %v", err)
+	}
+	if err := syscall.Mkfifo(hookReleaseFIFO, 0o600); err != nil {
+		t.Fatalf("mkfifo hook-release: %v", err)
+	}
+	hookCommand := "printf '{\"systemMessage\":\"DELEGATE_RESUME_USER_MESSAGE\",\"hookSpecificOutput\":{\"additionalContext\":\"DELEGATE_RESUME_CONTEXT\"}}\\n'; " +
+		"echo hook >> " + shellQuote(hookMarker) + "; " +
+		"printf started > " + shellQuote(hookStartedFIFO) + "; " +
+		"cat " + shellQuote(hookReleaseFIFO) + " >/dev/null"
 	pluginDir := sessionStartHookPlugin(t, "sh -c "+shellQuote(hookCommand))
 	meta, err := schema.LoadSessionMeta(s.stateDir, childID)
 	if err != nil {
@@ -2370,6 +2383,65 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	}
 	close(start)
 
+	startedReader, err := os.OpenFile(hookStartedFIFO, os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("open hook-started fifo: %v", err)
+	}
+	started := make([]byte, len("started"))
+	if _, err := startedReader.Read(started); err != nil {
+		startedReader.Close()
+		t.Fatalf("read hook-started fifo: %v", err)
+	}
+	startedReader.Close()
+	if string(started) != "started" {
+		t.Fatalf("hook-started fifo read %q, want started", string(started))
+	}
+	if got := countFileLines(t, hookMarker); got != 1 {
+		t.Fatalf("SessionStart hook executions while restore hook is in flight = %d, want 1", got)
+	}
+
+	tracked := s.subagents.get(childID)
+	if tracked == nil || tracked.sess == nil {
+		t.Fatalf("tracked child while restore hook is in flight = %+v, want retained child", tracked)
+	}
+	child := tracked.sess
+	userTurnDone := make(chan sendMessageResult, 1)
+	go func() {
+		userTurnDone <- s.sendDelegateMessage(context.Background(), sendMessageArgs{
+			Target:         rec.DelegateID,
+			Message:        "first post-restore delegate user turn",
+			OnIdle:         "start",
+			BackgroundSet:  true,
+			Background:     false,
+			BlockTimeoutMS: 5000,
+		})
+	}()
+
+	// The first real user turn is racing with an in-flight restore-side-effect
+	// SessionStart hook. It must wait for that hook result instead of running a
+	// second hook or making a model request without the captured output.
+	select {
+	case res := <-userTurnDone:
+		t.Fatalf("first user turn completed before in-flight restore hook was released: %+v", res)
+	default:
+	}
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("adapter requests while restore hook is in flight = %+v, want none", requests)
+	}
+	if got := countFileLines(t, hookMarker); got != 1 {
+		t.Fatalf("SessionStart hook executions before releasing restore hook = %d, want 1", got)
+	}
+
+	releaseWriter, err := os.OpenFile(hookReleaseFIFO, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open hook-release fifo: %v", err)
+	}
+	if _, err := releaseWriter.Write([]byte("release")); err != nil {
+		releaseWriter.Close()
+		t.Fatalf("write hook-release fifo: %v", err)
+	}
+	releaseWriter.Close()
+
 	first := <-results
 	second := <-results
 
@@ -2382,21 +2454,23 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	if first.sub == nil || second.sub == nil || first.sub != second.sub {
 		t.Fatalf("reconstruction results = %p and %p, want same retained child", first.sub, second.sub)
 	}
+	if first.sub.sess != child {
+		t.Fatalf("tracked child changed after restore: got %p, want %p", first.sub.sess, child)
+	}
 	if got := atomic.LoadInt32(&callerTokens); got != 1 {
 		t.Fatalf("caller watch-send tokens enqueued = %d, want exactly one (side effects run once)", got)
 	}
 	if got := countFileLines(t, hookMarker); got != 1 {
-		t.Fatalf("SessionStart hook executions = %d, want 1", got)
+		t.Fatalf("SessionStart hook executions after restore completed = %d, want 1", got)
 	}
-	child := first.sub.sess
 	if got := countSteeringEntriesContaining(child, "DELEGATE_RESUME_CONTEXT"); got != 0 {
-		t.Fatalf("child resume hook context steering entries after restore = %d, want 0; queue = %+v", got, child.SteeringQueueSnapshot())
+		t.Fatalf("child resume hook context steering entries before user turn completes = %d, want 0; queue = %+v", got, child.SteeringQueueSnapshot())
 	}
 	if history := sessionHistoryText(child); strings.Contains(history, "DELEGATE_RESUME_CONTEXT") || strings.Contains(history, "DELEGATE_RESUME_USER_MESSAGE") {
-		t.Fatalf("child resume hook output was delivered during restore; history:\n%s", history)
+		t.Fatalf("child resume hook output was delivered before first user turn completed; history:\n%s", history)
 	}
 	if got := drainEventWarningsContaining(child, "DELEGATE_RESUME_USER_MESSAGE"); got != 0 {
-		t.Fatalf("child resume hook user messages delivered during restore = %d, want 0", got)
+		t.Fatalf("child resume hook user messages delivered before first user turn completed = %d, want 0", got)
 	}
 	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 0 {
 		t.Fatalf("parent watch-frame steering deliveries = %d, want 0 (caller sends never steer); queue = %+v", got, s.SteeringQueueSnapshot())
@@ -2405,14 +2479,7 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 		t.Fatalf("child pending after winning reconstruction = %+v, want still pending (token surfaced, not settled)", pending)
 	}
 
-	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
-		Target:         rec.DelegateID,
-		Message:        "first post-restore delegate user turn",
-		OnIdle:         "start",
-		BackgroundSet:  true,
-		Background:     false,
-		BlockTimeoutMS: 5000,
-	})
+	res := <-userTurnDone
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage first post-restore user turn: %v", res.Err)
 	}

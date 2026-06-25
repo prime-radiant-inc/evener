@@ -175,11 +175,17 @@ type Session struct {
 	// pendingSessionStartKind defers restore SessionStart hook output until the
 	// first accepted real user turn. Deferred delegate restore side effects may run
 	// the hook earlier for lifecycle effects; pendingSessionStartResult preserves
-	// that model-facing output for the real user turn. Guarded by mu.
-	pendingSessionStartKind   *plugin.SessionStartKind
-	pendingSessionStartResult *hooks.RunResult
-	pluginAgents              map[string]plugin.Agent
-	pluginMCPConfigs          []mcpconfig.ServerConfig
+	// that model-facing output for the real user turn. pendingSessionStartInFlight
+	// makes restore-time execution and first-user-turn delivery mutually exclusive:
+	// a user turn that arrives while restore side effects are running waits for the
+	// captured result instead of running the hook again. Guarded by mu; waiters use
+	// pendingSessionStartCond.
+	pendingSessionStartKind     *plugin.SessionStartKind
+	pendingSessionStartResult   *hooks.RunResult
+	pendingSessionStartInFlight bool
+	pendingSessionStartCond     *sync.Cond
+	pluginAgents                map[string]plugin.Agent
+	pluginMCPConfigs            []mcpconfig.ServerConfig
 	// unsupportedPluginHookEvents accumulates all Claude-recognized events
 	// declared by loaded plugins that serf does not currently fire.
 	// Populated by initPlugins; used by DetailedStatus for diagnostics.
