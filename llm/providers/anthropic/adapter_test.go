@@ -2875,7 +2875,7 @@ func TestToAnthropicMessages_ToolCallInput_NeverNull(t *testing.T) {
 		{"empty object", json.RawMessage(`{}`)},
 		{"nil args", nil},
 		{"empty bytes", json.RawMessage(``)},
-		{"malformed args", json.RawMessage(`{"status": in_progresss"}`)},
+		{"malformed args", json.RawMessage(`{"status": in_progress"}`)},
 		{"non-object args", json.RawMessage(`["status"]`)},
 	}
 

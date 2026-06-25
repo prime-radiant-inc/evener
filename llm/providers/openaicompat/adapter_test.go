@@ -528,7 +528,7 @@ func TestBuildRequestBody_SanitizesMalformedHistoricalToolCallArguments(t *testi
 				ToolCall: &llm.ToolCallData{
 					ID:        "call_bad",
 					Name:      "task_list",
-					Arguments: json.RawMessage(`{"status": in_progresss"}`),
+					Arguments: json.RawMessage(`{"status": in_progress"}`),
 					Type:      "function",
 				},
 			}},

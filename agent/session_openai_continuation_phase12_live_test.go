@@ -244,16 +244,6 @@ func (a *phase12PublicOpenAIAdapter) firstRequestWithHistoryMode(mode llm.Histor
 	return llm.Request{}, false
 }
 
-func (a *phase12PublicOpenAIAdapter) historyModes() []llm.HistoryMode {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	modes := make([]llm.HistoryMode, 0, len(a.reqs))
-	for _, req := range a.reqs {
-		modes = append(modes, req.HistoryMode)
-	}
-	return modes
-}
-
 func (a *phase12PublicOpenAIAdapter) requestSummaries() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()

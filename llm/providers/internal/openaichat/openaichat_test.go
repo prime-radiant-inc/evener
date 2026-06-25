@@ -13,7 +13,7 @@ func TestToolArgumentsString(t *testing.T) {
 	}{
 		{name: "object", raw: json.RawMessage(`{"status":"in_progress"}`), want: `{"status":"in_progress"}`},
 		{name: "empty", raw: nil, want: `{}`},
-		{name: "malformed", raw: json.RawMessage(`{"status": in_progresss"}`), want: `{}`},
+		{name: "malformed", raw: json.RawMessage(`{"status": in_progress"}`), want: `{}`},
 		{name: "non_object", raw: json.RawMessage(`["status"]`), want: `{}`},
 		{name: "null", raw: json.RawMessage(`null`), want: `{}`},
 	} {
