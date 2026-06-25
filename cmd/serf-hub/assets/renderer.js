@@ -1835,12 +1835,13 @@
     },
 
     // Live thinking: the quietest transcript entry (design-system §2.5).
-    // Reserved-slot collapse (mockup #5 alt A): while streaming the block sits
-    // in a fixed-height slot showing a one-line teleprompter tail of the newest
-    // reasoning, so the prose below never reflows token-by-token. It collapses
-    // to "Thought for Ns" plus a duration-ranked noun-phrase gist (alt D).
-    // Click to expand the full reasoning body. One per turn; the projector
-    // emits a single reasoning item per turn.
+    // While it is the current turn the block streams OPEN — the full reasoning
+    // body grows in view so the reader can follow the model's thought as it
+    // lands. Once the turn moves on (finalizeReasoning) it collapses to
+    // "Thought for Ns" plus a duration-ranked noun-phrase gist (mockup #5 alt
+    // D); clicking re-expands the body. The reader may also click to collapse
+    // mid-stream, which falls back to the one-line teleprompter tail. One block
+    // per turn; the projector emits a single reasoning item per turn.
     beginReasoning() {
       if (this.reasoningEl) return;
       this.removeColdStartSkeleton();
@@ -1848,7 +1849,7 @@
       this.closeSubagentModule();
       const el = document.createElement("button");
       el.type = "button";
-      el.className = "think streaming";
+      el.className = "think streaming open";
       const label = document.createElement("span");
       label.className = "think-label";
       label.textContent = "✦ Thinking…";
@@ -1880,8 +1881,9 @@
 
     // finalizeReasoning collapses the in-progress thought to a one-line summary
     // (or drops it if nothing streamed). Called when the assistant starts its
-    // answer or the turn completes. The collapsed line carries a duration tier
-    // and a noun-phrase gist so a stack of thoughts is scannable by effort.
+    // answer or the turn completes — i.e. when this thought is no longer the
+    // current turn. The collapsed line carries a duration tier and a noun-phrase
+    // gist so a stack of thoughts is scannable by effort; clicking re-expands.
     finalizeReasoning() {
       const el = this.reasoningEl;
       if (!el) return;
@@ -1891,6 +1893,8 @@
         return;
       }
       el.classList.remove("streaming");
+      el.classList.remove("open");
+      el.setAttribute("aria-expanded", "false");
       const secs = Math.max(1, Math.round((Date.now() - (this.reasoningStartedAt || Date.now())) / 1000));
       el.classList.add("think-tier-" + reasoningTier(secs));
       const label = el.querySelector(".think-label");

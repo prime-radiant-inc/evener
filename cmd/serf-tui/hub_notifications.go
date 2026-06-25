@@ -77,6 +77,11 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		if json.Unmarshal(notification.Params, &params) == nil {
 			m.applyAgentMessageDelta(params.TurnID, params.ItemID, params.Delta)
 		}
+	case appwire.NotifyReasoningSummaryDelta:
+		var params appwire.ReasoningSummaryDeltaParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			m.applyReasoningSummaryDelta(params.TurnID, params.ItemID, params.Delta)
+		}
 	case appwire.NotifyAgentMessageReset:
 		var params appwire.AgentMessageResetParams
 		if json.Unmarshal(notification.Params, &params) == nil {
@@ -101,6 +106,10 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 				}
 				m.applyThreadItem(item, true)
 			}
+			// A completed turn never leaves a thought streaming open.
+			reducer := m.sessionTranscriptReducer()
+			reducer.FinalizeReasoning()
+			m.applySessionTranscriptReducer(reducer)
 			if turnID != "" && turnID == m.detail.ActiveTurnID {
 				m.detail.ActiveTurnID = ""
 			}
@@ -329,6 +338,12 @@ func (m *hubModel) applyAgentMessageDelta(turnID, itemID, delta string) {
 func (m *hubModel) applyThreadItem(item appwire.ThreadItem, completed bool) {
 	reducer := m.sessionTranscriptReducer()
 	reducer.ApplyThreadItem(item, transcript.TurnIndexFromID(item.TurnID), completed)
+	m.applySessionTranscriptReducer(reducer)
+}
+
+func (m *hubModel) applyReasoningSummaryDelta(turnID, itemID, delta string) {
+	reducer := m.sessionTranscriptReducer()
+	reducer.ApplyReasoningSummaryDelta(turnID, itemID, delta)
 	m.applySessionTranscriptReducer(reducer)
 }
 

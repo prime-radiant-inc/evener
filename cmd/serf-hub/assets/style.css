@@ -1814,8 +1814,10 @@ button.composer-model-value:hover { text-decoration: underline; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Streaming teleprompter tail: clamp to one line and reveal right-to-left so
-   the newest words stay visible while the slot height is fixed. */
+/* Teleprompter tail for a thought collapsed mid-stream: clamp to one line and
+   reveal right-to-left so the newest words stay visible while the slot height
+   is fixed. The current turn streams open (full body), so this shows only when
+   the reader has manually collapsed a still-streaming thought. */
 .think.streaming .pv {
   direction: rtl;
   text-align: left;

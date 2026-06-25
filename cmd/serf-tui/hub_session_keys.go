@@ -189,8 +189,10 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.moveBrowsePage(1)
 		case "f":
 			m.startForkDraft()
+		case "enter":
+			m.toggleSelectedBrowseDetail()
 		case "ctrl+t":
-			m.toggleAllBrowseToolEntries()
+			m.toggleAllBrowseDetails()
 		default:
 			if msg.Type == tea.KeyRunes || msg.Paste {
 				prevHeight := m.session.input.Height()

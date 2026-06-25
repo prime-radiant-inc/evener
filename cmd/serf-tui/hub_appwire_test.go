@@ -116,6 +116,55 @@ func TestHubModelAppliesAppWireNotifications(t *testing.T) {
 	}
 }
 
+func TestHubModelStreamsReasoningThenCollapsesOnAnswer(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+
+	// item/started(reasoning) opens the thought; summary deltas stream into it.
+	updated, _ := m.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
+			"threadId": "th_1",
+			"turnId":   "turn_1",
+			"item":     appwire.ThreadItem{Type: "reasoning", ID: "reasoning_1", TurnID: "turn_1", Status: appwire.TurnStatusInProgress},
+		}).Notification,
+	})
+	for _, chunk := range []string{"weighing ", "the cache options"} {
+		updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+			ok: true,
+			notification: *appwire.NotificationMessage(appwire.NotifyReasoningSummaryDelta, appwire.ReasoningSummaryDeltaParams{
+				ThreadID: "th_1", Ref: "local:th_1", TurnID: "turn_1", ItemID: "reasoning_1", Delta: chunk,
+			}).Notification,
+		})
+	}
+	got := updated.(hubModel)
+	if len(got.session.messages) != 1 || got.session.messages[0].Kind != transcript.MsgReasoning {
+		t.Fatalf("expected one live reasoning message, got %+v", got.session.messages)
+	}
+	if got.session.messages[0].Text != "weighing the cache options" || got.session.messages[0].Done {
+		t.Fatalf("reasoning should stream open with full text: %+v", got.session.messages[0])
+	}
+
+	// The assistant answering collapses the thought (Done) without dropping it.
+	updated, _ = got.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_1", Ref: "local:th_1", TurnID: "turn_1", ItemID: "item_1", Delta: "Here it is",
+		}).Notification,
+	})
+	got = updated.(hubModel)
+	if len(got.session.messages) != 2 {
+		t.Fatalf("expected reasoning + assistant messages, got %+v", got.session.messages)
+	}
+	if !got.session.messages[0].Done || got.session.messages[0].Text != "weighing the cache options" {
+		t.Fatalf("reasoning should collapse and keep its text: %+v", got.session.messages[0])
+	}
+	if got.session.messages[1].Kind != transcript.MsgAssistant || got.session.messages[1].Text != "Here it is" {
+		t.Fatalf("assistant message=%+v", got.session.messages[1])
+	}
+}
+
 func TestHubModelCompletesLiveToolWithoutDuplicateMessage(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.mode = hubModeSession

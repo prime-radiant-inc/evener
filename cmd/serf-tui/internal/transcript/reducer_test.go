@@ -382,6 +382,59 @@ func TestHubTranscriptReducerPreservesSerfAndCodexToolShapes(t *testing.T) {
 	}
 }
 
+func TestHubTranscriptReducerStreamsReasoningThenCollapses(t *testing.T) {
+	r := NewTranscriptReducer(nil, nil, nil)
+	start := appwire.ThreadItem{Type: "reasoning", ID: "reasoning_1", TurnID: "turn_1", Status: appwire.TurnStatusInProgress}
+	r.ApplyThreadItem(start, 1, false)
+	r.ApplyReasoningSummaryDelta("turn_1", "reasoning_1", "weighing ")
+	r.ApplyReasoningSummaryDelta("turn_1", "reasoning_1", "the options")
+
+	if len(r.messages) != 1 {
+		t.Fatalf("want one reasoning message, got %+v", r.messages)
+	}
+	if got := r.messages[0]; got.Kind != MsgReasoning || got.Text != "weighing the options" {
+		t.Fatalf("reasoning message = %+v", got)
+	}
+	if r.messages[0].Done {
+		t.Fatalf("reasoning must stay live while it is the current turn: %+v", r.messages[0])
+	}
+
+	// The assistant starting its answer collapses the thought, preserving its text.
+	r.ApplyAgentMessageDelta("turn_1", "agent_1", "Here is the answer")
+	if !r.messages[0].Done {
+		t.Fatalf("reasoning must collapse once the assistant answers: %+v", r.messages)
+	}
+	if r.messages[0].Text != "weighing the options" {
+		t.Fatalf("collapsing must preserve the reasoning text: %+v", r.messages[0])
+	}
+	if got := r.messages[1]; got.Kind != MsgAssistant || got.Text != "Here is the answer" {
+		t.Fatalf("assistant message = %+v", got)
+	}
+}
+
+func TestHubTranscriptReducerReasoningSupersededAndTurnFinalized(t *testing.T) {
+	r := NewTranscriptReducer(nil, nil, nil)
+	// A delta with no preceding item/started still opens the thought.
+	r.ApplyReasoningSummaryDelta("turn_1", "reasoning_1", "first thought")
+	r.ApplyReasoningSummaryDelta("turn_1", "reasoning_2", "second thought")
+
+	if len(r.messages) != 2 {
+		t.Fatalf("want two reasoning messages, got %+v", r.messages)
+	}
+	if !r.messages[0].Done {
+		t.Fatalf("a new reasoning item must collapse the prior one: %+v", r.messages)
+	}
+	if r.messages[1].Done {
+		t.Fatalf("the newest reasoning must stay live: %+v", r.messages)
+	}
+
+	// Turn completion collapses whatever thought is still live.
+	r.FinalizeReasoning()
+	if !r.messages[1].Done {
+		t.Fatalf("turn completion must collapse the live reasoning: %+v", r.messages)
+	}
+}
+
 type transcriptMessageSnapshot struct {
 	Kind       MessageKind
 	Text       string

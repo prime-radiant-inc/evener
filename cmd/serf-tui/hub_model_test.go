@@ -1118,6 +1118,73 @@ func TestHubModelBrowseCtrlTTogglesAllToolEntries(t *testing.T) {
 	}
 }
 
+func TestHubModelBrowseCtrlTExpandsReasoning(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 100
+	m.session.width = 100
+	m.session.messages = []transcript.ChatMessage{
+		{Kind: transcript.MsgReasoning, Text: "weighing the cache options\nthen the retry path", Done: true},
+		{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "shell", Description: "run", Output: "out", Done: true}},
+	}
+	m.session.scrollMode = true
+	m.browseSelected = 0
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	got := updated.(hubModel)
+	if !got.session.messages[0].Expanded {
+		t.Fatalf("ctrl+t should expand the finished thought: %+v", got.session.messages[0])
+	}
+	if !got.session.messages[1].Tool.Expanded {
+		t.Fatalf("ctrl+t should still expand tools alongside thoughts: %+v", got.session.messages[1].Tool)
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	got = updated.(hubModel)
+	if got.session.messages[0].Expanded {
+		t.Fatalf("ctrl+t should collapse the finished thought again: %+v", got.session.messages[0])
+	}
+	if got.session.messages[1].Tool.Expanded {
+		t.Fatalf("ctrl+t should collapse tools again: %+v", got.session.messages[1].Tool)
+	}
+}
+
+func TestHubModelBrowseEnterTogglesSelectedDetail(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 100
+	m.session.width = 100
+	m.session.messages = []transcript.ChatMessage{
+		{Kind: transcript.MsgReasoning, Text: "weighing the options\nthen the retry", Done: true},
+		{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "shell", Description: "run", Output: "out", Done: true}},
+	}
+	m.session.scrollMode = true
+	m.browseSelected = 1
+
+	// Enter expands only the selected tool, leaving the unselected thought alone.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(hubModel)
+	if !got.session.messages[1].Tool.Expanded {
+		t.Fatalf("enter should expand the selected tool: %+v", got.session.messages[1].Tool)
+	}
+	if got.session.messages[0].Expanded {
+		t.Fatalf("enter must not touch unselected entries: %+v", got.session.messages[0])
+	}
+
+	// Enter again collapses just it.
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = updated.(hubModel)
+	if got.session.messages[1].Tool.Expanded {
+		t.Fatalf("enter should collapse the selected tool again: %+v", got.session.messages[1].Tool)
+	}
+
+	// Selecting the finished thought and pressing enter expands just it.
+	got.browseSelected = 0
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = updated.(hubModel)
+	if !got.session.messages[0].Expanded {
+		t.Fatalf("enter should expand the selected thought: %+v", got.session.messages[0])
+	}
+}
+
 func TestHubModelSessionBrowseExitKeysReturnToCompose(t *testing.T) {
 	for _, tc := range []struct {
 		name string
