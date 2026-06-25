@@ -774,6 +774,10 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 	if !runSessionStartHooks {
 		return nil
 	}
+	if sessionStartKind == plugin.SessionStartKindResume {
+		s.deferSessionStartHooks(sessionStartKind)
+		return nil
+	}
 	s.runSessionStartHooks(sessionStartKind)
 	return nil
 }
@@ -911,7 +915,6 @@ func (s *Session) runDeferredRestoreSideEffects() error {
 	if err := s.jobManager.recoverForwardedPendingNotifications(); err != nil {
 		return fmt.Errorf("nested job notifications: %w", err)
 	}
-	s.runSessionStartHooks(s.cfg.SessionStartKind)
 	return nil
 }
 
