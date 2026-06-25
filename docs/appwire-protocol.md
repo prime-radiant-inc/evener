@@ -89,8 +89,8 @@ no router (reserved).
 | `ping` | connection | `EmptyParams` | `EmptyResponse` | Connection keepalive, answered directly before the initialize gate (the browser's app-level heartbeat). |
 | `thread/list` | both | `ThreadListParams` | `ThreadListResponse` | Lists threads; the daemon returns its single session. |
 | `thread/read` | both | `ThreadReadParams` | `ThreadReadResponse` | Reads one thread and optionally subscribes to its live updates. |
-| `thread/turns/list` | unimplemented | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Reserved: paginated turn list. Defined with a client stub but served by no router. |
-| `thread/turns/items/list` | unimplemented | `ThreadTurnItemsListParams` | `ThreadTurnItemsListResponse` | Reserved: paginated turn-item list. Defined with a client stub but served by no router. |
+| `thread/turns/list` | unimplemented | `ThreadTurnsListParams` | `ThreadTurnsListResponse` | Codex-parity: paginated turn list for transcript browsing. Defined for protocol shape but served by no serf router (serf loads transcripts via thread/read). |
+| `thread/turns/items/list` | unimplemented | `ThreadTurnItemsListParams` | `ThreadTurnItemsListResponse` | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no serf router. |
 | `thread/start` | hub | `ThreadStartParams` | `ThreadStartResponse` | Starts a new thread and attaches a live-update relay. |
 | `thread/resume` | hub | `ThreadResumeParams` | `ThreadResumeResponse` | Resumes an existing session and attaches its relay. |
 | `thread/fork` | hub | `ThreadForkParams` | `ThreadForkResponse` | Forks a thread from a source turn, optionally with edited input. |
