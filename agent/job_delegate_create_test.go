@@ -11,11 +11,54 @@ import (
 
 	"encoding/json"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/llm"
 )
+
+func TestDelegateJobEventsCarrySubagentRunLinkage(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("parent done") },
+	}})
+	sess := newDelegateTestSession(t, c)
+
+	ctx := context.WithValue(context.Background(), ctxToolCallID, "call_delegate_linkage")
+	res := sess.createDelegate(ctx, delegateArgs{
+		Task:           "inspect linkage",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", res.Err)
+	}
+	if res.JobID == "" || res.DelegateID == "" {
+		t.Fatalf("delegate result missing ids: %+v", res)
+	}
+
+	var started []events.JobStartedData
+drain:
+	for {
+		select {
+		case ev := <-sess.Events():
+			data, ok := ev.Data.(events.JobStartedData)
+			if ok && data.JobType == "delegate" {
+				started = append(started, data)
+			}
+		default:
+			break drain
+		}
+	}
+	if len(started) == 0 {
+		t.Fatalf("no delegate JOB_STARTED events captured")
+	}
+	got := started[len(started)-1]
+	if got.JobID != res.JobID || got.DelegateID != res.DelegateID || got.Task != "inspect linkage" || got.TranscriptRef == "" || got.OriginToolCallID != "call_delegate_linkage" {
+		t.Fatalf("JOB_STARTED linkage = %+v, want job/delegate/task/transcript/origin call", got)
+	}
+}
 
 func TestCreateDelegateForegroundCompletesWithStructuredResult(t *testing.T) {
 	t.Parallel()

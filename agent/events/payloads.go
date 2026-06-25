@@ -206,22 +206,33 @@ type ErrorCause struct {
 
 // JobStartedData is the payload for an EventJobStarted event.
 type JobStartedData struct {
-	JobID     string `json:"job_id"`
-	JobType   string `json:"job_type"`
-	Status    string `json:"status"`
-	FromWatch bool   `json:"from_watch,omitempty"`
+	JobID            string `json:"job_id"`
+	JobType          string `json:"job_type"`
+	Status           string `json:"status"`
+	FromWatch        bool   `json:"from_watch,omitempty"`
+	DelegateID       string `json:"delegate_id,omitempty"`
+	Task             string `json:"task,omitempty"`
+	TranscriptRef    string `json:"transcript_ref,omitempty"`
+	OriginTurnID     string `json:"origin_turn_id,omitempty"`
+	OriginToolCallID string `json:"origin_tool_call_id,omitempty"`
+	OriginItemID     string `json:"origin_item_id,omitempty"`
 }
 
 // JobFinishedData is the payload for an EventJobFinished event.
 type JobFinishedData struct {
-	JobID         string `json:"job_id"`
-	JobType       string `json:"job_type"`
-	Status        string `json:"status"`
-	Reason        string `json:"reason"`
-	ExitCode      *int   `json:"exit_code,omitempty"`
-	OutputBytes   int64  `json:"output_bytes"`
-	TranscriptRef string `json:"transcript_ref,omitempty"`
-	FromWatch     bool   `json:"from_watch,omitempty"`
+	JobID            string `json:"job_id"`
+	JobType          string `json:"job_type"`
+	Status           string `json:"status"`
+	Reason           string `json:"reason"`
+	ExitCode         *int   `json:"exit_code,omitempty"`
+	OutputBytes      int64  `json:"output_bytes"`
+	TranscriptRef    string `json:"transcript_ref,omitempty"`
+	FromWatch        bool   `json:"from_watch,omitempty"`
+	DelegateID       string `json:"delegate_id,omitempty"`
+	Task             string `json:"task,omitempty"`
+	OriginTurnID     string `json:"origin_turn_id,omitempty"`
+	OriginToolCallID string `json:"origin_tool_call_id,omitempty"`
+	OriginItemID     string `json:"origin_item_id,omitempty"`
 }
 
 // PluginLoadedData is the payload for an EventPluginLoaded event.

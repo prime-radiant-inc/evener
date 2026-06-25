@@ -147,6 +147,54 @@ func TestDelegateResumeKeepsDelegateIDAndUpdatesLatestJob(t *testing.T) {
 	}
 }
 
+func TestDelegateResumeJobStartedKeepsOriginalOriginLinkage(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("first") },
+		func(req llm.Request) llm.Response { return communicateWithDefaultOutput("second") },
+	}})
+	parent := newDelegateTestSession(t, c)
+	ctx := context.WithValue(context.Background(), ctxToolCallID, "call_original_delegate")
+	first := parent.createDelegate(ctx, delegateArgs{Task: "finish first", Background: false, BlockTimeoutMS: 5000})
+	if first.Err != nil {
+		t.Fatalf("first delegate: %v", first.Err)
+	}
+
+	res := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  first.DelegateID,
+		Message: "run again",
+		OnIdle:  "start",
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage: %v", res.Err)
+	}
+	if res.JobID == "" || res.JobID == first.JobID {
+		t.Fatalf("resume result = %+v, want new job", res)
+	}
+
+	waitForShellDone(t, parent.jobManager, res.JobID)
+	var starts []events.JobStartedData
+drain:
+	for {
+		select {
+		case ev := <-parent.Events():
+			data, ok := ev.Data.(events.JobStartedData)
+			if ok && data.JobType == "delegate" && data.DelegateID == first.DelegateID {
+				starts = append(starts, data)
+			}
+		default:
+			break drain
+		}
+	}
+	if len(starts) < 2 {
+		t.Fatalf("starts=%+v, want initial and resumed delegate starts", starts)
+	}
+	resumed := starts[len(starts)-1]
+	if resumed.JobID == first.JobID || resumed.DelegateID != first.DelegateID || resumed.Task != "finish first" || resumed.OriginToolCallID != "call_original_delegate" || resumed.TranscriptRef == "" {
+		t.Fatalf("resumed JOB_STARTED linkage = %+v", resumed)
+	}
+}
+
 func TestDelegateIDResumeFinalizesObservedTerminalRunningJob(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
