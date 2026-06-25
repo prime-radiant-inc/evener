@@ -2896,6 +2896,94 @@
     //     compact "task list reloaded · N items" pointer that opens the panel.
     //   - loop / read-only / all-done / unknown: keep the current
     //     full-width steering divider with click-to-expand body.
+    notificationMetaRows(n) {
+      const attrs = n && n.attrs || {};
+      const rows = [];
+      const push = (label, value) => {
+        value = String(value || "").trim();
+        if (value) rows.push([label, value]);
+      };
+      push("job", attrs.job_id);
+      push("type", attrs.job_type);
+      push("status", attrs.status || attrs.event);
+      push("reason", attrs.reason);
+      if (attrs.exit_code) push("exit", attrs.exit_code);
+      if (attrs.output_bytes && attrs.output_bytes !== "0") push("output", attrs.output_bytes + " B");
+      push("transcript", attrs.transcript_ref);
+      push("delivery", attrs.delivery_id);
+      push("trigger", attrs.trigger);
+      return rows;
+    },
+
+    appendNotificationText(parent, className, text) {
+      text = String(text || "").trim();
+      if (!text) return null;
+      const el = document.createElement("div");
+      el.className = className;
+      el.textContent = text;
+      parent.appendChild(el);
+      return el;
+    },
+
+    appendNotificationCard(summary) {
+      const n = summary.notification || {};
+      const card = document.createElement("div");
+      card.className = "notification-card notification-card-" + (n.tone || "neutral") + " notification-card-" + (n.type || "unknown");
+
+      const header = document.createElement("div");
+      header.className = "notification-card-header";
+      const glyph = document.createElement("span");
+      glyph.className = "notification-card-glyph";
+      glyph.setAttribute("aria-hidden", "true");
+      glyph.textContent = n.type === "watch" || n.type === "watch-send" ? "◌" : (n.type === "observer-callback" ? "↩" : "●");
+      header.appendChild(glyph);
+      const title = document.createElement("span");
+      title.className = "notification-card-title";
+      title.textContent = n.title || "Notification";
+      header.appendChild(title);
+      card.appendChild(header);
+
+      const rows = this.notificationMetaRows(n);
+      if (rows.length) {
+        const meta = document.createElement("div");
+        meta.className = "notification-card-meta";
+        for (const [label, value] of rows) {
+          const chip = document.createElement("span");
+          chip.className = "notification-card-chip";
+          chip.textContent = label + " " + value;
+          meta.appendChild(chip);
+        }
+        card.appendChild(meta);
+      }
+
+      const summaryEl = document.createElement("div");
+      summaryEl.className = "notification-card-summary";
+      this.appendNotificationText(summaryEl, "notification-card-prose", n.prose);
+      if (n.communicate) {
+        this.appendNotificationText(summaryEl, "notification-card-message", n.communicate.message);
+        this.appendNotificationText(summaryEl, "notification-card-status", n.communicate.status ? "status " + n.communicate.status : "");
+        this.appendNotificationText(summaryEl, "notification-card-commits", (n.communicate.commitHashes || []).length ? "commits " + n.communicate.commitHashes.join(", ") : "");
+        this.appendNotificationText(summaryEl, "notification-card-tests", n.communicate.testSummary ? "tests " + n.communicate.testSummary : "");
+        this.appendNotificationText(summaryEl, "notification-card-concerns", (n.communicate.concerns || []).length ? "concerns " + n.communicate.concerns.join("; ") : "concerns none");
+        this.appendNotificationText(summaryEl, "notification-card-artifacts", (n.communicate.artifacts || []).length ? "artifacts " + n.communicate.artifacts.join(", ") : "");
+      } else {
+        this.appendNotificationText(summaryEl, "notification-card-excerpt", n.excerpt);
+      }
+      if (summaryEl.childNodes.length) card.appendChild(summaryEl);
+
+      const raw = document.createElement("details");
+      raw.className = "notification-card-raw";
+      const rawSummary = document.createElement("summary");
+      rawSummary.textContent = "raw notification";
+      raw.appendChild(rawSummary);
+      const pre = document.createElement("pre");
+      pre.textContent = n.rawText || summary.cleanText || "";
+      raw.appendChild(pre);
+      card.appendChild(raw);
+
+      this.conversation.appendChild(card);
+    },
+
     appendSteeringMessage(text) {
       this.endCheapCluster();
       this.closeSubagentModule();
@@ -2950,26 +3038,7 @@
       }
 
       if (summary.kind === "notification") {
-        const n = summary.notification || {};
-        const card = document.createElement("div");
-        card.className = "notification-card notification-card-" + (n.tone || "neutral");
-        const title = document.createElement("div");
-        title.className = "notification-title";
-        title.textContent = n.title || "Notification";
-        card.appendChild(title);
-        const textParts = [n.prose || ""];
-        if (n.attrs) textParts.push(Object.values(n.attrs).join(" "));
-        if (n.communicate) {
-          textParts.push(n.communicate.status || "");
-          textParts.push((n.communicate.commitHashes || []).join(" "));
-          textParts.push(n.communicate.testSummary || "");
-          textParts.push((n.communicate.concerns || []).join(" "));
-        }
-        const body = document.createElement("div");
-        body.className = "notification-body";
-        body.textContent = textParts.filter(Boolean).join(" ");
-        card.appendChild(body);
-        this.conversation.appendChild(card);
+        this.appendNotificationCard(summary);
         return;
       }
 

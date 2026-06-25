@@ -220,6 +220,74 @@ not-json error output
   await scenario("nonzero exit code renders minimal error card", errorNotification, (conv) =>
     expectNotificationCard(conv, "error", ["Job completed", "job_error", "shell", "2", "local:error"]));
 
+  await scenario("shell failure notification shows failure metadata", `<job-notification job_id="job_shell" event="failed" job_type="shell" status="failed" reason="exit_nonzero" output_bytes="128" exit_code="2" transcript_ref="job:job_shell">
+Job job_shell failed. Output is available through read_transcript(transcript_ref="job:job_shell") if needed.
+excerpt:
+command failed on line 1
+</job-notification>`, (conv) => {
+    const card = conv.querySelector(".notification-card-error");
+    if (!card) return { ok: false, detail: "missing error card" };
+    for (const needle of ["Job failed", "job_shell", "shell", "exit_nonzero", "exit 2", "128 B", "job:job_shell", "command failed on line 1"]) {
+      if (!expectText(card, needle)) return { ok: false, detail: "missing " + needle };
+    }
+    return { ok: true };
+  });
+
+  await scenario("watch event notification renders as watch card", `<job-notification job_id="" event="watch" job_type="watch" status="watch" reason="event: ASSISTANT_TEXT_END" output_bytes="0">
+Watch event triggered: event: ASSISTANT_TEXT_END.
+</job-notification>`, (conv) => {
+    const card = conv.querySelector(".notification-card-warning");
+    if (!card) return { ok: false, detail: "missing warning card" };
+    if (!expectText(card, "Watch triggered")) return { ok: false, detail: "missing watch title" };
+    if (!expectText(card, "event: ASSISTANT_TEXT_END")) return { ok: false, detail: "missing trigger reason" };
+    if (expectText(card, "read_transcript")) return { ok: false, detail: "watch event must not suggest read_transcript" };
+    return { ok: true };
+  });
+
+  await scenario("watch-send notification renders delivery metadata", `<job-notification job_id="job_w" event="watch_send" delivery_id="dlv_1" trigger="output_match: ready">
+frame text from watcher
+</job-notification>`, (conv) => {
+    const card = conv.querySelector(".notification-card-warning");
+    if (!card) return { ok: false, detail: "missing watch-send card" };
+    for (const needle of ["Watch delivered", "job_w", "dlv_1", "output_match: ready", "frame text from watcher"]) {
+      if (!expectText(card, needle)) return { ok: false, detail: "missing " + needle };
+    }
+    return { ok: true };
+  });
+
+  await scenario("observer callback renders in notification family", `Observer callback:
+message: Child finished
+output: {"message":"Status: DONE","data":{"status":"DONE","concerns":[]},"artifacts":["report.md"]}`, (conv) => {
+    const card = conv.querySelector(".notification-card");
+    if (!card) return { ok: false, detail: "missing observer card" };
+    for (const needle of ["Observer callback", "Child finished", "DONE", "report.md"]) {
+      if (!expectText(card, needle)) return { ok: false, detail: "missing " + needle };
+    }
+    return { ok: true };
+  });
+
+  await scenario("malformed notification falls back with raw evidence", `<job-notification job_id="broken">
+missing closing tag`, (conv) => {
+    const card = conv.querySelector(".notification-card");
+    if (card) return { ok: false, detail: "malformed block should not render notification card" };
+    const steering = conv.querySelector(".steering");
+    if (!steering) return { ok: false, detail: "malformed block should fall back to steering" };
+    if (!expectText(steering, "missing closing tag")) return { ok: false, detail: "raw fallback missing" };
+    return { ok: true };
+  });
+
+  await scenario("notification text is escaped", `<job-notification job_id="job_html" event="completed" job_type="shell" status="completed" reason="" output_bytes="0">
+Job job_html completed. Complete output below.
+excerpt:
+<img src=x onerror="window.__xss=1"> literal
+</job-notification>`, (conv) => {
+    const card = conv.querySelector(".notification-card");
+    if (!card) return { ok: false, detail: "missing card" };
+    if (card.querySelector("img")) return { ok: false, detail: "notification inserted HTML" };
+    if (!expectText(card, "<img src=x")) return { ok: false, detail: "escaped text not visible" };
+    return { ok: true };
+  });
+
   if (!allPass) process.exit(1);
   console.log("PASS: notification renderer assertions");
   process.exit(0); // renderer pollers keep the event loop alive otherwise

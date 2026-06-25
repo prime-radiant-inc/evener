@@ -2362,6 +2362,37 @@ button.composer-model-value:hover { text-decoration: underline; }
 .steering .steering-detail { color: var(--text); }
 .steering .steering-body { margin: var(--space-4) 0 0; padding: var(--space-4) var(--space-4); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 
+.notification-card {
+  margin: var(--space-4) 0 var(--space-4) var(--space-7);
+  padding: var(--space-4);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--text-muted);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+.notification-card-success { border-left-color: var(--success); }
+.notification-card-warning { border-left-color: var(--state-warning); }
+.notification-card-error { border-left-color: var(--error); }
+.notification-card-neutral { border-left-color: var(--text-muted); }
+.notification-card-header { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); }
+.notification-card-glyph { color: var(--text-muted); font-family: var(--font-mono); }
+.notification-card-title { font-weight: 600; color: var(--text); }
+.notification-card-meta { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-2) 0; }
+.notification-card-chip { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); border: 1px solid var(--rule); border-radius: var(--radius-pill); padding: var(--space-1) var(--space-2); background: var(--bg); overflow-wrap: anywhere; }
+.notification-card-summary { display: grid; gap: var(--space-1); color: var(--text-muted); line-height: var(--leading-snug); }
+.notification-card-message,
+.notification-card-tests,
+.notification-card-excerpt { white-space: pre-wrap; overflow-wrap: anywhere; }
+.notification-card-status,
+.notification-card-commits,
+.notification-card-concerns,
+.notification-card-artifacts { font-family: var(--font-mono); font-size: var(--text-xs); }
+.notification-card-raw { margin-top: var(--space-3); color: var(--text-muted); }
+.notification-card-raw > summary { cursor: pointer; font-size: var(--text-xs); }
+.notification-card-raw pre { margin: var(--space-2) 0 0; padding: var(--space-3); border-radius: var(--radius-md); background: var(--bg); color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
+
 /* Lifecycle events are bookkeeping (design-system §4): a quiet dim one-liner,
    NEVER divider-weight, and with no meaningless "N chars" count (mockup #7
    alt A). Override the steering divider rules and tighten the spacing so a
