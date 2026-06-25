@@ -22,7 +22,19 @@
     pathValidate: "serf/path/validate",
     serfUpgrade: "serf/upgrade",
     modelList: "model/list",
+    ping: "ping",
   };
+
+  // Application-level heartbeat. Browsers can't send WebSocket ping frames from
+  // JS, so a silently-dropped connection leaves readyState OPEN forever and no
+  // notifications flow (the "quiet for N minutes" desync). We periodically send
+  // a cheap `ping` RPC with a timeout; if it goes unanswered the socket is
+  // force-closed, which fires the close handler → markDisconnected → reconnect.
+  const HEARTBEAT_INTERVAL_MS = 20000;
+  const HEARTBEAT_TIMEOUT_MS = 10000;
+  let heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS;
+  let heartbeatTimeoutMs = HEARTBEAT_TIMEOUT_MS;
+  let heartbeatTimer = null;
 
   let ws = null;
   let connecting = null;
@@ -64,6 +76,7 @@
           capabilities: {},
         }).then((resp) => {
           serverFeatures = (resp && resp.features) || {};
+          ensureHeartbeat();
           if (wasDisconnected) {
             wasDisconnected = false;
             notifyConnectionRestored();
@@ -98,6 +111,47 @@
       });
     });
     return connecting;
+  }
+
+  // ensureHeartbeat starts the single shared heartbeat interval lazily on the
+  // first successful initialize. It is never cleared — each tick re-checks the
+  // socket, so it harmlessly idles while disconnected and resumes on reconnect.
+  // Environments without setInterval (the jsdom-free unit harness) opt out.
+  function ensureHeartbeat() {
+    if (heartbeatTimer) return;
+    if (typeof setInterval !== "function") return;
+    heartbeatTimer = setInterval(sendHeartbeat, heartbeatIntervalMs);
+  }
+
+  function sendHeartbeat() {
+    const sock = ws;
+    if (!sock || sock.readyState !== WebSocket.OPEN) return;
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("heartbeat timeout")), heartbeatTimeoutMs);
+    });
+    Promise.race([request(METHOD.ping, {}), timeout]).then(() => {
+      if (timer) clearTimeout(timer);
+    }, () => {
+      if (timer) clearTimeout(timer);
+      // Open but unresponsive — a silent drop. Force-close so the close handler
+      // runs the reconnect lifecycle; an OPEN-but-dead socket never recovers on
+      // its own.
+      if (ws === sock) { try { sock.close(); } catch (_) {} }
+    });
+  }
+
+  // setHeartbeatTiming overrides the heartbeat cadence. Test seam; the
+  // production defaults are HEARTBEAT_INTERVAL_MS / HEARTBEAT_TIMEOUT_MS.
+  function setHeartbeatTiming(intervalMs, timeoutMs) {
+    if (intervalMs > 0) heartbeatIntervalMs = intervalMs;
+    if (timeoutMs > 0) heartbeatTimeoutMs = timeoutMs;
+    const wasRunning = !!heartbeatTimer;
+    if (heartbeatTimer && typeof clearInterval === "function") {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    if (wasRunning) ensureHeartbeat();
   }
 
   function request(method, params) {
@@ -878,6 +932,7 @@
     eventsFromNotification,
     liveItemStateSize() { return liveItemState.size; },
     setPendingRegistry,
+    setHeartbeatTiming,
   };
 
   // The transport-drop affordance lives in the workspace chrome, owned by the

@@ -1963,6 +1963,7 @@
         el.removeAttribute("data-level");
       }
       if (level !== this.livenessLevel) {
+        const enteringConcern = level === "concern" && this.livenessLevel !== "concern";
         this.livenessLevel = level;
         // Only the concern band flags the conversation as stalled and drops the
         // reassuring pulse; the calm-quiet band leaves both alone.
@@ -1971,7 +1972,20 @@
           else this.conversation.removeAttribute("data-stalled");
         }
         applyStatusDotPulse(document);
+        // Entering concern is also our cue to self-heal: a long frame silence on
+        // an active session can be a silently-stalled subscription (e.g. the
+        // hub↔daemon hop dropped without a close frame, so the browser↔hub
+        // heartbeat still passes but no thread frames flow). Re-subscribe and
+        // re-hydrate once per episode; a successful replay stamps lastFrameAt,
+        // drops us out of concern, and re-arms this for the next silence.
+        if (enteringConcern) this.attemptLivenessSelfHeal();
       }
+    },
+
+    attemptLivenessSelfHeal() {
+      if (!this.liveStream || !this.sessionId || !window.SerfAppwire) return;
+      if (typeof this.connectAppwire !== "function") return;
+      this.connectAppwire();
     },
 
     formatLivenessGap(ms) {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 var ErrNotificationOverflow = errors.New("appwire notification buffer overflow")
@@ -48,7 +49,31 @@ func NewClient(transport Transport) *Client {
 	return c
 }
 
+// Pinger is an optional transport capability: a transport that can send a
+// keepalive ping and block until the peer answers or ctx is done. The WebSocket
+// transport implements it; in-memory test transports do not, so they opt out of
+// keepalive.
+type Pinger interface {
+	Ping(context.Context) error
+}
+
+const (
+	// keepalivePingInterval / keepalivePongTimeout mirror the server side
+	// (internal/appserver). They bound how long a silently-dropped daemon
+	// connection blocks the hub's read loop before it errors out and the
+	// subscription closes.
+	keepalivePingInterval = 15 * time.Second
+	keepalivePongTimeout  = 10 * time.Second
+)
+
 func (c *Client) Start(ctx context.Context) {
+	c.startWithKeepalive(ctx, keepalivePingInterval, keepalivePongTimeout)
+}
+
+func (c *Client) startWithKeepalive(ctx context.Context, pingInterval, pongTimeout time.Duration) {
+	if pinger, ok := c.transport.(Pinger); ok {
+		go runClientKeepalive(ctx, pinger, c.transport.Close, pingInterval, pongTimeout)
+	}
 	go func() {
 		for {
 			msg, err := c.transport.Recv(ctx)
@@ -76,6 +101,29 @@ func (c *Client) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// runClientKeepalive pings the peer every interval and closes the transport if
+// a ping goes unanswered within timeout. Closing unblocks the read loop's Recv,
+// which fails pending requests and closes the notifications channel — so a
+// silently-dead daemon surfaces as a normal subscription end.
+func runClientKeepalive(ctx context.Context, pinger Pinger, closeFn func() error, interval, timeout time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, timeout)
+			err := pinger.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				_ = closeFn()
+				return
+			}
+		}
+	}
 }
 
 func (c *Client) enqueueNotification(notification Notification) bool {

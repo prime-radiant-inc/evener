@@ -21,6 +21,18 @@ func TestConnectionRequiresInitialize(t *testing.T) {
 	}
 }
 
+func TestConnectionPingAnsweredWithoutInitialize(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-1")
+	// The browser heartbeat must succeed regardless of initialize state and
+	// without touching the router, so a hung daemon can't make the keepalive
+	// probe spuriously fail.
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(7), appwire.MethodPing, nil))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("ping kind=%v, want response", resp.Kind())
+	}
+}
+
 func TestConnectionInitializeAllowsLaterRequests(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
