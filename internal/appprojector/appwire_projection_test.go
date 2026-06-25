@@ -757,7 +757,7 @@ func TestAppEventProjectorGroupsSkillActivationBeforeUseSkillEnd(t *testing.T) {
 		SkillActivation *struct {
 			Name string `json:"name"`
 			Text string `json:"text"`
-		} `json:"skill_activation"`
+		} `json:"skillActivation"`
 	}
 	if err := json.Unmarshal(item.Raw, &raw); err != nil {
 		t.Fatalf("Raw is not valid JSON: %v (%s)", err, item.Raw)
@@ -798,7 +798,7 @@ func TestAppEventProjectorGroupsSkillActivationWithUseSkill(t *testing.T) {
 		SkillActivation *struct {
 			Name string `json:"name"`
 			Text string `json:"text"`
-		} `json:"skill_activation"`
+		} `json:"skillActivation"`
 	}
 	if err := json.Unmarshal(item.Raw, &raw); err != nil {
 		t.Fatalf("Raw is not valid JSON: %v (%s)", err, item.Raw)

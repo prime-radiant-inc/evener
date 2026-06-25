@@ -94,6 +94,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodThreadReasoningEffortSet, s.handleAppThreadReasoningEffortSet)
 	appserver.HandleTyped(router, appwire.MethodSerfTasksList, s.handleAppTasksList)
 	appserver.HandleTyped(router, appwire.MethodModelList, s.handleAppModelList)
+	appserver.HandleTyped(router, appwire.MethodThreadTurnsList, s.handleAppThreadTurnsList)
 }
 
 func (s *Server) handleAppThreadList(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
@@ -105,16 +106,29 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 	if params.Subscribe {
 		appserver.Subscribe(ctx, thread.ID)
 	}
+	var olderCursor string
 	if params.IncludeTurns {
-		notificationTurns := appTurnsFromNotifications(s.AppNotificationsAfter(0, thread.ID))
-		transcriptTurns := s.appTurnsFromTranscript()
-		if useTranscriptTurns(transcriptTurns, notificationTurns) {
-			thread.Turns = transcriptTurns
-		} else {
-			thread.Turns = notificationTurns
-		}
+		thread.Turns, olderCursor = appwire.WindowTurns(s.appAllTurns(thread.ID), params.TurnLimit)
 	}
-	return appwire.ThreadReadResponse{Thread: thread}, nil
+	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}, nil
+}
+
+// appAllTurns materializes the full ordered turn list (oldest-first), choosing
+// the transcript-file turns over the notification-derived turns when richer.
+func (s *Server) appAllTurns(threadID string) []appwire.Turn {
+	notificationTurns := appTurnsFromNotifications(s.AppNotificationsAfter(0, threadID))
+	transcriptTurns := s.appTurnsFromTranscript()
+	if useTranscriptTurns(transcriptTurns, notificationTurns) {
+		return transcriptTurns
+	}
+	return notificationTurns
+}
+
+// handleAppThreadTurnsList pages turns backward (older) for lazy transcript
+// loading. The web client seeds the latest window via thread/read(TurnLimit)
+// and walks back with this as the user scrolls up.
+func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	return appwire.PageTurns(s.appAllTurns(s.appThread().ID), params.Cursor, params.Limit), nil
 }
 
 func (s *Server) appTurnsFromTranscript() []appwire.Turn {

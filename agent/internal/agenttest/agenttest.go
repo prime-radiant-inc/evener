@@ -13,6 +13,7 @@ package agenttest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -66,7 +67,7 @@ func (a *FakeAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, 
 // PlanResponsesContinuation delegates to the configured planner hook.
 func (a *FakeAdapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 	if a.PlanResponsesContinuationFunc == nil {
-		return llm.ResponsesContinuationPlan{}, fmt.Errorf("fake adapter missing PlanResponsesContinuationFunc")
+		return llm.ResponsesContinuationPlan{}, errors.New("fake adapter missing PlanResponsesContinuationFunc")
 	}
 	plan, err := a.PlanResponsesContinuationFunc(req)
 	if err != nil {

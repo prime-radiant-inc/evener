@@ -188,6 +188,13 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 		return appwire.ErrorMessage(appwire.NewIntID(0), appwire.InvalidRequest("request message required"))
 	}
 	req := *msg.Request
+	// ping is a connection-level keepalive (the browser's app-level heartbeat,
+	// since browsers can't send WS ping frames from JS). Answer it directly,
+	// before the initialize gate and without the router, so it stays cheap and
+	// can't be starved by a busy handler.
+	if req.Method == appwire.MethodPing {
+		return appwire.ResponseMessage(req.ID, struct{}{})
+	}
 	if !c.isInitialized() && req.Method != appwire.MethodInitialize {
 		return appwire.ErrorMessage(req.ID, appwire.InvalidRequest("initialize required"))
 	}

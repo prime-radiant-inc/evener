@@ -55,6 +55,13 @@ func (t *WSTransport) Recv(ctx context.Context) (Message, error) {
 	return msg, nil
 }
 
+// Ping implements Pinger: it sends a WebSocket ping and blocks until the peer
+// pongs or ctx is done. The client keepalive loop uses it to detect a
+// silently-dropped connection.
+func (t *WSTransport) Ping(ctx context.Context) error {
+	return t.conn.Ping(ctx)
+}
+
 func (t *WSTransport) Close() error {
 	return t.conn.Close(websocket.StatusNormalClosure, "")
 }

@@ -175,7 +175,7 @@ func NewServer(cfg ServerConfig) *Server {
 			SourceID:   "local",
 			Features: appwire.FeatureSet{
 				ThreadList:        true,
-				ThreadTurnsList:   false,
+				ThreadTurnsList:   true,
 				TurnStart:         true,
 				TurnSteer:         true,
 				ThreadClear:       true,

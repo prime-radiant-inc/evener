@@ -166,10 +166,25 @@ func pastEntryThread(entry hubcore.PastEntry, includeTurns bool) appwire.Thread 
 	return thread
 }
 
+// windowedReadResponse bounds a thread's turns to the latest TurnLimit for a
+// lazy initial load, setting OlderCursor when it truncates. TurnLimit <= 0
+// returns the full transcript (legacy behavior).
+func windowedReadResponse(thread appwire.Thread, turnLimit int) appwire.ThreadReadResponse {
+	turns, cursor := appwire.WindowTurns(thread.Turns, turnLimit)
+	thread.Turns = turns
+	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: cursor}
+}
+
+// pastTranscriptCache memoizes saved-transcript parsing by file identity. Past
+// transcripts are immutable, so lazy paging back through one (a fresh
+// thread/turns/list file read per page) reuses one parse instead of re-reading
+// the whole transcript each page.
+var pastTranscriptCache = apptranscript.NewTurnCache()
+
 func pastEntryTurns(entry hubcore.PastEntry) []appwire.Turn {
 	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 	toolNames := map[string]string{}
-	return apptranscript.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
+	return pastTranscriptCache.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
 		var entryRec hubcore.ReplayEntry
 		if err := json.Unmarshal(raw, &entryRec); err != nil {
 			return nil

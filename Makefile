@@ -116,7 +116,18 @@ build-namingcheck:
 lint-golangci:
 	@for m in $(GO_MODULES); do (cd $$m && golangci-lint run ./...) || exit 1; done
 
-lint: lint-naming lint-internal lint-docs lint-golangci
+# generate runs all `go generate` directives. Currently the AppWire protocol
+# reference (docs/appwire-protocol.md) from the catalog in appwire/protocol.go.
+generate:
+	go generate ./appwire/...
+
+# lint-generated fails if a committed generated file is stale — i.e. the
+# AppWire catalog changed without regenerating the protocol doc.
+lint-generated: generate
+	@git diff --exit-code -- docs/appwire-protocol.md || \
+	  { echo "docs/appwire-protocol.md is stale; run 'make generate' and commit."; exit 1; }
+
+lint: lint-naming lint-internal lint-docs lint-golangci lint-generated
 
 clean:
 	rm -f serf serf-hub serf-tui serf-doctor llmcall serf-namingcheck serf-internalcheck

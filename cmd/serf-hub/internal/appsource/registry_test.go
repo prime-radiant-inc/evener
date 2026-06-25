@@ -13,6 +13,9 @@ func (f fakeSource) ID() string { return f.id }
 func (f fakeSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_1"}}}, nil
 }
+func (f fakeSource) ListTurns(context.Context, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	return appwire.ThreadTurnsListResponse{}, nil
+}
 func (f fakeSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	return appwire.ThreadReadResponse{}, nil
 }

@@ -136,11 +136,7 @@ func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
 		if source.ID() == "local" {
 			continue
 		}
-		resp, err := source.ListThreads(ctx, appwire.ThreadListParams{IncludeSubagents: true})
-		if err != nil {
-			continue
-		}
-		for _, thread := range resp.Data {
+		for _, thread := range s.listThreadsWithFallback(ctx, source) {
 			sourceID := threadListSourceID(source.ID(), thread)
 			thread.Source = sourceID
 			if thread.Serf.Ref == "" {
@@ -153,6 +149,33 @@ func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
 		}
 	}
 	return threads
+}
+
+// sourceThreadLister is the minimal slice of appsource.Source that
+// listThreadsWithFallback needs. Keeping it small makes the last-known-good
+// retention straightforward to test without stubbing the whole Source surface.
+type sourceThreadLister interface {
+	ID() string
+	ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error)
+}
+
+// listThreadsWithFallback lists a remote source's threads, retaining the last
+// successful result when the source errors. A transient ListThreads failure
+// (slow daemon, dial timeout) must not blank that source's sessions from the
+// sidebar. An empty *successful* list does clear the cache, so a genuinely-gone
+// source ages out instead of lingering forever.
+func (s *WebServer) listThreadsWithFallback(ctx context.Context, source sourceThreadLister) []appwire.Thread {
+	resp, err := source.ListThreads(ctx, appwire.ThreadListParams{IncludeSubagents: true})
+	s.lastGoodMu.Lock()
+	defer s.lastGoodMu.Unlock()
+	if s.lastGoodThreads == nil {
+		s.lastGoodThreads = map[string][]appwire.Thread{}
+	}
+	if err != nil {
+		return s.lastGoodThreads[source.ID()]
+	}
+	s.lastGoodThreads[source.ID()] = resp.Data
+	return resp.Data
 }
 
 func (s *WebServer) ensureManagedCodexSources(ctx context.Context) {

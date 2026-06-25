@@ -95,6 +95,43 @@ func (s *CodexSource) ReadThread(ctx context.Context, params appwire.ThreadReadP
 	return appwire.ThreadReadResponse{Thread: s.mapThread(out.Thread)}, nil
 }
 
+// ListTurns proxies to the Codex app-server's native thread/turns/list, which
+// supports cursor/limit/itemsView paging, then maps the returned turns into
+// AppWire turns.
+func (s *CodexSource) ListTurns(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	threadID, err := s.threadID(params.Ref, params.ThreadID)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	var out codexTurnsListResponse
+	err = s.withClient(ctx, func(client *appwire.Client) error {
+		req := map[string]any{"threadId": threadID}
+		if params.Cursor != "" {
+			req["cursor"] = params.Cursor
+		}
+		if params.Limit > 0 {
+			req["limit"] = params.Limit
+		}
+		if params.ItemsView != "" {
+			req["itemsView"] = params.ItemsView
+		}
+		return client.Request(ctx, appwire.MethodThreadTurnsList, req, &out)
+	})
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	resp := appwire.ThreadTurnsListResponse{NextCursor: out.NextCursor}
+	for _, turn := range out.Data {
+		resp.Data = append(resp.Data, mapCodexTurn(turn))
+	}
+	return resp, nil
+}
+
+type codexTurnsListResponse struct {
+	Data       []codexTurn `json:"data"`
+	NextCursor string      `json:"nextCursor,omitempty"`
+}
+
 func (s *CodexSource) readThread(ctx context.Context, threadID string, includeTurns bool, itemsView string) (codexThreadReadResponse, error) {
 	var out codexThreadReadResponse
 	err := s.withClient(ctx, func(client *appwire.Client) error {

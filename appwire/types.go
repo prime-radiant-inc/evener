@@ -7,6 +7,7 @@ const ProtocolVersion = "serf-appwire-v1"
 const (
 	MethodInitialize                = "initialize"
 	MethodInitialized               = "initialized"
+	MethodPing                      = "ping"
 	MethodThreadList                = "thread/list"
 	MethodThreadRead                = "thread/read"
 	MethodThreadTurnsList           = "thread/turns/list"
@@ -380,10 +381,19 @@ type ThreadReadParams struct {
 	ItemsView           string `json:"itemsView,omitempty"`
 	Subscribe           bool   `json:"subscribe,omitempty"`
 	ReplaceSubscription bool   `json:"replaceSubscription,omitempty"`
+	// TurnLimit bounds includeTurns to the latest N turns for windowed
+	// (lazy) loading; 0 means unbounded (the full transcript). When it
+	// truncates, the response carries OlderCursor for paging back via
+	// thread/turns/list.
+	TurnLimit int `json:"turnLimit,omitempty"`
 }
 
 type ThreadReadResponse struct {
 	Thread Thread `json:"thread"`
+	// OlderCursor is set when TurnLimit truncated the returned turns; pass it
+	// to thread/turns/list to fetch the page of turns just before the window.
+	// Empty means the response already includes the oldest turn.
+	OlderCursor string `json:"olderCursor,omitempty"`
 }
 
 type ThreadTurnsListParams struct {

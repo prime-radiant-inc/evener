@@ -1916,6 +1916,10 @@ func (s *scriptedAppSource) ListThreads(context.Context, appwire.ThreadListParam
 	return appwire.ThreadListResponse{Data: []appwire.Thread{s.thread}}, nil
 }
 
+func (s *scriptedAppSource) ListTurns(context.Context, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	return appwire.ThreadTurnsListResponse{}, nil
+}
+
 func (s *scriptedAppSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	return appwire.ThreadReadResponse{Thread: s.thread}, nil
 }

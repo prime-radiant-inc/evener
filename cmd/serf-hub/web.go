@@ -36,6 +36,12 @@ type WebServer struct {
 
 	resumeMu    sync.Mutex
 	resumeLocks map[string]*sync.Mutex // sessionID -> per-session lock
+
+	// lastGoodThreads retains each remote source's most recent successful
+	// ListThreads result so a transient list failure doesn't blank that
+	// source's sessions from the sidebar (which renders a snapshot).
+	lastGoodMu      sync.Mutex
+	lastGoodThreads map[string][]appwire.Thread // sourceID -> last successful list
 }
 
 // sidebarTemplateFuncs supplies small helpers the sidebar template needs:
@@ -90,6 +96,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		sources:             sources,
 		startedAt:           time.Now().UTC(),
 		resumeLocks:         map[string]*sync.Mutex{},
+		lastGoodThreads:     map[string][]appwire.Thread{},
 	}
 	web.appRPC = newHubAppServer(cfg, sources)
 	return web

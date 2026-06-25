@@ -18,6 +18,9 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// ModelAttemptMetadata records continuation, endpoint, and attempt-grouping
+// details captured across one model call (including any fallback retries) for
+// transcript and API-log reporting.
 type ModelAttemptMetadata struct {
 	HistoryMode             llm.HistoryMode
 	EndpointFamily          string

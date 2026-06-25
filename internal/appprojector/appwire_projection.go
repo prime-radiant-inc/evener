@@ -655,7 +655,7 @@ func skillActivationRaw(name string) json.RawMessage {
 		SkillActivation struct {
 			Name string `json:"name"`
 			Text string `json:"text"`
-		} `json:"skill_activation"`
+		} `json:"skillActivation"`
 	}{}
 	payload.SkillActivation.Name = name
 	payload.SkillActivation.Text = "Activated skill: " + name

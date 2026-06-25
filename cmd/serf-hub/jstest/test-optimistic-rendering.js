@@ -172,4 +172,6 @@ async function runTests() {
   console.log("PASS test-optimistic-rendering.js");
 }
 
-runTests().catch(e => { console.error(e); process.exit(1); });
+// appwire's heartbeat interval keeps the jsdom event loop alive, so exit
+// explicitly on success rather than relying on a natural drain.
+runTests().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });

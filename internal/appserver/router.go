@@ -23,6 +23,17 @@ func (r *Router) Handle(method string, fn HandlerFunc) {
 	r.handlers[method] = fn
 }
 
+// Methods returns the registered method names, unordered. Used by the appwire
+// catalog cross-check tests to verify the generated protocol doc matches what
+// is actually wired.
+func (r *Router) Methods() []string {
+	out := make([]string, 0, len(r.handlers))
+	for m := range r.handlers {
+		out = append(out, m)
+	}
+	return out
+}
+
 func HandleTyped[P any, R any](r *Router, method string, fn func(context.Context, P) (R, error)) {
 	r.Handle(method, func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var params P

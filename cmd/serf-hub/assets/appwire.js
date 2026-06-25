@@ -5,6 +5,7 @@
     initialize: "initialize",
     threadList: "thread/list",
     threadRead: "thread/read",
+    threadTurnsList: "thread/turns/list",
     threadStart: "thread/start",
     threadFork: "thread/fork",
     threadClear: "thread/clear",
@@ -22,7 +23,19 @@
     pathValidate: "serf/path/validate",
     serfUpgrade: "serf/upgrade",
     modelList: "model/list",
+    ping: "ping",
   };
+
+  // Application-level heartbeat. Browsers can't send WebSocket ping frames from
+  // JS, so a silently-dropped connection leaves readyState OPEN forever and no
+  // notifications flow (the "quiet for N minutes" desync). We periodically send
+  // a cheap `ping` RPC with a timeout; if it goes unanswered the socket is
+  // force-closed, which fires the close handler → markDisconnected → reconnect.
+  const HEARTBEAT_INTERVAL_MS = 20000;
+  const HEARTBEAT_TIMEOUT_MS = 10000;
+  let heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS;
+  let heartbeatTimeoutMs = HEARTBEAT_TIMEOUT_MS;
+  let heartbeatTimer = null;
 
   let ws = null;
   let connecting = null;
@@ -64,6 +77,7 @@
           capabilities: {},
         }).then((resp) => {
           serverFeatures = (resp && resp.features) || {};
+          ensureHeartbeat();
           if (wasDisconnected) {
             wasDisconnected = false;
             notifyConnectionRestored();
@@ -98,6 +112,47 @@
       });
     });
     return connecting;
+  }
+
+  // ensureHeartbeat starts the single shared heartbeat interval lazily on the
+  // first successful initialize. It is never cleared — each tick re-checks the
+  // socket, so it harmlessly idles while disconnected and resumes on reconnect.
+  // Environments without setInterval (the jsdom-free unit harness) opt out.
+  function ensureHeartbeat() {
+    if (heartbeatTimer) return;
+    if (typeof setInterval !== "function") return;
+    heartbeatTimer = setInterval(sendHeartbeat, heartbeatIntervalMs);
+  }
+
+  function sendHeartbeat() {
+    const sock = ws;
+    if (!sock || sock.readyState !== WebSocket.OPEN) return;
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("heartbeat timeout")), heartbeatTimeoutMs);
+    });
+    Promise.race([request(METHOD.ping, {}), timeout]).then(() => {
+      if (timer) clearTimeout(timer);
+    }, () => {
+      if (timer) clearTimeout(timer);
+      // Open but unresponsive — a silent drop. Force-close so the close handler
+      // runs the reconnect lifecycle; an OPEN-but-dead socket never recovers on
+      // its own.
+      if (ws === sock) { try { sock.close(); } catch (_) {} }
+    });
+  }
+
+  // setHeartbeatTiming overrides the heartbeat cadence. Test seam; the
+  // production defaults are HEARTBEAT_INTERVAL_MS / HEARTBEAT_TIMEOUT_MS.
+  function setHeartbeatTiming(intervalMs, timeoutMs) {
+    if (intervalMs > 0) heartbeatIntervalMs = intervalMs;
+    if (timeoutMs > 0) heartbeatTimeoutMs = timeoutMs;
+    const wasRunning = !!heartbeatTimer;
+    if (heartbeatTimer && typeof clearInterval === "function") {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    if (wasRunning) ensureHeartbeat();
   }
 
   function request(method, params) {
@@ -315,8 +370,21 @@
     });
   }
 
-  function readThread(sessionId, includeTurns, subscribe, replaceSubscription) {
-    return request(METHOD.threadRead, { ref: refForSession(sessionId), includeTurns: !!includeTurns, itemsView: "full", subscribe: !!subscribe, replaceSubscription: !!replaceSubscription });
+  function readThread(sessionId, includeTurns, subscribe, replaceSubscription, turnLimit) {
+    const params = { ref: refForSession(sessionId), includeTurns: !!includeTurns, itemsView: "full", subscribe: !!subscribe, replaceSubscription: !!replaceSubscription };
+    if (turnLimit > 0) params.turnLimit = turnLimit;
+    return request(METHOD.threadRead, params);
+  }
+
+  // listTurns fetches a page of older turns for lazy transcript loading. cursor
+  // comes from a prior thread/read (olderCursor) or listTurns (nextCursor); an
+  // empty nextCursor in the reply means the oldest turn has been reached.
+  function listTurns(sessionId, cursor, limit) {
+    return request(METHOD.threadTurnsList, {
+      ref: refForSession(sessionId),
+      cursor: cursor || "",
+      limit: limit > 0 ? limit : 0,
+    }).then((resp) => ({ turns: resp.data || [], nextCursor: resp.nextCursor || "" }));
   }
 
   function tasks(sessionId) {
@@ -671,8 +739,18 @@
       depth: typeof queue.depth === "number" ? queue.depth : (Array.isArray(queue.preview) ? queue.preview.length : 0),
       preview: Array.isArray(queue.preview) ? queue.preview.slice() : [],
     }]);
+    events.push.apply(events, eventsFromTurns(thread.turns));
+    return events;
+  }
+
+  // eventsFromTurns converts an ordered turn array into the renderer's flat
+  // event stream (the per-turn/per-item body of eventsFromThread, without the
+  // SESSION_START/QUEUE seed). Reused to render older pages fetched via
+  // thread/turns/list when lazily loading earlier history.
+  function eventsFromTurns(turns) {
+    const events = [];
     const activeToolCalls = new Set();
-    for (const turn of thread.turns || []) {
+    for (const turn of turns || []) {
       for (const item of turn.items || []) {
         if (item && internalItemType(item.type) === "commandExecution") {
           const callID = firstNonEmpty(item.callId, item.id);
@@ -864,6 +942,7 @@
     upgrade,
     startThread,
     readThread,
+    listTurns,
     tasks,
     startTurn,
     steer,
@@ -874,10 +953,12 @@
     setReasoningEffort,
     forkThread,
     eventsFromThread,
+    eventsFromTurns,
     activeTurnIDFromThread,
     eventsFromNotification,
     liveItemStateSize() { return liveItemState.size; },
     setPendingRegistry,
+    setHeartbeatTiming,
   };
 
   // The transport-drop affordance lives in the workspace chrome, owned by the
