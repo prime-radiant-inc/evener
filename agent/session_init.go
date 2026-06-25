@@ -803,47 +803,8 @@ func (s *Session) ensurePendingSessionStartCondLocked() *sync.Cond {
 	return s.pendingSessionStartCond
 }
 
-func (s *Session) takePendingSessionStartKind() (plugin.SessionStartKind, bool) {
-	if s == nil {
-		return "", false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.pendingSessionStartKind == nil {
-		return "", false
-	}
-	kind := *s.pendingSessionStartKind
-	s.pendingSessionStartKind = nil
-	s.pendingSessionStartResult = nil
-	return kind, true
-}
-
-func (s *Session) takePendingSessionStartResult() (hooks.RunResult, bool) {
-	if s == nil {
-		return hooks.RunResult{}, false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.pendingSessionStartResult == nil {
-		return hooks.RunResult{}, false
-	}
-	result := *s.pendingSessionStartResult
-	s.pendingSessionStartResult = nil
-	s.pendingSessionStartKind = nil
-	s.pendingSessionStartInFlight = false
-	return result, true
-}
-
-func (s *Session) drainPendingSessionStartHooks(ctx context.Context) {
-	kind, ok := s.takePendingSessionStartKind()
-	if !ok {
-		return
-	}
-	s.deliverSessionStartHookResult(s.runSessionStartHooksWithContext(ctx, kind))
-}
-
 func (s *Session) drainPendingSessionStartHooksForUserTurn(ctx context.Context) {
-	result, kind, haveResult, shouldRun := s.pendingSessionStartForUserTurn()
+	result, kind, haveResult, shouldRun := s.pendingSessionStartForUserTurn(ctx)
 	if !haveResult && !shouldRun {
 		return
 	}
@@ -853,14 +814,37 @@ func (s *Session) drainPendingSessionStartHooksForUserTurn(ctx context.Context) 
 	s.deliverSessionStartHookResultForUserTurn(result)
 }
 
-func (s *Session) pendingSessionStartForUserTurn() (hooks.RunResult, plugin.SessionStartKind, bool, bool) {
+func (s *Session) pendingSessionStartForUserTurn(ctx context.Context) (hooks.RunResult, plugin.SessionStartKind, bool, bool) {
 	if s == nil {
 		return hooks.RunResult{}, "", false, false
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var stopAfterFunc func() bool
 	for s.pendingSessionStartInFlight && s.pendingSessionStartKind != nil && s.pendingSessionStartResult == nil {
+		if err := ctx.Err(); err != nil {
+			return hooks.RunResult{}, "", false, false
+		}
+		if stopAfterFunc == nil {
+			stopAfterFunc = context.AfterFunc(ctx, func() {
+				s.mu.Lock()
+				if s.pendingSessionStartCond != nil {
+					s.pendingSessionStartCond.Broadcast()
+				}
+				s.mu.Unlock()
+			})
+			defer stopAfterFunc()
+		}
+		if s.pendingSessionStartWaitEntered != nil {
+			s.pendingSessionStartWaitEntered()
+		}
 		s.ensurePendingSessionStartCondLocked().Wait()
+	}
+	if ctx.Err() != nil {
+		return hooks.RunResult{}, "", false, false
 	}
 	if s.pendingSessionStartResult != nil {
 		result := *s.pendingSessionStartResult

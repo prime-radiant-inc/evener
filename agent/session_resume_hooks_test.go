@@ -33,7 +33,7 @@ func newResumeHookPluginDir(t *testing.T) string {
         "hooks": [
           {
             "type": "command",
-            "command": "printf '{\"hookSpecificOutput\":{\"additionalContext\":\"RESUME_HOOK_CONTEXT\"}}\\n'; printf 'RESUME_HOOK_USER_MESSAGE\\n'",
+            "command": "printf '{\"systemMessage\":\"RESUME_HOOK_USER_MESSAGE\",\"hookSpecificOutput\":{\"additionalContext\":\"RESUME_HOOK_CONTEXT\"}}\\n'",
             "timeout": 5
           }
         ]
@@ -197,6 +197,72 @@ func TestRestoreSessionNotificationDoesNotDrainResumeSessionStartHooks(t *testin
 	}
 	if got := closeAndCountSessionStartHooks(t, sess, eventsPtr, mu, doneCh); got != 1 {
 		t.Fatalf("SessionStart hook starts after notification plus user input = %d, want 1", got)
+	}
+}
+
+func TestRestoreSessionWatchDeliveryDoesNotDrainResumeSessionStartHooks(t *testing.T) {
+	t.Parallel()
+	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			text := requestText(req)
+			if strings.Contains(text, "RESUME_HOOK_CONTEXT") || strings.Contains(text, "RESUME_HOOK_USER_MESSAGE") {
+				t.Fatalf("watch-delivery request drained resume hooks; text:\n%s", text)
+			}
+			if !strings.Contains(text, "watch delivery before user") {
+				t.Fatalf("watch-delivery request missing watch frame; text:\n%s", text)
+			}
+			return finalResponse("watch done")
+		},
+		func(req llm.Request) llm.Response {
+			text := requestText(req)
+			if strings.Count(text, "RESUME_HOOK_CONTEXT") != 1 {
+				t.Fatalf("first user request resume context count = %d, want 1; text:\n%s", strings.Count(text, "RESUME_HOOK_CONTEXT"), text)
+			}
+			if strings.Contains(text, "RESUME_HOOK_USER_MESSAGE") {
+				t.Fatalf("first user request included hook user message; text:\n%s", text)
+			}
+			requireRequestContainsInOrder(t, req, "RESUME_HOOK_CONTEXT", "first real user after watch")
+			return finalResponse("user done")
+		},
+	}}
+	sess := restoredSessionWithResumeHook(t, adapter)
+	eventsPtr, mu, doneCh := collectEvents(sess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInputKind(ctx, "watch delivery before user", nil, EntryWatchDelivery); err != nil {
+		t.Fatalf("ProcessInputKind(EntryWatchDelivery): %v", err)
+	}
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("adapter requests after watch delivery = %d, want 1", got)
+	}
+	mu.Lock()
+	watchEvents := append([]events.SessionEvent(nil), (*eventsPtr)...)
+	mu.Unlock()
+	if got := countHookStarts(watchEvents, plugin.HookSessionStart); got != 0 {
+		t.Fatalf("SessionStart hook starts after watch delivery = %d, want 0", got)
+	}
+	for _, ev := range watchEvents {
+		if ev.Kind != events.EventWarning {
+			continue
+		}
+		if data, ok := ev.Data.(events.WarningData); ok && strings.Contains(data.Message, "RESUME_HOOK_USER_MESSAGE") {
+			t.Fatalf("watch delivery emitted resume hook user message warning: %+v", data)
+		}
+	}
+	watchHistory := sessionHistoryText(sess)
+	if strings.Contains(watchHistory, "RESUME_HOOK_CONTEXT") || strings.Contains(watchHistory, "RESUME_HOOK_USER_MESSAGE") {
+		t.Fatalf("watch delivery consumed resume hook output; history:\n%s", watchHistory)
+	}
+
+	if _, err := sess.ProcessInput(ctx, "first real user after watch", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := len(adapter.Requests()); got != 2 {
+		t.Fatalf("adapter requests after user = %d, want 2", got)
+	}
+	if got := closeAndCountSessionStartHooks(t, sess, eventsPtr, mu, doneCh); got != 1 {
+		t.Fatalf("SessionStart hook starts after watch delivery plus user input = %d, want 1", got)
 	}
 }
 

@@ -184,8 +184,12 @@ type Session struct {
 	pendingSessionStartResult   *hooks.RunResult
 	pendingSessionStartInFlight bool
 	pendingSessionStartCond     *sync.Cond
-	pluginAgents                map[string]plugin.Agent
-	pluginMCPConfigs            []mcpconfig.ServerConfig
+	// pendingSessionStartWaitEntered is test-only instrumentation for deterministic
+	// rendezvous when a user turn blocks behind in-flight restore hook execution.
+	// Nil in production.
+	pendingSessionStartWaitEntered func()
+	pluginAgents                   map[string]plugin.Agent
+	pluginMCPConfigs               []mcpconfig.ServerConfig
 	// unsupportedPluginHookEvents accumulates all Claude-recognized events
 	// declared by loaded plugins that serf does not currently fire.
 	// Populated by initPlugins; used by DetailedStatus for diagnostics.

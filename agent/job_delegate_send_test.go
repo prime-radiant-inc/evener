@@ -2405,6 +2405,11 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 		t.Fatalf("tracked child while restore hook is in flight = %+v, want retained child", tracked)
 	}
 	child := tracked.sess
+	waitEntered := make(chan struct{})
+	var waitEnteredOnce sync.Once
+	child.pendingSessionStartWaitEntered = func() {
+		waitEnteredOnce.Do(func() { close(waitEntered) })
+	}
 	userTurnDone := make(chan sendMessageResult, 1)
 	go func() {
 		userTurnDone <- s.sendDelegateMessage(context.Background(), sendMessageArgs{
@@ -2418,8 +2423,16 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	}()
 
 	// The first real user turn is racing with an in-flight restore-side-effect
-	// SessionStart hook. It must wait for that hook result instead of running a
-	// second hook or making a model request without the captured output.
+	// SessionStart hook. It must reach the pending drain wait and then wait for
+	// that hook result instead of running a second hook or making a model request
+	// without the captured output.
+	select {
+	case <-waitEntered:
+	case res := <-userTurnDone:
+		t.Fatalf("first user turn completed before reaching in-flight restore hook wait: %+v", res)
+	case <-time.After(5 * time.Second):
+		t.Fatal("first user turn did not reach in-flight restore hook wait")
+	}
 	select {
 	case res := <-userTurnDone:
 		t.Fatalf("first user turn completed before in-flight restore hook was released: %+v", res)
@@ -2430,6 +2443,15 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	}
 	if got := countFileLines(t, hookMarker); got != 1 {
 		t.Fatalf("SessionStart hook executions before releasing restore hook = %d, want 1", got)
+	}
+	if got := countSteeringEntriesContaining(child, "DELEGATE_RESUME_CONTEXT"); got != 0 {
+		t.Fatalf("child resume hook context steering entries before releasing restore hook = %d, want 0; queue = %+v", got, child.SteeringQueueSnapshot())
+	}
+	if history := sessionHistoryText(child); strings.Contains(history, "DELEGATE_RESUME_CONTEXT") || strings.Contains(history, "DELEGATE_RESUME_USER_MESSAGE") {
+		t.Fatalf("child resume hook output was delivered before releasing restore hook; history:\n%s", history)
+	}
+	if got := drainEventWarningsContaining(child, "DELEGATE_RESUME_USER_MESSAGE"); got != 0 {
+		t.Fatalf("child resume hook user messages delivered before releasing restore hook = %d, want 0", got)
 	}
 
 	releaseWriter, err := os.OpenFile(hookReleaseFIFO, os.O_WRONLY, 0)
@@ -2462,15 +2484,6 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	}
 	if got := countFileLines(t, hookMarker); got != 1 {
 		t.Fatalf("SessionStart hook executions after restore completed = %d, want 1", got)
-	}
-	if got := countSteeringEntriesContaining(child, "DELEGATE_RESUME_CONTEXT"); got != 0 {
-		t.Fatalf("child resume hook context steering entries before user turn completes = %d, want 0; queue = %+v", got, child.SteeringQueueSnapshot())
-	}
-	if history := sessionHistoryText(child); strings.Contains(history, "DELEGATE_RESUME_CONTEXT") || strings.Contains(history, "DELEGATE_RESUME_USER_MESSAGE") {
-		t.Fatalf("child resume hook output was delivered before first user turn completed; history:\n%s", history)
-	}
-	if got := drainEventWarningsContaining(child, "DELEGATE_RESUME_USER_MESSAGE"); got != 0 {
-		t.Fatalf("child resume hook user messages delivered before first user turn completed = %d, want 0", got)
 	}
 	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 0 {
 		t.Fatalf("parent watch-frame steering deliveries = %d, want 0 (caller sends never steer); queue = %+v", got, s.SteeringQueueSnapshot())

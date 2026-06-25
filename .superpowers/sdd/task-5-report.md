@@ -338,3 +338,131 @@ ok  	primeradiant.com/serf/agent	1.357s
 ## Notes
 
 - The pre-existing unrelated `.superpowers/sdd/task-1-report.md` modification remains unstaged and uncommitted.
+
+## Task 5 Fix Report 4
+
+Status: DONE
+
+Fixed the latest Task 5 re-review findings around resume `SessionStart` hook output ordering for watch/autonomous entries and strengthened the delegate restore race test.
+
+## Files changed
+
+- `agent/session_lifecycle.go`
+  - `processOneInput` now tells `acceptUserInput` whether the entry is a real `EntryUserInput`.
+  - `acceptUserInput` drains deferred resume `SessionStart` output only when `kind == EntryUserInput`; `EntryWatchDelivery` keeps its existing shared accept path but no longer consumes resume hook output.
+- `agent/session_resume_hooks_test.go`
+  - Added `TestRestoreSessionWatchDeliveryDoesNotDrainResumeSessionStartHooks`.
+  - The regression first verified RED: before the production fix, the watch-delivery model request contained `RESUME_HOOK_CONTEXT`.
+  - The test now asserts watch delivery does not run/deliver resume hook context or hook user messages, then the later real user input receives the context exactly once and emits the user message exactly once.
+- `agent/session.go`
+  - Added package-private test-only `pendingSessionStartWaitEntered` instrumentation for deterministic race-test rendezvous.
+- `agent/session_init.go`
+  - Made `pendingSessionStartForUserTurn` context-aware while waiting for in-flight restore hook execution. Cancellation wakes the condition wait and returns without clearing pending kind/result/in-flight state.
+  - Removed unused generic pending `SessionStart` drain/take helpers after `rg` confirmed no callers, avoiding future accidental autonomous-entry drains.
+- `agent/job_delegate_send_test.go`
+  - Strengthened `TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce` with a deterministic wait-entry barrier. The test now proves the first delegate user turn reached the pending restore-hook wait before the FIFO hook release.
+
+## Review findings fixed/evaluated
+
+### Critical finding
+
+Fixed. Deferred resume `SessionStart` model-facing output is now drained only for accepted real `EntryUserInput`. `EntryWatchDelivery` no longer falls through to a drain-capable path, so watch/autonomous turns do not consume or deliver resume hook context/user messages. A later real user input receives the pending output exactly once.
+
+### Important finding: deterministic race proof
+
+Fixed. The delegate reconstruction race test no longer relies on only observing that the hook is blocked. It installs test-only instrumentation on the retained child and waits until the user turn has entered the pending `SessionStart` wait path before releasing the blocked restore hook.
+
+### Important finding: context cancellation while waiting
+
+Fixed cleanly. `pendingSessionStartForUserTurn(ctx)` now uses `context.AfterFunc` to broadcast the condition variable on cancellation. If cancellation occurs while the first user turn waits for in-flight restore hook execution, it returns without clearing pending output. Restore completion still stores/broadcasts the captured result for a later accepted user turn.
+
+### Minor finding
+
+Fixed. Removed unused generic pending `SessionStart` drain/take helpers after verifying with `rg` that they had no callers.
+
+## Tests run
+
+1. New watch-delivery regression:
+
+```bash
+go test ./agent -run 'TestRestoreSessionWatchDeliveryDoesNotDrainResumeSessionStartHooks' -count=1
+```
+
+Result: PASS
+
+```text
+ok  	primeradiant.com/serf/agent	0.051s
+```
+
+2. Strengthened racing delegate reconstruction regression:
+
+```bash
+go test ./agent -run TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce -count=1
+```
+
+Result: PASS
+
+```text
+ok  	primeradiant.com/serf/agent	0.187s
+```
+
+3. Task 4 resume-hook regressions, including MaxTurns:
+
+```bash
+go test ./agent -run 'TestRestoreSessionDefersResumeSessionStartHooksUntilUserInput|TestRestoreSessionNotificationDoesNotDrainResumeSessionStartHooks|TestRestoreSessionStartHooksDrainOnlyOnce|TestRestoreSessionMaxTurnsRejectedUserInputKeepsPendingResumeHooks|TestRestoreSessionRejectedUserInputKeepsPendingResumeHooks' -count=1
+```
+
+Result: PASS
+
+```text
+ok  	primeradiant.com/serf/agent	0.099s
+```
+
+4. Core focused rerun after removing unused helpers:
+
+```bash
+go test ./agent -run 'TestRestoreSessionWatchDeliveryDoesNotDrainResumeSessionStartHooks|TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce|TestRestoreSessionDefersResumeSessionStartHooksUntilUserInput|TestRestoreSessionNotificationDoesNotDrainResumeSessionStartHooks|TestRestoreSessionStartHooksDrainOnlyOnce|TestRestoreSessionMaxTurnsRejectedUserInputKeepsPendingResumeHooks|TestRestoreSessionRejectedUserInputKeepsPendingResumeHooks' -count=1
+```
+
+Result: PASS
+
+```text
+ok  	primeradiant.com/serf/agent	0.240s
+```
+
+5. Affected watch/delegate tests:
+
+```bash
+go test ./agent -run 'TestWatchOriginCommunicateEndTurnResumesParentOnce|TestSendDelegateMessage|TestDelegateReconstruction' -count=1
+```
+
+Result: PASS
+
+```text
+ok  	primeradiant.com/serf/agent	1.301s
+```
+
+6. Affected session lifecycle/resume tests:
+
+```bash
+go test ./agent -run 'TestRestoreSession|TestSession_Notification|TestSession_PreCompactHook|TestSession_Compact' -count=1
+```
+
+Result: PASS
+
+```text
+ok  	primeradiant.com/serf/agent	0.153s
+```
+
+7. Diff whitespace check:
+
+```bash
+git diff --check
+```
+
+Result: PASS, exit 0.
+
+## Notes
+
+- The new watch regression was verified RED before the production fix: `go test ./agent -run TestRestoreSessionWatchDeliveryDoesNotDrainResumeSessionStartHooks -count=1` failed because the watch-delivery request contained `<SYSTEM-REMINDER>RESUME_HOOK_CONTEXT</SYSTEM-REMINDER>`.
+- The pre-existing unrelated `.superpowers/sdd/task-1-report.md` modification remains unstaged and uncommitted.

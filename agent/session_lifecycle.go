@@ -540,7 +540,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if !s.acceptNotificationInput(ctx) {
 			return "", false, nil
 		}
-	} else if !s.acceptUserInput(ctx, input, images, inputProvenance) {
+	} else if !s.acceptUserInput(ctx, input, images, inputProvenance, kind == EntryUserInput) {
 		return "", false, nil
 	}
 
@@ -771,11 +771,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 // acceptUserInput records a new user input at the start of an input turn: it
 // repairs any orphaned tool results, enforces MaxTurns, and returns proceed=false
 // (the caller returns "", nil) when the turn limit is already reached. Once the
-// turn is accepted, it increments the turn counter, drains any pending resume
-// SessionStart hook output before appending the user turn, then emits
-// EventUserInput, appends the user turn, launches the session namer, runs
-// UserPromptSubmit hooks, drains any pending steering, and returns proceed=true.
-func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal) (proceed bool) {
+// turn is accepted, it increments the turn counter. For real external user
+// input only, it drains any pending resume SessionStart hook output before
+// appending the user turn. It then emits EventUserInput, appends the user turn,
+// launches the session namer, runs UserPromptSubmit hooks, drains any pending
+// steering, and returns proceed=true.
+func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool) (proceed bool) {
 	// A new top-level input starts a fresh causal context: replace active
 	// provenance with the input's provenance, or empty provenance for ordinary
 	// external user input.
@@ -799,13 +800,15 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	userInputTurn := len(s.history) + 1
 	s.mu.Unlock()
 
-	// Resume SessionStart hooks are intentionally lazy: they are recorded during
-	// restore, but their model-facing output must join the first accepted real user
-	// turn, never a MaxTurns-rejected input or an autonomous notification,
-	// continuation, or watch turn. Drain them after the proceed gate accepts the
-	// turn and before recording the user turn so their model context precedes the
-	// prompt it applies to in the first resumed model request.
-	s.drainPendingSessionStartHooksForUserTurn(ctx)
+	if drainResumeSessionStart {
+		// Resume SessionStart hooks are intentionally lazy: they are recorded during
+		// restore, but their model-facing output must join the first accepted real user
+		// turn, never a MaxTurns-rejected input or an autonomous notification,
+		// continuation, or watch turn. Drain them after the proceed gate accepts the
+		// turn and before recording the user turn so their model context precedes the
+		// prompt it applies to in the first resumed model request.
+		s.drainPendingSessionStartHooksForUserTurn(ctx)
+	}
 
 	s.emit(events.EventUserInput, events.UserInputData{
 		Text:   input,
