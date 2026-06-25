@@ -422,7 +422,22 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 body.app[data-sidebar-resizing="true"] .sidebar-resizer {
   background: color-mix(in srgb, var(--rule) 70%, transparent);
 }
-#workspace { position: relative; flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+#workspace {
+  --workspace-content-max-w: 1040px;
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.workspace-header,
+.conversation,
+.workspace-input {
+  width: min(100%, var(--workspace-content-max-w));
+  margin-inline: auto;
+}
 /* Multi-pane: side panes sit as flex columns to the right of #workspace. */
 .side-panes { --pane-min: 300px; display: flex; flex-direction: row; min-width: 0; height: 100vh; width: var(--side-panes-w, 420px); flex: 0 0 var(--side-panes-w, 420px); }
 .side-panes[hidden] { display: none; }

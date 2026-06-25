@@ -57,6 +57,26 @@ func TestWeb_Landing_Renders(t *testing.T) {
 	}
 }
 
+func TestWebWorkspaceContentColumnCSSContract(t *testing.T) {
+	data, err := assetsFS.ReadFile("assets/style.css")
+	if err != nil {
+		t.Fatalf("read style.css: %v", err)
+	}
+	css := string(data)
+
+	checks := []string{
+		"--workspace-content-max-w: 1040px;",
+		".workspace-header,\n.conversation,\n.workspace-input",
+		"width: min(100%, var(--workspace-content-max-w));",
+		"margin-inline: auto;",
+	}
+	for _, want := range checks {
+		if !strings.Contains(css, want) {
+			t.Fatalf("style.css missing %q", want)
+		}
+	}
+}
+
 func TestWebAPIUpgradeRunsSelfUpdater(t *testing.T) {
 	var got selfupdate.Options
 	previous := runHubSelfUpgrade
