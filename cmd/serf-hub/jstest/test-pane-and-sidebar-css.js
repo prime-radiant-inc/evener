@@ -92,6 +92,19 @@ pass(
   "tool timing metadata should reveal on keyboard focus within the row"
 );
 
+// Job notification communicate output is already HTML rendered from markdown.
+// Preserving parser-inserted whitespace on that HTML turns marked's formatting
+// newlines into visible blank rows between every block/list item. Raw excerpts
+// still preserve original text newlines through .notification-card-excerpt.
+pass(
+  !ruleContains(".notification-card-message", /white-space:\s*pre-wrap/),
+  "job notification markdown messages should not preserve parser whitespace as visible blank lines"
+);
+pass(
+  ruleContains(".notification-card-excerpt", /white-space:\s*pre-wrap/),
+  "raw notification excerpts should still preserve output newlines"
+);
+
 if (failures.length > 0) {
   for (const f of failures) console.log(f);
   process.exit(1);
