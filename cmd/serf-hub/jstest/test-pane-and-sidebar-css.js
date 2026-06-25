@@ -7,10 +7,12 @@ const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
 function ruleContains(selector, pattern) {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(escaped + "\\s*\\{([^}]*)\\}", "m");
-  const m = css.match(re);
-  return !!(m && pattern.test(m[1]));
+  const re = /([^{}]+)\{([^}]*)\}/gm;
+  for (const m of css.matchAll(re)) {
+    const selectors = m[1].split(",").map((s) => s.trim());
+    if (selectors.includes(selector) && pattern.test(m[2])) return true;
+  }
+  return false;
 }
 
 // Right-pane compact footer/input: no extra rule or full-line gap above metadata.
@@ -72,6 +74,24 @@ pass(
 pass(
   ruleContains(".thread-document main", /padding:\s*0\b/) && ruleContains(".thread-document main", /max-width:\s*none\b/),
   "thread-document main should remove legacy page padding and max-width"
+);
+
+// Transcript tool timing metadata should stay out of the scan path until the
+// user shows row-level intent with hover or keyboard focus.
+pass(
+  ruleContains(".tool-call .tool-meta", /opacity:\s*0\b/) &&
+    ruleContains(".tool-call .tool-meta", /visibility:\s*hidden\b/),
+  "tool timing metadata should be visually hidden by default"
+);
+pass(
+  ruleContains(".tool-call:hover .tool-meta", /opacity:\s*1\b/) &&
+    ruleContains(".tool-call:hover .tool-meta", /visibility:\s*visible\b/),
+  "tool timing metadata should reveal on row hover"
+);
+pass(
+  ruleContains(".tool-call:focus-within .tool-meta", /opacity:\s*1\b/) &&
+    ruleContains(".tool-call:focus-within .tool-meta", /visibility:\s*visible\b/),
+  "tool timing metadata should reveal on keyboard focus within the row"
 );
 
 if (failures.length > 0) {

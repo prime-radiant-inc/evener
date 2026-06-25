@@ -1926,7 +1926,21 @@ button.composer-model-value:hover { text-decoration: underline; }
   word-break: normal;
 }
 .tool-call .result-detail { color: var(--text-muted); }
-.tool-call .tool-meta { margin-left: auto; color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); white-space: nowrap; }
+.tool-call .tool-meta {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--motion-fast), visibility var(--motion-fast);
+}
+.tool-call:hover .tool-meta,
+.tool-call:focus-within .tool-meta {
+  opacity: 1;
+  visibility: visible;
+}
 .tool-call .tool-intent {
   flex: 0 0 auto;
   width: calc(100% - 12px - var(--space-3));
