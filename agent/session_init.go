@@ -789,6 +789,7 @@ func (s *Session) deferSessionStartHooks(kind plugin.SessionStartKind) {
 	k := kind
 	s.mu.Lock()
 	s.pendingSessionStartKind = &k
+	s.pendingSessionStartResult = nil
 	s.mu.Unlock()
 }
 
@@ -806,6 +807,21 @@ func (s *Session) takePendingSessionStartKind() (plugin.SessionStartKind, bool) 
 	return kind, true
 }
 
+func (s *Session) takePendingSessionStartResult() (hooks.RunResult, bool) {
+	if s == nil {
+		return hooks.RunResult{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingSessionStartResult == nil {
+		return hooks.RunResult{}, false
+	}
+	result := *s.pendingSessionStartResult
+	s.pendingSessionStartResult = nil
+	s.pendingSessionStartKind = nil
+	return result, true
+}
+
 func (s *Session) drainPendingSessionStartHooks(ctx context.Context) {
 	kind, ok := s.takePendingSessionStartKind()
 	if !ok {
@@ -815,11 +831,19 @@ func (s *Session) drainPendingSessionStartHooks(ctx context.Context) {
 }
 
 func (s *Session) drainPendingSessionStartHooksForUserTurn(ctx context.Context) {
+	if result, ok := s.takePendingSessionStartResult(); ok {
+		s.deliverSessionStartHookResultForUserTurn(result)
+		return
+	}
 	kind, ok := s.takePendingSessionStartKind()
 	if !ok {
 		return
 	}
 	result := s.runSessionStartHooksWithContext(ctx, kind)
+	s.deliverSessionStartHookResultForUserTurn(result)
+}
+
+func (s *Session) deliverSessionStartHookResultForUserTurn(result hooks.RunResult) {
 	for _, m := range result.ModelContext {
 		wrapped := wrapHookContext(m)
 		s.appendTurn(schema.TurnSteering, llm.User(wrapped))
@@ -828,6 +852,32 @@ func (s *Session) drainPendingSessionStartHooksForUserTurn(ctx context.Context) 
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessage(m)
 	}
+}
+
+func (s *Session) runPendingSessionStartHooksForRestoreSideEffects(ctx context.Context) {
+	kind, ok := s.pendingSessionStartKindForRestoreSideEffects()
+	if !ok {
+		return
+	}
+	result := s.runSessionStartHooksWithContext(ctx, kind)
+	s.mu.Lock()
+	if s.pendingSessionStartKind != nil && *s.pendingSessionStartKind == kind && s.pendingSessionStartResult == nil {
+		stored := result
+		s.pendingSessionStartResult = &stored
+	}
+	s.mu.Unlock()
+}
+
+func (s *Session) pendingSessionStartKindForRestoreSideEffects() (plugin.SessionStartKind, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingSessionStartKind == nil || s.pendingSessionStartResult != nil {
+		return "", false
+	}
+	return *s.pendingSessionStartKind, true
 }
 
 func (s *Session) runSessionStartHooks(sessionStartKind plugin.SessionStartKind) {
@@ -935,7 +985,7 @@ func (s *Session) runDeferredRestoreSideEffects() error {
 	if err := s.jobManager.recoverForwardedPendingNotifications(); err != nil {
 		return fmt.Errorf("nested job notifications: %w", err)
 	}
-	s.drainPendingSessionStartHooks(context.Background())
+	s.runPendingSessionStartHooksForRestoreSideEffects(context.Background())
 	return nil
 }
 

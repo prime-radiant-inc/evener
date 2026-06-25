@@ -2302,7 +2302,22 @@ func TestReconstructDelegateChildRegistryMismatchDoesNotReconcileChildJobs(t *te
 
 func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{name: "openai"}
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				text := requestText(req)
+				if strings.Count(text, "DELEGATE_RESUME_CONTEXT") != 1 {
+					t.Fatalf("delegate first user request resume context count = %d, want 1; text:\n%s", strings.Count(text, "DELEGATE_RESUME_CONTEXT"), text)
+				}
+				if strings.Contains(text, "DELEGATE_RESUME_USER_MESSAGE") {
+					t.Fatalf("delegate first user request included hook user message; text:\n%s", text)
+				}
+				requireRequestContainsInOrder(t, req, "DELEGATE_RESUME_CONTEXT", "first post-restore delegate user turn")
+				return finalResponse("delegate done")
+			},
+		},
+	}
 	c := llm.NewClient()
 	c.Register(adapter)
 	s := newDelegateRestorePreflightSession(t, c)
@@ -2311,7 +2326,8 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	rec = loadShellRecord(t, s.jobManager, rec.JobID)
 	childID := rec.DelegateRestore.ChildSessionID
 	hookMarker := filepath.Join(t.TempDir(), "session-start-hook")
-	pluginDir := sessionStartHookPlugin(t, "sh -c "+shellQuote("echo hook >> "+hookMarker+"; sleep 0.2"))
+	hookCommand := "printf '{\"systemMessage\":\"DELEGATE_RESUME_USER_MESSAGE\",\"hookSpecificOutput\":{\"additionalContext\":\"DELEGATE_RESUME_CONTEXT\"}}\\n'; echo hook >> " + shellQuote(hookMarker) + "; sleep 0.2"
+	pluginDir := sessionStartHookPlugin(t, "sh -c "+shellQuote(hookCommand))
 	meta, err := schema.LoadSessionMeta(s.stateDir, childID)
 	if err != nil {
 		t.Fatalf("load child meta: %v", err)
@@ -2372,11 +2388,47 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	if got := countFileLines(t, hookMarker); got != 1 {
 		t.Fatalf("SessionStart hook executions = %d, want 1", got)
 	}
+	child := first.sub.sess
+	if got := countSteeringEntriesContaining(child, "DELEGATE_RESUME_CONTEXT"); got != 0 {
+		t.Fatalf("child resume hook context steering entries after restore = %d, want 0; queue = %+v", got, child.SteeringQueueSnapshot())
+	}
+	if history := sessionHistoryText(child); strings.Contains(history, "DELEGATE_RESUME_CONTEXT") || strings.Contains(history, "DELEGATE_RESUME_USER_MESSAGE") {
+		t.Fatalf("child resume hook output was delivered during restore; history:\n%s", history)
+	}
+	if got := drainEventWarningsContaining(child, "DELEGATE_RESUME_USER_MESSAGE"); got != 0 {
+		t.Fatalf("child resume hook user messages delivered during restore = %d, want 0", got)
+	}
 	if got := countSteeringEntriesContaining(s, "delivery_restore_pending"); got != 0 {
 		t.Fatalf("parent watch-frame steering deliveries = %d, want 0 (caller sends never steer); queue = %+v", got, s.SteeringQueueSnapshot())
 	}
 	if pending := loadSessionWatchSendRecord(t, s.stateDir, childID).Pending; len(pending) != 1 {
 		t.Fatalf("child pending after winning reconstruction = %+v, want still pending (token surfaced, not settled)", pending)
+	}
+
+	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         rec.DelegateID,
+		Message:        "first post-restore delegate user turn",
+		OnIdle:         "start",
+		BackgroundSet:  true,
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage first post-restore user turn: %v", res.Err)
+	}
+	if requests := adapter.Requests(); len(requests) == 0 {
+		t.Fatal("adapter requests after first post-restore user turn = 0, want at least 1")
+	} else {
+		text := requestText(requests[0])
+		if strings.Count(text, "DELEGATE_RESUME_CONTEXT") != 1 {
+			t.Fatalf("first adapter request resume context count = %d, want 1; text:\n%s", strings.Count(text, "DELEGATE_RESUME_CONTEXT"), text)
+		}
+	}
+	if got := drainEventWarningsContaining(child, "DELEGATE_RESUME_USER_MESSAGE"); got != 1 {
+		t.Fatalf("child resume hook user messages after first real user turn = %d, want 1", got)
+	}
+	if got := countFileLines(t, hookMarker); got != 1 {
+		t.Fatalf("SessionStart hook executions after first real user turn = %d, want still 1", got)
 	}
 }
 

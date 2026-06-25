@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
@@ -375,6 +376,23 @@ func sessionStartHookPlugin(t *testing.T, command string) string {
 
 func countSteeringEntriesContaining(s *Session, text string) int {
 	return len(steeringEntriesContaining(s, text))
+}
+
+func drainEventWarningsContaining(s *Session, text string) int {
+	count := 0
+	for {
+		select {
+		case ev := <-s.Events():
+			if ev.Kind != events.EventWarning {
+				continue
+			}
+			if data, ok := ev.Data.(events.WarningData); ok && strings.Contains(data.Message, text) {
+				count++
+			}
+		default:
+			return count
+		}
+	}
 }
 
 func newPersistentTestSession(t *testing.T) *Session {
