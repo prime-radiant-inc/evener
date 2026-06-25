@@ -42,20 +42,20 @@ async function run() {
   const think = conv.querySelector("button.think");
   pass(!!think, "expected a thinking disclosure button");
 
-  // Collapsed by default → aria-expanded must be present and "false".
-  pass(think && think.getAttribute("aria-expanded") === "false",
-    "collapsed thinking disclosure must expose aria-expanded=false, got " + (think && think.getAttribute("aria-expanded")));
+  // Streaming open by default → aria-expanded must be present and "true".
+  pass(think && think.getAttribute("aria-expanded") === "true",
+    "open thinking disclosure must expose aria-expanded=true, got " + (think && think.getAttribute("aria-expanded")));
 
-  // Clicking expands it → class flips to open AND aria-expanded flips to true.
+  // Clicking collapses it → class drops open AND aria-expanded flips to false.
   if (think) {
     think.dispatchEvent(new window.Event("click"));
-    pass(think.classList.contains("open"), "click should add .open");
-    pass(think.getAttribute("aria-expanded") === "true",
-      "expanded thinking disclosure must expose aria-expanded=true, got " + think.getAttribute("aria-expanded"));
-    // Clicking again collapses it.
-    think.dispatchEvent(new window.Event("click"));
+    pass(!think.classList.contains("open"), "click should remove .open");
     pass(think.getAttribute("aria-expanded") === "false",
-      "re-collapsed thinking disclosure must expose aria-expanded=false");
+      "collapsed thinking disclosure must expose aria-expanded=false, got " + think.getAttribute("aria-expanded"));
+    // Clicking again expands it.
+    think.dispatchEvent(new window.Event("click"));
+    pass(think.getAttribute("aria-expanded") === "true",
+      "re-expanded thinking disclosure must expose aria-expanded=true");
   }
 
   if (failures.length === 0) {
