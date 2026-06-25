@@ -2908,7 +2908,10 @@
       push("status", attrs.status || attrs.event);
       push("reason", attrs.reason);
       if (attrs.exit_code) push("exit", attrs.exit_code);
-      if (attrs.output_bytes && attrs.output_bytes !== "0") push("output", attrs.output_bytes + " B");
+      if (attrs.output_bytes && attrs.output_bytes !== "0") {
+        const outputBytes = Number(attrs.output_bytes);
+        push("output", Number.isFinite(outputBytes) ? formatBytes(outputBytes) : attrs.output_bytes + " B");
+      }
       push("transcript", attrs.transcript_ref);
       push("delivery", attrs.delivery_id);
       push("trigger", attrs.trigger);

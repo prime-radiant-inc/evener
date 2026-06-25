@@ -306,10 +306,13 @@
   }
 
   function notificationTone(attrs, communicate) {
-    const status = String((communicate && communicate.status) || attrs.status || attrs.event || "").toLowerCase();
+    const outerStatus = String(attrs.status || "").toLowerCase();
+    const outerEvent = String(attrs.event || "").toLowerCase();
+    const communicateStatus = String(communicate && communicate.status || "").toLowerCase();
     const exitCode = String(attrs.exit_code || "").trim();
     const concerns = communicate && communicate.concerns && communicate.concerns.length;
-    if (status.includes("fail") || status === "error" || (exitCode && exitCode !== "0")) return "error";
+    if (outerStatus.includes("fail") || outerEvent.includes("fail") || outerStatus === "error" || outerEvent === "error" || (exitCode && exitCode !== "0")) return "error";
+    const status = communicateStatus || outerStatus || outerEvent;
     if (concerns || status === "cancelled" || status === "stopped" || attrs.event === "watch_send" || attrs.event === "watch") return "warning";
     if (status === "completed" || status === "done") return "success";
     return "neutral";
@@ -385,7 +388,7 @@
   //   - "loop"         (kept)
   //   - "read-only"    (kept)
   //   - "transcript"   (kept)
-  //   - "notification" (rendered as temporary minimal notification card)
+  //   - "notification" (rendered as a structured notification card)
   //   - "unknown"      (kept)
   function classifySteering(text) {
     const stripped = text

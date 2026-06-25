@@ -126,6 +126,13 @@ ${delegateEnvelope}
   await scenario("delegate completion notification parses", delegateNotification, (conv) =>
     expectNotificationCard(conv, "success", ["Job completed", "job_delegate", "delegate", "local:delegate", "DONE", "3fbe7256", "node test passed; go test passed."]));
 
+  await scenario("raw notification remains inspectable", delegateNotification, (conv) => {
+    const pre = conv.querySelector(".notification-card-raw pre");
+    if (!pre) return { ok: false, detail: "missing raw notification pre" };
+    if (pre.textContent !== delegateNotification) return { ok: false, detail: "raw notification text changed" };
+    return { ok: true };
+  });
+
   const watchNotification = `<job-notification event="watch" status="watch" watch_id="watch_01" transcript_ref="local:watch">
 Watch watch_01 triggered for output match.
 excerpt:
@@ -220,6 +227,18 @@ not-json error output
   await scenario("nonzero exit code renders minimal error card", errorNotification, (conv) =>
     expectNotificationCard(conv, "error", ["Job completed", "job_error", "shell", "2", "local:error"]));
 
+  await scenario("outer failure overrides successful communicate status", `<job-notification job_id="job_failed_done" event="completed" job_type="delegate" status="failed" reason="" output_bytes="12" transcript_ref="local:failed-done">
+Job job_failed_done failed. Output is available through read_transcript(transcript_ref="local:failed-done") if needed.
+excerpt:
+{"data":{"status":"DONE"}}
+</job-notification>`, (conv) => {
+    const card = conv.querySelector(".notification-card-error");
+    if (!card) return { ok: false, detail: "missing error card" };
+    if (!expectText(card, "Job failed")) return { ok: false, detail: "missing failed title" };
+    if (!expectText(card, "DONE")) return { ok: false, detail: "missing communicate status" };
+    return { ok: true };
+  });
+
   await scenario("shell failure notification shows failure metadata", `<job-notification job_id="job_shell" event="failed" job_type="shell" status="failed" reason="exit_nonzero" output_bytes="128" exit_code="2" transcript_ref="job:job_shell">
 Job job_shell failed. Output is available through read_transcript(transcript_ref="job:job_shell") if needed.
 excerpt:
@@ -227,7 +246,7 @@ command failed on line 1
 </job-notification>`, (conv) => {
     const card = conv.querySelector(".notification-card-error");
     if (!card) return { ok: false, detail: "missing error card" };
-    for (const needle of ["Job failed", "job_shell", "shell", "exit_nonzero", "exit 2", "128 B", "job:job_shell", "command failed on line 1"]) {
+    for (const needle of ["Job failed", "job_shell", "shell", "exit_nonzero", "exit 2", "128 bytes", "job:job_shell", "command failed on line 1"]) {
       if (!expectText(card, needle)) return { ok: false, detail: "missing " + needle };
     }
     return { ok: true };
