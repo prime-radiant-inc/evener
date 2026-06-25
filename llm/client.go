@@ -236,6 +236,8 @@ type ModelLister interface {
 	ListModels(ctx context.Context) ([]ModelInfo, error)
 }
 
+// ResponsesContinuationPlanner is implemented by adapters that can build a
+// ResponsesContinuationPlan for a request.
 type ResponsesContinuationPlanner interface {
 	PlanResponsesContinuation(req Request) (ResponsesContinuationPlan, error)
 }

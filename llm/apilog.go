@@ -34,6 +34,9 @@ func WithAPILogContext(ctx context.Context, sessionID string, round int) context
 	return context.WithValue(ctx, apiLogKey{}, APILogContext{SessionID: sessionID, Round: round})
 }
 
+// WithAPILogAttemptContext returns a context carrying meta, inheriting any unset
+// SessionID, Round, AttemptGroupID, and AttemptRecorder from an existing
+// API-log context.
 func WithAPILogAttemptContext(ctx context.Context, meta APILogContext) context.Context {
 	if existing, ok := getAPILogContext(ctx); ok {
 		if meta.SessionID == "" {
@@ -57,8 +60,14 @@ func getAPILogContext(ctx context.Context) (APILogContext, bool) {
 	return v, ok
 }
 
+// AdapterAttemptRecorder is a callback an adapter invokes per call attempt; it
+// may enrich the record (filling group/history fields) and returns the record
+// actually logged.
 type AdapterAttemptRecorder func(context.Context, AdapterAttemptRecord) AdapterAttemptRecord
 
+// AdapterAttemptRecord holds the request, response or error, history mode,
+// endpoint, raw HTTP bodies, and attempt-group fields for a single adapter call
+// attempt logged to the API log.
 type AdapterAttemptRecord struct {
 	Request           Request
 	Response          *Response
@@ -76,6 +85,9 @@ type AdapterAttemptRecord struct {
 	FinalAttemptCount *int
 }
 
+// RecordAdapterAttempt normalizes a record (defaulting history mode, mode, and
+// raw bodies) and forwards it to the AttemptRecorder in ctx, returning the
+// (possibly enriched) record; it is a no-op passthrough when no recorder is set.
 func RecordAdapterAttempt(ctx context.Context, rec AdapterAttemptRecord) AdapterAttemptRecord {
 	if rec.HistoryMode == "" {
 		rec.HistoryMode = rec.Request.HistoryMode

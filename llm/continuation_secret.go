@@ -13,15 +13,23 @@ import (
 	"strings"
 )
 
+// ErrContinuationSecretUnavailable wraps every failure to load, create, or use
+// the continuation secret.
 var ErrContinuationSecretUnavailable = errors.New("continuation secret unavailable")
 
+// ContinuationScopeHashVersion is the version prefix tagged onto continuation
+// scope and storage-scope HMACs.
 const ContinuationScopeHashVersion = "cont-scope-v1"
 
+// ContinuationHasher produces stable, redacted HMACs of continuation handles
+// and storage-scope values using subkeys derived from a per-state-dir secret.
 type ContinuationHasher struct {
 	redactionKey []byte
 	scopeKey     []byte
 }
 
+// NewContinuationHasher returns a ContinuationHasher whose redaction and scope
+// subkeys are HMAC-derived from secret.
 func NewContinuationHasher(secret []byte) *ContinuationHasher {
 	return &ContinuationHasher{
 		redactionKey: deriveContinuationSubkey(secret, "serf-continuation-redaction-v1"),
@@ -29,6 +37,8 @@ func NewContinuationHasher(secret []byte) *ContinuationHasher {
 	}
 }
 
+// ContinuationHasherForStateDir loads or creates the continuation secret under
+// stateDir and returns a ContinuationHasher keyed from it.
 func ContinuationHasherForStateDir(stateDir string) (*ContinuationHasher, error) {
 	secret, err := LoadOrCreateContinuationSecret(stateDir)
 	if err != nil {
@@ -71,11 +81,13 @@ func (h *ContinuationHasher) HashContinuationStorageScope(scope ContinuationStor
 	}
 	b, err := json.Marshal(input)
 	if err != nil {
-		return "", fmt.Errorf("%w: marshal storage scope: %v", ErrContinuationSecretUnavailable, err)
+		return "", fmt.Errorf("%w: marshal storage scope: %w", ErrContinuationSecretUnavailable, err)
 	}
 	return versionedContinuationHMAC(ContinuationScopeHashVersion, "storage_scope", h.scopeKey, string(b)), nil
 }
 
+// ContinuationSecretPath returns the file path of the continuation scope secret
+// under stateDir, or "" when stateDir is empty.
 func ContinuationSecretPath(stateDir string) string {
 	if stateDir == "" {
 		return ""
@@ -83,13 +95,16 @@ func ContinuationSecretPath(stateDir string) string {
 	return filepath.Join(stateDir, "continuation", "local_scope_secret")
 }
 
+// LoadOrCreateContinuationSecret reads the 32-byte continuation secret under
+// stateDir, creating it (mode 0600) if absent, and returns
+// ErrContinuationSecretUnavailable on failure.
 func LoadOrCreateContinuationSecret(stateDir string) ([]byte, error) {
 	path := ContinuationSecretPath(stateDir)
 	if path == "" {
 		return nil, fmt.Errorf("%w: missing state dir", ErrContinuationSecretUnavailable)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("%w: create secret dir: %v", ErrContinuationSecretUnavailable, err)
+		return nil, fmt.Errorf("%w: create secret dir: %w", ErrContinuationSecretUnavailable, err)
 	}
 
 	secret, err := readContinuationSecret(path)
@@ -102,21 +117,21 @@ func LoadOrCreateContinuationSecret(stateDir string) ([]byte, error) {
 
 	secret = make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
-		return nil, fmt.Errorf("%w: generate secret: %v", ErrContinuationSecretUnavailable, err)
+		return nil, fmt.Errorf("%w: generate secret: %w", ErrContinuationSecretUnavailable, err)
 	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, os.ErrExist) {
 		return readContinuationSecret(path)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: create secret file: %v", ErrContinuationSecretUnavailable, err)
+		return nil, fmt.Errorf("%w: create secret file: %w", ErrContinuationSecretUnavailable, err)
 	}
 	defer f.Close() //nolint:errcheck
 	if _, err := f.Write(secret); err != nil {
-		return nil, fmt.Errorf("%w: write secret file: %v", ErrContinuationSecretUnavailable, err)
+		return nil, fmt.Errorf("%w: write secret file: %w", ErrContinuationSecretUnavailable, err)
 	}
 	if err := f.Sync(); err != nil {
-		return nil, fmt.Errorf("%w: sync secret file: %v", ErrContinuationSecretUnavailable, err)
+		return nil, fmt.Errorf("%w: sync secret file: %w", ErrContinuationSecretUnavailable, err)
 	}
 	return secret, nil
 }
@@ -131,7 +146,7 @@ func readContinuationSecret(path string) ([]byte, error) {
 	}
 	secret, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("%w: read secret file: %v", ErrContinuationSecretUnavailable, err)
+		return nil, fmt.Errorf("%w: read secret file: %w", ErrContinuationSecretUnavailable, err)
 	}
 	if len(secret) != 32 {
 		return nil, fmt.Errorf("%w: secret length %d", ErrContinuationSecretUnavailable, len(secret))
