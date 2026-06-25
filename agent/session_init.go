@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/internal/mcp"
+	"primeradiant.com/serf/agent/internal/sessionlog"
 	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
@@ -779,12 +780,52 @@ func (s *Session) runSessionStartHooks(sessionStartKind plugin.SessionStartKind)
 		return
 	}
 	result := s.hookRunner.RunSessionStartFor(context.Background(), s.hookInput(plugin.HookSessionStart), sessionStartKind)
+	s.logSessionStartHookDispatch(sessionStartKind, len(result.ModelContext)+len(result.UserMessages))
 	for _, m := range result.ModelContext {
 		s.deliverHookContext(m)
 	}
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessage(m)
 	}
+}
+
+// logSessionStartHookDispatch records every SessionStart hook dispatch to the
+// session log so the suspected re-injection — SessionStart hooks firing again
+// when an existing session is resumed/restarted — can be caught from live data.
+// A dispatch that delivers any context to a session that already carries history
+// is the anomaly: on a true resume the kind is "resume", which startup-only
+// matchers (startup|clear|compact) must not match, so delivered should be 0.
+// The entry is tagged outcome=failure in that case so it greps out of the noise.
+func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, delivered int) {
+	if s == nil || s.stateDir == "" {
+		return
+	}
+	k := strings.TrimSpace(string(kind))
+	if k == "" {
+		k = string(plugin.SessionStartKindStartup)
+	}
+	historyTurns := len(s.history)
+	outcome := "success"
+	var failures []string
+	if delivered > 0 && (historyTurns > 0 || s.modelResponses > 0) {
+		outcome = "failure"
+		failures = append(failures, fmt.Sprintf(
+			"SessionStart hooks re-injected: kind=%s delivered=%d on a session with prior history (historyTurns=%d modelResponses=%d) — a resume/restart should pass kind=resume and deliver 0",
+			k, delivered, historyTurns, s.modelResponses))
+	}
+	entry := sessionlog.SessionLogEntry{
+		Kind:     "advisory",
+		Action:   "session_start_hooks",
+		Summary:  fmt.Sprintf("SessionStart hooks dispatched: kind=%s delivered=%d historyTurns=%d modelResponses=%d", k, delivered, historyTurns, s.modelResponses),
+		Outcome:  outcome,
+		Failures: failures,
+	}
+	logPath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".log.jsonl")
+	log, err := sessionlog.NewSessionLog(logPath)
+	if err != nil {
+		return
+	}
+	_ = log.Append(entry)
 }
 
 func (s *Session) runDeferredRestoreSideEffects() error {
