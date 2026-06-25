@@ -71,12 +71,20 @@ func expandPluginRoot(s string, pluginDir string) string {
 
 // Instance represents a plugin that has been loaded from disk.
 type Instance struct {
-	Manifest   Manifest                       // parsed plugin.json
-	Dir        string                         // absolute path = CLAUDE_PLUGIN_ROOT
-	Skills     map[string]skill.SkillMeta     // namespaced as "plugin-name:skill-name"
-	Agents     map[string]Agent               // namespaced as "plugin-name:agent-name"
-	Hooks      map[HookEvent][]RegisteredHook // keyed by event type
-	MCPConfigs []mcpconfig.ServerConfig       // namespaced as "plugin_<name>_<server>"
+	Manifest Manifest // parsed plugin.json
+	Dir      string   // absolute path = CLAUDE_PLUGIN_ROOT
+	// ManifestFlavor is which manifest directory the plugin was loaded from:
+	// "claude" for .claude-plugin, "codex" for .codex-plugin. A plugin that
+	// ships both flavors loads the Claude one (see Load); the flavor is surfaced
+	// at load time so a wrong-flavor load (e.g. codex hooks that re-inject on
+	// resume) is diagnosable.
+	ManifestFlavor string
+	// ManifestPath is the absolute path of the plugin.json that was loaded.
+	ManifestPath string
+	Skills       map[string]skill.SkillMeta     // namespaced as "plugin-name:skill-name"
+	Agents       map[string]Agent               // namespaced as "plugin-name:agent-name"
+	Hooks        map[HookEvent][]RegisteredHook // keyed by event type
+	MCPConfigs   []mcpconfig.ServerConfig       // namespaced as "plugin_<name>_<server>"
 
 	// UnsupportedHooks is the set of Claude-recognized events declared by this
 	// plugin that serf does not currently fire (tier: reserved-placeholder).
@@ -163,9 +171,13 @@ func loadPluginMCPFile(path, pluginDir string) ([]mcpconfig.ServerConfig, error)
 	return mcpconfig.ParseServerMap(cf.MCPServers, path)
 }
 
-// Load reads a plugin manifest from <dir>/.codex-plugin/plugin.json
-// or <dir>/.claude-plugin/plugin.json, parses it, and returns an Instance
-// with Dir set to the resolved absolute path.
+// Load reads a plugin manifest from <dir>/.claude-plugin/plugin.json, falling
+// back to <dir>/.codex-plugin/plugin.json only when no Claude manifest exists,
+// parses it, and returns an Instance with Dir set to the resolved absolute path.
+// Claude is preferred because serf preserves conversation context across resume
+// (it replays the transcript), matching Claude Code's resume semantics; the
+// codex flavor's SessionStart hooks re-inject on resume, which double-injects
+// under serf. The chosen flavor is recorded in Instance.ManifestFlavor.
 func Load(dir string) (Instance, error) {
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -176,12 +188,14 @@ func Load(dir string) (Instance, error) {
 		return Instance{}, fmt.Errorf("resolving plugin dir %q: %w", dir, err)
 	}
 
-	manifestPath := filepath.Join(resolved, ".codex-plugin", "plugin.json")
+	manifestPath := filepath.Join(resolved, ".claude-plugin", "plugin.json")
+	flavor := "claude"
 	if _, err := os.Stat(manifestPath); err != nil {
 		if !os.IsNotExist(err) {
 			return Instance{}, fmt.Errorf("reading plugin manifest %q: %w", manifestPath, err)
 		}
-		manifestPath = filepath.Join(resolved, ".claude-plugin", "plugin.json")
+		manifestPath = filepath.Join(resolved, ".codex-plugin", "plugin.json")
+		flavor = "codex"
 	}
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -193,7 +207,7 @@ func Load(dir string) (Instance, error) {
 		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 
-	lp := Instance{Manifest: manifest, Dir: resolved}
+	lp := Instance{Manifest: manifest, Dir: resolved, ManifestFlavor: flavor, ManifestPath: manifestPath}
 	lp.Skills = discoverPluginSkills(resolved, manifest.Name)
 
 	agents, err := discoverPluginAgents(resolved, manifest.Agents, manifest.Name)

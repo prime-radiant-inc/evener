@@ -735,12 +735,15 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 		s.pluginMCPConfigs = append(s.pluginMCPConfigs, p.MCPConfigs...)
 
 		s.pendingPluginEvents = append(s.pendingPluginEvents, events.PluginLoadedData{
-			Name:       p.Manifest.Name,
-			Dir:        p.Dir,
-			SkillCount: len(p.Skills),
-			AgentCount: len(p.Agents),
-			MCPCount:   len(p.MCPConfigs),
+			Name:           p.Manifest.Name,
+			Dir:            p.Dir,
+			SkillCount:     len(p.Skills),
+			AgentCount:     len(p.Agents),
+			MCPCount:       len(p.MCPConfigs),
+			ManifestFlavor: p.ManifestFlavor,
+			ManifestPath:   p.ManifestPath,
 		})
+		s.logPluginLoadDiag(p)
 	}
 
 	// Validate every registered matcher ONCE at load time. An invalid-regex
@@ -787,6 +790,28 @@ func (s *Session) runSessionStartHooks(sessionStartKind plugin.SessionStartKind)
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessage(m)
 	}
+}
+
+// logPluginLoadDiag records, per loaded plugin, which manifest flavor was
+// selected (.claude-plugin vs .codex-plugin) and the exact manifest path. A
+// plugin loading from the codex flavor on serf is the signal behind the
+// resume-reinjection bug, so it is surfaced at load time, not inferred later.
+func (s *Session) logPluginLoadDiag(p plugin.Instance) {
+	if s == nil || s.stateDir == "" {
+		return
+	}
+	entry := sessionlog.SessionLogEntry{
+		Kind:    "advisory",
+		Action:  "plugin_loaded",
+		Summary: fmt.Sprintf("plugin loaded: name=%s flavor=%s manifest=%s", p.Manifest.Name, p.ManifestFlavor, p.ManifestPath),
+		Outcome: "success",
+	}
+	logPath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".log.jsonl")
+	log, err := sessionlog.NewSessionLog(logPath)
+	if err != nil {
+		return
+	}
+	_ = log.Append(entry)
 }
 
 // logSessionStartHookDispatch records every SessionStart hook dispatch to the

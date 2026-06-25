@@ -231,6 +231,11 @@ type PluginLoadedData struct {
 	SkillCount int    `json:"skill_count"`
 	AgentCount int    `json:"agent_count"`
 	MCPCount   int    `json:"mcp_count"`
+	// ManifestFlavor is which manifest directory the plugin loaded from:
+	// "claude" (.claude-plugin) or "codex" (.codex-plugin).
+	ManifestFlavor string `json:"manifest_flavor,omitempty"`
+	// ManifestPath is the absolute path of the loaded plugin.json.
+	ManifestPath string `json:"manifest_path,omitempty"`
 }
 
 // HookStartData is the payload for an EventHookStart event.

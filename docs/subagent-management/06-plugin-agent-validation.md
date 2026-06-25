@@ -30,7 +30,7 @@ Make plugin and plugin-agent loading fail predictably, with diagnostics that tel
 
 - `agent/plugin/plugin.go` defines `Manifest` with fixed string fields and raw JSON component fields for `author`, `commands`, `agents`, `hooks`, and `mcpServers` (`agent/plugin/plugin.go:19-35`).
 - `agent/plugin/plugin.go` already has the canonical kebab-case validator for plugin names (`agent/plugin/plugin.go:37-50`) and applies it in `ParseManifest` (`agent/plugin/plugin.go:53-64`).
-- `agent/plugin/plugin.go` loads `.codex-plugin/plugin.json` first, then falls back to `.claude-plugin/plugin.json` (`agent/plugin/plugin.go:158-183`).
+- `agent/plugin/plugin.go` loads `.claude-plugin/plugin.json` first, then falls back to `.codex-plugin/plugin.json` (`agent/plugin/plugin.go` `Load`).
 - `agent/plugin/plugin.go` loads skills, agents, hooks, and MCP configs in `Load` (`agent/plugin/plugin.go:188-207`) and detects duplicate plugin names in `LoadAll` (`agent/plugin/plugin.go:212-230`).
 - `agent/plugin/plugin.go` resolves component directories by adding the default directory plus string or string-list overrides (`agent/plugin/plugin.go:233-260`).
 - `agent/plugin/agents.go` defines plugin agent fields: `Name`, `Description`, `Model`, `Color`, `AllTools`, `Tools`, `Skills`, `Tasks`, `SystemPrompt`, and `PluginName` (`agent/plugin/agents.go:16-28`).
@@ -231,7 +231,7 @@ Group multiple issues for one plugin when practical so authors can fix them in o
 - Path overrides for components cannot escape the plugin root.
 - Invalid agent `model`, `tools`, `skills`, and `tasks` shapes fail deterministically.
 - Valid existing plugin fixtures continue loading.
-- `.codex-plugin/plugin.json` continues to take precedence over `.claude-plugin/plugin.json` if both exist.
+- `.claude-plugin/plugin.json` takes precedence over `.codex-plugin/plugin.json` if both exist.
 - Missing component directories remain tolerated.
 - `tools: all` never grants tools outside the parent/session effective catalog.
 - Explicit tool restrictions preserve the effective result tool so children can report completion.
@@ -265,7 +265,7 @@ Group multiple issues for one plugin when practical so authors can fix them in o
   - marker-only `insert: parent_tasks` with no supplied parent tasks is skipped rather than becoming an empty concrete task, while marker templates with non-empty fallback `title`/`prompt` become fallback tasks.
 - Duplicate agent test with two `.md` files in one plugin and assertion that both paths are reported.
 - Compatibility fixture test showing valid existing bundled/plugin fixtures still load.
-- Precedence test showing `.codex-plugin` is chosen before `.claude-plugin` when both manifests exist.
+- Precedence test showing `.claude-plugin` is chosen before `.codex-plugin` when both manifests exist.
 - Phase 2 policy tests:
   - `tools: all` is intersected with parent/session effective tools;
   - child cannot obtain a tool unavailable to the parent;
@@ -278,7 +278,7 @@ Group multiple issues for one plugin when practical so authors can fix them in o
 
 ## Compatibility notes
 
-- The manifest path precedence currently implemented is `.codex-plugin/plugin.json` before `.claude-plugin/plugin.json`; keep this behavior unless a separate compatibility decision changes it.
+- The manifest path precedence is `.claude-plugin/plugin.json` before `.codex-plugin/plugin.json`: serf preserves context across resume (it replays the transcript), so it must use the Claude flavor, whose SessionStart hooks do not re-inject on resume. (Earlier serf preferred `.codex-plugin`, which re-injected the using-superpowers skill on every resume; that was reverted.)
 - `tools` continues to support Claude tool-name mapping through `toolname.ClaudeToSerf` during agent parsing.
 - Plugin package agent maps remain namespaced as `plugin-name:agent-name`; session exposure preserves the current `coordinator-workflow` bare-name compatibility exception.
 - MCP server names remain prefixed as `plugin_<pluginName>_...`.

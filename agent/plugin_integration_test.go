@@ -78,6 +78,67 @@ func TestInitPlugins_BuildsHookRunner(t *testing.T) {
 	}
 }
 
+// TestResume_DualFlavorPlugin_DoesNotReinject is the regression guard for the
+// using-superpowers re-read on resume (session 01KVYB5S...). The superpowers
+// plugin ships BOTH a .claude-plugin manifest (hooks.json, SessionStart matcher
+// startup|clear|compact — resume excluded) and a .codex-plugin manifest
+// (hooks-codex.json, matcher startup|resume|clear — resume INCLUDED). serf must
+// load the Claude flavor, so resuming an existing session does NOT re-fire the
+// SessionStart hook. With the old .codex-plugin-first precedence this delivered
+// the bootstrap again on every resume.
+func TestResume_DualFlavorPlugin_DoesNotReinject(t *testing.T) {
+	t.Parallel()
+	dir := makePluginDir(t, "dual-flavor") // writes .claude-plugin/plugin.json
+	// Claude default hooks: resume excluded.
+	hooksDir := filepath.Join(dir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "hooks.json"),
+		[]byte(`{"hooks":{"SessionStart":[{"matcher":"startup|clear|compact","hooks":[{"type":"command","command":"echo claude-bootstrap"}]}]}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Codex flavor: resume included (the trap). serf must not pick this.
+	codexDir := filepath.Join(dir, ".codex-plugin")
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexDir, "plugin.json"),
+		[]byte(`{"name":"dual-flavor-codex","hooks":"./hooks/hooks-codex.json"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "hooks-codex.json"),
+		[]byte(`{"hooks":{"SessionStart":[{"matcher":"startup|resume|clear","hooks":[{"type":"command","command":"echo codex-bootstrap"}]}]}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := llm.NewClient()
+	workDir := t.TempDir()
+	stateDir := t.TempDir()
+	cfg := SessionConfig{PluginDirs: []string{dir}, StateDir: stateDir}
+
+	fresh, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	// Fresh startup fires the Claude bootstrap exactly once.
+	if got := fresh.SteeringQueueSnapshot(); len(got) != 1 || got[0].Text != "<SYSTEM-REMINDER>claude-bootstrap</SYSTEM-REMINDER>" {
+		t.Fatalf("fresh bootstrap steering = %+v, want claude-bootstrap (Claude flavor must load)", got)
+	}
+	fresh.appendTurn(schema.TurnUserInput, llm.User("hello"))
+	fresh.Close()
+
+	meta := schema.SessionMeta{ID: fresh.id, ProfileID: "openai", Model: "gpt-5.2", Config: cfg.toSnapshot(), TurnCount: 1}
+	restored, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), meta, stateDir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.SteeringQueueSnapshot(); len(got) != 0 {
+		t.Fatalf("resume re-fired a SessionStart hook (re-injection): %+v", got)
+	}
+}
+
 func TestRestoreSessionFromMeta_DoesNotMatchStartupSessionStartHooks(t *testing.T) {
 	t.Parallel()
 	dir := makePluginDir(t, "session-start-plugin")

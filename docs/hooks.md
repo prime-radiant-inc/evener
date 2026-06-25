@@ -32,7 +32,7 @@ serf --plugin-dir ./my-plugin "do the thing"
 For each plugin directory, serf reads hooks from the **first** of these it finds:
 
 1. **A manifest-referenced path.** If the plugin manifest
-   (`.codex-plugin/plugin.json` or `.claude-plugin/plugin.json`) has a `hooks`
+   (`.claude-plugin/plugin.json`, or `.codex-plugin/plugin.json` as a fallback) has a `hooks`
    field that is a **string**, it is a path (relative to the plugin dir,
    `${CLAUDE_PLUGIN_ROOT}` expanded) to a hooks file.
 2. **Inline manifest hooks.** If the manifest `hooks` field is a JSON **object**,

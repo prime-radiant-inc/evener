@@ -232,7 +232,7 @@ This type is illustrative. Runtime errors and validation diagnostics do not need
 ### Rules
 
 1. Do not claim full Claude hook or plugin parity until event types, handler types, matcher semantics, output parsing, environment variables, permission filters, async behavior, UI/status fields, and config-change behavior are implemented and tested.
-2. The current `.codex-plugin` and `.claude-plugin` loading behavior in `agent/plugin/plugin.go` must be documented and tested: when both `<dir>/.codex-plugin/plugin.json` and `<dir>/.claude-plugin/plugin.json` exist, Serf loads `.codex-plugin` and ignores `.claude-plugin` for that plugin root.
+2. The `.claude-plugin` / `.codex-plugin` loading behavior in `agent/plugin/plugin.go` must be documented and tested: when both `<dir>/.claude-plugin/plugin.json` and `<dir>/.codex-plugin/plugin.json` exist, Serf loads `.claude-plugin` and ignores `.codex-plugin` for that plugin root (Claude is preferred because serf's resume preserves context, so the codex SessionStart-on-resume re-injection is never wanted). The chosen flavor is recorded in `Instance.ManifestFlavor` and emitted in `PluginLoadedData`.
 3. Namespacing rules must be stable and unambiguous: plugin agents use `plugin:agent`; plugin skills and MCP names must have documented equivalent prefixes or mappings. If plugin-provided tools are added later, define their namespace as a reserved or experimental surface before documenting them as supported.
 4. Unsupported high-risk fields should fail clearly or be explicitly ignored according to the relevant compatibility policy. They must not be documented as working.
 5. Compatibility shims must not bypass Serf-native effective policy, diagnostics, event ordering, cancellation, or helper-isolation contracts.

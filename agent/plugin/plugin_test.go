@@ -234,8 +234,13 @@ func TestLoadPlugin_Valid(t *testing.T) {
 	}
 }
 
-func TestLoadPlugin_PrefersCodexManifest(t *testing.T) {
-	dir := makePluginDir(t, "claude-plugin")
+// A plugin that ships BOTH flavors must load the Claude one. Serf's resume
+// replays the full transcript (context is preserved), so it must not adopt the
+// codex SessionStart hooks, whose matcher includes "resume" to re-inject context
+// that serf already has — that caused the using-superpowers skill to be re-read
+// on every resume.
+func TestLoadPlugin_PrefersClaudeManifest(t *testing.T) {
+	dir := makePluginDir(t, "claude-plugin") // writes .claude-plugin/plugin.json (name=claude-plugin)
 	metaDir := filepath.Join(dir, ".codex-plugin")
 	if err := os.MkdirAll(metaDir, 0755); err != nil {
 		t.Fatalf("mkdir .codex-plugin: %v", err)
@@ -246,8 +251,13 @@ func TestLoadPlugin_PrefersCodexManifest(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "hooks"), 0755); err != nil {
 		t.Fatalf("mkdir hooks: %v", err)
 	}
-	hooks := `{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"\"${PLUGIN_ROOT}/hooks/session-start-codex\""}]}]}}`
-	if err := os.WriteFile(filepath.Join(dir, "hooks", "hooks-codex.json"), []byte(hooks), 0644); err != nil {
+	// Claude default hooks (resume EXCLUDED) and codex hooks (resume INCLUDED).
+	if err := os.WriteFile(filepath.Join(dir, "hooks", "hooks.json"),
+		[]byte(`{"hooks":{"SessionStart":[{"matcher":"startup|clear|compact","hooks":[{"type":"command","command":"echo claude"}]}]}}`), 0644); err != nil {
+		t.Fatalf("write claude hooks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hooks", "hooks-codex.json"),
+		[]byte(`{"hooks":{"SessionStart":[{"matcher":"startup|resume|clear","hooks":[{"type":"command","command":"echo codex"}]}]}}`), 0644); err != nil {
 		t.Fatalf("write codex hooks: %v", err)
 	}
 
@@ -255,16 +265,44 @@ func TestLoadPlugin_PrefersCodexManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if lp.Manifest.Name != "codex-plugin" {
-		t.Fatalf("manifest name = %q, want codex-plugin", lp.Manifest.Name)
+	if lp.Manifest.Name != "claude-plugin" {
+		t.Fatalf("manifest name = %q, want claude-plugin (Claude flavor must win when both exist)", lp.Manifest.Name)
+	}
+	if lp.ManifestFlavor != "claude" {
+		t.Fatalf("ManifestFlavor = %q, want claude", lp.ManifestFlavor)
 	}
 	got := lp.Hooks[HookSessionStart]
 	if len(got) != 1 {
 		t.Fatalf("SessionStart hook count = %d, want 1", len(got))
 	}
-	wantCommand := filepath.Join(dir, "hooks", "session-start-codex")
-	if got[0].Command != `"`+wantCommand+`"` {
-		t.Fatalf("hook command = %q, want quoted %q", got[0].Command, wantCommand)
+	if got[0].Matcher != "startup|clear|compact" {
+		t.Fatalf("SessionStart matcher = %q, want startup|clear|compact (Claude hooks; resume must be excluded)", got[0].Matcher)
+	}
+}
+
+// A codex-only plugin (no .claude-plugin) must still load from .codex-plugin.
+func TestLoadPlugin_FallsBackToCodexManifest(t *testing.T) {
+	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	metaDir := filepath.Join(dir, ".codex-plugin")
+	if err := os.MkdirAll(metaDir, 0755); err != nil {
+		t.Fatalf("mkdir .codex-plugin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(metaDir, "plugin.json"), []byte(`{"name":"codex-only"}`), 0644); err != nil {
+		t.Fatalf("write codex manifest: %v", err)
+	}
+	lp, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if lp.Manifest.Name != "codex-only" {
+		t.Fatalf("manifest name = %q, want codex-only", lp.Manifest.Name)
+	}
+	if lp.ManifestFlavor != "codex" {
+		t.Fatalf("ManifestFlavor = %q, want codex", lp.ManifestFlavor)
 	}
 }
 
