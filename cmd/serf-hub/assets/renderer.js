@@ -2949,6 +2949,30 @@
         return;
       }
 
+      if (summary.kind === "notification") {
+        const n = summary.notification || {};
+        const card = document.createElement("div");
+        card.className = "notification-card notification-card-" + (n.tone || "neutral");
+        const title = document.createElement("div");
+        title.className = "notification-title";
+        title.textContent = n.title || "Notification";
+        card.appendChild(title);
+        const textParts = [n.prose || ""];
+        if (n.attrs) textParts.push(Object.values(n.attrs).join(" "));
+        if (n.communicate) {
+          textParts.push(n.communicate.status || "");
+          textParts.push((n.communicate.commitHashes || []).join(" "));
+          textParts.push(n.communicate.testSummary || "");
+          textParts.push((n.communicate.concerns || []).join(" "));
+        }
+        const body = document.createElement("div");
+        body.className = "notification-body";
+        body.textContent = textParts.filter(Boolean).join(" ");
+        card.appendChild(body);
+        this.conversation.appendChild(card);
+        return;
+      }
+
       // Default: keep the existing collapsible divider for genuine system
       // notes (loop detection, read-only nudge, all-done, transcript
       // pointer, unknown).

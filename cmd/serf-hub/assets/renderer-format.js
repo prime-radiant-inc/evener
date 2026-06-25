@@ -261,6 +261,119 @@
     return "";
   }
 
+  function parseQuotedAttrs(src) {
+    const attrs = {};
+    String(src || "").replace(/([A-Za-z0-9_:-]+)="([^"]*)"/g, (_, k, v) => {
+      attrs[k] = v;
+      return "";
+    });
+    return attrs;
+  }
+
+  function splitNotificationExcerpt(body) {
+    const text = String(body || "").trim();
+    const marker = "\nexcerpt:\n";
+    const idx = text.indexOf(marker);
+    if (idx === -1) return { prose: text, excerpt: "" };
+    return {
+      prose: text.slice(0, idx).trim(),
+      excerpt: text.slice(idx + marker.length).trim(),
+    };
+  }
+
+  function compactStringArray(value) {
+    if (!Array.isArray(value)) return [];
+    return value.map(v => String(v || "").trim()).filter(Boolean);
+  }
+
+  function parseCommunicateEnvelope(text) {
+    const raw = String(text || "").trim();
+    if (!raw || raw[0] !== "{") return null;
+    try {
+      const parsed = JSON.parse(raw);
+      const data = parsed && typeof parsed.data === "object" && parsed.data ? parsed.data : {};
+      return {
+        message: String(parsed && parsed.message || "").trim(),
+        status: String(data.status || "").trim(),
+        commitHashes: compactStringArray(data.commit_hashes),
+        testSummary: String(data.test_summary || "").trim(),
+        concerns: compactStringArray(data.concerns),
+        artifacts: compactStringArray(parsed && parsed.artifacts),
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function notificationTone(attrs, communicate) {
+    const status = String((communicate && communicate.status) || attrs.status || attrs.event || "").toLowerCase();
+    const exitCode = String(attrs.exit_code || "").trim();
+    const concerns = communicate && communicate.concerns && communicate.concerns.length;
+    if (status.includes("fail") || status === "error" || (exitCode && exitCode !== "0")) return "error";
+    if (concerns || status === "cancelled" || status === "stopped" || attrs.event === "watch_send" || attrs.event === "watch") return "warning";
+    if (status === "completed" || status === "done") return "success";
+    return "neutral";
+  }
+
+  function titleForJobNotification(attrs, type) {
+    if (type === "watch-send") return "Watch delivered";
+    if (type === "watch") return "Watch triggered";
+    const status = String(attrs.status || attrs.event || "notification").trim();
+    if (!status) return "Job notification";
+    return "Job " + status;
+  }
+
+  function parseJobNotification(stripped) {
+    const m = String(stripped || "").match(/^<job-notification\s+([^>]*)>([\s\S]*)<\/job-notification>$/);
+    if (!m) return null;
+    const attrs = parseQuotedAttrs(m[1]);
+    const bodyText = (m[2] || "").trim();
+    const parts = splitNotificationExcerpt(bodyText);
+    const communicate = parseCommunicateEnvelope(parts.excerpt);
+    let type = "job";
+    if ((attrs.event === "watch" || attrs.status === "watch") && !attrs.job_id) type = "watch";
+    if (attrs.event === "watch_send") type = "watch-send";
+    return {
+      type,
+      title: titleForJobNotification(attrs, type),
+      tone: notificationTone(attrs, communicate),
+      attrs,
+      bodyText,
+      prose: parts.prose,
+      excerpt: parts.excerpt,
+      rawText: stripped,
+      communicate,
+    };
+  }
+
+  function parseObserverCallback(stripped) {
+    const text = String(stripped || "").trim();
+    if (!/^Observer callback:\n/.test(text)) return null;
+    const withoutHeader = text.replace(/^Observer callback:\n/, "");
+    const outputMarker = "\noutput: ";
+    const idx = withoutHeader.indexOf(outputMarker);
+    let message = withoutHeader;
+    let output = "";
+    if (idx !== -1) {
+      message = withoutHeader.slice(0, idx);
+      output = withoutHeader.slice(idx + outputMarker.length);
+    }
+    message = message.replace(/^message: /, "").trim();
+    output = output.trim();
+    const communicate = parseCommunicateEnvelope(output);
+    return {
+      type: "observer-callback",
+      title: "Observer callback",
+      tone: notificationTone({ event: "observer_callback" }, communicate) === "success" ? "warning" : notificationTone({ event: "observer_callback" }, communicate),
+      attrs: {},
+      bodyText: withoutHeader.trim(),
+      prose: message,
+      excerpt: output,
+      rawText: stripped,
+      communicate,
+    };
+  }
+
   // classifySteering inspects steering text and returns:
   //   { kind, label, detail, cleanText, taskID?, taskTitle?, tasks? }
   // Recognized kinds:
@@ -333,6 +446,14 @@
     }
     if (/pre-compaction transcript/.test(stripped)) {
       return { kind: "transcript", label: "transcript pointer", detail: "", cleanText: stripped };
+    }
+    const jobNotification = parseJobNotification(stripped);
+    if (jobNotification) {
+      return { kind: "notification", label: jobNotification.title, detail: "", cleanText: stripped, notification: jobNotification };
+    }
+    const observerNotification = parseObserverCallback(stripped);
+    if (observerNotification) {
+      return { kind: "notification", label: observerNotification.title, detail: "", cleanText: stripped, notification: observerNotification };
     }
     return { kind: "unknown", label: "steering injected", detail: "", cleanText: stripped };
   }
