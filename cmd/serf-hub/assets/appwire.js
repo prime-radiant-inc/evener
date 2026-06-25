@@ -5,6 +5,7 @@
     initialize: "initialize",
     threadList: "thread/list",
     threadRead: "thread/read",
+    threadTurnsList: "thread/turns/list",
     threadStart: "thread/start",
     threadFork: "thread/fork",
     threadClear: "thread/clear",
@@ -369,8 +370,21 @@
     });
   }
 
-  function readThread(sessionId, includeTurns, subscribe, replaceSubscription) {
-    return request(METHOD.threadRead, { ref: refForSession(sessionId), includeTurns: !!includeTurns, itemsView: "full", subscribe: !!subscribe, replaceSubscription: !!replaceSubscription });
+  function readThread(sessionId, includeTurns, subscribe, replaceSubscription, turnLimit) {
+    const params = { ref: refForSession(sessionId), includeTurns: !!includeTurns, itemsView: "full", subscribe: !!subscribe, replaceSubscription: !!replaceSubscription };
+    if (turnLimit > 0) params.turnLimit = turnLimit;
+    return request(METHOD.threadRead, params);
+  }
+
+  // listTurns fetches a page of older turns for lazy transcript loading. cursor
+  // comes from a prior thread/read (olderCursor) or listTurns (nextCursor); an
+  // empty nextCursor in the reply means the oldest turn has been reached.
+  function listTurns(sessionId, cursor, limit) {
+    return request(METHOD.threadTurnsList, {
+      ref: refForSession(sessionId),
+      cursor: cursor || "",
+      limit: limit > 0 ? limit : 0,
+    }).then((resp) => ({ turns: resp.data || [], nextCursor: resp.nextCursor || "" }));
   }
 
   function tasks(sessionId) {
@@ -725,8 +739,18 @@
       depth: typeof queue.depth === "number" ? queue.depth : (Array.isArray(queue.preview) ? queue.preview.length : 0),
       preview: Array.isArray(queue.preview) ? queue.preview.slice() : [],
     }]);
+    events.push.apply(events, eventsFromTurns(thread.turns));
+    return events;
+  }
+
+  // eventsFromTurns converts an ordered turn array into the renderer's flat
+  // event stream (the per-turn/per-item body of eventsFromThread, without the
+  // SESSION_START/QUEUE seed). Reused to render older pages fetched via
+  // thread/turns/list when lazily loading earlier history.
+  function eventsFromTurns(turns) {
+    const events = [];
     const activeToolCalls = new Set();
-    for (const turn of thread.turns || []) {
+    for (const turn of turns || []) {
       for (const item of turn.items || []) {
         if (item && internalItemType(item.type) === "commandExecution") {
           const callID = firstNonEmpty(item.callId, item.id);
@@ -918,6 +942,7 @@
     upgrade,
     startThread,
     readThread,
+    listTurns,
     tasks,
     startTurn,
     steer,
@@ -928,6 +953,7 @@
     setReasoningEffort,
     forkThread,
     eventsFromThread,
+    eventsFromTurns,
     activeTurnIDFromThread,
     eventsFromNotification,
     liveItemStateSize() { return liveItemState.size; },

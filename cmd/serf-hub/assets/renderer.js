@@ -62,6 +62,11 @@
   const LIVENESS_STALL_MS = 180000;
   const LIVENESS_TICK_MS = 3000;
 
+  // Lazy transcript loading: how many of the latest turns the cold load
+  // hydrates, and how many older turns each scroll-up page fetches.
+  const INITIAL_TURN_WINDOW = 40;
+  const OLDER_TURN_PAGE = 30;
+
   const SerfRenderer = {
     // isInPane returns true when the renderer is running inside a framed pane
     // (a side-pane iframe). Uses the standard same-origin cross-frame check;
@@ -156,6 +161,12 @@
       // truth instead of mirroring local POSTs. depth is the authoritative
       // count, preview is the head-first list.
       this.queueState = { depth: 0, preview: [] };
+      // Lazy transcript loading: the cold load hydrates only the latest window
+      // of turns (INITIAL_TURN_WINDOW); olderTurnsCursor is the wire cursor for
+      // the next page back, "" once the oldest turn is loaded. loadingOlderTurns
+      // guards against overlapping scroll-triggered fetches.
+      this.olderTurnsCursor = "";
+      this.loadingOlderTurns = false;
       this.lastFrameAt = Date.now();     // wall-clock of the last frame, for honest liveness
       this.livenessLevel = "none";       // none | quiet | concern (mockup #13)
       // New-content pill: counts transcript entries that rendered while the
@@ -676,11 +687,15 @@
           this.scheduleAppwireReconnect();
         });
       }
-      window.SerfAppwire.readThread(sessionId, true, true, true)
+      window.SerfAppwire.readThread(sessionId, true, true, true, INITIAL_TURN_WINDOW)
         .then((resp) => {
           if (this.sessionId !== sessionId || this.conversation !== conversation) return;
           const thread = resp.thread || {};
           if (this.appwireHydrated) this.resetTranscriptReplay();
+          // Seed the lazy-load cursor: non-empty means older turns exist beyond
+          // the hydrated window and can be paged in on scroll-up.
+          this.olderTurnsCursor = resp.olderCursor || "";
+          this.loadingOlderTurns = false;
           this.appwireThreadId = thread.id || this.appwireThreadId;
           this.appwireRef = (thread.serf && thread.serf.ref) || (this.appwireThreadId ? window.SerfAppwire.refForSession(this.appwireThreadId) : null);
           if (typeof window.SerfAppwire.activeTurnIDFromThread === "function") {
@@ -3301,6 +3316,7 @@
       if (!el.__serfScrollPillBound) {
         el.__serfScrollPillBound = true;
         el.addEventListener("scroll", () => {
+          if (this.isNearTop()) this.maybeLoadOlderTurns();
           if (this.isNearBottom()) this.clearNewContentPill();
           // Re-evaluate the urgent anchor as the reader scrolls, so the arrow
           // flips (↓→↑) when they pass an error and the label tracks what's
@@ -3322,6 +3338,85 @@
       const el = this.conversation;
       if (!el || !el.parentNode) return null;
       return el.parentNode.querySelector("[data-new-content-pill]");
+    },
+
+    isNearTop() {
+      const el = this.conversation;
+      if (!el) return false;
+      return el.scrollTop < 200;
+    },
+
+    // maybeLoadOlderTurns pages in the next batch of earlier turns when the
+    // reader scrolls near the top and more history remains. Guarded so
+    // overlapping scroll events don't double-fetch.
+    maybeLoadOlderTurns() {
+      if (this.loadingOlderTurns || !this.olderTurnsCursor) return;
+      if (!this.sessionId || !window.SerfAppwire || typeof window.SerfAppwire.listTurns !== "function") return;
+      this.loadingOlderTurns = true;
+      const sessionId = this.sessionId;
+      const conversation = this.conversation;
+      const cursor = this.olderTurnsCursor;
+      window.SerfAppwire.listTurns(sessionId, cursor, OLDER_TURN_PAGE)
+        .then((page) => {
+          if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+          if (page && page.turns && page.turns.length) this.prependOlderTurns(page.turns);
+          this.olderTurnsCursor = (page && page.nextCursor) || "";
+        })
+        .catch(() => {})
+        .then(() => { if (this.sessionId === sessionId) this.loadingOlderTurns = false; });
+    },
+
+    // prependOlderTurns renders a page of already-completed older turns above
+    // the current transcript. The turns render into a detached container under
+    // a fresh, isolated copy of the replay state, so they can't disturb the
+    // live (in-progress) content at the bottom; the nodes are then prepended
+    // with the scroll position preserved so the viewport stays on the turn the
+    // reader was looking at.
+    prependOlderTurns(turns) {
+      if (!this.conversation || !window.SerfAppwire || typeof window.SerfAppwire.eventsFromTurns !== "function") return;
+      const sc = this.conversation;
+      const saved = {
+        activeMessages: this.activeMessages,
+        activeTools: this.activeTools,
+        activeJobs: this.activeJobs,
+        suppressedToolCalls: this.suppressedToolCalls,
+        pendingTaskCalls: this.pendingTaskCalls,
+        currentMessageId: this.currentMessageId,
+        userTurnIndex: this.userTurnIndex,
+        entryIndex: this.entryIndex,
+        cheapToolCluster: this.cheapToolCluster,
+        subagentModule: this.subagentModule,
+        lastUserText: this.lastUserText,
+        lastSubmittedTurn: this.lastSubmittedTurn,
+        lastCurrentTaskId: this.lastCurrentTaskId,
+        newContentCount: this.newContentCount,
+        conversation: this.conversation,
+      };
+      const staging = document.createElement("div");
+      this.conversation = staging;
+      this.activeMessages = new Map();
+      this.activeTools = new Map();
+      this.activeJobs = new Map();
+      this.suppressedToolCalls = new Set();
+      this.pendingTaskCalls = new Map();
+      this.currentMessageId = null;
+      this.userTurnIndex = 0;
+      this.entryIndex = 0;
+      this.cheapToolCluster = null;
+      this.subagentModule = null;
+      try {
+        for (const [kind, data] of window.SerfAppwire.eventsFromTurns(turns)) {
+          this.handleData(kind, data);
+        }
+      } finally {
+        for (const key of Object.keys(saved)) this[key] = saved[key];
+      }
+      const beforeHeight = sc.scrollHeight;
+      const beforeTop = sc.scrollTop;
+      const frag = document.createDocumentFragment();
+      while (staging.firstChild) frag.appendChild(staging.firstChild);
+      sc.insertBefore(frag, sc.firstChild);
+      sc.scrollTop = beforeTop + (sc.scrollHeight - beforeHeight);
     },
 
     // noteNewContent records that `added` new transcript entries rendered while
