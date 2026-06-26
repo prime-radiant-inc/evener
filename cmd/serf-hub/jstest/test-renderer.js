@@ -85,21 +85,19 @@ pass(userPill && !userPill.textContent.includes("You"), "the 'You' tag must not 
 const steerings = conv.querySelectorAll(".steering");
 pass(steerings.length === 0, "expected 0 steering dividers, got " + steerings.length);
 
-// 3. Two system-lines: the "marked done" prose for #1 and the "now on" line
-//    for #2 (auto-advanced by the daemon's steering — #2 is never explicitly
-//    started by the agent's task_list call, so the steering carries that
-//    transition). The leading current-task steering is suppressed because
-//    the previous element is a user-message.
+// 3. The task_list update renders ONE task-update card — no separate
+//    system-line prose, and no "now on" steer line (the card conveys both the
+//    change and the current task). Both current-task steerings are suppressed.
 const sysLines = conv.querySelectorAll(".system-line");
-pass(sysLines.length === 2, "expected 2 system-lines, got " + sysLines.length + ": " + Array.from(sysLines).map(e => e.textContent).join(" | "));
-if (sysLines.length === 2) {
-  const detail1 = sysLines[0].querySelector(".task-system-details");
-  const t1 = sysLines[0].childNodes[1] && sysLines[0].childNodes[1].textContent;
-  pass(t1.includes("marked") && t1.includes("Understand task") && t1.includes("done"), "first system-line wrong: " + sysLines[0].textContent);
-  pass(!t1.includes("#1"), "first system-line prose should use description not #id: " + sysLines[0].textContent);
-  pass(detail1 && detail1.textContent.includes("Understand the task."), "first system-line should expose task prompt details");
-  const t2 = sysLines[1].textContent;
-  pass(t2.includes("now on") && t2.includes("Do the work"), "second system-line wrong: " + t2);
+pass(sysLines.length === 0, "expected 0 system-lines (the card replaces them), got " + sysLines.length + ": " + Array.from(sysLines).map(e => e.textContent).join(" | "));
+const taskCards = conv.querySelectorAll(".task-card");
+pass(taskCards.length === 1, "expected 1 task-update card, got " + taskCards.length);
+if (taskCards.length === 1) {
+  const card = taskCards[0];
+  pass(/Understand task/.test(card.textContent), "card should name the changed task by description, not #id: " + card.textContent);
+  pass(!/#1\b/.test(card.querySelector(".plan-step").textContent), "row label should use description not #id");
+  pass(!!card.querySelector(".task-card-row.touched.done"), "task #1 should render as a flagged (touched) done row");
+  pass(!/now on/.test(conv.textContent), "no 'now on' line should be emitted — the card conveys the current task");
 }
 
 // 4. Zero task-list tool-call cards.

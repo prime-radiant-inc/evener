@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // TaskTemplate defines a default task in an agent's workflow. When a session
@@ -63,6 +64,15 @@ type Task struct {
 	// Insert is a template-expansion marker (e.g. "parent_tasks") carried over
 	// from the task template it was created from; empty for ordinary tasks.
 	Insert string `json:"insert,omitempty"`
+	// CreatedAt/UpdatedAt/CompletedAt are minted automatically by the store —
+	// never settable through the agent-facing tool (TaskInput/TaskUpdate carry
+	// no timestamp fields). CreatedAt is stamped once when the task is added;
+	// UpdatedAt advances on every mutation; CompletedAt is stamped when the task
+	// transitions to done and cleared if it is later reopened. Pointers so an
+	// unset stamp (and tasks persisted before timestamps existed) omit cleanly.
+	CreatedAt   *time.Time `json:"created_at,omitempty"`
+	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
 // TaskInput is the data needed to create a new task.
@@ -92,6 +102,7 @@ type TaskStore struct {
 	tasks  []Task
 	nextID int
 	path   string
+	now    func() time.Time
 }
 
 // NewTaskStore creates a TaskStore that persists to <stateDir>/tasks/<sessionID>.json.
@@ -100,7 +111,23 @@ func NewTaskStore(stateDir, sessionID string) *TaskStore {
 	return &TaskStore{
 		nextID: 1,
 		path:   filepath.Join(stateDir, "tasks", sessionID+".json"),
+		now:    time.Now,
 	}
+}
+
+// SetClock overrides the store's time source. Used by tests for deterministic
+// timestamps; returns the store for call chaining.
+func (s *TaskStore) SetClock(now func() time.Time) *TaskStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.now = now
+	return s
+}
+
+// stamp returns a pointer to the current store time.
+func (s *TaskStore) stamp() *time.Time {
+	t := s.now()
+	return &t
 }
 
 // Load reads the task list from disk. If the file does not exist, the store starts empty.
@@ -256,6 +283,7 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 		if taskType == "" {
 			taskType = TaskTypeImplement // default to implement
 		}
+		ts := s.stamp()
 		t := Task{
 			ID:              s.nextID,
 			Type:            taskType,
@@ -265,6 +293,8 @@ func (s *TaskStore) Append(items []TaskInput) ([]Task, error) {
 			DependsOn:       item.DependsOn,
 			ReasoningEffort: item.ReasoningEffort,
 			Insert:          item.Insert,
+			CreatedAt:       ts,
+			UpdatedAt:       ts,
 		}
 		s.nextID++
 		added = append(added, t)
@@ -383,6 +413,7 @@ func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks 
 		if taskType == "" {
 			taskType = TaskTypeImplement
 		}
+		ts := s.stamp()
 		t := Task{
 			ID:              s.nextID,
 			Type:            taskType,
@@ -391,6 +422,8 @@ func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks 
 			Status:          TaskOpen,
 			ReasoningEffort: tt.ReasoningEffort,
 			Insert:          tt.Insert,
+			CreatedAt:       ts,
+			UpdatedAt:       ts,
 		}
 		s.nextID++
 		s.tasks = append(s.tasks, t)
@@ -399,6 +432,7 @@ func (s *TaskStore) PopulateFromTemplates(templates []TaskTemplate, parentTasks 
 	// Auto-start the first task.
 	if len(s.tasks) > 0 {
 		s.tasks[0].Status = TaskInProgress
+		s.tasks[0].UpdatedAt = s.stamp()
 	}
 
 	return s.save()
@@ -457,6 +491,15 @@ func (s *TaskStore) Update(updates []TaskUpdate) error {
 				}
 				if u.ReasoningEffort != "" {
 					s.tasks[i].ReasoningEffort = u.ReasoningEffort
+				}
+				// Mint timestamps: every update advances UpdatedAt; reaching done
+				// stamps CompletedAt, and reopening a done task clears it.
+				ts := s.stamp()
+				s.tasks[i].UpdatedAt = ts
+				if u.Status == TaskDone {
+					s.tasks[i].CompletedAt = ts
+				} else {
+					s.tasks[i].CompletedAt = nil
 				}
 				found = true
 				break

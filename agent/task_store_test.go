@@ -8,12 +8,77 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/provider"
 	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
+
+func TestTaskStore_TimestampsMintedAutomatically(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	base := time.Date(2026, 6, 25, 14, 0, 0, 0, time.UTC)
+	clock := base
+	s := taskpkg.NewTaskStore(dir, "ts-session").SetClock(func() time.Time { return clock })
+
+	// Append stamps created_at == updated_at and leaves completed_at unset.
+	added, err := s.Append([]taskpkg.TaskInput{{Description: "A", Prompt: "do a"}})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	a := added[0]
+	if a.CreatedAt == nil || !a.CreatedAt.Equal(base) {
+		t.Fatalf("created_at not minted on append: %v", a.CreatedAt)
+	}
+	if a.UpdatedAt == nil || !a.UpdatedAt.Equal(base) {
+		t.Fatalf("updated_at not minted on append: %v", a.UpdatedAt)
+	}
+	if a.CompletedAt != nil {
+		t.Fatalf("open task must not carry completed_at: %v", a.CompletedAt)
+	}
+
+	// An update advances updated_at; reaching done stamps completed_at while
+	// created_at stays put.
+	clock = base.Add(5 * time.Minute)
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: a.ID, Status: taskpkg.TaskDone}}); err != nil {
+		t.Fatalf("Update done: %v", err)
+	}
+	got := s.View()[0]
+	if got.CreatedAt == nil || !got.CreatedAt.Equal(base) {
+		t.Fatalf("created_at must not change on update: %v", got.CreatedAt)
+	}
+	if got.UpdatedAt == nil || !got.UpdatedAt.Equal(clock) {
+		t.Fatalf("updated_at not advanced on update: %v", got.UpdatedAt)
+	}
+	if got.CompletedAt == nil || !got.CompletedAt.Equal(clock) {
+		t.Fatalf("completed_at not stamped on done: %v", got.CompletedAt)
+	}
+
+	// Reopening a done task clears completed_at and advances updated_at.
+	clock = base.Add(10 * time.Minute)
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: a.ID, Status: taskpkg.TaskInProgress}}); err != nil {
+		t.Fatalf("Update reopen: %v", err)
+	}
+	got = s.View()[0]
+	if got.CompletedAt != nil {
+		t.Fatalf("reopened task must clear completed_at: %v", got.CompletedAt)
+	}
+	if got.UpdatedAt == nil || !got.UpdatedAt.Equal(clock) {
+		t.Fatalf("updated_at not advanced on reopen: %v", got.UpdatedAt)
+	}
+
+	// Timestamps survive a round-trip through disk.
+	s2 := taskpkg.NewTaskStore(dir, "ts-session")
+	if err := s2.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	r := s2.View()[0]
+	if r.CreatedAt == nil || !r.CreatedAt.Equal(base) {
+		t.Fatalf("created_at lost on reload: %v", r.CreatedAt)
+	}
+}
 
 func TestTaskStore_AppendAndView(t *testing.T) {
 	t.Parallel()
