@@ -557,10 +557,16 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 		Kind:      events.EventJobStarted,
 		SessionID: "th_1",
 		Data: events.JobStartedData{
-			JobID:     "job_1",
-			JobType:   "delegate",
-			Status:    "running",
-			FromWatch: true,
+			JobID:            "job_1",
+			JobType:          "delegate",
+			Status:           "running",
+			FromWatch:        true,
+			DelegateID:       "dlg_1",
+			Task:             "inspect invoices",
+			TranscriptRef:    "local:child-start",
+			OriginTurnID:     "turn_parent",
+			OriginToolCallID: "call_delegate",
+			OriginItemID:     "item_delegate",
 		},
 	})
 	if len(started) != 1 || started[0].Method != appwire.NotifySerfJobStarted {
@@ -574,7 +580,9 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 	if !ok {
 		t.Fatalf("started job=%T in %+v", startedParams["job"], startedParams)
 	}
-	if startedJob.JobID != "job_1" || startedJob.JobType != "delegate" || startedJob.Status != "running" || !startedJob.FromWatch {
+	if startedJob.JobID != "job_1" || startedJob.JobType != "delegate" || startedJob.Status != "running" || !startedJob.FromWatch ||
+		startedJob.DelegateID != "dlg_1" || startedJob.Task != "inspect invoices" || startedJob.TranscriptRef != "local:child-start" ||
+		startedJob.OriginTurnID != "turn_parent" || startedJob.OriginToolCallID != "call_delegate" || startedJob.OriginItemID != "item_delegate" {
 		t.Fatalf("started job=%+v", startedJob)
 	}
 	if _, ok := startedParams["subagent"]; ok {
@@ -586,13 +594,18 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 		Kind:      events.EventJobFinished,
 		SessionID: "th_1",
 		Data: events.JobFinishedData{
-			JobID:         "job_1",
-			JobType:       "delegate",
-			Status:        "failed",
-			Reason:        "signal",
-			ExitCode:      &exitCode,
-			OutputBytes:   0,
-			TranscriptRef: "local:child",
+			JobID:            "job_1",
+			JobType:          "delegate",
+			Status:           "failed",
+			Reason:           "signal",
+			ExitCode:         &exitCode,
+			OutputBytes:      0,
+			TranscriptRef:    "local:child",
+			DelegateID:       "dlg_1",
+			Task:             "inspect invoices",
+			OriginTurnID:     "turn_parent",
+			OriginToolCallID: "call_delegate",
+			OriginItemID:     "item_delegate",
 		},
 	})
 	if len(finished) != 1 || finished[0].Method != appwire.NotifySerfJobFinished {
@@ -608,12 +621,45 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 	}
 	if finishedJob.JobID != "job_1" || finishedJob.JobType != "delegate" || finishedJob.Status != "failed" ||
 		finishedJob.Reason != "signal" || finishedJob.ExitCode == nil || *finishedJob.ExitCode != exitCode ||
-		finishedJob.OutputBytes != 0 || finishedJob.TranscriptRef != "local:child" {
+		finishedJob.OutputBytes != 0 || finishedJob.TranscriptRef != "local:child" ||
+		finishedJob.DelegateID != "dlg_1" || finishedJob.Task != "inspect invoices" ||
+		finishedJob.OriginTurnID != "turn_parent" || finishedJob.OriginToolCallID != "call_delegate" || finishedJob.OriginItemID != "item_delegate" {
 		t.Fatalf("finished job=%+v", finishedJob)
 	}
 	finishedJSON := string(notificationParamsJSON(t, finished, appwire.NotifySerfJobFinished))
 	if !strings.Contains(finishedJSON, `"outputBytes":0`) {
 		t.Fatalf("finished notification json=%s missing zero outputBytes", finishedJSON)
+	}
+}
+
+func TestSerfJobInfoDelegateFieldsAreOptional(t *testing.T) {
+	payload, err := json.Marshal(appwire.SerfJobInfo{
+		JobID:       "job_shell",
+		JobType:     "shell",
+		Status:      "running",
+		OutputBytes: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(payload)
+	for _, forbidden := range []string{"delegateId", "task", "originTurnId", "originToolCallId", "originItemId", "transcriptRef"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("shell job payload %s unexpectedly contains %s", text, forbidden)
+		}
+	}
+
+	var oldClient struct {
+		JobID   string `json:"jobId"`
+		JobType string `json:"jobType"`
+		Status  string `json:"status"`
+	}
+	enriched := []byte(`{"jobId":"job_1","jobType":"delegate","status":"running","delegateId":"dlg_1","task":"inspect"}`)
+	if err := json.Unmarshal(enriched, &oldClient); err != nil {
+		t.Fatal(err)
+	}
+	if oldClient.JobID != "job_1" || oldClient.JobType != "delegate" || oldClient.Status != "running" {
+		t.Fatalf("old client decode = %+v", oldClient)
 	}
 }
 
