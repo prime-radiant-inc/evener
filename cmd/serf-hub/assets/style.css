@@ -3385,6 +3385,9 @@ button.composer-model-value:hover { text-decoration: underline; }
   .controls-center { flex: none; }
   .btn-primary kbd { display: none; }
   .input-status { flex-wrap: wrap; }
+  /* The model-picker chip is a 17px-tall inline button on desktop; give it the
+     full tap-min hit area on touch without inflating the visible chip text. */
+  button.composer-model-value { min-height: var(--tap-min); }
 
   /* Search palette: full-screen on mobile so the keyboard doesn't shove it. */
   .search-dialog-inner {
