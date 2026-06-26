@@ -83,6 +83,9 @@ await scenario("task_list append renders a task-update card with glyph-paired st
   if (items.length !== 7) return { ok: false, detail: "expected 7 rows, got " + items.length };
   if (card.querySelector(".task-card-hidden")) return { ok: false, detail: "append should not hide any rows" };
   if (card.querySelector(".task-card-showall")) return { ok: false, detail: "append should not show a show-all control" };
+  // Appended tasks are flagged "added" in the list (not re-listed elsewhere).
+  if (card.querySelectorAll(".task-card-row.touched.added").length !== 7)
+    return { ok: false, detail: "all 7 appended rows should be flagged added" };
 
   // State classes + glyphs per status (reused plan grammar).
   const done = card.querySelectorAll(".task-card-row.done");
@@ -139,10 +142,13 @@ await scenario("task_list update flags changes, keeps context, folds the rest", 
   const prog = card.querySelector(".task-card-progress");
   if (!prog || !/3\s*\/\s*6/.test(prog.textContent)) return { ok: false, detail: "update progress wrong: " + (prog && prog.textContent) };
 
-  // Changed rows (#3, #4) are flagged.
-  const changed = Array.from(card.querySelectorAll(".task-card-row.changed .plan-step")).map(s => s.textContent);
+  // Touched rows (#3 done, #4 started) are flagged by kind — no prose summary.
+  if (card.querySelector(".task-card-summary")) return { ok: false, detail: "no prose summary — the edit reads from style" };
+  const changed = Array.from(card.querySelectorAll(".task-card-row.touched .plan-step")).map(s => s.textContent);
   if (!(changed.includes("Three") && changed.includes("Four") && changed.length === 2))
-    return { ok: false, detail: "changed rows should be exactly Three+Four, got " + changed.join(",") };
+    return { ok: false, detail: "touched rows should be exactly Three+Four, got " + changed.join(",") };
+  if (!card.querySelector(".task-card-row.touched.done")) return { ok: false, detail: "#3 should be flagged done (touched)" };
+  if (!card.querySelector(".task-card-row.touched.started")) return { ok: false, detail: "#4 should be flagged started (touched)" };
 
   // Current task is #4 (now in_progress).
   const cur = card.querySelectorAll(".task-card-row.current");

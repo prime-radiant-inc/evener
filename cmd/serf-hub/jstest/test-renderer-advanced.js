@@ -161,16 +161,17 @@ await scenario("multi-update in one call (descriptions seeded via full-list)", [
   }) }],
   ["TOOL_CALL_END", { call_id: "c1", output: "ok", tool_name: "task_list" }],
 ], ({ conv }) => {
-  // The full-list no longer renders a pointer; the update renders one card.
+  // The full-list no longer renders a pointer; the update renders one card and
+  // shows the edit through row style — no prose summary.
   if (conv.querySelector(".system-line-pointer")) return { ok: false, detail: "full-list must not render a pointer" };
-  const summary = conv.querySelector(".task-card .task-card-summary");
-  if (!summary) return { ok: false, detail: "no card summary" };
-  const s = summary.textContent;
-  if (!s.includes("marked")) return { ok: false, detail: "no 'marked' verb: " + s };
-  if (!s.includes("Phase 1")) return { ok: false, detail: "no Phase 1 description: " + s };
-  if (!s.includes("Phase 2")) return { ok: false, detail: "no Phase 2 description: " + s };
-  if (!s.includes("started")) return { ok: false, detail: "no 'started' verb: " + s };
-  if (!s.includes("took longer")) return { ok: false, detail: "notes missing: " + s };
+  if (conv.querySelector(".task-card-summary")) return { ok: false, detail: "no prose summary — the edit reads from style" };
+  const rowFor = desc => Array.from(conv.querySelectorAll(".task-card-row")).find(r => r.textContent.includes(desc));
+  const done = rowFor("Phase 1"), started = rowFor("Phase 2");
+  if (!done || !done.classList.contains("touched") || !done.classList.contains("done"))
+    return { ok: false, detail: "Phase 1 should be a touched-done row: " + (done && done.className) };
+  if (!started || !started.classList.contains("touched") || !started.classList.contains("started"))
+    return { ok: false, detail: "Phase 2 should be a touched-started row: " + (started && started.className) };
+  if (!/took longer/.test(conv.querySelector(".task-card").textContent)) return { ok: false, detail: "notes missing" };
   return { ok: true };
 });
 
@@ -207,8 +208,8 @@ await scenario("view action suppressed", [
   return { ok: true };
 });
 
-// 7. Same-verb runs collapse: 3 dones in one call → "marked A, B, C done"
-await scenario("same-verb runs collapse", [
+// 7. Several dones in one call each render as a flagged (touched-done) row.
+await scenario("multiple dones render as flagged rows", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["STEERING_INJECTED", { text: "<SYSTEM-REMINDER>\nTask list:\n  [open] #1: Phase 1\n  [open] #2: Phase 2\n  [open] #3: Phase 3\n</SYSTEM-REMINDER>" }],
   ["TOOL_CALL_START", { call_id: "u1", tool_name: "task_list", arguments_json: JSON.stringify({
@@ -221,20 +222,16 @@ await scenario("same-verb runs collapse", [
   }) }],
   ["TOOL_CALL_END", { call_id: "u1", output: "ok", tool_name: "task_list" }],
 ], ({ conv }) => {
-  const summary = conv.querySelector(".task-card .task-card-summary");
-  if (!summary) return { ok: false, detail: "no card summary" };
-  const update = summary.textContent;
-  // Should be ONE clause: "marked A, B, C done", not three "marked X done" clauses.
-  const matches = update.match(/marked /g);
-  if (!matches || matches.length !== 1) return { ok: false, detail: "expected single 'marked' verb, got: " + update };
-  if (!update.includes("Phase 1") || !update.includes("Phase 2") || !update.includes("Phase 3"))
-    return { ok: false, detail: "missing description: " + update };
-  if (!update.endsWith("done")) return { ok: false, detail: "should end with 'done': " + update };
+  if (conv.querySelector(".task-card-summary")) return { ok: false, detail: "no prose summary" };
+  const doneRows = Array.from(conv.querySelectorAll(".task-card-row.touched.done .plan-step")).map(s => s.textContent);
+  if (doneRows.length !== 3) return { ok: false, detail: "expected 3 touched-done rows, got " + doneRows.length };
+  if (!(doneRows.includes("Phase 1") && doneRows.includes("Phase 2") && doneRows.includes("Phase 3")))
+    return { ok: false, detail: "missing description: " + doneRows.join(",") };
   return { ok: true };
 });
 
-// 8. Cancelled verb
-await scenario("cancelled tasks get distinct verb", [
+// 8. A cancelled task renders as a touched-cancelled row, carrying its note.
+await scenario("cancelled tasks render as a cancelled row", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["STEERING_INJECTED", { text: "<SYSTEM-REMINDER>\nTask list:\n  [open] #5: Future feature\n</SYSTEM-REMINDER>" }],
   ["TOOL_CALL_START", { call_id: "u1", tool_name: "task_list", arguments_json: JSON.stringify({
@@ -242,16 +239,17 @@ await scenario("cancelled tasks get distinct verb", [
   }) }],
   ["TOOL_CALL_END", { call_id: "u1", output: "ok", tool_name: "task_list" }],
 ], ({ conv }) => {
-  const summary = conv.querySelector(".task-card .task-card-summary");
-  const line = summary && summary.textContent;
-  if (!line || !line.includes("Future feature")) return { ok: false, detail: "summary doesn't name task: " + line };
-  if (!line.includes("cancelled")) return { ok: false, detail: "missing 'cancelled': " + line };
-  if (!line.includes("out of scope")) return { ok: false, detail: "missing notes: " + line };
+  const row = Array.from(conv.querySelectorAll(".task-card-row")).find(r => r.textContent.includes("Future feature"));
+  if (!row) return { ok: false, detail: "no row names the task" };
+  if (!row.classList.contains("touched") || !row.classList.contains("cancelled"))
+    return { ok: false, detail: "should be a touched-cancelled row: " + row.className };
+  if (!/out of scope/.test(conv.querySelector(".task-card").textContent)) return { ok: false, detail: "missing note" };
   return { ok: true };
 });
 
-// 9. Bracketed descriptions in full-list shouldn't get clipped (regex bug)
-await scenario("full-list parses descriptions ending in [TBD]", [
+// 9. Bracketed descriptions in full-list shouldn't get clipped (regex bug). The
+//    cleaned description surfaces in the row label.
+await scenario("full-list parses descriptions ending in [WIP]", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["STEERING_INJECTED", { text: "<SYSTEM-REMINDER>\nTask list:\n  [open] #9: Migrate users [WIP]\n</SYSTEM-REMINDER>" }],
   ["TOOL_CALL_START", { call_id: "u1", tool_name: "task_list", arguments_json: JSON.stringify({
@@ -259,14 +257,12 @@ await scenario("full-list parses descriptions ending in [TBD]", [
   }) }],
   ["TOOL_CALL_END", { call_id: "u1", output: "ok", tool_name: "task_list" }],
 ], ({ conv }) => {
-  const summary = conv.querySelector(".task-card .task-card-summary");
-  const line = summary && summary.textContent;
-  if (!line || !line.includes("marked")) return { ok: false, detail: "no 'marked' summary: " + line };
-  if (!line.includes("Migrate users [WIP]")) return { ok: false, detail: "description got clipped: " + line };
+  const step = conv.querySelector(".task-card-row .plan-step");
+  if (!step || !step.textContent.includes("Migrate users [WIP]")) return { ok: false, detail: "description got clipped: " + (step && step.textContent) };
   return { ok: true };
 });
 
-// 10. Reasoning-effort suffix [high] DOES get stripped from full-list parse
+// 10. Reasoning-effort suffix [high] DOES get stripped from the full-list parse.
 await scenario("full-list strips [high] reasoning-effort suffix", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["STEERING_INJECTED", { text: "<SYSTEM-REMINDER>\nTask list:\n  [open] #10: Deep work [high]\n</SYSTEM-REMINDER>" }],
@@ -275,11 +271,10 @@ await scenario("full-list strips [high] reasoning-effort suffix", [
   }) }],
   ["TOOL_CALL_END", { call_id: "u1", output: "ok", tool_name: "task_list" }],
 ], ({ conv }) => {
-  const summary = conv.querySelector(".task-card .task-card-summary");
-  const line = summary && summary.textContent;
-  if (!line || !line.includes("marked")) return { ok: false, detail: "no marked summary" };
-  if (line.includes("[high]")) return { ok: false, detail: "reasoning suffix should be stripped: " + line };
-  if (!line.includes("Deep work")) return { ok: false, detail: "description should remain: " + line };
+  const step = conv.querySelector(".task-card-row .plan-step");
+  const t = step && step.textContent;
+  if (!t || t.includes("[high]")) return { ok: false, detail: "reasoning suffix should be stripped: " + t };
+  if (!t.includes("Deep work")) return { ok: false, detail: "description should remain: " + t };
   return { ok: true };
 });
 
@@ -292,10 +287,9 @@ await scenario("full-list strips [minimal]/[max] reasoning-effort suffixes", [
   }) }],
   ["TOOL_CALL_END", { call_id: "u2", output: "ok", tool_name: "task_list" }],
 ], ({ conv }) => {
-  const summary = conv.querySelector(".task-card .task-card-summary");
-  const joined = summary ? summary.textContent : "";
-  if (joined.includes("[minimal]") || joined.includes("[max]")) return { ok: false, detail: "new-vocab effort suffix should be stripped: " + joined };
-  if (!joined.includes("Quick fix") || !joined.includes("Hard problem")) return { ok: false, detail: "descriptions should remain: " + joined };
+  const steps = Array.from(conv.querySelectorAll(".task-card-row .plan-step")).map(s => s.textContent).join(" | ");
+  if (steps.includes("[minimal]") || steps.includes("[max]")) return { ok: false, detail: "new-vocab effort suffix should be stripped: " + steps };
+  if (!steps.includes("Quick fix") || !steps.includes("Hard problem")) return { ok: false, detail: "descriptions should remain: " + steps };
   return { ok: true };
 });
 

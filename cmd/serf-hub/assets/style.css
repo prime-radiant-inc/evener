@@ -2269,11 +2269,12 @@ button.composer-model-value:hover { text-decoration: underline; }
 
 /* Task-update card: one coherent block emitted when the agent changes its task
    list. Same containment device as the subagents module (.subs): bg-raised + a
-   hairline rule. It leads with what changed (flagged rows + their notes and, for
-   completed tasks, when they were checked off), elevates the now-current task,
-   and shows a little surrounding context; the rest folds behind "show all". The
-   rows reuse the .plan-item glyph grammar — ✓ done (neutral, recedes), ⟳ current
-   (blue, the live item), ○ pending (dim). */
+   hairline rule. The edit reads from color and style, not prose: the rows the
+   agent just touched this turn wear a kind-colored bar (added · done · started
+   · cancelled), completed rows carry a checked-off time, the now-current task
+   is elevated, and a little surrounding context shows; the rest folds behind
+   "show all". Rows reuse the .plan-item glyph grammar — ✓ done (neutral,
+   recedes), ⟳ current (blue, live), ○ pending (dim). */
 .task-card {
   margin: var(--space-3) 0 var(--space-4) var(--tool-indent);
   max-width: min(720px, 100%);
@@ -2295,21 +2296,24 @@ button.composer-model-value:hover { text-decoration: underline; }
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
-/* The prose one-liner of the edit ("marked X done · started Y"). Quiet — the
-   rows carry the structure. */
-.task-card-summary {
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  margin-bottom: var(--space-2);
-}
 .task-card-rows { display: flex; flex-direction: column; }
-/* Changed rows wear a thin accent bar (inset, no layout shift) so "what the
-   agent just touched" reads at a glance without a second containment device. */
-.task-card-row.changed {
+/* Rows touched THIS turn wear a thin kind-colored bar (inset, no layout shift)
+   so the edit reads at a glance — no prose sentence. The bar's color names the
+   kind; the row's own glyph + (for done) time carry the resulting state. */
+.task-card-row.touched {
   box-shadow: inset 2px 0 0 var(--accent);
   padding-left: var(--space-2);
   border-radius: 1px;
 }
+/* added — newly created. The "diff add" green (the established added-content
+   hue), echoed on the glyph so a new row reads as new even without the bar. */
+.task-card-row.touched.added { box-shadow: inset 2px 0 0 var(--diff-add-ink); }
+.task-card-row.touched.added .plan-glyph { color: var(--diff-add-ink); }
+/* done this turn — the success green marks the completion beat; the ✓ glyph
+   and the checked-off time carry the rest. */
+.task-card-row.touched.done { box-shadow: inset 2px 0 0 var(--success); }
+/* cancelled this turn — recedes; a dim bar, matching the struck row. */
+.task-card-row.touched.cancelled { box-shadow: inset 2px 0 0 var(--text-dim); }
 /* "Checked off at" stamp on a completed row — minute-precision wall clock. */
 .task-card-time {
   margin-left: auto;

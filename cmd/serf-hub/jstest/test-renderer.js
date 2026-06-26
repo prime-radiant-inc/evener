@@ -96,7 +96,7 @@ if (taskCards.length === 1) {
   const card = taskCards[0];
   pass(/Understand task/.test(card.textContent), "card should name the changed task by description, not #id: " + card.textContent);
   pass(!/#1\b/.test(card.querySelector(".plan-step").textContent), "row label should use description not #id");
-  pass(!!card.querySelector(".task-card-row.done.changed"), "task #1 should render as a flagged done row");
+  pass(!!card.querySelector(".task-card-row.touched.done"), "task #1 should render as a flagged (touched) done row");
   pass(!/now on/.test(conv.textContent), "no 'now on' line should be emitted — the card conveys the current task");
 }
 

@@ -237,10 +237,6 @@
     if (next.description) taskDescriptions.set(id, next.description);
     taskDetails.set(id, next);
   }
-  function taskDesc(id) {
-    const d = taskDescriptions.get(id);
-    return d ? '"' + d + '"' : "#" + id;
-  }
   function parseArgs(json) {
     if (!json) return {};
     try { return JSON.parse(json); } catch (e) { return {}; }
@@ -482,62 +478,16 @@
     }
   }
 
-  // formatTaskListAction renders task_list tool args as a single line of
-  // English prose. Returns null/empty for no-op cases (view, empty updates).
-  // Multiple updates in one call collapse into a comma-joined sentence
-  // capped at 4 clauses to prevent runaway lines.
-  function formatTaskListAction(args) {
-    if (!args || !args.action) return "";
-    if (args.action === "view") return "";
-
-    if (args.action === "append") {
-      if (!Array.isArray(args.tasks) || args.tasks.length === 0) return "";
-      // Show the FULL plan on creation — the one moment the entire list
-      // matters to the reader. No "+N more" truncation.
-      const descs = args.tasks.map(t => '"' + (t.description || "?") + '"');
-      return "added " + descs.length + " task" + (descs.length === 1 ? "" : "s") + ": " + descs.join(" · ");
-    }
-
-    if (args.action === "update") {
-      if (!Array.isArray(args.updates) || args.updates.length === 0) return "";
-      // Group same-status updates together so 3 dones in one call read as
-      //   marked "A", "B", "C" done
-      // instead of
-      //   marked "A" done, marked "B" done, marked "C" done.
-      // Notes are emitted only when there's exactly one update with notes
-      // for that status — otherwise the prose gets unwieldy.
-      const byStatus = new Map(); // status -> [{id, notes}, …]
-      const order = [];
-      for (const u of args.updates) {
-        const s = u.status || "?";
-        if (!byStatus.has(s)) { byStatus.set(s, []); order.push(s); }
-        byStatus.get(s).push(u);
-      }
-      const clauses = order.map(s => formatStatusClause(s, byStatus.get(s)));
-      return clauses.filter(Boolean).join(", ");
-    }
-    return "";
-  }
-
-  // formatStatusClause renders one verb's worth of updates: "marked A done",
-  // "marked A, B, C done", "started X", etc. Notes attach when exactly one
-  // task got that status this turn.
-  function formatStatusClause(status, items) {
-    if (!items || items.length === 0) return "";
-    const subjects = items.map(u => taskDesc(u.id)).join(", ");
-    let clause;
+  // touchKind classifies what a task_list update did to a task, so the card can
+  // flag the row by kind (color/style) instead of narrating it in prose.
+  function touchKind(status) {
     switch (status) {
-      case "done":        clause = "marked " + subjects + " done"; break;
-      case "in_progress": clause = "started " + subjects; break;
-      case "cancelled":   clause = "cancelled " + subjects; break;
-      case "open":        clause = "reopened " + subjects; break;
-      default:            clause = "updated " + subjects; break;
+      case "done": return "done";
+      case "in_progress": return "started";
+      case "cancelled": return "cancelled";
+      case "open": return "reopened";
+      default: return "changed";
     }
-    if (items.length === 1 && items[0].notes) {
-      const note = clip(items[0].notes, 100).replace(/[.!?]+$/, "");
-      clause += " (" + note + ")";
-    }
-    return clause;
   }
 
   function parseToolState(s) {
@@ -685,14 +635,12 @@
     taskDescriptions,
     taskDetails,
     rememberTask,
-    taskDesc,
     parseArgs,
     toolIntent,
     classifySteering,
     planStateClass,
     planGlyphForStatus,
-    formatTaskListAction,
-    formatStatusClause,
+    touchKind,
     parseToolState,
     parseToolJSON,
     formatBytes,

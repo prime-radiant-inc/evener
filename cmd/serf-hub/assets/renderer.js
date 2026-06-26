@@ -22,7 +22,7 @@
     classifySteering,
     planStateClass,
     planGlyphForStatus,
-    formatTaskListAction,
+    touchKind,
     parseToolState,
     parseToolJSON,
     formatBytes,
@@ -3172,24 +3172,26 @@
       tasks = tasks.sort((a, b) => Number(a.id) - Number(b.id));
       if (!tasks.length) return;
 
-      // Which tasks did THIS call touch? Updates name their ids directly; an
-      // append's changed set is every task that did not exist before the call.
-      const changed = new Map(); // id -> note text (may be "")
+      // Which tasks did THIS call touch, and how? The kind drives the visual
+      // flag (added · done · started · cancelled · changed) so the edit reads
+      // from color and style, not a prose sentence. Updates name their ids and
+      // new status directly; an append's tasks are all newly added.
+      const touched = new Map(); // id -> { kind, note }
       if (args.action === "update" && Array.isArray(args.updates)) {
         for (const u of args.updates) {
-          if (u && u.id != null) changed.set(Number(u.id), String(u.notes || "").trim());
+          if (u && u.id != null) touched.set(Number(u.id), { kind: touchKind(u.status), note: String(u.notes || "").trim() });
         }
       } else if (args.action === "append") {
         const known = priorIds || new Set();
         for (const t of tasks) {
-          if (!known.has(Number(t.id))) changed.set(Number(t.id), "");
+          if (!known.has(Number(t.id))) touched.set(Number(t.id), { kind: "added", note: "" });
         }
       }
 
-      // The visible window: changed rows + the current task + its immediate
+      // The visible window: touched rows + the current task + its immediate
       // neighbors (unlabeled — just where we came from and where we're going).
       const current = tasks.find(t => t.status === "in_progress");
-      const visible = new Set(changed.keys());
+      const visible = new Set(touched.keys());
       if (current) {
         const cid = Number(current.id);
         visible.add(cid);
@@ -3215,18 +3217,6 @@
       head.appendChild(prog);
       card.appendChild(head);
 
-      // A one-line prose summary of the edit (updates only — an append's rows
-      // already are the content).
-      if (args.action === "update") {
-        const text = formatTaskListAction(args);
-        if (text) {
-          const summary = document.createElement("div");
-          summary.className = "task-card-summary";
-          summary.textContent = text;
-          card.appendChild(summary);
-        }
-      }
-
       const rows = document.createElement("div");
       rows.className = "task-card-rows";
       let hidden = 0;
@@ -3234,9 +3224,10 @@
         const id = Number(t.id);
         const shown = visible.has(id);
         if (!shown) hidden++;
+        const flag = touched.get(id);
         const row = document.createElement("div");
         row.className = "task-card-row plan-item " + planStateClass(t.status) +
-          (changed.has(id) ? " changed" : "") + (shown ? "" : " task-card-hidden");
+          (flag ? " touched " + flag.kind : "") + (shown ? "" : " task-card-hidden");
         const glyph = document.createElement("span");
         glyph.className = "plan-glyph";
         glyph.textContent = planGlyphForStatus(t.status);
@@ -3255,11 +3246,10 @@
           }
         }
         rows.appendChild(row);
-        const note = changed.get(id);
-        if (note) {
+        if (flag && flag.note) {
           const noteEl = document.createElement("div");
           noteEl.className = "task-card-note" + (shown ? "" : " task-card-hidden");
-          noteEl.textContent = note;
+          noteEl.textContent = flag.note;
           rows.appendChild(noteEl);
         }
       }
