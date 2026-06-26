@@ -92,36 +92,57 @@ func NewRosterWithEntries(entries ...LiveEntry) *Roster {
 }
 
 // Refresh re-scans the rendezvous dir and updates the in-memory roster.
-// A daemon that fails its liveness probe is kept as long as its process is
-// still alive — a transient probe miss (busy daemon, overloaded host) must not
-// blank the session from the UI. It is dropped only when its process is gone
-// (a stale rendezvous file).
+//
+// Probes run concurrently and WITHOUT the roster lock held, so List() never
+// blocks on network I/O and always returns the last good snapshot; the new
+// snapshot is swapped in atomically at the end. A daemon that fails its
+// liveness probe is kept as long as its process is still alive — a transient
+// probe miss (busy daemon, overloaded host) must not blank the session from the
+// UI. It is dropped only when its process is gone (a stale rendezvous file).
 func (r *Roster) Refresh() {
 	entries, err := rendezvous.List(r.runDir)
 	if err != nil {
 		return
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	// Snapshot the previous PID map for the keep-alive fallback. Reading it
+	// under a brief lock (rather than holding the lock across the probes) keeps
+	// List() responsive while a slow probe pass runs.
+	r.mu.RLock()
+	prevByPID := r.byPID
+	r.mu.RUnlock()
+
+	type probeResult struct {
+		entry  rendezvous.Entry
+		sessID string
+		status string
+		ok     bool
+	}
+	results := make([]probeResult, len(entries))
+	var wg sync.WaitGroup
+	for i, e := range entries {
+		if r.prober == nil {
+			results[i] = probeResult{entry: e, ok: true}
+			continue
+		}
+		wg.Add(1)
+		go func(i int, e rendezvous.Entry) {
+			defer wg.Done()
+			sessID, status, ok := r.prober.Probe(e)
+			results[i] = probeResult{entry: e, sessID: sessID, status: status, ok: ok}
+		}(i, e)
+	}
+	wg.Wait()
 
 	bySess := make(map[string]LiveEntry, len(entries))
 	byPID := make(map[int]LiveEntry, len(entries))
-
-	for _, e := range entries {
-		var sessID, status string
-		ok := true
-		if r.prober != nil {
-			sessID, status, ok = r.prober.Probe(e)
-		}
-		if !ok {
-			// The probe failed, but the rendezvous file plus a live PID are the
-			// authoritative "this session exists" signal: a transient miss (a
-			// busy daemon, a briefly overloaded host) must not blank the sidebar.
-			// Keep the previously-seen entry while its process is alive; prune
-			// only when the process is gone (a stale rendezvous file left by a
-			// crashed daemon).
-			if prev, had := r.byPID[e.PID]; had && r.procAlive(e.PID) {
+	for _, res := range results {
+		e := res.entry
+		if !res.ok {
+			// The rendezvous file plus a live PID are the authoritative "this
+			// session exists" signal; keep the previously-seen entry while its
+			// process is alive, and prune only when the process is gone.
+			if prev, had := prevByPID[e.PID]; had && r.procAlive(e.PID) {
 				byPID[e.PID] = prev
 				if prev.SessionID != "" {
 					bySess[prev.SessionID] = prev
@@ -129,17 +150,19 @@ func (r *Roster) Refresh() {
 			}
 			continue
 		}
-		live := LiveEntry{Entry: e, SessionID: sessID, Status: status}
-		if sessID != "" {
-			if prev, ok := bySess[sessID]; !ok || preferLiveEntry(live, prev) {
-				bySess[sessID] = live
+		live := LiveEntry{Entry: e, SessionID: res.sessID, Status: res.status}
+		if res.sessID != "" {
+			if prev, ok := bySess[res.sessID]; !ok || preferLiveEntry(live, prev) {
+				bySess[res.sessID] = live
 			}
 		}
 		byPID[e.PID] = live
 	}
 
+	r.mu.Lock()
 	r.bySess = bySess
 	r.byPID = byPID
+	r.mu.Unlock()
 }
 
 // List returns all live entries.

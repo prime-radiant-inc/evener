@@ -201,6 +201,11 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Populate the roster before serving so the first sidebar request can't hit
+	// an empty roster (the "flash of no sessions" right after a restart). Probes
+	// run concurrently, so this is bounded by ~one probe timeout regardless of
+	// how many daemons are live.
+	roster.Refresh()
 	go func() {
 		if err := roster.Watch(ctx); err != nil && ctx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "[hub] roster watch: %v\n", err)

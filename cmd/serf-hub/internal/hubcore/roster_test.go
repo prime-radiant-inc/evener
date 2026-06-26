@@ -226,6 +226,60 @@ func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, ok bool) 
 	return p.sessionID, p.status, true
 }
 
+// gateProber blocks each probe on a channel, so a test can hold a Refresh in
+// the middle of its probe pass and assert List() stays responsive.
+type gateProber struct {
+	sessionID string
+	gate      chan struct{}
+	started   chan struct{}
+}
+
+func (p *gateProber) Probe(rendezvous.Entry) (sessionID, status string, ok bool) {
+	select {
+	case p.started <- struct{}{}:
+	default:
+	}
+	<-p.gate
+	return p.sessionID, "", true
+}
+
+// TestRoster_ListStaysResponsiveDuringSlowProbe is the regression test for the
+// startup/refresh hang: Refresh must probe without holding the roster lock, so
+// List() returns the last good snapshot instead of blocking on a slow probe.
+func TestRoster_ListStaysResponsiveDuringSlowProbe(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:1", SessionID: "01S"})
+	started := make(chan struct{}, 1)
+
+	// Seed a good snapshot (first probe is let straight through).
+	open := make(chan struct{})
+	close(open)
+	r := NewRoster(dir, &gateProber{sessionID: "01S", gate: open, started: started})
+	r.procAlive = func(int) bool { return true }
+	r.Refresh()
+	if _, ok := r.Find("01S"); !ok {
+		t.Fatal("seed refresh did not populate the roster")
+	}
+
+	// Now a refresh blocks mid-probe. List() must not wait for it.
+	blocked := make(chan struct{})
+	r.prober = &gateProber{sessionID: "01S", gate: blocked, started: started}
+	go r.Refresh()
+	<-started // the probe is now blocked, with no roster lock held
+
+	done := make(chan int, 1)
+	go func() { done <- len(r.List()) }()
+	select {
+	case n := <-done:
+		if n != 1 {
+			t.Fatalf("List returned %d during a blocked probe, want the prior snapshot (1)", n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("List blocked while a probe was in flight (roster lock held during probing)")
+	}
+	close(blocked) // let the background refresh finish
+}
+
 // flakyProber can be flipped from succeeding to failing mid-test (pointer
 // receiver), to simulate a daemon that goes transiently unresponsive.
 type flakyProber struct {
