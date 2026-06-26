@@ -10,6 +10,7 @@ import (
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
@@ -226,7 +227,15 @@ func delegateBody(args ToolArgs, output string, width int) string {
 	}
 
 	th := tuitheme.ActiveTheme()
-	summary := fmt.Sprintf("delegate %s (%s)", shortID(jobID), status)
+	summaryLabel := "delegate"
+	if task := strings.TrimSpace(args.Str("task")); task != "" {
+		summaryLabel = task
+	}
+	identity := shortID(jobID)
+	if identity != "" {
+		summaryLabel += " · job " + identity
+	}
+	summary := fmt.Sprintf("%s (%s)", summaryLabel, status)
 	styled := lipgloss.NewStyle().Foreground(th.StateSubagent).Render(summary)
 
 	if width < 30 {
@@ -235,6 +244,28 @@ func delegateBody(args ToolArgs, output string, width int) string {
 
 	// On-demand child transcript loading deferred to follow-up kata.
 	return styled
+}
+
+func SubagentRunBody(run transcript.SubagentRunInfo, width int) string {
+	status := strings.TrimSpace(run.Status)
+	if status == "" {
+		status = "running"
+	}
+	label := strings.TrimSpace(run.Task)
+	if label == "" {
+		label = "delegate"
+	}
+	parts := []string{label, "(" + status + ")"}
+	if run.JobID != "" {
+		parts = append(parts, "job "+shortID(run.JobID))
+	}
+	if run.DelegateID != "" && width >= 60 {
+		parts = append(parts, "delegate "+shortID(run.DelegateID))
+	}
+	if run.TranscriptRef != "" && width >= 70 {
+		parts = append(parts, "transcript "+run.TranscriptRef)
+	}
+	return lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().StateSubagent).Render(strings.Join(parts, " · "))
 }
 
 // ShellBody renders shell command output, optionally with bash chroma highlighting.

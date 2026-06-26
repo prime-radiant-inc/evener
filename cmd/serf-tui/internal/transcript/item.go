@@ -34,7 +34,7 @@ func threadItemToolDone(item appwire.ThreadItem, completed bool) bool {
 
 func toolInfoFromThreadItem(item appwire.ThreadItem, done bool) *ToolCallInfo {
 	desc, detail := toolsummary.SummarizeTool(item.ToolName, item.ArgumentsJSON)
-	return &ToolCallInfo{
+	info := &ToolCallInfo{
 		Name:        item.ToolName,
 		Description: desc,
 		Detail:      detail,
@@ -47,6 +47,13 @@ func toolInfoFromThreadItem(item appwire.ThreadItem, done bool) *ToolCallInfo {
 		Expanded:    detail != "" || (done && strings.Count(item.Output, "\n")+1 <= ToolCollapseThreshold),
 		Hidden:      item.ToolName == "communicate",
 	}
+	if info.Name == "delegate" || info.Name == "delegate_send" {
+		if run := subagentRunFromToolItem(item); run.JobID != "" || run.DelegateID != "" {
+			merged := mergeSubagentRun(info.Subagent, run)
+			info.Subagent = &merged
+		}
+	}
+	return info
 }
 
 func mergeThreadItemIntoToolInfo(info *ToolCallInfo, item appwire.ThreadItem, done bool) {
@@ -71,6 +78,12 @@ func mergeThreadItemIntoToolInfo(info *ToolCallInfo, item appwire.ThreadItem, do
 	}
 	if len(item.Raw) > 0 {
 		info.Raw = string(item.Raw)
+	}
+	if info.Name == "delegate" || info.Name == "delegate_send" {
+		if run := subagentRunFromToolItem(item); run.JobID != "" || run.DelegateID != "" {
+			merged := mergeSubagentRun(info.Subagent, run)
+			info.Subagent = &merged
+		}
 	}
 	if done {
 		info.Done = true

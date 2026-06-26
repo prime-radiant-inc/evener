@@ -435,6 +435,44 @@ func TestHubTranscriptReducerReasoningSupersededAndTurnFinalized(t *testing.T) {
 	}
 }
 
+func TestTranscriptReducerAppliesSerfJobNotificationsToDelegateTool(t *testing.T) {
+	reducer := NewTranscriptReducer(nil, nil, nil)
+	reducer.ApplyThreadItem(appwire.ThreadItem{
+		Type:          "commandExecution",
+		ID:            "item_delegate",
+		CallID:        "call_delegate",
+		TurnID:        "turn_1",
+		ToolName:      "delegate",
+		ArgumentsJSON: `{"task":"inspect billing"}`,
+		Output:        `{"job_id":"job_A","delegate_id":"dlg_A","status":"running","task":"inspect billing","transcript_ref":"local:child"}`,
+		Status:        appwire.TurnStatusCompleted,
+	}, 1, true)
+
+	reducer.ApplySerfJob(appwire.SerfJobInfo{
+		JobID:            "job_A",
+		JobType:          "delegate",
+		Status:           "completed",
+		OutputBytes:      42,
+		TranscriptRef:    "local:child",
+		DelegateID:       "dlg_A",
+		Task:             "inspect billing",
+		OriginToolCallID: "call_delegate",
+		OriginItemID:     "item_delegate",
+	})
+
+	tools := transcriptTools(reducer.messages)
+	if len(tools) != 1 || tools[0].Subagent == nil {
+		t.Fatalf("tools=%+v, want one delegate tool with Subagent metadata", tools)
+	}
+	got := tools[0].Subagent
+	if got.JobID != "job_A" || got.DelegateID != "dlg_A" || got.Status != "completed" || got.Task != "inspect billing" || got.TranscriptRef != "local:child" || got.OriginToolCallID != "call_delegate" || got.OutputBytes != 42 {
+		t.Fatalf("Subagent = %+v", got)
+	}
+	if !tools[0].Done {
+		t.Fatalf("delegate tool should be marked done after terminal job")
+	}
+}
+
 type transcriptMessageSnapshot struct {
 	Kind       MessageKind
 	Text       string

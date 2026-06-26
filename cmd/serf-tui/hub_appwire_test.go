@@ -430,6 +430,45 @@ func TestHubThreadFixtureKeepsSplitToolResultsGrouped(t *testing.T) {
 	}
 }
 
+func TestHubModelAppliesSerfJobNotificationsToDelegateTool(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+
+	updated, _ := m.Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+		"threadId": "th_1",
+		"turnId":   "turn_1",
+		"item": appwire.ThreadItem{
+			Type:          "commandExecution",
+			ID:            "item_delegate",
+			TurnID:        "turn_1",
+			CallID:        "call_delegate",
+			ToolName:      "delegate",
+			ArgumentsJSON: `{"task":"inspect billing"}`,
+			Output:        `{"job_id":"job_A","delegate_id":"dlg_A","status":"running","task":"inspect billing","transcript_ref":"local:child"}`,
+			Status:        appwire.TurnStatusCompleted,
+		},
+	}).Notification})
+
+	updated, _ = updated.(hubModel).Update(hubNotificationMsg{ok: true, notification: *appwire.NotificationMessage(appwire.NotifySerfJobFinished, map[string]any{
+		"threadId": "th_1",
+		"ref":      "local:th_1",
+		"job": appwire.SerfJobInfo{
+			JobID: "job_A", JobType: "delegate", Status: "completed", DelegateID: "dlg_A", Task: "inspect billing",
+			TranscriptRef: "local:child", OriginToolCallID: "call_delegate", OriginItemID: "item_delegate", OutputBytes: 42,
+		},
+	}).Notification})
+
+	got := updated.(hubModel)
+	if len(got.session.messages) != 1 || got.session.messages[0].Tool == nil || got.session.messages[0].Tool.Subagent == nil {
+		t.Fatalf("messages=%+v, want delegate message with Subagent metadata", got.session.messages)
+	}
+	run := got.session.messages[0].Tool.Subagent
+	if run.Status != "completed" || run.JobID != "job_A" || run.DelegateID != "dlg_A" || !got.session.messages[0].Tool.Done {
+		t.Fatalf("run=%+v tool=%+v", run, got.session.messages[0].Tool)
+	}
+}
+
 func newTUIAppWireClient(t *testing.T, app *appserver.Server) (*appwire.Client, func()) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
