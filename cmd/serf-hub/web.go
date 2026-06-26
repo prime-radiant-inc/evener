@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"html/template"
-	"io/fs"
 	"net/http"
 	"net/url"
 	"strings"
@@ -66,24 +65,24 @@ var sidebarTemplateFuncs = template.FuncMap{
 
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
 func NewWebServer(cfg hubcore.WebConfig) *WebServer {
-	appTmpl := template.Must(template.ParseFS(templatesFS, "templates/app.html"))
-	sidebarTmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
-	workspaceTmpl := template.Must(template.ParseFS(templatesFS,
+	appTmpl := template.Must(template.ParseFS(templatesRoot(), "templates/app.html"))
+	sidebarTmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesRoot(), "templates/partials/sidebar.html"))
+	workspaceTmpl := template.Must(template.ParseFS(templatesRoot(),
 		"templates/partials/workspace.html",
 		"templates/partials/input_strip.html",
 	))
-	threadTmpl := template.Must(template.ParseFS(templatesFS,
+	threadTmpl := template.Must(template.ParseFS(templatesRoot(),
 		"templates/thread.html",
 		"templates/partials/workspace.html",
 		"templates/partials/input_strip.html",
 	))
-	spawnTmpl := template.Must(template.ParseFS(templatesFS,
+	spawnTmpl := template.Must(template.ParseFS(templatesRoot(),
 		"templates/partials/spawn.html",
 	))
-	inputStripTmpl := template.Must(template.ParseFS(templatesFS,
+	inputStripTmpl := template.Must(template.ParseFS(templatesRoot(),
 		"templates/partials/input_strip.html",
 	))
-	projectSettingsTmpl := template.Must(template.ParseFS(templatesFS,
+	projectSettingsTmpl := template.Must(template.ParseFS(templatesRoot(),
 		"templates/partials/settings/project.html",
 	))
 	settingsSections := []string{"general", "theme", "transcript", "notifications", "providers", "agents", "launch-serf", "launch-codex", "inrepo", "plugins", "skills", "mcp", "hub", "storage", "credentials"}
@@ -95,7 +94,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		} else {
 			files = append(files, "templates/partials/settings/"+sec+".html")
 		}
-		settingsTmpls[sec] = template.Must(template.ParseFS(templatesFS, files...))
+		settingsTmpls[sec] = template.Must(template.ParseFS(templatesRoot(), files...))
 	}
 	sources := newHubSourceRegistry(cfg)
 	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
@@ -133,9 +132,8 @@ func (s *WebServer) lockForSession(sessionID string) *sync.Mutex {
 func (s *WebServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// Assets
-	sub, _ := fs.Sub(assetsFS, "assets")
-	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(sub))))
+	// Assets — served from disk when SERF_HUB_ASSETS_DIR is set (dev), else embed.
+	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(assetsRoot()))))
 
 	// App-wire RPC
 	mux.HandleFunc("/rpc", s.appRPC.ServeWebSocket)
@@ -346,11 +344,12 @@ func (s *WebServer) handleSidebarProject(w http.ResponseWriter, r *http.Request)
 func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = fmt.Fprint(w, `<div class="empty-state empty-state-workspace">
-  <p class="empty-state-title">Welcome to serf-hub</p>
-  <p class="empty-state-body">Spawn a session to start working with an agent, or search across live and past sessions. The hub keeps every session alive in the sidebar — pick one to jump in.</p>
+  <div class="welcome-wordmark">serf<span class="welcome-dot">.</span></div>
+  <p class="empty-state-title">Watch your agents work.</p>
+  <p class="empty-state-body">Spawn a session, or pick one from the sidebar. Every session stays live — jump back in any time.</p>
   <div class="empty-state-actions">
-    <a class="btn btn-secondary" href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ New session</a>
-    <button class="btn btn-ghost" type="button" data-search-trigger>⌘K search</button>
+    <a class="btn btn-primary" href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ New session</a>
+    <button class="btn btn-ghost" type="button" data-search-trigger>Search <kbd>⌘K</kbd></button>
   </div>
 </div>`)
 }

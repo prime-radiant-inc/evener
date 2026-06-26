@@ -89,10 +89,15 @@
   --radius-md:   5px;
   --radius-pill: 999px;
 
-  /* Motion — three durations, one easing. See design language §1.5. */
-  --motion-fast: 100ms ease;
-  --motion-base: 160ms ease;
-  --motion-slow: 240ms ease;
+  /* Motion — three durations on one shared easing curve. The curve is a crisp
+     ease-out (decelerate): UI reacts fast, settles softly. --ease-emphasis adds
+     a faint, controlled overshoot for "pop" moments (press, new content) — used
+     sparingly. All of this collapses to instant under prefers-reduced-motion. */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-emphasis: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --motion-fast: 110ms var(--ease);
+  --motion-base: 180ms var(--ease);
+  --motion-slow: 260ms var(--ease);
   --pulse-cycle: 1400ms ease-in-out;
   --flash-cycle: 2000ms ease-out;
 
@@ -232,6 +237,43 @@
   }
 }
 
+/* ── Motion polish ─────────────────────────────────────────────────────────
+   Purposeful motion on state changes only — never ambient animation that could
+   masquerade as "the agent is working". Every rule here collapses to instant
+   under the reduced-motion override above. The new directive: the app should
+   feel alive and crafted when you act on it, while honest about liveness. */
+
+/* Opening a session: the transcript settles in once, softly. #conversation is
+   created fresh per session open, so this plays on navigation, not on the live
+   token-by-token appends that happen within an already-open session. */
+.conversation { animation: conversation-reveal var(--motion-slow) both; }
+@keyframes conversation-reveal { from { opacity: 0; } to { opacity: 1; } }
+
+/* Press feedback for the controls that read as real buttons (the quiet,
+   chrome-stripped inline actions opt out to avoid nudging tight rows). A small
+   settle on release, on the emphasis curve, makes a tap feel physical. */
+.btn:active,
+.btn-primary:active,
+.app-nav-toggle:active,
+.sidebar-action:active,
+.composer-send:active,
+#send-btn:active { transform: translateY(0.5px) scale(0.97); transition-timing-function: var(--ease-emphasis); }
+
+/* Interactive transcript rows acknowledge the pointer with a hairline-quiet
+   wash, so it reads as "clickable to expand" without adding a containment box. */
+.tool-call { border-radius: var(--radius-md); transition: background var(--motion-fast); }
+.tool-call:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.notification-card,
+.subs { transition: border-color var(--motion-base); }
+.notification-card:hover { border-color: color-mix(in srgb, var(--text) 14%, var(--rule)); }
+
+/* The "↓ N new" pill arrives with a soft pop rather than blinking into place. */
+.new-content-pill { animation: pill-pop var(--motion-base) var(--ease-emphasis) both; }
+@keyframes pill-pop {
+  from { opacity: 0; transform: translateX(-50%) translateY(6px) scale(0.96); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
 /* ── Universal focus ring (Pass 5) ────────────────────────────────────────
    :where() gives this rule zero specificity so per-component overrides
    with negative offsets win. See design language §6.1. */
@@ -326,7 +368,7 @@ section.panel h2 { margin-top: 0; font-family: var(--font-mono); font-size: var(
   flex: 1;
 }
 
-button, input[type=submit], a.btn {
+button, input[type=submit], .btn {
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--border);
@@ -334,8 +376,14 @@ button, input[type=submit], a.btn {
   padding: var(--space-3) var(--space-4);
   font-size: var(--text-base);
   cursor: pointer;
+  text-decoration: none;
+  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), transform var(--motion-fast);
 }
-button:hover, a.btn:hover { background: var(--border); }
+/* Base hover only for the unstyled .btn; variants (.btn-primary/-secondary/
+   -ghost) own their own hover. Using a class selector here keeps specificity at
+   parity with the variants so the later variant rules win (an element-qualified
+   a.btn base would otherwise override .btn-primary's background). */
+button:not([class*="btn-"]):hover, .btn:not([class*="btn-"]):hover { background: var(--border); }
 button.danger { color: var(--error); }
 input[type=text], textarea, select {
   background: var(--bg);
@@ -1289,20 +1337,16 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .workspace-title-row { display: flex; align-items: center; gap: var(--space-4); }
 .workspace-title { display: flex; align-items: baseline; gap: var(--space-3); flex: 1; min-width: 0; }
 .workspace-title .title { font-weight: 600; font-size: var(--text-lg); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-/* Inline workspace-header hamburger — visible on phone only. The
-   button takes the leftmost slot in .workspace-title-row so partials
-   without a header (empty state, settings) don't need their own
-   hamburger; those partials now lose the hamburger affordance, which
-   is acceptable because the sidebar tap-out + ⌘B + the search palette
-   all remain available. */
-.header-hamburger {
+/* Persistent app-shell nav toggle (.app-nav-toggle, in app.html) — the single
+   mobile affordance for reaching the off-canvas sidebar from ANY page. Hidden
+   on desktop where the sidebar is always present; the phone rules (fixed chip,
+   top-left) live in the mobile media query. */
+.app-nav-toggle {
   display: none;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
   padding: 0;
-  background: transparent;
+  background: var(--bg-raised);
   border: 1px solid var(--rule);
   border-radius: var(--radius-md);
   color: var(--text);
@@ -1311,7 +1355,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   cursor: pointer;
   flex-shrink: 0;
 }
-.header-hamburger:hover { background: var(--bg-raised); }
+.app-nav-toggle:hover { background: var(--surface-secondary); }
 .workspace-meta {
   margin-top: 3px;
   display: flex;
@@ -1355,6 +1399,11 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   min-height: 0;
   padding: var(--space-5) var(--space-6);
   overflow-y: auto;
+  /* Systemic guard: the transcript column never scrolls sideways. Wrapping is
+     enforced on prose/labels and machine-text blocks (<pre>) carry their own
+     contained horizontal scroll, so clipping here only kills the column-wide
+     scrollbar that any one stray wide element would otherwise introduce. */
+  overflow-x: clip;
   font-size: var(--text-md);
   line-height: var(--leading-snug);
   color: var(--text);
@@ -1362,6 +1411,13 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   container-name: conversation;
   --tool-indent: 36px;
 }
+
+/* Safety net: no machine-text block may force the whole transcript column to
+   scroll sideways. Any <pre> in the conversation is capped to its container and
+   given its own contained horizontal scroll, so a long unbroken line scrolls
+   inside its box rather than introducing a column-wide horizontal scrollbar.
+   Blocks that opt into wrapping (pre-wrap) simply never trigger the scroll. */
+.conversation pre { max-width: 100%; overflow-x: auto; }
 
 /* ── New-content pill ──────────────────────────────────────────────────────
    Floating "↓ N new" affordance shown when the transcript appends content
@@ -1734,9 +1790,11 @@ button.composer-model-value:hover { text-decoration: underline; }
   align-items: baseline;
   gap: var(--space-4);
   margin-bottom: var(--space-5);
-  padding-top: 22px;
+  padding-top: var(--space-7);
   position: relative;
 }
+/* No oversized gap above the very first exchange in the transcript. */
+.conversation > .user-message:first-child { padding-top: var(--space-2); }
 .user-message-tag {
   flex: none;
   font-size: var(--text-xs);
@@ -1802,17 +1860,27 @@ button.composer-model-value:hover { text-decoration: underline; }
 .image-lightbox-next { right: var(--space-5); }
 .image-lightbox-pos { position: fixed; top: var(--space-5); right: var(--space-5); color: #fff; font-family: var(--font-mono); font-size: var(--text-xs); opacity: 0.75; font-variant-numeric: tabular-nums; }
 .assistant-message {
-  margin-bottom: var(--space-5);
+  margin-bottom: var(--space-6);
   max-width: 680px;
-  font-size: var(--text-md);
-  line-height: var(--leading-snug);
+  font-size: var(--text-lg);
+  line-height: var(--leading-normal);
   color: var(--text);
+  letter-spacing: -0.003em;
+  overflow-wrap: break-word;
 }
+/* Paragraph rhythm inside the hero prose: real spacing between paragraphs and
+   lists so the agent's message reads as composed writing, not a run-on block. */
+.assistant-message > p { margin: 0 0 var(--space-4); }
+.assistant-message > p:last-child { margin-bottom: 0; }
+.assistant-message > ul,
+.assistant-message > ol { margin: 0 0 var(--space-4); padding-left: var(--space-6); }
+.assistant-message li { margin: var(--space-1) 0; }
+.assistant-message li::marker { color: var(--text-dim); }
 /* Inline code = quiet underline, not a filled chip (mockup #4): a chip
    stipples the hero prose like noise. The underline keeps machine text legible
    while letting the prose read as one unbroken line. Relative font-size so it
    tracks the prose. (--text-dim is a non-text hairline use here — allowed.) */
-.assistant-message code { background: none; padding: 0; border-bottom: 1px solid var(--text-dim); font-family: var(--font-mono); font-size: 0.86em; color: var(--text); }
+.assistant-message code { background: none; padding: 0; border-bottom: 1px solid var(--text-dim); font-family: var(--font-mono); font-size: 0.86em; color: var(--text); overflow-wrap: anywhere; }
 .assistant-message pre { background: var(--bg-raised); padding: var(--space-4) var(--space-5); border-radius: var(--radius-md); overflow-x: auto; font-family: var(--font-mono); font-size: var(--text-sm); }
 
 /* Thinking — the quietest transcript entry (design-system §2.5, §4). A reset
@@ -1925,7 +1993,7 @@ button.composer-model-value:hover { text-decoration: underline; }
 }
 
 /* Annotation tier — tool calls, diffs, subagent references */
-.tool-call { margin: 0 0 var(--space-3) 0; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); display: flex; column-gap: var(--space-3); row-gap: var(--space-2); flex-wrap: wrap; align-items: baseline; }
+.tool-call { margin: 0 0 var(--space-2) 0; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); display: flex; column-gap: var(--space-3); row-gap: var(--space-1); flex-wrap: wrap; align-items: baseline; }
 .tool-call-cluster { margin-bottom: var(--space-5); }
 .tool-call-cluster .tool-call:last-child { margin-bottom: 0; }
 /* Collapsed cluster summary (mockup #6 alt A): while the cluster is live the
@@ -1977,15 +2045,30 @@ button.composer-model-value:hover { text-decoration: underline; }
 .tool-call:focus-within .tool-meta {
   opacity: 1;
 }
+/* The agent's stated purpose for a call. It is context, not the scannable
+   primary (the verb+target line already reads at a glance), and agents write it
+   as full sentences — left loud it stacks into a gray wall that drowns the
+   conversation. So it recedes to a single dim, clamped line and only reveals in
+   full when the row is hovered/focused or expanded. */
 .tool-call .tool-intent {
   flex: 0 0 auto;
   width: calc(100% - 12px - var(--space-3));
-  margin: 0 0 0 calc(12px + var(--space-3));
-  color: var(--text-muted);
+  margin: var(--space-1) 0 0 calc(12px + var(--space-3));
+  color: var(--text-dim);
   font-family: var(--font-sans);
-  font-size: var(--text-sm);
-  font-style: italic;
+  font-size: var(--text-xs);
   line-height: var(--leading-snug);
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.tool-call:hover .tool-intent,
+.tool-call:focus-within .tool-intent,
+.tool-call[data-expanded="true"] .tool-intent {
+  color: var(--text-muted);
+  -webkit-line-clamp: unset;
+  overflow: visible;
 }
 .tool-call[data-expanded] .tool-intent {
   width: calc(100% - 12px - 1ch - var(--space-3) - var(--space-3));
@@ -2383,6 +2466,7 @@ button.composer-model-value:hover { text-decoration: underline; }
   font-size: var(--text-xs);
   color: var(--text-muted);
   line-height: var(--leading-snug);
+  overflow-wrap: anywhere;
 }
 .task-card-hidden { display: none; }
 /* "show all (N)" reveal — dim, indented to match the rows. */
@@ -2415,6 +2499,10 @@ button.composer-model-value:hover { text-decoration: underline; }
   font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
 }
+/* The label flexes and must be allowed to shrink and wrap, or a long unbroken
+   task title pushes the whole card past the column and forces a horizontal
+   scrollbar (min-width:auto is the flexbox default that blocks shrinking). */
+.plan-step { min-width: 0; overflow-wrap: anywhere; }
 /* done — neutral, recedes. No strike (these are completed, not removed). */
 .plan-item.done .plan-glyph { color: var(--state-idle); }
 .plan-item.done .plan-step { color: var(--text-muted); }
@@ -2467,6 +2555,8 @@ button.composer-model-value:hover { text-decoration: underline; }
   background: var(--bg-raised);
   color: var(--text);
   font-size: var(--text-sm);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .notification-card-success { border-left-color: var(--success); }
 .notification-card-warning { border-left-color: var(--state-warning); }
@@ -2488,6 +2578,10 @@ button.composer-model-value:hover { text-decoration: underline; }
 .notification-card-raw { margin-top: var(--space-3); color: var(--text-muted); }
 .notification-card-raw > summary { cursor: pointer; font-size: var(--text-xs); }
 .notification-card-raw pre { margin: var(--space-2) 0 0; padding: var(--space-3); border-radius: var(--radius-md); background: var(--bg); color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The expandable full excerpt is a bare <pre>; without this its long noisy
+   lines (e.g. a wall of unbroken output) blow out the column width. Wrap it. */
+.notification-card-excerpt-full > summary { cursor: pointer; font-size: var(--text-xs); color: var(--text-muted); }
+.notification-card-excerpt-full pre { margin: var(--space-2) 0 0; padding: var(--space-3); border-radius: var(--radius-md); background: var(--bg); color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* Lifecycle events are bookkeeping (design-system §4): a quiet dim one-liner,
    NEVER divider-weight, and with no meaningless "N chars" count (mockup #7
@@ -3202,6 +3296,10 @@ button.composer-model-value:hover { text-decoration: underline; }
 
   /* Single-column layout: workspace fills the screen, sidebar lives off-canvas. */
   body.app { display: block; }
+  /* The drag-to-resize handle is meaningless when the sidebar is an off-canvas
+     drawer. Left in flow it is a full-height, static element that shoves the
+     workspace a whole viewport down (blank screen). Remove it on phone. */
+  #sidebar-resizer { display: none; }
   #sidebar {
     position: fixed;
     top: 0; left: 0; bottom: 0;
@@ -3239,20 +3337,40 @@ button.composer-model-value:hover { text-decoration: underline; }
   }
   #workspace { width: 100%; height: 100vh; }
 
-  /* Inline hamburger visible on phone, leftmost in the title row.
-     Partials don't need to remember a 56px offset anymore. */
-  .header-hamburger { display: inline-flex; width: var(--tap-min); height: var(--tap-min); }
+  /* Reclaim horizontal room on phone: the desktop transcript reserves a wide
+     left gutter (tool indent, 32px card/system indents) that wastes a quarter
+     of a 390px screen. Tighten the column padding and pull the indents in so
+     prose and cards use the full width. */
+  .conversation { padding: var(--space-4) var(--space-4); --tool-indent: 22px; }
+  .notification-card { margin-left: var(--space-4); }
+  .task-card { margin-left: var(--space-4); }
+  .system-line { margin-left: var(--space-4); }
+  .steering { margin-left: 0; }
 
-  /* Workspace header reverts to its standard padding; no fixed-overlay
-     hamburger offset. */
-  .workspace-header { padding: 10px 14px 8px; }
+  /* Persistent nav toggle: a fixed chip at top-left, present on every page.
+     Sits below the drawer/scrim (z-fixed-action < z-overlay/z-drawer) so it is
+     covered while the drawer is open and reappears when it closes. */
+  .app-nav-toggle {
+    display: inline-flex;
+    position: fixed;
+    top: var(--space-3);
+    left: var(--space-3);
+    width: var(--tap-min);
+    height: var(--tap-min);
+    z-index: var(--z-fixed-action);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+  body.has-connection-banner .app-nav-toggle { top: calc(32px + var(--space-3)); }
+
+  /* Page headers reserve a left safe-area so their title/content clears the
+     fixed toggle. All main pages (session, new, settings) use .workspace-header,
+     so one rule covers them; the welcome is centered and needs nothing. */
+  .workspace-header { padding: 10px 14px 8px calc(var(--tap-min) + var(--space-3)); }
   .workspace-title-row { gap: 8px; flex-wrap: wrap; }
   .workspace-actions { gap: 4px; flex-wrap: wrap; }
   .panel-toggle-icon { display: none; }
   .workspace-meta { font-size: 11px; gap: var(--space-3); }
 
-  /* Empty state and other workspace partials don't have a header to push;
-     they keep their own padding without needing a hamburger offset. */
   .workspace-empty { padding-top: 64px; }
 
   /* Tasks/details: full screen on mobile so they're actually readable. */
@@ -3268,6 +3386,9 @@ button.composer-model-value:hover { text-decoration: underline; }
   .controls-center { flex: none; }
   .btn-primary kbd { display: none; }
   .input-status { flex-wrap: wrap; }
+  /* The model-picker chip is a 17px-tall inline button on desktop; give it the
+     full tap-min hit area on touch without inflating the visible chip text. */
+  button.composer-model-value { min-height: var(--tap-min); }
 
   /* Search palette: full-screen on mobile so the keyboard doesn't shove it. */
   .search-dialog-inner {
@@ -4010,7 +4131,36 @@ body.has-connection-banner #workspace { height: calc(100vh - 32px); }
   margin-top: var(--space-2);
 }
 /* Per-surface tweaks */
-.empty-state-workspace { padding-top: var(--space-8); }
+/* The hub welcome is the first impression: center it in the workspace and lead
+   with a quiet wordmark, then the value prop, then the actions. A single
+   one-shot reveal stages the three in sequence (reduced-motion → instant). */
+.empty-state-workspace {
+  margin: auto;
+  padding: var(--space-6) var(--space-5);
+  gap: var(--space-4);
+}
+.welcome-wordmark {
+  font-family: var(--font-sans);
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  line-height: 1;
+}
+.welcome-dot { color: var(--accent); }
+.empty-state-workspace .empty-state-title { font-size: var(--text-xl); font-weight: 600; }
+.empty-state-workspace .empty-state-body { max-width: 30rem; }
+.empty-state-workspace .btn-ghost kbd {
+  font-family: var(--font-mono); font-size: var(--text-2xs);
+  padding: 1px 5px; margin-left: var(--space-2);
+  border: 1px solid var(--rule); border-radius: 4px; color: var(--text-muted);
+}
+.empty-state-workspace > * { animation: welcome-rise var(--motion-slow) var(--ease) both; }
+.empty-state-workspace > .welcome-wordmark { animation-delay: 0ms; }
+.empty-state-workspace > .empty-state-title { animation-delay: 50ms; }
+.empty-state-workspace > .empty-state-body { animation-delay: 100ms; }
+.empty-state-workspace > .empty-state-actions { animation-delay: 150ms; }
+@keyframes welcome-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 .empty-state-conversation { padding: var(--space-4) 0; align-items: flex-start; text-align: left; }
 .empty-state-conversation .empty-state-title { font-size: var(--text-base); }
 .empty-state-sidebar { padding: var(--space-4) var(--space-3); }

@@ -432,8 +432,13 @@
       ? window.SerfDiagnostics.render({ severity: "error", source: "hub", title: "Hub spawn error", message })
       : fallbackSpawnDiagnostic(message);
     el.dataset.spawnError = "true";
-    const actions = form.querySelector(".spawn-actions");
-    form.insertBefore(el, actions || null);
+    // Anchor on the attach/spawn ROW, a direct child of the form. The spawn
+    // button lives in .spawn-actions *inside* that row, so using it as the
+    // insertBefore reference throws NotFoundError (the reference must be a
+    // direct child of the element insertBefore is called on). Fall back to
+    // appending if the row is missing.
+    const row = form.querySelector(".spawn-attach-row");
+    form.insertBefore(el, row && row.parentNode === form ? row : null);
   }
 
   function safeEnvFallbacks() {

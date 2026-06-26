@@ -155,3 +155,56 @@ prompt (interactive **and** needs-you — decide which color wins); plan/todo li
 the agent asking the user a question; empty/just-started session; stalled agent; daemon
 disconnect; multi-image gallery; silent-success tool; interrupted turn; failed-then-retried
 tool; and **error-findability** (scroll-track markers + an attention-aware "jump to latest").
+
+---
+
+## 8. Mobile (≤767px)
+
+The hub must work on a phone, not just survive on one. The desktop two-pane layout collapses to
+a single-pane workspace; the sidebar becomes an off-canvas drawer behind the header hamburger.
+
+- **One column.** `#workspace` is the full viewport. The sidebar is `position: fixed`,
+  `translateX(-100%)`, revealed by `body.app[data-sidebar-open]` over a scrim. Anything that is
+  only meaningful in the two-pane layout (the sidebar drag-resizer, side panes, the pane
+  splitter) is **`display: none`** here — an in-flow, full-height element left behind shoves the
+  workspace a whole viewport down (the "blank phone screen" bug).
+- **Reclaim width.** Desktop reserves a wide left gutter (tool indent + 32px card/system
+  indents). On phone that wastes a quarter of the screen — tighten conversation padding to
+  `--s3` and pull the indents in (`--tool-indent: 22px`, cards/system to `--s4`). Prose and
+  cards use the **full** width.
+- **Never scroll sideways.** Long unbroken machine tokens (identifiers in inline code, paths,
+  notification chips) must wrap (`overflow-wrap: anywhere`); flexed labels need `min-width: 0`.
+  The conversation column itself is `overflow-x: clip` as a permanent guard — a `<pre>` of raw
+  output keeps its **own** contained `overflow-x: auto`, but nothing forces a column-wide
+  horizontal scrollbar.
+- **Touch.** `--tap-min: 44px` on phone (desktop is 32px); suppress sticky `:hover` backgrounds
+  under `@media (hover: none)` so a tapped row doesn't stay lit.
+
+## 9. Motion
+
+Principle #5 (minimal, purposeful motion) stands, sharpened — **motion marks state changes; it
+never runs ambiently.** A looping animation that plays while the agent is "working" is forbidden:
+it is indistinguishable from a hang (principle #7). Everything here collapses to instant under
+`@media (prefers-reduced-motion: reduce)`.
+
+- **One easing.** `--ease: cubic-bezier(0.22, 0.61, 0.36, 1)` (crisp ease-out: reacts fast,
+  settles soft) on three durations `--motion-fast 110 / -base 180 / -slow 260`. `--ease-emphasis`
+  (faint overshoot) is reserved for press/pop moments — used sparingly.
+- **Where motion is allowed:** opening a session (one-shot transcript + welcome reveal); a
+  control acknowledging a press (small settle); a quiet hover wash on an interactive row; a
+  panel/drawer sliding; the "↓ N new" pill popping in; the streaming caret and the single live-dot
+  breathe. That is the whole budget.
+- **Where it is forbidden:** per-token reflow on live append; any infinite loop that implies
+  progress; blinking/flashing; motion on the user's own messages.
+
+## 10. Implementation status & dev workflow
+
+The shipping UI now carries the token foundation **and** the conversation-first grammar: assistant
+prose is the reading hero (size + leading + paragraph rhythm); tool calls are quiet one-line rows
+whose verbose per-call intent recedes to a single dim clamped breadcrumb (full text on
+hover/expand); turn boundaries breathe; mobile is single-column and overflow-proof; the motion
+layer above is in place. Remaining from §7's deferred list is still open.
+
+**Dev loop:** set `SERF_HUB_ASSETS_DIR=<repo>/cmd/serf-hub` when launching `serf-hub` to serve
+`assets/` and re-parse `templates/` from disk — CSS/JS edits take effect on reload (templates on
+restart) with no rebuild. Unset in production; assets ship embedded.
