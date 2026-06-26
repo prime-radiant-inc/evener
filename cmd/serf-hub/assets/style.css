@@ -1817,6 +1817,7 @@ button.composer-model-value:hover { text-decoration: underline; }
   line-height: var(--leading-normal);
   color: var(--text);
   letter-spacing: -0.003em;
+  overflow-wrap: break-word;
 }
 /* Paragraph rhythm inside the hero prose: real spacing between paragraphs and
    lists so the agent's message reads as composed writing, not a run-on block. */
@@ -1830,7 +1831,7 @@ button.composer-model-value:hover { text-decoration: underline; }
    stipples the hero prose like noise. The underline keeps machine text legible
    while letting the prose read as one unbroken line. Relative font-size so it
    tracks the prose. (--text-dim is a non-text hairline use here — allowed.) */
-.assistant-message code { background: none; padding: 0; border-bottom: 1px solid var(--text-dim); font-family: var(--font-mono); font-size: 0.86em; color: var(--text); }
+.assistant-message code { background: none; padding: 0; border-bottom: 1px solid var(--text-dim); font-family: var(--font-mono); font-size: 0.86em; color: var(--text); overflow-wrap: anywhere; }
 .assistant-message pre { background: var(--bg-raised); padding: var(--space-4) var(--space-5); border-radius: var(--radius-md); overflow-x: auto; font-family: var(--font-mono); font-size: var(--text-sm); }
 
 /* Thinking — the quietest transcript entry (design-system §2.5, §4). A reset
@@ -2500,6 +2501,8 @@ button.composer-model-value:hover { text-decoration: underline; }
   background: var(--bg-raised);
   color: var(--text);
   font-size: var(--text-sm);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .notification-card-success { border-left-color: var(--success); }
 .notification-card-warning { border-left-color: var(--state-warning); }
@@ -3279,6 +3282,16 @@ button.composer-model-value:hover { text-decoration: underline; }
     z-index: var(--z-overlay, 800);
   }
   #workspace { width: 100%; height: 100vh; }
+
+  /* Reclaim horizontal room on phone: the desktop transcript reserves a wide
+     left gutter (tool indent, 32px card/system indents) that wastes a quarter
+     of a 390px screen. Tighten the column padding and pull the indents in so
+     prose and cards use the full width. */
+  .conversation { padding: var(--space-4) var(--space-4); --tool-indent: 22px; }
+  .notification-card { margin-left: var(--space-4); }
+  .task-card { margin-left: var(--space-4); }
+  .system-line { margin-left: var(--space-4); }
+  .steering { margin-left: 0; }
 
   /* Inline hamburger visible on phone, leftmost in the title row.
      Partials don't need to remember a 56px offset anymore. */
