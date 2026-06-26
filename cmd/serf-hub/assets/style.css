@@ -368,7 +368,7 @@ section.panel h2 { margin-top: 0; font-family: var(--font-mono); font-size: var(
   flex: 1;
 }
 
-button, input[type=submit], a.btn {
+button, input[type=submit], .btn {
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--border);
@@ -376,9 +376,14 @@ button, input[type=submit], a.btn {
   padding: var(--space-3) var(--space-4);
   font-size: var(--text-base);
   cursor: pointer;
+  text-decoration: none;
   transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), transform var(--motion-fast);
 }
-button:hover, a.btn:hover { background: var(--border); }
+/* Base hover only for the unstyled .btn; variants (.btn-primary/-secondary/
+   -ghost) own their own hover. Using a class selector here keeps specificity at
+   parity with the variants so the later variant rules win (an element-qualified
+   a.btn base would otherwise override .btn-primary's background). */
+button:not([class*="btn-"]):hover, .btn:not([class*="btn-"]):hover { background: var(--border); }
 button.danger { color: var(--error); }
 input[type=text], textarea, select {
   background: var(--bg);
@@ -4117,7 +4122,36 @@ body.has-connection-banner #workspace { height: calc(100vh - 32px); }
   margin-top: var(--space-2);
 }
 /* Per-surface tweaks */
-.empty-state-workspace { padding-top: var(--space-8); }
+/* The hub welcome is the first impression: center it in the workspace and lead
+   with a quiet wordmark, then the value prop, then the actions. A single
+   one-shot reveal stages the three in sequence (reduced-motion → instant). */
+.empty-state-workspace {
+  margin: auto;
+  padding: var(--space-6) var(--space-5);
+  gap: var(--space-4);
+}
+.welcome-wordmark {
+  font-family: var(--font-sans);
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  line-height: 1;
+}
+.welcome-dot { color: var(--accent); }
+.empty-state-workspace .empty-state-title { font-size: var(--text-xl); font-weight: 600; }
+.empty-state-workspace .empty-state-body { max-width: 30rem; }
+.empty-state-workspace .btn-ghost kbd {
+  font-family: var(--font-mono); font-size: var(--text-2xs);
+  padding: 1px 5px; margin-left: var(--space-2);
+  border: 1px solid var(--rule); border-radius: 4px; color: var(--text-muted);
+}
+.empty-state-workspace > * { animation: welcome-rise var(--motion-slow) var(--ease) both; }
+.empty-state-workspace > .welcome-wordmark { animation-delay: 0ms; }
+.empty-state-workspace > .empty-state-title { animation-delay: 50ms; }
+.empty-state-workspace > .empty-state-body { animation-delay: 100ms; }
+.empty-state-workspace > .empty-state-actions { animation-delay: 150ms; }
+@keyframes welcome-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 .empty-state-conversation { padding: var(--space-4) 0; align-items: flex-start; text-align: left; }
 .empty-state-conversation .empty-state-title { font-size: var(--text-base); }
 .empty-state-sidebar { padding: var(--space-4) var(--space-3); }
