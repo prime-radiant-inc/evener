@@ -160,6 +160,7 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/spawn", s.handleApiSpawn)
 	mux.HandleFunc("/api/models", s.handleApiModels)
 	mux.HandleFunc("/api/dirs", s.handleApiDirs)
+	mux.HandleFunc("/api/dirs/create", s.handleAPIDirCreate)
 	mux.HandleFunc("/api/path/validate", s.handleAPIPathValidate)
 	mux.HandleFunc("/api/git/head", s.handleApiGitHead)
 	mux.HandleFunc("/api/search", s.handleApiSearch)

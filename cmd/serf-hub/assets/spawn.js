@@ -425,6 +425,15 @@
     return el;
   }
 
+  // Insert a banner just above the attach/spawn row. The row is a direct child
+  // of the form; .spawn-actions inside it is NOT, and insertBefore requires the
+  // reference node to be a direct child (else it throws NotFoundError). Falls
+  // back to appending when the row is absent.
+  function insertAboveSpawnRow(form, el) {
+    const row = form.querySelector(".spawn-attach-row");
+    form.insertBefore(el, row && row.parentNode === form ? row : null);
+  }
+
   function renderSpawnError(form, err) {
     clearSpawnError(form);
     const message = spawnFailureMessage(err);
@@ -432,13 +441,89 @@
       ? window.SerfDiagnostics.render({ severity: "error", source: "hub", title: "Hub spawn error", message })
       : fallbackSpawnDiagnostic(message);
     el.dataset.spawnError = "true";
-    // Anchor on the attach/spawn ROW, a direct child of the form. The spawn
-    // button lives in .spawn-actions *inside* that row, so using it as the
-    // insertBefore reference throws NotFoundError (the reference must be a
-    // direct child of the element insertBefore is called on). Fall back to
-    // appending if the row is missing.
-    const row = form.querySelector(".spawn-attach-row");
-    form.insertBefore(el, row && row.parentNode === form ? row : null);
+    insertAboveSpawnRow(form, el);
+  }
+
+  // Inline confirmation asking whether to create a not-yet-existing working
+  // directory. Resolves true (create) / false (cancel). Rendered in-form rather
+  // than via a native dialog to match the rest of the spawn UI.
+  function confirmCreateDir(form, displayPath) {
+    clearSpawnError(form);
+    return new Promise((resolve) => {
+      const el = document.createElement("div");
+      el.className = "spawn-confirm";
+      el.dataset.spawnConfirm = "true";
+      el.setAttribute("role", "alertdialog");
+
+      const msg = document.createElement("div");
+      msg.className = "spawn-confirm-message";
+      const strong = document.createElement("span");
+      strong.className = "spawn-confirm-path";
+      strong.textContent = displayPath;
+      msg.append("The directory ", strong, " doesn’t exist yet. Create it and start the session?");
+      el.appendChild(msg);
+
+      const actions = document.createElement("div");
+      actions.className = "spawn-confirm-actions";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "btn btn-ghost";
+      cancel.textContent = "Cancel";
+      const create = document.createElement("button");
+      create.type = "button";
+      create.className = "btn btn-primary";
+      create.textContent = "Create & start";
+      actions.append(cancel, create);
+      el.appendChild(actions);
+
+      const done = (result) => { el.remove(); resolve(result); };
+      cancel.addEventListener("click", () => done(false));
+      create.addEventListener("click", () => done(true));
+
+      insertAboveSpawnRow(form, el);
+      create.focus();
+    });
+  }
+
+  // Pre-flight for the proposed working directory. Returns true when the spawn
+  // may proceed (the directory exists, or the user agreed to create it and it
+  // was created); false when the user cancelled or it can't be used (a
+  // diagnostic is shown in that case). Fails OPEN on any check error so a
+  // flaky validate never blocks a spawn — the daemon still reports real issues.
+  async function ensureWorkingDir(form, dir) {
+    let state;
+    try {
+      const resp = await fetch("/api/path/validate?path=" + encodeURIComponent(dir) + "&kind=dir");
+      state = await resp.json();
+    } catch (e) {
+      return true;
+    }
+    if (!state || state.valid !== false) return true;
+    const err = (state.error || "").toString();
+    // Validator's deterministic messages for problems that creating a directory
+    // would NOT fix — surface them instead of offering to create.
+    if (err === "path is not a directory" || err === "absolute path required" || err === "path is required") {
+      renderSpawnError(form, new Error("Working directory: " + err));
+      return false;
+    }
+    // Otherwise the path simply isn't there yet — offer to create it.
+    const displayPath = state.path || dir;
+    if (!(await confirmCreateDir(form, displayPath))) return false;
+    try {
+      const resp = await fetch("/api/dirs/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: dir }),
+      });
+      if (resp.ok) return true;
+      let detail = "HTTP " + resp.status;
+      try { const j = await resp.json(); if (j && j.error) detail = j.error; } catch (_) { /* keep status */ }
+      renderSpawnError(form, new Error("Couldn’t create " + displayPath + ": " + detail));
+      return false;
+    } catch (e) {
+      renderSpawnError(form, new Error("Couldn’t create " + displayPath + ": " + ((e && e.message) || e)));
+      return false;
+    }
   }
 
   function safeEnvFallbacks() {
@@ -1103,6 +1188,10 @@
         // appwire.InputItem.Data).
         attachments,
       };
+      // If the proposed working directory doesn't exist yet, offer to create it
+      // before spawning (rather than letting the daemon fail to launch in it).
+      const proposedDir = (body.working_dir || "").trim();
+      if (proposedDir && !(await ensureWorkingDir(form, proposedDir))) return;
       // Persist sticky defaults (excluding the prompt override and the
       // ephemeral attachments list).
       saveDefaults({

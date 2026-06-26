@@ -2646,6 +2646,23 @@ button.composer-model-value:hover { text-decoration: underline; }
   background: var(--surface-secondary); color: var(--text-muted);
 }
 .spawn-form .diagnostic { margin: 0; max-width: none; }
+/* Inline "create this directory?" confirmation shown above the spawn row when
+   the proposed working dir doesn't exist. An amber rail (needs-you), not red —
+   nothing has failed; the user just needs to decide. */
+.spawn-confirm {
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--state-awaiting);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  animation: welcome-rise var(--motion-base) var(--ease) both;
+}
+.spawn-confirm-message { color: var(--text); line-height: var(--leading-snug); }
+.spawn-confirm-path { font-family: var(--font-mono); color: var(--text); overflow-wrap: anywhere; }
+.spawn-confirm-actions { display: flex; gap: var(--space-3); justify-content: flex-end; }
 /* Spawn-advanced — the <details> toggle for the per-launch override panel. */
 .spawn-advanced { color: var(--text-muted); font-size: var(--text-sm); }
 .spawn-advanced summary { cursor: pointer; padding: var(--space-2) 0; font-family: var(--font-mono); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.16em; color: var(--text-muted); }
