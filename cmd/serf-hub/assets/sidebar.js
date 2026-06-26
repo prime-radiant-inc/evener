@@ -202,6 +202,78 @@
     applyLiveStagger(document);
   }
 
+  // --- Ephemeral disclosure preservation across sidebar swaps ----------------
+  // The sidebar re-renders by replacing #sidebar's innerHTML on every archive
+  // action and every notification-driven refresh. Native <details> and the
+  // JS-toggled cluster/subagent folds carry no server "open" marker, so they'd
+  // snap shut on each swap. Snapshot what's open just before the swap, reapply
+  // it just after. (Project collapse is preserved separately via localStorage.)
+  var disclosureSnapshot = null;
+
+  function projectKeyOf(el) {
+    var sec = el.closest("[data-project-key]");
+    return sec ? sec.getAttribute("data-project-key") : null;
+  }
+
+  function snapshotDisclosures(root) {
+    var snap = { archivedTiers: {}, subagents: {}, clusters: {}, archivedProjects: false };
+    var tiers = root.querySelectorAll("details.session-tier.archived");
+    for (var i = 0; i < tiers.length; i++) {
+      var tk = projectKeyOf(tiers[i]);
+      if (tk && tiers[i].open) snap.archivedTiers[tk] = true;
+    }
+    var subs = root.querySelectorAll(".project-children[data-subagents-expanded]");
+    for (var j = 0; j < subs.length; j++) {
+      var sk = projectKeyOf(subs[j]);
+      if (sk) snap.subagents[sk] = true;
+    }
+    var clusters = root.querySelectorAll(".session-cluster[data-cluster-expanded]");
+    for (var c = 0; c < clusters.length; c++) {
+      var ck = clusters[c].getAttribute("data-cluster-key");
+      if (ck) snap.clusters[ck] = true;
+    }
+    var ap = root.querySelector(".archived-projects details");
+    snap.archivedProjects = !!(ap && ap.open);
+    return snap;
+  }
+
+  function restoreDisclosures(root, snap) {
+    if (!snap) return;
+    var tiers = root.querySelectorAll("details.session-tier.archived");
+    for (var i = 0; i < tiers.length; i++) {
+      var tk = projectKeyOf(tiers[i]);
+      if (tk && snap.archivedTiers[tk]) tiers[i].open = true;
+    }
+    var subs = root.querySelectorAll(".project-children");
+    for (var j = 0; j < subs.length; j++) {
+      var sk = projectKeyOf(subs[j]);
+      if (sk && snap.subagents[sk]) setSubagentsExpanded(subs[j], true);
+    }
+    var clusters = root.querySelectorAll(".session-cluster");
+    for (var c = 0; c < clusters.length; c++) {
+      var ck = clusters[c].getAttribute("data-cluster-key");
+      if (ck && snap.clusters[ck]) setClusterExpanded(clusters[c], true);
+    }
+    if (snap.archivedProjects) {
+      var ap = root.querySelector(".archived-projects details");
+      if (ap) ap.open = true;
+    }
+  }
+
+  function isSidebarSwap(e) {
+    var t = e && e.target;
+    return !!(t && (t.id === "sidebar" || (t.closest && t.closest("#sidebar"))));
+  }
+
+  document.addEventListener("htmx:beforeSwap", function (e) {
+    if (isSidebarSwap(e)) disclosureSnapshot = snapshotDisclosures(e.target);
+  });
+  document.addEventListener("htmx:afterSwap", function (e) {
+    if (!isSidebarSwap(e)) return;
+    restoreDisclosures(e.target, disclosureSnapshot);
+    disclosureSnapshot = null;
+  });
+
   var sidebarRefreshTimer = null;
   function scheduleSidebarRefresh() {
     if (!window.htmx || !document.body) return;
@@ -268,10 +340,23 @@
     if (!btn) return;
     e.preventDefault();
     e.stopPropagation();
+    if (btn.disabled) return; // request already in flight — ignore repeat clicks
     var kind = btn.getAttribute("data-archive-kind");
     var id = btn.getAttribute("data-archive-id");
     if (!kind || !id) return;
     var archived = !isInsideArchivedContainer(btn);
+    // Optimistic feedback: dim the affected row/section and spin the button the
+    // instant it's clicked, so the action feels responsive across the two
+    // network hops (POST, then the full sidebar refresh) before the swap lands.
+    // The swap then replaces this DOM with server truth — restoring the row if
+    // the POST failed.
+    var target = kind === "project" ? btn.closest("[data-project-key]") : btn.closest(".sb-row-wrap");
+    if (target) {
+      target.classList.add("archiving");
+      target.setAttribute("aria-busy", "true");
+    }
+    btn.disabled = true;
+    btn.setAttribute("aria-busy", "true");
     window.fetch("/api/archive", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -290,6 +375,30 @@
   // its own label between "Completed (N)" and "− hide". Not persisted: subagent
   // rows are ephemeral and the parent project's collapse state already governs
   // visibility across re-renders.
+  // setSubagentsExpanded flips a project-children container's subagent fold and
+  // syncs every "Completed (N)" toggle inside it: aria-expanded plus the label
+  // swap between "Completed (N)" (remembered in dataset.collapsedLabel) and
+  // "− hide". Shared by the click handler and the post-swap restore.
+  function setSubagentsExpanded(children, expanded) {
+    if (expanded) {
+      children.setAttribute("data-subagents-expanded", "");
+    } else {
+      children.removeAttribute("data-subagents-expanded");
+    }
+    var toggles = children.querySelectorAll(".subagent-toggle");
+    for (var i = 0; i < toggles.length; i++) {
+      var toggle = toggles[i];
+      if (expanded) {
+        if (!toggle.dataset.collapsedLabel) toggle.dataset.collapsedLabel = toggle.textContent;
+        toggle.setAttribute("aria-expanded", "true");
+        toggle.textContent = "− hide";
+      } else {
+        toggle.setAttribute("aria-expanded", "false");
+        if (toggle.dataset.collapsedLabel) toggle.textContent = toggle.dataset.collapsedLabel;
+      }
+    }
+  }
+
   function onSubagentToggle(e) {
     var toggle = e.target.closest(".subagent-toggle");
     if (!toggle) return;
@@ -297,18 +406,7 @@
     e.stopPropagation();
     var children = toggle.closest(".project-children");
     if (!children) return;
-    var expanded = children.hasAttribute("data-subagents-expanded");
-    if (expanded) {
-      children.removeAttribute("data-subagents-expanded");
-      toggle.setAttribute("aria-expanded", "false");
-      if (toggle.dataset.collapsedLabel) toggle.textContent = toggle.dataset.collapsedLabel;
-    } else {
-      // Remember the "Completed (N)" label so we can restore it on collapse.
-      toggle.dataset.collapsedLabel = toggle.textContent;
-      children.setAttribute("data-subagents-expanded", "");
-      toggle.setAttribute("aria-expanded", "true");
-      toggle.textContent = "− hide";
-    }
+    setSubagentsExpanded(children, !children.hasAttribute("data-subagents-expanded"));
   }
   document.addEventListener("click", onSubagentToggle);
 
@@ -351,6 +449,23 @@
   // runs), swaps the chevron glyph, and updates aria-expanded. Not persisted:
   // clusters are recomputed each render and the parent project's collapse state
   // already governs visibility across re-renders.
+  // setClusterExpanded flips a repeated-title cluster's fold and syncs its
+  // header aria-expanded plus the chevron glyph. Shared by the click handler
+  // and the post-swap restore.
+  function setClusterExpanded(cluster, expanded) {
+    var header = cluster.querySelector(".cluster-header");
+    var chevron = cluster.querySelector(".cluster-chevron");
+    if (expanded) {
+      cluster.setAttribute("data-cluster-expanded", "");
+      if (header) header.setAttribute("aria-expanded", "true");
+      if (chevron) chevron.textContent = "▾";
+    } else {
+      cluster.removeAttribute("data-cluster-expanded");
+      if (header) header.setAttribute("aria-expanded", "false");
+      if (chevron) chevron.textContent = "▸";
+    }
+  }
+
   function onClusterToggle(e) {
     var header = e.target.closest(".cluster-header");
     if (!header) return;
@@ -358,17 +473,7 @@
     e.stopPropagation();
     var cluster = header.closest(".session-cluster");
     if (!cluster) return;
-    var expanded = cluster.hasAttribute("data-cluster-expanded");
-    var chevron = header.querySelector(".cluster-chevron");
-    if (expanded) {
-      cluster.removeAttribute("data-cluster-expanded");
-      header.setAttribute("aria-expanded", "false");
-      if (chevron) chevron.textContent = "▸";
-    } else {
-      cluster.setAttribute("data-cluster-expanded", "");
-      header.setAttribute("aria-expanded", "true");
-      if (chevron) chevron.textContent = "▾";
-    }
+    setClusterExpanded(cluster, !cluster.hasAttribute("data-cluster-expanded"));
   }
   document.addEventListener("click", onClusterToggle);
 
