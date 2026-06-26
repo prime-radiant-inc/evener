@@ -350,6 +350,7 @@ func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request)
   <div class="empty-state-actions">
     <a class="btn btn-primary" href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ New session</a>
     <button class="btn btn-ghost" type="button" data-search-trigger>Search <kbd>⌘K</kbd></button>
+    <button class="btn btn-ghost welcome-browse" type="button" data-sidebar-toggle>☰ Browse sessions</button>
   </div>
 </div>`)
 }

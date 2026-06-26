@@ -3367,6 +3367,11 @@ button.composer-model-value:hover { text-decoration: underline; }
      they keep their own padding without needing a hamburger offset. */
   .workspace-empty { padding-top: 64px; }
 
+  /* The welcome has no header/hamburger on phone, so expose sidebar access.
+     Compound selector outranks the later base `.welcome-browse{display:none}`
+     (equal specificity would otherwise lose on source order). */
+  .empty-state-actions .welcome-browse { display: inline-flex; }
+
   /* Tasks/details: full screen on mobile so they're actually readable. */
   .details-panel {
     width: 100%;
@@ -4152,6 +4157,10 @@ body.has-connection-banner #workspace { height: calc(100vh - 32px); }
 .empty-state-workspace > .empty-state-body { animation-delay: 100ms; }
 .empty-state-workspace > .empty-state-actions { animation-delay: 150ms; }
 @keyframes welcome-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+/* On desktop the sidebar is always present; "Browse sessions" only matters on
+   phone, where the sidebar is an off-canvas drawer and the welcome (no session,
+   no header) would otherwise leave no way to reach it. */
+.welcome-browse { display: none; }
 .empty-state-conversation { padding: var(--space-4) 0; align-items: flex-start; text-align: left; }
 .empty-state-conversation .empty-state-title { font-size: var(--text-base); }
 .empty-state-sidebar { padding: var(--space-4) var(--space-3); }
