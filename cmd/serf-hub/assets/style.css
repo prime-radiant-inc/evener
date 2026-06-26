@@ -2314,8 +2314,9 @@ button.composer-model-value:hover { text-decoration: underline; }
 .task-card-row.touched.done { box-shadow: inset 2px 0 0 var(--success); }
 /* cancelled this turn — recedes; a dim bar, matching the struck row. */
 .task-card-row.touched.cancelled { box-shadow: inset 2px 0 0 var(--text-dim); }
-/* "Checked off at" stamp on a completed row — minute-precision wall clock. */
-.task-card-time {
+/* "Checked off at" stamp on a completed row — minute-precision wall clock.
+   Shared by the inline card and the sidebar panel (both use buildTaskRowLine). */
+.task-time {
   margin-left: auto;
   padding-left: var(--space-3);
   font-family: var(--font-mono);
@@ -3104,25 +3105,16 @@ button.composer-model-value:hover { text-decoration: underline; }
 /* Conversation empty state */
 .conversation-empty { color: var(--text-muted); font-size: var(--text-base); padding: var(--space-7) 0; font-style: italic; }
 
-/* Task list panel */
+/* Task list panel. Each row is a <details> whose summary is the shared
+   task-row-line widget (same glyph grammar as the inline task-update card),
+   with the full task fields revealed on expand. */
 .tasks-summary { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); margin: var(--space-4) 0 var(--space-3); }
 .tasks-list { list-style: none; margin: var(--space-3) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-3); }
-.task-row { display: grid; grid-template-columns: 14px 28px auto 1fr auto; gap: var(--space-3); align-items: baseline; padding: var(--space-3) var(--space-3); border-radius: var(--radius-md); font-size: var(--text-sm); line-height: var(--leading-tight); background: var(--bg); border: 1px solid var(--rule); }
-.task-row .task-icon { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
-.task-row .task-id { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
-.task-row .task-type { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.04em; }
-.task-row .task-desc { color: var(--text); word-break: break-word; }
-.task-row .task-deps { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-2xs); }
-.task-status-done .task-icon { color: var(--state-idle); }
-.task-status-done .task-desc { color: var(--text-muted); text-decoration: line-through; }
-.task-status-in-progress { border-color: var(--state-processing); }
-.task-status-in-progress .task-icon { color: var(--state-processing); }
-.task-status-cancelled .task-desc { color: var(--text-muted); text-decoration: line-through; opacity: 0.6; }
-
-/* Sidebar task rows: every row is a <details> with full metadata in <dl>. */
-.tasks-list .task-row { padding: 0; display: block; }
+.tasks-list .task-row { padding: 0; display: block; border-radius: var(--radius-md); background: var(--bg); border: 1px solid var(--rule); }
 .tasks-list .task-row-details { width: 100%; }
-.tasks-list .task-row-details > summary { display: grid; grid-template-columns: 14px 28px 1fr 14px; gap: var(--space-3); align-items: baseline; padding: var(--space-3) var(--space-3); cursor: pointer; list-style: none; user-select: none; }
+.tasks-list .task-row-details > summary { display: flex; align-items: baseline; gap: var(--space-3); padding: var(--space-2) var(--space-3); cursor: pointer; list-style: none; user-select: none; }
+.tasks-list .task-row-line { flex: 1; min-width: 0; padding: 0; }
+.tasks-list .task-row-line .plan-step { word-break: break-word; }
 .tasks-list .task-row-details > summary::-webkit-details-marker { display: none; }
 .tasks-list .task-row-details > summary:hover { background: var(--bg-raised); }
 .tasks-list .task-row-chevron { color: var(--text-dim); font-size: var(--text-md); transition: transform var(--motion-fast); transform: rotate(0deg); }

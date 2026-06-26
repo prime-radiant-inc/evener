@@ -20,9 +20,8 @@
     parseArgs,
     toolIntent,
     classifySteering,
-    planStateClass,
-    planGlyphForStatus,
     touchKind,
+    buildTaskRowLine,
     parseToolState,
     parseToolJSON,
     formatBytes,
@@ -32,8 +31,6 @@
     toolEventTime,
     toolDuration,
     formatToolClock,
-    formatClockShort,
-    taskTimeOf,
     formatToolDuration,
     clip,
     reasoningGist,
@@ -3225,26 +3222,11 @@
         const shown = visible.has(id);
         if (!shown) hidden++;
         const flag = touched.get(id);
-        const row = document.createElement("div");
-        row.className = "task-card-row plan-item " + planStateClass(t.status) +
-          (flag ? " touched " + flag.kind : "") + (shown ? "" : " task-card-hidden");
-        const glyph = document.createElement("span");
-        glyph.className = "plan-glyph";
-        glyph.textContent = planGlyphForStatus(t.status);
-        const step = document.createElement("span");
-        step.className = "plan-step";
-        step.textContent = t.description || t.title || ("#" + id);
-        row.appendChild(glyph);
-        row.appendChild(step);
-        if (t.status === "done") {
-          const when = taskTimeOf(t.completed_at);
-          if (when) {
-            const time = document.createElement("span");
-            time.className = "task-card-time";
-            time.textContent = formatClockShort(when);
-            row.appendChild(time);
-          }
-        }
+        // Shared row widget; the card adds its own flag/fold classes on top.
+        const row = buildTaskRowLine(t);
+        row.classList.add("task-card-row");
+        if (flag) row.classList.add("touched", flag.kind);
+        if (!shown) row.classList.add("task-card-hidden");
         rows.appendChild(row);
         if (flag && flag.note) {
           const noteEl = document.createElement("div");

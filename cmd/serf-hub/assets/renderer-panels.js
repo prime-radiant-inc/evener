@@ -8,7 +8,7 @@
   // loads after renderer-tools.js and before renderer.js. toggleTasksPanel,
   // currentTaskSummary, and updateTasksBadge are the core-facing exports.
 
-  const { partialFetch, sessionPartialPath, rememberTask, clip } =
+  const { partialFetch, sessionPartialPath, rememberTask, clip, buildTaskRowLine } =
     window.SerfRendererInternal;
 
   // Tab title — track sessions awaiting reply for the title-count notification
@@ -319,52 +319,31 @@
     if (done) counts.push(done + " done");
     if (cancelled) counts.push(cancelled + " cancelled");
     parts.push("<div class='tasks-summary'>" + counts.join(" · ") + "</div>");
-
-    parts.push("<ul class='tasks-list'>");
-    for (const t of tasks) {
-      const cls = "task-row task-status-" + (t.status || "open").replace(/_/g, "-");
-      const icon = taskStatusIcon(t.status);
-      const desc = escapeHTML(t.description || "");
-      const id = t.id || "?";
-      const head =
-        "<span class='task-icon'>" + icon + "</span>" +
-        "<span class='task-id'>#" + id + "</span>" +
-        "<span class='task-desc'>" + desc + "</span>";
-
-      const detail = [];
-      if (t.type) {
-        detail.push("<dt>type</dt><dd><span class='task-type-pill'>" + escapeHTML(t.type) + "</span></dd>");
-      }
-      if (t.status) {
-        detail.push("<dt>status</dt><dd>" + escapeHTML(t.status) + "</dd>");
-      }
-      if (Array.isArray(t.depends_on) && t.depends_on.length > 0) {
-        detail.push("<dt>depends on</dt><dd>" + t.depends_on.map(x => "#" + x).join(", ") + "</dd>");
-      }
-      if (t.reasoning_effort) {
-        detail.push("<dt>reasoning</dt><dd>" + escapeHTML(t.reasoning_effort) + "</dd>");
-      }
-      if (t.prompt) {
-        detail.push("<dt>prompt</dt><dd class='task-prompt'>" + escapeHTML(t.prompt) + "</dd>");
-      }
-      if (Array.isArray(t.notes) && t.notes.length > 0) {
-        const notesHTML = t.notes.map((n, i) =>
-          "<li class='task-note'><span class='task-note-num'>" + (i + 1) + "</span>" +
-          "<span class='task-note-text'>" + escapeHTML(n) + "</span></li>"
-        ).join("");
-        detail.push("<dt>notes</dt><dd><ol class='task-notes-list'>" + notesHTML + "</ol></dd>");
-      }
-
-      parts.push(
-        "<li class='" + cls + "'>" +
-        "<details class='task-row-details'>" +
-        "<summary>" + head + "<span class='task-row-chevron'>›</span></summary>" +
-        "<dl class='task-detail'>" + detail.join("") + "</dl>" +
-        "</details></li>"
-      );
-    }
-    parts.push("</ul>");
+    parts.push("<ul class='tasks-list'></ul>");
     panel.innerHTML = parts.join("");
+
+    // The living list shares the task-update card's row grammar (glyph · step ·
+    // checked-off time, with done receding / current breathing) via the shared
+    // buildTaskRowLine widget, then wraps each row in an expandable disclosure
+    // carrying the full task fields.
+    const ul = panel.querySelector(".tasks-list");
+    for (const t of tasks) {
+      const li = document.createElement("li");
+      li.className = "task-row";
+      const details = document.createElement("details");
+      details.className = "task-row-details";
+      const summary = document.createElement("summary");
+      summary.appendChild(buildTaskRowLine(t));
+      const chevron = document.createElement("span");
+      chevron.className = "task-row-chevron";
+      chevron.setAttribute("aria-hidden", "true");
+      chevron.textContent = "›";
+      summary.appendChild(chevron);
+      details.appendChild(summary);
+      details.appendChild(buildTaskDetailList(t));
+      li.appendChild(details);
+      ul.appendChild(li);
+    }
   }
 
   function currentTaskSummary(tasks) {
@@ -398,21 +377,53 @@
     }
   }
 
-  function taskStatusIcon(status) {
-    switch (status) {
-      case "done": return "✓";
-      case "in_progress": return "▶";
-      case "cancelled": return "✕";
-      default: return "○";
+  // buildTaskDetailList builds the <dl> of full task fields revealed when a
+  // sidebar row expands: type · status · depends on · reasoning · prompt ·
+  // notes. Built with textContent (no manual escaping needed).
+  function buildTaskDetailList(t) {
+    const dl = document.createElement("dl");
+    dl.className = "task-detail";
+    const dt = (label) => { const e = document.createElement("dt"); e.textContent = label; return e; };
+    const ddText = (text, cls) => {
+      const e = document.createElement("dd");
+      if (cls) e.className = cls;
+      e.textContent = text;
+      return e;
+    };
+    if (t.type) {
+      const pill = document.createElement("span");
+      pill.className = "task-type-pill";
+      pill.textContent = t.type;
+      const dd = document.createElement("dd");
+      dd.appendChild(pill);
+      dl.append(dt("type"), dd);
     }
-  }
-
-  function escapeHTML(s) {
-    return String(s)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+    if (t.status) dl.append(dt("status"), ddText(t.status));
+    if (Array.isArray(t.depends_on) && t.depends_on.length > 0) {
+      dl.append(dt("depends on"), ddText(t.depends_on.map(x => "#" + x).join(", ")));
+    }
+    if (t.reasoning_effort) dl.append(dt("reasoning"), ddText(t.reasoning_effort));
+    if (t.prompt) dl.append(dt("prompt"), ddText(t.prompt, "task-prompt"));
+    if (Array.isArray(t.notes) && t.notes.length > 0) {
+      const ol = document.createElement("ol");
+      ol.className = "task-notes-list";
+      t.notes.forEach((n, i) => {
+        const li = document.createElement("li");
+        li.className = "task-note";
+        const num = document.createElement("span");
+        num.className = "task-note-num";
+        num.textContent = String(i + 1);
+        const txt = document.createElement("span");
+        txt.className = "task-note-text";
+        txt.textContent = n;
+        li.append(num, txt);
+        ol.appendChild(li);
+      });
+      const dd = document.createElement("dd");
+      dd.appendChild(ol);
+      dl.append(dt("notes"), dd);
+    }
+    return dl;
   }
 
   function toggleDetailsPanel(trigger) {

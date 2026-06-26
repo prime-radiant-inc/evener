@@ -169,7 +169,7 @@ await scenario("task_list update flags changes, keeps context, folds the rest", 
   if (!/shipped it/.test(card.textContent)) return { ok: false, detail: "update note 'shipped it' missing" };
 
   // A completed row carries a checked-off time.
-  const doneTime = card.querySelector(".task-card-row.done .task-card-time");
+  const doneTime = card.querySelector(".task-card-row.done .task-time");
   if (!doneTime || !doneTime.textContent.trim()) return { ok: false, detail: "completed row should show a checked-off time" };
 
   // Expanding show-all reveals the folded rows.

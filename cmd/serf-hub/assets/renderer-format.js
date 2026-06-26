@@ -490,6 +490,34 @@
     }
   }
 
+  // buildTaskRowLine builds the canonical one-line task row shared by the inline
+  // task-update card and the sidebar tasks panel: the status glyph, the
+  // description, and (for a completed task) the checked-off time, carrying the
+  // plan-state grammar class so done recedes / current breathes / pending dims.
+  // The two surfaces add their own wrappers around this shared line.
+  function buildTaskRowLine(task) {
+    const row = document.createElement("div");
+    row.className = "task-row-line plan-item " + planStateClass(task.status);
+    const glyph = document.createElement("span");
+    glyph.className = "plan-glyph";
+    glyph.textContent = planGlyphForStatus(task.status);
+    const step = document.createElement("span");
+    step.className = "plan-step";
+    step.textContent = task.description || task.title || ("#" + task.id);
+    row.appendChild(glyph);
+    row.appendChild(step);
+    if (task.status === "done") {
+      const when = taskTimeOf(task.completed_at);
+      if (when) {
+        const time = document.createElement("span");
+        time.className = "task-time";
+        time.textContent = formatClockShort(when);
+        row.appendChild(time);
+      }
+    }
+    return row;
+  }
+
   function parseToolState(s) {
     if (!s) return null;
     try { return typeof s === "string" ? JSON.parse(s) : s; } catch (e) { return null; }
@@ -641,6 +669,7 @@
     planStateClass,
     planGlyphForStatus,
     touchKind,
+    buildTaskRowLine,
     parseToolState,
     parseToolJSON,
     formatBytes,
