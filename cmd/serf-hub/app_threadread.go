@@ -229,6 +229,31 @@ func replayTurnToAgentTurn(turn hubcore.ReplayTurn) (schema.Turn, map[string]str
 			content = append(content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: thinking})
 		case string(llm.ContentRedThinking):
 			content = append(content, llm.ContentPart{Kind: llm.ContentRedThinking, Thinking: &llm.ThinkingData{Redacted: true}})
+		case string(llm.ContentAudio):
+			if part.Audio == nil {
+				continue
+			}
+			content = append(content, llm.ContentPart{Kind: llm.ContentAudio, Audio: &llm.AudioData{
+				URL:       part.Audio.URL,
+				MediaType: part.Audio.MediaType,
+			}})
+		case string(llm.ContentDocument):
+			if part.Document == nil {
+				continue
+			}
+			content = append(content, llm.ContentPart{Kind: llm.ContentDocument, Document: &llm.DocumentData{
+				URL:       part.Document.URL,
+				MediaType: part.Document.MediaType,
+				FileName:  part.Document.FileName,
+			}})
+		case string(llm.ContentWebSearch):
+			if part.WebSearch == nil {
+				continue
+			}
+			content = append(content, llm.ContentPart{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{
+				Query: part.WebSearch.Query,
+				Raw:   part.WebSearch.Raw,
+			}})
 		case string(llm.ContentImage):
 			if part.Image == nil {
 				continue

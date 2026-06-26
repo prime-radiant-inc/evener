@@ -33,13 +33,27 @@ type ReplayPart struct {
 	Text       string            `json:"text,omitempty"`
 	Thinking   *ReplayThinking   `json:"thinking,omitempty"`
 	Image      *ReplayImage      `json:"image,omitempty"`
+	Audio      *ReplayMedia      `json:"audio,omitempty"`
+	Document   *ReplayMedia      `json:"document,omitempty"`
 	ToolCall   *ReplayToolCall   `json:"tool_call,omitempty"`
 	ToolResult *ReplayToolResult `json:"tool_result,omitempty"`
+	WebSearch  *ReplayWebSearch  `json:"web_search,omitempty"`
 }
 
 type ReplayThinking struct {
 	Text     string `json:"text,omitempty"`
 	Redacted bool   `json:"redacted,omitempty"`
+}
+
+type ReplayMedia struct {
+	URL       string `json:"url,omitempty"`
+	MediaType string `json:"media_type,omitempty"`
+	FileName  string `json:"file_name,omitempty"`
+}
+
+type ReplayWebSearch struct {
+	Query string          `json:"query,omitempty"`
+	Raw   json.RawMessage `json:"raw,omitempty"`
 }
 
 type ReplayImage struct {

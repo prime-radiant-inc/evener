@@ -211,6 +211,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 		}}
 	case schema.TurnUserInput:
 		images := ImagesFromContent(turn.Message.Content, imageProjector)
+		images = append(images, AttachmentsFromContent(turn.Message.Content)...)
 		return []appwire.ThreadItem{{
 			Type:                 "userMessage",
 			ID:                   fmt.Sprintf("item_user_%d", turnIndex),
@@ -226,6 +227,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 		if text == "" && len(images) > 0 {
 			text = ImagePlaceholder(len(images))
 		}
+		images = append(images, AttachmentsFromContent(turn.Message.Content)...)
 		return []appwire.ThreadItem{{
 			Type:   "steering",
 			ID:     fmt.Sprintf("item_steering_%d", turnIndex),
@@ -265,6 +267,26 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 					TurnID: turnID,
 					Text:   "[redacted thinking]",
 					Status: appwire.TurnStatusCompleted,
+				})
+			case llm.ContentWebSearch:
+				if part.WebSearch == nil {
+					continue
+				}
+				query, results := WebSearchProjection(part.WebSearch)
+				args := "{}"
+				if query != "" {
+					if encoded, err := json.Marshal(map[string]string{"query": query}); err == nil {
+						args = string(encoded)
+					}
+				}
+				items = append(items, appwire.ThreadItem{
+					Type:          "commandExecution",
+					ID:            fmt.Sprintf("item_websearch_%d_%d", turnIndex, i),
+					TurnID:        turnID,
+					ToolName:      "web_search",
+					ArgumentsJSON: args,
+					Output:        results,
+					Status:        appwire.TurnStatusCompleted,
 				})
 			case llm.ContentToolCall:
 				if part.ToolCall == nil {
@@ -330,6 +352,107 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 	default:
 		return nil
 	}
+}
+
+// AttachmentsFromContent maps non-image input attachments (audio, documents)
+// into AppWire input items rendered as labeled chips. Images are handled
+// separately by ImagesFromContent because they carry sha-addressed bytes the
+// web UI fetches lazily; audio and documents have no byte-serving path, so a
+// chip naming the file and media type is the honest representation.
+func AttachmentsFromContent(parts []llm.ContentPart) []appwire.InputItem {
+	var out []appwire.InputItem
+	for _, part := range parts {
+		switch part.Kind {
+		case llm.ContentAudio:
+			if part.Audio == nil {
+				continue
+			}
+			out = append(out, appwire.InputItem{Type: "input_audio", MediaType: part.Audio.MediaType, URL: part.Audio.URL})
+		case llm.ContentDocument:
+			if part.Document == nil {
+				continue
+			}
+			out = append(out, appwire.InputItem{Type: "input_document", MediaType: part.Document.MediaType, Name: part.Document.FileName, URL: part.Document.URL})
+		}
+	}
+	return out
+}
+
+// webSearchRaw captures the provider-native web-search payload shapes serf's
+// adapters store in WebSearchData.Raw: OpenAI's web_search_call (action.query),
+// Anthropic's server_tool_use (input.query) and web_search_tool_result
+// (content[]), and Gemini's grounding metadata (webSearchQueries +
+// groundingChunks[]).
+type webSearchRaw struct {
+	Action           struct{ Query string } `json:"action"`
+	Input            struct{ Query string } `json:"input"`
+	WebSearchQueries []string               `json:"webSearchQueries"`
+	GroundingChunks  []struct {
+		Web struct {
+			URI   string `json:"uri"`
+			Title string `json:"title"`
+		} `json:"web"`
+	} `json:"groundingChunks"`
+	Content []struct {
+		Type  string `json:"type"`
+		URL   string `json:"url"`
+		Title string `json:"title"`
+	} `json:"content"`
+}
+
+// WebSearchProjection derives a display query and newline-separated result
+// lines ("Title — URL") from a provider-native web-search content part, so it
+// can render through the existing web_search tool card. Unrecognized payloads
+// still yield the part's Query, keeping the search visible.
+func WebSearchProjection(ws *llm.WebSearchData) (query string, results string) {
+	if ws == nil {
+		return "", ""
+	}
+	query = strings.TrimSpace(ws.Query)
+	var raw webSearchRaw
+	if len(ws.Raw) > 0 {
+		_ = json.Unmarshal(ws.Raw, &raw)
+	}
+	if query == "" {
+		query = firstNonEmpty(raw.Action.Query, raw.Input.Query, strings.Join(raw.WebSearchQueries, "; "))
+	}
+	var lines []string
+	for _, chunk := range raw.GroundingChunks {
+		if line := webSearchResultLine(chunk.Web.Title, chunk.Web.URI); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	for _, c := range raw.Content {
+		if c.Type != "" && c.Type != "web_search_result" {
+			continue
+		}
+		if line := webSearchResultLine(c.Title, c.URL); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return query, strings.Join(lines, "\n")
+}
+
+func webSearchResultLine(title, url string) string {
+	title = strings.TrimSpace(title)
+	url = strings.TrimSpace(url)
+	switch {
+	case title != "" && url != "":
+		return title + " — " + url
+	case title != "":
+		return title
+	default:
+		return url
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // ImagesFromContent maps image content parts into AppWire image items.

@@ -226,6 +226,52 @@ func TestAppItemsFromReplayTurnProjectsRedactedThinking(t *testing.T) {
 	}
 }
 
+func TestAppItemsFromReplayTurnProjectsWebSearch(t *testing.T) {
+	var entry hubcore.ReplayEntry
+	raw := []byte(`{"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[` +
+		`{"kind":"web_search","web_search":{"query":"go context","raw":{"type":"web_search_tool_result","content":[{"type":"web_search_result","url":"https://go.dev/ctx","title":"Context"}]}}}` +
+		`]}}}`)
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("unmarshal replay entry: %v", err)
+	}
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	if len(items) != 1 || items[0].Type != "commandExecution" || items[0].ToolName != "web_search" {
+		t.Fatalf("web_search items=%+v", items)
+	}
+	if !strings.Contains(items[0].ArgumentsJSON, "go context") {
+		t.Fatalf("args missing query: %s", items[0].ArgumentsJSON)
+	}
+	if !strings.Contains(items[0].Output, "Context") || !strings.Contains(items[0].Output, "https://go.dev/ctx") {
+		t.Fatalf("output missing results: %q", items[0].Output)
+	}
+}
+
+func TestAppItemsFromReplayTurnProjectsAudioAndDocument(t *testing.T) {
+	var entry hubcore.ReplayEntry
+	raw := []byte(`{"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[` +
+		`{"kind":"text","text":"summarize"},` +
+		`{"kind":"document","document":{"file_name":"report.pdf","media_type":"application/pdf"}},` +
+		`{"kind":"audio","audio":{"media_type":"audio/wav"}}` +
+		`]}}}`)
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("unmarshal replay entry: %v", err)
+	}
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	if len(items) != 1 || items[0].Type != "userMessage" {
+		t.Fatalf("expected userMessage, got %+v", items)
+	}
+	atts := items[0].Images
+	if len(atts) != 2 {
+		t.Fatalf("expected 2 attachments, got %+v", atts)
+	}
+	if atts[0].Type != "input_document" || atts[0].Name != "report.pdf" {
+		t.Fatalf("document attachment=%+v", atts[0])
+	}
+	if atts[1].Type != "input_audio" || atts[1].MediaType != "audio/wav" {
+		t.Fatalf("audio attachment=%+v", atts[1])
+	}
+}
+
 func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
 	items := appItemsFromReplayTurn("turn_1", 1, hubcore.ReplayTurn{
 		Kind: "ASSISTANT",

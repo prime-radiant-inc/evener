@@ -1,0 +1,45 @@
+{
+  "id": "th_attach",
+  "ref": "local:th_attach",
+  "sessionId": "sess_attach",
+  "source": "local",
+  "status": {
+    "type": "idle"
+  },
+  "turns": [
+    {
+      "id": "turn_1",
+      "items": [
+        {
+          "type": "userMessage",
+          "id": "item_user_1",
+          "turnId": "turn_1",
+          "text": "summarize these",
+          "status": "completed",
+          "images": [
+            { "type": "input_document", "name": "report.pdf", "mediaType": "application/pdf" },
+            { "type": "input_audio", "mediaType": "audio/wav" }
+          ]
+        },
+        {
+          "type": "commandExecution",
+          "id": "item_websearch_1",
+          "turnId": "turn_1",
+          "toolName": "web_search",
+          "callId": "item_websearch_1",
+          "argumentsJson": "{\"query\":\"go context cancellation\"}",
+          "output": "Context — https://go.dev/ctx\nError Handling — https://go.dev/blog/err",
+          "status": "completed"
+        },
+        {
+          "type": "agentMessage",
+          "id": "item_msg_1",
+          "turnId": "turn_1",
+          "text": "Done.",
+          "status": "completed"
+        }
+      ],
+      "status": "completed"
+    }
+  ]
+}

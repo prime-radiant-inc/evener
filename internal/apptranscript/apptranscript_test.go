@@ -218,3 +218,87 @@ func TestProjectTurnMapsRedactedThinkingContent(t *testing.T) {
 		t.Fatalf("agent message item=%+v", items[1])
 	}
 }
+
+func TestProjectTurnProjectsWebSearchCall(t *testing.T) {
+	items := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{
+				Query: "go context cancellation",
+				Raw:   json.RawMessage(`{"type":"web_search_call","status":"completed"}`),
+			}},
+		}},
+	}, map[string]string{}, nil)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 web_search item, got %+v", items)
+	}
+	got := items[0]
+	if got.Type != "commandExecution" || got.ToolName != "web_search" {
+		t.Fatalf("web_search item=%+v", got)
+	}
+	if !strings.Contains(got.ArgumentsJSON, "go context cancellation") {
+		t.Fatalf("args missing query: %s", got.ArgumentsJSON)
+	}
+	if got.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("status=%q", got.Status)
+	}
+}
+
+func TestProjectTurnProjectsWebSearchResultsFromRaw(t *testing.T) {
+	anthropic := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(
+				`{"type":"web_search_tool_result","content":[{"type":"web_search_result","url":"https://go.dev/blog/err","title":"Error Handling"},{"type":"web_search_result","url":"https://go.dev/ctx","title":"Context"}]}`)}},
+		}},
+	}, map[string]string{}, nil)
+	if len(anthropic) != 1 || anthropic[0].Output == "" {
+		t.Fatalf("anthropic web_search results=%+v", anthropic)
+	}
+	for _, want := range []string{"Error Handling", "https://go.dev/blog/err", "Context"} {
+		if !strings.Contains(anthropic[0].Output, want) {
+			t.Fatalf("output missing %q: %q", want, anthropic[0].Output)
+		}
+	}
+
+	gemini := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(
+				`{"webSearchQueries":["golang generics"],"groundingChunks":[{"web":{"uri":"https://go.dev/generics","title":"Generics"}}]}`)}},
+		}},
+	}, map[string]string{}, nil)
+	if len(gemini) != 1 {
+		t.Fatalf("gemini web_search=%+v", gemini)
+	}
+	if !strings.Contains(gemini[0].ArgumentsJSON, "golang generics") {
+		t.Fatalf("gemini query missing: %s", gemini[0].ArgumentsJSON)
+	}
+	if !strings.Contains(gemini[0].Output, "Generics") || !strings.Contains(gemini[0].Output, "https://go.dev/generics") {
+		t.Fatalf("gemini output=%q", gemini[0].Output)
+	}
+}
+
+func TestProjectTurnProjectsAudioAndDocumentAttachments(t *testing.T) {
+	items := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnUserInput,
+		Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "summarize these"},
+			{Kind: llm.ContentDocument, Document: &llm.DocumentData{FileName: "report.pdf", MediaType: "application/pdf"}},
+			{Kind: llm.ContentAudio, Audio: &llm.AudioData{MediaType: "audio/wav"}},
+		}},
+	}, map[string]string{}, nil)
+	if len(items) != 1 || items[0].Type != "userMessage" {
+		t.Fatalf("expected 1 userMessage, got %+v", items)
+	}
+	atts := items[0].Images
+	if len(atts) != 2 {
+		t.Fatalf("expected 2 attachments, got %+v", atts)
+	}
+	if atts[0].Type != "input_document" || atts[0].Name != "report.pdf" || atts[0].MediaType != "application/pdf" {
+		t.Fatalf("document attachment=%+v", atts[0])
+	}
+	if atts[1].Type != "input_audio" || atts[1].MediaType != "audio/wav" {
+		t.Fatalf("audio attachment=%+v", atts[1])
+	}
+}

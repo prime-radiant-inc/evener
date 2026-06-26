@@ -1245,8 +1245,12 @@
       // a card-of-cards. Either way, opening any thumbnail pages through the
       // whole message's set in the shared lightbox (←/→, Esc).
       if (Array.isArray(images) && images.length > 0) {
+        // Non-image attachments (audio, documents) have no byte-serving path,
+        // so they render as labeled file chips rather than thumbnails.
+        const attachments = images.filter((img) => img && (img.type === "input_audio" || img.type === "input_document"));
         const resolved = [];
         for (const img of images) {
+          if (img && (img.type === "input_audio" || img.type === "input_document")) continue;
           const src = this.imageSrc(img);
           if (!src) continue;
           resolved.push({ src, name: (img && img.name) || "" });
@@ -1259,6 +1263,7 @@
         } else if (resolved.length > 1) {
           pill.appendChild(this.buildImageSheet(resolved));
         }
+        if (attachments.length > 0) pill.appendChild(this.buildAttachmentChips(attachments));
       }
       if (text) {
         const t = document.createElement("div");
@@ -1318,6 +1323,30 @@
       };
       if (thumb.complete) stampDims();
       thumb.addEventListener("load", stampDims);
+    },
+
+    // buildAttachmentChips renders non-image input attachments (audio,
+    // documents) as a row of labeled file chips. There is no byte-serving path
+    // for these, so the chip names the file (or media type) and marks the kind
+    // rather than embedding the content.
+    buildAttachmentChips(attachments) {
+      const row = document.createElement("div");
+      row.className = "user-message-attachments";
+      for (const att of attachments) {
+        const chip = document.createElement("span");
+        chip.className = "user-message-attachment";
+        const icon = document.createElement("span");
+        icon.className = "user-message-attachment-icon";
+        icon.textContent = att.type === "input_audio" ? "♪" : "📄";
+        const label = document.createElement("span");
+        label.className = "user-message-attachment-label";
+        label.textContent = att.name || att.media_type || (att.type === "input_audio" ? "audio" : "document");
+        chip.appendChild(icon);
+        chip.appendChild(label);
+        if (att.media_type && att.name) chip.title = att.media_type;
+        row.appendChild(chip);
+      }
+      return row;
     },
 
     // buildSingleImageCard renders the one-image neutral card (today's path).

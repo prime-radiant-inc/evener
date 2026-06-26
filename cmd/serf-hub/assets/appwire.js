@@ -549,6 +549,7 @@
 
   function imagesForUserItem(item) {
     return (item.images || []).map((img) => ({
+      type: img.type || "",
       media_type: img.mediaType || img.media_type || "",
       data: img.data || "",
       url: img.url || "",
