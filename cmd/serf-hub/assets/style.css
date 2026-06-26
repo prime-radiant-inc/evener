@@ -2134,6 +2134,13 @@ button.composer-model-value:hover { text-decoration: underline; }
   max-width: 40%;
   flex: none;
 }
+.sub-r .sub-meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .sub-r .res {
   font-size: var(--text-sm);
   color: var(--text-muted);

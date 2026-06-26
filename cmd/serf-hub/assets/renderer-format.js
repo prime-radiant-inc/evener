@@ -49,13 +49,26 @@
     const outputBytes = data.outputBytes != null ? data.outputBytes : data.output_bytes;
     return {
       jobId: data.jobId || data.job_id || "",
-      jobType: data.jobType || data.job_type || "",
+      jobType: data.jobType || data.job_type || data.type || "",
       status: data.status || "",
       reason: data.reason || "",
       outputBytes,
       transcriptRef: data.transcriptRef || data.transcript_ref || "",
       label: data.label || data.task || data.description || "",
+      delegateId: data.delegateId || data.delegate_id || "",
+      originTurnId: data.originTurnId || data.origin_turn_id || "",
+      originToolCallId: data.originToolCallId || data.origin_tool_call_id || data.call_id || "",
+      originItemId: data.originItemId || data.origin_item_id || data.item_id || "",
     };
+  }
+
+  function shortMachineID(id) {
+    const s = String(id || "").trim();
+    if (s.length <= 18) return s;
+    const prefix = s.startsWith("job_") ? "job " : (s.startsWith("dlg_") ? "delegate " : "");
+    const body = prefix ? s.slice(4) : s;
+    if (body.length <= 14) return prefix + body;
+    return prefix + body.slice(0, 6) + "…" + body.slice(-6);
   }
 
   const transcriptStatusPrefsKey = "serf-hub.transcript.systemStatus";
@@ -752,6 +765,7 @@
     itemDataToBase64,
     imagePlaceholderForCount,
     normalizedJobRefData,
+    shortMachineID,
     transcriptStatusPrefsKey,
     transcriptStatusDefaults,
     readTranscriptStatusPrefs,

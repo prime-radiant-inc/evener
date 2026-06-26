@@ -11,9 +11,10 @@
 // job_read_output / job_list / delegate_send for that job id, not only from a
 // JOB_FINISHED event (which often never arrives).
 const fs = require("fs");
+const path = require("path");
 const { JSDOM } = require("jsdom");
 
-const STYLE_PATH = "../assets/style.css";
+const STYLE_PATH = path.resolve(__dirname, "../assets/style.css");
 const styleSrc = fs.readFileSync(STYLE_PATH, "utf8");
 
 function newHarness() {
@@ -57,7 +58,70 @@ function spawnDelegate(callId, jobId, task, transcriptRef) {
   ];
 }
 
+function jobStarted(jobId, delegateId, task, transcriptRef, callId) {
+  return ["JOB_STARTED", {
+    jobId, jobType: "delegate", status: "running", delegateId, task,
+    transcriptRef, originToolCallId: callId, originItemId: "item_" + callId,
+  }];
+}
+
+function jobFinished(jobId, delegateId, task, transcriptRef, callId, status) {
+  return ["JOB_FINISHED", {
+    jobId, jobType: "delegate", status: status || "completed", delegateId, task,
+    transcriptRef, originToolCallId: callId, originItemId: "item_" + callId, outputBytes: 42,
+  }];
+}
+
 (async () => {
+
+await scenario("JOB_STARTED before delegate TOOL_CALL_END merges into one row", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  jobStarted("job_01KW0LONGSTARTIDABCDEFG", "dlg_01KW0DELEGATEABCDEFG", "inspect billing", "local:child-A", "d1"),
+  ...spawnDelegate("d1", "job_01KW0LONGSTARTIDABCDEFG", "inspect billing", "local:child-A"),
+], ({ conv }) => {
+  const rows = conv.querySelectorAll(".subs .sub-r");
+  if (rows.length !== 1) return { ok: false, detail: "expected one merged row, got " + rows.length };
+  const row = rows[0];
+  if (row.dataset.delegateId !== "dlg_01KW0DELEGATEABCDEFG") return { ok: false, detail: "missing delegateId dataset" };
+  if (row.dataset.fullDelegateId !== "dlg_01KW0DELEGATEABCDEFG") return { ok: false, detail: "missing fullDelegateId dataset" };
+  if (row.dataset.fullJobId !== "job_01KW0LONGSTARTIDABCDEFG") return { ok: false, detail: "missing fullJobId dataset" };
+  if (row.dataset.originToolCallId !== "d1") return { ok: false, detail: "missing origin call dataset" };
+  if (row.dataset.originItemId !== "item_d1") return { ok: false, detail: "missing origin item dataset" };
+  const meta = row.querySelector(".sub-meta");
+  if (!meta || !meta.textContent.includes("job 01KW0L…BCDEFG")) return { ok: false, detail: "missing shortened job metadata: " + (meta && meta.textContent) };
+  if (!meta || meta.textContent.includes("job_01KW0LONGSTARTIDABCDEFG")) return { ok: false, detail: "raw long job id used in metadata: " + (meta && meta.textContent) };
+  if (!row.textContent.includes("inspect billing")) return { ok: false, detail: "task should be primary label: " + row.textContent };
+  if (row.querySelector(".nm").textContent.includes("job_01KW0LONGSTARTIDABCDEFG")) return { ok: false, detail: "raw long job id used as primary label" };
+  return { ok: true };
+});
+
+await scenario("JOB_FINISHED updates originating delegate row", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ...spawnDelegate("d1", "job_A", "inspect billing", "local:child-A"),
+  jobFinished("job_A", "dlg_A", "inspect billing", "local:child-A", "d1", "completed"),
+], ({ conv }) => {
+  const rows = conv.querySelectorAll(".subs .sub-r");
+  if (rows.length !== 1) return { ok: false, detail: "expected one row after finish, got " + rows.length };
+  const glyph = rows[0].querySelector(".g");
+  if (!glyph || !glyph.classList.contains("done")) return { ok: false, detail: "finished row should be done: " + (glyph && glyph.className) };
+  if (rows[0].dataset.status !== "completed") return { ok: false, detail: "status dataset not terminal" };
+  return { ok: true };
+});
+
+await scenario("delegate_send second job creates second row under same delegate", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  jobStarted("job_first", "dlg_same", "inspect billing", "local:child", "d1"),
+  jobFinished("job_first", "dlg_same", "inspect billing", "local:child", "d1", "completed"),
+  jobStarted("job_second", "dlg_same", "inspect billing", "local:child", "send1"),
+], ({ conv }) => {
+  const rows = conv.querySelectorAll('.subs .sub-r[data-delegate-id="dlg_same"]');
+  if (rows.length !== 2) return { ok: false, detail: "expected two runs under delegate, got " + rows.length };
+  const first = conv.querySelector('.sub-r[data-job-id="job_first"] .g');
+  const second = conv.querySelector('.sub-r[data-job-id="job_second"] .g');
+  if (!first || !first.classList.contains("done")) return { ok: false, detail: "first run overwritten or not done" };
+  if (!second || !second.classList.contains("run")) return { ok: false, detail: "second run should be running" };
+  return { ok: true };
+});
 
 await scenario("one module aggregates multiple spawned subagents", [
   ["SESSION_START", { session_id: "01TEST" }],

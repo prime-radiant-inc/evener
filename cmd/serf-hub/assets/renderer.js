@@ -7,6 +7,7 @@
     itemDataToBase64,
     imagePlaceholderForCount,
     normalizedJobRefData,
+    shortMachineID,
     systemMessageDisplayTitle,
     shouldRenderSystemMessage,
     shouldRenderSystemLine,
@@ -132,6 +133,9 @@
       this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
       this.activeTools = new Map();      // callId -> {el, outputBuf}
       this.activeJobs = new Map();       // appwire jobId -> subagent row el
+      this.subagentRowsByDelegate = new Map();   // delegateId -> subagent row els
+      this.subagentRowsByOriginCall = new Map(); // origin tool call id -> subagent row el
+      this.subagentRowsByOriginItem = new Map(); // origin item id -> subagent row el
       this.subagentModule = null;        // current "Subagents (N)" module (per fan-out)
       this.suppressedToolCalls = new Set();
       this.pendingTaskCalls = new Map(); // callId -> args (for system-line rendering on END)
@@ -799,6 +803,9 @@
       this.activeMessages.clear();
       this.activeTools.clear();
       this.activeJobs.clear();
+      this.subagentRowsByDelegate.clear();
+      this.subagentRowsByOriginCall.clear();
+      this.subagentRowsByOriginItem.clear();
       this.suppressedToolCalls.clear();
       this.pendingTaskCalls.clear();
       this.currentMessageId = null;
@@ -894,6 +901,9 @@
             this.activeMessages.clear();
             this.activeTools.clear();
             this.activeJobs.clear();
+            this.subagentRowsByDelegate.clear();
+            this.subagentRowsByOriginCall.clear();
+            this.subagentRowsByOriginItem.clear();
             this.subagentModule = null;
             this.suppressedToolCalls.clear();
             this.pendingTaskCalls.clear();
@@ -2418,16 +2428,36 @@
       return row;
     },
 
-    // findSubagentRow locates a row by jobId. It prefers the current module but
-    // falls back to a transcript-wide scan, because a reconciliation signal
-    // (job_read_output etc.) can arrive after the module was closed by an
-    // intervening entry — and we still want that stale "running" row to flip.
-    findSubagentRow(jobId) {
-      if (!jobId || !this.conversation) return null;
-      for (const row of this.conversation.querySelectorAll(".sub-r")) {
-        if (row.dataset.jobId === jobId) return row;
+    // findSubagentRunRow locates a row by any stable linkage key. Job events can
+    // race with delegate tool output, so origin item/call ids win, then job id,
+    // then the latest still-running row for a delegate.
+    findSubagentRunRow(data) {
+      const norm = normalizedJobRefData(data);
+      if (!this.conversation) return null;
+      const esc = (value) => (window.CSS && window.CSS.escape) ? window.CSS.escape(value) : String(value).replace(/["\\]/g, "\\$&");
+      if (norm.originItemId) {
+        const row = this.subagentRowsByOriginItem.get(norm.originItemId) || this.conversation.querySelector('.sub-r[data-origin-item-id="' + esc(norm.originItemId) + '"]');
+        if (row) return row;
+      }
+      if (norm.originToolCallId) {
+        const row = this.subagentRowsByOriginCall.get(norm.originToolCallId) || this.conversation.querySelector('.sub-r[data-origin-tool-call-id="' + esc(norm.originToolCallId) + '"]');
+        if (row) return row;
+      }
+      if (norm.jobId) {
+        const row = this.activeJobs.get(norm.jobId) || this.conversation.querySelector('.sub-r[data-job-id="' + esc(norm.jobId) + '"]');
+        if (row) return row;
+      }
+      if (norm.delegateId) {
+        const rows = this.subagentRowsByDelegate.get(norm.delegateId) || [];
+        for (let i = rows.length - 1; i >= 0; i--) {
+          if (rows[i] && rows[i].isConnected && rows[i].dataset.statusKind === "running") return rows[i];
+        }
       }
       return null;
+    },
+
+    findSubagentRow(jobId) {
+      return this.findSubagentRunRow({ jobId });
     },
 
     // upsertJobRef creates or updates a subagent row from a payload. Creating
@@ -2440,7 +2470,7 @@
         resultText: (data && data.resultText) || "",
         lastAction: (data && data.lastAction) || "",
       });
-      let row = this.findSubagentRow(merged.jobId);
+      let row = this.findSubagentRunRow(merged);
       if (!row) {
         this.ensureSubagentModule();
         row = this.makeSubagentRow();
@@ -2449,8 +2479,19 @@
       this.updateSubagentRow(row, merged);
       const mod = row.closest(".subs");
       if (mod) this.refreshSubagentModule(mod);
-      if (merged.jobId) this.activeJobs.set(merged.jobId, row);
       return row;
+    },
+
+    indexSubagentRow(row) {
+      if (!row) return;
+      if (row.dataset.jobId) this.activeJobs.set(row.dataset.jobId, row);
+      if (row.dataset.originToolCallId) this.subagentRowsByOriginCall.set(row.dataset.originToolCallId, row);
+      if (row.dataset.originItemId) this.subagentRowsByOriginItem.set(row.dataset.originItemId, row);
+      if (row.dataset.delegateId) {
+        const rows = this.subagentRowsByDelegate.get(row.dataset.delegateId) || [];
+        if (!rows.includes(row)) rows.push(row);
+        this.subagentRowsByDelegate.set(row.dataset.delegateId, rows);
+      }
     },
 
     // updateSubagentRow applies an already-shaped payload (no re-normalization,
@@ -2459,10 +2500,20 @@
       if (!row) return;
       data = data || {};
       if (data.jobId) row.dataset.jobId = data.jobId;
+      if (data.delegateId) {
+        row.dataset.delegateId = data.delegateId;
+        row.dataset.fullDelegateId = data.delegateId;
+      }
+      if (data.originTurnId) row.dataset.originTurnId = data.originTurnId;
+      if (data.originToolCallId) row.dataset.originToolCallId = data.originToolCallId;
+      if (data.originItemId) row.dataset.originItemId = data.originItemId;
+      if (data.jobId) row.dataset.fullJobId = data.jobId;
+      if (data.transcriptRef) row.dataset.transcriptRef = data.transcriptRef;
       if (data.jobType && !row.dataset.jobType) row.dataset.jobType = data.jobType;
       const name = row.querySelector(".nm");
       if (name) {
-        const label = data.label || row.dataset.jobType || data.jobType || data.jobId || "subagent";
+        const label = data.label || row.dataset.label || row.dataset.jobType || data.jobType || "delegate";
+        if (data.label) row.dataset.label = data.label;
         if (label && (!name.textContent || data.label)) name.textContent = clip(label, 80);
       }
       const kind = this.classifyJobStatus(data.status || row.dataset.status || "running");
@@ -2479,6 +2530,8 @@
       this.renderSubagentResult(row, data, kind);
       this.renderSubagentDuration(row, kind);
       this.applyJobRefTarget(row, data);
+      this.renderSubagentMachineMeta(row, data);
+      this.indexSubagentRow(row);
     },
 
     renderSubagentResult(row, data, kind) {
@@ -2516,6 +2569,25 @@
       }
       res.textContent = clip(text, 120);
       row.classList.toggle("res-error", kind === "failed");
+    },
+
+    renderSubagentMachineMeta(row, data) {
+      let meta = row.querySelector(".sub-meta");
+      if (!meta) {
+        meta = document.createElement("span");
+        meta.className = "sub-meta";
+        const res = row.querySelector(".res");
+        row.insertBefore(meta, res || null);
+      }
+      const bits = [];
+      const jobId = data.jobId || row.dataset.jobId || "";
+      const delegateId = data.delegateId || row.dataset.delegateId || "";
+      const transcriptRef = data.transcriptRef || row.dataset.transcriptRef || "";
+      if (jobId) bits.push(shortMachineID(jobId));
+      if (delegateId) bits.push(shortMachineID(delegateId));
+      if (transcriptRef) bits.push("transcript");
+      meta.textContent = bits.join(" · ");
+      meta.title = [jobId && "job " + jobId, delegateId && "delegate " + delegateId, transcriptRef && "transcript " + transcriptRef].filter(Boolean).join("\n");
     },
 
     renderSubagentDuration(row, kind) {
@@ -2719,21 +2791,18 @@
     // arrived. It only updates an EXISTING row (never spawns one from a read).
     reconcileSubagent(info) {
       info = info || {};
-      const jobId = info.jobId || info.job_id || "";
-      if (!jobId) return;
-      const row = this.findSubagentRow(jobId);
+      const norm = normalizedJobRefData(info);
+      const jobId = norm.jobId || "";
+      if (!jobId && !norm.originToolCallId && !norm.originItemId && !norm.delegateId) return;
+      const row = this.findSubagentRunRow(norm);
       if (!row) return;
-      this.updateSubagentRow(row, {
-        jobId,
-        jobType: info.jobType || info.type || row.dataset.jobType || "",
-        status: info.status || "",
-        reason: info.reason || "",
-        outputBytes: info.outputBytes != null ? info.outputBytes : info.output_bytes,
-        transcriptRef: info.transcriptRef || info.transcript_ref || "",
+      this.updateSubagentRow(row, Object.assign({}, norm, {
+        jobType: norm.jobType || row.dataset.jobType || "",
+        status: norm.status || "",
         resultText: info.resultText || "",
         lastAction: info.lastAction || "",
-      });
-      if (this.classifyJobStatus(info.status) !== "running") this.activeJobs.delete(jobId);
+      }));
+      if (jobId && this.classifyJobStatus(norm.status) !== "running") this.activeJobs.delete(jobId);
       const mod = row.closest(".subs");
       if (mod) this.refreshSubagentModule(mod);
     },
@@ -2801,11 +2870,8 @@
       // A standalone JOB_FINISHED (no preceding spawn row) still creates a row
       // for subagent jobs so the completion is visible; otherwise reconcile the
       // existing row. Non-subagent jobs (shell, etc.) stay with their tool cards.
-      if (this.findSubagentRow(jobId)) {
-        this.reconcileSubagent({
-          jobId, jobType: data.jobType, status, reason: data.reason,
-          outputBytes: data.outputBytes, transcriptRef: data.transcriptRef,
-        });
+      if (this.findSubagentRunRow(data)) {
+        this.reconcileSubagent(Object.assign({}, data, { status }));
       } else if (this.shouldRenderJobRefAsSubagent(data)) {
         this.upsertJobRef(Object.assign({}, data, { status }));
       }
@@ -3379,6 +3445,9 @@
         activeMessages: this.activeMessages,
         activeTools: this.activeTools,
         activeJobs: this.activeJobs,
+        subagentRowsByDelegate: this.subagentRowsByDelegate,
+        subagentRowsByOriginCall: this.subagentRowsByOriginCall,
+        subagentRowsByOriginItem: this.subagentRowsByOriginItem,
         suppressedToolCalls: this.suppressedToolCalls,
         pendingTaskCalls: this.pendingTaskCalls,
         currentMessageId: this.currentMessageId,
@@ -3397,6 +3466,9 @@
       this.activeMessages = new Map();
       this.activeTools = new Map();
       this.activeJobs = new Map();
+      this.subagentRowsByDelegate = new Map();
+      this.subagentRowsByOriginCall = new Map();
+      this.subagentRowsByOriginItem = new Map();
       this.suppressedToolCalls = new Set();
       this.pendingTaskCalls = new Map();
       this.currentMessageId = null;
