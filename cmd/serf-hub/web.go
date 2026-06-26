@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"html/template"
-	"io/fs"
 	"net/http"
 	"net/url"
 	"strings"
@@ -66,24 +65,24 @@ var sidebarTemplateFuncs = template.FuncMap{
 
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
 func NewWebServer(cfg hubcore.WebConfig) *WebServer {
-	appTmpl := template.Must(template.ParseFS(templatesFS, "templates/app.html"))
-	sidebarTmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesFS, "templates/partials/sidebar.html"))
-	workspaceTmpl := template.Must(template.ParseFS(templatesFS,
+	appTmpl := template.Must(template.ParseFS(templatesRoot(), "templates/app.html"))
+	sidebarTmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesRoot(), "templates/partials/sidebar.html"))
+	workspaceTmpl := template.Must(template.ParseFS(templatesRoot(),
 		"templates/partials/workspace.html",
 		"templates/partials/input_strip.html",
 	))
-	threadTmpl := template.Must(template.ParseFS(templatesFS,
+	threadTmpl := template.Must(template.ParseFS(templatesRoot(),
 		"templates/thread.html",
 		"templates/partials/workspace.html",
 		"templates/partials/input_strip.html",
 	))
-	spawnTmpl := template.Must(template.ParseFS(templatesFS,
+	spawnTmpl := template.Must(template.ParseFS(templatesRoot(),
 		"templates/partials/spawn.html",
 	))
-	inputStripTmpl := template.Must(template.ParseFS(templatesFS,
+	inputStripTmpl := template.Must(template.ParseFS(templatesRoot(),
 		"templates/partials/input_strip.html",
 	))
-	projectSettingsTmpl := template.Must(template.ParseFS(templatesFS,
+	projectSettingsTmpl := template.Must(template.ParseFS(templatesRoot(),
 		"templates/partials/settings/project.html",
 	))
 	settingsSections := []string{"general", "theme", "transcript", "notifications", "providers", "agents", "launch-serf", "launch-codex", "inrepo", "plugins", "skills", "mcp", "hub", "storage", "credentials"}
@@ -95,7 +94,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		} else {
 			files = append(files, "templates/partials/settings/"+sec+".html")
 		}
-		settingsTmpls[sec] = template.Must(template.ParseFS(templatesFS, files...))
+		settingsTmpls[sec] = template.Must(template.ParseFS(templatesRoot(), files...))
 	}
 	sources := newHubSourceRegistry(cfg)
 	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
@@ -133,9 +132,8 @@ func (s *WebServer) lockForSession(sessionID string) *sync.Mutex {
 func (s *WebServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// Assets
-	sub, _ := fs.Sub(assetsFS, "assets")
-	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(sub))))
+	// Assets — served from disk when SERF_HUB_ASSETS_DIR is set (dev), else embed.
+	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(assetsRoot()))))
 
 	// App-wire RPC
 	mux.HandleFunc("/rpc", s.appRPC.ServeWebSocket)
