@@ -89,10 +89,15 @@
   --radius-md:   5px;
   --radius-pill: 999px;
 
-  /* Motion — three durations, one easing. See design language §1.5. */
-  --motion-fast: 100ms ease;
-  --motion-base: 160ms ease;
-  --motion-slow: 240ms ease;
+  /* Motion — three durations on one shared easing curve. The curve is a crisp
+     ease-out (decelerate): UI reacts fast, settles softly. --ease-emphasis adds
+     a faint, controlled overshoot for "pop" moments (press, new content) — used
+     sparingly. All of this collapses to instant under prefers-reduced-motion. */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-emphasis: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --motion-fast: 110ms var(--ease);
+  --motion-base: 180ms var(--ease);
+  --motion-slow: 260ms var(--ease);
   --pulse-cycle: 1400ms ease-in-out;
   --flash-cycle: 2000ms ease-out;
 
@@ -232,6 +237,43 @@
   }
 }
 
+/* ── Motion polish ─────────────────────────────────────────────────────────
+   Purposeful motion on state changes only — never ambient animation that could
+   masquerade as "the agent is working". Every rule here collapses to instant
+   under the reduced-motion override above. The new directive: the app should
+   feel alive and crafted when you act on it, while honest about liveness. */
+
+/* Opening a session: the transcript settles in once, softly. #conversation is
+   created fresh per session open, so this plays on navigation, not on the live
+   token-by-token appends that happen within an already-open session. */
+.conversation { animation: conversation-reveal var(--motion-slow) both; }
+@keyframes conversation-reveal { from { opacity: 0; } to { opacity: 1; } }
+
+/* Press feedback for the controls that read as real buttons (the quiet,
+   chrome-stripped inline actions opt out to avoid nudging tight rows). A small
+   settle on release, on the emphasis curve, makes a tap feel physical. */
+.btn:active,
+.btn-primary:active,
+.header-hamburger:active,
+.sidebar-action:active,
+.composer-send:active,
+#send-btn:active { transform: translateY(0.5px) scale(0.97); transition-timing-function: var(--ease-emphasis); }
+
+/* Interactive transcript rows acknowledge the pointer with a hairline-quiet
+   wash, so it reads as "clickable to expand" without adding a containment box. */
+.tool-call { border-radius: var(--radius-md); transition: background var(--motion-fast); }
+.tool-call:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.notification-card,
+.subs { transition: border-color var(--motion-base); }
+.notification-card:hover { border-color: color-mix(in srgb, var(--text) 14%, var(--rule)); }
+
+/* The "↓ N new" pill arrives with a soft pop rather than blinking into place. */
+.new-content-pill { animation: pill-pop var(--motion-base) var(--ease-emphasis) both; }
+@keyframes pill-pop {
+  from { opacity: 0; transform: translateX(-50%) translateY(6px) scale(0.96); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
 /* ── Universal focus ring (Pass 5) ────────────────────────────────────────
    :where() gives this rule zero specificity so per-component overrides
    with negative offsets win. See design language §6.1. */
@@ -334,6 +376,7 @@ button, input[type=submit], a.btn {
   padding: var(--space-3) var(--space-4);
   font-size: var(--text-base);
   cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), transform var(--motion-fast);
 }
 button:hover, a.btn:hover { background: var(--border); }
 button.danger { color: var(--error); }
@@ -1355,6 +1398,11 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   min-height: 0;
   padding: var(--space-5) var(--space-6);
   overflow-y: auto;
+  /* Systemic guard: the transcript column never scrolls sideways. Wrapping is
+     enforced on prose/labels and machine-text blocks (<pre>) carry their own
+     contained horizontal scroll, so clipping here only kills the column-wide
+     scrollbar that any one stray wide element would otherwise introduce. */
+  overflow-x: clip;
   font-size: var(--text-md);
   line-height: var(--leading-snug);
   color: var(--text);
@@ -2417,6 +2465,7 @@ button.composer-model-value:hover { text-decoration: underline; }
   font-size: var(--text-xs);
   color: var(--text-muted);
   line-height: var(--leading-snug);
+  overflow-wrap: anywhere;
 }
 .task-card-hidden { display: none; }
 /* "show all (N)" reveal — dim, indented to match the rows. */
@@ -2449,6 +2498,10 @@ button.composer-model-value:hover { text-decoration: underline; }
   font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
 }
+/* The label flexes and must be allowed to shrink and wrap, or a long unbroken
+   task title pushes the whole card past the column and forces a horizontal
+   scrollbar (min-width:auto is the flexbox default that blocks shrinking). */
+.plan-step { min-width: 0; overflow-wrap: anywhere; }
 /* done — neutral, recedes. No strike (these are completed, not removed). */
 .plan-item.done .plan-glyph { color: var(--state-idle); }
 .plan-item.done .plan-step { color: var(--text-muted); }
