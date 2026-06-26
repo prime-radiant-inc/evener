@@ -254,7 +254,7 @@
    settle on release, on the emphasis curve, makes a tap feel physical. */
 .btn:active,
 .btn-primary:active,
-.header-hamburger:active,
+.app-nav-toggle:active,
 .sidebar-action:active,
 .composer-send:active,
 #send-btn:active { transform: translateY(0.5px) scale(0.97); transition-timing-function: var(--ease-emphasis); }
@@ -1337,20 +1337,16 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .workspace-title-row { display: flex; align-items: center; gap: var(--space-4); }
 .workspace-title { display: flex; align-items: baseline; gap: var(--space-3); flex: 1; min-width: 0; }
 .workspace-title .title { font-weight: 600; font-size: var(--text-lg); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-/* Inline workspace-header hamburger — visible on phone only. The
-   button takes the leftmost slot in .workspace-title-row so partials
-   without a header (empty state, settings) don't need their own
-   hamburger; those partials now lose the hamburger affordance, which
-   is acceptable because the sidebar tap-out + ⌘B + the search palette
-   all remain available. */
-.header-hamburger {
+/* Persistent app-shell nav toggle (.app-nav-toggle, in app.html) — the single
+   mobile affordance for reaching the off-canvas sidebar from ANY page. Hidden
+   on desktop where the sidebar is always present; the phone rules (fixed chip,
+   top-left) live in the mobile media query. */
+.app-nav-toggle {
   display: none;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
   padding: 0;
-  background: transparent;
+  background: var(--bg-raised);
   border: 1px solid var(--rule);
   border-radius: var(--radius-md);
   color: var(--text);
@@ -1359,7 +1355,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   cursor: pointer;
   flex-shrink: 0;
 }
-.header-hamburger:hover { background: var(--bg-raised); }
+.app-nav-toggle:hover { background: var(--surface-secondary); }
 .workspace-meta {
   margin-top: 3px;
   display: flex;
@@ -3351,26 +3347,31 @@ button.composer-model-value:hover { text-decoration: underline; }
   .system-line { margin-left: var(--space-4); }
   .steering { margin-left: 0; }
 
-  /* Inline hamburger visible on phone, leftmost in the title row.
-     Partials don't need to remember a 56px offset anymore. */
-  .header-hamburger { display: inline-flex; width: var(--tap-min); height: var(--tap-min); }
+  /* Persistent nav toggle: a fixed chip at top-left, present on every page.
+     Sits below the drawer/scrim (z-fixed-action < z-overlay/z-drawer) so it is
+     covered while the drawer is open and reappears when it closes. */
+  .app-nav-toggle {
+    display: inline-flex;
+    position: fixed;
+    top: var(--space-3);
+    left: var(--space-3);
+    width: var(--tap-min);
+    height: var(--tap-min);
+    z-index: var(--z-fixed-action);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+  body.has-connection-banner .app-nav-toggle { top: calc(32px + var(--space-3)); }
 
-  /* Workspace header reverts to its standard padding; no fixed-overlay
-     hamburger offset. */
-  .workspace-header { padding: 10px 14px 8px; }
+  /* Page headers reserve a left safe-area so their title/content clears the
+     fixed toggle. All main pages (session, new, settings) use .workspace-header,
+     so one rule covers them; the welcome is centered and needs nothing. */
+  .workspace-header { padding: 10px 14px 8px calc(var(--tap-min) + var(--space-3)); }
   .workspace-title-row { gap: 8px; flex-wrap: wrap; }
   .workspace-actions { gap: 4px; flex-wrap: wrap; }
   .panel-toggle-icon { display: none; }
   .workspace-meta { font-size: 11px; gap: var(--space-3); }
 
-  /* Empty state and other workspace partials don't have a header to push;
-     they keep their own padding without needing a hamburger offset. */
   .workspace-empty { padding-top: 64px; }
-
-  /* The welcome has no header/hamburger on phone, so expose sidebar access.
-     Compound selector outranks the later base `.welcome-browse{display:none}`
-     (equal specificity would otherwise lose on source order). */
-  .empty-state-actions .welcome-browse { display: inline-flex; }
 
   /* Tasks/details: full screen on mobile so they're actually readable. */
   .details-panel {
@@ -4160,10 +4161,6 @@ body.has-connection-banner #workspace { height: calc(100vh - 32px); }
 .empty-state-workspace > .empty-state-body { animation-delay: 100ms; }
 .empty-state-workspace > .empty-state-actions { animation-delay: 150ms; }
 @keyframes welcome-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-/* On desktop the sidebar is always present; "Browse sessions" only matters on
-   phone, where the sidebar is an off-canvas drawer and the welcome (no session,
-   no header) would otherwise leave no way to reach it. */
-.welcome-browse { display: none; }
 .empty-state-conversation { padding: var(--space-4) 0; align-items: flex-start; text-align: left; }
 .empty-state-conversation .empty-state-title { font-size: var(--text-base); }
 .empty-state-sidebar { padding: var(--space-4) var(--space-3); }

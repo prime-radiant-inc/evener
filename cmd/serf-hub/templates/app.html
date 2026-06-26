@@ -20,6 +20,11 @@
   <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body class="app">
+  <!-- Persistent mobile nav: lives in the app shell (not a per-page header) so
+       every page swapped into #workspace — session, new, settings, welcome —
+       can always reach the off-canvas sidebar. Hidden on desktop where the
+       sidebar is always visible. -->
+  <button type="button" class="app-nav-toggle" data-sidebar-toggle title="open sidebar" aria-label="open sidebar">☰</button>
   <aside id="sidebar"
          hx-get="/_partials/sidebar"
          hx-trigger="load, sidebar:refresh from:body"
