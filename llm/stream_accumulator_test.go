@@ -89,6 +89,50 @@ func TestStreamAccumulator_FinishWithMetadataOnlyResponse_PreservesAccumulatedCo
 	}
 }
 
+func TestStreamAccumulator_FinishWithContentResponsePreservesFinalToolCallItemID(t *testing.T) {
+	acc := NewStreamAccumulator()
+	acc.Process(StreamEvent{Type: StreamEventStreamStart})
+	acc.Process(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{
+		ID: "call_streamed", ItemID: "fc_streamed", Name: "delegate", Type: "function",
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{
+		ID: "call_streamed", ItemID: "fc_streamed", Arguments: json.RawMessage(`{"task":"streamed"}`), Type: "function",
+	}})
+
+	final := Response{
+		ID:       "resp_1",
+		Provider: "openai",
+		Model:    "gpt-5.5",
+		Message: Message{Role: RoleAssistant, Content: []ContentPart{{
+			Kind: ContentToolCall,
+			ToolCall: &ToolCallData{
+				ID:        "call_final",
+				ItemID:    "fc_final",
+				Name:      "delegate",
+				Arguments: json.RawMessage(`{"task":"final"}`),
+				Type:      "function",
+			},
+		}}},
+		Finish: FinishReason{Reason: "tool_calls"},
+	}
+	acc.Process(StreamEvent{Type: StreamEventFinish, Response: &final, FinishReason: &final.Finish})
+
+	got := acc.Response()
+	if got == nil {
+		t.Fatalf("expected response")
+	}
+	calls := got.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(calls))
+	}
+	if calls[0].ID != "call_final" {
+		t.Fatalf("tool call id = %q, want call_final", calls[0].ID)
+	}
+	if calls[0].ItemID != "fc_final" {
+		t.Fatalf("tool item id = %q, want fc_final", calls[0].ItemID)
+	}
+}
+
 func TestStreamAccumulator_ReasoningEvents_AccumulatedInResponse(t *testing.T) {
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})

@@ -161,3 +161,74 @@ git diff --check
 Result: passed with no whitespace errors.
 
 Concerns: None.
+## Re-review fix: OpenAI Responses final function_call ItemID propagation
+
+Status: DONE
+
+Findings addressed:
+- Parsed OpenAI Responses final `function_call` output item identity into `llm.ToolCallData.ItemID` in `fromResponses`, using output item `id` and falling back to `item_id` if present.
+- Preserved the existing naming distinction: `ToolCallData.ID` remains the Responses `call_id`; `ToolCallData.ItemID` carries the provider output item id.
+- Extended deterministic OpenAI provider tests so a completed Responses `function_call` with `id`/`call_id` reaches `ToolCallData.ItemID`, including the `Complete`/`StreamAccumulator.Response()` path where final response content replaces streamed accumulated content.
+- Added a focused `llm.StreamAccumulator` regression test documenting that when a final response with content is accepted, its tool-call `ItemID` must be present in `Response().ToolCalls()`.
+- Corrected an accidental edit made in the original checkout during the fix attempt; verified the original checkout no longer has these modifications and all final changes are in the requested worktree only.
+
+Tests run:
+
+```bash
+go test ./llm -run TestStreamAccumulator_FinishWithContentResponsePreservesFinalToolCallItemID -count=1 -v
+```
+
+Result:
+
+```text
+=== RUN   TestStreamAccumulator_FinishWithContentResponsePreservesFinalToolCallItemID
+--- PASS: TestStreamAccumulator_FinishWithContentResponsePreservesFinalToolCallItemID (0.00s)
+PASS
+ok  	primeradiant.com/serf/llm	0.005s
+```
+
+```bash
+go test ./llm/providers/openai -run 'TestAdapter_Complete_OAuthTransportPreservesStreamedToolCallsWhenCompletedOutputIsEmpty|TestFromResponses_FunctionCallPreservesOutputItemID|TestAdapter_Complete_OAuthTransportTracksItemIDAndFragmentedToolArguments' -count=1 -v
+```
+
+Result:
+
+```text
+=== RUN   TestAdapter_Complete_OAuthTransportPreservesStreamedToolCallsWhenCompletedOutputIsEmpty
+--- PASS: TestAdapter_Complete_OAuthTransportPreservesStreamedToolCallsWhenCompletedOutputIsEmpty (0.00s)
+=== RUN   TestAdapter_Complete_OAuthTransportTracksItemIDAndFragmentedToolArguments
+--- PASS: TestAdapter_Complete_OAuthTransportTracksItemIDAndFragmentedToolArguments (0.00s)
+=== RUN   TestFromResponses_FunctionCallPreservesOutputItemID
+--- PASS: TestFromResponses_FunctionCallPreservesOutputItemID (0.00s)
+PASS
+ok  	primeradiant.com/serf/llm/providers/openai	0.011s
+```
+
+```bash
+go test ./agent -count=1
+```
+
+Result:
+
+```text
+ok  	primeradiant.com/serf/agent	9.242s
+```
+
+```bash
+go test ./llm/providers/openai -count=1
+```
+
+Result:
+
+```text
+ok  	primeradiant.com/serf/llm/providers/openai	0.316s
+```
+
+```bash
+git diff --check
+```
+
+Result: passed with no whitespace errors.
+
+Concerns: None.
+

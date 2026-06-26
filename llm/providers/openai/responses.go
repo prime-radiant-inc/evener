@@ -1011,10 +1011,15 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 				name, _ := item["name"].(string)
 				args, _ := item["arguments"].(string)
 				callID, _ := item["call_id"].(string)
+				itemID, _ := item["id"].(string)
+				if itemID == "" {
+					itemID, _ = item["item_id"].(string)
+				}
 				msg.Content = append(msg.Content, llm.ContentPart{
 					Kind: llm.ContentToolCall,
 					ToolCall: &llm.ToolCallData{
 						ID:        callID,
+						ItemID:    itemID,
 						Name:      name,
 						Arguments: json.RawMessage(args),
 						Type:      "function",

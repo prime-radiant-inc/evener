@@ -3154,7 +3154,7 @@ func TestAdapter_Complete_OAuthTransportTracksItemIDAndFragmentedToolArguments(t
 		_, _ = io.WriteString(w, "event: response.output_item.done\n")
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"status\":\"completed\",\"arguments\":\"{\\\"action\\\":\\\"update\\\"}\",\"call_id\":\"call_1\",\"name\":\"task_list\"}}\n\n")
 		_, _ = io.WriteString(w, "event: response.completed\n")
-		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[{\"id\":\"fc_1\",\"type\":\"function_call\",\"status\":\"completed\",\"arguments\":\"{\\\"action\\\":\\\"update\\\"}\",\"call_id\":\"call_1\",\"name\":\"task_list\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
 	}))
 	t.Cleanup(srv.Close)
 
@@ -3178,11 +3178,43 @@ func TestAdapter_Complete_OAuthTransportTracksItemIDAndFragmentedToolArguments(t
 	if resp.ToolCalls()[0].ID != "call_1" {
 		t.Fatalf("tool id = %q, want %q", resp.ToolCalls()[0].ID, "call_1")
 	}
+	if resp.ToolCalls()[0].ItemID != "fc_1" {
+		t.Fatalf("tool item id = %q, want %q", resp.ToolCalls()[0].ItemID, "fc_1")
+	}
 	if resp.ToolCalls()[0].Name != "task_list" {
 		t.Fatalf("tool name = %q, want %q", resp.ToolCalls()[0].Name, "task_list")
 	}
 	if got := string(resp.ToolCalls()[0].Arguments); got != `{"action":"update"}` {
 		t.Fatalf("tool args = %q, want %q", got, `{"action":"update"}`)
+	}
+}
+
+func TestFromResponses_FunctionCallPreservesOutputItemID(t *testing.T) {
+	raw := map[string]any{
+		"id":     "r1",
+		"model":  "gpt-5.5",
+		"status": "completed",
+		"output": []any{
+			map[string]any{
+				"id":        "fc_item_1",
+				"type":      "function_call",
+				"call_id":   "call_1",
+				"name":      "delegate",
+				"arguments": `{"task":"inspect"}`,
+			},
+		},
+	}
+
+	r := fromResponses(raw, "gpt-5.5")
+	calls := r.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(calls))
+	}
+	if calls[0].ID != "call_1" {
+		t.Fatalf("tool call id = %q, want call_1", calls[0].ID)
+	}
+	if calls[0].ItemID != "fc_item_1" {
+		t.Fatalf("tool item id = %q, want fc_item_1", calls[0].ItemID)
 	}
 }
 
