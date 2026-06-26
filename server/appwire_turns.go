@@ -141,6 +141,15 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 			if item != nil {
 				item.Text += params.Delta
 			}
+		case appwire.NotifyReasoningSummaryDelta:
+			var params appwire.ReasoningSummaryDeltaParams
+			if json.Unmarshal(record.Notification.Params, &params) != nil {
+				continue
+			}
+			item := itemForDelta(params.TurnID, params.ItemID, "reasoning")
+			if item != nil {
+				item.Text += params.Delta
+			}
 		case appwire.NotifyToolOutputDelta:
 			var params struct {
 				TurnID string `json:"turnId"`

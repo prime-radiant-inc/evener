@@ -248,6 +248,24 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 						Status: appwire.TurnStatusCompleted,
 					})
 				}
+			case llm.ContentThinking:
+				if part.Thinking != nil && part.Thinking.Text != "" {
+					items = append(items, appwire.ThreadItem{
+						Type:   "reasoning",
+						ID:     fmt.Sprintf("item_reasoning_%d_%d", turnIndex, i),
+						TurnID: turnID,
+						Text:   part.Thinking.Text,
+						Status: appwire.TurnStatusCompleted,
+					})
+				}
+			case llm.ContentRedThinking:
+				items = append(items, appwire.ThreadItem{
+					Type:   "reasoning",
+					ID:     fmt.Sprintf("item_reasoning_%d_%d", turnIndex, i),
+					TurnID: turnID,
+					Text:   "[redacted thinking]",
+					Status: appwire.TurnStatusCompleted,
+				})
 			case llm.ContentToolCall:
 				if part.ToolCall == nil {
 					continue

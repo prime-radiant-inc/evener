@@ -2,6 +2,9 @@ package server
 
 import (
 	"testing"
+
+	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/internal/appserver"
 )
 
 func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
@@ -41,5 +44,26 @@ func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
 				t.Fatalf("Steer = %v, want %v", got.Steer, tc.wantSteer)
 			}
 		})
+	}
+}
+
+func TestAppTurnsFromNotificationsAccumulatesReasoningDeltas(t *testing.T) {
+	records := []appserver.SequencedNotification{
+		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turnId":"turn_1"}`)}},
+		{Notification: appwire.Notification{Method: "item/started", Params: []byte(`{"turnId":"turn_1","item":{"type":"reasoning","id":"item_reasoning_1","turnId":"turn_1","status":"inProgress"}}`)}},
+		{Notification: appwire.Notification{Method: "item/reasoning/summaryTextDelta", Params: []byte(`{"turnId":"turn_1","itemId":"item_reasoning_1","delta":"Let me think"}`)}},
+		{Notification: appwire.Notification{Method: "item/reasoning/summaryTextDelta", Params: []byte(`{"turnId":"turn_1","itemId":"item_reasoning_1","delta":" about this."}`)}},
+		{Notification: appwire.Notification{Method: "turn/completed", Params: []byte(`{"turnId":"turn_1","turn":{"status":"completed"}}`)}},
+	}
+	turns := appTurnsFromNotifications(records)
+	if len(turns) != 1 {
+		t.Fatalf("expected 1 turn, got %d", len(turns))
+	}
+	items := turns[0].Items
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d: %+v", len(items), items)
+	}
+	if items[0].Type != "reasoning" || items[0].Text != "Let me think about this." {
+		t.Fatalf("reasoning item=%+v", items[0])
 	}
 }

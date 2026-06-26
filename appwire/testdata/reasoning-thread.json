@@ -1,0 +1,38 @@
+{
+  "id": "th_reasoning",
+  "ref": "local:th_reasoning",
+  "sessionId": "sess_reasoning",
+  "source": "local",
+  "status": {
+    "type": "idle"
+  },
+  "turns": [
+    {
+      "id": "turn_1",
+      "items": [
+        {
+          "type": "userMessage",
+          "id": "item_user_1",
+          "turnId": "turn_1",
+          "text": "Solve this puzzle.",
+          "status": "completed"
+        },
+        {
+          "type": "reasoning",
+          "id": "item_reasoning_1",
+          "turnId": "turn_1",
+          "text": "Let me break this down step by step. First, I need to understand the constraints.",
+          "status": "completed"
+        },
+        {
+          "type": "agentMessage",
+          "id": "item_msg_1",
+          "turnId": "turn_1",
+          "text": "The answer is 42.",
+          "status": "completed"
+        }
+      ],
+      "status": "completed"
+    }
+  ]
+}

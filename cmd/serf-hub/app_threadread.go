@@ -221,6 +221,14 @@ func replayTurnToAgentTurn(turn hubcore.ReplayTurn) (schema.Turn, map[string]str
 		switch part.Kind {
 		case string(llm.ContentText):
 			content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: part.Text})
+		case string(llm.ContentThinking):
+			thinking := &llm.ThinkingData{}
+			if part.Thinking != nil {
+				thinking.Text = part.Thinking.Text
+			}
+			content = append(content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: thinking})
+		case string(llm.ContentRedThinking):
+			content = append(content, llm.ContentPart{Kind: llm.ContentRedThinking, Thinking: &llm.ThinkingData{Redacted: true}})
 		case string(llm.ContentImage):
 			if part.Image == nil {
 				continue

@@ -178,3 +178,43 @@ func TestProjectTurnPreservesDelegateToolStateForColdReconciliation(t *testing.T
 		t.Fatalf("delegate raw = %s", items[0].Raw)
 	}
 }
+
+func TestProjectTurnMapsThinkingContent(t *testing.T) {
+	toolNames := map[string]string{}
+	items := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "Let me plan this out."}},
+			{Kind: llm.ContentText, Text: "The answer is 42."},
+		}},
+	}, toolNames, nil)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %+v", items)
+	}
+	if items[0].Type != "reasoning" || items[0].Text != "Let me plan this out." {
+		t.Fatalf("reasoning item=%+v", items[0])
+	}
+	if items[1].Type != "agentMessage" || items[1].Text != "The answer is 42." {
+		t.Fatalf("agent message item=%+v", items[1])
+	}
+}
+
+func TestProjectTurnMapsRedactedThinkingContent(t *testing.T) {
+	toolNames := map[string]string{}
+	items := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentRedThinking, Thinking: &llm.ThinkingData{Redacted: true}},
+			{Kind: llm.ContentText, Text: "The answer is 42."},
+		}},
+	}, toolNames, nil)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %+v", items)
+	}
+	if items[0].Type != "reasoning" || items[0].Text != "[redacted thinking]" {
+		t.Fatalf("redacted reasoning item=%+v", items[0])
+	}
+	if items[1].Type != "agentMessage" || items[1].Text != "The answer is 42." {
+		t.Fatalf("agent message item=%+v", items[1])
+	}
+}

@@ -31,9 +31,15 @@ type ReplayMessage struct {
 type ReplayPart struct {
 	Kind       string            `json:"kind"`
 	Text       string            `json:"text,omitempty"`
+	Thinking   *ReplayThinking   `json:"thinking,omitempty"`
 	Image      *ReplayImage      `json:"image,omitempty"`
 	ToolCall   *ReplayToolCall   `json:"tool_call,omitempty"`
 	ToolResult *ReplayToolResult `json:"tool_result,omitempty"`
+}
+
+type ReplayThinking struct {
+	Text     string `json:"text,omitempty"`
+	Redacted bool   `json:"redacted,omitempty"`
 }
 
 type ReplayImage struct {

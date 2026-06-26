@@ -643,6 +643,11 @@
       out.push(["TOOL_CALL_END", Object.assign({ call_id: callID, item_id: itemID, tool_name: item.toolName || "", arguments_json: item.argumentsJson || "", description: item.description || "", output: item.output || "", error: item.error || "", tool_state: item.raw || "" }, toolTimingPayload(item))]);
       return out;
     }
+    if (type === "reasoning") {
+      const out = [["REASONING_START", { itemId: item.id || "" }]];
+      if (item.text) out.push(["REASONING_DELTA", { delta: item.text }]);
+      return out;
+    }
     return [];
   }
 

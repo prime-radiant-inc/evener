@@ -124,6 +124,70 @@ func TestPastThreadReadReconcilesDelegateRawWithTerminalJobstoreState(t *testing
 	}
 }
 
+func TestPastThreadReadProjectsThinkingFromTranscript(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "repo")
+	sessionID := "01THINK"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions", sessionID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID:        sessionID,
+		ProfileID: "kimi",
+		Model:     "kimi-for-coding",
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/project"},
+		CreatedAt: now,
+		UpdatedAt: now,
+		TurnCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
+		SessionID: sessionID,
+		CreatedAt: now,
+		ProfileID: "kimi",
+		Model:     "kimi-for-coding",
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := w.Append(schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "Let me reason about this."}},
+			{Kind: llm.ContentText, Text: "Here is the answer."},
+		}},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	thread, ok := pastThreadForRead(hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true})
+	if !ok {
+		t.Fatal("past thread not found")
+	}
+	if len(thread.Turns) != 1 {
+		t.Fatalf("turns=%+v", thread.Turns)
+	}
+	items := thread.Turns[0].Items
+	if len(items) != 2 {
+		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
+	}
+	if items[0].Type != "reasoning" || items[0].Text != "Let me reason about this." {
+		t.Fatalf("reasoning item=%+v", items[0])
+	}
+	if items[1].Type != "agentMessage" || items[1].Text != "Here is the answer." {
+		t.Fatalf("agent message item=%+v", items[1])
+	}
+}
+
 func writeHistoricalJobLog(t *testing.T, path string, ts time.Time, jobID string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

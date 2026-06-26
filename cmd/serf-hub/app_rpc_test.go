@@ -185,6 +185,47 @@ func TestAppItemsFromReplayTurnCarriesToolStateRaw(t *testing.T) {
 	}
 }
 
+func TestAppItemsFromReplayTurnProjectsThinking(t *testing.T) {
+	var entry hubcore.ReplayEntry
+	raw := []byte(`{"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[` +
+		`{"kind":"thinking","thinking":{"text":"Let me plan this out."}},` +
+		`{"kind":"text","text":"The answer is 42."}` +
+		`]}}}`)
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("unmarshal replay entry: %v", err)
+	}
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+
+	if len(items) != 2 {
+		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
+	}
+	if items[0].Type != "reasoning" || items[0].Text != "Let me plan this out." {
+		t.Fatalf("reasoning item=%+v", items[0])
+	}
+	if items[1].Type != "agentMessage" || items[1].Text != "The answer is 42." {
+		t.Fatalf("agent message item=%+v", items[1])
+	}
+}
+
+func TestAppItemsFromReplayTurnProjectsRedactedThinking(t *testing.T) {
+	var entry hubcore.ReplayEntry
+	raw := []byte(`{"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[` +
+		`{"kind":"redacted_thinking","thinking":{"redacted":true,"encrypted_content":"xyz"}},` +
+		`{"kind":"text","text":"ok"}` +
+		`]}}}`)
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("unmarshal replay entry: %v", err)
+	}
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+
+	if len(items) != 2 {
+		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
+	}
+	if items[0].Type != "reasoning" || items[0].Text != "[redacted thinking]" {
+		t.Fatalf("redacted reasoning item=%+v", items[0])
+	}
+}
+
 func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
 	items := appItemsFromReplayTurn("turn_1", 1, hubcore.ReplayTurn{
 		Kind: "ASSISTANT",
