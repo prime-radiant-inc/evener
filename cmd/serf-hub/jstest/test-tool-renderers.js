@@ -127,7 +127,10 @@ await scenario("tool intent renders below header and above results", [
     return { ok: false, detail: "intent should be before tool results/body" };
   }
   if (!/\.tool-call \.tool-intent\s*\{[^}]*font-family:\s*var\(--font-sans\)/.test(styleSrc)) return { ok: false, detail: "intent stylesheet should use variable-width sans font" };
-  if (!/\.tool-call \.tool-intent\s*\{[^}]*font-style:\s*italic/.test(styleSrc)) return { ok: false, detail: "intent stylesheet should set italic font style" };
+  // The per-call intent recedes: it is the quiet context, not the scannable
+  // primary (the verb+target line). It clamps to a single dim line and reveals
+  // in full on hover/expand, rather than wrapping into a full-width italic wall.
+  if (!/\.tool-call \.tool-intent\s*\{[^}]*-webkit-line-clamp:\s*1/.test(styleSrc)) return { ok: false, detail: "intent stylesheet should clamp to a single receding line" };
   return { ok: true };
 });
 
