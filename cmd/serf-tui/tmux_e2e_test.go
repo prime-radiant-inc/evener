@@ -233,17 +233,21 @@ func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
 	app := startTUITmuxSized(t, bin, hub.URL(), 124, 18)
 	defer app.Close()
 
-	screen := app.WaitFor("SERF LIVE", "select")
-	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
-	lastNonEmpty := -1
-	for i, line := range lines {
-		if strings.TrimSpace(line) != "" {
-			lastNonEmpty = i
+	app.WaitFor("SERF LIVE", "select")
+	footerAnchored := func(screen string) bool {
+		lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
+		lastNonEmpty := -1
+		for i, line := range lines {
+			if strings.TrimSpace(line) != "" {
+				lastNonEmpty = i
+			}
 		}
+		return lastNonEmpty == len(lines)-1
 	}
-	if lastNonEmpty != len(lines)-1 {
-		t.Fatalf("footer/action line is not anchored to the bottom (last non-empty row %d of %d):\n%s", lastNonEmpty+1, len(lines), screen)
-	}
+	// The dashboard's first paint can briefly leave the footer mid-screen before
+	// the layout settles; wait for it to anchor rather than racing the initial
+	// render (which flaked under parallel load).
+	app.WaitUntil("footer/action line anchors to the bottom row", footerAnchored)
 }
 
 func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
@@ -1072,6 +1076,29 @@ func (a *tmuxTUI) WaitFor(wants ...string) string {
 		time.Sleep(tuiE2EPollInterval)
 	}
 	a.t.Fatalf("timed out waiting for %q\nvisible pane:\n%s\nrecent history:\n%s", wants, screen, a.CaptureHistory())
+	return ""
+}
+
+// WaitUntil polls the captured pane until check returns true, returning the
+// settled capture. Mirrors WaitFor but for layout/structural conditions that
+// substring matching can't express (e.g. the footer anchoring to the bottom
+// only after the dashboard's first paint settles), so tests don't race the
+// initial render.
+func (a *tmuxTUI) WaitUntil(desc string, check func(screen string) bool) string {
+	a.t.Helper()
+	deadline := time.Now().Add(tuiE2EWaitTimeout)
+	var screen string
+	for time.Now().Before(deadline) {
+		if status, dead := a.PaneDeadStatus(); dead {
+			a.t.Fatalf("serf-tui exited before %s (status %s)\nvisible pane:\n%s\nrecent history:\n%s", desc, status, a.Capture(), a.CaptureHistory())
+		}
+		screen = a.Capture()
+		if check(screen) {
+			return screen
+		}
+		time.Sleep(tuiE2EPollInterval)
+	}
+	a.t.Fatalf("timed out waiting until %s\nvisible pane:\n%s\nrecent history:\n%s", desc, screen, a.CaptureHistory())
 	return ""
 }
 
