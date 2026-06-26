@@ -222,6 +222,53 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms || 30));
     pass(fetchCalls.length >= 1, "archive-btn click should still issue the POST");
   }
 
+  // ---- Test 8: archiving a session immediately dims its row + busies the button ----
+  {
+    const { window } = buildDom();
+    window.eval(sidebarSrc);
+    await wait(30);
+
+    const btn = window.document.querySelector('[data-archive-id="01ABC"]');
+    const wrap = btn.closest(".sb-row-wrap");
+    pass(wrap !== null, "session archive-btn should live inside a .sb-row-wrap");
+
+    btn.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    // Optimistic state is applied synchronously on click, before the fetch resolves.
+    pass(wrap.classList.contains("archiving"), "row wrap should gain .archiving immediately on click");
+    pass(wrap.getAttribute("aria-busy") === "true", "row wrap should be aria-busy while archiving");
+    pass(btn.disabled === true, "archive-btn should disable itself while the request is in flight");
+    pass(btn.getAttribute("aria-busy") === "true", "archive-btn should be aria-busy while archiving");
+  }
+
+  // ---- Test 9: a second click on a busy archive-btn does not double-POST ----
+  {
+    const { window, fetchCalls } = buildDom();
+    window.eval(sidebarSrc);
+    await wait(30);
+
+    const btn = window.document.querySelector('[data-archive-id="01ABC"]');
+    btn.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    btn.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    await wait(100);
+
+    pass(fetchCalls.length === 1, "a disabled archive-btn must not fire a second POST, got " + fetchCalls.length);
+  }
+
+  // ---- Test 10: archiving a project immediately dims the whole project section ----
+  {
+    const { window } = buildDom();
+    window.eval(sidebarSrc);
+    await wait(30);
+
+    const btn = window.document.querySelector('[data-archive-kind="project"][data-archive-id="myproject"]');
+    const section = btn.closest("[data-project-key]");
+    pass(section !== null, "project archive-btn should live inside a [data-project-key] section");
+
+    btn.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    pass(section.classList.contains("archiving"), "project section should gain .archiving immediately on click");
+    pass(section.getAttribute("aria-busy") === "true", "project section should be aria-busy while archiving");
+  }
+
   if (failures.length === 0) {
     console.log("PASS: sidebar archive — POST, unarchive, refresh, collapse default");
     process.exit(0);

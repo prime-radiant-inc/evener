@@ -1247,6 +1247,38 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 /* Archive control icon (a box, not the ⋯ menu glyph): block so it centers in
    the icon button without baseline gap; inherits the button's color. */
 .archive-btn .archive-icon { display: block; }
+
+/* Archiving in flight: the instant the archive button is clicked, the affected
+   session row (.sb-row-wrap) or project section dims and stops taking input,
+   giving immediate feedback across the POST + sidebar-refresh round trip before
+   the swap reconciles the DOM to server truth. */
+.sb-row-wrap.archiving,
+.project-section.archiving {
+  opacity: 0.5;
+  pointer-events: none;
+  transition: opacity var(--motion-fast);
+}
+
+/* Busy archive button: override the hover-only reveal so it stays visible, and
+   swap the box glyph for a spinner so the click reads as "working" right away. */
+.archive-btn[aria-busy="true"] {
+  opacity: 1;
+  color: var(--text-muted);
+}
+.archive-btn[aria-busy="true"] .archive-icon { display: none; }
+.archive-btn[aria-busy="true"]::after {
+  content: "";
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: archive-spin 0.6s linear infinite;
+}
+@keyframes archive-spin {
+  to { transform: rotate(360deg); }
+}
 @container sidebar (max-width: 80px) {
   .session-tier-label,
   .archive-btn { display: none; }
