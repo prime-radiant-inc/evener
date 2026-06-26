@@ -123,6 +123,30 @@ await scenario("delegate_send second job creates second row under same delegate"
   return { ok: true };
 });
 
+await scenario("resumed delegate job with same origin creates a new run row", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  jobStarted("job_first", "dlg_same", "inspect billing", "local:child-first", "d1"),
+  jobFinished("job_first", "dlg_same", "inspect billing", "local:child-first", "d1", "completed"),
+  ["JOB_STARTED", {
+    jobId: "job_second", jobType: "delegate", status: "running", delegateId: "dlg_same", task: "inspect billing",
+    transcriptRef: "local:child-second", originToolCallId: "d1", originItemId: "item_d1",
+  }],
+], ({ conv }) => {
+  const rows = conv.querySelectorAll('.subs .sub-r[data-delegate-id="dlg_same"]');
+  if (rows.length !== 2) return { ok: false, detail: "expected two runs under delegate, got " + rows.length };
+  const first = conv.querySelector('.subs .sub-r[data-job-id="job_first"]');
+  const second = conv.querySelector('.subs .sub-r[data-job-id="job_second"]');
+  if (!first) return { ok: false, detail: "missing first run row" };
+  if (!second) return { ok: false, detail: "missing second run row" };
+  if (first.dataset.status !== "completed") return { ok: false, detail: "first run status overwritten: " + first.dataset.status };
+  const firstGlyph = first.querySelector(".g");
+  if (!firstGlyph || !firstGlyph.classList.contains("done")) return { ok: false, detail: "first run should remain done" };
+  if (second.dataset.status !== "running") return { ok: false, detail: "second run should be running: " + second.dataset.status };
+  const secondGlyph = second.querySelector(".g");
+  if (!secondGlyph || !secondGlyph.classList.contains("run")) return { ok: false, detail: "second run should show running glyph" };
+  return { ok: true };
+});
+
 await scenario("one module aggregates multiple spawned subagents", [
   ["SESSION_START", { session_id: "01TEST" }],
   ...spawnDelegate("d1", "job_A", "trace callers", "local:child-A"),

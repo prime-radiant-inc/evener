@@ -343,20 +343,23 @@ func (r *TranscriptReducer) subagentMessageIndex(run SubagentRunInfo) (int, bool
 		if msg.Kind != MsgTool || msg.Tool == nil || !isDelegateToolName(msg.Tool.Name) {
 			continue
 		}
-		if run.OriginItemID != "" && msg.ItemID == run.OriginItemID {
-			return i, true
-		}
-		if run.OriginToolCallID != "" && msg.ToolCallID == run.OriginToolCallID {
-			return i, true
-		}
 		if msg.Tool.Subagent != nil {
 			existing := msg.Tool.Subagent
+			if run.JobID != "" && existing.JobID != "" && existing.JobID != run.JobID {
+				continue
+			}
 			if run.JobID != "" && existing.JobID == run.JobID {
 				return i, true
 			}
 			if run.DelegateID != "" && existing.DelegateID == run.DelegateID && existing.JobID == run.JobID {
 				return i, true
 			}
+		}
+		if run.OriginItemID != "" && msg.ItemID == run.OriginItemID {
+			return i, true
+		}
+		if run.OriginToolCallID != "" && msg.ToolCallID == run.OriginToolCallID {
+			return i, true
 		}
 	}
 	return 0, false

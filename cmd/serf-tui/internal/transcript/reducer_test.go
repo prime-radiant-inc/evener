@@ -473,6 +473,44 @@ func TestTranscriptReducerAppliesSerfJobNotificationsToDelegateTool(t *testing.T
 	}
 }
 
+func TestTranscriptReducerResumedDelegateJobWithSameOriginCreatesNewRun(t *testing.T) {
+	reducer := NewTranscriptReducer(nil, nil, nil)
+	first := appwire.SerfJobInfo{
+		JobID:            "job_first",
+		JobType:          "delegate",
+		Status:           "running",
+		TranscriptRef:    "local:child-first",
+		DelegateID:       "dlg_same",
+		Task:             "inspect billing",
+		OriginToolCallID: "call_delegate",
+		OriginItemID:     "item_delegate",
+	}
+	reducer.ApplySerfJob(first)
+	first.Status = "completed"
+	reducer.ApplySerfJob(first)
+	reducer.ApplySerfJob(appwire.SerfJobInfo{
+		JobID:            "job_second",
+		JobType:          "delegate",
+		Status:           "running",
+		TranscriptRef:    "local:child-second",
+		DelegateID:       "dlg_same",
+		Task:             "inspect billing",
+		OriginToolCallID: "call_delegate",
+		OriginItemID:     "item_delegate",
+	})
+
+	tools := transcriptTools(reducer.messages)
+	if len(tools) != 2 {
+		t.Fatalf("tools=%+v messages=%+v, want two delegate run rows", tools, reducer.messages)
+	}
+	if tools[0].Subagent == nil || tools[0].Subagent.JobID != "job_first" || tools[0].Subagent.Status != "completed" || !tools[0].Done {
+		t.Fatalf("first run overwritten or not completed: %+v", tools[0])
+	}
+	if tools[1].Subagent == nil || tools[1].Subagent.JobID != "job_second" || tools[1].Subagent.Status != "running" || tools[1].Done {
+		t.Fatalf("second run missing or not running: %+v", tools[1])
+	}
+}
+
 func TestTranscriptReducerIgnoresNonDelegateSerfJobNotification(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
 

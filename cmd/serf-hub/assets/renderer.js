@@ -2481,18 +2481,31 @@
     },
 
     // findSubagentRunRow locates a row by any stable linkage key. Job events can
-    // race with delegate tool output, so origin item/call ids win, then job id,
-    // then the latest still-running row for a delegate.
+    // race with delegate tool output, so origin item/call ids win only when they
+    // do not name a different already-known job attempt; job id then resolves a
+    // specific run; finally fall back to the latest still-running row for a delegate.
     findSubagentRunRow(data) {
       const norm = normalizedJobRefData(data);
       if (!this.conversation) return null;
       const esc = (value) => (window.CSS && window.CSS.escape) ? window.CSS.escape(value) : String(value).replace(/["\\]/g, "\\$&");
+      const sameJobAttempt = (row) => {
+        if (!row) return false;
+        const existingJobId = row.dataset.jobId || "";
+        return !norm.jobId || !existingJobId || existingJobId === norm.jobId;
+      };
+      const originRow = (mapped, selector) => {
+        if (sameJobAttempt(mapped)) return mapped;
+        for (const row of Array.from(this.conversation.querySelectorAll(selector))) {
+          if (sameJobAttempt(row)) return row;
+        }
+        return null;
+      };
       if (norm.originItemId) {
-        const row = this.subagentRowsByOriginItem.get(norm.originItemId) || this.conversation.querySelector('.sub-r[data-origin-item-id="' + esc(norm.originItemId) + '"]');
+        const row = originRow(this.subagentRowsByOriginItem.get(norm.originItemId), '.sub-r[data-origin-item-id="' + esc(norm.originItemId) + '"]');
         if (row) return row;
       }
       if (norm.originToolCallId) {
-        const row = this.subagentRowsByOriginCall.get(norm.originToolCallId) || this.conversation.querySelector('.sub-r[data-origin-tool-call-id="' + esc(norm.originToolCallId) + '"]');
+        const row = originRow(this.subagentRowsByOriginCall.get(norm.originToolCallId), '.sub-r[data-origin-tool-call-id="' + esc(norm.originToolCallId) + '"]');
         if (row) return row;
       }
       if (norm.jobId) {
