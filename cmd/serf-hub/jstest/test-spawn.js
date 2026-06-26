@@ -570,6 +570,57 @@ assert(
 );
 const spawnButton = formDom.window.document.querySelector(".spawn-btn");
 assert(!spawnButton.disabled, "spawn button should be re-enabled after failed spawn");
+
+// Regression (real-template structure): in spawn.html the submit button lives
+// in .spawn-actions *nested inside* .spawn-attach-row, so .spawn-actions is NOT
+// a direct child of the form. renderSpawnError must insert relative to a real
+// direct child (the attach row), or form.insertBefore throws NotFoundError and
+// the failure is swallowed as an unhandled rejection with no diagnostic shown.
+// The earlier fixtures put .spawn-btn directly under <form>, which masked this.
+const nestedDom = new JSDOM(`<!DOCTYPE html><html><body>
+  <form data-spawn-form>
+    <textarea name="prompt">do the thing</textarea>
+    <div class="spawn-attach-row">
+      <button type="button" class="spawn-attach-btn" data-attach-trigger>attach</button>
+      <div class="spawn-actions">
+        <button class="btn btn-primary spawn-btn" type="submit">spawn</button>
+      </div>
+    </div>
+    <input type="hidden" name="harness" value="serf">
+    <input type="hidden" data-harness-option value="serf" data-label="serf">
+    <input type="hidden" name="model" value="openai/gpt-5.5">
+    <input type="hidden" name="working_dir" value="/tmp/nested">
+    <input type="hidden" name="branch" value="">
+    <input type="hidden" name="access_mode" value="full">
+    <input type="hidden" name="agent" value="default">
+    <input type="hidden" name="reasoning_effort" value="">
+  </form>
+</body></html>`, {
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+  url: "http://127.0.0.1:9180/new",
+});
+nestedDom.window.SerfAppwire = null;
+nestedDom.window.fetch = () => Promise.resolve({
+  ok: false,
+  text: () => Promise.resolve(JSON.stringify({ error: "spawn boom: daemon refused" })),
+});
+nestedDom.window.eval(dirPickerSrc);
+nestedDom.window.eval(spawnSrc);
+nestedDom.window.document.dispatchEvent(new nestedDom.window.Event("DOMContentLoaded", { bubbles: true }));
+const nestedForm = nestedDom.window.document.querySelector("[data-spawn-form]");
+nestedForm.dispatchEvent(new nestedDom.window.Event("submit", { bubbles: true, cancelable: true }));
+await new Promise((r) => setTimeout(r, 0));
+const nestedErr = nestedDom.window.document.querySelector("[data-spawn-error]");
+assert(nestedErr, "failed spawn with the real nested attach-row/actions structure must still render an in-page diagnostic (not throw on insertBefore)");
+assert(nestedErr.parentNode === nestedForm,
+  "spawn error must be inserted as a direct child of the form");
+const nestedAttachRow = nestedForm.querySelector(".spawn-attach-row");
+assert(nestedErr.compareDocumentPosition(nestedAttachRow) & nestedDom.window.Node.DOCUMENT_POSITION_FOLLOWING,
+  "spawn error should sit above the attach/spawn row");
+assert(!nestedDom.window.document.querySelector(".spawn-btn").disabled,
+  "spawn button should be re-enabled after the nested-structure failure");
+
 console.log("PASS: spawn navigation and harness-aware model defaults");
 })().catch((err) => {
   console.error(err && err.stack ? err.stack : err);
