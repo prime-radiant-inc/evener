@@ -2,9 +2,10 @@
 // edit_file with diff, web_fetch, web_search, delegate, and the
 // cheap-cluster grouping for read_file/grep/list_dir/glob.
 const fs = require("fs");
+const path = require("path");
 const { JSDOM } = require("jsdom");
 
-const STYLE_PATH = "../assets/style.css";
+const STYLE_PATH = path.join(__dirname, "../assets/style.css");
 const styleSrc = fs.readFileSync(STYLE_PATH, "utf8");
 
 function newHarness() {
@@ -225,7 +226,7 @@ await scenario("delegate output drops its tool row and adds a clickable subagent
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "d1", tool_name: "delegate", arguments_json: JSON.stringify({ task: "Write focused tests" }) }],
   ["TOOL_CALL_END", { call_id: "d1", tool_name: "delegate", output: JSON.stringify({
-    job_id: "job_DELEGATE",
+    job_id: "job_01KW0VERYVERYLONGIDENTIFIER",
     type: "delegate",
     status: "running",
     transcript_ref: "local:delegate-child",
@@ -235,8 +236,14 @@ await scenario("delegate output drops its tool row and adds a clickable subagent
   if (conv.querySelector(".subagent-reference")) return { ok: false, detail: "standalone subagent-reference should no longer be used" };
   const ref = conv.querySelector(".subs .sub-r");
   if (!ref) return { ok: false, detail: "missing subagents-module row" };
-  if (ref.dataset.jobId !== "job_DELEGATE") return { ok: false, detail: "missing job id dataset" };
+  if (ref.dataset.jobId !== "job_01KW0VERYVERYLONGIDENTIFIER") return { ok: false, detail: "missing job id dataset" };
+  if (ref.dataset.fullJobId !== "job_01KW0VERYVERYLONGIDENTIFIER") return { ok: false, detail: "missing full job id dataset" };
   if (ref.dataset.transcriptRef !== "local:delegate-child") return { ok: false, detail: "missing transcript ref dataset" };
+  const meta = ref.querySelector(".sub-meta");
+  if (!meta) return { ok: false, detail: "missing subagent machine metadata" };
+  if (meta.textContent.includes("job_01KW0VERYVERYLONGIDENTIFIER")) return { ok: false, detail: "primary visible label leaked raw long job id: " + meta.textContent };
+  if (!meta.textContent.includes("job ")) return { ok: false, detail: "primary visible label missing short job label: " + meta.textContent };
+  if (!meta.title.includes("job job_01KW0VERYVERYLONGIDENTIFIER")) return { ok: false, detail: "details title missing raw job id: " + meta.title };
   const text = ref.textContent;
   for (const want of ["Write focused tests", "running"]) {
     if (!text.includes(want)) return { ok: false, detail: "subagent row missing " + want + ": " + text };

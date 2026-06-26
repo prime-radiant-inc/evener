@@ -1,6 +1,8 @@
 #!/bin/sh
 set -u
 
+cd "$(dirname "$0")"
+
 # Per-test wall-clock limit (seconds). A hung test must not wedge the whole
 # suite, so each test runs under `timeout` and a TIMEOUT is reported as a
 # failure while the loop continues. Override with JSTEST_TIMEOUT.

@@ -96,6 +96,15 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			reducer.ApplyToolOutputDelta(params.ItemID, params.Delta)
 			m.applySessionTranscriptReducer(reducer)
 		}
+	case appwire.NotifySerfJobStarted, appwire.NotifySerfJobFinished:
+		var params struct {
+			Job appwire.SerfJobInfo `json:"job"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil {
+			reducer := m.sessionTranscriptReducer()
+			reducer.ApplySerfJob(params.Job)
+			m.applySessionTranscriptReducer(reducer)
+		}
 	case appwire.NotifyTurnCompleted:
 		var params appwire.TurnCompletedParams
 		if json.Unmarshal(notification.Params, &params) == nil {

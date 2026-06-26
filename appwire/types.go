@@ -28,6 +28,7 @@ const (
 	MethodGoalSet                   = "goal/set"
 	MethodSerfTasksList             = "serf/tasks/list"
 	MethodSerfThreadTranscriptsList = "serf/thread/transcripts/list"
+	MethodSerfSubagentPreview       = "serf/subagentPreview"
 	MethodSerfDirsComplete          = "serf/dirs/complete"
 	MethodSerfPathValidate          = "serf/path/validate"
 	MethodSerfHarnessesList         = "serf/harnesses/list"
@@ -282,14 +283,19 @@ type SerfPluginInfo struct {
 }
 
 type SerfJobInfo struct {
-	JobID         string `json:"jobId"`
-	JobType       string `json:"jobType"`
-	Status        string `json:"status"`
-	Reason        string `json:"reason,omitempty"`
-	ExitCode      *int   `json:"exitCode,omitempty"`
-	OutputBytes   int64  `json:"outputBytes"`
-	TranscriptRef string `json:"transcriptRef,omitempty"`
-	FromWatch     bool   `json:"fromWatch,omitempty"`
+	JobID            string `json:"jobId"`
+	JobType          string `json:"jobType"`
+	Status           string `json:"status"`
+	Reason           string `json:"reason,omitempty"`
+	ExitCode         *int   `json:"exitCode,omitempty"`
+	OutputBytes      int64  `json:"outputBytes"`
+	TranscriptRef    string `json:"transcriptRef,omitempty"`
+	FromWatch        bool   `json:"fromWatch,omitempty"`
+	DelegateID       string `json:"delegateId,omitempty"`
+	Task             string `json:"task,omitempty"`
+	OriginTurnID     string `json:"originTurnId,omitempty"`
+	OriginToolCallID string `json:"originToolCallId,omitempty"`
+	OriginItemID     string `json:"originItemId,omitempty"`
 }
 
 type Turn struct {
@@ -438,6 +444,17 @@ type ThreadTranscriptTarget struct {
 
 type ThreadTranscriptListResponse struct {
 	Data []ThreadTranscriptTarget `json:"data"`
+}
+
+type SerfSubagentPreviewParams struct {
+	Ref   string `json:"ref"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+type SerfSubagentPreviewResponse struct {
+	Ref       string       `json:"ref"`
+	Items     []ThreadItem `json:"items"`
+	Truncated bool         `json:"truncated"`
 }
 
 type ThreadStartParams struct {

@@ -18,6 +18,20 @@ const (
 	MsgReasoning // the model's reasoning summary ("thinking"), streamed live
 )
 
+type SubagentRunInfo struct {
+	DelegateID       string
+	JobID            string
+	JobType          string
+	Status           string
+	Reason           string
+	Task             string
+	TranscriptRef    string
+	OriginTurnID     string
+	OriginToolCallID string
+	OriginItemID     string
+	OutputBytes      int64
+}
+
 type ToolCallInfo struct {
 	Name        string
 	Description string // compact one-liner header
@@ -30,6 +44,7 @@ type ToolCallInfo struct {
 	Expanded    bool
 	Done        bool
 	Hidden      bool // suppress from display (e.g. communicate)
+	Subagent    *SubagentRunInfo
 }
 
 const ToolCollapseThreshold = 5

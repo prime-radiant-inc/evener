@@ -1,6 +1,7 @@
 package transcript
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -302,6 +303,203 @@ func (r *TranscriptReducer) ApplyThreadItem(item appwire.ThreadItem, turnIndex i
 			r.rememberActiveTool(item, idx)
 		}
 	}
+}
+
+func (r *TranscriptReducer) ApplySerfJob(job appwire.SerfJobInfo) {
+	run := subagentRunFromJob(job)
+	if run.JobID == "" && run.DelegateID == "" && run.OriginToolCallID == "" && run.OriginItemID == "" {
+		return
+	}
+	if run.JobType != "" && !isDelegateJobType(run.JobType) {
+		return
+	}
+	idx, matched := r.subagentMessageIndex(run)
+	if !matched && !hasDelegateJobSignal(run) {
+		return
+	}
+	if matched {
+		info := r.messages[idx].Tool
+		if info == nil {
+			return
+		}
+		merged := mergeSubagentRun(info.Subagent, run)
+		info.Subagent = &merged
+		if merged.Task != "" && info.Description == "" {
+			info.Description = merged.Task
+		}
+		if subagentTerminalStatus(merged.Status) {
+			info.Done = true
+		}
+		return
+	}
+	info := &ToolCallInfo{Name: "delegate", Description: run.Task, Done: subagentTerminalStatus(run.Status)}
+	info.Subagent = &run
+	r.messages = append(r.messages, ChatMessage{Kind: MsgTool, ItemID: run.OriginItemID, ToolCallID: run.OriginToolCallID, Tool: info})
+}
+
+func (r *TranscriptReducer) subagentMessageIndex(run SubagentRunInfo) (int, bool) {
+	for i := range r.messages {
+		msg := r.messages[i]
+		if msg.Kind != MsgTool || msg.Tool == nil || !isDelegateToolName(msg.Tool.Name) {
+			continue
+		}
+		if msg.Tool.Subagent != nil {
+			existing := msg.Tool.Subagent
+			if run.JobID != "" && existing.JobID != "" && existing.JobID != run.JobID {
+				continue
+			}
+			if run.JobID != "" && existing.JobID == run.JobID {
+				return i, true
+			}
+			if run.DelegateID != "" && existing.DelegateID == run.DelegateID && existing.JobID == run.JobID {
+				return i, true
+			}
+		}
+		if run.OriginItemID != "" && msg.ItemID == run.OriginItemID {
+			return i, true
+		}
+		if run.OriginToolCallID != "" && msg.ToolCallID == run.OriginToolCallID {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func hasDelegateJobSignal(run SubagentRunInfo) bool {
+	return isDelegateJobType(run.JobType) || run.DelegateID != ""
+}
+
+func isDelegateJobType(jobType string) bool {
+	return strings.EqualFold(strings.TrimSpace(jobType), "delegate")
+}
+
+func isDelegateToolName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "delegate", "delegate_send":
+		return true
+	default:
+		return false
+	}
+}
+
+func subagentRunFromJob(job appwire.SerfJobInfo) SubagentRunInfo {
+	return SubagentRunInfo{
+		DelegateID:       strings.TrimSpace(job.DelegateID),
+		JobID:            strings.TrimSpace(job.JobID),
+		JobType:          strings.TrimSpace(job.JobType),
+		Status:           strings.TrimSpace(job.Status),
+		Reason:           strings.TrimSpace(job.Reason),
+		Task:             strings.TrimSpace(job.Task),
+		TranscriptRef:    strings.TrimSpace(job.TranscriptRef),
+		OriginTurnID:     strings.TrimSpace(job.OriginTurnID),
+		OriginToolCallID: strings.TrimSpace(job.OriginToolCallID),
+		OriginItemID:     strings.TrimSpace(job.OriginItemID),
+		OutputBytes:      job.OutputBytes,
+	}
+}
+
+func subagentRunFromToolItem(item appwire.ThreadItem) SubagentRunInfo {
+	raw := item.Raw
+	if len(raw) == 0 && strings.TrimSpace(item.Output) != "" {
+		raw = json.RawMessage(item.Output)
+	}
+	var payload struct {
+		DelegateID       string `json:"delegate_id"`
+		JobID            string `json:"job_id"`
+		StartedJobID     string `json:"started_job_id"`
+		CurrentJobID     string `json:"current_job_id"`
+		LatestJobID      string `json:"latest_job_id"`
+		Type             string `json:"type"`
+		Status           string `json:"status"`
+		Reason           string `json:"reason"`
+		Task             string `json:"task"`
+		TranscriptRef    string `json:"transcript_ref"`
+		OriginTurnID     string `json:"origin_turn_id"`
+		OriginToolCallID string `json:"origin_tool_call_id"`
+		OriginItemID     string `json:"origin_item_id"`
+		OutputBytes      int64  `json:"output_bytes"`
+		TotalBytes       int64  `json:"total_bytes"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &payload) != nil {
+		return SubagentRunInfo{}
+	}
+	jobID := firstNonEmptyString(payload.JobID, payload.StartedJobID, payload.CurrentJobID, payload.LatestJobID)
+	outputBytes := payload.OutputBytes
+	if outputBytes == 0 {
+		outputBytes = payload.TotalBytes
+	}
+	return SubagentRunInfo{
+		DelegateID:       strings.TrimSpace(payload.DelegateID),
+		JobID:            strings.TrimSpace(jobID),
+		JobType:          strings.TrimSpace(payload.Type),
+		Status:           strings.TrimSpace(payload.Status),
+		Reason:           strings.TrimSpace(payload.Reason),
+		Task:             strings.TrimSpace(payload.Task),
+		TranscriptRef:    strings.TrimSpace(payload.TranscriptRef),
+		OriginTurnID:     strings.TrimSpace(payload.OriginTurnID),
+		OriginToolCallID: strings.TrimSpace(payload.OriginToolCallID),
+		OriginItemID:     strings.TrimSpace(payload.OriginItemID),
+		OutputBytes:      outputBytes,
+	}
+}
+
+func mergeSubagentRun(dst *SubagentRunInfo, src SubagentRunInfo) SubagentRunInfo {
+	if dst == nil {
+		return src
+	}
+	out := *dst
+	if src.DelegateID != "" {
+		out.DelegateID = src.DelegateID
+	}
+	if src.JobID != "" {
+		out.JobID = src.JobID
+	}
+	if src.JobType != "" {
+		out.JobType = src.JobType
+	}
+	if src.Status != "" {
+		out.Status = src.Status
+	}
+	if src.Reason != "" {
+		out.Reason = src.Reason
+	}
+	if src.Task != "" {
+		out.Task = src.Task
+	}
+	if src.TranscriptRef != "" {
+		out.TranscriptRef = src.TranscriptRef
+	}
+	if src.OriginTurnID != "" {
+		out.OriginTurnID = src.OriginTurnID
+	}
+	if src.OriginToolCallID != "" {
+		out.OriginToolCallID = src.OriginToolCallID
+	}
+	if src.OriginItemID != "" {
+		out.OriginItemID = src.OriginItemID
+	}
+	if src.OutputBytes != 0 {
+		out.OutputBytes = src.OutputBytes
+	}
+	return out
+}
+
+func subagentTerminalStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "done", "failed", "cancelled", "stopped", "succeeded":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func systemMessageItemText(item appwire.ThreadItem) string {

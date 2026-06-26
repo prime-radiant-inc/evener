@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -162,6 +163,9 @@ func pastEntryThread(entry hubcore.PastEntry, includeTurns bool) appwire.Thread 
 	}
 	if includeTurns {
 		thread.Turns = pastEntryTurns(entry)
+		if jobsByID, err := agent.LoadSessionHistoricalJobRecords(entry.StateDir, entry.Meta.ID); err == nil {
+			thread = reconcileDelegateThreadItems(thread, jobsByID)
+		}
 	}
 	return thread
 }
@@ -264,4 +268,120 @@ func replayTurnToAgentTurn(turn hubcore.ReplayTurn) (schema.Turn, map[string]str
 			Content: content,
 		},
 	}, imageNames
+}
+
+func reconcileDelegateThreadItemForTest(item appwire.ThreadItem, rec agent.HistoricalJobRecord) appwire.ThreadItem {
+	return reconcileDelegateThreadItem(item, rec)
+}
+
+func reconcileDelegateThreadItems(thread appwire.Thread, jobsByID map[string]agent.HistoricalJobRecord) appwire.Thread {
+	if len(jobsByID) == 0 || len(thread.Turns) == 0 {
+		return thread
+	}
+	var turns []appwire.Turn
+	clonedItems := map[int]bool{}
+	for ti := range thread.Turns {
+		for ii := range thread.Turns[ti].Items {
+			item := thread.Turns[ti].Items[ii]
+			if item.Type != "commandExecution" || item.ToolName != "delegate" {
+				continue
+			}
+			jobID := delegateJobIDFromRaw(item.Raw)
+			if jobID == "" {
+				continue
+			}
+			rec, ok := jobsByID[jobID]
+			if !ok {
+				continue
+			}
+			reconciled := reconcileDelegateThreadItem(item, rec)
+			if turns == nil {
+				turns = append([]appwire.Turn(nil), thread.Turns...)
+			}
+			if !clonedItems[ti] {
+				turns[ti].Items = append([]appwire.ThreadItem(nil), thread.Turns[ti].Items...)
+				clonedItems[ti] = true
+			}
+			turns[ti].Items[ii] = reconciled
+		}
+	}
+	if turns != nil {
+		thread.Turns = turns
+	}
+	return thread
+}
+
+func reconcileDelegateThreadItem(item appwire.ThreadItem, rec agent.HistoricalJobRecord) appwire.ThreadItem {
+	if item.Type != "commandExecution" || item.ToolName != "delegate" || rec.JobID == "" || rec.Type != "delegate" || !isTerminalHistoricalJobStatus(rec.Status) {
+		return item
+	}
+	var raw map[string]any
+	if len(item.Raw) != 0 {
+		_ = json.Unmarshal(item.Raw, &raw)
+	}
+	if raw == nil {
+		raw = map[string]any{}
+	}
+	rawJobID, _ := raw["job_id"].(string)
+	if rawJobID != "" && rawJobID != rec.JobID {
+		return item
+	}
+	raw["job_id"] = rec.JobID
+	if rec.DelegateID != "" {
+		raw["delegate_id"] = rec.DelegateID
+	}
+	if rec.Task != "" {
+		raw["task"] = rec.Task
+	}
+	if rec.TranscriptRef != "" {
+		raw["transcript_ref"] = rec.TranscriptRef
+	}
+	if rec.OriginTurnID != "" {
+		raw["origin_turn_id"] = rec.OriginTurnID
+	}
+	if rec.OriginToolCallID != "" {
+		raw["origin_tool_call_id"] = rec.OriginToolCallID
+	}
+	if rec.OriginItemID != "" {
+		raw["origin_item_id"] = rec.OriginItemID
+	}
+	if rec.Status != "" {
+		raw["status"] = rec.Status
+		item.Status = rec.Status
+	}
+	if rec.Reason != "" {
+		raw["reason"] = rec.Reason
+	}
+	raw["output_bytes"] = rec.OutputBytes
+	if b, err := json.Marshal(raw); err == nil {
+		item.Raw = b
+	}
+	return item
+}
+
+func delegateJobIDFromRaw(raw json.RawMessage) string {
+	var payload struct {
+		JobID        string `json:"job_id"`
+		StartedJobID string `json:"started_job_id"`
+		CurrentJobID string `json:"current_job_id"`
+		LatestJobID  string `json:"latest_job_id"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &payload) != nil {
+		return ""
+	}
+	for _, value := range []string{payload.JobID, payload.StartedJobID, payload.CurrentJobID, payload.LatestJobID} {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func isTerminalHistoricalJobStatus(status string) bool {
+	switch status {
+	case "completed", "failed", "cancelled", "stopped":
+		return true
+	default:
+		return false
+	}
 }

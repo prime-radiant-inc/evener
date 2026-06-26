@@ -27,6 +27,9 @@ type ctxKey string
 // ctxToolCallID carries the tool call ID into tool execution closures via context.
 const ctxToolCallID ctxKey = "toolCallID"
 
+// ctxToolItemID carries the provider/tool item ID into tool execution closures via context.
+const ctxToolItemID ctxKey = "toolItemID"
+
 // ctxParentJobID carries the delegate job ID into child session spawn plumbing.
 const ctxParentJobID ctxKey = "parentJobID"
 
@@ -349,6 +352,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 
 	// Session-level tools (subagents) are registered in the registry with closures.
 	ctx = context.WithValue(ctx, ctxToolCallID, call.ID)
+	if call.ItemID != "" {
+		ctx = context.WithValue(ctx, ctxToolItemID, call.ItemID)
+	}
 	toolStart := time.Now()
 	if err := s.abortIfClosing(ctx); err != nil {
 		emitCanceledEnd(err)

@@ -1437,6 +1437,7 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 			VisibleToSession: s.id,
 			ParentJobID:      parentJobID,
 			DelegateID:       link.delegateID,
+			OriginItemID:     restore.OriginItemID,
 			TranscriptRef:    transcriptRef,
 			DelegateRestore:  restore,
 			StartedAt:        startedAt,
@@ -1499,6 +1500,7 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 		VisibleToSession: run.rec.VisibleToSession,
 		ParentJobID:      run.rec.ParentJobID,
 		DelegateID:       run.rec.DelegateID,
+		OriginItemID:     run.rec.OriginItemID,
 		StartedAt:        &startedAt,
 		OutputPath:       run.rec.OutputPath,
 		TranscriptRef:    run.rec.TranscriptRef,
@@ -1565,6 +1567,7 @@ func (s *Session) delegateRestoreDescriptor(jobID, childID, task, transcriptRef 
 	desc.ParentSessionID = prepared.parentSessionID
 	desc.ParentJobID = prepared.parentJobID
 	desc.OriginToolCallID = prepared.originToolCallID
+	desc.OriginItemID = prepared.originItemID
 	desc.Task = prepared.task
 	desc.AgentType = prepared.agentType
 	desc.RequestedModel = prepared.requestedModel
@@ -1606,6 +1609,7 @@ func (s *Session) resumedDelegateRestoreDescriptor(jobID, childID, transcriptRef
 		VisibleSessionID:    s.id,
 		OriginTurnID:        previous.OriginTurnID,
 		OriginToolCallID:    previous.OriginToolCallID,
+		OriginItemID:        previous.OriginItemID,
 		Task:                previous.Task,
 		AgentType:           previous.AgentType,
 		RequestedModel:      previous.RequestedModel,

@@ -50,6 +50,7 @@ type Event struct {
 	DelegateID       string                     `json:"delegate_id,omitempty"`
 	OriginTurnID     string                     `json:"origin_turn_id,omitempty"`
 	OriginToolCallID string                     `json:"origin_tool_call_id,omitempty"`
+	OriginItemID     string                     `json:"origin_item_id,omitempty"`
 	StartedAt        *time.Time                 `json:"started_at,omitempty"`
 	OutputPath       string                     `json:"output_path,omitempty"`
 	DelegateRestore  *DelegateRestoreDescriptor `json:"delegate_restore,omitempty"`

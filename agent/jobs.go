@@ -666,38 +666,111 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 		return
 	}
 	fromWatch := false
+	jobType := string(e.Type)
+	delegateID := e.DelegateID
+	task := e.Task
+	transcriptRef := e.TranscriptRef
+	originTurnID := e.OriginTurnID
+	originToolCallID := e.OriginToolCallID
+	originItemID := e.OriginItemID
 	if run != nil {
 		fromWatch = run.fromWatch.Load()
+		if run.rec != nil {
+			if run.rec.Type != "" {
+				jobType = string(run.rec.Type)
+			}
+			delegateID = firstNonEmptyJobString(run.rec.DelegateID, delegateID)
+			task = firstNonEmptyJobString(delegateRestoreTask(run.rec), run.rec.Task, task)
+			transcriptRef = firstNonEmptyJobString(run.rec.TranscriptRef, transcriptRef)
+			originTurnID = firstNonEmptyJobString(run.rec.OriginTurnID, originTurnID)
+			originToolCallID = firstNonEmptyJobString(run.rec.OriginToolCallID, originToolCallID, delegateRestoreOriginToolCallID(run.rec))
+			originItemID = firstNonEmptyJobString(run.rec.OriginItemID, originItemID, delegateRestoreOriginItemID(run.rec))
+		}
 	}
 	jm.emit(events.EventJobStarted, events.JobStartedData{
-		JobID:     e.JobID,
-		JobType:   string(e.Type),
-		Status:    string(jobstore.StatusRunning),
-		FromWatch: fromWatch,
+		JobID:            e.JobID,
+		JobType:          jobType,
+		Status:           string(jobstore.StatusRunning),
+		FromWatch:        fromWatch,
+		DelegateID:       delegateID,
+		Task:             task,
+		TranscriptRef:    transcriptRef,
+		OriginTurnID:     originTurnID,
+		OriginToolCallID: originToolCallID,
+		OriginItemID:     originItemID,
 	}, e.Provenance)
+}
+
+func firstNonEmptyJobString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func delegateRestoreTask(rec *jobstore.JobRecord) string {
+	if rec == nil || rec.DelegateRestore == nil {
+		return ""
+	}
+	// Restored/resumed delegate jobs keep the original launch task for run linkage;
+	// run.rec.Task is the resume message for the concrete job activation.
+	return rec.DelegateRestore.Task
+}
+
+func delegateRestoreOriginToolCallID(rec *jobstore.JobRecord) string {
+	if rec == nil || rec.DelegateRestore == nil {
+		return ""
+	}
+	return rec.DelegateRestore.OriginToolCallID
+}
+
+func delegateRestoreOriginItemID(rec *jobstore.JobRecord) string {
+	if rec == nil || rec.DelegateRestore == nil {
+		return ""
+	}
+	return rec.DelegateRestore.OriginItemID
 }
 
 func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 	if jm == nil || jm.emit == nil {
 		return
 	}
-	jobType := ""
-	transcriptRef := ""
+	jobType := string(e.Type)
+	transcriptRef := e.TranscriptRef
+	delegateID := e.DelegateID
+	task := e.Task
+	originTurnID := e.OriginTurnID
+	originToolCallID := e.OriginToolCallID
+	originItemID := e.OriginItemID
 	fromWatch := false
 	if run != nil && run.rec != nil {
-		jobType = string(run.rec.Type)
-		transcriptRef = run.rec.TranscriptRef
+		if run.rec.Type != "" {
+			jobType = string(run.rec.Type)
+		}
+		transcriptRef = firstNonEmptyJobString(run.rec.TranscriptRef, transcriptRef)
+		delegateID = firstNonEmptyJobString(run.rec.DelegateID, delegateID)
+		task = firstNonEmptyJobString(delegateRestoreTask(run.rec), run.rec.Task, task)
+		originTurnID = firstNonEmptyJobString(run.rec.OriginTurnID, originTurnID)
+		originToolCallID = firstNonEmptyJobString(run.rec.OriginToolCallID, originToolCallID, delegateRestoreOriginToolCallID(run.rec))
+		originItemID = firstNonEmptyJobString(run.rec.OriginItemID, originItemID, delegateRestoreOriginItemID(run.rec))
 		fromWatch = run.fromWatch.Load()
 	}
 	jm.emit(events.EventJobFinished, events.JobFinishedData{
-		JobID:         e.JobID,
-		JobType:       jobType,
-		Status:        string(e.Status),
-		Reason:        e.Reason,
-		ExitCode:      e.ExitCode,
-		OutputBytes:   e.OutputBytes,
-		TranscriptRef: transcriptRef,
-		FromWatch:     fromWatch,
+		JobID:            e.JobID,
+		JobType:          jobType,
+		Status:           string(e.Status),
+		Reason:           e.Reason,
+		ExitCode:         e.ExitCode,
+		OutputBytes:      e.OutputBytes,
+		TranscriptRef:    transcriptRef,
+		FromWatch:        fromWatch,
+		DelegateID:       delegateID,
+		Task:             task,
+		OriginTurnID:     originTurnID,
+		OriginToolCallID: originToolCallID,
+		OriginItemID:     originItemID,
 	}, e.Provenance)
 }
 

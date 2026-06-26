@@ -305,7 +305,18 @@ func RenderToolCall(tc transcript.ToolCallInfo, width int, focused bool) string 
 	}
 
 	bodyFromRenderer := false
-	if r.Body != nil {
+	if (tc.Name == "delegate" || tc.Name == "delegate_send") && tc.Subagent != nil {
+		body := SubagentRunBody(*tc.Subagent, width-th.IndentToolBody)
+		if body != "" {
+			if tc.Error != "" {
+				errStyle := lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().StateAwaiting)
+				body = body + "\n" + errStyle.Render(tc.Error)
+			}
+			bodyLines = append(bodyLines, indentBlock(body, th.IndentToolBody))
+			bodyFromRenderer = true
+		}
+	}
+	if r.Body != nil && !bodyFromRenderer {
 		body := r.Body(args, tc.Output, width-th.IndentToolBody)
 		if body != "" {
 			// Append error after renderer body so errors from unknown/MCP tools

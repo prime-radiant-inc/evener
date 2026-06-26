@@ -155,3 +155,26 @@ func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 		t.Fatalf("tool result Raw = %s, want tool_state", done[0].Raw)
 	}
 }
+
+func TestProjectTurnPreservesDelegateToolStateForColdReconciliation(t *testing.T) {
+	turn := schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_delegate",
+				Name:       "delegate",
+				Content:    `{"job_id":"job_A","delegate_id":"dlg_A","status":"running","task":"inspect billing","transcript_ref":"local:child"}`,
+				ToolState:  json.RawMessage(`{"job_id":"job_A","delegate_id":"dlg_A","status":"running","task":"inspect billing","transcript_ref":"local:child"}`),
+			},
+		}}},
+	}
+
+	items := ProjectTurn("turn_1", 1, turn, map[string]string{"call_delegate": "delegate"}, nil)
+	if len(items) != 1 || items[0].Type != "commandExecution" || items[0].CallID != "call_delegate" {
+		t.Fatalf("items=%+v", items)
+	}
+	if !strings.Contains(string(items[0].Raw), `"delegate_id":"dlg_A"`) || !strings.Contains(string(items[0].Raw), `"transcript_ref":"local:child"`) {
+		t.Fatalf("delegate raw = %s", items[0].Raw)
+	}
+}

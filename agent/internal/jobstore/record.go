@@ -69,6 +69,7 @@ type DelegateRestoreDescriptor struct {
 	VisibleSessionID    string             `json:"visible_session_id,omitempty"`
 	OriginTurnID        string             `json:"origin_turn_id,omitempty"`
 	OriginToolCallID    string             `json:"origin_tool_call_id,omitempty"`
+	OriginItemID        string             `json:"origin_item_id,omitempty"`
 	Task                string             `json:"task,omitempty"`
 	AgentType           string             `json:"agent_type,omitempty"`
 	RequestedModel      string             `json:"requested_model,omitempty"`
@@ -191,6 +192,7 @@ type JobRecord struct {
 	DelegateID       string                     `json:"delegate_id,omitempty"`
 	OriginTurnID     string                     `json:"origin_turn_id,omitempty"`
 	OriginToolCallID string                     `json:"origin_tool_call_id,omitempty"`
+	OriginItemID     string                     `json:"origin_item_id,omitempty"`
 	DelegateRestore  *DelegateRestoreDescriptor `json:"delegate_restore,omitempty"`
 	TranscriptRef    string                     `json:"transcript_ref,omitempty"`
 	Resumable        *bool                      `json:"resumable,omitempty"`

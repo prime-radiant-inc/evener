@@ -11,9 +11,10 @@
 // job_read_output / job_list / delegate_send for that job id, not only from a
 // JOB_FINISHED event (which often never arrives).
 const fs = require("fs");
+const path = require("path");
 const { JSDOM } = require("jsdom");
 
-const STYLE_PATH = "../assets/style.css";
+const STYLE_PATH = path.resolve(__dirname, "../assets/style.css");
 const styleSrc = fs.readFileSync(STYLE_PATH, "utf8");
 
 function newHarness() {
@@ -39,7 +40,7 @@ async function scenario(name, eventSeq, check) {
   await new Promise(r => setTimeout(r, 30));
   for (const [t, d] of eventSeq) window.SerfRenderer.handleData(t, d);
   await new Promise(r => setTimeout(r, 10));
-  const result = check({ conv, window });
+  const result = await check({ conv, window });
   console.log((result.ok ? "PASS" : "FAIL") + " — " + name);
   if (!result.ok) {
     allPass = false;
@@ -57,7 +58,94 @@ function spawnDelegate(callId, jobId, task, transcriptRef) {
   ];
 }
 
+function jobStarted(jobId, delegateId, task, transcriptRef, callId) {
+  return ["JOB_STARTED", {
+    jobId, jobType: "delegate", status: "running", delegateId, task,
+    transcriptRef, originToolCallId: callId, originItemId: "item_" + callId,
+  }];
+}
+
+function jobFinished(jobId, delegateId, task, transcriptRef, callId, status) {
+  return ["JOB_FINISHED", {
+    jobId, jobType: "delegate", status: status || "completed", delegateId, task,
+    transcriptRef, originToolCallId: callId, originItemId: "item_" + callId, outputBytes: 42,
+  }];
+}
+
 (async () => {
+
+await scenario("JOB_STARTED before delegate TOOL_CALL_END merges into one row", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  jobStarted("job_01KW0LONGSTARTIDABCDEFG", "dlg_01KW0DELEGATEABCDEFG", "inspect billing", "local:child-A", "d1"),
+  ...spawnDelegate("d1", "job_01KW0LONGSTARTIDABCDEFG", "inspect billing", "local:child-A"),
+], ({ conv }) => {
+  const rows = conv.querySelectorAll(".subs .sub-r");
+  if (rows.length !== 1) return { ok: false, detail: "expected one merged row, got " + rows.length };
+  const row = rows[0];
+  if (row.dataset.delegateId !== "dlg_01KW0DELEGATEABCDEFG") return { ok: false, detail: "missing delegateId dataset" };
+  if (row.dataset.fullDelegateId !== "dlg_01KW0DELEGATEABCDEFG") return { ok: false, detail: "missing fullDelegateId dataset" };
+  if (row.dataset.fullJobId !== "job_01KW0LONGSTARTIDABCDEFG") return { ok: false, detail: "missing fullJobId dataset" };
+  if (row.dataset.originToolCallId !== "d1") return { ok: false, detail: "missing origin call dataset" };
+  if (row.dataset.originItemId !== "item_d1") return { ok: false, detail: "missing origin item dataset" };
+  const meta = row.querySelector(".sub-meta");
+  if (!meta || !meta.textContent.includes("job 01KW0L…BCDEFG")) return { ok: false, detail: "missing shortened job metadata: " + (meta && meta.textContent) };
+  if (!meta || meta.textContent.includes("job_01KW0LONGSTARTIDABCDEFG")) return { ok: false, detail: "raw long job id used in metadata: " + (meta && meta.textContent) };
+  if (!row.textContent.includes("inspect billing")) return { ok: false, detail: "task should be primary label: " + row.textContent };
+  if (row.querySelector(".nm").textContent.includes("job_01KW0LONGSTARTIDABCDEFG")) return { ok: false, detail: "raw long job id used as primary label" };
+  return { ok: true };
+});
+
+await scenario("JOB_FINISHED updates originating delegate row", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ...spawnDelegate("d1", "job_A", "inspect billing", "local:child-A"),
+  jobFinished("job_A", "dlg_A", "inspect billing", "local:child-A", "d1", "completed"),
+], ({ conv }) => {
+  const rows = conv.querySelectorAll(".subs .sub-r");
+  if (rows.length !== 1) return { ok: false, detail: "expected one row after finish, got " + rows.length };
+  const glyph = rows[0].querySelector(".g");
+  if (!glyph || !glyph.classList.contains("done")) return { ok: false, detail: "finished row should be done: " + (glyph && glyph.className) };
+  if (rows[0].dataset.status !== "completed") return { ok: false, detail: "status dataset not terminal" };
+  return { ok: true };
+});
+
+await scenario("delegate_send second job creates second row under same delegate", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  jobStarted("job_first", "dlg_same", "inspect billing", "local:child", "d1"),
+  jobFinished("job_first", "dlg_same", "inspect billing", "local:child", "d1", "completed"),
+  jobStarted("job_second", "dlg_same", "inspect billing", "local:child", "send1"),
+], ({ conv }) => {
+  const rows = conv.querySelectorAll('.subs .sub-r[data-delegate-id="dlg_same"]');
+  if (rows.length !== 2) return { ok: false, detail: "expected two runs under delegate, got " + rows.length };
+  const first = conv.querySelector('.sub-r[data-job-id="job_first"] .g');
+  const second = conv.querySelector('.sub-r[data-job-id="job_second"] .g');
+  if (!first || !first.classList.contains("done")) return { ok: false, detail: "first run overwritten or not done" };
+  if (!second || !second.classList.contains("run")) return { ok: false, detail: "second run should be running" };
+  return { ok: true };
+});
+
+await scenario("resumed delegate job with same origin creates a new run row", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  jobStarted("job_first", "dlg_same", "inspect billing", "local:child-first", "d1"),
+  jobFinished("job_first", "dlg_same", "inspect billing", "local:child-first", "d1", "completed"),
+  ["JOB_STARTED", {
+    jobId: "job_second", jobType: "delegate", status: "running", delegateId: "dlg_same", task: "inspect billing",
+    transcriptRef: "local:child-second", originToolCallId: "d1", originItemId: "item_d1",
+  }],
+], ({ conv }) => {
+  const rows = conv.querySelectorAll('.subs .sub-r[data-delegate-id="dlg_same"]');
+  if (rows.length !== 2) return { ok: false, detail: "expected two runs under delegate, got " + rows.length };
+  const first = conv.querySelector('.subs .sub-r[data-job-id="job_first"]');
+  const second = conv.querySelector('.subs .sub-r[data-job-id="job_second"]');
+  if (!first) return { ok: false, detail: "missing first run row" };
+  if (!second) return { ok: false, detail: "missing second run row" };
+  if (first.dataset.status !== "completed") return { ok: false, detail: "first run status overwritten: " + first.dataset.status };
+  const firstGlyph = first.querySelector(".g");
+  if (!firstGlyph || !firstGlyph.classList.contains("done")) return { ok: false, detail: "first run should remain done" };
+  if (second.dataset.status !== "running") return { ok: false, detail: "second run should be running: " + second.dataset.status };
+  const secondGlyph = second.querySelector(".g");
+  if (!secondGlyph || !secondGlyph.classList.contains("run")) return { ok: false, detail: "second run should show running glyph" };
+  return { ok: true };
+});
 
 await scenario("one module aggregates multiple spawned subagents", [
   ["SESSION_START", { session_id: "01TEST" }],
@@ -407,6 +495,32 @@ await scenario("overflow sorts worst-first: failed and unknown above the fold, d
   const firstDoneIdx = visibleKinds.indexOf("done");
   const lastNonDoneIdx = Math.max(visibleKinds.lastIndexOf("failed"), visibleKinds.lastIndexOf("running"), visibleKinds.lastIndexOf("unknown"));
   if (firstDoneIdx !== -1 && firstDoneIdx < lastNonDoneIdx) return { ok: false, detail: "done rows must sort after failed/running/unknown: " + visibleKinds.join(",") };
+  return { ok: true };
+});
+
+await scenario("expanded subagent row lazy-loads bounded preview", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  jobFinished("job_preview", "dlg_preview", "inspect billing", "local:child-preview", "dpreview", "completed"),
+], async ({ conv, window }) => {
+  let requested = "";
+  window.fetch = (url) => {
+    requested = String(url);
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ ref: "local:child-preview", truncated: true, items: [
+      { type: "agentMessage", text: "found three callers" },
+      { type: "commandExecution", toolName: "grep_files", description: "search billing", status: "completed" },
+      { type: "agentMessage", text: "recommended fix" },
+      { type: "agentMessage", text: "extra item should not render when limit is 3" },
+    ] }) });
+  };
+  const row = conv.querySelector('.sub-r[data-job-id="job_preview"]');
+  if (!row) return { ok: false, detail: "missing preview row" };
+  row.click();
+  await new Promise(r => setTimeout(r, 20));
+  const preview = row.parentElement.querySelector('.sub-preview');
+  if (!requested.includes("local%3Achild-preview")) return { ok: false, detail: "preview endpoint not requested: " + requested };
+  if (!preview) return { ok: false, detail: "missing preview container" };
+  if (!preview.textContent.includes("found three callers") || !preview.textContent.includes("search billing")) return { ok: false, detail: "missing preview snippets: " + preview.textContent };
+  if (preview.textContent.includes("extra item should not render")) return { ok: false, detail: "preview rendered more than bounded limit" };
   return { ok: true };
 });
 

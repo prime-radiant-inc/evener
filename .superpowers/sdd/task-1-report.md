@@ -1,173 +1,234 @@
+# Task 1 Report: Backend event payload linkage
+
+## Status
+DONE
+
+## Summary
+Implemented backend job event payload linkage for delegate/subagent runs in the isolated worktree `/home/jesse/git/prime-radiant/serf/.worktrees/subagent-run-rendering`.
+
+Changes made:
+- Extended `events.JobStartedData` with linkage fields:
+  - `delegate_id`
+  - `task`
+  - `transcript_ref`
+  - `origin_turn_id`
+  - `origin_tool_call_id`
+  - `origin_item_id`
+- Extended `events.JobFinishedData` with linkage fields:
+  - `delegate_id`
+  - `task`
+  - `origin_turn_id`
+  - `origin_tool_call_id`
+  - `origin_item_id`
+- Updated `jobManager.emitJobStarted` and `jobManager.emitJobFinished` to populate linkage from:
+  - `jobstore.Event`
+  - live `runningJob.rec`
+  - delegate restore descriptor fallback for original delegate task/origin tool call linkage on resumed delegate runs
+- Added focused create-flow event linkage coverage.
+- Added focused resume-flow event linkage coverage.
+
+## Files changed
+- `agent/events/payloads.go`
+- `agent/jobs.go`
+- `agent/job_delegate_create_test.go`
+- `agent/job_delegate_send_test.go`
+
+## TDD evidence
+Initial failing focused test was added first and run before implementation:
+
+```bash
+go test ./agent -run TestDelegateJobEventsCarrySubagentRunLinkage -count=1 -v
+```
+
+Expected failure observed before implementation:
+
+```text
+agent/job_delegate_create_test.go:58:35: got.DelegateID undefined (type events.JobStartedData has no field or method DelegateID)
+agent/job_delegate_create_test.go:58:71: got.Task undefined (type events.JobStartedData has no field or method Task)
+agent/job_delegate_create_test.go:58:104: got.TranscriptRef undefined (type events.JobStartedData has no field or method TranscriptRef)
+agent/job_delegate_create_test.go:58:131: got.OriginToolCallID undefined (type events.JobStartedData has no field or method OriginToolCallID)
+FAIL	primeradiant.com/serf/agent [build failed]
+```
+
+After implementation and adding the resume-flow test, the focused tests passed:
+
+```bash
+go test ./agent -run 'TestDelegateJobEventsCarrySubagentRunLinkage|TestDelegateResumeJobStartedKeepsOriginalOriginLinkage' -count=1 -v
+```
+
+Result:
+
+```text
+=== RUN   TestDelegateJobEventsCarrySubagentRunLinkage
+--- PASS: TestDelegateJobEventsCarrySubagentRunLinkage (0.10s)
+=== RUN   TestDelegateResumeJobStartedKeepsOriginalOriginLinkage
+--- PASS: TestDelegateResumeJobStartedKeepsOriginalOriginLinkage (0.13s)
+PASS
+ok  	primeradiant.com/serf/agent	0.254s
+```
+
+## Package-level verification
+Ran the required package-level covering test:
+
+```bash
+go test ./agent -count=1
+```
+
+Result:
+
+```text
+ok  	primeradiant.com/serf/agent	9.701s
+```
+
+Also ran:
+
+```bash
+git diff --check
+```
+
+Result: passed with no whitespace errors.
+
+## Commit
+Created commit:
+
+```text
+d7237f83 feat(agent): carry delegate linkage in job events
+```
+
+Commit summary:
+
+```text
+agent/events/payloads.go          | 35 +++++++++------
+agent/job_delegate_create_test.go | 43 +++++++++++++++++++
+agent/job_delegate_send_test.go   | 48 +++++++++++++++++++++
+agent/jobs.go                     | 90 ++++++++++++++++++++++++++++++++-------
+4 files changed, 188 insertions(+), 28 deletions(-)
+```
+
+## Self-review notes
+- Scope stayed limited to Task 1 backend event payload linkage.
+- Did not change AppWire/Codex wire methods.
+- Did not modify the original checkout.
+- Did not modify the unrelated `kimi-jobs-ux-cleanup.md` file.
+- Only staged/committed the four requested task files.
+- The resume-flow event assertion required emitted payloads to preserve the original delegate launch task/origin, not the later `delegate_send` message. The implementation therefore uses the delegate restore descriptor as an additional fallback source for `Task` and `OriginToolCallID` when available, while preserving the requested `jobstore.Event` and `runningJob.rec` sources.
+
+## Concerns
+None.
+
+## Review fix: OriginItemID durable linkage
+
 Status: DONE
 
-Commit hash(es):
-- 7acecf1d3b92c5ed5dda666248db3071db38f5be
+Findings addressed:
+- Added `OriginItemID` to durable job linkage (`jobstore.Event`, `jobstore.JobRecord`, and `DelegateRestoreDescriptor`) so `origin_item_id` can round-trip through job start folding and delegate resume restore metadata.
+- Preserved the canonical provider/tool item identity by adding `llm.ToolCallData.ItemID`, carrying OpenAI Responses `item_id` through streaming tool-call events/accumulation, and threading it through tool execution context into delegate/subagent job creation.
+- Populated `OriginItemID` in both `emitJobStarted` and `emitJobFinished`, preferring live `runningJob.rec` / restore descriptor linkage when available and falling back to durable terminal/start event fields.
+- Extended focused delegate create/resume event tests to seed an origin item ID and assert `JobStartedData.OriginItemID` is non-empty and preserved.
+- Added the requested comment documenting why restored original delegate task overrides resumed job record task for linkage payloads.
 
-Commands run and relevant output:
+Tests run:
 
-1. Read requirements and testing guidance:
 ```bash
-# via read_file
-.superpowers/sdd/task-1-brief.md
-docs/testing.md
+go test ./agent -run 'TestDelegateJobEventsCarrySubagentRunLinkage|TestDelegateResumeJobStartedKeepsOriginalOriginLinkage' -count=1 -v
 ```
 
-2. RED: new scaffold fails before implementation:
-```bash
-node cmd/serf-hub/jstest/test-renderer-notifications.js
-```
-Output:
+Result:
+
 ```text
-FAIL — delegate completion notification parses
-  detail: missing notification card
-  HTML: <div class="cold-start-welcome"><div class="cold-start-intro">Describe a task and the agent gets to work — you'll watch it think, run tools, and spawn subagents in real time.</div><div class="cold-start-try">Try</div><div class="cold-start-examples"><button type="button" class="cold-start-example" data-prompt="Find and fix the root cause of a flaky test"><span class="cold-start-example-arrow">→</span><span>Find and fix the root cause of a flaky test</span></button><button type="button" class="cold-start-example" data-prompt="Audit error handling across this package"><span class="cold-start-example-arrow">→</span><span>Audit error handling across this package</span></button><button type="button" class="cold-start-example" data-prompt="Explain how a request flows from router to handler"><span class="cold-start-example-arrow">→</span><span>Explain how a request flows from router to handler</span></button></div></div><details class="steering"><summary><span class="steering-verb">↻ steering injected</span></summary><pre class="steering-body">&lt;job-notification job_id="job_delegate" event="completed" job_type="delegate" status="completed" reason="" output_bytes="402" transcript_ref="local:delegate"&gt;
-Job job_delegate completed. Output is available through read_transcript(transcript_ref="local:delegate") if needed.
-excerpt:
-{"message":"Status: DONE\nCommit hash(es): 3fbe7256\nOne-line test summary: node test passed; go test passed.\nConcerns: None","data":{"status":"DONE","commit_hashes":["3fbe7256"],"test_summary":"node test passed; go test passed.","concerns":[]},"artifacts":[]}
-&lt;/job-notification&gt;</pre></details>
-[exit 1]
-```
-
-3. PASS: focused test after implementation:
-```bash
-node cmd/serf-hub/jstest/test-renderer-notifications.js
-```
-First run passed but timed out because renderer pollers kept the Node event loop alive:
-```text
-PASS — delegate completion notification parses
-PASS: notification renderer assertions
-[timed out · running in background as job_01KVYHSB77FX34Z9ZJHM119DQC]
-```
-I added the same deterministic `process.exit(0)` pattern used by nearby renderer JS tests.
-
-Final focused run:
-```bash
-node cmd/serf-hub/jstest/test-renderer-notifications.js
-```
-Output:
-```text
-PASS — delegate completion notification parses
-PASS: notification renderer assertions
-[exit 0]
-```
-
-4. Self-review checks:
-```bash
-git diff --check -- cmd/serf-hub/assets/renderer-format.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-notifications.js
-```
-Output:
-```text
-[exit 0]
+=== RUN   TestDelegateJobEventsCarrySubagentRunLinkage
+--- PASS: TestDelegateJobEventsCarrySubagentRunLinkage (0.10s)
+=== RUN   TestDelegateResumeJobStartedKeepsOriginalOriginLinkage
+--- PASS: TestDelegateResumeJobStartedKeepsOriginalOriginLinkage (0.13s)
+PASS
+ok  	primeradiant.com/serf/agent	0.251s
 ```
 
 ```bash
-git status --short
-```
-Before commit output:
-```text
- M cmd/serf-hub/assets/renderer-format.js
- M cmd/serf-hub/assets/renderer.js
-?? cmd/serf-hub/jstest/test-renderer-notifications.js
-[exit 0]
+go test ./agent -count=1
 ```
 
-5. Commit:
-```bash
-git add cmd/serf-hub/assets/renderer-format.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-notifications.js && git commit -m "feat(web): parse notification steering"
-```
-Output:
-```text
-[instrument-sessionstart-refire 7acecf1d] feat(web): parse notification steering
- 3 files changed, 225 insertions(+)
- create mode 100644 cmd/serf-hub/jstest/test-renderer-notifications.js
-[exit 0]
-```
+Result:
 
-6. Post-commit verification:
-```bash
-git rev-parse HEAD
-```
-Output:
 ```text
-7acecf1d3b92c5ed5dda666248db3071db38f5be
-[exit 0]
+ok  	primeradiant.com/serf/agent	8.826s
 ```
 
 ```bash
-git status --short
-```
-Output:
-```text
-[exit 0]
+git diff --check
 ```
 
-Self-review notes:
-- Implemented only Task 1 files:
-  - `cmd/serf-hub/assets/renderer-format.js`
-  - `cmd/serf-hub/assets/renderer.js`
-  - `cmd/serf-hub/jstest/test-renderer-notifications.js`
-- Added client-side deterministic parsing helpers for notification-shaped steering and observer callbacks as specified.
-- Inserted notification classification before the final unknown return, preserving existing task/current-task/full-list steering priority.
-- Added the temporary minimal renderer branch after `full-list` and before generic `.steering` rendering.
-- Renderer branch uses DOM creation and `textContent`, not HTML injection.
-- Did not add transcript fetch behavior, transcript links, action buttons, or structured Task 2 card styling.
-- Raw notification text remains represented in `summary.cleanText` / `notification.rawText` for inspectability by parser consumers, though the temporary minimal visual branch does not display it because Task 1 requested only the minimal renderer snippet.
-- Added `process.exit(0)` to the new JS test after the PASS output because this renderer harness starts pollers; this matches the pattern in existing renderer JS tests and makes the focused test deterministic.
+Result: passed with no whitespace errors.
 
-Concerns:
-- None.
+Concerns: None.
+## Re-review fix: OpenAI Responses final function_call ItemID propagation
 
----
+Status: DONE
 
-## Task 1 Review Fix Report
+Findings addressed:
+- Parsed OpenAI Responses final `function_call` output item identity into `llm.ToolCallData.ItemID` in `fromResponses`, using output item `id` and falling back to `item_id` if present.
+- Preserved the existing naming distinction: `ToolCallData.ID` remains the Responses `call_id`; `ToolCallData.ItemID` carries the provider output item id.
+- Extended deterministic OpenAI provider tests so a completed Responses `function_call` with `id`/`call_id` reaches `ToolCallData.ItemID`, including the `Complete`/`StreamAccumulator.Response()` path where final response content replaces streamed accumulated content.
+- Added a focused `llm.StreamAccumulator` regression test documenting that when a final response with content is accepted, its tool-call `ItemID` must be present in `Response().ToolCalls()`.
+- Corrected an accidental edit made in the original checkout during the fix attempt; verified the original checkout no longer has these modifications and all final changes are in the requested worktree only.
 
-Fix status: DONE
+Tests run:
 
-Commit hash(es):
-- 9bd1544cd896ea1674e8ce5b4c667c552e294fa0
-
-Exact commands and outputs:
-
-1. Focused notification renderer test:
 ```bash
-node cmd/serf-hub/jstest/test-renderer-notifications.js
-```
-Output:
-```text
-PASS — delegate completion notification parses
-PASS — watch notification parses as warning with non-json excerpt
-PASS — watch notification renders minimal warning card
-PASS — watch-send notification parses concerns and warning tone
-PASS — watch-send notification renders minimal warning card
-PASS — observer callback coerces success tone to warning
-PASS — observer callback renders minimal warning card
-PASS — malformed excerpt remains raw inspectable text
-PASS — malformed excerpt is not injected as HTML
-PASS — nonzero exit code gives error tone
-PASS — nonzero exit code renders minimal error card
-PASS: notification renderer assertions
-[exit 0]
+go test ./llm -run TestStreamAccumulator_FinishWithContentResponsePreservesFinalToolCallItemID -count=1 -v
 ```
 
-2. Requested diff whitespace check:
+Result:
+
+```text
+=== RUN   TestStreamAccumulator_FinishWithContentResponsePreservesFinalToolCallItemID
+--- PASS: TestStreamAccumulator_FinishWithContentResponsePreservesFinalToolCallItemID (0.00s)
+PASS
+ok  	primeradiant.com/serf/llm	0.005s
+```
+
 ```bash
-git diff --check -- cmd/serf-hub/assets/renderer-format.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-notifications.js
+go test ./llm/providers/openai -run 'TestAdapter_Complete_OAuthTransportPreservesStreamedToolCallsWhenCompletedOutputIsEmpty|TestFromResponses_FunctionCallPreservesOutputItemID|TestAdapter_Complete_OAuthTransportTracksItemIDAndFragmentedToolArguments' -count=1 -v
 ```
-Output:
+
+Result:
+
 ```text
-[exit 0]
+=== RUN   TestAdapter_Complete_OAuthTransportPreservesStreamedToolCallsWhenCompletedOutputIsEmpty
+--- PASS: TestAdapter_Complete_OAuthTransportPreservesStreamedToolCallsWhenCompletedOutputIsEmpty (0.00s)
+=== RUN   TestAdapter_Complete_OAuthTransportTracksItemIDAndFragmentedToolArguments
+--- PASS: TestAdapter_Complete_OAuthTransportTracksItemIDAndFragmentedToolArguments (0.00s)
+=== RUN   TestFromResponses_FunctionCallPreservesOutputItemID
+--- PASS: TestFromResponses_FunctionCallPreservesOutputItemID (0.00s)
+PASS
+ok  	primeradiant.com/serf/llm/providers/openai	0.011s
 ```
 
-What changed:
-- Added deterministic focused assertions in `cmd/serf-hub/jstest/test-renderer-notifications.js` for:
-  - watch notification parsing and warning minimal card rendering;
-  - watch-send parsing/rendering, including communicate concerns;
-  - observer-callback parsing/rendering and success-to-warning tone coercion;
-  - malformed/non-JSON excerpts remaining parser-inspectable without HTML injection;
-  - nonzero exit code error tone parsing/rendering.
-- Updated `cmd/serf-hub/assets/renderer-format.js` so `parseObserverCallback` computes `notificationTone({ event: "observer_callback" }, communicate)` once, stores it in `observerTone`, then coerces success to warning.
-- Updated the `classifySteering` comment to list the `notification` kind.
-- Did not change daemon notification formats, transcript storage/delivery, job/watch semantics, model-facing steering content, transcript fetching/actions/links, or the temporary Task 1 minimal renderer behavior.
+```bash
+go test ./agent -count=1
+```
 
-Concerns:
-- None.
+Result:
+
+```text
+ok  	primeradiant.com/serf/agent	9.242s
+```
+
+```bash
+go test ./llm/providers/openai -count=1
+```
+
+Result:
+
+```text
+ok  	primeradiant.com/serf/llm/providers/openai	0.316s
+```
+
+```bash
+git diff --check
+```
+
+Result: passed with no whitespace errors.
+
+Concerns: None.
+

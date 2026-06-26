@@ -66,9 +66,10 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 	case StreamEventToolCallStart:
 		if ev.ToolCall != nil && ev.ToolCall.ID != "" {
 			tc := &ToolCallData{
-				ID:   ev.ToolCall.ID,
-				Name: ev.ToolCall.Name,
-				Type: ev.ToolCall.Type,
+				ID:     ev.ToolCall.ID,
+				ItemID: ev.ToolCall.ItemID,
+				Name:   ev.ToolCall.Name,
+				Type:   ev.ToolCall.Type,
 			}
 			a.toolCalls[ev.ToolCall.ID] = tc
 			a.toolCallOrder = append(a.toolCallOrder, ev.ToolCall.ID)
@@ -77,12 +78,15 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 		if ev.ToolCall != nil && ev.ToolCall.ID != "" {
 			tc, ok := a.toolCalls[ev.ToolCall.ID]
 			if !ok {
-				tc = &ToolCallData{ID: ev.ToolCall.ID}
+				tc = &ToolCallData{ID: ev.ToolCall.ID, ItemID: ev.ToolCall.ItemID}
 				a.toolCalls[ev.ToolCall.ID] = tc
 				a.toolCallOrder = append(a.toolCallOrder, ev.ToolCall.ID)
 			}
 			if tc.Name == "" && ev.ToolCall.Name != "" {
 				tc.Name = ev.ToolCall.Name
+			}
+			if tc.ItemID == "" && ev.ToolCall.ItemID != "" {
+				tc.ItemID = ev.ToolCall.ItemID
 			}
 			if tc.Type == "" && ev.ToolCall.Type != "" {
 				tc.Type = ev.ToolCall.Type
@@ -95,12 +99,15 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 		if ev.ToolCall != nil && ev.ToolCall.ID != "" {
 			tc, ok := a.toolCalls[ev.ToolCall.ID]
 			if !ok {
-				tc = &ToolCallData{ID: ev.ToolCall.ID}
+				tc = &ToolCallData{ID: ev.ToolCall.ID, ItemID: ev.ToolCall.ItemID}
 				a.toolCalls[ev.ToolCall.ID] = tc
 				a.toolCallOrder = append(a.toolCallOrder, ev.ToolCall.ID)
 			}
 			if tc.Name == "" && ev.ToolCall.Name != "" {
 				tc.Name = ev.ToolCall.Name
+			}
+			if tc.ItemID == "" && ev.ToolCall.ItemID != "" {
+				tc.ItemID = ev.ToolCall.ItemID
 			}
 			if tc.Type == "" && ev.ToolCall.Type != "" {
 				tc.Type = ev.ToolCall.Type

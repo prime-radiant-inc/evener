@@ -156,13 +156,28 @@ func appendDiagnosticsSections(b *strings.Builder, ds *appwire.SerfDiagnostics, 
 
 	fmt.Fprintf(b, "\n\nJobs (%d):", len(ds.Jobs))
 	for _, job := range ds.Jobs {
-		fmt.Fprintf(b, "\n  %s (%s, %s)", job.JobID, job.JobType, job.Status)
+		fmt.Fprintf(b, "\n  %s (%s, %s)", shortStatusJobID(job.JobID), job.JobType, job.Status)
 	}
 
 	fmt.Fprintf(b, "\n\nAgents (%d):", len(ds.Agents))
 	for _, name := range ds.Agents {
 		fmt.Fprintf(b, "\n  %s", name)
 	}
+}
+
+func shortStatusJobID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) <= 8 {
+		return id
+	}
+	if strings.HasPrefix(id, "job_") {
+		body := id[len("job_"):]
+		if len(body) <= 8 {
+			return id
+		}
+		return "job " + body[:6] + "…"
+	}
+	return id[:8]
 }
 
 // writeWrappedStatusList writes a labeled comma-separated list that wraps at

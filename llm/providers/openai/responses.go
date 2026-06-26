@@ -367,10 +367,10 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 			if !st.started {
 				sentContent = true
 				st.started = true
-				tc := llm.ToolCallData{ID: st.id, Name: st.name, Type: "function"}
+				tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
 			}
-			tc := llm.ToolCallData{ID: st.id, Name: st.name, Arguments: []byte(delta), Type: "function"}
+			tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: []byte(delta), Type: "function"}
 			s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
 		case "response.function_call_arguments.done":
 			argsStr, _ := payload["arguments"].(string)
@@ -451,10 +451,10 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 						if !st.started {
 							sentContent = true
 							st.started = true
-							tc := llm.ToolCallData{ID: st.id, Name: st.name, Type: "function"}
+							tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
 							s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
 						}
-						tc := llm.ToolCallData{ID: st.id, Name: st.name, Arguments: json.RawMessage(argsStr), Type: "function"}
+						tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: json.RawMessage(argsStr), Type: "function"}
 						s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
 					} else {
 						s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
@@ -1011,10 +1011,15 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 				name, _ := item["name"].(string)
 				args, _ := item["arguments"].(string)
 				callID, _ := item["call_id"].(string)
+				itemID, _ := item["id"].(string)
+				if itemID == "" {
+					itemID, _ = item["item_id"].(string)
+				}
 				msg.Content = append(msg.Content, llm.ContentPart{
 					Kind: llm.ContentToolCall,
 					ToolCall: &llm.ToolCallData{
 						ID:        callID,
+						ItemID:    itemID,
 						Name:      name,
 						Arguments: json.RawMessage(args),
 						Type:      "function",

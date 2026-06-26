@@ -158,6 +158,7 @@ type DocumentData struct {
 // ToolCallData describes a tool call requested by the model.
 type ToolCallData struct {
 	ID              string          `json:"id"`
+	ItemID          string          `json:"item_id,omitempty"`
 	Name            string          `json:"name"`
 	Arguments       json.RawMessage `json:"arguments,omitempty"`        // raw JSON object
 	ParsedArguments map[string]any  `json:"parsed_arguments,omitempty"` // populated by Parse()

@@ -105,6 +105,7 @@ var Methods = []MethodSpec{
 	{MethodGoalSet, GoalSetParams{}, GoalSetResponse{}, ScopeBoth, "Sets or clears the session's /goal objective."},
 	{MethodSerfTasksList, TaskListParams{}, TaskListResponse{}, ScopeBoth, "Lists the session's tasks."},
 	{MethodSerfThreadTranscriptsList, ThreadTranscriptListParams{}, ThreadTranscriptListResponse{}, ScopeHub, "Lists transcript targets (subagents/related threads) for a ref."},
+	{MethodSerfSubagentPreview, SerfSubagentPreviewParams{}, SerfSubagentPreviewResponse{}, ScopeHub, "Reads a bounded lazy preview of a subagent transcript's latest direct items."},
 	{MethodSerfDirsComplete, DirsCompleteParams{}, DirsCompleteResponse{}, ScopeHub, "Directory-path autocompletion for a prefix."},
 	{MethodSerfPathValidate, PathValidateParams{}, PathValidateResponse{}, ScopeHub, "Validates a launch path."},
 	{MethodSerfHarnessesList, HarnessListParams{}, HarnessListResponse{}, ScopeHub, "Lists available harness descriptors."},

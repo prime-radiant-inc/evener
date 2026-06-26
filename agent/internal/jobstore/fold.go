@@ -301,6 +301,7 @@ func applyEvent(r *JobRecord, e Event) {
 		r.DelegateID = e.DelegateID
 		r.OriginTurnID = e.OriginTurnID
 		r.OriginToolCallID = e.OriginToolCallID
+		r.OriginItemID = e.OriginItemID
 		r.DelegateRestore = e.DelegateRestore
 		r.Provenance = provenance.Clone(e.Provenance)
 		r.OutputPath = e.OutputPath
