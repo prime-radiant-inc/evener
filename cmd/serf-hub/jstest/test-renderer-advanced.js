@@ -116,7 +116,8 @@ await scenario("system status preferences reveal saved transcript statuses", [
   return { ok: true };
 });
 
-// 1. Append action with multiple tasks
+// 1. Append renders a task-update card with one row per new task. The append's
+//    State snapshot carries the store-assigned ids + statuses.
 await scenario("append 3 tasks", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "c1", tool_name: "task_list", arguments_json: JSON.stringify({
@@ -127,12 +128,17 @@ await scenario("append 3 tasks", [
       { type: "verify", description: "run tests", prompt: "..." },
     ],
   }) }],
-  ["TOOL_CALL_END", { call_id: "c1", output: "ok", tool_name: "task_list" }],
-], ({ sysLines, steerings, toolCalls, conv }) => {
-  if (sysLines.length !== 1) return { ok: false, detail: "expected 1 system-line, got " + sysLines.length };
-  if (!conv.querySelector(".task-system-icon")) return { ok: false, detail: "missing task system icon" };
-  const t = sysLines[0];
-  if (!t.includes("added 3 tasks")) return { ok: false, detail: "missing 'added 3 tasks': " + t };
+  ["TOOL_CALL_END", { call_id: "c1", output: "ok", tool_name: "task_list", tool_state: JSON.stringify([
+    { id: 1, description: "investigate spec", status: "open" },
+    { id: 2, description: "write code", status: "open" },
+    { id: 3, description: "run tests", status: "open" },
+  ]) }],
+], ({ steerings, toolCalls, conv }) => {
+  const card = conv.querySelector(".task-card");
+  if (!card) return { ok: false, detail: "no task-update card" };
+  const rows = card.querySelectorAll(".task-card-row");
+  if (rows.length !== 3) return { ok: false, detail: "expected 3 rows, got " + rows.length };
+  const t = card.textContent;
   if (!t.includes("investigate spec") || !t.includes("write code") || !t.includes("run tests"))
     return { ok: false, detail: "missing task names: " + t };
   if (steerings.length !== 0) return { ok: false, detail: "expected 0 steerings" };
@@ -140,9 +146,9 @@ await scenario("append 3 tasks", [
   return { ok: true };
 });
 
-// 2. Multi-update in one call (collapses to one prose line). Description
-//    seeding via STEERING full-list (the realistic post-compaction path
-//    where the daemon emits the full task table including ids).
+// 2. Multi-update in one call collapses to one prose summary on the card.
+//    Descriptions are seeded via the STEERING full-list (the realistic
+//    post-compaction path where the daemon emits the full task table).
 await scenario("multi-update in one call (descriptions seeded via full-list)", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["STEERING_INJECTED", { text: "<SYSTEM-REMINDER>\nTask list:\n  [open] #1: Phase 1\n  [open] #2: Phase 2\n</SYSTEM-REMINDER>" }],
@@ -154,26 +160,28 @@ await scenario("multi-update in one call (descriptions seeded via full-list)", [
     ],
   }) }],
   ["TOOL_CALL_END", { call_id: "c1", output: "ok", tool_name: "task_list" }],
-], ({ sysLines }) => {
-  // We expect: pointer line from full-list + one update prose line.
-  if (sysLines.length !== 2) return { ok: false, detail: "expected 2 system-lines (pointer + update), got " + sysLines.length + ": " + sysLines.join(" | ") };
-  const updateLine = sysLines[1];
-  if (!updateLine.includes("marked")) return { ok: false, detail: "no 'marked' verb: " + updateLine };
-  if (!updateLine.includes("Phase 1")) return { ok: false, detail: "no Phase 1 description: " + updateLine };
-  if (!updateLine.includes("Phase 2")) return { ok: false, detail: "no Phase 2 description: " + updateLine };
-  if (!updateLine.includes("started")) return { ok: false, detail: "no 'started' verb: " + updateLine };
-  if (!updateLine.includes("took longer")) return { ok: false, detail: "notes missing: " + updateLine };
+], ({ conv }) => {
+  // The full-list no longer renders a pointer; the update renders one card.
+  if (conv.querySelector(".system-line-pointer")) return { ok: false, detail: "full-list must not render a pointer" };
+  const summary = conv.querySelector(".task-card .task-card-summary");
+  if (!summary) return { ok: false, detail: "no card summary" };
+  const s = summary.textContent;
+  if (!s.includes("marked")) return { ok: false, detail: "no 'marked' verb: " + s };
+  if (!s.includes("Phase 1")) return { ok: false, detail: "no Phase 1 description: " + s };
+  if (!s.includes("Phase 2")) return { ok: false, detail: "no Phase 2 description: " + s };
+  if (!s.includes("started")) return { ok: false, detail: "no 'started' verb: " + s };
+  if (!s.includes("took longer")) return { ok: false, detail: "notes missing: " + s };
   return { ok: true };
 });
 
-// 3. Full-list steering renders as a pointer line that opens the panel
-await scenario("full-list steering renders as pointer", [
+// 3. A bare full-list steering seeds the cache but renders nothing on its own —
+//    no pointer, no card (the card is reserved for actual task_list changes).
+await scenario("full-list steering seeds the cache without rendering", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["STEERING_INJECTED", { text: "<SYSTEM-REMINDER>\nTask list:\n  [open] #1: Plan the work\n  [in_progress] #2: Do the work\n  [done] #3: Test it\n</SYSTEM-REMINDER>" }],
 ], ({ conv }) => {
-  const ptr = conv.querySelector(".system-line-pointer");
-  if (!ptr) return { ok: false, detail: "no pointer rendered" };
-  if (!ptr.textContent.includes("3 items")) return { ok: false, detail: "pointer wrong: " + ptr.textContent };
+  if (conv.querySelector(".system-line-pointer")) return { ok: false, detail: "pointer should be gone" };
+  if (conv.querySelector(".task-card")) return { ok: false, detail: "bare full-list should not render a card" };
   return { ok: true };
 });
 
@@ -212,9 +220,10 @@ await scenario("same-verb runs collapse", [
     ],
   }) }],
   ["TOOL_CALL_END", { call_id: "u1", output: "ok", tool_name: "task_list" }],
-], ({ sysLines }) => {
-  const update = sysLines.find(l => l.includes("marked"));
-  if (!update) return { ok: false, detail: "no 'marked' line: " + sysLines.join(" | ") };
+], ({ conv }) => {
+  const summary = conv.querySelector(".task-card .task-card-summary");
+  if (!summary) return { ok: false, detail: "no card summary" };
+  const update = summary.textContent;
   // Should be ONE clause: "marked A, B, C done", not three "marked X done" clauses.
   const matches = update.match(/marked /g);
   if (!matches || matches.length !== 1) return { ok: false, detail: "expected single 'marked' verb, got: " + update };
@@ -232,9 +241,10 @@ await scenario("cancelled tasks get distinct verb", [
     action: "update", updates: [{ id: 5, status: "cancelled", notes: "out of scope" }],
   }) }],
   ["TOOL_CALL_END", { call_id: "u1", output: "ok", tool_name: "task_list" }],
-], ({ sysLines }) => {
-  const line = sysLines.find(l => l.includes("Future feature"));
-  if (!line) return { ok: false, detail: "no line names task: " + sysLines.join(" | ") };
+], ({ conv }) => {
+  const summary = conv.querySelector(".task-card .task-card-summary");
+  const line = summary && summary.textContent;
+  if (!line || !line.includes("Future feature")) return { ok: false, detail: "summary doesn't name task: " + line };
   if (!line.includes("cancelled")) return { ok: false, detail: "missing 'cancelled': " + line };
   if (!line.includes("out of scope")) return { ok: false, detail: "missing notes: " + line };
   return { ok: true };
@@ -248,9 +258,10 @@ await scenario("full-list parses descriptions ending in [TBD]", [
     action: "update", updates: [{ id: 9, status: "done" }],
   }) }],
   ["TOOL_CALL_END", { call_id: "u1", output: "ok", tool_name: "task_list" }],
-], ({ sysLines }) => {
-  const line = sysLines.find(l => l.includes("marked"));
-  if (!line) return { ok: false, detail: "no 'marked' line: " + sysLines.join(" | ") };
+], ({ conv }) => {
+  const summary = conv.querySelector(".task-card .task-card-summary");
+  const line = summary && summary.textContent;
+  if (!line || !line.includes("marked")) return { ok: false, detail: "no 'marked' summary: " + line };
   if (!line.includes("Migrate users [WIP]")) return { ok: false, detail: "description got clipped: " + line };
   return { ok: true };
 });
@@ -263,9 +274,10 @@ await scenario("full-list strips [high] reasoning-effort suffix", [
     action: "update", updates: [{ id: 10, status: "done" }],
   }) }],
   ["TOOL_CALL_END", { call_id: "u1", output: "ok", tool_name: "task_list" }],
-], ({ sysLines }) => {
-  const line = sysLines.find(l => l.includes("marked"));
-  if (!line) return { ok: false, detail: "no marked line" };
+], ({ conv }) => {
+  const summary = conv.querySelector(".task-card .task-card-summary");
+  const line = summary && summary.textContent;
+  if (!line || !line.includes("marked")) return { ok: false, detail: "no marked summary" };
   if (line.includes("[high]")) return { ok: false, detail: "reasoning suffix should be stripped: " + line };
   if (!line.includes("Deep work")) return { ok: false, detail: "description should remain: " + line };
   return { ok: true };
@@ -279,8 +291,9 @@ await scenario("full-list strips [minimal]/[max] reasoning-effort suffixes", [
     action: "update", updates: [{ id: 11, status: "done" }, { id: 12, status: "done" }],
   }) }],
   ["TOOL_CALL_END", { call_id: "u2", output: "ok", tool_name: "task_list" }],
-], ({ sysLines }) => {
-  const joined = sysLines.join("\n");
+], ({ conv }) => {
+  const summary = conv.querySelector(".task-card .task-card-summary");
+  const joined = summary ? summary.textContent : "";
   if (joined.includes("[minimal]") || joined.includes("[max]")) return { ok: false, detail: "new-vocab effort suffix should be stripped: " + joined };
   if (!joined.includes("Quick fix") || !joined.includes("Hard problem")) return { ok: false, detail: "descriptions should remain: " + joined };
   return { ok: true };
@@ -296,41 +309,45 @@ await scenario("task-nudge steering suppressed", [
   return { ok: true };
 });
 
-// 12. "now on X" emitted on auto-advance after a done update
-await scenario("auto-advance steering becomes 'now on X'", [
+// 12. The daemon auto-advances the next task to in_progress inside the same
+//     task_list handler, so the returned State already names the new current
+//     task. The card shows it as current; the trailing current-task steering is
+//     suppressed (no separate "now on X" line).
+await scenario("auto-advance: card shows the new current task, steer is suppressed", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["USER_INPUT", { text: "go" }],
   ["STEERING_INJECTED", { text: "<SYSTEM-REMINDER>\n<CURRENT-TASK id=\"1\">\n<TITLE>First</TITLE>\n</CURRENT-TASK>\n</SYSTEM-REMINDER>" }],
   ["TOOL_CALL_START", { call_id: "u1", tool_name: "task_list", arguments_json: JSON.stringify({
     action: "update", updates: [{ id: 1, status: "done" }],
   }) }],
-  ["TOOL_CALL_END", { call_id: "u1", output: "ok", tool_name: "task_list" }],
+  ["TOOL_CALL_END", { call_id: "u1", output: "ok", tool_name: "task_list", tool_state: JSON.stringify([
+    { id: 1, description: "First", status: "done" },
+    { id: 2, description: "Second", status: "in_progress" },
+  ]) }],
   ["STEERING_INJECTED", { text: "<SYSTEM-REMINDER>\n<CURRENT-TASK id=\"2\">\n<TITLE>Second</TITLE>\n<INSTRUCTIONS>Do the second task carefully.</INSTRUCTIONS>\n</CURRENT-TASK>\n</SYSTEM-REMINDER>" }],
-], ({ sysLines, conv }) => {
-  const nowOn = sysLines.find(l => l.includes("now on"));
-  if (!nowOn) return { ok: false, detail: "expected a 'now on' line on auto-advance: " + sysLines.join(" | ") };
-  if (!nowOn.includes("Second")) return { ok: false, detail: "should name the new task: " + nowOn };
-  // Make sure the LEADING current-task steering didn't emit "now on First"
-  if (sysLines.some(l => l.includes("now on") && l.includes("First")))
-    return { ok: false, detail: "leading steering should NOT emit 'now on First'" };
-  const details = conv.querySelector(".system-line-now .task-system-details");
-  if (!details) return { ok: false, detail: "now-on line should include task details disclosure" };
-  if (!details.textContent.includes("Do the second task carefully.")) return { ok: false, detail: "task prompt missing from details" };
+], ({ conv }) => {
+  if (/now on/.test(conv.textContent)) return { ok: false, detail: "no separate 'now on' line should be emitted" };
+  if (conv.querySelector(".system-line-now")) return { ok: false, detail: "no .system-line-now should be rendered" };
+  const card = conv.querySelector(".task-card");
+  if (!card) return { ok: false, detail: "no task-update card" };
+  const cur = card.querySelector(".task-card-row.current");
+  if (!cur || !cur.textContent.includes("Second")) return { ok: false, detail: "card should show Second as the current task" };
   return { ok: true };
 });
 
-// 6. Update without seeded description falls back to #N
+// 6. Update with no seeded description and no State still shows the task by id.
 	await scenario("update with no seeded description falls back to #N", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "c1", tool_name: "task_list", arguments_json: JSON.stringify({
     action: "update", updates: [{ id: 7, status: "done" }],
   }) }],
   ["TOOL_CALL_END", { call_id: "c1", output: "ok", tool_name: "task_list" }],
-], ({ sysLines }) => {
-  if (sysLines.length !== 1) return { ok: false, detail: "expected 1 system-line" };
-  const t = sysLines[0];
-  if (!t.includes("#7")) return { ok: false, detail: "should fall back to #7: " + t };
-  if (!t.includes("done")) return { ok: false, detail: "should say done: " + t };
+], ({ conv }) => {
+  const card = conv.querySelector(".task-card");
+  if (!card) return { ok: false, detail: "expected a degraded-path card" };
+  const row = card.querySelector(".task-card-row");
+  if (!row || !row.textContent.includes("#7")) return { ok: false, detail: "should fall back to #7: " + (row && row.textContent) };
+  if (!row.classList.contains("done")) return { ok: false, detail: "row should be done" };
 	  return { ok: true };
 	});
 

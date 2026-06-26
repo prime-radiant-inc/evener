@@ -241,11 +241,6 @@
     const d = taskDescriptions.get(id);
     return d ? '"' + d + '"' : "#" + id;
   }
-  function taskDetailFor(id) {
-    const n = Number(id);
-    return Number.isFinite(n) ? taskDetails.get(n) : null;
-  }
-
   function parseArgs(json) {
     if (!json) return {};
     try { return JSON.parse(json); } catch (e) { return {}; }
@@ -463,90 +458,6 @@
     return { kind: "unknown", label: "steering injected", detail: "", cleanText: stripped };
   }
 
-  function appendTaskIcon(line, kind) {
-    const icon = document.createElement("span");
-    icon.className = "task-system-icon task-system-icon-" + (kind || "open");
-    icon.textContent = kind === "done" ? "✓" : "□";
-    line.appendChild(icon);
-  }
-
-  function taskDetailRows(t) {
-    if (!t) return [];
-    const rows = [];
-    if (t.type) rows.push(["type", t.type]);
-    if (t.status) rows.push(["status", t.status]);
-    if (Array.isArray(t.depends_on) && t.depends_on.length) rows.push(["depends on", t.depends_on.map(x => "#" + x).join(", ")]);
-    if (t.reasoning_effort) rows.push(["reasoning", t.reasoning_effort]);
-    if (t.prompt) rows.push(["prompt", t.prompt]);
-    if (t.notes) rows.push(["notes", Array.isArray(t.notes) ? t.notes.join("\n") : t.notes]);
-    return rows;
-  }
-
-  function appendTaskDetailDisclosure(parent, task) {
-    const rows = taskDetailRows(task);
-    if (!rows.length) return;
-    const details = document.createElement("details");
-    details.className = "task-system-details";
-    const summary = document.createElement("summary");
-    summary.textContent = "task details";
-    details.appendChild(summary);
-    const dl = document.createElement("dl");
-    dl.className = "task-system-detail";
-    for (const row of rows) {
-      const dt = document.createElement("dt");
-      dt.textContent = row[0];
-      const dd = document.createElement("dd");
-      dd.textContent = row[1];
-      dl.appendChild(dt);
-      dl.appendChild(dd);
-    }
-    details.appendChild(dl);
-    parent.appendChild(details);
-  }
-
-  function appendTaskListDetails(parent, args) {
-    if (!args) return;
-    const tasks = [];
-    if (args.action === "append" && Array.isArray(args.tasks)) {
-      for (const t of args.tasks) { rememberTask(t); if (t) tasks.push(t); }
-    } else if (args.action === "update" && Array.isArray(args.updates)) {
-      for (const u of args.updates) {
-        const cached = taskDetailFor(u && u.id) || {};
-        const merged = Object.assign({}, cached, u || {});
-        if (u && u.id != null) rememberTask(merged);
-        tasks.push(merged);
-      }
-    }
-    const useful = tasks.filter(t => taskDetailRows(t).length);
-    if (!useful.length) return;
-    const details = document.createElement("details");
-    details.className = "task-system-details";
-    const summary = document.createElement("summary");
-    summary.textContent = useful.length === 1 ? "task details" : useful.length + " task details";
-    details.appendChild(summary);
-    for (const t of useful) {
-      const section = document.createElement("div");
-      section.className = "task-system-detail-item";
-      const title = document.createElement("div");
-      title.className = "task-system-detail-title";
-      title.textContent = "#" + (t.id || "?") + (t.description ? ": " + t.description : "");
-      section.appendChild(title);
-      const dl = document.createElement("dl");
-      dl.className = "task-system-detail";
-      for (const row of taskDetailRows(t)) {
-        const dt = document.createElement("dt");
-        dt.textContent = row[0];
-        const dd = document.createElement("dd");
-        dd.textContent = row[1];
-        dl.appendChild(dt);
-        dl.appendChild(dd);
-      }
-      section.appendChild(dl);
-      details.appendChild(section);
-    }
-    parent.appendChild(details);
-  }
-
   // planStateClass maps a task status to the three-state plan grammar used by
   // the inline checklist block (mockup #18 alt C): done (neutral, recedes),
   // current (the live in_progress item, blue + breathing), pending (open, dim).
@@ -569,16 +480,6 @@
       case "cancelled": return "✕";
       default: return "○";
     }
-  }
-
-  function taskListIconKind(args) {
-    if (!args) return "open";
-    if (args.action === "append") return "open";
-    if (args.action === "update" && Array.isArray(args.updates)) {
-      if (args.updates.some(u => u && u.status === "done")) return "done";
-      if (args.updates.some(u => u && u.status === "in_progress")) return "in_progress";
-    }
-    return "open";
   }
 
   // formatTaskListAction renders task_list tool args as a single line of
@@ -697,6 +598,21 @@
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
 
+  // formatClockShort renders a wall-clock time of day (no seconds) — used for a
+  // task's "checked off at" stamp where minute precision is plenty.
+  function formatClockShort(d) {
+    if (!d || !Number.isFinite(d.getTime())) return "";
+    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
+  // taskTimeOf parses one of a task's minted timestamps (ISO string) into a Date,
+  // or null when absent/unparseable.
+  function taskTimeOf(raw) {
+    if (raw == null || raw === "") return null;
+    const d = new Date(raw);
+    return Number.isFinite(d.getTime()) ? d : null;
+  }
+
   function formatToolDuration(ms) {
     if (!Number.isFinite(ms) || ms < 0) return "";
     if (ms < 1000) return Math.max(1, Math.round(ms)) + "ms";
@@ -770,15 +686,9 @@
     taskDetails,
     rememberTask,
     taskDesc,
-    taskDetailFor,
     parseArgs,
     toolIntent,
     classifySteering,
-    appendTaskIcon,
-    taskDetailRows,
-    appendTaskDetailDisclosure,
-    appendTaskListDetails,
-    taskListIconKind,
     planStateClass,
     planGlyphForStatus,
     formatTaskListAction,
@@ -792,6 +702,8 @@
     toolEventTime,
     toolDuration,
     formatToolClock,
+    formatClockShort,
+    taskTimeOf,
     formatToolDuration,
     clip,
     reasoningGist,

@@ -2262,28 +2262,19 @@ button.composer-model-value:hover { text-decoration: underline; }
 .banner.warning { color: var(--state-warning);  border-left: 2px solid var(--state-warning);  padding-left: var(--space-3); }
 .banner.note    { color: var(--text-muted);     border-left: 2px solid var(--rule);           padding-left: var(--space-3); }
 
-/* System-line: short prose narration between user and agent — used for
- * task_list transitions ("marked X done · started Y"), full-list pointers,
- * and other compact system events. Reads as a quiet aside, not a tool log. */
+/* System-line: short prose narration between user and agent — used for compact
+ * system events (hook exits, round timings). Reads as a quiet aside, not a tool
+ * log. Task_list changes render as a .task-card, not a system-line. */
 .system-line { margin: var(--space-3) 0 var(--space-3) var(--space-7); padding: var(--space-2) 0; font-size: var(--text-sm); color: var(--text-muted); font-style: italic; line-height: var(--leading-snug); }
-.task-system-icon { display: inline-block; width: 14px; margin-right: var(--space-3); color: var(--text); font-style: normal; font-family: var(--font-mono); }
-.task-system-details { display: block; margin: var(--space-1) 0 0 var(--space-6); font-style: normal; }
-.task-system-details summary { cursor: pointer; color: var(--text-muted); display: list-item; list-style: disclosure-closed inside; width: max-content; text-align: left; }
-.task-system-details[open] summary { list-style-type: disclosure-open; }
-.task-system-detail-item { margin-top: var(--space-2); }
-.task-system-detail-title { color: var(--text); font-family: var(--font-mono); font-size: var(--text-xs); }
-.task-system-detail { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-3); margin: var(--space-2) 0 0; max-width: 680px; }
-.task-system-detail dt { color: var(--text-muted); font-family: var(--font-mono); }
-.task-system-detail dd { margin: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
-.system-line-pointer { display: inline-block; text-decoration: none; cursor: pointer; }
-.system-line-pointer:hover { color: var(--text); }
 
-/* Inline plan checklist (mockup #18 alt C): the full task set rendered as ONE
-   neutral box at the moment the plan is declared/updated. Same containment
-   device as the subagents module (.subs): bg-raised + a hairline rule. Three
-   glyph-paired states — ✓ done (neutral, recedes), ⟳ current (blue, the live
-   item), ○ pending (dim). Empty plan ⇒ the block is never emitted. */
-.plan-block {
+/* Task-update card: one coherent block emitted when the agent changes its task
+   list. Same containment device as the subagents module (.subs): bg-raised + a
+   hairline rule. It leads with what changed (flagged rows + their notes and, for
+   completed tasks, when they were checked off), elevates the now-current task,
+   and shows a little surrounding context; the rest folds behind "show all". The
+   rows reuse the .plan-item glyph grammar — ✓ done (neutral, recedes), ⟳ current
+   (blue, the live item), ○ pending (dim). */
+.task-card {
   margin: var(--space-3) 0 var(--space-4) var(--tool-indent);
   max-width: min(720px, 100%);
   background: var(--bg-raised);
@@ -2291,19 +2282,65 @@ button.composer-model-value:hover { text-decoration: underline; }
   border-radius: var(--radius-md);
   padding: var(--space-3) var(--space-4);
 }
-.plan-header {
+.task-card-head {
   display: flex;
   align-items: baseline;
   gap: var(--space-3);
-  margin-bottom: var(--space-2);
+  margin-bottom: var(--space-1);
 }
-.plan-title { font-size: var(--text-sm); font-weight: 600; color: var(--text); }
-.plan-progress {
+.task-card-title { font-size: var(--text-sm); font-weight: 600; color: var(--text); }
+.task-card-progress {
   margin-left: auto;
   font-size: var(--text-xs);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+/* The prose one-liner of the edit ("marked X done · started Y"). Quiet — the
+   rows carry the structure. */
+.task-card-summary {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-bottom: var(--space-2);
+}
+.task-card-rows { display: flex; flex-direction: column; }
+/* Changed rows wear a thin accent bar (inset, no layout shift) so "what the
+   agent just touched" reads at a glance without a second containment device. */
+.task-card-row.changed {
+  box-shadow: inset 2px 0 0 var(--accent);
+  padding-left: var(--space-2);
+  border-radius: 1px;
+}
+/* "Checked off at" stamp on a completed row — minute-precision wall clock. */
+.task-card-time {
+  margin-left: auto;
+  padding-left: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+/* A progress note carried by an update, aligned under its row's label. */
+.task-card-note {
+  margin: 0 0 var(--space-1) calc(14px + var(--space-3) + var(--space-2));
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: var(--leading-snug);
+}
+.task-card-hidden { display: none; }
+/* "show all (N)" reveal — dim, indented to match the rows. */
+.task-card-showall {
+  display: block;
+  margin-top: var(--space-1);
+  padding: 2px 0;
+  background: transparent;
+  border: none;
+  text-align: left;
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.task-card-showall:hover { color: var(--text); }
 .plan-item {
   display: flex;
   gap: var(--space-3);

@@ -17,14 +17,9 @@
     taskDescriptions,
     taskDetails,
     rememberTask,
-    taskDetailFor,
     parseArgs,
     toolIntent,
     classifySteering,
-    appendTaskIcon,
-    appendTaskDetailDisclosure,
-    appendTaskListDetails,
-    taskListIconKind,
     planStateClass,
     planGlyphForStatus,
     formatTaskListAction,
@@ -37,6 +32,8 @@
     toolEventTime,
     toolDuration,
     formatToolClock,
+    formatClockShort,
+    taskTimeOf,
     formatToolDuration,
     clip,
     reasoningGist,
@@ -48,7 +45,7 @@
   const { toolRendererFor } = window.SerfRendererInternal;
 
   // Side panels live in renderer-panels.js (loaded after tools).
-  const { toggleTasksPanel, currentTaskSummary, updateTasksBadge } =
+  const { currentTaskSummary, updateTasksBadge } =
     window.SerfRendererInternal;
 
   // Liveness has two honest thresholds (mockup #13). A short silence is
@@ -983,10 +980,13 @@
             break;
           }
           if (data.tool_name === "task_list") {
-            // Render as inline system-line prose; suppress the normal
-            // tool-call card. Seed the description cache on append calls.
+            // Render as a task-update card; suppress the normal tool-call card.
+            // Snapshot the known task ids BEFORE seeding so the card can tell
+            // which tasks an append newly created. Seed the description cache on
+            // append calls.
             this.suppressedToolCalls.add(data.call_id);
             const args = parseArgs(data.arguments_json);
+            const priorIds = new Set(taskDetails.keys());
             if (args.action === "append" && Array.isArray(args.tasks)) {
               for (const t of args.tasks) {
                 if (t && t.id != null && t.description) {
@@ -994,7 +994,7 @@
                 }
               }
             }
-            this.pendingTaskCalls.set(data.call_id, args);
+            this.pendingTaskCalls.set(data.call_id, { args, priorIds });
             break;
           }
           this.entryIndex++;
@@ -1016,7 +1016,7 @@
             const pending = this.pendingTaskCalls && this.pendingTaskCalls.get(data.call_id);
             if (pending !== undefined) {
               this.pendingTaskCalls.delete(data.call_id);
-              this.appendTaskListSystemLine(pending);
+              this.appendTaskListSystemLine(pending.args, parseToolState(data.tool_state), pending.priorIds);
             }
             break;
           }
@@ -3071,30 +3071,16 @@
       const summary = classifySteering(text);
 
       if (summary.kind === "current-task") {
-        // Seed description from the title attribute. The daemon repeats this
-        // steering before nearly every model call, so we only emit a "now on
-        // X" system-line when the active task ID actually changes — and we
-        // skip it when implied by surrounding context:
-        //   • the previous element is a user message (the agent picking up
-        //     work right after a request is implicit)
-        //   • the previous system-line already named this task (avoids
-        //     "started X. now on X" redundancy)
+        // The daemon re-states the current task before nearly every model call.
+        // The task-update card already shows the now-current task (sourced from
+        // the in_progress task in the same task_list change), so this steer is
+        // redundant inline — keep only the cache seeding (title + instructions)
+        // and the active-id tracking.
         const idNum = summary.taskID ? parseInt(summary.taskID, 10) : null;
         if (idNum && summary.taskTitle) {
           rememberTask({ id: idNum, description: summary.taskTitle, prompt: summary.taskPrompt });
         }
-        if (idNum && idNum !== this.lastCurrentTaskId) {
-          const previousID = this.lastCurrentTaskId;
-          this.lastCurrentTaskId = idNum;
-          if (previousID === null) return; // first steering of session: silent
-          if (this.lastSystemLineMentions(idNum)) return;
-          const line = document.createElement("div");
-          line.className = "system-line system-line-now";
-          appendTaskIcon(line, "in_progress");
-          line.appendChild(document.createTextNode('now on "' + summary.taskTitle + '"'));
-          appendTaskDetailDisclosure(line, taskDetailFor(idNum));
-          this.conversation.appendChild(line);
-        }
+        if (idNum) this.lastCurrentTaskId = idNum;
         return;
       }
       if (summary.kind === "task-nudge") {
@@ -3102,19 +3088,13 @@
         return;
       }
       if (summary.kind === "full-list") {
-        // Seed all descriptions from the parsed list.
+        // Seed descriptions from the parsed list; the task-update card and the
+        // sidebar tasks panel carry the list itself, so no inline pointer.
         if (summary.tasks) {
           for (const t of summary.tasks) {
             rememberTask(t);
           }
         }
-        const total = summary.tasks ? summary.tasks.length : 0;
-        const line = document.createElement("a");
-        line.className = "system-line system-line-pointer";
-        line.href = "#";
-        line.textContent = "task list reloaded · " + total + " item" + (total === 1 ? "" : "s");
-        line.onclick = (e) => { e.preventDefault(); toggleTasksPanel(null); };
-        this.conversation.appendChild(line);
         return;
       }
 
@@ -3147,86 +3127,157 @@
       this.conversation.appendChild(el);
     },
 
-    // appendTaskListSystemLine renders a task_list tool call as a single
-    // line of system prose: "marked X done", "now starting Y", "added 3
-    // tasks", etc. Multiple updates in one call are joined into one
-    // sentence. action=view is suppressed entirely (it's a read with no
-    // user-visible change).
-    //
-    // After rendering, kicks an immediate /tasks fetch so newly-assigned
-    // ids (from appends) get a description in cache before the agent's
-    // next update — minimising the "marked #N done" fallback window.
-    appendTaskListSystemLine(args) {
+    // appendTaskListSystemLine handles a task_list tool call. action=view is a
+    // read and renders nothing. Any real change renders ONE task-update card.
+    // The known-id snapshot is taken BEFORE seeding the cache so an append can
+    // tell which tasks are newly created. After rendering, an immediate /tasks
+    // fetch refreshes the sidebar badge.
+    appendTaskListSystemLine(args, stateTasks, priorIds) {
       if (!args || args.action === "view") return;
-      const text = formatTaskListAction(args);
-      if (text) {
-        const line = document.createElement("div");
-        line.className = "system-line";
-        appendTaskIcon(line, taskListIconKind(args));
-        line.appendChild(document.createTextNode(text));
-        appendTaskListDetails(line, args);
-        this.conversation.appendChild(line);
+      priorIds = priorIds || new Set(taskDetails.keys());
+      if (args.action === "append" && Array.isArray(args.tasks)) {
+        for (const t of args.tasks) rememberTask(t);
       }
-      this.appendPlanBlock();
+      if (args.action === "update" && Array.isArray(args.updates)) {
+        for (const u of args.updates) if (u && u.id != null) rememberTask(u);
+      }
+      if (Array.isArray(stateTasks)) {
+        for (const t of stateTasks) rememberTask(t);
+      }
+      this.appendTaskUpdateCard(args, stateTasks, priorIds);
       this.refreshTaskBadgeSoon();
     },
 
-    // appendPlanBlock renders the inline plan checklist (mockup #18 alt C): the
-    // full current task set as ONE neutral box at the point the plan was
-    // declared/updated, with the three glyph-paired states (✓ done · ⟳ current
-    // · ○ pending) and a progress count. Empty plan ⇒ render NOTHING (no plan,
-    // no control). The task set is read from the shared description/status cache
-    // (taskDetails), which append/update calls and /tasks fetches keep current,
-    // so the block always shows real statuses ordered by task id.
-    appendPlanBlock() {
-      const tasks = Array.from(taskDetails.values())
-        .filter(t => t && t.id != null)
-        .sort((a, b) => Number(a.id) - Number(b.id));
+    // appendTaskUpdateCard renders one coherent card for a task_list change:
+    // what the agent just edited (the changed rows, flagged, with their notes
+    // and — for completed tasks — when they were checked off), the now-current
+    // task, and a little surrounding context (the tasks immediately before and
+    // after the current one, shown in sequence). The rest of the plan folds
+    // behind "show all". The authoritative task set is the tool's State
+    // snapshot (it carries statuses + minted timestamps); the description cache
+    // is the fallback when no State rode along (e.g. older transcripts).
+    appendTaskUpdateCard(args, stateTasks, priorIds) {
+      let tasks = Array.isArray(stateTasks) && stateTasks.length
+        ? stateTasks.slice()
+        : Array.from(taskDetails.values());
+      tasks = tasks.filter(t => t && t.id != null);
+      // Degraded path: no State rode along and the cache never learned these
+      // tasks (an old transcript, or an update before any /tasks fetch). Show
+      // the touched tasks anyway, by id, from the update args alone.
+      if (!tasks.length && args.action === "update" && Array.isArray(args.updates)) {
+        tasks = args.updates
+          .filter(u => u && u.id != null)
+          .map(u => ({ id: Number(u.id), status: u.status }));
+      }
+      tasks = tasks.sort((a, b) => Number(a.id) - Number(b.id));
       if (!tasks.length) return;
 
-      const done = tasks.filter(t => t.status === "done" || t.status === "cancelled").length;
-      const block = document.createElement("div");
-      block.className = "plan-block";
+      // Which tasks did THIS call touch? Updates name their ids directly; an
+      // append's changed set is every task that did not exist before the call.
+      const changed = new Map(); // id -> note text (may be "")
+      if (args.action === "update" && Array.isArray(args.updates)) {
+        for (const u of args.updates) {
+          if (u && u.id != null) changed.set(Number(u.id), String(u.notes || "").trim());
+        }
+      } else if (args.action === "append") {
+        const known = priorIds || new Set();
+        for (const t of tasks) {
+          if (!known.has(Number(t.id))) changed.set(Number(t.id), "");
+        }
+      }
 
-      const header = document.createElement("div");
-      header.className = "plan-header";
+      // The visible window: changed rows + the current task + its immediate
+      // neighbors (unlabeled — just where we came from and where we're going).
+      const current = tasks.find(t => t.status === "in_progress");
+      const visible = new Set(changed.keys());
+      if (current) {
+        const cid = Number(current.id);
+        visible.add(cid);
+        const idx = tasks.findIndex(t => Number(t.id) === cid);
+        if (idx > 0) visible.add(Number(tasks[idx - 1].id));
+        if (idx >= 0 && idx < tasks.length - 1) visible.add(Number(tasks[idx + 1].id));
+      }
+      if (!visible.size) for (const t of tasks) visible.add(Number(t.id));
+
+      const doneCount = tasks.filter(t => t.status === "done" || t.status === "cancelled").length;
+      const card = document.createElement("div");
+      card.className = "task-card";
+
+      const head = document.createElement("div");
+      head.className = "task-card-head";
       const title = document.createElement("span");
-      title.className = "plan-title";
-      title.textContent = "Plan";
+      title.className = "task-card-title";
+      title.textContent = "Tasks";
       const prog = document.createElement("span");
-      prog.className = "plan-progress";
-      prog.textContent = done + " / " + tasks.length;
-      header.appendChild(title);
-      header.appendChild(prog);
-      block.appendChild(header);
+      prog.className = "task-card-progress";
+      prog.textContent = doneCount + " / " + tasks.length;
+      head.appendChild(title);
+      head.appendChild(prog);
+      card.appendChild(head);
 
+      // A one-line prose summary of the edit (updates only — an append's rows
+      // already are the content).
+      if (args.action === "update") {
+        const text = formatTaskListAction(args);
+        if (text) {
+          const summary = document.createElement("div");
+          summary.className = "task-card-summary";
+          summary.textContent = text;
+          card.appendChild(summary);
+        }
+      }
+
+      const rows = document.createElement("div");
+      rows.className = "task-card-rows";
+      let hidden = 0;
       for (const t of tasks) {
-        const item = document.createElement("div");
-        item.className = "plan-item " + planStateClass(t.status);
+        const id = Number(t.id);
+        const shown = visible.has(id);
+        if (!shown) hidden++;
+        const row = document.createElement("div");
+        row.className = "task-card-row plan-item " + planStateClass(t.status) +
+          (changed.has(id) ? " changed" : "") + (shown ? "" : " task-card-hidden");
         const glyph = document.createElement("span");
         glyph.className = "plan-glyph";
         glyph.textContent = planGlyphForStatus(t.status);
         const step = document.createElement("span");
         step.className = "plan-step";
-        step.textContent = t.description || t.title || ("#" + t.id);
-        item.appendChild(glyph);
-        item.appendChild(step);
-        block.appendChild(item);
+        step.textContent = t.description || t.title || ("#" + id);
+        row.appendChild(glyph);
+        row.appendChild(step);
+        if (t.status === "done") {
+          const when = taskTimeOf(t.completed_at);
+          if (when) {
+            const time = document.createElement("span");
+            time.className = "task-card-time";
+            time.textContent = formatClockShort(when);
+            row.appendChild(time);
+          }
+        }
+        rows.appendChild(row);
+        const note = changed.get(id);
+        if (note) {
+          const noteEl = document.createElement("div");
+          noteEl.className = "task-card-note" + (shown ? "" : " task-card-hidden");
+          noteEl.textContent = note;
+          rows.appendChild(noteEl);
+        }
       }
-      this.conversation.appendChild(block);
-    },
+      card.appendChild(rows);
 
-    // lastSystemLineMentions returns true if the most-recent system-line in
-    // the conversation already contains the description for the given task
-    // id. Used to dedupe a redundant "now on X" steering that arrives right
-    // after a task_list update saying "started X".
-    lastSystemLineMentions(taskID) {
-      const desc = taskDescriptions.get(taskID);
-      if (!desc) return false;
-      const all = this.conversation.querySelectorAll(".system-line");
-      const last = all[all.length - 1];
-      if (!last) return false;
-      return last.textContent.includes('"' + desc + '"');
+      if (hidden) {
+        const showAll = document.createElement("button");
+        showAll.type = "button";
+        showAll.className = "task-card-showall";
+        showAll.textContent = "show all (" + tasks.length + ")";
+        showAll.addEventListener("click", () => {
+          card.querySelectorAll(".task-card-hidden").forEach(el => el.classList.remove("task-card-hidden"));
+          showAll.remove();
+        });
+        card.appendChild(showAll);
+      }
+
+      this.conversation.appendChild(card);
     },
 
     refreshTaskBadgeSoon() {
