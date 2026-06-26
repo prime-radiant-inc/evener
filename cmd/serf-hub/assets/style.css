@@ -2167,6 +2167,15 @@ button.composer-model-value:hover { text-decoration: underline; }
 }
 .sub-r:hover .lk { color: var(--accent); }
 .sub-r:hover { color: var(--text); }
+.sub-preview {
+  margin: calc(-1 * var(--space-1)) 0 var(--space-3) calc(12px + var(--space-4));
+  padding: var(--space-2) var(--space-3);
+  border-left: 1px solid var(--rule-soft);
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.sub-preview-line + .sub-preview-line { margin-top: var(--space-1); }
+.sub-preview-more { margin-top: var(--space-2); font-style: italic; }
 /* Open-beside button: quiet, hover-revealed, sits after "view →". */
 /* The quiet, hover-revealed ⇲ "open beside" control. Shared across subagent
    rows, image cards, and file-referencing tool cards: a transparent glyph that

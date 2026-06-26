@@ -40,7 +40,7 @@ async function scenario(name, eventSeq, check) {
   await new Promise(r => setTimeout(r, 30));
   for (const [t, d] of eventSeq) window.SerfRenderer.handleData(t, d);
   await new Promise(r => setTimeout(r, 10));
-  const result = check({ conv, window });
+  const result = await check({ conv, window });
   console.log((result.ok ? "PASS" : "FAIL") + " — " + name);
   if (!result.ok) {
     allPass = false;
@@ -471,6 +471,32 @@ await scenario("overflow sorts worst-first: failed and unknown above the fold, d
   const firstDoneIdx = visibleKinds.indexOf("done");
   const lastNonDoneIdx = Math.max(visibleKinds.lastIndexOf("failed"), visibleKinds.lastIndexOf("running"), visibleKinds.lastIndexOf("unknown"));
   if (firstDoneIdx !== -1 && firstDoneIdx < lastNonDoneIdx) return { ok: false, detail: "done rows must sort after failed/running/unknown: " + visibleKinds.join(",") };
+  return { ok: true };
+});
+
+await scenario("expanded subagent row lazy-loads bounded preview", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  jobFinished("job_preview", "dlg_preview", "inspect billing", "local:child-preview", "dpreview", "completed"),
+], async ({ conv, window }) => {
+  let requested = "";
+  window.fetch = (url) => {
+    requested = String(url);
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ ref: "local:child-preview", truncated: true, items: [
+      { type: "agentMessage", text: "found three callers" },
+      { type: "commandExecution", toolName: "grep_files", description: "search billing", status: "completed" },
+      { type: "agentMessage", text: "recommended fix" },
+      { type: "agentMessage", text: "extra item should not render when limit is 3" },
+    ] }) });
+  };
+  const row = conv.querySelector('.sub-r[data-job-id="job_preview"]');
+  if (!row) return { ok: false, detail: "missing preview row" };
+  row.click();
+  await new Promise(r => setTimeout(r, 20));
+  const preview = row.parentElement.querySelector('.sub-preview');
+  if (!requested.includes("local%3Achild-preview")) return { ok: false, detail: "preview endpoint not requested: " + requested };
+  if (!preview) return { ok: false, detail: "missing preview container" };
+  if (!preview.textContent.includes("found three callers") || !preview.textContent.includes("search billing")) return { ok: false, detail: "missing preview snippets: " + preview.textContent };
+  if (preview.textContent.includes("extra item should not render")) return { ok: false, detail: "preview rendered more than bounded limit" };
   return { ok: true };
 });
 

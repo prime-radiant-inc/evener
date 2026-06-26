@@ -336,6 +336,27 @@ func registerThreadHandlers(
 		}
 		return live, liveErr
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfSubagentPreview, func(ctx context.Context, params appwire.SerfSubagentPreviewParams) (appwire.SerfSubagentPreviewResponse, error) {
+		ref := strings.TrimSpace(params.Ref)
+		if ref == "" {
+			return appwire.SerfSubagentPreviewResponse{}, appwire.InvalidParams("ref required")
+		}
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, ref, "")
+		if err != nil {
+			if thread, ok := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"}); ok {
+				return subagentPreviewFromThread(thread, ref, params.Limit), nil
+			}
+			return appwire.SerfSubagentPreviewResponse{}, err
+		}
+		resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+		if err != nil {
+			if thread, ok := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"}); ok {
+				return subagentPreviewFromThread(thread, ref, params.Limit), nil
+			}
+			return appwire.SerfSubagentPreviewResponse{}, err
+		}
+		return subagentPreviewFromThread(resp.Thread, ref, params.Limit), nil
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 		resp, err := hubThreadStart(ctx, cfg, sources, params)
 		if err != nil {

@@ -2425,7 +2425,59 @@
       // Spawn order, preserved so worst-first sorting stays stable within a
       // severity band (mockup #8 alt B sorts by severity, not by recency).
       row.dataset.spawnIndex = String(this.subagentSpawnSeq = (this.subagentSpawnSeq || 0) + 1);
+      row.addEventListener("click", (e) => {
+        if (e.target && e.target.classList && e.target.classList.contains("lk")) return;
+        this.loadSubagentPreview(row);
+      });
       return row;
+    },
+
+    loadSubagentPreview(row) {
+      if (!row || row.dataset.previewState === "loaded" || row.dataset.previewState === "loading") return;
+      const ref = row.dataset.transcriptRef;
+      if (!ref) return;
+      row.dataset.previewState = "loading";
+      const box = this.ensureSubagentPreviewBox(row);
+      box.textContent = "loading preview…";
+      fetch("/_api/subagent-preview?ref=" + encodeURIComponent(ref) + "&limit=3")
+        .then(r => r.ok ? r.json() : Promise.reject(new Error("preview unavailable")))
+        .then(data => {
+          row.dataset.previewState = "loaded";
+          this.renderSubagentPreview(box, data);
+        })
+        .catch(() => {
+          row.dataset.previewState = "failed";
+          box.textContent = "preview unavailable";
+        });
+    },
+
+    ensureSubagentPreviewBox(row) {
+      let box = row.nextElementSibling;
+      if (!box || !box.classList || !box.classList.contains("sub-preview")) {
+        box = document.createElement("div");
+        box.className = "sub-preview";
+        row.insertAdjacentElement("afterend", box);
+      }
+      return box;
+    },
+
+    renderSubagentPreview(box, data) {
+      box.innerHTML = "";
+      const items = (data && data.items || []).slice(0, 3);
+      for (const item of items) {
+        const line = document.createElement("div");
+        line.className = "sub-preview-line";
+        const label = item.toolName ? item.toolName : (item.type === "agentMessage" ? "assistant" : item.type || "item");
+        const text = item.description || item.text || item.output || item.status || "";
+        line.textContent = label + (text ? ": " + clip(text, 100) : "");
+        box.appendChild(line);
+      }
+      if (data && data.truncated) {
+        const more = document.createElement("div");
+        more.className = "sub-preview-more";
+        more.textContent = "older child steps hidden";
+        box.appendChild(more);
+      }
     },
 
     // findSubagentRunRow locates a row by any stable linkage key. Job events can
@@ -2651,7 +2703,16 @@
     applyJobRefTarget(row, data) {
       if (!row || !data || !data.transcriptRef) return;
       row.dataset.transcriptRef = data.transcriptRef;
-      row.onclick = () => { this.navigateTo("/s/" + encodeURIComponent(data.transcriptRef)); };
+      const link = row.querySelector(".lk");
+      if (link && !link.dataset.navBound) {
+        link.dataset.navBound = "true";
+        link.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const ref = row.dataset.transcriptRef;
+          if (ref) this.navigateTo("/s/" + encodeURIComponent(ref));
+        });
+      }
       // "Open beside" — opens the subagent in a side pane instead of navigating away.
       if (!row.querySelector(".open-beside-btn")) {
         var renderer = this;

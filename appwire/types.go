@@ -28,6 +28,7 @@ const (
 	MethodGoalSet                   = "goal/set"
 	MethodSerfTasksList             = "serf/tasks/list"
 	MethodSerfThreadTranscriptsList = "serf/thread/transcripts/list"
+	MethodSerfSubagentPreview       = "serf/subagentPreview"
 	MethodSerfDirsComplete          = "serf/dirs/complete"
 	MethodSerfPathValidate          = "serf/path/validate"
 	MethodSerfHarnessesList         = "serf/harnesses/list"
@@ -443,6 +444,17 @@ type ThreadTranscriptTarget struct {
 
 type ThreadTranscriptListResponse struct {
 	Data []ThreadTranscriptTarget `json:"data"`
+}
+
+type SerfSubagentPreviewParams struct {
+	Ref   string `json:"ref"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+type SerfSubagentPreviewResponse struct {
+	Ref       string       `json:"ref"`
+	Items     []ThreadItem `json:"items"`
+	Truncated bool         `json:"truncated"`
 }
 
 type ThreadStartParams struct {
