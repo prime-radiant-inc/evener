@@ -310,7 +310,14 @@ func (r *TranscriptReducer) ApplySerfJob(job appwire.SerfJobInfo) {
 	if run.JobID == "" && run.DelegateID == "" && run.OriginToolCallID == "" && run.OriginItemID == "" {
 		return
 	}
-	if idx, ok := r.subagentMessageIndex(run); ok {
+	if run.JobType != "" && !isDelegateJobType(run.JobType) {
+		return
+	}
+	idx, matched := r.subagentMessageIndex(run)
+	if !matched && !hasDelegateJobSignal(run) {
+		return
+	}
+	if matched {
 		info := r.messages[idx].Tool
 		if info == nil {
 			return
@@ -333,7 +340,7 @@ func (r *TranscriptReducer) ApplySerfJob(job appwire.SerfJobInfo) {
 func (r *TranscriptReducer) subagentMessageIndex(run SubagentRunInfo) (int, bool) {
 	for i := range r.messages {
 		msg := r.messages[i]
-		if msg.Kind != MsgTool || msg.Tool == nil {
+		if msg.Kind != MsgTool || msg.Tool == nil || !isDelegateToolName(msg.Tool.Name) {
 			continue
 		}
 		if run.OriginItemID != "" && msg.ItemID == run.OriginItemID {
@@ -353,6 +360,23 @@ func (r *TranscriptReducer) subagentMessageIndex(run SubagentRunInfo) (int, bool
 		}
 	}
 	return 0, false
+}
+
+func hasDelegateJobSignal(run SubagentRunInfo) bool {
+	return isDelegateJobType(run.JobType) || run.DelegateID != ""
+}
+
+func isDelegateJobType(jobType string) bool {
+	return strings.EqualFold(strings.TrimSpace(jobType), "delegate")
+}
+
+func isDelegateToolName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "delegate", "delegate_send":
+		return true
+	default:
+		return false
+	}
 }
 
 func subagentRunFromJob(job appwire.SerfJobInfo) SubagentRunInfo {

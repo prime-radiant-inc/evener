@@ -473,6 +473,55 @@ func TestTranscriptReducerAppliesSerfJobNotificationsToDelegateTool(t *testing.T
 	}
 }
 
+func TestTranscriptReducerIgnoresNonDelegateSerfJobNotification(t *testing.T) {
+	reducer := NewTranscriptReducer(nil, nil, nil)
+
+	reducer.ApplySerfJob(appwire.SerfJobInfo{
+		JobID:       "job_shell",
+		JobType:     "shell",
+		Status:      "completed",
+		OutputBytes: 128,
+	})
+
+	if len(reducer.messages) != 0 {
+		t.Fatalf("non-delegate job should not create transcript messages: %+v", reducer.messages)
+	}
+}
+
+func TestTranscriptReducerDoesNotAttachNonDelegateJobToOriginTool(t *testing.T) {
+	reducer := NewTranscriptReducer(nil, nil, nil)
+	reducer.ApplyThreadItem(appwire.ThreadItem{
+		Type:          "commandExecution",
+		ID:            "item_shell",
+		CallID:        "call_shell",
+		TurnID:        "turn_1",
+		ToolName:      "exec_command",
+		ArgumentsJSON: `{"command":"echo hi"}`,
+		Output:        "hi\n",
+		Status:        appwire.TurnStatusCompleted,
+	}, 1, true)
+
+	reducer.ApplySerfJob(appwire.SerfJobInfo{
+		JobID:            "job_shell",
+		JobType:          "shell",
+		Status:           "completed",
+		OutputBytes:      3,
+		OriginToolCallID: "call_shell",
+		OriginItemID:     "item_shell",
+	})
+
+	tools := transcriptTools(reducer.messages)
+	if len(tools) != 1 {
+		t.Fatalf("tools=%+v, want existing shell tool only", tools)
+	}
+	if tools[0].Name != "exec_command" {
+		t.Fatalf("tool name = %q, want exec_command", tools[0].Name)
+	}
+	if tools[0].Subagent != nil {
+		t.Fatalf("non-delegate job mutated shell tool with Subagent metadata: %+v", tools[0].Subagent)
+	}
+}
+
 type transcriptMessageSnapshot struct {
 	Kind       MessageKind
 	Text       string
