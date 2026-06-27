@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 )
 
 func TestDiffBodyTintsAddLines(t *testing.T) {
@@ -94,5 +96,45 @@ func TestWebSearchBodyFormatsResults(t *testing.T) {
 	got := webSearchBody(ToolArgs{}, output, 60)
 	if !strings.Contains(got, "Result 1") || !strings.Contains(got, "Result 2") {
 		t.Errorf("webSearchBody should include results: %q", got)
+	}
+}
+
+func TestRenderSubagentRailConsolidates(t *testing.T) {
+	withTestColorProfile(t)
+	runs := []transcript.SubagentRunInfo{
+		{JobID: "j1", Task: "port webhook verification", Status: "running"},
+		{JobID: "j2", Task: "trace retry callers", Status: "running"},
+		{JobID: "j3", Task: "update docs", Status: "completed"},
+		{JobID: "j4", Task: "audit deps", Status: "failed", Reason: "2 high CVEs"},
+	}
+	out := RenderSubagentRail(runs, 80)
+	// Header tallies the workers.
+	for _, want := range []string{"Subagents", "2 running", "1 done", "1 failed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("header missing %q: %q", want, out)
+		}
+	}
+	// Running entries are listed; the failure surfaces with its reason.
+	for _, want := range []string{"port webhook verification", "trace retry callers", "audit deps", "2 high CVEs"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q: %q", want, out)
+		}
+	}
+	// The settled pile folds to a count — the done entry's name is NOT listed.
+	if strings.Contains(out, "update docs") {
+		t.Fatalf("done should fold to a count, not list 'update docs': %q", out)
+	}
+	if !strings.Contains(out, "✓ 1 done") {
+		t.Fatalf("done count missing: %q", out)
+	}
+}
+
+func TestRenderSubagentRailNamesBackgroundShellByCommand(t *testing.T) {
+	withTestColorProfile(t)
+	out := RenderSubagentRail([]transcript.SubagentRunInfo{
+		{JobID: "jbg", JobType: "shell", Background: true, Command: "go test ./... -count=1", Status: "running"},
+	}, 80)
+	if !strings.Contains(out, "go test ./... -count=1") {
+		t.Fatalf("a background shell should be named by its command: %q", out)
 	}
 }

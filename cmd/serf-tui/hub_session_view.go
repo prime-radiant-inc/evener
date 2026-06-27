@@ -203,7 +203,34 @@ func (m hubModel) renderSessionMainBody() string {
 			width = 100
 		}
 		prevRendered := false
-		for i, msg := range messages {
+		for i := 0; i < len(messages); i++ {
+			msg := messages[i]
+			// Consolidate a contiguous run of subagent / background-job entries
+			// into one calm delegation rail (the TUI analog of the web rail).
+			if isSubagentRunMessage(msg) {
+				runs := make([]transcript.SubagentRunInfo, 0, 4)
+				selected := false
+				j := i
+				for j < len(messages) && isSubagentRunMessage(messages[j]) {
+					runs = append(runs, *messages[j].Tool.Subagent)
+					if m.transcriptView == nil && m.session.scrollMode && m.browseSelected == j {
+						selected = true
+					}
+					j++
+				}
+				rendered := msgrender.RenderSubagentRail(runs, width)
+				if rendered != "" {
+					if selected {
+						rendered = msgrender.RenderSelectedMessage(rendered, true)
+					}
+					b.WriteString("\n")
+					b.WriteString(rendered)
+					b.WriteString("\n")
+					prevRendered = true
+				}
+				i = j - 1
+				continue
+			}
 			focused := false
 			rendered := msgrender.RenderMessage(msg, width, focused)
 			if rendered == "" {
@@ -224,6 +251,13 @@ func (m hubModel) renderSessionMainBody() string {
 		}
 	}
 	return b.String()
+}
+
+// isSubagentRunMessage reports whether a message is a subagent / background-job
+// run entry (consolidated into the delegation rail rather than rendered as an
+// individual tool line).
+func isSubagentRunMessage(msg transcript.ChatMessage) bool {
+	return msg.Kind == transcript.MsgTool && msg.Tool != nil && msg.Tool.Subagent != nil
 }
 
 // sessionChromeText returns the overlay and footer strings used for body-height
