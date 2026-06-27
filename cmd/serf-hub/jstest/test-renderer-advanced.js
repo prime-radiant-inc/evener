@@ -161,17 +161,18 @@ await scenario("multi-update in one call (descriptions seeded via full-list)", [
   }) }],
   ["TOOL_CALL_END", { call_id: "c1", output: "ok", tool_name: "task_list" }],
 ], ({ conv }) => {
-  // The full-list no longer renders a pointer; the update renders one card and
-  // shows the edit through row style — no prose summary.
+  // The full-list no longer renders a pointer; the update refreshes the living
+  // card to the current state: Phase 2 is the active frontier, Phase 1 recedes
+  // into the done pile.
   if (conv.querySelector(".system-line-pointer")) return { ok: false, detail: "full-list must not render a pointer" };
-  if (conv.querySelector(".task-card-summary")) return { ok: false, detail: "no prose summary — the edit reads from style" };
-  const rowFor = desc => Array.from(conv.querySelectorAll(".task-card-row")).find(r => r.textContent.includes(desc));
-  const done = rowFor("Phase 1"), started = rowFor("Phase 2");
-  if (!done || !done.classList.contains("touched") || !done.classList.contains("done"))
-    return { ok: false, detail: "Phase 1 should be a touched-done row: " + (done && done.className) };
-  if (!started || !started.classList.contains("touched") || !started.classList.contains("started"))
-    return { ok: false, detail: "Phase 2 should be a touched-started row: " + (started && started.className) };
-  if (!/took longer/.test(conv.querySelector(".task-card").textContent)) return { ok: false, detail: "notes missing" };
+  if (conv.querySelector(".task-card-summary")) return { ok: false, detail: "no prose summary — the card reads from state" };
+  const card = conv.querySelector(".task-card");
+  if (!card) return { ok: false, detail: "no living plan card" };
+  const active = card.querySelector(".task-card-active");
+  if (!active || !active.textContent.includes("Phase 2") || !active.classList.contains("current"))
+    return { ok: false, detail: "Phase 2 should be the active (current) task: " + (active && active.className) };
+  const done = Array.from(card.querySelectorAll(".plan-item.done")).find(r => r.textContent.includes("Phase 1"));
+  if (!done) return { ok: false, detail: "Phase 1 should recede into the done pile" };
   return { ok: true };
 });
 
@@ -222,9 +223,13 @@ await scenario("multiple dones render as flagged rows", [
   }) }],
   ["TOOL_CALL_END", { call_id: "u1", output: "ok", tool_name: "task_list" }],
 ], ({ conv }) => {
-  if (conv.querySelector(".task-card-summary")) return { ok: false, detail: "no prose summary" };
-  const doneRows = Array.from(conv.querySelectorAll(".task-card-row.touched.done .plan-step")).map(s => s.textContent);
-  if (doneRows.length !== 3) return { ok: false, detail: "expected 3 touched-done rows, got " + doneRows.length };
+  // All three done → the card reads "all 3 done" and the three settled tasks
+  // live in the (folded) done pile.
+  const card = conv.querySelector(".task-card");
+  if (!card) return { ok: false, detail: "no living plan card" };
+  if (!/all 3 done/.test(card.textContent)) return { ok: false, detail: "finished plan should read 'all 3 done'" };
+  const doneRows = Array.from(card.querySelectorAll(".plan-item.done .plan-step")).map(s => s.textContent);
+  if (doneRows.length !== 3) return { ok: false, detail: "expected 3 done rows, got " + doneRows.length };
   if (!(doneRows.includes("Phase 1") && doneRows.includes("Phase 2") && doneRows.includes("Phase 3")))
     return { ok: false, detail: "missing description: " + doneRows.join(",") };
   return { ok: true };
@@ -239,11 +244,11 @@ await scenario("cancelled tasks render as a cancelled row", [
   }) }],
   ["TOOL_CALL_END", { call_id: "u1", output: "ok", tool_name: "task_list" }],
 ], ({ conv }) => {
-  const row = Array.from(conv.querySelectorAll(".task-card-row")).find(r => r.textContent.includes("Future feature"));
-  if (!row) return { ok: false, detail: "no row names the task" };
-  if (!row.classList.contains("touched") || !row.classList.contains("cancelled"))
-    return { ok: false, detail: "should be a touched-cancelled row: " + row.className };
-  if (!/out of scope/.test(conv.querySelector(".task-card").textContent)) return { ok: false, detail: "missing note" };
+  const card = conv.querySelector(".task-card");
+  if (!card) return { ok: false, detail: "no living plan card" };
+  const row = Array.from(card.querySelectorAll(".plan-item.cancelled")).find(r => r.textContent.includes("Future feature"));
+  if (!row) return { ok: false, detail: "cancelled task should render as a cancelled row" };
+  if (!/1 cancelled/.test(card.textContent)) return { ok: false, detail: "card should count the cancelled task" };
   return { ok: true };
 });
 
