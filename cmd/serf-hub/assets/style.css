@@ -3351,14 +3351,12 @@ button.composer-model-value:hover { text-decoration: underline; }
   #sidebar {
     position: fixed;
     top: 0; left: 0; bottom: 0;
-    width: 80vw;
-    max-width: 320px;
+    width: 100vw;
+    max-width: 100vw;
     z-index: var(--z-drawer, 900);
     transform: translateX(-100%);
     transition: transform var(--motion-base);
-    box-shadow: 4px 0 24px rgba(0,0,0,0.4);
-    /* Fully opaque background so the scrim behind the drawer does not bleed
-       through the sidebar content (or tinted sb-row backgrounds). */
+    /* Full-screen nav: opaque, no shadow (nothing shows beside it). */
     background: var(--bg-raised);
   }
   /* Suppress sticky hover backgrounds on touch devices — they persist after
@@ -3380,7 +3378,7 @@ button.composer-model-value:hover { text-decoration: underline; }
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: var(--space-3);
-    padding: var(--space-3) var(--space-4) var(--space-4);
+    padding: var(--space-3) var(--space-5) var(--space-5);
     border-bottom: 1px solid var(--rule);
     margin-bottom: var(--space-3);
   }
@@ -3391,32 +3389,34 @@ button.composer-model-value:hover { text-decoration: underline; }
     justify-content: center;
     grid-column: 1 / -1;
     justify-self: end;
-    width: var(--tap-min);
-    height: var(--tap-min);
+    width: 48px;
+    height: 48px;
     margin: calc(0px - var(--space-2)) calc(0px - var(--space-2)) 0 0;
     background: transparent;
     border: none;
+    border-radius: var(--radius-md);
     color: var(--text-muted);
-    font-size: var(--text-lg);
+    font-size: var(--text-2xl);
   }
-  .sidebar-close:active { color: var(--text); }
-  .sidebar-action-icon { display: inline; }
+  .sidebar-close:active { color: var(--text); background: var(--surface-secondary); }
+  .sidebar-action-icon { display: inline; font-size: 1.15em; }
   .sidebar-action {
-    min-height: var(--tap-min);
+    min-height: 52px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: var(--space-2);
-    font-size: var(--text-base);
+    gap: var(--space-3);
+    font-size: var(--text-lg);
     color: var(--text);
     border: 1px solid var(--rule);
     border-radius: var(--radius-md);
     background: var(--bg-raised);
-    padding: 0 var(--space-3);
+    padding: 0 var(--space-4);
   }
   .sidebar-action kbd { display: none; }
   .sidebar-action-new {
     grid-column: 1 / -1;
+    min-height: 56px;
     background: var(--accent);
     color: var(--btn-primary-text);
     border-color: var(--accent);
@@ -3425,27 +3425,62 @@ button.composer-model-value:hover { text-decoration: underline; }
   .sidebar-action-search { grid-column: 1; }
   .settings-link { grid-column: 2; }
   .project-header {
-    font-size: var(--text-base);
+    font-size: var(--text-lg);
     color: var(--text);
-    min-height: var(--tap-min);
+    min-height: 52px;
     align-items: center;
     padding: var(--space-2) var(--space-5);
-    gap: var(--space-3);
+    gap: var(--space-2);
   }
   .project-name { color: var(--text); }
-  .project-header .count { font-size: var(--text-sm); }
+  .project-header .count { font-size: var(--text-base); }
   .project-chevron {
-    width: var(--tap-min);
-    height: var(--tap-min);
+    width: 48px;
+    height: 52px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: var(--text-md);
+    font-size: var(--text-xl);
     margin-left: calc(0px - var(--space-3));
   }
-  .sb-row { padding: var(--space-3) var(--space-4); min-height: var(--tap-min); align-items: center; }
-  .sb-row .title { font-size: var(--text-md); line-height: 1.4; }
-  .sb-row .sub, .sb-row .meta, .sb-sub { font-size: var(--text-sm); }
+  /* Section labels (Current / Recent / tier headers) — readable, not 10px caps. */
+  .sidebar-section-header, .tier-header, .sidebar-tier > header {
+    font-size: var(--text-sm);
+    padding: var(--space-3) var(--space-5) var(--space-1);
+  }
+  .sb-row { padding: var(--space-3) var(--space-5); min-height: 52px; align-items: center; }
+  .sb-row .title { font-size: var(--text-lg); line-height: 1.4; }
+  .sb-row .sub, .sb-row .meta, .sb-sub { font-size: var(--text-base); }
+
+  /* Disclosure + status icons — the small chrome the bump above missed. The
+     chevrons are the main expand affordance, so size them clearly; status dots
+     get bigger for visibility. */
+  .project-chevron { font-size: var(--text-2xl); color: var(--text-muted); }
+  .cluster-chevron { font-size: var(--text-lg); }
+  .sb-row .dot-col { min-width: 22px; }
+  .project-rollup-dot { width: 9px; height: 9px; }
+  .rollup-glyph, .rollup-badge { font-size: var(--text-base); }
+  /* Per-project actions (settings / new-in-project / archive) can't be reached
+     by hover on touch. Keep collapsed rows clean and reveal them — with real
+     tap targets and bigger glyphs — on the project you've expanded. */
+  .project-new-btn.btn-icon,
+  .project-gear-btn.btn-icon,
+  .archive-btn.btn-icon {
+    color: var(--text-muted);
+    font-size: var(--text-lg);
+    min-width: var(--tap-min);
+    min-height: var(--tap-min);
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .project-section.collapsed > .project-header .project-new-btn,
+  .project-section.collapsed > .project-header .project-gear-btn,
+  .project-section.collapsed > .project-header .archive-btn { display: none; }
+  .project-section:not(.collapsed) > .project-header .project-new-btn,
+  .project-section:not(.collapsed) > .project-header .project-gear-btn,
+  .project-section:not(.collapsed) > .project-header .archive-btn { opacity: 1; }
 
   /* Connection banner offset for mobile sidebar drawer — the fixed drawer
      must start below the 32px banner so it is not covered. */
