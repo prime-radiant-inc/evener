@@ -133,7 +133,13 @@ func (s *WebServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Assets — served from disk when SERF_HUB_ASSETS_DIR is set (dev), else embed.
-	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.FS(assetsRoot()))))
+	assetHandler := http.StripPrefix("/assets/", http.FileServer(http.FS(assetsRoot())))
+	if devAssetsDir() != "" {
+		// In the on-disk dev mode, disable caching so CSS/JS edits take effect on
+		// reload without the browser serving a stale heuristically-cached copy.
+		assetHandler = noStore(assetHandler)
+	}
+	mux.Handle("/assets/", assetHandler)
 
 	// App-wire RPC
 	mux.HandleFunc("/rpc", s.appRPC.ServeWebSocket)
