@@ -94,16 +94,23 @@ const dirCompletionPrefixes = [];
 // provider enumerates `openai/gpt-5.2`. That keeps the current cwd's
 // chip valid while still exercising the sweep against retired models
 // like `openai/gpt-5-mini` seeded in other per-project blobs below.
+// The real backend scopes the model list to the selected harness; the flat
+// model picker renders every model it returns, so the stub filters too (a codex
+// launch lists only codex-source models).
+function modelsForHarness(h) {
+  const all = [
+    { provider: "openai", model: "gpt-5.2" },
+    { provider: "codex", model: "gpt-5.3-codex" },
+  ];
+  return h === "codex" ? all.filter((m) => m.provider === "codex") : all;
+}
 formDom.window.SerfAppwire = {
   listModels(params) {
     listModelsCalls++;
     listModelsParams = params || {};
     return {
       then(resolve) {
-        resolve([
-          { provider: "openai", model: "gpt-5.2" },
-          { provider: "codex", model: "gpt-5.3-codex" },
-        ]);
+        resolve(modelsForHarness((params || {}).harness));
         return { catch() {} };
       },
     };
@@ -113,13 +120,7 @@ formDom.window.SerfAppwire = {
     listModelsParams = params || {};
     return {
       then(resolve) {
-        resolve({
-          models: [
-            { provider: "openai", model: "gpt-5.2" },
-            { provider: "codex", model: "gpt-5.3-codex" },
-          ],
-          diagnostics: [],
-        });
+        resolve({ models: modelsForHarness((params || {}).harness), diagnostics: [] });
         return { catch() {} };
       },
     };
@@ -271,7 +272,22 @@ listModelsParams = null;
 formDom.window.document.querySelector('button[data-chip="model"]').click();
 assert(listModelsCalls === 1, "serf model picker should fetch launch-scoped model list");
 assert(listModelsParams.cwd === "/tmp/project-with-oauth", "serf model picker should pass selected working directory");
-formDom.window.document.querySelector(".chip-picker").remove();
+// Flat, grouped list — not the old provider/model master-detail (which caused
+// a provider tap to false-dismiss the picker).
+const mp = formDom.window.document.querySelector(".chip-picker");
+assert(mp && !mp.querySelector(".chip-picker-providers"), "model picker is a flat list, not a master-detail rail");
+assert(mp && mp.querySelectorAll(".chip-picker-group").length >= 1, "model picker groups models under provider headers");
+assert(mp && mp.querySelectorAll(".chip-picker-model").length >= 1, "model picker lists model rows");
+// Re-rendering the list (search input) must NOT dismiss the picker.
+const mpSearch = mp.querySelector(".chip-picker-search");
+mpSearch.value = "gpt";
+mpSearch.dispatchEvent(new formDom.window.Event("input", { bubbles: true }));
+assert(formDom.window.document.querySelector(".chip-picker"), "typing in search re-renders the list without closing the picker");
+// The outside-dismiss listener attaches on a 0ms timer; let it arm, then an
+// outside pointerdown should dismiss.
+await new Promise((r) => setTimeout(r, 0));
+formDom.window.document.body.dispatchEvent(new formDom.window.Event("pointerdown", { bubbles: true }));
+assert(!formDom.window.document.querySelector(".chip-picker"), "an outside pointerdown dismisses the picker");
 
 formDom.window.document.querySelector('button[data-chip="harness"]').click();
 formDom.window.document.querySelectorAll(".chip-picker-option")[1].click();

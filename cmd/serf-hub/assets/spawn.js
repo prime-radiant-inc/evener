@@ -1403,16 +1403,12 @@
       search.placeholder = "search models…";
       picker.appendChild(search);
 
-      const body = document.createElement("div");
-      body.className = "chip-picker-body";
-
-      const providerCol = document.createElement("div");
-      providerCol.className = "chip-picker-providers";
-      const modelCol = document.createElement("div");
-      modelCol.className = "chip-picker-models";
-      body.appendChild(providerCol);
-      body.appendChild(modelCol);
-      picker.appendChild(body);
+      // One scrollable list grouped by provider — no master-detail drill, so a
+      // tap selects a model directly (and never re-renders the tapped element
+      // out from under the dismiss handler, which used to false-close it).
+      const list = document.createElement("div");
+      list.className = "chip-picker-list";
+      picker.appendChild(list);
 
       // Configured providers whose model listing failed (bad key, network,
       // provider down) are reported here so they don't silently vanish.
@@ -1431,84 +1427,63 @@
         picker.appendChild(diagBox);
       }
 
-      let activeProvider = providers[0] || "";
-
-      function renderProviders(filter) {
-        providerCol.innerHTML = "";
-        providers.forEach(p => {
-          if (filter) {
-            const hasMatch = byProvider[p].some(m =>
-              (m.model + " " + (m.display_name || "")).toLowerCase().includes(filter)
-            );
-            if (!hasMatch) return;
-          }
-          const el = document.createElement("div");
-          el.className = "chip-picker-provider" + (p === activeProvider ? " active" : "");
-          el.textContent = p;
-          el.addEventListener("click", () => {
-            activeProvider = p;
-            renderProviders(filter);
-            renderModels(filter);
-          });
-          providerCol.appendChild(el);
-        });
-      }
-
       function formatCtx(n) {
         if (n >= 1000000) return (n / 1000000).toFixed(1).replace(".0", "") + "M";
         if (n >= 1000) return (n / 1000).toFixed(0) + "K";
         return String(n);
       }
 
-      function renderModels(filter) {
-        modelCol.innerHTML = "";
-        const list = byProvider[activeProvider] || [];
-        list.forEach(m => {
-          if (filter) {
-            const hay = (m.model + " " + (m.display_name || "")).toLowerCase();
-            if (!hay.includes(filter)) return;
-          }
-          const el = document.createElement("div");
-          el.className = "chip-picker-model";
-          const name = document.createElement("div");
-          name.className = "chip-picker-model-name";
-          name.textContent = m.model;
-          const meta = document.createElement("div");
-          meta.className = "chip-picker-model-meta";
-          const parts = [];
-          if (m.context_window) parts.push(formatCtx(m.context_window) + " ctx");
-          if (m.input_cost_per_million != null) parts.push("$" + m.input_cost_per_million.toFixed(2) + "/M in");
-          if (m.output_cost_per_million != null) parts.push("$" + m.output_cost_per_million.toFixed(2) + "/M out");
-          meta.textContent = parts.join(" · ");
-          el.appendChild(name);
-          el.appendChild(meta);
-          el.addEventListener("click", () => {
-            if (harnessUsesSerfModels(harness)) {
-              setChipValue("model", m.provider + "/" + m.model);
-            } else {
-              setModelValue(m.model, modelOptionLabel(m));
-            }
-            picker.remove();
-          });
-          modelCol.appendChild(el);
-        });
+      function selectModel(m) {
+        if (harnessUsesSerfModels(harness)) {
+          setChipValue("model", m.provider + "/" + m.model);
+        } else {
+          setModelValue(m.model, modelOptionLabel(m));
+        }
+        picker.remove();
       }
 
-      search.addEventListener("input", () => {
-        const q = search.value.toLowerCase().trim();
-        // If query matches another provider's models, switch to that provider.
-        if (q && byProvider[activeProvider] && !byProvider[activeProvider].some(m =>
-            (m.model + " " + (m.display_name || "")).toLowerCase().includes(q))) {
-          for (const p of providers) {
-            if (byProvider[p].some(m => (m.model + " " + (m.display_name || "")).toLowerCase().includes(q))) {
-              activeProvider = p;
-              break;
-            }
-          }
+      function renderList(filter) {
+        list.innerHTML = "";
+        let shown = 0;
+        providers.forEach(p => {
+          const matches = byProvider[p].filter(m =>
+            !filter || (m.model + " " + (m.display_name || "")).toLowerCase().includes(filter)
+          );
+          if (matches.length === 0) return;
+          const header = document.createElement("div");
+          header.className = "chip-picker-group";
+          header.textContent = p;
+          list.appendChild(header);
+          matches.forEach(m => {
+            shown++;
+            const el = document.createElement("button");
+            el.type = "button";
+            el.className = "chip-picker-model";
+            const name = document.createElement("div");
+            name.className = "chip-picker-model-name";
+            name.textContent = m.model;
+            const meta = document.createElement("div");
+            meta.className = "chip-picker-model-meta";
+            const parts = [];
+            if (m.context_window) parts.push(formatCtx(m.context_window) + " ctx");
+            if (m.input_cost_per_million != null) parts.push("$" + m.input_cost_per_million.toFixed(2) + "/M in");
+            if (m.output_cost_per_million != null) parts.push("$" + m.output_cost_per_million.toFixed(2) + "/M out");
+            meta.textContent = parts.join(" · ");
+            el.appendChild(name);
+            if (parts.length) el.appendChild(meta);
+            el.addEventListener("click", () => selectModel(m));
+            list.appendChild(el);
+          });
+        });
+        if (shown === 0) {
+          const empty = document.createElement("div");
+          empty.className = "chip-picker-empty";
+          empty.textContent = filter ? "No models match." : "No models available.";
+          list.appendChild(empty);
         }
-        renderProviders(q);
-        renderModels(q);
-      });
+      }
+
+      search.addEventListener("input", () => renderList(search.value.toLowerCase().trim()));
 
       // Without an explicit keydown handler, pressing Enter inside the
       // search box triggers the enclosing form's implicit submit — and
@@ -1518,7 +1493,7 @@
       search.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
-          const first = modelCol.querySelector(".chip-picker-model");
+          const first = list.querySelector(".chip-picker-model");
           if (first) first.click();
         } else if (e.key === "Escape") {
           e.preventDefault();
@@ -1526,8 +1501,7 @@
         }
       });
 
-      renderProviders("");
-      renderModels("");
+      renderList("");
 
       chip.parentNode.style.position = "relative";
       chip.parentNode.appendChild(picker);
@@ -1545,19 +1519,20 @@
     });
   }
 
-  // attachPickerDismiss adds click-outside and Escape handlers that close
-  // the given picker element. Use composedPath so clicks inside the
-  // picker (including on elements that get re-rendered out from under
-  // the event) are reliably detected as "inside".
+  // attachPickerDismiss closes the picker on an outside press or Escape. It
+  // listens on pointerdown (not click) and tests picker.contains(target) on the
+  // LIVE target: pointerdown fires before any in-picker click handler can
+  // re-render that target out of the DOM, so an inside tap is never mistaken
+  // for an outside one (the old composedPath-on-click check false-closed the
+  // picker whenever a tap re-rendered its own row/column).
   function attachPickerDismiss(picker) {
     function dismiss() {
       picker.remove();
-      document.removeEventListener("click", offClick);
+      document.removeEventListener("pointerdown", offDown);
       document.removeEventListener("keydown", onKey);
     }
-    function offClick(e) {
-      const path = (e.composedPath && e.composedPath()) || [];
-      if (!picker.isConnected || !path.includes(picker)) dismiss();
+    function offDown(e) {
+      if (!picker.contains(e.target)) dismiss();
     }
     function onKey(e) {
       if (e.key === "Escape") {
@@ -1566,7 +1541,7 @@
       }
     }
     setTimeout(() => {
-      document.addEventListener("click", offClick);
+      document.addEventListener("pointerdown", offDown);
       document.addEventListener("keydown", onKey);
     }, 0);
   }
