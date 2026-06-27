@@ -42,6 +42,7 @@
     "provider": "kimi",
     "display_name": "K2.7 Code",
     "context_window": 262144,
+    "supports_tools": true,
     "supports_reasoning": true,
     "reasoning_effort_levels": ["minimal", "low", "medium", "high"],
     "supports_adaptive_thinking": false,
