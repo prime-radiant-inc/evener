@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"strings"
@@ -141,6 +143,13 @@ func (s *WebServer) Handler() http.Handler {
 	}
 	mux.Handle("/assets/", assetHandler)
 
+	// PWA manifest — served dynamically (not as a static asset) so start_url can
+	// carry the auth token. A home-screen launch on iOS gets its own cookie jar,
+	// separate from the browser that authorized the hub, so it must re-auth via
+	// the token in start_url or it lands on the 401 wall. Auth-gated, so only an
+	// already authorized browser can read the token.
+	mux.HandleFunc("/manifest.webmanifest", s.handleManifest)
+
 	// App-wire RPC
 	mux.HandleFunc("/rpc", s.appRPC.ServeWebSocket)
 
@@ -210,6 +219,36 @@ func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": workspaceURL}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// handleManifest serves the PWA manifest with the auth token injected into
+// start_url. The manifest file on disk is the template; we only rewrite
+// start_url so a standalone (home-screen) launch self-authenticates into its
+// own cookie jar instead of hitting the auth wall. When the guard is disabled
+// (no token) start_url stays "/".
+func (s *WebServer) handleManifest(w http.ResponseWriter, r *http.Request) {
+	raw, err := fs.ReadFile(assetsRoot(), "manifest.webmanifest")
+	if err != nil {
+		http.Error(w, "manifest unavailable", http.StatusInternalServerError)
+		return
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		http.Error(w, "manifest malformed", http.StatusInternalServerError)
+		return
+	}
+	if token := s.cfg.AuthToken; token != "" {
+		manifest["start_url"] = "/auth?token=" + url.QueryEscape(token) + "&next=" + url.QueryEscape("/")
+	}
+	out, err := json.Marshal(manifest)
+	if err != nil {
+		http.Error(w, "manifest encode failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
+	// The token is per-browser-jar; never let a shared cache hold this response.
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(out)
 }
 
 // handleInternalPartial is the only route family that serves HTMX fragments.
