@@ -43,13 +43,22 @@ func TestLoadOrCreateAuthToken_PersistsAndReloads(t *testing.T) {
 func TestAuthGuard_AllowsExemptRoutes(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
-	for _, path := range []string{"/auth", "/api/health"} {
+	// /auth + health bootstrap, plus the non-sensitive PWA icons (so the OS can
+	// fetch the home-screen icon without credentials at install time).
+	for _, path := range []string{"/auth", "/api/health", "/assets/icon.svg", "/assets/icon-192.png", "/assets/icon-512.png", "/assets/icon-maskable-512.png"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Errorf("%s: code = %d, want 200", path, rec.Code)
 		}
+	}
+	// The manifest must stay gated — it carries the capability token in start_url.
+	req := httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("manifest should require auth (it carries the token), got %d", rec.Code)
 	}
 }
 
