@@ -2685,16 +2685,33 @@ button.composer-model-value:hover { text-decoration: underline; }
 /* ── Model picker (two-pane) ─────────────────────────────────────────────── */
 .chip-picker-wide { width: 520px; max-height: 360px; display: flex; flex-direction: column; }
 .chip-picker-search { background: transparent; border: none; border-bottom: 1px solid var(--rule); padding: var(--space-3) var(--space-4); color: var(--text); font: inherit; font-size: var(--text-base); outline: none; }
-.chip-picker-body { display: flex; flex: 1; min-height: 0; }
-.chip-picker-providers { width: 140px; flex-shrink: 0; border-right: 1px solid var(--rule); overflow-y: auto; padding: var(--space-2) 0; }
-.chip-picker-provider { padding: var(--space-3) var(--space-4); cursor: pointer; color: var(--text-muted); font-size: var(--text-sm); }
-.chip-picker-provider:hover { color: var(--text); }
-.chip-picker-provider.active { color: var(--text); background: var(--rule); }
-.chip-picker-models { flex: 1; overflow-y: auto; padding: var(--space-2) 0; }
-.chip-picker-model { padding: var(--space-3) var(--space-4); cursor: pointer; }
+/* Flat, grouped model list (replaced the provider/model master-detail). */
+.chip-picker-list { flex: 1; min-height: 0; overflow-y: auto; padding: var(--space-2) 0; }
+.chip-picker-group {
+  position: sticky;
+  top: 0;
+  padding: var(--space-3) var(--space-4) var(--space-1);
+  background: var(--bg-raised);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+}
+.chip-picker-model {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: var(--space-3) var(--space-4);
+  cursor: pointer;
+}
 .chip-picker-model:hover { background: var(--rule); }
 .chip-picker-model-name { color: var(--text); font-family: var(--font-mono); font-size: var(--text-sm); }
 .chip-picker-model-meta { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); margin-top: var(--space-1); }
+.chip-picker-empty { padding: var(--space-4); color: var(--text-muted); font-size: var(--text-sm); }
 .chip-picker-diagnostics { border-top: 1px solid var(--rule); padding: var(--space-2) var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); }
 .chip-picker-diagnostic { color: var(--text-muted); font-size: var(--text-xs); overflow-wrap: anywhere; }
 /* Backdrop behind the mobile bottom-sheet pickers (created by the dir/chip
@@ -3349,6 +3366,41 @@ button.composer-model-value:hover { text-decoration: underline; }
     .sb-row[data-state="warning"]:hover  { background: color-mix(in srgb, var(--state-warning) 5%, transparent); }
   }
   body.app[data-sidebar-open] #sidebar { transform: translateX(0); }
+
+  /* ── Sidebar drawer content on phone: readable type + 44px touch rows ──
+     The desktop sidebar packs 11px muted project names into ~25px rows; on a
+     phone that's both hard to read and hard to hit. Enlarge and space out. */
+  .sidebar-header { padding: var(--space-4) var(--space-5); gap: var(--space-6); flex-wrap: wrap; }
+  .sidebar-action {
+    font-size: var(--text-base);
+    color: var(--text);
+    min-height: var(--tap-min);
+    display: inline-flex;
+    align-items: center;
+  }
+  .project-header {
+    font-size: var(--text-base);
+    color: var(--text);
+    min-height: var(--tap-min);
+    align-items: center;
+    padding: var(--space-2) var(--space-5);
+    gap: var(--space-3);
+  }
+  .project-name { color: var(--text); }
+  .project-header .count { font-size: var(--text-sm); }
+  .project-chevron {
+    width: var(--tap-min);
+    height: var(--tap-min);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: var(--text-md);
+    margin-left: calc(0px - var(--space-3));
+  }
+  .sb-row { padding: var(--space-3) var(--space-4); min-height: var(--tap-min); align-items: center; }
+  .sb-row .title { font-size: var(--text-md); line-height: 1.4; }
+  .sb-row .sub, .sb-row .meta, .sb-sub { font-size: var(--text-sm); }
+
   /* Connection banner offset for mobile sidebar drawer — the fixed drawer
      must start below the 32px banner so it is not covered. */
   body.has-connection-banner #sidebar {
@@ -3490,18 +3542,17 @@ button.composer-model-value:hover { text-decoration: underline; }
   }
   /* Touch-sized rows with comfortable padding. */
   .chip-picker-option,
-  .chip-picker-provider,
   .chip-picker-model,
   .chip-picker-dir-row {
     min-height: var(--tap-min);
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    justify-content: center;
+    align-items: flex-start;
     padding-left: var(--space-5);
     padding-right: var(--space-5);
   }
-  .chip-picker-model { flex-direction: column; align-items: flex-start; justify-content: center; }
-  /* The master-detail provider rail is narrower on a phone. */
-  .chip-picker-providers { width: 120px; }
+  .chip-picker-group { padding-left: var(--space-5); padding-right: var(--space-5); }
   .chip-picker-diagnostics { padding: var(--space-3) var(--space-5); }
   @keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
