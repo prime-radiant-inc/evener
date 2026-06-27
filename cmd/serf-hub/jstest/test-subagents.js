@@ -278,6 +278,43 @@ await scenario("job_list reconciles several subagents at once", [
   return { ok: true };
 });
 
+await scenario("live activity: child frames push to the row's activity line, steps + honest aging", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ...spawnDelegate("d1", "job_L", "trace the retry callers", "local:child-L"),
+], ({ conv, window }) => {
+  const R = window.SerfRenderer;
+  const row = conv.querySelector('.sub-r[data-job-id="job_L"]');
+  if (!row) return { ok: false, detail: "no row" };
+  // A frame for the watched child is routed to the row (and swallowed — never
+  // rendered into the parent transcript).
+  const before = conv.querySelectorAll(".tool-call, .assistant-message").length;
+  if (!R.handleChildFrame("item/started", { ref: "local:child-L", item: { toolName: "shell", description: "go test ./..." } })) {
+    return { ok: false, detail: "a frame for a watched child must be handled" };
+  }
+  if (conv.querySelectorAll(".tool-call, .assistant-message").length !== before) {
+    return { ok: false, detail: "a child frame must NOT render into the parent transcript" };
+  }
+  if (row.dataset.steps !== "1") return { ok: false, detail: "first activity should set steps=1, got " + row.dataset.steps };
+  const live = row.querySelector(".res .live");
+  if (!live || !/shell: go test/.test(live.textContent)) return { ok: false, detail: "activity line should show the latest step: " + (live && live.textContent) };
+  // A frame for an UNwatched ref is not ours — must not be swallowed.
+  if (R.handleChildFrame("item/started", { ref: "local:other", item: { toolName: "grep" } })) {
+    return { ok: false, detail: "a frame for an unwatched ref must not be swallowed" };
+  }
+  // New activity advances the step count; an identical repeat does NOT (honest).
+  R.handleChildFrame("item/started", { ref: "local:child-L", item: { toolName: "read_file", description: "auth/session.go" } });
+  if (row.dataset.steps !== "2") return { ok: false, detail: "new activity should advance steps to 2, got " + row.dataset.steps };
+  R.handleChildFrame("item/started", { ref: "local:child-L", item: { toolName: "read_file", description: "auth/session.go" } });
+  if (row.dataset.steps !== "2") return { ok: false, detail: "identical activity must not advance steps, got " + row.dataset.steps };
+  // Honest aging: rewind the last change and re-age → silent + a 'quiet Ns' clock.
+  row.dataset.lastChangeAt = String(Date.now() - 50000);
+  R.ageSubagentRow(row);
+  if (!row.classList.contains("act-silent")) return { ok: false, detail: "50s without a change should read as silent, not a spinning lie" };
+  const age = row.querySelector(".res .age");
+  if (!age || !/quiet/.test(age.textContent)) return { ok: false, detail: "a silent row should show a 'quiet Ns' clock: " + (age && age.textContent) };
+  return { ok: true };
+});
+
 await scenario("done subagents fold behind a count; running stay visible", [
   ["SESSION_START", { session_id: "01TEST" }],
   ...spawnDelegate("d1", "job_1", "one", "local:c1"),

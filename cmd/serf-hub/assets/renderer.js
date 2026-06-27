@@ -132,6 +132,7 @@
       this.subagentRowsByOriginItem = new Map(); // origin item id -> subagent row el
       this.subagentModule = null;        // current "Subagents (N)" module (per fan-out)
       this.livePlanCard = null;          // the single living task/plan card (Design B)
+      this.watchedChildRefs = new Map(); // child transcript ref -> subagent row (live activity push)
       this.suppressedToolCalls = new Set();
       this.pendingTaskCalls = new Map(); // callId -> args (for system-line rendering on END)
       this.lastCurrentTaskId = null;     // dedupe state for "now on X" system-line
@@ -669,6 +670,9 @@
           pendingNotifications.push([method, params]);
           return;
         }
+        // A frame for a watched subagent child updates its rail row's live
+        // activity and is NOT rendered into this transcript.
+        if (this.handleChildFrame(method, params)) return;
         if (!notificationMatches(params)) return;
         deliverNotification(method, params);
       });
@@ -1987,6 +1991,13 @@
     //                          honestly claim the agent is alive. Escalation
     //                          REMOVES the alive cue rather than adding a loop.
     refreshLiveness() {
+      // Age every running subagent's live activity (honest clock) even when the
+      // session-level liveness strip isn't mounted.
+      if (this.conversation) {
+        for (const row of this.conversation.querySelectorAll('.sub-r[data-status-kind="running"]')) {
+          this.ageSubagentRow(row);
+        }
+      }
       const el = this.livenessEl;
       if (!el) return;
       const gap = this.lastFrameAt ? (Date.now() - this.lastFrameAt) : 0;
@@ -2583,6 +2594,85 @@
       return row;
     },
 
+    // watchSubagentActivity subscribes (additively, no turns) to a child's
+    // transcript thread so its frames push to this connection; handleChildFrame
+    // routes them to the row. Idempotent per ref.
+    watchSubagentActivity(ref, row) {
+      if (!ref || !row) return;
+      this.watchedChildRefs.set(ref, row);
+      if (this.watchedChildSubscribed && this.watchedChildSubscribed.has(ref)) return;
+      if (!window.SerfAppwire || typeof window.SerfAppwire.readThread !== "function") return;
+      (this.watchedChildSubscribed = this.watchedChildSubscribed || new Set()).add(ref);
+      try {
+        // includeTurns=false (only new frames), subscribe=true, replaceSubscription=false (additive).
+        const p = window.SerfAppwire.readThread(ref, false, true, false);
+        if (p && typeof p.catch === "function") p.catch(() => {});
+      } catch (e) { /* a failed subscribe just means no live activity for this row */ }
+    },
+
+    // handleChildFrame routes a notification belonging to a watched subagent
+    // child to its row's live activity line, and reports true so the caller does
+    // NOT render it in the parent transcript. A child ref is always a different
+    // thread than this session, so this can never swallow our own frames.
+    handleChildFrame(method, params) {
+      if (!this.watchedChildRefs || this.watchedChildRefs.size === 0) return false;
+      const ref = params && (params.ref || (params.item && params.item.ref));
+      if (!ref || !this.watchedChildRefs.has(ref)) return false;
+      const row = this.watchedChildRefs.get(ref);
+      if (!row || !row.isConnected) { this.watchedChildRefs.delete(ref); return false; }
+      if (row.dataset.statusKind === "running") {
+        const activity = this.childActivityFromFrame(method, params);
+        if (activity) this.applyChildActivity(row, activity);
+      }
+      return true; // swallow — a child frame is never a parent-transcript entry
+    },
+
+    // childActivityFromFrame distills a child notification into one verb-led
+    // line — the current thing the subagent is doing. Mirrors the on-demand
+    // preview formatter so live and clicked-open activity read the same.
+    childActivityFromFrame(method, params) {
+      const item = params && params.item;
+      if (!item) return null;
+      const tool = item.toolName || item.tool_name;
+      if (tool) {
+        const detail = item.description || item.command || item.target || item.query || "";
+        return clip(detail ? tool + ": " + detail : tool, 80);
+      }
+      const type = String(item.type || "");
+      if (type === "agentMessage" || type === "assistantText" || type === "reasoning") return "responding";
+      const text = item.description || item.text || item.output || item.status || "";
+      return text ? clip(String(text), 80) : null;
+    },
+
+    // applyChildActivity records the latest activity on the row and re-renders.
+    // Step count + last-change time advance ONLY when the activity actually
+    // changes, so the honest-aging clock measures real silence (a child wedged
+    // mid-tool rots into "quiet Ns" because lastChangeAt stops moving).
+    applyChildActivity(row, activity) {
+      if ((row.dataset.lastAction || "") !== activity) {
+        row.dataset.steps = String(Number(row.dataset.steps || 0) + 1);
+        row.dataset.lastAction = activity;
+        row.dataset.lastChangeAt = String(Date.now());
+      }
+      this.renderSubagentResult(row, { lastAction: activity }, "running");
+    },
+
+    // ageSubagentRow drives the honest liveness clock for a running row: fresh
+    // for the first ~10s after a real change, then dims and shows "quiet Ns",
+    // then "silent" (amber) past ~45s. Driven by lastChangeAt, NOT by the
+    // activity text — so a child wedged mid-tool visibly rots into silence.
+    ageSubagentRow(row) {
+      if (!row || row.dataset.statusKind !== "running") return;
+      const age = row.querySelector(".res .age");
+      if (!age) return;
+      const last = Number(row.dataset.lastChangeAt || row.dataset.lastSeenAt || row.dataset.startedAt || 0);
+      const secs = last ? Math.max(0, Math.floor((Date.now() - last) / 1000)) : 0;
+      row.classList.toggle("act-quiet", secs >= 10 && secs < 45);
+      row.classList.toggle("act-silent", secs >= 45);
+      const mins = Math.floor(secs / 60);
+      age.textContent = secs >= 10 ? "  quiet " + (mins ? mins + "m" : secs + "s") : "";
+    },
+
     indexSubagentRow(row) {
       if (!row) return;
       if (row.dataset.jobId) this.activeJobs.set(row.dataset.jobId, row);
@@ -2633,6 +2723,11 @@
       this.applyJobRefTarget(row, data);
       this.renderSubagentMachineMeta(row, data);
       this.indexSubagentRow(row);
+      // Live push: subscribe to a running child's transcript so its activity
+      // streams to this row over the same socket — no polling.
+      if (kind === "running" && row.dataset.transcriptRef) {
+        this.watchSubagentActivity(row.dataset.transcriptRef, row);
+      }
     },
 
     renderSubagentResult(row, data, kind) {
@@ -2642,12 +2737,24 @@
       let text = String(data.resultText || "").trim();
       if (!text && kind === "running") {
         res.innerHTML = "";
+        const action = data.lastAction || row.dataset.lastAction || "";
         const live = document.createElement("span");
         live.className = "live";
-        live.textContent = "running";
+        live.textContent = action ? clip(action, 70) : "running";
         res.appendChild(live);
-        const action = data.lastAction || row.dataset.lastAction || "";
-        if (action) res.append(" · " + clip(action, 60));
+        const steps = Number(row.dataset.steps || 0);
+        if (steps > 0) {
+          const s = document.createElement("span");
+          s.className = "steps";
+          s.textContent = "· " + steps;
+          res.append(" ");
+          res.appendChild(s);
+        }
+        // The honest-aging clock: filled by ageSubagentRow on each liveness tick.
+        const age = document.createElement("span");
+        age.className = "age";
+        res.appendChild(age);
+        this.ageSubagentRow(row);
         row.classList.remove("res-error");
         return;
       }
