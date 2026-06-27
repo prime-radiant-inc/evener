@@ -431,16 +431,22 @@
   function placeChipPicker(picker, anchor) {
     if (window.matchMedia && window.matchMedia("(max-width: 767px)").matches) {
       picker.classList.add("chip-picker-sheet");
-      // Clear the inline absolute positioning callers set, so the CSS bottom
-      // sheet (position: fixed) takes over.
+      // Re-parent to <body> so the sheet shares the root stacking context with
+      // its scrim. Left inside the positioned chip wrapper, the sheet's z-index
+      // couldn't beat the body-level scrim, so the scrim sat on top and every
+      // tap dismissed instead of selecting. Then clear the inline absolute
+      // positioning (the CSS fixed sheet takes over) and sit ABOVE the scrim.
+      document.body.appendChild(picker);
       picker.style.position = "";
       picker.style.top = "";
       picker.style.left = "";
+      picker.style.zIndex = "901";
       addPickerScrim(picker);
       return;
     }
     picker.style.top = (anchor.offsetTop + anchor.offsetHeight + 4) + "px";
     picker.style.left = anchor.offsetLeft + "px";
+    picker.style.zIndex = "50";
   }
 
   // A dimming backdrop behind the mobile bottom sheet. Clicking it counts as an
@@ -1328,7 +1334,6 @@
     chip.parentNode.appendChild(picker);
     picker.style.position = "absolute";
     placeChipPicker(picker, chip);
-    picker.style.zIndex = "50";
 
     input.focus();
 
@@ -1368,7 +1373,6 @@
     chip.parentNode.appendChild(picker);
     picker.style.position = "absolute";
     placeChipPicker(picker, chip);
-    picker.style.zIndex = "50";
     attachPickerDismiss(picker);
   }
 
@@ -1507,7 +1511,6 @@
       chip.parentNode.appendChild(picker);
       picker.style.position = "absolute";
       placeChipPicker(picker, chip);
-      picker.style.zIndex = "50";
 
       search.focus();
 
@@ -1603,7 +1606,6 @@
       chip.parentNode.appendChild(picker);
       picker.style.position = "absolute";
       placeChipPicker(picker, chip);
-      picker.style.zIndex = "50";
       attachPickerDismiss(picker);
       return;
     }
@@ -1637,7 +1639,6 @@
       chip.parentNode.appendChild(picker);
       picker.style.position = "absolute";
       placeChipPicker(picker, chip);
-      picker.style.zIndex = "50";
       attachPickerDismiss(picker);
     });
   }
@@ -1700,7 +1701,6 @@
     chip.parentNode.appendChild(picker);
     picker.style.position = "absolute";
     placeChipPicker(picker, chip);
-    picker.style.zIndex = "50";
     attachPickerDismiss(picker);
   }
 

@@ -7,14 +7,20 @@
   function placeChipPicker(picker, anchor) {
     if (global.matchMedia && global.matchMedia("(max-width: 767px)").matches) {
       picker.classList.add("chip-picker-sheet");
+      // Re-parent to <body> so the sheet outranks its body-level scrim (inside a
+      // positioned wrapper its z-index can't, so the scrim ate every tap), then
+      // sit above the scrim.
+      document.body.appendChild(picker);
       picker.style.position = "";
       picker.style.top = "";
       picker.style.left = "";
+      picker.style.zIndex = "901";
       addPickerScrim(picker);
       return;
     }
     picker.style.top = (anchor.offsetTop + anchor.offsetHeight + 4) + "px";
     picker.style.left = anchor.offsetLeft + "px";
+    picker.style.zIndex = "50";
   }
 
   // Dimming backdrop behind the mobile bottom sheet; removes itself once the
@@ -181,7 +187,6 @@
     anchor.parentNode.appendChild(picker);
     picker.style.position = "absolute";
     placeChipPicker(picker, anchor);
-    picker.style.zIndex = "50";
     if (options.minWidth) picker.style.minWidth = options.minWidth;
 
     if (!inlineInput) input.focus();
