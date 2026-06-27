@@ -278,17 +278,24 @@ func RenderSubagentRail(runs []transcript.SubagentRunInfo, width int) string {
 		return ""
 	}
 	th := tuitheme.ActiveTheme()
-	var running, done, failed []transcript.SubagentRunInfo
+	var running, doneShown, doneFolded, failed []transcript.SubagentRunInfo
 	for _, r := range runs {
 		switch subagentRailClass(r.Status) {
 		case "failed":
 			failed = append(failed, r)
 		case "done":
-			done = append(done, r)
+			// A finished run that carries a tied notification headline stays
+			// visible (it shows the result); plain ones recede to a count.
+			if strings.TrimSpace(r.Headline) != "" {
+				doneShown = append(doneShown, r)
+			} else {
+				doneFolded = append(doneFolded, r)
+			}
 		default:
 			running = append(running, r)
 		}
 	}
+	doneCount := len(doneShown) + len(doneFolded)
 	rail := lipgloss.NewStyle().Foreground(th.RuleSoft).Render("│") + " "
 	red := lipgloss.Color("9")
 
@@ -296,8 +303,8 @@ func RenderSubagentRail(runs []transcript.SubagentRunInfo, width int) string {
 	if len(running) > 0 {
 		tally = append(tally, fmt.Sprintf("⟳ %d running", len(running)))
 	}
-	if len(done) > 0 {
-		tally = append(tally, fmt.Sprintf("✓ %d done", len(done)))
+	if doneCount > 0 {
+		tally = append(tally, fmt.Sprintf("✓ %d done", doneCount))
 	}
 	if len(failed) > 0 {
 		tally = append(tally, fmt.Sprintf("✕ %d failed", len(failed)))
@@ -314,8 +321,11 @@ func RenderSubagentRail(runs []transcript.SubagentRunInfo, width int) string {
 	for _, r := range running {
 		lines = append(lines, rail+subagentRailRow(r, "⟳", th.StateSubagent, width))
 	}
-	if len(done) > 0 { // the settled pile recedes to a count
-		lines = append(lines, rail+lipgloss.NewStyle().Foreground(th.TextMuted).Render(fmt.Sprintf("✓ %d done", len(done))))
+	for _, r := range doneShown { // tied-result rows stay visible (show the headline)
+		lines = append(lines, rail+subagentRailRow(r, "✓", th.TextMuted, width))
+	}
+	if len(doneFolded) > 0 { // the rest of the settled pile recedes to a count
+		lines = append(lines, rail+lipgloss.NewStyle().Foreground(th.TextMuted).Render(fmt.Sprintf("✓ %d done", len(doneFolded))))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -349,6 +359,18 @@ func subagentRailRow(r transcript.SubagentRunInfo, glyph string, glyphColor lipg
 				act = fmt.Sprintf("%s · %d", act, r.Steps)
 			}
 			row += "  " + lipgloss.NewStyle().Foreground(th.TextDim).Render(act)
+		}
+	case "done":
+		// A tied notification headline ("tests passed · 4ad69c0") on a finished row.
+		if hl := strings.TrimSpace(r.Headline); hl != "" {
+			if len(hl) > 50 {
+				hl = hl[:49] + "…"
+			}
+			color := th.TextDim
+			if r.HeadlineError {
+				color = lipgloss.Color("9")
+			}
+			row += "  " + lipgloss.NewStyle().Foreground(color).Render(hl)
 		}
 	case "failed":
 		if reason := strings.TrimSpace(r.Reason); reason != "" {

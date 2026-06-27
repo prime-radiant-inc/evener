@@ -669,3 +669,36 @@ func TestApplyChildActivityTracksRunningRunHonestly(t *testing.T) {
 		t.Fatalf("activity must not apply to a finished run")
 	}
 }
+
+func TestParseJobNotificationHeadlineAndTie(t *testing.T) {
+	env := `{"message":"Status: DONE","data":{"status":"DONE","test_summary":"go test ./agent passed","commit_hashes":["4ad69c0e123"],"concerns":[]},"artifacts":[]}`
+	text := "<job-notification job_id=\"job_T\" event=\"completed\" job_type=\"delegate\" status=\"completed\" transcript_ref=\"local:ct\">\nJob job_T completed.\nexcerpt:\n" + env + "\n</job-notification>"
+	jobID, headline, isError, ok := ParseJobNotificationHeadline(text)
+	if !ok || jobID != "job_T" {
+		t.Fatalf("parse failed: ok=%v id=%q", ok, jobID)
+	}
+	if isError {
+		t.Fatalf("a completed job should not be flagged error")
+	}
+	if !strings.Contains(headline, "go test ./agent passed") || !strings.Contains(headline, "4ad69c0e") {
+		t.Fatalf("headline wrong: %q", headline)
+	}
+	// Plain text is not a job notification.
+	if _, _, _, ok := ParseJobNotificationHeadline("just some steering text"); ok {
+		t.Fatalf("non-notification text must not parse")
+	}
+	// A failed notification is flagged.
+	if _, _, isErr, ok := ParseJobNotificationHeadline(`<job-notification job_id="job_F" status="failed" exit_code="2">x</job-notification>`); !ok || !isErr {
+		t.Fatalf("failed notification should be error: ok=%v err=%v", ok, isErr)
+	}
+
+	// The headline ties onto the matching rail run.
+	reducer := NewTranscriptReducer(nil, nil, nil)
+	reducer.ApplySerfJob(appwire.SerfJobInfo{JobID: "job_T", JobType: "delegate", Status: "completed", TranscriptRef: "local:ct", Task: "port webhook"})
+	if !reducer.ApplyTieHeadline(jobID, headline, isError) {
+		t.Fatalf("headline should tie to the run with the matching job id")
+	}
+	if transcriptTools(reducer.messages)[0].Subagent.Headline != headline {
+		t.Fatalf("run headline not set: %+v", transcriptTools(reducer.messages)[0].Subagent)
+	}
+}

@@ -351,6 +351,30 @@ func isBackgroundShellRun(run SubagentRunInfo) bool {
 	return run.Background && strings.EqualFold(strings.TrimSpace(run.JobType), "shell")
 }
 
+// ApplyTieHeadline pulls a job notification's result headline onto its rail run
+// (matched by job id), so a finished subagent reads "tests passed · 4ad69c0"
+// instead of a bare "done". Reports whether a run was matched.
+func (r *TranscriptReducer) ApplyTieHeadline(jobID, headline string, isError bool) bool {
+	jobID = strings.TrimSpace(jobID)
+	headline = strings.TrimSpace(headline)
+	if jobID == "" || headline == "" {
+		return false
+	}
+	for i := range r.messages {
+		msg := r.messages[i]
+		if msg.Kind != MsgTool || msg.Tool == nil || msg.Tool.Subagent == nil {
+			continue
+		}
+		if msg.Tool.Subagent.JobID != jobID {
+			continue
+		}
+		msg.Tool.Subagent.Headline = headline
+		msg.Tool.Subagent.HeadlineError = isError
+		return true
+	}
+	return false
+}
+
 // ApplyChildActivity routes a watched child's latest live step to its running
 // subagent row (matched by transcript ref). The step count advances only when
 // the activity actually changes, so a stalled child's count visibly freezes
