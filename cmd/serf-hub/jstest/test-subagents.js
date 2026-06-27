@@ -315,6 +315,36 @@ await scenario("live activity: child frames push to the row's activity line, ste
   return { ok: true };
 });
 
+await scenario("a job notification ties to its rail row: shared headline + cross-links", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ...spawnDelegate("dt", "job_T", "port the webhook verification", "local:ct"),
+  ["JOB_FINISHED", { jobId: "job_T", status: "completed", outputBytes: 233, transcriptRef: "local:ct" }],
+  ["STEERING_INJECTED", { text: `<job-notification job_id="job_T" event="completed" job_type="delegate" status="completed" transcript_ref="local:ct">
+Job job_T completed.
+excerpt:
+${JSON.stringify({ message: "Status: DONE", data: { status: "DONE", test_summary: "go test ./agent passed", commit_hashes: ["4ad69c0e"], concerns: [] }, artifacts: [] })}
+</job-notification>` }],
+], ({ conv }) => {
+  const row = conv.querySelector('.sub-r[data-job-id="job_T"]');
+  const card = conv.querySelector('.notification-card[data-job-id="job_T"]');
+  if (!row) return { ok: false, detail: "no rail row for job_T" };
+  if (!card) return { ok: false, detail: "no notification card for job_T" };
+  // Both ends are marked tied.
+  if (row.dataset.tied !== "job_T" || card.dataset.tied !== "job_T") {
+    return { ok: false, detail: "both ends should be marked tied (row=" + row.dataset.tied + " card=" + card.dataset.tied + ")" };
+  }
+  // The row pulls the notification's headline instead of "done · 233 bytes".
+  const res = row.querySelector(".res");
+  if (!res || !/go test \.\/agent passed/.test(res.textContent)) {
+    return { ok: false, detail: "row result should show the notification headline: " + (res && res.textContent) };
+  }
+  if (!/4ad69c0e/.test(res.textContent)) return { ok: false, detail: "headline should include the short commit: " + res.textContent };
+  // Each carries a cross-link to the other.
+  if (!card.querySelector(".notification-card-tie")) return { ok: false, detail: "card missing the '↑ in rail' cross-link" };
+  if (!row.querySelector(".tie-link.sub-report")) return { ok: false, detail: "row missing the 'report ↓' cross-link" };
+  return { ok: true };
+});
+
 await scenario("done subagents fold behind a count; running stay visible", [
   ["SESSION_START", { session_id: "01TEST" }],
   ...spawnDelegate("d1", "job_1", "one", "local:c1"),
