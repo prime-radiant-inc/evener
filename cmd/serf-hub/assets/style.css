@@ -3660,6 +3660,25 @@ button.composer-model-value .caret { color: var(--text-dim); }
   .input-card { background: transparent; border: 0; border-radius: 0; padding: var(--space-1) 0; }
   .message-input { min-height: 24px; max-height: 32vh; }
 
+  /* iOS Safari auto-zooms into any focused field whose text is smaller than
+     16px — and does NOT zoom back out on blur, leaving the whole UI zoomed and
+     shifted. Pin every editable field to 16px on phone so tapping in and out of
+     the composer (or any input) never zooms the page. */
+  .message-input,
+  .spawn-input,
+  #search-input,
+  input[type="text"],
+  input[type="search"],
+  input[type="url"],
+  input[type="email"],
+  input[type="number"],
+  input[type="password"],
+  input:not([type]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+
   .input-controls { display: flex; align-items: center; flex-wrap: nowrap; gap: var(--space-2); padding-top: var(--space-2); min-width: 0; }
   .controls-left, .controls-right { gap: var(--space-2); flex-wrap: nowrap; flex: none; }
   .controls-center { flex: 1; min-width: 0; overflow: hidden; }

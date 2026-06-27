@@ -41,6 +41,14 @@ pass(purposeCmdRule && /padding-left:/.test(purposeCmdRule) && !/margin-left:/.t
 pass(/#workspace\s*\{[^}]*overflow-x:\s*clip/s.test(mobile),
   "mobile #workspace must set overflow-x: clip as a horizontal-anchor guard");
 
+// iOS zoom guard: a focused field whose text is < 16px makes iOS Safari zoom
+// the page in (and never zoom back out on blur). Editable fields must be 16px
+// on phone — checked via the rule whose selector includes .message-input.
+const inputZoomRule = (mobile.match(/[^{}]*\{[^}]*\}/g) || [])
+  .find((block) => /\.message-input/.test(block.split("{")[0]) && /font-size:\s*16px/.test(block));
+pass(!!inputZoomRule,
+  "mobile must pin editable fields (incl .message-input) to font-size: 16px so iOS does not auto-zoom on focus");
+
 if (failures.length === 0) {
   console.log("PASS: mobile search palette CSS contract + layout guards");
   process.exit(0);
