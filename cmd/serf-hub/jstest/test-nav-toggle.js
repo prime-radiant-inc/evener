@@ -25,6 +25,12 @@ pass(!/header-hamburger/.test(workspaceHtml),
 // covered by the open drawer), wired to the same toggle mechanism.
 pass(/class="sidebar-close"[^>]*data-sidebar-toggle/.test(sidebarHtml),
   "sidebar must offer a .sidebar-close button wired to data-sidebar-toggle");
+// Standalone / full-screen capability when added to the home screen.
+pass(/name="apple-mobile-web-app-capable"\s+content="yes"/.test(appHtml) &&
+     /name="mobile-web-app-capable"\s+content="yes"/.test(appHtml),
+  "app shell must declare web-app-capable for full-screen standalone launch");
+pass(/rel="manifest"/.test(appHtml), "app shell must link a web manifest");
+pass(/viewport-fit=cover/.test(appHtml), "viewport must be viewport-fit=cover for safe-area handling");
 
 // --- Behavioral: clicking a [data-sidebar-toggle] opens/closes the drawer. ---
 (async () => {

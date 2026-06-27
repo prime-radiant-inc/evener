@@ -3378,7 +3378,7 @@ button.composer-model-value:hover { text-decoration: underline; }
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: var(--space-3);
-    padding: var(--space-3) var(--space-5) var(--space-5);
+    padding: calc(var(--space-3) + env(safe-area-inset-top)) var(--space-5) var(--space-5);
     border-bottom: 1px solid var(--rule);
     margin-bottom: var(--space-3);
   }
@@ -3504,11 +3504,24 @@ button.composer-model-value:hover { text-decoration: underline; }
      left gutter (tool indent, 32px card/system indents) that wastes a quarter
      of a 390px screen. Tighten the column padding and pull the indents in so
      prose and cards use the full width. */
-  .conversation { padding: var(--space-4) var(--space-4); --tool-indent: 22px; }
+  .conversation { padding: var(--space-5) var(--space-4); --tool-indent: 20px; line-height: var(--leading-normal); }
   .notification-card { margin-left: var(--space-4); }
   .task-card { margin-left: var(--space-4); }
   .system-line { margin-left: var(--space-4); }
   .steering { margin-left: 0; }
+
+  /* De-clutter the transcript on a phone: more air between turns, and drop the
+     per-call intent breadcrumb — the ✓ verb + target line already says what ran,
+     and the dim purpose line under every row is what made it feel busy. (It's
+     still there on desktop and on expand.) */
+  .assistant-message { margin-bottom: var(--space-7); line-height: var(--leading-relaxed); }
+  .user-message { padding-top: var(--space-6); margin-bottom: var(--space-5); }
+  .tool-call { margin-bottom: var(--space-3); }
+  .tool-call .tool-intent { display: none; }
+  .tool-call-cluster { margin-bottom: var(--space-6); }
+  .think { margin: var(--space-4) 0; }
+  .notification-card { margin-top: var(--space-5); margin-bottom: var(--space-5); }
+  .steering { margin: var(--space-6) 0; }
 
   /* Persistent nav toggle: a fixed chip at top-left, present on every page.
      Sits below the drawer/scrim (z-fixed-action < z-overlay/z-drawer) so it is
@@ -3516,19 +3529,19 @@ button.composer-model-value:hover { text-decoration: underline; }
   .app-nav-toggle {
     display: inline-flex;
     position: fixed;
-    top: var(--space-3);
+    top: calc(var(--space-3) + env(safe-area-inset-top));
     left: var(--space-3);
     width: var(--tap-min);
     height: var(--tap-min);
     z-index: var(--z-fixed-action);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   }
-  body.has-connection-banner .app-nav-toggle { top: calc(32px + var(--space-3)); }
+  body.has-connection-banner .app-nav-toggle { top: calc(32px + var(--space-3) + env(safe-area-inset-top)); }
 
   /* Page headers reserve a left safe-area so their title/content clears the
-     fixed toggle. All main pages (session, new, settings) use .workspace-header,
-     so one rule covers them; the welcome is centered and needs nothing. */
-  .workspace-header { padding: 10px 14px 8px calc(var(--tap-min) + var(--space-3)); }
+     fixed toggle, plus a top safe-area so the title isn't under the notch /
+     status bar in full-screen (standalone) mode. */
+  .workspace-header { padding: calc(10px + env(safe-area-inset-top)) 14px 8px calc(var(--tap-min) + var(--space-3)); }
   .workspace-title-row { gap: 8px; flex-wrap: wrap; }
   .workspace-actions { gap: 4px; flex-wrap: wrap; }
   .panel-toggle-icon { display: none; }
