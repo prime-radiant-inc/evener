@@ -526,6 +526,33 @@ func TestTranscriptReducerIgnoresNonDelegateSerfJobNotification(t *testing.T) {
 	}
 }
 
+func TestTranscriptReducerTracksBackgroundShellJob(t *testing.T) {
+	reducer := NewTranscriptReducer(nil, nil, nil)
+	// A foreground shell is still ignored.
+	reducer.ApplySerfJob(appwire.SerfJobInfo{JobID: "job_fg", JobType: "shell", Status: "running", Command: "ls"})
+	if len(reducer.messages) != 0 {
+		t.Fatalf("a foreground shell must not be tracked: %+v", reducer.messages)
+	}
+	// A long-lived (background) shell IS tracked, named by its command.
+	reducer.ApplySerfJob(appwire.SerfJobInfo{JobID: "job_bg", JobType: "shell", Background: true, Command: "go test ./... -count=1", Status: "running"})
+	tools := transcriptTools(reducer.messages)
+	if len(tools) != 1 || tools[0].Subagent == nil || !tools[0].Subagent.Background || tools[0].Subagent.JobID != "job_bg" {
+		t.Fatalf("background shell run not captured: %+v", reducer.messages)
+	}
+	if tools[0].Description == "" || tools[0].Done {
+		t.Fatalf("background shell should be named by its command and still running: %+v", tools[0])
+	}
+	// Finishing it reconciles the SAME entry (no duplicate) and marks it done.
+	reducer.ApplySerfJob(appwire.SerfJobInfo{JobID: "job_bg", JobType: "shell", Background: true, Command: "go test ./... -count=1", Status: "completed", OutputBytes: 42})
+	tools = transcriptTools(reducer.messages)
+	if len(tools) != 1 {
+		t.Fatalf("finishing a background shell must reconcile, not duplicate: %+v", reducer.messages)
+	}
+	if !tools[0].Done || tools[0].Subagent.Status != "completed" {
+		t.Fatalf("background shell should be marked done on finish: %+v", tools[0])
+	}
+}
+
 func TestTranscriptReducerDoesNotAttachNonDelegateJobToOriginTool(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
 	reducer.ApplyThreadItem(appwire.ThreadItem{
