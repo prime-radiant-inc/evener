@@ -41,6 +41,11 @@ function harness(isPhone) {
     pass(picker && picker.classList.contains("chip-picker-sheet"), "on phone the picker is a bottom sheet (.chip-picker-sheet)");
     pass(picker && picker.style.position === "", "inline absolute position is cleared so the CSS fixed sheet wins");
     pass(picker && picker.style.top === "" && picker.style.left === "", "inline top/left are cleared on phone");
+    // The sheet must re-parent to <body> with a high stacking z-index, or the
+    // body-level scrim sits on top of it and every tap dismisses instead of
+    // selecting (the reported bug).
+    pass(picker && picker.parentNode === window.document.body, "the sheet re-parents to <body> so it shares the scrim's stacking context");
+    pass(picker && parseInt(picker.style.zIndex, 10) >= 900, "the sheet gets a high z-index so it sits above the scrim, got " + (picker && picker.style.zIndex));
     pass(window.document.querySelector(".chip-picker-scrim"), "a dimming scrim is added behind the sheet");
 
     // Closing the picker removes the scrim (MutationObserver cleanup).

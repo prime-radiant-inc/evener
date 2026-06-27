@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 )
 
 // noStore wraps a handler to forbid caching — used for on-disk dev assets so
@@ -15,6 +17,30 @@ func noStore(h http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		h.ServeHTTP(w, r)
 	})
+}
+
+var (
+	assetVersionOnce sync.Once
+	assetVersionVal  string
+)
+
+// assetVersionQuery returns a "?v=<token>" cache-busting suffix appended to
+// every /assets URL in the page templates. The token is the binary's build
+// time, so it changes on every rebuild/deploy (forcing browsers to fetch the
+// new CSS/JS) but stays stable across mere restarts of the same binary. In the
+// on-disk dev mode the served assets are no-store, so the (stale) token there
+// is harmless.
+func assetVersionQuery() string {
+	assetVersionOnce.Do(func() {
+		token := "1"
+		if exe, err := os.Executable(); err == nil {
+			if fi, err := os.Stat(exe); err == nil {
+				token = strconv.FormatInt(fi.ModTime().Unix(), 10)
+			}
+		}
+		assetVersionVal = "?v=" + token
+	})
+	return assetVersionVal
 }
 
 //go:embed templates/*.html templates/partials/*.html templates/partials/settings/*.html

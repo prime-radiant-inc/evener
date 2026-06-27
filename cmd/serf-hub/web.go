@@ -65,7 +65,7 @@ var sidebarTemplateFuncs = template.FuncMap{
 
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
 func NewWebServer(cfg hubcore.WebConfig) *WebServer {
-	appTmpl := template.Must(template.ParseFS(templatesRoot(), "templates/app.html"))
+	appTmpl := template.Must(template.New("app.html").Funcs(template.FuncMap{"assetv": assetVersionQuery}).ParseFS(templatesRoot(), "templates/app.html"))
 	sidebarTmpl := template.Must(template.New("sidebar.html").Funcs(sidebarTemplateFuncs).ParseFS(templatesRoot(), "templates/partials/sidebar.html"))
 	workspaceTmpl := template.Must(template.ParseFS(templatesRoot(),
 		"templates/partials/workspace.html",
