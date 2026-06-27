@@ -2112,7 +2112,11 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .tool-call.has-purpose .tool-command {
   order: 3;
   flex: 0 0 100%;
-  margin-left: calc(12px + var(--space-3));
+  /* Indent with padding, not margin: the flex-basis is 100% and box-sizing is
+     border-box, so padding stays inside the row. A margin would push the line
+     past the row's right edge (a horizontal overflow that iOS scrolls to when
+     the keyboard opens, leaving the page shifted and un-anchored). */
+  padding-left: calc(12px + var(--space-3));
   font-size: var(--text-xs);
   overflow: hidden;
 }
@@ -3555,7 +3559,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   /* dvh tracks the *visible* viewport, so the workspace (and the composer at its
      bottom) shrinks above the on-screen keyboard instead of being pushed under
      it. 100vh is the fallback for older engines. */
-  #workspace { width: 100%; height: 100vh; height: 100dvh; }
+  #workspace { width: 100%; height: 100vh; height: 100dvh; overflow-x: clip; }
 
   /* Reclaim horizontal room on phone: the desktop transcript reserves a wide
      left gutter (tool indent, 32px card/system indents) that wastes a quarter
