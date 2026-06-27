@@ -2287,65 +2287,80 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .subs-h .tally .f { color: var(--error); }
 .subs-h .tally .u { color: var(--text-muted); }
 .subs-rows { display: flex; flex-direction: column; }
+/* Two clean lines: the name (sans — it's a human task, not machine text) leads
+   on the top line with the duration; the live activity / result recedes to a
+   dim second line beneath it. The job-id machinery is dropped (the row is the
+   door to the child — the id isn't for reading). */
 .sub-r {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--space-4);
-  padding: var(--space-1) 0;
+  column-gap: var(--space-3);
+  row-gap: 2px;
+  padding: var(--space-2) 0;
   width: 100%;
   text-align: left;
   font-size: var(--text-sm);
   color: var(--text-muted);
 }
 .sub-r[hidden] { display: none; }
-.sub-r .g { font-family: var(--font-mono); font-size: var(--text-xs); width: 12px; flex: none; }
+.sub-r .g { order: 1; font-size: var(--text-xs); width: 12px; flex: none; }
 .sub-r .g.run  { color: var(--state-processing); }
 .sub-r .g.done { color: var(--text-muted); }
 .sub-r .g.err  { color: var(--error); }
 /* Terminal-unknown: neutral, NOT alarming, NOT live (mockup #8). */
 .sub-r .g.unk  { color: var(--text-dim); }
 .sub-r .nm {
-  font-family: var(--font-mono);
+  order: 2;
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-sans);
   font-size: var(--text-sm);
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 40%;
-  flex: none;
 }
-.sub-r .sub-meta {
-  color: var(--muted);
-  font-size: 0.78rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.sub-r .res {
-  font-size: var(--text-sm);
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-}
-.sub-r .res .live { color: var(--state-processing); }
-.sub-r .res .unk { color: var(--text-muted); font-style: italic; }
-.sub-r.res-error .res { color: var(--error); }
+.sub-r .sub-meta { display: none; }
 .sub-r .dur {
+  order: 3;
   font-size: var(--text-xs);
-  color: var(--text-muted);
-  margin-left: auto;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
   flex: none;
 }
 .sub-r .lk {
+  order: 4;
   font-size: var(--text-xs);
-  color: var(--text-muted);
-  margin-left: var(--space-4);
+  color: var(--text-dim);
   flex: none;
+  opacity: 0;
+  transition: opacity var(--motion-fast);
 }
-.sub-r:hover .lk { color: var(--accent); }
+/* The live activity / result — the dim second line, indented under the name. */
+.sub-r .res {
+  order: 5;
+  flex: 0 0 100%;
+  padding-left: calc(12px + var(--space-3));
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.sub-r .res:empty { display: none; }
+.sub-r .res .live { color: var(--text-muted); }
+.sub-r .res .steps { color: var(--text-dim); }
+.sub-r .res .age { color: var(--text-dim); }
+.sub-r .res .unk { color: var(--text-muted); font-style: italic; }
+.sub-r.res-error .res,
+.sub-r.res-error .res .live { color: var(--error); }
+/* Honest aging: the activity dims when quiet; the clock turns amber when silent. */
+.sub-r.act-quiet .res .live { color: var(--text-dim); }
+.sub-r.act-silent .res .age { color: var(--state-warning); }
+.sub-r:hover .lk,
+.sub-r:focus-visible .lk { opacity: 1; color: var(--accent); }
 .sub-r:hover { color: var(--text); }
 .sub-preview {
   margin: calc(-1 * var(--space-1)) 0 var(--space-3) calc(12px + var(--space-4));
