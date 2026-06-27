@@ -101,7 +101,7 @@ detail demoted to a mono chip; deep detail hidden until expanded.** Content colu
 | **User prompt** | quiet: a dim `You` tag + muted text | turn index | — | none. Demoted on purpose. |
 | **Assistant prose** | the **hero** — sans, `--fs-md`, full contrast | — | — | none; wins via size+space |
 | **Thinking** | quiet collapsed line "Thought for Ns" + faint preview | — | full reasoning (streams live) | none; quietest. Collapsible. |
-| **Tool call (done)** | the **purpose** ("Check kernel version"), not the command | verb+args as mono chip; "exit 0" | full output | neutral; collapses once scrolled past |
+| **Tool call (done)** | the **purpose** ("Check kernel version"), not the command | verb+args as a quiet mono line; **success is silent** (no "exit 0" — the ✓ glyph says it) | full output | neutral; collapses once scrolled past |
 | **Tool cluster (scrolled-past)** | one line: "✓ 4 steps · …" | — | the individual calls | neutral box (the one device) |
 | **Tool call (running)** | purpose | mono chip | live output | blue left-rail tick |
 | **Tool call (error)** | error summary promoted to primary | mono chip | stderr (truncated, see below) | red left-rail (one device — no extra box) |
@@ -204,6 +204,22 @@ a single-pane workspace; the sidebar becomes an off-canvas drawer behind the hea
   horizontal scrollbar.
 - **Touch.** `--tap-min: 44px` on phone (desktop is 32px); suppress sticky `:hover` backgrounds
   under `@media (hover: none)` so a tapped row doesn't stay lit.
+- **Reading scale (sized to actually read on a phone).** A clear, descending hierarchy — the
+  conversation leads, machine text is legible (never the old 10px squint), metadata is quietest:
+
+  | level | size | what |
+  |---|---|---|
+  | hero | 14 | assistant prose — the thing you read, the largest text |
+  | primary | 13 | the agent's tool **purpose**; the user's message |
+  | machine | 12 | commands, diffs, output, code (mono) |
+  | meta | 11 | the demoted command under a purpose; timings, counts |
+
+  The hero must stay larger than the tool purpose, which must stay larger than the command — an
+  inverted step (a 12px hero under a 13px purpose) reads as "the tool matters more than the
+  answer." Editable fields are pinned to **16px** so iOS never zoom-jumps on focus.
+- **Editable fields ≥ 16px.** iOS Safari zooms the page into any focused field whose text is
+  smaller than 16px and does not zoom back out — so the composer, prompt, and search inputs are all
+  16px on phone.
 
 ## 9. Motion
 

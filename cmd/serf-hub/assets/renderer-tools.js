@@ -476,8 +476,11 @@
     target: (a) => clip(a.command || a.cmd || "", 200),
     result: (data) => {
       const st = parseToolState(data.tool_state);
-      if (st && st.exit_code != null) return "exit " + st.exit_code;
-      return data.error ? "error" : "ok";
+      // Success is the expected state — the ✓ status glyph already conveys it,
+      // so a clean exit shows no result text. Only a nonzero exit (or an error)
+      // is worth the eye.
+      if (st && st.exit_code != null) return st.exit_code === 0 ? "" : "exit " + st.exit_code;
+      return data.error ? "error" : "";
     },
     body: (args, conversation) => {
       return outputPreviewBody("shell-body", "shell-output", conversation);
