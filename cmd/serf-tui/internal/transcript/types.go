@@ -26,6 +26,8 @@ type SubagentRunInfo struct {
 	Reason           string
 	Background       bool
 	Command          string
+	Activity         string // the child's latest live step (verb-led)
+	Steps            int    // advances only when Activity actually changes (honest progress)
 	Task             string
 	TranscriptRef    string
 	OriginTurnID     string

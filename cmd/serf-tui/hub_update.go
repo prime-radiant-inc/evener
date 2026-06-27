@@ -96,6 +96,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session.viewport.Height = m.session.vpHeight()
 		m.session.refreshViewport()
 		m.browseSelected = -1
+		m.watchedChildRefs = nil // fresh per session; re-subscribed below
 		m.forkDraft = nil
 		m.sessionThemePicker = nil
 		m.sessionModelPicker = nil
@@ -109,7 +110,9 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// state immediately (kata r80p).
 		m.clearSessionQueue()
 		m.applyQueueState(msg.detail.Ref, msg.detail.Queue)
-		return m, nil
+		// Subscribe to any already-running subagent children so the rail shows
+		// their live activity on session entry, not just for new spawns.
+		return m, m.subscribeNewChildren()
 	case hubNotificationMsg:
 		if !msg.ok {
 			return m, nil

@@ -335,13 +335,28 @@ func subagentRailRow(r transcript.SubagentRunInfo, glyph string, glyphColor lipg
 	if len(name) > limit {
 		name = name[:limit-1] + "…"
 	}
+	th := tuitheme.ActiveTheme()
 	row := lipgloss.NewStyle().Foreground(glyphColor).Render(glyph) + " " + name
-	if subagentRailClass(r.Status) == "failed" && strings.TrimSpace(r.Reason) != "" {
-		reason := strings.TrimSpace(r.Reason)
-		if len(reason) > 40 {
-			reason = reason[:39] + "…"
+	switch subagentRailClass(r.Status) {
+	case "running":
+		// The live activity line: the child's latest step + an honest step count
+		// (it freezes when the child stalls — no fake liveness).
+		if act := strings.TrimSpace(r.Activity); act != "" {
+			if len(act) > 50 {
+				act = act[:49] + "…"
+			}
+			if r.Steps > 0 {
+				act = fmt.Sprintf("%s · %d", act, r.Steps)
+			}
+			row += "  " + lipgloss.NewStyle().Foreground(th.TextDim).Render(act)
 		}
-		row += "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(reason)
+	case "failed":
+		if reason := strings.TrimSpace(r.Reason); reason != "" {
+			if len(reason) > 40 {
+				reason = reason[:39] + "…"
+			}
+			row += "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(reason)
+		}
 	}
 	return row
 }

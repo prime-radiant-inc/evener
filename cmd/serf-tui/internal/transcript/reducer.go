@@ -351,6 +351,34 @@ func isBackgroundShellRun(run SubagentRunInfo) bool {
 	return run.Background && strings.EqualFold(strings.TrimSpace(run.JobType), "shell")
 }
 
+// ApplyChildActivity routes a watched child's latest live step to its running
+// subagent row (matched by transcript ref). The step count advances only when
+// the activity actually changes, so a stalled child's count visibly freezes
+// (honest progress, no fake liveness). Reports whether a row was updated.
+func (r *TranscriptReducer) ApplyChildActivity(ref, activity string) bool {
+	ref = strings.TrimSpace(ref)
+	activity = strings.TrimSpace(activity)
+	if ref == "" || activity == "" {
+		return false
+	}
+	for i := range r.messages {
+		msg := r.messages[i]
+		if msg.Kind != MsgTool || msg.Tool == nil || msg.Tool.Subagent == nil {
+			continue
+		}
+		run := msg.Tool.Subagent
+		if run.TranscriptRef != ref || subagentTerminalStatus(run.Status) {
+			continue
+		}
+		if run.Activity != activity {
+			run.Steps++
+			run.Activity = activity
+		}
+		return true
+	}
+	return false
+}
+
 func (r *TranscriptReducer) subagentMessageIndex(run SubagentRunInfo) (int, bool) {
 	for i := range r.messages {
 		msg := r.messages[i]

@@ -138,3 +138,13 @@ func TestRenderSubagentRailNamesBackgroundShellByCommand(t *testing.T) {
 		t.Fatalf("a background shell should be named by its command: %q", out)
 	}
 }
+
+func TestRenderSubagentRailShowsLiveActivity(t *testing.T) {
+	withTestColorProfile(t)
+	out := RenderSubagentRail([]transcript.SubagentRunInfo{
+		{JobID: "j1", Task: "port webhook", Status: "running", Activity: "shell: go test ./...", Steps: 3},
+	}, 80)
+	if !strings.Contains(out, "shell: go test ./...") || !strings.Contains(out, "· 3") {
+		t.Fatalf("running row should show the live activity + step count: %q", out)
+	}
+}
