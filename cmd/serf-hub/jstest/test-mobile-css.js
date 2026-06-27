@@ -49,6 +49,15 @@ const inputZoomRule = (mobile.match(/[^{}]*\{[^}]*\}/g) || [])
 pass(!!inputZoomRule,
   "mobile must pin editable fields (incl .message-input) to font-size: 16px so iOS does not auto-zoom on focus");
 
+// Phone reading hierarchy: the hero prose must be a larger step than the tool
+// machine text. An inverted scale (a small hero under a larger tool purpose)
+// reads as "the tool matters more than the answer". Lock the compact sizes.
+const blocks = mobile.match(/[^{}]*\{[^}]*\}/g) || [];
+const heroRule = blocks.find((b) => /\.assistant-message/.test(b.split("{")[0]) && /font-size:\s*var\(--text-md\)/.test(b));
+pass(!!heroRule, "compact phone density must size the assistant hero prose at --text-md (largest reading text)");
+const machineRule = blocks.find((b) => /\.tool-call\b/.test(b.split("{")[0]) && /font-size:\s*var\(--text-sm\)/.test(b));
+pass(!!machineRule, "compact phone density must size tool/machine text at --text-sm (legible, not the old 10px)");
+
 if (failures.length === 0) {
   console.log("PASS: mobile search palette CSS contract + layout guards");
   process.exit(0);

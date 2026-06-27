@@ -3839,20 +3839,23 @@ button.composer-model-value .caret { color: var(--text-dim); }
      narrow viewports (flex child default min-width: auto blocks shrink). */
   .tool-call .target { min-width: 0; }
 
-  /* Phone density — design language §1.5 §4. ≤767px defaults to compact:
-     11px body text, 10px tool-call/monospace text, snug leading.
-     Comfortable density is the opt-in via body[data-phone-density="comfortable"];
-     compact is the default (no attribute, or explicit "compact"). */
-  body:not([data-phone-density="comfortable"]) { font-size: var(--text-xs); line-height: var(--leading-snug); }
-  /* Conversation elements override desktop font-size so they must be
-     explicitly reduced here to inherit the compact phone density. */
+  /* Phone reading scale. A clear hierarchy, sized to actually read on a phone:
+     the assistant prose is the hero and the largest text; the agent's tool
+     purpose sits just under it; machine text (commands, diffs, output) is a
+     legible 12px mono — never the old 10px squint. Metadata stays quietest.
+       hero prose 14  >  purpose / user 13  >  command·diff·output 12  >  meta 11
+     Comfortable density (body[data-phone-density="comfortable"]) keeps the
+     larger desktop scale; compact is the default. */
+  body:not([data-phone-density="comfortable"]) { font-size: var(--text-sm); line-height: var(--leading-snug); }
+  /* Conversation elements override desktop font-size so they must be set
+     explicitly here to take the compact phone scale. */
   body:not([data-phone-density="comfortable"]) .conversation { font-size: inherit; }
-  body:not([data-phone-density="comfortable"]) .assistant-message,
-  body:not([data-phone-density="comfortable"]) .user-message .pill { font-size: var(--text-sm); }
+  body:not([data-phone-density="comfortable"]) .assistant-message { font-size: var(--text-md); }
+  body:not([data-phone-density="comfortable"]) .user-message .pill { font-size: var(--text-base); }
   body:not([data-phone-density="comfortable"]) .tool-call,
   body:not([data-phone-density="comfortable"]) .msg.tool,
   body:not([data-phone-density="comfortable"]) .tool-body,
-  body:not([data-phone-density="comfortable"]) .diff-body { font-size: var(--text-2xs); }
+  body:not([data-phone-density="comfortable"]) .diff-body { font-size: var(--text-sm); }
 }
 
 /* Project settings pane (per-project settings, opened from sidebar gear).

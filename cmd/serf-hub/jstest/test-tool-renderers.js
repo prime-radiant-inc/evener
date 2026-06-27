@@ -539,7 +539,8 @@ await scenario("shell with stdout, exit code, and right-aligned timing", [
   const card = conv.querySelector(".tool-call.shell");
   if (!card) return { ok: false, detail: "no shell card" };
   if (!card.textContent.includes("ls -la")) return { ok: false, detail: "missing command" };
-  if (!card.textContent.includes("exit 0")) return { ok: false, detail: "missing exit code" };
+  // Success is silent: a clean exit prints no "exit 0" — the ✓ glyph conveys it.
+  if (card.textContent.includes("exit 0")) return { ok: false, detail: "successful shell should not print 'exit 0'" };
   if (!card.querySelector(".tool-status-good")) return { ok: false, detail: "missing shell success icon" };
   const meta = card.querySelector(".tool-meta");
   if (!meta) return { ok: false, detail: "missing tool metadata" };
@@ -565,6 +566,23 @@ await scenario("failed shell shows error output", [
   const pre = body.querySelector(".shell-output");
   if (!pre || !pre.textContent.includes("stderr detail")) return { ok: false, detail: "stderr/error output missing" };
   if (body.style.display === "none") return { ok: false, detail: "failed shell body hidden" };
+  return { ok: true };
+});
+
+// Success is silent, but a nonzero exit is the failure signal and stays.
+await scenario("nonzero exit shows 'exit N'; clean exit shows nothing", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "ok1", tool_name: "shell", arguments_json: JSON.stringify({ command: "true" }) }],
+  ["TOOL_CALL_END", { call_id: "ok1", output: "done\n", tool_state: JSON.stringify({ exit_code: 0 }), tool_name: "shell" }],
+  ["TOOL_CALL_START", { call_id: "bad1", tool_name: "shell", arguments_json: JSON.stringify({ command: "exit 2" }) }],
+  ["TOOL_CALL_END", { call_id: "bad1", output: "nope\n", tool_state: JSON.stringify({ exit_code: 2 }), tool_name: "shell" }],
+], ({ conv }) => {
+  const cards = conv.querySelectorAll(".tool-call.shell");
+  if (cards.length !== 2) return { ok: false, detail: "expected two shell cards, got " + cards.length };
+  const okStat = cards[0].querySelector(".result-detail").textContent.trim();
+  if (okStat !== "") return { ok: false, detail: "clean exit should print nothing, got " + JSON.stringify(okStat) };
+  const badStat = cards[1].querySelector(".result-detail").textContent.trim();
+  if (badStat !== "exit 2") return { ok: false, detail: "nonzero exit should print 'exit 2', got " + JSON.stringify(badStat) };
   return { ok: true };
 });
 
