@@ -2462,75 +2462,81 @@ button.composer-model-value .caret { color: var(--text-dim); }
  * log. Task_list changes render as a .task-card, not a system-line. */
 .system-line { margin: var(--space-3) 0 var(--space-3) var(--space-7); padding: var(--space-2) 0; font-size: var(--text-sm); color: var(--text-muted); font-style: italic; line-height: var(--leading-snug); }
 
-/* Task-update card: one coherent block emitted when the agent changes its task
-   list. Same containment device as the subagents module (.subs): bg-raised + a
-   hairline rule. The edit reads from color and style, not prose: the rows the
-   agent just touched this turn wear a kind-colored bar (added · done · started
-   · cancelled), completed rows carry a checked-off time, the now-current task
-   is elevated, and a little surrounding context shows; the rest folds behind
-   "show all". Rows reuse the .plan-item glyph grammar — ✓ done (neutral,
-   recedes), ⟳ current (blue, live), ○ pending (dim). */
+/* The living plan card (Design B): ONE card per session, rebuilt on each
+   task_list change and floated to the live frontier — never a fresh card per
+   edit. It reads as a quiet ledger of progress, not speech, so its containment
+   is a single neutral LEFT RAIL (no box — boxes are for needs-you cards; a rail
+   says "status"). It leads with progress + the active task (the one blue mark,
+   breathing via the shared .plan-item grammar); the done pile recedes to a
+   count; the rest folds away. The full list lives in the sidebar. */
 .task-card {
-  margin: var(--space-3) 0 var(--space-4) var(--tool-indent);
+  margin: var(--space-4) 0 var(--space-4) var(--tool-indent);
   max-width: min(720px, 100%);
-  background: var(--bg-raised);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--text-muted);
 }
 .task-card-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--space-3);
-  margin-bottom: var(--space-1);
 }
 .task-card-title { font-size: var(--text-sm); font-weight: 600; color: var(--text); }
 .task-card-progress {
-  margin-left: auto;
   font-size: var(--text-xs);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
-.task-card-rows { display: flex; flex-direction: column; }
-/* Rows touched THIS turn wear a thin kind-colored bar (inset, no layout shift)
-   so the edit reads at a glance — no prose sentence. The bar's color names the
-   kind; the row's own glyph + (for done) time carry the resulting state. */
-.task-card-row.touched {
-  box-shadow: inset 2px 0 0 var(--accent);
-  padding-left: var(--space-2);
-  border-radius: 1px;
+/* A thin neutral meter — reference, not a call to action, so the fill is dim
+   (done recedes). The live blue is spent only on the active task. */
+.task-card-meter {
+  flex: 1;
+  max-width: 160px;
+  height: 3px;
+  background: var(--bg);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
 }
-/* added — newly created. The "diff add" green (the established added-content
-   hue), echoed on the glyph so a new row reads as new even without the bar. */
-.task-card-row.touched.added { box-shadow: inset 2px 0 0 var(--diff-add-ink); }
-.task-card-row.touched.added .plan-glyph { color: var(--diff-add-ink); }
-/* done this turn — the success green marks the completion beat; the ✓ glyph
-   and the checked-off time carry the rest. */
-.task-card-row.touched.done { box-shadow: inset 2px 0 0 var(--success); }
-/* cancelled this turn — recedes; a dim bar, matching the struck row. */
-.task-card-row.touched.cancelled { box-shadow: inset 2px 0 0 var(--text-dim); }
-/* "Checked off at" stamp on a completed row — minute-precision wall clock.
-   Shared by the inline card and the sidebar panel (both use buildTaskRowLine). */
-.task-time {
-  margin-left: auto;
-  padding-left: var(--space-3);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
+.task-card-meter-fill { height: 100%; background: var(--text-dim); }
+/* The frontier row (the active task) and the "all done" line. */
+.task-card-active { margin-top: var(--space-1); }
+.task-card-complete { margin-top: var(--space-1); color: var(--text-muted); }
+/* Collapsed summary: the recede pile + what's left, one quiet dim line. */
+.task-card-summary-line { color: var(--text-dim); font-size: var(--text-xs); }
+/* Expanded body — hidden until the card is opened; then the summary gives way
+   to the grouped buckets. */
+.task-card-body { display: none; flex-direction: column; gap: var(--space-1); margin-top: var(--space-1); }
+.task-card[data-expanded="true"] .task-card-body { display: flex; }
+.task-card[data-expanded="true"] .task-card-summary-line { display: none; }
+.task-card-group {
+  margin-top: var(--space-2);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
 }
-/* A progress note carried by an update, aligned under its row's label. */
-.task-card-note {
-  margin: 0 0 var(--space-1) calc(14px + var(--space-3) + var(--space-2));
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  line-height: var(--leading-snug);
-  overflow-wrap: anywhere;
+/* Done / cancelled piles: folded behind their count even when the card is open,
+   so the settled work stays recessive. */
+.task-card-fold { margin-top: var(--space-2); }
+.task-card-fold-head {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: var(--text-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
 }
-.task-card-hidden { display: none; }
-/* "show all (N)" reveal — dim, indented to match the rows. */
-.task-card-showall {
-  display: block;
+.task-card-fold-head:hover { color: var(--text-muted); }
+.task-card-fold-rows { display: none; flex-direction: column; gap: var(--space-1); margin-top: var(--space-1); }
+.task-card-fold.open .task-card-fold-rows { display: flex; }
+.task-card-toggle {
+  align-self: flex-start;
   margin-top: var(--space-1);
   padding: 2px 0;
   background: transparent;
@@ -2541,7 +2547,23 @@ button.composer-model-value .caret { color: var(--text-dim); }
   color: var(--text-muted);
   cursor: pointer;
 }
-.task-card-showall:hover { color: var(--text); }
+.task-card-toggle:hover { color: var(--text); }
+.task-card-note {
+  margin-left: calc(14px + var(--space-3));
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: var(--leading-snug);
+  overflow-wrap: anywhere;
+}
+/* "Checked off at" stamp on a completed row — shared with the sidebar panel. */
+.task-time {
+  margin-left: auto;
+  padding-left: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
 .plan-item {
   display: flex;
   gap: var(--space-3);

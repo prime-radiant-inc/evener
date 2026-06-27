@@ -1,10 +1,10 @@
-// Task-update card. When the agent declares or changes its task list via the
-// task_list tool, the transcript renders ONE coherent card: the changed rows
-// (flagged), the now-current task, and a little surrounding context, with the
-// three glyph-paired states reused from the plan grammar:
-//   ✓ done (neutral, recedes), ⟳ in_progress (blue, breathes), ○ open (dim).
-// Completed rows carry a "checked off at" time when the tool State provides it.
-// A no-task / empty case renders NOTHING.
+// The living plan card (Design B). The agent maintains a task list via the
+// task_list tool; instead of a fresh "Tasks" card on every edit (which littered
+// the transcript with repeated near-identical checklists), there is ONE living
+// card per session: it is rebuilt to the current plan state and floated to the
+// live frontier. It leads with progress + the active task (⟳ blue, breathing),
+// the done pile recedes to a count, and the rest folds behind "show all". The
+// full list lives in the sidebar. An empty task_list renders NOTHING.
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
@@ -49,9 +49,11 @@ async function scenario(name, eventSeq, check) {
   }
 }
 
-// A task_list append carries the State snapshot (full list with statuses), so
-// every task is "new" and the card shows the whole plan with glyph-paired
-// states + a progress count.
+function click(el, conv) {
+  el.dispatchEvent(new (conv.ownerDocument.defaultView).MouseEvent("click", { bubbles: true }));
+}
+
+// A task_list append carries the State snapshot (full list with statuses).
 function appendTask(callId, tasks) {
   return [
     ["TOOL_CALL_START", { call_id: callId, tool_name: "task_list", arguments_json: JSON.stringify({ action: "append", tasks }) }],
@@ -59,47 +61,48 @@ function appendTask(callId, tasks) {
   ];
 }
 
+const PLAN = [
+  { id: 1, description: "Audit current Stripe client usage", status: "done" },
+  { id: 2, description: "Pin the new SDK version", status: "done" },
+  { id: 3, description: "Map old API surface to new SDK", status: "done" },
+  { id: 4, description: "Port the charge and refund paths", status: "in_progress" },
+  { id: 5, description: "Port the webhook signature verification", status: "open" },
+  { id: 6, description: "Update the integration tests", status: "open" },
+  { id: 7, description: "Remove the legacy client", status: "open" },
+];
+
 (async () => {
 
-await scenario("task_list append renders a task-update card with glyph-paired states + progress", [
+await scenario("living plan card leads with progress + active task, collapsed by default", [
   ["SESSION_START", { session_id: "01TEST" }],
-  ...appendTask("t1", [
-    { id: 1, description: "Audit current Stripe client usage", status: "done" },
-    { id: 2, description: "Pin the new SDK version", status: "done" },
-    { id: 3, description: "Map old API surface to new SDK", status: "done" },
-    { id: 4, description: "Port the charge and refund paths", status: "in_progress" },
-    { id: 5, description: "Port the webhook signature verification", status: "open" },
-    { id: 6, description: "Update the integration tests", status: "open" },
-    { id: 7, description: "Remove the legacy client", status: "open" },
-  ]),
+  ...appendTask("t1", PLAN),
 ], ({ conv }) => {
-  const card = conv.querySelector(".task-card");
-  if (!card) return { ok: false, detail: "no task-update card" };
+  const cards = conv.querySelectorAll(".task-card");
+  if (cards.length !== 1) return { ok: false, detail: "expected exactly one living card, got " + cards.length };
+  const card = cards[0];
+
   const prog = card.querySelector(".task-card-progress");
-  if (!prog || !/3\s*\/\s*7/.test(prog.textContent)) return { ok: false, detail: "wrong progress: " + (prog && prog.textContent) };
+  if (!prog || !/3\s*\/\s*7/.test(prog.textContent)) return { ok: false, detail: "progress should be 3 / 7, got " + (prog && prog.textContent) };
+  if (!card.querySelector(".task-card-meter-fill")) return { ok: false, detail: "missing progress meter" };
 
-  // An append makes every task new → all rows visible (none hidden), no show-all.
-  const items = card.querySelectorAll(".task-card-row");
-  if (items.length !== 7) return { ok: false, detail: "expected 7 rows, got " + items.length };
-  if (card.querySelector(".task-card-hidden")) return { ok: false, detail: "append should not hide any rows" };
-  if (card.querySelector(".task-card-showall")) return { ok: false, detail: "append should not show a show-all control" };
-  // Appended tasks are flagged "added" in the list (not re-listed elsewhere).
-  if (card.querySelectorAll(".task-card-row.touched.added").length !== 7)
-    return { ok: false, detail: "all 7 appended rows should be flagged added" };
+  // The active task is the frontier: visible, current (blue, breathing ⟳).
+  const active = card.querySelector(".task-card-active");
+  if (!active) return { ok: false, detail: "missing active task row" };
+  if (!active.classList.contains("current")) return { ok: false, detail: "active row should carry the .current plan state" };
+  if (active.querySelector(".plan-glyph").textContent !== "⟳") return { ok: false, detail: "active glyph should be ⟳" };
+  if (!active.textContent.includes("Port the charge and refund paths")) return { ok: false, detail: "wrong active task text" };
 
-  // State classes + glyphs per status (reused plan grammar).
-  const done = card.querySelectorAll(".task-card-row.done");
-  if (done.length !== 3) return { ok: false, detail: "expected 3 done rows, got " + done.length };
-  const cur = card.querySelectorAll(".task-card-row.current");
-  if (cur.length !== 1) return { ok: false, detail: "expected 1 current row, got " + cur.length };
-  const pend = card.querySelectorAll(".task-card-row.pending");
-  if (pend.length !== 3) return { ok: false, detail: "expected 3 pending rows, got " + pend.length };
-  if (done[0].querySelector(".plan-glyph").textContent !== "✓") return { ok: false, detail: "done glyph wrong" };
-  if (cur[0].querySelector(".plan-glyph").textContent !== "⟳") return { ok: false, detail: "current glyph wrong" };
-  if (pend[0].querySelector(".plan-glyph").textContent !== "○") return { ok: false, detail: "pending glyph wrong" };
-  if (!cur[0].textContent.includes("Port the charge and refund paths")) return { ok: false, detail: "missing current item text" };
+  // Collapsed: the done pile + what's left fold into one quiet summary line; the
+  // expanded body and the individual rows are not shown yet.
+  if (card.dataset.expanded !== "false") return { ok: false, detail: "card should start collapsed" };
+  const summary = card.querySelector(".task-card-summary-line");
+  if (!summary || !/3 done/.test(summary.textContent) || !/3 up next/.test(summary.textContent)) {
+    return { ok: false, detail: "summary should read '3 done · 3 up next', got " + (summary && summary.textContent) };
+  }
+  const toggle = card.querySelector(".task-card-toggle");
+  if (!toggle || !/show all/.test(toggle.textContent)) return { ok: false, detail: "missing 'show all' toggle" };
 
-  // The current glyph reuses the existing pulse-cycle breathe loop.
+  // Visual contract: the active glyph reuses the shared breathe; progress is tabular.
   if (!/\.plan-item\.current \.plan-glyph\s*\{[^}]*animation:[^;]*think-breathe[^;]*var\(--pulse-cycle\)/.test(styleSrc)) {
     return { ok: false, detail: "current glyph must reuse think-breathe at var(--pulse-cycle)" };
   }
@@ -107,74 +110,91 @@ await scenario("task_list append renders a task-update card with glyph-paired st
   if (!/\.task-card-progress\s*\{[^}]*font-variant-numeric:\s*tabular-nums/.test(styleSrc)) {
     return { ok: false, detail: "progress count should use tabular-nums" };
   }
+  // The card is a rail, not a box (one containment device).
+  if (!/\.task-card\s*\{[^}]*border-left:[^;]*var\(--rule\)/.test(styleSrc)) {
+    return { ok: false, detail: ".task-card should use a left rail, not a box" };
+  }
+  if (/\.task-card\s*\{[^}]*\bborder:\s/.test(styleSrc)) {
+    return { ok: false, detail: ".task-card must not draw a full box border" };
+  }
   return { ok: true };
 });
 
-// An update flags only the changed rows, elevates the new current task, shows
-// the surrounding context, folds the rest behind "show all", and surfaces the
-// completion time + the progress note that rode with the update.
-await scenario("task_list update flags changes, keeps context, folds the rest", [
+await scenario("repeated task_list edits keep ONE living card, updated in place", [
   ["SESSION_START", { session_id: "01TEST" }],
-  ...appendTask("t1", [
-    { id: 1, description: "One", status: "done", completed_at: "2026-06-25T14:00:00Z" },
-    { id: 2, description: "Two", status: "done", completed_at: "2026-06-25T14:05:00Z" },
-    { id: 3, description: "Three", status: "in_progress" },
-    { id: 4, description: "Four", status: "open" },
-    { id: 5, description: "Five", status: "open" },
-    { id: 6, description: "Six", status: "open" },
-  ]),
+  ...appendTask("t1", PLAN),
   ["TOOL_CALL_START", { call_id: "t2", tool_name: "task_list", arguments_json: JSON.stringify({
-    action: "update",
-    updates: [{ id: 3, status: "done", notes: "shipped it" }, { id: 4, status: "in_progress" }],
+    action: "update", updates: [{ id: 4, status: "done", notes: "shipped it" }, { id: 5, status: "in_progress" }],
   }) }],
   ["TOOL_CALL_END", { call_id: "t2", tool_name: "task_list", output: "ok", tool_state: JSON.stringify([
-    { id: 1, description: "One", status: "done", completed_at: "2026-06-25T14:00:00Z" },
-    { id: 2, description: "Two", status: "done", completed_at: "2026-06-25T14:05:00Z" },
-    { id: 3, description: "Three", status: "done", completed_at: "2026-06-25T14:10:00Z", notes: ["shipped it"] },
-    { id: 4, description: "Four", status: "in_progress" },
-    { id: 5, description: "Five", status: "open" },
-    { id: 6, description: "Six", status: "open" },
+    { id: 1, description: "Audit current Stripe client usage", status: "done" },
+    { id: 2, description: "Pin the new SDK version", status: "done" },
+    { id: 3, description: "Map old API surface to new SDK", status: "done" },
+    { id: 4, description: "Port the charge and refund paths", status: "done" },
+    { id: 5, description: "Port the webhook signature verification", status: "in_progress", notes: ["watch the webhook secret"] },
+    { id: 6, description: "Update the integration tests", status: "open" },
+    { id: 7, description: "Remove the legacy client", status: "open" },
   ]) }],
 ], ({ conv }) => {
+  // The disease cured: still exactly ONE card after two edits — no per-edit spam.
   const cards = conv.querySelectorAll(".task-card");
-  if (cards.length !== 2) return { ok: false, detail: "expected 2 cards (append + update), got " + cards.length };
-  const card = cards[1];
+  if (cards.length !== 1) return { ok: false, detail: "repeated edits must reuse one card, got " + cards.length };
+  const card = cards[0];
   const prog = card.querySelector(".task-card-progress");
-  if (!prog || !/3\s*\/\s*6/.test(prog.textContent)) return { ok: false, detail: "update progress wrong: " + (prog && prog.textContent) };
+  if (!prog || !/4\s*\/\s*7/.test(prog.textContent)) return { ok: false, detail: "progress should advance to 4 / 7, got " + (prog && prog.textContent) };
+  const active = card.querySelector(".task-card-active");
+  if (!active || !active.textContent.includes("Port the webhook signature verification")) {
+    return { ok: false, detail: "active task should now be the webhook step" };
+  }
+  // The active task's note rides under it.
+  const note = card.querySelector(".task-card-note");
+  if (!note || !/watch the webhook secret/.test(note.textContent)) return { ok: false, detail: "active note missing" };
+  return { ok: true };
+});
 
-  // Touched rows (#3 done, #4 started) are flagged by kind — no prose summary.
-  if (card.querySelector(".task-card-summary")) return { ok: false, detail: "no prose summary — the edit reads from style" };
-  const changed = Array.from(card.querySelectorAll(".task-card-row.touched .plan-step")).map(s => s.textContent);
-  if (!(changed.includes("Three") && changed.includes("Four") && changed.length === 2))
-    return { ok: false, detail: "touched rows should be exactly Three+Four, got " + changed.join(",") };
-  if (!card.querySelector(".task-card-row.touched.done")) return { ok: false, detail: "#3 should be flagged done (touched)" };
-  if (!card.querySelector(".task-card-row.touched.started")) return { ok: false, detail: "#4 should be flagged started (touched)" };
+await scenario("expanding reveals Up next; the done pile stays folded behind its count", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ...appendTask("t1", PLAN),
+], ({ conv }) => {
+  const card = conv.querySelector(".task-card");
+  const toggle = card.querySelector(".task-card-toggle");
+  click(toggle, conv);
+  if (card.dataset.expanded !== "true") return { ok: false, detail: "toggle should expand the card" };
+  if (!/collapse/.test(toggle.textContent)) return { ok: false, detail: "toggle should now offer collapse" };
 
-  // Current task is #4 (now in_progress).
-  const cur = card.querySelectorAll(".task-card-row.current");
-  if (cur.length !== 1 || !cur[0].textContent.includes("Four")) return { ok: false, detail: "current should be Four" };
+  // Up next lists the open tasks in full.
+  const groups = Array.from(card.querySelectorAll(".task-card-group")).map(g => g.textContent);
+  if (!groups.some(g => /Up next · 3/.test(g))) return { ok: false, detail: "expected 'Up next · 3' group, got " + groups.join(" | ") };
+  const body = card.querySelector(".task-card-body");
+  if (!body || !body.textContent.includes("Remove the legacy client")) return { ok: false, detail: "open tasks should be listed when expanded" };
 
-  // Context: the neighbor before the current (#3, just done) and after (#5) are
-  // visible without being flagged; the far tasks (#1, #2) fold away.
-  const visibleSteps = Array.from(card.querySelectorAll(".task-card-row:not(.task-card-hidden) .plan-step")).map(s => s.textContent);
-  if (!visibleSteps.includes("Five")) return { ok: false, detail: "next task (Five) should be visible context: " + visibleSteps.join(",") };
-  if (visibleSteps.includes("One") || visibleSteps.includes("Two")) return { ok: false, detail: "far done tasks should fold: " + visibleSteps.join(",") };
+  // The done pile is a fold: its count shows, its rows are hidden until clicked.
+  const fold = card.querySelector(".task-card-fold");
+  if (!fold) return { ok: false, detail: "done pile should be a fold group" };
+  if (!/3 done/.test(fold.querySelector(".task-card-fold-head").textContent)) return { ok: false, detail: "fold head should count the done pile" };
+  const doneRows = fold.querySelector(".task-card-fold-rows");
+  if (fold.classList.contains("open")) return { ok: false, detail: "done pile should start folded" };
+  click(fold.querySelector(".task-card-fold-head"), conv);
+  if (!fold.classList.contains("open")) return { ok: false, detail: "clicking the count should reveal the done rows" };
+  if (!doneRows.textContent.includes("Audit current Stripe client usage")) return { ok: false, detail: "done rows missing after reveal" };
+  return { ok: true };
+});
 
-  // The folded tasks hide behind a show-all control.
-  if (!card.querySelector(".task-card-hidden")) return { ok: false, detail: "expected some rows hidden" };
-  const showAll = card.querySelector(".task-card-showall");
-  if (!showAll || !/show all \(6\)/.test(showAll.textContent)) return { ok: false, detail: "missing show-all (6): " + (showAll && showAll.textContent) };
-
-  // The note that rode with the update is shown under its row.
-  if (!/shipped it/.test(card.textContent)) return { ok: false, detail: "update note 'shipped it' missing" };
-
-  // A completed row carries a checked-off time.
-  const doneTime = card.querySelector(".task-card-row.done .task-time");
-  if (!doneTime || !doneTime.textContent.trim()) return { ok: false, detail: "completed row should show a checked-off time" };
-
-  // Expanding show-all reveals the folded rows.
-  showAll.dispatchEvent(new (conv.ownerDocument.defaultView).MouseEvent("click", { bubbles: true }));
-  if (card.querySelector(".task-card-hidden")) return { ok: false, detail: "show-all should reveal all rows" };
+await scenario("a finished plan shows a quiet 'all done' line, no active row", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ...appendTask("t1", [
+    { id: 1, description: "One", status: "done" },
+    { id: 2, description: "Two", status: "done" },
+    { id: 3, description: "Three", status: "done" },
+  ]),
+], ({ conv }) => {
+  const card = conv.querySelector(".task-card");
+  if (!card) return { ok: false, detail: "missing card" };
+  if (card.querySelector(".task-card-active")) return { ok: false, detail: "a finished plan has no active task row" };
+  const complete = card.querySelector(".task-card-complete");
+  if (!complete || !/all 3 done/.test(complete.textContent)) return { ok: false, detail: "should show 'all 3 done', got " + (complete && complete.textContent) };
+  const prog = card.querySelector(".task-card-progress");
+  if (!prog || !/3\s*\/\s*3/.test(prog.textContent)) return { ok: false, detail: "progress should be 3 / 3" };
   return { ok: true };
 });
 
