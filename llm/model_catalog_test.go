@@ -666,4 +666,9 @@ func TestEmbeddedCatalog_KimiForCoding(t *testing.T) {
 	if len(mi.ReasoningEffortLevels) == 0 {
 		t.Error("kimi-for-coding has no reasoning_effort_levels")
 	}
+	// kimi-for-coding is tool-capable (verified end-to-end: it drives delegate +
+	// shell). The catalog must reflect that, not the no-tools default.
+	if !mi.SupportsTools {
+		t.Error("kimi-for-coding should be SupportsTools=true")
+	}
 }
