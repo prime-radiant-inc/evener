@@ -413,6 +413,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 			Type:             jobstore.JobShell,
 			Status:           jobstore.StatusRunning,
 			Command:          args.Command,
+			Background:       args.Background,
 			Description:      args.Description,
 			OwnerSessionID:   jm.sessionID,
 			VisibleToSession: jm.sessionID,

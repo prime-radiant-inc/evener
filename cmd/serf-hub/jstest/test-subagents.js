@@ -315,6 +315,23 @@ await scenario("live activity: child frames push to the row's activity line, ste
   return { ok: true };
 });
 
+await scenario("a long-lived (background) shell job joins the rail; a foreground one does not", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  // Foreground shell: stays a tool card, never a rail row.
+  ["JOB_STARTED", { jobId: "job_FG", jobType: "shell", command: "ls -la", status: "running" }],
+  ["JOB_FINISHED", { jobId: "job_FG", jobType: "shell", status: "completed", outputBytes: 12 }],
+  // Background shell: joins the rail, named by its command.
+  ["JOB_STARTED", { jobId: "job_BG", jobType: "shell", background: true, command: "go test ./... -count=1", status: "running" }],
+], ({ conv }) => {
+  if (conv.querySelector('.sub-r[data-job-id="job_FG"]')) return { ok: false, detail: "a foreground shell must NOT join the rail" };
+  const row = conv.querySelector('.sub-r[data-job-id="job_BG"]');
+  if (!row) return { ok: false, detail: "a background shell should join the rail" };
+  if (row.dataset.statusKind !== "running") return { ok: false, detail: "background shell row should be running" };
+  const nm = row.querySelector(".nm");
+  if (!nm || !/go test/.test(nm.textContent)) return { ok: false, detail: "the row should be named by its command: " + (nm && nm.textContent) };
+  return { ok: true };
+});
+
 await scenario("a job notification ties to its rail row: shared headline + cross-links", [
   ["SESSION_START", { session_id: "01TEST" }],
   ...spawnDelegate("dt", "job_T", "port the webhook verification", "local:ct"),

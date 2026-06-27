@@ -184,6 +184,7 @@ type JobRecord struct {
 	Reason           string                     `json:"reason,omitempty"`
 	Description      string                     `json:"description,omitempty"`
 	Command          string                     `json:"command,omitempty"`
+	Background       bool                       `json:"background,omitempty"`
 	Task             string                     `json:"task,omitempty"`
 	ParentSessionID  string                     `json:"parent_session_id,omitempty"`
 	OwnerSessionID   string                     `json:"owner_session_id"`

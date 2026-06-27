@@ -291,6 +291,8 @@ type SerfJobInfo struct {
 	OutputBytes      int64  `json:"outputBytes"`
 	TranscriptRef    string `json:"transcriptRef,omitempty"`
 	FromWatch        bool   `json:"fromWatch,omitempty"`
+	Background       bool   `json:"background,omitempty"`
+	Command          string `json:"command,omitempty"`
 	DelegateID       string `json:"delegateId,omitempty"`
 	Task             string `json:"task,omitempty"`
 	OriginTurnID     string `json:"originTurnId,omitempty"`
