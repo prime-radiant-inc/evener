@@ -268,6 +268,95 @@ func SubagentRunBody(run transcript.SubagentRunInfo, width int) string {
 	return lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().StateSubagent).Render(strings.Join(parts, " · "))
 }
 
+// RenderSubagentRail consolidates a contiguous run of subagent / background-job
+// entries into one calm "delegation rail" block — the TUI analog of the web
+// rail. A left rail glyph marks the block; a header tallies the workers; failures
+// surface (red) and running entries list, while the finished pile recedes to a
+// "✓ N done" count.
+func RenderSubagentRail(runs []transcript.SubagentRunInfo, width int) string {
+	if len(runs) == 0 {
+		return ""
+	}
+	th := tuitheme.ActiveTheme()
+	var running, done, failed []transcript.SubagentRunInfo
+	for _, r := range runs {
+		switch subagentRailClass(r.Status) {
+		case "failed":
+			failed = append(failed, r)
+		case "done":
+			done = append(done, r)
+		default:
+			running = append(running, r)
+		}
+	}
+	rail := lipgloss.NewStyle().Foreground(th.RuleSoft).Render("│") + " "
+	red := lipgloss.Color("9")
+
+	tally := make([]string, 0, 3)
+	if len(running) > 0 {
+		tally = append(tally, fmt.Sprintf("⟳ %d running", len(running)))
+	}
+	if len(done) > 0 {
+		tally = append(tally, fmt.Sprintf("✓ %d done", len(done)))
+	}
+	if len(failed) > 0 {
+		tally = append(tally, fmt.Sprintf("✕ %d failed", len(failed)))
+	}
+	header := "Subagents"
+	if len(tally) > 0 {
+		header += " · " + strings.Join(tally, " · ")
+	}
+
+	lines := []string{rail + lipgloss.NewStyle().Foreground(th.TextMuted).Bold(true).Render(header)}
+	for _, r := range failed { // failures surface at the top
+		lines = append(lines, rail+subagentRailRow(r, "✕", red, width))
+	}
+	for _, r := range running {
+		lines = append(lines, rail+subagentRailRow(r, "⟳", th.StateSubagent, width))
+	}
+	if len(done) > 0 { // the settled pile recedes to a count
+		lines = append(lines, rail+lipgloss.NewStyle().Foreground(th.TextMuted).Render(fmt.Sprintf("✓ %d done", len(done))))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func subagentRailRow(r transcript.SubagentRunInfo, glyph string, glyphColor lipgloss.TerminalColor, width int) string {
+	name := strings.TrimSpace(r.Task)
+	if name == "" {
+		name = strings.TrimSpace(r.Command)
+	}
+	if name == "" {
+		name = "delegate"
+	}
+	limit := width - 6
+	if limit < 12 {
+		limit = 12
+	}
+	if len(name) > limit {
+		name = name[:limit-1] + "…"
+	}
+	row := lipgloss.NewStyle().Foreground(glyphColor).Render(glyph) + " " + name
+	if subagentRailClass(r.Status) == "failed" && strings.TrimSpace(r.Reason) != "" {
+		reason := strings.TrimSpace(r.Reason)
+		if len(reason) > 40 {
+			reason = reason[:39] + "…"
+		}
+		row += "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(reason)
+	}
+	return row
+}
+
+func subagentRailClass(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "error":
+		return "failed"
+	case "completed", "done", "succeeded", "cancelled", "stopped":
+		return "done"
+	default:
+		return "running"
+	}
+}
+
 // ShellBody renders shell command output, optionally with bash chroma highlighting.
 // It prepends the command (from args) as a styled prompt line so that long or
 // multi-line commands are visible in the expanded view.
