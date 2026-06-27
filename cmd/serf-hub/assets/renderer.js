@@ -2108,28 +2108,37 @@
       status.className = "tool-status tool-status-pending";
       status.textContent = "…";
       el.appendChild(status);
-      const verb = document.createElement("span");
-      verb.className = "verb";
-      verb.textContent = renderer.friendly || tool;
-      el.appendChild(verb);
-      const target = document.createElement("span");
-      target.className = "target";
-      target.textContent = renderer.target ? this.relativizePath(renderer.target(args, data)) : "";
-      el.appendChild(target);
-      const result = document.createElement("span");
-      result.className = "result-detail";
-      result.textContent = "";
-      const meta = document.createElement("span");
-      meta.className = "tool-meta";
-      meta.textContent = "";
-      el.appendChild(result); el.appendChild(meta);
+      // The agent's stated purpose leads when present (the prominent line); the
+      // verb+target+result command is demoted to a quiet line beneath it. Without
+      // a purpose the command line stands in as the primary (.has-purpose gates
+      // the demotion in CSS).
       const intent = toolIntent(data, args);
       if (intent) {
         const intentEl = document.createElement("div");
         intentEl.className = "tool-intent";
         intentEl.textContent = intent;
         el.appendChild(intentEl);
+        el.classList.add("has-purpose");
       }
+      const meta = document.createElement("span");
+      meta.className = "tool-meta";
+      meta.textContent = "";
+      el.appendChild(meta);
+      const command = document.createElement("div");
+      command.className = "tool-command";
+      const verb = document.createElement("span");
+      verb.className = "verb";
+      verb.textContent = renderer.friendly || tool;
+      command.appendChild(verb);
+      const target = document.createElement("span");
+      target.className = "target";
+      target.textContent = renderer.target ? this.relativizePath(renderer.target(args, data)) : "";
+      command.appendChild(target);
+      const result = document.createElement("span");
+      result.className = "result-detail";
+      result.textContent = "";
+      command.appendChild(result);
+      el.appendChild(command);
       parent.appendChild(el);
       this.attachFileOpenBeside(el, tool, args);
 

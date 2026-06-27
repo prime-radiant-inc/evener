@@ -2027,16 +2027,41 @@ button.composer-model-value:hover { text-decoration: underline; }
 .tool-call .tool-status-pending { color: var(--text-dim); }
 .tool-call .tool-status-good { color: var(--text-muted); }
 .tool-call .tool-status-bad { color: var(--error); }
-.tool-call .verb { color: var(--text-muted); font-family: var(--font-mono); }
+/* Command line (verb · target · result). The PRIMARY line when a call has no
+   stated purpose; demoted to a quiet line beneath the purpose when it has one.
+   order is used so the meta stays top-right in both cases. */
+.tool-call .tool-command {
+  order: 1;
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  column-gap: var(--space-3);
+  font-family: var(--font-mono);
+}
+/* Verb and result hug their text; only the target absorbs the slack and wraps,
+   so a long target never squeezes the verb into a vertical char-stack. */
+.tool-call .verb {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  flex: none;
+  white-space: nowrap;
+}
 .tool-call .target {
   color: var(--text);
   font-family: var(--font-mono);
+  flex: 1 1 auto;
   min-width: 0;
   overflow-wrap: anywhere;
   word-break: normal;
 }
-.tool-call .result-detail { color: var(--text-muted); }
+.tool-call .result-detail {
+  color: var(--text-muted);
+  flex: none;
+  white-space: nowrap;
+}
 .tool-call .tool-meta {
+  order: 2;
   margin-left: auto;
   color: var(--text-muted);
   font-family: var(--font-mono);
@@ -2046,38 +2071,42 @@ button.composer-model-value:hover { text-decoration: underline; }
   transition: opacity var(--motion-fast);
 }
 .tool-call:hover .tool-meta,
-.tool-call:focus-within .tool-meta {
-  opacity: 1;
-}
-/* The agent's stated purpose for a call. It is context, not the scannable
-   primary (the verb+target line already reads at a glance), and agents write it
-   as full sentences — left loud it stacks into a gray wall that drowns the
-   conversation. So it recedes to a single dim, clamped line and only reveals in
-   full when the row is hovered/focused or expanded. */
+.tool-call:focus-within .tool-meta { opacity: 1; }
+.tool-call .tool-body,
+.tool-call .diff-body,
+.tool-call .output-preview-body { order: 4; }
+
+/* The agent's stated purpose — the PRIMARY, prominent line when present: sans,
+   readable, full contrast. The command recedes to a quiet mono line beneath. */
 .tool-call .tool-intent {
-  flex: 0 0 auto;
-  width: calc(100% - 12px - var(--space-3));
-  margin: var(--space-1) 0 0 calc(12px + var(--space-3));
-  color: var(--text-dim);
+  order: 1;
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
   font-family: var(--font-sans);
-  font-size: var(--text-xs);
+  font-size: var(--text-base);
   line-height: var(--leading-snug);
-  display: -webkit-box;
-  -webkit-line-clamp: 1;
-  -webkit-box-orient: vertical;
+}
+.tool-call.has-purpose .tool-command {
+  order: 3;
+  flex: 0 0 100%;
+  margin-left: calc(12px + var(--space-3));
+  font-size: var(--text-xs);
   overflow: hidden;
 }
-.tool-call:hover .tool-intent,
-.tool-call:focus-within .tool-intent,
-.tool-call[data-expanded="true"] .tool-intent {
-  color: var(--text-muted);
-  -webkit-line-clamp: unset;
-  overflow: visible;
+/* The demoted command is a glanceable detail, not the story: keep it to one
+   quiet truncated line rather than letting a long command wrap and dominate. */
+.tool-call.has-purpose .target {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
 }
-.tool-call[data-expanded] .tool-intent {
-  width: calc(100% - 12px - 1ch - var(--space-3) - var(--space-3));
-  margin-left: calc(12px + 1ch + var(--space-3) + var(--space-3));
-}
+.tool-call.has-purpose .verb,
+.tool-call.has-purpose .target,
+.tool-call.has-purpose .result-detail { color: var(--text-dim); }
+.tool-call.has-purpose:hover .target,
+.tool-call.has-purpose:focus-within .target { color: var(--text-muted); }
 .tool-call .result { color: var(--text-muted); }
 .tool-call .result-good { color: var(--text-muted); }
 .tool-call .result-bad { color: var(--error); }
@@ -3510,14 +3539,12 @@ button.composer-model-value:hover { text-decoration: underline; }
   .system-line { margin-left: var(--space-4); }
   .steering { margin-left: 0; }
 
-  /* De-clutter the transcript on a phone: more air between turns, and drop the
-     per-call intent breadcrumb — the ✓ verb + target line already says what ran,
-     and the dim purpose line under every row is what made it feel busy. (It's
-     still there on desktop and on expand.) */
+  /* De-clutter the transcript on a phone: more air between turns. The tool
+     purpose now LEADS each row (sans, prominent) with the mono command quiet
+     beneath — so it reads as plain language, not a wall of commands. */
   .assistant-message { margin-bottom: var(--space-7); line-height: var(--leading-relaxed); }
   .user-message { padding-top: var(--space-6); margin-bottom: var(--space-5); }
-  .tool-call { margin-bottom: var(--space-3); }
-  .tool-call .tool-intent { display: none; }
+  .tool-call { margin-bottom: var(--space-4); }
   .tool-call-cluster { margin-bottom: var(--space-6); }
   .think { margin: var(--space-4) 0; }
   .notification-card { margin-top: var(--space-5); margin-bottom: var(--space-5); }

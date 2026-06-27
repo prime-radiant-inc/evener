@@ -110,27 +110,39 @@ await scenario("read_file in cheap cluster with inline range, purpose, and five-
   return { ok: true };
 });
 
-await scenario("tool intent renders below header and above results", [
+await scenario("tool purpose leads as the prominent line; command is demoted beneath it", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "i1", tool_name: "shell", arguments_json: JSON.stringify({ command: "go test ./...", purpose: "Verify the repository before handing off." }) }],
   ["TOOL_CALL_END", { call_id: "i1", output: "ok\n", tool_state: JSON.stringify({ exit_code: 0 }), tool_name: "shell" }],
 ], ({ conv }) => {
   const card = conv.querySelector(".tool-call.shell");
   if (!card) return { ok: false, detail: "no shell card" };
+  // A call with a stated purpose is flagged so the command can recede beneath it.
+  if (!card.classList.contains("has-purpose")) return { ok: false, detail: "card with a purpose should carry .has-purpose" };
   const intent = card.querySelector(".tool-intent");
   if (!intent) return { ok: false, detail: "missing tool intent" };
   if (intent.textContent !== "Verify the repository before handing off.") return { ok: false, detail: "wrong intent text: " + intent.textContent };
+  // The verb/target/result line is wrapped so it can be demoted as a whole.
+  const command = card.querySelector(".tool-command");
+  if (!command) return { ok: false, detail: "command should be wrapped in .tool-command" };
+  if (!command.querySelector(".target") || !command.textContent.includes("go test ./...")) return { ok: false, detail: "command missing the verb/target line" };
   const body = card.querySelector(".shell-body");
   if (!body) return { ok: false, detail: "missing shell body" };
   const children = Array.from(card.children);
+  // DOM order keeps the purpose ahead of both the command and the body.
   if (children.indexOf(intent) < 0 || children.indexOf(body) < 0 || children.indexOf(intent) > children.indexOf(body)) {
     return { ok: false, detail: "intent should be before tool results/body" };
   }
+  if (children.indexOf(intent) > children.indexOf(command)) {
+    return { ok: false, detail: "intent should be before the demoted command in the DOM" };
+  }
   if (!/\.tool-call \.tool-intent\s*\{[^}]*font-family:\s*var\(--font-sans\)/.test(styleSrc)) return { ok: false, detail: "intent stylesheet should use variable-width sans font" };
-  // The per-call intent recedes: it is the quiet context, not the scannable
-  // primary (the verb+target line). It clamps to a single dim line and reveals
-  // in full on hover/expand, rather than wrapping into a full-width italic wall.
-  if (!/\.tool-call \.tool-intent\s*\{[^}]*-webkit-line-clamp:\s*1/.test(styleSrc)) return { ok: false, detail: "intent stylesheet should clamp to a single receding line" };
+  // The purpose is now the PRIMARY line: prominent (full contrast, readable
+  // size, order 1), no longer clamped to a single receding line. The command
+  // recedes to a quiet demoted line beneath it via .has-purpose.
+  if (/\.tool-call \.tool-intent\s*\{[^}]*-webkit-line-clamp:\s*1/.test(styleSrc)) return { ok: false, detail: "intent should no longer clamp to a single receding line" };
+  if (!/\.tool-call \.tool-intent\s*\{[^}]*font-size:\s*var\(--text-base\)/.test(styleSrc)) return { ok: false, detail: "intent should be a prominent --text-base line" };
+  if (!/\.tool-call\.has-purpose \.tool-command\s*\{/.test(styleSrc)) return { ok: false, detail: "stylesheet should demote the command under .has-purpose" };
   return { ok: true };
 });
 
