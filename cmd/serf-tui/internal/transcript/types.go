@@ -28,6 +28,8 @@ type SubagentRunInfo struct {
 	Command          string
 	Activity         string // the child's latest live step (verb-led)
 	Steps            int    // advances only when Activity actually changes (honest progress)
+	Headline         string // result headline pulled from a tied job notification
+	HeadlineError    bool   // the tied notification reported a failure
 	Task             string
 	TranscriptRef    string
 	OriginTurnID     string

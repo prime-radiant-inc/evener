@@ -148,3 +148,20 @@ func TestRenderSubagentRailShowsLiveActivity(t *testing.T) {
 		t.Fatalf("running row should show the live activity + step count: %q", out)
 	}
 }
+
+func TestRenderSubagentRailKeepsTiedDoneRowVisible(t *testing.T) {
+	withTestColorProfile(t)
+	out := RenderSubagentRail([]transcript.SubagentRunInfo{
+		{JobID: "j1", Task: "port webhook", Status: "completed", Headline: "go test passed · 4ad69c0"},
+		{JobID: "j2", Task: "trace callers", Status: "completed"},
+	}, 80)
+	if !strings.Contains(out, "port webhook") || !strings.Contains(out, "go test passed · 4ad69c0") {
+		t.Fatalf("a tied done row should stay visible with its headline: %q", out)
+	}
+	if strings.Contains(out, "trace callers") {
+		t.Fatalf("a plain done row should fold, not list 'trace callers': %q", out)
+	}
+	if !strings.Contains(out, "✓ 2 done") {
+		t.Fatalf("tally should count both done: %q", out)
+	}
+}
