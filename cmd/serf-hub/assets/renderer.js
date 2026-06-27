@@ -3154,7 +3154,11 @@
     shouldRenderJobRefAsSubagent(data) {
       const norm = normalizedJobRefData(data);
       const jobType = String(norm.jobType || "").trim().toLowerCase();
-      if (jobType) return jobType === "delegate";
+      if (jobType === "delegate") return true;
+      // Long-lived/background shell jobs join the rail too (a foreground shell
+      // stays a tool card). The rail becomes a "delegated work" index.
+      if (jobType === "shell") return norm.background;
+      if (jobType) return false;
       return !!norm.transcriptRef;
     },
 

@@ -210,6 +210,8 @@ type JobStartedData struct {
 	JobType          string `json:"job_type"`
 	Status           string `json:"status"`
 	FromWatch        bool   `json:"from_watch,omitempty"`
+	Background       bool   `json:"background,omitempty"`
+	Command          string `json:"command,omitempty"`
 	DelegateID       string `json:"delegate_id,omitempty"`
 	Task             string `json:"task,omitempty"`
 	TranscriptRef    string `json:"transcript_ref,omitempty"`
@@ -228,6 +230,8 @@ type JobFinishedData struct {
 	OutputBytes      int64  `json:"output_bytes"`
 	TranscriptRef    string `json:"transcript_ref,omitempty"`
 	FromWatch        bool   `json:"from_watch,omitempty"`
+	Background       bool   `json:"background,omitempty"`
+	Command          string `json:"command,omitempty"`
 	DelegateID       string `json:"delegate_id,omitempty"`
 	Task             string `json:"task,omitempty"`
 	OriginTurnID     string `json:"origin_turn_id,omitempty"`

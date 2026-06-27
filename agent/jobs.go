@@ -673,12 +673,16 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 	originTurnID := e.OriginTurnID
 	originToolCallID := e.OriginToolCallID
 	originItemID := e.OriginItemID
+	background := false
+	command := ""
 	if run != nil {
 		fromWatch = run.fromWatch.Load()
 		if run.rec != nil {
 			if run.rec.Type != "" {
 				jobType = string(run.rec.Type)
 			}
+			background = run.rec.Background
+			command = run.rec.Command
 			delegateID = firstNonEmptyJobString(run.rec.DelegateID, delegateID)
 			task = firstNonEmptyJobString(delegateRestoreTask(run.rec), run.rec.Task, task)
 			transcriptRef = firstNonEmptyJobString(run.rec.TranscriptRef, transcriptRef)
@@ -692,6 +696,8 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 		JobType:          jobType,
 		Status:           string(jobstore.StatusRunning),
 		FromWatch:        fromWatch,
+		Background:       background,
+		Command:          command,
 		DelegateID:       delegateID,
 		Task:             task,
 		TranscriptRef:    transcriptRef,
@@ -745,10 +751,14 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 	originToolCallID := e.OriginToolCallID
 	originItemID := e.OriginItemID
 	fromWatch := false
+	background := false
+	command := ""
 	if run != nil && run.rec != nil {
 		if run.rec.Type != "" {
 			jobType = string(run.rec.Type)
 		}
+		background = run.rec.Background
+		command = run.rec.Command
 		transcriptRef = firstNonEmptyJobString(run.rec.TranscriptRef, transcriptRef)
 		delegateID = firstNonEmptyJobString(run.rec.DelegateID, delegateID)
 		task = firstNonEmptyJobString(delegateRestoreTask(run.rec), run.rec.Task, task)
@@ -766,6 +776,8 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		OutputBytes:      e.OutputBytes,
 		TranscriptRef:    transcriptRef,
 		FromWatch:        fromWatch,
+		Background:       background,
+		Command:          command,
 		DelegateID:       delegateID,
 		Task:             task,
 		OriginTurnID:     originTurnID,
