@@ -3104,26 +3104,65 @@
     //     compact "task list reloaded · N items" pointer that opens the panel.
     //   - loop / read-only / all-done / unknown: keep the current
     //     full-width steering divider with click-to-expand body.
-    notificationMetaRows(n) {
+    // The status glyph. Per the design system, a *done* job is the expected
+    // state and must recede (neutral ✓) — colour (amber/red) is spent only on a
+    // warning or an outright failure, paired with a distinct glyph so it reads
+    // without relying on colour.
+    notificationGlyph(n) {
+      if (n.type === "watch" || n.type === "watch-send") return "◌";
+      if (n.type === "observer-callback") return "↩";
+      if (n.tone === "error") return "✕";
+      if (n.tone === "warning") return "⚠";
+      return "✓";
+    },
+
+    // The quiet secondary line: a couple of plain-language bits (the job kind,
+    // and the failure signal when something broke). Identifiers, transcript
+    // refs, delivery ids and byte counts are plumbing — they stay in the raw
+    // disclosure rather than a wall of bordered chips.
+    notificationSecondary(n) {
       const attrs = n && n.attrs || {};
-      const rows = [];
-      const push = (label, value) => {
-        value = String(value || "").trim();
-        if (value) rows.push([label, value]);
-      };
-      push("job", attrs.job_id);
-      push("type", attrs.job_type);
-      push("status", attrs.status || attrs.event);
-      push("reason", attrs.reason);
-      if (attrs.exit_code) push("exit", attrs.exit_code);
-      if (attrs.output_bytes && attrs.output_bytes !== "0") {
-        const outputBytes = Number(attrs.output_bytes);
-        push("output", Number.isFinite(outputBytes) ? formatBytes(outputBytes) : attrs.output_bytes + " B");
+      const bits = [];
+      const type = String(attrs.job_type || "").trim();
+      if (type && type !== "job") bits.push(type);
+      const exit = String(attrs.exit_code || "").trim();
+      if (exit && exit !== "0") bits.push("exit " + exit);
+      const reason = String(attrs.reason || "").trim();
+      if (reason && (n.tone === "error" || n.tone === "warning")) bits.push(reason);
+      return bits.join(" · ");
+    },
+
+    // Structured communicate fields, demoted to a tidy definition list. Concerns
+    // and artifacts always surface (they carry signal the prose message rarely
+    // restates); status/commit/tests are conventionally already in the message,
+    // so they only appear here as a fallback when there is no message prose.
+    notificationFacts(communicate, includeAll) {
+      const c = communicate || {};
+      const facts = [];
+      if (includeAll && c.status) facts.push(["status", c.status, false]);
+      if (includeAll && (c.commitHashes || []).length) {
+        facts.push([c.commitHashes.length > 1 ? "commits" : "commit", c.commitHashes.join(", "), true]);
       }
-      push("transcript", attrs.transcript_ref);
-      push("delivery", attrs.delivery_id);
-      push("trigger", attrs.trigger);
-      return rows;
+      if (includeAll && c.testSummary) facts.push(["tests", c.testSummary, false]);
+      if ((c.concerns || []).length) facts.push(["concerns", c.concerns.join("; "), false]);
+      if ((c.artifacts || []).length) facts.push(["artifacts", c.artifacts.join(", "), true]);
+      return facts;
+    },
+
+    appendNotificationFacts(parent, facts) {
+      if (!facts.length) return;
+      const dl = document.createElement("dl");
+      dl.className = "notification-card-facts";
+      for (const [label, value, mono] of facts) {
+        const dt = document.createElement("dt");
+        dt.textContent = label;
+        const dd = document.createElement("dd");
+        dd.textContent = value;
+        if (mono) dd.className = "mono";
+        dl.appendChild(dt);
+        dl.appendChild(dd);
+      }
+      parent.appendChild(dl);
     },
 
     appendNotificationText(parent, className, text) {
@@ -3191,37 +3230,31 @@
       const glyph = document.createElement("span");
       glyph.className = "notification-card-glyph";
       glyph.setAttribute("aria-hidden", "true");
-      glyph.textContent = n.type === "watch" || n.type === "watch-send" ? "◌" : (n.type === "observer-callback" ? "↩" : "●");
+      glyph.textContent = this.notificationGlyph(n);
       header.appendChild(glyph);
       const title = document.createElement("span");
       title.className = "notification-card-title";
       title.textContent = n.title || "Notification";
       header.appendChild(title);
-      card.appendChild(header);
-
-      const rows = this.notificationMetaRows(n);
-      if (rows.length) {
-        const meta = document.createElement("div");
-        meta.className = "notification-card-meta";
-        for (const [label, value] of rows) {
-          const chip = document.createElement("span");
-          chip.className = "notification-card-chip";
-          chip.textContent = label + " " + value;
-          meta.appendChild(chip);
-        }
-        card.appendChild(meta);
+      const secondary = this.notificationSecondary(n);
+      if (secondary) {
+        const sub = document.createElement("span");
+        sub.className = "notification-card-sub";
+        sub.textContent = secondary;
+        header.appendChild(sub);
       }
+      card.appendChild(header);
 
       const summaryEl = document.createElement("div");
       summaryEl.className = "notification-card-summary";
-      this.appendNotificationText(summaryEl, "notification-card-prose", n.prose);
+      // The job/watch prose is daemon boilerplate that restates the title and
+      // embeds the raw id; only the observer-callback prose carries real signal.
+      if (n.type === "observer-callback") {
+        this.appendNotificationText(summaryEl, "notification-card-prose", n.prose);
+      }
       if (n.communicate) {
-        this.appendNotificationMarkdown(summaryEl, "notification-card-message", n.communicate.message);
-        this.appendNotificationText(summaryEl, "notification-card-status", n.communicate.status ? "status " + n.communicate.status : "");
-        this.appendNotificationText(summaryEl, "notification-card-commits", (n.communicate.commitHashes || []).length ? "commits " + n.communicate.commitHashes.join(", ") : "");
-        this.appendNotificationText(summaryEl, "notification-card-tests", n.communicate.testSummary ? "tests " + n.communicate.testSummary : "");
-        this.appendNotificationText(summaryEl, "notification-card-concerns", (n.communicate.concerns || []).length ? "concerns " + n.communicate.concerns.join("; ") : "concerns none");
-        this.appendNotificationText(summaryEl, "notification-card-artifacts", (n.communicate.artifacts || []).length ? "artifacts " + n.communicate.artifacts.join(", ") : "");
+        const message = this.appendNotificationMarkdown(summaryEl, "notification-card-message", n.communicate.message);
+        this.appendNotificationFacts(summaryEl, this.notificationFacts(n.communicate, !message));
       } else {
         this.appendNotificationExcerpt(summaryEl, n.excerpt);
       }

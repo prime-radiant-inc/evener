@@ -133,6 +133,23 @@ ${delegateEnvelope}
     return { ok: true };
   });
 
+  await scenario("completed job recedes: neutral done-glyph, no chip wall, demoted metadata", delegateNotification, (conv) => {
+    const card = conv.querySelector(".notification-card");
+    if (!card) return { ok: false, detail: "missing card" };
+    // The wall of bordered key/value chips is gone (one containment device).
+    if (card.querySelector(".notification-card-chip") || card.querySelector(".notification-card-meta")) {
+      return { ok: false, detail: "chip wall should be removed" };
+    }
+    // Done recedes: a neutral ✓ glyph, not a coloured/filled dot.
+    const glyph = card.querySelector(".notification-card-glyph");
+    if (!glyph || glyph.textContent !== "✓") return { ok: false, detail: "completed job should show a neutral ✓ glyph, got " + (glyph && glyph.textContent) };
+    // The job kind is demoted to a quiet secondary; the raw id is not echoed as boilerplate prose.
+    const sub = card.querySelector(".notification-card-sub");
+    if (!sub || !expectText(sub, "delegate")) return { ok: false, detail: "job kind should appear on the demoted secondary" };
+    if (card.querySelector(".notification-card-prose")) return { ok: false, detail: "job boilerplate prose should be suppressed" };
+    return { ok: true };
+  });
+
   const watchNotification = `<job-notification event="watch" status="watch" watch_id="watch_01" transcript_ref="local:watch">
 Watch watch_01 triggered for output match.
 excerpt:
@@ -170,6 +187,15 @@ ${watchSendEnvelope}
     }));
   await scenario("watch-send notification renders minimal warning card", watchSendNotification, (conv) =>
     expectNotificationCard(conv, "warning", ["Watch delivered", "watch_02", "dlg_abc", "DELIVERED", "observer still running"]));
+
+  await scenario("communicate concerns surface as a tidy facts list", watchSendNotification, (conv) => {
+    const facts = conv.querySelector(".notification-card-facts");
+    if (!facts) return { ok: false, detail: "missing facts list" };
+    if (!expectText(facts, "concerns") || !expectText(facts, "observer still running")) {
+      return { ok: false, detail: "concerns should render in the facts list" };
+    }
+    return { ok: true };
+  });
 
   const observerEnvelope = JSON.stringify({
     message: "Status: DONE\nOne-line test summary: observer callback delivered.",
@@ -246,9 +272,15 @@ command failed on line 1
 </job-notification>`, (conv) => {
     const card = conv.querySelector(".notification-card-error");
     if (!card) return { ok: false, detail: "missing error card" };
-    for (const needle of ["Job failed", "job_shell", "shell", "exit_nonzero", "exit 2", "128 bytes", "job:job_shell", "command failed on line 1"]) {
+    // The failure signal (kind, exit code, reason) surfaces on the card; the
+    // byte count is plumbing and stays inspectable in the raw disclosure.
+    for (const needle of ["Job failed", "job_shell", "shell", "exit_nonzero", "exit 2", "job:job_shell", "command failed on line 1"]) {
       if (!expectText(card, needle)) return { ok: false, detail: "missing " + needle };
     }
+    const sub = card.querySelector(".notification-card-sub");
+    if (!sub || !expectText(sub, "exit 2")) return { ok: false, detail: "exit code should surface on the demoted secondary line" };
+    const raw = card.querySelector(".notification-card-raw pre");
+    if (!raw || raw.textContent.indexOf("output_bytes=\"128\"") === -1) return { ok: false, detail: "byte count should remain inspectable in raw" };
     return { ok: true };
   });
 

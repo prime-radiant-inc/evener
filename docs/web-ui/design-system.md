@@ -106,6 +106,7 @@ detail demoted to a mono chip; deep detail hidden until expanded.** Content colu
 | **Tool call (running)** | purpose | mono chip | live output | blue left-rail tick |
 | **Tool call (error)** | error summary promoted to primary | mono chip | stderr (truncated, see below) | red left-rail (one device — no extra box) |
 | **Subagents** | one module: "Subagents (N) · ⟳ running · ✓ done · ✕ failed" | per-row: name · result · duration · view→ | each subagent's transcript | one neutral box; rows separated by space (no gridlines) |
+| **Job / watch notification** | glyph + title ("Job completed"); **done glyph is neutral ✓** | a quiet dim secondary (job kind · `exit N` · reason); the message prose + a facts list | machine metadata (ids, transcript ref, bytes) in a "raw notification" disclosure | one neutral box + a left rail in the tone colour (neutral for done). **No chip wall.** |
 | **Steering** | quiet: dim "You steered" + muted text, thin amber tick | — | — | demoted (it's the user's message); amber tick only |
 | **Image** | inline thumbnail + caption (filename · dims) | provenance (user-pasted / tool-read / generated) | lightbox | neutral card |
 | **Long output** | first N lines + "expand · N more lines" | byte/line count | full (with escape hatch for huge) | neutral box; blue "expand" affordance |
@@ -114,6 +115,26 @@ detail demoted to a mono chip; deep detail hidden until expanded.** Content colu
 
 Status hierarchy: **running (blue) draws the eye; done (neutral) recedes; needs-you (amber) and
 error (red) stand out.** Pair every status color with a glyph so it is colorblind-safe.
+
+### The notification / job card (worked example)
+
+The job- and watch-notification card is the canonical test of principles #1, #3, and #6. It is a
+single neutral box with a tone-coloured left rail — **one** containment device. Inside:
+
+- **Header:** a tone glyph + the title. A *completed* job is the expected state, so its glyph is a
+  **neutral ✓** and its rail is neutral — not a green dot. Only a warning (amber ⚠) or a failure
+  (red ✕) spends colour. The job kind and the failure signal (`delegate`, `exit 1`, the reason)
+  ride a **quiet dim secondary**, not bordered chips.
+- **Body:** the agent's `communicate` message as prose (markdown), then a compact **facts**
+  definition list for the structured extras (concerns, artifacts; commit/tests/status only as a
+  fallback when there's no message). Mono is used **only** for machine values (commit hashes,
+  filenames) — never for the labels.
+- **Demoted to the "raw notification" disclosure:** job/delivery ids, transcript refs, byte counts,
+  triggers — the plumbing. It is discoverable, not displayed. The daemon's boilerplate prose
+  ("Job <id> completed…") is suppressed; the title already says it.
+
+Anti-pattern (retired): a wall of bordered `label value` mono chips for every attribute, a green
+"done" dot, and structured fields as `status x` / `commits y` mono run-on lines.
 
 ---
 
@@ -138,7 +159,11 @@ something is live/needs-you.
 ## 6. Controls layout
 
 - **Top bar = identity only:** session title + a single `Details ⋯` overflow. (The model chip
-  does **not** live here — no duplication.)
+  does **not** live here — no duplication.) The mobile nav toggle (`☰`) is a **quiet bare glyph**,
+  not a filled, bordered, shadowed box — it floats over the stable header, so it recedes like the
+  rest of the identity bar (a faint backdrop blur keeps it legible on the rare page where content
+  sits beneath it). Title + actions stay on **one row** (the title ellipsizes; actions never wrap
+  under it).
 - **Bottom = all live controls, by the composer where hands/eyes already are:** model chip, `+`
   attach, `Interrupt`, `Send as steer`, `Send` (primary blue). Every control is a real
   `<button>` with a visible `:focus-visible` ring and ≥30px hit target.

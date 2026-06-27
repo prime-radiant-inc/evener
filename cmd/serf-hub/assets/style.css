@@ -1353,13 +1353,15 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   background: var(--bg-raised);
   border: 1px solid var(--rule);
   border-radius: var(--radius-md);
-  color: var(--text);
+  color: var(--text-muted);
   font-size: var(--text-lg);
   line-height: 1;
   cursor: pointer;
   flex-shrink: 0;
+  transition: color var(--motion-fast), background var(--motion-fast);
 }
-.app-nav-toggle:hover { background: var(--surface-secondary); }
+.app-nav-toggle:hover { color: var(--text); }
+.app-nav-toggle:active { color: var(--text); }
 .workspace-meta {
   margin-top: 3px;
   display: flex;
@@ -2591,23 +2593,29 @@ button.composer-model-value:hover { text-decoration: underline; }
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.notification-card-success { border-left-color: var(--success); }
+/* "Done" is the expected, settled state — its rail recedes to neutral. Colour
+   (amber / red) is spent only on a warning or a failure that needs the eye. */
+.notification-card-success { border-left-color: var(--text-muted); }
 .notification-card-warning { border-left-color: var(--state-warning); }
 .notification-card-error { border-left-color: var(--error); }
 .notification-card-neutral { border-left-color: var(--text-muted); }
-.notification-card-header { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); }
-.notification-card-glyph { color: var(--text-muted); font-family: var(--font-mono); }
+.notification-card-header { display: flex; align-items: baseline; gap: var(--space-2); margin-bottom: var(--space-2); }
+.notification-card-glyph { color: var(--text-muted); }
+.notification-card-warning .notification-card-glyph { color: var(--state-warning); }
+.notification-card-error .notification-card-glyph { color: var(--error); }
 .notification-card-title { font-weight: 600; color: var(--text); }
-.notification-card-meta { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-2) 0; }
-.notification-card-chip { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); border: 1px solid var(--rule); border-radius: var(--radius-pill); padding: var(--space-1) var(--space-2); background: var(--bg); overflow-wrap: anywhere; }
-.notification-card-summary { display: grid; gap: var(--space-1); color: var(--text-muted); line-height: var(--leading-snug); }
+/* Quiet, plain-language secondary (job kind, failure signal). The rest of the
+   machine metadata lives in the raw disclosure, not in bordered chips. */
+.notification-card-sub { color: var(--text-dim); font-size: var(--text-xs); }
+.notification-card-summary { display: grid; gap: var(--space-2); color: var(--text-muted); line-height: var(--leading-normal); }
 .notification-card-message { overflow-wrap: anywhere; }
-.notification-card-tests,
 .notification-card-excerpt { white-space: pre-wrap; overflow-wrap: anywhere; }
-.notification-card-status,
-.notification-card-commits,
-.notification-card-concerns,
-.notification-card-artifacts { font-family: var(--font-mono); font-size: var(--text-xs); }
+/* Structured communicate fields as a tidy two-column definition list: a dim
+   sans label and its value (mono only when the value is machine text). */
+.notification-card-facts { display: grid; grid-template-columns: auto 1fr; gap: var(--space-1) var(--space-3); margin: 0; }
+.notification-card-facts dt { color: var(--text-dim); font-size: var(--text-xs); }
+.notification-card-facts dd { margin: 0; color: var(--text-muted); min-width: 0; overflow-wrap: anywhere; }
+.notification-card-facts dd.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
 .notification-card-raw { margin-top: var(--space-3); color: var(--text-muted); }
 .notification-card-raw > summary { cursor: pointer; font-size: var(--text-xs); }
 .notification-card-raw pre { margin: var(--space-2) 0 0; padding: var(--space-3); border-radius: var(--radius-md); background: var(--bg); color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -3561,7 +3569,15 @@ button.composer-model-value:hover { text-decoration: underline; }
     width: var(--tap-min);
     height: var(--tap-min);
     z-index: var(--z-fixed-action);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    /* A quiet bare glyph, not a heavy floating box: the toggle sits over the
+       stable header bar, so the top bar reads as identity, not a button bar. A
+       faint blur keeps it legible on the rare page where content sits beneath. */
+    background: transparent;
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    border-color: transparent;
+    box-shadow: none;
+    font-size: var(--text-xl);
   }
   body.has-connection-banner .app-nav-toggle { top: calc(32px + var(--space-3) + env(safe-area-inset-top)); }
 
@@ -3569,8 +3585,11 @@ button.composer-model-value:hover { text-decoration: underline; }
      fixed toggle, plus a top safe-area so the title isn't under the notch /
      status bar in full-screen (standalone) mode. */
   .workspace-header { padding: calc(10px + env(safe-area-inset-top)) 14px 8px calc(var(--tap-min) + var(--space-3)); }
-  .workspace-title-row { gap: 8px; flex-wrap: wrap; }
-  .workspace-actions { gap: 4px; flex-wrap: wrap; }
+  /* One clean row: the title ellipsizes and the quiet ghost actions stay
+     pinned to the right rather than wrapping under it. */
+  .workspace-title-row { gap: 8px; flex-wrap: nowrap; }
+  .workspace-actions { gap: 2px; flex-wrap: nowrap; flex-shrink: 0; }
+  .workspace-title .title-action { flex-shrink: 0; }
   .panel-toggle-icon { display: none; }
   .workspace-meta { font-size: 11px; gap: var(--space-3); }
 
