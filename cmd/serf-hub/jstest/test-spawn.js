@@ -476,6 +476,8 @@ formDom.window.document.querySelector("[data-spawn-form]").dispatchEvent(new for
   bubbles: true,
   cancelable: true,
 }));
+// Spawn now runs an async working-dir pre-flight before reaching startThread.
+await new Promise((r) => setTimeout(r, 0));
 assert(advancedModelStartBody && advancedModelStartBody.model === "openai/advanced-model",
   "advanced schema model should win over chip model in appwire start payload");
 assert(advancedModelStartBody.launch_overrides && advancedModelStartBody.launch_overrides.model === "openai/advanced-model",
@@ -524,6 +526,7 @@ formDom.window.document.querySelector("[data-spawn-form]").dispatchEvent(new for
   bubbles: true,
   cancelable: true,
 }));
+await new Promise((r) => setTimeout(r, 0));
 assert(imageOnlySpawnBody && imageOnlySpawnBody.prompt === "   \n  ",
   "image-only spawn should submit even with whitespace prompt and path-list wrapper hooks");
 assert(imageOnlySpawnBody.items && imageOnlySpawnBody.items.length === 1,
