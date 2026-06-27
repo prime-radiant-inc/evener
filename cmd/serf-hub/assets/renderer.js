@@ -2673,6 +2673,75 @@
       age.textContent = secs >= 10 ? "  quiet " + (mins ? mins + "m" : secs + "s") : "";
     },
 
+    // ── Tying a job notification to its rail row (they share a job_id) ───────
+    // Both are kept (the card is the chronological "reported back" beat; the row
+    // is the live/persistent index) and connected: the row pulls the
+    // notification's headline, and each carries a quiet cross-link that scrolls
+    // to + flashes the other. Called from BOTH sides so it works in any order.
+    tieJobAndRail(jobId) {
+      if (!jobId || !this.conversation) return;
+      const esc = (window.CSS && window.CSS.escape) ? window.CSS.escape(jobId) : String(jobId).replace(/["\\]/g, "\\$&");
+      const row = this.conversation.querySelector('.sub-r[data-job-id="' + esc + '"]');
+      const card = this.conversation.querySelector('.notification-card[data-job-id="' + esc + '"]');
+      if (!row || !card) return;
+      if (row.dataset.tied === jobId && card.dataset.tied === jobId) return;
+      row.dataset.tied = jobId;
+      card.dataset.tied = jobId;
+      const n = card.__notification;
+      if (n) this.applyTieHeadline(row, n);
+      const header = card.querySelector(".notification-card-header");
+      this.addTieLink(header, "↑ in rail", "notification-card-tie", () => this.jumpToTied(row));
+      this.addTieLink(row, "report ↓", "sub-report", () => this.jumpToTied(card));
+    },
+
+    // applyTieHeadline lifts the notification's one-line summary onto the row so
+    // a finished subagent reads "tests passed · 4ad69c0", not "done · 233 bytes".
+    applyTieHeadline(row, n) {
+      const headline = this.notificationHeadline(n);
+      if (!headline) return;
+      row.dataset.tieHeadline = headline;
+      if (n.tone === "error") row.dataset.tieError = "1";
+      if (row.dataset.statusKind !== "running") {
+        this.renderSubagentResult(row, {}, row.dataset.statusKind || "done");
+      }
+    },
+
+    // notificationHeadline distills a job notification into one quiet line for
+    // the rail row: the test summary / status, a short commit, a concern count.
+    notificationHeadline(n) {
+      const c = (n && n.communicate) || {};
+      const bits = [];
+      if (c.testSummary) bits.push(clip(c.testSummary, 60));
+      else if (c.status) bits.push(c.status);
+      if ((c.commitHashes || []).length) bits.push(shortMachineID(c.commitHashes[0]));
+      if ((c.concerns || []).length) bits.push(c.concerns.length + " concern" + (c.concerns.length > 1 ? "s" : ""));
+      if (bits.length) return bits.join(" · ");
+      if (n && n.excerpt) return clip(String(n.excerpt).split("\n").find(l => l.trim()) || "", 60);
+      return (n && n.title) || "";
+    },
+
+    addTieLink(container, label, cls, onClick) {
+      if (!container || container.querySelector(".tie-link." + cls)) return;
+      const link = document.createElement("span");
+      link.className = "tie-link " + cls;
+      link.setAttribute("role", "button");
+      link.tabIndex = 0;
+      link.textContent = label;
+      const go = (e) => { if (e) { e.stopPropagation(); e.preventDefault(); } onClick(); };
+      link.addEventListener("click", go);
+      link.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") go(e); });
+      container.appendChild(link);
+    },
+
+    jumpToTied(el) {
+      if (!el) return;
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      el.classList.add("tie-flash");
+      this._tieFlashTimers = this._tieFlashTimers || new Map();
+      if (this._tieFlashTimers.get(el)) clearTimeout(this._tieFlashTimers.get(el));
+      this._tieFlashTimers.set(el, setTimeout(() => el.classList.remove("tie-flash"), 1400));
+    },
+
     indexSubagentRow(row) {
       if (!row) return;
       if (row.dataset.jobId) this.activeJobs.set(row.dataset.jobId, row);
@@ -2728,6 +2797,8 @@
       if (kind === "running" && row.dataset.transcriptRef) {
         this.watchSubagentActivity(row.dataset.transcriptRef, row);
       }
+      // Tie to a job notification if one is already in the transcript.
+      if (row.dataset.jobId) this.tieJobAndRail(row.dataset.jobId);
     },
 
     renderSubagentResult(row, data, kind) {
@@ -2735,6 +2806,13 @@
       if (!res) return;
       if (data.lastAction) row.dataset.lastAction = data.lastAction;
       let text = String(data.resultText || "").trim();
+      // A finished row prefers its tied notification headline ("tests passed ·
+      // 4ad69c0") over a generic "done · N bytes".
+      if (kind !== "running" && !text && row.dataset.tieHeadline) {
+        res.textContent = clip(row.dataset.tieHeadline, 120);
+        row.classList.toggle("res-error", kind === "failed" || row.dataset.tieError === "1");
+        return;
+      }
       if (!text && kind === "running") {
         res.innerHTML = "";
         const action = data.lastAction || row.dataset.lastAction || "";
@@ -3332,6 +3410,9 @@
       const n = summary.notification || {};
       const card = document.createElement("div");
       card.className = "notification-card notification-card-" + (n.tone || "neutral") + " notification-card-" + (n.type || "unknown");
+      // Correlation handle: a job notification can be tied to its rail row.
+      if (n.attrs && n.attrs.job_id) card.dataset.jobId = n.attrs.job_id;
+      card.__notification = n;
 
       const header = document.createElement("div");
       header.className = "notification-card-header";
@@ -3379,6 +3460,7 @@
       card.appendChild(raw);
 
       this.conversation.appendChild(card);
+      if (card.dataset.jobId) this.tieJobAndRail(card.dataset.jobId);
     },
 
     appendSteeringMessage(text) {
