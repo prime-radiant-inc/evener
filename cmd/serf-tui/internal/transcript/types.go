@@ -24,6 +24,8 @@ type SubagentRunInfo struct {
 	JobType          string
 	Status           string
 	Reason           string
+	Background       bool
+	Command          string
 	Task             string
 	TranscriptRef    string
 	OriginTurnID     string

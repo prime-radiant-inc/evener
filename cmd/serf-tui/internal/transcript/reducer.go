@@ -310,7 +310,9 @@ func (r *TranscriptReducer) ApplySerfJob(job appwire.SerfJobInfo) {
 	if run.JobID == "" && run.DelegateID == "" && run.OriginToolCallID == "" && run.OriginItemID == "" {
 		return
 	}
-	if run.JobType != "" && !isDelegateJobType(run.JobType) {
+	// Delegate subagents and long-lived (background) shell jobs are tracked as
+	// subagent runs; a foreground shell stays an ordinary tool call.
+	if run.JobType != "" && !isDelegateJobType(run.JobType) && !isBackgroundShellRun(run) {
 		return
 	}
 	idx, matched := r.subagentMessageIndex(run)
@@ -332,15 +334,32 @@ func (r *TranscriptReducer) ApplySerfJob(job appwire.SerfJobInfo) {
 		}
 		return
 	}
-	info := &ToolCallInfo{Name: "delegate", Description: run.Task, Done: subagentTerminalStatus(run.Status)}
+	name := "delegate"
+	desc := run.Task
+	if isBackgroundShellRun(run) {
+		name = "shell"
+		if desc == "" {
+			desc = run.Command
+		}
+	}
+	info := &ToolCallInfo{Name: name, Description: desc, Done: subagentTerminalStatus(run.Status)}
 	info.Subagent = &run
 	r.messages = append(r.messages, ChatMessage{Kind: MsgTool, ItemID: run.OriginItemID, ToolCallID: run.OriginToolCallID, Tool: info})
+}
+
+func isBackgroundShellRun(run SubagentRunInfo) bool {
+	return run.Background && strings.EqualFold(strings.TrimSpace(run.JobType), "shell")
 }
 
 func (r *TranscriptReducer) subagentMessageIndex(run SubagentRunInfo) (int, bool) {
 	for i := range r.messages {
 		msg := r.messages[i]
-		if msg.Kind != MsgTool || msg.Tool == nil || !isDelegateToolName(msg.Tool.Name) {
+		if msg.Kind != MsgTool || msg.Tool == nil {
+			continue
+		}
+		// Match a delegate tool message, or any tool message that already
+		// carries a subagent run (e.g. a tracked background shell).
+		if !isDelegateToolName(msg.Tool.Name) && msg.Tool.Subagent == nil {
 			continue
 		}
 		if msg.Tool.Subagent != nil {
@@ -366,7 +385,7 @@ func (r *TranscriptReducer) subagentMessageIndex(run SubagentRunInfo) (int, bool
 }
 
 func hasDelegateJobSignal(run SubagentRunInfo) bool {
-	return isDelegateJobType(run.JobType) || run.DelegateID != ""
+	return isDelegateJobType(run.JobType) || run.DelegateID != "" || isBackgroundShellRun(run)
 }
 
 func isDelegateJobType(jobType string) bool {
@@ -389,6 +408,8 @@ func subagentRunFromJob(job appwire.SerfJobInfo) SubagentRunInfo {
 		JobType:          strings.TrimSpace(job.JobType),
 		Status:           strings.TrimSpace(job.Status),
 		Reason:           strings.TrimSpace(job.Reason),
+		Background:       job.Background,
+		Command:          strings.TrimSpace(job.Command),
 		Task:             strings.TrimSpace(job.Task),
 		TranscriptRef:    strings.TrimSpace(job.TranscriptRef),
 		OriginTurnID:     strings.TrimSpace(job.OriginTurnID),
