@@ -98,10 +98,14 @@ func tokensEqual(presented, expected string) bool {
 
 // isAuthExempt reports whether a path is reachable without
 // authentication. /auth itself is the bootstrap; /api/health is for
-// liveness checks.
+// liveness checks; the PWA icons are a non-sensitive logo that the OS may
+// fetch without credentials when installing to the home screen (the manifest
+// stays gated — it carries the capability token).
 func isAuthExempt(path string) bool {
 	switch path {
-	case "/auth", "/api/health":
+	case "/auth", "/api/health",
+		"/assets/icon.svg", "/assets/icon-192.png",
+		"/assets/icon-512.png", "/assets/icon-maskable-512.png":
 		return true
 	}
 	return false
