@@ -172,6 +172,16 @@ func fetchHubSessionRead(client *appwire.Client, ref appwire.Ref, expectedState 
 	}
 }
 
+// subscribeChildActivity subscribes (additively, no turns) to a subagent
+// child's transcript thread so its live frames push to this connection; the
+// child-activity handler routes them to the matching rail row. Fire-and-forget.
+func subscribeChildActivity(client *appwire.Client, ref string) tea.Cmd {
+	return func() tea.Msg {
+		_, _ = client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref, IncludeTurns: false, Subscribe: true, ReplaceSubscription: false})
+		return nil
+	}
+}
+
 func fetchHubStatus(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full"})

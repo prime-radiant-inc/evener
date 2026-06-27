@@ -30,6 +30,11 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 	if m.mode != hubModeSession {
 		return nil
 	}
+	// A frame for a watched subagent child updates its rail row's live activity
+	// and is NOT processed as a session-transcript frame.
+	if cmd, handled := m.handleChildActivityFrame(notification); handled {
+		return cmd
+	}
 	if !m.notificationMatchesCurrentSession(notification) {
 		return nil
 	}
@@ -104,6 +109,8 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			reducer := m.sessionTranscriptReducer()
 			reducer.ApplySerfJob(params.Job)
 			m.applySessionTranscriptReducer(reducer)
+			// Subscribe to any newly-running child so its activity pushes live.
+			cmd = m.subscribeNewChildren()
 		}
 	case appwire.NotifyTurnCompleted:
 		var params appwire.TurnCompletedParams
@@ -336,6 +343,97 @@ func (m hubModel) notificationMatchesCurrentSession(notification appwire.Notific
 		return threadID == ref.ThreadID
 	}
 	return false
+}
+
+// handleChildActivityFrame routes a frame belonging to a watched subagent child
+// to its rail row's live activity (matched by ref), and reports handled=true so
+// the caller does NOT render it in the parent transcript. A child ref is always
+// a different thread than this session, so this never swallows our own frames.
+func (m *hubModel) handleChildActivityFrame(notification appwire.Notification) (tea.Cmd, bool) {
+	if len(m.watchedChildRefs) == 0 {
+		return nil, false
+	}
+	if notification.Method != appwire.NotifyItemStarted && notification.Method != appwire.NotifyItemCompleted {
+		return nil, false
+	}
+	var ref appwire.NotificationRef
+	if json.Unmarshal(notification.Params, &ref) != nil {
+		return nil, false
+	}
+	childRef := strings.TrimSpace(ref.Ref)
+	if childRef == "" || !m.watchedChildRefs[childRef] {
+		return nil, false
+	}
+	var params struct {
+		Item appwire.ThreadItem `json:"item"`
+	}
+	if json.Unmarshal(notification.Params, &params) != nil {
+		return nil, true
+	}
+	if activity := childActivityFromItem(params.Item); activity != "" {
+		reducer := m.sessionTranscriptReducer()
+		if reducer.ApplyChildActivity(childRef, activity) {
+			m.applySessionTranscriptReducer(reducer)
+		}
+	}
+	return nil, true
+}
+
+// subscribeNewChildren subscribes (additively, no turns) to any running subagent
+// child thread not yet watched, so its frames push live to the rail.
+func (m *hubModel) subscribeNewChildren() tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	var cmds []tea.Cmd
+	for _, msg := range m.session.messages {
+		if !isSubagentRunMessage(msg) {
+			continue
+		}
+		ref := strings.TrimSpace(msg.Tool.Subagent.TranscriptRef)
+		if ref == "" || !runStillRunning(msg.Tool.Subagent.Status) {
+			continue
+		}
+		if m.watchedChildRefs == nil {
+			m.watchedChildRefs = map[string]bool{}
+		}
+		if m.watchedChildRefs[ref] {
+			continue
+		}
+		m.watchedChildRefs[ref] = true
+		cmds = append(cmds, subscribeChildActivity(m.client, ref))
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
+}
+
+// childActivityFromItem distills a child notification item into one verb-led
+// line — the current thing the subagent is doing.
+func childActivityFromItem(item appwire.ThreadItem) string {
+	if tool := strings.TrimSpace(item.ToolName); tool != "" {
+		if detail := strings.TrimSpace(item.Description); detail != "" {
+			return tool + ": " + detail
+		}
+		return tool
+	}
+	switch strings.TrimSpace(item.Type) {
+	case "agentMessage", "assistantText", "reasoning":
+		return "responding"
+	}
+	if t := strings.TrimSpace(item.Text); t != "" {
+		return t
+	}
+	return strings.TrimSpace(item.Status)
+}
+
+func runStillRunning(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "done", "failed", "cancelled", "stopped", "succeeded":
+		return false
+	}
+	return true
 }
 
 func (m *hubModel) applyAgentMessageDelta(turnID, itemID, delta string) {

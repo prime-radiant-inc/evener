@@ -86,6 +86,7 @@ type hubModel struct {
 	commandPalette         *commandPalette
 
 	browseSelected          int
+	watchedChildRefs        map[string]bool // child transcript refs subscribed for live rail activity
 	forkDraft               *hubForkDraft
 	sessionThemePicker      *tuipick.ThemePicker
 	sessionModelPicker      *tuipick.ModelPicker

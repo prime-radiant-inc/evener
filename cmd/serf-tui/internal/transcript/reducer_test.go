@@ -637,3 +637,35 @@ func transcriptTools(messages []ChatMessage) []ToolCallInfo {
 	}
 	return tools
 }
+
+func TestApplyChildActivityTracksRunningRunHonestly(t *testing.T) {
+	reducer := NewTranscriptReducer(nil, nil, nil)
+	reducer.ApplySerfJob(appwire.SerfJobInfo{JobID: "job_a", JobType: "delegate", Status: "running", TranscriptRef: "local:c1", Task: "port webhook"})
+
+	if !reducer.ApplyChildActivity("local:c1", "shell: go test ./...") {
+		t.Fatalf("activity for a watched running child should apply")
+	}
+	tools := transcriptTools(reducer.messages)
+	if tools[0].Subagent.Activity != "shell: go test ./..." || tools[0].Subagent.Steps != 1 {
+		t.Fatalf("first activity not recorded: %+v", tools[0].Subagent)
+	}
+	// New activity advances the step count.
+	reducer.ApplyChildActivity("local:c1", "read_file: auth/session.go")
+	if tools[0].Subagent.Steps != 2 {
+		t.Fatalf("new activity should advance steps to 2: %+v", tools[0].Subagent)
+	}
+	// An identical repeat does NOT advance (honest: a stalled child's count freezes).
+	reducer.ApplyChildActivity("local:c1", "read_file: auth/session.go")
+	if tools[0].Subagent.Steps != 2 {
+		t.Fatalf("identical activity must not advance steps: %+v", tools[0].Subagent)
+	}
+	// A frame for an unwatched ref does not apply.
+	if reducer.ApplyChildActivity("local:other", "grep") {
+		t.Fatalf("activity for an unknown ref must not apply")
+	}
+	// Once terminal, activity no longer applies.
+	reducer.ApplySerfJob(appwire.SerfJobInfo{JobID: "job_a", JobType: "delegate", Status: "completed", TranscriptRef: "local:c1"})
+	if reducer.ApplyChildActivity("local:c1", "late frame") {
+		t.Fatalf("activity must not apply to a finished run")
+	}
+}
