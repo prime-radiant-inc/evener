@@ -2252,29 +2252,31 @@ button.composer-model-value .caret { color: var(--text-dim); }
    (--text-muted, recedes), failed=red (--error). A child failure
    surfaces at the module level — it is never folded into a "N done" count.
    ============================================================ */
+/* The delegation rail — a sibling of the living plan card: ONE neutral left
+   rail (no box; box = "needs-you", rail = "status"). It leads with a worker
+   tally and the live front of running subagents; finished ones recede to a
+   folded count. A lone subagent isn't a module at all (data-count="1") — it
+   reads as a single quiet row. Failure promotes the rail to red. */
 .subs {
-  margin: 0 0 var(--space-5) var(--tool-indent);
+  margin: var(--space-4) 0 var(--space-4) var(--tool-indent);
   max-width: min(720px, 100%);
-  background: var(--bg-raised);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-md);
-  padding: var(--space-4) var(--space-5);
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--rule);
 }
-.subs[data-has-failure="true"] {
-  border-left: 3px solid var(--error);
-}
+.subs[data-has-failure="true"] { border-left-color: var(--error); }
 /* Stale: the session went dark with work still "running", now demoted to an
    honest neutral "?" unknown. A muted edge, NOT a fake spinner. */
-.subs[data-stale="true"] {
-  border-color: var(--text-dim);
-}
+.subs[data-stale="true"] { border-left-color: var(--text-dim); }
+/* A single subagent is just a row in the flow — drop the rail + header. */
+.subs[data-count="1"] { border-left: 0; padding-left: 0; }
+.subs[data-count="1"] .subs-h { display: none; }
 .subs-h {
   display: flex;
   align-items: baseline;
   gap: var(--space-4);
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-2);
 }
-.subs-h .t { font-size: var(--text-sm); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.07em; }
+.subs-h .t { font-size: var(--text-sm); font-weight: 600; color: var(--text-muted); }
 .subs-h .tally {
   font-size: var(--text-xs);
   color: var(--text-muted);

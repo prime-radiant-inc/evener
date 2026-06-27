@@ -278,7 +278,7 @@ await scenario("job_list reconciles several subagents at once", [
   return { ok: true };
 });
 
-await scenario("heavy fan-out collapses overflow rows behind +N more · expand", [
+await scenario("done subagents fold behind a count; running stay visible", [
   ["SESSION_START", { session_id: "01TEST" }],
   ...spawnDelegate("d1", "job_1", "one", "local:c1"),
   ...spawnDelegate("d2", "job_2", "two", "local:c2"),
@@ -288,24 +288,29 @@ await scenario("heavy fan-out collapses overflow rows behind +N more · expand",
   ...spawnDelegate("d6", "job_6", "six", "local:c6"),
   ...spawnDelegate("d7", "job_7", "seven", "local:c7"),
   ...spawnDelegate("d8", "job_8", "eight", "local:c8"),
+  // five finish; three keep running.
+  ["JOB_FINISHED", { jobId: "job_1", status: "completed", outputBytes: 1, transcriptRef: "local:c1" }],
+  ["JOB_FINISHED", { jobId: "job_2", status: "completed", outputBytes: 1, transcriptRef: "local:c2" }],
+  ["JOB_FINISHED", { jobId: "job_3", status: "completed", outputBytes: 1, transcriptRef: "local:c3" }],
+  ["JOB_FINISHED", { jobId: "job_4", status: "completed", outputBytes: 1, transcriptRef: "local:c4" }],
+  ["JOB_FINISHED", { jobId: "job_5", status: "completed", outputBytes: 1, transcriptRef: "local:c5" }],
 ], ({ conv }) => {
   const mod = conv.querySelector(".subs");
   if (!mod) return { ok: false, detail: "missing module" };
-  const rows = mod.querySelectorAll(".sub-r");
+  const rows = Array.from(mod.querySelectorAll(".sub-r"));
   if (rows.length !== 8) return { ok: false, detail: "all 8 rows should exist in the DOM, got " + rows.length };
-  // header still counts all 8
-  if (!mod.querySelector(".subs-h").textContent.includes("8")) return { ok: false, detail: "header should count 8" };
-  // overflow control present and labelled
-  const more = mod.querySelector(".subs-more");
-  if (!more) return { ok: false, detail: "missing +N more · expand control under heavy fan-out" };
-  if (!/more/.test(more.textContent) || !/expand/.test(more.textContent)) {
-    return { ok: false, detail: "overflow control should read '+N more · expand': " + more.textContent };
+  // Collapsed: the three running rows stay visible; the five done fold away.
+  const visible = rows.filter(r => !r.hidden);
+  if (visible.length !== 3 || !visible.every(r => r.dataset.statusKind === "running")) {
+    return { ok: false, detail: "only the 3 running rows should be visible when collapsed, got " + visible.map(r => r.dataset.statusKind).join(",") };
   }
-  // before expansion, the module is collapsed (some rows hidden via class)
-  if (mod.dataset.expanded === "true") return { ok: false, detail: "module should start collapsed under heavy fan-out" };
-  // expanding reveals all rows
+  const more = mod.querySelector(".subs-more");
+  if (!more || !/5 done/.test(more.textContent)) return { ok: false, detail: "done should fold behind a '✓ 5 done' count: " + (more && more.textContent) };
+  if (mod.dataset.expanded === "true") return { ok: false, detail: "module should start collapsed" };
+  // Expanding reveals the done rows too.
   more.click();
-  if (mod.dataset.expanded !== "true") return { ok: false, detail: "clicking expand should mark module expanded" };
+  if (mod.dataset.expanded !== "true") return { ok: false, detail: "clicking should expand" };
+  if (rows.some(r => r.hidden)) return { ok: false, detail: "expanding should reveal all rows" };
   return { ok: true };
 });
 
@@ -334,7 +339,7 @@ await scenario("CSS defines the subagents module section with the four-color gly
   return { ok: true };
 });
 
-await scenario("subagent module renders a visible 'Subagents (N)' section header", [
+await scenario("subagent module header names the section + tallies the workers", [
   ["SESSION_START", { session_id: "01TEST" }],
   ...spawnDelegate("d1", "job_A", "trace callers", "local:child-A"),
   ...spawnDelegate("d2", "job_B", "find tests", "local:child-B"),
@@ -342,12 +347,12 @@ await scenario("subagent module renders a visible 'Subagents (N)' section header
 ], ({ conv }) => {
   const mod = conv.querySelector(".subs");
   if (!mod) return { ok: false, detail: "missing .subs module" };
+  if (mod.dataset.count !== "3") return { ok: false, detail: "module should carry data-count=3 (it's a fan-out, not a lone row): " + mod.dataset.count };
   const header = mod.querySelector(".subs-h");
-  if (!header) return { ok: false, detail: "missing .subs-h header element" };
   const label = header.querySelector(".t");
-  if (!label) return { ok: false, detail: "missing .t label span inside .subs-h" };
-  if (!label.textContent.includes("Subagents")) return { ok: false, detail: "header label must include 'Subagents': " + label.textContent };
-  if (!label.textContent.includes("3")) return { ok: false, detail: "header label must show pane count (3): " + label.textContent };
+  if (!label || !label.textContent.includes("Subagents")) return { ok: false, detail: "header label must name 'Subagents': " + (label && label.textContent) };
+  const tally = header.querySelector(".tally");
+  if (!tally || !/3 running/.test(tally.textContent)) return { ok: false, detail: "tally should count the workers (3 running): " + (tally && tally.textContent) };
   return { ok: true };
 });
 
@@ -362,19 +367,15 @@ await scenario("subagent module header is absent when there are no subagents", [
   return { ok: true };
 });
 
-await scenario("CSS: .subs-h .t uses section-header visual treatment (uppercase, muted)", [], () => {
-  // The header label must use the quiet section-header grammar:
-  // uppercase + letter-spacing for scannability, muted color (not full text
-  // weight), sans-serif (it's a label, not machine text — no mono).
-  if (!/\.subs-h\s+\.t\s*\{/.test(styleSrc) && !/\.subs-h\s*\.t\s*\{/.test(styleSrc)) {
-    return { ok: false, detail: "missing .subs-h .t rule in CSS" };
-  }
-  if (!/text-transform\s*:\s*uppercase/.test(styleSrc)) {
-    return { ok: false, detail: ".subs-h .t must use text-transform: uppercase for section-header scannability" };
-  }
-  if (!/letter-spacing/.test(styleSrc)) {
-    return { ok: false, detail: ".subs-h .t must use letter-spacing for section-header visual treatment" };
-  }
+await scenario("CSS: the subagents module is a left rail, not a box", [], () => {
+  // Sibling of the living plan card: ONE neutral left rail (rail = "status"),
+  // never a filled box (a box reads as "needs-you"). The retired uppercase-mono
+  // section-header treatment is gone — the label is plain muted sans.
+  const blocks = styleSrc.match(/\.subs\s*\{[^}]*\}/g) || [];
+  if (!blocks.length) return { ok: false, detail: "missing .subs rule" };
+  if (!blocks.some(b => /border-left:[^;]*var\(--rule\)/.test(b))) return { ok: false, detail: ".subs must use a neutral left rail" };
+  if (blocks.some(b => /\bbackground:\s*var\(--bg-raised\)/.test(b))) return { ok: false, detail: ".subs must not be a filled box" };
+  if (!/\.subs\[data-count="1"\]/.test(styleSrc)) return { ok: false, detail: "a lone subagent (data-count=1) must drop the rail/header to read as a row" };
   return { ok: true };
 });
 
@@ -464,7 +465,7 @@ await scenario("a still-active session does NOT demote a legitimately running su
   return { ok: true };
 });
 
-await scenario("overflow sorts worst-first: failed and unknown above the fold, done last", [
+await scenario("fixed spawn-order: running + failed stay visible, done fold (no reshuffle)", [
   ["SESSION_START", { session_id: "01TEST", status: "active" }],
   ...spawnDelegate("d1", "job_1", "done one", "local:c1"),
   ...spawnDelegate("d2", "job_2", "done two", "local:c2"),
@@ -485,16 +486,19 @@ await scenario("overflow sorts worst-first: failed and unknown above the fold, d
 ], ({ conv }) => {
   const mod = conv.querySelector(".subs");
   if (!mod) return { ok: false, detail: "missing module" };
-  // The first (visible, above-the-fold) rows must include the failure and the
-  // running one — never buried under six done rows.
-  const visible = Array.from(mod.querySelectorAll(".sub-r")).filter(r => !r.hidden);
-  const visibleKinds = visible.map(r => r.dataset.statusKind);
-  if (visibleKinds[0] !== "failed") return { ok: false, detail: "first row should be the failure, got order: " + visibleKinds.join(",") };
-  if (!visibleKinds.includes("running")) return { ok: false, detail: "running row should be above the fold, got: " + visibleKinds.join(",") };
-  // done rows sort last
-  const firstDoneIdx = visibleKinds.indexOf("done");
-  const lastNonDoneIdx = Math.max(visibleKinds.lastIndexOf("failed"), visibleKinds.lastIndexOf("running"), visibleKinds.lastIndexOf("unknown"));
-  if (firstDoneIdx !== -1 && firstDoneIdx < lastNonDoneIdx) return { ok: false, detail: "done rows must sort after failed/running/unknown: " + visibleKinds.join(",") };
+  const all = Array.from(mod.querySelectorAll(".sub-r"));
+  const visible = all.filter(r => !r.hidden);
+  // The six done fold away; the failure + the running one stay visible — never
+  // buried, but also never sorted to the top (rows keep spawn order so they
+  // don't jump as statuses change live).
+  if (visible.length !== 2) return { ok: false, detail: "only the failed + running rows should be visible, got " + visible.map(r => r.dataset.statusKind).join(",") };
+  const kinds = visible.map(r => r.dataset.statusKind);
+  if (!kinds.includes("failed") || !kinds.includes("running")) return { ok: false, detail: "failed and running must stay visible: " + kinds.join(",") };
+  // Fixed spawn-order: job_7 (failed, spawn 7) stays before job_8 (running, spawn 8).
+  const spawn = visible.map(r => Number(r.dataset.spawnIndex));
+  if (spawn[0] >= spawn[1]) return { ok: false, detail: "rows must stay in spawn order, not reshuffle by status: " + spawn.join(",") };
+  const more = mod.querySelector(".subs-more");
+  if (!more || !/6 done/.test(more.textContent)) return { ok: false, detail: "the six done should fold behind a '✓ 6 done' count: " + (more && more.textContent) };
   return { ok: true };
 });
 
