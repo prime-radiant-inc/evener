@@ -3495,7 +3495,10 @@ button.composer-model-value:hover { text-decoration: underline; }
     background: rgba(0,0,0,0.5);
     z-index: var(--z-overlay, 800);
   }
-  #workspace { width: 100%; height: 100vh; }
+  /* dvh tracks the *visible* viewport, so the workspace (and the composer at its
+     bottom) shrinks above the on-screen keyboard instead of being pushed under
+     it. 100vh is the fallback for older engines. */
+  #workspace { width: 100%; height: 100vh; height: 100dvh; }
 
   /* Reclaim horizontal room on phone: the desktop transcript reserves a wide
      left gutter (tool indent, 32px card/system indents) that wastes a quarter
@@ -3540,14 +3543,41 @@ button.composer-model-value:hover { text-decoration: underline; }
     box-shadow: none;
   }
 
-  /* Bottom strip: keep horizontal but allow wrap so chips reflow rather than overflow. */
-  .workspace-input { padding: var(--space-3) var(--space-4) var(--space-4); }
-  .input-controls { flex-wrap: wrap; gap: var(--space-3); }
-  .controls-center { flex: none; }
-  .btn-primary kbd { display: none; }
-  .input-status { flex-wrap: wrap; }
-  /* The model-picker chip is a 17px-tall inline button on desktop; give it the
-     full tap-min hit area on touch without inflating the visible chip text. */
+  /* ── Compact, bottom-anchored composer on phone ─────────────────────────
+     Pin it to the bottom and shed the desktop info-density: the tasks row and
+     the long src/turns/cwd/branch status line (the cwd path is what spilled
+     past the screen edge). Keep only the live state + context so you still know
+     whether the agent is working. */
+  .workspace-input {
+    position: sticky;
+    bottom: 0;
+    flex: none;
+    padding: var(--space-2) var(--space-3) calc(var(--space-2) + env(safe-area-inset-bottom));
+    background: var(--bg);
+    border-top: 1px solid var(--rule);
+  }
+  .task-status-row { display: none; }
+  .input-status { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-2); padding: 0; min-height: 0; }
+  .input-status .source,
+  .input-status .turns,
+  .input-status .cwd,
+  .input-status .branch,
+  .input-status .cost,
+  .input-status .goal { display: none; }
+
+  .input-card { padding: var(--space-2) var(--space-3); }
+  .message-input { min-height: 24px; max-height: 32vh; }
+
+  .input-controls { display: flex; align-items: center; flex-wrap: nowrap; gap: var(--space-2); padding-top: var(--space-2); min-width: 0; }
+  .controls-left, .controls-right { gap: var(--space-2); flex-wrap: nowrap; flex: none; }
+  .controls-center { flex: 1; min-width: 0; overflow: hidden; }
+  .composer-model-key { display: none; }
+  .composer-model { font-size: var(--text-sm); min-width: 0; }
+  .composer-model-value { max-width: 100%; }
+  .input-controls .btn kbd { display: none; }
+  /* Touch-sized primary controls. */
+  .send-btn, [data-steer-trigger], .stop-btn { min-height: var(--tap-min); }
+  .controls-left .btn { min-width: var(--tap-min); min-height: var(--tap-min); }
   button.composer-model-value { min-height: var(--tap-min); }
 
   /* ── Session-creation (spawn) form on phone ─────────────────────────────
