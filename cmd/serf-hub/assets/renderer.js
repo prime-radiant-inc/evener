@@ -2789,22 +2789,15 @@
 
     refreshSubagentModule(mod) {
       if (!mod) return;
-      // Sort worst-first so a failure (or an unknown that might be one) is
-      // always above the fold and the clean "done" results recede — never a
-      // failure buried under a wall of green. Stable within a band by spawn
-      // order.
+      // FIXED spawn-order — rows never reshuffle as statuses change live (a
+      // moving target is hostile to read). A finished subagent recedes by
+      // FOLDING (below), not by jumping; a failure surfaces by colour + the
+      // running/failed rows staying visible, not by sorting to the top.
       const rowsContainer = mod.querySelector(".subs-rows");
       const rows = Array.from(mod.querySelectorAll(".sub-r"));
       if (rowsContainer && rows.length > 1) {
-        const rank = (r) => {
-          const v = this.SUBAGENT_SEVERITY[r.dataset.statusKind || "running"];
-          return v == null ? 2 : v;
-        };
-        const sorted = rows.slice().sort((a, b) => {
-          const d = rank(a) - rank(b);
-          if (d !== 0) return d;
-          return Number(a.dataset.spawnIndex || 0) - Number(b.dataset.spawnIndex || 0);
-        });
+        const sorted = rows.slice().sort((a, b) =>
+          Number(a.dataset.spawnIndex || 0) - Number(b.dataset.spawnIndex || 0));
         for (const row of sorted) rowsContainer.appendChild(row);
       }
       let running = 0, done = 0, failed = 0, unknown = 0;
@@ -2815,8 +2808,10 @@
         else if (kind === "unknown") unknown++;
         else running++;
       }
+      // A lone subagent is just a row in the flow (CSS drops the rail + header).
+      mod.dataset.count = String(rows.length);
       const title = mod.querySelector(".t");
-      if (title) title.textContent = "Subagents (" + rows.length + ")";
+      if (title) title.textContent = "Subagents";
       const tally = mod.querySelector(".tally");
       if (tally) {
         tally.innerHTML = "";
@@ -2840,18 +2835,23 @@
       // neutral treatment, not a fake spinner).
       mod.dataset.stale = unknown > 0 ? "true" : "false";
 
-      // Overflow: hide rows past the visible threshold unless expanded.
+      // Done recedes by folding: when collapsed, the finished/cancelled rows
+      // hide behind a "✓ N done" count, while every running / failed / unknown
+      // row stays visible (you never lose sight of live work or a failure).
       const expanded = mod.dataset.expanded === "true";
-      const limit = this.SUBAGENT_VISIBLE_ROWS;
-      const hiddenCount = Math.max(0, rows.length - limit);
-      Array.from(rowsContainer ? rowsContainer.querySelectorAll(".sub-r") : rows).forEach((row, i) => {
-        row.hidden = !expanded && hiddenCount > 0 && i >= limit;
+      const isDone = (row) => {
+        const k = row.dataset.statusKind || "running";
+        return k === "done";
+      };
+      const doneRows = rows.filter(isDone);
+      Array.from(rowsContainer ? rowsContainer.querySelectorAll(".sub-r") : rows).forEach((row) => {
+        row.hidden = !expanded && isDone(row);
       });
       const more = mod.querySelector(".subs-more");
       if (more) {
-        if (hiddenCount > 0) {
+        if (doneRows.length > 0) {
           more.hidden = false;
-          more.textContent = expanded ? "collapse" : ("+" + hiddenCount + " more · expand");
+          more.textContent = expanded ? "collapse ▴" : ("✓ " + doneRows.length + " done ▾");
         } else {
           more.hidden = true;
         }
