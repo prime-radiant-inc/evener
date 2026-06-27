@@ -33,6 +33,27 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
+// controlTag returns the opening <button …> tag whose attributes contain the
+// given marker (a stable hook like a data-* attribute). Assertions check a
+// control's state — disabled, capability flags — off this tag instead of
+// pinning the exact class list or inner markup, which churn with styling.
+func controlTag(t *testing.T, body, marker string) string {
+	t.Helper()
+	i := strings.Index(body, marker)
+	if i == -1 {
+		t.Fatalf("control %q not found in:\n%s", marker, body)
+	}
+	start := strings.LastIndex(body[:i], "<button")
+	if start == -1 {
+		t.Fatalf("no <button> opening tag precedes %q", marker)
+	}
+	rel := strings.Index(body[start:], ">")
+	if rel == -1 {
+		t.Fatalf("unterminated <button> tag for %q", marker)
+	}
+	return body[start : start+rel+1]
+}
+
 func TestWeb_Landing_Renders(t *testing.T) {
 	r := hubcore.NewRoster(t.TempDir(), nil)
 	idx := hubcore.NewPastIndex("")
@@ -250,20 +271,21 @@ func TestWeb_CodexSessionRouteReadsConfiguredSource(t *testing.T) {
 			t.Fatalf("codex workspace advertised unsupported control %q:\n%s", unsupported, body)
 		}
 	}
-	for _, disabledUntilTurn := range []string{`data-action-trigger="interrupt"`, `data-steer-trigger data-capability-steer="true" title="drain the queue as a steering message — or steer with the textarea text when the queue is empty" disabled`} {
-		if !strings.Contains(body, disabledUntilTurn) {
-			t.Fatalf("codex workspace missing disabled turn control %q:\n%s", disabledUntilTurn, body)
-		}
+	// Interrupt + steer exist but are disabled until a turn is in flight.
+	if tag := controlTag(t, body, `data-action-trigger="interrupt"`); !strings.Contains(tag, "disabled") {
+		t.Fatalf("codex interrupt should be disabled until a turn is active: %s", tag)
+	}
+	if tag := controlTag(t, body, "data-steer-trigger"); !strings.Contains(tag, `data-capability-steer="true"`) || !strings.Contains(tag, "disabled") {
+		t.Fatalf("codex steer should be capable-but-disabled until a turn is active: %s", tag)
 	}
 	for _, unsupportedHeader := range []string{`data-action-trigger="compact"`, `data-action-trigger="shutdown"`} {
 		if strings.Contains(body, unsupportedHeader) {
 			t.Fatalf("workspace rendered removed header action %q:\n%s", unsupportedHeader, body)
 		}
 	}
-	for _, supported := range []string{`class="btn btn-primary send-btn"`} {
-		if !strings.Contains(body, supported) {
-			t.Fatalf("codex workspace missing supported control %q:\n%s", supported, body)
-		}
+	// The send control is present as a submit button.
+	if tag := controlTag(t, body, "send-btn"); !strings.Contains(tag, `type="submit"`) {
+		t.Fatalf("codex send control should be a submit button: %s", tag)
 	}
 }
 
@@ -293,12 +315,11 @@ func TestWeb_WorkspaceRendersDisabledSteerControlForIdleSendCapableAppThread(t *
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `data-steer-trigger data-capability-steer="false"`) || !strings.Contains(body, `disabled>steer`) {
-		t.Fatalf("workspace should render disabled steer control for idle send-capable app thread:\n%s", body)
+	if tag := controlTag(t, body, "data-steer-trigger"); !strings.Contains(tag, `data-capability-steer="false"`) || !strings.Contains(tag, "disabled") {
+		t.Fatalf("workspace should render disabled steer control for idle send-capable app thread: %s", tag)
 	}
-	if !strings.Contains(body, `class="btn btn-danger stop-btn" data-action-trigger="interrupt" data-capability-interrupt="false"`) ||
-		!strings.Contains(body, `disabled>Stop</button>`) {
-		t.Fatalf("workspace should render disabled stop control for idle send-capable app thread:\n%s", body)
+	if tag := controlTag(t, body, `data-action-trigger="interrupt"`); !strings.Contains(tag, `data-capability-interrupt="false"`) || !strings.Contains(tag, "disabled") {
+		t.Fatalf("workspace should render disabled stop control for idle send-capable app thread: %s", tag)
 	}
 }
 
@@ -339,12 +360,12 @@ func TestWeb_WorkspaceRendersBottomStopForActiveSession(t *testing.T) {
 		strings.Contains(body, `data-action-trigger="shutdown"`) {
 		t.Fatalf("workspace rendered removed header controls:\n%s", body)
 	}
-	if !strings.Contains(body, `class="btn btn-danger stop-btn" data-action-trigger="interrupt"`) ||
-		!strings.Contains(body, `>Stop<`) {
+	stop := controlTag(t, body, `data-action-trigger="interrupt"`)
+	if !strings.Contains(stop, "stop-btn") || !strings.Contains(body, ">Stop<") {
 		t.Fatalf("workspace missing bottom Stop control:\n%s", body)
 	}
-	if strings.Contains(body, `class="btn btn-danger stop-btn" data-action-trigger="interrupt" title="stop the in-flight turn" disabled`) {
-		t.Fatalf("bottom Stop should be enabled for active session:\n%s", body)
+	if strings.Contains(stop, "disabled") {
+		t.Fatalf("bottom Stop should be enabled for active session: %s", stop)
 	}
 	// The live state is shown by the single status badge ("Working" for an active
 	// session) — the duplicate running-indicator was removed.
@@ -2689,8 +2710,8 @@ func TestWeb_ThreadDocument_ComposerControlsLiveInsideInputCard(t *testing.T) {
 	if strings.Contains(body, `send as steer`) {
 		t.Fatalf("composer should use short steer label, not send as steer")
 	}
-	if !strings.Contains(body, `data-steer-trigger`) || !strings.Contains(body, `>steer`) {
-		t.Fatalf("composer should render short steer button label")
+	if tag := controlTag(t, body, "data-steer-trigger"); !strings.Contains(body, ">steer<") {
+		t.Fatalf("composer should render the short steer button label: %s", tag)
 	}
 }
 
