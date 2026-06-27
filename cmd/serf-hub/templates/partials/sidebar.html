@@ -2,9 +2,10 @@
 <nav class="sidebar" aria-label="Sessions">
   <div class="sidebar-header">
     <button type="button" class="sidebar-rail-toggle" data-sidebar-rail-toggle title="collapse sidebar (⌘B)" aria-label="collapse sidebar">⇤</button>
-    <a class="sidebar-action" href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ new</a>
-    <a class="sidebar-action" href="#" data-search-trigger>search<kbd>⌘K</kbd></a>
-    <a class="sidebar-action settings-link" href="/settings" hx-get="/_partials/settings/general" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/settings">settings</a>
+    <button type="button" class="sidebar-close" data-sidebar-toggle aria-label="close sidebar">✕</button>
+    <a class="sidebar-action sidebar-action-new" href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ <span class="sidebar-action-label">new</span></a>
+    <a class="sidebar-action sidebar-action-search" href="#" data-search-trigger><span class="sidebar-action-icon" aria-hidden="true">🔍</span> <span class="sidebar-action-label">search</span><kbd>⌘K</kbd></a>
+    <a class="sidebar-action settings-link" href="/settings" hx-get="/_partials/settings/general" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/settings"><span class="sidebar-action-icon" aria-hidden="true">⚙</span> <span class="sidebar-action-label">settings</span></a>
   </div>
 
   {{/* Needs-you triage tier (mockup #11): every awaiting session across all
