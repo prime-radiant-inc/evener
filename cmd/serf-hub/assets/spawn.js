@@ -425,6 +425,38 @@
     return el;
   }
 
+  // Position a chip picker. On phone it becomes a full-width bottom sheet
+  // (styled via .chip-picker-sheet); on larger screens it's anchored just below
+  // its chip. Fixed desktop widths (520/480px) overflow a phone otherwise.
+  function placeChipPicker(picker, anchor) {
+    if (window.matchMedia && window.matchMedia("(max-width: 767px)").matches) {
+      picker.classList.add("chip-picker-sheet");
+      // Clear the inline absolute positioning callers set, so the CSS bottom
+      // sheet (position: fixed) takes over.
+      picker.style.position = "";
+      picker.style.top = "";
+      picker.style.left = "";
+      addPickerScrim(picker);
+      return;
+    }
+    picker.style.top = (anchor.offsetTop + anchor.offsetHeight + 4) + "px";
+    picker.style.left = anchor.offsetLeft + "px";
+  }
+
+  // A dimming backdrop behind the mobile bottom sheet. Clicking it counts as an
+  // outside click (so the picker's own dismiss closes it); it removes itself
+  // once the picker leaves the DOM.
+  function addPickerScrim(picker) {
+    if (document.querySelector(".chip-picker-scrim")) return;
+    const scrim = document.createElement("div");
+    scrim.className = "chip-picker-scrim";
+    document.body.appendChild(scrim);
+    const obs = new MutationObserver(() => {
+      if (!document.body.contains(picker)) { scrim.remove(); obs.disconnect(); }
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+  }
+
   // Insert a banner just above the attach/spawn row. The row is a direct child
   // of the form; .spawn-actions inside it is NOT, and insertBefore requires the
   // reference node to be a direct child (else it throws NotFoundError). Falls
@@ -1295,8 +1327,7 @@
     chip.parentNode.style.position = "relative";
     chip.parentNode.appendChild(picker);
     picker.style.position = "absolute";
-    picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
-    picker.style.left = chip.offsetLeft + "px";
+    placeChipPicker(picker, chip);
     picker.style.zIndex = "50";
 
     input.focus();
@@ -1336,8 +1367,7 @@
     chip.parentNode.style.position = "relative";
     chip.parentNode.appendChild(picker);
     picker.style.position = "absolute";
-    picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
-    picker.style.left = chip.offsetLeft + "px";
+    placeChipPicker(picker, chip);
     picker.style.zIndex = "50";
     attachPickerDismiss(picker);
   }
@@ -1502,8 +1532,7 @@
       chip.parentNode.style.position = "relative";
       chip.parentNode.appendChild(picker);
       picker.style.position = "absolute";
-      picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
-      picker.style.left = chip.offsetLeft + "px";
+      placeChipPicker(picker, chip);
       picker.style.zIndex = "50";
 
       search.focus();
@@ -1598,8 +1627,7 @@
       chip.parentNode.style.position = "relative";
       chip.parentNode.appendChild(picker);
       picker.style.position = "absolute";
-      picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
-      picker.style.left = chip.offsetLeft + "px";
+      placeChipPicker(picker, chip);
       picker.style.zIndex = "50";
       attachPickerDismiss(picker);
       return;
@@ -1633,8 +1661,7 @@
       chip.parentNode.style.position = "relative";
       chip.parentNode.appendChild(picker);
       picker.style.position = "absolute";
-      picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
-      picker.style.left = chip.offsetLeft + "px";
+      placeChipPicker(picker, chip);
       picker.style.zIndex = "50";
       attachPickerDismiss(picker);
     });
@@ -1697,8 +1724,7 @@
     chip.parentNode.style.position = "relative";
     chip.parentNode.appendChild(picker);
     picker.style.position = "absolute";
-    picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
-    picker.style.left = chip.offsetLeft + "px";
+    placeChipPicker(picker, chip);
     picker.style.zIndex = "50";
     attachPickerDismiss(picker);
   }

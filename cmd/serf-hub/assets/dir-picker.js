@@ -2,6 +2,34 @@
 (function (global) {
   "use strict";
 
+  // Position a chip picker: a full-width bottom sheet on phone (.chip-picker-sheet),
+  // else anchored just below its chip. Mirrors spawn.js's placeChipPicker.
+  function placeChipPicker(picker, anchor) {
+    if (global.matchMedia && global.matchMedia("(max-width: 767px)").matches) {
+      picker.classList.add("chip-picker-sheet");
+      picker.style.position = "";
+      picker.style.top = "";
+      picker.style.left = "";
+      addPickerScrim(picker);
+      return;
+    }
+    picker.style.top = (anchor.offsetTop + anchor.offsetHeight + 4) + "px";
+    picker.style.left = anchor.offsetLeft + "px";
+  }
+
+  // Dimming backdrop behind the mobile bottom sheet; removes itself once the
+  // picker leaves the DOM. A click on it is an outside click → picker dismisses.
+  function addPickerScrim(picker) {
+    if (document.querySelector(".chip-picker-scrim")) return;
+    const scrim = document.createElement("div");
+    scrim.className = "chip-picker-scrim";
+    document.body.appendChild(scrim);
+    const obs = new MutationObserver(() => {
+      if (!document.body.contains(picker)) { scrim.remove(); obs.disconnect(); }
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+  }
+
   function completeDirs(prefix) {
     if (global.SerfAppwire && typeof global.SerfAppwire.completeDirs === "function") {
       return global.SerfAppwire.completeDirs(prefix);
@@ -152,8 +180,7 @@
     anchor.parentNode.style.position = "relative";
     anchor.parentNode.appendChild(picker);
     picker.style.position = "absolute";
-    picker.style.top = (anchor.offsetTop + anchor.offsetHeight + 4) + "px";
-    picker.style.left = anchor.offsetLeft + "px";
+    placeChipPicker(picker, anchor);
     picker.style.zIndex = "50";
     if (options.minWidth) picker.style.minWidth = options.minWidth;
 

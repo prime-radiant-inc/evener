@@ -3,9 +3,19 @@ package main
 import (
 	"embed"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 )
+
+// noStore wraps a handler to forbid caching — used for on-disk dev assets so
+// edits always reload (browsers otherwise heuristically cache un-headered CSS/JS).
+func noStore(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		h.ServeHTTP(w, r)
+	})
+}
 
 //go:embed templates/*.html templates/partials/*.html templates/partials/settings/*.html
 var templatesFS embed.FS

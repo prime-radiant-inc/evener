@@ -2696,7 +2696,17 @@ button.composer-model-value:hover { text-decoration: underline; }
 .chip-picker-model-name { color: var(--text); font-family: var(--font-mono); font-size: var(--text-sm); }
 .chip-picker-model-meta { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); margin-top: var(--space-1); }
 .chip-picker-diagnostics { border-top: 1px solid var(--rule); padding: var(--space-2) var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); }
-.chip-picker-diagnostic { color: var(--text-muted); font-size: var(--text-xs); }
+.chip-picker-diagnostic { color: var(--text-muted); font-size: var(--text-xs); overflow-wrap: anywhere; }
+/* Backdrop behind the mobile bottom-sheet pickers (created by the dir/chip
+   pickers' JS). Below the sheet (z-drawer), above the page. */
+.chip-picker-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: var(--z-overlay);
+  animation: chip-picker-scrim-in var(--motion-fast) both;
+}
+@keyframes chip-picker-scrim-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* ── Directory picker ────────────────────────────────────────────────────── */
 .chip-picker-dir { width: 480px; max-height: 360px; display: flex; flex-direction: column; }
@@ -3406,6 +3416,94 @@ button.composer-model-value:hover { text-decoration: underline; }
   /* The model-picker chip is a 17px-tall inline button on desktop; give it the
      full tap-min hit area on touch without inflating the visible chip text. */
   button.composer-model-value { min-height: var(--tap-min); }
+
+  /* ── Session-creation (spawn) form on phone ─────────────────────────────
+     Desktop reserves a 64px side gutter; reclaim it. The config chips become
+     full-width settings-style rows — label+value at the left, chevron pinned
+     right — instead of a ragged pile of differently-sized pills. */
+  .spawn-pane { padding: var(--space-5) var(--space-4); }
+  .spawn-prompt { font-size: var(--text-xl); }
+  .spawn-chips { flex-direction: column; align-items: stretch; gap: var(--space-2); }
+  .btn-chip {
+    width: 100%;
+    justify-content: flex-start;
+    gap: var(--space-2);
+    min-height: var(--tap-min);
+    border-radius: var(--radius-md);
+    padding: var(--space-3) var(--space-4);
+  }
+  .btn-chip .caret { margin-left: auto; font-size: var(--text-xs); }
+  .btn-chip .val { max-width: none; min-width: 0; }
+  /* access_mode chip has no label; keep its tint but align like the rest. */
+  .btn-chip[data-mode] { justify-content: flex-start; }
+  /* Attach + spawn: full touch height; let them wrap rather than crush. */
+  .spawn-attach-row { flex-wrap: wrap; gap: var(--space-3); }
+  .spawn-attach-btn, .spawn-btn { min-height: var(--tap-min); }
+  /* Recent prompts are long; clamp each to two lines so the list stays scannable. */
+  .spawn-recent-row {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* ── Chip selectors (model / path / etc.) as a bottom sheet on phone ──────
+     The desktop pickers are fixed 480–520px panels anchored under a chip — far
+     wider than the screen. On phone JS adds .chip-picker-sheet (instead of inline
+     top/left) and they dock to the bottom, full-width and finger-friendly. */
+  .chip-picker-sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    width: auto;
+    max-width: none;
+    max-height: 80vh;
+    min-height: 40vh;
+    border: none;
+    border-top: 1px solid var(--hair, var(--rule));
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.5);
+    z-index: var(--z-drawer);
+    padding: var(--space-5) 0 env(safe-area-inset-bottom);
+    animation: sheet-up var(--motion-base) var(--ease) both;
+  }
+  /* Grab handle — signals a draggable bottom sheet. */
+  .chip-picker-sheet::before {
+    content: "";
+    position: absolute;
+    top: var(--space-3);
+    left: 50%;
+    transform: translateX(-50%);
+    width: 36px;
+    height: 4px;
+    border-radius: var(--radius-pill);
+    background: var(--text-dim);
+  }
+  .chip-picker-sheet.chip-picker-wide,
+  .chip-picker-sheet.chip-picker-dir { width: auto; max-height: 80vh; }
+  .chip-picker-sheet .chip-picker-search {
+    font-size: var(--text-md);
+    padding: var(--space-3) var(--space-5);
+    margin: var(--space-2) 0 0;
+  }
+  /* Touch-sized rows with comfortable padding. */
+  .chip-picker-option,
+  .chip-picker-provider,
+  .chip-picker-model,
+  .chip-picker-dir-row {
+    min-height: var(--tap-min);
+    display: flex;
+    align-items: center;
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+  .chip-picker-model { flex-direction: column; align-items: flex-start; justify-content: center; }
+  /* The master-detail provider rail is narrower on a phone. */
+  .chip-picker-providers { width: 120px; }
+  .chip-picker-diagnostics { padding: var(--space-3) var(--space-5); }
+  @keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
   /* Search palette: full-screen on mobile so the keyboard doesn't shove it. */
   .search-dialog-inner {
