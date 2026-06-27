@@ -517,6 +517,10 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 .sidebar-header { padding: 0 var(--space-6) var(--space-4); display: flex; gap: var(--space-5); }
 .sidebar-action { color: var(--text-muted); text-decoration: none; cursor: pointer; white-space: nowrap; }
 .sidebar-action:hover { color: var(--text); }
+/* The close button and per-action icons are phone-only chrome; on desktop the
+   header stays the compact text row. */
+.sidebar-close { display: none; }
+.sidebar-action-icon { display: none; }
 .sidebar-action kbd { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-2xs); margin-left: var(--space-2); }
 .sidebar-section { margin-bottom: var(--space-2); }
 .sidebar-section-header,
@@ -3370,14 +3374,56 @@ button.composer-model-value:hover { text-decoration: underline; }
   /* ── Sidebar drawer content on phone: readable type + 44px touch rows ──
      The desktop sidebar packs 11px muted project names into ~25px rows; on a
      phone that's both hard to read and hard to hit. Enlarge and space out. */
-  .sidebar-header { padding: var(--space-4) var(--space-5); gap: var(--space-6); flex-wrap: wrap; }
+  /* Header: a close (top-right), a prominent New-session button, then search +
+     settings as a button pair. The desktop rail-toggle and ⌘K hint are dropped. */
+  .sidebar-header {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4) var(--space-4);
+    border-bottom: 1px solid var(--rule);
+    margin-bottom: var(--space-3);
+  }
+  .sidebar-rail-toggle { display: none; }
+  .sidebar-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    grid-column: 1 / -1;
+    justify-self: end;
+    width: var(--tap-min);
+    height: var(--tap-min);
+    margin: calc(0px - var(--space-2)) calc(0px - var(--space-2)) 0 0;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: var(--text-lg);
+  }
+  .sidebar-close:active { color: var(--text); }
+  .sidebar-action-icon { display: inline; }
   .sidebar-action {
-    font-size: var(--text-base);
-    color: var(--text);
     min-height: var(--tap-min);
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    font-size: var(--text-base);
+    color: var(--text);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius-md);
+    background: var(--bg-raised);
+    padding: 0 var(--space-3);
   }
+  .sidebar-action kbd { display: none; }
+  .sidebar-action-new {
+    grid-column: 1 / -1;
+    background: var(--accent);
+    color: var(--btn-primary-text);
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  .sidebar-action-search { grid-column: 1; }
+  .settings-link { grid-column: 2; }
   .project-header {
     font-size: var(--text-base);
     color: var(--text);

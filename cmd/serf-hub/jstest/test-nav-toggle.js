@@ -9,6 +9,7 @@ const { JSDOM } = require("jsdom");
 
 const appHtml = fs.readFileSync(path.resolve(__dirname, "../templates/app.html"), "utf8");
 const workspaceHtml = fs.readFileSync(path.resolve(__dirname, "../templates/partials/workspace.html"), "utf8");
+const sidebarHtml = fs.readFileSync(path.resolve(__dirname, "../templates/partials/sidebar.html"), "utf8");
 const sidebarSrc = fs.readFileSync(path.resolve(__dirname, "../assets/sidebar.js"), "utf8");
 
 const failures = [];
@@ -20,6 +21,10 @@ pass(/class="app-nav-toggle"/.test(appHtml), "app shell must contain the persist
 pass(/app-nav-toggle[^>]*data-sidebar-toggle/.test(appHtml), ".app-nav-toggle must carry data-sidebar-toggle");
 pass(!/header-hamburger/.test(workspaceHtml),
   "workspace header must NOT carry its own hamburger (nav lives in the shell, so all pages have it)");
+// The drawer needs an in-panel close affordance on phone (the hamburger is
+// covered by the open drawer), wired to the same toggle mechanism.
+pass(/class="sidebar-close"[^>]*data-sidebar-toggle/.test(sidebarHtml),
+  "sidebar must offer a .sidebar-close button wired to data-sidebar-toggle");
 
 // --- Behavioral: clicking a [data-sidebar-toggle] opens/closes the drawer. ---
 (async () => {
