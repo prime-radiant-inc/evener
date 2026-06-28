@@ -2,7 +2,7 @@ package main
 
 import (
 	"bytes"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,7 +85,7 @@ func TestResolveSerfBinaryPath(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := resolveSerfBinaryPath("", hubPath, func(string) (string, error) {
-			return "", fmt.Errorf("should not call lookPath")
+			return "", errors.New("should not call lookPath")
 		})
 		if got != serfPath {
 			t.Fatalf("sibling resolution = %q, want %q", got, serfPath)
@@ -106,7 +106,7 @@ func TestResolveSerfBinaryPath(t *testing.T) {
 
 	t.Run("lookPath error returns empty", func(t *testing.T) {
 		got := resolveSerfBinaryPath("", "/no/such/hub", func(string) (string, error) {
-			return "", fmt.Errorf("not found")
+			return "", errors.New("not found")
 		})
 		if got != "" {
 			t.Fatalf("lookPath error = %q, want empty", got)
