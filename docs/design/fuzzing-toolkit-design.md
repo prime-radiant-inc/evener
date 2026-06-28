@@ -1,6 +1,6 @@
 # Fuzzing + failure-to-regression toolkit — detailed design
 
-**Status:** design, ready to implement. **Date:** 2026-06-28. **Branch:** `wip/fuzzing-toolkit` (worktree `.worktrees/fuzzing-toolkit`).
+**Status:** Phases 0–5 BUILT on `wip/fuzzing-toolkit`; Phase 6+ (§8) is the full-coverage roadmap, each item planned under `docs/design/plans/`. **Date:** 2026-06-28. **Branch:** `wip/fuzzing-toolkit` (worktree `.worktrees/fuzzing-toolkit`).
 **Builds on:** [`docs/research/api-fuzzing-toolkit.md`](../research/api-fuzzing-toolkit.md) — read that first for prior art, the four API surfaces, and why serf is unusually fuzz-ready. This doc is the *how*: package layout, Go signatures, the promoter internals, and a file-by-file build plan.
 
 ## 0. Goal & non-goals
@@ -182,3 +182,28 @@ Acceptance per phase:
 3. **K and N** for flake-guard / stack-hash (start K=5, N=4; tune).
 4. **Nightly budget** per target in `fuzz-nightly` (start 60s).
 5. Whether Phase 2's state model lives as code or is derived from a declarative transition table (prefer the table — it's the reusable artifact).
+
+## 8. Beyond the toolkit — full-coverage roadmap (Phase 6+)
+
+Phases 0–5 are **built** (see git history on `wip/fuzzing-toolkit`). They cover ~6–7 seams: SSE parse, appwire frame/param decode, tool-arg validate, appwire dispatch sequence, hub HTTP, and the openai responses decoder. That is a foundation, **not** whole-codebase coverage. "Fuzz the entire codebase" decomposes into three different investments — only one of which is hard — plus the automation that turns a one-shot into a standing capability.
+
+Each work item below gets its own detailed implementation plan under `docs/design/plans/`. The item text here is the charter (scope + the real seams + rough size + dependencies); the plan doc is the *how*.
+
+### A. More per-surface targets — no new infra, just more `testing.F` (mechanical, high-yield)
+- **8.1 Persistence round-trip + replay-idempotence targets** → `docs/design/plans/01-persistence-roundtrip-targets.md`. Seams: `agent/schema/snapshot.go`, transcript write/replay, the jobstore event log, `agent/schema` session meta. Oracles: decode→encode→decode fixed point; **replay-idempotence** (replaying a persisted log reproduces the same in-memory state). Highest-yield next surface — serf's historical bugs cluster at reload/replay. ~300–500 LoC.
+- **8.2 Codex-compat input/item + config decode targets** → `docs/design/plans/02-codex-compat-and-config-targets.md`. Seams: appwire `InputItem`/item parsing (the codex-compat path), `providers.toml`, plugin manifests, session config. Same decode-surface pattern as Phase 0. ~250–450 LoC.
+
+### B. The stateful agent core — the one real infrastructure investment
+- **8.3 Deterministic offline agent harness + first stateful agent-core target** → `docs/design/plans/03-offline-agent-harness.md`. The 47K-LoC `agent` core is unfuzzed because driving a real turn/job lifecycle deterministically needs a fake LLM, a fake clock, and a sandboxed exec env. The seed already exists: `agent/internal/agenttest.FakeAdapter` (scripted `llm.Response`s). The work: (1) a **fuzz-driven programmable provider** so a `rapid` state machine can drive a session through fuzzed sequences of (LLM responses, tool results, steers, interrupts, job events); (2) a first-class **fake clock** seam (extend the existing `freezeClock` test helper); (3) a **sandboxed `execenv`** (replace/deny over `agent/execenv/local.go`, which runs real commands) — this is also what would unblock fuzzing tool *handler execution*, not just validation. Then one stateful target over the session/turn/job machinery: invariants = no wedge, status monotonicity, no lost turns, transcript↔state consistency. This is the high-effort, high-value piece; everything else in B depends on it. ~800–1500 LoC.
+
+### C. Tooling that multiplies coverage
+- **8.4 Corpus harvesting from recorded traffic** → `docs/design/plans/04-corpus-harvesting.md`. serf already records `RawRequestBody`/`RawResponseBody` and full transcripts. A tool that sanitizes those into `fuzz/corpus/` seeds beats hand-written `f.Add` seeds by orders of magnitude (real provider quirks for free). Highest-leverage tooling item. ~200–400 LoC.
+- **8.5 Unified wire-type → generator registry** → `docs/design/plans/05-unified-schema-registry.md`. Tool args have `schemagen`; appwire params/responses are reflected ad-hoc. One registry mapping every wire type (all 46 `appwire.Methods` params + response types) to a generator lets a single harness cover the whole protocol uniformly instead of one target per surface. Builds on `schemagen`. ~300–500 LoC.
+
+### D. Automation — the difference between a one-shot and a standing capability
+- **8.6 Coverage measurement** → `docs/design/plans/06-coverage-measurement.md`. The honesty tool: without it, "fuzzed the whole codebase" is unverifiable. Run each target's corpus under `-coverprofile`, report per-surface line coverage ("fuzzed nominally" vs "actually exercised"), and gate on it. ~150–300 LoC.
+- **8.7 Nightly CI campaign + auto-triage** → `docs/design/plans/07-nightly-ci-automation.md`. `make fuzz` runs seed corpus in the gate; `fuzz-nightly` is manual. Need a scheduled job running a real per-target budget, with the **promoter auto-filing crashers as a reviewable PR** (closing the failure→test loop unattended) and a found/fixed/quarantined triage record. ~250–500 LoC.
+
+## 9. Roadmap build order
+
+Within Phase 6+: **8.1 → 8.2** first (cheap, mechanical, likeliest payoff), in parallel with **8.6** (coverage measurement — needed to judge everything else). Then **8.4/8.5** (tooling that multiplies the targets). Then **8.3** (the harness — the big rock). Then **8.7** (wrap it all in nightly automation once there are enough targets to be worth scheduling). 8.3 is independent of A/C/D and can start any time resourcing allows; it is sequenced last only because it is the largest and the cheap wins should land first.
