@@ -67,6 +67,30 @@ func TestErrorResponseEncoding(t *testing.T) {
 	}
 }
 
+// TestIDLessFrameRoundTrips pins the codec contract for response/error frames
+// that arrive without an id: the decoder accepts them, and re-encoding omits the
+// empty id (rather than emitting a `null` the decoder would reject) so the frame
+// survives a decode→encode→decode round trip.
+func TestIDLessFrameRoundTrips(t *testing.T) {
+	for _, raw := range []string{`{"error":{}}`, `{"result":{}}`} {
+		var m Message
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			t.Fatalf("%s: decode: %v", raw, err)
+		}
+		encoded, err := json.Marshal(m)
+		if err != nil {
+			t.Fatalf("%s: re-marshal: %v", raw, err)
+		}
+		if bytes.Contains(encoded, []byte(`"id"`)) {
+			t.Fatalf("%s: re-encoded frame leaked an id: %s", raw, encoded)
+		}
+		var m2 Message
+		if err := json.Unmarshal(encoded, &m2); err != nil {
+			t.Fatalf("%s: re-encoded %s failed to re-decode: %v", raw, encoded, err)
+		}
+	}
+}
+
 func TestRejectsJSONRPCField(t *testing.T) {
 	raw := []byte(`{"jsonrpc":"2.0","id":7,"method":"thread/list"}`)
 	var msg Message

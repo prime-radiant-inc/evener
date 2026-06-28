@@ -22,12 +22,10 @@ func FuzzMessageDecode(f *testing.F) {
 		`{"id":null,"method":"x"}`,
 		`{"id":9999999999999999999999,"method":"x"}`,
 		`{"id":{"nested":"object"},"method":"x"}`,
-		// Asymmetric codec case the fuzzer surfaced: an id-less error/result
-		// frame decodes (Message.UnmarshalJSON only probes for the error/result
-		// field), but its zero-value ID re-marshals to `null`, which
-		// ID.UnmarshalJSON then rejects — so it is NOT a round-trip fixed point.
-		// The fixed-point oracle below carves these out (see hasWireID); kept as
-		// a seed so the behavior stays pinned.
+		// Id-less error/result frames: the decoder accepts them (it only probes
+		// for the error/result field), and Response/ErrorResponse.MarshalJSON
+		// omit the empty id so they re-encode to an id-less frame and round-trip
+		// cleanly. Kept as seeds so that fixed point stays pinned.
 		`{"error":{}}`,
 		`{"result":{}}`,
 		`{}`,
@@ -64,13 +62,9 @@ func FuzzMessageDecode(f *testing.F) {
 		}
 
 		// Fixed point: decoding the normalized bytes and re-marshaling must
-		// reproduce the same bytes. This holds for every frame the codec
-		// round-trips by contract — a response/error frame carries the request
-		// id, so we require a wire id first (an id-less response/error is the
-		// asymmetric case seeded above and is out of contract).
-		if !hasWireID(m) {
-			return
-		}
+		// reproduce the same bytes. This holds for every frame the codec decodes
+		// cleanly, including id-less response/error frames now that their
+		// MarshalJSON omits the empty id instead of emitting an unreadable null.
 		var m2 Message
 		if err := json.Unmarshal(encoded, &m2); err != nil {
 			t.Fatalf("re-marshaled frame failed to re-decode: %v\n input=%q\n encoded=%q", err, raw, encoded)
@@ -83,25 +77,6 @@ func FuzzMessageDecode(f *testing.F) {
 			t.Fatalf("encode is not idempotent after normalization:\n input=%q\n once=%q\n twice=%q", raw, encoded, encoded2)
 		}
 	})
-}
-
-// hasWireID reports whether the message carries a non-null id on the wire.
-// Requests always require one; responses and errors carry the request's id by
-// contract. A frame whose id marshals to `null` cannot round-trip because
-// ID.UnmarshalJSON rejects null, so the fixed-point oracle excludes it.
-func hasWireID(m Message) bool {
-	ids := messageIDs(m)
-	if m.Notification != nil {
-		return true // notifications legitimately have no id
-	}
-	if len(ids) == 0 {
-		return false
-	}
-	raw, err := json.Marshal(ids[0])
-	if err != nil {
-		return false
-	}
-	return string(raw) != "null"
 }
 
 // messageIDs returns the IDs carried by a decoded message, for the accessor
