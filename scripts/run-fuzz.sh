@@ -24,6 +24,8 @@ TARGETS=(
 	".:./appwire:FuzzMessageDecode"
 	".:./appwire:FuzzMethodParams"
 	"agent:.:FuzzToolArgsValidate"
+	"llm:./providers/openai:FuzzOpenAIResponsesMetamorphic"
+	".:./cmd/serf-hub:FuzzWebHandler"
 )
 
 duration="60s"
