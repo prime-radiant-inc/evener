@@ -13,8 +13,8 @@ func TestConfigDefaults(t *testing.T) {
 	if cfg.IssuerBaseURL != "https://auth.openai.com" {
 		t.Fatalf("IssuerBaseURL = %q, want %q", cfg.IssuerBaseURL, "https://auth.openai.com")
 	}
-	if cfg.ClientID == "" {
-		t.Fatal("ClientID is empty")
+	if cfg.ClientID != ClientID {
+		t.Fatalf("ClientID = %q, want %q", cfg.ClientID, ClientID)
 	}
 	if cfg.RedirectPath != "/auth/callback" {
 		t.Fatalf("RedirectPath = %q, want %q", cfg.RedirectPath, "/auth/callback")

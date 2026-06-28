@@ -100,6 +100,12 @@ func TestTurnsFromFileProjectsPreludeAndAPICallError(t *testing.T) {
 	if turns[1].Status != appwire.TurnStatusFailed || turns[1].Error == nil || turns[1].Error.Title != "Provider error" {
 		t.Fatalf("error turn=%+v", turns[1])
 	}
+	if turns[1].Error.Message != "provider failed" {
+		t.Fatalf("error turn Message=%q, want %q", turns[1].Error.Message, "provider failed")
+	}
+	if turns[1].Error.Source != "provider" {
+		t.Fatalf("error turn Source=%q, want %q", turns[1].Error.Source, "provider")
+	}
 }
 
 func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {

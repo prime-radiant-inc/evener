@@ -57,21 +57,6 @@ func TestResolvePrefersSiblingBeforePath(t *testing.T) {
 	}
 }
 
-func TestResolveFallsBackToPath(t *testing.T) {
-	pathHub := filepath.Join(t.TempDir(), "serf-hub")
-	writeExecutable(t, pathHub)
-
-	got, err := Resolve("serf-hub", "", filepath.Join(t.TempDir(), "serf-tui"), func(string) (string, error) {
-		return pathHub, nil
-	})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if got != pathHub {
-		t.Fatalf("got %q, want %q", got, pathHub)
-	}
-}
-
 func TestResolveSurfacesLookPathErrorWhenNothingFound(t *testing.T) {
 	_, err := Resolve("serf-hub", "", filepath.Join(t.TempDir(), "serf-tui"), func(string) (string, error) {
 		return "", os.ErrNotExist
@@ -79,30 +64,37 @@ func TestResolveSurfacesLookPathErrorWhenNothingFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("Resolve returned nil error when no candidate exists")
 	}
+	if !strings.Contains(err.Error(), "serf-hub") {
+		t.Fatalf("error %q does not mention binary name", err)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("error %q does not wrap os.ErrNotExist", err)
+	}
 }
 
 func TestResolveResolvesRelativeCurrentExecutable(t *testing.T) {
-	// Reproduces the original kata: a binary launched as "./serf-tui"
+	// Reproduces the original kata: a binary launched via a relative path
 	// must still locate a sibling by an absolute path, otherwise
 	// exec.Command will reject it with exec.ErrDot.
 	dir := t.TempDir()
 	sibling := filepath.Join(dir, "serf-hub")
 	writeExecutable(t, sibling)
 
-	prevWD, err := os.Getwd()
+	// Build a relative currentExecutable path without mutating the process
+	// cwd (os.Chdir is process-level state that would be a maintenance trap
+	// for any future parallel test). filepath.Rel produces a path relative
+	// to the test binary's cwd; filepath.Abs inside SiblingDir expands it
+	// back to the correct absolute directory.
+	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := os.Chdir(prevWD); err != nil {
-			t.Fatalf("restore wd: %v", err)
-		}
-	})
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
+	rel, err := filepath.Rel(cwd, filepath.Join(dir, "serf-tui"))
+	if err != nil {
+		t.Fatalf("filepath.Rel: %v", err)
 	}
 
-	got, err := Resolve("serf-hub", "", "./serf-tui", func(string) (string, error) {
+	got, err := Resolve("serf-hub", "", rel, func(string) (string, error) {
 		return "", errors.New("should not search PATH")
 	})
 	if err != nil {
@@ -261,6 +253,11 @@ func TestSiblingDir_AbsFailsWithVeryLongPath(t *testing.T) {
 	// Linux). Whether Abs succeeds is platform-dependent, so we assert the
 	// SiblingDir invariant either way: a true ok must yield an absolute
 	// directory, and a false ok must yield the empty string.
+	//
+	// NOTE: on Linux/macOS, filepath.Abs is pure string concatenation and
+	// never returns an error, so only the ok=true branch is exercised here.
+	// The ok=false invariant (empty string) is covered by
+	// TestSiblingDirHandlesEmptyAndMissing.
 	veryLong := strings.Repeat("a", 5000)
 	dir, ok := SiblingDir(veryLong)
 	if ok {

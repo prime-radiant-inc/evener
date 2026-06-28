@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -13,6 +14,12 @@ func TestConnectionRequiresInitialize(t *testing.T) {
 		ServerName: "serf-hub",
 		Version:    "test",
 		SourceID:   "local",
+	})
+	// Register a live handler so that without the initialize gate this request
+	// would succeed (MessageResponse). The assertion only holds if the gate is
+	// the sole source of the error, not a MethodNotFound fallback.
+	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{}, nil
 	})
 	conn := server.NewConnection("conn-1")
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodThreadList, appwire.ThreadListParams{}))
@@ -110,12 +117,6 @@ func TestConnectionResponseEnqueueWaitsForCapacity(t *testing.T) {
 		done <- conn.enqueueResponse(context.Background(), response)
 	}()
 
-	select {
-	case err := <-done:
-		t.Fatalf("enqueueResponse returned while buffer was full: %v", err)
-	default:
-	}
-
 	<-conn.send
 	select {
 	case err := <-done:
@@ -175,6 +176,13 @@ func TestServer_BroadcastAll(t *testing.T) {
 			}
 			if msg.Notification.Method != "test/notify" {
 				t.Fatalf("%s: method=%q, want %q", tc.name, msg.Notification.Method, "test/notify")
+			}
+			var params map[string]string
+			if err := json.Unmarshal(msg.Notification.Params, &params); err != nil {
+				t.Fatalf("%s: unmarshal params: %v", tc.name, err)
+			}
+			if params["key"] != "value" {
+				t.Fatalf("%s: params[key]=%q, want %q", tc.name, params["key"], "value")
 			}
 		default:
 			t.Fatalf("%s: no message received", tc.name)

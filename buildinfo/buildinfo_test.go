@@ -61,6 +61,25 @@ func TestVersionDirty(t *testing.T) {
 	}
 }
 
+func TestVersionDirtyWithBuildTime(t *testing.T) {
+	savedSHA := GitSHA
+	savedDirty := GitDirty
+	savedTime := BuildTime
+	defer func() { GitSHA = savedSHA; GitDirty = savedDirty; BuildTime = savedTime }()
+
+	GitSHA = "a69df56"
+	GitDirty = "true"
+	BuildTime = "2026-02-28T20:00:00Z"
+
+	if got := Version(); got != "a69df56-dirty" {
+		t.Errorf("Version() = %q, want %q", got, "a69df56-dirty")
+	}
+	want := "a69df56-dirty (2026-02-28T20:00:00Z)"
+	if got := VersionLong(); got != want {
+		t.Errorf("VersionLong() = %q, want %q", got, want)
+	}
+}
+
 func TestUpgradeChannelTracksSnapshotOnly(t *testing.T) {
 	saved := Channel
 	defer func() { Channel = saved }()

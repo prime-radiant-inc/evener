@@ -96,7 +96,20 @@ func literalUsesEnvName(value, name string) bool {
 	if genericInheritedEnvName(name) {
 		return false
 	}
-	return strings.Contains(value, name)
+	// Use a word-boundary check: the character immediately after the matched
+	// name (if any) must not be an env-name character, so that e.g. "SERF_FOO"
+	// does not spuriously match inside "SERF_FOO_BAR".
+	for {
+		idx := strings.Index(value, name)
+		if idx < 0 {
+			return false
+		}
+		end := idx + len(name)
+		if end == len(value) || !envNameChar(value[end]) {
+			return true
+		}
+		value = value[end:]
+	}
 }
 
 func containsEnvExpansion(value, name string) bool {

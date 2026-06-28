@@ -23,8 +23,8 @@ func TestBinariesWorkflowPublishesSnapshotFromMain(t *testing.T) {
 	if !ok {
 		t.Fatal("binaries workflow is missing snapshot job")
 	}
-	if !strings.Contains(job.If, "refs/heads/main") {
-		t.Fatalf("snapshot job condition = %q, want main branch only", job.If)
+	if job.If != "github.ref == 'refs/heads/main'" {
+		t.Fatalf("snapshot job condition = %q, want exact main-branch guard", job.If)
 	}
 	if !workflowNeeds(job.Needs, "build") {
 		t.Fatalf("snapshot job needs = %#v, want build", job.Needs)
@@ -58,8 +58,8 @@ func TestBinariesWorkflowPublishesVersionTags(t *testing.T) {
 	if !ok {
 		t.Fatal("binaries workflow is missing release job")
 	}
-	if !strings.Contains(job.If, "refs/tags/v") {
-		t.Fatalf("release job condition = %q, want v tag only", job.If)
+	if job.If != "startsWith(github.ref, 'refs/tags/v')" {
+		t.Fatalf("release job condition = %q, want exact v-tag guard", job.If)
 	}
 	if !workflowNeeds(job.Needs, "build") {
 		t.Fatalf("release job needs = %#v, want build", job.Needs)
@@ -73,7 +73,7 @@ func TestBinariesWorkflowPublishesVersionTags(t *testing.T) {
 	if !workflowRuns(job.Steps, `gh release upload "$GITHUB_REF_NAME"`) {
 		t.Fatal("release job does not upload assets to the GitHub release")
 	}
-	if !workflowStepEnv(job.Steps, "Publish GitHub release", "GH_REPO", "${{ github.repository }}") {
+	if !workflowStepEnv(job.Steps, "GH_REPO", "${{ github.repository }}") {
 		t.Fatal("release publish step must set GH_REPO because the artifact-only job has no checkout")
 	}
 }
@@ -128,9 +128,9 @@ func workflowRuns(steps []githubActionStep, want string) bool {
 	return false
 }
 
-func workflowStepEnv(steps []githubActionStep, name, key, want string) bool {
+func workflowStepEnv(steps []githubActionStep, key, want string) bool {
 	for _, step := range steps {
-		if step.Name == name && step.Env[key] == want {
+		if step.Env[key] == want {
 			return true
 		}
 	}

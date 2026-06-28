@@ -18,7 +18,41 @@ func TestTurnStatusHelpersUseCodexVocabulary(t *testing.T) {
 	if IsActiveTurnStatus("running") {
 		t.Fatal("running should not be accepted")
 	}
-	if !IsTerminalTurnStatus(TurnStatusInterrupted) {
-		t.Fatal("interrupted should be terminal")
+
+	terminalStatuses := []string{
+		TurnStatusCompleted,
+		TurnStatusFailed,
+		TurnStatusInterrupted,
+	}
+	for _, status := range terminalStatuses {
+		if !IsTerminalTurnStatus(status) {
+			t.Errorf("status %q should be terminal", status)
+		}
+	}
+	if IsTerminalTurnStatus(TurnStatusInProgress) {
+		t.Fatal("inProgress should not be terminal")
+	}
+}
+
+func TestItemStatusHelpers(t *testing.T) {
+	if !IsActiveItemStatus(TurnStatusInProgress) {
+		t.Fatal("inProgress should be active item status")
+	}
+	if IsActiveItemStatus("running") {
+		t.Fatal("running should not be accepted as active item status")
+	}
+
+	terminalStatuses := []string{
+		TurnStatusCompleted,
+		TurnStatusFailed,
+		TurnStatusInterrupted,
+	}
+	for _, status := range terminalStatuses {
+		if !IsTerminalItemStatus(status) {
+			t.Errorf("status %q should be terminal item status", status)
+		}
+	}
+	if IsTerminalItemStatus(TurnStatusInProgress) {
+		t.Fatal("inProgress should not be terminal item status")
 	}
 }

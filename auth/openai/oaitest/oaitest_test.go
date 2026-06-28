@@ -1,6 +1,7 @@
 package oaitest
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -9,6 +10,13 @@ import (
 
 func TestIsolateOpenAIAuthReturnsStateDirForStorage(t *testing.T) {
 	stateDir := IsolateOpenAIAuth(t)
+
+	// F2: the path returned by IsolateOpenAIAuth must equal what DefaultStateDir()
+	// computes from XDG_STATE_HOME — verifies env setup and returned path stay consistent.
+	if got := authopenai.DefaultStateDir(); got != stateDir {
+		t.Fatalf("DefaultStateDir() = %q, want %q (returned by IsolateOpenAIAuth)", got, stateDir)
+	}
+
 	record := authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
@@ -29,7 +37,8 @@ func TestIsolateOpenAIAuthReturnsStateDirForStorage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAuth() error = %v", err)
 	}
-	if loaded.AccessToken != record.AccessToken {
-		t.Fatalf("loaded.AccessToken = %q, want %q", loaded.AccessToken, record.AccessToken)
+	// F1: assert all fields survive the round-trip, not just AccessToken.
+	if !reflect.DeepEqual(loaded, record) {
+		t.Fatalf("LoadAuth() round-trip mismatch:\n  got  %+v\n  want %+v", loaded, record)
 	}
 }

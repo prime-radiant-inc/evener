@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/kimicoding"
 )
@@ -254,22 +253,28 @@ func TestResolveProfileWithLiveWindow_OpenAICompatAppliesLiveWindow(t *testing.T
 // zero result from the live lookup (no creds / offline) preserves the
 // catalog-derived window rather than zeroing it out.
 func TestResolveProfileWithLiveWindow_FallsBackWhenLookupZero(t *testing.T) {
-	stubQueryModelContextWindow(t, func(provider, model string) int { return 0 })
+	const model = "moonshot/kimi-latest-128k"
 
-	const catalogModel = "moonshot/kimi-latest-128k"
-	cat := llm.EmbeddedModelCatalog()
-	mi := cat.GetModelInfo(catalogModel)
-	if mi == nil || mi.ContextWindow == 0 {
-		t.Fatalf("catalog model %q missing or zero window; pick another", catalogModel)
+	// Capture the catalog-derived window via the network-free resolver before
+	// the stub is installed. This uses the same code path the resolver itself
+	// uses internally, avoiding a fragile direct catalog key lookup.
+	baseline, err := ResolveProfileForProvider("kimi", model)
+	if err != nil {
+		t.Fatalf("ResolveProfileForProvider: %v", err)
 	}
-	wantCtx := mi.ContextWindow
+	wantCtx := baseline.ContextWindowSize()
+	if wantCtx == 0 {
+		t.Fatal("baseline catalog window is 0; cannot verify fallback")
+	}
+
+	stubQueryModelContextWindow(t, func(provider, model string) int { return 0 })
 
 	cfg := providercfg.Config{
 		Instances: []providercfg.InstanceConfig{
 			{Name: "kc", Type: "kimi"},
 		},
 	}
-	p, err := ResolveProfileWithLiveWindow(cfg, "kc/"+catalogModel)
+	p, err := ResolveProfileWithLiveWindow(cfg, "kc/"+model)
 	if err != nil {
 		t.Fatalf("ResolveProfileWithLiveWindow: %v", err)
 	}
@@ -416,7 +421,11 @@ func TestQueryModelContextWindow_NonKimiOmitsCodingUserAgent(t *testing.T) {
 	if got != 200000 {
 		t.Fatalf("queryModelContextWindow = %d, want 200000", got)
 	}
-	if gotUA == kimicoding.UserAgent {
-		t.Fatalf("User-Agent = %q, must not announce the Kimi coding-agent UA for glm", gotUA)
+	// Assert the exact expected UA: no explicit header set → Go default.
+	// Asserting the exact value catches any mutation that injects a wrong
+	// explicit UA (e.g. "anthropic-agent/1.0") which the negative-only
+	// check would silently pass.
+	if gotUA != "Go-http-client/1.1" {
+		t.Fatalf("User-Agent = %q, want %q (must not inject any explicit UA for non-kimi provider)", gotUA, "Go-http-client/1.1")
 	}
 }

@@ -3,24 +3,17 @@ package scenarios
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
 
-func TestScenarioDocsUseCanonicalActiveState(t *testing.T) {
-	stale := []string{
-		`[ "$state" = "processing" ]`,
-		`state=processing`,
-		`state= processing`,
-		`state: processing`,
-		`state == "processing"`,
-		`state = "processing"`,
-		`status=processing`,
-		`status: processing`,
-		`{ state: "processing"`,
-		`data-state="processing"`,
-	}
+// staleStateRE matches any form of state/status being set or compared to the
+// stale "processing" value (e.g. state=processing, "state": "processing",
+// state='processing', status: processing). Use the canonical "active" value instead.
+var staleStateRE = regexp.MustCompile(`(?i)(state|status)[=: '"]+processing`)
 
+func TestScenarioDocsUseCanonicalActiveState(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -34,11 +27,8 @@ func TestScenarioDocsUseCanonicalActiveState(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		text := string(body)
-		for _, needle := range stale {
-			if strings.Contains(text, needle) {
-				t.Fatalf("%s contains stale state assertion %q; use canonical active", entry.Name(), needle)
-			}
+		if m := staleStateRE.FindString(string(body)); m != "" {
+			t.Fatalf("%s contains stale state form %q; use canonical active state", entry.Name(), m)
 		}
 	}
 }

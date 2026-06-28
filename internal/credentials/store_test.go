@@ -12,8 +12,8 @@ func TestStore_LoadMissingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStore missing: %v", err)
 	}
-	if v, _ := s.Get("anthropic"); v != "" {
-		t.Errorf("Get on empty store returned %q", v)
+	if v, src := s.Get("anthropic"); v != "" || src != SourceAbsent {
+		t.Errorf("Get on empty store returned %q/%v, want \"\"/absent", v, src)
 	}
 }
 
@@ -44,6 +44,14 @@ func TestStore_SetGetClear(t *testing.T) {
 	}
 	if v, _ := s2.Get("anthropic"); v != "" {
 		t.Errorf("after Clear, value = %q", v)
+	}
+	// Verify Clear persists to disk: a fresh LoadStore must not see the key.
+	s3, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore after Clear: %v", err)
+	}
+	if v, src := s3.Get("anthropic"); v != "" || src != SourceAbsent {
+		t.Errorf("after Clear+reload, value = %q src = %q, want \"\"/absent", v, src)
 	}
 }
 
@@ -103,7 +111,8 @@ func TestResolveKeyNameThenTypeEnv(t *testing.T) {
 	if v, src := s.ResolveKey("work2", "openai"); v != "env-openai" || src != SourceEnv {
 		t.Fatalf("type-env fallback = %q/%v, want env-openai/env", v, src)
 	}
-	// 3) nothing anywhere → absent
+	// 3) nothing anywhere → absent; isolate from any ambient KIMI_API_KEY
+	t.Setenv("KIMI_API_KEY", "")
 	if v, src := s.ResolveKey("nope", "kimi"); v != "" || src != SourceAbsent {
 		t.Fatalf("absent = %q/%v", v, src)
 	}
@@ -150,7 +159,7 @@ func TestStore_List(t *testing.T) {
 	if bySource["openrouter"] != SourceFile {
 		t.Errorf("openrouter source = %q", bySource["openrouter"])
 	}
-	if _, ok := bySource["ollama"]; !ok {
-		t.Errorf("ollama (no creds needed) should be in List")
+	if bySource["ollama"] != SourceNone {
+		t.Errorf("ollama source = %q, want none", bySource["ollama"])
 	}
 }

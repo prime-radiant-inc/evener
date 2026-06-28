@@ -61,6 +61,20 @@ func TestCodexAppServerCoreFixtureCompatibility(t *testing.T) {
 	if err := json.Unmarshal([]byte(turnStart), &msg); err != nil {
 		t.Fatalf("unmarshal turn/start response: %v", err)
 	}
+	data, err = json.Marshal(msg.Response.Result)
+	if err != nil {
+		t.Fatalf("marshal turn/start result: %v", err)
+	}
+	var turnResp TurnStartResponse
+	if err := json.Unmarshal(data, &turnResp); err != nil {
+		t.Fatalf("decode TurnStartResponse: %v", err)
+	}
+	if turnResp.Turn.ID != "turn_456" {
+		t.Fatalf("TurnStartResponse.Turn.ID=%q, want %q", turnResp.Turn.ID, "turn_456")
+	}
+	if turnResp.Turn.Status != TurnStatusInProgress {
+		t.Fatalf("TurnStartResponse.Turn.Status=%q, want %q", turnResp.Turn.Status, TurnStatusInProgress)
+	}
 
 	const itemStarted = `{
 		"method": "item/started",
