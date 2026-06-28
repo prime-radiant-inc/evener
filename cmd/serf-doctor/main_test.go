@@ -162,13 +162,21 @@ func fixtureWithAPILogData(t *testing.T) (base, sid string) {
 	return base, sid
 }
 
+// treeGrandchildSID is the delegate two hops below the root in
+// fixtureWithTreeData; it is only reachable when the depth limit allows a
+// second expansion hop.
+const treeGrandchildSID = "01CMDGRANDCHILD0000000001"
+
 // fixtureWithTreeData writes a session state tree with delegate_created events
-// in jobs.jsonl and observed_by in meta.json so cmdTree has edges to walk.
+// in jobs.jsonl and observed_by in meta.json so cmdTree has edges to walk. The
+// tree is two delegate hops deep (root -> child -> grandchild) so depth limits
+// have a visible effect.
 func fixtureWithTreeData(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
 	sid = "01CMDTESTSESSIONXXXXXXXXXXX"
 	childSID := "01CMDCHILD000000000000001"
+	grandchildSID := treeGrandchildSID
 	observerSID := "01CMDOBSERVER000000000001"
 	bucket := filepath.Join(base, "serf", "projects", "00aa00bb00cc00dd")
 	sess := filepath.Join(bucket, "sessions")
@@ -177,6 +185,10 @@ func fixtureWithTreeData(t *testing.T) (base, sid string) {
 	}
 	// Create a child session directory so the tree can resolve it.
 	if err := os.MkdirAll(filepath.Join(sess, childSID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Create a grandchild session directory (delegate under the child).
+	if err := os.MkdirAll(filepath.Join(sess, grandchildSID), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// Header + one api_call for the root transcript.
@@ -188,16 +200,27 @@ func fixtureWithTreeData(t *testing.T) (base, sid string) {
 	// Child transcript (minimal).
 	mustWrite(t, filepath.Join(sess, childSID+".transcript.jsonl"),
 		`{"kind":"header","session_id":"`+childSID+`"}`+"\n")
+	// Grandchild transcript (minimal).
+	mustWrite(t, filepath.Join(sess, grandchildSID+".transcript.jsonl"),
+		`{"kind":"header","session_id":"`+grandchildSID+`"}`+"\n")
 	// Root meta with observed_by for observer edges.
 	mustWrite(t, filepath.Join(sess, sid+".meta.json"),
 		`{"id":"`+sid+`","observed_by":["`+observerSID+`"]}`)
 	// Child meta (minimal).
 	mustWrite(t, filepath.Join(sess, childSID+".meta.json"), `{"id":"`+childSID+`"}`)
+	// Grandchild meta (minimal).
+	mustWrite(t, filepath.Join(sess, grandchildSID+".meta.json"), `{"id":"`+grandchildSID+`"}`)
 	// Jobs with a delegate_created event linking root -> child.
 	jobs := strings.Join([]string{
 		`{"kind":"delegate_created","seq":1,"delegate_id":"d1","delegate":{"child_session_id":"` + childSID + `","transcript_ref":"` + childSID + `","agent_type":"test-agent","owner_session_id":"` + sid + `","resumable":true}}`,
 	}, "\n") + "\n"
 	mustWrite(t, filepath.Join(sess, sid, "jobs.jsonl"), jobs)
+	// Child jobs with a delegate_created event linking child -> grandchild, so
+	// the tree has a second hop that depth limits can elide.
+	childJobs := strings.Join([]string{
+		`{"kind":"delegate_created","seq":1,"delegate_id":"d2","delegate":{"child_session_id":"` + grandchildSID + `","transcript_ref":"` + grandchildSID + `","agent_type":"test-agent","owner_session_id":"` + childSID + `","resumable":true}}`,
+	}, "\n") + "\n"
+	mustWrite(t, filepath.Join(sess, childSID, "jobs.jsonl"), childJobs)
 	return base, sid
 }
 
@@ -273,12 +296,25 @@ func TestRun_APILogFlags(t *testing.T) {
 	})
 
 	t.Run("summary", func(t *testing.T) {
+		// The per-call table emits a header column "uncached" and per-call model
+		// rows ("gpt-test"). The summary view must omit the whole table.
+		var full, fullErr bytes.Buffer
+		if code := run([]string{"apilog", "--state-dir", base, sid}, &full, &fullErr); code != 0 {
+			t.Fatalf("full run exit %d, stderr=%s", code, fullErr.String())
+		}
+		if !strings.Contains(full.String(), "uncached") {
+			t.Fatalf("full apilog should render the per-call table header; got:\n%s", full.String())
+		}
+
 		var out, errb bytes.Buffer
 		if code := run([]string{"apilog", "--state-dir", base, "--summary", sid}, &out, &errb); code != 0 {
 			t.Fatalf("exit %d, stderr=%s", code, errb.String())
 		}
-		if strings.Contains(out.String(), "round 1") {
-			t.Errorf("--summary should not list per-call rows; got:\n%s", out.String())
+		if strings.Contains(out.String(), "uncached") {
+			t.Errorf("--summary should omit the per-call table header; got:\n%s", out.String())
+		}
+		if strings.Contains(out.String(), "gpt-test") {
+			t.Errorf("--summary should not list per-call model rows; got:\n%s", out.String())
 		}
 	})
 }
@@ -339,12 +375,26 @@ func TestRun_TreeDepthAndObservers(t *testing.T) {
 	base, sid := fixtureWithTreeData(t)
 
 	t.Run("depth", func(t *testing.T) {
-		var out, errb bytes.Buffer
-		if code := run([]string{"tree", "--state-dir", base, "--depth", "1", sid}, &out, &errb); code != 0 {
-			t.Fatalf("exit %d, stderr=%s", code, errb.String())
+		// At --depth=1 the child is shown but its grandchild is elided, with a
+		// depth-limit note marking the truncation.
+		var shallow, shallowErr bytes.Buffer
+		if code := run([]string{"tree", "--state-dir", base, "--depth", "1", sid}, &shallow, &shallowErr); code != 0 {
+			t.Fatalf("exit %d, stderr=%s", code, shallowErr.String())
 		}
-		if !strings.Contains(out.String(), sid) {
-			t.Errorf("--depth=1 should still show root; got:\n%s", out.String())
+		if !strings.Contains(shallow.String(), "depth limit (children not expanded)") {
+			t.Errorf("--depth=1 should note the elided grandchild; got:\n%s", shallow.String())
+		}
+		if strings.Contains(shallow.String(), treeGrandchildSID) {
+			t.Errorf("--depth=1 should not expand to the grandchild; got:\n%s", shallow.String())
+		}
+
+		// At --depth=2 the grandchild is reached and printed.
+		var deep, deepErr bytes.Buffer
+		if code := run([]string{"tree", "--state-dir", base, "--depth", "2", sid}, &deep, &deepErr); code != 0 {
+			t.Fatalf("exit %d, stderr=%s", code, deepErr.String())
+		}
+		if !strings.Contains(deep.String(), treeGrandchildSID) {
+			t.Errorf("--depth=2 should expand to the grandchild; got:\n%s", deep.String())
 		}
 	})
 

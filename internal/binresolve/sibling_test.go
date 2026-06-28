@@ -205,7 +205,13 @@ func TestIsExecutable_NonExistent(t *testing.T) {
 
 func TestIsExecutable_Directory(t *testing.T) {
 	dir := t.TempDir()
-	// Create a sibling binary next to a dir (currentExecutable points to a dir).
+	// The sibling target "serf-hub" IS a directory: it exists next to the
+	// running binary and carries 0o755 (so its execute bits are set), but a
+	// directory must never be accepted as an executable. Resolve must
+	// reject it and fall through to the PATH lookup hook, which here errors.
+	if err := os.Mkdir(filepath.Join(dir, "serf-hub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	_, err := Resolve("serf-hub", "", filepath.Join(dir, "serf-tui"), func(string) (string, error) {
 		return "", errors.New("should not reach PATH")
 	})
@@ -251,14 +257,18 @@ func TestResolve_SiblingExistsButNotExecutable_FallsThroughToPATH(t *testing.T) 
 
 func TestSiblingDir_AbsFailsWithVeryLongPath(t *testing.T) {
 	// filepath.Abs on an extremely long path may fail on some platforms.
-	// Construct a path that exceeds typical limits (e.g., 4096 bytes on Linux).
+	// Construct a path that exceeds typical limits (e.g., 4096 bytes on
+	// Linux). Whether Abs succeeds is platform-dependent, so we assert the
+	// SiblingDir invariant either way: a true ok must yield an absolute
+	// directory, and a false ok must yield the empty string.
 	veryLong := strings.Repeat("a", 5000)
-	_, ok := SiblingDir(veryLong)
+	dir, ok := SiblingDir(veryLong)
 	if ok {
-		// On some platforms Abs may succeed even for very long strings, so
-		// we only assert that it does not panic. The ok value is platform-dependent.
-		// However, if ok is true, the returned dir must be absolute.
-		// We already validated that in other tests, so we just check no panic here.
+		if !filepath.IsAbs(dir) {
+			t.Fatalf("SiblingDir returned ok=true with non-absolute dir %q", dir)
+		}
+	} else if dir != "" {
+		t.Fatalf("SiblingDir returned ok=false with non-empty dir %q", dir)
 	}
 }
 

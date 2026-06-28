@@ -1,6 +1,7 @@
 package fspaths_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -100,23 +101,21 @@ func TestCompleteDirs(t *testing.T) {
 	})
 
 	t.Run("limit greater than 30 is capped", func(t *testing.T) {
-		// Create many dirs.
+		// Create more than 30 uniquely-named dirs so the cap is the only
+		// thing that can hold the result count down to 30.
 		bigHome := t.TempDir()
 		t.Setenv("HOME", bigHome)
 		for i := 0; i < 40; i++ {
-			if err := os.MkdirAll(filepath.Join(bigHome, "dir"+string(rune('0'+i%10))), 0o755); err != nil {
-				// If names collide that's fine; we just need enough dirs.
-				if err := os.MkdirAll(filepath.Join(bigHome, "dir"+string(rune('a'+i))), 0o755); err != nil {
-					t.Fatal(err)
-				}
+			if err := os.MkdirAll(filepath.Join(bigHome, fmt.Sprintf("dir%02d", i)), 0o755); err != nil {
+				t.Fatal(err)
 			}
 		}
 		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: bigHome + "/", Limit: 100})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(resp.Data) > 30 {
-			t.Fatalf("expected at most 30 entries, got %d", len(resp.Data))
+		if len(resp.Data) != 30 {
+			t.Fatalf("expected exactly 30 entries (capped), got %d", len(resp.Data))
 		}
 	})
 
