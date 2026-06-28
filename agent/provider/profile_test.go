@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"primeradiant.com/serf/agent/internal/tool"
@@ -64,8 +65,9 @@ func TestOpenRouterAnthropicProfile_OneMillionContext(t *testing.T) {
 	if p.ContextWindowSize() != 1_000_000 {
 		t.Errorf("openrouter-anthropic [1m] context = %d, want 1000000", p.ContextWindowSize())
 	}
-	if got := p.ReasoningEffortLevels(); len(got) != 3 {
-		t.Errorf("effort levels = %v, want 3 (opus-4-5 family)", got)
+	wantEfforts := []string{"low", "medium", "high"}
+	if got := p.ReasoningEffortLevels(); !reflect.DeepEqual(got, wantEfforts) {
+		t.Errorf("effort levels = %v, want %v (opus-4-5 family)", got, wantEfforts)
 	}
 }
 
@@ -75,8 +77,9 @@ func TestOpenRouterAnthropicProfile_OneMillionContext(t *testing.T) {
 // supported for a model that tops out at "high".
 func TestAnthropicProfile_EffortLevelsForOneMillionSuffix(t *testing.T) {
 	p := newAnthropicProfile("claude-opus-4-5[1m]")
-	if got := p.ReasoningEffortLevels(); len(got) != 3 {
-		t.Fatalf("ReasoningEffortLevels() = %v, want 3 (opus-4-5 family, 1M suffix stripped)", got)
+	wantEfforts := []string{"low", "medium", "high"}
+	if got := p.ReasoningEffortLevels(); !reflect.DeepEqual(got, wantEfforts) {
+		t.Fatalf("ReasoningEffortLevels() = %v, want %v (opus-4-5 family, 1M suffix stripped)", got, wantEfforts)
 	}
 }
 
@@ -86,12 +89,14 @@ func TestAnthropicProfile_EffortLevelsForOneMillionSuffix(t *testing.T) {
 // buildModelRequest would treat "max" as supported on the new model.
 func TestAnthropicProfile_WithModelReResolvesEffortLevels(t *testing.T) {
 	p := newAnthropicProfile("claude-opus-4-6")
-	if got := p.ReasoningEffortLevels(); len(got) != 4 {
-		t.Fatalf("opus-4-6 levels = %v, want 4 (low,medium,high,max)", got)
+	wantOpus46 := []string{"low", "medium", "high", "max"}
+	if got := p.ReasoningEffortLevels(); !reflect.DeepEqual(got, wantOpus46) {
+		t.Fatalf("opus-4-6 levels = %v, want %v (low,medium,high,max)", got, wantOpus46)
 	}
 	q := p.WithModel("claude-opus-4-5-20251101")
-	if got := q.ReasoningEffortLevels(); len(got) != 3 {
-		t.Fatalf("WithModel(opus-4-5) levels = %v, want 3 (re-resolved, not the stale opus-4-6 set)", got)
+	wantOpus45 := []string{"low", "medium", "high"}
+	if got := q.ReasoningEffortLevels(); !reflect.DeepEqual(got, wantOpus45) {
+		t.Fatalf("WithModel(opus-4-5) levels = %v, want %v (re-resolved, not the stale opus-4-6 set)", got, wantOpus45)
 	}
 }
 
@@ -153,6 +158,11 @@ func TestStandardProfilesAdvertiseJobControlWithoutLegacyAgentControl(t *testing
 			for _, name := range []string{"delegate", "job_watch", "delegate_send", "job_status", "job_list", "job_stop"} {
 				if !have[name] {
 					t.Errorf("profile missing job-control tool %q", name)
+				}
+			}
+			for _, legacy := range []string{"agent_control", "agent_list"} {
+				if have[legacy] {
+					t.Errorf("profile must NOT advertise legacy tool %q", legacy)
 				}
 			}
 		})

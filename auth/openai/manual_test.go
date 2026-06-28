@@ -1,6 +1,9 @@
 package openai
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestParseRedirectURLExtractsCodeAndState(t *testing.T) {
 	code, state, err := ParseRedirectURL("http://127.0.0.1:1455/callback?code=auth-code&state=expected-state")
@@ -21,12 +24,18 @@ func TestParseRedirectURLRejectsMissingCode(t *testing.T) {
 	if err == nil {
 		t.Fatal("ParseRedirectURL() error = nil, want missing code error")
 	}
+	if !errors.Is(err, ErrMissingCode) {
+		t.Fatalf("ParseRedirectURL() error = %v, want ErrMissingCode", err)
+	}
 }
 
 func TestParseRedirectURLRejectsInvalidURLShape(t *testing.T) {
 	_, _, err := ParseRedirectURL("http://%")
 	if err == nil {
 		t.Fatal("ParseRedirectURL() error = nil, want invalid URL error")
+	}
+	if !errors.Is(err, ErrInvalidRedirectURL) {
+		t.Fatalf("ParseRedirectURL() error = %v, want ErrInvalidRedirectURL", err)
 	}
 }
 
@@ -37,7 +46,11 @@ func TestValidateStateAcceptsMatchingState(t *testing.T) {
 }
 
 func TestValidateStateRejectsMismatchedState(t *testing.T) {
-	if err := ValidateState("expected-state", "other-state"); err == nil {
+	err := ValidateState("expected-state", "other-state")
+	if err == nil {
 		t.Fatal("ValidateState() error = nil, want mismatch error")
+	}
+	if !errors.Is(err, ErrStateMismatch) {
+		t.Fatalf("ValidateState() error = %v, want ErrStateMismatch", err)
 	}
 }

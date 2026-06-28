@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -76,6 +77,16 @@ func TestServeWebSocketPushesNotificationsToSubscribedThread(t *testing.T) {
 	case got := <-client.Notifications():
 		if got.Method != appwire.NotifyThreadStatusChanged {
 			t.Fatalf("method=%q", got.Method)
+		}
+		var params appwire.ThreadStatusChangedParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("unmarshal params: %v", err)
+		}
+		if params.ThreadID != "th_1" {
+			t.Fatalf("params.ThreadID=%q, want %q", params.ThreadID, "th_1")
+		}
+		if params.Status.Type != appwire.ThreadStatusActive {
+			t.Fatalf("params.Status.Type=%q, want %q", params.Status.Type, appwire.ThreadStatusActive)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for notification")

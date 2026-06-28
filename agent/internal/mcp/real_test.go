@@ -232,7 +232,14 @@ func TestRealMCP_AnnotatedMessage(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("tool call returned error: %s", result.Output)
 	}
-	if !strings.Contains(result.Output, "Error") {
-		t.Errorf("output missing 'Error': %s", result.Output)
+	// The MCP call itself must succeed — no [MCP Error] prefix.
+	// (If mcpResultToString prepended [MCP Error] unconditionally, this would
+	// catch that mutation even though the output still contains "Error".)
+	if strings.HasPrefix(result.Output, "[MCP Error]") {
+		t.Errorf("output has [MCP Error] prefix, meaning MCP call itself failed: %s", result.Output)
+	}
+	// The annotation content for messageType="error" is exactly this text.
+	if !strings.Contains(result.Output, "Error: Operation failed") {
+		t.Errorf("output missing expected annotation content %q: %s", "Error: Operation failed", result.Output)
 	}
 }

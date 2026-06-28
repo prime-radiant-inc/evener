@@ -28,6 +28,7 @@ package agent
 //                           round-trip preserves the instance name.
 
 import (
+	"errors"
 	"sort"
 	"strings"
 	"testing"
@@ -300,7 +301,7 @@ func TestPhase1b_PerInstanceOAuth_RoundTrip(t *testing.T) {
 
 // isAuthNotFound reports whether err wraps openai.ErrAuthNotFound.
 func isAuthNotFound(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "openai auth not found")
+	return errors.Is(err, openai.ErrAuthNotFound)
 }
 
 // ── Assertion 5: SetModel override preservation ───────────────────────────────

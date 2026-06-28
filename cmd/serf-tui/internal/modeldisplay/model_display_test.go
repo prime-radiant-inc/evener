@@ -111,6 +111,8 @@ func TestAbbreviateModel(t *testing.T) {
 		{"openrouter/anthropic/claude-opus", "anthropic/claude-opus"},
 		// Date suffix stripped after instance prefix.
 		{"openai/gpt-5-20260101", "gpt-5"},
+		// Date suffix containing '9' — exercises the r > '9' upper digit bound.
+		{"openai/gpt-5-20190901", "gpt-5"},
 		// Custom instance + date suffix.
 		{"work/gpt-5-20260101", "gpt-5"},
 		// No slash — bare model, returned unchanged.

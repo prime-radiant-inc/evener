@@ -29,6 +29,10 @@ func TestMemoryCrystalsStrategy_Tools_ReturnsNil(t *testing.T) {
 
 func TestMemoryCrystalsStrategy_AfterAction_SkipsNonThirdTurn(t *testing.T) {
 	client := llm.NewClient()
+	// spy records all Complete calls so we can assert the guard suppresses them.
+	spy := &fakeAdapter{name: "openai"}
+	client.Register(spy)
+
 	profile := NewOpenAIProfile("gpt-5.2")
 	cm := NewManager(profile, client)
 	s := NewMemoryCrystalsStrategy(cm)
@@ -42,6 +46,10 @@ func TestMemoryCrystalsStrategy_AfterAction_SkipsNonThirdTurn(t *testing.T) {
 	err := s.AfterAction(context.Background(), history, client)
 	if err != nil {
 		t.Fatalf("AfterAction returned error: %v", err)
+	}
+	// The modulus guard must prevent any LLM call; spy proves it.
+	if got := len(spy.Requests()); got != 0 {
+		t.Errorf("expected no LLM calls (modulus guard should skip), got %d", got)
 	}
 	if len(s.crystals) != 0 {
 		t.Errorf("expected 0 crystals, got %d", len(s.crystals))

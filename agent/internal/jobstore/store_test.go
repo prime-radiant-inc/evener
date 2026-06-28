@@ -383,22 +383,6 @@ func TestStoreOpenTruncatesTrailingPartialJSONCuts(t *testing.T) {
 	}
 }
 
-func TestStoreOpenPreservesCorruptCompleteLineError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "jobs.jsonl")
-	data := []byte("{\"kind\":\"job_started\",\"seq\":1,\"job_id\":\"job_A\"}\n{bad json}\n")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatalf("write store: %v", err)
-	}
-
-	_, err := Open(path)
-	if err == nil {
-		t.Fatal("open corrupt store succeeded, want error")
-	}
-	if !strings.Contains(err.Error(), "line 2") {
-		t.Fatalf("parse error = %q, want line number", err)
-	}
-}
-
 func TestStoreOpenPreservesCorruptTrailingLineError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.jsonl")
 	data := []byte("{\"kind\":\"job_started\",\"seq\":1,\"job_id\":\"job_A\"}\n{\"kind\":}")

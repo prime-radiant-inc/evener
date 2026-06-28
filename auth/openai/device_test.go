@@ -269,6 +269,20 @@ func TestPollDeviceAuthContextCancellationDuringSleep(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// sleepEntered is signaled when the mock sleep is entered so the main
+	// goroutine can cancel the context deterministically — no wall-clock sleep.
+	sleepEntered := make(chan struct{}, 1)
+	sleep := func(ctx context.Context, _ time.Duration) error {
+		select {
+		case sleepEntered <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
 	dc := DeviceCode{
 		DeviceAuthID: "dev-cancel",
 		UserCode:     "CODE-C",
@@ -279,13 +293,19 @@ func TestPollDeviceAuthContextCancellationDuringSleep(t *testing.T) {
 	go func() {
 		_, err := pollDeviceAuth(ctx, m.server.Client(), m.cfg(), dc, pollOptions{
 			maxWait: 10 * time.Second,
+			sleep:   sleep,
 		})
 		done <- err
 	}()
 
-	// Give the goroutine a moment to make at least one request and enter sleep.
-	time.Sleep(50 * time.Millisecond)
-	cancel()
+	// Wait until the mock sleep is entered, then cancel — exercises the
+	// interrupted-during-sleep code path deterministically.
+	select {
+	case <-sleepEntered:
+		cancel()
+	case <-time.After(2 * time.Second):
+		t.Fatal("pollDeviceAuth() did not enter sleep within timeout")
+	}
 
 	select {
 	case err := <-done:

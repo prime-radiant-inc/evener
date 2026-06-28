@@ -94,8 +94,12 @@ func TestWriter_SeqNotIncrementedOnWriteFailure(t *testing.T) {
 	}
 
 	var entry0, entry1 Entry
-	json.Unmarshal([]byte(lines[1]), &entry0)
-	json.Unmarshal([]byte(lines[2]), &entry1)
+	if err := json.Unmarshal([]byte(lines[1]), &entry0); err != nil {
+		t.Fatalf("unmarshal entry0: %v", err)
+	}
+	if err := json.Unmarshal([]byte(lines[2]), &entry1); err != nil {
+		t.Fatalf("unmarshal entry1: %v", err)
+	}
 
 	if entry0.Seq != 0 {
 		t.Errorf("entry0 seq = %d, want 0", entry0.Seq)
@@ -140,6 +144,15 @@ func TestWriter_PeriodicSync_SkipsSyncWithinInterval(t *testing.T) {
 
 	// Close should flush all data.
 	w.Close()
+
+	// dirty must be false after Close: Close() is required to sync pending
+	// writes before closing the file handle.
+	w.mu.Lock()
+	dirtyAfterClose := w.dirty
+	w.mu.Unlock()
+	if dirtyAfterClose {
+		t.Error("expected dirty=false after Close() (Close must sync pending writes)")
+	}
 
 	// All data should be present after Close (header + 5 entries).
 	lines := readTranscriptLines(t, path)
@@ -209,8 +222,11 @@ func TestWriter_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
 		t.Fatalf("Append: %v", err)
 	}
 
-	// Wait for interval to expire.
-	time.Sleep(5 * time.Millisecond)
+	// Advance lastSync into the past so the interval appears elapsed without
+	// sleeping: the test is in the same package so it can reach the field directly.
+	w.mu.Lock()
+	w.lastSync = time.Now().Add(-2 * time.Millisecond)
+	w.mu.Unlock()
 
 	// Next write should trigger a sync because the interval has elapsed.
 	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second"))); err != nil {

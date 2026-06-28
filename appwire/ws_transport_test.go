@@ -64,7 +64,25 @@ func TestWSTransportRoundTrip(t *testing.T) {
 	}
 }
 
+// TestWSTransportReceivesLargeAppWireMessage sends a response larger than the
+// WebSocket library's built-in default read limit (32 KiB) and asserts that
+// the transport delivers it correctly. This implicitly validates that
+// NewWSTransport called SetReadLimit on the underlying connection; without that
+// call, the read would fail with ErrMessageTooBig.
+//
+// Combined with TestWSTransportReadLimitCoversMaxComposerImages (which validates
+// the constant's arithmetic), the two tests together verify that the limit is
+// (a) set at all and (b) large enough for the expected payload sizes.
+//
+// Remaining gap: if NewWSTransport hardcodes a limit of the same order of
+// magnitude as appWireWebSocketReadLimit (e.g. 64 MiB instead of 128 MiB), the
+// discrepancy is not caught here. Closing that gap would require either a
+// payload >64 MiB (impractical in a unit test) or an exported getter on
+// WSTransport, neither of which is worth the cost at this risk level.
 func TestWSTransportReceivesLargeAppWireMessage(t *testing.T) {
+	// websocket default read limit; payload must exceed this to exercise SetReadLimit.
+	const wsDefaultReadLimit = 32768
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -85,6 +103,13 @@ func TestWSTransportReceivesLargeAppWireMessage(t *testing.T) {
 		}
 
 		largePreview := strings.Repeat("large session preview ", 4096)
+		if len(largePreview) <= wsDefaultReadLimit {
+			// Guard: keep the payload above the library default so the test
+			// stays meaningful if Repeat's argument is ever reduced.
+			t.Errorf("test payload (%d bytes) must exceed WebSocket default read limit (%d bytes)",
+				len(largePreview), wsDefaultReadLimit)
+			return
+		}
 		out, err := json.Marshal(ResponseMessage(msg.Request.ID, ThreadListResponse{Data: []Thread{{
 			ID:      "th_large",
 			Preview: largePreview,
@@ -118,6 +143,13 @@ func TestWSTransportReceivesLargeAppWireMessage(t *testing.T) {
 	}
 }
 
+// TestWSTransportReadLimitCoversMaxComposerImages validates that the
+// appWireWebSocketReadLimit constant is arithmetically large enough to receive a
+// message containing the maximum number of base64-encoded composer images.
+//
+// This test checks the constant's value only. TestWSTransportReceivesLargeAppWireMessage
+// validates that NewWSTransport actually applies the limit to the connection.
+// Together they cover both the magnitude of the limit and its application.
 func TestWSTransportReadLimitCoversMaxComposerImages(t *testing.T) {
 	const (
 		maxImages     = 8

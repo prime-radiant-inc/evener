@@ -9,11 +9,23 @@ import (
 
 func TestSchemaRows_SettingsFiltersDefaultableLayerAndKeepsOrder(t *testing.T) {
 	schema := testLaunchSchema()
+
+	// Layer "project": app_replay_size is excluded because it is only defaultable in "global".
 	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{Agent: "serf", ReasoningEffort: "high", FastCheapModel: "mini"}, launchLayerProject, launchSchemaRowsSettings)
 	fields := rowFields(rows)
 	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "system_prompt_file", "mcps", "verbose", "raw_http_logging", "export_atif_provider_handles"}
 	if !reflect.DeepEqual(fields, want) {
-		t.Fatalf("fields=%v, want %v", fields, want)
+		t.Fatalf("project-layer fields=%v, want %v", fields, want)
+	}
+
+	// Layer "global": app_replay_size IS included because it is defaultable in "global" but
+	// PerLaunch=false. This diverges from override mode (which filters by PerLaunch): settings
+	// mode must use DefaultableLayers, not PerLaunch, to include this field.
+	rows = launchSchemaRows(schema, appwire.LaunchConfigLayer{}, launchLayerGlobal, launchSchemaRowsSettings)
+	fields = rowFields(rows)
+	wantGlobal := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "app_replay_size", "system_prompt_file", "mcps", "verbose", "raw_http_logging", "export_atif_provider_handles"}
+	if !reflect.DeepEqual(fields, wantGlobal) {
+		t.Fatalf("global-layer fields=%v, want %v", fields, wantGlobal)
 	}
 }
 

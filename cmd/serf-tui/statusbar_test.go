@@ -1,8 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 func TestStatusBarConnectedShowsGreenDot(t *testing.T) {
@@ -35,8 +39,8 @@ func TestCtxBandFor_TracksThreshold(t *testing.T) {
 	}
 }
 
-func TestStatusBarCtxWarningThreshold(t *testing.T) {
-	// At 80% usage, color should be StateWarning.
+func TestStatusBarShowsCtxWhenLimitKnown(t *testing.T) {
+	// When CtxLimit is known the ctx field appears in the statusbar.
 	got := renderStatusBar(statusBarInfo{
 		Connected: true,
 		HubAddr:   "http://hub.test",
@@ -45,8 +49,31 @@ func TestStatusBarCtxWarningThreshold(t *testing.T) {
 		CtxLimit:  200000,
 		Width:     100,
 	})
-	// Just assert the ctx text is present; color verified visually.
 	if !strings.Contains(got, "ctx") {
 		t.Errorf("statusbar missing ctx info: %q", got)
+	}
+}
+
+func TestStatusBarCtxWarningThreshold(t *testing.T) {
+	// At ≥ warnThreshold usage (80%), renderStatusBar must apply StateWarning color,
+	// not TextDim. We verify this by forcing TrueColor so ANSI escapes are emitted,
+	// then checking that the output contains exactly the lipgloss-styled token that
+	// renderStatusBar produces when the warning branch is taken.
+	withTestColorProfile(t)
+	th := tuitheme.ActiveTheme()
+
+	ctxAt80 := fmt.Sprintf("ctx %s/%s", formatTokenCount(160000), formatTokenCount(200000))
+	warnStyled := lipgloss.NewStyle().Foreground(th.StateWarning).Render(ctxAt80)
+
+	got := renderStatusBar(statusBarInfo{
+		Connected: true,
+		HubAddr:   "http://hub.test",
+		Provider:  "openai",
+		CtxUsed:   160000,
+		CtxLimit:  200000,
+		Width:     100,
+	})
+	if !strings.Contains(got, warnStyled) {
+		t.Errorf("80%% ctx usage: expected StateWarning-colored %q in output; got: %q", warnStyled, got)
 	}
 }

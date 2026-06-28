@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAcquireLock_Success(t *testing.T) {
@@ -26,8 +27,33 @@ func TestAcquireLock_FailsIfHeld(t *testing.T) {
 	}
 	defer rel1()
 
-	if _, err := AcquireLock(path); err == nil {
-		t.Fatal("second AcquireLock should fail while first is held")
+	// Run the second attempt in a goroutine with a timeout so that a missing
+	// LOCK_NB (which would cause flock to block indefinitely) surfaces as a
+	// test failure rather than a deadlock that stalls the entire test binary.
+	type result struct {
+		rel func()
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		rel, err := AcquireLock(path)
+		ch <- result{rel, err}
+	}()
+
+	select {
+	case res := <-ch:
+		if res.err == nil {
+			if res.rel != nil {
+				res.rel()
+			}
+			t.Fatal("second AcquireLock should fail while first is held")
+		}
+		// H002: verify the error comes from the flock stage, not some other path.
+		if !strings.Contains(res.err.Error(), "flock") {
+			t.Fatalf("expected flock error, got: %v", res.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second AcquireLock blocked instead of returning an error (missing LOCK_NB?)")
 	}
 }
 

@@ -38,17 +38,24 @@ func TestWebFetchCachePath(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", xdg)
 
+	// Sample dates before and after the SUT call to tolerate a midnight boundary crossing.
+	dateBefore := time.Now().UTC().Format("2006-01-02")
 	p := webFetchCachePath("https://example.com/docs")
+	dateAfter := time.Now().UTC().Format("2006-01-02")
 
-	// Should contain today's date.
-	today := time.Now().UTC().Format("2006-01-02")
-	if !strings.Contains(p, today) {
-		t.Fatalf("cache path %q missing today's date %q", p, today)
+	// Should contain a valid UTC date (either side of any midnight boundary).
+	if !strings.Contains(p, dateBefore) && !strings.Contains(p, dateAfter) {
+		t.Fatalf("cache path %q missing today's date (before=%q, after=%q)", p, dateBefore, dateAfter)
 	}
 
 	// Should be an absolute path under $XDG_CACHE_HOME/serf/web_cache/date/hash.
 	wantKey := webFetchCacheKey("https://example.com/docs")
-	want := filepath.Join(xdg, "serf", "web_cache", today, wantKey)
+	// Use whichever date the SUT actually embedded in the path.
+	usedDate := dateBefore
+	if strings.Contains(p, dateAfter) {
+		usedDate = dateAfter
+	}
+	want := filepath.Join(xdg, "serf", "web_cache", usedDate, wantKey)
 	if p != want {
 		t.Fatalf("cache path:\n  got  %q\n  want %q", p, want)
 	}
@@ -150,7 +157,10 @@ func TestWebFetchTool_Integration(t *testing.T) {
 	}
 	defer sess.Close()
 
+	// Sample date before the fetch so we can tolerate a midnight boundary crossing.
+	dateBefore := time.Now().UTC().Format("2006-01-02")
 	out, err := sess.ProcessInput(context.Background(), "Fetch the test page", nil)
+	dateAfter := time.Now().UTC().Format("2006-01-02")
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -167,8 +177,6 @@ func TestWebFetchTool_Integration(t *testing.T) {
 		t.Fatalf("cheap model request used model %q, want %q", cheapReq.Model, "gpt-4.1-nano")
 	}
 	// Verify the cheap model request includes the question and content.
-	sysText := ""
-	userText := ""
 	var sysTextSb171 strings.Builder
 	var userTextSb171 strings.Builder
 	for _, m := range cheapReq.Messages {
@@ -179,8 +187,8 @@ func TestWebFetchTool_Integration(t *testing.T) {
 			userTextSb171.WriteString(m.Text())
 		}
 	}
-	sysText += sysTextSb171.String()
-	userText += userTextSb171.String()
+	sysText := sysTextSb171.String()
+	userText := userTextSb171.String()
 	if !strings.Contains(sysText, "web content") {
 		t.Fatalf("cheap model system prompt missing expected text: %s", sysText)
 	}
@@ -192,9 +200,12 @@ func TestWebFetchTool_Integration(t *testing.T) {
 	}
 
 	// Verify cache files use date-bucketed directory structure under XDG cache.
-	today := time.Now().UTC().Format("2006-01-02")
+	// Try both dates to tolerate a midnight boundary crossing during the fetch.
 	cacheKey := webFetchCacheKey(srv.URL)
-	fetchDir := filepath.Join(cacheHome, "serf", "web_cache", today, cacheKey)
+	fetchDir := filepath.Join(cacheHome, "serf", "web_cache", dateBefore, cacheKey)
+	if _, err := os.Stat(filepath.Join(fetchDir, "raw.html")); os.IsNotExist(err) {
+		fetchDir = filepath.Join(cacheHome, "serf", "web_cache", dateAfter, cacheKey)
+	}
 
 	rawPath := filepath.Join(fetchDir, "raw.html")
 	if _, err := os.Stat(rawPath); os.IsNotExist(err) {
@@ -324,7 +335,10 @@ func TestWebFetchTool_JSONContent(t *testing.T) {
 	}
 	defer sess.Close()
 
+	// Sample date before the fetch so we can tolerate a midnight boundary crossing.
+	dateBefore := time.Now().UTC().Format("2006-01-02")
 	out, err := sess.ProcessInput(context.Background(), "Check the JSON API", nil)
+	dateAfter := time.Now().UTC().Format("2006-01-02")
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
@@ -333,9 +347,12 @@ func TestWebFetchTool_JSONContent(t *testing.T) {
 	}
 
 	// Verify raw.json was written (no rendered.md for JSON).
-	today := time.Now().UTC().Format("2006-01-02")
+	// Try both dates to tolerate a midnight boundary crossing during the fetch.
 	cacheKey := webFetchCacheKey(srv.URL)
-	fetchDir := filepath.Join(cacheHome, "serf", "web_cache", today, cacheKey)
+	fetchDir := filepath.Join(cacheHome, "serf", "web_cache", dateBefore, cacheKey)
+	if _, err := os.Stat(filepath.Join(fetchDir, "raw.json")); os.IsNotExist(err) {
+		fetchDir = filepath.Join(cacheHome, "serf", "web_cache", dateAfter, cacheKey)
+	}
 
 	rawPath := filepath.Join(fetchDir, "raw.json")
 	if _, err := os.Stat(rawPath); os.IsNotExist(err) {

@@ -359,7 +359,7 @@ await scenario("auto-advance: card shows the new current task, steer is suppress
 	  window.SerfRenderer.handleData("SESSION_START", {
 	    session_id: "01TEST",
 	    status: "idle",
-	    capabilities: { queue: false },
+	    capabilities: { send: true, queue: false },
 	  });
 	  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "active" });
 	  const ok = btn.getAttribute("data-capability-send") === "false" &&

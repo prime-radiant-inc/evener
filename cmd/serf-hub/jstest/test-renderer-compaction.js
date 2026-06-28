@@ -97,8 +97,8 @@ async function waitForRendererReady(renderer) {
   const det = line && (line.tagName.toLowerCase() === "details" ? line : line.querySelector("details"));
   if (det) det.open = true;
   const body = line && line.textContent;
-  pass(!!body && /42/.test(body) && /8/.test(body), "expanded body shows turns before(42) -> after(8)");
-  pass(!!body && /120/.test(body) && /23/.test(body), "expanded body shows tokens before(120k) -> after(23k)");
+  pass(!!body && /42\s+turns\s*→\s*summary/.test(body) && /Turns:\s*42\s*→\s*8/.test(body), "expanded body shows turns before(42) → after(8)");
+  pass(!!body && /120k\s*→\s*23k/.test(body), "expanded body shows tokens before(120k) → after(23k)");
   pass(!!body && /L4/.test(body), "expanded body shows the compaction layer");
 
   if (failures.length > 0) {

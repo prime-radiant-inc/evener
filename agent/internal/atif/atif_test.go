@@ -551,6 +551,9 @@ func TestConvertToATIF_ThinkingContent(t *testing.T) {
 	if agentStep.Extra["thinking_signature"] != "sig-abc" {
 		t.Errorf("Extra[thinking_signature] = %v, want %q", agentStep.Extra["thinking_signature"], "sig-abc")
 	}
+	if _, ok := agentStep.Extra["has_redacted_thinking"]; ok {
+		t.Errorf("non-redacted thinking should not set has_redacted_thinking")
+	}
 
 	// Redacted thinking: separate entry using ContentRedThinking kind
 	entries[1].Turn.Message.Content = []llm.ContentPart{
@@ -565,6 +568,9 @@ func TestConvertToATIF_ThinkingContent(t *testing.T) {
 	}
 	if agentStep2.ReasoningContent != "" {
 		t.Errorf("ReasoningContent = %q, want empty for redacted thinking", agentStep2.ReasoningContent)
+	}
+	if agentStep2.Message != "Here is the answer." {
+		t.Errorf("Message = %q, want %q", agentStep2.Message, "Here is the answer.")
 	}
 
 	// Redacted thinking via ThinkingData.Redacted flag
@@ -582,6 +588,9 @@ func TestConvertToATIF_ThinkingContent(t *testing.T) {
 	agentStep3 := traj3.Steps[1]
 	if agentStep3.Extra["has_redacted_thinking"] != true {
 		t.Errorf("Extra[has_redacted_thinking] = %v, want true (Redacted flag)", agentStep3.Extra["has_redacted_thinking"])
+	}
+	if agentStep3.Message != "Answer with redacted flag." {
+		t.Errorf("Message = %q, want %q", agentStep3.Message, "Answer with redacted flag.")
 	}
 }
 
@@ -801,6 +810,9 @@ func TestConvertToATIF_OrphanedToolResults(t *testing.T) {
 	}
 
 	step := traj.Steps[0]
+	if step.StepID != 1 {
+		t.Errorf("StepID = %d, want 1", step.StepID)
+	}
 	// ATIF forbids an observation on a non-agent step and requires every
 	// observation source_call_id to reference a tool_call in the same step.
 	// An orphaned tool result has no originating tool_call, so it is emitted as

@@ -46,6 +46,14 @@ func TestSummarizeTool_Shell_LongSingleLine(t *testing.T) {
 	if !strings.HasSuffix(desc, "…") {
 		t.Errorf("long desc should be truncated: %q", desc)
 	}
+	// First 10 chars of input must appear at the start of desc.
+	if !strings.HasPrefix(desc, long[:10]) {
+		t.Errorf("long desc should start with input prefix: %q", desc)
+	}
+	// 80 ASCII bytes + 3-byte UTF-8 ellipsis = 83 bytes total.
+	if len(desc) != 83 {
+		t.Errorf("long desc should be 83 bytes (80+ellipsis), got %d: %q", len(desc), desc)
+	}
 	if !strings.Contains(detail, long) {
 		t.Errorf("detail should contain full command")
 	}
@@ -134,20 +142,22 @@ func TestSummarizeTool_TaskList_Append(t *testing.T) {
 }
 
 func TestSummarizeTool_TaskList_Update(t *testing.T) {
-	desc, detail := SummarizeTool("task_list", `{"action":"update","updates":[{"id":1,"status":"done"},{"id":2,"status":"inProgress"}]}`)
+	// Status keys must be snake_case to match the statusIcon map.
+	desc, detail := SummarizeTool("task_list", `{"action":"update","updates":[{"id":1,"status":"done"},{"id":2,"status":"in_progress"}]}`)
 	if desc != "update 2 tasks" {
 		t.Errorf("desc: got %q", desc)
 	}
 	if !strings.Contains(detail, "done") {
 		t.Errorf("detail missing status: %q", detail)
 	}
-	if !strings.Contains(detail, "inProgress") {
+	if !strings.Contains(detail, "in_progress") {
 		t.Errorf("detail missing status: %q", detail)
 	}
 	if !strings.Contains(detail, "✓") {
 		t.Errorf("detail missing done icon: %q", detail)
 	}
-	if !strings.Contains(detail, "→") {
+	// "→ task" matches the icon position (not the separator which is followed by the status name).
+	if !strings.Contains(detail, "→ task") {
 		t.Errorf("detail missing in_progress icon: %q", detail)
 	}
 }
@@ -185,7 +195,8 @@ func TestSummarizeTool_Communicate(t *testing.T) {
 
 func TestSummarizeTool_Fallback(t *testing.T) {
 	desc, _ := SummarizeTool("unknown_tool", `{"foo":"bar","num":42}`)
-	if !strings.Contains(desc, "bar") && !strings.Contains(desc, "42") {
+	// Both values must appear; OR catches a mutation that drops either one.
+	if !strings.Contains(desc, "bar") || !strings.Contains(desc, "42") {
 		t.Errorf("fallback should show short values: %q", desc)
 	}
 }

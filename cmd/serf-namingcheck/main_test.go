@@ -149,6 +149,9 @@ func TestSuggestions(t *testing.T) {
 	if got := toSnakeCase("reasoningEffort"); got != "reasoning_effort" {
 		t.Errorf("toSnakeCase(reasoningEffort) = %q", got)
 	}
+	if got := toSnakeCase("WorkingDir"); got != "working_dir" {
+		t.Errorf("toSnakeCase(WorkingDir) = %q", got)
+	}
 }
 
 // --- end-to-end fixture tests ----------------------------------------------
@@ -282,6 +285,14 @@ func TestCheckJSONTag_AppwireCarveOut(t *testing.T) {
 		{"server appwire_runtime camelCase ok", "server/appwire_runtime.go", "turnId", false},
 		{"server appwire_projection camelCase ok", "server/appwire_projection.go", "itemId", false},
 		{"server appwire_runtime snake bad", "server/appwire_runtime.go", "turn_id", true},
+
+		// internal/appprojector/ — projects codex/appwire payloads.
+		{"appprojector camelCase ok", "internal/appprojector/types.go", "workingDir", false},
+		{"appprojector snake bad", "internal/appprojector/types.go", "working_dir", true},
+
+		// cmd/serf-hub/internal/launchconfig/ — launch-option schema mirrored on the wire.
+		{"launchconfig camelCase ok", "cmd/serf-hub/internal/launchconfig/config.go", "configValue", false},
+		{"launchconfig snake bad", "cmd/serf-hub/internal/launchconfig/config.go", "config_value", true},
 
 		// Other files under server/ are NOT carved out; they remain on
 		// the snake-default rule.
@@ -515,6 +526,15 @@ type X struct { F string ` + "`json:\"badField\"`" + ` }
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "llm", "providers", "openai", "x.go"), []byte(badSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// cmd/serf-namingcheck/ is excluded so the tool never lints itself
+	// (test source files contain camelCase string literals that would fire).
+	if err := os.MkdirAll(filepath.Join(root, "cmd", "serf-namingcheck"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "cmd", "serf-namingcheck", "x.go"), []byte(badSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

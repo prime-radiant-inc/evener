@@ -95,6 +95,12 @@ func TestDocFile_RendersMarkdown(t *testing.T) {
 	if !strings.Contains(body, "doc-markdown") {
 		t.Errorf("markdown page should mark the render target; got %q", body)
 	}
+	// The actual markdown source must be forwarded into the page (embedded in
+	// the hidden #doc-src div). A broken implementation that passes an empty
+	// string still emits "marked" and "doc-markdown", so we verify the content.
+	if !strings.Contains(body, "# Title") {
+		t.Errorf("markdown page must embed the markdown source (heading missing); got %q", body)
+	}
 }
 
 func TestDocFile_RejectsTraversalDotDot(t *testing.T) {

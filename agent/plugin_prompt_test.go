@@ -108,8 +108,8 @@ func TestSubagentPromptStatesAllowance(t *testing.T) {
 	if !strings.Contains(granting, "## Background jobs") {
 		t.Errorf("allowance>0 subagent prompt should contain the Background jobs section, got:\n%s", granting)
 	}
-	if !strings.Contains(granting, "2") {
-		t.Errorf("allowance>0 subagent prompt should state its allowance (2), got:\n%s", granting)
+	if !strings.Contains(granting, "delegation_allowance` is 2") {
+		t.Errorf("allowance>0 subagent prompt should state its allowance (2) in context, got:\n%s", granting)
 	}
 	if strings.Contains(granting, "Only you can call") {
 		t.Errorf("allowance>0 subagent prompt must not say \"Only you can call\", got:\n%s", granting)
@@ -241,8 +241,10 @@ func TestAvailableAgentsSection_WithAgents(t *testing.T) {
 	if !strings.Contains(result, "delegate") {
 		t.Error("should mention delegate usage")
 	}
-	if !strings.Contains(result, "Default tools: `communicate`, `grep_files`, `read_file`, `task_list`") {
-		t.Errorf("should include default tool summary, got: %s", result)
+	for _, want := range []string{"communicate", "grep_files", "read_file", "task_list"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("default tool summary should include %q, got:\n%s", want, result)
+		}
 	}
 	if !strings.Contains(result, "Include relevant parent task details in the `delegate` task prompt for this step.") {
 		t.Errorf("should explain parent task slot behavior, got: %s", result)

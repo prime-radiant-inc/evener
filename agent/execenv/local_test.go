@@ -227,6 +227,12 @@ func TestLocalExecutionEnvironment_WriteFile_DotDotEscape_Rejected(t *testing.T)
 	if _, err := env.WriteFile("../escape.txt", "nope"); err == nil {
 		t.Fatalf("WriteFile with ../ that escapes RootDir should fail; it returned nil err")
 	}
+	// Verify the file was not created on disk (a write-then-reject bug would
+	// pass the error check above but still leave the file present).
+	escapePath := filepath.Join(filepath.Dir(root), "escape.txt")
+	if _, statErr := os.Stat(escapePath); !os.IsNotExist(statErr) {
+		t.Fatalf("escape file must not exist after rejected write; stat=%v", statErr)
+	}
 }
 
 func TestReadFile_ImageReturnsBase64(t *testing.T) {
@@ -248,6 +254,20 @@ func TestReadFile_ImageReturnsBase64(t *testing.T) {
 	}
 	if !strings.Contains(result, "image") {
 		t.Fatalf("expected 'image' indicator in output, got: %q", result)
+	}
+	// Decode the base64 payload and verify the bytes match the original, so a
+	// mutation that substitutes an invalid or empty payload is caught.
+	idx := strings.Index(result, "\n")
+	if idx < 0 {
+		t.Fatal("expected newline separating header from base64 payload")
+	}
+	b64 := strings.TrimSpace(result[idx+1:])
+	decoded, decErr := base64.StdEncoding.DecodeString(b64)
+	if decErr != nil {
+		t.Fatalf("base64 decode: %v", decErr)
+	}
+	if !bytes.Equal(decoded, pngHeader) {
+		t.Fatalf("base64 round-trip mismatch: got %d bytes, want %d", len(decoded), len(pngHeader))
 	}
 }
 
@@ -712,6 +732,11 @@ func TestGrepNative_MaxResults(t *testing.T) {
 	if len(lines) > 5 {
 		t.Fatalf("expected at most 5 results, got %d", len(lines))
 	}
+	// Lower bound: a mutation returning "" would yield len==1 with lines[0]==""
+	// and pass the upper-bound check above; pin that the result is non-empty.
+	if len(lines) < 5 || (len(lines) == 1 && lines[0] == "") {
+		t.Fatalf("expected 5 results, got %d: %q", len(lines), result)
+	}
 }
 
 func TestGrepNative_InvalidRegex(t *testing.T) {
@@ -808,8 +833,20 @@ func TestCleanup_TerminatesRunningProcesses(t *testing.T) {
 		close(done)
 	}()
 
-	// Give the process a moment to start.
-	time.Sleep(200 * time.Millisecond)
+	// Poll until the PID is registered in the tracker to avoid a scheduling
+	// race: the blind 200ms sleep can fire before cmd.Start() runs, leaving
+	// the tracker empty so Cleanup is a no-op and the test hits its 5s deadline.
+	for range 50 {
+		found := false
+		env.runningPIDs.Range(func(_, _ any) bool {
+			found = true
+			return false
+		})
+		if found {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 
 	// Cleanup should terminate the process.
 	env.Cleanup()
@@ -889,8 +926,17 @@ func TestLocalExecutionEnvironment_InitializeCleanup(t *testing.T) {
 	if err := env.Initialize(); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
+	// Exercise a real operation to verify Initialize left usable state, not
+	// just that it returned nil (a mutation zeroing runningPIDs would cause
+	// ExecCommand to panic even though Initialize returned nil).
+	res, err := env.ExecCommand(context.Background(), "echo ok", 5000, "", nil)
+	if err != nil {
+		t.Fatalf("ExecCommand after Initialize: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "ok") {
+		t.Fatalf("expected 'ok' in stdout, got: %q", res.Stdout)
+	}
 	env.Cleanup()
-	// Should not panic or error
 }
 
 func TestGrep_OutputMode_FilesWithMatches(t *testing.T) {
@@ -937,8 +983,11 @@ func TestGrep_OutputMode_Count(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "2") {
-		t.Errorf("expected count of 2: %q", result)
+	// Assert "a.txt:2" rather than just "2" to avoid false-positives from
+	// any digit appearing in timestamps, paths, or a wrong count value.
+	// Consistent with TestGrepNative_OutputMode_Count which checks "a.txt:2".
+	if !strings.Contains(result, "a.txt:2") {
+		t.Errorf("expected a.txt:2 in count output: %q", result)
 	}
 }
 
@@ -1052,13 +1101,13 @@ func TestSubagent_WorkingDir_SharesParentPIDTracking(t *testing.T) {
 		t.Fatalf("child working dir: %q, want %q", childEnv.WorkingDirectory(), subDir)
 	}
 
-	// Store a PID in the child and verify it's visible from the parent.
+	// Store a fake PID in the child; defer its removal so Cleanup() never
+	// tries to signal it, even if an assertion below calls t.Fatal first.
 	childEnv.runningPIDs.Store(12345, struct{}{})
+	defer env.runningPIDs.Delete(12345)
+
 	_, ok := env.runningPIDs.Load(12345)
 	if !ok {
 		t.Fatal("PID stored in child env not visible in parent env — PID tracking is not shared")
 	}
-
-	// Clean up fake PID to avoid Cleanup() trying to signal it.
-	env.runningPIDs.Delete(12345)
 }

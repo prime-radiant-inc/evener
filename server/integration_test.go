@@ -22,14 +22,24 @@ func TestIntegration_InputToAppwire(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	// Verify status returns valid JSON
+	// Verify /status returns 200 with well-formed JSON before any events.
 	resp, err := http.Get(ts.URL + "/status")
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("status code: got %d, want 200", resp.StatusCode)
+	}
 	var status StatusInfo
-	json.NewDecoder(resp.Body).Decode(&status)
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		resp.Body.Close()
+		t.Fatalf("status decode: %v", err)
+	}
 	resp.Body.Close()
+	if !status.Capabilities.Send {
+		t.Errorf("capabilities.send: got false, want true (session is idle and ready)")
+	}
 
 	// Send input
 	inputBody := strings.NewReader(`{"text":"hello"}`)
@@ -81,12 +91,16 @@ func TestIntegration_StatusUpdates(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 
 	evs := make(chan events.SessionEvent, 10)
-	go Bridge(srv, evs)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Bridge(srv, evs)
+	}()
 
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	// Send session start event
+	// Send session start event, then close to let Bridge drain and exit.
 	evs <- events.SessionEvent{
 		Kind:      events.EventSessionStart,
 		SessionID: "test-session",
@@ -95,9 +109,8 @@ func TestIntegration_StatusUpdates(t *testing.T) {
 			Model:   "gpt-5",
 		},
 	}
-
-	// Give bridge time to process
-	time.Sleep(50 * time.Millisecond)
+	close(evs)
+	<-done // Bridge has processed all events; status is now stable.
 
 	// Check status via HTTP
 	resp, err := http.Get(ts.URL + "/status")
@@ -107,7 +120,9 @@ func TestIntegration_StatusUpdates(t *testing.T) {
 	defer resp.Body.Close()
 
 	var status StatusInfo
-	json.NewDecoder(resp.Body).Decode(&status)
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatalf("status decode: %v", err)
+	}
 
 	if status.SessionID != "test-session" {
 		t.Errorf("session_id: got %q, want test-session", status.SessionID)
@@ -118,6 +133,4 @@ func TestIntegration_StatusUpdates(t *testing.T) {
 	if status.State != "idle" {
 		t.Errorf("state: got %q, want idle", status.State)
 	}
-
-	close(evs)
 }

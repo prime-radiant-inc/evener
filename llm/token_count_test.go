@@ -74,28 +74,46 @@ func TestEstimateInputTokens_GoogleImageTiles(t *testing.T) {
 	if got.Source != TokenCountSourceLocalEstimate {
 		t.Fatalf("Source = %q, want %q", got.Source, TokenCountSourceLocalEstimate)
 	}
+
+	// Non-square image: ceilDiv(800,768)=2, ceilDiv(1600,768)=3 → 258*2*3=1548.
+	// Addition instead of multiplication would give 258*(2+3)=1290, catching that bug.
+	req2 := Request{
+		Provider: "google",
+		Model:    "gemini-2.5-pro",
+		Messages: []Message{{Role: RoleUser, Content: []ContentPart{
+			{Kind: ContentImage, Image: &ImageData{MediaType: "image/png", Data: pngImage(t, 800, 1600)}},
+		}}},
+	}
+	got2 := EstimateInputTokens(req2)
+	if got2.Tokens != 258*2*3 {
+		t.Fatalf("non-square Tokens = %d, want %d", got2.Tokens, 258*2*3)
+	}
 }
 
 func TestEstimateInputTokens_AnthropicImagePatches(t *testing.T) {
+	// 57×57: ceilDiv(57,28)=3, so 3*3=9 tokens.
+	// Floor division (57/28=2) would give 2*2=4, making the ceiling behaviour observable.
 	req := Request{
 		Provider: "anthropic",
 		Model:    "claude-test",
 		Messages: []Message{{Role: RoleUser, Content: []ContentPart{
-			{Kind: ContentImage, Image: &ImageData{MediaType: "image/png", Data: pngImage(t, 56, 56)}},
+			{Kind: ContentImage, Image: &ImageData{MediaType: "image/png", Data: pngImage(t, 57, 57)}},
 		}}},
 	}
 
 	got := EstimateInputTokens(req)
-	if got.Tokens != 4 {
-		t.Fatalf("Tokens = %d, want 4", got.Tokens)
+	if got.Tokens != 9 {
+		t.Fatalf("Tokens = %d, want 9", got.Tokens)
 	}
 }
 
 func TestClient_CountInputTokens_UsesAdapterCounter(t *testing.T) {
 	c := NewClient()
+	// Adapter returns only Tokens; Exact/Source/Provider/Model are deliberately blank
+	// so the enrichment block in CountInputTokens must fill every field.
 	a := &countAdapter{
 		name: "counted",
-		out:  InputTokenCount{Tokens: 123, Exact: true, Source: TokenCountSourceProvider},
+		out:  InputTokenCount{Tokens: 123},
 	}
 	c.Register(a)
 
@@ -107,8 +125,20 @@ func TestClient_CountInputTokens_UsesAdapterCounter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CountInputTokens: %v", err)
 	}
-	if got.Tokens != 123 || !got.Exact || got.Source != TokenCountSourceProvider {
-		t.Fatalf("CountInputTokens = %+v, want exact provider count", got)
+	if got.Tokens != 123 {
+		t.Fatalf("Tokens = %d, want 123", got.Tokens)
+	}
+	if !got.Exact {
+		t.Fatalf("Exact = false, want true")
+	}
+	if got.Source != TokenCountSourceProvider {
+		t.Fatalf("Source = %q, want %q", got.Source, TokenCountSourceProvider)
+	}
+	if got.Provider != "counted" {
+		t.Fatalf("Provider = %q, want counted", got.Provider)
+	}
+	if got.Model != "m" {
+		t.Fatalf("Model = %q, want m", got.Model)
 	}
 	if a.got.Provider != "counted" {
 		t.Fatalf("adapter request provider = %q, want counted", a.got.Provider)
@@ -139,6 +169,9 @@ func TestClient_CountInputTokens_FallsBackWhenCounterUnsupported(t *testing.T) {
 	}
 	if got.Provider != "unsupported" {
 		t.Fatalf("Provider = %q, want unsupported", got.Provider)
+	}
+	if got.Tokens != len("hello world")/4 {
+		t.Fatalf("Tokens = %d, want %d", got.Tokens, len("hello world")/4)
 	}
 }
 

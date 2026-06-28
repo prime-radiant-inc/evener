@@ -219,6 +219,8 @@ func TestDecidePrefixAction(t *testing.T) {
 		{"openrouter self strip", "openrouter", "openrouter", "openrouter", prefixActionStrip},
 		{"openrouter switch ollama", "openrouter", "openrouter", "ollama", prefixActionSwitch},
 		{"openrouter switch kimi", "openrouter", "openrouter", "kimi", prefixActionSwitch},
+		{"openrouter switch glm", "openrouter", "openrouter", "glm", prefixActionSwitch},
+		{"openrouter switch openrouter-anthropic", "openrouter", "openrouter", "openrouter-anthropic", prefixActionSwitch},
 		{"openrouter keep anthropic", "openrouter", "openrouter", "anthropic", prefixActionKeep},
 		// Renamed instance (id != behaviorTag via WithProviderID): the
 		// self-strip check must key off instanceName, not behaviorTag.

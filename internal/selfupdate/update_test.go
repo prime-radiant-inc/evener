@@ -60,6 +60,13 @@ func TestResolveTargetTracksCurrentChannel(t *testing.T) {
 			wantRelease:    "v1.2.3",
 			wantChannel:    "release",
 		},
+		{
+			name:           "explicit current behaves like empty",
+			requested:      "current",
+			currentChannel: "release",
+			wantRelease:    "latest",
+			wantChannel:    "release",
+		},
 	}
 
 	for _, tc := range tests {
@@ -107,8 +114,12 @@ func TestUpgradeInstallsReleaseArchive(t *testing.T) {
 	if result.Channel != "snapshot" {
 		t.Fatalf("Channel = %q, want snapshot", result.Channel)
 	}
-	if !strings.Contains(result.RestartMessage, "Restart") {
-		t.Fatalf("RestartMessage = %q, want restart guidance", result.RestartMessage)
+	if result.Release != "snapshot" {
+		t.Fatalf("Release = %q, want snapshot", result.Release)
+	}
+	const wantRestart = "Restart serf-tui and serf-hub to use the upgraded binaries."
+	if result.RestartMessage != wantRestart {
+		t.Fatalf("RestartMessage = %q, want %q", result.RestartMessage, wantRestart)
 	}
 
 	binDir := filepath.Join(prefix, "bin")
@@ -138,6 +149,40 @@ func TestUpgradeInstallsReleaseArchive(t *testing.T) {
 		if target != installed {
 			t.Fatalf("symlink %s -> %s, want %s", link, target, installed)
 		}
+	}
+}
+
+func TestUpgradeReleaseChannelUsesLatestDownloadURL(t *testing.T) {
+	archive := releaseArchive(t, "serf_linux_amd64")
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/gzip")
+		_, _ = w.Write(archive)
+	}))
+	t.Cleanup(server.Close)
+
+	prefix := filepath.Join(t.TempDir(), ".local")
+	result, err := Upgrade(t.Context(), Options{
+		Requested:      "",
+		CurrentChannel: "release",
+		Prefix:         prefix,
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		RepoURL:        server.URL,
+	})
+	if err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+
+	if want := "/releases/latest/download/serf_linux_amd64.tar.gz"; gotPath != want {
+		t.Fatalf("download path = %q, want %q", gotPath, want)
+	}
+	if result.Channel != "release" {
+		t.Fatalf("Channel = %q, want release", result.Channel)
+	}
+	if result.Release != "latest" {
+		t.Fatalf("Release = %q, want latest", result.Release)
 	}
 }
 

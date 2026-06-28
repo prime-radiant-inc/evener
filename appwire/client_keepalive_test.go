@@ -72,6 +72,43 @@ func TestClientKeepaliveTearsDownOnPingFailure(t *testing.T) {
 	}
 }
 
+// blockingPingerTransport is a pingingTransport whose Ping blocks until the
+// ping context is cancelled, simulating a peer that never responds to pings.
+// This exercises the pong-timeout branch of runClientKeepalive.
+type blockingPingerTransport struct {
+	*pingingTransport
+}
+
+func (b *blockingPingerTransport) Ping(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestClientKeepaliveTearsDownOnPongTimeout(t *testing.T) {
+	base := newPingingTransport()
+	transport := &blockingPingerTransport{base}
+	client := NewClient(transport)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// 1 ms interval, 5 ms pong timeout: the blocking Ping will always exceed the
+	// timeout, so runClientKeepalive must close the transport. The outer 1 s
+	// deadline provides ample headroom under scheduler pressure.
+	client.startWithKeepalive(ctx, time.Millisecond, 5*time.Millisecond)
+
+	select {
+	case _, ok := <-client.Notifications():
+		if ok {
+			t.Fatal("expected notifications channel to close, got a value")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("keepalive did not tear down the client after pong timeout")
+	}
+	if !transport.closed.Load() {
+		t.Fatal("keepalive did not close the transport after pong timeout")
+	}
+}
+
 func TestClientWithoutPingerHasNoKeepalive(t *testing.T) {
 	// memoryTransport is not a Pinger; Start must not spuriously close it.
 	transport := newMemoryTransport()

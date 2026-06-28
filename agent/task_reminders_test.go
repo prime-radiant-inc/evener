@@ -113,7 +113,7 @@ func TestTaskReminderForInactivity_InProgressReFiresCurrentTaskSteering(t *testi
 		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Prompt for A"},
 		{Type: taskpkg.TaskTypeResearch, Description: "Task B", Prompt: "Prompt for B"},
 	})
-	store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}})
+	store.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskInProgress}})
 
 	msg := taskReminderForInactivity(store)
 	if msg == "" {

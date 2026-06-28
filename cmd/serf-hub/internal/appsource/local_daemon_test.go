@@ -267,9 +267,18 @@ func TestLocalDaemonSourceListsOnlyAppWireRendezvousThreads(t *testing.T) {
 				SessionID:  "sess_1",
 				WorkingDir: "/tmp/project",
 			},
+			// Has valid Endpoint and ThreadID but wrong Protocol — must be excluded by
+			// the Protocol filter, not by the Endpoint/ThreadID guards.
 			{
-				PID:     2,
-				Address: "127.0.0.1:2",
+				Protocol: "legacy-protocol",
+				Endpoint: "ws://127.0.0.1:2/rpc",
+				SourceID: "local",
+				ThreadID: "th_2",
+			},
+			// Missing both Endpoint and Protocol — covers the empty-Endpoint guard.
+			{
+				PID:     3,
+				Address: "127.0.0.1:3",
 			},
 		}
 	}, nil)

@@ -37,8 +37,14 @@ const dot = window.document.querySelector(".status-dot");
   await new Promise((r) => setTimeout(r, 30)); // let the cold-load fetch flush
 
   // Incoming frames stamp lastFrameAt.
+  // Pin lastFrameAt to a known past value so the assertion cannot pass trivially
+  // from the value set during init — if handle() stops updating it, the clock
+  // will still be 10s in the past after the call and the assertion fails.
+  R.lastFrameAt = Date.now() - 10000;
+  const tBefore = Date.now();
   R.handleData("THREAD_STATUS_CHANGED", { status: "active" });
-  pass(typeof R.lastFrameAt === "number" && R.lastFrameAt > 0, "frames stamp lastFrameAt");
+  const tAfter = Date.now();
+  pass(R.lastFrameAt >= tBefore && R.lastFrameAt <= tAfter, "frames stamp lastFrameAt");
 
   // Working + a long silent gap past the stall threshold → honest stall notice,
   // and the dot stops pulsing.

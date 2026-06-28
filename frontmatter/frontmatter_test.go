@@ -95,6 +95,12 @@ func TestParse_ComplexMetadata(t *testing.T) {
 	if len(tags) != 2 {
 		t.Errorf("tags length = %d, want 2", len(tags))
 	}
+	if tags[0] != "go" {
+		t.Errorf("tags[0] = %q, want %q", tags[0], "go")
+	}
+	if tags[1] != "yaml" {
+		t.Errorf("tags[1] = %q, want %q", tags[1], "yaml")
+	}
 	nested, ok := doc.Meta["nested"].(map[string]any)
 	if !ok {
 		t.Fatalf("nested should be map[string]any, got %T", doc.Meta["nested"])

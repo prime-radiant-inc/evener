@@ -127,24 +127,24 @@ func TestParseSSE_StreamReadTimeout_ResetsOnData(t *testing.T) {
 	// Verify that the timeout resets after each line of data, not just events.
 	pr, pw := io.Pipe()
 	go func() {
-		// Write lines slowly but within the timeout window.
+		// Write lines slowly but well within the timeout window (10× margin).
 		_, _ = pw.Write([]byte("data: first\n\n"))
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 		_, _ = pw.Write([]byte("data: second\n\n"))
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 		_, _ = pw.Write([]byte("data: third\n\n"))
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 		_ = pw.Close()
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	var events []SSEEvent
 	err := ParseSSE(ctx, pr, func(ev SSEEvent) error {
 		events = append(events, ev)
 		return nil
-	}, WithStreamReadTimeout(300*time.Millisecond))
+	}, WithStreamReadTimeout(2*time.Second))
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

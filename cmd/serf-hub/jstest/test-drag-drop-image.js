@@ -86,11 +86,6 @@ function buildDropEvent(window, kind, files) {
   return ev;
 }
 
-function buildChangeEvent(window, files) {
-  const ev = new window.Event("change", { bubbles: true });
-  return ev;
-}
-
 async function waitMicrotasks(n = 20) {
   for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 1));
 }
@@ -262,12 +257,30 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
       "expected chip rendered after pick, got " + container.querySelectorAll("[data-attachment]").length);
   }
 
-  // ---------- Assertion 10: file picker accept attribute is image/* ----------
+  // ---------- Assertion 10: attachComposerFilePickerHandlers defensively sets accept=image/* ----------
+  // Tests the defensive-set path in attachComposerFilePickerHandlers: when a
+  // bare <input type=file> has no accept attribute the handler must apply
+  // "image/*" itself. This would fail if that defensive branch were removed,
+  // unlike reading the accept attribute from the fixture (which pre-sets it).
   {
     const w = buildDom();
-    const picker = w.document.getElementById("picker");
-    pass(picker.getAttribute("accept") === "image/*",
-      "expected accept=image/*, got " + picker.getAttribute("accept"));
+    const bare = w.document.createElement("input");
+    bare.type = "file";
+    // Intentionally no accept attribute on this element.
+    const btn = w.document.createElement("button");
+    const pending = { items: [] };
+    w.SerfComposerAttachments.attachComposerFilePickerHandlers(btn, bare, pending);
+    pass(bare.getAttribute("accept") === "image/*",
+      "expected attachComposerFilePickerHandlers to defensively set accept=image/*, got " + bare.getAttribute("accept"));
+
+    // Verify it does NOT clobber an already-set accept attribute.
+    const preSet = w.document.createElement("input");
+    preSet.type = "file";
+    preSet.setAttribute("accept", ".jpg,.png");
+    const btn2 = w.document.createElement("button");
+    w.SerfComposerAttachments.attachComposerFilePickerHandlers(btn2, preSet, { items: [] });
+    pass(preSet.getAttribute("accept") === ".jpg,.png",
+      "expected attachComposerFilePickerHandlers NOT to override an existing accept, got " + preSet.getAttribute("accept"));
   }
 
   // ---------- Assertion 11: file picker change with 2 PNGs → 2 entries ----------

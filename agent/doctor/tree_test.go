@@ -67,8 +67,8 @@ func TestTree_DelegateEdgeCrossBucket(t *testing.T) {
 	if c.TranscriptRef != "proj:"+hash2+":"+childSID {
 		t.Errorf("child ref = %q, want cross-bucket proj ref", c.TranscriptRef)
 	}
-	if c.Status == "" {
-		t.Error("child status should be set (job_started ran)")
+	if c.Status != "running" {
+		t.Errorf("child status = %q, want %q (EventJobStarted → DelegateRunning)", c.Status, "running")
 	}
 }
 
@@ -96,14 +96,28 @@ func TestTree_ObserversOptIn(t *testing.T) {
 
 func TestTree_DepthLimit(t *testing.T) {
 	base, rootSID := treeFixture(t)
+
+	// Give childSID a delegate child of its own so depthLimitNote has a real
+	// grandchild to report and the depth-1 suppression is observable in the note.
+	childBucket := stateHomeBucket(base, hash2)
+	childJobs := filepath.Join(childBucket, "sessions", childSID, "jobs.jsonl")
+	writeJobsEvents(t, childJobs, []jobstore.Event{
+		{Kind: jobstore.EventDelegateCreated, DelegateID: "del2", Delegate: &jobstore.DelegateEvent{
+			ChildSessionID: "grandchild-placeholder",
+			AgentType:      "leaf",
+		}},
+	})
+
 	root, _ := Tree(base, rootSID, TreeOpts{Depth: 1})
 	if len(root.Children) != 1 {
 		t.Fatalf("depth 1 should still list immediate children, got %d", len(root.Children))
 	}
-	// The child has no delegates of its own, so no depth-limit note is expected,
-	// but it must be present as a leaf (not expanded further).
-	if len(root.Children[0].Children) != 0 {
-		t.Error("depth 1 should not expand grandchildren")
+	child := root.Children[0]
+	if len(child.Children) != 0 {
+		t.Errorf("depth 1 should not expand grandchildren, got %d", len(child.Children))
+	}
+	if !strings.Contains(child.Note, "depth limit") {
+		t.Errorf("depth-limit note should indicate suppression, got %q", child.Note)
 	}
 }
 

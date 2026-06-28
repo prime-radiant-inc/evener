@@ -49,6 +49,7 @@ func TestSchemaWaitKnobs(t *testing.T) {
 	}{
 		{"delegate", func() map[string]any { return DefDelegate(nil).Parameters }},
 		{"delegate_send", func() map[string]any { return DefDelegateSend().Parameters }},
+		{"job_read_output", func() map[string]any { return DefJobReadOutput().Parameters }},
 		{"job_stop", func() map[string]any { return DefJobStop().Parameters }},
 	}
 

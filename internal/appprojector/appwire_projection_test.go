@@ -62,6 +62,26 @@ func TestAppEventProjectorTurnStartedCarriesStartedAt(t *testing.T) {
 	}
 }
 
+// TestAppEventProjectorTurnStartedZeroTimestampOmitsStartedAt (kata F1) verifies
+// that when EventUserInput carries a zero Timestamp, startedTurn leaves
+// StartedAt nil rather than emitting the Unix epoch (1970-01-01).
+func TestAppEventProjectorTurnStartedZeroTimestampOmitsStartedAt(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	// Timestamp zero value — must NOT produce StartedAt on the wire.
+	out := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+
+	started := notificationParamsJSON(t, out, appwire.NotifyTurnStarted)
+	var params struct {
+		Turn appwire.Turn `json:"turn"`
+	}
+	if err := json.Unmarshal(started, &params); err != nil {
+		t.Fatalf("turn/started json: %v", err)
+	}
+	if params.Turn.StartedAt != nil {
+		t.Fatalf("turn/started StartedAt=%v, want nil for zero Timestamp", *params.Turn.StartedAt)
+	}
+}
+
 func TestAppEventProjectorProjectsReasoningDelta(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
@@ -313,6 +333,10 @@ func TestAppEventProjectorCompletesTurnOnSessionEnd(t *testing.T) {
 	}
 	if !hasAppNotification(sessionEnd, appwire.NotifyTurnCompleted) {
 		t.Fatalf("session end did not complete turn: %+v", sessionEnd)
+	}
+	completedTurn := notificationTurn(t, sessionEnd, appwire.NotifyTurnCompleted)
+	if completedTurn.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("idle session end turn status=%s, want completed", completedTurn.Status)
 	}
 	if !hasAppNotification(sessionEnd, appwire.NotifyThreadStatusChanged) {
 		t.Fatalf("session end did not update thread status: %+v", sessionEnd)
@@ -649,18 +673,6 @@ func TestSerfJobInfoDelegateFieldsAreOptional(t *testing.T) {
 		}
 	}
 
-	var oldClient struct {
-		JobID   string `json:"jobId"`
-		JobType string `json:"jobType"`
-		Status  string `json:"status"`
-	}
-	enriched := []byte(`{"jobId":"job_1","jobType":"delegate","status":"running","delegateId":"dlg_1","task":"inspect"}`)
-	if err := json.Unmarshal(enriched, &oldClient); err != nil {
-		t.Fatal(err)
-	}
-	if oldClient.JobID != "job_1" || oldClient.JobType != "delegate" || oldClient.Status != "running" {
-		t.Fatalf("old client decode = %+v", oldClient)
-	}
 }
 
 // TestAppEventProjectorProjectsQueueChanged (kata r80p) verifies the
@@ -1175,7 +1187,7 @@ func TestProjector_ForwardsProviderCause(t *testing.T) {
 	if turn.Error == nil || turn.Error.Cause == nil {
 		t.Fatalf("turn error cause missing: %+v", turn.Error)
 	}
-	if turn.Error.Cause.Provider != "anthropic" || turn.Error.Cause.Model != "claude-opus-4-7" || turn.Error.Cause.Status != 503 {
+	if turn.Error.Cause.Kind != "provider" || turn.Error.Cause.Provider != "anthropic" || turn.Error.Cause.Model != "claude-opus-4-7" || turn.Error.Cause.Status != 503 {
 		t.Fatalf("turn error cause=%+v", turn.Error.Cause)
 	}
 }

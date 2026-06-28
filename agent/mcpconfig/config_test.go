@@ -3,6 +3,7 @@ package mcpconfig
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"primeradiant.com/serf/agent/internal/agenttest"
@@ -203,7 +204,7 @@ func TestParseMCPInline(t *testing.T) {
 		if cfg.Command != tt.command {
 			t.Errorf("ParseInline(%q).Command = %q, want %q", tt.spec, cfg.Command, tt.command)
 		}
-		if len(cfg.Args) != len(tt.args) {
+		if !reflect.DeepEqual(cfg.Args, tt.args) {
 			t.Errorf("ParseInline(%q).Args = %v, want %v", tt.spec, cfg.Args, tt.args)
 		}
 		if cfg.Type != "stdio" {

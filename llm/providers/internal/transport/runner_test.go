@@ -40,10 +40,15 @@ func drain(ctx context.Context, t *testing.T, r *StreamRunner) []llm.StreamEvent
 
 // TestRun_TeeOnlyWhenRawBodyEnabled asserts the runner tees the response body
 // into a buffer exactly when llm.RawBodyEnabled() is true, and hands that buffer
-// (else nil) to OnEvent. RawBodyEnabled is frozen at llm-package init from
-// SERF_LOG_RAW_HTTP, so this validates whichever mode the binary runs in: with
-// the env set, the tee path (buffer non-nil and filled); without it, the nil path.
+// (else nil) to OnEvent. Both branches are exercised unconditionally: the
+// disabled path runs inline; the enabled path runs in a subprocess with
+// SERF_LOG_RAW_HTTP=1 so the positive assertions always execute.
 func TestRun_TeeOnlyWhenRawBodyEnabled(t *testing.T) {
+	if os.Getenv("SERF_TRANSPORT_TEE_ENABLED_HELPER") == "1" {
+		runTeeEnabledHelper(t)
+		return
+	}
+
 	const body = "event: ping\ndata: {\"a\":1}\n\ndata: [DONE]\n\n"
 
 	var lastBuf *bytes.Buffer
@@ -75,17 +80,61 @@ func TestRun_TeeOnlyWhenRawBodyEnabled(t *testing.T) {
 			t.Fatalf("unexpected error event after completion: %v", ev.Err)
 		}
 	}
+	if !llm.RawBodyEnabled() {
+		if lastBuf != nil {
+			t.Fatalf("RawBody disabled: expected nil sseBuf, got %q", lastBuf.String())
+		}
+	}
 
-	if llm.RawBodyEnabled() {
-		if lastBuf == nil {
-			t.Fatal("RawBodyEnabled: expected non-nil sseBuf in OnEvent")
-		}
-		// The tee mirrors everything the parser consumed from the body.
-		if !strings.Contains(lastBuf.String(), "[DONE]") {
-			t.Fatalf("RawBodyEnabled: tee buffer did not capture body, got %q", lastBuf.String())
-		}
-	} else if lastBuf != nil {
-		t.Fatalf("RawBody disabled: expected nil sseBuf, got %q", lastBuf.String())
+	// Spawn a subprocess with SERF_LOG_RAW_HTTP=1 to unconditionally exercise
+	// the tee path (sseBuf non-nil and populated with body content).
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	cmd := exec.Command(exe, "-test.run=TestRun_TeeOnlyWhenRawBodyEnabled", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		"SERF_TRANSPORT_TEE_ENABLED_HELPER=1",
+		"SERF_LOG_RAW_HTTP=1",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("tee-enabled helper failed: %v\n%s", err, out)
+	}
+}
+
+func runTeeEnabledHelper(t *testing.T) {
+	t.Helper()
+	if !llm.RawBodyEnabled() {
+		t.Fatal("RawBodyEnabled is false in helper subprocess")
+	}
+
+	const body = "event: ping\ndata: {\"a\":1}\n\ndata: [DONE]\n\n"
+
+	var lastBuf *bytes.Buffer
+	finished := false
+	r := &StreamRunner{
+		Provider: "test",
+		Resp:     respFrom(body),
+		Stream:   llm.NewChanStream(nil),
+		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
+			lastBuf = sseBuf
+			if string(ev.Data) == "[DONE]" {
+				finished = true
+			}
+			return nil
+		},
+		Finished:      &finished,
+		IncompleteMsg: "incomplete",
+	}
+	drain(context.Background(), t, r)
+
+	if lastBuf == nil {
+		t.Fatal("RawBodyEnabled: expected non-nil sseBuf in OnEvent")
+	}
+	// The tee mirrors everything the parser consumed from the body.
+	if !strings.Contains(lastBuf.String(), "[DONE]") {
+		t.Fatalf("RawBodyEnabled: tee buffer did not capture body, got %q", lastBuf.String())
 	}
 }
 
@@ -127,6 +176,14 @@ func TestRun_EpilogueWrapsContextErrorOnCancel(t *testing.T) {
 	var streamErr *llm.StreamError
 	if errors.As(errEv.Err, &streamErr) {
 		t.Fatalf("ctx-cancel epilogue wrongly produced StreamError: %v", errEv.Err)
+	}
+	// The provider name must be threaded from r.Provider into WrapContextError.
+	var llmErr llm.Error
+	if !errors.As(errEv.Err, &llmErr) {
+		t.Fatalf("ctx-cancel epilogue: error %T does not implement llm.Error", errEv.Err)
+	}
+	if got := llmErr.Provider(); got != "anthropic" {
+		t.Fatalf("ctx-cancel epilogue: provider = %q, want %q", got, "anthropic")
 	}
 }
 
@@ -259,14 +316,14 @@ func TestRun_NoErrorWhenFinished(t *testing.T) {
 	}
 }
 
-// TestRun_NeverCallsCancel documents the no-cancel invariant: the runner holds
-// no CancelFunc and never cancels. We assert it by passing a stream whose
-// cancel hook would flip a flag if invoked, then confirming it stays false
-// across a normal run. (The runner never receives this cancel; ChanStream.Close
-// owns it, and the runner never calls Close.)
+// TestRun_NeverCallsCancel verifies the runner does not invoke Stream.Close().
+// Close is the consumer-side tear-down API; the runner is the producer and must
+// only call Send/CloseSend. We observe this via a cancel hook counter, then
+// confirm Stream.Close() completes without deadlocking after drain: CloseSend
+// was called by drain so <-s.done returns immediately.
 func TestRun_NeverCallsCancel(t *testing.T) {
-	cancelled := false
-	stream := llm.NewChanStream(func() { cancelled = true })
+	var closeCalls int
+	stream := llm.NewChanStream(func() { closeCalls++ })
 
 	finished := false
 	r := &StreamRunner{
@@ -284,7 +341,10 @@ func TestRun_NeverCallsCancel(t *testing.T) {
 	}
 	_ = drain(context.Background(), t, r)
 
-	if cancelled {
-		t.Fatal("runner invoked the stream cancel hook; it must never cancel")
+	if closeCalls != 0 {
+		t.Fatalf("runner called Stream.Close() %d time(s); it must never cancel the stream", closeCalls)
 	}
+	// After CloseSend (called by drain), Stream.Close() must not block:
+	// <-s.done returns immediately because s.done was already closed.
+	stream.Close()
 }

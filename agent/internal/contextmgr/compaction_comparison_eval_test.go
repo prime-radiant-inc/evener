@@ -244,6 +244,24 @@ func taskContextFor(c obedienceCase) string {
 // the obedience corpus against the real OAuth model and reports per-arm
 // needle-retention + mean judge score, the A->B and B->C gaps, and the concrete
 // baseline-drop wins.
+//
+// MEASUREMENT HARNESS — NOT a regression guard. The A-arm needle retention and
+// all LLM-judge scores are observational: they quantify the value of the
+// agent-authored note, not a correctness invariant of any production code path.
+// Results are written to resultsDoc for human review. No production code path
+// "passes" or "fails" based on those scores.
+//
+// Structural invariant that IS asserted (one per completed case): arms B and C
+// must always retain the must-keep needle. This is unconditionally guaranteed by
+// construction:
+//
+//	b.output  = pinnedNote(c.mustKeep) + aSummary
+//	cc.output = pinnedNote(c.mustKeep) + cSummary
+//
+// pinnedNote wraps mustKeep verbatim, so strings.Contains(b.output, c.mustKeep)
+// is always true regardless of what the summarizer returns. An assertion failure
+// here indicates a test-setup bug (e.g. the note was not prepended, pinnedNote
+// was changed, or mustKeep was mutated before the contains check).
 func TestCompactionComparison(t *testing.T) {
 	cm := newOAuthManager(t)
 	cases := obedienceCases()
@@ -294,6 +312,15 @@ func TestCompactionComparison(t *testing.T) {
 		if judgeFailed {
 			skipped = append(skipped, c.name)
 			continue
+		}
+
+		// Structural invariant: arms B and C prepend the note verbatim, so they
+		// must always contain the needle regardless of what the summarizer returns.
+		if !b.needleKept {
+			t.Errorf("arm B must always retain needle (verbatim note prepended): case %q dropped %q", c.name, c.mustKeep)
+		}
+		if !cc.needleKept {
+			t.Errorf("arm C must always retain needle (verbatim note prepended): case %q dropped %q", c.name, c.mustKeep)
 		}
 
 		rows = append(rows, caseRow{name: c.name, a: a, b: b, c: cc})

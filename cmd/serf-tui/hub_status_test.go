@@ -124,8 +124,8 @@ func TestRenderHubSessionStatusShortensLongDelegateJobIDs(t *testing.T) {
 	if strings.Contains(collapsed, longJobID) {
 		t.Fatalf("collapsed status leaked full job id: %s", collapsed)
 	}
-	if !strings.Contains(collapsed, "job ") {
-		t.Fatalf("collapsed status missing short job label: %s", collapsed)
+	if !strings.Contains(collapsed, "job 01KW0V…") {
+		t.Fatalf("collapsed status missing exact abbreviated job label 'job 01KW0V…': %s", collapsed)
 	}
 }
 

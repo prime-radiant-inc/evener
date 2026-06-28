@@ -575,9 +575,7 @@ await scenario("failed shell shows error output", [
 
 // The expand caret sits on the RIGHT of the header line (order 3), so the status
 // glyph leads a clean, aligned left edge; the disclosure recedes to the right.
-await scenario("expand caret is right-aligned; card disclosures use a right chevron", [
-  ["SESSION_START", { session_id: "01TEST" }],
-], () => {
+await scenario("expand caret is right-aligned; card disclosures use a right chevron", [], () => {
   if (!/\.tool-expand-btn\s*\{[^}]*order:\s*3/.test(styleSrc)) {
     return { ok: false, detail: "expand caret must be order: 3 (right of the header line)" };
   }

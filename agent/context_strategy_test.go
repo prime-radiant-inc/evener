@@ -169,6 +169,7 @@ func TestCompactionThresholdScale(t *testing.T) {
 	check("ThinkingClearThreshold clamped", cm2.ThinkingClearThreshold, 0.20)
 	check("CheckpointThreshold clamped", cm2.CheckpointThreshold, 0.20)
 	check("SummarizeThreshold clamped", cm2.SummarizeThreshold, 0.20)
+	check("WarnThreshold clamped", cm2.WarnThreshold, 0.20)
 	sess2.Close()
 }
 

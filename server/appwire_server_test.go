@@ -834,6 +834,22 @@ func TestServerAppWireErrorEventNotifiesSubscribers(t *testing.T) {
 			t.Fatalf("missing failed-turn notification")
 		}
 	}
+
+	// Drain for a short window after seeing the failed turn to catch any
+	// NotifyWarning that arrives after the completed notification. Without this
+	// drain a late warning is left unread in the channel and the test passes
+	// even when the invariant is broken.
+	drainDeadline := time.After(100 * time.Millisecond)
+	for {
+		select {
+		case got := <-client.Notifications():
+			if got.Method == appwire.NotifyWarning {
+				t.Fatalf("non-cancelled provider error emitted a redundant NotifyWarning after the failed turn: %s", got.Params)
+			}
+		case <-drainDeadline:
+			return
+		}
+	}
 }
 
 func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {

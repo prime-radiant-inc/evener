@@ -10,9 +10,8 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func TestCheckpointPredStrategy_SatisfiesInterface(t *testing.T) {
-	var _ Strategy = (*CheckpointPredStrategy)(nil)
-}
+// Compile-time assertion: CheckpointPredStrategy must satisfy Strategy.
+var _ Strategy = (*CheckpointPredStrategy)(nil)
 
 func TestCheckpointPredStrategy_Name(t *testing.T) {
 	s := &CheckpointPredStrategy{}

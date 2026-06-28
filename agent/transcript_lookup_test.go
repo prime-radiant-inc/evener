@@ -210,8 +210,10 @@ func TestResolveTranscript_AmbiguousBareID(t *testing.T) {
 	writeTranscript(t, a, "01DUP")
 	writeTranscript(t, b, "01DUP")
 	_, _, err := resolveTranscript("01DUP", a, "01CUR")
-	if err == nil || !strings.Contains(err.Error(), "local:01DUP") || !strings.Contains(err.Error(), "proj:") {
-		t.Fatalf("expected ambiguity error with both candidates, got %v", err)
+	bHash := filepath.Base(b)
+	expectedBRef := "proj:" + bHash + ":01DUP"
+	if err == nil || !strings.Contains(err.Error(), "local:01DUP") || !strings.Contains(err.Error(), expectedBRef) {
+		t.Fatalf("expected ambiguity error with candidates local:01DUP and %s, got %v", expectedBRef, err)
 	}
 }
 

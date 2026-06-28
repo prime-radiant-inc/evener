@@ -133,8 +133,8 @@ async function testClusterCompact() {
   const css = fs.readFileSync(cssPath, "utf8");
   pass(css.includes(".pane-compact"), "style.css must define a .pane-compact scope");
   pass(css.includes(".pane-compact .workspace-header"), "style.css must trim .workspace-header in pane-compact");
-  pass(css.includes(".pane-compact .workspace-title-row") && css.includes("display: none"), "style.css must hide inner title row in pane-compact");
-  pass(css.includes(".pane-compact kbd") && css.includes("display: none"), "style.css must hide composer hotkey labels in pane-compact");
+  pass(/\.pane-compact \.workspace-title-row\s*\{[^}]*display:\s*none/.test(css), "style.css must hide inner title row in pane-compact");
+  pass(/\.pane-compact kbd\s*\{[^}]*display:\s*none/.test(css), "style.css must hide composer hotkey labels in pane-compact");
   pass(css.includes(".pane-compact .conversation"), "style.css must tighten .conversation in pane-compact");
   pass(
     css.includes(".pane-compact .tool-call-cluster[data-compact]"),

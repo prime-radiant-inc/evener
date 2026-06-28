@@ -32,11 +32,21 @@ const compLabel = css.match(/\.context-compaction-label\s*\{[^}]*\}/);
 pass(!!compLabel, "context-compaction-label rule exists");
 const compStat = css.match(/\.context-compaction-stat\s*\{[^}]*\}/);
 pass(!!compStat, "context-compaction-stat (expanded math) rule exists");
-const compBlock = css.match(/\.context-compaction-line[\s\S]*?\.context-compaction-stat\s*\{[^}]*\}/);
-pass(!!compBlock, "compaction CSS block found");
-if (compBlock) {
-  pass(!/var\(--error\)/.test(compBlock[0]), "compaction styling must NOT use red --error");
-  pass(!/var\(--state-awaiting\)/.test(compBlock[0]), "compaction styling is neutral, not amber (it is a settled DONE event)");
+// Check neutral-color constraints on each compaction rule individually (not as a
+// span) so that an unrelated amber/error rule added between them doesn't cause a
+// spurious failure here.
+const compLine = css.match(/\.context-compaction-line\s*\{[^}]*\}/);
+if (compLine) {
+  pass(!/var\(--error\)/.test(compLine[0]), "context-compaction-line must NOT use red --error");
+  pass(!/var\(--state-awaiting\)/.test(compLine[0]), "context-compaction-line is neutral, not amber");
+}
+if (compLabel) {
+  pass(!/var\(--error\)/.test(compLabel[0]), "context-compaction-label must NOT use red --error");
+  pass(!/var\(--state-awaiting\)/.test(compLabel[0]), "context-compaction-label is neutral, not amber (it is a settled DONE event)");
+}
+if (compStat) {
+  pass(!/var\(--error\)/.test(compStat[0]), "context-compaction-stat must NOT use red --error");
+  pass(!/var\(--state-awaiting\)/.test(compStat[0]), "context-compaction-stat is neutral, not amber (it is a settled DONE event)");
 }
 
 if (failures.length > 0) {

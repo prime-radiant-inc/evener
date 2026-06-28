@@ -42,23 +42,58 @@ func TestAnthropic_Name(t *testing.T) {
 }
 
 func TestAnthropic_CountInputTokensFallsBackWhenForwarderDoesNotEnableIt(t *testing.T) {
-	c := llm.NewClient()
-	c.Register(NewAnthropic("", "anthropic-proxy", nil))
+	assertLocalEstimate := func(t *testing.T, got llm.InputTokenCount, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("CountInputTokens: %v", err)
+		}
+		if got.Exact {
+			t.Fatalf("fallback estimate should not be exact: %+v", got)
+		}
+		if got.Source != llm.TokenCountSourceLocalEstimate {
+			t.Fatalf("Source = %q, want %q", got.Source, llm.TokenCountSourceLocalEstimate)
+		}
+	}
 
-	got, err := c.CountInputTokens(context.Background(), llm.Request{
-		Provider: "anthropic-proxy",
-		Model:    "claude-test",
-		Messages: []llm.Message{llm.User("hello world")},
+	t.Run("nil adapter", func(t *testing.T) {
+		c := llm.NewClient()
+		c.Register(NewAnthropic("", "anthropic-proxy", nil))
+		got, err := c.CountInputTokens(context.Background(), llm.Request{
+			Provider: "anthropic-proxy",
+			Model:    "claude-test",
+			Messages: []llm.Message{llm.User("hello world")},
+		})
+		assertLocalEstimate(t, got, err)
 	})
-	if err != nil {
-		t.Fatalf("CountInputTokens: %v", err)
-	}
-	if got.Exact {
-		t.Fatalf("fallback estimate should not be exact: %+v", got)
-	}
-	if got.Source != llm.TokenCountSourceLocalEstimate {
-		t.Fatalf("Source = %q, want %q", got.Source, llm.TokenCountSourceLocalEstimate)
-	}
+
+	// Pin the countInputTokens=false gate independently of the nil-adapter branch.
+	// With a real adapter present, the flag must still suppress forwarding and
+	// the backing server must receive zero requests.
+	t.Run("non-nil adapter without opt-in", func(t *testing.T) {
+		var reqs int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			reqs++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"input_tokens":99}`))
+		}))
+		t.Cleanup(srv.Close)
+
+		c := llm.NewClient()
+		c.Register(NewAnthropic("", "anthropic-proxy", &anthropic.Adapter{
+			APIKey:  "k",
+			BaseURL: srv.URL,
+			Client:  srv.Client(),
+		}))
+		got, err := c.CountInputTokens(context.Background(), llm.Request{
+			Provider: "anthropic-proxy",
+			Model:    "claude-test",
+			Messages: []llm.Message{llm.User("hello world")},
+		})
+		assertLocalEstimate(t, got, err)
+		if reqs != 0 {
+			t.Fatalf("server received %d requests, want 0: countInputTokens=false must block forwarding", reqs)
+		}
+	})
 }
 
 func TestAnthropic_CountInputTokensOptInForwardsAndPreservesName(t *testing.T) {

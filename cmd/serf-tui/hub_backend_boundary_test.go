@@ -2,26 +2,41 @@ package main
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
 
 func TestHubModelDisablesLegacySessionBackends(t *testing.T) {
-	// The model struct used to carry addr, stateDir, embedded, and
-	// authController fields that the standalone TUI populated. All four are
-	// gone from the type now; their absence is enforced at compile time, a
-	// stronger guarantee than the nil/empty-string checks this test used to
-	// make. Construction parity (hub creates a session) is still exercised
-	// indirectly by every hub_*_test that newHubModel a session.
-	_ = newHubModel(nil, "http://hub.test")
+	// addr, embedded, and authController are legacy standalone-TUI fields that
+	// must never come back. Use reflect so the test actually fails if one is
+	// reintroduced — a compile-only call-and-not-panic is coverage theater.
+	typ := reflect.TypeOf(hubModel{})
+	for _, banned := range []string{"addr", "embedded", "authController"} {
+		if _, ok := typ.FieldByName(banned); ok {
+			t.Errorf("hubModel must not carry legacy field %q", banned)
+		}
+	}
 }
 
 func TestHubCommandRoutingStaysInsideAppWireClientBoundary(t *testing.T) {
-	// Routes can be split across hub_commands.go and the smaller helper
-	// files that grew out of it (queue_send.go for kata 111a/0bq1, etc.).
-	// Concatenate any file that registers `tea.Cmd` helpers and assert
-	// against the combined surface.
-	combined := readSourceFile(t, "hub_commands.go") + "\n" + readSourceFile(t, "queue_send.go")
+	// Scan every non-test .go file in the package so a new file (e.g.
+	// hub_bypass.go) cannot silently violate the boundary.
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+	var sb strings.Builder
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		sb.WriteString(readSourceFile(t, name))
+		sb.WriteByte('\n')
+	}
+	combined := sb.String()
+
 	for _, want := range []string{
 		"client.ThreadList(",
 		"client.ThreadRead(",

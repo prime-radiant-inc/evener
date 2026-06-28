@@ -281,8 +281,12 @@ func TestProviderHTTPErrorRawLoggingHelper(t *testing.T) {
 			if raw.Model != tc.model {
 				t.Fatalf("raw model = %q, want %q", raw.Model, tc.model)
 			}
-			if strings.TrimSpace(raw.RequestBody) == "" {
-				t.Fatal("raw request_body is empty")
+			// Assert that the actual outgoing request payload was captured, not a
+			// placeholder. The user message text is serialized into every provider's
+			// request body regardless of wire format.
+			bodyMarker := "hi from " + tc.name
+			if !strings.Contains(raw.RequestBody, bodyMarker) {
+				t.Fatalf("raw request_body missing payload marker %q: got %q", bodyMarker, raw.RequestBody)
 			}
 			if !strings.Contains(raw.ResponseBody, "bad-key-provider-error") {
 				t.Fatalf("raw response_body missing provider error marker: %q", raw.ResponseBody)

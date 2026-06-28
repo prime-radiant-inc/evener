@@ -4,9 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/tool"
-	"primeradiant.com/serf/llm"
 )
 
 func TestDefCommunicate_DefaultSchema_NoDecisionField(t *testing.T) {
@@ -111,46 +110,36 @@ func TestWithAllowedDecisions_NilDecisions_NoOp(t *testing.T) {
 
 func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 	t.Parallel()
-	// Regression test: tool.NewRegistry registers the profile's communicate
-	// definition (with decision). Then re-registering with the base definition
-	// but checking for an existing entry first should preserve decision.
+	// Regression: registerCommunicateTool must pick up the profile's
+	// communicate definition (with the decision field injected by
+	// WithAllowedDecisions) via its reg.Get guard, rather than overwriting it
+	// with the plain DefCommunicateNamed base definition.
 	p := WithAllowedDecisions(NewOpenAIProfile("gpt-5.2"), []string{"approved", "rejected"})
 	reg := newProfileToolRegistry(p)
 
-	// Registry should have communicate with decision from profile.
-	existing := reg.Get("communicate")
-	if existing == nil {
-		t.Fatal("communicate not found in registry after tool.NewRegistry")
+	// Call the real production function. If its reg.Get guard is removed, it
+	// will overwrite the profile's decision-bearing definition with the plain
+	// base, and the assertion below will fail.
+	deps := &toolDeps{
+		emit:                     func(events.EventKind, events.EventData) {},
+		abort:                    func(context.Context) error { return nil },
+		drainSteering:            func() []steeringMessage { return nil },
+		prependSteering:          func([]steeringMessage) {},
+		resultToolName:           func() string { return "communicate" },
+		setCommunicateResult:     func(string, string, string) {},
+		setCommunicateStructured: func(any) {},
 	}
+	registerCommunicateTool(reg, deps)
 
-	// Simulate registerCoreTools pattern (the fix):
-	// Use existing definition from registry instead of base.
-	resultToolDef := tool.DefCommunicateNamed("communicate")
-	if ex := reg.Get("communicate"); ex != nil {
-		resultToolDef = ex.Definition
-	}
-
-	// Re-register with the preserved definition + an executor.
-	err := reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: resultToolDef},
-		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			return nil, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("re-register failed: %v", err)
-	}
-
-	// Verify decision survived the re-registration.
 	final := reg.Get("communicate")
 	if final == nil {
-		t.Fatal("communicate not found after re-registration")
+		t.Fatal("communicate not found in registry after registerCommunicateTool")
 	}
 	props, _ := final.Definition.Parameters["properties"].(map[string]any)
 	output, _ := props["output"].(map[string]any)
 	outProps, _ := output["properties"].(map[string]any)
 	if _, exists := outProps["decision"]; !exists {
-		t.Fatal("decision field lost during re-registration — schema overwrite bug")
+		t.Fatal("decision field lost by registerCommunicateTool — guard (reg.Get check) missing from production code")
 	}
 }
 

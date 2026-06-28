@@ -13,9 +13,21 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
 // Slice the :root[data-theme="dark"] token block so token-value assertions
 // are unambiguous (the file ships dark + light + media-query copies).
+// Use a balanced-brace counter so values containing '}' don't truncate the block.
 const darkStart = css.indexOf(':root[data-theme="dark"]');
-const darkEnd = css.indexOf("}", darkStart);
-const darkRoot = darkStart >= 0 ? css.slice(darkStart, darkEnd) : "";
+let darkRoot = "";
+if (darkStart >= 0) {
+  const openBrace = css.indexOf("{", darkStart);
+  if (openBrace >= 0) {
+    let depth = 1, i = openBrace + 1;
+    while (i < css.length && depth > 0) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}") depth--;
+      i++;
+    }
+    darkRoot = css.slice(darkStart, i);
+  }
+}
 const tokenVal = (name) => {
   const m = darkRoot.match(new RegExp("--" + name + ":\\s*([^;]+);"));
   return m ? m[1].trim() : null;
@@ -30,6 +42,7 @@ pass(!/--error:\s*var\(--state-awaiting\)/.test(darkRoot), "--error must not ali
 // done/idle/user are neutral (no color). user no longer maps to green idle.
 pass(!/--user:\s*var\(--state-idle\)/.test(darkRoot), "--user must not map to green --state-idle");
 pass(tokenVal("state-idle") !== "#9ece6a", "--state-idle must not be green #9ece6a (idle/user are neutral)");
+pass(tokenVal("state-idle") === "#7a7a86", "--state-idle should be neutral muted #7a7a86, got " + tokenVal("state-idle"));
 // purple subagent retired everywhere.
 pass(!/--state-subagent:\s*#bb9af7/.test(css), "--state-subagent purple #bb9af7 must be retired");
 // success token exists for genuine good-news only.
@@ -59,12 +72,32 @@ pass(/\.tool-call \.tool-status-bad\s*\{[^}]*var\(--error\)/s.test(css), "tool-s
 pass(/\.tool-call \.result-bad\s*\{[^}]*var\(--error\)/s.test(css), "result-bad must use red --error");
 
 // ── Mockup #2 — chrome labels: sentence-case sans, mono for machine only ──
-const sectionHeader = css.match(/\.sidebar-section-header,\s*\.project-header\s*\{[^}]*\}/s);
-pass(sectionHeader != null, "section/project header rule exists");
-if (sectionHeader) {
-  pass(!/text-transform:\s*uppercase/.test(sectionHeader[0]), "section/project headers must not be uppercase");
-  pass(!/font-family:\s*var\(--font-mono\)/.test(sectionHeader[0]), "section/project headers must be sans, not mono");
+// Find all rule bodies where the given class is a DIRECT target (appears
+// immediately before ',' or '{' in the selector, so descendant selectors
+// like ".sidebar-section-header .count { font-family: mono }" are excluded).
+// Works whether the two selectors appear combined or in separate rules.
+function directRuleBodies(css, cls) {
+  const esc = cls.replace(/\./g, '\\.').replace(/[[\]]/g, '\\$&');
+  const re = new RegExp(esc + '\\s*[,{]', 'g');
+  const bodies = [];
+  let m;
+  while ((m = re.exec(css)) !== null) {
+    const openBrace = m[0].endsWith('{')
+      ? m.index + m[0].length - 1
+      : css.indexOf('{', m.index + m[0].length);
+    if (openBrace < 0) continue;
+    const closeBrace = css.indexOf('}', openBrace + 1);
+    if (closeBrace < 0) continue;
+    bodies.push(css.slice(openBrace + 1, closeBrace));
+  }
+  return bodies;
 }
+const sshBodies = directRuleBodies(css, '.sidebar-section-header');
+const phBodies  = directRuleBodies(css, '.project-header');
+pass(sshBodies.length > 0 || phBodies.length > 0, "section/project header rule exists");
+const headerBody = [...sshBodies, ...phBodies].join('\n');
+pass(!/text-transform:\s*uppercase/.test(headerBody), "section/project headers must not be uppercase");
+pass(!/font-family:\s*var\(--font-mono\)/.test(headerBody), "section/project headers must be sans, not mono");
 const statusBadge = css.match(/\.status-badge\s*\{[^}]*\}/s);
 pass(statusBadge != null, "status-badge rule exists");
 if (statusBadge) {

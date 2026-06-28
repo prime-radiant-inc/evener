@@ -521,7 +521,7 @@ func TestCodexSourceUsesLifecycleModelMetadata(t *testing.T) {
 		return map[string]any{
 			"thread":        codexThreadMap(id),
 			"model":         "gpt-5.3-codex",
-			"modelProvider": "openai",
+			"modelProvider": "azure",
 		}
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
@@ -553,7 +553,7 @@ func TestCodexSourceUsesLifecycleModelMetadata(t *testing.T) {
 		t.Fatalf("ForkThread: %v", err)
 	}
 	for _, thread := range []appwire.Thread{start.Thread, resume.Thread, fork.Thread} {
-		if thread.ModelProvider != "gpt-5.3-codex" || thread.Serf.Profile != "openai" {
+		if thread.ModelProvider != "gpt-5.3-codex" || thread.Serf.Profile != "azure" {
 			t.Fatalf("thread model metadata=%+v", thread)
 		}
 	}
@@ -753,12 +753,29 @@ func TestCodexSourceLiveThreadFansOutToMultipleSubscribers(t *testing.T) {
 	assertDelta(t, sub2, "fanout one")
 
 	cancel1()
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the unsubscribe goroutine to close sub1's channel.
+	waitChannelClosed := func(ch <-chan appwire.Notification) bool {
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case _, ok := <-ch:
+				if !ok {
+					return true
+				}
+			case <-deadline:
+				return false
+			}
+		}
+	}
+	if !waitChannelClosed(sub1) {
+		t.Fatal("sub1 channel was not closed after context cancellation")
+	}
 	server.Broadcast("th_codex", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
 		ThreadID: "th_codex",
 		Delta:    "fanout two",
 	})
 	assertDelta(t, sub2, "fanout two")
+	assertNoNotification(t, sub1, "fanout two")
 }
 
 func TestCodexSourceStartThreadSpoolsInitialTurnNotificationsForEarlySubscribers(t *testing.T) {
@@ -832,6 +849,7 @@ func TestCodexSourceStartThreadSpoolsInitialTurnNotificationsForEarlySubscribers
 func TestCodexLiveThreadDoesNotReplayDeliveredLiveNotifications(t *testing.T) {
 	live := &codexLiveThread{
 		close:       func() error { return nil },
+		done:        make(chan struct{}),
 		subscribers: map[chan appwire.Notification]struct{}{},
 	}
 	live.publish(deltaNotification("initial backlog"))
@@ -1418,10 +1436,7 @@ func TestCodexSourceCallErrorPassesThroughApplicationErrors(t *testing.T) {
 	// through — only daemon-dead patterns get promoted.
 	semantic := appwire.InternalError("appwire turn/start: model token quota exceeded")
 	if got := codexSourceCallError(semantic); !errors.Is(got, semantic) {
-		var w appwire.WireError
-		if errors.As(got, &w) && w.Code == appwire.CodeUnavailable {
-			t.Fatalf("non-transport internal error remapped: %+v", w)
-		}
+		t.Fatalf("semantic internal error was rewritten: got %T=%v", got, got)
 	}
 
 	if got := codexSourceCallError(context.Canceled); !errors.Is(got, context.Canceled) {

@@ -11,8 +11,12 @@ import (
 func TestBridge_ForwardsEvents(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	evs := make(chan events.SessionEvent, 10)
+	done := make(chan struct{})
 
-	go Bridge(srv, evs)
+	go func() {
+		defer close(done)
+		Bridge(srv, evs)
+	}()
 
 	evs <- events.SessionEvent{
 		Kind:      events.EventAssistantTextDelta,
@@ -20,21 +24,26 @@ func TestBridge_ForwardsEvents(t *testing.T) {
 		Data:      events.AssistantTextDeltaData{Delta: "hello"},
 	}
 	close(evs)
-
-	// Give bridge time to process
-	time.Sleep(50 * time.Millisecond)
+	<-done
 
 	items := srv.AppNotificationsAfter(0, "s1")
 	if len(items) == 0 {
 		t.Fatal("expected at least one appwire notification")
+	}
+	if items[0].Notification.Method != appwire.NotifyAgentMessageDelta {
+		t.Fatalf("notification method: got %q, want %q", items[0].Notification.Method, appwire.NotifyAgentMessageDelta)
 	}
 }
 
 func TestBridge_UpdatesStatusOnSessionStart(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	evs := make(chan events.SessionEvent, 10)
+	done := make(chan struct{})
 
-	go Bridge(srv, evs)
+	go func() {
+		defer close(done)
+		Bridge(srv, evs)
+	}()
 
 	evs <- events.SessionEvent{
 		Kind:      events.EventSessionStart,
@@ -45,7 +54,7 @@ func TestBridge_UpdatesStatusOnSessionStart(t *testing.T) {
 		},
 	}
 	close(evs)
-	time.Sleep(50 * time.Millisecond)
+	<-done
 
 	status := srv.GetStatus()
 	if status.SessionID != "s1" {
@@ -62,8 +71,12 @@ func TestBridge_UpdatesStatusOnSessionStart(t *testing.T) {
 func TestBridge_IncrementsturnsOnAssistantTextEnd(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	evs := make(chan events.SessionEvent, 10)
+	done := make(chan struct{})
 
-	go Bridge(srv, evs)
+	go func() {
+		defer close(done)
+		Bridge(srv, evs)
+	}()
 
 	evs <- events.SessionEvent{
 		Kind:      events.EventAssistantTextEnd,
@@ -76,7 +89,7 @@ func TestBridge_IncrementsturnsOnAssistantTextEnd(t *testing.T) {
 		Data:      events.AssistantTextEndData{Text: "bye"},
 	}
 	close(evs)
-	time.Sleep(50 * time.Millisecond)
+	<-done
 
 	status := srv.GetStatus()
 	if status.Turns != 2 {
@@ -87,8 +100,12 @@ func TestBridge_IncrementsturnsOnAssistantTextEnd(t *testing.T) {
 func TestBridge_ClosesOnSessionEnd(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	evs := make(chan events.SessionEvent, 10)
+	done := make(chan struct{})
 
-	go Bridge(srv, evs)
+	go func() {
+		defer close(done)
+		Bridge(srv, evs)
+	}()
 
 	evs <- events.SessionEvent{
 		Kind:      events.EventSessionEnd,
@@ -96,7 +113,7 @@ func TestBridge_ClosesOnSessionEnd(t *testing.T) {
 		Data:      events.SessionEndData{Reason: "done"},
 	}
 	close(evs)
-	time.Sleep(50 * time.Millisecond)
+	<-done
 
 	status := srv.GetStatus()
 	if status.State != "closed" {
@@ -114,8 +131,12 @@ func TestBridge_ClosesOnSessionEnd(t *testing.T) {
 func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	evs := make(chan events.SessionEvent, 10)
+	done := make(chan struct{})
 
-	go Bridge(srv, evs)
+	go func() {
+		defer close(done)
+		Bridge(srv, evs)
+	}()
 
 	evs <- events.SessionEvent{
 		Kind:      events.EventSessionEnd,
@@ -123,7 +144,7 @@ func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
 		Data:      events.SessionEndData{Reason: "input_complete", State: "idle"},
 	}
 	close(evs)
-	time.Sleep(50 * time.Millisecond)
+	<-done
 
 	status := srv.GetStatus()
 	if status.State != "idle" {
@@ -136,8 +157,12 @@ func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 	srv.SetProcessing(true)
 	srv.SetState("active")
 	evs := make(chan events.SessionEvent, 10)
+	done := make(chan struct{})
 
-	go Bridge(srv, evs)
+	go func() {
+		defer close(done)
+		Bridge(srv, evs)
+	}()
 
 	evs <- events.SessionEvent{
 		Kind:      events.EventSessionEnd,
@@ -145,7 +170,7 @@ func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 		Data:      events.SessionEndData{Reason: "interrupted", State: "idle", Interrupted: true},
 	}
 	close(evs)
-	time.Sleep(50 * time.Millisecond)
+	<-done
 
 	status := srv.GetStatus()
 	if status.State != "active" {
@@ -225,8 +250,12 @@ func TestBridge_RecordsAppWireNotifications(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetAppIdentity("local", "th_1")
 	evs := make(chan events.SessionEvent, 10)
+	done := make(chan struct{})
 
-	go Bridge(srv, evs)
+	go func() {
+		defer close(done)
+		Bridge(srv, evs)
+	}()
 
 	evs <- events.SessionEvent{
 		Kind:      events.EventUserInput,
@@ -239,7 +268,7 @@ func TestBridge_RecordsAppWireNotifications(t *testing.T) {
 		Data:      events.AssistantTextDeltaData{Delta: "hi"},
 	}
 	close(evs)
-	time.Sleep(50 * time.Millisecond)
+	<-done
 
 	items := srv.AppNotificationsAfter(0, "th_1")
 	if len(items) == 0 {

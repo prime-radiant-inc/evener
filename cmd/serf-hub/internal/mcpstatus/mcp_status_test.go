@@ -1,9 +1,9 @@
 package mcpstatus_test
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/mcpconfig"
@@ -45,8 +45,16 @@ func TestProbeMCPStatus_HTTPReachable(t *testing.T) {
 }
 
 func TestProbeMCPStatus_HTTPUnreachable(t *testing.T) {
-	// Bind to a closed port (127.0.0.1:1 is reliably unreachable).
-	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{Type: "http", URL: "http://127.0.0.1:1/"})
+	// Bind a listener on an ephemeral port and close it immediately so the
+	// probe hits a port that is guaranteed to refuse connections without
+	// depending on system-level port 1 being refused.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("could not bind listener: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{Type: "http", URL: "http://" + addr + "/"})
 	if got != "unreachable" {
 		t.Errorf("status=%q, want unreachable", got)
 	}
@@ -88,8 +96,39 @@ func TestProbeMCPStatus_HTTPWithHeaders(t *testing.T) {
 	if got != "available" {
 		t.Errorf("status=%q, want available", got)
 	}
-	if !strings.HasPrefix(seenAuth, "Bearer ") {
-		t.Errorf("server saw Authorization=%q, want Bearer prefix", seenAuth)
+	if seenAuth != "Bearer xyz" {
+		t.Errorf("server saw Authorization=%q, want %q", seenAuth, "Bearer xyz")
+	}
+}
+
+func TestProbeMCPStatus_HTTPGetFallbackForwardsHeaders(t *testing.T) {
+	// HEAD is hijacked to force a network error, triggering the GET fallback
+	// (mcp_status.go lines 63-77). The GET handler captures Authorization so
+	// we can verify the header-forwarding loop inside the fallback path runs.
+	var seenAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			hj, ok := w.(http.Hijacker)
+			if ok {
+				conn, _, _ := hj.Hijack()
+				conn.Close()
+			}
+			return
+		}
+		seenAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{
+		Type:    "http",
+		URL:     srv.URL,
+		Headers: map[string]string{"Authorization": "Bearer xyz"},
+	})
+	if got != "available" {
+		t.Errorf("status=%q, want available (HEAD failed, GET succeeded)", got)
+	}
+	if seenAuth != "Bearer xyz" {
+		t.Errorf("GET fallback saw Authorization=%q, want %q", seenAuth, "Bearer xyz")
 	}
 }
 

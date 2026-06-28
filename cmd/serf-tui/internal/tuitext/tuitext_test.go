@@ -39,6 +39,13 @@ func TestNonEmptyStrings(t *testing.T) {
 			values:   []string{"a", "", "b", "", "c"},
 			expected: []string{"a", "b", "c"},
 		},
+		{
+			// NonEmptyStrings filters blank entries but must not trim whitespace
+			// from entries that pass the filter.
+			name:     "preserves surrounding whitespace in non-blank entries",
+			values:   []string{" hello ", "world"},
+			expected: []string{" hello ", "world"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -190,6 +197,13 @@ func TestShellSectionLineCount(t *testing.T) {
 			section:  "line1\nline2\nline3\n",
 			expected: 3,
 		},
+		{
+			// Implementation uses TrimRight which strips ALL trailing newlines,
+			// not just one. Pin that "hello\n\n" counts as 1 line.
+			name:     "multiple trailing newlines",
+			section:  "hello\n\n",
+			expected: 1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -232,6 +246,22 @@ func TestLimitFirstLines(t *testing.T) {
 			text:     "line1\nline2\nline3",
 			maxLines: 3,
 			expected: "line1\nline2\nline3",
+		},
+		{
+			// Early-return path (maxLines <= 0) returns text unchanged,
+			// preserving any trailing newlines.
+			name:     "maxLines zero preserves trailing newline",
+			text:     "line1\n",
+			maxLines: 0,
+			expected: "line1\n",
+		},
+		{
+			// Normal path goes through MultilineLines which strips all trailing
+			// newlines before joining. Pin that trailing newlines are dropped.
+			name:     "trailing newline stripped by normal path",
+			text:     "line1\n",
+			maxLines: 5,
+			expected: "line1",
 		},
 	}
 

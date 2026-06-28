@@ -65,6 +65,16 @@ func TestAdapter_Complete_DelegatesToAnthropicInner(t *testing.T) {
 	if gotAPIKey != "test-minimax-key" {
 		t.Fatalf("x-api-key: %q", gotAPIKey)
 	}
+	// Body must be Anthropic-format: "messages", "model", and "max_tokens" required.
+	if gotBody["messages"] == nil {
+		t.Fatal("request body missing 'messages' field — not Anthropic format")
+	}
+	if gotBody["model"] != "MiniMax-M2.7" {
+		t.Fatalf("request body model = %v, want MiniMax-M2.7", gotBody["model"])
+	}
+	if gotBody["max_tokens"] == nil {
+		t.Fatal("request body missing 'max_tokens' field — not Anthropic format")
+	}
 }
 
 func TestAdapter_Stream_DelegatesToAnthropicInner(t *testing.T) {
@@ -118,6 +128,10 @@ func TestAdapter_DefaultBaseURL(t *testing.T) {
 // reaches the provider's Anthropic-style /v1/models endpoint.
 func TestClient_ListModels_Forwards(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.Error(w, "wrong path: "+r.URL.Path, http.StatusNotFound)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[{"id":"MiniMax-M2.7","display_name":"MiniMax M2.7"}],"has_more":false}`))
 	}))
@@ -153,7 +167,7 @@ func TestNewForInstance_Name(t *testing.T) {
 
 func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "mm", APIKey: "k"})
-	if a.BaseURL != defaultBaseURL {
-		t.Fatalf("backing BaseURL = %q, want %q", a.BaseURL, defaultBaseURL)
+	if a.BaseURL != "https://api.minimax.io/anthropic" {
+		t.Fatalf("backing BaseURL = %q, want %q", a.BaseURL, "https://api.minimax.io/anthropic")
 	}
 }

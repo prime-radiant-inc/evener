@@ -170,12 +170,12 @@ func TestJobManagerReadOutput(t *testing.T) {
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	_, _ = jm.running[rec.JobID].output.Append([]byte("hello\n"))
-	content, _, _, err := jm.readOutput(rec.JobID, 1024)
+	content, total, truncated, err := jm.readOutput(rec.JobID, 1024)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if content != "hello\n" {
-		t.Errorf("content = %q", content)
+	if content != "hello\n" || total != int64(len("hello\n")) || truncated {
+		t.Errorf("readOutput = %q, %d, %v", content, total, truncated)
 	}
 }
 

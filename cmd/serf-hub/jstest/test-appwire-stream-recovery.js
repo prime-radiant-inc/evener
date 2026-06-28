@@ -107,7 +107,9 @@ async function testConnectionLossClearsAndReconnects() {
   assert(dropBanner.classList.contains("reconnecting"), "the chrome banner is amber 'reconnecting' while recovering");
   assert(window.document.querySelector(".diagnostic") === null, "connection loss must NOT pollute the transcript with a diagnostic");
   assert(unsubscribes === 1, "connection loss should unsubscribe live notifications");
-  await wait(300);
+  // Poll until the 250ms reconnect timer fires rather than using a fixed
+  // 300ms wait — the 50ms margin is too thin on loaded CI machines (F5).
+  for (let i = 0; i < 100 && readThreadCalls < 2; i++) await wait(10);
   assert(readThreadCalls >= 2, "connection loss should schedule a new thread/read");
   assert(subscriptions >= 2, "connection loss should resubscribe to live notifications");
 }

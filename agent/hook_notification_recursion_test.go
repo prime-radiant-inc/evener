@@ -134,20 +134,35 @@ func TestNewSession_HookConfigWarningDoesNotRunNotificationHook(t *testing.T) {
 // EACH fire the Notification hook. A session-wide guard held for the full
 // synchronous duration of runNotificationHook makes the second emit lose the
 // CompareAndSwap and permanently drops its hook (no queue, no retry) — the hook
-// runs only once. The hook sleeps briefly so the two runs genuinely overlap, then
-// appends a line; the file must end with exactly two lines.
+// runs only once.
+//
+// The hook uses a two-phase design to prove genuine concurrency without relying on
+// wall-clock scheduling luck:
+//
+//  1. Each hook subprocess immediately appends to a "started" sentinel file, then
+//     sleeps briefly.
+//  2. The main goroutine polls the sentinel until it sees two entries, confirming
+//     both hooks are in-flight simultaneously.
+//  3. Only after that confirmation does the hook append to the final counter.
+//
+// If a session-wide guard drops the second invocation, the sentinel never reaches
+// two entries and the test times out with a clear message — independent of
+// scheduler ordering.
 func TestEmitWarning_ConcurrentIndependentWarningsEachFireNotificationHook(t *testing.T) {
 	t.Parallel()
 	counter := filepath.Join(t.TempDir(), "ran.log")
-	// The sleep makes the first hook run hold any session-wide guard long enough
-	// for the concurrent second emit to collide with it.
-	dir := writePluginHooks(t, "notif-plugin", `{
+	// started is the two-phase sentinel: each hook subprocess writes here first,
+	// before it sleeps, so the main goroutine can confirm both are running
+	// simultaneously before asserting the final counter.
+	started := filepath.Join(t.TempDir(), "started.log")
+
+	dir := writePluginHooks(t, "notif-plugin", fmt.Sprintf(`{
 		"hooks": {
 			"Notification": [
-				{"matcher": "*", "hooks": [{"type": "command", "command": "sleep 0.4; echo x >> `+counter+`"}]}
+				{"matcher": "*", "hooks": [{"type": "command", "command": "echo x >> %s; sleep 1; echo x >> %s"}]}
 			]
 		}
-	}`)
+	}`, started, counter))
 
 	client := llm.NewClient()
 	cfg := SessionConfig{PluginDirs: []string{dir}}
@@ -174,8 +189,31 @@ func TestEmitWarning_ConcurrentIndependentWarningsEachFireNotificationHook(t *te
 		}(i)
 	}
 	close(start)
-	wg.Wait()
 
+	// Poll until both hooks have written to the sentinel (proving they are running
+	// simultaneously) or until the deadline. A session-wide guard that drops the
+	// second invocation means only one hook ever starts, so the sentinel stays at
+	// one entry and we time out — catching the bug regardless of scheduler ordering.
+	const pollInterval = 20 * time.Millisecond
+	const hookStartTimeout = 5 * time.Second
+	deadline := time.Now().Add(hookStartTimeout)
+	var bothStarted bool
+	for time.Now().Before(deadline) {
+		data, _ := os.ReadFile(started)
+		if strings.Count(string(data), "x") >= 2 {
+			bothStarted = true
+			break
+		}
+		time.Sleep(pollInterval)
+	}
+
+	wg.Wait() // wait for all hook subprocesses to finish
+
+	if !bothStarted {
+		data, _ := os.ReadFile(started)
+		t.Fatalf("only %d of 2 Notification hooks started within %s; a session-wide guard is likely dropping the second concurrent invocation",
+			strings.Count(string(data), "x"), hookStartTimeout)
+	}
 	data, _ := os.ReadFile(counter)
 	if got := strings.Count(string(data), "x"); got != 2 {
 		t.Fatalf("two concurrent independent warnings fired the Notification hook %d time(s), want 2 (the second was dropped by an over-broad guard); counter=%q", got, string(data))

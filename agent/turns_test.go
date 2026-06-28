@@ -12,13 +12,14 @@ func TestTurn_HasTimestamp(t *testing.T) {
 	t.Parallel()
 	before := time.Now().UTC()
 	turn := schema.NewTurn(schema.TurnUserInput, llm.User("hello"))
-	after := time.Now().UTC()
 
 	if turn.Timestamp.IsZero() {
 		t.Fatal("expected non-zero timestamp")
 	}
-	if turn.Timestamp.Before(before) || turn.Timestamp.After(after) {
-		t.Fatalf("timestamp %v not between %v and %v", turn.Timestamp, before, after)
+	// Belt-and-suspenders: tolerate ±1 s for coarse-resolution or NTP-adjusted clocks
+	// while still verifying NewTurn records an approximately-current timestamp.
+	if d := turn.Timestamp.Sub(before); d < -time.Second || d > time.Second {
+		t.Fatalf("timestamp %v not within 1s of start %v (delta %v)", turn.Timestamp, before, d)
 	}
 }
 

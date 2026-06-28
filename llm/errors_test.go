@@ -100,34 +100,6 @@ func TestErrorFromHTTPStatus_MappingAndRetryable(t *testing.T) {
 	}
 }
 
-func TestContentFilterError_ImplementsErrorInterface(t *testing.T) {
-	err := &contentFilterError{httpBaseError{provider: "test", statusCode: 400, message: "blocked", retryable: false}}
-	var llmErr Error
-	if !errors.As(err, &llmErr) {
-		t.Fatalf("ContentFilterError does not implement Error interface")
-	}
-	if llmErr.Provider() != "test" {
-		t.Fatalf("Provider: %q", llmErr.Provider())
-	}
-	if llmErr.Retryable() {
-		t.Fatalf("expected non-retryable")
-	}
-}
-
-func TestQuotaExceededError_ImplementsErrorInterface(t *testing.T) {
-	err := &quotaExceededError{httpBaseError{provider: "test", statusCode: 429, message: "quota exceeded", retryable: false}}
-	var llmErr Error
-	if !errors.As(err, &llmErr) {
-		t.Fatalf("QuotaExceededError does not implement Error interface")
-	}
-	if llmErr.Provider() != "test" {
-		t.Fatalf("Provider: %q", llmErr.Provider())
-	}
-	if llmErr.Retryable() {
-		t.Fatalf("expected non-retryable")
-	}
-}
-
 func TestErrorCode_OnHTTPErrors(t *testing.T) {
 	raw := map[string]any{"error": map[string]any{"code": "model_not_found"}}
 	err := ErrorFromHTTPStatus("openai", 404, "not found", raw, nil)
@@ -438,38 +410,46 @@ func TestBehaviorTag_EmptyNoOp(t *testing.T) {
 
 func TestErrorFromHTTPStatus_MessageBasedClassification(t *testing.T) {
 	cases := []struct {
-		name    string
-		status  int
-		message string
-		want    ErrorKind
+		name      string
+		status    int
+		message   string
+		want      ErrorKind
+		retryable bool
 	}{
-		// Ambiguous 400 classified by message.
-		{"400 content filter", 400, "content filter policy violated", KindContentFilter},
-		{"400 safety", 400, "blocked by safety settings", KindContentFilter},
-		{"400 context length", 400, "context length exceeded", KindContextLength},
-		{"400 too many tokens", 400, "too many tokens in request", KindContextLength},
-		{"400 quota", 400, "quota exceeded for billing account", KindQuotaExceeded},
-		{"400 billing", 400, "billing issue on account", KindQuotaExceeded},
-		{"400 not found", 400, "model does not exist", KindNotFound},
-		{"400 plain", 400, "bad request", KindInvalidRequest},
+		// Ambiguous 400 classified by message — classifyByMessage must not set retryable.
+		{"400 content filter", 400, "content filter policy violated", KindContentFilter, false},
+		{"400 safety", 400, "blocked by safety settings", KindContentFilter, false},
+		{"400 context length", 400, "context length exceeded", KindContextLength, false},
+		{"400 too many tokens", 400, "too many tokens in request", KindContextLength, false},
+		{"400 quota", 400, "quota exceeded for billing account", KindQuotaExceeded, false},
+		{"400 billing", 400, "billing issue on account", KindQuotaExceeded, false},
+		{"400 not found", 400, "model does not exist", KindNotFound, false},
+		{"400 plain", 400, "bad request", KindInvalidRequest, false},
 
 		// Unambiguous status codes should NOT be overridden by message.
-		{"401 always auth", 401, "content filter something", KindAuthentication},
-		{"429 always rate", 429, "quota exceeded", KindRateLimit},
-		{"404 always notfound", 404, "quota exceeded", KindNotFound},
+		{"401 always auth", 401, "content filter something", KindAuthentication, false},
+		{"429 always rate", 429, "quota exceeded", KindRateLimit, true},
+		{"404 always notfound", 404, "quota exceeded", KindNotFound, false},
 
 		// 422 is ambiguous like 400.
-		{"422 content filter", 422, "this violates safety policy", KindContentFilter},
-		{"422 plain", 422, "invalid field", KindInvalidRequest},
+		{"422 content filter", 422, "this violates safety policy", KindContentFilter, false},
+		{"422 plain", 422, "invalid field", KindInvalidRequest, false},
 
 		// OpenAI usage policy violation (invalid_prompt).
-		{"400 usage policy", 400, "Your prompt was flagged as potentially violating our usage policy", KindContentFilter},
+		{"400 usage policy", 400, "Your prompt was flagged as potentially violating our usage policy", KindContentFilter, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := ErrorFromHTTPStatus("p", tc.status, tc.message, nil, nil)
 			if got := Kind(err); got != tc.want {
 				t.Fatalf("ErrorFromHTTPStatus(%d, %q) kind = %v, want %v", tc.status, tc.message, got, tc.want)
+			}
+			var e Error
+			if !errors.As(err, &e) {
+				t.Fatalf("ErrorFromHTTPStatus(%d, %q): not an llm.Error", tc.status, tc.message)
+			}
+			if e.Retryable() != tc.retryable {
+				t.Fatalf("ErrorFromHTTPStatus(%d, %q) retryable = %v, want %v", tc.status, tc.message, e.Retryable(), tc.retryable)
 			}
 		})
 	}

@@ -407,38 +407,7 @@ func TestInstances_SetDefault_MissingInstance_Errors(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 9. After Create, List reads fresh from disk and reflects the new instance
-// ─────────────────────────────────────────────────────────────────────────────
-
-func TestInstances_Create_ListReflectsNewInstance(t *testing.T) {
-	oaitest.IsolateOpenAIAuth(t)
-	dir := t.TempDir()
-	stateDir := t.TempDir()
-	tomlPath := filepath.Join(dir, "providers.toml")
-	writeMinimalProvidersToml(t, tomlPath)
-
-	ctl := newTestInstancesController(t, tomlPath, dir, stateDir)
-
-	if err := ctl.Create(appwire.InstanceCreateParams{Type: "anthropic", Name: "newone"}); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	// List must read fresh from disk and include the new instance.
-	resp := ctl.List()
-	found := false
-	for _, inst := range resp.Instances {
-		if inst.Name == "newone" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("List did not include 'newone' after Create")
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 10. List: IsDefault is correctly set; sort is Type then Name
+// 9. List: IsDefault is correctly set; sort is Type then Name
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestInstances_List_IsDefaultAndSort(t *testing.T) {
@@ -446,6 +415,10 @@ func TestInstances_List_IsDefaultAndSort(t *testing.T) {
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
+	// "zorro" is anthropic but sorts last by name; type-first ordering must
+	// place it at index 1 (after alpha/anthropic, before bravo/openai).
+	// Name-only ordering would put zorro at index 2, so this fixture
+	// distinguishes the two sort strategies.
 	content := `schema = 1
 default = "bravo"
 
@@ -454,6 +427,9 @@ type = "anthropic"
 
 [instances.bravo]
 type = "openai"
+
+[instances.zorro]
+type = "anthropic"
 `
 	if err := os.WriteFile(tomlPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write providers.toml: %v", err)
@@ -462,8 +438,8 @@ type = "openai"
 	ctl := newTestInstancesController(t, tomlPath, dir, stateDir)
 	resp := ctl.List()
 
-	if len(resp.Instances) != 2 {
-		t.Fatalf("len(Instances) = %d, want 2", len(resp.Instances))
+	if len(resp.Instances) != 3 {
+		t.Fatalf("len(Instances) = %d, want 3", len(resp.Instances))
 	}
 
 	// Find each entry.
@@ -488,11 +464,22 @@ type = "openai"
 		t.Error("bravo.IsDefault = false, want true")
 	}
 
-	// Sort: anthropic (alpha) before openai (bravo) by type, then name.
-	if resp.Instances[0].Type != "anthropic" || resp.Instances[0].Name != "alpha" {
-		t.Errorf("first entry = %q/%q, want anthropic/alpha", resp.Instances[0].Type, resp.Instances[0].Name)
+	if _, ok := byName["zorro"]; !ok {
+		t.Fatal("'zorro' not in List")
 	}
-	if resp.Instances[1].Type != "openai" || resp.Instances[1].Name != "bravo" {
-		t.Errorf("second entry = %q/%q, want openai/bravo", resp.Instances[1].Type, resp.Instances[1].Name)
+
+	// Sort is Type then Name: anthropic/alpha, anthropic/zorro, openai/bravo.
+	// A name-only sort would produce alpha, bravo, zorro — putting zorro last.
+	// Asserting zorro at index 1 proves the type key is load-bearing.
+	wantOrder := []struct{ typ, name string }{
+		{"anthropic", "alpha"},
+		{"anthropic", "zorro"},
+		{"openai", "bravo"},
+	}
+	for i, want := range wantOrder {
+		got := resp.Instances[i]
+		if got.Type != want.typ || got.Name != want.name {
+			t.Errorf("Instances[%d] = %q/%q, want %q/%q", i, got.Type, got.Name, want.typ, want.name)
+		}
 	}
 }

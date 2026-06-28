@@ -319,7 +319,7 @@ func TestParity_GrepAndGlob(t *testing.T) {
 					return finalResponse("done")
 				},
 			}
-			sess, _ := newParitySession(t, pc, steps)
+			sess, fa := newParitySession(t, pc, steps)
 			defer sess.Close()
 
 			// Create files to find.
@@ -334,6 +334,40 @@ func TestParity_GrepAndGlob(t *testing.T) {
 				t.Fatal(err)
 			}
 			sess.Close()
+
+			// Verify the glob result (sent to the model in the second request) contains haystack.txt.
+			reqs := fa.Requests()
+			if len(reqs) < 3 {
+				t.Fatalf("expected at least 3 requests (initial + after-glob + after-grep), got %d", len(reqs))
+			}
+			globFound := false
+			for _, m := range reqs[1].Messages {
+				for _, p := range m.Content {
+					if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+						if s, ok := p.ToolResult.Content.(string); ok && strings.Contains(s, "haystack.txt") {
+							globFound = true
+						}
+					}
+				}
+			}
+			if !globFound {
+				t.Fatal("glob tool result should contain haystack.txt")
+			}
+
+			// Verify the grep result (sent to the model in the third request) contains the match.
+			grepFound := false
+			for _, m := range reqs[2].Messages {
+				for _, p := range m.Content {
+					if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+						if s, ok := p.ToolResult.Content.(string); ok && strings.Contains(s, "needle in here") {
+							grepFound = true
+						}
+					}
+				}
+			}
+			if !grepFound {
+				t.Fatal("grep tool result should contain 'needle in here'")
+			}
 		})
 	}
 }
@@ -569,8 +603,8 @@ func TestParity_SteeringMidTask(t *testing.T) {
 
 			result := <-done
 			sess.Close()
-			if !strings.Contains(result, "steered") {
-				t.Fatalf("steering not applied: got %q", result)
+			if result != "steered" {
+				t.Fatalf("steering not applied: got %q, want %q", result, "steered")
 			}
 		})
 	}
@@ -787,17 +821,24 @@ func TestParity_SubagentNoMCPInheritance(t *testing.T) {
 func TestParity_WorkingDirRemovedFromSchema(t *testing.T) {
 	t.Parallel()
 	// working_dir is not model-configurable; delegated jobs always use the parent's working dir.
-	pc := providerCases[0]
-	for _, td := range pc.profile("test-model").ToolDefinitions() {
-		if td.Name == "delegate" {
-			props := td.Parameters["properties"].(map[string]any)
-			if _, ok := props["working_dir"]; ok {
-				t.Fatal("delegate should NOT have working_dir parameter")
+	for _, pc := range providerCases {
+		t.Run(pc.name, func(t *testing.T) {
+			found := false
+			for _, td := range pc.profile("test-model").ToolDefinitions() {
+				if td.Name == "delegate" {
+					found = true
+					props := td.Parameters["properties"].(map[string]any)
+					if _, ok := props["working_dir"]; ok {
+						t.Fatalf("delegate should NOT have working_dir parameter (%s profile)", pc.name)
+					}
+					break
+				}
 			}
-			return
-		}
+			if !found {
+				t.Fatalf("delegate not found in %s profile", pc.name)
+			}
+		})
 	}
-	t.Fatal("delegate not found")
 }
 
 // canonicalXxx returns the wire-name for a tool given the provider name.
@@ -819,9 +860,8 @@ func canonicalGlob(provider string) string {
 	switch provider {
 	case "openai":
 		return "list_dir"
-	case "gemini":
-		return "list_directory"
 	default:
+		// anthropic and gemini both expose "glob" without renaming in their ToolNameMaps.
 		return "glob"
 	}
 }

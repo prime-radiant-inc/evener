@@ -122,6 +122,18 @@ func TestLoadClient_NoFile_SeedsInMemory(t *testing.T) {
 	if len(cfg.Instances) == 0 {
 		t.Fatal("expected non-empty Config after seed")
 	}
+	foundOpenAI := false
+	for _, inst := range cfg.Instances {
+		if inst.Name == "openai" {
+			foundOpenAI = true
+			if inst.Type != "openai" {
+				t.Errorf("openai instance Type=%q, want %q", inst.Type, "openai")
+			}
+		}
+	}
+	if !foundOpenAI {
+		t.Fatalf("expected 'openai' instance in seeded Config, got: %+v", cfg.Instances)
+	}
 	if client == nil {
 		t.Fatal("expected non-nil client after seed")
 	}
@@ -146,9 +158,11 @@ func TestLoadClient_CorruptFile_ReturnsError(t *testing.T) {
 
 func TestLoadClient_DefaultPath_UsedWhenEnvNotSet(t *testing.T) {
 	// Clear SERF_PROVIDERS_CONFIG so LoadClient uses the default path.
+	// Clear SERF_STATE_DIR so DefaultStateRoot() falls back to the HOME path.
 	// Override HOME so the default state root lands in a clean temp dir.
 	// The config is seeded in memory; hasConfig is true and no file is written.
 	t.Setenv("SERF_PROVIDERS_CONFIG", "")
+	t.Setenv("SERF_STATE_DIR", "")
 	t.Setenv("OPENAI_API_KEY", "sk-fake-for-test")
 
 	dir := t.TempDir()

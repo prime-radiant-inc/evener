@@ -82,6 +82,48 @@ calls.length = 0;
 disabledBtn.click();
 pass(calls.length === 0, "disabled action button must NOT fire fetch");
 
+// ── SerfAppwire primary path ─────────────────────────────────────────────────
+// Install the AppWire stub. From here on, triggerSessionAction takes the
+// SerfAppwire branch and must NOT fall through to fetch().
+const appwireCalls = [];
+window.SerfAppwire = {
+  action: (sid, name, turnId) => {
+    appwireCalls.push({ sid, name, turnId });
+    return Promise.resolve();
+  },
+};
+
+// 6. interrupt via SerfAppwire — correct session id, action name, and turn id.
+appwireCalls.length = 0;
+calls.length = 0;
+interruptBtn.click();
+pass(appwireCalls.length === 1, "interrupt should call SerfAppwire.action once (not fetch)");
+pass(calls.length === 0, "interrupt must NOT fall through to fetch when SerfAppwire is present");
+pass(appwireCalls[0] && appwireCalls[0].sid === "01ACT001", "interrupt: SerfAppwire.action must receive the session id");
+pass(appwireCalls[0] && appwireCalls[0].name === "interrupt", "interrupt: SerfAppwire.action must receive action name 'interrupt'");
+pass(appwireCalls[0] && appwireCalls[0].turnId === "turn_1", "interrupt: SerfAppwire.action must receive active turn id");
+
+// 7. compact via SerfAppwire.
+appwireCalls.length = 0;
+calls.length = 0;
+compactBtn.click();
+pass(appwireCalls.length === 1, "compact should call SerfAppwire.action once");
+pass(calls.length === 0, "compact must NOT fall through to fetch when SerfAppwire is present");
+pass(appwireCalls[0] && appwireCalls[0].name === "compact", "compact: SerfAppwire.action must receive action name 'compact'");
+
+// 8. shutdown via SerfAppwire.
+appwireCalls.length = 0;
+calls.length = 0;
+shutdownBtn.click();
+pass(appwireCalls.length === 1, "shutdown should call SerfAppwire.action once");
+pass(calls.length === 0, "shutdown must NOT fall through to fetch when SerfAppwire is present");
+pass(appwireCalls[0] && appwireCalls[0].name === "shutdown", "shutdown: SerfAppwire.action must receive action name 'shutdown'");
+
+// 9. disabled interrupt button must not fire SerfAppwire.action.
+appwireCalls.length = 0;
+disabledBtn.click();
+pass(appwireCalls.length === 0, "disabled action button must NOT fire SerfAppwire.action");
+
 if (failures.length === 0) {
   console.log("PASS: workspace action buttons (interrupt/compact/shutdown) wired correctly");
   process.exit(0);

@@ -22,6 +22,9 @@ func TestThemePickerUsesOverlayBorder(t *testing.T) {
 
 // TestThemePicker_InitialCursor verifies the picker pre-selects the active theme.
 func TestThemePicker_InitialCursor(t *testing.T) {
+	prev := tuitheme.CurrentThemeName()
+	t.Cleanup(func() { tuitheme.SetTheme(prev) })
+
 	tuitheme.SetTheme("system")
 	p := NewThemePicker()
 	want := 0 // "system" is index 0
@@ -44,12 +47,15 @@ func TestThemePicker_InitialCursor(t *testing.T) {
 	}
 }
 
-// TestThemePicker_ViewContainsThemes verifies the picker View shows both themes.
+// TestThemePicker_ViewContainsThemes verifies the picker View shows all expected themes.
 func TestThemePicker_ViewContainsThemes(t *testing.T) {
 	tuitheme.InitTheme()
 	p := NewThemePicker()
 	view := p.View()
-	for _, name := range ThemePickerItems {
+	// Hardcoded so the test catches removals from ThemePickerItems regardless
+	// of what the SUT iterates.
+	wantThemes := []string{"system", "dark", "light"}
+	for _, name := range wantThemes {
 		if !strings.Contains(view, name) {
 			t.Errorf("picker view missing theme %q", name)
 		}

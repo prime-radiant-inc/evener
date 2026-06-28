@@ -45,11 +45,11 @@ func TestGoalPersist_MetaPopulated(t *testing.T) {
 	if !g.MadeProgressOnce {
 		t.Error("MadeProgressOnce: got false, want true")
 	}
-	if g.CreatedAt.IsZero() {
-		t.Error("CreatedAt must not be zero")
+	if !g.CreatedAt.Equal(now) {
+		t.Errorf("CreatedAt: got %v, want %v", g.CreatedAt, now)
 	}
-	if g.UpdatedAt.IsZero() {
-		t.Error("UpdatedAt must not be zero")
+	if !g.UpdatedAt.Equal(now.Add(2 * time.Minute)) {
+		t.Errorf("UpdatedAt: got %v, want %v", g.UpdatedAt, now.Add(2*time.Minute))
 	}
 }
 

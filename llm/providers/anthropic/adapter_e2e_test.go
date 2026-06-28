@@ -33,7 +33,12 @@ func anthropicE2EAdapter(t *testing.T) (*Adapter, string) {
 	return a, model
 }
 
-func TestAdapter_E2E_AnthropicTransportServiceTierAndCaching(t *testing.T) {
+// TestAdapter_E2E_AnthropicBasicComplete verifies a minimal round-trip: the adapter
+// sends a request (with the standard_only service tier to exercise that field path)
+// and receives a non-empty text response routed through /v1/messages.
+// Service-tier response field and cache token coverage are tested in
+// TestAdapter_Integration_PromptCaching (unit) and adapter_test.go.
+func TestAdapter_E2E_AnthropicBasicComplete(t *testing.T) {
 	a, model := anthropicE2EAdapter(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -52,13 +57,6 @@ func TestAdapter_E2E_AnthropicTransportServiceTierAndCaching(t *testing.T) {
 	endpoint, _ := resp.Raw["endpoint_url"].(string)
 	if !strings.HasSuffix(endpoint, "/v1/messages") {
 		t.Fatalf("endpoint_url = %q, want /v1/messages", endpoint)
-	}
-	serviceTier, _ := resp.Usage.Raw["service_tier"].(string)
-	if serviceTier == "" {
-		t.Logf("Anthropic response usage did not include service_tier; usage=%#v", resp.Usage.Raw)
-	}
-	if resp.Usage.CacheWriteTokens == nil && resp.Usage.CacheWrite1hTokens == nil && resp.Usage.CacheReadTokens == nil {
-		t.Logf("Anthropic response did not report cache activity for short prompt; usage=%#v", resp.Usage.Raw)
 	}
 }
 

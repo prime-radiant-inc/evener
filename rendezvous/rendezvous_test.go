@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -66,16 +67,25 @@ func TestEntryRoundTripIncludesAppWireEndpoint(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("entries=%d, want 1", len(entries))
 	}
-	if entries[0].Protocol != "serf-appwire-v1" || entries[0].Endpoint == "" || entries[0].ThreadID != "th_1" {
-		t.Fatalf("entry=%+v", entries[0])
+	if entries[0].Protocol != entry.Protocol ||
+		entries[0].Endpoint != entry.Endpoint ||
+		entries[0].SourceID != entry.SourceID ||
+		entries[0].SessionID != entry.SessionID ||
+		entries[0].ThreadID != entry.ThreadID {
+		t.Fatalf("AppWire fields mismatch: got %+v, want %+v", entries[0], entry)
 	}
-	if entries[0].HubToken != "secret-token" {
+	if entries[0].HubToken != entry.HubToken {
 		t.Fatalf("hub token was not preserved")
 	}
 }
 
 func TestWrite_UsesPrivatePermissionsForTokenFile(t *testing.T) {
-	dir := t.TempDir()
+	base := t.TempDir()
+	dir := filepath.Join(base, "rdv")
+	// pre-create with loose permissions so Write must fix them via Chmod
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	path, err := Write(dir, Entry{PID: 12345, Address: "127.0.0.1:1", HubToken: "secret-token"})
 	if err != nil {
 		t.Fatalf("Write: %v", err)
@@ -133,6 +143,13 @@ func TestList_ReturnsAllEntries(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Fatalf("got %d entries, want 2", len(got))
+	}
+	sort.Slice(got, func(i, j int) bool { return got[i].PID < got[j].PID })
+	if got[0].PID != e1.PID || got[0].Address != e1.Address {
+		t.Fatalf("entry[0] mismatch: got %#v, want %#v", got[0], e1)
+	}
+	if got[1].PID != e2.PID || got[1].Address != e2.Address {
+		t.Fatalf("entry[1] mismatch: got %#v, want %#v", got[1], e2)
 	}
 }
 

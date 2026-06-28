@@ -4,9 +4,10 @@
 // workspace navigates up to the parent via the breadcrumb's "↑ Parent" link.
 // It must defer to any open overlay and ignore Escape while typing.
 const fs = require("fs");
+const path = require("path");
 const { JSDOM } = require("jsdom");
 
-const STYLE_PATH = "../assets/style.css";
+const STYLE_PATH = path.resolve(__dirname, "../assets/style.css");
 const styleSrc = fs.readFileSync(STYLE_PATH, "utf8");
 
 function newHarness(opts) {
@@ -123,9 +124,15 @@ await scenario("an all-clean session keeps the rollup chip hidden", async () => 
 });
 
 await scenario("CSS defines the subagent breadcrumb banner and rollup chip", async () => {
-  if (!/\.subagent-parent-banner\s*\{/.test(styleSrc)) return { ok: false, detail: "missing .subagent-parent-banner rule" };
+  const bannerRule = styleSrc.match(/\.subagent-parent-banner\s*\{[^}]*\}/);
+  if (!bannerRule) return { ok: false, detail: "missing .subagent-parent-banner rule" };
+  if (!/display\s*:\s*flex/.test(bannerRule[0])) return { ok: false, detail: ".subagent-parent-banner must set display: flex; got: " + bannerRule[0] };
   if (!/\.subagent-parent-up/.test(styleSrc)) return { ok: false, detail: "missing .subagent-parent-up rule" };
-  if (!/\.subagent-parent-rollup/.test(styleSrc)) return { ok: false, detail: "missing .subagent-parent-rollup rule" };
+  const rollupRule = styleSrc.match(/\.subagent-parent-rollup\s*\{[^}]*\}/);
+  if (!rollupRule) return { ok: false, detail: "missing .subagent-parent-rollup rule" };
+  const rollupBadRule = styleSrc.match(/\.subagent-parent-rollup\.bad\s*\{[^}]*\}/);
+  if (!rollupBadRule) return { ok: false, detail: "missing .subagent-parent-rollup.bad rule" };
+  if (!/color\s*:\s*var\(--error\)/.test(rollupBadRule[0])) return { ok: false, detail: ".subagent-parent-rollup.bad must use color: var(--error) as the failure color signal" };
   return { ok: true };
 });
 

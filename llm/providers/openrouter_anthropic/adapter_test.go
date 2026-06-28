@@ -61,6 +61,13 @@ func TestAdapter_Complete_HitsCorrectPath(t *testing.T) {
 	if gotAPIKey != "test-openrouter-key" {
 		t.Fatalf("x-api-key: %q", gotAPIKey)
 	}
+	if gotBody["model"] != "minimax/minimax-m2.7" {
+		t.Fatalf("body model: %q, want minimax/minimax-m2.7", gotBody["model"])
+	}
+	msgs, _ := gotBody["messages"].([]any)
+	if len(msgs) == 0 {
+		t.Fatal("body messages: empty or missing")
+	}
 }
 
 func TestAdapter_DefaultBaseURL(t *testing.T) {
@@ -99,10 +106,6 @@ func TestClient_ListModels_Forwards(t *testing.T) {
 
 	a := newTestAdapter(srv.URL, "k", srv.Client())
 
-	if _, ok := llm.ProviderAdapter(a).(llm.ModelLister); !ok {
-		t.Fatal("openrouter-anthropic adapter does not implement llm.ModelLister — ListModels not promoted")
-	}
-
 	c := llm.NewClient()
 	c.Register(a)
 
@@ -112,5 +115,15 @@ func TestClient_ListModels_Forwards(t *testing.T) {
 	}
 	if len(models) != 1 {
 		t.Fatalf("len(models) = %d, want 1", len(models))
+	}
+	if models[0].ID != "minimax/minimax-m2.7" {
+		t.Fatalf("models[0].ID = %q, want minimax/minimax-m2.7", models[0].ID)
+	}
+	if models[0].DisplayName != "MiniMax M2.7" {
+		t.Fatalf("models[0].DisplayName = %q, want MiniMax M2.7", models[0].DisplayName)
+	}
+	// Provider is inherited from the backing anthropic adapter.
+	if models[0].Provider != "anthropic" {
+		t.Fatalf("models[0].Provider = %q, want anthropic", models[0].Provider)
 	}
 }

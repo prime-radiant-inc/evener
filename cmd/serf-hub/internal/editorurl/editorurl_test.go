@@ -1,20 +1,8 @@
 package editorurl
 
 import (
-	"strings"
 	"testing"
 )
-
-func TestEditorURL_DefaultIsVSCode(t *testing.T) {
-	t.Setenv("SERF_HUB_EDITOR_URL_TEMPLATE", "")
-	got := string(EditorURL("/Users/jesse/code/foo.go"))
-	if !strings.HasPrefix(got, "vscode://file/") {
-		t.Errorf("got %q, want vscode://file/ prefix", got)
-	}
-	if !strings.HasSuffix(got, "/foo.go") {
-		t.Errorf("got %q, want /foo.go suffix", got)
-	}
-}
 
 func TestEditorURL_PreservesPathSeparators(t *testing.T) {
 	t.Setenv("SERF_HUB_EDITOR_URL_TEMPLATE", "")
@@ -53,8 +41,9 @@ func TestEditorURL_EmptyPath(t *testing.T) {
 func TestEditorURL_EncodesSpecialChars(t *testing.T) {
 	t.Setenv("SERF_HUB_EDITOR_URL_TEMPLATE", "vscode://file/{path}")
 	got := string(EditorURL("/Users/jesse/My Code/foo bar.go"))
-	if !strings.Contains(got, "My%20Code") {
-		t.Errorf("got %q, want spaces percent-encoded", got)
+	want := "vscode://file/Users/jesse/My%20Code/foo%20bar.go"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 

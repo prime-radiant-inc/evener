@@ -35,6 +35,40 @@ function newHarness() {
 }
 
 let allPass = true;
+
+// CSS contract: verified synchronously so a DOM regression in the scenario below
+// cannot short-circuit these checks and hide a concurrent CSS regression.
+(function testCSSContract() {
+  const checks = [
+    [
+      /\.plan-item\.current \.plan-glyph\s*\{[^}]*animation:[^;]*think-breathe[^;]*var\(--pulse-cycle\)/.test(styleSrc),
+      "current glyph must reuse think-breathe at var(--pulse-cycle)",
+    ],
+    [
+      !/@keyframes\s+plan-breathe/.test(styleSrc),
+      "must not add a new plan-breathe keyframe",
+    ],
+    [
+      /\.task-card-progress\s*\{[^}]*font-variant-numeric:\s*tabular-nums/.test(styleSrc),
+      "progress count should use tabular-nums",
+    ],
+    [
+      /\.task-card\s*\{[^}]*border-left:[^;]*var\(--rule\)/.test(styleSrc),
+      ".task-card should use a left rail, not a box",
+    ],
+    [
+      !/\.task-card\s*\{[^}]*\bborder:\s/.test(styleSrc),
+      ".task-card must not draw a full box border",
+    ],
+  ];
+  let ok = true;
+  for (const [cond, msg] of checks) {
+    if (!cond) { console.log("FAIL — CSS contract: " + msg); ok = false; }
+  }
+  if (ok) console.log("PASS — CSS contract: plan-item animation, tabular-nums, left-rail");
+  if (!ok) allPass = false;
+})();
+
 async function scenario(name, eventSeq, check) {
   const { window, conv } = newHarness();
   await new Promise(r => setTimeout(r, 30));
@@ -102,21 +136,6 @@ await scenario("living plan card leads with progress + active task, collapsed by
   const toggle = card.querySelector(".task-card-toggle");
   if (!toggle || !/show all/.test(toggle.textContent)) return { ok: false, detail: "missing 'show all' toggle" };
 
-  // Visual contract: the active glyph reuses the shared breathe; progress is tabular.
-  if (!/\.plan-item\.current \.plan-glyph\s*\{[^}]*animation:[^;]*think-breathe[^;]*var\(--pulse-cycle\)/.test(styleSrc)) {
-    return { ok: false, detail: "current glyph must reuse think-breathe at var(--pulse-cycle)" };
-  }
-  if (/@keyframes\s+plan-breathe/.test(styleSrc)) return { ok: false, detail: "must not add a new plan-breathe keyframe" };
-  if (!/\.task-card-progress\s*\{[^}]*font-variant-numeric:\s*tabular-nums/.test(styleSrc)) {
-    return { ok: false, detail: "progress count should use tabular-nums" };
-  }
-  // The card is a rail, not a box (one containment device).
-  if (!/\.task-card\s*\{[^}]*border-left:[^;]*var\(--rule\)/.test(styleSrc)) {
-    return { ok: false, detail: ".task-card should use a left rail, not a box" };
-  }
-  if (/\.task-card\s*\{[^}]*\bborder:\s/.test(styleSrc)) {
-    return { ok: false, detail: ".task-card must not draw a full box border" };
-  }
   return { ok: true };
 });
 

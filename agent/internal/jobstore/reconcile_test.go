@@ -39,6 +39,9 @@ func TestReconcileFinalizesLostRunningJobs(t *testing.T) {
 			t.Errorf("event[%d] ended_at = %v, want %v", i, e.EndedAt, now)
 		}
 	}
+	if events[0].TerminalGen == events[1].TerminalGen {
+		t.Errorf("each lost job must receive a distinct terminal_generation; both got %q", events[0].TerminalGen)
+	}
 }
 
 func TestReconcileIsIdempotentOnSecondPass(t *testing.T) {

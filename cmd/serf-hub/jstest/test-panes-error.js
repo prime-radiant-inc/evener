@@ -1,4 +1,5 @@
 const fs = require("fs");
+const path = require("path");
 const { JSDOM } = require("jsdom");
 
 function load(window, file) { window.eval(fs.readFileSync(file, "utf8")); }
@@ -9,7 +10,7 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <aside id="side-panes" hidden></aside>
 </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://127.0.0.1:9180/s/parent" });
 const { window } = dom;
-load(window, "../assets/panes.js");
+load(window, path.resolve(__dirname, "../assets/panes.js"));
 
 let allPass = true;
 function check(ok, msg) { console.log((ok ? "PASS" : "FAIL") + " — " + msg); if (!ok) allPass = false; }

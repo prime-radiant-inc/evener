@@ -340,6 +340,19 @@ func TestJobManagerNotificationCallbackRegistrationRace(t *testing.T) {
 		sess.enqueueJobNotificationAndNotify(jobNotification{JobID: "job_done"})
 	}
 	<-done
+
+	// All 100 notifications must have been enqueued without corruption despite
+	// concurrent SetNotifyFunc toggle (tests pendingJobNotifsMu correctness).
+	if got := sess.peekNotifications(); got != 100 {
+		t.Fatalf("peekNotifications = %d, want 100", got)
+	}
+	// A late-registered notifyFunc must fire immediately when notifications are
+	// already pending (tests SetNotifyFunc immediate-wake contract).
+	var wakes int
+	sess.SetNotifyFunc(func() { wakes++ })
+	if wakes != 1 {
+		t.Fatalf("late-register wakes = %d, want 1", wakes)
+	}
 }
 
 func TestSessionCloseClosesJobStore(t *testing.T) {

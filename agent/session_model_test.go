@@ -538,9 +538,10 @@ func TestSession_EmptyResponseExhaustedFlushesMeta(t *testing.T) {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
 	// Each empty response (initial + 3 retries) bumps modelResponses, then
-	// the loop hits the exhausted exit. meta.json must reflect that — non-zero.
-	if meta.TurnCount == 0 {
-		t.Fatalf("turn_count after empty-response exhaustion: got 0, want >0 (deferred flush should persist modelResponses)")
+	// the loop hits the exhausted exit. meta.json must reflect exactly
+	// maxEmptyRetries+1 rounds.
+	if want := maxEmptyRetries + 1; meta.TurnCount != want {
+		t.Fatalf("turn_count after empty-response exhaustion: got %d, want %d (1 initial + maxEmptyRetries retries)", meta.TurnCount, want)
 	}
 }
 
@@ -586,8 +587,8 @@ func TestSession_BareTextWithoutResultToolFlushesMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
-	if meta.TurnCount == 0 {
-		t.Fatalf("turn_count after bare-text exhaustion: got 0, want >0 (deferred flush should persist modelResponses)")
+	if want := maxBareTextRetries + 1; meta.TurnCount != want {
+		t.Fatalf("turn_count after bare-text exhaustion: got %d, want %d (1 initial + maxBareTextRetries retries)", meta.TurnCount, want)
 	}
 }
 
@@ -652,8 +653,8 @@ func TestSession_MaxToolRoundsExitFlushesMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
-	if meta.TurnCount == 0 {
-		t.Fatalf("turn_count after MaxToolRoundsPerInput exit: got 0, want >0 (deferred flush should persist modelResponses)")
+	if meta.TurnCount != 1 {
+		t.Fatalf("turn_count after MaxToolRoundsPerInput=1 exit: got %d, want 1 (exactly one LLM round ran)", meta.TurnCount)
 	}
 }
 
@@ -1075,10 +1076,11 @@ func TestSession_RecordInputTokens_SkipsWebSearchResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The inflated 200K should NOT have been recorded as lastInputTokens.
+	// The inflated 200K should NOT have been recorded as lastInputTokens;
+	// the prior value (0 for a fresh session) must be preserved.
 	lit := sess.contextMgr.LastInputTokens()
-	if lit == 200_000 {
-		t.Fatalf("lastInputTokens = %d; inflated web search tokens should not be recorded", lit)
+	if lit != 0 {
+		t.Fatalf("lastInputTokens after web-search response = %d, want 0 (inflated tokens must not be recorded; prior value must be preserved)", lit)
 	}
 
 	// Second call: normal response.

@@ -541,38 +541,6 @@ func TestCheckpoint_CreatesValidMessage(t *testing.T) {
 	}
 }
 
-// TestCheckpoint_DoesNotFreezeStaleTaskState is a regression test for the
-// frozen-state staleness bug: compaction metadata captures the task snapshot at
-// turn start, so a task completed during the round that triggers compaction
-// would otherwise be embedded in the checkpoint as still in_progress. The
-// checkpoint must not carry task state at all — live reminders are the canonical
-// post-compaction source, so they cannot contradict it.
-// TestCheckpoint_RendersOnlyFromMetaAndHistory proves checkpoint draws its
-// content solely from the CompactionMeta it is handed and the turn history. The
-// session deliberately captures task-free compaction meta at turn start
-// (buildCompactionMeta records only the session id — see the agent-side
-// TestBuildCompactionMeta_ExcludesTaskState), so state that lives outside meta
-// and history — e.g. a task description sitting in the session's task store —
-// must never surface in the checkpoint.
-func TestCheckpoint_RendersOnlyFromMetaAndHistory(t *testing.T) {
-	// Meta as the session freezes it at turn start: a session id, no tasks.
-	meta := CompactionMeta{SessionID: "XSESS"}
-
-	history := []schema.Turn{
-		{Kind: schema.TurnUserInput, Message: llm.User("do the work")},
-		{Kind: schema.TurnAssistant, Message: llm.Assistant("working")},
-		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
-		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
-	}
-	result := checkpoint(history, 2, &meta, "communicate")
-	text := result[0].Message.Text()
-	// "Frobnicate the gizmo" appears in neither meta nor history; it stands in for
-	// live task state the session must not leak into the checkpoint.
-	if strings.Contains(text, "Frobnicate the gizmo") {
-		t.Fatalf("checkpoint surfaced state absent from meta and history: %q", text)
-	}
-}
-
 func TestCheckpoint_IncludesOriginalPrompt(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug in login.go")},

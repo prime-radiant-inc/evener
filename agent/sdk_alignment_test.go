@@ -67,7 +67,8 @@ func TestRegisteredTool_ExecuteNotBridgedWhenAlreadySet(t *testing.T) {
 	rt := tool.RegisteredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
-				Name: "preset_exec",
+				Name:        "preset_exec",
+				Description: "tool with execute already set",
 			},
 			Execute: func(ctx context.Context, args any) (any, error) {
 				executeCalled = true
@@ -106,7 +107,8 @@ func TestRegisteredTool_BridgedExecute_RejectsNonMapArgs(t *testing.T) {
 	rt := tool.RegisteredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
-				Name: "bridge_reject",
+				Name:        "bridge_reject",
+				Description: "tool for testing non-map arg rejection",
 			},
 		},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {

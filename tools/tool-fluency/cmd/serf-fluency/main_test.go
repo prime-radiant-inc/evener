@@ -39,6 +39,17 @@ func TestCLIProbeArgsIncludesSystemPromptAppendFiles(t *testing.T) {
 		"--system-prompt-append", "/tmp/append-b.md",
 	}
 	assertSubsequence(t, args, want)
+
+	// The whitespace-only entry ' ' must be excluded: exactly 2 flags, not 3.
+	count := 0
+	for _, a := range args {
+		if a == "--system-prompt-append" {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("--system-prompt-append flag count = %d, want 2 (blank entry must be excluded)", count)
+	}
 }
 
 func TestMaybeClearOpenAIAPIKeyRestoresExistingValue(t *testing.T) {
@@ -72,6 +83,8 @@ func TestAllTranscriptToolCountsIncludesChildSessions(t *testing.T) {
 			Content: []llm.ContentPart{
 				fluencyToolCall("job_watch", `{"source":"parent"}`),
 				fluencyToolCall("communicate", `{"message":"OBSERVER_READY","end_turn":true}`),
+				// read_file also appears in root_session; its counts must be summed, not overwritten.
+				fluencyToolCall("read_file", `{"file_path":"child-result.txt"}`),
 			},
 		}),
 	})
@@ -82,7 +95,7 @@ func TestAllTranscriptToolCountsIncludesChildSessions(t *testing.T) {
 	}
 
 	assertToolCount(t, got, "delegate", 1)
-	assertToolCount(t, got, "read_file", 1)
+	assertToolCount(t, got, "read_file", 2) // one call per session — += accumulation path exercised
 	assertToolCount(t, got, "job_watch", 1)
 	assertToolCount(t, got, "communicate", 1)
 }

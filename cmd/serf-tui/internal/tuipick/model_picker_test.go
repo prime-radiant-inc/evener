@@ -61,9 +61,28 @@ func TestModelPicker_ActiveHighlight(t *testing.T) {
 	}
 	p := NewModelPicker(items, "gpt-4o-mini", 80)
 
-	view := p.View()
-	if !strings.Contains(view, "(active)") {
-		t.Error("view should contain '(active)' tag for current model")
+	plain := ansiPattern.ReplaceAllString(p.View(), "")
+	lines := strings.Split(plain, "\n")
+
+	var miniLine, gpt4oLine string
+	for _, line := range lines {
+		if strings.Contains(line, "gpt-4o-mini") {
+			miniLine = line
+		} else if strings.Contains(line, "gpt-4o") {
+			gpt4oLine = line
+		}
+	}
+	if miniLine == "" {
+		t.Fatal("no line containing gpt-4o-mini found in view")
+	}
+	if !strings.Contains(miniLine, "(active)") {
+		t.Errorf("line with gpt-4o-mini should contain (active), got: %q", miniLine)
+	}
+	if gpt4oLine == "" {
+		t.Fatal("no line containing gpt-4o found in view")
+	}
+	if strings.Contains(gpt4oLine, "(active)") {
+		t.Errorf("line with gpt-4o should NOT contain (active), got: %q", gpt4oLine)
 	}
 }
 

@@ -30,8 +30,9 @@ func TestParseImageResult_ExtractsImageData(t *testing.T) {
 	if got.MediaType != "image/png" {
 		t.Fatalf("MediaType = %q, want image/png", got.MediaType)
 	}
-	if !strings.Contains(got.Text, "[image: png") {
-		t.Fatalf("Text should contain header, got: %q", got.Text)
+	wantText := fmt.Sprintf("[image: png, %d bytes, base64 data follows]", len(pngHeader))
+	if got.Text != wantText {
+		t.Fatalf("Text = %q, want %q", got.Text, wantText)
 	}
 }
 
@@ -95,8 +96,9 @@ func TestParseDocumentResult_ExtractsPDFData(t *testing.T) {
 	if got.MediaType != "application/pdf" {
 		t.Fatalf("MediaType = %q, want application/pdf", got.MediaType)
 	}
-	if !strings.Contains(got.Text, "[document: pdf") {
-		t.Fatalf("Text should contain header, got: %q", got.Text)
+	wantText := fmt.Sprintf("[document: pdf, %d bytes, base64 data follows]", len(pdfContent))
+	if got.Text != wantText {
+		t.Fatalf("Text = %q, want %q", got.Text, wantText)
 	}
 }
 

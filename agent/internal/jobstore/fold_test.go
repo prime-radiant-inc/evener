@@ -556,10 +556,20 @@ func TestDelegateRestoreDescriptorSurvivesStoreReopenAndFold(t *testing.T) {
 		got.VisibleSessionID != desc.VisibleSessionID ||
 		got.OriginTurnID != desc.OriginTurnID ||
 		got.OriginToolCallID != desc.OriginToolCallID ||
+		got.OriginItemID != desc.OriginItemID ||
+		got.Task != desc.Task ||
+		got.AgentType != desc.AgentType ||
 		got.RequestedModel != desc.RequestedModel ||
 		got.ResolvedProfileID != desc.ResolvedProfileID ||
 		got.ResolvedModel != desc.ResolvedModel ||
-		got.LocalEnvPolicy != desc.LocalEnvPolicy {
+		got.ReasoningEffort != desc.ReasoningEffort ||
+		got.AgentName != desc.AgentName ||
+		got.FrozenRolePrompt != desc.FrozenRolePrompt ||
+		got.FrozenTaskPrompt != desc.FrozenTaskPrompt ||
+		got.WorkingDir != desc.WorkingDir ||
+		got.LocalEnvPolicy != desc.LocalEnvPolicy ||
+		got.ParentWatchGranted != desc.ParentWatchGranted ||
+		got.DelegationAllowance != desc.DelegationAllowance {
 		t.Fatalf("reopened descriptor = %+v, want %+v", got, desc)
 	}
 	if len(got.FrozenToolNames) != 2 || got.FrozenToolNames[0] != "read_file" || got.FrozenToolNames[1] != "task_list" {

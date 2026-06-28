@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -67,8 +68,16 @@ func TestE2E_HubAndDaemon(t *testing.T) {
 		_ = dCmd.Process.Kill()
 	}()
 
-	// Launch the hub on a fixed port.
-	hubAddr := "127.0.0.1:9181"
+	// Pick a free port for the hub. We bind, read the address, then close
+	// immediately so the hub process can bind to it. The TOCTOU window is tiny
+	// and far smaller than the collision risk of a hard-coded port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("allocate hub port: %v", err)
+	}
+	hubAddr := ln.Addr().String()
+	ln.Close()
+
 	hCmd := exec.Command(hubBin, "--addr", hubAddr, "--serf", serfBin)
 	hCmd.Env = append(os.Environ(), "HOME="+tmpHome)
 	hCmd.Stderr = os.Stderr

@@ -112,7 +112,8 @@ func TestLocate_ProjRef(t *testing.T) {
 
 func TestLocate_LocalRef(t *testing.T) {
 	base := t.TempDir()
-	writeSession(t, stateHomeBucket(base, hash1), sidA)
+	bucket := stateHomeBucket(base, hash1)
+	writeSession(t, bucket, sidA)
 
 	got, err := Locate(base, "local:"+sidA)
 	if err != nil {
@@ -120,6 +121,18 @@ func TestLocate_LocalRef(t *testing.T) {
 	}
 	if got.SessionID != sidA {
 		t.Errorf("SessionID = %q, want %q", got.SessionID, sidA)
+	}
+	// local:<sid> resolves by searching buckets; the session lives in a hashed
+	// bucket so TranscriptRef must be the proj: form, not local:.
+	if got.TranscriptRef != "proj:"+hash1+":"+sidA {
+		t.Errorf("TranscriptRef = %q, want proj:%s:%s", got.TranscriptRef, hash1, sidA)
+	}
+	if got.BucketHash != hash1 {
+		t.Errorf("BucketHash = %q, want %q", got.BucketHash, hash1)
+	}
+	wantJobs := filepath.Join(bucket, "sessions", sidA, "jobs.jsonl")
+	if got.JobsPath != wantJobs {
+		t.Errorf("JobsPath = %q, want %q", got.JobsPath, wantJobs)
 	}
 }
 

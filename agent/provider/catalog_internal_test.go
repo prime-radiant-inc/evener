@@ -144,15 +144,6 @@ func TestResolveOpenAICompatCatalogModel(t *testing.T) {
 		}
 	})
 
-	t.Run("kimi still uses bare-key fallback", func(t *testing.T) {
-		// Sanity: providers whose catalog keys are unprefixed (kimi,
-		// glm) must still hit the bare lookup.
-		lookup := fake(map[string]int{"kimi-k2.5": 100})
-		mi := resolveOpenAICompatCatalogModel(lookup, "kimi", "kimi-k2.5")
-		if mi == nil || mi.ContextWindow != 100 {
-			t.Fatalf("got %+v, want kimi-k2.5 bare match", mi)
-		}
-	})
 }
 
 // TestResolveOpenRouterAnthropicWebSearch verifies the three-step
@@ -200,11 +191,14 @@ func TestResolveOpenRouterAnthropicWebSearch(t *testing.T) {
 		map[string]bool{"anthropic/m": true, "m": true},
 		"anthropic/m", false)
 
-	// Step 3 fills when steps 1 and 2 are silent (no entries match).
+	// Step 3 fills when steps 1 and 2 are silent (no entries match). The
+	// step-3 entry carries ws=false so that removing step 3 causes the
+	// function to return the default (true) ≠ expected (false), proving
+	// the branch is load-bearing and not tautological.
 	tt(t, "step 3 fills when steps 1 and 2 silent",
-		map[string]*bool{"m": &bTrue},
+		map[string]*bool{"m": &bFalse},
 		map[string]bool{"m": true},
-		"anthropic/m", true)
+		"anthropic/m", false)
 
 	// Step 3 fills when step 2 matched but its entry has no field —
 	// useful for picking up serf overrides on bare upstream IDs.

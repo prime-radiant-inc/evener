@@ -54,6 +54,11 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   pass(listCalls === 0, "no fetch when there is no older cursor");
 
   // Cursor set → fetch + prepend.
+  // Backdate lastFrameAt to simulate a stalled session; prependOlderTurns must
+  // not clobber it (the liveness clock belongs to the live session, not the
+  // detached older-turn render).
+  const testStartAt = Date.now();
+  R.lastFrameAt = testStartAt - 300000;
   R.olderTurnsCursor = "cursor-5";
   R.maybeLoadOlderTurns();
   // Overlap guard: a second near-top scroll while loading must not double-fetch.
@@ -72,6 +77,7 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
   pass(R.olderTurnsCursor === "", "cursor advances to the reply's nextCursor (head reached)");
   pass(R.loadingOlderTurns === false, "loading flag cleared after the fetch");
+  pass(R.lastFrameAt <= testStartAt, "prependOlderTurns does not clobber lastFrameAt (liveness clock preserved across detached older-turn render, got " + R.lastFrameAt + " expected <= " + testStartAt + ")");
   pass(R.currentMessageId === "live-msg-id", "live currentMessageId preserved across older render");
   pass(R.lastUserText === "LIVE-USER-MESSAGE", "live lastUserText preserved across older render");
 

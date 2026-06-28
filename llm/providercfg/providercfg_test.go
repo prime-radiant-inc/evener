@@ -45,7 +45,8 @@ func TestBehaviorTag(t *testing.T) {
 	cases := []struct{ typ, style, want string }{
 		{"openai", "responses", "openai"},
 		{"openai", "chat-completions", "openai-compatible"},
-		{"openai", "", "openai"}, // default style = responses
+		{"openai", "auto", "openai"}, // auto style falls through to typ identity
+		{"openai", "", "openai"},     // default style = responses
 		{"anthropic", "", "anthropic"},
 		{"google", "", "google"},
 		{"openrouter", "", "openrouter"},

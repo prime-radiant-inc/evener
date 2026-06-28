@@ -114,8 +114,8 @@ func TestInitPlugins_UnsupportedHookEventWarns(t *testing.T) {
 		t.Errorf("PluginName = %q, want %q", found.PluginName, "reserved-plugin")
 	}
 	msg := strings.ToLower(found.Message)
-	if !strings.Contains(msg, "not") {
-		t.Errorf("warning %q should explain the event is not fired yet", found.Message)
+	if !strings.Contains(msg, "not") || !strings.Contains(msg, "fire") {
+		t.Errorf("warning %q should say the event is not fired by serf", found.Message)
 	}
 }
 

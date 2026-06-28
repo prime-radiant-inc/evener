@@ -1384,17 +1384,31 @@ func TestSendMessageMidDriveSteersNoSecondTurn(t *testing.T) {
 			"a \"started\" Action means a SECOND concurrent ProcessInputKind launched on the driving child", res.Action)
 	}
 
-	// A second concurrent turn must NEVER start on the child. At HEAD the resumed
-	// turn fires its own model call (adapter call 3); give it a window so -race can
-	// observe the concurrent turn and the adapter records secondTurnStarted.
+	// A second concurrent turn must NEVER start on the child. The 1 s window is
+	// wider than any realistic steer-vs-launch scheduling gap, so a buggy
+	// implementation that defers the launch by a few hundred ms is still caught.
+	// (Per poll_test.go: a negative wait must keep its fixed sleep — there is no
+	// condition to poll for.)
 	select {
 	case <-adapter.secondTurnStart:
 		t.Fatal("a second concurrent turn started on the driving child; the mid-drive send must steer, not launch a fresh turn")
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(time.Second):
 	}
 
-	// Release the drive turn and let it finish cleanly.
+	// Release the drive turn, then wait for the drive goroutine to finish and
+	// make a deterministic call-count assertion: exactly 2 model calls (initial
+	// turn + drive turn). A third call recorded by the adapter means a concurrent
+	// turn launched after the observation window — the bug even if secondTurnStart
+	// fired too late to be caught above.
 	releaseOnce.Do(func() { close(release) })
+	waitForCondition(t, 5*time.Second, "drive goroutine to finish (sub.driving==false)", func() bool {
+		coordSub.mu.Lock()
+		defer coordSub.mu.Unlock()
+		return !coordSub.driving
+	})
+	if n := len(adapter.Requests()); n != 2 {
+		t.Fatalf("expected exactly 2 model calls (initial + drive turn), got %d; extra calls indicate a concurrent turn launched on the driving child", n)
+	}
 }
 
 // TestWatchResumeMidDriveSteersNotDropped proves the A7 fix's FromWatch leg: a

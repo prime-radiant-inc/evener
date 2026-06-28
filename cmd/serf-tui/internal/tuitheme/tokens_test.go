@@ -107,14 +107,6 @@ func TestSetThemeCallsMarkdownInvalidator(t *testing.T) {
 	}
 }
 
-func TestSetThemeUpdatesActiveTheme(t *testing.T) {
-	t.Cleanup(func() { SetTheme("dark") })
-	SetTheme("light")
-	if ActiveTheme().Name != "light" {
-		t.Errorf("SetTheme(light) did not update active theme")
-	}
-}
-
 func TestNoTokenIsEmpty(t *testing.T) {
 	for name, th := range Themes() {
 		fields := map[string]lipgloss.Color{

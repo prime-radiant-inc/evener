@@ -126,8 +126,8 @@ func TestRoundTimings_Emitted(t *testing.T) {
 			t.Errorf("timing[%d].LLMCall = %v, expected > 0", i, rt.LLMCall)
 		}
 		// ToolExec should be > 0 because we executed exec_command or communicate.
-		if rt.ToolExec < 0 {
-			t.Errorf("timing[%d].ToolExec = %v, expected >= 0", i, rt.ToolExec)
+		if rt.ToolExec <= 0 {
+			t.Errorf("timing[%d].ToolExec = %v, expected > 0", i, rt.ToolExec)
 		}
 	}
 }

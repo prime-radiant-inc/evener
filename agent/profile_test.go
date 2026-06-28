@@ -1688,7 +1688,7 @@ func TestBuildSystemPrompt_WorkspaceSection(t *testing.T) {
 	// Workspace section should come after environment and after the tool list.
 	wsIdx := strings.Index(prompt, "<workspace>")
 	envIdx := strings.Index(prompt, "</environment>")
-	toolIdx := strings.Index(prompt, "Tools:")
+	toolIdx := strings.Index(prompt, "## Tool usage")
 	if wsIdx < envIdx {
 		t.Errorf("workspace (pos %d) should come after environment (pos %d)", wsIdx, envIdx)
 	}

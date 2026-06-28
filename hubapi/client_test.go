@@ -72,6 +72,9 @@ func TestClientHealth(t *testing.T) {
 	if !got.Capabilities.Spawn {
 		t.Error("expected Spawn capability")
 	}
+	if !got.StartedAt.Equal(want.StartedAt) {
+		t.Errorf("started_at: got %v, want %v", got.StartedAt, want.StartedAt)
+	}
 }
 
 func TestClientHealth_Error(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -134,9 +135,9 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 	}
 }
 
-func TestSessionState_Transitions(t *testing.T) {
+func TestSessionStateStringValues(t *testing.T) {
 	t.Parallel()
-	// Verify state type and constants exist
+	// Verify state constants have the expected wire-format string values.
 	if SessionIdle != SessionState("idle") {
 		t.Fatal("SessionIdle wrong")
 	}
@@ -145,6 +146,23 @@ func TestSessionState_Transitions(t *testing.T) {
 	}
 	if SessionClosed != SessionState("closed") {
 		t.Fatal("SessionClosed wrong")
+	}
+	// Round-trip: confirm the constant value survives JSON serialisation in the
+	// real event payload that carries it. A mutation that changes the constant
+	// string (e.g. "closed" → "done") or the JSON field tag on SessionEndData
+	// would break the wire format and fail here, whereas the constant == literal
+	// comparisons above cannot be made to fail without also editing this test.
+	payload := events.SessionEndData{Reason: "test", State: string(SessionClosed)}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal SessionEndData: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := m["state"]; got != string(SessionClosed) {
+		t.Fatalf("SessionEndData.State wire value: got %v, want %q", got, string(SessionClosed))
 	}
 }
 
@@ -564,6 +582,33 @@ func TestSession_CloseCancelsInFlightWithoutInterruptMarker(t *testing.T) {
 	}
 }
 
+// checkpointTrackingEnv wraps cleanupTrackingEnv and replaces the sleep-based
+// ordering check with a synchronous checkpoint handshake. When Cleanup() is
+// done with the actual environment teardown it closes checkpointCh to ask the
+// consumer goroutine to drain all currently-buffered events; the consumer closes
+// checkpointAck once done. This ensures that in the wrong ordering (SESSION_END
+// emitted before Cleanup), "session_end_received" appears before "cleanup_end"
+// in the shared log without any wall-clock dependency.
+type checkpointTrackingEnv struct {
+	cleanupTrackingEnv
+	checkpointCh  chan struct{} // closed by Cleanup() to trigger consumer drain
+	checkpointAck chan struct{} // closed by consumer after draining buffered events
+}
+
+func (e *checkpointTrackingEnv) Cleanup() {
+	e.Append("cleanup_start")
+	e.ExecutionEnvironment.Cleanup()
+	// Signal the consumer to drain all buffered events before we record
+	// "cleanup_end". In the correct ordering, no events are buffered yet
+	// (SESSION_END hasn't been emitted), so the consumer acks immediately.
+	// In the wrong ordering, the consumer drains SESSION_END first and records
+	// "session_end_received" before acking — placing it before "cleanup_end"
+	// in the log so the ordering assertion detects the violation.
+	close(e.checkpointCh)
+	<-e.checkpointAck
+	e.Append("cleanup_end")
+}
+
 func TestSession_GracefulShutdown_CorrectOrdering(t *testing.T) {
 	t.Parallel()
 	// Use a blocking adapter so we can call Close() while the LLM call is
@@ -575,7 +620,11 @@ func TestSession_GracefulShutdown_CorrectOrdering(t *testing.T) {
 	dir := t.TempDir()
 
 	inner := execenv.NewLocalExecutionEnvironment(dir)
-	trackEnv := &cleanupTrackingEnv{ExecutionEnvironment: inner}
+	trackEnv := &checkpointTrackingEnv{
+		cleanupTrackingEnv: cleanupTrackingEnv{ExecutionEnvironment: inner},
+		checkpointCh:       make(chan struct{}),
+		checkpointAck:      make(chan struct{}),
+	}
 
 	sess, err := NewSession(c, NewOpenAIProfile("test-model"), trackEnv, SessionConfig{})
 	if err != nil {
@@ -583,15 +632,51 @@ func TestSession_GracefulShutdown_CorrectOrdering(t *testing.T) {
 	}
 
 	// The event consumer records when SESSION_END is received and when the
-	// channel closes. Because Close() is synchronous and we share the log
-	// with Cleanup(), we can verify the ordering of operations in Close().
+	// channel closes. It uses a two-phase loop so it can participate in the
+	// checkpoint handshake with Cleanup(): in Phase 1 it selects on both the
+	// events channel and checkpointCh; when the checkpoint fires it drains all
+	// buffered events before acking, then finishes in Phase 2 with a plain range.
 	doneCh := make(chan struct{})
 	go func() {
 		defer close(doneCh)
-		for ev := range sess.Events() {
+		eventsCh := sess.Events()
+		recordIfEnd := func(ev events.SessionEvent) {
 			if ev.Kind == events.EventSessionEnd {
 				trackEnv.Append("session_end_received")
 			}
+		}
+	phase1:
+		for {
+			select {
+			case ev, ok := <-eventsCh:
+				if !ok {
+					trackEnv.Append("channel_closed")
+					return
+				}
+				recordIfEnd(ev)
+			case <-trackEnv.checkpointCh:
+				// Drain all currently-buffered events before acking so that
+				// "session_end_received" is logged before "cleanup_end" when
+				// SESSION_END was already in the channel (wrong ordering).
+				for {
+					select {
+					case ev, ok := <-eventsCh:
+						if !ok {
+							trackEnv.Append("channel_closed")
+							close(trackEnv.checkpointAck)
+							return
+						}
+						recordIfEnd(ev)
+					default:
+						close(trackEnv.checkpointAck)
+						break phase1
+					}
+				}
+			}
+		}
+		// Phase 2: drain remaining events after checkpoint.
+		for ev := range eventsCh {
+			recordIfEnd(ev)
 		}
 		trackEnv.Append("channel_closed")
 	}()
@@ -998,15 +1083,19 @@ func TestSession_QueueMutationWaitsForQueuePublicationSlot(t *testing.T) {
 	defer sess.Close()
 
 	sess.queueEventsMu.Lock()
+	started := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
+		close(started) // goroutine has started; Enqueue is about to try the mutex
 		done <- sess.Enqueue(context.Background(), "queued while publisher busy")
 	}()
 
+	<-started         // goroutine has started
+	runtime.Gosched() // yield so the goroutine can advance into Enqueue and block on queueEventsMu
 	select {
 	case err := <-done:
 		t.Fatalf("Enqueue completed while queue publication slot was held: %v", err)
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 	if depth := sess.QueueDepth(); depth != 0 {
 		t.Fatalf("QueueDepth while publication slot held = %d, want 0", depth)

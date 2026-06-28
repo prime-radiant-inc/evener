@@ -288,18 +288,19 @@ func TestMCPManager_Empty(t *testing.T) {
 
 func TestTransportForConfig_Types(t *testing.T) {
 	tests := []struct {
-		name    string
-		cfg     mcpconfig.ServerConfig
-		wantErr bool
+		name     string
+		cfg      mcpconfig.ServerConfig
+		wantErr  bool
+		wantType string // concrete type label for non-error cases
 	}{
-		{"stdio valid", mcpconfig.ServerConfig{Type: "stdio", Command: "cmd"}, false},
-		{"stdio empty command", mcpconfig.ServerConfig{Type: "stdio"}, true},
-		{"sse valid", mcpconfig.ServerConfig{Type: "sse", URL: "http://localhost:8080"}, false},
-		{"sse empty url", mcpconfig.ServerConfig{Type: "sse"}, true},
-		{"http valid", mcpconfig.ServerConfig{Type: "http", URL: "http://localhost:8080"}, false},
-		{"http empty url", mcpconfig.ServerConfig{Type: "http"}, true},
-		{"unknown type", mcpconfig.ServerConfig{Type: "websocket"}, true},
-		{"default (empty type) with command", mcpconfig.ServerConfig{Command: "cmd"}, false},
+		{"stdio valid", mcpconfig.ServerConfig{Type: "stdio", Command: "cmd"}, false, "CommandTransport"},
+		{"stdio empty command", mcpconfig.ServerConfig{Type: "stdio"}, true, ""},
+		{"sse valid", mcpconfig.ServerConfig{Type: "sse", URL: "http://localhost:8080"}, false, "SSEClientTransport"},
+		{"sse empty url", mcpconfig.ServerConfig{Type: "sse"}, true, ""},
+		{"http valid", mcpconfig.ServerConfig{Type: "http", URL: "http://localhost:8080"}, false, "StreamableClientTransport"},
+		{"http empty url", mcpconfig.ServerConfig{Type: "http"}, true, ""},
+		{"unknown type", mcpconfig.ServerConfig{Type: "websocket"}, true, ""},
+		{"default (empty type) with command", mcpconfig.ServerConfig{Command: "cmd"}, false, "CommandTransport"},
 	}
 
 	for _, tt := range tests {
@@ -313,9 +314,25 @@ func TestTransportForConfig_Types(t *testing.T) {
 			}
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
+				return
 			}
 			if transport == nil {
 				t.Error("expected non-nil transport")
+				return
+			}
+			switch tt.wantType {
+			case "CommandTransport":
+				if _, ok := transport.(*mcpsdk.CommandTransport); !ok {
+					t.Errorf("got %T, want *mcpsdk.CommandTransport", transport)
+				}
+			case "SSEClientTransport":
+				if _, ok := transport.(*mcpsdk.SSEClientTransport); !ok {
+					t.Errorf("got %T, want *mcpsdk.SSEClientTransport", transport)
+				}
+			case "StreamableClientTransport":
+				if _, ok := transport.(*mcpsdk.StreamableClientTransport); !ok {
+					t.Errorf("got %T, want *mcpsdk.StreamableClientTransport", transport)
+				}
 			}
 		})
 	}
@@ -405,6 +422,16 @@ func TestMCPManager_Servers(t *testing.T) {
 	if len(alpha.Tools) != 2 {
 		t.Errorf("alpha tools: got %d, want 2", len(alpha.Tools))
 	}
+	alphaTools := make(map[string]bool, len(alpha.Tools))
+	for _, name := range alpha.Tools {
+		alphaTools[name] = true
+	}
+	if !alphaTools["alpha__greet"] {
+		t.Error("alpha tools missing alpha__greet")
+	}
+	if !alphaTools["alpha__farewell"] {
+		t.Error("alpha tools missing alpha__farewell")
+	}
 
 	beta, ok := byName["beta"]
 	if !ok {
@@ -443,13 +470,16 @@ func TestMergeEnv(t *testing.T) {
 		t.Error("expected MCP_TEST_UNIQUE_KEY_42=value42 in merged env")
 	}
 
-	// Setting PATH should replace, not duplicate.
+	// Setting PATH should replace, not duplicate, and must carry the override value.
 	result2 := mergeEnv(map[string]string{"PATH": "/custom/path"})
 	pathCount := 0
 	for _, e := range result2 {
-		key, _, _ := strings.Cut(e, "=")
+		key, val, _ := strings.Cut(e, "=")
 		if key == "PATH" {
 			pathCount++
+			if val != "/custom/path" {
+				t.Errorf("PATH value = %q, want /custom/path", val)
+			}
 		}
 	}
 	if pathCount != 1 {

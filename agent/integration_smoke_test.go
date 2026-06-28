@@ -93,7 +93,7 @@ func TestIntegration_SimpleFileCreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("file not created: %v", err)
 	}
-	if !strings.Contains(string(data), "Hello") {
+	if strings.TrimSpace(string(data)) != "Hello, World!" {
 		t.Fatalf("unexpected content: %q", string(data))
 	}
 
@@ -195,7 +195,7 @@ func TestIntegration_ShellCommand(t *testing.T) {
 	t.Logf("output: %q", output)
 }
 
-func TestIntegration_ToolOutputTruncation(t *testing.T) {
+func TestIntegration_LargeFileReadDoesNotCrash(t *testing.T) {
 	t.Parallel()
 	skipWithoutAPIKey(t)
 	sess := integrationSession(t)

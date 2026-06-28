@@ -168,7 +168,8 @@ func TestTokenResponseExpiryTime(t *testing.T) {
 	}
 
 	tokens := resp.intoTokenSet(before)
-	if tokens.Expiry.Before(before.Add(59*time.Second)) || tokens.Expiry.After(before.Add(61*time.Second)) {
-		t.Fatalf("Expiry = %s, want about 60 seconds after %s", tokens.Expiry, before)
+	want := before.Add(60 * time.Second)
+	if !tokens.Expiry.Equal(want) {
+		t.Fatalf("Expiry = %s, want %s", tokens.Expiry, want)
 	}
 }

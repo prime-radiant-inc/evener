@@ -10,7 +10,7 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
 // ── appwire mapping: item/agentMessage/reset → ASSISTANT_TEXT_RESET ──────────
 {
-  const appwireSrc = fs.readFileSync("../assets/appwire.js", "utf8");
+  const appwireSrc = fs.readFileSync(require('path').resolve(__dirname, '../assets/appwire.js'), 'utf8');
   const dom = new JSDOM(`<!DOCTYPE html><html><body></body></html>`, { runScripts: "outside-only" });
   dom.window.eval(appwireSrc);
   const out = dom.window.SerfAppwire.eventsFromNotification("item/agentMessage/reset", { itemId: "assistant_1" });

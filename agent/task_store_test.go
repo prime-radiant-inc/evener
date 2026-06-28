@@ -1792,22 +1792,27 @@ func TestSharedTaskStore_ShareTasksWithChildrenConfig(t *testing.T) {
 		{Type: taskpkg.TaskTypeResearch, Description: "Shared via config", Prompt: "Work"},
 	})
 
-	// Verify config propagation: subCfg should have a shared task store set.
-	// We can't easily call spawnAgent in a unit test, so verify the config
-	// field is correctly set and the child would pick it up.
-	subCfg := parentSess.cfg
-	subCfg.spawn.sharedTaskStore = nil // Reset to simulate fresh subCfg copy
-	if parentSess.cfg.ShareTasksWithChildren {
-		subCfg.spawn.sharedTaskStore = parentSess.getOrCreateTaskStore()
-	}
-
-	childSess, err := NewSession(c, NewOpenAIProfile("test"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
+	// Exercise the actual propagation path inside prepareSubagentRun (subagents.go
+	// lines 385-388). A re-implementation of the if-statement here would not catch
+	// a condition inversion in the SUT.
+	ctx := context.Background()
+	prepared, err := parentSess.prepareSubagentRun(ctx, "child task", "", "", 0, "", "", nil, nil)
 	if err != nil {
-		t.Fatalf("NewSession (child): %v", err)
+		t.Fatalf("prepareSubagentRun: %v", err)
 	}
-	defer childSess.Close()
+	// We are not launching the child; release the tree-counter slot that
+	// prepareSubagentRun reserved (mirrors the spawnAgent in-process path).
+	releasePreparedTreeSlot(prepared)
+	defer prepared.sub.sess.Close()
 
-	childTasks := childSess.getOrCreateTaskStore().View()
+	// The child's spawn config must carry the parent's store — not a copy, not nil.
+	// This assertion fails if the condition in prepareSubagentRun is ever inverted.
+	if got := prepared.sub.sess.cfg.spawn.sharedTaskStore; got != parentStore {
+		t.Fatalf("child cfg.spawn.sharedTaskStore = %v, want parent's store (%v)", got, parentStore)
+	}
+
+	// Cross-check via behaviour: the child's task-store view must contain the shared task.
+	childTasks := prepared.sub.sess.getOrCreateTaskStore().View()
 	if len(childTasks) != 1 || childTasks[0].Description != "Shared via config" {
 		t.Fatalf("child should see parent task via ShareTasksWithChildren, got: %v", childTasks)
 	}
@@ -1935,6 +1940,18 @@ func TestTask_Insert_RoundTrips(t *testing.T) {
 	}
 	if added[0].Insert != "parent_tasks" {
 		t.Errorf("got %q, want parent_tasks", added[0].Insert)
+	}
+
+	// Reload from disk and verify that Insert survives serialization.
+	// A json:"-" tag (or missing field) would drop the value silently.
+	store2 := taskpkg.NewTaskStore(dir, "test-insert")
+	store2.Load()
+	tasks := store2.View()
+	if len(tasks) == 0 {
+		t.Fatal("after reload: no tasks found")
+	}
+	if tasks[0].Insert != "parent_tasks" {
+		t.Errorf("after reload: got %q, want parent_tasks", tasks[0].Insert)
 	}
 }
 

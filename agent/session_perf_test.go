@@ -21,8 +21,10 @@ import (
 
 func TestCachedToolDefs_MatchUncached(t *testing.T) {
 	t.Parallel()
-	// Verify that cached tool definitions produce the same result as
-	// building them from scratch each round.
+	// Verify that cached tool definitions contain all registered profile tools.
+	// Expected names are derived directly from profile.ToolDefinitions() filtered
+	// by reg.RegisteredNames() — the "uncached" path — so a silent drop in
+	// rebuildToolDefsCache would cause names to go missing here.
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{
@@ -41,20 +43,38 @@ func TestCachedToolDefs_MatchUncached(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// Get cached defs (no MinResultRound gate).
 	defs := sess.allToolDefinitions(0)
 	if len(defs) == 0 {
 		t.Fatal("allToolDefinitions returned empty list")
 	}
 
-	// Call again — should return identical results.
-	defs2 := sess.allToolDefinitions(0)
-	if len(defs) != len(defs2) {
-		t.Fatalf("tool def count mismatch: %d vs %d", len(defs), len(defs2))
+	// Build the expected wire names independently from the cache:
+	// each profile tool that is registered in the registry should appear
+	// in allToolDefinitions under its provider-mapped (wire) name.
+	registered := sess.reg.RegisteredNames()
+	nameMap := sess.profile.ToolNameMap() // canonical → wire; nil means identity
+	wantNames := make(map[string]bool)
+	for _, td := range sess.profile.ToolDefinitions() {
+		if !registered[td.Name] {
+			continue
+		}
+		wireName := td.Name
+		if n, ok := nameMap[td.Name]; ok {
+			wireName = n
+		}
+		wantNames[wireName] = true
 	}
-	for i := range defs {
-		if defs[i].Name != defs2[i].Name {
-			t.Errorf("tool %d name mismatch: %q vs %q", i, defs[i].Name, defs2[i].Name)
+	if len(wantNames) == 0 {
+		t.Fatal("no registered profile tools found — test precondition violated")
+	}
+
+	gotNames := make(map[string]bool, len(defs))
+	for _, td := range defs {
+		gotNames[td.Name] = true
+	}
+	for name := range wantNames {
+		if !gotNames[name] {
+			t.Errorf("tool %q (from profile+registry) missing in allToolDefinitions", name)
 		}
 	}
 }
@@ -841,6 +861,21 @@ func TestLoadSessionMeta(t *testing.T) {
 	}
 	if got.Model != meta.Model {
 		t.Fatalf("model: got %q want %q", got.Model, meta.Model)
+	}
+	if got.ProfileID != meta.ProfileID {
+		t.Fatalf("profile_id: got %q want %q", got.ProfileID, meta.ProfileID)
+	}
+	if got.TurnCount != meta.TurnCount {
+		t.Fatalf("turn_count: got %d want %d", got.TurnCount, meta.TurnCount)
+	}
+	if got.Config.MaxToolRoundsPerInput != meta.Config.MaxToolRoundsPerInput {
+		t.Fatalf("config.max_tool_rounds_per_input: got %d want %d", got.Config.MaxToolRoundsPerInput, meta.Config.MaxToolRoundsPerInput)
+	}
+	if got.Config.ReasoningEffort != meta.Config.ReasoningEffort {
+		t.Fatalf("config.reasoning_effort: got %q want %q", got.Config.ReasoningEffort, meta.Config.ReasoningEffort)
+	}
+	if got.EnvInfo.WorkingDir != meta.EnvInfo.WorkingDir {
+		t.Fatalf("env_info.working_dir: got %q want %q", got.EnvInfo.WorkingDir, meta.EnvInfo.WorkingDir)
 	}
 }
 

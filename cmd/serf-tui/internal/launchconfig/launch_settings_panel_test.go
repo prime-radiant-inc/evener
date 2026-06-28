@@ -31,8 +31,8 @@ func TestLaunchSettingsPanel_TabSwitch(t *testing.T) {
 	p = updated.(LaunchSettingsPanel)
 	updated, _ = p.Update(tea.KeyMsg{Type: tea.KeyRight})
 	v := updated.(LaunchSettingsPanel).View()
-	if !strings.Contains(v, "Project") {
-		t.Errorf("view should show Project tab after Right:\n%s", v)
+	if !strings.Contains(v, "[Project]") {
+		t.Errorf("view should show Project tab active after Right:\n%s", v)
 	}
 }
 
@@ -44,6 +44,25 @@ func TestLaunchSettingsPanel_LoadsGlobalFirst(t *testing.T) {
 	}
 	if !p.loadingGlobal {
 		t.Errorf("expected loadingGlobal")
+	}
+	// Verify InitialCmd actually dispatches a global-layer fetch, not just any command.
+	var found bool
+	switch m := cmd().(type) {
+	case LaunchLayerResultMsg:
+		found = m.Layer == "global"
+	case tea.BatchMsg:
+		for _, sub := range m {
+			if sub == nil {
+				continue
+			}
+			if r, ok := sub().(LaunchLayerResultMsg); ok && r.Layer == "global" {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Error("InitialCmd does not trigger a global-layer fetch")
 	}
 }
 
@@ -202,7 +221,7 @@ func TestApplyEdit_NewSchemaFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export_atif_provider_handles: %v", err)
 	}
-	if got.SystemPromptFile != prompt || got.SystemPromptText != "inline prompt" || len(got.ModelFallbacks) != 2 || got.Verbose == nil || !*got.Verbose || got.RawHTTPLogging == nil || !*got.RawHTTPLogging || got.OpenAIResponsesContinuation != "auto" || got.TraceFile != trace || got.CPUProfile == "" || got.ExportATIFPath == "" || got.ExportATIFProviderHandles != "raw-local" {
+	if got.SystemPromptFile != prompt || got.SystemPromptText != "inline prompt" || len(got.ModelFallbacks) != 2 || got.Verbose == nil || !*got.Verbose || got.RawHTTPLogging == nil || !*got.RawHTTPLogging || got.OpenAIResponsesContinuation != "auto" || got.TraceFile != trace || got.CPUProfile != filepath.Join(dir, "cpu.pprof") || got.ExportATIFPath != filepath.Join(dir, "out.atif.json") || got.ExportATIFProviderHandles != "raw-local" {
 		t.Fatalf("updated layer=%+v", got)
 	}
 }
@@ -253,6 +272,9 @@ func TestValidateLocalLaunchPath_OutputFileRejectsExistingDirectory(t *testing.T
 }
 
 func TestValidateLocalLaunchPath_OutputFileRejectsNonWritableParent(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("chmod-based permission tests are unreliable as root")
+	}
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o555); err != nil {
 		t.Fatal(err)
@@ -264,30 +286,44 @@ func TestValidateLocalLaunchPath_OutputFileRejectsNonWritableParent(t *testing.T
 	}
 }
 
+// requireBinSh returns /bin/sh, skipping the test if it is absent.
+// Using an absolute path bypasses exec.LookPath so tests are not sensitive
+// to PATH layout in the test environment.
+func requireBinSh(t *testing.T) string {
+	t.Helper()
+	const sh = "/bin/sh"
+	if _, err := os.Stat(sh); err != nil {
+		t.Skipf("no /bin/sh: %v", err)
+	}
+	return sh
+}
+
 func TestApplyEdit_MCPsParsesRowsAndPreservesArgs(t *testing.T) {
-	got, err := applyEdit(appwire.LaunchConfigLayer{}, "mcps", "docs:sh -c docs; files:sh")
+	sh := requireBinSh(t)
+	got, err := applyEdit(appwire.LaunchConfigLayer{}, "mcps", "docs:"+sh+" -c docs; files:"+sh)
 	if err != nil {
 		t.Fatalf("applyEdit: %v", err)
 	}
 	if len(got.MCPs) != 2 {
 		t.Fatalf("MCPs=%+v, want 2 entries", got.MCPs)
 	}
-	if got.MCPs[0].Name != "docs" || got.MCPs[0].Command != "sh" || strings.Join(got.MCPs[0].Args, " ") != "-c docs" {
+	if got.MCPs[0].Name != "docs" || got.MCPs[0].Command != sh || strings.Join(got.MCPs[0].Args, " ") != "-c docs" {
 		t.Fatalf("first MCP=%+v", got.MCPs[0])
 	}
-	if got.MCPs[1].Name != "files" || got.MCPs[1].Command != "sh" || len(got.MCPs[1].Args) != 0 {
+	if got.MCPs[1].Name != "files" || got.MCPs[1].Command != sh || len(got.MCPs[1].Args) != 0 {
 		t.Fatalf("second MCP=%+v", got.MCPs[1])
 	}
 }
 
 func TestLaunchSettingsPanel_ApplyEditMCPs(t *testing.T) {
+	sh := requireBinSh(t)
 	p := NewLaunchSettingsPanel(nil, "/cwd")
-	p.global = appwire.LaunchConfigLayer{MCPs: []appwire.MCPServerSpec{{Name: "old", Command: "sh"}}}
+	p.global = appwire.LaunchConfigLayer{MCPs: []appwire.MCPServerSpec{{Name: "old", Command: sh}}}
 	gotPanel, updated, err := p.ApplyEdit("mcps", mcpEditValue(p.global.MCPs))
 	if err != nil {
 		t.Fatalf("ApplyEdit: %v", err)
 	}
-	if len(updated.MCPs) != 1 || updated.MCPs[0].Name != "old" || updated.MCPs[0].Command != "sh" {
+	if len(updated.MCPs) != 1 || updated.MCPs[0].Name != "old" || updated.MCPs[0].Command != sh {
 		t.Fatalf("updated MCPs=%+v", updated.MCPs)
 	}
 	if len(gotPanel.global.MCPs) != 1 || gotPanel.global.MCPs[0].Name != "old" {
@@ -296,22 +332,24 @@ func TestLaunchSettingsPanel_ApplyEditMCPs(t *testing.T) {
 }
 
 func TestApplyEdit_MCPsPreservesSerializedRows(t *testing.T) {
+	sh := requireBinSh(t)
 	layer := appwire.LaunchConfigLayer{MCPs: []appwire.MCPServerSpec{{Name: "docs", Command: "docs-mcp"}}}
-	value := mcpEditValue([]appwire.MCPServerSpec{{Name: "docs", Command: "sh", Args: []string{"-c", "docs"}}})
+	value := mcpEditValue([]appwire.MCPServerSpec{{Name: "docs", Command: sh, Args: []string{"-c", "docs"}}})
 	got, err := applyEdit(layer, "mcps", value)
 	if err != nil {
 		t.Fatalf("applyEdit: %v", err)
 	}
-	if len(got.MCPs) != 1 || got.MCPs[0].Name != "docs" || got.MCPs[0].Command != "sh" || strings.Join(got.MCPs[0].Args, " ") != "-c docs" {
+	if len(got.MCPs) != 1 || got.MCPs[0].Name != "docs" || got.MCPs[0].Command != sh || strings.Join(got.MCPs[0].Args, " ") != "-c docs" {
 		t.Fatalf("MCPs=%+v, want serialized row preserved", got.MCPs)
 	}
 }
 
 func TestMCPsEditValueRoundTripsArgsWithSpaces(t *testing.T) {
+	sh := requireBinSh(t)
 	want := []appwire.MCPServerSpec{
-		{Name: "docs", Command: "sh", Args: []string{"-c", "echo hi"}},
-		{Name: "empty", Command: "sh", Args: []string{}},
-		{Name: "nil", Command: "sh"},
+		{Name: "docs", Command: sh, Args: []string{"-c", "echo hi"}},
+		{Name: "empty", Command: sh, Args: []string{}},
+		{Name: "nil", Command: sh},
 	}
 	got, err := parseMCPs(mcpEditValue(want))
 	if err != nil {

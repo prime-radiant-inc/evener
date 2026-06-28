@@ -119,7 +119,8 @@ func TestTurnSteer_RegistersPending_NoFailOnRPCSuccess(t *testing.T) {
 	}
 }
 
-// With no coordinator set, TurnSteer behaves exactly as before.
+// With no coordinator set, TurnSteer behaves exactly as before: it still sends
+// the RPC and returns nil on success.
 func TestTurnSteer_NoCoordinator_PassThrough(t *testing.T) {
 	t.Parallel()
 	transport := appwiretest.NewScriptedTransport()
@@ -127,12 +128,18 @@ func TestTurnSteer_NoCoordinator_PassThrough(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	client.Start(ctx)
+	captureCh := make(chan appwire.Message, 1)
 	go func() {
 		req := <-transport.Sent()
+		captureCh <- req // capture before delivering so it's readable after TurnSteer returns
 		transport.DeliverResponse(req.Request.ID, struct{}{})
 	}()
 	if err := client.TurnSteer(ctx, appwire.TurnSteerParams{Ref: "local:t1", ExpectedTurnID: "turn_1", Input: []appwire.InputItem{{Type: "text", Text: "x"}}}); err != nil {
 		t.Fatalf("TurnSteer: %v", err)
+	}
+	sent := <-captureCh
+	if sent.Request.Method != appwire.MethodTurnSteer {
+		t.Fatalf("method = %q, want %q", sent.Request.Method, appwire.MethodTurnSteer)
 	}
 }
 

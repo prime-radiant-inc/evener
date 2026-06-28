@@ -215,9 +215,12 @@ func TestMerge_EmptyModelFallbacksClearsInherited(t *testing.T) {
 
 func TestMerge_BlockedCredentialEnvKeys(t *testing.T) {
 	g := Layer{Env: map[string]string{"OPENAI_API_KEY": "leak"}}
-	_, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: g})
+	got, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: g})
 	if len(diags) == 0 || diags[0].Field != "env.OPENAI_API_KEY" {
 		t.Errorf("expected blocklist diagnostic, got %v", diags)
+	}
+	if v, present := got.Effective.Env["OPENAI_API_KEY"]; present {
+		t.Errorf("credential key must be absent from Effective.Env, got %q", v)
 	}
 }
 

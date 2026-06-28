@@ -10,10 +10,8 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func TestContextStrategyInterface(t *testing.T) {
-	// Verify that CompactStrategy satisfies the Strategy interface.
-	var _ Strategy = (*CompactStrategy)(nil)
-}
+// Compile-time assertion: CompactStrategy must satisfy Strategy.
+var _ Strategy = (*CompactStrategy)(nil)
 
 func TestCompactStrategyName(t *testing.T) {
 	cs := &CompactStrategy{}

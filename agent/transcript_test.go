@@ -358,10 +358,12 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 	defer w.Close()
 
 	// Text content
-	w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("Hello world")))
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("Hello world"))); err != nil {
+		t.Fatalf("Append text: %v", err)
+	}
 
 	// Tool call content
-	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentPart{
 			{Kind: llm.ContentText, Text: "Let me check that."},
@@ -371,10 +373,12 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 				Arguments: json.RawMessage(`{"path":"/tmp/foo"}`),
 			}},
 		},
-	}))
+	})); err != nil {
+		t.Fatalf("Append tool call: %v", err)
+	}
 
 	// Tool result content
-	w.Append(schema.NewTurn(schema.TurnToolResults, llm.Message{
+	if err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.Message{
 		Role: llm.RoleUser,
 		Content: []llm.ContentPart{
 			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
@@ -383,10 +387,12 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 				Content:    "file contents here",
 			}},
 		},
-	}))
+	})); err != nil {
+		t.Fatalf("Append tool result: %v", err)
+	}
 
 	// Thinking content
-	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentPart{
 			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
@@ -394,7 +400,9 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 			}},
 			{Kind: llm.ContentText, Text: "Here's what I found."},
 		},
-	}))
+	})); err != nil {
+		t.Fatalf("Append thinking: %v", err)
+	}
 
 	lines := readTranscriptLines(t, path)
 	if len(lines) != 5 { // header + 4 entries
@@ -1779,16 +1787,52 @@ func TestTranscriptWriter_PeriodicSync_ConcurrentAppendWithInterval(t *testing.T
 	}
 
 	wg.Wait()
-	w.Close()
+
+	// Sleep well past SyncInterval so the next Append fires the timed-sync branch.
+	time.Sleep(150 * time.Millisecond)
+
+	// This Append must trigger a periodic sync (time.Since(lastSync) > 50ms).
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("trigger-sync"))); err != nil {
+		t.Fatalf("trigger-sync append: %v", err)
+	}
+
+	// Read the file WITHOUT calling Close — all entries must already be on disk
+	// via the periodic-sync path, not via Close's final flush.
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open transcript before Close: %v", err)
+	}
+	var onDiskLines int
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		if scanner.Text() != "" {
+			onDiskLines++
+		}
+	}
+	_ = f.Close()
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan transcript before Close: %v", err)
+	}
+	// header + numGoroutines*turnsPerGoroutine entries + 1 trigger entry
+	wantLines := 1 + numGoroutines*turnsPerGoroutine + 1
+	if onDiskLines != wantLines {
+		t.Errorf("before Close: expected %d lines on disk (periodic sync must have run), got %d", wantLines, onDiskLines)
+	}
+
+	// Verify full correctness after Close.
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	_, entries, _, err := readTranscript(path)
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
 
-	expectedTotal := numGoroutines * turnsPerGoroutine
+	expectedTotal := numGoroutines*turnsPerGoroutine + 1 // +1 for the trigger entry
 	if len(entries) != expectedTotal {
-		t.Fatalf("expected %d entries, got %d", expectedTotal, len(entries))
+		t.Fatalf("expected %d entries after Close, got %d", expectedTotal, len(entries))
 	}
 
 	// Verify seq uniqueness.

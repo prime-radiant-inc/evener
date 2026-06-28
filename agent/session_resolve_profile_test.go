@@ -207,23 +207,25 @@ func TestRestoreSessionFromMetaWithConfig_LayersModelFallbacks(t *testing.T) {
 }
 
 func TestRestoreSessionFromMetaWithConfig_LayersOpenAIResponsesContinuation(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-
+	t.Parallel()
 	tests := []struct {
 		name      string
+		id        string
 		persisted string
 		override  string
 		want      string
 	}{
-		{name: "global auto overrides persisted off", persisted: "off", override: "auto", want: "auto"},
-		{name: "global off overrides persisted auto", persisted: "auto", override: "off", want: "off"},
+		{name: "global auto overrides persisted off", id: "01JRESTORECONTINUATION000000001", persisted: "off", override: "auto", want: "auto"},
+		{name: "global off overrides persisted auto", id: "01JRESTORECONTINUATION000000002", persisted: "auto", override: "off", want: "off"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			c := llm.NewClient()
+			c.Register(&fakeAdapter{name: "openai"})
 			meta := schema.SessionMeta{
-				ID:        "01JRESTORECONTINUATION000000001",
+				ID:        tc.id,
 				ProfileID: "openai",
 				Model:     "gpt-5.4",
 				Config: (SessionConfig{

@@ -1088,14 +1088,16 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	// Track execution order: each tool call records its start and end.
-	type callTiming struct {
-		name  string
-		start time.Time
-		end   time.Time
-	}
-	var mu sync.Mutex
-	var timings []callTiming
+	// Track completion order via a sequence counter. The ordered-group algorithm
+	// processes [reader, writer, reader] as: flush-reader → writer → flush-reader,
+	// so the completion sequence must be reader < writer < reader (strictly between).
+	// This is deterministic and removes all wall-clock timing dependency.
+	var (
+		mu         sync.Mutex
+		seq        int
+		writerSeq  int
+		readerSeqs []int
+	)
 
 	f := &fakeAdapter{
 		name: "anthropic",
@@ -1134,11 +1136,14 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 				ReadOnly: readOnly,
 			},
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-				start := time.Now()
-				time.Sleep(50 * time.Millisecond)
-				end := time.Now()
 				mu.Lock()
-				timings = append(timings, callTiming{name: name, start: start, end: end})
+				seq++
+				mySeq := seq
+				if name == "writer" {
+					writerSeq = mySeq
+				} else {
+					readerSeqs = append(readerSeqs, mySeq)
+				}
 				mu.Unlock()
 				return "ok", nil
 			},
@@ -1157,26 +1162,18 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(timings) != 3 {
-		t.Fatalf("expected 3 tool calls, got %d", len(timings))
+	if len(readerSeqs) != 2 {
+		t.Fatalf("expected 2 reader calls, got %d", len(readerSeqs))
 	}
-
-	// Find the writer timing.
-	var writerTiming callTiming
-	for _, ct := range timings {
-		if ct.name == "writer" {
-			writerTiming = ct
-			break
-		}
+	if writerSeq == 0 {
+		t.Fatal("writer was never called")
 	}
-	// Every reader must not overlap with the writer.
-	for _, ct := range timings {
-		if ct.name == "reader" {
-			if ct.start.Before(writerTiming.end) && writerTiming.start.Before(ct.end) {
-				t.Errorf("reader overlapped with writer: reader=%v-%v writer=%v-%v",
-					ct.start, ct.end, writerTiming.start, writerTiming.end)
-			}
-		}
+	// The ordered-group algorithm flushes accumulated read-only calls before any
+	// non-read-only call, so the batch [reader, writer, reader] always completes in
+	// the order reader(readerSeqs[0]) → writer(writerSeq) → reader(readerSeqs[1]).
+	if readerSeqs[0] >= writerSeq || writerSeq >= readerSeqs[1] {
+		t.Errorf("expected completion order reader(%d) < writer(%d) < reader(%d); serialization violated",
+			readerSeqs[0], writerSeq, readerSeqs[1])
 	}
 }
 
@@ -1536,19 +1533,46 @@ func TestSession_SetModel_TakesEffectOnNextCall(t *testing.T) {
 
 func TestSession_SetTimeout(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi"}`)}},
+						},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response { return finalResponse("ok") },
+		},
+	}
+	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	env := &captureEnv{wd: "/tmp"}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
 
 	sess.SetTimeout(30000)
-	if sess.cfg.DefaultCommandTimeoutMS != 30000 {
-		t.Errorf("expected 30000, got %d", sess.cfg.DefaultCommandTimeoutMS)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "run", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	got, ok := env.TimeoutForCommand("echo hi")
+	if !ok {
+		t.Fatal("expected ExecCommand call with 'echo hi'")
+	}
+	if got != 30000 {
+		t.Fatalf("shell timeout after SetTimeout: got %d want %d", got, 30000)
 	}
 }
 

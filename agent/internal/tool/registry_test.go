@@ -243,8 +243,10 @@ func TestToolRegistry_ExecError_IsReturnedToModel(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("expected error")
 	}
-	if strings.TrimSpace(res.Output) == "" {
-		t.Fatalf("expected non-empty error output")
+	// The executor returned context.DeadlineExceeded; its error text must flow
+	// through to the model so the model knows what went wrong.
+	if !strings.Contains(res.Output, "deadline") {
+		t.Fatalf("expected error output to contain %q (from context.DeadlineExceeded), got: %q", "deadline", res.Output)
 	}
 }
 
@@ -673,18 +675,34 @@ func TestToolRegistry_Register_RecoversPanicInSchemaCompilation(t *testing.T) {
 	// sites. A recover() in compileSchema must convert panics to errors so
 	// that a malformed MCP or plugin tool schema doesn't crash the process.
 
-	// We can't easily trigger the exact library panic in a unit test, so
-	// we verify the contract: Register never panics, even with pathological
-	// schema inputs that push the library to its limits.
 	reg := NewRegistry()
-	pathological := []struct {
+
+	// nil-property-value: the jsonschema library rejects a null property schema
+	// during meta-schema validation. Register must propagate the compilation
+	// error to the caller — registering a tool with a broken schema silently
+	// would let the process serve un-validatable tool calls.
+	err := reg.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Name: "test_nil_property",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"x": nil},
+			},
+		}},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			return nil, nil
+		},
+	})
+	if err == nil {
+		t.Error("Register must return a non-nil error for a nil property schema")
+	}
+
+	// The remaining inputs must not panic — error returns are acceptable,
+	// but a process crash is not.
+	nocrash := []struct {
 		name   string
 		params map[string]any
 	}{
-		{"nil-property-value", map[string]any{
-			"type":       "object",
-			"properties": map[string]any{"x": nil},
-		}},
 		{"empty-map", map[string]any{}},
 		{"nested-self-ref", map[string]any{
 			"type":       "object",
@@ -701,8 +719,7 @@ func TestToolRegistry_Register_RecoversPanicInSchemaCompilation(t *testing.T) {
 			return inner
 		}()},
 	}
-
-	for _, tc := range pathological {
+	for _, tc := range nocrash {
 		t.Run(tc.name, func(t *testing.T) {
 			// This must not panic — error return is acceptable.
 			_ = reg.Register(RegisteredTool{

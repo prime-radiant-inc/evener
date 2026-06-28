@@ -42,9 +42,11 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
   // A provider turn failure, as forwarded by appwire's errorPayload:
   // { error (raw), source, title, hint, cause }.
+  // source is deliberately 'serf' so the test exercises the typed cause.kind
+  // override path rather than the stored source field.
   R.handleData("ERROR", {
     error: "[error] openai: 500 internal_server_error\nrequest-id: req_8fa1c…  ·  model gpt-5.5",
-    source: "provider",
+    source: "serf",
     title: "Provider error",
     cause: { kind: "provider", provider: "openai", model: "gpt-5.5", status: 500 },
   });
@@ -60,23 +62,24 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   pass(!!msg && !/^\[error\]/i.test(msg.textContent.trim()), "the summary is human-readable (no leading [error] prefix)");
 
   // ── Raw [error] text is available in MONO on expand ───────────────────────
-  const detail = card && card.querySelector("details.diagnostic-detail, .diagnostic-detail details, [data-diagnostic-raw]");
-  pass(!!detail, "the raw error is foldable into an expandable detail");
-  const det = card && card.querySelector("details");
+  const det = card && card.querySelector("details.diagnostic-detail");
+  pass(!!det, "the raw error is foldable into an expandable detail");
+  pass(!det || !det.open, "raw detail must start collapsed");
   if (det) det.open = true;
-  const rawText = card && card.textContent;
-  pass(!!rawText && /openai: 500 internal_server_error/.test(rawText), "the expanded raw error shows the original provider error text");
-  pass(!!rawText && /req_8fa1c/.test(rawText), "the expanded raw error preserves the request-id");
+  const pre = det && det.querySelector(".diagnostic-detail-pre");
+  pass(!!pre && /openai: 500/.test(pre.textContent), "the expanded raw error shows the original provider error text");
+  pass(!!pre && /req_8fa1c/.test(pre.textContent), "the expanded raw error preserves the request-id");
   // The raw block is mono.
-  const rawPre = card && (card.querySelector(".diagnostic-detail-pre") || card.querySelector("pre"));
-  pass(!!rawPre, "the raw error renders in a mono <pre>/code block");
+  pass(!!pre, "the raw error renders in a mono <pre>/code block");
 
   // ── A blue Retry action ────────────────────────────────────────────────────
   const retry = card && Array.from(card.querySelectorAll("button")).find((b) => /retry/i.test(b.textContent));
   pass(!!retry, "the end-cap offers a Retry action");
 
   // ── A short taxonomy label from Cause.Kind ────────────────────────────────
-  pass(!!card && /provider/i.test(card.textContent), "the end-cap carries a 'provider' taxonomy label from Cause.Kind");
+  // The badge must read 'Provider …' even though the stored source was 'serf'.
+  const badge = card && card.querySelector(".diagnostic-badge");
+  pass(!!badge && /provider/i.test(badge.textContent), "the end-cap badge re-classifies source='serf' to 'provider' via cause.kind override");
 
   if (failures.length > 0) {
     for (const f of failures) console.log(f);

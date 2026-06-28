@@ -50,9 +50,10 @@ func TestMaterializeProvidersConfig(t *testing.T) {
 	if !names["openai"] || !names["anthropic"] {
 		t.Errorf("missing instances: %+v", got.Instances)
 	}
-	// default is consistent with what the env client picked
-	if cfg.Default == "" {
-		t.Error("empty default")
+	// default is determined by registration order: anthropic registers before openai
+	// (blank import order in load_client_test.go), so anthropic wins when both keys are set.
+	if cfg.Default != "anthropic" {
+		t.Errorf("cfg.Default = %q, want \"anthropic\"", cfg.Default)
 	}
 }
 

@@ -286,24 +286,68 @@ func TestEventPluginLoaded_Exists(t *testing.T) {
 	}
 }
 
-func TestPluginLoadedData_Fields(t *testing.T) {
+// TestPluginLoadedData_PopulatedByInitPlugins verifies that the PLUGIN_LOADED
+// event emitted by initPlugins correctly reflects the actual plugin content —
+// name, dir, skill count, agent count, and manifest flavor. This exercises the
+// production mapping in session_init.go, not just struct field reads.
+func TestPluginLoadedData_PopulatedByInitPlugins(t *testing.T) {
 	t.Parallel()
-	data := events.PluginLoadedData{
-		Name:       "test-plugin",
-		Dir:        "/some/path",
-		SkillCount: 3,
-		AgentCount: 1,
+	dir := makePluginDir(t, "count-plugin")
+
+	// Add 2 skills.
+	for _, name := range []string{"alpha", "beta"} {
+		sd := filepath.Join(dir, "skills", name)
+		if err := os.MkdirAll(sd, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sd, "SKILL.md"),
+			[]byte("---\nname: "+name+"\ndescription: test\n---\nbody"), 0644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if data.Name != "test-plugin" {
-		t.Errorf("Name = %q", data.Name)
+
+	// Add 1 agent.
+	agentsDir := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		t.Fatal(err)
 	}
-	if data.Dir != "/some/path" {
-		t.Errorf("Dir = %q", data.Dir)
+	if err := os.WriteFile(filepath.Join(agentsDir, "helper.md"),
+		[]byte("---\nname: helper\ndescription: A helper agent\nmodel: gpt-4\ncolor: blue\n---\nYou are a helper."), 0644); err != nil {
+		t.Fatal(err)
 	}
-	if data.SkillCount != 3 {
-		t.Errorf("SkillCount = %d", data.SkillCount)
+
+	client := llm.NewClient()
+	workDir := t.TempDir()
+	cfg := SessionConfig{PluginDirs: []string{dir}}
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
 	}
-	if data.AgentCount != 1 {
-		t.Errorf("AgentCount = %d", data.AgentCount)
+	sess.Close()
+
+	var got *events.PluginLoadedData
+	for ev := range sess.Events() {
+		if d, ok := ev.Data.(events.PluginLoadedData); ok && d.Name == "count-plugin" {
+			d := d
+			got = &d
+		}
+	}
+	if got == nil {
+		t.Fatal("no PLUGIN_LOADED event emitted for count-plugin")
+	}
+	if got.Name != "count-plugin" {
+		t.Errorf("Name = %q, want %q", got.Name, "count-plugin")
+	}
+	if got.Dir != dir {
+		t.Errorf("Dir = %q, want %q", got.Dir, dir)
+	}
+	if got.SkillCount != 2 {
+		t.Errorf("SkillCount = %d, want 2", got.SkillCount)
+	}
+	if got.AgentCount != 1 {
+		t.Errorf("AgentCount = %d, want 1", got.AgentCount)
+	}
+	if got.ManifestFlavor != "claude" {
+		t.Errorf("ManifestFlavor = %q, want %q", got.ManifestFlavor, "claude")
 	}
 }

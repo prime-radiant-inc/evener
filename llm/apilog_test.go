@@ -584,22 +584,53 @@ func TestAPILoggerWrapStreamCallsNext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
 	}
-	defer logger.Close()
 
 	called := false
 	fakeStream := func(ctx context.Context, req Request) (Stream, error) {
 		called = true
-		return nil, nil
+		st := NewChanStream(nil)
+		go func() {
+			defer st.CloseSend()
+			resp := Response{
+				Model:    req.Model,
+				Provider: req.Provider,
+				Finish:   FinishReason{Reason: FinishReasonStop},
+			}
+			st.Send(StreamEvent{Type: StreamEventFinish, FinishReason: &resp.Finish, Response: &resp})
+		}()
+		return st, nil
 	}
 
 	wrapped := logger.WrapStream(fakeStream)
-	_, _ = wrapped(context.Background(), Request{
+	st, err := wrapped(context.Background(), Request{
 		Model:    "test-model",
 		Provider: "test",
 		Messages: []Message{User("hi")},
 	})
+	if err != nil {
+		t.Fatalf("WrapStream: %v", err)
+	}
 	if !called {
 		t.Error("stream func was not called (passthrough failed)")
+	}
+	for range st.Events() {
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("stream Close: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("logger Close: %v", err)
+	}
+
+	entries := readAPILogEntries(t, path)
+	if len(entries) == 0 {
+		t.Fatal("expected at least one log entry written by the logging path")
+	}
+	if entries[0].Request.Model != "test-model" {
+		t.Errorf("log entry model = %q, want test-model", entries[0].Request.Model)
+	}
+	if entries[0].Response == nil {
+		t.Error("log entry has no response field; logFinish path was not reached")
 	}
 }
 
@@ -1097,8 +1128,11 @@ func TestAPILogger_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
 		Messages: []Message{User("hi")},
 	})
 
-	// Wait for interval to expire.
-	time.Sleep(5 * time.Millisecond)
+	// Advance lastSync far enough into the past so the next write deterministically
+	// triggers a sync without relying on wall-clock scheduling.
+	logger.mu.Lock()
+	logger.lastSync = time.Now().Add(-2 * time.Millisecond)
+	logger.mu.Unlock()
 
 	// Second call should trigger sync.
 	_, _ = wrapped(context.Background(), Request{
