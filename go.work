@@ -5,6 +5,7 @@ use (
 	./agent
 	./auth
 	./envvars
+	./fuzz
 	./llm
 )
 
