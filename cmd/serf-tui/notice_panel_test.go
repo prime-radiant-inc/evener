@@ -22,4 +22,10 @@ func TestNoticePanelHasStateBar(t *testing.T) {
 	if !strings.Contains(plain, "source") || !strings.Contains(plain, "next") {
 		t.Errorf("notice should include source + next labels: %q", plain)
 	}
+	if !strings.Contains(plain, "serf") {
+		t.Errorf("notice should render Source field value %q: %q", "serf", plain)
+	}
+	if !strings.Contains(plain, "not in discovery") {
+		t.Errorf("notice should render Reason field value substring %q: %q", "not in discovery", plain)
+	}
 }

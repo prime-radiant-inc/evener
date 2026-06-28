@@ -136,8 +136,13 @@ func TestResolveInRoot_AllowsNestedFile(t *testing.T) {
 	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ResolveInRoot(root, "a/b/deep.txt"); err != nil {
+	got, err := ResolveInRoot(root, "a/b/deep.txt")
+	if err != nil {
 		t.Fatalf("nested file should resolve: %v", err)
+	}
+	want, _ := filepath.EvalSymlinks(f)
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 

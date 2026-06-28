@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -16,7 +17,8 @@ func TestHubModelAgentsPickerReadsSelectedTranscriptThroughAppWire(t *testing.T)
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodSerfThreadTranscriptsList, func(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
 			if params.Ref != "local:01SEND" {
-				t.Fatalf("transcript list ref=%q, want local:01SEND", params.Ref)
+				t.Errorf("transcript list ref=%q, want local:01SEND", params.Ref)
+				return appwire.ThreadTranscriptListResponse{}, fmt.Errorf("unexpected ref: %q", params.Ref)
 			}
 			return appwire.ThreadTranscriptListResponse{Data: []appwire.ThreadTranscriptTarget{
 				{Ref: "local:01SEND", Title: "main session (live)", Kind: "main", Status: appwire.ThreadStatusIdle},
@@ -26,7 +28,8 @@ func TestHubModelAgentsPickerReadsSelectedTranscriptThroughAppWire(t *testing.T)
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 			readRefs = append(readRefs, params.Ref)
 			if params.Ref != "local:01SUB" || !params.IncludeTurns {
-				t.Fatalf("thread/read params=%+v, want subagent full transcript", params)
+				t.Errorf("thread/read params=%+v, want subagent full transcript", params)
+				return appwire.ThreadReadResponse{}, fmt.Errorf("unexpected params: %+v", params)
 			}
 			return appwire.ThreadReadResponse{Thread: appwire.Thread{
 				ID:            "01SUB",
@@ -91,7 +94,8 @@ func TestHubModelUnavailableAgentTranscriptKeepsParentSession(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodSerfThreadTranscriptsList, func(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
 			if params.Ref != "local:01SEND" {
-				t.Fatalf("transcript list ref=%q, want local:01SEND", params.Ref)
+				t.Errorf("transcript list ref=%q, want local:01SEND", params.Ref)
+				return appwire.ThreadTranscriptListResponse{}, fmt.Errorf("unexpected ref: %q", params.Ref)
 			}
 			return appwire.ThreadTranscriptListResponse{Data: []appwire.ThreadTranscriptTarget{
 				{Ref: "local:01SEND", Title: "main session", Kind: "main", Status: appwire.ThreadStatusIdle},
@@ -100,7 +104,8 @@ func TestHubModelUnavailableAgentTranscriptKeepsParentSession(t *testing.T) {
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 			if params.Ref != "local:01SUB" {
-				t.Fatalf("thread/read ref=%q, want local:01SUB", params.Ref)
+				t.Errorf("thread/read ref=%q, want local:01SUB", params.Ref)
+				return appwire.ThreadReadResponse{}, fmt.Errorf("unexpected ref: %q", params.Ref)
 			}
 			return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("transcript archived by source")
 		})
@@ -139,8 +144,14 @@ func TestHubTranscriptPickerItemsIncludeSourceStatusAndTurns(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("items=%+v", items)
 	}
+	if items[0].ID != "codex:01MAIN" {
+		t.Fatalf("main transcript ID=%q", items[0].ID)
+	}
 	if items[0].Display != "main session (codex, idle)" {
 		t.Fatalf("main transcript display=%q", items[0].Display)
+	}
+	if items[1].ID != "local:01SUB" {
+		t.Fatalf("subagent transcript ID=%q", items[1].ID)
 	}
 	if items[1].Display != "subagent inspect (serf, active, 2 turns)" {
 		t.Fatalf("subagent transcript display=%q", items[1].Display)
@@ -152,7 +163,8 @@ func TestHubModelAgentsPickerShowsCodexSourceAndLiveSubagent(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodSerfThreadTranscriptsList, func(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
 			if params.Ref != "codex:01CODEX" {
-				t.Fatalf("transcript list ref=%q, want codex:01CODEX", params.Ref)
+				t.Errorf("transcript list ref=%q, want codex:01CODEX", params.Ref)
+				return appwire.ThreadTranscriptListResponse{}, fmt.Errorf("unexpected ref: %q", params.Ref)
 			}
 			return appwire.ThreadTranscriptListResponse{Data: []appwire.ThreadTranscriptTarget{
 				{Ref: "codex:01CODEX", Title: "main session", Kind: "main", Status: appwire.ThreadStatusIdle, Source: "codex"},
@@ -162,7 +174,8 @@ func TestHubModelAgentsPickerShowsCodexSourceAndLiveSubagent(t *testing.T) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 			readRefs = append(readRefs, params.Ref)
 			if params.Ref != "codex:01LIVE" || !params.IncludeTurns {
-				t.Fatalf("thread/read params=%+v, want live Codex subagent full transcript", params)
+				t.Errorf("thread/read params=%+v, want live Codex subagent full transcript", params)
+				return appwire.ThreadReadResponse{}, fmt.Errorf("unexpected params: %+v", params)
 			}
 			return appwire.ThreadReadResponse{Thread: appwire.Thread{
 				ID:            "01LIVE",

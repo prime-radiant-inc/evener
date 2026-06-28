@@ -24,6 +24,10 @@ func TestCompleteDirs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Add a regular file to verify the IsDir() filter in CompleteDirs excludes files.
+	if err := os.WriteFile(filepath.Join(home, "afile.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Run("empty prefix expands to home", func(t *testing.T) {
 		// An empty prefix expands to HOME with no trailing slash, so the SUT
@@ -78,6 +82,12 @@ func TestCompleteDirs(t *testing.T) {
 				t.Fatalf("expected %q in results, got %v", w, got)
 			}
 		}
+		// Regular files must be excluded (exercises the IsDir() filter).
+		for _, p := range resp.Data {
+			if filepath.Base(p) == "afile.txt" {
+				t.Fatalf("regular file afile.txt should be excluded from directory completions, got %v", resp.Data)
+			}
+		}
 	})
 
 	t.Run("prefix without trailing slash lists parent and filters", func(t *testing.T) {
@@ -129,6 +139,9 @@ func TestCompleteDirs(t *testing.T) {
 		for _, p := range resp.Data {
 			if strings.HasPrefix(filepath.Base(p), ".") {
 				t.Fatalf("hidden dir %q should be filtered", p)
+			}
+			if filepath.Base(p) == "afile.txt" {
+				t.Fatalf("regular file %q should be excluded from directory completions", p)
 			}
 		}
 	})
@@ -230,8 +243,15 @@ func TestValidateLaunchPath(t *testing.T) {
 		if !resp.Valid {
 			t.Fatalf("expected valid for 'sh', got error: %s", resp.Error)
 		}
-		if resp.Path == "" {
-			t.Fatal("expected resolved path")
+		if !filepath.IsAbs(resp.Path) {
+			t.Fatalf("expected absolute resolved path, got %q", resp.Path)
+		}
+		info, err := os.Stat(resp.Path)
+		if err != nil {
+			t.Fatalf("resolved path %q does not exist: %v", resp.Path, err)
+		}
+		if info.Mode()&0o111 == 0 {
+			t.Fatalf("resolved path %q is not executable", resp.Path)
 		}
 	})
 
@@ -276,9 +296,13 @@ func TestValidateLaunchPath(t *testing.T) {
 	})
 
 	t.Run("output-file kind valid", func(t *testing.T) {
-		resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{Path: filepath.Join(tmp, "newfile.txt"), Kind: "output-file"})
+		wantPath := filepath.Join(tmp, "newfile.txt")
+		resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{Path: wantPath, Kind: "output-file"})
 		if !resp.Valid {
 			t.Fatalf("expected valid, got error: %s", resp.Error)
+		}
+		if resp.Path != wantPath {
+			t.Fatalf("expected path %q, got %q", wantPath, resp.Path)
 		}
 	})
 
@@ -391,6 +415,9 @@ func TestValidateLaunchPath(t *testing.T) {
 		resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{Path: executableFile, Kind: "command"})
 		if !resp.Valid {
 			t.Fatalf("expected valid, got error: %s", resp.Error)
+		}
+		if resp.Path != executableFile {
+			t.Fatalf("expected path %q, got %q", executableFile, resp.Path)
 		}
 	})
 

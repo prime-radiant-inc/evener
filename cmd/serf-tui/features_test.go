@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -398,35 +399,32 @@ func TestRenderMessage_PassesFocusedToTool(t *testing.T) {
 }
 
 func TestTaskStatus_Constants(t *testing.T) {
-	// Verify task status constants are distinct strings
-	statuses := []taskpkg.TaskStatus{
-		taskpkg.TaskOpen,
-		taskpkg.TaskInProgress,
-		taskpkg.TaskDone,
-		taskpkg.TaskCancelled,
-	}
-	seen := make(map[string]bool)
-	for _, s := range statuses {
-		if seen[string(s)] {
-			t.Errorf("duplicate status: %s", s)
+	// Verify task status constants have the exact string values the JSON API and
+	// renderers depend on.
+	for want, got := range map[string]taskpkg.TaskStatus{
+		"open":        taskpkg.TaskOpen,
+		"in_progress": taskpkg.TaskInProgress,
+		"done":        taskpkg.TaskDone,
+		"cancelled":   taskpkg.TaskCancelled,
+	} {
+		if string(got) != want {
+			t.Errorf("constant value = %q, want %q", got, want)
 		}
-		seen[string(s)] = true
 	}
 }
 
 func TestTaskType_Constants(t *testing.T) {
-	types := []taskpkg.TaskType{
-		taskpkg.TaskTypeResearch,
-		taskpkg.TaskTypeImplement,
-		taskpkg.TaskTypeVerify,
-		taskpkg.TaskTypeFix,
-	}
-	seen := make(map[string]bool)
-	for _, typ := range types {
-		if seen[string(typ)] {
-			t.Errorf("duplicate type: %s", typ)
+	// Verify task type constants have the exact string values the JSON API and
+	// renderers depend on.
+	for want, got := range map[string]taskpkg.TaskType{
+		"research":  taskpkg.TaskTypeResearch,
+		"implement": taskpkg.TaskTypeImplement,
+		"verify":    taskpkg.TaskTypeVerify,
+		"fix":       taskpkg.TaskTypeFix,
+	} {
+		if string(got) != want {
+			t.Errorf("constant value = %q, want %q", got, want)
 		}
-		seen[string(typ)] = true
 	}
 }
 
@@ -504,5 +502,17 @@ func TestTask_JSON(t *testing.T) {
 	}
 	if roundtrip.ReasoningEffort != task.ReasoningEffort {
 		t.Errorf("ReasoningEffort = %s, want %s", roundtrip.ReasoningEffort, task.ReasoningEffort)
+	}
+	if roundtrip.Description != task.Description {
+		t.Errorf("Description = %q, want %q", roundtrip.Description, task.Description)
+	}
+	if roundtrip.Prompt != task.Prompt {
+		t.Errorf("Prompt = %q, want %q", roundtrip.Prompt, task.Prompt)
+	}
+	if !reflect.DeepEqual(roundtrip.DependsOn, task.DependsOn) {
+		t.Errorf("DependsOn = %v, want %v", roundtrip.DependsOn, task.DependsOn)
+	}
+	if !reflect.DeepEqual(roundtrip.Notes, task.Notes) {
+		t.Errorf("Notes = %v, want %v", roundtrip.Notes, task.Notes)
 	}
 }

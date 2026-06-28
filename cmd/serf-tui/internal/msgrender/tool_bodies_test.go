@@ -17,14 +17,36 @@ func TestDiffBodyTintsAddLines(t *testing.T) {
 		"+added",
 	}, "\n")
 	got := diffBody(ToolArgs{}, diff, 60)
-	// Each + line should carry a background tint; we can detect via ANSI bg escape.
+
 	// Lipgloss may combine fg+bg in one sequence (e.g. \x1b[38;2;...;48;2;...m)
 	// or emit separate \x1b[48;...m sequences.
-	hasBg := strings.Contains(got, "\x1b[48") ||
-		strings.Contains(got, ";48;") ||
-		strings.Contains(got, ";48m")
-	if !hasBg {
-		t.Errorf("diffBody should set background on +/− lines: %q", got)
+	hasBg := func(s string) bool {
+		return strings.Contains(s, "\x1b[48") ||
+			strings.Contains(s, ";48;") ||
+			strings.Contains(s, ";48m")
+	}
+
+	// Locate the rendered lines by their visible text content.
+	var addedLine, contextLine string
+	for _, l := range strings.Split(got, "\n") {
+		if strings.Contains(l, "+added") {
+			addedLine = l
+		}
+		if strings.Contains(l, " context") {
+			contextLine = l
+		}
+	}
+	if addedLine == "" {
+		t.Fatal("diffBody output missing '+added' line")
+	}
+	if !hasBg(addedLine) {
+		t.Errorf("'+added' line should carry a background tint: %q", addedLine)
+	}
+	if contextLine == "" {
+		t.Fatal("diffBody output missing context line")
+	}
+	if hasBg(contextLine) {
+		t.Errorf("context line should NOT carry a background tint: %q", contextLine)
 	}
 }
 
@@ -76,26 +98,33 @@ func TestDelegateBodyShowsSummaryWhenChildUnavailable(t *testing.T) {
 func TestDelegateBodyHandlesNarrowWidth(t *testing.T) {
 	args := ToolArgs{"job_id": "job_01ABCD"}
 	got := delegateBody(args, "", 10)
-	if strings.Contains(got, "panic") {
-		t.Errorf("delegateBody should not panic at narrow width")
+	if got == "" {
+		t.Errorf("delegateBody should return non-empty output at narrow width")
 	}
 }
 
 func TestShellBodyHighlightsOutput(t *testing.T) {
+	withTestColorProfile(t)
 	got := ShellBody(ToolArgs{"command": "ls"}, "file1.go\nfile2.go\nfile3.go", 60)
-	if got == "" {
-		t.Errorf("ShellBody should return non-empty for non-empty output")
+	if !strings.Contains(got, "$ ls") {
+		t.Errorf("ShellBody should include the styled command prompt: %q", got)
+	}
+	if !strings.Contains(got, "file1.go") {
+		t.Errorf("ShellBody should include output content: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[") {
+		t.Errorf("ShellBody should emit ANSI escapes with TrueColor profile: %q", got)
 	}
 }
 
-func TestWebSearchBodyFormatsResults(t *testing.T) {
+func TestWebSearchBodyPassesThroughUnchanged(t *testing.T) {
 	output := strings.Join([]string{
 		"Result 1 title — https://a.com",
 		"Result 2 title — https://b.com",
 	}, "\n")
 	got := webSearchBody(ToolArgs{}, output, 60)
-	if !strings.Contains(got, "Result 1") || !strings.Contains(got, "Result 2") {
-		t.Errorf("webSearchBody should include results: %q", got)
+	if got != output {
+		t.Errorf("webSearchBody should pass through unchanged:\n got  %q\n want %q", got, output)
 	}
 }
 

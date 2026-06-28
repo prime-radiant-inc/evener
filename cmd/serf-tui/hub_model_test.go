@@ -2407,6 +2407,14 @@ func TestStatusRefreshStatesMatchExpectedRequiresCurrentAndPayload(t *testing.T)
 	if !statusRefreshStatesMatchExpected(appwire.ThreadStatusActive, appwire.ThreadStatusActive, appwire.ThreadStatusActive) {
 		t.Fatal("expected matching current and payload states to pass")
 	}
+	// Independently test each half of the && with expectedState==Idle so that
+	// a bug replacing either comparison with the other would be caught.
+	if statusRefreshStatesMatchExpected(appwire.ThreadStatusActive, appwire.ThreadStatusIdle, appwire.ThreadStatusIdle) {
+		t.Fatal("payload matches expected but current does not: want false")
+	}
+	if statusRefreshStatesMatchExpected(appwire.ThreadStatusIdle, appwire.ThreadStatusActive, appwire.ThreadStatusIdle) {
+		t.Fatal("current matches expected but payload does not: want false")
+	}
 }
 
 func TestHubModelSendUsesAppWireTurnStart(t *testing.T) {

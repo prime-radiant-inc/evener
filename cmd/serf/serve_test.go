@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/plugin"
@@ -398,20 +399,63 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 	}
 }
 
+// waitForServeTestRendezvous waits for the serve process to write its
+// rendezvous file and returns the ready entry. It uses filesystem
+// notifications instead of sleep-polling so it responds immediately when the
+// file appears. This is integration-test infrastructure: the server must
+// start within 5 seconds.
 func waitForServeTestRendezvous(t *testing.T, runDir string) rendezvous.Entry {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+
+	// Ensure the run directory exists before attaching the watcher.
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		t.Fatalf("waitForServeTestRendezvous: mkdir %s: %v", runDir, err)
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("waitForServeTestRendezvous: new watcher: %v", err)
+	}
+	defer watcher.Close()
+
+	if err := watcher.Add(runDir); err != nil {
+		t.Fatalf("waitForServeTestRendezvous: watch %s: %v", runDir, err)
+	}
+
+	// findEntry scans the run dir for a ready rendezvous entry.
+	findEntry := func() (rendezvous.Entry, bool) {
 		entries, _ := rendezvous.List(runDir)
-		for _, entry := range entries {
-			if entry.Address != "" && entry.SessionID != "" {
-				return entry
+		for _, e := range entries {
+			if e.Address != "" && e.SessionID != "" {
+				return e, true
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
+		return rendezvous.Entry{}, false
 	}
-	t.Fatalf("no rendezvous entry in %s", runDir)
-	return rendezvous.Entry{}
+
+	// Check once after installing the watcher to close the TOCTOU window: the
+	// file may have been written between goroutine start and watcher.Add.
+	if e, ok := findEntry(); ok {
+		return e
+	}
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case _, ok := <-watcher.Events:
+			if !ok {
+				t.Fatal("waitForServeTestRendezvous: watcher closed unexpectedly")
+			}
+			if e, found := findEntry(); found {
+				return e
+			}
+		case werr := <-watcher.Errors:
+			t.Fatalf("waitForServeTestRendezvous: watcher error: %v", werr)
+		case <-deadline:
+			t.Fatalf("no rendezvous entry in %s after 5s", runDir)
+			return rendezvous.Entry{}
+		}
+	}
 }
 
 func TestServeClient_APILogWritesJSONL(t *testing.T) {

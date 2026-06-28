@@ -6,6 +6,7 @@ import (
 )
 
 func TestComposerChipStripShowsChips(t *testing.T) {
+	withTestColorProfile(t)
 	got := renderComposerChipStrip(composerContext{
 		Harness:    "serf",
 		Model:      "openai/gpt-5.5",
@@ -13,21 +14,24 @@ func TestComposerChipStripShowsChips(t *testing.T) {
 		WorkingDir: "/home/jesse/git/serf",
 		Width:      80,
 	})
+	plain := ansiPattern.ReplaceAllString(got, "")
 	for _, want := range []string{"harness serf", "model gpt-5.5", "branch feat/widget"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("composer chip strip missing %q in: %q", want, got)
+		if !strings.Contains(plain, want) {
+			t.Errorf("composer chip strip missing %q in: %q", want, plain)
 		}
 	}
 }
 
 func TestComposerChipStripIncludesModeChip(t *testing.T) {
+	withTestColorProfile(t)
 	got := renderComposerChipStrip(composerContext{
 		Harness: "serf",
-		Mode:    "QUEUE 2",
+		Mode:    "queue 2",
 		Width:   80,
 	})
-	if !strings.Contains(got, "QUEUE 2") {
-		t.Errorf("composer should include mode chip: %q", got)
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "QUEUE 2") {
+		t.Errorf("composer should include uppercased mode chip: %q", plain)
 	}
 }
 

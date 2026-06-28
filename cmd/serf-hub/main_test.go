@@ -55,13 +55,16 @@ func TestPrintHubEnvVars(t *testing.T) {
 }
 
 func TestCurrentExecutable(t *testing.T) {
-	// Normal case: os.Executable() should succeed and return a non-empty path.
+	// The documented contract is to prefer os.Executable(), which always
+	// returns an absolute path. Verify absoluteness so that a mutation
+	// that drops the os.Executable() branch and falls back to os.Args[0]
+	// (which may be relative) is detected.
 	exe := currentExecutable()
 	if exe == "" {
 		t.Fatal("currentExecutable() returned empty string")
 	}
-	if !strings.Contains(exe, string(os.PathSeparator)) {
-		t.Fatalf("expected an absolute or relative path with separator, got %q", exe)
+	if !filepath.IsAbs(exe) {
+		t.Fatalf("currentExecutable() = %q, want an absolute path (os.Executable() preference)", exe)
 	}
 }
 

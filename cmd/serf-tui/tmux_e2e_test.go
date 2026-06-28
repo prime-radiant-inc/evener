@@ -666,10 +666,19 @@ func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
 	// the turn first — covered by the header/composer state behavior.)
 	openEndedSession(t, app)
 	app.SendKeys("C-c")
-	time.Sleep(100 * time.Millisecond)
-	if screen := app.Capture(); strings.Contains(screen, "Press ctrl+c again") || strings.Contains(screen, "Restore this session:") {
-		t.Fatalf("first ctrl+c should not render an in-app quit warning:\n%s", screen)
+	// Poll over a window wider than any realistic render delay so a broken
+	// handler that defers the warning render is reliably caught. A single
+	// fixed sleep misses warnings that render after the sleep completes;
+	// repeated captures over 300 ms cannot.
+	settleDeadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(settleDeadline) {
+		if screen := app.Capture(); strings.Contains(screen, "Press ctrl+c again") || strings.Contains(screen, "Restore this session:") {
+			t.Fatalf("first ctrl+c should not render an in-app quit warning:\n%s", screen)
+		}
+		time.Sleep(tuiE2EPollInterval)
 	}
+	// Positive gate: session must still be alive after the settling window.
+	app.WaitFor("serf / session / ended maintenance")
 	app.SendKeys("C-c")
 	app.WaitForExit()
 }
@@ -685,10 +694,17 @@ func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 
 	openEndedSession(t, app)
 	app.SendKeys("C-c")
-	time.Sleep(100 * time.Millisecond)
-	if screen := app.Capture(); strings.Contains(screen, "Press ctrl+c again") || strings.Contains(screen, "Restore this session:") {
-		t.Fatalf("first ctrl+c should not render an in-app quit warning:\n%s", screen)
+	// Poll over a window wider than any realistic render delay so a broken
+	// handler that defers the warning render is reliably caught.
+	settleDeadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(settleDeadline) {
+		if screen := app.Capture(); strings.Contains(screen, "Press ctrl+c again") || strings.Contains(screen, "Restore this session:") {
+			t.Fatalf("first ctrl+c should not render an in-app quit warning:\n%s", screen)
+		}
+		time.Sleep(tuiE2EPollInterval)
 	}
+	// Positive gate: session must still be alive after the settling window.
+	app.WaitFor("serf / session / ended maintenance")
 	app.SendKeys("C-c")
 	app.WaitForExit()
 	history := app.CaptureHistory()

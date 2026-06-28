@@ -76,12 +76,23 @@ func TestCredentialsPanel_GroupsByType(t *testing.T) {
 	got := updated.(CredentialsPanel).View()
 	plain := ansiPattern.ReplaceAllString(got, "")
 
-	// Type group headers appear
-	if !strings.Contains(plain, "openai") {
-		t.Errorf("view should show openai type header:\n%s", plain)
+	// Type group headers appear as lines that contain the type name but no
+	// badge dot (●). Instance rows always include a StatusBadge which emits
+	// "●", so a line with the type name and no "●" uniquely identifies a
+	// rendered header row.
+	hasHeaderLine := func(typeName string) bool {
+		for _, line := range strings.Split(plain, "\n") {
+			if strings.Contains(line, typeName) && !strings.Contains(line, "●") {
+				return true
+			}
+		}
+		return false
 	}
-	if !strings.Contains(plain, "anthropic") {
-		t.Errorf("view should show anthropic type header:\n%s", plain)
+	if !hasHeaderLine("openai") {
+		t.Errorf("view should show openai type-group header line:\n%s", plain)
+	}
+	if !hasHeaderLine("anthropic") {
+		t.Errorf("view should show anthropic type-group header line:\n%s", plain)
 	}
 	// Default instance marked with star
 	if !strings.Contains(plain, "★") {

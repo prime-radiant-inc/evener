@@ -99,6 +99,8 @@ func TestNormalizePastedPath(t *testing.T) {
 		want string
 	}{
 		{"file URL absolute", "file:///tmp/example.png", "/tmp/example.png"},
+		{"file URL percent-encoded", "file:///tmp/My%20Shot%231.png", "/tmp/My Shot#1.png"},
+		{"file URL with hostname", "file://localhost/tmp/foo.png", "/tmp/foo.png"},
 		{"double-quoted unix path", `"/tmp/example.png"`, "/tmp/example.png"},
 		{"double-quoted unix path with spaces", `"/tmp/My Pictures/example.png"`, "/tmp/My Pictures/example.png"},
 		{"single-quoted unix path", `'/tmp/example.png'`, "/tmp/example.png"},
@@ -227,6 +229,9 @@ func TestPasteClipboardImage_SkipsNonImageFiles(t *testing.T) {
 	if got.Origin != "clipboard-image" {
 		t.Fatalf("Origin = %q, want clipboard-image", got.Origin)
 	}
+	if got.MediaType != "image/png" {
+		t.Fatalf("MediaType = %q, want image/png", got.MediaType)
+	}
 	t.Cleanup(func() { _ = os.Remove(got.Path) })
 }
 
@@ -244,6 +249,9 @@ func TestPasteClipboardImage_FallsBackToImageBytes(t *testing.T) {
 	if got.Origin != "clipboard-image" {
 		t.Fatalf("Origin = %q, want clipboard-image", got.Origin)
 	}
+	if got.MediaType != "image/png" {
+		t.Fatalf("MediaType = %q, want image/png", got.MediaType)
+	}
 	if got.Path == "" {
 		t.Fatal("Path empty, want temp file path")
 	}
@@ -257,35 +265,65 @@ func TestPasteClipboardImage_FallsBackToImageBytes(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(got.Path) })
 }
 
-func TestPasteClipboardImage_FallsBackToWSL(t *testing.T) {
-	// Stage a "Windows" temp file that the PowerShell stub will report.
-	dir := t.TempDir()
-	winName := filepath.Join(dir, "clip.png")
-	if err := os.WriteFile(winName, []byte("wsl image payload"), 0o644); err != nil {
-		t.Fatalf("setup write: %v", err)
+func TestPasteClipboardImage_DefaultsMediaTypeWhenEmpty(t *testing.T) {
+	// imageMediaType: "" exercises the fallback in Step 2 that sets mediaType = "image/png".
+	src := &fakeClipboard{
+		filesErr:       errors.New("no file list"),
+		imageBytes:     []byte("raw image bytes"),
+		imageMediaType: "",
 	}
-	// Build a fake Windows path that, after conversion, lands at winName.
-	// We pretend dir is "/mnt/c/wsl-test" so we can synthesise the
-	// matching "C:\wsl-test\clip.png".
-	// Instead of relying on real /mnt mapping, the fake source returns
-	// the staged path directly under a synthetic drive.
-	// We construct a fake winPath whose conversion equals winName.
-	// Easier path: make the fake return a Windows path whose conversion
-	// lands at the actual staged location.
+
+	got, err := PasteClipboardImage(src)
+	if err != nil {
+		t.Fatalf("PasteClipboardImage err = %v", err)
+	}
+	if got.MediaType != "image/png" {
+		t.Fatalf("MediaType = %q, want image/png (default when source returns empty type)", got.MediaType)
+	}
+	t.Cleanup(func() { _ = os.Remove(got.Path) })
+}
+
+func TestPasteClipboardImage_FallsBackToWSL(t *testing.T) {
+	// Stage the image at the WSL mount path that ConvertWindowsPathToWSL would
+	// produce for the fake Windows path below.  The paths are paired by
+	// construction: ConvertWindowsPathToWSL(`T:\serf-wsl-clip\clip.png`) ==
+	// "/mnt/t/serf-wsl-clip/clip.png".  This requires /mnt to be writable,
+	// which is only true on WSL; the test skips otherwise.
+	const (
+		fakeWinPath = `T:\serf-wsl-clip\clip.png`
+		wslClipPath = "/mnt/t/serf-wsl-clip/clip.png"
+		wslClipDir  = "/mnt/t/serf-wsl-clip"
+	)
+	payload := []byte("wsl image payload")
+
+	if err := os.MkdirAll(wslClipDir, 0o755); err != nil {
+		t.Skipf("cannot create WSL mount path %s: %v (test requires WSL or /mnt write access)", wslClipDir, err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(wslClipDir) })
+
+	if err := os.WriteFile(wslClipPath, payload, 0o644); err != nil {
+		t.Fatalf("write WSL clip file: %v", err)
+	}
+
 	src := &fakeClipboard{
 		filesErr:    errors.New("no file list"),
 		imageErr:    ErrNoClipboardImage,
-		winPath:     `C:\fake\clip.png`,
+		winPath:     fakeWinPath,
 		procVersion: "Linux version 5.15-microsoft-standard-WSL2",
 	}
 
-	// First confirm the helper translates the fake path correctly.
-	gotPath, err := TryWSLClipboardFallback(src, ErrNoClipboardImage)
+	got, err := PasteClipboardImage(src)
 	if err != nil {
-		t.Fatalf("TryWSLClipboardFallback err = %v", err)
+		t.Fatalf("PasteClipboardImage err = %v", err)
 	}
-	if gotPath != "/mnt/c/fake/clip.png" {
-		t.Fatalf("converted path = %q, want /mnt/c/fake/clip.png", gotPath)
+	if got.Origin != "wsl" {
+		t.Fatalf("Origin = %q, want wsl", got.Origin)
+	}
+	if got.MediaType != "image/png" {
+		t.Fatalf("MediaType = %q, want image/png", got.MediaType)
+	}
+	if got.Size != len(payload) {
+		t.Fatalf("Size = %d, want %d", got.Size, len(payload))
 	}
 }
 

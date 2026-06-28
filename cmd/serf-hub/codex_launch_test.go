@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -92,7 +93,7 @@ func TestCodexLauncherTimeoutReturnsStructuredDiagnostic(t *testing.T) {
 func TestCodexLauncherMissingBinaryReturnsStructuredDiagnostic(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{
 		ID:     "codex-missing",
-		Binary: "/tmp/serf-no-such-codex-binary",
+		Binary: filepath.Join(t.TempDir(), "no-such-binary"),
 		Listen: "ws://127.0.0.1:0",
 	}})
 	defer shutdownCodexLauncher(t, launcher)

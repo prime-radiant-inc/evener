@@ -33,8 +33,9 @@ func TestReducerGroupedUseSkillActivationDoesNotCreateSystemDuplicate(t *testing
 	if messages[0].Kind != MsgTool || messages[0].Tool == nil || messages[0].Tool.Name != "use_skill" {
 		t.Fatalf("message should be one use_skill tool: %+v", messages[0])
 	}
-	if messages[0].Tool.Raw == "" {
-		t.Fatalf("grouped raw metadata should be carried for TUI renderers")
+	wantRaw := string(thread.Turns[0].Items[0].Raw)
+	if messages[0].Tool.Raw != wantRaw {
+		t.Fatalf("grouped raw metadata mismatch: got %q, want %q", messages[0].Tool.Raw, wantRaw)
 	}
 }
 
@@ -680,8 +681,9 @@ func TestParseJobNotificationHeadlineAndTie(t *testing.T) {
 	if isError {
 		t.Fatalf("a completed job should not be flagged error")
 	}
-	if !strings.Contains(headline, "go test ./agent passed") || !strings.Contains(headline, "4ad69c0e") {
-		t.Fatalf("headline wrong: %q", headline)
+	wantHeadline := "go test ./agent passed · 4ad69c0e"
+	if headline != wantHeadline {
+		t.Fatalf("headline = %q, want %q", headline, wantHeadline)
 	}
 	// Plain text is not a job notification.
 	if _, _, _, ok := ParseJobNotificationHeadline("just some steering text"); ok {
@@ -782,13 +784,24 @@ func TestRemoveUserMessageEcho(t *testing.T) {
 			if len(r.messages) != tc.wantLen {
 				t.Errorf("messages len=%d, want %d", len(r.messages), tc.wantLen)
 			}
+			if tc.wantLen == 1 && r.messages[0].Text != tc.initial[0].Text {
+				t.Errorf("surviving message text=%q, want %q", r.messages[0].Text, tc.initial[0].Text)
+			}
 		})
 	}
 }
 
-func TestAppendPendingMessages(t *testing.T) {
-	// Reset the global counter so IDs are deterministic.
+// resetPendingIDCounter zeroes the package-level pending-ID counter and
+// registers a cleanup that restores it to zero so each test starts clean
+// regardless of execution order or future parallelism.
+func resetPendingIDCounter(t *testing.T) {
+	t.Helper()
 	pendingMessageIDCounter = 0
+	t.Cleanup(func() { pendingMessageIDCounter = 0 })
+}
+
+func TestAppendPendingMessages(t *testing.T) {
+	resetPendingIDCounter(t)
 
 	r := NewTranscriptReducer(nil, nil, nil)
 
@@ -813,7 +826,7 @@ func TestAppendPendingMessages(t *testing.T) {
 }
 
 func TestMarkPendingFailed(t *testing.T) {
-	pendingMessageIDCounter = 0
+	resetPendingIDCounter(t)
 	r := NewTranscriptReducer(nil, nil, nil)
 	r.AppendPendingSteering("steer me")
 
@@ -836,7 +849,7 @@ func TestMarkPendingFailed(t *testing.T) {
 }
 
 func TestRemovePending(t *testing.T) {
-	pendingMessageIDCounter = 0
+	resetPendingIDCounter(t)
 	r := NewTranscriptReducer(nil, nil, nil)
 	r.AppendPendingSteering("first")
 	r.AppendPendingSteering("second")

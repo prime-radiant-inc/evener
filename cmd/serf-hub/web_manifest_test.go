@@ -37,8 +37,8 @@ func TestWeb_Manifest_CarriesAuthTokenInStartURL(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("manifest status: %d, body=%q", rec.Code, rec.Body.String())
 	}
-	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "manifest") && !strings.Contains(ct, "json") {
-		t.Errorf("manifest content-type: %q", ct)
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/manifest+json") {
+		t.Errorf("manifest content-type: %q, want application/manifest+json", ct)
 	}
 
 	var m struct {

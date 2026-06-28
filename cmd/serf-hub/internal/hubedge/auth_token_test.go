@@ -21,7 +21,7 @@ func TestLoadOrCreateAuthToken_PersistsAndReloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadOrCreateAuthToken: %v", err)
 	}
-	if len(a) < 40 {
+	if len(a) < 43 {
 		t.Errorf("token too short: %q", a)
 	}
 	info, err := os.Stat(filepath.Join(root, TokenFileName))
@@ -136,6 +136,12 @@ func TestHandleAuth_ValidatesAndSetsCookie(t *testing.T) {
 	if got[0].SameSite != http.SameSiteStrictMode || !got[0].HttpOnly {
 		t.Errorf("cookie should be SameSite=Strict and HttpOnly: %+v", got[0])
 	}
+	if got[0].MaxAge != authCookieMaxAgeSeconds {
+		t.Errorf("cookie MaxAge = %d, want %d", got[0].MaxAge, authCookieMaxAgeSeconds)
+	}
+	if got[0].Path != "/" {
+		t.Errorf("cookie Path = %q, want /", got[0].Path)
+	}
 }
 
 func TestHandleAuth_RejectsWrongToken(t *testing.T) {
@@ -153,6 +159,9 @@ func TestHandleAuth_HonorsNextParam(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/auth?token=secret&next=/settings/launch", nil)
 	rec := httptest.NewRecorder()
 	h(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Errorf("code = %d, want 302", rec.Code)
+	}
 	if loc := rec.Header().Get("Location"); loc != "/settings/launch" {
 		t.Errorf("Location = %q, want /settings/launch", loc)
 	}
@@ -173,9 +182,6 @@ func TestAuthURLFor(t *testing.T) {
 	want := "http://magic-kingdom:9180/auth?token=tok"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
-	}
-	if !strings.HasSuffix(AuthURLFor("http://x", "y"), "/auth?token=y") {
-		t.Errorf("suffix wrong")
 	}
 }
 

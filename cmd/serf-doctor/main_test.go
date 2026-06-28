@@ -119,8 +119,11 @@ func TestRun_Help(t *testing.T) {
 	if code := run([]string{"--help"}, &out, &errb); code != 0 {
 		t.Errorf("help exit = %d, want 0", code)
 	}
-	if !strings.Contains(out.String(), "watches") {
-		t.Error("help should list subcommands")
+	got := out.String()
+	for _, sub := range []string{"locate", "transcript", "apilog", "watches", "tree"} {
+		if !strings.Contains(got, sub) {
+			t.Errorf("help should list subcommand %q; got:\n%s", sub, got)
+		}
 	}
 }
 
@@ -352,6 +355,9 @@ func TestRun_APILogFlags(t *testing.T) {
 		}
 		if strings.Contains(out.String(), "gpt-test") {
 			t.Errorf("--summary should not list per-call model rows; got:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "calls=4") {
+			t.Errorf("--summary must still include the aggregate totals line; got:\n%s", out.String())
 		}
 	})
 }

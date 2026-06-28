@@ -3,14 +3,33 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 func TestSessionRowAwaitingHasStateColor(t *testing.T) {
 	withTestColorProfile(t)
 	row := hubRow{kind: hubRowSession, project: "serf", title: "X", state: "awaiting"}
 	got := renderDashboardSessionRow(row, false, 80, false, "")
-	if !strings.Contains(got, "\x1b[") {
-		t.Errorf("awaiting row should carry color; got plain: %q", got)
+
+	// Plain text must contain the state label.
+	plain := ansi.Strip(got)
+	if !strings.Contains(plain, "awaiting") {
+		t.Errorf("awaiting row should contain state label 'awaiting' in plain text; got %q", plain)
+	}
+
+	// The row must be wrapped in the StateAwaiting theme color, not just any ANSI escape.
+	// Derive the expected ANSI foreground escape from the live theme so the test
+	// stays correct if the palette changes — and fails if stateColor("awaiting")
+	// returns a different color (e.g. TextDim, the named mutation-that-escapes).
+	th := tuitheme.ActiveTheme()
+	sample := lipgloss.NewStyle().Foreground(th.StateAwaiting).Render("X")
+	wantPrefix, _, _ := strings.Cut(sample, "X")
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Errorf("awaiting row should start with StateAwaiting color escape %q; got prefix %q",
+			wantPrefix, got[:min(len(got), 30)])
 	}
 }
 

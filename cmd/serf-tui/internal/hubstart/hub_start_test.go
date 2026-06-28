@@ -52,6 +52,13 @@ func TestHubAddressNormalization(t *testing.T) {
 			bindAddr: "example.com:9180",
 			local:    false,
 		},
+		{
+			name:     "non-loopback ip",
+			raw:      "http://8.8.8.8:9180",
+			baseURL:  "http://8.8.8.8:9180",
+			bindAddr: "8.8.8.8:9180",
+			local:    false,
+		},
 	}
 
 	for _, tt := range tests {

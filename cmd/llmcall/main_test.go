@@ -68,6 +68,9 @@ func TestRunLLMCall_DefaultsToNoSystemPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runLLMCall: %v", err)
 	}
+	if strings.TrimSpace(stdout.String()) != "OK" {
+		t.Fatalf("expected stdout %q, got %q", "OK", stdout.String())
+	}
 }
 
 func TestRunLLMCall_SetsToolChoiceNoneAndNoTools(t *testing.T) {

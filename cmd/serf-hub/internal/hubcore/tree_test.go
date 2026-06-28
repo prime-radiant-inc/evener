@@ -432,23 +432,27 @@ func TestBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
 		{ID: "01ASK", UpdatedAt: now.Add(-2 * time.Minute), OriginalPrompt: "blocked",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
-		{ID: "01ZZZ", UpdatedAt: now.Add(-3 * time.Minute), OriginalPrompt: "idle one",
+		{ID: "01WARN", UpdatedAt: now.Add(-3 * time.Minute), OriginalPrompt: "has a warning",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		{ID: "01ZZZ", UpdatedAt: now.Add(-4 * time.Minute), OriginalPrompt: "idle one",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
 	}
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01WORK1", Status: appwire.ThreadStatusActive},
 		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01WORK2", Status: appwire.ThreadStatusActive},
 		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting},
-		{Entry: rendezvous.Entry{PID: 4}, SessionID: "01ZZZ", Status: appwire.ThreadStatusIdle},
+		{Entry: rendezvous.Entry{PID: 4}, SessionID: "01WARN", Status: appwire.ThreadStatusWarning},
+		{Entry: rendezvous.Entry{PID: 5}, SessionID: "01ZZZ", Status: appwire.ThreadStatusIdle},
 	}
 	proj := projectByName(t, buildTree(metas, live), "serf")
-	// 2 working (active) sessions, 1 awaiting (needs-you). Idle does not count
-	// toward either magnitude — it's the settled state.
+	// 2 working (active) sessions. Idle does not count toward either magnitude.
 	if proj.RollupLive != 2 {
 		t.Errorf("RollupLive = %d, want 2", proj.RollupLive)
 	}
-	if proj.RollupAttn != 1 {
-		t.Errorf("RollupAttn = %d, want 1", proj.RollupAttn)
+	// 1 awaiting + 1 warning = 2 attention-needed. Both states count toward
+	// RollupAttn; pinning both legs of the switch case.
+	if proj.RollupAttn != 2 {
+		t.Errorf("RollupAttn = %d, want 2 (awaiting + warning)", proj.RollupAttn)
 	}
 }
 
@@ -891,6 +895,9 @@ func TestRollupRank(t *testing.T) {
 }
 
 func TestAgeString(t *testing.T) {
+	// AgeString calls time.Since internally so we keep inputs well within each
+	// bucket (≥10s of margin). The 59s boundary cannot be reliably tested
+	// without clock injection — use 45s (15s margin) to stay in "now".
 	now := time.Now()
 	cases := []struct {
 		t    time.Time
@@ -898,8 +905,8 @@ func TestAgeString(t *testing.T) {
 	}{
 		{time.Time{}, ""},
 		{now.Add(-30 * time.Second), "now"},
-		{now.Add(-59 * time.Second), "now"},
-		{now.Add(-61 * time.Second), "1m"},
+		{now.Add(-45 * time.Second), "now"}, // was 59s (1s margin → flaky); 45s gives 15s margin
+		{now.Add(-75 * time.Second), "1m"},
 		{now.Add(-5 * time.Minute), "5m"},
 		{now.Add(-59 * time.Minute), "59m"},
 		{now.Add(-61 * time.Minute), "1h"},

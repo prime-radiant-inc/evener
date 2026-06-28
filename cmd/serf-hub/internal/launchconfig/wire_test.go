@@ -10,6 +10,8 @@ import (
 )
 
 func TestFromWire(t *testing.T) {
+	noProjectPrompts := true
+	appReplaySize := 42
 	in := appwire.LaunchConfigLayer{
 		Model:                       "openai/gpt-5",
 		FastCheapModel:              "openai/gpt-5-mini",
@@ -17,6 +19,15 @@ func TestFromWire(t *testing.T) {
 		Schema:                      ptrInt(1),
 		MCPs:                        []appwire.MCPServerSpec{{Name: "x", Command: "y", Args: []string{"z"}}},
 		MaxRounds:                   ptrInt(50),
+		Agent:                       "myagent",
+		ReasoningEffort:             "high",
+		ContextStrategy:             "compact",
+		SkillsDirs:                  []string{"/skills"},
+		PluginDirs:                  []string{"/plugins"},
+		MCPConfigs:                  []string{"/mcp.toml"},
+		NoProjectPrompts:            &noProjectPrompts,
+		AppReplaySize:               &appReplaySize,
+		Env:                         map[string]string{"FOO": "bar"},
 	}
 	got := FromWire(in)
 	if got.Model != "openai/gpt-5" {
@@ -36,6 +47,33 @@ func TestFromWire(t *testing.T) {
 	}
 	if len(got.MCPs) != 1 || got.MCPs[0].Name != "x" {
 		t.Errorf("MCPs = %v", got.MCPs)
+	}
+	if got.Agent != "myagent" {
+		t.Errorf("Agent = %q, want myagent", got.Agent)
+	}
+	if got.ReasoningEffort != "high" {
+		t.Errorf("ReasoningEffort = %q, want high", got.ReasoningEffort)
+	}
+	if got.ContextStrategy != "compact" {
+		t.Errorf("ContextStrategy = %q, want compact", got.ContextStrategy)
+	}
+	if !reflect.DeepEqual(got.SkillsDirs, []string{"/skills"}) {
+		t.Errorf("SkillsDirs = %v, want [/skills]", got.SkillsDirs)
+	}
+	if !reflect.DeepEqual(got.PluginDirs, []string{"/plugins"}) {
+		t.Errorf("PluginDirs = %v, want [/plugins]", got.PluginDirs)
+	}
+	if !reflect.DeepEqual(got.MCPConfigs, []string{"/mcp.toml"}) {
+		t.Errorf("MCPConfigs = %v, want [/mcp.toml]", got.MCPConfigs)
+	}
+	if got.NoProjectPrompts == nil || !*got.NoProjectPrompts {
+		t.Errorf("NoProjectPrompts = %v, want true", got.NoProjectPrompts)
+	}
+	if got.AppReplaySize == nil || *got.AppReplaySize != 42 {
+		t.Errorf("AppReplaySize = %v, want 42", got.AppReplaySize)
+	}
+	if got.Env["FOO"] != "bar" {
+		t.Errorf("Env[FOO] = %q, want bar", got.Env["FOO"])
 	}
 }
 
@@ -114,10 +152,11 @@ func TestWireOmitsUnsetModelFallbacks(t *testing.T) {
 
 func TestResolvedToWire(t *testing.T) {
 	r := Resolved{
-		Effective:  Layer{Model: "m"},
-		Layers:     map[LayerName]Layer{LayerGlobal: {Model: "m"}},
-		Provenance: map[string]LayerName{"model": LayerGlobal},
-		Repo:       &RepoStatus{Path: "/p", Trust: TrustTrusted, Hash: "sha256:abc"},
+		Effective:   Layer{Model: "m"},
+		Layers:      map[LayerName]Layer{LayerGlobal: {Model: "m"}},
+		Provenance:  map[string]LayerName{"model": LayerGlobal},
+		Repo:        &RepoStatus{Path: "/p", Trust: TrustTrusted, Hash: "sha256:abc"},
+		Diagnostics: []Diagnostic{{Layer: LayerGlobal, Field: "model", Message: "overridden"}},
 	}
 	got := ResolvedToWire(r)
 	if got.Effective.Model != "m" {
@@ -132,7 +171,9 @@ func TestResolvedToWire(t *testing.T) {
 	if got.Repo == nil || got.Repo.Trust != "trusted" {
 		t.Errorf("Repo = %v", got.Repo)
 	}
-	_ = reflect.TypeOf(got)
+	if len(got.Diagnostics) != 1 || got.Diagnostics[0].Field != "model" || got.Diagnostics[0].Message != "overridden" {
+		t.Errorf("Diagnostics = %v", got.Diagnostics)
+	}
 }
 
 // TestLaunchConfigLayer_ConfigPlumbingRoundtrip: ModelFallbacks survives the

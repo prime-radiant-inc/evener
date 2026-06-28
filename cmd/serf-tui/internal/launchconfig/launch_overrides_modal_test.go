@@ -34,8 +34,8 @@ func TestLaunchOverridesModal_AddsField(t *testing.T) {
 	if req.Layer != "launch" {
 		t.Errorf("Layer = %q, want launch", req.Layer)
 	}
-	if req.Field == "" {
-		t.Errorf("missing field: %+v", req)
+	if req.Field != "model" {
+		t.Errorf("Field = %q, want model", req.Field)
 	}
 }
 

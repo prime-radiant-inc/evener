@@ -53,14 +53,14 @@ func TestReadFileResultLineCount(t *testing.T) {
 }
 
 func TestRendererRegistryFallback(t *testing.T) {
-	// Unknown tool gets fallback renderer.
+	// Unknown tool gets fallback renderer whose verb is the tool name itself.
 	r, ok := lookupToolRenderer("totally_unknown_tool")
 	if !ok {
 		t.Fatalf("no fallback renderer")
 	}
 	args := toolArgsFromJSON(`{"x":"y"}`)
-	if r.Verb(args) == "" {
-		t.Errorf("fallback verb is empty")
+	if r.Verb(args) != "totally_unknown_tool" {
+		t.Errorf("fallback verb = %q; want %q", r.Verb(args), "totally_unknown_tool")
 	}
 }
 

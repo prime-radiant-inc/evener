@@ -5,11 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/auth/openai/oaitest"
@@ -187,17 +187,7 @@ func TestRunFastCheapModelValidation(t *testing.T) {
 // TestRunMissingModel verifies that run returns an error when no --model is
 // provided and SERF_MODEL is unset.
 func TestRunMissingModel(t *testing.T) {
-	old := os.Getenv("SERF_MODEL")
-	if err := os.Unsetenv("SERF_MODEL"); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if old != "" {
-			if err := os.Setenv("SERF_MODEL", old); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}()
+	t.Setenv("SERF_MODEL", "")
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
@@ -467,23 +457,46 @@ func TestDrainEventsHuman(t *testing.T) {
 
 func intPtr(v int) *int { return &v }
 
-func TestRunConfig_PluginDirsPassthrough(t *testing.T) {
-	// Verify that pluginDirs on runConfig flows through to SessionConfig.PluginDirs.
-	cfg := runConfig{
-		pluginDirs: []string{"/a", "/b"},
+// TestRunPluginDirsPassthrough verifies that pluginDirs on runConfig flows
+// through to SessionConfig.PluginDirs, causing the named plugin to be loaded.
+// A probe plugin directory produces a PLUGIN_LOADED event that drainEventsHuman
+// writes to stderr; if run() drops pluginDirs the event never fires.
+func TestRunPluginDirsPassthrough(t *testing.T) {
+	// Build a minimal plugin directory that session init will scan and load.
+	pluginDir := t.TempDir()
+	metaDir := filepath.Join(pluginDir, ".claude-plugin")
+	if err := os.MkdirAll(metaDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
 	}
-	if len(cfg.pluginDirs) != 2 {
-		t.Fatalf("pluginDirs: got %d, want 2", len(cfg.pluginDirs))
+	if err := os.WriteFile(filepath.Join(metaDir, "plugin.json"),
+		[]byte(`{"name": "passthrough-probe"}`), 0644); err != nil {
+		t.Fatalf("write plugin.json: %v", err)
 	}
 
-	sessionCfg := agent.SessionConfig{
-		PluginDirs: cfg.pluginDirs,
+	installRunScriptedProvider(t, &scriptedProvider{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response { return scriptedCommunicate("PONG") },
+		},
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), runConfig{
+		prompt:     "ping",
+		model:      "openai/gpt-test",
+		workDir:    t.TempDir(),
+		pluginDirs: []string{pluginDir},
+		stdout:     &stdout,
+		stderr:     &stderr,
+	})
+	if err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
 	}
-	if len(sessionCfg.PluginDirs) != 2 {
-		t.Fatalf("SessionConfig.PluginDirs: got %d, want 2", len(sessionCfg.PluginDirs))
-	}
-	if sessionCfg.PluginDirs[0] != "/a" || sessionCfg.PluginDirs[1] != "/b" {
-		t.Fatalf("SessionConfig.PluginDirs: got %v, want [/a /b]", sessionCfg.PluginDirs)
+	// drainEventsHuman writes "[plugin] loaded <name>" for every PLUGIN_LOADED
+	// event. This line only appears when run() correctly forwards pluginDirs to
+	// the SessionConfig — deleting that field assignment makes the test fail.
+	if !strings.Contains(stderr.String(), "[plugin] loaded passthrough-probe") {
+		t.Fatalf("expected '[plugin] loaded passthrough-probe' in stderr; pluginDirs may not be forwarded\nstderr: %s", stderr.String())
 	}
 }
 
@@ -523,7 +536,7 @@ func TestDrainEventsHuman_PluginEvents(t *testing.T) {
 	}
 }
 
-func TestRunWithContextStrategy(t *testing.T) {
+func TestRunWithContextStrategy_DoesNotError(t *testing.T) {
 	installRunScriptedProvider(t, &scriptedProvider{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{

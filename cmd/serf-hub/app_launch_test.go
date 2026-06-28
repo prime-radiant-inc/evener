@@ -88,6 +88,13 @@ func TestLaunchController_SetLayer_ProjectWritesLocalFile(t *testing.T) {
 	if _, err := os.Stat(paths.LegacyProject); !os.IsNotExist(err) {
 		t.Fatalf("legacy project layer should not be written, stat err=%v", err)
 	}
+	got, err := c.GetLayer(context.Background(), appwire.LaunchConfigGetLayerParams{CWD: cwd, Layer: "project"})
+	if err != nil {
+		t.Fatalf("GetLayer: %v", err)
+	}
+	if got.Model != "openai/gpt-5" {
+		t.Errorf("GetLayer model = %q, want openai/gpt-5", got.Model)
+	}
 }
 
 func TestLaunchController_GetLayer_ProjectReadsLegacyFallback(t *testing.T) {

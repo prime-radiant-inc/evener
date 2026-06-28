@@ -1434,10 +1434,31 @@ func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for source b notification")
 	}
+	// Prove isolation: send a sentinel on sourceA so clientA receives something.
+	// If sourceB's notification had leaked to clientA it would have arrived
+	// first (it was broadcast before the sentinel), so receiving the sentinel
+	// as the first notification structurally proves no cross-source leak.
+	sourceA.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: threadID,
+			Ref:      "codex-a:" + threadID,
+			TurnID:   "turn_sentinel",
+			ItemID:   "item_sentinel",
+			Delta:    "sentinel",
+		}),
+	}
 	select {
 	case got := <-clientA.Notifications():
-		t.Fatalf("clientA received cross-source notification: %+v", got)
-	case <-time.After(50 * time.Millisecond):
+		var params appwire.AgentMessageDeltaParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("clientA: unmarshal params: %v", err)
+		}
+		if params.Ref != "codex-a:"+threadID {
+			t.Fatalf("clientA received cross-source notification before sentinel: ref=%q", params.Ref)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for sentinel notification on clientA")
 	}
 }
 
@@ -1552,12 +1573,9 @@ func TestHubRPCThreadReadReplaceSubscriptionDropsPreviousRelaySubscriber(t *test
 			Delta:    "from source a",
 		}),
 	}
-	select {
-	case got := <-client.Notifications():
-		t.Fatalf("client received notification for replaced subscription: %+v", got)
-	case <-time.After(50 * time.Millisecond):
-	}
-
+	// Send sourceB notification immediately after sourceA. If the replaced
+	// subscription leaked, sourceA's notification would arrive first; the
+	// client must receive sourceB's as the first notification.
 	sourceB.notifications <- appwire.Notification{
 		Method: appwire.NotifyAgentMessageDelta,
 		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
@@ -1572,6 +1590,13 @@ func TestHubRPCThreadReadReplaceSubscriptionDropsPreviousRelaySubscriber(t *test
 	case got := <-client.Notifications():
 		if got.Method != appwire.NotifyAgentMessageDelta {
 			t.Fatalf("notification method=%q", got.Method)
+		}
+		var params appwire.AgentMessageDeltaParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("unmarshal params: %v", err)
+		}
+		if params.Ref != "codex-b:th_b" {
+			t.Fatalf("client received notification for replaced subscription before sentinel: ref=%q", params.Ref)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for active replacement subscription notification")
@@ -1716,7 +1741,9 @@ func TestHubRPCThreadReadKeepsReplacementRelayTrackedAfterIdleCleanup(t *testing
 
 	afterIdleDelete := make(chan struct{})
 	releaseCleanup := make(chan struct{})
+	cleanupDone := make(chan struct{})
 	var idleOnce sync.Once
+	var cleanupOnce sync.Once
 	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
 	cfg.RelayHooks.AfterIdleDelete = func(threadID string) {
 		if threadID != "th_cleanup" {
@@ -1724,6 +1751,7 @@ func TestHubRPCThreadReadKeepsReplacementRelayTrackedAfterIdleCleanup(t *testing
 		}
 		idleOnce.Do(func() { close(afterIdleDelete) })
 		<-releaseCleanup
+		cleanupOnce.Do(func() { close(cleanupDone) })
 	}
 	web := NewWebServer(cfg)
 	web.sources.Add(source)
@@ -1759,7 +1787,11 @@ func TestHubRPCThreadReadKeepsReplacementRelayTrackedAfterIdleCleanup(t *testing
 	}
 	expectRelaySubscription(t, source.subscribed)
 	close(releaseCleanup)
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-cleanupDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle cleanup goroutine did not complete")
+	}
 	drainRelaySubscriptions(source.subscribed)
 
 	if _, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
@@ -1896,10 +1928,30 @@ func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for retry relay notification")
 	}
+	// Send a sentinel and wait for okClient to receive it. After okClient
+	// receives the sentinel the relay pipeline has fully flushed: any
+	// notification that failedClient (if wrongly subscribed) would have
+	// received from the first broadcast is already in its buffer, because
+	// Broadcast enqueues to all subscribers synchronously before moving on.
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: threadID,
+			Ref:      "codex:" + threadID,
+			TurnID:   "turn_sentinel",
+			ItemID:   "item_sentinel",
+			Delta:    "sentinel",
+		}),
+	}
+	select {
+	case <-okClient.Notifications():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for sentinel notification")
+	}
 	select {
 	case got := <-failedClient.Notifications():
 		t.Fatalf("failed client received stale relay notification: %+v", got)
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 }
 

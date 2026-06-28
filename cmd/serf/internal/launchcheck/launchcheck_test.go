@@ -41,6 +41,10 @@ func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
 	if out.Protocol != appwire.ProtocolVersion || out.Provider != "openrouter" || out.Model != "free" {
 		t.Fatalf("launch check output=%+v", out)
 	}
+	// Literal check: catches a change to the ProtocolVersion constant value.
+	if out.Protocol != "serf-appwire-v1" {
+		t.Fatalf("out.Protocol=%q, want \"serf-appwire-v1\"", out.Protocol)
+	}
 }
 
 func TestLaunchCheckListsLiveModelsFromConfiguredProviders(t *testing.T) {
@@ -99,7 +103,7 @@ func TestLaunchCheckReportsModelEnumerationDiagnostics(t *testing.T) {
 	for _, got := range out.Diagnostics {
 		if got.Provider == "openai" {
 			found = true
-			if got.Source != "provider" || got.Title == "" || !strings.Contains(got.Message, "403") {
+			if got.Source != "provider" || got.Title != "Provider error" || !strings.Contains(got.Message, "403") {
 				t.Fatalf("diagnostic=%+v", got)
 			}
 		}
@@ -271,6 +275,41 @@ func TestLaunchCheckModelListUnavailableClassifiesTransientFailures(t *testing.T
 		{
 			name: "net timeout",
 			err:  launchCheckTimeoutError{},
+			want: true,
+		},
+		{
+			name: "http 403",
+			err:  errors.New("http 403 forbidden"),
+			want: true,
+		},
+		{
+			name: "http 404",
+			err:  errors.New("http 404 not found"),
+			want: true,
+		},
+		{
+			name: "does not support listing models",
+			err:  errors.New("does not support listing models"),
+			want: true,
+		},
+		{
+			name: "i/o timeout",
+			err:  errors.New("read tcp: i/o timeout"),
+			want: true,
+		},
+		{
+			name: "client.timeout exceeded",
+			err:  errors.New("net/http: request canceled (client.timeout exceeded while awaiting headers)"),
+			want: true,
+		},
+		{
+			name: "timeout awaiting response headers",
+			err:  errors.New("timeout awaiting response headers"),
+			want: true,
+		},
+		{
+			name: "network is unreachable",
+			err:  errors.New("dial tcp: connect: network is unreachable"),
 			want: true,
 		},
 		{

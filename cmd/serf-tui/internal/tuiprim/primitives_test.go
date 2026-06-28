@@ -20,6 +20,9 @@ func TestFocusedStateBarReturnsDoubleGlyph(t *testing.T) {
 	if strings.Count(bar, "▍") != 2 {
 		t.Errorf("FocusedStateBar should contain two ▍ glyphs; got %q", bar)
 	}
+	if !strings.Contains(bar, "▍▍") {
+		t.Errorf("FocusedStateBar glyphs must be adjacent (▍▍); got %q", bar)
+	}
 }
 
 func TestSectionDividerEmitsLeftRight(t *testing.T) {
@@ -43,20 +46,29 @@ func TestSectionDividerUsesRuleGlyphs(t *testing.T) {
 }
 
 func TestSectionDividerTruncatesAtNarrowWidth(t *testing.T) {
-	out := SectionDivider(20, "VERY LONG LEFT", "VERY LONG RIGHT")
+	const width = 20
+	out := SectionDivider(width, "VERY LONG LEFT", "VERY LONG RIGHT")
 	visible := lipgloss.Width(out)
-	if visible > 25 {
-		t.Errorf("SectionDivider too wide at narrow width; got width %d", visible)
+	if visible > width {
+		t.Errorf("SectionDivider too wide at narrow width; got width %d, want <= %d", visible, width)
 	}
 }
 
 func TestKbdHintFormatsKeyAndAction(t *testing.T) {
-	out := KbdHint("enter", "send")
-	if !strings.Contains(out, "enter") {
+	const key, action = "enter", "send"
+	out := KbdHint(key, action)
+	if !strings.Contains(out, key) {
 		t.Errorf("KbdHint missing key: %q", out)
 	}
-	if !strings.Contains(out, "send") {
+	if !strings.Contains(out, action) {
 		t.Errorf("KbdHint missing action: %q", out)
+	}
+	// Key must precede action and be separated by exactly one space.
+	if strings.Index(out, key) >= strings.Index(out, action) {
+		t.Errorf("KbdHint key should appear before action; got %q", out)
+	}
+	if !strings.Contains(out, key+" "+action) {
+		t.Errorf("KbdHint expected key and action separated by one space; got %q", out)
 	}
 }
 
@@ -74,9 +86,20 @@ func TestDotLeaderFillsMiddle(t *testing.T) {
 }
 
 func TestDotLeaderHandlesOverflow(t *testing.T) {
-	out := DotLeader("verylongverb", "and result text here", 10)
-	if lipgloss.Width(out) > 10 {
-		t.Errorf("DotLeader exceeded width on overflow: width=%d", lipgloss.Width(out))
+	const width = 10
+	left := "verylongverb"
+	right := "and result text here"
+	out := DotLeader(left, right, width)
+	if out == "" {
+		t.Fatalf("DotLeader returned empty string on overflow")
+	}
+	w := lipgloss.Width(out)
+	if w > width {
+		t.Errorf("DotLeader exceeded width on overflow: got width %d, want <= %d", w, width)
+	}
+	// The truncated output must preserve a meaningful prefix of one of the input strings.
+	if !strings.HasPrefix(out, "and") && !strings.HasPrefix(out, "very") {
+		t.Errorf("DotLeader overflow result missing meaningful content: %q", out)
 	}
 }
 

@@ -89,14 +89,17 @@ func TestRegistryRejectsMissingSource(t *testing.T) {
 
 func TestRegistryAllReturnsSourcesInIDOrder(t *testing.T) {
 	reg := NewRegistry()
+	// Insert in non-lexicographic order; "local" sorts between "codex" and "serf",
+	// so all three positions must be correct — a random permutation matches in only 1/6 runs.
 	reg.Add(fakeSource{id: "serf"})
 	reg.Add(fakeSource{id: "codex"})
+	reg.Add(fakeSource{id: "local"})
 
 	sources := reg.All()
-	if len(sources) != 2 {
+	if len(sources) != 3 {
 		t.Fatalf("sources=%d", len(sources))
 	}
-	if sources[0].ID() != "codex" || sources[1].ID() != "serf" {
-		t.Fatalf("source order=%s,%s", sources[0].ID(), sources[1].ID())
+	if sources[0].ID() != "codex" || sources[1].ID() != "local" || sources[2].ID() != "serf" {
+		t.Fatalf("source order=%s,%s,%s", sources[0].ID(), sources[1].ID(), sources[2].ID())
 	}
 }

@@ -86,9 +86,14 @@ func TestWebWorkspaceContentColumnCSSContract(t *testing.T) {
 	}
 	css := string(data)
 
+	// Check each selector individually rather than the exact joined form, so
+	// that CSS reformatting (whitespace, selector ordering, CRLF) does not
+	// break the test while the stylesheet remains semantically identical.
 	checks := []string{
 		"--workspace-content-max-w: 832px;",
-		".workspace-header,\n.conversation,\n.workspace-input",
+		".workspace-header,",
+		".conversation,",
+		".workspace-input {",
 		"width: min(100%, var(--workspace-content-max-w));",
 		"margin-inline: auto;",
 	}
@@ -1595,6 +1600,9 @@ func TestWeb_Assets_ServeHtmx(t *testing.T) {
 	if rec.Body.Len() < 1000 {
 		t.Errorf("htmx.min.js too small: %d bytes", rec.Body.Len())
 	}
+	if !strings.Contains(rec.Body.String(), "htmx") {
+		t.Errorf("htmx.min.js body does not contain 'htmx' — wrong file served")
+	}
 }
 
 func TestWeb_Assets_ServeRenderer(t *testing.T) {
@@ -2589,28 +2597,68 @@ func TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument(t *testing.
 }
 
 func TestWeb_ThreadDocument_RouteEncoding(t *testing.T) {
+	// Seed the past index with a local session whose canonical ID is "child-A"
+	// (what canonicalRouteID produces by stripping the "local:" source prefix).
+	// The test then requests /thread/local%3Achild-A — the %3A must be decoded
+	// to ':' before the prefix is stripped, otherwise the wrong key is used and
+	// the registered session is not found.
+	stateParent := t.TempDir()
+	stateDir := filepath.Join(stateParent, "project1")
+	sessionMeta := schema.SessionMeta{
+		ID:   "child-A",
+		Name: "route-encoding-test-title",
+	}
+	if err := schema.SaveSessionMeta(stateDir, sessionMeta); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	past := hubcore.NewPastIndex(stateParent + "/*")
+	if err := past.Rebuild(); err != nil {
+		t.Fatalf("past.Rebuild: %v", err)
+	}
+
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
-		Past:    hubcore.NewPastIndex(""),
+		Past:    past,
 	})
 
-	cases := []string{
-		"local%3Achild-A",
-		"codex%3Ath_active",
-		"bare-session",
-	}
-	for _, encoded := range cases {
-		t.Run(encoded, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/thread/"+encoded, nil)
-			req.Host = "127.0.0.1:9180"
-			rec := httptest.NewRecorder()
-			web.Handler().ServeHTTP(rec, req)
-			if rec.Code != http.StatusOK && rec.Code != http.StatusNotFound {
-				t.Fatalf("unexpected status for encoded route %s: %d", encoded, rec.Code)
-			}
-		})
-	}
+	// Encoded local ref: %3A must decode to ':' so the source prefix is stripped
+	// and the "child-A" session is resolved from the past index.
+	t.Run("encoded-local-ref", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/thread/local%3Achild-A", nil)
+		req.Host = "127.0.0.1:9180"
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "route-encoding-test-title") {
+			t.Errorf("body should contain session title after URL decode; got:\n%s", rec.Body.String())
+		}
+	})
+
+	// Non-local source: encoded separator still decoded, handler returns OK with
+	// fallback workspace (no codex source configured in this test).
+	t.Run("encoded-remote-ref", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/thread/codex%3Ath_active", nil)
+		req.Host = "127.0.0.1:9180"
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d", rec.Code)
+		}
+	})
+
+	// Plain session ID with no encoding needed.
+	t.Run("bare-session", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/thread/bare-session", nil)
+		req.Host = "127.0.0.1:9180"
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d", rec.Code)
+		}
+	})
 }
 
 func TestWeb_ThreadDocument_SecurityHeaders(t *testing.T) {
@@ -3087,8 +3135,10 @@ func TestWeb_WorkspaceInitialMetaDoesNotDuplicateTitleOOB(t *testing.T) {
 }
 
 func TestFormatContextNumbersShowsUsedWindowAndRemaining(t *testing.T) {
-	got := formatContextNumbers(42000, 100000, 58000)
-	want := "42k / 100k tokens (58k left)"
+	// Use remaining=55000 ≠ window-used=58000 so the test detects any mutation
+	// that recomputes remaining as window-used instead of using the parameter.
+	got := formatContextNumbers(42000, 100000, 55000)
+	want := "42k / 100k tokens (55k left)"
 	if got != want {
 		t.Fatalf("formatContextNumbers() = %q, want %q", got, want)
 	}
@@ -3578,6 +3628,7 @@ func TestWeb_ApiModels_ReturnsListWithProviderEnv(t *testing.T) {
 	liveModelsCache.expires = time.Time{}
 	liveModelsCache.models = nil
 	liveModelsCache.mu.Unlock()
+	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	if os.Getenv("SERF_LIVE_TESTS") != "1" {
 		t.Skip("set SERF_LIVE_TESTS=1 to run live provider model-list test")
 	}
@@ -3633,6 +3684,7 @@ func TestWeb_ApiModels_ReturnsSerfLaunchContractWhenLiveUnavailable(t *testing.T
 	liveModelsCache.expires = time.Time{}
 	liveModelsCache.models = nil
 	liveModelsCache.mu.Unlock()
+	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
@@ -3714,6 +3766,7 @@ func TestWeb_ApiModels_DoesNotUseLiveProvidersWhenLaunchContractIsEmpty(t *testi
 	liveModelsCache.expires = time.Time{}
 	liveModelsCache.models = nil
 	liveModelsCache.mu.Unlock()
+	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
@@ -3879,6 +3932,7 @@ func TestWeb_ApiModels_DiagnosticsParamReturnsModelsAndDiagnostics(t *testing.T)
 	liveModelsCache.expires = time.Time{}
 	liveModelsCache.models = nil
 	liveModelsCache.mu.Unlock()
+	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
@@ -3922,6 +3976,7 @@ func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
 	liveModelsCache.expires = time.Time{}
 	liveModelsCache.models = nil
 	liveModelsCache.mu.Unlock()
+	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")
@@ -3977,6 +4032,7 @@ func TestWeb_ApiModels_NoProvidersConfigured(t *testing.T) {
 	liveModelsCache.expires = time.Time{}
 	liveModelsCache.models = nil
 	liveModelsCache.mu.Unlock()
+	t.Cleanup(func() { liveModelsCache = modelsCache{} })
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("GEMINI_API_KEY", "")

@@ -90,7 +90,7 @@ func TestApplyFastCheapModel_BlankKeepsDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("applyFastCheapModel: %v", err)
 	}
-	if got.CheapModel() != profile.CheapModel() {
-		t.Fatalf("CheapModel() = %q, want %q", got.CheapModel(), profile.CheapModel())
+	if got.CheapModel() != "gpt-4.1-nano" {
+		t.Fatalf("CheapModel() = %q, want gpt-4.1-nano", got.CheapModel())
 	}
 }

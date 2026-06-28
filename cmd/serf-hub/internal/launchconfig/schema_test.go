@@ -21,10 +21,22 @@ func TestLaunchOptionSchema_FieldCoverage(t *testing.T) {
 		"model_fallbacks", "env",
 		"verbose", "raw_http_logging", "trace_file", "cpu_profile", "export_atif_path", "export_atif_provider_handles",
 	}
+	wantSet := map[string]bool{}
 	for _, field := range want {
+		wantSet[field] = true
 		if !got[field] {
 			t.Fatalf("schema missing field %q", field)
 		}
+	}
+	// Bidirectional: every schema field must appear in want so that new fields
+	// are not silently skipped by this coverage check.
+	for field := range got {
+		if !wantSet[field] {
+			t.Errorf("schema has unexpected field %q — add it to the want list or LaunchOptionExclusions", field)
+		}
+	}
+	if len(got) != len(wantSet) {
+		t.Errorf("schema has %d unique fields, want %d", len(got), len(wantSet))
 	}
 }
 

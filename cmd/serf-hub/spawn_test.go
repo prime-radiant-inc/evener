@@ -72,17 +72,19 @@ func TestBuildSpawnArgs_FromResolved(t *testing.T) {
 	}}
 	req := hubcore.SpawnRequest{Resolved: r, WorkingDir: "/wd", StateDir: "/st", RunDir: "/rn"}
 	got := buildSpawnArgs(req)
-	wantHas := []string{"--addr", "127.0.0.1:0", "--dir", "/wd", "--state-dir", "/st", "--run-dir", "/rn", "--model", "openai/gpt-5", "--agent", "default", "--skills-dir", "/sk"}
-	for _, w := range wantHas {
-		found := false
-		for _, a := range got {
-			if a == w {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("buildSpawnArgs missing %q in %v", w, got)
+	m := pairsToMap(got)
+	wantPairs := map[string]string{
+		"--addr":       "127.0.0.1:0",
+		"--dir":        "/wd",
+		"--state-dir":  "/st",
+		"--run-dir":    "/rn",
+		"--model":      "openai/gpt-5",
+		"--agent":      "default",
+		"--skills-dir": "/sk",
+	}
+	for k, v := range wantPairs {
+		if m[k] != v {
+			t.Errorf("arg %s: got %q, want %q", k, m[k], v)
 		}
 	}
 }
@@ -808,11 +810,9 @@ func TestRedactEnvSecretsKeepsShortSensitiveValues(t *testing.T) {
 func TestResolveSerfStateDirMatchesServeDefaultForWorkingDir(t *testing.T) {
 	dir := t.TempDir()
 	got := resolveSerfStateDir(dir, "")
-	if got == "" {
-		t.Fatal("state dir is empty")
-	}
-	if !strings.Contains(got, "serf") {
-		t.Fatalf("state dir=%q, want serf runtime path", got)
+	wantPrefix := filepath.Join(os.Getenv("XDG_STATE_HOME"), "serf", "projects")
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Fatalf("state dir=%q, want prefix %q", got, wantPrefix)
 	}
 }
 
