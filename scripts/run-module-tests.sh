@@ -31,7 +31,11 @@
 set -uo pipefail
 
 WAVE1=${WAVE1:-"."}
-WAVE2=${WAVE2:-"agent llm auth"}
+# fuzz is the serf-agnostic toolkit module (promoter/schemagen): CPU-only unit
+# tests with no tmux/TUI timing sensitivity, so it rides WAVE2 alongside the
+# other library modules. Listed here (not just in the Makefile's GO_MODULES,
+# which this script does not read) so its tests are actually gated.
+WAVE2=${WAVE2:-"agent llm auth fuzz"}
 # Extra -parallel for the agent wave. Defaults to 32 (helps overlap the few
 # remaining timer waits on multi-core dev machines). An explicit empty value
 # (note: -, not :-) means "don't pass -parallel" so go test uses GOMAXPROCS —

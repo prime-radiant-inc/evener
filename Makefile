@@ -76,7 +76,7 @@ test-install:
 # libraries. Under go.work, `./...` resolves per-module, so the gates must loop
 # over each module to cover the whole repo (root-only `./...` silently skips the
 # agent/llm/auth library test suites and lint).
-GO_MODULES := . agent llm auth
+GO_MODULES := . agent llm auth fuzz
 
 test:
 	@MODULES="$(GO_MODULES)" scripts/run-module-tests.sh -count=1
