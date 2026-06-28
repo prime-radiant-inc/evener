@@ -173,13 +173,11 @@ func FuzzWebHandler(f *testing.F) {
 
 		handler.ServeHTTP(rec, req) // Oracle 1: never panics.
 
-		// Oracle 2: serf-authored handlers must never 5xx — bad input may yield a
-		// 4xx, but a 500 is a defect. /assets/ is excluded: it is a bare stdlib
-		// http.FileServer(http.FS(embed.FS)) with no serf logic, and net/http maps
-		// an fs.ErrInvalid path (e.g. an invalid-UTF-8 byte like /assets/%99) to a
-		// 500 rather than a 404. That is a documented net/http behavior, surfaced
-		// by this fuzz and recorded as a finding, not serf handler logic to assert.
-		if base != "/assets/" && rec.Code >= 500 {
+		// Oracle 2: handlers must never 5xx — bad input may yield a 4xx, but a 500
+		// is a defect. /assets/ is included: validAssetPath maps the fs.ErrInvalid
+		// path that a bare http.FileServer would 500 on (e.g. /assets/%99) to a
+		// 404, so the file server is now held to the same never-5xx contract.
+		if rec.Code >= 500 {
 			t.Fatalf("5xx from GET %s: status=%d body=%s", req.URL, rec.Code, truncateForLog(rec.Body.String()))
 		}
 		// Oracle 3: never serve the out-of-root secret.

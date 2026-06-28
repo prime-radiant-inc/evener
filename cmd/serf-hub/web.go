@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -131,11 +132,26 @@ func (s *WebServer) lockForSession(sessionID string) *sync.Mutex {
 
 // Handler returns the http.Handler with all routes wired and the security
 // guard middleware applied.
+// validAssetPath short-circuits asset requests whose cleaned path fs.ValidPath
+// rejects (e.g. an invalid-UTF-8 byte) to a 404. A bare http.FileServer maps
+// the resulting fs.ErrInvalid to a 500; for a static file server a malformed
+// path is a not-found, not a server fault.
+func validAssetPath(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		if name != "" && !fs.ValidPath(name) {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *WebServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Assets — served from disk when SERF_HUB_ASSETS_DIR is set (dev), else embed.
-	assetHandler := http.StripPrefix("/assets/", http.FileServer(http.FS(assetsRoot())))
+	assetHandler := http.StripPrefix("/assets/", validAssetPath(http.FileServer(http.FS(assetsRoot()))))
 	if devAssetsDir() != "" {
 		// In the on-disk dev mode, disable caching so CSS/JS edits take effect on
 		// reload without the browser serving a stale heuristically-cached copy.
