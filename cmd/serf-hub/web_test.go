@@ -33,6 +33,23 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
+// TestAssetsInvalidPathIs404 pins that the static asset handler maps an
+// unreadable path — an invalid-UTF-8 byte that fs.ValidPath rejects — to a 404
+// rather than the 500 a bare http.FileServer returns for fs.ErrInvalid. A
+// merely-missing asset must also be 404. (Surfaced by FuzzWebHandler.)
+func TestAssetsInvalidPathIs404(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
+	handler := web.Handler()
+	for _, p := range []string{"/assets/%99", "/assets/%ff%fe", "/assets/missing.css"} {
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s: status=%d, want 404", p, rec.Code)
+		}
+	}
+}
+
 // controlTag returns the opening <button …> tag whose attributes contain the
 // given marker (a stable hook like a data-* attribute). Assertions check a
 // control's state — disabled, capability flags — off this tag instead of
