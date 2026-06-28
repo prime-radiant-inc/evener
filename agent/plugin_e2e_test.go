@@ -212,10 +212,14 @@ func TestPlugin_EndToEnd_HookExecution(t *testing.T) {
 		runner.Add(event, eventHooks...)
 	}
 
-	// Track events
-	var evs []events.EventKind
+	// capturedEvent pairs a lifecycle kind with its payload for post-run inspection.
+	type capturedEvent struct {
+		kind events.EventKind
+		data events.EventData
+	}
+	var evs []capturedEvent
 	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
-		evs = append(evs, kind)
+		evs = append(evs, capturedEvent{kind, data})
 	})
 
 	// Fire SessionStart
@@ -225,24 +229,46 @@ func TestPlugin_EndToEnd_HookExecution(t *testing.T) {
 		HookEventName: "SessionStart",
 	}
 	result := runner.RunSessionStart(context.Background(), input)
+	// A successful command hook produces no model-context or user messages.
+	if len(result.ModelContext) != 0 {
+		t.Errorf("unexpected ModelContext from hook: %v", result.ModelContext)
+	}
 
-	// RunSessionStart returns hookRunResult; any system messages are informational.
-	// The absence of error-level messages means the hook succeeded.
-	_ = result
-
-	// Verify the marker file was created by the hook command
+	// Verify the marker file was created by the hook command.
 	if _, err := os.Stat(filepath.Join(pluginDir, "started")); err != nil {
 		t.Errorf("SessionStart hook did not create marker file: %v", err)
 	}
 
-	// Verify lifecycle events were emitted (HookStart + HookEnd per hook)
-	if len(evs) != 2 {
-		t.Fatalf("expected 2 events (HookStart + HookEnd), got %d: %v", len(evs), evs)
+	// containsKind reports whether any captured event has the given kind.
+	containsKind := func(kind events.EventKind) bool {
+		for _, ev := range evs {
+			if ev.kind == kind {
+				return true
+			}
+		}
+		return false
 	}
-	if evs[0] != events.EventHookStart {
-		t.Errorf("events[0] = %q, want %q", evs[0], events.EventHookStart)
+
+	// Both HookStart and HookEnd must be present. Additional lifecycle events
+	// (e.g. EventHookProgress) are allowed without breaking this assertion.
+	if !containsKind(events.EventHookStart) {
+		t.Errorf("EventHookStart not emitted; got: %v", evs)
 	}
-	if evs[1] != events.EventHookEnd {
-		t.Errorf("events[1] = %q, want %q", evs[1], events.EventHookEnd)
+	if !containsKind(events.EventHookEnd) {
+		t.Errorf("EventHookEnd not emitted; got: %v", evs)
+	}
+
+	// HookEnd must report ExitCode==0: the hook command must have succeeded.
+	for _, ev := range evs {
+		if ev.kind != events.EventHookEnd {
+			continue
+		}
+		endData, ok := ev.data.(events.HookEndData)
+		if !ok {
+			t.Fatalf("EventHookEnd payload has unexpected type %T", ev.data)
+		}
+		if endData.ExitCode != 0 {
+			t.Errorf("HookEnd ExitCode = %d, want 0", endData.ExitCode)
+		}
 	}
 }

@@ -45,6 +45,10 @@ func TestSessionLog_AppendAndRead(t *testing.T) {
 	if entries[1].Turn != 2 || entries[1].Action != "edit_file" {
 		t.Errorf("entry2 mismatch: got %+v", entries[1])
 	}
+	// SL-02: verify FilesTouched is stored and returned faithfully
+	if len(entries[1].FilesTouched) != 1 || entries[1].FilesTouched[0] != "auth.py" {
+		t.Errorf("entry2 FilesTouched mismatch: got %+v", entries[1].FilesTouched)
+	}
 }
 
 func TestSessionLog_Persistence(t *testing.T) {
@@ -54,10 +58,11 @@ func TestSessionLog_Persistence(t *testing.T) {
 	// Create log and append entries
 	log1 := mustNewSessionLog(t, path)
 	entry1 := SessionLogEntry{
-		Turn:    1,
-		Action:  "shell",
-		Summary: "First command",
-		Outcome: "success",
+		Turn:         1,
+		Action:       "shell",
+		Summary:      "First command",
+		Outcome:      "success",
+		FilesTouched: []string{"config.yaml"}, // SL-02: verify field survives round-trip
 	}
 	entry2 := SessionLogEntry{
 		Turn:     2,
@@ -82,10 +87,13 @@ func TestSessionLog_Persistence(t *testing.T) {
 		t.Fatalf("expected 2 entries after reload, got %d", len(entries))
 	}
 
-	if entries[0].Turn != 1 || entries[0].Summary != "First command" {
+	// SL-02: FilesTouched must survive the disk round-trip
+	if entries[0].Turn != 1 || entries[0].Summary != "First command" ||
+		len(entries[0].FilesTouched) != 1 || entries[0].FilesTouched[0] != "config.yaml" {
 		t.Errorf("entry1 not persisted correctly: got %+v", entries[0])
 	}
-	if entries[1].Turn != 2 || len(entries[1].Failures) != 1 {
+	// SL-03: pin the exact failure string, not just the count
+	if entries[1].Turn != 2 || len(entries[1].Failures) != 1 || entries[1].Failures[0] != "file not found" {
 		t.Errorf("entry2 not persisted correctly: got %+v", entries[1])
 	}
 }
@@ -140,19 +148,23 @@ func TestSessionLog_Range(t *testing.T) {
 		}
 	}
 
+	// SL-01: wantFirst/wantLast are the expected Turn values at the slice boundaries;
+	// -1 means "no entries expected, skip the identity check".
 	tests := []struct {
-		name  string
-		start int
-		end   int
-		want  int
+		name      string
+		start     int
+		end       int
+		want      int
+		wantFirst int
+		wantLast  int
 	}{
-		{"middle range", 2, 5, 3},
-		{"full range", 0, 10, 10},
-		{"start clamped", -5, 3, 3},
-		{"end clamped", 5, 20, 5},
-		{"both clamped", -5, 20, 10},
-		{"empty range", 5, 5, 0},
-		{"reversed range", 5, 3, 0},
+		{"middle range", 2, 5, 3, 2, 4},
+		{"full range", 0, 10, 10, 0, 9},
+		{"start clamped", -5, 3, 3, 0, 2},
+		{"end clamped", 5, 20, 5, 5, 9},
+		{"both clamped", -5, 20, 10, 0, 9},
+		{"empty range", 5, 5, 0, -1, -1},
+		{"reversed range", 5, 3, 0, -1, -1},
 	}
 
 	for _, tt := range tests {
@@ -160,6 +172,19 @@ func TestSessionLog_Range(t *testing.T) {
 			entries := log.EntriesRange(tt.start, tt.end)
 			if len(entries) != tt.want {
 				t.Errorf("EntriesRange(%d, %d) = %d entries, want %d", tt.start, tt.end, len(entries), tt.want)
+			}
+			// Verify the window identity: wrong slice offset returns the right count but wrong turns.
+			if tt.wantFirst >= 0 {
+				if len(entries) == 0 {
+					t.Errorf("EntriesRange(%d, %d): expected non-empty slice", tt.start, tt.end)
+				} else {
+					if entries[0].Turn != tt.wantFirst {
+						t.Errorf("EntriesRange(%d, %d) first Turn = %d, want %d", tt.start, tt.end, entries[0].Turn, tt.wantFirst)
+					}
+					if entries[len(entries)-1].Turn != tt.wantLast {
+						t.Errorf("EntriesRange(%d, %d) last Turn = %d, want %d", tt.start, tt.end, entries[len(entries)-1].Turn, tt.wantLast)
+					}
+				}
 			}
 		})
 	}
@@ -194,26 +219,15 @@ func TestSessionLog_String(t *testing.T) {
 
 	str := log.String()
 
-	// Verify format contains key information
-	if str == "" {
-		t.Error("String() returned empty string")
+	// SL-04: assert the exact formatted line for each entry so that swapping
+	// Action and Outcome fields in the format string is caught.
+	want1 := "Turn 47 [edit_file] success: Modified auth middleware"
+	want2 := "Turn 48 [shell] failure: Ran tests"
+	if !strings.Contains(str, want1) {
+		t.Errorf("String() missing expected line %q\nGot: %s", want1, str)
 	}
-	// Should contain turn number, action, outcome, and summary
-	expectedSubstrings := []string{
-		"Turn 47",
-		"edit_file",
-		"success",
-		"Modified auth middleware",
-		"Turn 48",
-		"shell",
-		"failure",
-		"Ran tests",
-	}
-
-	for _, substr := range expectedSubstrings {
-		if !strings.Contains(str, substr) {
-			t.Errorf("String() missing expected substring: %q\nGot: %s", substr, str)
-		}
+	if !strings.Contains(str, want2) {
+		t.Errorf("String() missing expected line %q\nGot: %s", want2, str)
 	}
 }
 

@@ -15,10 +15,12 @@ import (
 
 // waitForTreeCount polls the tree counter until it reaches want or the deadline
 // elapses. Reservations and releases happen on spawn/resume/drive/finalize
-// goroutines, so the count is observed asynchronously.
+// goroutines, so the count is observed asynchronously. The 5 s deadline is
+// generous enough to accommodate -race on slow/few-core boxes without being so
+// long that a genuine hang goes undetected.
 func waitForTreeCount(t *testing.T, c *treeCounter, want int64) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if got := c.n.Load(); got == want {
 			return
@@ -321,7 +323,7 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 	if !sess.driveSubagentNotificationTurn(coordSub) {
 		t.Fatal("driveSubagentNotificationTurn returned false after a slot freed; the retry should launch")
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) && coordSub.sess.peekNotifications() != 0 {
 		time.Sleep(10 * time.Millisecond)
 	}

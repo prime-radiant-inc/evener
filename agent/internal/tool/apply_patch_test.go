@@ -80,6 +80,9 @@ func TestApplyPatch_EndOfFileMarker(t *testing.T) {
 	if !strings.Contains(string(got), "replaced") {
 		t.Fatal("patch not applied")
 	}
+	if strings.Contains(string(got), "line2") {
+		t.Fatal("replaced line 'line2' should have been removed by patch")
+	}
 }
 
 func TestApplyPatch_FuzzyWhitespaceMatching(t *testing.T) {
@@ -97,6 +100,9 @@ func TestApplyPatch_FuzzyWhitespaceMatching(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(dir, "f.txt"))
 	if !strings.Contains(string(got), "farewell") {
 		t.Fatal("fuzzy match patch not applied")
+	}
+	if strings.Contains(string(got), "goodbye") {
+		t.Fatal("replaced line 'goodbye' should have been removed by patch")
 	}
 }
 
@@ -287,6 +293,9 @@ func TestApplyPatch_FuzzyMatch_UnicodeQuotes(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(dir, "test.go"))
 	if !strings.Contains(string(got), "goodbye world") {
 		t.Errorf("expected result to contain 'goodbye world', got:\n%s\nresult: %s", string(got), result)
+	}
+	if strings.Contains(string(got), "hello world") {
+		t.Errorf("original line 'hello world' should have been removed by patch, got:\n%s", string(got))
 	}
 }
 

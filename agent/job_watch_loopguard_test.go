@@ -113,7 +113,7 @@ func TestValidateWatchDeliveryLoop(t *testing.T) {
 			t.Cleanup(func() { _ = jm.close() })
 			jm.enqueue = func(jobNotification) {}
 			args := tt.build(t, jm)
-			_, err := jm.configureWatch(args)
+			res, err := jm.configureWatch(args)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("configureWatch(%+v) = nil error, want feedback-loop rejection", args)
@@ -131,6 +131,9 @@ func TestValidateWatchDeliveryLoop(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("configureWatch(%+v) = %v, want no error", args, err)
+			}
+			if jm.watchCount() == 0 {
+				t.Fatalf("allowed watch was not installed; watchCount = 0, result = %+v", res)
 			}
 		})
 	}

@@ -2,6 +2,7 @@ package events_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -19,14 +20,42 @@ func TestSessionEventCarriesCausalProvenanceOnEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal event: %v", err)
 	}
-	s := string(b)
-	for _, want := range []string{`"provenance"`, `"watch_id":"watch_A"`, `"watch_generation":"wg_1"`, `"delivery_id":"wd_1"`} {
-		if !strings.Contains(s, want) {
-			t.Fatalf("event JSON missing %s: %s", want, s)
+
+	// Parse the envelope as a flat map to verify structural placement.
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(b, &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+
+	// Provenance must be a non-null top-level key on the envelope.
+	provRaw, ok := envelope["provenance"]
+	if !ok {
+		t.Fatalf("envelope missing top-level \"provenance\" key: %s", b)
+	}
+	if string(provRaw) == "null" {
+		t.Fatalf("envelope \"provenance\" is null: %s", b)
+	}
+
+	// Verify the expected provenance fields appear inside the provenance JSON.
+	ps := string(provRaw)
+	for _, want := range []string{`"watch_id":"watch_A"`, `"watch_generation":"wg_1"`, `"delivery_id":"wd_1"`} {
+		if !strings.Contains(ps, want) {
+			t.Errorf("provenance JSON missing %s: %s", want, ps)
 		}
 	}
-	if strings.Contains(s, `"data":{"provenance"`) {
-		t.Fatalf("provenance must live on event envelope, not payload: %s", s)
+
+	// Data must NOT contain a "provenance" sub-key: provenance belongs on the
+	// envelope, not the payload.
+	dataRaw, ok := envelope["data"]
+	if !ok {
+		t.Fatalf("envelope missing \"data\" key: %s", b)
+	}
+	var dataMap map[string]json.RawMessage
+	if err := json.Unmarshal(dataRaw, &dataMap); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if _, hasProv := dataMap["provenance"]; hasProv {
+		t.Fatalf("provenance must live on event envelope, not payload: %s", b)
 	}
 }
 
@@ -74,13 +103,48 @@ func TestNewDerivesCorrectKind(t *testing.T) {
 			if ev.Kind != tt.wantKind {
 				t.Errorf("New(%T).Kind = %q, want %q", tt.data, ev.Kind, tt.wantKind)
 			}
-			if ev.Data == nil {
-				t.Errorf("New(%T).Data = nil, want non-nil", tt.data)
+			if !reflect.DeepEqual(ev.Data, tt.data) {
+				t.Errorf("New(%T).Data = %+v, want %+v", tt.data, ev.Data, tt.data)
 			}
 			if ev.Timestamp.IsZero() {
 				t.Errorf("New(%T).Timestamp is zero", tt.data)
 			}
 		})
+	}
+}
+
+func TestEventKindWireStrings(t *testing.T) {
+	// Verify that EventKind constants equal their wire strings. An accidental
+	// rename (e.g. "SESSION_START" → "SESSION_STARTED") must fail here rather
+	// than silently breaking JSON consumers.
+	tests := []struct {
+		kind events.EventKind
+		want string
+	}{
+		{events.EventSessionStart, "SESSION_START"},
+		{events.EventSessionEnd, "SESSION_END"},
+		{events.EventUserInput, "USER_INPUT"},
+		{events.EventAssistantTextStart, "ASSISTANT_TEXT_START"},
+		{events.EventAssistantTextDelta, "ASSISTANT_TEXT_DELTA"},
+		{events.EventAssistantTextEnd, "ASSISTANT_TEXT_END"},
+		{events.EventCommunicate, "COMMUNICATE"},
+		{events.EventWarning, "WARNING"},
+		{events.EventError, "ERROR"},
+	}
+	for _, tt := range tests {
+		if string(tt.kind) != tt.want {
+			t.Errorf("EventKind %q has wire string %q, want %q", tt.kind, string(tt.kind), tt.want)
+		}
+	}
+
+	// Confirm the wire string appears literally in marshaled JSON.
+	ev := events.New(events.SessionStartData{Profile: "p", Model: "m"})
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal SessionStart event: %v", err)
+	}
+	if want := `"kind":"SESSION_START"`; !strings.Contains(string(b), want) {
+		t.Errorf("marshaled SessionStart event missing %s: %s", want, b)
 	}
 }
 

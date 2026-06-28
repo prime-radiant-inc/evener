@@ -547,9 +547,24 @@ func TestCommunicate_InboxDrainsSteering(t *testing.T) {
 		t.Fatalf("communicate error: %s", res.Output)
 	}
 
-	// The tool result should contain the steering message in the inbox.
-	if !strings.Contains(res.Output, "change direction: do Y instead") {
-		t.Fatalf("expected steering message in inbox, got: %s", res.Output)
+	// The tool result should contain the steering message specifically inside the 'inbox' array.
+	var resp1 map[string]any
+	if err := json.Unmarshal([]byte(res.Output), &resp1); err != nil {
+		t.Fatalf("unmarshal first response: %v", err)
+	}
+	inbox1, ok := resp1["inbox"].([]any)
+	if !ok || len(inbox1) == 0 {
+		t.Fatalf("expected non-empty inbox array in response, got: %v", resp1)
+	}
+	found := false
+	for _, item := range inbox1 {
+		if s, ok := item.(string); ok && strings.Contains(s, "change direction: do Y instead") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected steering message inside inbox array, got inbox: %v", inbox1)
 	}
 
 	// A second call should have an empty inbox (steering was already drained).
@@ -558,10 +573,13 @@ func TestCommunicate_InboxDrainsSteering(t *testing.T) {
 		t.Fatalf("communicate error: %s", res2.Output)
 	}
 
-	// Parse the JSON to verify inbox is empty.
+	// Parse the JSON to verify inbox is present but empty.
 	var resp2 map[string]any
 	if err := json.Unmarshal(toolResultJSON(res2), &resp2); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, exists := resp2["inbox"]; !exists {
+		t.Fatal("inbox field missing from second response")
 	}
 	inbox2, _ := resp2["inbox"].([]any)
 	if len(inbox2) != 0 {

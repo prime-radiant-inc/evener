@@ -15,13 +15,19 @@ import (
 	"primeradiant.com/serf/agent/skill"
 )
 
-// pluginCacheDir is where the official Anthropic plugins are cached.
-const pluginCacheDir = "/Users/jesse/.claude/plugins/cache/claude-plugins-official"
+// pluginCacheDir returns the directory where the official Anthropic plugins are cached.
+// Set SERF_PLUGIN_CACHE_DIR to override the default macOS path, e.g. in CI or on Linux.
+func pluginCacheDir() string {
+	if dir := os.Getenv("SERF_PLUGIN_CACHE_DIR"); dir != "" {
+		return dir
+	}
+	return "/Users/jesse/.claude/plugins/cache/claude-plugins-official"
+}
 
 // realPluginDir returns the path to a real plugin or skips the test if not present.
 func realPluginDir(t *testing.T, subpath string) string {
 	t.Helper()
-	dir := filepath.Join(pluginCacheDir, subpath)
+	dir := filepath.Join(pluginCacheDir(), subpath)
 	if _, err := os.Stat(dir); err != nil {
 		t.Skipf("real plugin not found at %s (run with real plugins installed)", dir)
 	}
@@ -224,12 +230,18 @@ func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
 		t.Error("SessionStart hook should produce model context")
 	}
 
-	// Verify the output contains the expected content injection
+	// Verify the output contains the expected content injection.
+	// The hook must mention "superpowers" or "EXTREMELY_IMPORTANT"; a generic
+	// additionalContext that lacks these keywords must fail the test.
+	foundContext := false
 	for _, msg := range result.ModelContext {
 		if strings.Contains(msg, "superpowers") || strings.Contains(msg, "EXTREMELY_IMPORTANT") {
-			// Good - the hook injected its context
+			foundContext = true
 			break
 		}
+	}
+	if !foundContext {
+		t.Error("hook did not inject expected superpowers context")
 	}
 
 	// Verify lifecycle events fired

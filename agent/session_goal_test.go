@@ -403,7 +403,8 @@ func TestContinuationEventOmitsFullPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	sess.getOrCreateGoalStore().Set("make the tests pass", time.Now())
+	const objective = "make the tests pass"
+	sess.getOrCreateGoalStore().Set(objective, time.Now())
 
 	stop := drainEvents(sess)
 
@@ -430,8 +431,10 @@ func TestContinuationEventOmitsFullPrompt(t *testing.T) {
 	if !found {
 		t.Fatal("expected an EventGoalContinuation")
 	}
-	if marker != "Continuing toward: make the tests pass" {
-		t.Fatalf("marker = %q, want the compact objective form", marker)
+	// The marker must contain the objective so the UI surfaces which goal is running,
+	// but must not re-encode the exact prefix format (that is presentation, not behaviour).
+	if !strings.Contains(marker, objective) {
+		t.Fatalf("marker %q does not contain the objective %q", marker, objective)
 	}
 	if strings.Contains(marker, "scaffolding") {
 		t.Fatalf("marker leaked the full prompt: %q", marker)

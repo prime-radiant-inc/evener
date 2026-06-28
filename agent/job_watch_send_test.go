@@ -236,7 +236,10 @@ func TestWatchSendToResumedRunningDelegateSteersActiveRun(t *testing.T) {
 	}
 	select {
 	case <-adapter.secondStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
+		// Generous backstop: a goroutine that has been scheduled returns near-instantly,
+		// so this only bounds a genuine hang. Sized to tolerate heavy CPU load under
+		// -race on a slow/few-core CI box (matches waitForShellDone in job_shell_test.go).
 		t.Fatal("resumed delegate did not start")
 	}
 

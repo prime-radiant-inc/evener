@@ -357,14 +357,15 @@ func TestSessionLogStrategy_ExtractOriginalPromptReadsCurrentAndLegacyCheckpoint
 	for _, tc := range []struct {
 		name string
 		text string
+		want string
 	}{
-		{name: "current", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal prompt: fix the login bug\n\n[END CHECKPOINT]\n"},
-		{name: "legacy", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal task: fix the auth bug\n\n[END CHECKPOINT]\n"},
+		{name: "current", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal prompt: fix the login bug\n\n[END CHECKPOINT]\n", want: "fix the login bug"},
+		{name: "legacy", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal task: fix the auth bug\n\n[END CHECKPOINT]\n", want: "fix the auth bug"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := extractOriginalPrompt([]schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User(tc.text)}})
-			if got == "" {
-				t.Fatalf("expected prompt extracted from checkpoint")
+			if got != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got)
 			}
 		})
 	}

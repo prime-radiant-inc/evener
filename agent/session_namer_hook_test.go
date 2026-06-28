@@ -158,31 +158,39 @@ func TestSessionInitialPromptNamerSkipsWhilePending(t *testing.T) {
 	}
 	defer sess.Close()
 
-	calls := make(chan string, 2)
+	// entered is buffered to count namer goroutine launches. Each goroutine sends
+	// once on entry (before blocking on done) so we can tally them deterministically.
+	entered := make(chan struct{}, 2)
 	done := make(chan struct{})
 	sess.nameSessionFromTextFunc = func(ctx context.Context, source, text string) error {
-		calls <- text
+		entered <- struct{}{}
 		<-done
 		return nil
 	}
 
 	sess.launchInitialPromptNamer(context.Background(), "initial task")
 	select {
-	case got := <-calls:
-		if got != "initial task" {
-			t.Fatalf("first namer text = %q, want initial task", got)
-		}
+	case <-entered:
 	case <-time.After(2 * time.Second):
 		t.Fatal("initial prompt namer did not start")
 	}
 
+	// While the first namer goroutine is still in flight, a second launch must
+	// be suppressed by the promptPending guard. Call it synchronously — if it
+	// bypasses the guard it will have spawned a goroutine before returning.
 	sess.launchInitialPromptNamer(context.Background(), "later task")
-	select {
-	case got := <-calls:
-		t.Fatalf("second namer started while first pending with text %q", got)
-	case <-time.After(100 * time.Millisecond):
-	}
+
+	// Unblock goroutines then join via sess.Close() (which drains sendersWG).
+	// After Close() returns every spawned goroutine has run to completion, so
+	// any spurious second goroutine would already have sent to entered.
 	close(done)
+	sess.Close()
+
+	select {
+	case <-entered:
+		t.Fatal("second namer goroutine was started while first was still pending")
+	default:
+	}
 }
 
 func TestSessionProcessInput_LaunchesInitialPromptNamer(t *testing.T) {

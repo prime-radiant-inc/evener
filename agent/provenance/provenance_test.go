@@ -75,6 +75,10 @@ func TestDiagnosticChainTruncatesWithoutDroppingWatchKeys(t *testing.T) {
 }
 
 func TestCloneTruncatesOverlongDiagnosticChain(t *testing.T) {
+	if Clone(nil) != nil {
+		t.Fatal("Clone(nil) must return nil")
+	}
+
 	p := &Causal{}
 	for i := 0; i < maxDiagnosticChain+5; i++ {
 		p.Chain = append(p.Chain, Entry{Kind: "manual", DeliveryID: "wd"})
@@ -97,6 +101,45 @@ func TestNilIfEmpty(t *testing.T) {
 		t.Fatal("empty provenance should serialize as nil")
 	}
 	if NilIfEmpty(&Causal{WatchKeys: []WatchKey{{WatchID: "watch_A", WatchGeneration: "wg_1"}}}) == nil {
-		t.Fatal("non-empty provenance should survive")
+		t.Fatal("non-empty provenance should survive (WatchKeys)")
+	}
+	if NilIfEmpty(&Causal{Chain: []Entry{{Kind: "x"}}}) == nil {
+		t.Fatal("non-empty provenance should survive (Chain)")
+	}
+	if NilIfEmpty(&Causal{ChainTruncated: true}) == nil {
+		t.Fatal("non-empty provenance should survive (ChainTruncated)")
+	}
+}
+
+func TestLatestDeliveryID(t *testing.T) {
+	if LatestDeliveryID(nil) != "" {
+		t.Fatal("nil provenance should return empty string")
+	}
+	if LatestDeliveryID(&Causal{}) != "" {
+		t.Fatal("empty chain should return empty string")
+	}
+
+	single := &Causal{Chain: []Entry{{Kind: "watch", DeliveryID: "wd_1"}}}
+	if got := LatestDeliveryID(single); got != "wd_1" {
+		t.Fatalf("single entry: got %q, want %q", got, "wd_1")
+	}
+
+	// Last non-empty DeliveryID is not the last element.
+	gapped := &Causal{Chain: []Entry{
+		{Kind: "watch", DeliveryID: "wd_1"},
+		{Kind: "watch", DeliveryID: "wd_2"},
+		{Kind: "watch", DeliveryID: ""},
+	}}
+	if got := LatestDeliveryID(gapped); got != "wd_2" {
+		t.Fatalf("gapped chain: got %q, want %q", got, "wd_2")
+	}
+
+	// Only the last element has a non-empty DeliveryID.
+	lastOnly := &Causal{Chain: []Entry{
+		{Kind: "watch", DeliveryID: ""},
+		{Kind: "watch", DeliveryID: "wd_3"},
+	}}
+	if got := LatestDeliveryID(lastOnly); got != "wd_3" {
+		t.Fatalf("last-only chain: got %q, want %q", got, "wd_3")
 	}
 }

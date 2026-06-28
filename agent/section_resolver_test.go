@@ -652,9 +652,12 @@ func TestTranscriptsSection_TeachesToolsNotRawRead(t *testing.T) {
 	}
 
 	// Must not instruct raw file reading via read_file.
-	for _, bad := range []string{"read_file", "transcript path"} {
+	// We check for imperative phrasings rather than the bare name so that a
+	// future prohibition like "Never use read_file directly" does not
+	// false-positive: the concern is guidance that directs raw-file access.
+	for _, bad := range []string{"use read_file", "via read_file", "transcript path"} {
 		if strings.Contains(section, bad) {
-			t.Errorf("transcripts section should not mention %q (instructs raw file reading)", bad)
+			t.Errorf("transcripts section should not contain %q (instructs raw file reading)", bad)
 		}
 	}
 }
@@ -729,4 +732,8 @@ func TestAnthropicProvider_UsesEditFile(t *testing.T) {
 	if strings.Contains(result, "apply_patch") {
 		t.Error("anthropic prompt should NOT contain apply_patch")
 	}
+	// Anthropic must provide edit_file as its native editing tool.
+	// This ensures the provider separation is bidirectional: apply_patch absent
+	// AND edit_file present in the profile that drives the rendered prompt.
+	assertHasTool(t, newAnthropicProfile("claude-test"), "edit_file")
 }

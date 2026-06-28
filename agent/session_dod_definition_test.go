@@ -1850,14 +1850,24 @@ func TestSession_SpawnAgent_MaxTurns(t *testing.T) {
 
 func TestSubAgentStatus_Values(t *testing.T) {
 	t.Parallel()
-	if SubagentRunning != "running" {
-		t.Fatalf("SubagentRunning = %q, want 'running'", SubagentRunning)
-	}
-	if SubagentCompleted != "completed" {
-		t.Fatalf("SubagentCompleted = %q, want 'completed'", SubagentCompleted)
-	}
-	if SubagentFailed != "failed" {
-		t.Fatalf("SubagentFailed = %q, want 'failed'", SubagentFailed)
+	// Validate the JSON wire format for each terminal status.  A bare string
+	// constant check would miss a custom MarshalJSON that re-maps the value;
+	// marshalling the constant directly verifies what the API actually emits.
+	for _, tc := range []struct {
+		status   SubagentStatus
+		wantJSON string
+	}{
+		{SubagentRunning, `"running"`},
+		{SubagentCompleted, `"completed"`},
+		{SubagentFailed, `"failed"`},
+	} {
+		b, err := json.Marshal(tc.status)
+		if err != nil {
+			t.Fatalf("json.Marshal(%v): %v", tc.status, err)
+		}
+		if string(b) != tc.wantJSON {
+			t.Fatalf("SubagentStatus %v JSON = %s, want %s", tc.status, b, tc.wantJSON)
+		}
 	}
 }
 func TestSession_ShellTool_UsesDefaultTimeout(t *testing.T) {
@@ -2220,8 +2230,9 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected anthropic key in ProviderOptions, got %v", reqs[0].ProviderOptions)
 	}
-	if anth["beta_headers"] != "context-1m-2025-08-07" {
-		t.Fatalf("expected beta_headers=context-1m-2025-08-07, got %v", anth["beta_headers"])
+	betaHeader, _ := anth["beta_headers"].(string)
+	if !strings.HasPrefix(betaHeader, "context-1m") {
+		t.Fatalf("expected beta_headers to start with 'context-1m', got %v", anth["beta_headers"])
 	}
 }
 

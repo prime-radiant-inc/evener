@@ -467,17 +467,28 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 		t.Fatal("child model call did not start")
 	}
 
+	// Drain the child's event stream so we are notified when child.close()
+	// has run to completion. The events channel is closed as the very last
+	// act of close(), after closeRuntimeState() has set jm.closing=true.
+	// Waiting for this eliminates the busy-poll race where the session
+	// closing flag was visible but the job manager had not yet rejected
+	// new work.
+	childClosed := make(chan struct{})
+	go func() {
+		for range child.Events() {
+		}
+		close(childClosed)
+	}()
+
 	parentCloseDone := make(chan struct{})
 	go func() {
 		parent.Close()
 		close(parentCloseDone)
 	}()
-	deadline := time.Now().Add(2 * time.Second)
-	for !child.isClosingOrClosed() {
-		if time.Now().After(deadline) {
-			t.Fatal("child session was not marked closing")
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-childClosed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("child session did not close within timeout")
 	}
 	release()
 

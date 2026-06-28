@@ -125,14 +125,18 @@ func TestAggressiveMaskObservations_PreservesErrors(t *testing.T) {
 }
 
 func TestAggressiveMaskObservations_SkipsAlreadyMasked(t *testing.T) {
+	// The content looks like a prior mask from a different tool call. Without the
+	// skip-already-masked guard, re-masking would overwrite it with "[shell: OK]"
+	// (using the current Name), which differs — making the guard observable.
+	alreadyMasked := "[read_file: prior OK note with extra text that is under 100 chars]"
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("do something")),
 		{Kind: schema.TurnToolResults, Message: llm.Message{
 			Role: llm.RoleUser,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
-					Name:    "read_file",
-					Content: "[read_file: OK]",
+					Name:    "shell",
+					Content: alreadyMasked,
 				}},
 			},
 		}},
@@ -144,7 +148,7 @@ func TestAggressiveMaskObservations_SkipsAlreadyMasked(t *testing.T) {
 
 	tr := history[1].Message.Content[0].ToolResult
 	content, _ := tr.Content.(string)
-	if content != "[read_file: OK]" {
+	if content != alreadyMasked {
 		t.Errorf("already-masked content should be unchanged, got: %s", content)
 	}
 }

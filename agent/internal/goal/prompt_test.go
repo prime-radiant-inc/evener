@@ -8,9 +8,9 @@ import (
 func TestRenderPrompt(t *testing.T) {
 	out := Render("fix <bug> & ship")
 
-	// The objective must be XML-escaped inside the <objective> tags.
-	if !strings.Contains(out, "fix &lt;bug&gt; &amp; ship") {
-		t.Fatal("objective must be XML-escaped inside <objective>")
+	// The objective must be XML-escaped *inside* the <objective>...</objective> tags.
+	if !strings.Contains(out, "<objective>fix &lt;bug&gt; &amp; ship</objective>") {
+		t.Fatal("objective must be XML-escaped inside <objective>...</objective> tags")
 	}
 
 	// One distinctive phrase from each §4 paragraph must be present.
@@ -40,10 +40,5 @@ func TestRenderPrompt(t *testing.T) {
 	// The <objective> placeholder must be replaced (no literal {{objective}}).
 	if strings.Contains(out, "{{objective}}") {
 		t.Fatal("rendered prompt still contains unreplaced {{objective}} placeholder")
-	}
-
-	// The objective XML tags must appear.
-	if !strings.Contains(out, "<objective>") || !strings.Contains(out, "</objective>") {
-		t.Fatal("rendered prompt must contain <objective>...</objective> tags")
 	}
 }

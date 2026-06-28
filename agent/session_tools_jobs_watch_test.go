@@ -451,10 +451,14 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	s := newPersistentTestSession(t)
 	const token = "WATCH_OUTPUT_TOKEN_ONCE"
 
+	// Use a long-running shell so the job stays alive without a timing
+	// dependency. The token is injected directly via the output pipeline below
+	// to avoid the wall-clock race that made the original sleep-based approach
+	// flaky in CI.
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "shell",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"sleep 0.3; echo 'WATCH_OUTPUT_TOKEN_ONCE'; sleep 0.3","background":true}`),
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
 	})
 	if shellRes.IsError {
 		t.Fatalf("shell returned error: %s", shellRes.Output)
@@ -490,11 +494,22 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 		t.Fatalf("job_watch returned error for returned job_id %s: %s", shellOut.JobID, watchRes.Output)
 	}
 
-	// The shell prints the token asynchronously; observation enqueues a caller
-	// wake token on the notification queue (no synchronous delivery, spec §3). The
-	// live loop would wake and accept; here we wait for the wake and accept it,
-	// which renders the frame into the notification turn (a TurnSteering in
-	// history) and settles the pending.
+	// Inject the token through the full output pipeline so watch matchers fire
+	// deterministically, without relying on the real shell process timing.
+	s.jobManager.mu.Lock()
+	run := s.jobManager.running[shellOut.JobID]
+	s.jobManager.mu.Unlock()
+	if run == nil {
+		t.Fatalf("job %s is not running after watch install", shellOut.JobID)
+	}
+	if _, err := s.jobManager.appendJobOutput(shellOut.JobID, run.output, []byte(token+"\n")); err != nil {
+		t.Fatalf("inject token into job output: %v", err)
+	}
+
+	// Observation enqueues a caller wake token on the notification queue (no
+	// synchronous delivery, spec §3). The live loop would wake and accept; here
+	// we wait for the wake and accept it, which renders the frame into the
+	// notification turn (a TurnSteering in history) and settles the pending.
 	waitForJobNotification(t, s)
 	drainAndAccept(t, s)
 
@@ -502,7 +517,6 @@ func TestJobWatchCanImmediatelyWatchReturnedBackgroundShellJob(t *testing.T) {
 	if !strings.Contains(first, token) {
 		t.Fatalf("watch delivery = %q, want token", first)
 	}
-	waitForShellDone(t, s.jobManager, shellOut.JobID)
 	if got := countSteeringEntriesContaining(s, token); got != 1 {
 		t.Fatalf("watch deliveries containing %q = %d, want 1", token, got)
 	}

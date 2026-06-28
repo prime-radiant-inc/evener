@@ -703,11 +703,19 @@ func TestCreateDelegateForegroundTimeoutLeavesChildRunning(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})
 	var releaseOnce sync.Once
+	// started is closed by the adapter the first time it is called, allowing the
+	// test to confirm the child has reached the LLM call (and is therefore in
+	// running state) before asserting state invariants.  Without this
+	// synchronisation the 1-second BlockTimeoutMS window could fire before child
+	// setup completes on a slow host, leaving running=false at the assertion.
+	started := make(chan struct{})
+	var startedOnce sync.Once
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
+				startedOnce.Do(func() { close(started) })
 				<-release
 				return communicateWithStructured("timeout child complete", map[string]any{
 					"message": "timeout child complete",
@@ -718,18 +726,40 @@ func TestCreateDelegateForegroundTimeoutLeavesChildRunning(t *testing.T) {
 	sess := newDelegateTestSession(t, c)
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 
-	res := sess.createDelegate(context.Background(), delegateArgs{
-		Task:           "wait past foreground timeout",
-		Background:     false,
-		BlockTimeoutMS: 1000,
-		ResultSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"message": map[string]any{"type": "string"},
+	// Run createDelegate in a goroutine so that we can wait for the adapter
+	// readiness signal independently of the blocking foreground-timeout window.
+	resultCh := make(chan delegateResult, 1)
+	go func() {
+		resultCh <- sess.createDelegate(context.Background(), delegateArgs{
+			Task:           "wait past foreground timeout",
+			Background:     false,
+			BlockTimeoutMS: 1000,
+			ResultSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"message": map[string]any{"type": "string"},
+				},
+				"required": []string{"message"},
 			},
-			"required": []string{"message"},
-		},
-	})
+		})
+	}()
+
+	// Confirm the child is blocking inside the adapter before checking state.
+	// Even when the foreground timer fires before the adapter is reached, the
+	// child continues running in background and will call the adapter shortly.
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delegate child did not reach adapter")
+	}
+
+	var res delegateResult
+	select {
+	case res = <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("createDelegate did not return foreground_timeout result")
+	}
+
 	if res.Err != nil {
 		t.Fatalf("createDelegate returned error: %v", res.Err)
 	}
@@ -744,6 +774,8 @@ func TestCreateDelegateForegroundTimeoutLeavesChildRunning(t *testing.T) {
 	if sub == nil {
 		t.Fatalf("subagent %s not found", childID)
 	}
+	// The adapter is still blocking on release, so the child must be running and
+	// must not have been cancelled by the foreground timeout.
 	sub.mu.Lock()
 	cancelled := sub.cancelRequested
 	running := sub.running
@@ -876,10 +908,13 @@ func TestCreateDelegateDurableRecordKeepsOutputPathAndTranscriptRef(t *testing.T
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
+			// communicateWithDefaultOutput includes the required data/artifacts
+			// envelope so the communicate tool's schema validation passes. Without
+			// these fields the call is rejected and the job output contains only an
+			// error string, which would let the "OutputPath != empty string" guard
+			// pass even if the path were set to a constant without real content.
 			func(req llm.Request) llm.Response {
-				return communicateWithStructured("durable delegate complete", map[string]any{
-					"message": "durable delegate complete",
-				})
+				return communicateWithDefaultOutput("durable delegate complete")
 			},
 		},
 	})
@@ -905,6 +940,16 @@ func TestCreateDelegateDurableRecordKeepsOutputPathAndTranscriptRef(t *testing.T
 	}
 	if rec.TranscriptRef != res.TranscriptRef {
 		t.Fatalf("transcript_ref = %q, want %q", rec.TranscriptRef, res.TranscriptRef)
+	}
+	// Verify the output file contains the delegate's actual prose; a non-empty
+	// OutputPath alone would pass if it were set to a fixed constant without
+	// writing real content.
+	content, _, _, err := sess.jobManager.readOutput(res.JobID, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read delegate output: %v", err)
+	}
+	if !strings.Contains(content, "durable delegate complete") {
+		t.Fatalf("delegate output = %q, want prose containing %q", content, "durable delegate complete")
 	}
 }
 

@@ -504,8 +504,16 @@ func TestLive_Hooks_PromptWithRealLLM(t *testing.T) {
 	// A prompt hook on PreToolUse returns plain text (non-context event) → UserMessages.
 	if len(result.UserMessages) == 0 {
 		t.Error("prompt hook should produce a user message from the LLM")
+		return
 	}
 	t.Logf("Prompt hook LLM response: %v", result.UserMessages)
+	// Assert the LLM actually honored the policy prompt: it must reply with "approve" or
+	// "deny" (case-insensitive, tolerant of surrounding punctuation). Any other word means
+	// the hook's policy enforcement is broken.
+	resp := strings.ToLower(result.UserMessages[0])
+	if !strings.Contains(resp, "approve") && !strings.Contains(resp, "deny") {
+		t.Errorf("prompt hook: expected LLM to respond with 'approve' or 'deny', got: %q", result.UserMessages[0])
+	}
 }
 
 // ---------- Test: Full session with plugin (MCP + hooks + agents) ----------
@@ -838,7 +846,7 @@ func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 
 func TestLive_Session_RealSuperpowersPlugin(t *testing.T) {
 	t.Parallel()
-	superpowersDir := filepath.Join(pluginCacheDir, "superpowers", "4.3.0")
+	superpowersDir := filepath.Join(pluginCacheDir(), "superpowers", "4.3.0")
 	if _, err := os.Stat(superpowersDir); err != nil {
 		t.Skip("superpowers plugin not installed")
 	}

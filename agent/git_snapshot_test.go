@@ -62,6 +62,7 @@ func TestGitOriginURL_NilEnv(t *testing.T) {
 }
 
 func TestSnapshotGit_InGitRepo(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
@@ -129,6 +130,7 @@ func TestSnapshotGit_FreshRepoNoCommits(t *testing.T) {
 }
 
 func TestSnapshotGit_TracksModifiedAndUntracked(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()

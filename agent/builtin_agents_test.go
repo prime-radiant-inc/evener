@@ -311,28 +311,38 @@ func TestSession_LoadsWorkflowReviewerAgentFromConfiguredPlugin(t *testing.T) {
 
 func TestSession_PluginAgentOverridesBuiltin(t *testing.T) {
 	t.Parallel()
+
+	// Create a temporary plugin named "coordinator-workflow": this is the only plugin
+	// flavor whose agents are exposed under their unqualified name (via
+	// exposedAgentCatalogKey), so they can shadow same-named builtins in pluginAgents.
+	pluginDir := makePluginDir(t, "coordinator-workflow")
+	agentsDir := filepath.Join(pluginDir, "agents")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
+	}
+	explorerMD := "---\nname: explorer\ndescription: Custom explorer from plugin\nmodel: inherit\n---\nCustom prompt.\n"
+	if err := os.WriteFile(filepath.Join(agentsDir, "explorer.md"), []byte(explorerMD), 0644); err != nil {
+		t.Fatalf("write explorer.md: %v", err)
+	}
+
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		PluginDirs: []string{pluginDir},
+	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
 
-	// Simulate a plugin agent overriding the built-in explorer.
-	sess.pluginAgents["explorer"] = plugin.Agent{
-		Name:         "explorer",
-		Description:  "Custom explorer from plugin",
-		Model:        "inherit",
-		PluginName:   "my-plugin",
-		SystemPrompt: "Custom prompt.",
+	explorer, ok := sess.pluginAgents["explorer"]
+	if !ok {
+		t.Fatal("expected explorer agent in session")
 	}
-
-	agent := sess.pluginAgents["explorer"]
-	if agent.PluginName != "my-plugin" {
-		t.Errorf("plugin agent should override built-in, got PluginName=%q", agent.PluginName)
+	if explorer.PluginName != "coordinator-workflow" {
+		t.Errorf("plugin agent should override built-in: PluginName = %q, want %q", explorer.PluginName, "coordinator-workflow")
 	}
 }
 
@@ -706,9 +716,26 @@ func TestWorkflowPlugin_ReviewerIsReadOnly(t *testing.T) {
 	t.Parallel()
 	agents := coordinatorWorkflowPublicAgentsForTest(t)
 	reviewer := agents["reviewer"]
+	// Write tools must be absent.
 	for _, tool := range reviewer.Tools {
 		if tool == "write_file" || tool == "edit_file" || tool == "apply_patch" {
 			t.Errorf("reviewer should not have write tool %q", tool)
+		}
+	}
+	// Read tools must be present — reviewer.md declares [glob, grep, read_file, shell].
+	wantReadTools := map[string]bool{
+		"glob":      false,
+		"grep":      false,
+		"read_file": false,
+	}
+	for _, tool := range reviewer.Tools {
+		if _, ok := wantReadTools[tool]; ok {
+			wantReadTools[tool] = true
+		}
+	}
+	for tool, found := range wantReadTools {
+		if !found {
+			t.Errorf("reviewer should have read tool %q, got tools: %v", tool, reviewer.Tools)
 		}
 	}
 }

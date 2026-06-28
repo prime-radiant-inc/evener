@@ -94,7 +94,10 @@ func TestRunPreCompactHook_HandsOffNoteBeforeObjective(t *testing.T) {
 	if noteIdx < 0 {
 		t.Fatal("note not handed off")
 	}
-	if goalIdx >= 0 && noteIdx > goalIdx {
+	if goalIdx < 0 {
+		t.Fatal("goal objective not injected by runPreCompactHook")
+	}
+	if noteIdx > goalIdx {
 		t.Fatal("note must precede the goal objective (objective stays trailing)")
 	}
 	if s.PinnedNote() != "" {
@@ -152,6 +155,9 @@ func TestApplyPendingForceCompact_CompactsWithNote(t *testing.T) {
 		t.Fatal("force request should be consumed by applyPendingForceCompact")
 	}
 	h := currentHistory(t, s)
+	if len(h) >= 14 {
+		t.Fatalf("history not compacted: %d turns remain", len(h))
+	}
 	if countSteering(h, noteHandoffPrefix) != 1 || indexOfSteering(h, "REMEMBER: API is Foo(ctx, id)") < 0 {
 		t.Fatal("pinned note not handed off exactly once after force compaction")
 	}

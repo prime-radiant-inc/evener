@@ -232,6 +232,12 @@ func TestDiscoverPluginHooks_FromFile(t *testing.T) {
 	if pre[0].Command != "echo from-file" {
 		t.Errorf("Command = %q, want %q", pre[0].Command, "echo from-file")
 	}
+	wantSourcePath := filepath.Join(dir, "hooks", "hooks.json")
+	if pre[0].SourcePath == "" {
+		t.Errorf("SourcePath is empty, want resolved hooks.json path")
+	} else if pre[0].SourcePath != wantSourcePath {
+		t.Errorf("SourcePath = %q, want %q", pre[0].SourcePath, wantSourcePath)
+	}
 }
 
 func TestDiscoverPluginHooks_NoFile(t *testing.T) {

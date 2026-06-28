@@ -82,9 +82,19 @@ func TestRootAllowanceFromConfig(t *testing.T) {
 			wantAllowance:    2,
 		},
 		{
+			name:             "explicit 1 gives 1",
+			maxSubagentDepth: 1,
+			wantAllowance:    1,
+		},
+		{
 			name:             "explicit 2 gives 2",
 			maxSubagentDepth: 2,
 			wantAllowance:    2,
+		},
+		{
+			name:             "explicit 3 gives 3",
+			maxSubagentDepth: 3,
+			wantAllowance:    3,
 		},
 	}
 

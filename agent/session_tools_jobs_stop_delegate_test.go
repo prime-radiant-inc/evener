@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1300,22 +1301,34 @@ func TestMaxWaitMSDecoders(t *testing.T) {
 	})
 }
 
-// TestGrantedReadBlockUnsupportedErrReword pins the error message wording for
-// max_wait_ms>0 on a cross-session read — both a watch-granted read (spec §3)
-// and a depth >= 2 descendant read resolved through the recursive owner path
-// (spec §2). The message generalizes to "cross-session reads" so it is truthful
-// for both.
-
-// TestGrantedReadBlockUnsupportedErrReword pins the error message wording for
-// max_wait_ms>0 on a cross-session read — both a watch-granted read (spec §3)
-// and a depth >= 2 descendant read resolved through the recursive owner path
-// (spec §2). The message generalizes to "cross-session reads" so it is truthful
-// for both.
+// TestGrantedReadBlockUnsupportedErrReword verifies that the production code
+// path — a job_read_output call with max_wait_ms>0 against a watch-granted
+// cross-session job — emits grantedReadBlockUnsupportedErr (spec §3). A
+// mutation that replaces errors.New(grantedReadBlockUnsupportedErr) with a
+// different message escapes a constant-equality check but is caught here
+// because the actual error returned by jobReadOutputTool is asserted.
 func TestGrantedReadBlockUnsupportedErrReword(t *testing.T) {
 	t.Parallel()
-	const want = "invalid_request: max_wait_ms is not supported for cross-session reads"
-	if grantedReadBlockUnsupportedErr != want {
-		t.Fatalf("grantedReadBlockUnsupportedErr = %q, want %q", grantedReadBlockUnsupportedErr, want)
+	s := newTestSession(t)
+	// Inject a parentGrantedJobRead that grants one specific job_id. The job
+	// does not exist in the local store, so nestedOrLocalJobManager fails and
+	// the granted path is reached.
+	const grantedID = "job_fakeForCrossSessionRead"
+	s.cfg.spawn.parentGrantedJobRead = func(_ string, jobID string) (*grantedJobRead, bool) {
+		if jobID != grantedID {
+			return nil, false
+		}
+		return &grantedJobRead{record: &jobstore.JobRecord{JobID: jobID}}, true
+	}
+	_, err := jobReadOutputTool(context.Background(), s, map[string]any{
+		"job_id":      grantedID,
+		"max_wait_ms": float64(1000),
+	}, jobToolResultDefaultMaxChar)
+	if err == nil {
+		t.Fatal("jobReadOutputTool with max_wait_ms on cross-session read succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), grantedReadBlockUnsupportedErr) {
+		t.Fatalf("error = %q, want it to contain grantedReadBlockUnsupportedErr", err.Error())
 	}
 }
 
@@ -1366,19 +1379,67 @@ func TestDelegateToolParsesDelegationAllowance(t *testing.T) {
 	}
 }
 
+// TestDelegateToolParsesWatchParent proves that watch_parent=true in the
+// delegate tool's JSON arguments reaches the child session's spawn config as
+// parentWatchGranted=true. The production path is exercised through
+// s.reg.ExecuteCall so the shellBoolArg JSON-boundary parse and the
+// ctxWatchParent context plumbing are both included. A mutation that drops the
+// WatchParent field assignment in delegateTool is caught because
+// child.cfg.spawn.parentWatchGranted would be false.
 func TestDelegateToolParsesWatchParent(t *testing.T) {
 	t.Parallel()
-	args := map[string]any{
-		"task":         "observe my work",
-		"watch_parent": true,
+
+	started := make(chan struct{})
+	proceed := make(chan struct{})
+	var startedOnce sync.Once
+	var proceedOnce sync.Once
+	// Register cleanup before newDelegateTestSession so it runs first (LIFO),
+	// unblocking the child adapter before Close() is called.
+	t.Cleanup(func() { proceedOnce.Do(func() { close(proceed) }) })
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(_ llm.Request) llm.Response {
+				startedOnce.Do(func() { close(started) })
+				<-proceed
+				return communicateWithDefaultOutput("done")
+			},
+		},
+	})
+	s := newDelegateTestSession(t, c)
+
+	// Call through the registered tool; background delegate returns immediately.
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "d1",
+		Name:      "delegate",
+		Arguments: json.RawMessage(`{"task":"observe","watch_parent":true}`),
+	})
+	if res.IsError {
+		t.Fatalf("delegate returned error: %s", res.Output)
 	}
-	parsed := delegateArgs{
-		Task:        stringArg(args, "task"),
-		WatchParent: shellBoolArg(args, "watch_parent"),
-		Background:  true,
+
+	// Wait for the child session to reach its first LLM call; until then the
+	// child goroutine is alive and visible in liveDescendantSessions.
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("child delegate session did not start within 2s")
 	}
-	if !parsed.WatchParent {
-		t.Fatal("WatchParent = false, want true")
+
+	children := s.liveDescendantSessions()
+	if len(children) == 0 {
+		t.Fatal("no live child sessions while adapter was blocking")
+	}
+	child := children[0]
+	child.mu.Lock()
+	granted := child.cfg.spawn.parentWatchGranted
+	child.mu.Unlock()
+	proceedOnce.Do(func() { close(proceed) }) // unblock child before asserting
+
+	if !granted {
+		t.Fatal("parentWatchGranted = false on child spawned with watch_parent=true; shellBoolArg parse or context plumbing is broken")
 	}
 }
 

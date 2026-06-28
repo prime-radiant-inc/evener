@@ -110,7 +110,24 @@ func TestCompactionErosion(t *testing.T) {
 
 	// NOTE arm is verbatim by construction: the pinned note carries each fact token
 	// unchanged through every compaction, so its survival is len(facts)/len(facts)
-	// at every round. We assert that and contrast with the baseline's final round.
+	// at every round. Assert this at zero LLM cost to catch any coding error in
+	// how the note arm is constructed (e.g. if erosionFacts() or fact() helpers
+	// drift so the token is no longer present in the note text).
+	var noteContent strings.Builder
+	for _, f := range facts {
+		noteContent.WriteString(f.statement + "\n")
+	}
+	noteText := pinnedNote(noteContent.String())
+	noteArmSurvival := 0
+	for _, f := range facts {
+		if strings.Contains(noteText, f.token) {
+			noteArmSurvival++
+		}
+	}
+	if noteArmSurvival != len(facts) {
+		t.Errorf("note arm construction error: expected all %d fact tokens in note, got %d; check erosionFacts()/pinnedNote()", len(facts), noteArmSurvival)
+	}
+
 	finalBaselineAlive := 0
 	for i := range facts {
 		if rounds[len(rounds)-1].survive[i] {

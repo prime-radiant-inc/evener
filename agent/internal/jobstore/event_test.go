@@ -30,6 +30,15 @@ func TestEventJSONRoundTrip(t *testing.T) {
 	if got.Kind != EventJobStarted || got.JobID != "job_X" || got.Command != "make test" {
 		t.Errorf("round trip mismatch: %+v", got)
 	}
+	if got.Type != JobShell {
+		t.Errorf("Type: got %q, want %q", got.Type, JobShell)
+	}
+	if got.Description != "run tests" {
+		t.Errorf("Description: got %q, want %q", got.Description, "run tests")
+	}
+	if got.StartedAt == nil || !got.StartedAt.Equal(ts) {
+		t.Errorf("StartedAt: got %v, want %v", got.StartedAt, ts)
+	}
 	// Absent fields must stay absent in the wire form (omitempty).
 	if got.Status != "" {
 		t.Errorf("status should be empty, got %q", got.Status)

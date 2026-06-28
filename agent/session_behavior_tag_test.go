@@ -7,6 +7,7 @@ package agent
 // correctly do NOT get the real-openai behavior.
 
 import (
+	_ "embed"
 	"strings"
 	"testing"
 
@@ -14,6 +15,15 @@ import (
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 )
+
+// openAISectionContent holds the raw content of the embedded OpenAI-specific
+// tools prompt section. The section resolver loads this file when
+// provider="openai"; tests verify its presence or absence in rendered system
+// prompts by comparing against the actual file content rather than a
+// hardcoded phrase, so they track prose changes automatically.
+//
+//go:embed prompts/sections/tools.provider-openai_append.md
+var openAISectionContent string
 
 // ── Site 1: applyModelRequestMetadata (prompt-cache) ──────────────────────
 
@@ -84,6 +94,10 @@ func TestBehaviorTag_PromptCache_OpenAICompatible(t *testing.T) {
 // We distinguish them by calling the executor and checking whether the error
 // text is the sentinel placeholder string. The real executor may panic on nil
 // client/context; we recover from that (it still means it was the real path).
+//
+// Used by provider_instance_integration_test.go and session_resolve_profile_test.go
+// to inspect a live session's registry after profile switches. New tests in this
+// file use webSearchIsWired instead, which avoids the panic-recovery heuristic.
 func webSearchExecIsReal(t *testing.T, reg *tool.Registry) (isReal bool) {
 	t.Helper()
 	tool := reg.Get("web_search")
@@ -102,11 +116,26 @@ func webSearchExecIsReal(t *testing.T, reg *tool.Registry) (isReal bool) {
 	return err == nil || !strings.Contains(err.Error(), "tool executor not wired")
 }
 
+// webSearchIsWired reports whether registerCoreTools registers the web_search
+// function tool for the given session's behavior tag. It uses a fresh empty
+// registry — not newProfileToolRegistry — so the result reflects only what
+// registerCoreTools itself adds: a non-nil entry means the BehaviorTag=="google"
+// branch was taken; absence means it was not. This avoids relying on executor
+// nil-deref behavior to distinguish real from placeholder.
+func webSearchIsWired(t *testing.T, sess *Session) bool {
+	t.Helper()
+	reg := tool.NewRegistry()
+	if err := registerCoreTools(reg, sess); err != nil {
+		t.Fatalf("registerCoreTools: %v", err)
+	}
+	return reg.Get("web_search") != nil
+}
+
 // TestBehaviorTag_Gemini_RenamedGoogleRegistersWebSearch verifies that a
-// renamed Google instance (id="myai", tag="google") gets the real web_search
-// executor wired by registerCoreTools.
+// renamed Google instance (id="myai", tag="google") gets the web_search tool
+// wired by registerCoreTools.
 // Before the fix, the check was s.profile.ID() == "gemini", so a renamed
-// instance (id="myai") would retain only the placeholder executor.
+// instance (id="myai") would not get web_search registered.
 func TestBehaviorTag_Gemini_RenamedGoogleRegistersWebSearch(t *testing.T) {
 	t.Parallel()
 	// newGeminiProfile has id="gemini", tag="google".
@@ -125,19 +154,15 @@ func TestBehaviorTag_Gemini_RenamedGoogleRegistersWebSearch(t *testing.T) {
 		env:     execenv.NewLocalExecutionEnvironment(dir),
 	}
 
-	reg := newProfileToolRegistry(renamedGemini)
-	if err := registerCoreTools(reg, sess); err != nil {
-		t.Fatalf("registerCoreTools: %v", err)
-	}
-
-	if !webSearchExecIsReal(t, reg) {
-		t.Fatalf("web_search executor is placeholder — renamed google instance must get real web_search executor")
+	if !webSearchIsWired(t, sess) {
+		t.Fatalf("web_search not registered by registerCoreTools — renamed google instance (BehaviorTag=%q) must get web_search wired",
+			renamedGemini.BehaviorTag())
 	}
 }
 
 // TestBehaviorTag_Gemini_OriginalGeminiRegistersWebSearch verifies the
 // existing baseline: an unmodified gemini profile (id="gemini", tag="google")
-// still gets the real web_search executor.
+// still gets web_search wired by registerCoreTools.
 func TestBehaviorTag_Gemini_OriginalGeminiRegistersWebSearch(t *testing.T) {
 	t.Parallel()
 	geminiProfile := newGeminiProfile("gemini-2.5-pro")
@@ -148,18 +173,14 @@ func TestBehaviorTag_Gemini_OriginalGeminiRegistersWebSearch(t *testing.T) {
 		env:     execenv.NewLocalExecutionEnvironment(dir),
 	}
 
-	reg := newProfileToolRegistry(geminiProfile)
-	if err := registerCoreTools(reg, sess); err != nil {
-		t.Fatalf("registerCoreTools: %v", err)
-	}
-
-	if !webSearchExecIsReal(t, reg) {
-		t.Fatalf("web_search executor is placeholder for unmodified gemini profile — must have real executor")
+	if !webSearchIsWired(t, sess) {
+		t.Fatalf("web_search not registered by registerCoreTools for unmodified gemini profile (BehaviorTag=%q)",
+			geminiProfile.BehaviorTag())
 	}
 }
 
 // TestBehaviorTag_Gemini_OpenAIDoesNotRegisterWebSearch verifies that
-// registerCoreTools does NOT wire a real web_search executor for OpenAI
+// registerCoreTools does NOT wire web_search for OpenAI
 // (it uses native web search via req.WebSearch instead).
 func TestBehaviorTag_Gemini_OpenAIDoesNotRegisterWebSearch(t *testing.T) {
 	t.Parallel()
@@ -171,14 +192,9 @@ func TestBehaviorTag_Gemini_OpenAIDoesNotRegisterWebSearch(t *testing.T) {
 		env:     execenv.NewLocalExecutionEnvironment(dir),
 	}
 
-	// Use a fresh empty registry to isolate registerCoreTools behavior from
-	// what tool.NewRegistry pre-populates from profile.ToolDefinitions().
-	emptyReg := tool.NewRegistry()
-	if err := registerCoreTools(emptyReg, sess); err != nil {
-		t.Fatalf("registerCoreTools (empty reg): %v", err)
-	}
-	if tool := emptyReg.Get("web_search"); tool != nil {
-		t.Fatalf("web_search registered by registerCoreTools for openai — must use native web search instead")
+	if webSearchIsWired(t, sess) {
+		t.Fatalf("registerCoreTools wired web_search for openai (BehaviorTag=%q) — must use native web search instead",
+			openaiProfile.BehaviorTag())
 	}
 }
 
@@ -208,13 +224,15 @@ func TestBehaviorTag_SectionResolver_RenamedOpenAILoadsOpenAISection(t *testing.
 	}
 	defer sess.Close()
 
-	// The embedded tools.provider-openai_append.md contains the text
-	// "they execute in the order you" — present only when provider="openai".
-	const openAIMarker = "they execute in the order you"
+	// The embedded tools.provider-openai_append.md content is present verbatim
+	// in the rendered system prompt only when sectionResolver.provider="openai".
+	// We compare against the actual file content so the test tracks prose
+	// changes automatically rather than coupling to a specific phrase.
+	openAISection := strings.TrimRight(openAISectionContent, "\n")
 	prompt := sess.renderSystemPrompt()
-	if !strings.Contains(prompt, openAIMarker) {
-		t.Fatalf("system prompt missing openai section marker %q — SectionResolver provider must be %q (behaviorTag), not %q (ID)",
-			openAIMarker, renamedProfile.BehaviorTag(), renamedProfile.ID())
+	if !strings.Contains(prompt, openAISection) {
+		t.Fatalf("system prompt missing openai section — SectionResolver provider must be %q (behaviorTag), not %q (ID)",
+			renamedProfile.BehaviorTag(), renamedProfile.ID())
 	}
 }
 
@@ -240,10 +258,9 @@ func TestBehaviorTag_SectionResolver_OpenAICompatibleDoesNotLoadOpenAISection(t 
 	}
 	defer sess.Close()
 
-	const openAIMarker = "they execute in the order you"
+	openAISection := strings.TrimRight(openAISectionContent, "\n")
 	prompt := sess.renderSystemPrompt()
-	if strings.Contains(prompt, openAIMarker) {
-		t.Fatalf("system prompt contains openai section marker %q — openai-compatible must NOT load the openai section",
-			openAIMarker)
+	if strings.Contains(prompt, openAISection) {
+		t.Fatalf("system prompt contains openai section — openai-compatible must NOT load the openai section")
 	}
 }

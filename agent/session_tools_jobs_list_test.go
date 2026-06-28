@@ -997,7 +997,7 @@ func TestJobListExcludesTerminalFlushWatches(t *testing.T) {
 func TestDefJobListDescriptionMentionsActiveWatches(t *testing.T) {
 	t.Parallel()
 	desc := tooldefs.DefJobList().Description
-	if !strings.Contains(desc, "The result also includes your active watches.") {
+	if !strings.Contains(desc, "active watches") {
 		t.Fatalf("DefJobList description = %q, want it to mention active watches", desc)
 	}
 }

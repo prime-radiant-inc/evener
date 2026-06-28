@@ -29,6 +29,12 @@ func TestRecursiveDistillStrategy_Tools_ReturnsNil(t *testing.T) {
 
 func TestRecursiveDistillStrategy_AfterAction_NoMicroBelowThreshold(t *testing.T) {
 	client := llm.NewClient()
+	// Register a counting stub so that any LLM call is visible, not silently
+	// swallowed by a missing-adapter error. The >= 10 guard must prevent any
+	// call when we are below the threshold.
+	f := &fakeAdapter{name: "openai"}
+	client.Register(f)
+
 	profile := NewOpenAIProfile("gpt-5.2")
 	cm := NewManager(profile, client)
 	s := NewRecursiveDistillStrategy(cm)
@@ -42,6 +48,10 @@ func TestRecursiveDistillStrategy_AfterAction_NoMicroBelowThreshold(t *testing.T
 	err := s.AfterAction(context.Background(), history, client)
 	if err != nil {
 		t.Fatalf("AfterAction returned error: %v", err)
+	}
+	// The >= 10 guard must not have triggered: no LLM call and no micro-summary.
+	if got := len(f.Requests()); got != 0 {
+		t.Errorf("expected 0 LLM calls below threshold, got %d", got)
 	}
 	if len(s.microSummaries) != 0 {
 		t.Errorf("expected 0 micro-summaries, got %d", len(s.microSummaries))

@@ -573,9 +573,14 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 		t.Errorf("agentType = %q, want empty for default spawn", agentTypeVal)
 	}
 
-	// Ensure startedAt0 is strictly before any resume timestamp. time.Now() on some
-	// platforms has coarse resolution, so we sleep a short but reliable duration.
-	time.Sleep(2 * time.Millisecond)
+	// Capture a reference point just before the sleep so we can make a robust
+	// clock-independent assertion: the resume timestamp must be after beforeResume.
+	// Using beforeResume (captured here, after startedAt0) plus a 50ms guard is more
+	// reliable than comparing against startedAt0 directly, because on platforms with
+	// coarse clock resolution (e.g. 10-15ms ticks) a 2ms sleep cannot guarantee the
+	// two time.Now() calls land in different ticks.
+	beforeResume := time.Now()
+	time.Sleep(50 * time.Millisecond)
 
 	// Non-blocking resume: sendInput spawns the goroutine and returns "ok" immediately
 	// while adapter step 1 blocks inside Complete waiting for release.
@@ -593,8 +598,9 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 	// Inspect IN-FLIGHT: sendInput has already reset the fields but finalize has not
 	// yet run. These are the load-bearing assertions:
 	//   - endedAt == nil proves resume CLEARED it (catches deleted `sub.endedAt = nil`)
-	//   - startedAt.After(startedAt0) proves resume RE-STAMPED it (catches deleted
-	//     `sub.startedAt = resumeTime`)
+	//   - startedAt.After(beforeResume) proves resume RE-STAMPED it to a strictly later
+	//     time (catches deleted `sub.startedAt = resumeTime`); beforeResume >= startedAt0
+	//     so this transitively proves startedAt advanced past the first-run value.
 	sub.mu.Lock()
 	createdAtInFlight := sub.createdAt
 	startedAtInFlight := sub.startedAt
@@ -605,8 +611,8 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 	if endedAtInFlight != nil {
 		t.Errorf("endedAt must be nil in-flight (resume must clear it); got %v", endedAtInFlight)
 	}
-	if !startedAtInFlight.After(startedAt0) {
-		t.Errorf("startedAt must be strictly after startedAt0 in-flight; startedAt0=%v startedAtInFlight=%v", startedAt0, startedAtInFlight)
+	if !startedAtInFlight.After(beforeResume) {
+		t.Errorf("startedAt must be strictly after pre-resume snapshot; beforeResume=%v startedAtInFlight=%v", beforeResume, startedAtInFlight)
 	}
 	if !runningInFlight {
 		t.Error("running must be true while resumed run is in-flight")

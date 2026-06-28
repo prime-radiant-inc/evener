@@ -673,13 +673,24 @@ func TestProgressTimerFiresPeriodically(t *testing.T) {
 	jm.enqueue = func(jobNotification) { fired <- struct{}{} }
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, ProgressIntervalMS: 1000}); err != nil {
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, ProgressIntervalMS: minWatchProgressIntervalMS}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
+	// configureWatch clamps progress_interval_ms to minWatchProgressIntervalMS (1 s);
+	// bypass that floor by restarting the goroutine directly at 10 ms so the test
+	// does not depend on wall-clock seconds.
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID}
+	jm.mu.Lock()
+	cfg := jm.watches[key]
+	closeWatchConfig(cfg)          // stop the slow goroutine; resets cfg.progressStop
+	cfg.progressIntervalMS = 10    // 10 ms test-scoped interval
+	stop := cfg.initProgressStop() // new stop channel
+	jm.mu.Unlock()
+	jm.startProgressTimer(key, cfg, stop)
 	select {
 	case <-fired:
-	case <-time.After(3 * time.Second):
-		t.Fatal("progress timer did not fire within 3s")
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("progress timer did not fire within 200ms")
 	}
 	_, _ = jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true})
 }
@@ -693,12 +704,23 @@ func TestProgressTimerStopsOnClose(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{Target: "caller", ProgressIntervalMS: minWatchProgressIntervalMS}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
+	// Swap the timer to 10 ms so the test does not depend on wall-clock seconds.
+	// configureWatch clamps progress_interval_ms to minWatchProgressIntervalMS (1 s);
+	// restart the goroutine directly at 10 ms after installation.
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: "caller"}
+	jm.mu.Lock()
+	cfg := jm.watches[key]
+	closeWatchConfig(cfg)          // stop the slow goroutine; resets cfg.progressStop
+	cfg.progressIntervalMS = 10    // 10 ms test-scoped interval
+	stop := cfg.initProgressStop() // close() will close this via closeWatchConfig
+	jm.mu.Unlock()
+	jm.startProgressTimer(key, cfg, stop)
 	select {
 	case n := <-fired:
 		if n.JobID != "" {
 			t.Fatalf("session progress notification job_id = %q, want empty", n.JobID)
 		}
-	case <-time.After(1500 * time.Millisecond):
+	case <-time.After(200 * time.Millisecond):
 		t.Fatal("progress timer did not fire before close")
 	}
 	if err := jm.close(); err != nil {
@@ -713,6 +735,15 @@ func TestProgressTimerStopsOnClose(t *testing.T) {
 	}
 
 drained:
+	// close() must invoke closeWatchConfig which closes the stop channel, signalling
+	// the goroutine to exit. If close(cfg.progressStop) were removed from
+	// closeWatchConfig the channel would never close and this select would time out,
+	// catching the goroutine-leak mutation.
+	select {
+	case <-stop:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("close() did not close progressStop channel; goroutine would leak")
+	}
 	if count := jm.watchCount(); count != 0 {
 		t.Fatalf("close must remove watches; count = %d", count)
 	}

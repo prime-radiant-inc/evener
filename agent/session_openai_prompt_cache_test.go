@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
@@ -34,8 +33,8 @@ func TestOpenAIPromptCacheDefaults_RequestCapture(t *testing.T) {
 		t.Fatal("requests: got 0 want at least 1")
 	}
 	req := reqs[0]
-	if strings.TrimSpace(req.PromptCacheKey) == "" {
-		t.Fatal("PromptCacheKey is empty")
+	if got, want := req.PromptCacheKey, "serf-session-"+sess.ID(); got != want {
+		t.Fatalf("PromptCacheKey = %q, want %q", got, want)
 	}
 	if got, want := req.PromptCacheRetention, "24h"; got != want {
 		t.Fatalf("PromptCacheRetention = %q, want %q", got, want)

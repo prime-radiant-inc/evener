@@ -250,22 +250,21 @@ func TestParseBinaryJudge(t *testing.T) {
 func TestBuildBinaryJudgePrompt(t *testing.T) {
 	t.Parallel()
 	prompt := buildBinaryJudgePrompt("What repo?", "django/django", "I was working on django")
-	if !probeContainsAll(prompt, "What repo?", "django/django", "I was working on django", "YES or NO") {
-		t.Errorf("judge prompt missing expected content: %s", prompt)
-	}
-}
 
-func probeContainsAll(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if !probeContains(s, sub) {
-			return false
-		}
+	// Each value must appear under the correct label — not just anywhere in the prompt.
+	// This catches argument-order bugs like swapping expected and response.
+	if !strings.Contains(prompt, "What repo?") {
+		t.Errorf("judge prompt missing question: %s", prompt)
 	}
-	return true
-}
-
-func probeContains(s, sub string) bool {
-	return strings.Contains(s, sub)
+	if !strings.Contains(prompt, "Expected answer: django/django") {
+		t.Errorf("judge prompt missing labeled expected answer: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Agent's response: I was working on django") {
+		t.Errorf("judge prompt missing labeled agent response: %s", prompt)
+	}
+	if !strings.Contains(prompt, "YES or NO") {
+		t.Errorf("judge prompt missing verdict instruction: %s", prompt)
+	}
 }
 
 func TestRunRetentionProbes_DistractorScoring(t *testing.T) {

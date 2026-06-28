@@ -131,7 +131,17 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	defer sess.Close()
+
+	// Collect events to verify compaction actually ran (not just that the adapter
+	// was called twice). Without this, commenting out MaybeCompact still passes.
+	var evs []events.SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			evs = append(evs, ev)
+		}
+	}()
 
 	// Verify the session is configured with the small window.
 	if sess.Profile().ContextWindowSize() != 500 {
@@ -146,6 +156,19 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 
 	if callCount != 2 {
 		t.Fatalf("expected 2 LLM calls, got %d", callCount)
+	}
+
+	sess.Close()
+	<-done
+
+	foundCompaction := false
+	for _, e := range evs {
+		if e.Kind == events.EventContextCompaction {
+			foundCompaction = true
+		}
+	}
+	if !foundCompaction {
+		t.Fatal("expected CONTEXT_COMPACTION event when using small context window")
 	}
 }
 
@@ -244,13 +267,13 @@ func TestBuildCompactionMeta_ExcludesTaskState(t *testing.T) {
 	}
 
 	meta := sess.buildCompactionMeta()
-	if strings.Contains(meta.SessionID, "Frobnicate") {
-		t.Fatalf("task description leaked into SessionID: %q", meta.SessionID)
+	// SessionID should be exactly sess.id — task descriptions must not appear in it.
+	if meta.SessionID != sess.id {
+		t.Fatalf("expected SessionID %q, got %q", sess.id, meta.SessionID)
 	}
-	for _, s := range meta.ActivatedSkills {
-		if strings.Contains(s, "Frobnicate") {
-			t.Fatalf("task description leaked into ActivatedSkills: %v", meta.ActivatedSkills)
-		}
+	// ActivatedSkills is never populated by buildCompactionMeta; assert it remains nil.
+	if len(meta.ActivatedSkills) != 0 {
+		t.Fatalf("task state leaked into ActivatedSkills: %v", meta.ActivatedSkills)
 	}
 }
 

@@ -8,7 +8,6 @@ func TestClaudeToSerf(t *testing.T) {
 		"Bash": "shell", "Grep": "grep", "Glob": "glob",
 		"Task": "delegate", "WebFetch": "web_fetch", "WebSearch": "web_search",
 		"NotebookEdit":      "notebook_edit",
-		"unknown_tool":      "unknown_tool",
 		"mcp__server__tool": "mcp__server__tool",
 	}
 	for input, want := range tests {

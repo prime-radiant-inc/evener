@@ -1,6 +1,7 @@
 package frontmatter
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -58,9 +59,18 @@ func TestParse_EmptyFrontmatter(t *testing.T) {
 
 func TestParse_InvalidYAML(t *testing.T) {
 	raw := "---\n: bad: yaml: [unclosed\n---\nBody.\n"
-	_, err := Parse(raw)
+	doc, err := Parse(raw)
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
+	}
+	if doc.Meta != nil {
+		t.Errorf("Meta should be nil on error, got %v", doc.Meta)
+	}
+	if doc.Body != "" {
+		t.Errorf("Body should be empty on error, got %q", doc.Body)
+	}
+	if !strings.Contains(err.Error(), "frontmatter") {
+		t.Errorf("error should mention frontmatter, got %q", err.Error())
 	}
 }
 
@@ -94,6 +104,12 @@ func TestParse_ComplexMetadata(t *testing.T) {
 	}
 	if len(tags) != 2 {
 		t.Errorf("tags length = %d, want 2", len(tags))
+	}
+	if tags[0] != "go" {
+		t.Errorf("tags[0] = %q, want %q", tags[0], "go")
+	}
+	if tags[1] != "yaml" {
+		t.Errorf("tags[1] = %q, want %q", tags[1], "yaml")
 	}
 	nested, ok := doc.Meta["nested"].(map[string]any)
 	if !ok {
@@ -145,5 +161,22 @@ func TestParse_OnlyDelimiters(t *testing.T) {
 	}
 	if doc.Body != "" {
 		t.Errorf("Body should be empty, got %q", doc.Body)
+	}
+}
+
+func TestParse_DelimiterInBody(t *testing.T) {
+	// A second "---\n" in the body must not be treated as a closing delimiter.
+	// Parse must use the FIRST occurrence (strings.Index semantics).
+	raw := "---\nname: t\n---\nbody\n---\nnot-fm\n"
+	doc, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if doc.Meta["name"] != "t" {
+		t.Errorf("name = %q, want %q", doc.Meta["name"], "t")
+	}
+	want := "body\n---\nnot-fm\n"
+	if doc.Body != want {
+		t.Errorf("Body = %q, want %q", doc.Body, want)
 	}
 }

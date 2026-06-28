@@ -225,11 +225,15 @@ func TestForkSummarize_ExtractsAction(t *testing.T) {
 }
 
 func TestForkSummarize_UsesCheapModel(t *testing.T) {
+	// Configure an explicit cheap model so the test is independent of provider
+	// defaults. If forkSummarize routes to the main model ("gpt-5.2") instead
+	// of the configured cheap model, the assertion will catch it.
+	const cheapModel = "gpt-test-cheap"
 	adapter := &stubSummarizeAdapter{
 		name: "openai",
 		respFn: func(req llm.Request) (llm.Response, error) {
-			if req.Model != "gpt-4.1-nano" {
-				t.Errorf("expected cheap model gpt-4.1-nano, got %q", req.Model)
+			if req.Model != cheapModel {
+				t.Errorf("expected cheap model %q, got %q", cheapModel, req.Model)
 			}
 			entry := sessionlog.SessionLogEntry{
 				Action:  "shell",
@@ -243,7 +247,7 @@ func TestForkSummarize_UsesCheapModel(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), cheapModel)
 	turns := []schema.Turn{
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
