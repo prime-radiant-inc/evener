@@ -70,9 +70,41 @@ type Response struct {
 	Result any `json:"result"`
 }
 
+// MarshalJSON omits the id field when the id is empty so an id-less frame
+// received off the wire round-trips faithfully. ID.MarshalJSON would otherwise
+// render an empty id as `null`, which ID.UnmarshalJSON rejects — leaving the
+// codec unable to re-read its own output. A frame built with a real id is
+// unaffected (identical bytes and field order).
+func (r Response) MarshalJSON() ([]byte, error) {
+	if len(r.ID.raw) == 0 {
+		return json.Marshal(struct {
+			Result any `json:"result"`
+		}{r.Result})
+	}
+	return json.Marshal(struct {
+		ID     ID  `json:"id"`
+		Result any `json:"result"`
+	}{r.ID, r.Result})
+}
+
 type ErrorResponse struct {
 	ID    ID        `json:"id"`
 	Error WireError `json:"error"`
+}
+
+// MarshalJSON omits the id field when the id is empty, mirroring Response: an
+// id-less error frame must round-trip rather than re-encode to an unreadable
+// `null` id.
+func (e ErrorResponse) MarshalJSON() ([]byte, error) {
+	if len(e.ID.raw) == 0 {
+		return json.Marshal(struct {
+			Error WireError `json:"error"`
+		}{e.Error})
+	}
+	return json.Marshal(struct {
+		ID    ID        `json:"id"`
+		Error WireError `json:"error"`
+	}{e.ID, e.Error})
 }
 
 type Message struct {
