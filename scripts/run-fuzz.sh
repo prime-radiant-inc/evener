@@ -25,6 +25,10 @@ TARGETS=(
 	".:./appwire:FuzzMethodParams"
 	"agent:.:FuzzToolArgsValidate"
 	"llm:./providers/openai:FuzzOpenAIResponsesMetamorphic"
+	"llm:./providers/openai:FuzzOpenAIChatCompletionsMetamorphic"
+	"llm:./providers/anthropic:FuzzAnthropicStreamMetamorphic"
+	"llm:./providers/google:FuzzGeminiStreamMetamorphic"
+	"llm:./providers/openaicompat:FuzzOpenAICompatStreamMetamorphic"
 	".:./cmd/serf-hub:FuzzWebHandler"
 )
 
