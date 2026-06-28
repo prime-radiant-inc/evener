@@ -1,8 +1,10 @@
 package launchconfig
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -209,22 +211,25 @@ func hasDiagnostic(diags []Diagnostic, layer LayerName, field string) bool {
 }
 
 func TestLoadProjectLayer_StatError(t *testing.T) {
-	dir := t.TempDir()
-	paths := PathsFor(dir, dir)
-	// Create paths.Project as a file with no read permissions to trigger Stat error.
-	if err := os.MkdirAll(filepath.Dir(paths.Project), 0o755); err != nil {
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	paths := PathsFor(stateRoot, cwd)
+	// Make the parent component of paths.Project (<cwd>/.serf) a regular file
+	// so os.Stat on paths.Project fails with ENOTDIR. This is root-proof:
+	// ENOTDIR is returned regardless of uid, unlike chmod-based permission
+	// bits, which root bypasses (and which would not make Stat itself fail).
+	if err := os.WriteFile(filepath.Dir(paths.Project), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(paths.Project, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(paths.Project, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chmod(paths.Project, 0o600)
 	_, _, err := LoadProjectLayer(paths)
 	if err == nil {
 		t.Fatal("expected error when Stat on project path fails")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected a non-ErrNotExist Stat error, got %v", err)
+	}
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("expected ENOTDIR from the Stat-error branch, got %v", err)
 	}
 }
 
@@ -248,17 +253,12 @@ func TestLoadProjectLayer_LegacyLoadError(t *testing.T) {
 func TestLoadRepoLayer_ReadFileError(t *testing.T) {
 	cwd := t.TempDir()
 	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
-	// Create parent directory and repo file.
-	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
+	// Make the parent component (<cwd>/.serf) a regular file so os.ReadFile on
+	// repoPath fails with ENOTDIR. This is root-proof: ENOTDIR is returned
+	// regardless of uid, unlike chmod 0o000, which root bypasses.
+	if err := os.WriteFile(filepath.Dir(repoPath), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(repoPath, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(repoPath, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chmod(repoPath, 0o600)
 	_, _, diags := loadRepoLayer(cwd, "")
 	var seen bool
 	for _, d := range diags {

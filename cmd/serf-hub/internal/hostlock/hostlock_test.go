@@ -3,6 +3,7 @@ package hostlock
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -62,14 +63,18 @@ func TestAcquireLock_MkdirAllError(t *testing.T) {
 
 func TestAcquireLock_OpenFileError(t *testing.T) {
 	dir := t.TempDir()
-	// Make the directory read-only so OpenFile fails.
-	if err := os.Chmod(dir, 0o555); err != nil {
+	// The lock parent exists (so MkdirAll succeeds), but the lock path
+	// itself is a directory. Opening a directory O_RDWR returns EISDIR,
+	// which even root cannot bypass, so OpenFile fails for everyone.
+	path := filepath.Join(dir, "hub.lock")
+	if err := os.Mkdir(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(dir, 0o755) // restore for cleanup
-	path := filepath.Join(dir, "hub.lock")
 	_, err := AcquireLock(path)
 	if err == nil {
-		t.Fatal("expected error when directory is read-only")
+		t.Fatal("expected error when lock path is a directory")
+	}
+	if !strings.Contains(err.Error(), "open lock") {
+		t.Fatalf("expected open lock error, got: %v", err)
 	}
 }

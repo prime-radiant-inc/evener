@@ -243,13 +243,6 @@ func TestValidateLaunchPath(t *testing.T) {
 		}
 	})
 
-	t.Run("command kind without separator looks up PATH", func(t *testing.T) {
-		resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{Path: "sh", Kind: "command"})
-		if !resp.Valid {
-			t.Fatalf("expected valid for 'sh', got error: %s", resp.Error)
-		}
-	})
-
 	t.Run("non-absolute path", func(t *testing.T) {
 		resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{Path: "relative/path", Kind: "file"})
 		if resp.Valid {

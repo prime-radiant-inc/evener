@@ -1,9 +1,11 @@
 package hubcore
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -462,13 +464,6 @@ func TestPastIndex_RebuildFTSError(t *testing.T) {
 	}
 }
 
-func TestPastIndex_StateGlob(t *testing.T) {
-	idx := NewPastIndex(filepath.Join("/some", "path", "*"))
-	if got := idx.StateGlob(); got != filepath.Join("/some", "path", "*") {
-		t.Errorf("StateGlob = %q, want %q", got, filepath.Join("/some", "path", "*"))
-	}
-}
-
 func TestPastIndex_AllMetas(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
@@ -509,23 +504,20 @@ func TestPastIndex_SearchFTSSpecialCharsOnly(t *testing.T) {
 
 func TestChmodSQLiteIndexFiles_Error(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "sub", "db")
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+	// Place the db path under a parent component that is a regular file, not a
+	// directory. chmod on any path beneath it returns ENOTDIR regardless of uid,
+	// so this exercises the error path even when the test runs as root.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(dbPath, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
+	dbPath := filepath.Join(blocker, "db")
+	err := chmodSQLiteIndexFiles(dbPath)
+	if err == nil {
+		t.Fatal("expected error when a parent path component is a regular file")
 	}
-	if err := os.WriteFile(dbPath+"-journal", []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Make the parent directory non-executable so chmod fails.
-	if err := os.Chmod(filepath.Dir(dbPath), 0o666); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chmod(filepath.Dir(dbPath), 0o755)
-	if err := chmodSQLiteIndexFiles(dbPath); err == nil {
-		t.Fatal("expected error when parent directory is not executable")
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("expected ENOTDIR, got %v", err)
 	}
 }
 

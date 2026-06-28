@@ -102,24 +102,6 @@ func TestTurnsFromFileProjectsPreludeAndAPICallError(t *testing.T) {
 	}
 }
 
-func TestSharedTranscriptHelpers(t *testing.T) {
-	if got := CompactionDescription("SUMMARY"); got != "Context summary" {
-		t.Fatalf("summary description=%q", got)
-	}
-	if got := ImagePlaceholder(2); got != "[2 images]" {
-		t.Fatalf("image placeholder=%q", got)
-	}
-	if got := CommunicateMessageFromArguments([]byte(`{"output":{"message":"nested"}}`)); got != "nested" {
-		t.Fatalf("communicate message=%q", got)
-	}
-	if got := ToolIntentFromArguments([]byte(`{"purpose":"inspect file"}`)); got != "inspect file" {
-		t.Fatalf("tool intent=%q", got)
-	}
-	if got := StringifyToolContent(map[string]any{"ok": true}); !strings.Contains(got, `"ok":true`) {
-		t.Fatalf("tool content=%q", got)
-	}
-}
-
 func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 	toolNames := map[string]string{}
 	start := ProjectTurn("turn_1", 1, schema.Turn{

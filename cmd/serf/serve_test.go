@@ -542,41 +542,74 @@ func TestAgentToServerDetailedStatus_Empty(t *testing.T) {
 }
 
 func TestAgentToServerDetailedStatus_Partial(t *testing.T) {
+	// Every field gets a distinct value so a transposed or dropped mapping
+	// (e.g. SkillCount swapped with AgentCount, or Skills.Description dropped)
+	// produces a detectable mismatch rather than silently passing.
 	exitCode := 42
 	ds := agent.DetailedStatus{
 		Tools:   []agent.ToolInfo{{Name: "shell", Source: "core"}},
-		MCP:     []mcpconfig.ServerInfo{{Name: "test-server", Tools: []string{"tool1"}}},
+		MCP:     []mcpconfig.ServerInfo{{Name: "test-server", Tools: []string{"tool1", "tool2"}}},
 		Skills:  []skill.SkillMeta{{Name: "test-skill", Description: "A test skill"}},
-		Plugins: []agent.PluginInfo{{Name: "test-plugin", Version: "1.0.0", SkillCount: 2, AgentCount: 1, HookCount: 3, MCPCount: 0}},
-		Hooks:   map[plugin.HookEvent]int{"PreToolUse": 1},
+		Plugins: []agent.PluginInfo{{Name: "test-plugin", Version: "1.0.0", SkillCount: 2, AgentCount: 3, HookCount: 4, MCPCount: 5}},
+		Hooks:   map[plugin.HookEvent]int{"PreToolUse": 1, "PostToolUse": 7},
 		Jobs:    []agent.JobStatusInfo{{JobID: "job1", JobType: "delegate", Status: "done", Reason: "finished", ExitCode: &exitCode, TranscriptRef: "ref1", OutputBytes: 100}},
 		Agents:  []string{"explorer", "default"},
 	}
 	got := agentToServerDetailedStatus(ds)
 
-	if len(got.Tools) != 1 || got.Tools[0].Name != "shell" {
-		t.Errorf("Tools = %v, want 1 shell", got.Tools)
+	if len(got.Tools) != 1 {
+		t.Fatalf("Tools = %v, want 1", got.Tools)
 	}
-	if len(got.MCP) != 1 || got.MCP[0].Name != "test-server" {
-		t.Errorf("MCP = %v, want 1 test-server", got.MCP)
+	if got.Tools[0].Name != "shell" || got.Tools[0].Source != "core" {
+		t.Errorf("Tools[0] = %+v, want {Name:shell Source:core}", got.Tools[0])
 	}
-	if len(got.Skills) != 1 || got.Skills[0].Name != "test-skill" {
-		t.Errorf("Skills = %v, want 1 test-skill", got.Skills)
+
+	if len(got.MCP) != 1 {
+		t.Fatalf("MCP = %v, want 1", got.MCP)
 	}
-	if len(got.Plugins) != 1 || got.Plugins[0].Name != "test-plugin" {
-		t.Errorf("Plugins = %v, want 1 test-plugin", got.Plugins)
+	if got.MCP[0].Name != "test-server" {
+		t.Errorf("MCP[0].Name = %q, want test-server", got.MCP[0].Name)
 	}
-	if len(got.Hooks) != 1 || got.Hooks["PreToolUse"] != 1 {
-		t.Errorf("Hooks = %v, want PreToolUse=1", got.Hooks)
+	if len(got.MCP[0].Tools) != 2 || got.MCP[0].Tools[0] != "tool1" || got.MCP[0].Tools[1] != "tool2" {
+		t.Errorf("MCP[0].Tools = %v, want [tool1 tool2]", got.MCP[0].Tools)
 	}
-	if len(got.Jobs) != 1 || got.Jobs[0].JobID != "job1" || *got.Jobs[0].ExitCode != 42 {
-		t.Errorf("Jobs = %v, want 1 job1 with exit code 42", got.Jobs)
+
+	if len(got.Skills) != 1 {
+		t.Fatalf("Skills = %v, want 1", got.Skills)
 	}
-	if len(got.Agents) != 2 {
-		t.Errorf("Agents = %v, want 2", got.Agents)
+	if got.Skills[0].Name != "test-skill" || got.Skills[0].Description != "A test skill" {
+		t.Errorf("Skills[0] = %+v, want {Name:test-skill Description:A test skill}", got.Skills[0])
+	}
+
+	if len(got.Plugins) != 1 {
+		t.Fatalf("Plugins = %v, want 1", got.Plugins)
+	}
+	p := got.Plugins[0]
+	if p.Name != "test-plugin" || p.Version != "1.0.0" ||
+		p.SkillCount != 2 || p.AgentCount != 3 || p.HookCount != 4 || p.MCPCount != 5 {
+		t.Errorf("Plugins[0] = %+v, want {Name:test-plugin Version:1.0.0 SkillCount:2 AgentCount:3 HookCount:4 MCPCount:5}", p)
+	}
+
+	if len(got.Hooks) != 2 || got.Hooks["PreToolUse"] != 1 || got.Hooks["PostToolUse"] != 7 {
+		t.Errorf("Hooks = %v, want PreToolUse=1 PostToolUse=7", got.Hooks)
+	}
+
+	if len(got.Jobs) != 1 {
+		t.Fatalf("Jobs = %v, want 1", got.Jobs)
+	}
+	job := got.Jobs[0]
+	if job.JobID != "job1" || job.JobType != "delegate" || job.Status != "done" ||
+		job.Reason != "finished" || job.TranscriptRef != "ref1" || job.OutputBytes != 100 {
+		t.Errorf("Jobs[0] = %+v, want job1/delegate/done/finished/ref1/100", job)
+	}
+	if job.ExitCode == nil || *job.ExitCode != 42 {
+		t.Errorf("Jobs[0].ExitCode = %v, want 42", job.ExitCode)
+	}
+
+	if len(got.Agents) != 2 || got.Agents[0] != "explorer" || got.Agents[1] != "default" {
+		t.Errorf("Agents = %v, want [explorer default]", got.Agents)
 	}
 }
-
 func TestRunServe_ResumeNonexistent(t *testing.T) {
 	oldLoadClient := serveLoadClient
 	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {

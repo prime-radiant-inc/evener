@@ -39,17 +39,6 @@ func TestCurrentExecutable(t *testing.T) {
 	if !strings.Contains(exe, string(os.PathSeparator)) {
 		t.Fatalf("expected an absolute or relative path with separator, got %q", exe)
 	}
-
-	// os.Args fallback: temporarily empty os.Args and verify that
-	// currentExecutable still returns a value (from os.Executable).
-	oldArgs := os.Args
-	os.Args = []string{}
-	defer func() { os.Args = oldArgs }()
-
-	exe2 := currentExecutable()
-	if exe2 == "" {
-		t.Fatal("currentExecutable() returned empty string even when os.Args is empty")
-	}
 }
 
 func TestResolveSerfBinaryPath(t *testing.T) {

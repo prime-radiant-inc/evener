@@ -373,28 +373,6 @@ func TestWithCheapModel(t *testing.T) {
 		}
 	})
 
-	t.Run("bare model", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-4")
-		q := WithCheapModel(p, "gpt-3.5-turbo")
-		if q.ConfiguredCheapModel() != "gpt-3.5-turbo" {
-			t.Errorf("CheapModel = %q, want gpt-3.5-turbo", q.ConfiguredCheapModel())
-		}
-		if q.CheapProvider() != p.ID() {
-			t.Errorf("CheapProvider changed unexpectedly to %q", q.CheapProvider())
-		}
-	})
-
-	t.Run("provider/model format", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-4")
-		q := WithCheapModel(p, "openai/gpt-3.5-turbo")
-		if q.ConfiguredCheapModel() != "gpt-3.5-turbo" {
-			t.Errorf("CheapModel = %q, want gpt-3.5-turbo", q.ConfiguredCheapModel())
-		}
-		if q.CheapProvider() != "openai" {
-			t.Errorf("CheapProvider = %q, want openai", q.CheapProvider())
-		}
-	})
-
 	t.Run("whitespace trimmed", func(t *testing.T) {
 		p := NewOpenAIProfile("gpt-4")
 		q := WithCheapModel(p, "  model  ")

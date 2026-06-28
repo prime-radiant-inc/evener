@@ -134,7 +134,7 @@ func TestClientSession(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("method: got %s, want GET", r.Method)
 		}
-		wantPath := "/api/sessions/" + ref.PathEscaped()
+		wantPath := "/api/sessions/local:test"
 		if r.URL.Path != wantPath {
 			t.Errorf("path: got %s, want %s", r.URL.Path, wantPath)
 		}
@@ -302,7 +302,7 @@ func TestClientSend(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method: got %s, want POST", r.Method)
 		}
-		wantPath := "/api/sessions/" + ref.PathEscaped() + "/send"
+		wantPath := "/api/sessions/local:test/send"
 		if r.URL.Path != wantPath {
 			t.Errorf("path: got %s, want %s", r.URL.Path, wantPath)
 		}
@@ -345,7 +345,7 @@ func TestClientTasks(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("method: got %s, want GET", r.Method)
 		}
-		wantPath := "/api/sessions/" + ref.PathEscaped() + "/tasks"
+		wantPath := "/api/sessions/local:test/tasks"
 		if r.URL.Path != wantPath {
 			t.Errorf("path: got %s, want %s", r.URL.Path, wantPath)
 		}
@@ -381,7 +381,7 @@ func TestClientInterrupt(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method: got %s, want POST", r.Method)
 		}
-		wantPath := "/api/sessions/" + ref.PathEscaped() + "/interrupt"
+		wantPath := "/api/sessions/local:test/interrupt"
 		if r.URL.Path != wantPath {
 			t.Errorf("path: got %s, want %s", r.URL.Path, wantPath)
 		}
@@ -414,7 +414,7 @@ func TestClientCompact(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method: got %s, want POST", r.Method)
 		}
-		wantPath := "/api/sessions/" + ref.PathEscaped() + "/compact"
+		wantPath := "/api/sessions/local:test/compact"
 		if r.URL.Path != wantPath {
 			t.Errorf("path: got %s, want %s", r.URL.Path, wantPath)
 		}
@@ -452,7 +452,7 @@ func TestClientClear(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method: got %s, want POST", r.Method)
 		}
-		wantPath := "/api/sessions/" + ref.PathEscaped() + "/clear"
+		wantPath := "/api/sessions/local:test/clear"
 		if r.URL.Path != wantPath {
 			t.Errorf("path: got %s, want %s", r.URL.Path, wantPath)
 		}
@@ -500,7 +500,7 @@ func TestClientFork(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method: got %s, want POST", r.Method)
 		}
-		wantPath := "/api/sessions/" + ref.PathEscaped() + "/fork"
+		wantPath := "/api/sessions/local:test/fork"
 		if r.URL.Path != wantPath {
 			t.Errorf("path: got %s, want %s", r.URL.Path, wantPath)
 		}
@@ -555,7 +555,7 @@ func TestClientSetModel(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("method: got %s, want POST", r.Method)
 		}
-		wantPath := "/api/sessions/" + ref.PathEscaped() + "/model"
+		wantPath := "/api/sessions/local:test/model"
 		if r.URL.Path != wantPath {
 			t.Errorf("path: got %s, want %s", r.URL.Path, wantPath)
 		}

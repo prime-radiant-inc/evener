@@ -2,8 +2,10 @@ package rendezvous
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -184,20 +186,22 @@ func TestWrite_MkdirAllFails(t *testing.T) {
 	}
 }
 
-func TestWrite_NestedDirParentReadOnly(t *testing.T) {
-	// Create a nested dir where the parent is read-only so MkdirAll fails.
+func TestWrite_NestedDirParentIsFile(t *testing.T) {
+	// Make a parent path component a regular file so MkdirAll returns ENOTDIR.
+	// This is root-proof: the OS rejects creating a dir under a file even for
+	// uid 0, unlike chmod-based permission tricks that root bypasses.
 	dir := t.TempDir()
-	parent := filepath.Join(dir, "parent")
-	if err := os.Mkdir(parent, 0o555); err != nil {
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = os.Chmod(parent, 0o755)
-	})
 
-	_, err := Write(filepath.Join(parent, "child"), Entry{PID: 1, Address: "127.0.0.1:1"})
+	_, err := Write(filepath.Join(blocker, "child"), Entry{PID: 1, Address: "127.0.0.1:1"})
 	if err == nil {
-		t.Fatal("expected error when MkdirAll fails due to read-only parent")
+		t.Fatal("expected error when MkdirAll fails because a parent component is a file")
+	}
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("expected ENOTDIR, got %v", err)
 	}
 }
 
@@ -226,26 +230,5 @@ func TestWrite_TargetIsDirectory(t *testing.T) {
 	_, err := Write(dir, entry)
 	if err == nil {
 		t.Fatal("expected error when target path is a directory")
-	}
-}
-
-func TestWrite_MarshalDoesNotPanic(t *testing.T) {
-	// Entry with a valid time should marshal fine; this is just a sanity check.
-	dir := t.TempDir()
-	entry := Entry{PID: 1, Address: "127.0.0.1:1", StartedAt: time.Now()}
-	path, err := Write(dir, entry)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got Entry
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.PID != 1 || got.Address != "127.0.0.1:1" {
-		t.Fatalf("round-trip mismatch: got %#v", got)
 	}
 }

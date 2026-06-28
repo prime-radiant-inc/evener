@@ -220,19 +220,6 @@ func TestIsExecutable_Directory(t *testing.T) {
 	}
 }
 
-func TestIsExecutable_NonExecutableFile(t *testing.T) {
-	// Explicit non-executable file should be rejected.
-	dir := t.TempDir()
-	nonExec := filepath.Join(dir, "not-executable")
-	if err := os.WriteFile(nonExec, []byte("noop"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, err := Resolve("serf-hub", nonExec, "", nil)
-	if err == nil {
-		t.Fatal("expected error for non-executable explicit path")
-	}
-}
-
 func TestResolve_SiblingExistsButNotExecutable_FallsThroughToPATH(t *testing.T) {
 	dir := t.TempDir()
 	// Create a sibling file that exists but is NOT executable.

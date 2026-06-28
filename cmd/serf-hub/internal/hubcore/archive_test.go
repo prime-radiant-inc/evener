@@ -47,17 +47,18 @@ func TestArchiveStoreEmptyWhenNoDB(t *testing.T) {
 }
 
 func TestArchiveStoreOpenError(t *testing.T) {
+	// Root-proof injection: make the dbPath itself a directory. MkdirAll of the
+	// parent succeeds, but sqlite cannot open a directory as a database file, so
+	// open() fails at db.Exec regardless of uid (root cannot open a dir as a DB).
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o555); err != nil {
+	dbPath := filepath.Join(dir, "index.db")
+	if err := os.Mkdir(dbPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(dir, 0o755)
-	// Attempting to create a DB file in a read-only directory should fail.
-	db := filepath.Join(dir, "index.db")
-	s := NewArchiveStore(db)
+	s := NewArchiveStore(dbPath)
 	now := time.Now()
 	if err := s.Set("session", "sess-1", true, now); err == nil {
-		t.Fatal("expected error when DB cannot be created")
+		t.Fatal("expected error when DB path is a directory")
 	}
 }
 

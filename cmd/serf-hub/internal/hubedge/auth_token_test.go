@@ -206,29 +206,36 @@ func TestLoadOrCreateAuthToken_MkdirAllError(t *testing.T) {
 
 func TestLoadOrCreateAuthToken_ReadFileError(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, TokenFileName)
-	if err := os.WriteFile(path, []byte("token\n"), 0o600); err != nil {
+	// Make the token path itself a directory. ReadFile opens it fine but the
+	// first Read returns EISDIR ("is a directory"), which is a non-ErrNotExist
+	// error — root-proof, since reading a directory fails regardless of uid.
+	if err := os.Mkdir(filepath.Join(root, TokenFileName), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(path, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chmod(path, 0o600)
 	_, err := LoadOrCreateAuthToken(root)
 	if err == nil {
 		t.Fatal("expected error when read file fails")
+	}
+	if !strings.Contains(err.Error(), "read") {
+		t.Errorf("error should be from the read path, got %v", err)
 	}
 }
 
 func TestLoadOrCreateAuthToken_WriteFileError(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Chmod(root, 0o555); err != nil {
+	// The token file doesn't exist yet (ReadFile returns ErrNotExist), so the
+	// code proceeds to write the temp file path+".tmp". Pre-create that path as
+	// a directory: opening a directory for writing fails with EISDIR even for
+	// root, so this exercises the write-error branch regardless of uid.
+	if err := os.Mkdir(filepath.Join(root, TokenFileName+".tmp"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(root, 0o755)
 	_, err := LoadOrCreateAuthToken(root)
 	if err == nil {
 		t.Fatal("expected error when write file fails")
+	}
+	if !strings.Contains(err.Error(), "write") {
+		t.Errorf("error should be from the write path, got %v", err)
 	}
 }
 

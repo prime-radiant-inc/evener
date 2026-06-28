@@ -1,17 +1,13 @@
 package modeldisplay
 
 import (
-	"os/user"
 	"testing"
 )
 
 func TestAbbreviatePath(t *testing.T) {
-	usr, err := user.Current()
-	var homeDir string
-	if err == nil {
-		homeDir = usr.HomeDir
-	}
-
+	// AbbreviatePath recognizes a home directory by the literal "/home/<user>/"
+	// prefix (it does not consult $HOME or os/user), so a fixed /home path keeps
+	// these cases deterministic regardless of who runs the test.
 	tests := []struct {
 		name   string
 		p      string
@@ -32,21 +28,25 @@ func TestAbbreviatePath(t *testing.T) {
 		},
 		{
 			name:   "home_prefix_replaced",
-			p:      homeDir + "/projects/myapp/main.go",
+			p:      "/home/someuser/projects/myapp/main.go",
 			maxLen: 30,
 			want:   "~/projects/myapp/main.go",
 		},
 		{
 			name:   "home_prefix_replaced_then_truncated",
-			p:      homeDir + "/very/long/path/to/project/file.txt",
+			p:      "/home/someuser/very/long/path/to/project/file.txt",
 			maxLen: 20,
 			want:   "~/very/lo…t/file.txt",
 		},
 		{
-			name:   "home_no_subdir_unchanged",
-			p:      "/home/someuser",
-			maxLen: 50,
-			want:   "/home/someuser",
+			// No slash after the username: the IndexByte == -1 branch fires,
+			// so the /home prefix is NOT replaced with ~. maxLen is below the
+			// path length so it still reaches that branch (rather than the
+			// short-path early return) and then middle-truncates.
+			name:   "home_no_subdir_not_replaced",
+			p:      "/home/verylongusername",
+			maxLen: 15,
+			want:   "/home/v…sername",
 		},
 		{
 			name:   "empty_path",
