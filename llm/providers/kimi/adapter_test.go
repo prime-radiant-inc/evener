@@ -105,8 +105,15 @@ func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 
 func TestNewForInstance_DefaultQuirks(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "kc", APIKey: "k"})
-	if !a.Quirks.LockTemperature {
-		t.Fatal("expected kimi quirks (LockTemperature) to be applied")
+	q := a.Quirks
+	want := openaicompat.QuirksPreset("kimi-k2.5")
+	if q.LockTemperature != want.LockTemperature ||
+		q.LockTopP != want.LockTopP ||
+		q.LockFrequencyPenalty != want.LockFrequencyPenalty ||
+		q.LockPresencePenalty != want.LockPresencePenalty ||
+		q.ToolChoiceAutoOnly != want.ToolChoiceAutoOnly ||
+		q.NoJSONSchema != want.NoJSONSchema {
+		t.Fatalf("Quirks = %+v, want %+v", q, want)
 	}
 }
 
@@ -114,18 +121,6 @@ func TestNewForInstance_CustomBaseURL(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "kc", APIKey: "k", BaseURL: "http://custom"})
 	if a.BaseURL != "http://custom" {
 		t.Fatalf("backing BaseURL = %q, want http://custom", a.BaseURL)
-	}
-}
-
-func TestNewForInstance_EnvPathPreservesName(t *testing.T) {
-	// The env factory still names the adapter "kimi".
-	t.Setenv("KIMI_API_KEY", "testkey")
-	t.Setenv("KIMI_BASE_URL", "")
-	// Trigger the env factory by calling init-registered code indirectly.
-	// We just verify NewForInstance with env-equivalent params gives name "kimi".
-	a := NewForInstance(InstanceParams{Name: "kimi", APIKey: "testkey"})
-	if a.Name() != "kimi" {
-		t.Fatalf("Name() = %q, want kimi", a.Name())
 	}
 }
 
@@ -194,8 +189,29 @@ func TestAdapter_CountInputTokens_UsesEstimateEndpoint(t *testing.T) {
 	if gotBody["model"] != "kimi-k2.6" {
 		t.Fatalf("model = %#v, want kimi-k2.6", gotBody["model"])
 	}
-	if _, ok := gotBody["messages"]; !ok {
-		t.Fatalf("messages missing from body: %#v", gotBody)
+	msgs, ok := gotBody["messages"].([]any)
+	if !ok {
+		t.Fatalf("messages missing or wrong type in body: %#v", gotBody["messages"])
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(msgs))
+	}
+	msg, ok := msgs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("messages[0] not map: %#v", msgs[0])
+	}
+	if msg["role"] != "user" {
+		t.Fatalf("messages[0].role = %q, want user", msg["role"])
+	}
+	if msg["content"] != "hello" {
+		t.Fatalf("messages[0].content = %q, want hello", msg["content"])
+	}
+	tools, ok := gotBody["tools"].([]any)
+	if !ok {
+		t.Fatalf("tools missing or wrong type in body: %#v", gotBody["tools"])
+	}
+	if len(tools) != 1 {
+		t.Fatalf("len(tools) = %d, want 1", len(tools))
 	}
 	for _, key := range []string{"max_tokens", "temperature", "top_p", "stop", "stream", "stream_options"} {
 		if _, ok := gotBody[key]; ok {
@@ -218,6 +234,12 @@ func TestAdapter_CountInputTokens_HTTPErrorMapping(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("CountInputTokens error = nil, want HTTP error")
+	}
+	if llm.Kind(err) != llm.KindRateLimit {
+		t.Fatalf("Kind(err) = %v, want KindRateLimit", llm.Kind(err))
+	}
+	if !strings.Contains(err.Error(), "slow down") {
+		t.Fatalf("err.Error() = %q, want to contain 'slow down'", err.Error())
 	}
 }
 

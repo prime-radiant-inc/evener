@@ -446,9 +446,16 @@ func TestGenerate_ParallelToolCalls_ExecuteConcurrently(t *testing.T) {
 	}()
 
 	// If tool calls aren't executed concurrently, the first execution blocks and the
-	// second never starts, causing ctx to time out and the test to fail.
-	<-started
-	<-started
+	// second never starts. Use a timeout on each receive so a serial implementation
+	// produces a clean, attributable failure rather than a silent hang until the
+	// global test timeout.
+	for i := range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatalf("tool %d did not start within 1s; tools may be serialized", i+1)
+		}
+	}
 	close(release)
 	if err := <-done; err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -1379,6 +1386,11 @@ type callRecord struct {
 // makeTimingToolIndex builds a toolIndex (via prepareTools) where every tool
 // sleeps for sleepDur, then records a callRecord into *records under mu.
 // toolSpecs is a slice of (name, readOnly) pairs.
+//
+// Concurrency assertions (overlaps) depend on wall-clock timing: two goroutines
+// must both be sleeping at the same instant for the intervals to overlap. Use a
+// sleepDur large enough (≥200 ms) that goroutine scheduling jitter cannot cause
+// a false failure even under load.
 func makeTimingToolIndex(t *testing.T, sleepDur time.Duration, records *[]callRecord, mu *sync.Mutex, toolSpecs []struct {
 	name     string
 	readOnly bool
@@ -1466,7 +1478,7 @@ func TestExecuteToolCalls_SingleCall(t *testing.T) {
 }
 
 func TestExecuteToolCalls_AllReads(t *testing.T) {
-	const sleep = 50 * time.Millisecond
+	const sleep = 200 * time.Millisecond
 	var mu sync.Mutex
 	var records []callRecord
 
@@ -1510,7 +1522,7 @@ func TestExecuteToolCalls_AllReads(t *testing.T) {
 }
 
 func TestExecuteToolCalls_ReadThenWrite(t *testing.T) {
-	const sleep = 50 * time.Millisecond
+	const sleep = 200 * time.Millisecond
 	var mu sync.Mutex
 	var records []callRecord
 
@@ -1553,7 +1565,7 @@ func TestExecuteToolCalls_ReadThenWrite(t *testing.T) {
 }
 
 func TestExecuteToolCalls_WriteThenRead(t *testing.T) {
-	const sleep = 50 * time.Millisecond
+	const sleep = 200 * time.Millisecond
 	var mu sync.Mutex
 	var records []callRecord
 
@@ -1598,7 +1610,7 @@ func TestExecuteToolCalls_WriteThenRead(t *testing.T) {
 func TestExecuteToolCalls_InterleavedReadWrite(t *testing.T) {
 	// Pattern: [read, write, read, write, read]
 	// Expected groups: group1(read1) → group2(write1) → group3(read2) → group4(write2) → group5(read3)
-	const sleep = 50 * time.Millisecond
+	const sleep = 200 * time.Millisecond
 	var mu sync.Mutex
 	var records []callRecord
 
@@ -1649,7 +1661,7 @@ func TestExecuteToolCalls_InterleavedReadWrite(t *testing.T) {
 }
 
 func TestExecuteToolCalls_ConsecutiveWritesSerialized(t *testing.T) {
-	const sleep = 50 * time.Millisecond
+	const sleep = 200 * time.Millisecond
 	var mu sync.Mutex
 	var records []callRecord
 

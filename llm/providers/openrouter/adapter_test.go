@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"primeradiant.com/serf/llm"
@@ -50,11 +51,9 @@ func TestAdapter_Complete_DelegatesToInner(t *testing.T) {
 func TestAdapter_Quirks(t *testing.T) {
 	// OpenRouter should have minimal quirks — no restrictions, but does translate max→xhigh.
 	quirks := openaicompat.QuirksPreset("openrouter")
-	if quirks.LockTemperature || quirks.ToolChoiceAutoOnly || quirks.StripEmptyContent {
-		t.Fatal("openrouter should not have restrictive quirks")
-	}
-	if !quirks.TranslateMaxToXHigh {
-		t.Fatal("openrouter should translate max to xhigh")
+	want := openaicompat.ProviderQuirks{TranslateMaxToXHigh: true}
+	if !reflect.DeepEqual(quirks, want) {
+		t.Fatalf("openrouter quirks = %+v, want %+v", quirks, want)
 	}
 }
 
@@ -80,8 +79,9 @@ func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 
 func TestNewForInstance_DefaultQuirks(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "oc", APIKey: "k"})
-	if !a.Quirks.TranslateMaxToXHigh {
-		t.Fatal("expected openrouter quirks (TranslateMaxToXHigh) to be applied")
+	want := openaicompat.ProviderQuirks{TranslateMaxToXHigh: true}
+	if !reflect.DeepEqual(a.Quirks, want) {
+		t.Fatalf("Quirks = %+v, want %+v", a.Quirks, want)
 	}
 }
 

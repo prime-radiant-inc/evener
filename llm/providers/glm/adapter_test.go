@@ -82,8 +82,11 @@ func TestClient_ListModels_Forwards(t *testing.T) {
 	if len(models) != 2 {
 		t.Fatalf("len(models) = %d, want 2", len(models))
 	}
-	if models[0].ID != "glm-5" && models[1].ID != "glm-5" {
-		t.Fatalf("expected glm-5 in forwarded models, got %+v", models)
+	if models[0].ID != "glm-5" {
+		t.Fatalf("models[0].ID = %q, want glm-5", models[0].ID)
+	}
+	if models[1].ID != "glm-5-air" {
+		t.Fatalf("models[1].ID = %q, want glm-5-air", models[1].ID)
 	}
 }
 
@@ -104,6 +107,15 @@ func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 func TestNewForInstance_DefaultQuirks(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "gc", APIKey: "k"})
 	if !a.Quirks.StripEmptyContent {
-		t.Fatal("expected glm quirks (StripEmptyContent) to be applied")
+		t.Fatal("glm quirks: StripEmptyContent should be true")
+	}
+	if !a.Quirks.ToolChoiceAutoOnly {
+		t.Fatal("glm quirks: ToolChoiceAutoOnly should be true")
+	}
+	if a.Quirks.MaxStopSequences != 1 {
+		t.Fatalf("glm quirks: MaxStopSequences = %d, want 1", a.Quirks.MaxStopSequences)
+	}
+	if !a.Quirks.NoJSONSchema {
+		t.Fatal("glm quirks: NoJSONSchema should be true")
 	}
 }

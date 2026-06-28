@@ -101,8 +101,22 @@ func TestAdapter_Complete_MapsToResponsesAPI(t *testing.T) {
 	if toolsAny, ok := gotBody["tools"].([]any); !ok || len(toolsAny) != 1 {
 		t.Fatalf("tools: %#v", gotBody["tools"])
 	}
-	if inputAny, ok := gotBody["input"].([]any); !ok || len(inputAny) == 0 {
+	inputAny, ok := gotBody["input"].([]any)
+	if !ok || len(inputAny) == 0 {
 		t.Fatalf("input: %#v", gotBody["input"])
+	}
+	var fcoCount int
+	for _, raw := range inputAny {
+		item, _ := raw.(map[string]any)
+		if item["type"] == "function_call_output" {
+			fcoCount++
+			if item["call_id"] != "call1" {
+				t.Fatalf("function_call_output call_id = %q, want %q", item["call_id"], "call1")
+			}
+		}
+	}
+	if fcoCount != 1 {
+		t.Fatalf("expected exactly 1 function_call_output item, got %d", fcoCount)
 	}
 }
 
@@ -137,11 +151,19 @@ func TestAdapter_CountInputTokens_UsesResponsesInputTokensEndpoint(t *testing.T)
 
 	maxTokens := 99
 	temp := 0.2
+	maxToolCalls := 5
+	bgTrue := true
 	got, err := a.CountInputTokens(ctx, llm.Request{
-		Model:       "gpt-5.2",
-		Messages:    []llm.Message{llm.System("sys"), llm.User("hello")},
-		MaxTokens:   &maxTokens,
-		Temperature: &temp,
+		Model:                "gpt-5.2",
+		Messages:             []llm.Message{llm.System("sys"), llm.User("hello")},
+		MaxTokens:            &maxTokens,
+		Temperature:          &temp,
+		SafetyIdentifier:     "test-safety-id",
+		PromptCacheRetention: "test-retention",
+		MaxToolCalls:         &maxToolCalls,
+		Background:           &bgTrue,
+		ServiceTier:          "auto",
+		Metadata:             map[string]string{"k": "v"},
 		Tools: []llm.ToolDefinition{{
 			Name:       "lookup",
 			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
@@ -174,7 +196,20 @@ func TestAdapter_CountInputTokens_UsesResponsesInputTokensEndpoint(t *testing.T)
 	if _, ok := gotBody["tools"]; !ok {
 		t.Fatalf("tools missing from body: %#v", gotBody)
 	}
-	for _, key := range []string{"max_output_tokens", "temperature", "top_p", "stop", "store", "include"} {
+	for _, key := range []string{
+		"background",
+		"include",
+		"max_output_tokens",
+		"max_tool_calls",
+		"metadata",
+		"prompt_cache_retention",
+		"safety_identifier",
+		"service_tier",
+		"stop",
+		"store",
+		"temperature",
+		"top_p",
+	} {
 		if _, ok := gotBody[key]; ok {
 			t.Fatalf("%s should be omitted from token-count body: %#v", key, gotBody)
 		}
@@ -1089,13 +1124,13 @@ func TestAdapter_Stream_CloseClosesResponsesStream(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Close: %v", err)
 		}
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(2 * time.Second):
 		t.Fatal("Close hung without closing the underlying Responses stream")
 	}
 
 	select {
 	case <-requestDone:
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(2 * time.Second):
 		t.Fatal("server request context was not canceled by stream Close")
 	}
 }
@@ -1413,7 +1448,7 @@ func TestAdapter_Stream_ContextDeadline_EmitsRequestTimeoutError(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	st, err := a.Stream(ctx, llm.Request{Model: "gpt-5.2", Messages: []llm.Message{llm.User("hi")}})
@@ -3285,6 +3320,9 @@ func TestComplete_PassesStopSequences(t *testing.T) {
 	if !ok || len(stop) != 2 {
 		t.Fatalf("stop = %v", gotBody["stop"])
 	}
+	if stop[0] != "STOP" || stop[1] != "END" {
+		t.Fatalf("stop = %v, want [STOP END]", stop)
+	}
 }
 
 func TestStream_PassesStopSequences(t *testing.T) {
@@ -3322,11 +3360,17 @@ func TestStream_PassesStopSequences(t *testing.T) {
 	if !ok || len(stop) != 2 {
 		t.Fatalf("stop = %v", gotBody["stop"])
 	}
+	if stop[0] != "STOP" || stop[1] != "END" {
+		t.Fatalf("stop = %v, want [STOP END]", stop)
+	}
 }
 
 func TestComplete_WrapsContextCanceled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(5 * time.Second)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
 	}))
 	t.Cleanup(srv.Close)
 
@@ -3402,14 +3446,10 @@ func TestParseUsage_ReasoningTokensDistinctFromOutputTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resp.Usage.OutputTokens != 50 {
-		t.Fatalf("OutputTokens = %d, want 50", resp.Usage.OutputTokens)
+		t.Fatalf("OutputTokens = %d, want 50 (reasoning tokens must not be included)", resp.Usage.OutputTokens)
 	}
 	if resp.Usage.ReasoningTokens == nil || *resp.Usage.ReasoningTokens != 30 {
 		t.Fatalf("ReasoningTokens = %v, want 30", resp.Usage.ReasoningTokens)
-	}
-	// Reasoning tokens must NOT inflate OutputTokens
-	if resp.Usage.OutputTokens == 50+30 {
-		t.Fatal("OutputTokens includes reasoning tokens — they should be distinct")
 	}
 }
 

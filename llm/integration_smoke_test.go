@@ -164,14 +164,12 @@ func TestIntegration_Streaming(t *testing.T) {
 			if final == "" {
 				t.Fatalf("expected non-empty final text")
 			}
-			// The streamed deltas should match the final text.
+			if strings.TrimSpace(streamed) == "" {
+				t.Fatalf("no text deltas received")
+			}
+			// The streamed deltas must match the final accumulated text.
 			if strings.TrimSpace(streamed) != final {
-				t.Logf("streamed (truncated): %.100s", streamed)
-				t.Logf("final (truncated): %.100s", final)
-				// Allow minor whitespace differences.
-				if strings.TrimSpace(streamed) == "" {
-					t.Fatalf("no text deltas received")
-				}
+				t.Fatalf("streamed text mismatch:\n  streamed (truncated): %.100s\n  final (truncated): %.100s", streamed, final)
 			}
 			t.Logf("text (truncated): %.100s", final)
 		})

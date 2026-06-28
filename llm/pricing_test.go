@@ -100,7 +100,7 @@ func TestDefaultPrice_WellKnownModels(t *testing.T) {
 		t.Run(tc.model, func(t *testing.T) {
 			p, ok := DefaultPrice(tc.model)
 			if !ok {
-				t.Skipf("%s not in embedded catalog", tc.model)
+				t.Fatalf("%s not in embedded catalog", tc.model)
 			}
 			if approxF(p.InputPerM, tc.wantIn) == false {
 				t.Errorf("input: got %v, want %v", p.InputPerM, tc.wantIn)

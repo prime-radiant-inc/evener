@@ -207,8 +207,8 @@ func TestNewForInstance_Name(t *testing.T) {
 
 func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 	a := newForInstance(InstanceParams{Name: "ol"})
-	if a.BaseURL != defaultBaseURL {
-		t.Fatalf("Adapter.BaseURL = %q, want %q", a.BaseURL, defaultBaseURL)
+	if a.BaseURL != "http://localhost:11434/v1" {
+		t.Fatalf("Adapter.BaseURL = %q, want %q", a.BaseURL, "http://localhost:11434/v1")
 	}
 }
 
@@ -365,8 +365,10 @@ func TestAdapter_Stream_CloseIsIdempotent(t *testing.T) {
 	if err := stream.Close(); err != nil {
 		t.Errorf("first Close: %v", err)
 	}
-	// Second close must not panic.
-	_ = stream.Close()
+	// Second close must not panic and must return nil.
+	if err2 := stream.Close(); err2 != nil {
+		t.Errorf("second Close: %v", err2)
+	}
 }
 
 // TestAdapter_Complete_RewritesErrorProvider verifies that an HTTP error from
@@ -436,20 +438,60 @@ func TestAdapter_Stream_RewritesStartupErrorProvider(t *testing.T) {
 	}
 }
 
-// TestAdapter_AbortErrorNotRestamped verifies that user-driven
-// cancellation errors (AbortError, constructed with no provider) are
-// NOT restamped. Cancellation isn't provider-attributed — turning
-// "context canceled" into "ollama error: context canceled" would mislead
-// callers about who originated the failure.
+// TestAdapter_AbortErrorNotRestamped verifies that user-driven cancellation
+// errors are NOT restamped with a provider name when they flow through the
+// ollama adapter. The test routes a real request through c.Complete so that
+// the full ollama → openaicompat → HTTP path is exercised. Cancellation
+// isn't provider-attributed — turning "context canceled" into "ollama
+// error: context canceled" would mislead callers about who originated the
+// failure.
 func TestAdapter_AbortErrorNotRestamped(t *testing.T) {
-	abort := llm.NewAbortError("context canceled", nil)
-	got := llm.RewriteErrorProvider(abort, "ollama")
-	var llmErr llm.Error
-	if !errors.As(got, &llmErr) {
-		t.Fatalf("rewritten value is not a llm.Error: %T %v", got, got)
+	// handlerExit lets the test explicitly unblock the server handler.
+	// We close it via defer so it fires before t.Cleanup(srv.Close) runs,
+	// allowing the server to drain cleanly without a 5-second timeout.
+	// (r.Context().Done() is unreliable for HTTP/1.1 client-side cancellation.)
+	handlerExit := make(chan struct{})
+	defer close(handlerExit)
+
+	requestReceived := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case requestReceived <- struct{}{}:
+		default:
+		}
+		<-handlerExit // hold the connection open until the test exits
+	}))
+	t.Cleanup(srv.Close)
+
+	c := clientFor(&openaicompat.Adapter{
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-requestReceived:
+			cancel() // cancel the request after the server has received it
+		case <-ctx.Done():
+		}
+	}()
+
+	_, err := c.Complete(ctx, llm.Request{
+		Provider: "ollama",
+		Model:    "llama3.2",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err == nil {
+		t.Fatal("expected error from canceled context")
 	}
-	if llmErr.Provider() != "" {
-		t.Fatalf("AbortError.Provider() = %q after rewrite, want \"\" (cancellation must stay provider-less)", llmErr.Provider())
+	var abortErr *llm.AbortError
+	if !errors.As(err, &abortErr) {
+		t.Fatalf("expected *llm.AbortError, got %T: %v", err, err)
+	}
+	if got := abortErr.Provider(); got != "" {
+		t.Fatalf("AbortError.Provider() = %q after ollama adapter, want empty (cancellation must stay provider-less)", got)
 	}
 }
 

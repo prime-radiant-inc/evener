@@ -3,6 +3,7 @@ package openaicompat
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -85,10 +86,16 @@ func TestAdapter_Complete_MapsToChatCompletionsAPI(t *testing.T) {
 	if len(msgs) != 4 {
 		t.Fatalf("messages count: %d", len(msgs))
 	}
-	// First message should be system.
-	first, _ := msgs[0].(map[string]any)
-	if first["role"] != "system" {
-		t.Fatalf("first message role: %v", first["role"])
+	// All four messages should have the correct roles.
+	roleChecks := []struct {
+		idx  int
+		want string
+	}{{0, "system"}, {1, "user"}, {2, "assistant"}, {3, "user"}}
+	for _, rc := range roleChecks {
+		msg, _ := msgs[rc.idx].(map[string]any)
+		if msg["role"] != rc.want {
+			t.Fatalf("msgs[%d] role: got %v, want %s", rc.idx, msg["role"], rc.want)
+		}
 	}
 }
 
@@ -451,10 +458,21 @@ func TestAdapter_Complete_ToolCalling(t *testing.T) {
 		t.Fatalf("finish reason: %q", resp.Finish.Reason)
 	}
 
-	// Verify tools were sent in request.
+	// Verify tools were sent in request with correct structure.
 	tools, ok := gotBody["tools"].([]any)
 	if !ok || len(tools) != 1 {
 		t.Fatalf("tools: %#v", gotBody["tools"])
+	}
+	tool0, _ := tools[0].(map[string]any)
+	if tool0["type"] != "function" {
+		t.Fatalf("tool type: %v, want function", tool0["type"])
+	}
+	fn, _ := tool0["function"].(map[string]any)
+	if fn["name"] != "get_weather" {
+		t.Fatalf("function name: %v, want get_weather", fn["name"])
+	}
+	if fn["parameters"] == nil {
+		t.Fatalf("function.parameters should be non-empty")
 	}
 }
 
@@ -511,6 +529,9 @@ func TestAdapter_Complete_ToolResults(t *testing.T) {
 			if msg["tool_call_id"] != "call_1" {
 				t.Fatalf("tool_call_id: %v", msg["tool_call_id"])
 			}
+			if msg["content"] != "Sunny, 72F" {
+				t.Fatalf("tool message content: %v, want Sunny, 72F", msg["content"])
+			}
 		}
 	}
 	if !foundToolMsg {
@@ -544,9 +565,6 @@ func TestBuildRequestBody_SanitizesMalformedHistoricalToolCallArguments(t *testi
 	args := fn["arguments"].(string)
 	if args != "{}" {
 		t.Fatalf("tool call arguments = %q, want {}", args)
-	}
-	if !json.Valid([]byte(args)) {
-		t.Fatalf("tool call arguments are not valid JSON: %q", args)
 	}
 }
 
@@ -625,21 +643,27 @@ func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 		t.Fatalf("deltas: %q", joined)
 	}
 
-	foundStart := false
-	foundFinish := false
-	for _, k := range kinds {
-		if k == llm.StreamEventStreamStart {
-			foundStart = true
+	indexOf := func(target llm.StreamEventType) int {
+		for i, k := range kinds {
+			if k == target {
+				return i
+			}
 		}
-		if k == llm.StreamEventFinish {
-			foundFinish = true
-		}
+		return -1
 	}
-	if !foundStart {
+	startIdx := indexOf(llm.StreamEventStreamStart)
+	finishIdx := indexOf(llm.StreamEventFinish)
+	if startIdx < 0 {
 		t.Fatalf("expected STREAM_START (kinds=%v)", kinds)
 	}
-	if !foundFinish {
+	if finishIdx < 0 {
 		t.Fatalf("expected FINISH (kinds=%v)", kinds)
+	}
+	if startIdx != 0 {
+		t.Fatalf("STREAM_START should be first event, got index %d (kinds=%v)", startIdx, kinds)
+	}
+	if finishIdx != len(kinds)-1 {
+		t.Fatalf("FINISH should be last event, got index %d of %d (kinds=%v)", finishIdx, len(kinds)-1, kinds)
 	}
 }
 
@@ -1171,6 +1195,13 @@ func TestAdapter_Complete_ImageContent_Base64(t *testing.T) {
 	url, _ := imgURL["url"].(string)
 	if !strings.HasPrefix(url, "data:image/png;base64,") {
 		t.Fatalf("expected data URI, got %q", url)
+	}
+	decoded, decErr := base64.StdEncoding.DecodeString(strings.TrimPrefix(url, "data:image/png;base64,"))
+	if decErr != nil {
+		t.Fatalf("base64 decode: %v", decErr)
+	}
+	if !bytes.Equal(decoded, []byte{0x89, 0x50, 0x4E, 0x47}) {
+		t.Fatalf("image bytes: %v, want [137 80 78 71]", decoded)
 	}
 }
 
@@ -2005,10 +2036,10 @@ func TestQuirks_StripEmptyContent_RemovesEmptyTextParts(t *testing.T) {
 
 	msgs := gotBody["messages"].([]any)
 	assistantMsg := msgs[0].(map[string]any)
-	// With StripEmptyContent, the empty text part should be stripped.
-	// The assistant message should have tool_calls but no content key (since empty text was stripped).
-	if content, has := assistantMsg["content"]; has && content != "" {
-		t.Fatalf("content should be empty or absent after stripping, got: %v", content)
+	// With StripEmptyContent, the empty text part should be stripped entirely.
+	// The assistant message should have tool_calls but the content key must be absent.
+	if content, has := assistantMsg["content"]; has {
+		t.Fatalf("content key should be absent after stripping, got: %v", content)
 	}
 }
 

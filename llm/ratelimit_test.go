@@ -80,6 +80,27 @@ func TestParseRateLimitHeaders_InvalidNumber_Ignored(t *testing.T) {
 	}
 }
 
+// TestParseRateLimitHeaders_ResetRequestsPriority verifies that when both
+// x-ratelimit-reset-requests and x-ratelimit-reset-tokens are present,
+// reset-requests takes priority.
+func TestParseRateLimitHeaders_ResetRequestsPriority(t *testing.T) {
+	h := http.Header{}
+	h.Set("x-ratelimit-reset-requests", "2026-02-10T12:00:00Z")
+	h.Set("x-ratelimit-reset-tokens", "2026-02-10T13:00:00Z")
+
+	info := ParseRateLimitHeaders(h)
+	if info == nil {
+		t.Fatal("expected non-nil RateLimitInfo")
+	}
+	wantReset := time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)
+	if info.ResetAt == nil {
+		t.Fatal("ResetAt is nil")
+	}
+	if !info.ResetAt.Equal(wantReset) {
+		t.Fatalf("ResetAt = %v, want %v (reset-requests should take priority over reset-tokens)", info.ResetAt, wantReset)
+	}
+}
+
 func TestParseRateLimitHeaders_ResetTokensFallback(t *testing.T) {
 	h := http.Header{}
 	h.Set("x-ratelimit-reset-tokens", "2026-02-10T13:00:00Z")

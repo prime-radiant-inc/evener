@@ -67,10 +67,33 @@ func TestAdapter_Complete_DelegatesToAnthropicInner(t *testing.T) {
 	if gotAPIKey != "test-kimi-key" {
 		t.Fatalf("x-api-key: %q", gotAPIKey)
 	}
+	// KA-1: verify the request body contains the expected messages and model.
+	if gotBody == nil {
+		t.Fatal("request body was empty or not valid JSON")
+	}
+	if gotBody["messages"] == nil {
+		t.Fatal("gotBody[\"messages\"] is nil — messages not sent in request body")
+	}
+	msgs, ok := gotBody["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		t.Fatalf("gotBody[\"messages\"] = %v, want non-empty slice", gotBody["messages"])
+	}
+	firstMsg, _ := msgs[0].(map[string]any)
+	if firstMsg["role"] != "user" {
+		t.Fatalf("messages[0].role = %v, want \"user\"", firstMsg["role"])
+	}
+	if gotBody["model"] != "kimi-for-coding" {
+		t.Fatalf("gotBody[\"model\"] = %v, want \"kimi-for-coding\"", gotBody["model"])
+	}
 }
 
 func TestAdapter_Stream_DelegatesToAnthropicInner(t *testing.T) {
+	var gotPath string
+	var gotAPIKey string
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAPIKey = r.Header.Get("x-api-key")
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
 		events := []string{
@@ -106,6 +129,13 @@ func TestAdapter_Stream_DelegatesToAnthropicInner(t *testing.T) {
 	}
 	if gotText.String() != "streamed" {
 		t.Fatalf("streamed text: %q", gotText.String())
+	}
+	// KA-3: verify path and API key for the streaming code path.
+	if gotPath != "/v1/messages" {
+		t.Fatalf("stream path: %q, want /v1/messages", gotPath)
+	}
+	if gotAPIKey != "test-key" {
+		t.Fatalf("stream x-api-key: %q, want \"test-key\"", gotAPIKey)
 	}
 }
 
@@ -162,18 +192,24 @@ func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 
 func TestAdapter_AnnouncesCodingAgentUserAgent(t *testing.T) {
 	var gotUA string
+	var gotAPIKey string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUA = r.Header.Get("User-Agent")
+		gotAPIKey = r.Header.Get("x-api-key")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"m","model":"kimi-for-coding","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
 	t.Cleanup(srv.Close)
 
-	a := NewForInstance(InstanceParams{Name: "kimi", BaseURL: srv.URL, APIKey: "k"})
+	a := NewForInstance(InstanceParams{Name: "kimi", BaseURL: srv.URL, APIKey: "secret-kimi-key"})
 	if _, err := a.Complete(context.Background(), llm.Request{Model: "kimi-for-coding", Messages: []llm.Message{llm.User("hi")}}); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	if gotUA != kimicoding.UserAgent {
 		t.Fatalf("User-Agent = %q, want %q", gotUA, kimicoding.UserAgent)
+	}
+	// KA-2: verify APIKey from InstanceParams reaches the outgoing x-api-key header.
+	if gotAPIKey != "secret-kimi-key" {
+		t.Fatalf("x-api-key = %q, want \"secret-kimi-key\"", gotAPIKey)
 	}
 }

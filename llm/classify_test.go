@@ -166,8 +166,8 @@ func TestClassify_NonOpenAI_BehaviorTag_NotFallback(t *testing.T) {
 		t.Fatalf("expected behaviorTagSetter, got %T", err)
 	}
 	bs.setBehaviorTag("anthropic")
-	if got := Classify(err); got == ErrorClassFallback {
-		t.Fatalf("Classify(work/tag=anthropic 404) = Fallback, want Permanent")
+	if got := Classify(err); got != ErrorClassPermanent {
+		t.Fatalf("Classify(work/tag=anthropic 404) = %v, want Permanent", got)
 	}
 }
 

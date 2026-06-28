@@ -814,8 +814,15 @@ func TestAdapter_Complete_ResponseFormat_JSONSchema_InjectedIntoSystem(t *testin
 		t.Fatalf("system blocks: %#v", gotBody["system"])
 	}
 	sb0, _ := sysBlocks[0].(map[string]any)
-	if !strings.Contains(fmt.Sprint(sb0["text"]), "JSON Schema") {
+	sysText := fmt.Sprint(sb0["text"])
+	if !strings.Contains(sysText, "JSON Schema") {
 		t.Fatalf("expected schema instructions in system; got %#v", sb0["text"])
+	}
+	// Verify the schema was actually serialized into the system prompt, not just
+	// the "JSON Schema:" header. A mutation omitting string(b) would still pass
+	// the check above while sending clients no schema at all.
+	if !strings.Contains(sysText, "name") {
+		t.Fatalf("expected schema field names serialized in system prompt; got %#v", sb0["text"])
 	}
 }
 
@@ -2068,17 +2075,15 @@ func TestComplete_ReasoningEstimated_FromThinkingChars(t *testing.T) {
 }
 
 func TestComplete_ReasoningTokens_NilWhenProviderOmits(t *testing.T) {
-	// Without any thinking blocks, both native and estimated fields stay nil.
-	thinkingText := "Let me think about this step by step..."
+	// Without any thinking blocks in the response, both the native field
+	// (ReasoningTokens, from provider usage) and the estimated field
+	// (ReasoningTokensEstimated, from char-counting thinking content) stay nil.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		resp := map[string]any{
-			"id":    "msg_1",
-			"model": "claude-3-5-sonnet-20241022",
-			"content": []any{
-				map[string]any{"type": "thinking", "thinking": thinkingText, "signature": "sig_abc"},
-				map[string]any{"type": "text", "text": "The answer is 42."},
-			},
+			"id":          "msg_1",
+			"model":       "claude-3-5-sonnet-20241022",
+			"content":     []any{map[string]any{"type": "text", "text": "The answer is 42."}},
 			"stop_reason": "end_turn",
 			"usage":       map[string]any{"input_tokens": 10, "output_tokens": 20},
 		}
@@ -2097,6 +2102,9 @@ func TestComplete_ReasoningTokens_NilWhenProviderOmits(t *testing.T) {
 	}
 	if resp.Usage.ReasoningTokens != nil {
 		t.Fatalf("ReasoningTokens should be nil (provider didn't report), got %d", *resp.Usage.ReasoningTokens)
+	}
+	if resp.Usage.ReasoningTokensEstimated != nil {
+		t.Fatalf("ReasoningTokensEstimated should be nil (no thinking blocks to estimate from), got %d", *resp.Usage.ReasoningTokensEstimated)
 	}
 }
 

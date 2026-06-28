@@ -87,12 +87,7 @@ type = "google"
 	}
 }
 
-func TestLoadRejectsDuplicateNames(t *testing.T) {
-	// TOML map keys are unique by definition, but we test our layer catches it
-	// via an overlapping name in our validation path.
-	// Since TOML maps deduplicate naturally, we can't inject a real duplicate;
-	// instead we test a minimal valid parse and trust map uniqueness is enforced.
-	// This test validates rejection of zero-instances instead.
+func TestLoadRejectsZeroInstances(t *testing.T) {
 	const empty = `schema = 1`
 	_, err := Load([]byte(empty))
 	if err == nil {

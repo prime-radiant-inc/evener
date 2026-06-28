@@ -1177,7 +1177,17 @@ func TestAdapter_Complete_ImageInput_URL_Data_AndFilePath(t *testing.T) {
 
 	dir := t.TempDir()
 	imgPath := filepath.Join(dir, "img.png")
-	_ = os.WriteFile(imgPath, []byte{0x89, 0x50, 0x4e, 0x47}, 0o644)
+	fileBytes := []byte{0x89, 0x50, 0x4e, 0x47}
+	_ = os.WriteFile(imgPath, fileBytes, 0o644)
+
+	// Raw bytes for the two inline images, in order of appearance.
+	// The first set uses bytes that produce '+' in StdEncoding (char 62), which
+	// URLEncoding would render as '-' instead, making the mutation detectable.
+	inlineBytes := [][]byte{
+		{0xfb, 0xef, 0xbe}, // StdEncoding: "++++", URLEncoding: "----"
+		fileBytes,
+	}
+	inlineMIME := []string{"image/png", "image/png"}
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1188,7 +1198,7 @@ func TestAdapter_Complete_ImageInput_URL_Data_AndFilePath(t *testing.T) {
 		Content: []llm.ContentPart{
 			{Kind: llm.ContentText, Text: "see"},
 			{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.com/x.png", MediaType: "image/png"}},
-			{Kind: llm.ContentImage, Image: &llm.ImageData{MediaType: "image/png", Data: []byte{0x01, 0x02, 0x03}}},
+			{Kind: llm.ContentImage, Image: &llm.ImageData{MediaType: "image/png", Data: []byte{0xfb, 0xef, 0xbe}}},
 			{Kind: llm.ContentImage, Image: &llm.ImageData{URL: imgPath}},
 		},
 	}
@@ -1207,7 +1217,7 @@ func TestAdapter_Complete_ImageInput_URL_Data_AndFilePath(t *testing.T) {
 	}
 
 	seenURL := false
-	seenInline := 0
+	var inlineParts []map[string]any
 	for _, pAny := range parts {
 		p, ok := pAny.(map[string]any)
 		if !ok {
@@ -1219,11 +1229,29 @@ func TestAdapter_Complete_ImageInput_URL_Data_AndFilePath(t *testing.T) {
 			}
 		}
 		if _, ok := p["inlineData"].(map[string]any); ok {
-			seenInline++
+			inlineParts = append(inlineParts, p)
 		}
 	}
-	if !seenURL || seenInline < 2 {
-		t.Fatalf("expected url image + 2 inline images; seenURL=%v seenInline=%d parts=%#v", seenURL, seenInline, parts)
+	if !seenURL || len(inlineParts) < 2 {
+		t.Fatalf("expected url image + 2 inline images; seenURL=%v inlineParts=%d parts=%#v", seenURL, len(inlineParts), parts)
+	}
+
+	// Verify that mimeType and base64-encoded data are forwarded correctly for
+	// each inline image. A mutation that corrupts the encoding (e.g. URLEncoding
+	// instead of StdEncoding) or clears the data must cause this to fail.
+	for i, p := range inlineParts {
+		inlineData, ok := p["inlineData"].(map[string]any)
+		if !ok {
+			t.Fatalf("inlineParts[%d]: missing inlineData map", i)
+		}
+		wantMIME := inlineMIME[i]
+		if gotMIME, _ := inlineData["mimeType"].(string); gotMIME != wantMIME {
+			t.Errorf("inlineParts[%d].mimeType = %q, want %q", i, gotMIME, wantMIME)
+		}
+		wantData := base64.StdEncoding.EncodeToString(inlineBytes[i])
+		if gotData, _ := inlineData["data"].(string); gotData != wantData {
+			t.Errorf("inlineParts[%d].data = %q, want %q", i, gotData, wantData)
+		}
 	}
 }
 
@@ -1273,47 +1301,44 @@ func TestAdapter_Complete_ResponseFormat_JSONSchema(t *testing.T) {
 	if genCfg["responseMimeType"] != "application/json" {
 		t.Fatalf("responseMimeType: %#v", genCfg["responseMimeType"])
 	}
-	if _, ok := genCfg["responseSchema"].(map[string]any); !ok {
+	rs, ok := genCfg["responseSchema"].(map[string]any)
+	if !ok {
 		t.Fatalf("responseSchema: %#v", genCfg["responseSchema"])
+	}
+	// Verify that schema content (properties, required) is forwarded correctly.
+	// An empty responseSchema map would pass the type assertion above but would
+	// silently drop the schema fields — catch that regression here.
+	if rs["properties"] == nil {
+		t.Errorf("responseSchema.properties not forwarded; got %#v", rs)
+	}
+	required, _ := rs["required"].([]any)
+	if len(required) == 0 {
+		t.Errorf("responseSchema.required not forwarded; got %#v", rs["required"])
 	}
 }
 
 func TestAdapter_Stream_ContextDeadline_EmitsRequestTimeoutError(t *testing.T) {
+	// The server blocks forever; the test does not need it to deliver any data
+	// because the context is pre-expired before the HTTP request is issued.
+	// That makes the KindTimeout classification deterministic with no wall-clock
+	// dependency.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || !strings.Contains(r.URL.Path, ":streamGenerateContent") {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
 		<-r.Context().Done()
 	}))
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// Pre-expire the deadline so client.Do returns context.DeadlineExceeded
+	// immediately; WrapContextError then maps it to KindTimeout.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Millisecond))
 	defer cancel()
 
-	st, err := a.Stream(ctx, llm.Request{Model: "gemini-test", Messages: []llm.Message{llm.User("hi")}})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
+	_, err := a.Stream(ctx, llm.Request{Model: "gemini-test", Messages: []llm.Message{llm.User("hi")}})
+	if err == nil {
+		t.Fatal("expected error from Stream with expired deadline")
 	}
-	defer st.Close() //nolint:errcheck
-
-	var sawErr error
-	for ev := range st.Events() {
-		if ev.Type == llm.StreamEventError && ev.Err != nil {
-			sawErr = ev.Err
-		}
-	}
-	if sawErr == nil {
-		t.Fatalf("expected stream error")
-	}
-	if llm.Kind(sawErr) != llm.KindTimeout {
-		t.Fatalf("expected RequestTimeoutError, got %T (%v)", sawErr, sawErr)
+	if llm.Kind(err) != llm.KindTimeout {
+		t.Fatalf("expected KindTimeout, got %T (%v)", err, err)
 	}
 }
 
@@ -1804,14 +1829,15 @@ func TestComplete_WrapsContextCanceled(t *testing.T) {
 
 func TestComplete_WrapsContextDeadlineExceeded(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(5 * time.Second)
+		<-r.Context().Done()
 	}))
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	// Pre-expire the deadline before calling Complete so context.DeadlineExceeded
+	// is guaranteed regardless of scheduler timing — mirrors TestComplete_WrapsContextCanceled.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Millisecond))
 	defer cancel()
-	time.Sleep(5 * time.Millisecond) // ensure deadline expires
 
 	_, err := a.Complete(ctx, llm.Request{
 		Model:    "gemini-test",
@@ -2475,13 +2501,12 @@ func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	if llm.Kind(err) == llm.KindTimeout {
-		return // correct error type
+	// AdapterTimeout must produce a classified KindTimeout error via WrapContextError.
+	// Accepting a raw context.DeadlineExceeded would hide regressions where the
+	// adapter bypasses the wrapping contract.
+	if llm.Kind(err) != llm.KindTimeout {
+		t.Errorf("expected KindTimeout, got %T: %v", err, err)
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return
-	}
-	t.Errorf("expected RequestTimeoutError or DeadlineExceeded, got %T: %v", err, err)
 }
 
 func TestAdapterTimeout_Stream_AcceptsAdapterTimeout(t *testing.T) {

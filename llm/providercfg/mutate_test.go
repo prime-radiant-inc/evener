@@ -51,7 +51,33 @@ func TestWriteFileRoundTrip(t *testing.T) {
 		t.Errorf("Default = %q, want %q", got.Default, cfg.Default)
 	}
 	if len(got.Instances) != 2 {
-		t.Errorf("len(Instances) = %d, want 2", len(got.Instances))
+		t.Fatalf("len(Instances) = %d, want 2", len(got.Instances))
+	}
+
+	// Verify field-level serialization fidelity for each instance.
+	// APIKey is intentionally excluded from the written file.
+	wantByName := make(map[string]InstanceConfig, len(cfg.Instances))
+	for _, inst := range cfg.Instances {
+		wantByName[inst.Name] = inst
+	}
+	for _, gotInst := range got.Instances {
+		want, ok := wantByName[gotInst.Name]
+		if !ok {
+			t.Errorf("unexpected instance %q in round-trip output", gotInst.Name)
+			continue
+		}
+		if gotInst.Type != want.Type {
+			t.Errorf("Instances[%q].Type = %q, want %q", gotInst.Name, gotInst.Type, want.Type)
+		}
+		if gotInst.APIStyle != want.APIStyle {
+			t.Errorf("Instances[%q].APIStyle = %q, want %q", gotInst.Name, gotInst.APIStyle, want.APIStyle)
+		}
+		if gotInst.BaseURL != want.BaseURL {
+			t.Errorf("Instances[%q].BaseURL = %q, want %q", gotInst.Name, gotInst.BaseURL, want.BaseURL)
+		}
+		if gotInst.Quirks != want.Quirks {
+			t.Errorf("Instances[%q].Quirks = %q, want %q", gotInst.Name, gotInst.Quirks, want.Quirks)
+		}
 	}
 }
 
@@ -89,6 +115,13 @@ func TestUpsertAppendsNewInstance(t *testing.T) {
 	updated := orig.Upsert(InstanceConfig{Name: "b", Type: "google"})
 	if len(updated.Instances) != 2 {
 		t.Fatalf("len = %d, want 2", len(updated.Instances))
+	}
+	// Instances are sorted: "a" < "b", so the appended instance is at index 1.
+	if updated.Instances[1].Name != "b" {
+		t.Errorf("Instances[1].Name = %q, want %q", updated.Instances[1].Name, "b")
+	}
+	if updated.Instances[1].Type != "google" {
+		t.Errorf("Instances[1].Type = %q, want %q", updated.Instances[1].Type, "google")
 	}
 }
 
@@ -251,7 +284,7 @@ func TestValidateAPIStyleRejectsUnknownStyle(t *testing.T) {
 }
 
 func TestValidateType(t *testing.T) {
-	for _, typ := range []Type{"openai", "anthropic", "google", "kimi", "glm", "minimax", "openrouter", "openrouter-anthropic", "ollama"} {
+	for _, typ := range []Type{"openai", "anthropic", "google", "kimi", "kimi-anthropic", "glm", "minimax", "openrouter", "openrouter-anthropic", "ollama"} {
 		if err := ValidateType(typ); err != nil {
 			t.Errorf("ValidateType(%q) = %v, want nil", typ, err)
 		}
@@ -259,6 +292,33 @@ func TestValidateType(t *testing.T) {
 	for _, typ := range []Type{"", "bogus", "openai-compatible", "OpenAI"} {
 		if err := ValidateType(typ); err == nil {
 			t.Errorf("ValidateType(%q) = nil, want error", typ)
+		}
+	}
+}
+
+func TestKnownTypeNamesGolden(t *testing.T) {
+	// Golden list: any addition or removal from knownTypes in load.go requires a
+	// deliberate update here. This catches mutations that knownTypes cross-checks
+	// alone cannot detect (e.g. removing a type that no positive test exercises).
+	want := []string{
+		"anthropic",
+		"glm",
+		"google",
+		"kimi",
+		"kimi-anthropic",
+		"minimax",
+		"ollama",
+		"openai",
+		"openrouter",
+		"openrouter-anthropic",
+	}
+	got := KnownTypeNames()
+	if len(got) != len(want) {
+		t.Fatalf("KnownTypeNames() = %v, want %v", got, want)
+	}
+	for i, name := range got {
+		if name != want[i] {
+			t.Errorf("KnownTypeNames()[%d] = %q, want %q", i, name, want[i])
 		}
 	}
 }

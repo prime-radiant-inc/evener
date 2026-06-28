@@ -284,13 +284,6 @@ func TestStreamGenerate_ToolLoop_EmitsStepFinishAndContinues(t *testing.T) {
 					cancel()
 				}()
 				_ = sctx
-
-				// No tool results should be present in the initial request.
-				for _, m := range req.Messages {
-					if m.Role == RoleTool {
-						t.Fatalf("unexpected tool result in step-1 request: %+v", m)
-					}
-				}
 				return st, nil
 			},
 			// Step 2: final text
@@ -309,22 +302,6 @@ func TestStreamGenerate_ToolLoop_EmitsStepFinishAndContinues(t *testing.T) {
 					cancel()
 				}()
 				_ = sctx
-
-				// Step 2 request must include tool results for all tool calls from step 1.
-				foundToolResult := false
-				for _, m := range req.Messages {
-					if m.Role != RoleTool {
-						continue
-					}
-					for _, p := range m.Content {
-						if p.Kind == ContentToolResult && p.ToolResult != nil && p.ToolResult.ToolCallID == "c1" {
-							foundToolResult = true
-						}
-					}
-				}
-				if !foundToolResult {
-					t.Fatalf("expected tool result message in step-2 request; msgs=%+v", req.Messages)
-				}
 				return st, nil
 			},
 		},
@@ -388,8 +365,32 @@ func TestStreamGenerate_ToolLoop_EmitsStepFinishAndContinues(t *testing.T) {
 		t.Fatalf("final response: %+v", gotResp)
 	}
 
-	if got := len(a.Requests()); got != 2 {
+	reqs := a.Requests()
+	if got := len(reqs); got != 2 {
 		t.Fatalf("adapter stream calls: got %d want 2", got)
+	}
+
+	// Step-1 request must contain no tool-result messages.
+	for _, m := range reqs[0].Messages {
+		if m.Role == RoleTool {
+			t.Fatalf("unexpected tool result in step-1 request: %+v", m)
+		}
+	}
+
+	// Step-2 request must include a tool result for call "c1".
+	foundToolResult := false
+	for _, m := range reqs[1].Messages {
+		if m.Role != RoleTool {
+			continue
+		}
+		for _, p := range m.Content {
+			if p.Kind == ContentToolResult && p.ToolResult != nil && p.ToolResult.ToolCallID == "c1" {
+				foundToolResult = true
+			}
+		}
+	}
+	if !foundToolResult {
+		t.Fatalf("expected tool result for call c1 in step-2 request; msgs=%+v", reqs[1].Messages)
 	}
 }
 
@@ -447,13 +448,27 @@ func TestStreamGenerate_PassiveToolCall_StopsWithoutStepFinish(t *testing.T) {
 	defer res.Close() //nolint:errcheck
 
 	var kinds []StreamEventType
+	finishCount := 0
 	for ev := range res.Events() {
 		kinds = append(kinds, ev.Type)
+		if ev.Type == StreamEventFinish {
+			finishCount++
+		}
 	}
 	for _, k := range kinds {
 		if k == StreamEventStepFinish {
 			t.Fatalf("did not expect STEP_FINISH for passive tool calls (kinds=%v)", kinds)
 		}
+	}
+	if finishCount != 1 {
+		t.Fatalf("expected exactly 1 FINISH event for passive tool call stop; got %d (kinds=%v)", finishCount, kinds)
+	}
+	gotResp, rerr := res.Response()
+	if rerr != nil {
+		t.Fatalf("Response() error: %v", rerr)
+	}
+	if gotResp == nil {
+		t.Fatal("Response() returned nil")
 	}
 }
 

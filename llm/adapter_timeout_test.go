@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -60,8 +61,26 @@ func TestAdapterTransport_ConnectTimeout_ReturnsTransport(t *testing.T) {
 		t.Fatal("expected non-nil transport")
 	}
 	if transport.DialContext == nil {
-		t.Error("transport should have a DialContext with timeout")
+		t.Fatal("transport should have a DialContext with timeout")
 	}
+	// Verify the DialContext is a real working dialer that can establish connections,
+	// not merely a non-nil function pointer.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			c.Close()
+		}
+	}()
+	conn, err := transport.DialContext(context.Background(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("DialContext to local listener failed: %v", err)
+	}
+	conn.Close()
 }
 
 func TestAdapterTransport_NilTimeout_ReturnsNil(t *testing.T) {
@@ -91,6 +110,15 @@ func TestClientWithConnectTimeout_AppliesTransport(t *testing.T) {
 	}
 	if client.Timeout != 30*time.Second {
 		t.Errorf("expected original timeout preserved, got %v", client.Timeout)
+	}
+	// Verify the transport carries the connect-timeout dialer.
+	// A bare &http.Transport{} (no dialer) would have nil DialContext.
+	ht, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", client.Transport)
+	}
+	if ht.DialContext == nil {
+		t.Error("transport DialContext is nil; connect timeout would not be enforced")
 	}
 }
 

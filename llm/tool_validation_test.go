@@ -7,7 +7,7 @@ import (
 )
 
 func TestValidateToolName(t *testing.T) {
-	for _, name := range []string{"t", "Tool_1", "a_b_c", "Z9"} {
+	for _, name := range []string{"t", "Tool_1", "a_b_c", "Z9", strings.Repeat("a", 64)} {
 		if err := ValidateToolName(name); err != nil {
 			t.Fatalf("ValidateToolName(%q): %v", name, err)
 		}
