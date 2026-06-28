@@ -48,6 +48,11 @@ type Roster struct {
 	// probe to a live process means the daemon is busy, not gone, so its session
 	// is kept; injectable for tests.
 	procAlive func(pid int) bool
+
+	// watchReadyFn is called by Watch immediately after the fsnotify watcher has
+	// been registered on runDir. Nil in production; injected by tests to
+	// synchronize file-creation events without wall-clock sleeps.
+	watchReadyFn func()
 }
 
 // NewRoster returns a Roster that scans runDir on demand.
@@ -231,6 +236,9 @@ func (r *Roster) Watch(ctx context.Context) error {
 	_ = ensureDir(r.runDir)
 	if err := w.Add(r.runDir); err != nil {
 		return err
+	}
+	if r.watchReadyFn != nil {
+		r.watchReadyFn()
 	}
 
 	ticker := time.NewTicker(5 * time.Second)

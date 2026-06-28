@@ -193,10 +193,14 @@ func TestRoster_Watch_PicksUpNewFile(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
+	// watchReady is closed by Watch immediately after w.Add(runDir) returns, so
+	// we know the fsnotify watcher is registered before we create the rendezvous
+	// file. This replaces the old 100 ms sleep, which was a race: on a loaded
+	// scheduler the goroutine might not have reached w.Add yet.
+	watchReady := make(chan struct{})
+	r.watchReadyFn = func() { close(watchReady) }
 	go r.Watch(ctx)
-
-	// Give the watcher a moment to start.
-	time.Sleep(100 * time.Millisecond)
+	<-watchReady // guaranteed: watcher is active before the file is written
 
 	writeRendezvous(t, dir, rendezvous.Entry{
 		PID:     1001,
