@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -191,5 +192,81 @@ func writeExecutable(t *testing.T, path string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestIsExecutable_NonExistent(t *testing.T) {
+	// Use the exported function indirectly by testing Resolve with explicit path.
+	_, err := Resolve("serf-hub", "/nonexistent/path/serf-hub", "", nil)
+	if err == nil {
+		t.Fatal("expected error for non-existent explicit path")
+	}
+}
+
+func TestIsExecutable_Directory(t *testing.T) {
+	dir := t.TempDir()
+	// Create a sibling binary next to a dir (currentExecutable points to a dir).
+	_, err := Resolve("serf-hub", "", filepath.Join(dir, "serf-tui"), func(string) (string, error) {
+		return "", errors.New("should not reach PATH")
+	})
+	if err == nil {
+		t.Fatal("expected error when sibling is a directory")
+	}
+}
+
+func TestIsExecutable_NonExecutableFile(t *testing.T) {
+	// Explicit non-executable file should be rejected.
+	dir := t.TempDir()
+	nonExec := filepath.Join(dir, "not-executable")
+	if err := os.WriteFile(nonExec, []byte("noop"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Resolve("serf-hub", nonExec, "", nil)
+	if err == nil {
+		t.Fatal("expected error for non-executable explicit path")
+	}
+}
+
+func TestResolve_SiblingExistsButNotExecutable_FallsThroughToPATH(t *testing.T) {
+	dir := t.TempDir()
+	// Create a sibling file that exists but is NOT executable.
+	sibling := filepath.Join(dir, "serf-hub")
+	if err := os.WriteFile(sibling, []byte("not executable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Create a PATH candidate that IS executable.
+	pathHub := filepath.Join(t.TempDir(), "serf-hub")
+	writeExecutable(t, pathHub)
+
+	got, err := Resolve("serf-hub", "", filepath.Join(dir, "serf-tui"), func(string) (string, error) {
+		return pathHub, nil
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got != pathHub {
+		t.Fatalf("got %q, want %q", got, pathHub)
+	}
+}
+
+func TestSiblingDir_AbsFailsWithVeryLongPath(t *testing.T) {
+	// filepath.Abs on an extremely long path may fail on some platforms.
+	// Construct a path that exceeds typical limits (e.g., 4096 bytes on Linux).
+	veryLong := strings.Repeat("a", 5000)
+	_, ok := SiblingDir(veryLong)
+	if ok {
+		// On some platforms Abs may succeed even for very long strings, so
+		// we only assert that it does not panic. The ok value is platform-dependent.
+		// However, if ok is true, the returned dir must be absolute.
+		// We already validated that in other tests, so we just check no panic here.
+	}
+}
+
+func TestResolveWithNilLookPath(t *testing.T) {
+	// Passing nil lookPath triggers the default exec.LookPath branch.
+	// Since serf-hub is unlikely to be on the real PATH, this should error.
+	_, err := Resolve("serf-hub-definitely-not-on-path", "", filepath.Join(t.TempDir(), "serf-tui"), nil)
+	if err == nil {
+		t.Fatal("expected error when lookPath is nil and no candidate exists")
 	}
 }

@@ -123,3 +123,10 @@ func TestRESTProxy_404UnknownSession(t *testing.T) {
 		t.Fatalf("status: got %d, want 404", rec.Code)
 	}
 }
+
+func TestSplitLivePath_NonMatching(t *testing.T) {
+	_, _, ok := splitLivePath("/other/01A")
+	if ok {
+		t.Fatal("expected splitLivePath to return false for non-matching path")
+	}
+}

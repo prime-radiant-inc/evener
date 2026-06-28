@@ -92,3 +92,105 @@ func TestProbeMCPStatus_HTTPWithHeaders(t *testing.T) {
 		t.Errorf("server saw Authorization=%q, want Bearer prefix", seenAuth)
 	}
 }
+
+func TestProbeMCPStatus_SSEReachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{Type: "sse", URL: srv.URL})
+	if got != "available" {
+		t.Errorf("status=%q, want available", got)
+	}
+}
+
+func TestProbeMCPStatus_HTTPHeadRejection(t *testing.T) {
+	// Some servers reject HEAD but accept GET.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{Type: "http", URL: srv.URL})
+	if got != "available" {
+		t.Errorf("status=%q, want available (HEAD failed, GET succeeded)", got)
+	}
+}
+func TestProbeMCPStatus_HTTPHeadConnectionReset(t *testing.T) {
+	// Server hijacks and closes the connection on HEAD, forcing a network error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			hj, ok := w.(http.Hijacker)
+			if ok {
+				conn, _, _ := hj.Hijack()
+				conn.Close()
+			}
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{Type: "http", URL: srv.URL})
+	if got != "available" {
+		t.Errorf("status=%q, want available (HEAD failed, GET succeeded)", got)
+	}
+}
+
+func TestProbeMCPStatus_SSEHeadConnectionReset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			hj, ok := w.(http.Hijacker)
+			if ok {
+				conn, _, _ := hj.Hijack()
+				conn.Close()
+			}
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{Type: "sse", URL: srv.URL})
+	if got != "available" {
+		t.Errorf("status=%q, want available (HEAD failed, GET succeeded)", got)
+	}
+}
+
+func TestProbeMCPStatus_SSEHeadRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{Type: "sse", URL: srv.URL})
+	if got != "available" {
+		t.Errorf("status=%q, want available (HEAD failed, GET succeeded)", got)
+	}
+}
+
+func TestProbeMCPStatus_SSEEmptyURL(t *testing.T) {
+	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{Type: "sse"})
+	if got != "unknown" {
+		t.Errorf("status=%q, want unknown", got)
+	}
+}
+
+func TestProbeMCPStatus_HTTPInvalidURL(t *testing.T) {
+	// Malformed URL should trigger http.NewRequestWithContext error on HEAD.
+	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{Type: "http", URL: "://malformed"})
+	if got != "unknown" {
+		t.Errorf("status=%q, want unknown for malformed URL", got)
+	}
+}
+
+func TestProbeMCPStatus_SSEInvalidURL(t *testing.T) {
+	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{Type: "sse", URL: "://malformed"})
+	if got != "unknown" {
+		t.Errorf("status=%q, want unknown for malformed URL", got)
+	}
+}

@@ -100,3 +100,22 @@ func testReleaseArchive(t *testing.T, root string) []byte {
 	}
 	return buf.Bytes()
 }
+
+func TestRunUpgrade_TooManyArgs(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := runUpgrade([]string{"snapshot", "extra"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("runUpgrade(too many args) error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "at most one upgrade target") {
+		t.Fatalf("error = %v, want 'at most one upgrade target'", err)
+	}
+}
+
+func TestRunUpgrade_InvalidFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := runUpgrade([]string{"--invalid-flag"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("runUpgrade(invalid flag) error = nil, want error")
+	}
+}

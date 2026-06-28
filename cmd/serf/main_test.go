@@ -673,3 +673,165 @@ func TestOpenAILogoutDeletesOnlySerfOwnedAuthState(t *testing.T) {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
 }
+
+func TestRunOpenAI_HelpAndUnknown(t *testing.T) {
+	t.Run("help", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		err := runOpenAI([]string{"help"}, strings.NewReader(""), &stdout, &stderr)
+		if err != nil {
+			t.Fatalf("runOpenAI(help) error = %v", err)
+		}
+		if !strings.Contains(stderr.String(), "Usage: serf openai") {
+			t.Fatalf("stderr = %q, want usage header", stderr.String())
+		}
+	})
+
+	t.Run("unknown command", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		err := runOpenAI([]string{"frobnicate"}, strings.NewReader(""), &stdout, &stderr)
+		if err == nil {
+			t.Fatal("runOpenAI(frobnicate) error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "unknown openai command") {
+			t.Fatalf("error = %v, want 'unknown openai command'", err)
+		}
+		if !strings.Contains(stderr.String(), "Usage: serf openai") {
+			t.Fatalf("stderr = %q, want usage header", stderr.String())
+		}
+	})
+}
+
+func TestRunOpenAILogout_Errors(t *testing.T) {
+	t.Run("unexpected arguments", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		err := runOpenAILogout([]string{"unexpected-arg"}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("runOpenAILogout(unexpected-arg) error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "unexpected arguments") {
+			t.Fatalf("error = %v, want 'unexpected arguments'", err)
+		}
+	})
+
+	t.Run("invalid flag", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		err := runOpenAILogout([]string{"--invalid-flag"}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("runOpenAILogout(--invalid-flag) error = nil, want error")
+		}
+	})
+}
+
+func TestMakeRedirectURLReader_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reader := makeRedirectURLReader(strings.NewReader("http://example.com\n"), &bytes.Buffer{})
+	_, err := reader(ctx)
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestMakeRedirectURLReader_EmptyLine(t *testing.T) {
+	reader := makeRedirectURLReader(strings.NewReader("\n"), &bytes.Buffer{})
+	_, err := reader(context.Background())
+	if err == nil {
+		t.Fatal("expected error for empty line")
+	}
+	if !strings.Contains(err.Error(), "redirect URL is required") {
+		t.Fatalf("error = %v, want 'redirect URL is required'", err)
+	}
+}
+
+func TestDispatchCLICommand_ServeError(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	handled, label, err := dispatchCLICommand([]string{"serve"}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("dispatchCLICommand(serve) error = nil, want error")
+	}
+	if !handled {
+		t.Fatal("dispatchCLICommand(serve) handled = false, want true")
+	}
+	if label != "serf serve" {
+		t.Fatalf("label = %q, want 'serf serve'", label)
+	}
+}
+
+func TestDispatchCLICommand_Default(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	handled, label, err := dispatchCLICommand([]string{"frobnicate"}, strings.NewReader(""), &stdout, &stderr)
+	if handled {
+		t.Fatal("dispatchCLICommand(frobnicate) handled = true, want false")
+	}
+	if label != "" {
+		t.Fatalf("label = %q, want empty", label)
+	}
+	if err != nil {
+		t.Fatalf("error = %v, want nil", err)
+	}
+}
+
+func TestDispatchCLICommand_NoArgs(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	handled, label, err := dispatchCLICommand([]string{}, strings.NewReader(""), &stdout, &stderr)
+	if handled {
+		t.Fatal("dispatchCLICommand([]) handled = true, want false")
+	}
+	if label != "" {
+		t.Fatalf("label = %q, want empty", label)
+	}
+	if err != nil {
+		t.Fatalf("error = %v, want nil", err)
+	}
+}
+
+func TestDrainEventsHuman_CommunicateAndSkillActivated(t *testing.T) {
+	ch := make(chan events.SessionEvent, 3)
+	ch <- events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{
+		Message: "hello", EndTurn: true,
+	}}
+	ch <- events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{
+		Message: "continuing", EndTurn: false,
+	}}
+	ch <- events.SessionEvent{Kind: events.EventSkillActivated, Data: events.SkillActivatedData{
+		Name: "debug-skill",
+	}}
+	close(ch)
+	var buf bytes.Buffer
+	done := drainEventsHuman(ch, &buf)
+	<-done
+	out := buf.String()
+	if !strings.Contains(out, "communicate:end_turn") {
+		t.Errorf("expected end_turn communicate line, got: %q", out)
+	}
+	if !strings.Contains(out, "[communicate]") {
+		t.Errorf("expected regular communicate line, got: %q", out)
+	}
+	if !strings.Contains(out, "debug-skill") {
+		t.Errorf("expected skill name, got: %q", out)
+	}
+}
+
+func TestRunOpenAILogin_Errors(t *testing.T) {
+	t.Run("unexpected arguments", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		err := runOpenAILogin([]string{"unexpected"}, strings.NewReader(""), &stdout, &stderr)
+		if err == nil {
+			t.Fatal("runOpenAILogin(unexpected) error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "unexpected arguments") {
+			t.Fatalf("error = %v, want 'unexpected arguments'", err)
+		}
+	})
+
+	t.Run("invalid flag", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		err := runOpenAILogin([]string{"--invalid"}, strings.NewReader(""), &stdout, &stderr)
+		if err == nil {
+			t.Fatal("runOpenAILogin(--invalid) error = nil, want error")
+		}
+	})
+}

@@ -669,3 +669,142 @@ func TestApplyChildActivityTracksRunningRunHonestly(t *testing.T) {
 		t.Fatalf("activity must not apply to a finished run")
 	}
 }
+
+func TestTranscriptReducerGetters(t *testing.T) {
+	msgs := []ChatMessage{{Kind: MsgUser, Text: "hello"}}
+	activeTools := map[string]int{"tool1": 0}
+	activeMessages := map[string]int{"msg1": 0}
+	r := NewTranscriptReducer(msgs, activeTools, activeMessages)
+
+	if got := r.Messages(); len(got) != 1 || got[0].Text != "hello" {
+		t.Errorf("Messages() = %+v", got)
+	}
+	if got := r.ActiveTools(); got["tool1"] != 0 {
+		t.Errorf("ActiveTools() = %+v", got)
+	}
+	if got := r.ActiveMessages(); got["msg1"] != 0 {
+		t.Errorf("ActiveMessages() = %+v", got)
+	}
+}
+
+func TestRemoveUserMessageEcho(t *testing.T) {
+	tests := []struct {
+		name    string
+		initial []ChatMessage
+		text    string
+		wantLen int
+	}{
+		{
+			name:    "removes matching echo",
+			initial: []ChatMessage{{Kind: MsgUser, Text: "hello"}},
+			text:    "hello",
+			wantLen: 0,
+		},
+		{
+			name:    "ignores non-matching echo",
+			initial: []ChatMessage{{Kind: MsgUser, Text: "hello"}},
+			text:    "world",
+			wantLen: 1,
+		},
+		{
+			name:    "ignores empty text",
+			initial: []ChatMessage{{Kind: MsgUser, Text: "hello"}},
+			text:    "",
+			wantLen: 1,
+		},
+		{
+			name:    "skips pending messages",
+			initial: []ChatMessage{{Kind: MsgUser, Text: "hello", Pending: true}},
+			text:    "hello",
+			wantLen: 1,
+		},
+		{
+			name:    "skips failed messages",
+			initial: []ChatMessage{{Kind: MsgUser, Text: "hello", Failed: true, PendingID: 1}},
+			text:    "hello",
+			wantLen: 1,
+		},
+		{
+			name:    "skips messages with itemID",
+			initial: []ChatMessage{{Kind: MsgUser, Text: "hello", ItemID: "item1"}},
+			text:    "hello",
+			wantLen: 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewTranscriptReducer(tc.initial, nil, nil)
+			r.RemoveUserMessageEcho(tc.text)
+			if len(r.messages) != tc.wantLen {
+				t.Errorf("messages len=%d, want %d", len(r.messages), tc.wantLen)
+			}
+		})
+	}
+}
+
+func TestAppendPendingMessages(t *testing.T) {
+	// Reset the global counter so IDs are deterministic.
+	pendingMessageIDCounter = 0
+
+	r := NewTranscriptReducer(nil, nil, nil)
+
+	id1 := r.AppendPendingSteering("steer me")
+	if len(r.messages) != 1 || r.messages[0].Kind != MsgSteering || r.messages[0].Text != "steer me" || !r.messages[0].Pending || r.messages[0].PendingID != 1 {
+		t.Fatalf("AppendPendingSteering = %+v", r.messages[0])
+	}
+
+	id2 := r.AppendPendingUser("user input")
+	if len(r.messages) != 2 || r.messages[1].Kind != MsgUser || r.messages[1].Text != "user input" || !r.messages[1].Pending || r.messages[1].PendingID != 2 {
+		t.Fatalf("AppendPendingUser = %+v", r.messages[1])
+	}
+
+	id3 := r.AppendPendingDrain(3)
+	if len(r.messages) != 3 || r.messages[2].Kind != MsgSteering || r.messages[2].Text != "draining 3 → steering" || !r.messages[2].Pending || r.messages[2].PendingID != 3 {
+		t.Fatalf("AppendPendingDrain = %+v", r.messages[2])
+	}
+
+	if id1 != 1 || id2 != 2 || id3 != 3 {
+		t.Fatalf("Pending IDs = %d, %d, %d, want 1, 2, 3", id1, id2, id3)
+	}
+}
+
+func TestMarkPendingFailed(t *testing.T) {
+	pendingMessageIDCounter = 0
+	r := NewTranscriptReducer(nil, nil, nil)
+	r.AppendPendingSteering("steer me")
+
+	r.MarkPendingFailed(1, "timeout")
+	if r.messages[0].Pending {
+		t.Errorf("Pending should be false after MarkPendingFailed")
+	}
+	if !r.messages[0].Failed {
+		t.Errorf("Failed should be true after MarkPendingFailed")
+	}
+	if r.messages[0].Reason != "timeout" {
+		t.Errorf("Reason = %q, want timeout", r.messages[0].Reason)
+	}
+
+	// Marking unknown ID is a no-op.
+	r.MarkPendingFailed(99, "nope")
+	if r.messages[0].Reason != "timeout" {
+		t.Errorf("Reason mutated by unknown ID: %q", r.messages[0].Reason)
+	}
+}
+
+func TestRemovePending(t *testing.T) {
+	pendingMessageIDCounter = 0
+	r := NewTranscriptReducer(nil, nil, nil)
+	r.AppendPendingSteering("first")
+	r.AppendPendingSteering("second")
+
+	r.RemovePending(1)
+	if len(r.messages) != 1 || r.messages[0].Text != "second" {
+		t.Fatalf("after removing first: %+v", r.messages)
+	}
+
+	// Removing unknown ID is a no-op.
+	r.RemovePending(99)
+	if len(r.messages) != 1 {
+		t.Fatalf("after removing unknown: %+v", r.messages)
+	}
+}

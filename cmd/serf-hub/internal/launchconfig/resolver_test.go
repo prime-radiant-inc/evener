@@ -207,3 +207,92 @@ func hasDiagnostic(diags []Diagnostic, layer LayerName, field string) bool {
 	}
 	return false
 }
+
+func TestLoadProjectLayer_StatError(t *testing.T) {
+	dir := t.TempDir()
+	paths := PathsFor(dir, dir)
+	// Create paths.Project as a file with no read permissions to trigger Stat error.
+	if err := os.MkdirAll(filepath.Dir(paths.Project), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Project, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(paths.Project, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(paths.Project, 0o600)
+	_, _, err := LoadProjectLayer(paths)
+	if err == nil {
+		t.Fatal("expected error when Stat on project path fails")
+	}
+}
+
+func TestLoadProjectLayer_LegacyLoadError(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	paths := PathsFor(stateRoot, cwd)
+	// Create legacy path with invalid TOML so LoadLayer fails.
+	if err := os.MkdirAll(filepath.Dir(paths.LegacyProject), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.LegacyProject, []byte("invalid {{{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := LoadProjectLayer(paths)
+	if err == nil {
+		t.Fatal("expected error when legacy project layer is malformed")
+	}
+}
+
+func TestLoadRepoLayer_ReadFileError(t *testing.T) {
+	cwd := t.TempDir()
+	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
+	// Create parent directory and repo file.
+	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(repoPath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(repoPath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(repoPath, 0o600)
+	_, _, diags := loadRepoLayer(cwd, "")
+	var seen bool
+	for _, d := range diags {
+		if d.Field == ".serf/launch.toml" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatalf("expected diagnostic for .serf/launch.toml read error, got %v", diags)
+	}
+}
+
+func TestValidateAndExpandRepoLayer_InvalidPaths(t *testing.T) {
+	cwd := t.TempDir()
+	in := Layer{
+		SkillsDirs:             []string{"../escape", "ok"},
+		SystemPromptFile:       "../escape",
+		SystemPromptAppendFile: "../escape",
+		TraceFile:              "../escape",
+		CPUProfile:             "../escape",
+		ExportATIFPath:         "../escape",
+	}
+	_, diags := validateAndExpandRepoLayer(cwd, in)
+	wantFields := []string{"skills_dirs", "system_prompt_file", "system_prompt_append_file", "trace_file", "cpu_profile", "export_atif_path"}
+	for _, field := range wantFields {
+		var seen bool
+		for _, d := range diags {
+			if d.Field == field {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			t.Errorf("missing diagnostic for %s", field)
+		}
+	}
+}

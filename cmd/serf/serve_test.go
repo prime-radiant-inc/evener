@@ -13,6 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmdutil"
@@ -510,4 +514,94 @@ func (a *shutdownBlockingAdapter) Complete(ctx context.Context, req llm.Request)
 
 func (a *shutdownBlockingAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	return nil, llm.ErrStreamUnsupported
+}
+
+func TestAgentToServerDetailedStatus_Empty(t *testing.T) {
+	got := agentToServerDetailedStatus(agent.DetailedStatus{})
+	if len(got.Tools) != 0 {
+		t.Errorf("Tools = %d, want 0", len(got.Tools))
+	}
+	if len(got.MCP) != 0 {
+		t.Errorf("MCP = %d, want 0", len(got.MCP))
+	}
+	if len(got.Skills) != 0 {
+		t.Errorf("Skills = %d, want 0", len(got.Skills))
+	}
+	if len(got.Plugins) != 0 {
+		t.Errorf("Plugins = %d, want 0", len(got.Plugins))
+	}
+	if len(got.Hooks) != 0 {
+		t.Errorf("Hooks = %d, want 0", len(got.Hooks))
+	}
+	if len(got.Jobs) != 0 {
+		t.Errorf("Jobs = %d, want 0", len(got.Jobs))
+	}
+	if len(got.Agents) != 0 {
+		t.Errorf("Agents = %d, want 0", len(got.Agents))
+	}
+}
+
+func TestAgentToServerDetailedStatus_Partial(t *testing.T) {
+	exitCode := 42
+	ds := agent.DetailedStatus{
+		Tools:   []agent.ToolInfo{{Name: "shell", Source: "core"}},
+		MCP:     []mcpconfig.ServerInfo{{Name: "test-server", Tools: []string{"tool1"}}},
+		Skills:  []skill.SkillMeta{{Name: "test-skill", Description: "A test skill"}},
+		Plugins: []agent.PluginInfo{{Name: "test-plugin", Version: "1.0.0", SkillCount: 2, AgentCount: 1, HookCount: 3, MCPCount: 0}},
+		Hooks:   map[plugin.HookEvent]int{"PreToolUse": 1},
+		Jobs:    []agent.JobStatusInfo{{JobID: "job1", JobType: "delegate", Status: "done", Reason: "finished", ExitCode: &exitCode, TranscriptRef: "ref1", OutputBytes: 100}},
+		Agents:  []string{"explorer", "default"},
+	}
+	got := agentToServerDetailedStatus(ds)
+
+	if len(got.Tools) != 1 || got.Tools[0].Name != "shell" {
+		t.Errorf("Tools = %v, want 1 shell", got.Tools)
+	}
+	if len(got.MCP) != 1 || got.MCP[0].Name != "test-server" {
+		t.Errorf("MCP = %v, want 1 test-server", got.MCP)
+	}
+	if len(got.Skills) != 1 || got.Skills[0].Name != "test-skill" {
+		t.Errorf("Skills = %v, want 1 test-skill", got.Skills)
+	}
+	if len(got.Plugins) != 1 || got.Plugins[0].Name != "test-plugin" {
+		t.Errorf("Plugins = %v, want 1 test-plugin", got.Plugins)
+	}
+	if len(got.Hooks) != 1 || got.Hooks["PreToolUse"] != 1 {
+		t.Errorf("Hooks = %v, want PreToolUse=1", got.Hooks)
+	}
+	if len(got.Jobs) != 1 || got.Jobs[0].JobID != "job1" || *got.Jobs[0].ExitCode != 42 {
+		t.Errorf("Jobs = %v, want 1 job1 with exit code 42", got.Jobs)
+	}
+	if len(got.Agents) != 2 {
+		t.Errorf("Agents = %v, want 2", got.Agents)
+	}
+}
+
+func TestRunServe_ResumeNonexistent(t *testing.T) {
+	oldLoadClient := serveLoadClient
+	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+		client := llm.NewClient()
+		client.Register(serveLoggingAdapter{})
+		cfg := providercfg.Config{
+			Default: "openai",
+			Instances: []providercfg.InstanceConfig{
+				{Name: "openai", Type: "openai"},
+			},
+		}
+		return client, cfg, true, nil
+	}
+	t.Cleanup(func() { serveLoadClient = oldLoadClient })
+
+	err := runServe([]string{
+		"--model", "openai/gpt-test",
+		"--resume", "NONEXISTENT",
+		"--dir", t.TempDir(),
+		"--state-dir", t.TempDir(),
+	})
+	if err == nil {
+		t.Fatal("expected error for nonexistent resume session")
+	}
+	if !strings.Contains(err.Error(), "NONEXISTENT") {
+		t.Fatalf("error = %v, want to mention NONEXISTENT", err)
+	}
 }

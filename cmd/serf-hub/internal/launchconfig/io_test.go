@@ -127,3 +127,136 @@ func TestSaveMeta_AtomicAndPermissions(t *testing.T) {
 		t.Errorf("round-trip CWD = %q", got.CWD)
 	}
 }
+
+func TestLoadLayer_ReadError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "launch.toml")
+	if err := os.WriteFile(path, []byte("schema = 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(path, 0o600)
+	_, err := LoadLayer(path)
+	if err == nil {
+		t.Fatal("expected error when file is unreadable")
+	}
+}
+
+func TestLoadLayer_ParseError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "launch.toml")
+	if err := os.WriteFile(path, []byte("invalid {{{ toml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadLayer(path)
+	if err == nil {
+		t.Fatal("expected error for malformed TOML")
+	}
+}
+
+func TestLoadMeta_ReadError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.toml")
+	if err := os.WriteFile(path, []byte("schema = 1\ncwd = \"/tmp\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(path, 0o600)
+	_, err := LoadMeta(path)
+	if err == nil {
+		t.Fatal("expected error when file is unreadable")
+	}
+}
+
+func TestLoadMeta_ParseError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.toml")
+	if err := os.WriteFile(path, []byte("invalid {{{ toml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadMeta(path)
+	if err == nil {
+		t.Fatal("expected error for malformed TOML")
+	}
+}
+
+func TestSaveLayer_WriteError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o755)
+	path := filepath.Join(dir, "launch.toml")
+	if err := SaveLayer(path, Layer{Schema: 1, Model: "x"}); err == nil {
+		t.Fatal("expected error when directory is read-only")
+	}
+}
+
+func TestSaveMeta_WriteError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o755)
+	path := filepath.Join(dir, "meta.toml")
+	if err := SaveMeta(path, Meta{Schema: 1, CWD: "/x"}); err == nil {
+		t.Fatal("expected error when directory is read-only")
+	}
+}
+
+func TestSaveLayer_MkdirAllError(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(blocker, "sub", "launch.toml")
+	if err := SaveLayer(path, Layer{Schema: 1, Model: "x"}); err == nil {
+		t.Fatal("expected error when MkdirAll parent is a file")
+	}
+}
+
+func TestSaveMeta_MkdirAllError(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(blocker, "sub", "meta.toml")
+	if err := SaveMeta(path, Meta{Schema: 1, CWD: "/x"}); err == nil {
+		t.Fatal("expected error when MkdirAll parent is a file")
+	}
+}
+
+func TestSaveLayer_RenameError(t *testing.T) {
+	dir := t.TempDir()
+	// Create path as a non-empty directory so Rename fails.
+	path := filepath.Join(dir, "launch.toml")
+	if err := os.MkdirAll(filepath.Join(path, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "sub", "file"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveLayer(path, Layer{Schema: 1, Model: "x"}); err == nil {
+		t.Fatal("expected error when target is a non-empty directory")
+	}
+}
+
+func TestSaveMeta_RenameError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.toml")
+	if err := os.MkdirAll(filepath.Join(path, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "sub", "file"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveMeta(path, Meta{Schema: 1, CWD: "/x"}); err == nil {
+		t.Fatal("expected error when target is a non-empty directory")
+	}
+}

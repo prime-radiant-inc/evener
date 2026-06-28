@@ -81,3 +81,15 @@ func TestStatusProberSendsHubTokenBearer(t *testing.T) {
 		t.Fatal("server did not receive probe")
 	}
 }
+
+func TestStatusProber_NonOKStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+	p := &StatusProber{Timeout: 100 * time.Millisecond}
+	_, _, ok := p.Probe(rendezvous.Entry{Address: srv.Listener.Addr().String()})
+	if ok {
+		t.Fatal("expected ok=false on non-200 status")
+	}
+}

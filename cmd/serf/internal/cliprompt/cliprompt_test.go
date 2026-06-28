@@ -1,6 +1,8 @@
 package cliprompt
 
 import (
+	"errors"
+	"io"
 	"strings"
 	"testing"
 )
@@ -32,3 +34,16 @@ func TestRead_ListSessionsDoesNotReadStdin(t *testing.T) {
 		t.Fatalf("prompt=%q, want empty", got)
 	}
 }
+
+func TestRead_StdinError(t *testing.T) {
+	got := Read(nil, false, &errReader{err: errors.New("read error")}, false)
+	if got != "" {
+		t.Fatalf("prompt=%q, want empty on stdin error", got)
+	}
+}
+
+type errReader struct{ err error }
+
+func (r *errReader) Read(p []byte) (int, error) { return 0, r.err }
+
+var _ io.Reader = (*errReader)(nil)

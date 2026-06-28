@@ -2,6 +2,7 @@ package hubcore
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -293,4 +294,79 @@ func (p *flakyProber) Probe(rendezvous.Entry) (sessionID, status string, ok bool
 		return "", "", false
 	}
 	return p.sessionID, p.status, true
+}
+
+func TestPreferLiveEntry(t *testing.T) {
+	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name      string
+		candidate LiveEntry
+		current   LiveEntry
+		want      bool
+	}{
+		{
+			name:      "appwire beats non-appwire",
+			candidate: LiveEntry{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://1", ThreadID: "t1"}},
+			current:   LiveEntry{Entry: rendezvous.Entry{Protocol: "v0", Endpoint: "", ThreadID: ""}},
+			want:      true,
+		},
+		{
+			name:      "non-appwire loses to appwire",
+			candidate: LiveEntry{Entry: rendezvous.Entry{Protocol: "v0", Endpoint: "", ThreadID: ""}},
+			current:   LiveEntry{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://1", ThreadID: "t1"}},
+			want:      false,
+		},
+		{
+			name:      "same protocol, newer started wins",
+			candidate: LiveEntry{Entry: rendezvous.Entry{StartedAt: base.Add(time.Hour)}},
+			current:   LiveEntry{Entry: rendezvous.Entry{StartedAt: base}},
+			want:      true,
+		},
+		{
+			name:      "same protocol, older started loses",
+			candidate: LiveEntry{Entry: rendezvous.Entry{StartedAt: base}},
+			current:   LiveEntry{Entry: rendezvous.Entry{StartedAt: base.Add(time.Hour)}},
+			want:      false,
+		},
+		{
+			name:      "same started, higher PID wins",
+			candidate: LiveEntry{Entry: rendezvous.Entry{PID: 2, StartedAt: base}},
+			current:   LiveEntry{Entry: rendezvous.Entry{PID: 1, StartedAt: base}},
+			want:      true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := preferLiveEntry(c.candidate, c.current); got != c.want {
+				t.Errorf("preferLiveEntry() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestProcessAlive(t *testing.T) {
+	if processAlive(0) {
+		t.Fatal("processAlive(0) should be false")
+	}
+	if processAlive(-1) {
+		t.Fatal("processAlive(-1) should be false")
+	}
+	// Current process should be alive.
+	if !processAlive(os.Getpid()) {
+		t.Fatal("processAlive(current) should be true")
+	}
+}
+
+func TestNewRosterWithEntries(t *testing.T) {
+	r := NewRosterWithEntries(
+		LiveEntry{Entry: rendezvous.Entry{PID: 1, Address: "127.0.0.1:1"}, SessionID: "01A"},
+		LiveEntry{Entry: rendezvous.Entry{PID: 2, Address: "127.0.0.1:2"}, SessionID: "01B"},
+	)
+	got := r.List()
+	if len(got) != 2 {
+		t.Fatalf("List = %d, want 2", len(got))
+	}
+	if _, ok := r.Find("01A"); !ok {
+		t.Fatal("expected to find 01A")
+	}
 }

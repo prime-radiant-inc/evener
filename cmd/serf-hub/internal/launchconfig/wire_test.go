@@ -169,3 +169,26 @@ func TestLaunchConfigLayer_ConfigPlumbingRoundtrip(t *testing.T) {
 func jsonContains(raw []byte, needle string) bool {
 	return strings.Contains(string(raw), needle)
 }
+
+func TestToWire_WithSchemaAndMCPs(t *testing.T) {
+	in := Layer{
+		Model:  "m",
+		Schema: 2,
+		MCPs:   []MCPServerSpec{{Name: "a", Command: "b"}},
+	}
+	got := ToWire(in)
+	if got.Schema == nil || *got.Schema != 2 {
+		t.Fatalf("Schema = %v, want 2", got.Schema)
+	}
+	if len(got.MCPs) != 1 || got.MCPs[0].Name != "a" {
+		t.Fatalf("MCPs = %v", got.MCPs)
+	}
+}
+
+func TestToWire_NilModelFallbacksSet(t *testing.T) {
+	in := Layer{ModelFallbacksSet: true, ModelFallbacks: nil}
+	got := ToWire(in)
+	if got.ModelFallbacks == nil || len(got.ModelFallbacks) != 0 {
+		t.Fatalf("ModelFallbacks = %#v, want explicit empty slice", got.ModelFallbacks)
+	}
+}

@@ -178,3 +178,88 @@ func TestAuthURLFor(t *testing.T) {
 		t.Errorf("suffix wrong")
 	}
 }
+
+func TestLoadOrCreateAuthToken_EmptyRoot(t *testing.T) {
+	_, err := LoadOrCreateAuthToken("")
+	if err == nil {
+		t.Fatal("expected error for empty hubStateRoot")
+	}
+	_, err = LoadOrCreateAuthToken("   ")
+	if err == nil {
+		t.Fatal("expected error for whitespace-only hubStateRoot")
+	}
+}
+
+func TestLoadOrCreateAuthToken_MkdirAllError(t *testing.T) {
+	dir := t.TempDir()
+	// Create a file where the parent of hubStateRoot should be a directory.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(blocker, "root")
+	_, err := LoadOrCreateAuthToken(root)
+	if err == nil {
+		t.Fatal("expected error when MkdirAll fails")
+	}
+}
+
+func TestLoadOrCreateAuthToken_ReadFileError(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, TokenFileName)
+	if err := os.WriteFile(path, []byte("token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(path, 0o600)
+	_, err := LoadOrCreateAuthToken(root)
+	if err == nil {
+		t.Fatal("expected error when read file fails")
+	}
+}
+
+func TestLoadOrCreateAuthToken_WriteFileError(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(root, 0o755)
+	_, err := LoadOrCreateAuthToken(root)
+	if err == nil {
+		t.Fatal("expected error when write file fails")
+	}
+}
+
+func TestAuthGuard_ReturnsHTMLForBrowser(t *testing.T) {
+	guard := AuthGuard("secret")
+	h := guard(okHandler())
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Unauthorized") {
+		t.Errorf("body missing 'Unauthorized': %q", body)
+	}
+}
+
+func TestAuthGuard_ReturnsPlainForAPI(t *testing.T) {
+	guard := AuthGuard("secret")
+	h := guard(okHandler())
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	req.Header.Set("Accept", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "unauthorized") {
+		t.Errorf("body missing 'unauthorized': %q", body)
+	}
+}

@@ -831,3 +831,137 @@ func TestClassifySession(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeState(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", "idle"},
+		{"awaiting", "awaiting"},
+		{"active", "active"},
+		{"systemError", "awaiting"},
+		{"warning", "warning"},
+		{"idle", "idle"},
+		{"closed", "ended"},
+		{"notLoaded", "ended"},
+		{"ended", "ended"},
+		{"unknown", "idle"},
+	}
+	for _, c := range cases {
+		if got := NormalizeState(c.in); got != c.want {
+			t.Errorf("NormalizeState(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestAttentionRank(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"awaiting", 4},
+		{"active", 3},
+		{"warning", 2},
+		{"idle", 1},
+		{"ended", 0},
+		{"unknown", 0},
+	}
+	for _, c := range cases {
+		if got := AttentionRank(c.in); got != c.want {
+			t.Errorf("AttentionRank(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestRollupRank(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"awaiting", 4},
+		{"warning", 3},
+		{"active", 2},
+		{"idle", 1},
+		{"ended", 0},
+		{"unknown", 0},
+	}
+	for _, c := range cases {
+		if got := rollupRank(c.in); got != c.want {
+			t.Errorf("rollupRank(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestAgeString(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		t    time.Time
+		want string
+	}{
+		{time.Time{}, ""},
+		{now.Add(-30 * time.Second), "now"},
+		{now.Add(-5 * time.Minute), "5m"},
+		{now.Add(-3 * time.Hour), "3h"},
+		{now.Add(-2 * 24 * time.Hour), "2d"},
+	}
+	for _, c := range cases {
+		if got := AgeString(c.t); got != c.want {
+			t.Errorf("AgeString(%v) = %q, want %q", c.t, got, c.want)
+		}
+	}
+}
+
+func TestShortID(t *testing.T) {
+	if got := ShortID("01A"); got != "01A" {
+		t.Errorf("ShortID(01A) = %q, want 01A", got)
+	}
+	if got := ShortID("01ABCDEFGHIJKLMNOPQRSTUVWXYZ"); got != "session UVWXYZ" {
+		t.Errorf("ShortID(long) = %q, want session UVWXYZ", got)
+	}
+}
+
+func TestNodeTitle_EmptyBaseWithForkLabel(t *testing.T) {
+	m := schema.SessionMeta{ID: "", Name: "", OriginalPrompt: ""}
+	got := nodeTitle(m, "fork")
+	if got != "" {
+		t.Errorf("nodeTitle(empty base, fork) = %q, want \"\"", got)
+	}
+	m.ForkLabel = "before"
+	got = nodeTitle(m, "fork")
+	if got != " · before" {
+		t.Errorf("nodeTitle(empty base with label, fork) = %q, want \" · before\"", got)
+	}
+}
+
+func TestCompareOrderText(t *testing.T) {
+	if got := compareOrderText("alpha", "beta"); got != -1 {
+		t.Errorf("compareOrderText(alpha, beta) = %d, want -1", got)
+	}
+	if got := compareOrderText("beta", "alpha"); got != 1 {
+		t.Errorf("compareOrderText(beta, alpha) = %d, want 1", got)
+	}
+	if got := compareOrderText("Alpha", "alpha"); got != -1 {
+		t.Errorf("compareOrderText(Alpha, alpha) = %d, want -1", got)
+	}
+	if got := compareOrderText("  alpha  ", "alpha"); got != 0 {
+		t.Errorf("compareOrderText( alpha , alpha) = %d, want -1", got)
+	}
+}
+
+func TestOrderUpdatedAt(t *testing.T) {
+	now := time.Now()
+	if got := OrderUpdatedAt(now.Add(time.Hour), now); got != now.Add(time.Hour) {
+		t.Errorf("OrderUpdatedAt(updated, created) = %v, want updated", got)
+	}
+	if got := OrderUpdatedAt(time.Time{}, now); got != now {
+		t.Errorf("OrderUpdatedAt(zero, created) = %v, want created", got)
+	}
+}
+
+func TestOrderCreatedAt(t *testing.T) {
+	now := time.Now()
+	if got := OrderCreatedAt(now.Add(time.Hour), now); got != now.Add(time.Hour) {
+		t.Errorf("OrderCreatedAt(created, updated) = %v, want created", got)
+	}
+	if got := OrderCreatedAt(time.Time{}, now); got != now {
+		t.Errorf("OrderCreatedAt(zero, updated) = %v, want updated", got)
+	}
+}

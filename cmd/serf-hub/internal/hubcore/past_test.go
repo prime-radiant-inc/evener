@@ -427,3 +427,112 @@ func TestPastIndex_FindRefreshesNewSessionOnMiss(t *testing.T) {
 		t.Errorf("StateDir: %q want %q", got.StateDir, proj)
 	}
 }
+
+func TestPastIndex_FindWithMalformedGlob(t *testing.T) {
+	idx := NewPastIndex("[unclosed")
+	_, ok := idx.Find("anything")
+	if ok {
+		t.Fatal("expected Find to return false on malformed glob")
+	}
+}
+
+func TestPastIndex_RebuildFTSError(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:             "01A",
+		UpdatedAt:      time.Now(),
+		OriginalPrompt: "fix auth",
+	})
+	// Use a directory as the DB path so SQLite open fails.
+	dbPath := filepath.Join(root, "index.db")
+	if err := os.MkdirAll(dbPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if err := idx.Rebuild(); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	// The Rebuild should succeed even though rebuildFTS failed.
+	// FTS flag should be false.
+	got := idx.Search("auth", 50, 0)
+	if len(got) != 1 || got[0].ID != "01A" {
+		t.Fatalf("expected fallback search to work: got %v", got)
+	}
+}
+
+func TestPastIndex_StateGlob(t *testing.T) {
+	idx := NewPastIndex(filepath.Join("/some", "path", "*"))
+	if got := idx.StateGlob(); got != filepath.Join("/some", "path", "*") {
+		t.Errorf("StateGlob = %q, want %q", got, filepath.Join("/some", "path", "*"))
+	}
+}
+
+func TestPastIndex_AllMetas(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:        "01A",
+		UpdatedAt: time.Now(),
+	})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	metas := idx.AllMetas()
+	if len(metas) != 1 || metas[0].ID != "01A" {
+		t.Fatalf("AllMetas: got %v", metas)
+	}
+}
+
+func TestPastIndex_SearchFTSSpecialCharsOnly(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:             "01A",
+		UpdatedAt:      time.Now(),
+		OriginalPrompt: "fix auth",
+	})
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".serf", "index.db"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	// Query with only special characters should fall back to memory search.
+	got := idx.Search("!@#$%", 50, 0)
+	if len(got) != 0 {
+		t.Fatalf("expected no results for special-char-only query: got %v", got)
+	}
+}
+
+func TestChmodSQLiteIndexFiles_Error(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "sub", "db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dbPath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dbPath+"-journal", []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Make the parent directory non-executable so chmod fails.
+	if err := os.Chmod(filepath.Dir(dbPath), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(filepath.Dir(dbPath), 0o755)
+	if err := chmodSQLiteIndexFiles(dbPath); err == nil {
+		t.Fatal("expected error when parent directory is not executable")
+	}
+}
+
+func TestPastIndex_FindEmptyStateGlob(t *testing.T) {
+	idx := NewPastIndex("")
+	_, ok := idx.Find("something")
+	if ok {
+		t.Fatal("expected Find to return false when stateGlob is empty")
+	}
+}

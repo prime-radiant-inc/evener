@@ -42,6 +42,9 @@ func AbbreviateModel(id string) string {
 // AbbreviatePath shortens a filesystem path to at most maxLen characters,
 // replacing $HOME prefix with ~ and middle-truncating if needed.
 func AbbreviatePath(p string, maxLen int) string {
+	if maxLen <= 0 {
+		return p
+	}
 	if len(p) <= maxLen {
 		return p
 	}

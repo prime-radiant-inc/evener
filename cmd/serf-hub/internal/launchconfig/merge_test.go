@@ -220,3 +220,79 @@ func TestMerge_BlockedCredentialEnvKeys(t *testing.T) {
 		t.Errorf("expected blocklist diagnostic, got %v", diags)
 	}
 }
+
+func TestMerge_CoversRemainingScalarAndListFields(t *testing.T) {
+	g := Layer{
+		Agent:            "global-agent",
+		ContextStrategy:  "global-ctx",
+		MaxSubagentDepth: ptrInt(3),
+		NoProjectPrompts: ptrBool(false),
+		PluginDirs:       []string{"/g/plugin"},
+		MCPConfigs:       []string{"/g/mcp.json"},
+	}
+	l := Layer{
+		Agent:            "launch-agent",
+		ContextStrategy:  "launch-ctx",
+		MaxSubagentDepth: ptrInt(5),
+		NoProjectPrompts: ptrBool(true),
+		PluginDirs:       []string{"/l/plugin"},
+		MCPConfigs:       []string{"/l/mcp.json"},
+	}
+	got, _ := mergeLayers(map[LayerName]Layer{LayerGlobal: g, LayerLaunch: l})
+	if got.Effective.Agent != "launch-agent" {
+		t.Errorf("Agent = %q", got.Effective.Agent)
+	}
+	if got.Effective.ContextStrategy != "launch-ctx" {
+		t.Errorf("ContextStrategy = %q", got.Effective.ContextStrategy)
+	}
+	if got.Effective.MaxSubagentDepth == nil || *got.Effective.MaxSubagentDepth != 5 {
+		t.Errorf("MaxSubagentDepth = %v", got.Effective.MaxSubagentDepth)
+	}
+	if got.Effective.NoProjectPrompts == nil || *got.Effective.NoProjectPrompts != true {
+		t.Errorf("NoProjectPrompts = %v", got.Effective.NoProjectPrompts)
+	}
+	wantPlugins := []string{"/g/plugin", "/l/plugin"}
+	if !reflect.DeepEqual(got.Effective.PluginDirs, wantPlugins) {
+		t.Errorf("PluginDirs = %v, want %v", got.Effective.PluginDirs, wantPlugins)
+	}
+	wantMCPConfigs := []string{"/g/mcp.json", "/l/mcp.json"}
+	if !reflect.DeepEqual(got.Effective.MCPConfigs, wantMCPConfigs) {
+		t.Errorf("MCPConfigs = %v, want %v", got.Effective.MCPConfigs, wantMCPConfigs)
+	}
+}
+
+func TestMerge_AppReplaySizeNonGlobalDiagnostic(t *testing.T) {
+	l := Layer{AppReplaySize: ptrInt(10)}
+	_, diags := mergeLayers(map[LayerName]Layer{LayerLaunch: l})
+	var seen bool
+	for _, d := range diags {
+		if d.Field == "app_replay_size" && d.Layer == LayerLaunch {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatalf("expected app_replay_size diagnostic for non-global layer, got %v", diags)
+	}
+}
+
+func TestIsCredentialEnvKey(t *testing.T) {
+	cases := []struct {
+		key  string
+		want bool
+	}{
+		{"OPENAI_API_KEY", true},
+		{"MY_TOKEN", true},
+		{"SECRET", true},
+		{"PASSWORD", true},
+		{"CREDENTIAL", true},
+		{"SOME_KEY", true},
+		{"HOME", false},
+		{"PATH", false},
+		{"USER", false},
+	}
+	for _, c := range cases {
+		if got := IsCredentialEnvKey(c.key); got != c.want {
+			t.Errorf("IsCredentialEnvKey(%q) = %v, want %v", c.key, got, c.want)
+		}
+	}
+}

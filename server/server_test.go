@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/appwire"
 )
 
 func TestStatusEndpoint_Idle(t *testing.T) {
@@ -1009,5 +1010,350 @@ func TestSubmitNotification_DropIfFull(t *testing.T) {
 		// expected: returned without blocking
 	case <-time.After(time.Second):
 		t.Fatal("SubmitNotification blocked on full channel")
+	}
+}
+
+func TestSteerEndpoint(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	var gotText string
+	srv.SetSteerFunc(func(text string) {
+		gotText = text
+	})
+
+	body := strings.NewReader(`{"text":"steer this"}`)
+	req := httptest.NewRequest(http.MethodPost, "/steer", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status code: got %d, want 204", w.Code)
+	}
+	if gotText != "steer this" {
+		t.Errorf("text = %q, want steer this", gotText)
+	}
+}
+
+func TestSteerEndpoint_EmptyText(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetSteerFunc(func(text string) {})
+
+	body := strings.NewReader(`{"text":""}`)
+	req := httptest.NewRequest(http.MethodPost, "/steer", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status code: got %d, want 400", w.Code)
+	}
+}
+
+func TestSteerEndpoint_NoFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	body := strings.NewReader(`{"text":"steer this"}`)
+	req := httptest.NewRequest(http.MethodPost, "/steer", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status code: got %d, want 204", w.Code)
+	}
+}
+
+func TestSteerEndpoint_MethodNotAllowed(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetSteerFunc(func(text string) {})
+
+	req := httptest.NewRequest(http.MethodGet, "/steer", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status code: got %d, want 405", w.Code)
+	}
+}
+
+func TestTasksEndpoint(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetTasksFunc(func() any {
+		return []map[string]any{
+			{"id": "1", "name": "task one"},
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code: got %d, want 200", w.Code)
+	}
+	var resp []map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp) != 1 || resp[0]["id"] != "1" {
+		t.Errorf("resp = %+v", resp)
+	}
+}
+
+func TestTasksEndpoint_NoFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code: got %d, want 200", w.Code)
+	}
+	if w.Body.String() != "[]\n" {
+		t.Errorf("body = %q, want []\\n", w.Body.String())
+	}
+}
+
+func TestTasksEndpoint_MethodNotAllowed(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetTasksFunc(func() any { return nil })
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status code: got %d, want 405", w.Code)
+	}
+}
+
+func TestInterruptEndpoint_MethodNotAllowed(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetCancelFunc(func() {})
+
+	req := httptest.NewRequest(http.MethodGet, "/interrupt", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status code: got %d, want 405", w.Code)
+	}
+}
+
+func TestQueueEndpoint_InvalidJSON(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(true)
+	srv.SetQueueFunc(func(string) error { return nil })
+
+	req := httptest.NewRequest(http.MethodPost, "/queue", strings.NewReader(`{bad`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestQueueEndpoint_FuncError(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(true)
+	srv.SetQueueFunc(func(string) error { return errors.New("queue fail") })
+
+	body := strings.NewReader(`{"text":"queued msg"}`)
+	req := httptest.NewRequest(http.MethodPost, "/queue", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status: got %d, want 500; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDrainAsSteerEndpoint_NoFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(true)
+	srv.SetQueueDepthFunc(func() int { return 2 })
+
+	req := httptest.NewRequest(http.MethodPost, "/drain-as-steer", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status: got %d, want 503; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDrainAsSteerEndpoint_ClosedSession(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(false)
+	srv.SetState("closed")
+	srv.SetDrainAsSteerFunc(func() error { return nil })
+
+	req := httptest.NewRequest(http.MethodPost, "/drain-as-steer", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDrainAsSteerEndpoint_InvalidJSON(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(true)
+	srv.SetDrainAsSteerFunc(func() error { return nil })
+	srv.SetDrainAsSteerWithInputFunc(func(string, []ImageAttachment) error { return nil })
+	srv.SetQueueDepthFunc(func() int { return 0 })
+
+	req := httptest.NewRequest(http.MethodPost, "/drain-as-steer", strings.NewReader(`{bad`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestModelEndpoint_InvalidJSON(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetModelFunc(func(string) {})
+
+	req := httptest.NewRequest(http.MethodPost, "/model", strings.NewReader(`{bad`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestClearEndpoint_FuncError(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(false)
+	srv.SetClearFunc(func(ctx context.Context) error {
+		return errors.New("clear failed")
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/clear", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status: got %d, want 500; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestInputEndpoint_InvalidJSON(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(false)
+
+	req := httptest.NewRequest(http.MethodPost, "/input", strings.NewReader(`{bad`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestInputEndpoint_FullChannel(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(false)
+	// Fill the 1-slot buffer.
+	select {
+	case srv.inputCh <- InputMessage{Text: "blocked"}:
+	default:
+	}
+
+	body := strings.NewReader(`{"text":"hello"}`)
+	req := httptest.NewRequest(http.MethodPost, "/input", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSubmitContinuation(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SubmitContinuation("continue")
+	select {
+	case msg := <-srv.InputCh():
+		if msg.Kind != agent.EntryContinuation {
+			t.Errorf("Kind: got %v, want EntryContinuation", msg.Kind)
+		}
+		if msg.Text != "continue" {
+			t.Errorf("Text: got %q, want continue", msg.Text)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout: SubmitContinuation did not deliver a message")
+	}
+}
+
+func TestSubmitContinuation_DropIfFull(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	// Fill the 1-slot buffer.
+	srv.SubmitContinuation("first")
+	// Second call must not block even though the channel is full.
+	done := make(chan struct{})
+	go func() {
+		srv.SubmitContinuation("second")
+		close(done)
+	}()
+	select {
+	case <-done:
+		// expected: returned without blocking
+	case <-time.After(time.Second):
+		t.Fatal("SubmitContinuation blocked on full channel")
+	}
+}
+
+func TestServerAppWireThreadList(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadList, appwire.ThreadListParams{}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
+	}
+}
+
+func TestServerAppWireTasksList(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetTasksFunc(func() any {
+		return []map[string]any{{"id": "1"}}
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodSerfTasksList, appwire.TaskListParams{}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
+	}
+}
+
+func TestServerAppWireModelList(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetListModelsFunc(func(ctx context.Context) ([]ModelsResponseItem, error) {
+		return []ModelsResponseItem{{ID: "gpt-4o"}}, nil
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodModelList, appwire.ModelListParams{}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
 	}
 }

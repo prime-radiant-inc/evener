@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -42,5 +43,34 @@ func TestArchiveStoreEmptyWhenNoDB(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("want empty, got %d", len(got))
+	}
+}
+
+func TestArchiveStoreOpenError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o755)
+	// Attempting to create a DB file in a read-only directory should fail.
+	db := filepath.Join(dir, "index.db")
+	s := NewArchiveStore(db)
+	now := time.Now()
+	if err := s.Set("session", "sess-1", true, now); err == nil {
+		t.Fatal("expected error when DB cannot be created")
+	}
+}
+
+func TestArchiveStoreMkdirAllError(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	db := filepath.Join(blocker, "sub", "index.db")
+	s := NewArchiveStore(db)
+	now := time.Now()
+	if err := s.Set("session", "sess-1", true, now); err == nil {
+		t.Fatal("expected error when MkdirAll parent is a file")
 	}
 }
