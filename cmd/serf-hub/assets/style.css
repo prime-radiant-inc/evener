@@ -2096,7 +2096,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .tool-call:focus-within .tool-meta { opacity: 1; }
 .tool-call .tool-body,
 .tool-call .diff-body,
-.tool-call .output-preview-body { order: 4; }
+.tool-call .output-preview-body { order: 5; }
 
 /* The agent's stated purpose — the PRIMARY, prominent line when present: sans,
    readable, full contrast. The command recedes to a quiet mono line beneath. */
@@ -2110,7 +2110,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   line-height: var(--leading-snug);
 }
 .tool-call.has-purpose .tool-command {
-  order: 3;
+  order: 4;
   flex: 0 0 100%;
   /* Indent with padding, not margin: the flex-basis is 100% and box-sizing is
      border-box, so padding stays inside the row. A margin would push the line
@@ -2146,7 +2146,12 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .tool-call[data-expanded="false"] .diff-body,
 .tool-call[data-expanded="false"] .output-preview-body { display: none; }
 /* Expand caret button on tool-call row. */
+/* The expand caret sits at the RIGHT of the header line (order 3 — after the
+   command/meta, before the wrapping demoted-command/body). This lets the status
+   glyph lead a clean, aligned left edge; the disclosure affordance reads as a
+   quiet "there's more →" on the right rather than offsetting every row. */
 .tool-expand-btn {
+  order: 3;
   background: none;
   border: none;
   padding: 0;
@@ -2702,6 +2707,35 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .notification-card-facts dt { color: var(--text-dim); font-size: var(--text-xs); }
 .notification-card-facts dd { margin: 0; color: var(--text-muted); min-width: 0; overflow-wrap: anywhere; }
 .notification-card-facts dd.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
+/* Transcript card disclosures put their chevron on the RIGHT — consistent with
+   the tool-row expand caret. The label leads; a quiet chevron sits at the right
+   edge; the native left marker is removed. (raw notification / full excerpt /
+   show raw error.) */
+.notification-card-raw > summary,
+.notification-card-excerpt-full > summary,
+.diagnostic-detail-summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+}
+.notification-card-raw > summary::-webkit-details-marker,
+.notification-card-excerpt-full > summary::-webkit-details-marker,
+.diagnostic-detail-summary::-webkit-details-marker { display: none; }
+.notification-card-raw > summary::after,
+.notification-card-excerpt-full > summary::after,
+.diagnostic-detail-summary::after {
+  content: "▸";
+  flex: none;
+  color: var(--text-dim);
+  font-size: var(--text-2xs);
+}
+.notification-card-raw[open] > summary::after,
+.notification-card-excerpt-full[open] > summary::after,
+details[open] > .diagnostic-detail-summary::after { content: "▾"; }
+
 .notification-card-raw { margin-top: var(--space-3); color: var(--text-muted); }
 .notification-card-raw > summary { cursor: pointer; font-size: var(--text-xs); }
 .notification-card-raw pre { margin: var(--space-2) 0 0; padding: var(--space-3); border-radius: var(--radius-md); background: var(--bg); color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -3900,6 +3934,12 @@ button.composer-model-value .caret { color: var(--text-dim); }
   /* Allow long file paths in .tool-call .target to shrink and wrap on
      narrow viewports (flex child default min-width: auto blocks shrink). */
   .tool-call .target { min-width: 0; }
+
+  /* The per-row timing meta (timestamp · duration) is a hover-only desktop
+     detail. Phones have no hover, so it never shows — yet it still reserved
+     ~112px and squeezed the command/path into a narrow, mid-word-wrapping
+     column. Drop it here so the command gets the full row width. */
+  .tool-call .tool-meta { display: none; }
 
   /* Phone reading scale. A clear hierarchy, sized to actually read on a phone:
      the assistant prose is the hero and the largest text; the agent's tool

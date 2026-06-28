@@ -101,7 +101,7 @@ detail demoted to a mono chip; deep detail hidden until expanded.** Content colu
 | **User prompt** | quiet: a dim `You` tag + muted text | turn index | — | none. Demoted on purpose. |
 | **Assistant prose** | the **hero** — sans, `--fs-md`, full contrast | — | — | none; wins via size+space |
 | **Thinking** | quiet collapsed line "Thought for Ns" + faint preview | — | full reasoning (streams live) | none; quietest. Collapsible. |
-| **Tool call (done)** | the **purpose** ("Check kernel version"), not the command | verb+args as a quiet mono line; **success is silent** (no "exit 0" — the ✓ glyph says it) | full output | neutral; collapses once scrolled past |
+| **Tool call (done)** | the **purpose** ("Check kernel version"), not the command | verb+args as a quiet mono line; **success is silent** — no "exit 0", and **no ✓ glyph either** (a done row leads with its content; the status slot stays empty so rows align) | full output | neutral; collapses once scrolled past |
 | **Tool cluster (scrolled-past)** | one line: "✓ 4 steps · …" | — | the individual calls | neutral box (the one device) |
 | **Tool call (running)** | purpose | mono chip | live output | blue left-rail tick |
 | **Tool call (error)** | error summary promoted to primary | mono chip | stderr (truncated, see below) | red left-rail (one device — no extra box) |
@@ -116,6 +116,16 @@ detail demoted to a mono chip; deep detail hidden until expanded.** Content colu
 
 Status hierarchy: **running (blue) draws the eye; done (neutral) recedes; needs-you (amber) and
 error (red) stand out.** Pair every status color with a glyph so it is colorblind-safe.
+**Done recedes to *absence*, not a green check:** a successful tool row shows **no glyph at all** —
+only a **failure (✕, red)** sits in the gutter. A transcript of successes is then a calm column of
+content with the occasional red ✕ standing out; you never scan past a wall of ✓✓✓.
+
+**Disclosure placement.** Expand affordances in the transcript sit on the **right**, not the left:
+the tool-row caret is right-aligned (so the status/glyph leads a clean, aligned left edge), and
+card disclosures (`raw notification`, `full excerpt`, `show raw error`) read `label … ▸` with the
+chevron at the right edge. A left-hung ▸ offsets every row and ragged-edges the column; on the
+right it's a quiet "there's more." (On phones the hover-only timing meta is hidden so the command
+and file paths get the full row width instead of wrapping mid-word in a squeezed column.)
 
 ### The notification / job card (worked example)
 

@@ -58,6 +58,12 @@ pass(!!heroRule, "compact phone density must size the assistant hero prose at --
 const machineRule = blocks.find((b) => /\.tool-call\b/.test(b.split("{")[0]) && /font-size:\s*var\(--text-sm\)/.test(b));
 pass(!!machineRule, "compact phone density must size tool/machine text at --text-sm (legible, not the old 10px)");
 
+// The hover-only timing meta has no hover target on phone, so it's hidden here —
+// otherwise it reserves ~112px and squeezes the command/path into a narrow,
+// mid-word-wrapping column.
+const metaHidden = blocks.find((b) => /\.tool-call \.tool-meta/.test(b.split("{")[0]) && /display:\s*none/.test(b));
+pass(!!metaHidden, "mobile must hide the hover-only .tool-call .tool-meta so the command gets full width");
+
 if (failures.length === 0) {
   console.log("PASS: mobile search palette CSS contract + layout guards");
   process.exit(0);

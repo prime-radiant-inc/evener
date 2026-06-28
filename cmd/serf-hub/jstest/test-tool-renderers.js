@@ -539,9 +539,12 @@ await scenario("shell with stdout, exit code, and right-aligned timing", [
   const card = conv.querySelector(".tool-call.shell");
   if (!card) return { ok: false, detail: "no shell card" };
   if (!card.textContent.includes("ls -la")) return { ok: false, detail: "missing command" };
-  // Success is silent: a clean exit prints no "exit 0" — the ✓ glyph conveys it.
+  // Success recedes fully: no "exit 0", and no ✓ glyph either — only failures
+  // are worth the eye. The status slot stays (class) so content aligns.
   if (card.textContent.includes("exit 0")) return { ok: false, detail: "successful shell should not print 'exit 0'" };
-  if (!card.querySelector(".tool-status-good")) return { ok: false, detail: "missing shell success icon" };
+  const sgood = card.querySelector(".tool-status-good");
+  if (!sgood) return { ok: false, detail: "missing shell success status slot" };
+  if (sgood.textContent.trim() !== "") return { ok: false, detail: "successful row should show NO checkmark, got " + JSON.stringify(sgood.textContent) };
   const meta = card.querySelector(".tool-meta");
   if (!meta) return { ok: false, detail: "missing tool metadata" };
   if (!meta.textContent.includes("1.3s")) return { ok: false, detail: "missing duration metadata: " + meta.textContent };
@@ -560,12 +563,29 @@ await scenario("failed shell shows error output", [
 ], ({ conv }) => {
   const card = conv.querySelector(".tool-call.shell");
   if (!card) return { ok: false, detail: "no shell card" };
-  if (!card.querySelector(".tool-status-bad")) return { ok: false, detail: "missing shell error icon" };
+  const sbad = card.querySelector(".tool-status-bad");
+  if (!sbad || sbad.textContent.trim() !== "✕") return { ok: false, detail: "a failed row must show the ✕ glyph, got " + (sbad && JSON.stringify(sbad.textContent)) };
   const body = conv.querySelector(".shell-body");
   if (!body) return { ok: false, detail: "no failed shell body" };
   const pre = body.querySelector(".shell-output");
   if (!pre || !pre.textContent.includes("stderr detail")) return { ok: false, detail: "stderr/error output missing" };
   if (body.style.display === "none") return { ok: false, detail: "failed shell body hidden" };
+  return { ok: true };
+});
+
+// The expand caret sits on the RIGHT of the header line (order 3), so the status
+// glyph leads a clean, aligned left edge; the disclosure recedes to the right.
+await scenario("expand caret is right-aligned; card disclosures use a right chevron", [
+  ["SESSION_START", { session_id: "01TEST" }],
+], () => {
+  if (!/\.tool-expand-btn\s*\{[^}]*order:\s*3/.test(styleSrc)) {
+    return { ok: false, detail: "expand caret must be order: 3 (right of the header line)" };
+  }
+  // Card disclosures (raw notification / excerpt / show raw error) put the
+  // chevron on the right via a removed native marker + a right ::after.
+  if (!/\.notification-card-raw > summary::after/.test(styleSrc) || !/\.notification-card-raw > summary[\s\S]{0,400}justify-content:\s*space-between/.test(styleSrc)) {
+    return { ok: false, detail: "card disclosures must put a right ▸ chevron on .notification-card-raw summary" };
+  }
   return { ok: true };
 });
 

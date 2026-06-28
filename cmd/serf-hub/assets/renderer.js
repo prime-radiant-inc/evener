@@ -2200,7 +2200,9 @@
 
       const ok = !data.error && toolLooksGood(data);
       if (m.statusEl) {
-        m.statusEl.textContent = ok ? "✓" : "✕";
+        // Success is the expected state and recedes — no ✓ down every row. Only
+        // a failure (✕, red) is worth the eye. The slot stays so content aligns.
+        m.statusEl.textContent = ok ? "" : "✕";
         m.statusEl.className = "tool-status " + (ok ? "tool-status-good" : "tool-status-bad");
       }
       // Mark an errored row as a queryable attention anchor so the new-content
