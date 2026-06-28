@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean
+.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -92,6 +92,19 @@ test-race:
 
 vet:
 	@for m in $(GO_MODULES); do (cd $$m && go vet ./...) || exit 1; done
+
+# fuzz runs every FuzzXxx target's SEED CORPUS plus any saved testdata/fuzz
+# crashers as ordinary deterministic tests — `go test -run '^Fuzz'` with no
+# -fuzz does NOT random-search, so it is fast and safe for the gate. `make test`
+# already executes these seeds (go test runs Fuzz seed corpora as subtests); this
+# target is the explicit entry point and the one used to verify saved crashers.
+fuzz:
+	@for m in $(GO_MODULES); do (cd $$m && go test -run '^Fuzz' ./...) || exit 1; done
+
+# fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
+# per-target time budget. Manual / nightly only — never in the gate.
+fuzz-nightly:
+	@scripts/run-fuzz.sh $(FUZZ_ARGS)
 
 # lint-naming enforces JSON=snake_case, TOML=snake_case across every Go
 # struct tag and TOML file in the repo. Fast (well under a second) and
