@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
 )
 
@@ -88,10 +89,21 @@ func TestTruncateText(t *testing.T) {
 			expected: "abc",
 		},
 		{
-			name:     "unicode text wide characters",
+			// "あいう" has display width 6; at width 3 only the first wide
+			// rune (width 2) fits — adding the next would reach width 4 > 3.
+			name:     "unicode text wide characters no ellipsis room",
 			text:     "あいう",
 			width:    3,
-			expected: "あいう",
+			expected: "あ",
+		},
+		{
+			// Wide runes with room for an ellipsis: reserve 3 columns for
+			// "...", then fit content by display width. "あい" is width 4,
+			// plus "..." is width 7 <= 8.
+			name:     "unicode text wide characters with ellipsis",
+			text:     "あいうえお",
+			width:    8,
+			expected: "あい...",
 		},
 	}
 
@@ -100,6 +112,10 @@ func TestTruncateText(t *testing.T) {
 			got := tuitext.TruncateText(tt.text, tt.width)
 			if got != tt.expected {
 				t.Errorf("TruncateText(%q, %d) = %q; want %q", tt.text, tt.width, got, tt.expected)
+			}
+			if tt.width > 0 && lipgloss.Width(got) > tt.width {
+				t.Errorf("TruncateText(%q, %d) = %q has display width %d; want <= %d",
+					tt.text, tt.width, got, lipgloss.Width(got), tt.width)
 			}
 		})
 	}

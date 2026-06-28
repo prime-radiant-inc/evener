@@ -22,6 +22,9 @@ func NonEmptyStrings(values []string) []string {
 
 // TruncateText shortens text to the given display width, appending "..." when
 // it must cut (or hard-slicing when the width is too small for an ellipsis).
+// Truncation is display-width aware: runes are accumulated by their rendered
+// width (so wide CJK runes count as 2 columns), guaranteeing the result never
+// exceeds the requested width.
 func TruncateText(text string, width int) string {
 	if width <= 0 {
 		return ""
@@ -30,13 +33,26 @@ func TruncateText(text string, width int) string {
 		return text
 	}
 	runes := []rune(text)
-	if len(runes) <= width {
-		return text
-	}
 	if width <= 3 {
-		return string(runes[:width])
+		return fitByWidth(runes, width)
 	}
-	return string(runes[:width-3]) + "..."
+	return fitByWidth(runes, width-3) + "..."
+}
+
+// fitByWidth returns the longest prefix of runes whose rendered width does not
+// exceed limit.
+func fitByWidth(runes []rune, limit int) string {
+	var b strings.Builder
+	used := 0
+	for _, r := range runes {
+		rw := lipgloss.Width(string(r))
+		if used+rw > limit {
+			break
+		}
+		b.WriteRune(r)
+		used += rw
+	}
+	return b.String()
 }
 
 // TruncateMultilineText applies TruncateText to every line of text independently.
