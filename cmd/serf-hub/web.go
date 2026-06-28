@@ -206,7 +206,10 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/auth", hubedge.HandleAuth(s.cfg.AuthToken))
 
 	auth := hubedge.AuthGuard(s.cfg.AuthToken)
-	return auth(httpsec.CSPMiddleware(mux))
+	// Optional opt-in (SERF_RECORD_HTTP) inbound-request recorder for fuzz-corpus
+	// harvesting; identity middleware when unset, so the stack is unchanged.
+	record := newHTTPRequestRecorder(s.cfg.HubStateRoot)
+	return record(auth(httpsec.CSPMiddleware(mux)))
 }
 
 func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
