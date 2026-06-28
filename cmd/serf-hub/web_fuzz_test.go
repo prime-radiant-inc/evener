@@ -121,9 +121,9 @@ func buildFuzzRequest(base, suffix string) *http.Request {
 }
 
 func truncateForLog(s string) string {
-	const max = 400
-	if len(s) > max {
-		return s[:max] + "…(truncated)"
+	const maxLen = 400
+	if len(s) > maxLen {
+		return s[:maxLen] + "…(truncated)"
 	}
 	return s
 }
