@@ -123,3 +123,33 @@ func TestRESTProxy_404UnknownSession(t *testing.T) {
 		t.Fatalf("status: got %d, want 404", rec.Code)
 	}
 }
+
+func TestSplitLivePath(t *testing.T) {
+	cases := []struct {
+		name        string
+		path        string
+		wantSession string
+		wantRest    string
+		wantOK      bool
+	}{
+		{name: "no rest", path: "/live/01A", wantSession: "01A", wantRest: "", wantOK: true},
+		{name: "with rest", path: "/live/01A/input", wantSession: "01A", wantRest: "input", wantOK: true},
+		{name: "nested rest", path: "/live/01A/turns/list", wantSession: "01A", wantRest: "turns/list", wantOK: true},
+		{name: "prefix mismatch", path: "/other/01A", wantSession: "", wantRest: "", wantOK: false},
+		{name: "empty", path: "", wantSession: "", wantRest: "", wantOK: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sessionID, rest, ok := splitLivePath(tc.path)
+			if ok != tc.wantOK {
+				t.Fatalf("ok: got %v, want %v", ok, tc.wantOK)
+			}
+			if sessionID != tc.wantSession {
+				t.Errorf("sessionID: got %q, want %q", sessionID, tc.wantSession)
+			}
+			if rest != tc.wantRest {
+				t.Errorf("rest: got %q, want %q", rest, tc.wantRest)
+			}
+		})
+	}
+}

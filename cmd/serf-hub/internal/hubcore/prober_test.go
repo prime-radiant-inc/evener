@@ -81,3 +81,24 @@ func TestStatusProberSendsHubTokenBearer(t *testing.T) {
 		t.Fatal("server did not receive probe")
 	}
 }
+
+func TestStatusProber_NonOKStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Valid JSON body so ok=false can only come from the status guard,
+		// not a JSON-decode failure (which TestStatusProber_BadJSON covers).
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(statusStub{SessionID: "01SESS001", State: "idle"})
+	}))
+	defer srv.Close()
+	p := &StatusProber{Timeout: 100 * time.Millisecond}
+	gotSess, gotStatus, ok := p.Probe(rendezvous.Entry{Address: srv.Listener.Addr().String()})
+	if ok {
+		t.Fatal("expected ok=false on non-200 status")
+	}
+	if gotSess != "" {
+		t.Errorf("session_id: got %q, want empty on non-200", gotSess)
+	}
+	if gotStatus != "" {
+		t.Errorf("state: got %q, want empty on non-200", gotStatus)
+	}
+}

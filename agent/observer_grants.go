@@ -8,6 +8,10 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
+// HistoricalJobRecord is a flattened, read-only snapshot of one job as it was
+// persisted in a session's durable jobs.jsonl — the origin coordinates, the
+// delegate/task it ran, and its terminal status — for tooling that inspects
+// past sessions without replaying their event streams.
 type HistoricalJobRecord struct {
 	JobID            string
 	Type             string

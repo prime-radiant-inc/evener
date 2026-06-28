@@ -2,6 +2,7 @@ package hubcore
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -293,4 +294,117 @@ func (p *flakyProber) Probe(rendezvous.Entry) (sessionID, status string, ok bool
 		return "", "", false
 	}
 	return p.sessionID, p.status, true
+}
+
+func TestPreferLiveEntry(t *testing.T) {
+	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name      string
+		candidate LiveEntry
+		current   LiveEntry
+		want      bool
+	}{
+		{
+			name:      "appwire beats non-appwire",
+			candidate: LiveEntry{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://1", ThreadID: "t1"}},
+			current:   LiveEntry{Entry: rendezvous.Entry{Protocol: "v0", Endpoint: "", ThreadID: ""}},
+			want:      true,
+		},
+		{
+			name:      "non-appwire loses to appwire",
+			candidate: LiveEntry{Entry: rendezvous.Entry{Protocol: "v0", Endpoint: "", ThreadID: ""}},
+			current:   LiveEntry{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://1", ThreadID: "t1"}},
+			want:      false,
+		},
+		{
+			// ProtocolVersion alone is not enough: an empty Endpoint must not
+			// count as appwire, so this falls through to the PID tiebreak (lower
+			// PID loses) rather than winning on protocol.
+			name:      "protocol set but empty endpoint is not appwire",
+			candidate: LiveEntry{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "", ThreadID: "t1", PID: 1, StartedAt: base}},
+			current:   LiveEntry{Entry: rendezvous.Entry{Protocol: "v0", Endpoint: "", ThreadID: "", PID: 2, StartedAt: base}},
+			want:      false,
+		},
+		{
+			// Likewise an empty ThreadID disqualifies appwire status, so the
+			// lower-PID candidate loses on the tiebreak instead of winning.
+			name:      "protocol set but empty thread id is not appwire",
+			candidate: LiveEntry{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://1", ThreadID: "", PID: 1, StartedAt: base}},
+			current:   LiveEntry{Entry: rendezvous.Entry{Protocol: "v0", Endpoint: "", ThreadID: "", PID: 2, StartedAt: base}},
+			want:      false,
+		},
+		{
+			name:      "same protocol, newer started wins",
+			candidate: LiveEntry{Entry: rendezvous.Entry{StartedAt: base.Add(time.Hour)}},
+			current:   LiveEntry{Entry: rendezvous.Entry{StartedAt: base}},
+			want:      true,
+		},
+		{
+			name:      "same protocol, older started loses",
+			candidate: LiveEntry{Entry: rendezvous.Entry{StartedAt: base}},
+			current:   LiveEntry{Entry: rendezvous.Entry{StartedAt: base.Add(time.Hour)}},
+			want:      false,
+		},
+		{
+			name:      "same started, higher PID wins",
+			candidate: LiveEntry{Entry: rendezvous.Entry{PID: 2, StartedAt: base}},
+			current:   LiveEntry{Entry: rendezvous.Entry{PID: 1, StartedAt: base}},
+			want:      true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := preferLiveEntry(c.candidate, c.current); got != c.want {
+				t.Errorf("preferLiveEntry() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestProcessAlive(t *testing.T) {
+	if processAlive(0) {
+		t.Fatal("processAlive(0) should be false")
+	}
+	if processAlive(-1) {
+		t.Fatal("processAlive(-1) should be false")
+	}
+	// Current process should be alive.
+	if !processAlive(os.Getpid()) {
+		t.Fatal("processAlive(current) should be true")
+	}
+}
+
+func TestNewRosterWithEntries(t *testing.T) {
+	r := NewRosterWithEntries(
+		LiveEntry{Entry: rendezvous.Entry{PID: 1, Address: "127.0.0.1:1"}, SessionID: "01A"},
+		LiveEntry{Entry: rendezvous.Entry{PID: 2, Address: "127.0.0.1:2"}, SessionID: "01B"},
+		LiveEntry{Entry: rendezvous.Entry{PID: 3, Address: "127.0.0.1:3"}, SessionID: ""},
+	)
+	got := r.List()
+	if len(got) != 3 {
+		t.Fatalf("List = %d, want 3", len(got))
+	}
+	// The session-less entry is indexed by PID and surfaces in List() under its
+	// own (empty session) identity.
+	var byPID = make(map[int]LiveEntry, len(got))
+	for _, e := range got {
+		byPID[e.PID] = e
+	}
+	if _, ok := byPID[3]; !ok {
+		t.Fatal("expected session-less entry (PID 3) in List")
+	}
+
+	found, ok := r.Find("01A")
+	if !ok {
+		t.Fatal("expected to find 01A")
+	}
+	if found.PID != 1 || found.Address != "127.0.0.1:1" {
+		t.Fatalf("Find(01A) = {PID:%d Address:%q}, want {PID:1 Address:127.0.0.1:1}", found.PID, found.Address)
+	}
+
+	// The empty SessionID must not be indexed for lookup; the guard in
+	// NewRosterWithEntries keeps bySess free of empty keys.
+	if e, ok := r.Find(""); ok {
+		t.Fatalf("Find(\"\") = {PID:%d}, want not found", e.PID)
+	}
 }

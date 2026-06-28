@@ -112,7 +112,8 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyQueueState(msg.detail.Ref, msg.detail.Queue)
 		// Subscribe to any already-running subagent children so the rail shows
 		// their live activity on session entry, not just for new spawns.
-		return m, m.subscribeNewChildren()
+		subscribeChildren := m.subscribeNewChildren()
+		return m, subscribeChildren
 	case hubNotificationMsg:
 		if !msg.ok {
 			return m, nil

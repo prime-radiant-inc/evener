@@ -100,3 +100,31 @@ func testReleaseArchive(t *testing.T, root string) []byte {
 	}
 	return buf.Bytes()
 }
+
+func TestRunUpgrade_TooManyArgs(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := runUpgrade([]string{"snapshot", "extra"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("runUpgrade(too many args) error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "at most one upgrade target") {
+		t.Fatalf("error = %v, want 'at most one upgrade target'", err)
+	}
+}
+
+func TestRunUpgrade_InvalidFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := runUpgrade([]string{"--invalid-flag"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("runUpgrade(invalid flag) error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "not defined") || !strings.Contains(err.Error(), "-invalid-flag") {
+		t.Fatalf("error = %v, want flag-parse error mentioning 'not defined' and '-invalid-flag'", err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "Usage: serf upgrade") {
+		t.Fatalf("stderr = %q, want usage banner 'Usage: serf upgrade'", got)
+	}
+	if got := stdout.String(); got != "" {
+		t.Fatalf("stdout = %q, want empty", got)
+	}
+}

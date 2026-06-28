@@ -178,3 +178,104 @@ func TestAuthURLFor(t *testing.T) {
 		t.Errorf("suffix wrong")
 	}
 }
+
+func TestLoadOrCreateAuthToken_EmptyRoot(t *testing.T) {
+	_, err := LoadOrCreateAuthToken("")
+	if err == nil {
+		t.Fatal("expected error for empty hubStateRoot")
+	}
+	if !strings.Contains(err.Error(), "hub state root not configured") {
+		t.Errorf("error should be the unconfigured-root branch, got %v", err)
+	}
+	_, err = LoadOrCreateAuthToken("   ")
+	if err == nil {
+		t.Fatal("expected error for whitespace-only hubStateRoot")
+	}
+	if !strings.Contains(err.Error(), "hub state root not configured") {
+		t.Errorf("error should be the unconfigured-root branch, got %v", err)
+	}
+}
+
+func TestLoadOrCreateAuthToken_MkdirAllError(t *testing.T) {
+	dir := t.TempDir()
+	// Create a file where the parent of hubStateRoot should be a directory.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(blocker, "root")
+	_, err := LoadOrCreateAuthToken(root)
+	if err == nil {
+		t.Fatal("expected error when MkdirAll fails")
+	}
+	if !strings.Contains(err.Error(), "mkdir") {
+		t.Errorf("error should be from the mkdir path, got %v", err)
+	}
+}
+
+func TestLoadOrCreateAuthToken_ReadFileError(t *testing.T) {
+	root := t.TempDir()
+	// Make the token path itself a directory. ReadFile opens it fine but the
+	// first Read returns EISDIR ("is a directory"), which is a non-ErrNotExist
+	// error — root-proof, since reading a directory fails regardless of uid.
+	if err := os.Mkdir(filepath.Join(root, TokenFileName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadOrCreateAuthToken(root)
+	if err == nil {
+		t.Fatal("expected error when read file fails")
+	}
+	if !strings.Contains(err.Error(), "read") {
+		t.Errorf("error should be from the read path, got %v", err)
+	}
+}
+
+func TestLoadOrCreateAuthToken_WriteFileError(t *testing.T) {
+	root := t.TempDir()
+	// The token file doesn't exist yet (ReadFile returns ErrNotExist), so the
+	// code proceeds to write the temp file path+".tmp". Pre-create that path as
+	// a directory: opening a directory for writing fails with EISDIR even for
+	// root, so this exercises the write-error branch regardless of uid.
+	if err := os.Mkdir(filepath.Join(root, TokenFileName+".tmp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadOrCreateAuthToken(root)
+	if err == nil {
+		t.Fatal("expected error when write file fails")
+	}
+	if !strings.Contains(err.Error(), "write") {
+		t.Errorf("error should be from the write path, got %v", err)
+	}
+}
+
+func TestAuthGuard_ReturnsHTMLForBrowser(t *testing.T) {
+	guard := AuthGuard("secret")
+	h := guard(okHandler())
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Unauthorized") {
+		t.Errorf("body missing 'Unauthorized': %q", body)
+	}
+}
+
+func TestAuthGuard_ReturnsPlainForAPI(t *testing.T) {
+	guard := AuthGuard("secret")
+	h := guard(okHandler())
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	req.Header.Set("Accept", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("code = %d, want 401", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "unauthorized") {
+		t.Errorf("body missing 'unauthorized': %q", body)
+	}
+}

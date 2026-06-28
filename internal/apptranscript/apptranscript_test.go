@@ -2,6 +2,7 @@ package apptranscript
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -98,24 +99,6 @@ func TestTurnsFromFileProjectsPreludeAndAPICallError(t *testing.T) {
 	}
 	if turns[1].Status != appwire.TurnStatusFailed || turns[1].Error == nil || turns[1].Error.Title != "Provider error" {
 		t.Fatalf("error turn=%+v", turns[1])
-	}
-}
-
-func TestSharedTranscriptHelpers(t *testing.T) {
-	if got := CompactionDescription("SUMMARY"); got != "Context summary" {
-		t.Fatalf("summary description=%q", got)
-	}
-	if got := ImagePlaceholder(2); got != "[2 images]" {
-		t.Fatalf("image placeholder=%q", got)
-	}
-	if got := CommunicateMessageFromArguments([]byte(`{"output":{"message":"nested"}}`)); got != "nested" {
-		t.Fatalf("communicate message=%q", got)
-	}
-	if got := ToolIntentFromArguments([]byte(`{"purpose":"inspect file"}`)); got != "inspect file" {
-		t.Fatalf("tool intent=%q", got)
-	}
-	if got := StringifyToolContent(map[string]any{"ok": true}); !strings.Contains(got, `"ok":true`) {
-		t.Fatalf("tool content=%q", got)
 	}
 }
 
@@ -300,5 +283,316 @@ func TestProjectTurnProjectsAudioAndDocumentAttachments(t *testing.T) {
 	}
 	if atts[1].Type != "input_audio" || atts[1].MediaType != "audio/wav" {
 		t.Fatalf("audio attachment=%+v", atts[1])
+	}
+}
+
+func TestDefaultImageProjector(t *testing.T) {
+	img := llm.ImageData{MediaType: "image/png", Data: []byte("secret")}
+	item := DefaultImageProjector(img)
+	if item.Type != "input_image" || item.MediaType != "image/png" || item.Name != "" {
+		t.Errorf("DefaultImageProjector = %+v", item)
+	}
+}
+
+func TestCompactionDescription(t *testing.T) {
+	tests := []struct {
+		kind string
+		want string
+	}{
+		{"SUMMARY", "Context summary"},
+		{"summary", "Context summary"},
+		{"  summary  ", "Context summary"},
+		{"CHECKPOINT", "Context checkpoint"},
+		{"checkpoint", "Context checkpoint"},
+		{"unknown", "Context checkpoint"},
+		{"", "Context checkpoint"},
+	}
+	for _, tc := range tests {
+		got := CompactionDescription(tc.kind)
+		if got != tc.want {
+			t.Errorf("CompactionDescription(%q) = %q, want %q", tc.kind, got, tc.want)
+		}
+	}
+}
+
+func TestImagePlaceholder(t *testing.T) {
+	tests := []struct {
+		count int
+		want  string
+	}{
+		{0, ""},
+		{1, "[image]"},
+		{2, "[2 images]"},
+		{5, "[5 images]"},
+	}
+	for _, tc := range tests {
+		got := ImagePlaceholder(tc.count)
+		if got != tc.want {
+			t.Errorf("ImagePlaceholder(%d) = %q, want %q", tc.count, got, tc.want)
+		}
+	}
+}
+
+func TestCommunicateMessageFromArguments(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"message", `{"message":"hello"}`, "hello"},
+		{"output nested", `{"output":{"message":"nested"}}`, "nested"},
+		{"message wins", `{"message":"direct","output":{"message":"nested"}}`, "direct"},
+		{"empty object", `{}`, ""},
+		{"invalid json", `not json`, ""},
+		{"empty string", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := CommunicateMessageFromArguments(json.RawMessage(tc.raw))
+			if got != tc.want {
+				t.Errorf("CommunicateMessageFromArguments(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestToolIntentFromArguments(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"intent", `{"intent":"do it"}`, "do it"},
+		{"purpose", `{"purpose":"inspect"}`, "inspect"},
+		{"description", `{"description":"read file"}`, "read file"},
+		{"intent priority", `{"intent":"a","purpose":"b"}`, "a"},
+		{"non-string ignored", `{"intent":123}`, ""},
+		{"empty object", `{}`, ""},
+		{"invalid json", `not json`, ""},
+		{"empty", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ToolIntentFromArguments(json.RawMessage(tc.raw))
+			if got != tc.want {
+				t.Errorf("ToolIntentFromArguments(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStringifyToolContent(t *testing.T) {
+	tests := []struct {
+		name string
+		v    any
+		want string
+	}{
+		{"nil", nil, ""},
+		{"string", "hello", "hello"},
+		{"map", map[string]any{"ok": true}, `{"ok":true}`},
+		{"int", 42, "42"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := StringifyToolContent(tc.v)
+			if got != tc.want {
+				t.Errorf("StringifyToolContent(%v) = %q, want %q", tc.v, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWebSearchProjection(t *testing.T) {
+	tests := []struct {
+		name        string
+		ws          *llm.WebSearchData
+		wantQuery   string
+		wantResults string
+	}{
+		{
+			name:        "nil",
+			ws:          nil,
+			wantQuery:   "",
+			wantResults: "",
+		},
+		{
+			name:        "query only",
+			ws:          &llm.WebSearchData{Query: "go generics"},
+			wantQuery:   "go generics",
+			wantResults: "",
+		},
+		{
+			name:        "anthropic content",
+			ws:          &llm.WebSearchData{Raw: json.RawMessage(`{"content":[{"type":"web_search_result","url":"https://go.dev","title":"Go"}]}`)},
+			wantQuery:   "",
+			wantResults: "Go — https://go.dev",
+		},
+		{
+			name:        "gemini grounding",
+			ws:          &llm.WebSearchData{Raw: json.RawMessage(`{"webSearchQueries":["golang"],"groundingChunks":[{"web":{"uri":"https://go.dev","title":"Go"}}]}`)},
+			wantQuery:   "golang",
+			wantResults: "Go — https://go.dev",
+		},
+		{
+			name:        "openai action",
+			ws:          &llm.WebSearchData{Raw: json.RawMessage(`{"action":{"query":"rust"}}`)},
+			wantQuery:   "rust",
+			wantResults: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q, r := WebSearchProjection(tc.ws)
+			if q != tc.wantQuery {
+				t.Errorf("query = %q, want %q", q, tc.wantQuery)
+			}
+			if r != tc.wantResults {
+				t.Errorf("results = %q, want %q", r, tc.wantResults)
+			}
+		})
+	}
+}
+
+func TestWebSearchResultLine(t *testing.T) {
+	tests := []struct {
+		title string
+		url   string
+		want  string
+	}{
+		{"Go", "https://go.dev", "Go — https://go.dev"},
+		{"Go", "", "Go"},
+		{"", "https://go.dev", "https://go.dev"},
+		{"", "", ""},
+		{"  Go  ", "  https://go.dev  ", "Go — https://go.dev"},
+	}
+	for _, tc := range tests {
+		got := webSearchResultLine(tc.title, tc.url)
+		if got != tc.want {
+			t.Errorf("webSearchResultLine(%q, %q) = %q, want %q", tc.title, tc.url, got, tc.want)
+		}
+	}
+}
+
+func TestFirstNonEmpty(t *testing.T) {
+	tests := []struct {
+		values []string
+		want   string
+	}{
+		{[]string{"a", "b"}, "a"},
+		{[]string{"", "b", "c"}, "b"},
+		{[]string{"", "", ""}, ""},
+		{[]string{}, ""},
+		{[]string{"  ", "x"}, "x"},
+	}
+	for _, tc := range tests {
+		got := firstNonEmpty(tc.values...)
+		if got != tc.want {
+			t.Errorf("firstNonEmpty(%v) = %q, want %q", tc.values, got, tc.want)
+		}
+	}
+}
+
+func TestFormatTools(t *testing.T) {
+	// Empty tools returns empty.
+	if got := FormatTools(llm.APILogRequest{}); got != "" {
+		t.Errorf("FormatTools empty = %q, want empty", got)
+	}
+	// Tools present returns the markdown-fenced MarshalIndent of the tools,
+	// including the closing fence.
+	req := llm.APILogRequest{Tools: []llm.ToolDefinition{{Name: "read_file"}}}
+	want := "```json\n[\n  {\n    \"name\": \"read_file\"\n  }\n]\n```"
+	if got := FormatTools(req); got != want {
+		t.Errorf("FormatTools = %q, want %q", got, want)
+	}
+}
+
+func TestScanPrelude(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.jsonl")
+
+	// File with header then api_call.
+	content := `{"kind":"header","system_prompt":"You are Serf."}
+{"kind":"api_call","system_prompt":"Call prompt.","request":{"tools":[{"name":"read_file"}]}}
+{"kind":"entry","turn":{}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	header, call := ScanPrelude(path, 1<<20)
+	if strings.TrimSpace(header.SystemPrompt) != "You are Serf." {
+		t.Errorf("header.SystemPrompt = %q", header.SystemPrompt)
+	}
+	if call == nil {
+		t.Fatal("expected api_call")
+	}
+	// The api_call line must be fully parsed, not discarded.
+	if call.SystemPrompt != "Call prompt." {
+		t.Errorf("call.SystemPrompt = %q, want %q", call.SystemPrompt, "Call prompt.")
+	}
+	if len(call.Request.Tools) != 1 || call.Request.Tools[0].Name != "read_file" {
+		t.Errorf("call.Request.Tools = %+v, want one read_file tool", call.Request.Tools)
+	}
+
+	// Missing file returns zero header and nil call.
+	header, call = ScanPrelude(filepath.Join(dir, "missing"), 1<<20)
+	if header.SystemPrompt != "" || call != nil {
+		t.Errorf("missing file: header=%+v call=%+v", header, call)
+	}
+}
+
+func TestPreludeTurn(t *testing.T) {
+	// Empty header and no call returns nil.
+	if got := PreludeTurn(transcript.Header{}, nil); got != nil {
+		t.Errorf("empty prelude = %+v, want nil", got)
+	}
+	// Header with system prompt only.
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Serf."}, nil)
+	if turn == nil || len(turn.Items) != 1 || turn.Items[0].Text != "You are Serf." {
+		t.Errorf("system prompt only = %+v", turn)
+	}
+	// Header with fallback system prompt from first call.
+	turn = PreludeTurn(transcript.Header{}, &transcript.APICall{SystemPrompt: "Fallback."})
+	if turn == nil || len(turn.Items) != 1 || turn.Items[0].Text != "Fallback." {
+		t.Errorf("fallback system prompt = %+v", turn)
+	}
+}
+
+func TestTurnsFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	content := `{"kind":"header","system_prompt":"You are Serf."}
+{"kind":"entry","turn":{}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without projector, only prelude turns are emitted (since no projector returns items).
+	turns := TurnsFromFile(path, 1<<20, nil)
+	if len(turns) != 1 || turns[0].ID != "turn_system" {
+		t.Errorf("turns = %+v", turns)
+	}
+
+	// With a projector that returns items.
+	project := func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem {
+		return []appwire.ThreadItem{{Type: "userMessage", Text: "hello"}}
+	}
+	turns = TurnsFromFile(path, 1<<20, project)
+	if len(turns) != 2 {
+		t.Fatalf("expected 2 turns, got %d: %+v", len(turns), turns)
+	}
+	if turns[0].ID != "turn_system" {
+		t.Errorf("first turn = %+v", turns[0])
+	}
+	if turns[1].ID != "turn_1" || len(turns[1].Items) != 1 {
+		t.Errorf("second turn = %+v", turns[1])
+	}
+
+	// Missing file returns nil.
+	turns = TurnsFromFile(filepath.Join(dir, "missing"), 1<<20, nil)
+	if turns != nil {
+		t.Errorf("missing file turns = %+v", turns)
 	}
 }

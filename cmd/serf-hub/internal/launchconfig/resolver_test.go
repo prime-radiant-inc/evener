@@ -1,8 +1,11 @@
 package launchconfig
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"syscall"
 	"testing"
 )
 
@@ -206,4 +209,113 @@ func hasDiagnostic(diags []Diagnostic, layer LayerName, field string) bool {
 		}
 	}
 	return false
+}
+
+func TestLoadProjectLayer_StatError(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	paths := PathsFor(stateRoot, cwd)
+	// Make the parent component of paths.Project (<cwd>/.serf) a regular file
+	// so os.Stat on paths.Project fails with ENOTDIR. This is root-proof:
+	// ENOTDIR is returned regardless of uid, unlike chmod-based permission
+	// bits, which root bypasses (and which would not make Stat itself fail).
+	if err := os.WriteFile(filepath.Dir(paths.Project), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := LoadProjectLayer(paths)
+	if err == nil {
+		t.Fatal("expected error when Stat on project path fails")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected a non-ErrNotExist Stat error, got %v", err)
+	}
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("expected ENOTDIR from the Stat-error branch, got %v", err)
+	}
+}
+
+func TestLoadProjectLayer_LegacyLoadError(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	paths := PathsFor(stateRoot, cwd)
+	// Create legacy path with invalid TOML so LoadLayer fails.
+	if err := os.MkdirAll(filepath.Dir(paths.LegacyProject), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.LegacyProject, []byte("invalid {{{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := LoadProjectLayer(paths)
+	if err == nil {
+		t.Fatal("expected error when legacy project layer is malformed")
+	}
+}
+
+func TestLoadRepoLayer_ReadFileError(t *testing.T) {
+	cwd := t.TempDir()
+	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
+	// Make the parent component (<cwd>/.serf) a regular file so os.ReadFile on
+	// repoPath fails with ENOTDIR. This is root-proof: ENOTDIR is returned
+	// regardless of uid, unlike chmod 0o000, which root bypasses.
+	if err := os.WriteFile(filepath.Dir(repoPath), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, diags := loadRepoLayer(cwd, "")
+	var seen bool
+	for _, d := range diags {
+		if d.Field == ".serf/launch.toml" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatalf("expected diagnostic for .serf/launch.toml read error, got %v", diags)
+	}
+}
+
+func TestValidateAndExpandRepoLayer_InvalidPaths(t *testing.T) {
+	cwd := t.TempDir()
+	in := Layer{
+		SkillsDirs:             []string{"../escape", "ok"},
+		SystemPromptFile:       "../escape",
+		SystemPromptAppendFile: "../escape",
+		TraceFile:              "../escape",
+		CPUProfile:             "../escape",
+		ExportATIFPath:         "../escape",
+	}
+	got, diags := validateAndExpandRepoLayer(cwd, in)
+	wantFields := []string{"skills_dirs", "system_prompt_file", "system_prompt_append_file", "trace_file", "cpu_profile", "export_atif_path"}
+	for _, field := range wantFields {
+		var seen bool
+		for _, d := range diags {
+			if d.Field == field {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			t.Errorf("missing diagnostic for %s", field)
+		}
+	}
+	// The rejected "../escape" entry must be dropped and the valid "ok"
+	// entry must survive, expanded to an absolute path under cwd.
+	wantSkills := []string{filepath.Join(cwd, "ok")}
+	if !reflect.DeepEqual(got.SkillsDirs, wantSkills) {
+		t.Errorf("SkillsDirs = %v, want %v", got.SkillsDirs, wantSkills)
+	}
+	// Single-value fields whose only value was rejected must be emptied.
+	if got.SystemPromptFile != "" {
+		t.Errorf("SystemPromptFile = %q, want empty", got.SystemPromptFile)
+	}
+	if got.SystemPromptAppendFile != "" {
+		t.Errorf("SystemPromptAppendFile = %q, want empty", got.SystemPromptAppendFile)
+	}
+	if got.TraceFile != "" {
+		t.Errorf("TraceFile = %q, want empty", got.TraceFile)
+	}
+	if got.CPUProfile != "" {
+		t.Errorf("CPUProfile = %q, want empty", got.CPUProfile)
+	}
+	if got.ExportATIFPath != "" {
+		t.Errorf("ExportATIFPath = %q, want empty", got.ExportATIFPath)
+	}
 }

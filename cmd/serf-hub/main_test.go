@@ -1,81 +1,132 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestVersionString_NotEmpty(t *testing.T) {
-	if Version == "" {
-		t.Fatal("Version should not be empty")
+func TestPrintHubEnvVars(t *testing.T) {
+	var buf bytes.Buffer
+	printHubEnvVars(&buf)
+	out := buf.String()
+
+	// Each documented var must appear on its own line alongside a
+	// non-empty Summary; otherwise dropping the description from the
+	// format string would silently pass.
+	wantSummary := map[string]string{
+		"SERF_PROVIDERS_CONFIG":        "Path to providers.toml.",
+		"SERF_STATE_DIR":               "Overrides the Serf state root.",
+		"SERF_HUB_EDITOR_URL_TEMPLATE": "Open-in-editor URL template; use {path} for the encoded path.",
+		"OPENAI_API_KEY":               "OpenAI API key.",
+		"ANTHROPIC_API_KEY":            "Anthropic API key.",
+		"GEMINI_API_KEY":               "Google Gemini API key; checked before GOOGLE_API_KEY.",
+		"GOOGLE_API_KEY":               "Google Gemini API key fallback.",
+		"OPENROUTER_API_KEY":           "OpenRouter API key.",
 	}
-}
 
-func TestResolveSerfBinaryPathExplicitWins(t *testing.T) {
-	// When --serf is set explicitly, the resolver returns it untouched
-	// even if no sibling exists and PATH lookup would fail.
-	got := resolveSerfBinaryPath("/custom/serf", "", func(string) (string, error) {
-		return "", errors.New("should not be called")
-	})
-	if got != "/custom/serf" {
-		t.Fatalf("got %q, want /custom/serf", got)
-	}
-}
-
-func TestResolveSerfBinaryPathPrefersSiblingOverPath(t *testing.T) {
-	dir := t.TempDir()
-	sibling := filepath.Join(dir, "serf")
-	writeHubExecutable(t, sibling)
-
-	pathSerf := filepath.Join(t.TempDir(), "serf")
-	writeHubExecutable(t, pathSerf)
-
-	got := resolveSerfBinaryPath("", filepath.Join(dir, "serf-hub"), func(string) (string, error) {
-		return pathSerf, nil
-	})
-	if got != sibling {
-		t.Fatalf("got %q, want sibling %q", got, sibling)
-	}
-}
-
-func TestResolveSerfBinaryPathFallsBackToPath(t *testing.T) {
-	// No sibling exists next to the hub binary; resolver should defer
-	// to the lookPath hook.
-	dir := t.TempDir()
-	hub := filepath.Join(dir, "serf-hub")
-	writeHubExecutable(t, hub)
-
-	pathSerf := filepath.Join(t.TempDir(), "serf")
-	writeHubExecutable(t, pathSerf)
-
-	got := resolveSerfBinaryPath("", hub, func(name string) (string, error) {
-		if name != "serf" {
-			t.Fatalf("lookPath called with %q, want %q", name, "serf")
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	for name, summary := range wantSummary {
+		var line string
+		for _, l := range lines {
+			if strings.HasPrefix(strings.TrimSpace(l), name) {
+				line = l
+				break
+			}
 		}
-		return pathSerf, nil
-	})
-	if got != pathSerf {
-		t.Fatalf("got %q, want PATH-resolved %q", got, pathSerf)
+		if line == "" {
+			t.Errorf("output missing %q:\n%s", name, out)
+			continue
+		}
+		if !strings.Contains(line, summary) {
+			t.Errorf("line for %q missing summary %q: got %q", name, summary, line)
+		}
+		// The description must follow the name, not just appear somewhere
+		// on the line: trimming the name must leave non-empty help text.
+		idx := strings.Index(line, name)
+		rest := strings.TrimSpace(line[idx+len(name):])
+		if rest == "" {
+			t.Errorf("line for %q has no description text: got %q", name, line)
+		}
 	}
 }
 
-func TestResolveSerfBinaryPathReturnsEmptyWhenNothingFound(t *testing.T) {
-	// When neither a sibling nor a PATH entry exists, the resolver
-	// returns "" so HubSpawner falls back to invoking plain "serf"
-	// and lets exec.Command surface the runtime error.
-	got := resolveSerfBinaryPath("", filepath.Join(t.TempDir(), "serf-hub"), func(string) (string, error) {
-		return "", os.ErrNotExist
-	})
-	if got != "" {
-		t.Fatalf("got %q, want empty string", got)
+func TestCurrentExecutable(t *testing.T) {
+	// Normal case: os.Executable() should succeed and return a non-empty path.
+	exe := currentExecutable()
+	if exe == "" {
+		t.Fatal("currentExecutable() returned empty string")
+	}
+	if !strings.Contains(exe, string(os.PathSeparator)) {
+		t.Fatalf("expected an absolute or relative path with separator, got %q", exe)
 	}
 }
 
-func writeHubExecutable(t *testing.T, path string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+func TestResolveSerfBinaryPath(t *testing.T) {
+	t.Run("explicit wins", func(t *testing.T) {
+		got := resolveSerfBinaryPath("/usr/bin/serf", "", nil)
+		if got != "/usr/bin/serf" {
+			t.Fatalf("explicit = %q, want /usr/bin/serf", got)
+		}
+	})
+
+	t.Run("sibling resolution", func(t *testing.T) {
+		dir := t.TempDir()
+		serfPath := filepath.Join(dir, "serf")
+		if err := os.WriteFile(serfPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// currentExecutable is the hub binary in the same directory.
+		hubPath := filepath.Join(dir, "serf-hub")
+		if err := os.WriteFile(hubPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		got := resolveSerfBinaryPath("", hubPath, func(string) (string, error) {
+			return "", errors.New("should not call lookPath")
+		})
+		if got != serfPath {
+			t.Fatalf("sibling resolution = %q, want %q", got, serfPath)
+		}
+	})
+
+	t.Run("PATH resolution", func(t *testing.T) {
+		got := resolveSerfBinaryPath("", "/no/such/hub", func(name string) (string, error) {
+			if name != "serf" {
+				t.Fatalf("lookPath called with %q, want serf", name)
+			}
+			return "/usr/local/bin/serf", nil
+		})
+		if got != "/usr/local/bin/serf" {
+			t.Fatalf("PATH resolution = %q, want /usr/local/bin/serf", got)
+		}
+	})
+
+	t.Run("lookPath error returns empty", func(t *testing.T) {
+		got := resolveSerfBinaryPath("", "/no/such/hub", func(string) (string, error) {
+			return "", errors.New("not found")
+		})
+		if got != "" {
+			t.Fatalf("lookPath error = %q, want empty", got)
+		}
+	})
+
+	t.Run("nil lookPath uses exec.LookPath", func(t *testing.T) {
+		// Create a temp directory with a "serf" binary and put it on PATH.
+		bindir := t.TempDir()
+		serfPath := filepath.Join(bindir, "serf")
+		if err := os.WriteFile(serfPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		oldPath := os.Getenv("PATH")
+		defer os.Setenv("PATH", oldPath)
+		os.Setenv("PATH", bindir)
+
+		got := resolveSerfBinaryPath("", "/no/such/hub", nil)
+		if got != serfPath {
+			t.Fatalf("nil lookPath resolution = %q, want %q", got, serfPath)
+		}
+	})
 }

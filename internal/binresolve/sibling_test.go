@@ -3,7 +3,9 @@ package binresolve
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -191,5 +193,99 @@ func writeExecutable(t *testing.T, path string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestIsExecutable_NonExistent(t *testing.T) {
+	// Use the exported function indirectly by testing Resolve with explicit path.
+	const explicit = "/nonexistent/path/serf-hub"
+	_, err := Resolve("serf-hub", explicit, "", nil)
+	if err == nil {
+		t.Fatal("expected error for non-existent explicit path")
+	}
+	// The error must name both the binary and the rejected path so the
+	// operator can tell which explicit override failed the check.
+	if !strings.Contains(err.Error(), "serf-hub") {
+		t.Fatalf("error %q does not mention binary name", err)
+	}
+	if !strings.Contains(err.Error(), explicit) {
+		t.Fatalf("error %q does not mention explicit path %q", err, explicit)
+	}
+	if !strings.Contains(err.Error(), "not executable") {
+		t.Fatalf("error %q does not describe the non-executable rejection", err)
+	}
+}
+
+func TestIsExecutable_Directory(t *testing.T) {
+	dir := t.TempDir()
+	// The sibling target "serf-hub" IS a directory: it exists next to the
+	// running binary and carries 0o755 (so its execute bits are set), but a
+	// directory must never be accepted as an executable. Resolve must
+	// reject it and fall through to the PATH lookup hook, which here errors.
+	if err := os.Mkdir(filepath.Join(dir, "serf-hub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Resolve("serf-hub", "", filepath.Join(dir, "serf-tui"), func(string) (string, error) {
+		return "", errors.New("should not reach PATH")
+	})
+	if err == nil {
+		t.Fatal("expected error when sibling is a directory")
+	}
+}
+
+func TestResolve_SiblingExistsButNotExecutable_FallsThroughToPATH(t *testing.T) {
+	dir := t.TempDir()
+	// Create a sibling file that exists but is NOT executable.
+	sibling := filepath.Join(dir, "serf-hub")
+	if err := os.WriteFile(sibling, []byte("not executable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Create a PATH candidate that IS executable.
+	pathHub := filepath.Join(t.TempDir(), "serf-hub")
+	writeExecutable(t, pathHub)
+
+	got, err := Resolve("serf-hub", "", filepath.Join(dir, "serf-tui"), func(string) (string, error) {
+		return pathHub, nil
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got != pathHub {
+		t.Fatalf("got %q, want %q", got, pathHub)
+	}
+}
+
+func TestSiblingDir_AbsFailsWithVeryLongPath(t *testing.T) {
+	// filepath.Abs on an extremely long path may fail on some platforms.
+	// Construct a path that exceeds typical limits (e.g., 4096 bytes on
+	// Linux). Whether Abs succeeds is platform-dependent, so we assert the
+	// SiblingDir invariant either way: a true ok must yield an absolute
+	// directory, and a false ok must yield the empty string.
+	veryLong := strings.Repeat("a", 5000)
+	dir, ok := SiblingDir(veryLong)
+	if ok {
+		if !filepath.IsAbs(dir) {
+			t.Fatalf("SiblingDir returned ok=true with non-absolute dir %q", dir)
+		}
+	} else if dir != "" {
+		t.Fatalf("SiblingDir returned ok=false with non-empty dir %q", dir)
+	}
+}
+
+func TestResolveWithNilLookPath(t *testing.T) {
+	// Passing nil lookPath triggers the default exec.LookPath branch.
+	// Since serf-hub is unlikely to be on the real PATH, this should error.
+	const name = "serf-hub-definitely-not-on-path"
+	_, err := Resolve(name, "", filepath.Join(t.TempDir(), "serf-tui"), nil)
+	if err == nil {
+		t.Fatal("expected error when lookPath is nil and no candidate exists")
+	}
+	// The failure must name the binary and preserve the wrapped
+	// exec.LookPath error so callers can still errors.Is against it.
+	if !strings.Contains(err.Error(), name) {
+		t.Fatalf("error %q does not mention binary name %q", err, name)
+	}
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("error %q does not wrap exec.ErrNotFound", err)
 	}
 }

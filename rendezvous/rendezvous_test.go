@@ -2,8 +2,11 @@ package rendezvous
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -167,5 +170,75 @@ func TestDefaultDir_RespectsHome(t *testing.T) {
 	want := "/tmp/fakehome/.serf/run"
 	if got != want {
 		t.Fatalf("DefaultDir: got %q, want %q", got, want)
+	}
+}
+
+func TestWrite_MkdirAllFails(t *testing.T) {
+	// Create a file at the path where MkdirAll would need to create a directory.
+	tmp := t.TempDir()
+	filePath := filepath.Join(tmp, "isfile")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Pass filePath as the dir argument; MkdirAll will fail because it exists and is not a dir.
+	_, err := Write(filePath, Entry{PID: 1, Address: "127.0.0.1:1"})
+	if err == nil {
+		t.Fatal("expected error when MkdirAll fails")
+	}
+	if !strings.Contains(err.Error(), "create rendezvous dir") {
+		t.Fatalf("expected error from the MkdirAll branch, got %v", err)
+	}
+}
+
+func TestWrite_NestedDirParentIsFile(t *testing.T) {
+	// Make a parent path component a regular file so MkdirAll returns ENOTDIR.
+	// This is root-proof: the OS rejects creating a dir under a file even for
+	// uid 0, unlike chmod-based permission tricks that root bypasses.
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Write(filepath.Join(blocker, "child"), Entry{PID: 1, Address: "127.0.0.1:1"})
+	if err == nil {
+		t.Fatal("expected error when MkdirAll fails because a parent component is a file")
+	}
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("expected ENOTDIR, got %v", err)
+	}
+}
+
+func TestWrite_TmpPathIsDirectory(t *testing.T) {
+	// Pre-create the temporary file path as a directory so WriteFile fails.
+	dir := t.TempDir()
+	entry := Entry{PID: 1, Address: "127.0.0.1:1"}
+	tmp := filepath.Join(dir, "1.json.tmp")
+	if err := os.Mkdir(tmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Write(dir, entry)
+	if err == nil {
+		t.Fatal("expected error when tmp path is a directory")
+	}
+	if !strings.Contains(err.Error(), "write tmp") {
+		t.Fatalf("expected error from the WriteFile branch, got %v", err)
+	}
+}
+
+func TestWrite_TargetIsDirectory(t *testing.T) {
+	// Pre-create the target file path as a directory so Rename fails.
+	dir := t.TempDir()
+	entry := Entry{PID: 1, Address: "127.0.0.1:1"}
+	target := filepath.Join(dir, "1.json")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Write(dir, entry)
+	if err == nil {
+		t.Fatal("expected error when target path is a directory")
+	}
+	if !strings.Contains(err.Error(), "rename") {
+		t.Fatalf("expected error from the Rename branch, got %v", err)
 	}
 }

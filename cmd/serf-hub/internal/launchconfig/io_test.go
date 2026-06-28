@@ -127,3 +127,174 @@ func TestSaveMeta_AtomicAndPermissions(t *testing.T) {
 		t.Errorf("round-trip CWD = %q", got.CWD)
 	}
 }
+
+func TestLoadLayer_ReadError(t *testing.T) {
+	// Root-proof read failure: a directory cannot be read as a file
+	// (EISDIR), and it is not ErrNotExist so it never hits the
+	// missing-file no-op branch. chmod-based injection would no-op as root.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "launch.toml")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadLayer(path)
+	if err == nil {
+		t.Fatal("expected error when path is a directory, got nil")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: read "+path) {
+		t.Fatalf("expected a launchconfig read error for %s, got %v", path, err)
+	}
+}
+
+func TestLoadLayer_ParseError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "launch.toml")
+	if err := os.WriteFile(path, []byte("invalid {{{ toml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadLayer(path)
+	if err == nil {
+		t.Fatal("expected error for malformed TOML")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: parse "+path) {
+		t.Fatalf("expected a launchconfig parse error for %s, got %v", path, err)
+	}
+}
+
+func TestLoadMeta_ReadError(t *testing.T) {
+	// Root-proof read failure: reading a directory as a file errors
+	// (EISDIR) for any uid, unlike chmod which root bypasses.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.toml")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadMeta(path)
+	if err == nil {
+		t.Fatal("expected error when path is a directory, got nil")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: read "+path) {
+		t.Fatalf("expected a launchconfig read error for %s, got %v", path, err)
+	}
+}
+
+func TestLoadMeta_ParseError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.toml")
+	if err := os.WriteFile(path, []byte("invalid {{{ toml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadMeta(path)
+	if err == nil {
+		t.Fatal("expected error for malformed TOML")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: parse "+path) {
+		t.Fatalf("expected a launchconfig parse error for %s, got %v", path, err)
+	}
+}
+
+func TestSaveLayer_WriteError(t *testing.T) {
+	// Root-proof write failure: MkdirAll on the real parent succeeds, but
+	// the atomic temp target (path + ".tmp") is pre-created as a directory,
+	// so OpenFile(..., O_WRONLY|O_TRUNC) fails with EISDIR for any uid.
+	// A read-only dir would no-op as root.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "launch.toml")
+	if err := os.Mkdir(path+".tmp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := SaveLayer(path, Layer{Schema: 1, Model: "x"})
+	if err == nil {
+		t.Fatal("expected error when the temp target is a directory, got nil")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: open "+path+".tmp") {
+		t.Fatalf("expected a launchconfig open error for %s.tmp, got %v", path, err)
+	}
+}
+
+func TestSaveMeta_WriteError(t *testing.T) {
+	// Root-proof write failure: the atomic temp target (path + ".tmp") is a
+	// directory, so OpenFile(..., O_WRONLY|O_TRUNC) fails with EISDIR for
+	// any uid. A read-only dir would no-op as root.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.toml")
+	if err := os.Mkdir(path+".tmp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := SaveMeta(path, Meta{Schema: 1, CWD: "/x"})
+	if err == nil {
+		t.Fatal("expected error when the temp target is a directory, got nil")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: open "+path+".tmp") {
+		t.Fatalf("expected a launchconfig open error for %s.tmp, got %v", path, err)
+	}
+}
+
+func TestSaveLayer_MkdirAllError(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(blocker, "sub", "launch.toml")
+	err := SaveLayer(path, Layer{Schema: 1, Model: "x"})
+	if err == nil {
+		t.Fatal("expected error when MkdirAll parent is a file")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: mkdir "+filepath.Dir(path)) {
+		t.Fatalf("expected a launchconfig mkdir error for %s, got %v", filepath.Dir(path), err)
+	}
+}
+
+func TestSaveMeta_MkdirAllError(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(blocker, "sub", "meta.toml")
+	err := SaveMeta(path, Meta{Schema: 1, CWD: "/x"})
+	if err == nil {
+		t.Fatal("expected error when MkdirAll parent is a file")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: mkdir "+filepath.Dir(path)) {
+		t.Fatalf("expected a launchconfig mkdir error for %s, got %v", filepath.Dir(path), err)
+	}
+}
+
+func TestSaveLayer_RenameError(t *testing.T) {
+	dir := t.TempDir()
+	// Create path as a non-empty directory so Rename fails.
+	path := filepath.Join(dir, "launch.toml")
+	if err := os.MkdirAll(filepath.Join(path, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "sub", "file"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := SaveLayer(path, Layer{Schema: 1, Model: "x"})
+	if err == nil {
+		t.Fatal("expected error when target is a non-empty directory")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: rename "+path+".tmp -> "+path) {
+		t.Fatalf("expected a launchconfig rename error for %s, got %v", path, err)
+	}
+}
+
+func TestSaveMeta_RenameError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "meta.toml")
+	if err := os.MkdirAll(filepath.Join(path, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "sub", "file"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := SaveMeta(path, Meta{Schema: 1, CWD: "/x"})
+	if err == nil {
+		t.Fatal("expected error when target is a non-empty directory")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: rename "+path+".tmp -> "+path) {
+		t.Fatalf("expected a launchconfig rename error for %s, got %v", path, err)
+	}
+}

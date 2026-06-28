@@ -107,6 +107,7 @@ no router (reserved).
 | `goal/set` | both | `GoalSetParams` | `GoalSetResponse` | Sets or clears the session's /goal objective. |
 | `serf/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
 | `serf/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
+| `serf/subagentPreview` | hub | `SerfSubagentPreviewParams` | `SerfSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `serf/dirs/complete` | hub | `DirsCompleteParams` | `DirsCompleteResponse` | Directory-path autocompletion for a prefix. |
 | `serf/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
 | `serf/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
@@ -552,6 +553,23 @@ _(no fields)_
 | `itemId` | `string` |  |  |
 | `summaryIndex` | `int` |  |  |
 | `delta` | `string` |  |  |
+
+
+### `SerfSubagentPreviewParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `limit` | `int` | yes |  |
+
+
+### `SerfSubagentPreviewResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `items` | `[]appwire.ThreadItem` |  |  |
+| `truncated` | `bool` |  |  |
 
 
 ### `TaskListParams`

@@ -384,10 +384,12 @@ func AttachmentsFromContent(parts []llm.ContentPart) []appwire.InputItem {
 // (content[]), and Gemini's grounding metadata (webSearchQueries +
 // groundingChunks[]).
 type webSearchRaw struct {
-	Action           struct{ Query string } `json:"action"`
-	Input            struct{ Query string } `json:"input"`
-	WebSearchQueries []string               `json:"webSearchQueries"`
-	GroundingChunks  []struct {
+	Action struct{ Query string } `json:"action"`
+	Input  struct{ Query string } `json:"input"`
+	// serf:naming-ignore: Gemini grounding-metadata wire field name (camelCase, fixed by the Gemini API).
+	WebSearchQueries []string `json:"webSearchQueries"`
+	// serf:naming-ignore: Gemini grounding-metadata wire field name (camelCase, fixed by the Gemini API).
+	GroundingChunks []struct {
 		Web struct {
 			URI   string `json:"uri"`
 			Title string `json:"title"`

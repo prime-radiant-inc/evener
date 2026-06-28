@@ -92,3 +92,57 @@ func TestProbeMCPStatus_HTTPWithHeaders(t *testing.T) {
 		t.Errorf("server saw Authorization=%q, want Bearer prefix", seenAuth)
 	}
 }
+
+func TestProbeMCPStatus_SSEReachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{Type: "sse", URL: srv.URL})
+	if got != "available" {
+		t.Errorf("status=%q, want available", got)
+	}
+}
+
+func TestProbeMCPStatus_HTTPHeadErrorStatus(t *testing.T) {
+	// A non-2xx HEAD response is still a response: client.Do returns err == nil,
+	// so the probe reports "available" straight from the HEAD path without ever
+	// reaching the GET fallback. Any HTTP status counts as reachable.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}))
+	defer srv.Close()
+	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{Type: "http", URL: srv.URL})
+	if got != "available" {
+		t.Errorf("status=%q, want available (HEAD returned a status, no fallback needed)", got)
+	}
+}
+
+func TestProbeMCPStatus_HTTPHeadConnectionReset(t *testing.T) {
+	// Server hijacks and closes the connection on HEAD, forcing a network error
+	// (err != nil) — the only condition under which the SUT falls back to GET.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			hj, ok := w.(http.Hijacker)
+			if ok {
+				conn, _, _ := hj.Hijack()
+				conn.Close()
+			}
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{Type: "http", URL: srv.URL})
+	if got != "available" {
+		t.Errorf("status=%q, want available (HEAD failed, GET succeeded)", got)
+	}
+}
+
+func TestProbeMCPStatus_HTTPInvalidURL(t *testing.T) {
+	// Malformed URL should trigger http.NewRequestWithContext error on HEAD.
+	got := mcpstatus.ProbeMCPStatus(mcpconfig.ServerConfig{Type: "http", URL: "://malformed"})
+	if got != "unknown" {
+		t.Errorf("status=%q, want unknown for malformed URL", got)
+	}
+}

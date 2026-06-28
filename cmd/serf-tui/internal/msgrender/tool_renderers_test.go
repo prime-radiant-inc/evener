@@ -329,3 +329,85 @@ func TestUnknownToolHasJSONBody(t *testing.T) {
 		t.Errorf("unknown tool renderer should have jsonBody")
 	}
 }
+
+func TestToolArgsFromJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want ToolArgs
+	}{
+		{"empty", "", ToolArgs{}},
+		{"valid object", `{"a":"b","c":1}`, ToolArgs{"a": "b", "c": float64(1)}},
+		{"invalid json", "not json", ToolArgs{}},
+		{"array not object", "[1,2]", ToolArgs{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := toolArgsFromJSON(tc.json)
+			if len(got) != len(tc.want) {
+				t.Errorf("toolArgsFromJSON(%q) = %+v, want %+v", tc.json, got, tc.want)
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Errorf("toolArgsFromJSON(%q)[%q] = %v, want %v", tc.json, k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestToolArgsStr(t *testing.T) {
+	args := toolArgsFromJSON(`{"command":"ls","count":5}`)
+	if args.Str("command") != "ls" {
+		t.Errorf("Str(command) = %q, want ls", args.Str("command"))
+	}
+	if args.Str("missing") != "" {
+		t.Errorf("Str(missing) = %q, want empty", args.Str("missing"))
+	}
+	if args.Str("count") != "" {
+		t.Errorf("Str(count) = %q, want empty (non-string)", args.Str("count"))
+	}
+}
+
+func TestUnknownToolRenderer(t *testing.T) {
+	r := unknownToolRenderer("custom_tool")
+	if r.Verb(nil) != "custom_tool" {
+		t.Errorf("verb = %q, want custom_tool", r.Verb(nil))
+	}
+	if r.Target(nil) != "" {
+		t.Errorf("target = %q, want empty", r.Target(nil))
+	}
+	if r.Result(nil, "", "", 0) != "ok" {
+		t.Errorf("result ok = %q", r.Result(nil, "", "", 0))
+	}
+	if r.Result(nil, "", "boom", 0) != "error" {
+		t.Errorf("result error = %q", r.Result(nil, "", "boom", 0))
+	}
+	if r.Body == nil {
+		t.Errorf("body should not be nil")
+	}
+}
+
+func TestDiffResultText(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		errStr string
+		want   string
+	}{
+		{"error", "+a", "boom", "error"},
+		{"empty", "", "", "ok"},
+		{"only added", "+a\n+b", "", "2 added"},
+		{"only removed", "-a\n-b", "", "2 removed"},
+		{"mixed", "+a\n+b\n-c\n-d\n-e", "", "2 +/3 -"},
+		{"ignores headers", "+++ a\n--- b\n+line", "", "1 added"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := diffResultText(ToolArgs{}, tc.output, tc.errStr, 0)
+			if got != tc.want {
+				t.Errorf("diffResultText(%q, %q) = %q, want %q", tc.output, tc.errStr, got, tc.want)
+			}
+		})
+	}
+}

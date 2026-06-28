@@ -2,6 +2,7 @@ package msgrender
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -321,3 +322,169 @@ func TestMarkdownInvalidatorIsWired(t *testing.T) {
 		t.Errorf("ApplyThemeName should have invalidated markdownRenderer cache")
 	}
 }
+
+func TestContainsMarkdownSyntax(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"bold asterisk", "**bold**", true},
+		{"backtick code", "`code`", true},
+		{"underscore italic", "_italic_", true},
+		{"bracket link", "[link](url)", true},
+		{"h1 heading", "# heading", true},
+		{"h2 heading", "## heading", true},
+		{"blockquote", "> quote", true},
+		{"unordered list", "- item", true},
+		{"plus list", "+ item", true},
+		{"ordered list", "1. item", true},
+		{"ordered list 10", "10. item", true},
+		{"plain text", "hello world", false},
+		{"empty", "", false},
+		{"just numbers", "12345", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := containsMarkdownSyntax(tc.text)
+			if got != tc.want {
+				t.Errorf("containsMarkdownSyntax(%q) = %v, want %v", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsOrderedMarkdownListItem(t *testing.T) {
+	tests := []struct {
+		line string
+		want bool
+	}{
+		{"1. item", true},
+		{"10. item", true},
+		{"99. x", true},
+		{"0. item", true},
+		{"item", false},
+		{"1 item", false},
+		{"1.", false},
+		{".", false},
+		{"a. item", false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		got := isOrderedMarkdownListItem(tc.line)
+		if got != tc.want {
+			t.Errorf("isOrderedMarkdownListItem(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
+
+func TestReasoningGist(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{"first line", "first line\nsecond line", "first line"},
+		{"single line", "single", "single"},
+		{"empty", "", ""},
+		{"whitespace only", "   \n  \n", ""},
+		{"long line clipped", strings.Repeat("a", 100), strings.Repeat("a", 72) + "…"},
+		{"tabs collapsed", "line\twith\ttabs", "line with tabs"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := reasoningGist(tc.text)
+			if got != tc.want {
+				t.Errorf("reasoningGist(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestArgsJSONFromDescription(t *testing.T) {
+	tests := []struct {
+		s    string
+		want string
+	}{
+		{`{"file_path":"x.go"}`, `{"file_path":"x.go"}`},
+		{"human summary", ""},
+		{"  {\"a\":1}  ", "{\"a\":1}"},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		got := argsJSONFromDescription(tc.s)
+		if got != tc.want {
+			t.Errorf("argsJSONFromDescription(%q) = %q, want %q", tc.s, got, tc.want)
+		}
+	}
+}
+
+func TestFormatDur(t *testing.T) {
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "<1ms"},
+		{500 * time.Microsecond, "<1ms"},
+		{1 * time.Millisecond, "1ms"},
+		{999 * time.Millisecond, "999ms"},
+		{1 * time.Second, "1.0s"},
+		{1500 * time.Millisecond, "1.5s"},
+		{10 * time.Second, "10.0s"},
+	}
+	for _, tc := range tests {
+		got := formatDur(tc.d)
+		if got != tc.want {
+			t.Errorf("formatDur(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}
+
+func TestExtractCommunicate(t *testing.T) {
+	tests := []struct {
+		name string
+		args string
+		want string
+	}{
+		{"message field", `{"message":"hello"}`, "hello"},
+		{"output nested", `{"output":{"message":"nested"}}`, "nested"},
+		{"message beats nested", `{"message":"direct","output":{"message":"nested"}}`, "direct"},
+		{"empty object", `{}`, ""},
+		{"invalid json", `not json`, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractCommunicate(&llm.ToolCallData{Arguments: json.RawMessage(tc.args)})
+			if got != tc.want {
+				t.Errorf("extractCommunicate(%q) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestJSONBody(t *testing.T) {
+	// Empty output returns empty.
+	if got := jsonBody(ToolArgs{}, "", 80); got != "" {
+		t.Errorf("jsonBody empty = %q, want empty", got)
+	}
+	// Invalid JSON returns raw output.
+	if got := jsonBody(ToolArgs{}, "not json", 80); got != "not json" {
+		t.Errorf("jsonBody invalid = %q, want raw", got)
+	}
+	// Valid JSON is pretty-printed: after stripping any ANSI highlighting,
+	// the output must match the json.Indent result with two-space indent,
+	// not the raw single-line input.
+	got := jsonBody(ToolArgs{}, `{"a":1}`, 80)
+	plain := ansiPattern.ReplaceAllString(got, "")
+	const wantPretty = "{\n  \"a\": 1\n}"
+	if plain != wantPretty {
+		t.Errorf("jsonBody valid = %q (stripped %q), want pretty-printed %q", got, plain, wantPretty)
+	}
+	if plain == `{"a":1}` {
+		t.Errorf("jsonBody valid returned raw input, not pretty-printed: %q", got)
+	}
+}
+
+// ansiPattern matches terminal SGR escape sequences so tests can compare the
+// underlying text without syntax-highlighting color codes.
+var ansiPattern = regexp.MustCompile("\x1b\\[[0-9;]*m")
