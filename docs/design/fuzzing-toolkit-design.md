@@ -36,8 +36,8 @@ fuzz/                              # NEW top-level dir; doc + shared, module-agn
 llm/sse_fuzz_test.go                                   # Phase 0 #1
 appwire/jsonrpc_fuzz_test.go                           # Phase 0 #2
 appwire/params_fuzz_test.go                            # Phase 0 #3 (table over appwire.Methods)
-agent/internal/tool/registry_fuzz_test.go              # Phase 0 #4
-agent/internal/tool/registry_schemafuzz_test.go        # Phase 1 #5
+agent/tool_args_fuzz_test.go                           # Phase 0 #4 (package agent: needs NewSession; internal/tool would cycle)
+agent/registry_schemafuzz_test.go                      # Phase 1 #5 (same reason)
 internal/appserver/router_seqfuzz_test.go              # Phase 2 #6
 llm/providers/openai/responses_fuzz_test.go            # Phase 4 #7
 cmd/serf-hub/web_fuzz_test.go                           # Phase 4 #8
