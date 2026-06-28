@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -350,9 +352,13 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
 				}
 
-				// Collect and emit tool call end events.
+				// Collect and emit tool call end events in wire (delta-index)
+				// order. The state is keyed in a map, whose iteration order is
+				// randomized; sort by index so parallel tool calls assemble
+				// deterministically.
 				var completedToolCalls []llm.ToolCallData
-				for idx, tc := range toolCalls {
+				for _, idx := range slices.Sorted(maps.Keys(toolCalls)) {
+					tc := toolCalls[idx]
 					rescuedArgs := rescueClaudeXMLArgs(tc.args.String())
 					tcd := llm.ToolCallData{
 						ID:        tc.id,
