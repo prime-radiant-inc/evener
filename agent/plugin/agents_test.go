@@ -154,6 +154,9 @@ Body.
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
+	if !strings.Contains(err.Error(), "name") {
+		t.Errorf("error %q should mention 'name'", err.Error())
+	}
 }
 
 func TestParseAgent_EmptyDescription(t *testing.T) {
@@ -166,6 +169,9 @@ Body.
 	_, err := ParseAgent(data, "p")
 	if err == nil {
 		t.Fatal("expected error for empty description")
+	}
+	if !strings.Contains(err.Error(), "description") {
+		t.Errorf("error %q should mention 'description'", err.Error())
 	}
 }
 
@@ -208,6 +214,28 @@ Body.
 	}
 	if len(agent.Tools) != 2 || agent.Tools[0] != "read_file" || agent.Tools[1] != "shell" {
 		t.Errorf("Tools = %v, want [read_file shell]", agent.Tools)
+	}
+}
+
+func TestParseAgent_ToolsClaudeNames(t *testing.T) {
+	data := []byte(`---
+name: claude-tools
+description: claude
+tools:
+  - Read
+  - Bash
+---
+Body.
+`)
+	agent, err := ParseAgent(data, "p")
+	if err != nil {
+		t.Fatalf("ParseAgent error: %v", err)
+	}
+	if agent.AllTools {
+		t.Error("AllTools should be false")
+	}
+	if len(agent.Tools) != 2 || agent.Tools[0] != "read_file" || agent.Tools[1] != "shell" {
+		t.Errorf("Tools = %v, want [read_file shell] (Claude names mapped to serf canonical)", agent.Tools)
 	}
 }
 

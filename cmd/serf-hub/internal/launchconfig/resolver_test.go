@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"syscall"
 	"testing"
 )
@@ -281,7 +282,7 @@ func TestValidateAndExpandRepoLayer_InvalidPaths(t *testing.T) {
 		CPUProfile:             "../escape",
 		ExportATIFPath:         "../escape",
 	}
-	_, diags := validateAndExpandRepoLayer(cwd, in)
+	got, diags := validateAndExpandRepoLayer(cwd, in)
 	wantFields := []string{"skills_dirs", "system_prompt_file", "system_prompt_append_file", "trace_file", "cpu_profile", "export_atif_path"}
 	for _, field := range wantFields {
 		var seen bool
@@ -294,5 +295,27 @@ func TestValidateAndExpandRepoLayer_InvalidPaths(t *testing.T) {
 		if !seen {
 			t.Errorf("missing diagnostic for %s", field)
 		}
+	}
+	// The rejected "../escape" entry must be dropped and the valid "ok"
+	// entry must survive, expanded to an absolute path under cwd.
+	wantSkills := []string{filepath.Join(cwd, "ok")}
+	if !reflect.DeepEqual(got.SkillsDirs, wantSkills) {
+		t.Errorf("SkillsDirs = %v, want %v", got.SkillsDirs, wantSkills)
+	}
+	// Single-value fields whose only value was rejected must be emptied.
+	if got.SystemPromptFile != "" {
+		t.Errorf("SystemPromptFile = %q, want empty", got.SystemPromptFile)
+	}
+	if got.SystemPromptAppendFile != "" {
+		t.Errorf("SystemPromptAppendFile = %q, want empty", got.SystemPromptAppendFile)
+	}
+	if got.TraceFile != "" {
+		t.Errorf("TraceFile = %q, want empty", got.TraceFile)
+	}
+	if got.CPUProfile != "" {
+		t.Errorf("CPUProfile = %q, want empty", got.CPUProfile)
+	}
+	if got.ExportATIFPath != "" {
+		t.Errorf("ExportATIFPath = %q, want empty", got.ExportATIFPath)
 	}
 }

@@ -1,8 +1,11 @@
 package hubcore
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -57,8 +60,14 @@ func TestArchiveStoreOpenError(t *testing.T) {
 	}
 	s := NewArchiveStore(dbPath)
 	now := time.Now()
-	if err := s.Set("session", "sess-1", true, now); err == nil {
+	err := s.Set("session", "sess-1", true, now)
+	if err == nil {
 		t.Fatal("expected error when DB path is a directory")
+	}
+	// The failure must come from sqlite opening the DB file (the db.Exec step in
+	// open()), not from some unrelated branch. Pin the sqlite open-failure message.
+	if !strings.Contains(err.Error(), "unable to open database file") {
+		t.Fatalf("error = %q; want it to reference the sqlite open failure", err)
 	}
 }
 
@@ -71,7 +80,16 @@ func TestArchiveStoreMkdirAllError(t *testing.T) {
 	db := filepath.Join(blocker, "sub", "index.db")
 	s := NewArchiveStore(db)
 	now := time.Now()
-	if err := s.Set("session", "sess-1", true, now); err == nil {
+	err := s.Set("session", "sess-1", true, now)
+	if err == nil {
 		t.Fatal("expected error when MkdirAll parent is a file")
+	}
+	// The failure must come from MkdirAll refusing to descend through a file, not
+	// from a later branch. Pin the ENOTDIR cause and the offending parent path.
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("error = %v; want it to wrap ENOTDIR from MkdirAll", err)
+	}
+	if !strings.Contains(err.Error(), blocker) {
+		t.Fatalf("error = %q; want it to reference the blocking parent path %q", err, blocker)
 	}
 }

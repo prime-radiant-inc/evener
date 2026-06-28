@@ -25,21 +25,18 @@ func TestCompleteDirs(t *testing.T) {
 		}
 	}
 
-	t.Run("empty prefix returns home dir entries", func(t *testing.T) {
+	t.Run("empty prefix expands to home", func(t *testing.T) {
+		// An empty prefix expands to HOME with no trailing slash, so the SUT
+		// lists home's PARENT filtered by home's basename — which matches home
+		// itself and nothing else. Pinning the exact result catches a regression
+		// where the empty prefix no longer maps to HOME (e.g. defaulting to "/").
 		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(resp.Data) == 0 {
-			t.Fatal("expected home dir entries")
-		}
-		// Should contain Alpha, Beta, Gamma, delta (non-hidden).
-		// .hidden should be excluded when filter is empty.
-		for _, p := range resp.Data {
-			base := filepath.Base(p)
-			if strings.HasPrefix(base, ".") {
-				t.Fatalf("hidden dir %q should be excluded", base)
-			}
+		want := []string{home}
+		if len(resp.Data) != 1 || resp.Data[0] != home {
+			t.Fatalf("expected %v, got %v", want, resp.Data)
 		}
 	})
 
@@ -48,8 +45,13 @@ func TestCompleteDirs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(resp.Data) == 0 {
-			t.Fatal("expected entries after ~ expansion")
+		// filepath.Join(home, "/") strips the trailing slash, so "~/" resolves to
+		// home itself (no trailing separator): the SUT lists home's parent
+		// filtered by home's basename, yielding home. Pinning the exact result
+		// catches a regression mapping ~ to some other directory (e.g. "/").
+		want := []string{home}
+		if len(resp.Data) != 1 || resp.Data[0] != home {
+			t.Fatalf("expected %v after ~ expansion, got %v", want, resp.Data)
 		}
 	})
 

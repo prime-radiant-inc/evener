@@ -898,8 +898,14 @@ func TestAgeString(t *testing.T) {
 	}{
 		{time.Time{}, ""},
 		{now.Add(-30 * time.Second), "now"},
+		{now.Add(-59 * time.Second), "now"},
+		{now.Add(-61 * time.Second), "1m"},
 		{now.Add(-5 * time.Minute), "5m"},
+		{now.Add(-59 * time.Minute), "59m"},
+		{now.Add(-61 * time.Minute), "1h"},
 		{now.Add(-3 * time.Hour), "3h"},
+		{now.Add(-23 * time.Hour), "23h"},
+		{now.Add(-25 * time.Hour), "1d"},
 		{now.Add(-2 * 24 * time.Hour), "2d"},
 	}
 	for _, c := range cases {
@@ -912,6 +918,14 @@ func TestAgeString(t *testing.T) {
 func TestShortID(t *testing.T) {
 	if got := ShortID("01A"); got != "01A" {
 		t.Errorf("ShortID(01A) = %q, want 01A", got)
+	}
+	// 14 chars is the boundary: still passes through unchanged.
+	if got := ShortID("0123456789ABCD"); got != "0123456789ABCD" {
+		t.Errorf("ShortID(14-char) = %q, want 0123456789ABCD", got)
+	}
+	// 15 chars is one past the boundary: shortened to "session "+last6.
+	if got := ShortID("0123456789ABCDE"); got != "session 9ABCDE" {
+		t.Errorf("ShortID(15-char) = %q, want session 9ABCDE", got)
 	}
 	if got := ShortID("01ABCDEFGHIJKLMNOPQRSTUVWXYZ"); got != "session UVWXYZ" {
 		t.Errorf("ShortID(long) = %q, want session UVWXYZ", got)
@@ -928,6 +942,16 @@ func TestNodeTitle_EmptyBaseWithForkLabel(t *testing.T) {
 	got = nodeTitle(m, "fork")
 	if got != " · before" {
 		t.Errorf("nodeTitle(empty base with label, fork) = %q, want \" · before\"", got)
+	}
+
+	// Realistic named session with a fork label renders "<name> · <label>".
+	named := schema.SessionMeta{Name: "deploy", ForkLabel: "before"}
+	if got := nodeTitle(named, "fork"); got != "deploy · before" {
+		t.Errorf("nodeTitle(named, fork) = %q, want \"deploy · before\"", got)
+	}
+	// A non-fork node omits the fork label even when one is present.
+	if got := nodeTitle(named, "session"); got != "deploy" {
+		t.Errorf("nodeTitle(named, session) = %q, want \"deploy\"", got)
 	}
 }
 

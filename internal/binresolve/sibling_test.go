@@ -3,6 +3,7 @@ package binresolve
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -197,9 +198,21 @@ func writeExecutable(t *testing.T, path string) {
 
 func TestIsExecutable_NonExistent(t *testing.T) {
 	// Use the exported function indirectly by testing Resolve with explicit path.
-	_, err := Resolve("serf-hub", "/nonexistent/path/serf-hub", "", nil)
+	const explicit = "/nonexistent/path/serf-hub"
+	_, err := Resolve("serf-hub", explicit, "", nil)
 	if err == nil {
 		t.Fatal("expected error for non-existent explicit path")
+	}
+	// The error must name both the binary and the rejected path so the
+	// operator can tell which explicit override failed the check.
+	if !strings.Contains(err.Error(), "serf-hub") {
+		t.Fatalf("error %q does not mention binary name", err)
+	}
+	if !strings.Contains(err.Error(), explicit) {
+		t.Fatalf("error %q does not mention explicit path %q", err, explicit)
+	}
+	if !strings.Contains(err.Error(), "not executable") {
+		t.Fatalf("error %q does not describe the non-executable rejection", err)
 	}
 }
 
@@ -262,8 +275,17 @@ func TestSiblingDir_AbsFailsWithVeryLongPath(t *testing.T) {
 func TestResolveWithNilLookPath(t *testing.T) {
 	// Passing nil lookPath triggers the default exec.LookPath branch.
 	// Since serf-hub is unlikely to be on the real PATH, this should error.
-	_, err := Resolve("serf-hub-definitely-not-on-path", "", filepath.Join(t.TempDir(), "serf-tui"), nil)
+	const name = "serf-hub-definitely-not-on-path"
+	_, err := Resolve(name, "", filepath.Join(t.TempDir(), "serf-tui"), nil)
 	if err == nil {
 		t.Fatal("expected error when lookPath is nil and no candidate exists")
+	}
+	// The failure must name the binary and preserve the wrapped
+	// exec.LookPath error so callers can still errors.Is against it.
+	if !strings.Contains(err.Error(), name) {
+		t.Fatalf("error %q does not mention binary name %q", err, name)
+	}
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("error %q does not wrap exec.ErrNotFound", err)
 	}
 }

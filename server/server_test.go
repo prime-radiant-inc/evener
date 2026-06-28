@@ -1320,6 +1320,23 @@ func TestServerAppWireThreadList(t *testing.T) {
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
 	}
+	out, ok := resp.Response.Result.(appwire.ThreadListResponse)
+	if !ok {
+		t.Fatalf("thread/list result=%T (%+v)", resp.Response.Result, resp)
+	}
+	if len(out.Data) != 1 {
+		t.Fatalf("thread/list data: got %d threads, want 1", len(out.Data))
+	}
+	thread := out.Data[0]
+	if thread.ID != "th_1" {
+		t.Errorf("thread ID: got %q, want th_1", thread.ID)
+	}
+	if thread.Source != "local" {
+		t.Errorf("thread Source: got %q, want local", thread.Source)
+	}
+	if thread.Serf.Ref != "local:th_1" {
+		t.Errorf("thread Serf.Ref: got %q, want local:th_1", thread.Serf.Ref)
+	}
 }
 
 func TestServerAppWireTasksList(t *testing.T) {
@@ -1338,6 +1355,20 @@ func TestServerAppWireTasksList(t *testing.T) {
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
 	}
+	out, ok := resp.Response.Result.(appwire.TaskListResponse)
+	if !ok {
+		t.Fatalf("serf/tasks/list result=%T (%+v)", resp.Response.Result, resp)
+	}
+	tasks, ok := out.Data.([]map[string]any)
+	if !ok {
+		t.Fatalf("task data type=%T, want []map[string]any", out.Data)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task data: got %d tasks, want 1", len(tasks))
+	}
+	if tasks[0]["id"] != "1" {
+		t.Errorf("task id: got %v, want 1", tasks[0]["id"])
+	}
 }
 
 func TestServerAppWireModelList(t *testing.T) {
@@ -1355,5 +1386,18 @@ func TestServerAppWireModelList(t *testing.T) {
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodModelList, appwire.ModelListParams{}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
+	}
+	out, ok := resp.Response.Result.(appwire.ModelListResponse)
+	if !ok {
+		t.Fatalf("model/list result=%T (%+v)", resp.Response.Result, resp)
+	}
+	if len(out.Data) != 1 {
+		t.Fatalf("model/list data: got %d models, want 1", len(out.Data))
+	}
+	if out.Data[0].Model != "gpt-4o" {
+		t.Errorf("model: got %q, want gpt-4o", out.Data[0].Model)
+	}
+	if out.Data[0].Provider != "" {
+		t.Errorf("provider: got %q, want empty (no profile set)", out.Data[0].Provider)
 	}
 }

@@ -59,6 +59,9 @@ func TestAcquireLock_MkdirAllError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when parent is a file")
 	}
+	if !strings.Contains(err.Error(), "mkdir lock parent") {
+		t.Fatalf("expected mkdir lock parent error, got: %v", err)
+	}
 }
 
 func TestAcquireLock_OpenFileError(t *testing.T) {

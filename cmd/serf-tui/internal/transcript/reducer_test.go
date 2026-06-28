@@ -672,18 +672,29 @@ func TestApplyChildActivityTracksRunningRunHonestly(t *testing.T) {
 
 func TestTranscriptReducerGetters(t *testing.T) {
 	msgs := []ChatMessage{{Kind: MsgUser, Text: "hello"}}
-	activeTools := map[string]int{"tool1": 0}
-	activeMessages := map[string]int{"msg1": 0}
+	activeTools := map[string]int{"tool1": 7}
+	activeMessages := map[string]int{"msg1": 3}
 	r := NewTranscriptReducer(msgs, activeTools, activeMessages)
 
 	if got := r.Messages(); len(got) != 1 || got[0].Text != "hello" {
 		t.Errorf("Messages() = %+v", got)
 	}
-	if got := r.ActiveTools(); got["tool1"] != 0 {
+	if got := r.ActiveTools(); len(got) != 1 || got["tool1"] != 7 {
 		t.Errorf("ActiveTools() = %+v", got)
 	}
-	if got := r.ActiveMessages(); got["msg1"] != 0 {
+	if got := r.ActiveMessages(); len(got) != 1 || got["msg1"] != 3 {
 		t.Errorf("ActiveMessages() = %+v", got)
+	}
+
+	// The getters expose the live fields, not defensive copies: a mutation
+	// through the returned map must be visible on a subsequent call.
+	r.ActiveTools()["tool2"] = 9
+	if got := r.ActiveTools(); len(got) != 2 || got["tool2"] != 9 {
+		t.Errorf("ActiveTools() did not return the live field: %+v", got)
+	}
+	r.ActiveMessages()["msg2"] = 4
+	if got := r.ActiveMessages(); len(got) != 2 || got["msg2"] != 4 {
+		t.Errorf("ActiveMessages() did not return the live field: %+v", got)
 	}
 }
 

@@ -140,8 +140,12 @@ func TestToStreamEvent_Mappings(t *testing.T) {
 			if got.Type != tt.wantType {
 				t.Errorf("Type = %q, want %q", got.Type, tt.wantType)
 			}
-			if tt.wantDelta != "" && got.Delta != tt.wantDelta {
-				t.Errorf("Delta = %q, want %q", got.Delta, tt.wantDelta)
+			if tt.wantDelta != "" {
+				if got.Delta != tt.wantDelta {
+					t.Errorf("Delta = %q, want %q", got.Delta, tt.wantDelta)
+				}
+			} else if got.Delta != "" {
+				t.Errorf("Delta = %q, want empty", got.Delta)
 			}
 			if tt.wantTool != nil {
 				if got.ToolCall == nil {
@@ -150,6 +154,8 @@ func TestToStreamEvent_Mappings(t *testing.T) {
 				if got.ToolCall.ID != tt.wantTool.ID || got.ToolCall.Name != tt.wantTool.Name {
 					t.Errorf("ToolCall = %+v, want %+v", got.ToolCall, tt.wantTool)
 				}
+			} else if got.ToolCall != nil {
+				t.Errorf("ToolCall = %+v, want nil", got.ToolCall)
 			}
 		})
 	}

@@ -14,18 +14,42 @@ func TestPrintHubEnvVars(t *testing.T) {
 	printHubEnvVars(&buf)
 	out := buf.String()
 
-	for _, want := range []string{
-		"SERF_PROVIDERS_CONFIG",
-		"SERF_STATE_DIR",
-		"SERF_HUB_EDITOR_URL_TEMPLATE",
-		"OPENAI_API_KEY",
-		"ANTHROPIC_API_KEY",
-		"GEMINI_API_KEY",
-		"GOOGLE_API_KEY",
-		"OPENROUTER_API_KEY",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q:\n%s", want, out)
+	// Each documented var must appear on its own line alongside a
+	// non-empty Summary; otherwise dropping the description from the
+	// format string would silently pass.
+	wantSummary := map[string]string{
+		"SERF_PROVIDERS_CONFIG":        "Path to providers.toml.",
+		"SERF_STATE_DIR":               "Overrides the Serf state root.",
+		"SERF_HUB_EDITOR_URL_TEMPLATE": "Open-in-editor URL template; use {path} for the encoded path.",
+		"OPENAI_API_KEY":               "OpenAI API key.",
+		"ANTHROPIC_API_KEY":            "Anthropic API key.",
+		"GEMINI_API_KEY":               "Google Gemini API key; checked before GOOGLE_API_KEY.",
+		"GOOGLE_API_KEY":               "Google Gemini API key fallback.",
+		"OPENROUTER_API_KEY":           "OpenRouter API key.",
+	}
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	for name, summary := range wantSummary {
+		var line string
+		for _, l := range lines {
+			if strings.HasPrefix(strings.TrimSpace(l), name) {
+				line = l
+				break
+			}
+		}
+		if line == "" {
+			t.Errorf("output missing %q:\n%s", name, out)
+			continue
+		}
+		if !strings.Contains(line, summary) {
+			t.Errorf("line for %q missing summary %q: got %q", name, summary, line)
+		}
+		// The description must follow the name, not just appear somewhere
+		// on the line: trimming the name must leave non-empty help text.
+		idx := strings.Index(line, name)
+		rest := strings.TrimSpace(line[idx+len(name):])
+		if rest == "" {
+			t.Errorf("line for %q has no description text: got %q", name, line)
 		}
 	}
 }

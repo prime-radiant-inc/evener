@@ -141,8 +141,8 @@ func TestLoadLayer_ReadError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when path is a directory, got nil")
 	}
-	if !strings.Contains(err.Error(), "read") {
-		t.Fatalf("expected a read error, got %v", err)
+	if !strings.Contains(err.Error(), "launchconfig: read "+path) {
+		t.Fatalf("expected a launchconfig read error for %s, got %v", path, err)
 	}
 }
 
@@ -155,6 +155,9 @@ func TestLoadLayer_ParseError(t *testing.T) {
 	_, err := LoadLayer(path)
 	if err == nil {
 		t.Fatal("expected error for malformed TOML")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: parse "+path) {
+		t.Fatalf("expected a launchconfig parse error for %s, got %v", path, err)
 	}
 }
 
@@ -170,8 +173,8 @@ func TestLoadMeta_ReadError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when path is a directory, got nil")
 	}
-	if !strings.Contains(err.Error(), "read") {
-		t.Fatalf("expected a read error, got %v", err)
+	if !strings.Contains(err.Error(), "launchconfig: read "+path) {
+		t.Fatalf("expected a launchconfig read error for %s, got %v", path, err)
 	}
 }
 
@@ -184,6 +187,9 @@ func TestLoadMeta_ParseError(t *testing.T) {
 	_, err := LoadMeta(path)
 	if err == nil {
 		t.Fatal("expected error for malformed TOML")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: parse "+path) {
+		t.Fatalf("expected a launchconfig parse error for %s, got %v", path, err)
 	}
 }
 
@@ -201,8 +207,8 @@ func TestSaveLayer_WriteError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when the temp target is a directory, got nil")
 	}
-	if !strings.Contains(err.Error(), "open") {
-		t.Fatalf("expected an open error, got %v", err)
+	if !strings.Contains(err.Error(), "launchconfig: open "+path+".tmp") {
+		t.Fatalf("expected a launchconfig open error for %s.tmp, got %v", path, err)
 	}
 }
 
@@ -219,8 +225,8 @@ func TestSaveMeta_WriteError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when the temp target is a directory, got nil")
 	}
-	if !strings.Contains(err.Error(), "open") {
-		t.Fatalf("expected an open error, got %v", err)
+	if !strings.Contains(err.Error(), "launchconfig: open "+path+".tmp") {
+		t.Fatalf("expected a launchconfig open error for %s.tmp, got %v", path, err)
 	}
 }
 
@@ -231,8 +237,12 @@ func TestSaveLayer_MkdirAllError(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(blocker, "sub", "launch.toml")
-	if err := SaveLayer(path, Layer{Schema: 1, Model: "x"}); err == nil {
+	err := SaveLayer(path, Layer{Schema: 1, Model: "x"})
+	if err == nil {
 		t.Fatal("expected error when MkdirAll parent is a file")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: mkdir "+filepath.Dir(path)) {
+		t.Fatalf("expected a launchconfig mkdir error for %s, got %v", filepath.Dir(path), err)
 	}
 }
 
@@ -243,8 +253,12 @@ func TestSaveMeta_MkdirAllError(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(blocker, "sub", "meta.toml")
-	if err := SaveMeta(path, Meta{Schema: 1, CWD: "/x"}); err == nil {
+	err := SaveMeta(path, Meta{Schema: 1, CWD: "/x"})
+	if err == nil {
 		t.Fatal("expected error when MkdirAll parent is a file")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: mkdir "+filepath.Dir(path)) {
+		t.Fatalf("expected a launchconfig mkdir error for %s, got %v", filepath.Dir(path), err)
 	}
 }
 
@@ -258,8 +272,12 @@ func TestSaveLayer_RenameError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(path, "sub", "file"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveLayer(path, Layer{Schema: 1, Model: "x"}); err == nil {
+	err := SaveLayer(path, Layer{Schema: 1, Model: "x"})
+	if err == nil {
 		t.Fatal("expected error when target is a non-empty directory")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: rename "+path+".tmp -> "+path) {
+		t.Fatalf("expected a launchconfig rename error for %s, got %v", path, err)
 	}
 }
 
@@ -272,7 +290,11 @@ func TestSaveMeta_RenameError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(path, "sub", "file"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveMeta(path, Meta{Schema: 1, CWD: "/x"}); err == nil {
+	err := SaveMeta(path, Meta{Schema: 1, CWD: "/x"})
+	if err == nil {
 		t.Fatal("expected error when target is a non-empty directory")
+	}
+	if !strings.Contains(err.Error(), "launchconfig: rename "+path+".tmp -> "+path) {
+		t.Fatalf("expected a launchconfig rename error for %s, got %v", path, err)
 	}
 }

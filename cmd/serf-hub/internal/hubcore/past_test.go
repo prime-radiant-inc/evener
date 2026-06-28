@@ -432,9 +432,18 @@ func TestPastIndex_FindRefreshesNewSessionOnMiss(t *testing.T) {
 
 func TestPastIndex_FindWithMalformedGlob(t *testing.T) {
 	idx := NewPastIndex("[unclosed")
-	_, ok := idx.Find("anything")
+	// Rebuild must propagate the glob compile error rather than swallow it: a
+	// silently-ignored ErrBadPattern leaves the index empty so Find still
+	// reports false, masking the lost error.
+	if err := idx.Rebuild(); !errors.Is(err, filepath.ErrBadPattern) {
+		t.Fatalf("expected Rebuild to propagate ErrBadPattern, got %v", err)
+	}
+	got, ok := idx.Find("anything")
 	if ok {
 		t.Fatal("expected Find to return false on malformed glob")
+	}
+	if got.ID != "" || got.StateDir != "" {
+		t.Errorf("expected zero PastEntry on miss, got %+v", got)
 	}
 }
 
@@ -495,7 +504,15 @@ func TestPastIndex_SearchFTSSpecialCharsOnly(t *testing.T) {
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	// Query with only special characters should fall back to memory search.
+	// A special-char-only query yields no FTS tokens, so ftsQuery must return ""
+	// to skip the FTS path entirely rather than emit a malformed MATCH string.
+	// Observing this directly proves the fallback decision; the zero-results
+	// check alone holds regardless of which path ran.
+	if q := ftsQuery("!@#$%"); q != "" {
+		t.Fatalf("ftsQuery(special-only): got %q want empty", q)
+	}
+	// Search then falls back to the in-memory substring scan, which finds no
+	// match for a query with no alphanumeric content.
 	got := idx.Search("!@#$%", 50, 0)
 	if len(got) != 0 {
 		t.Fatalf("expected no results for special-char-only query: got %v", got)
@@ -523,8 +540,37 @@ func TestChmodSQLiteIndexFiles_Error(t *testing.T) {
 
 func TestPastIndex_FindEmptyStateGlob(t *testing.T) {
 	idx := NewPastIndex("")
-	_, ok := idx.Find("something")
+	got, ok := idx.Find("something")
 	if ok {
 		t.Fatal("expected Find to return false when stateGlob is empty")
+	}
+	if got.ID != "" || got.StateDir != "" {
+		t.Errorf("expected zero PastEntry on miss, got %+v", got)
+	}
+}
+
+// TestPastIndex_FindEmptySessionIDSkipsRebuild pins the other half of Find's
+// short-circuit guard: an empty session id must return false WITHOUT triggering
+// a rebuild, even when the glob points at real on-disk sessions. Dropping the
+// guard would route the empty id through Rebuild, which populates the index as a
+// side effect — observable here as a non-empty All() snapshot.
+func TestPastIndex_FindEmptySessionIDSkipsRebuild(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:        "01A",
+		UpdatedAt: time.Now(),
+	})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	got, ok := idx.Find("")
+	if ok {
+		t.Fatal("expected Find to return false for an empty session id")
+	}
+	if got.ID != "" || got.StateDir != "" {
+		t.Errorf("expected zero PastEntry on miss, got %+v", got)
+	}
+	if all := idx.All(); len(all) != 0 {
+		t.Fatalf("Find(\"\") must not trigger a rebuild, but index holds %d entries", len(all))
 	}
 }

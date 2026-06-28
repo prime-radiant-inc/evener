@@ -719,6 +719,12 @@ func TestRunOpenAILogout_Errors(t *testing.T) {
 		if err == nil {
 			t.Fatal("runOpenAILogout(--invalid-flag) error = nil, want error")
 		}
+		if !strings.Contains(err.Error(), "flag provided but not defined") {
+			t.Fatalf("error = %v, want flag-parse error", err)
+		}
+		if !strings.Contains(stderr.String(), "Usage: serf openai logout") {
+			t.Fatalf("stderr = %q, want usage header", stderr.String())
+		}
 	})
 }
 
@@ -804,14 +810,20 @@ func TestDrainEventsHuman_CommunicateAndSkillActivated(t *testing.T) {
 	done := drainEventsHuman(ch, &buf)
 	<-done
 	out := buf.String()
-	if !strings.Contains(out, "communicate:end_turn") {
-		t.Errorf("expected end_turn communicate line, got: %q", out)
+	if !strings.Contains(out, "[communicate:end_turn] hello") {
+		t.Errorf("expected end_turn communicate line for 'hello', got: %q", out)
 	}
-	if !strings.Contains(out, "[communicate]") {
-		t.Errorf("expected regular communicate line, got: %q", out)
+	if !strings.Contains(out, "[communicate] continuing") {
+		t.Errorf("expected regular communicate line for 'continuing', got: %q", out)
 	}
-	if !strings.Contains(out, "debug-skill") {
-		t.Errorf("expected skill name, got: %q", out)
+	if strings.Contains(out, "[communicate] hello") {
+		t.Errorf("'hello' (EndTurn=true) must not get the regular prefix, got: %q", out)
+	}
+	if strings.Contains(out, "[communicate:end_turn] continuing") {
+		t.Errorf("'continuing' (EndTurn=false) must not get the end_turn prefix, got: %q", out)
+	}
+	if !strings.Contains(out, "[skill] activated debug-skill") {
+		t.Errorf("expected skill activated line, got: %q", out)
 	}
 }
 
@@ -832,6 +844,12 @@ func TestRunOpenAILogin_Errors(t *testing.T) {
 		err := runOpenAILogin([]string{"--invalid"}, strings.NewReader(""), &stdout, &stderr)
 		if err == nil {
 			t.Fatal("runOpenAILogin(--invalid) error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), "flag provided but not defined") {
+			t.Fatalf("error = %v, want flag-parse error", err)
+		}
+		if !strings.Contains(stderr.String(), "Usage: serf openai login") {
+			t.Fatalf("stderr = %q, want usage header", stderr.String())
 		}
 	})
 }

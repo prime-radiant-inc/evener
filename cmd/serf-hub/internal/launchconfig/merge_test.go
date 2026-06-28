@@ -263,7 +263,7 @@ func TestMerge_CoversRemainingScalarAndListFields(t *testing.T) {
 
 func TestMerge_AppReplaySizeNonGlobalDiagnostic(t *testing.T) {
 	l := Layer{AppReplaySize: ptrInt(10)}
-	_, diags := mergeLayers(map[LayerName]Layer{LayerLaunch: l})
+	got, diags := mergeLayers(map[LayerName]Layer{LayerLaunch: l})
 	var seen bool
 	for _, d := range diags {
 		if d.Field == "app_replay_size" && d.Layer == LayerLaunch {
@@ -272,6 +272,28 @@ func TestMerge_AppReplaySizeNonGlobalDiagnostic(t *testing.T) {
 	}
 	if !seen {
 		t.Fatalf("expected app_replay_size diagnostic for non-global layer, got %v", diags)
+	}
+	if got.Effective.AppReplaySize != nil {
+		t.Errorf("non-global app_replay_size must be rejected, got Effective.AppReplaySize = %v", *got.Effective.AppReplaySize)
+	}
+	if name, ok := got.Provenance["app_replay_size"]; ok {
+		t.Errorf("rejected app_replay_size must not appear in provenance, got %q", name)
+	}
+}
+
+func TestMerge_AppReplaySizeGlobalApplied(t *testing.T) {
+	g := Layer{AppReplaySize: ptrInt(10)}
+	got, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: g})
+	for _, d := range diags {
+		if d.Field == "app_replay_size" {
+			t.Errorf("global app_replay_size must not emit a diagnostic, got %v", d)
+		}
+	}
+	if got.Effective.AppReplaySize == nil || *got.Effective.AppReplaySize != 10 {
+		t.Fatalf("global app_replay_size must be applied, got Effective.AppReplaySize = %v", got.Effective.AppReplaySize)
+	}
+	if got.Provenance["app_replay_size"] != LayerGlobal {
+		t.Errorf("provenance[app_replay_size] = %q, want %q", got.Provenance["app_replay_size"], LayerGlobal)
 	}
 }
 

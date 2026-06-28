@@ -497,11 +497,12 @@ func TestFormatTools(t *testing.T) {
 	if got := FormatTools(llm.APILogRequest{}); got != "" {
 		t.Errorf("FormatTools empty = %q, want empty", got)
 	}
-	// Tools present returns markdown-wrapped JSON.
+	// Tools present returns the markdown-fenced MarshalIndent of the tools,
+	// including the closing fence.
 	req := llm.APILogRequest{Tools: []llm.ToolDefinition{{Name: "read_file"}}}
-	got := FormatTools(req)
-	if !strings.Contains(got, "```json") || !strings.Contains(got, "read_file") {
-		t.Errorf("FormatTools = %q, want markdown JSON", got)
+	want := "```json\n[\n  {\n    \"name\": \"read_file\"\n  }\n]\n```"
+	if got := FormatTools(req); got != want {
+		t.Errorf("FormatTools = %q, want %q", got, want)
 	}
 }
 
@@ -511,7 +512,7 @@ func TestScanPrelude(t *testing.T) {
 
 	// File with header then api_call.
 	content := `{"kind":"header","system_prompt":"You are Serf."}
-{"kind":"api_call","request":{"tools":[]}}
+{"kind":"api_call","system_prompt":"Call prompt.","request":{"tools":[{"name":"read_file"}]}}
 {"kind":"entry","turn":{}}
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -524,6 +525,13 @@ func TestScanPrelude(t *testing.T) {
 	}
 	if call == nil {
 		t.Fatal("expected api_call")
+	}
+	// The api_call line must be fully parsed, not discarded.
+	if call.SystemPrompt != "Call prompt." {
+		t.Errorf("call.SystemPrompt = %q, want %q", call.SystemPrompt, "Call prompt.")
+	}
+	if len(call.Request.Tools) != 1 || call.Request.Tools[0].Name != "read_file" {
+		t.Errorf("call.Request.Tools = %+v, want one read_file tool", call.Request.Tools)
 	}
 
 	// Missing file returns zero header and nil call.

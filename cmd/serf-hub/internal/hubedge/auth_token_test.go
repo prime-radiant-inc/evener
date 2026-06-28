@@ -184,9 +184,15 @@ func TestLoadOrCreateAuthToken_EmptyRoot(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty hubStateRoot")
 	}
+	if !strings.Contains(err.Error(), "hub state root not configured") {
+		t.Errorf("error should be the unconfigured-root branch, got %v", err)
+	}
 	_, err = LoadOrCreateAuthToken("   ")
 	if err == nil {
 		t.Fatal("expected error for whitespace-only hubStateRoot")
+	}
+	if !strings.Contains(err.Error(), "hub state root not configured") {
+		t.Errorf("error should be the unconfigured-root branch, got %v", err)
 	}
 }
 
@@ -201,6 +207,9 @@ func TestLoadOrCreateAuthToken_MkdirAllError(t *testing.T) {
 	_, err := LoadOrCreateAuthToken(root)
 	if err == nil {
 		t.Fatal("expected error when MkdirAll fails")
+	}
+	if !strings.Contains(err.Error(), "mkdir") {
+		t.Errorf("error should be from the mkdir path, got %v", err)
 	}
 }
 

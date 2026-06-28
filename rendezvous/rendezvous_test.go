@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -184,6 +185,9 @@ func TestWrite_MkdirAllFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when MkdirAll fails")
 	}
+	if !strings.Contains(err.Error(), "create rendezvous dir") {
+		t.Fatalf("expected error from the MkdirAll branch, got %v", err)
+	}
 }
 
 func TestWrite_NestedDirParentIsFile(t *testing.T) {
@@ -217,6 +221,9 @@ func TestWrite_TmpPathIsDirectory(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when tmp path is a directory")
 	}
+	if !strings.Contains(err.Error(), "write tmp") {
+		t.Fatalf("expected error from the WriteFile branch, got %v", err)
+	}
 }
 
 func TestWrite_TargetIsDirectory(t *testing.T) {
@@ -230,5 +237,8 @@ func TestWrite_TargetIsDirectory(t *testing.T) {
 	_, err := Write(dir, entry)
 	if err == nil {
 		t.Fatal("expected error when target path is a directory")
+	}
+	if !strings.Contains(err.Error(), "rename") {
+		t.Fatalf("expected error from the Rename branch, got %v", err)
 	}
 }

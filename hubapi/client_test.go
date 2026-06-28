@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,13 +76,17 @@ func TestClientHealth(t *testing.T) {
 
 func TestClientHealth_Error(t *testing.T) {
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(hubapi.HealthResponse{})
 	})
 	defer srv.Close()
 
 	_, err := client.Health(context.Background())
 	if err == nil {
 		t.Fatal("expected error for 400 response")
+	}
+	if !strings.Contains(err.Error(), "400") {
+		t.Errorf("error should report status code 400, got %v", err)
 	}
 }
 
@@ -114,12 +119,16 @@ func TestClientTree(t *testing.T) {
 func TestClientTree_Error(t *testing.T) {
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(hubapi.TreeResponse{})
 	})
 	defer srv.Close()
 
 	_, err := client.Tree(context.Background())
 	if err == nil {
 		t.Fatal("expected error for 500 response")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error should report status code 500, got %v", err)
 	}
 }
 
@@ -161,12 +170,16 @@ func TestClientSession_Error(t *testing.T) {
 	ref := hubapi.Ref{HostID: "local", SessionID: "test"}
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(hubapi.SessionDetail{})
 	})
 	defer srv.Close()
 
 	_, err := client.Session(context.Background(), ref)
 	if err == nil {
 		t.Fatal("expected error for 404 response")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("error should report status code 404, got %v", err)
 	}
 }
 
@@ -199,12 +212,16 @@ func TestClientSpawnSchema(t *testing.T) {
 func TestClientSpawnSchema_Error(t *testing.T) {
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(hubapi.SpawnSchema{})
 	})
 	defer srv.Close()
 
 	_, err := client.SpawnSchema(context.Background())
 	if err == nil {
 		t.Fatal("expected error for 503 response")
+	}
+	if !strings.Contains(err.Error(), "503") {
+		t.Errorf("error should report status code 503, got %v", err)
 	}
 }
 
@@ -287,12 +304,16 @@ func TestClientModels(t *testing.T) {
 func TestClientModels_Error(t *testing.T) {
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode([]hubapi.ModelOption{})
 	})
 	defer srv.Close()
 
 	_, err := client.Models(context.Background())
 	if err == nil {
 		t.Fatal("expected error for 502 response")
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Errorf("error should report status code 502, got %v", err)
 	}
 }
 
@@ -366,12 +387,16 @@ func TestClientTasks_Error(t *testing.T) {
 	ref := hubapi.Ref{HostID: "local", SessionID: "test"}
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode([]task.Task{})
 	})
 	defer srv.Close()
 
 	_, err := client.Tasks(context.Background(), ref)
 	if err == nil {
 		t.Fatal("expected error for 404 response")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("error should report status code 404, got %v", err)
 	}
 }
 
@@ -479,12 +504,16 @@ func TestClientClear_Error(t *testing.T) {
 	ref := hubapi.Ref{HostID: "local", SessionID: "test"}
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(hubapi.RefResponse{})
 	})
 	defer srv.Close()
 
 	_, err := client.Clear(context.Background(), ref)
 	if err == nil {
 		t.Fatal("expected error for 409 response")
+	}
+	if !strings.Contains(err.Error(), "409") {
+		t.Errorf("error should report status code 409, got %v", err)
 	}
 }
 
@@ -540,12 +569,16 @@ func TestClientFork_Error(t *testing.T) {
 	ref := hubapi.Ref{HostID: "local", SessionID: "test"}
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(hubapi.RefResponse{})
 	})
 	defer srv.Close()
 
 	_, err := client.Fork(context.Background(), ref, hubapi.ForkRequest{})
 	if err == nil {
 		t.Fatal("expected error for 400 response")
+	}
+	if !strings.Contains(err.Error(), "400") {
+		t.Errorf("error should report status code 400, got %v", err)
 	}
 }
 

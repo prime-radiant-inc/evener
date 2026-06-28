@@ -265,13 +265,30 @@ func TestRun_APILogJSON(t *testing.T) {
 func TestRun_APILogFlags(t *testing.T) {
 	base, sid := fixtureWithAPILogData(t)
 
+	// Each row in the fixture carries a marker that appears only in that row's
+	// rendered table line (never in the always-unfiltered totals block): the
+	// normal round-1 call shows txt length "42", the empty round-2 call shows
+	// "(empty)", the error round-3 call shows "ERROR:", and the cache-spike
+	// round-4 call shows uncached input "59000". Each filter must render its own
+	// row's marker and exclude every other row's marker; a no-op filter that
+	// rendered all four rows would leak the others.
 	t.Run("empty", func(t *testing.T) {
 		var out, errb bytes.Buffer
 		if code := run([]string{"apilog", "--state-dir", base, "--empty", sid}, &out, &errb); code != 0 {
 			t.Fatalf("exit %d, stderr=%s", code, errb.String())
 		}
-		if !strings.Contains(out.String(), "(empty)") {
-			t.Errorf("--empty should surface round 2; got:\n%s", out.String())
+		got := out.String()
+		if !strings.Contains(got, "(empty)") {
+			t.Errorf("--empty should surface round 2; got:\n%s", got)
+		}
+		if strings.Contains(got, "42") {
+			t.Errorf("--empty must exclude the normal round-1 call (txt=42); got:\n%s", got)
+		}
+		if strings.Contains(got, "ERROR:") {
+			t.Errorf("--empty must exclude the error round-3 call; got:\n%s", got)
+		}
+		if strings.Contains(got, "59000") {
+			t.Errorf("--empty must exclude the cache-spike round-4 call; got:\n%s", got)
 		}
 	})
 
@@ -280,8 +297,18 @@ func TestRun_APILogFlags(t *testing.T) {
 		if code := run([]string{"apilog", "--state-dir", base, "--errors", sid}, &out, &errb); code != 0 {
 			t.Fatalf("exit %d, stderr=%s", code, errb.String())
 		}
-		if !strings.Contains(out.String(), "ERROR:") {
-			t.Errorf("--errors should surface rate limit error; got:\n%s", out.String())
+		got := out.String()
+		if !strings.Contains(got, "ERROR:") {
+			t.Errorf("--errors should surface rate limit error; got:\n%s", got)
+		}
+		if strings.Contains(got, "42") {
+			t.Errorf("--errors must exclude the normal round-1 call (txt=42); got:\n%s", got)
+		}
+		if strings.Contains(got, "(empty)") {
+			t.Errorf("--errors must exclude the empty round-2 call; got:\n%s", got)
+		}
+		if strings.Contains(got, "59000") {
+			t.Errorf("--errors must exclude the cache-spike round-4 call; got:\n%s", got)
 		}
 	})
 
@@ -290,8 +317,18 @@ func TestRun_APILogFlags(t *testing.T) {
 		if code := run([]string{"apilog", "--state-dir", base, "--cache-spikes", sid}, &out, &errb); code != 0 {
 			t.Fatalf("exit %d, stderr=%s", code, errb.String())
 		}
-		if !strings.Contains(out.String(), "59000") {
-			t.Errorf("--cache-spikes should surface round 4; got:\n%s", out.String())
+		got := out.String()
+		if !strings.Contains(got, "59000") {
+			t.Errorf("--cache-spikes should surface round 4; got:\n%s", got)
+		}
+		if strings.Contains(got, "42") {
+			t.Errorf("--cache-spikes must exclude the normal round-1 call (txt=42); got:\n%s", got)
+		}
+		if strings.Contains(got, "(empty)") {
+			t.Errorf("--cache-spikes must exclude the empty round-2 call; got:\n%s", got)
+		}
+		if strings.Contains(got, "ERROR:") {
+			t.Errorf("--cache-spikes must exclude the error round-3 call; got:\n%s", got)
 		}
 	})
 

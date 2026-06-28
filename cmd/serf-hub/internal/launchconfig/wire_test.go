@@ -174,14 +174,20 @@ func TestToWire_WithSchemaAndMCPs(t *testing.T) {
 	in := Layer{
 		Model:  "m",
 		Schema: 2,
-		MCPs:   []MCPServerSpec{{Name: "a", Command: "b"}},
+		MCPs:   []MCPServerSpec{{Name: "a", Command: "b", Args: []string{"x", "y"}}},
 	}
 	got := ToWire(in)
 	if got.Schema == nil || *got.Schema != 2 {
 		t.Fatalf("Schema = %v, want 2", got.Schema)
 	}
-	if len(got.MCPs) != 1 || got.MCPs[0].Name != "a" {
-		t.Fatalf("MCPs = %v", got.MCPs)
+	if len(got.MCPs) != 1 {
+		t.Fatalf("MCPs = %v, want 1 entry", got.MCPs)
+	}
+	if got.MCPs[0].Name != "a" || got.MCPs[0].Command != "b" {
+		t.Errorf("MCPs[0] = %+v, want Name=a Command=b", got.MCPs[0])
+	}
+	if !reflect.DeepEqual(got.MCPs[0].Args, []string{"x", "y"}) {
+		t.Errorf("MCPs[0].Args = %#v, want [x y]", got.MCPs[0].Args)
 	}
 }
 

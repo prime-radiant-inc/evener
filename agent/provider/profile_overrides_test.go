@@ -220,6 +220,15 @@ func TestDecidePrefixAction(t *testing.T) {
 		{"openrouter switch ollama", "openrouter", "openrouter", "ollama", prefixActionSwitch},
 		{"openrouter switch kimi", "openrouter", "openrouter", "kimi", prefixActionSwitch},
 		{"openrouter keep anthropic", "openrouter", "openrouter", "anthropic", prefixActionKeep},
+		// Renamed instance (id != behaviorTag via WithProviderID): the
+		// self-strip check must key off instanceName, not behaviorTag.
+		{"openrouter renamed self strip", "openrouter", "myrouter", "myrouter", prefixActionStrip},
+		{"openrouter renamed tag switch", "openrouter", "myrouter", "openrouter", prefixActionSwitch},
+		// openrouter-anthropic shares the openrouter case-label arm.
+		{"openrouter-anthropic self strip", "openrouter-anthropic", "openrouter-anthropic", "openrouter-anthropic", prefixActionStrip},
+		{"openrouter-anthropic switch kimi", "openrouter-anthropic", "openrouter-anthropic", "kimi", prefixActionSwitch},
+		{"openrouter-anthropic keep anthropic", "openrouter-anthropic", "openrouter-anthropic", "anthropic", prefixActionKeep},
+		{"openrouter-anthropic renamed self strip", "openrouter-anthropic", "myrouter", "myrouter", prefixActionStrip},
 		{"minimax self keep", "minimax", "minimax", "minimax", prefixActionKeep},
 		{"minimax other switch", "minimax", "minimax", "openai", prefixActionSwitch},
 		{"openai self strip", "openai", "openai", "openai", prefixActionStrip},
@@ -420,11 +429,17 @@ func TestDeepCopyJSONMap(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		// JSON round-trip converts ints to float64, so compare via JSON
-		origJSON, _ := json.Marshal(orig)
-		cpJSON, _ := json.Marshal(cp)
-		if !reflect.DeepEqual(origJSON, cpJSON) {
-			t.Errorf("copy not equal to original after JSON round-trip")
+		// Assert the copy carries the specific values, including the
+		// nested map entry (JSON round-trip converts the int to float64).
+		if cp["a"] != "b" {
+			t.Errorf(`cp["a"] = %v, want "b"`, cp["a"])
+		}
+		cpNested, ok := cp["nested"].(map[string]any)
+		if !ok {
+			t.Fatalf(`cp["nested"] = %T, want map[string]any`, cp["nested"])
+		}
+		if cpNested["c"] != float64(1) {
+			t.Errorf(`cp["nested"]["c"] = %v, want 1`, cpNested["c"])
 		}
 		// Mutate copy and verify original is unaffected
 		cp["a"] = "changed"

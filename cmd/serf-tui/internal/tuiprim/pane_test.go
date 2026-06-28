@@ -116,9 +116,13 @@ func TestActionBarForWidthWrapsByRenderedWidth(t *testing.T) {
 	// Use keys that are short in plain text but verify wrapping logic works.
 	keys := []string{"enter send message", "esc cancel operation", "tab complete"}
 	got := ActionBarForWidth(25, keys...)
-	lines := strings.Split(got, "\n")
-	for i, line := range lines {
-		// Each line should be <= 25 runes (the wrapping width threshold).
+	// Each pairing exceeds width 25, so every key lands on its own line in order.
+	want := "enter send message\nesc cancel operation\ntab complete"
+	if got != want {
+		t.Errorf("ActionBarForWidth(25, ...) = %q, want %q", got, want)
+	}
+	// No line should exceed the wrapping width.
+	for i, line := range strings.Split(got, "\n") {
 		if len([]rune(line)) > 25 {
 			t.Errorf("line %d too long: %q (%d runes)", i, line, len([]rune(line)))
 		}

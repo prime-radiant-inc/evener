@@ -317,6 +317,23 @@ func TestPreferLiveEntry(t *testing.T) {
 			want:      false,
 		},
 		{
+			// ProtocolVersion alone is not enough: an empty Endpoint must not
+			// count as appwire, so this falls through to the PID tiebreak (lower
+			// PID loses) rather than winning on protocol.
+			name:      "protocol set but empty endpoint is not appwire",
+			candidate: LiveEntry{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "", ThreadID: "t1", PID: 1, StartedAt: base}},
+			current:   LiveEntry{Entry: rendezvous.Entry{Protocol: "v0", Endpoint: "", ThreadID: "", PID: 2, StartedAt: base}},
+			want:      false,
+		},
+		{
+			// Likewise an empty ThreadID disqualifies appwire status, so the
+			// lower-PID candidate loses on the tiebreak instead of winning.
+			name:      "protocol set but empty thread id is not appwire",
+			candidate: LiveEntry{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://1", ThreadID: "", PID: 1, StartedAt: base}},
+			current:   LiveEntry{Entry: rendezvous.Entry{Protocol: "v0", Endpoint: "", ThreadID: "", PID: 2, StartedAt: base}},
+			want:      false,
+		},
+		{
 			name:      "same protocol, newer started wins",
 			candidate: LiveEntry{Entry: rendezvous.Entry{StartedAt: base.Add(time.Hour)}},
 			current:   LiveEntry{Entry: rendezvous.Entry{StartedAt: base}},
@@ -361,12 +378,33 @@ func TestNewRosterWithEntries(t *testing.T) {
 	r := NewRosterWithEntries(
 		LiveEntry{Entry: rendezvous.Entry{PID: 1, Address: "127.0.0.1:1"}, SessionID: "01A"},
 		LiveEntry{Entry: rendezvous.Entry{PID: 2, Address: "127.0.0.1:2"}, SessionID: "01B"},
+		LiveEntry{Entry: rendezvous.Entry{PID: 3, Address: "127.0.0.1:3"}, SessionID: ""},
 	)
 	got := r.List()
-	if len(got) != 2 {
-		t.Fatalf("List = %d, want 2", len(got))
+	if len(got) != 3 {
+		t.Fatalf("List = %d, want 3", len(got))
 	}
-	if _, ok := r.Find("01A"); !ok {
+	// The session-less entry is indexed by PID and surfaces in List() under its
+	// own (empty session) identity.
+	var byPID = make(map[int]LiveEntry, len(got))
+	for _, e := range got {
+		byPID[e.PID] = e
+	}
+	if _, ok := byPID[3]; !ok {
+		t.Fatal("expected session-less entry (PID 3) in List")
+	}
+
+	found, ok := r.Find("01A")
+	if !ok {
 		t.Fatal("expected to find 01A")
+	}
+	if found.PID != 1 || found.Address != "127.0.0.1:1" {
+		t.Fatalf("Find(01A) = {PID:%d Address:%q}, want {PID:1 Address:127.0.0.1:1}", found.PID, found.Address)
+	}
+
+	// The empty SessionID must not be indexed for lookup; the guard in
+	// NewRosterWithEntries keeps bySess free of empty keys.
+	if e, ok := r.Find(""); ok {
+		t.Fatalf("Find(\"\") = {PID:%d}, want not found", e.PID)
 	}
 }

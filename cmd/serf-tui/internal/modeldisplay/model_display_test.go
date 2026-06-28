@@ -61,10 +61,25 @@ func TestAbbreviatePath(t *testing.T) {
 			want:   "/anything",
 		},
 		{
-			name:   "unicode_path",
+			// maxLen (35) exceeds the path's byte length (31), so this returns
+			// via the len(p) <= maxLen short-circuit: multibyte runes pass
+			// through untouched and truncation is never reached.
+			name:   "unicode_path_under_maxLen_unchanged",
 			p:      "/tmp/日本語/ファイル.txt",
 			maxLen: 35,
 			want:   "/tmp/日本語/ファイル.txt",
+		},
+		{
+			// maxLen (15) is below the byte length (31), so middle-truncation
+			// fires. AbbreviatePath slices on BYTE offsets, so the head cut
+			// (p[:7]) lands in the middle of the 3-byte "日" rune, emitting the
+			// dangling bytes "\xe6\x97". This pins the current byte-truncation
+			// behaviour: the head is split mid-rune (invalid UTF-8) while the
+			// tail happens to start on a rune boundary ("ル.txt").
+			name:   "unicode_path_truncated_splits_rune",
+			p:      "/tmp/日本語/ファイル.txt",
+			maxLen: 15,
+			want:   "/tmp/\xe6\x97…ル.txt",
 		},
 		{
 			name:   "long_path_no_home_middle_truncated",

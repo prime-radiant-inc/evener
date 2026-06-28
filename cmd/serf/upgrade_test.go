@@ -118,4 +118,13 @@ func TestRunUpgrade_InvalidFlag(t *testing.T) {
 	if err == nil {
 		t.Fatal("runUpgrade(invalid flag) error = nil, want error")
 	}
+	if !strings.Contains(err.Error(), "not defined") || !strings.Contains(err.Error(), "-invalid-flag") {
+		t.Fatalf("error = %v, want flag-parse error mentioning 'not defined' and '-invalid-flag'", err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "Usage: serf upgrade") {
+		t.Fatalf("stderr = %q, want usage banner 'Usage: serf upgrade'", got)
+	}
+	if got := stdout.String(); got != "" {
+		t.Fatalf("stdout = %q, want empty", got)
+	}
 }

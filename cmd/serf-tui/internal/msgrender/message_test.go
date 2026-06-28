@@ -2,6 +2,7 @@ package msgrender
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -470,9 +471,20 @@ func TestJSONBody(t *testing.T) {
 	if got := jsonBody(ToolArgs{}, "not json", 80); got != "not json" {
 		t.Errorf("jsonBody invalid = %q, want raw", got)
 	}
-	// Valid JSON returns pretty-printed (or highlighted).
+	// Valid JSON is pretty-printed: after stripping any ANSI highlighting,
+	// the output must match the json.Indent result with two-space indent,
+	// not the raw single-line input.
 	got := jsonBody(ToolArgs{}, `{"a":1}`, 80)
-	if !strings.Contains(got, "a") || !strings.Contains(got, "1") {
-		t.Errorf("jsonBody valid = %q, want pretty-printed JSON", got)
+	plain := ansiPattern.ReplaceAllString(got, "")
+	const wantPretty = "{\n  \"a\": 1\n}"
+	if plain != wantPretty {
+		t.Errorf("jsonBody valid = %q (stripped %q), want pretty-printed %q", got, plain, wantPretty)
+	}
+	if plain == `{"a":1}` {
+		t.Errorf("jsonBody valid returned raw input, not pretty-printed: %q", got)
 	}
 }
+
+// ansiPattern matches terminal SGR escape sequences so tests can compare the
+// underlying text without syntax-highlighting color codes.
+var ansiPattern = regexp.MustCompile("\x1b\\[[0-9;]*m")
