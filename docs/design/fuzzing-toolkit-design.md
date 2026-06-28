@@ -176,8 +176,10 @@ Acceptance per phase:
 - **Phase 3:** unit tests for the promoter — a deterministic synthetic failure promotes once, dedups on the second sighting, and a synthetic *flaky* failure is quarantined (never emitted). This is the most important test in the whole toolkit.
 - **Phases 1/2/4:** each finds ≥1 real issue or proves the surface clean to a stated depth; every promoted test replays green after the fix and red before.
 
-## 7. Open decisions (for the implementer to raise, not assume)
-1. **Auto-commit of generated tests:** default to *emit-only* (write file, leave unstaged) and require `--commit`? (Recommended: yes, opt-in.)
+## 7. Open decisions (RESOLVED)
+
+These were the Phase 0–5 open decisions; all are now settled (Phases 0–5 built as below; the Phase-6+ refinements in §8/§9 supersede where they overlap — e.g. generated tests are filed via the 8.7 local triage tool's PR-by-default flow, K=5/N=4, and there is no scheduled nightly).
+1. **Auto-commit of generated tests:** *emit-only* during the build; 8.7's local triage tool opens a PR by default carrying the generated test.
 2. **Where `fuzz/` sits in `go.work`/`GO_MODULES`** and the `envvars`-not-gated caveat (research §10).
 3. **K and N** for flake-guard / stack-hash (start K=5, N=4; tune).
 4. **Nightly budget** per target in `fuzz-nightly` (start 60s).
@@ -206,4 +208,15 @@ Each work item below gets its own detailed implementation plan under `docs/desig
 
 ## 9. Roadmap build order
 
-Within Phase 6+: **8.1 → 8.2** first (cheap, mechanical, likeliest payoff), in parallel with **8.6** (coverage measurement — needed to judge everything else). Then **8.4/8.5** (tooling that multiplies the targets). Then **8.3** (the harness — the big rock). Then **8.7** (wrap it all in nightly automation once there are enough targets to be worth scheduling). 8.3 is independent of A/C/D and can start any time resourcing allows; it is sequenced last only because it is the largest and the cheap wins should land first.
+All Phase-6+ decisions were resolved interactively with Jesse on 2026-06-28; each plan under `docs/design/plans/` carries its own resolved-decisions section, and the dependency graph below reflects those choices. (LoC/ordering are advisory — see each plan; the goal is *perfect coverage*, so the more-thorough option was taken throughout.)
+
+**Dependency graph (what gates what):**
+- **8.6 coverage (focus-set)** — stand up first; every target that lands afterward is ratcheted toward 100% from the start.
+- **8.4 corpus harvesting + the new WS-frame / hub-HTTP recorders** — precedes **8.1** (persistence consumes 8.4's harvested seeds, including jobs.jsonl). The recorder is a prerequisite sub-deliverable of 8.4.
+- **8.1 persistence** — depends on 8.4.
+- **8.2 codex-compat + config** — self-contained; includes the `launchconfig.ModelFallbacks` → `*[]string` production refactor as a prerequisite step before its launchconfig target.
+- **8.5 typegen registry** — depends on a foundational `fuzz/schemagen` **`Source` refactor** (generators abstracted over a byte-stream **or** rapid entropy source) so the registry can drive coverage-guided `testing.F`; the existing rapid targets migrate to a rapid-backed Source.
+- **8.3 offline agent harness** — the big rock: a first-class injectable **Clock** (replaces ~27 `time.Now` + jobs sleeps/timers), jobs + compaction + goals in scope, hybrid `Responder` adapter. Independent; can run any time.
+- **8.7 local triage tool** — last: needs targets to exist + the promoter temp-dir persistence fix. Local on-demand only (no scheduled CI); the sole CI change is adding `make fuzz` to the existing `ci.yml` PR gate.
+
+**Suggested order:** 8.6 → 8.4 (+recorders) → 8.1 → 8.2 → 8.5 (Source refactor → registry) → 8.3 (clock → jobs/compaction/goals harness) → 8.7. Foundational refactors (schemagen `Source`, the `Clock`) land at the head of their dependent item.
