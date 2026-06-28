@@ -249,16 +249,21 @@ async function testQueueFailureSurfaceErrorBanner() {
   ta.dispatchEvent(new window.Event("input", { bubbles: true }));
   fetchResponseOk = false;
   fetchLog.length = 0;
+  // Snapshot banner count before the failing POST so we detect only the new
+  // banner it produces, independent of banners left by earlier test steps.
+  const bannersBefore = window.document.querySelectorAll(".banner").length;
   form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
   await wait(15);
   // Failure path: queueState should remain depth=0 (daemon never emitted
   // a thread/queueChanged because the POST itself failed).
   pass(window.SerfRenderer.queueState.depth === 0,
     "expected queue state unchanged on queue failure, got " + window.SerfRenderer.queueState.depth);
-  const banners = window.document.querySelectorAll(".banner");
-  const last = banners[banners.length - 1];
-  pass(last && /queue failed/i.test(last.textContent),
-    "expected an error banner mentioning queue failed; last banner: " + (last && last.textContent));
+  const bannersAfter = window.document.querySelectorAll(".banner");
+  pass(bannersAfter.length > bannersBefore,
+    "expected a new error banner after queue failure; banners before=" + bannersBefore + " after=" + bannersAfter.length);
+  const newBanners = Array.from(bannersAfter).slice(bannersBefore);
+  pass(newBanners.some(b => /queue failed/i.test(b.textContent)),
+    "expected new banner mentioning 'queue failed'; new banners: " + newBanners.map(b => b.textContent).join(", "));
   fetchResponseOk = true;
 }
 

@@ -206,19 +206,27 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms || 30));
 
     // Navigation lives on the <a class="sb-row"> (htmx hx-get). The archive-btn
     // is its sibling inside .sb-row-wrap, NOT an ancestor of it, so a click on
-    // the button must never fire the row's own click. The handler also calls
-    // preventDefault()/stopPropagation() as belt-and-suspenders. This asserts
-    // the navigation element stays untouched.
+    // the button must never fire the row's own click. The handler calls
+    // stopPropagation() at the document level — verified here by adding a
+    // window-level (bubble phase) listener: it must NOT fire, because
+    // stopPropagation() on a document handler stops the event from propagating
+    // further to window. Removing stopPropagation() would let the event reach
+    // window and fail this assertion.
     const btn = window.document.querySelector('[data-archive-id="01ABC"]');
     const row = window.document.querySelector('a[href="/s/01ABC"]');
     pass(row !== null, "session nav row should exist");
-    let rowActivated = false;
-    row.addEventListener("click", function () { rowActivated = true; });
+
+    let clickReachedWindow = false;
+    window.addEventListener("click", function (e) {
+      if (e.target && e.target.closest && e.target.closest(".archive-btn")) {
+        clickReachedWindow = true;
+      }
+    });
 
     btn.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     await wait(100);
 
-    pass(!rowActivated, "archive-btn click must not activate the session nav row");
+    pass(!clickReachedWindow, "archive-btn click must not propagate past document (stopPropagation guard)");
     pass(fetchCalls.length >= 1, "archive-btn click should still issue the POST");
   }
 

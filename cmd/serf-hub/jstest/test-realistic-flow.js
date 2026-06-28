@@ -1,9 +1,9 @@
-// Simulate a realistic multi-turn agent run and dump the rendered DOM
-// for visual inspection. Doesn't assert; meant for eyeballing what a
-// reader would see.
+// Simulate a realistic multi-turn agent run and assert the rendered DOM.
+// Covers: user message, cheap-tool cluster, mid-turn assistant text,
+// standalone tool cards, SYSTEM-REMINDER suppression, communicate rendering,
+// and the living task card.
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
-
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div class="workspace-actions">
@@ -40,7 +40,7 @@ const events = [
 
   ["STEERING_INJECTED", { text: '<SYSTEM-REMINDER>\nTask list:\n  [open] #1: Audit existing auth\n  [open] #2: Write JWT verify helper\n  [open] #3: Wire helper into /api routes\n  [open] #4: Add integration tests\n</SYSTEM-REMINDER>' }],
 
-  // Steering: now on task 1 (suppressed)
+  // Steering: now on task 1 (suppressed — SYSTEM-REMINDER wrapper)
   ["STEERING_INJECTED", { text: '<SYSTEM-REMINDER>\n<CURRENT-TASK id="1">\n<TITLE>Audit existing auth</TITLE>\n</CURRENT-TASK>\n</SYSTEM-REMINDER>' }],
 
   // Agent reads files (cheap cluster)
@@ -49,7 +49,7 @@ const events = [
   ["TOOL_CALL_START", { call_id: "r2", tool_name: "grep_files", arguments_json: JSON.stringify({ pattern: "verify", path: "src/" }) }],
   ["TOOL_CALL_END", { call_id: "r2", output: Array(8).fill("hit").join("\n"), tool_name: "grep_files" }],
 
-  // Agent thinks
+  // Agent thinks — ASSISTANT_TEXT_END is the event under test
   ["ASSISTANT_TEXT_START", {}],
   ["ASSISTANT_TEXT_DELTA", { delta: "Session uses opaque tokens. " }],
   ["ASSISTANT_TEXT_DELTA", { delta: "JWT will live beside it." }],
@@ -90,7 +90,7 @@ const events = [
   }) }],
   ["TOOL_CALL_END", { call_id: "u3", output: "ok", tool_name: "task_list" }],
 
-  // Loop detection nudge (real steering, should render)
+  // Loop detection nudge (real steering, no SYSTEM-REMINDER wrapper — must render)
   ["STEERING_INJECTED", { text: "You are stuck in a loop. Stop and think about why your current approach is not working." }],
 
   // Mark all done
@@ -109,44 +109,64 @@ const events = [
 ];
 
 (async () => {
-await new Promise(r => setTimeout(r, 30));
-for (const [t, d] of events) window.SerfRenderer.handleData(t, d);
-await new Promise(r => setTimeout(r, 10));
+  await new Promise(r => setTimeout(r, 30));
+  for (const [t, d] of events) window.SerfRenderer.handleData(t, d);
+  await new Promise(r => setTimeout(r, 10));
 
-// Print a readable summary of what got rendered.
-console.log("=".repeat(70));
-console.log("REALISTIC FLOW — what the reader sees:");
-console.log("=".repeat(70));
+  const failures = [];
+  const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
-for (const child of conv.children) {
-  const cls = child.className.split(/\s+/)[0];
-  let summary;
-  if (child.classList.contains("user-message")) {
-    summary = "USER       │ " + child.querySelector(".pill").textContent.trim();
-  } else if (child.classList.contains("assistant-message")) {
-    summary = "ASSISTANT  │ " + child.textContent.trim().slice(0, 80);
-  } else if (child.classList.contains("system-line")) {
-    summary = "SYSTEM     │ " + child.textContent.trim();
-  } else if (child.classList.contains("steering")) {
-    const verb = child.querySelector(".steering-verb");
-    summary = "STEERING   │ " + (verb ? verb.textContent : "?");
-  } else if (child.classList.contains("tool-call-cluster")) {
-    const calls = child.querySelectorAll(".tool-call");
-    summary = "TOOL-CHEAP │ " + calls.length + " calls (" + Array.from(calls).map(c => c.querySelector(".verb").textContent).join(", ") + ")";
-  } else if (child.classList.contains("tool-call")) {
-    summary = "TOOL-CARD  │ " + child.querySelector(".verb").textContent + " · " + child.querySelector(".target").textContent.slice(0, 50);
-  } else if (child.classList.contains("diff-body") || child.classList.contains("tool-body")) {
-    summary = "TOOL-BODY  │ " + child.className.replace(/^.*\b(\w+-body)\b.*$/, "$1");
-  } else {
-    summary = cls.toUpperCase().padEnd(10) + " │ " + child.textContent.trim().slice(0, 80);
+  // 1. Exactly one user message with the prompt text in its pill.
+  const users = conv.querySelectorAll(".user-message");
+  pass(users.length === 1, "expected 1 .user-message, got " + users.length);
+  const pill = users[0] && users[0].querySelector(".pill");
+  pass(pill && pill.textContent.includes("Add JWT auth middleware"), "user pill should contain the prompt text");
+
+  // 2. Exactly two assistant messages: one from ASSISTANT_TEXT_END, one from
+  //    the communicate tool. Deleting .assistant-message from the
+  //    ASSISTANT_TEXT_END rendering path drops the count to 1 and fails here.
+  const assistants = conv.querySelectorAll(".assistant-message");
+  pass(assistants.length === 2, "expected 2 .assistant-message, got " + assistants.length);
+
+  // 3. First assistant message carries the mid-turn reasoning text.
+  pass(
+    assistants[0] && assistants[0].textContent.includes("Session uses opaque tokens"),
+    "first assistant message should carry mid-turn text from ASSISTANT_TEXT_END"
+  );
+
+  // 4. Second assistant message carries the communicate output.
+  pass(
+    assistants[1] && assistants[1].textContent.includes("Done!"),
+    "second assistant message should carry communicate output"
+  );
+
+  // 5. SYSTEM-REMINDER steerings are suppressed; the loop-detection nudge and
+  //    the tasks-done nudge (also a SYSTEM-REMINDER) are the only ones kept.
+  //    The loop-detection nudge has no SYSTEM-REMINDER wrapper, so it renders.
+  //    "You have completed all tasks" is wrapped in SYSTEM-REMINDER — suppressed.
+  const steerings = conv.querySelectorAll(".steering");
+  pass(steerings.length === 2, "expected 2 .steering (SYSTEM-REMINDERs suppressed), got " + steerings.length);
+
+  // 6. Cheap tool calls (read + grep) grouped into exactly one cluster.
+  const clusters = conv.querySelectorAll(".tool-call-cluster");
+  pass(clusters.length === 1, "expected 1 .tool-call-cluster, got " + clusters.length);
+
+  // 7. Total .tool-call count: 2 inside the cluster (read, grep) + edit + shell.
+  //    task_list updates are absorbed into the living task card, not tool-call cards.
+  const toolCalls = conv.querySelectorAll(".tool-call");
+  pass(toolCalls.length === 4, "expected 4 .tool-call (read+grep+edit+shell), got " + toolCalls.length);
+
+  // 8. Exactly one living task card (task_list operations fold into a single card).
+  const taskCards = conv.querySelectorAll(".task-card");
+  pass(taskCards.length === 1, "expected 1 .task-card, got " + taskCards.length);
+
+  // 9. Total top-level conversation children.
+  pass(conv.children.length === 9, "expected 9 conversation children, got " + conv.children.length);
+
+  if (failures.length) {
+    for (const f of failures) console.error(f);
+    process.exit(1);
   }
-  console.log("  " + summary);
-}
-
-console.log("=".repeat(70));
-console.log("Total elements: " + conv.children.length);
-console.log("System-lines:   " + conv.querySelectorAll(".system-line").length);
-console.log("Steerings kept: " + conv.querySelectorAll(".steering").length);
-console.log("Tool cards:     " + conv.querySelectorAll(".tool-call").length);
-process.exit(0);
+  console.log("PASS realistic-flow — user message, assistant text (×2), tool cluster, task card, steering suppression");
+  process.exit(0);
 })();

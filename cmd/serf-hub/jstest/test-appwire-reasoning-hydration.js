@@ -55,6 +55,7 @@ async function run() {
     pass(!thinks[0].classList.contains("streaming"), "hydrated thinking block should not be streaming");
     pass(!thinks[0].classList.contains("open"), "hydrated thinking block should be collapsed");
     pass(/Thought for/.test(thinks[0].textContent), "collapsed block should read 'Thought for …'");
+    pass(/think-tier-/.test(thinks[0].className), "collapsed block should carry a tier class");
   }
 
   const assistantMessages = conv.querySelectorAll(".assistant-message");

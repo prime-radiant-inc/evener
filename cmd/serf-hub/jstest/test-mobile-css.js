@@ -3,7 +3,35 @@ const path = require("path");
 
 const css = fs.readFileSync(path.resolve(__dirname, "../assets/style.css"), "utf8");
 const mobileStart = css.indexOf("@media (max-width: 767px)");
-const mobile = mobileStart >= 0 ? css.slice(mobileStart) : "";
+
+// Extract only CSS text that lives INSIDE @media (max-width: 767px) { ... } blocks,
+// tracking brace depth so nested @keyframes / @media blocks don't confuse the
+// boundary detection. Without this, global rules that happen to follow the FIRST
+// mobile query (line 511) are included in `mobile` and can satisfy mobile-specific
+// assertions even when the real mobile rule is absent or overridden.
+function extractMobileContent(src) {
+  const QUERY = "@media (max-width: 767px)";
+  let result = "";
+  let i = 0;
+  while (i < src.length) {
+    const qi = src.indexOf(QUERY, i);
+    if (qi === -1) break;
+    const open = src.indexOf("{", qi);
+    if (open === -1) break;
+    let depth = 1;
+    let j = open + 1;
+    while (j < src.length && depth > 0) {
+      if (src[j] === "{") depth++;
+      else if (src[j] === "}") depth--;
+      j++;
+    }
+    result += src.slice(open + 1, j - 1) + "\n";
+    i = j;
+  }
+  return result;
+}
+
+const mobile = extractMobileContent(css);
 
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
@@ -57,6 +85,13 @@ const heroRule = blocks.find((b) => /\.assistant-message/.test(b.split("{")[0]) 
 pass(!!heroRule, "compact phone density must size the assistant hero prose at --text-md (largest reading text)");
 const machineRule = blocks.find((b) => /\.tool-call\b/.test(b.split("{")[0]) && /font-size:\s*var\(--text-sm\)/.test(b));
 pass(!!machineRule, "compact phone density must size tool/machine text at --text-sm (legible, not the old 10px)");
+// Negative guard: a mobile rule that overrides .tool-call to any size other than
+// --text-sm (e.g. --text-base !important) inverts the reading hierarchy — tool
+// machine text becomes larger than assistant prose. Catch that mutation here.
+const toolCallSizeOverride = blocks.find(
+  (b) => /\.tool-call\b/.test(b.split("{")[0]) && /font-size:\s*var\(--text-(?!sm\b)/.test(b)
+);
+pass(!toolCallSizeOverride, "no mobile rule must override .tool-call font-size away from --text-sm (inverts reading hierarchy)");
 
 // The hover-only timing meta has no hover target on phone, so it's hidden here —
 // otherwise it reserves ~112px and squeezes the command/path into a narrow,

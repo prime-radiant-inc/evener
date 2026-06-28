@@ -53,12 +53,16 @@ function deliver(method, params) {
 async function run() {
   await new Promise((resolve) => setTimeout(resolve, 30));
 
+  const failures = [];
+  const pass = (condition, message) => { if (!condition) failures.push("FAIL: " + message); };
+
   deliver("item/started", {
     threadId: "01TEST",
     ref: "local:01TEST",
     turnId: "turn_1",
     item: { type: "agentMessage", id: "item_empty_1", turnId: "turn_1", status: "inProgress" },
   });
+  pass(conv.querySelectorAll(".assistant-message").length > 0, "assistant placeholder was created");
   deliver("item/completed", {
     threadId: "01TEST",
     ref: "local:01TEST",
@@ -99,8 +103,6 @@ async function run() {
   });
 
   let shellOutput = conv.querySelector(".shell-output");
-  const failures = [];
-  const pass = (condition, message) => { if (!condition) failures.push("FAIL: " + message); };
 
   pass(!Array.from(conv.querySelectorAll(".assistant-message")).some((el) => !el.textContent.trim()), "empty live assistant placeholder should be removed");
   pass(shellOutput && shellOutput.textContent.includes("zero\none\ntwo"), "live tool output snapshot/delta did not render before completion");

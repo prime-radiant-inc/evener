@@ -35,10 +35,14 @@ setTimeout(() => {
   const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
   pass(handlers.length > 0, "sidebar should subscribe to AppWire notifications");
+  pass(handlers.length === 2, "sidebar should register exactly 2 AppWire handlers (onNotification + onConnectionRestored)");
   handlers[0]("thread/status/changed", { threadId: "th_1" });
 
   setTimeout(() => {
-    pass(triggered.some(t => t.name === "sidebar:refresh"), "thread notification should trigger sidebar refresh");
+    pass(
+      triggered.some(t => t.name === "sidebar:refresh" && t.target === window.document.body),
+      "thread notification should trigger sidebar:refresh on document.body"
+    );
     if (failures.length === 0) {
       console.log("PASS: sidebar refreshes from AppWire notifications");
       process.exit(0);

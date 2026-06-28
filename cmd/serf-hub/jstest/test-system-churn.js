@@ -21,7 +21,6 @@ function newHarness() {
   const { window } = dom;
   window.marked = { parse: (t) => t };
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
-  window.HTMLElement.prototype.contains = window.HTMLElement.prototype.contains || function () { return false; };
   require("./load-renderer").evalRenderer(window);
   const conv = window.document.getElementById("conversation");
   window.SerfRenderer.init(conv);

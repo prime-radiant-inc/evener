@@ -21,11 +21,11 @@ function buildDom() {
           </header>
           <div class="project-children">
             <a class="sb-row" href="/s/01P">parent</a>
-            <a class="sb-row sub subagent-row" href="/s/01S1"><span class="subagent-glyph">✓</span><span class="subagent-title">s1</span></a>
-            <a class="sb-row sub subagent-row" href="/s/01S2"><span class="subagent-glyph">✓</span><span class="subagent-title">s2</span></a>
-            <a class="sb-row sub subagent-row" href="/s/01S3"><span class="subagent-glyph">✓</span><span class="subagent-title">s3</span></a>
-            <a class="sb-row sub subagent-row subagent-overflow" href="/s/01S4"><span class="subagent-glyph">✓</span><span class="subagent-title">s4</span></a>
-            <a class="sb-row sub subagent-row subagent-overflow" href="/s/01S5"><span class="subagent-glyph">✓</span><span class="subagent-title">s5</span></a>
+            <div class="subagent-row-wrap" data-ref="01S1" data-title="s1"><a class="sb-row sub subagent-row" href="/s/01S1"><span class="subagent-glyph">✓</span><span class="subagent-title">s1</span></a></div>
+            <div class="subagent-row-wrap" data-ref="01S2" data-title="s2"><a class="sb-row sub subagent-row" href="/s/01S2"><span class="subagent-glyph">✓</span><span class="subagent-title">s2</span></a></div>
+            <div class="subagent-row-wrap" data-ref="01S3" data-title="s3"><a class="sb-row sub subagent-row" href="/s/01S3"><span class="subagent-glyph">✓</span><span class="subagent-title">s3</span></a></div>
+            <div class="subagent-row-wrap subagent-overflow" data-ref="01S4" data-title="s4"><a class="sb-row sub subagent-row" href="/s/01S4"><span class="subagent-glyph">✓</span><span class="subagent-title">s4</span></a></div>
+            <div class="subagent-row-wrap subagent-overflow" data-ref="01S5" data-title="s5"><a class="sb-row sub subagent-row" href="/s/01S5"><span class="subagent-glyph">✓</span><span class="subagent-title">s5</span></a></div>
             <button class="subagent-toggle" aria-expanded="false">Completed (2)</button>
           </div>
         </section>
@@ -87,6 +87,12 @@ const wait = () => new Promise(r => setTimeout(r, 30));
   const children = window.document.querySelector('[data-project-key="alpha"] .project-children');
   const toggle = children.querySelector(".subagent-toggle");
   pass(toggle !== null, "subagent toggle should exist");
+  // Guard template drift: subagent-overflow must be on the wrapper div, not the inner <a>.
+  // Mutation: moving .subagent-overflow onto the <a> would preserve the JS behaviour
+  // (attribute toggling) but break CSS visibility — this assertion catches that.
+  const overflowEl = children.querySelector(".subagent-overflow");
+  pass(overflowEl !== null && overflowEl.tagName.toLowerCase() === "div",
+    ".subagent-overflow should be on a div wrapper (subagent-row-wrap), not on the inner <a>");
   pass(!children.hasAttribute("data-subagents-expanded"), "overflow hidden initially");
 
   toggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));

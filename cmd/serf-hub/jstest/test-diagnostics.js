@@ -2,9 +2,10 @@
 // JSDOM so the diagnostic taxonomy can be tested without installing browser
 // test dependencies.
 const fs = require("fs");
+const path = require("path");
 const vm = require("vm");
 
-const SRC = fs.readFileSync("../assets/diagnostics.js", "utf8");
+const SRC = fs.readFileSync(path.resolve(__dirname, "../assets/diagnostics.js"), "utf8");
 
 class Element {
   constructor(tag) {

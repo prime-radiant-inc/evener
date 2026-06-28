@@ -93,6 +93,13 @@ await scenario("diff add/del palette is desaturated and NOT the semantic error/s
   }) }],
   ["TOOL_CALL_END", { call_id: "e2", tool_name: "edit_file", output: "ok" }],
 ], ({ conv, window }) => {
+  // Verify the renderer actually produced .add/.del spans in the DOM — without
+  // this, removing the class assignments from renderDiffLines() would escape.
+  const diff = conv.querySelector(".diff-body");
+  if (!diff) return { ok: false, detail: "no diff body rendered" };
+  if (!diff.querySelector(".add")) return { ok: false, detail: "no .add spans in rendered diff body" };
+  if (!diff.querySelector(".del")) return { ok: false, detail: "no .del spans in rendered diff body" };
+
   // The diff tokens must be defined.
   for (const tok of ["--diff-add-gutter", "--diff-del-gutter", "--diff-add-bg", "--diff-del-bg"]) {
     if (styleSrc.indexOf(tok + ":") < 0 && styleSrc.indexOf(tok + " :") < 0) {

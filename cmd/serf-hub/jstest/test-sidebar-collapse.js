@@ -7,16 +7,20 @@ const { JSDOM } = require("jsdom");
 const SIDEBAR_JS = "../assets/sidebar.js";
 const sidebarSrc = fs.readFileSync(SIDEBAR_JS, "utf8");
 
+// buildDom builds a minimal sidebar DOM that matches what the server-rendered
+// sidebarProject template actually emits (templates/partials/sidebar.html).
+// Key structure: project-chevron is a <button>, not a <span>; sections start
+// with the collapsed class and data-default-expanded="false" as the server
+// renders them for non-expanded projects. Phantom elements present in old
+// fixtures (.project-folder, .row-meta) have been removed — they are not
+// emitted by the template and were masking a tagName-guard mutation.
 function buildDom() {
   return new JSDOM(`<!DOCTYPE html><html><body>
     <nav class="sidebar">
-      <section class="sidebar-section project-section" data-project-key="serf-hub">
+      <section class="sidebar-section project-section collapsed" data-project-key="serf-hub" data-default-expanded="false">
         <header class="project-header">
-          <span class="project-chevron">▾</span>
-          <span class="project-folder">📁</span>
+          <button type="button" class="project-chevron" aria-label="toggle project" aria-expanded="false">▸</button>
           <span class="project-name">serf-hub</span>
-          <span class="row-meta project-count">3</span>
-          <span class="project-rollup-dot" data-state="awaiting"></span>
         </header>
         <div class="project-children">
           <a class="sb-row">a</a>
@@ -24,13 +28,10 @@ function buildDom() {
           <a class="sb-row">c</a>
         </div>
       </section>
-      <section class="sidebar-section project-section" data-project-key="other-proj">
+      <section class="sidebar-section project-section collapsed" data-project-key="other-proj" data-default-expanded="false">
         <header class="project-header">
-          <span class="project-chevron">▾</span>
-          <span class="project-folder">📁</span>
+          <button type="button" class="project-chevron" aria-label="toggle project" aria-expanded="false">▸</button>
           <span class="project-name">other-proj</span>
-          <span class="row-meta project-count">1</span>
-          <span class="project-rollup-dot" data-state=""></span>
         </header>
         <div class="project-children">
           <a class="sb-row">x</a>

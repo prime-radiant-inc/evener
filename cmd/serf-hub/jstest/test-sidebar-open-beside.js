@@ -122,15 +122,20 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms || 30));
     const btn = window.document.querySelector(".subagent-row-wrap .open-beside-btn");
     pass(btn !== null, "open-beside-btn should exist (test 3)");
 
-    const rowA = window.document.querySelector(".subagent-row-wrap .subagent-row");
-    let rowClicked = false;
-    rowA.addEventListener("click", function () { rowClicked = true; });
+    // onSidebarOpenBeside is registered at the document level and calls
+    // stopPropagation(), which prevents the click from bubbling further to
+    // window. A window-level listener is the minimal probe for this: if
+    // stopPropagation() is removed the click reaches window and the flag
+    // flips. (Asserting on the sibling <a> is tautological — events never
+    // propagate sideways between siblings.)
+    let clickReachedWindow = false;
+    window.addEventListener("click", function () { clickReachedWindow = true; });
 
     const beforeHref = window.location.href;
     btn.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     await wait(10);
 
-    pass(!rowClicked, "open-beside click must not propagate to the subagent-row <a>");
+    pass(!clickReachedWindow, "open-beside click must not reach window (stopPropagation in document handler)");
     pass(window.location.href === beforeHref, "open-beside click must not change location");
   }
 

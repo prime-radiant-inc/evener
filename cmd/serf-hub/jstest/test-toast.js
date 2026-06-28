@@ -57,13 +57,20 @@ flushTimers(); // runs the exit-animation cleanup timer
 toasts = region.querySelectorAll(".toast");
 pass(toasts.length === 0, "after auto-dismiss the toast should be removed");
 
-// Default kind is "info"; missing region is tolerated.
-const ghost = window.document.createElement("div");
-const detached = window.SerfToast.show("ignored", "info"); // should still create a toast in the existing region
+// Default kind is "info".
+const detached = window.SerfToast.show("ignored", "info");
 toasts = region.querySelectorAll(".toast");
 pass(toasts.length === 1, "default kind toast inserted");
 window.SerfToast.dismiss(detached);
 flushTimers();
+
+// Missing region is tolerated: show() returns null and does not append.
+const regionParent = region.parentNode;
+regionParent.removeChild(region);
+const nullHandle = window.SerfToast.show("should-be-dropped", "info");
+pass(nullHandle === null, "show() with no #toast-region should return null");
+pass(region.querySelectorAll(".toast").length === 0, "show() with no region should not append a toast");
+regionParent.appendChild(region);
 
 // Unknown kind defaults to info.
 window.SerfToast.show("hi", "unknown-kind");

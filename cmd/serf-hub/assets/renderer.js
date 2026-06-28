@@ -3978,6 +3978,7 @@
         lastCurrentTaskId: this.lastCurrentTaskId,
         newContentCount: this.newContentCount,
         conversation: this.conversation,
+        lastFrameAt: this.lastFrameAt,
       };
       const staging = document.createElement("div");
       this.conversation = staging;

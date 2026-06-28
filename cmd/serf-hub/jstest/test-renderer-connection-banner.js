@@ -77,7 +77,7 @@ const transcriptErrors = (w) =>
   pass(!!sendBtn && sendBtn.disabled, "send is disabled while disconnected");
 
   // ── 2. Reconnect clears the banner ────────────────────────────────────────
-  await wait(300); // let scheduleAppwireReconnect → ensureLiveStream → readThread run
+  await wait(750); // ≥3× the 250 ms scheduleAppwireReconnect delay to absorb CI jitter
   pass(readThreadCalls >= 2, "a reconnect is attempted (readThread re-runs)");
   pass(!banner(w), "the banner clears once the connection is restored");
 
@@ -94,7 +94,7 @@ const transcriptErrors = (w) =>
   let b2 = banner(w2);
   pass(!!b2 && b2.classList.contains("reconnecting"), "the second banner starts amber 'reconnecting'");
   // Drive failing reconnect attempts; the renderer escalates to red on give-up.
-  await wait(400);
+  await wait(750); // ≥3× the 250 ms scheduleAppwireReconnect delay to absorb CI jitter
   b2 = banner(w2);
   pass(!!b2 && b2.classList.contains("lost"), "the banner escalates to red 'lost' when reconnection keeps failing");
   pass(!!b2 && /connection lost/i.test(b2.textContent), "the escalated banner reads 'Connection lost'");

@@ -1,4 +1,5 @@
 const fs = require("fs");
+const path = require("path");
 const { JSDOM } = require("jsdom");
 
 function loadScript(window, path) {
@@ -20,7 +21,7 @@ function newHostHarness() {
     <aside id="side-panes" hidden></aside>
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://127.0.0.1:9180/s/parent" });
   const { window } = dom;
-  loadScript(window, "../assets/panes.js");
+  loadScript(window, path.resolve(__dirname, "../assets/panes.js"));
   return window;
 }
 
@@ -64,7 +65,7 @@ function pass(ok, msg) {
   const child = frame.contentWindow;
   const originalPostMessage = host.postMessage;
   host.postMessage = function (data) { dispatchChildMessage(host, child, data); };
-  loadScript(child, "../assets/panes.js");
+  loadScript(child, path.resolve(__dirname, "../assets/panes.js"));
   const localPane = child.SerfPanes.open("/thread/local%3Abridged", "bridged");
   host.postMessage = originalPostMessage;
   pass(!localPane, "framed child with no local pane host returns no local pane");

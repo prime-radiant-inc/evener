@@ -416,10 +416,19 @@ await scenario("a new conversation entry closes the current module so the next f
 await scenario("CSS defines the subagents module section with the four-color glyphs", [], () => {
   if (!/\.subs\s*\{/.test(styleSrc)) return { ok: false, detail: "missing .subs rule" };
   if (!/\.sub-r\s*\{/.test(styleSrc)) return { ok: false, detail: "missing .sub-r rule" };
-  if (!/\.g\.run\b/.test(styleSrc)) return { ok: false, detail: "missing running glyph color" };
-  if (!/\.g\.done\b/.test(styleSrc)) return { ok: false, detail: "missing done glyph color" };
-  if (!/\.g\.err\b/.test(styleSrc)) return { ok: false, detail: "missing error glyph color" };
-  if (!/\.g\.unk\b/.test(styleSrc)) return { ok: false, detail: "missing unknown glyph color (mockup #8 honest-clock demotion)" };
+  // Extract each glyph rule block and verify the semantic color token it carries.
+  const runBlock  = (styleSrc.match(/\.g\.run\b[^{]*\{[^}]*\}/g) || []).join(" ");
+  const doneBlock = (styleSrc.match(/\.g\.done\b[^{]*\{[^}]*\}/g) || []).join(" ");
+  const errBlock  = (styleSrc.match(/\.g\.err\b[^{]*\{[^}]*\}/g) || []).join(" ");
+  const unkBlock  = (styleSrc.match(/\.g\.unk\b[^{]*\{[^}]*\}/g) || []).join(" ");
+  if (!runBlock)  return { ok: false, detail: "missing .g.run rule" };
+  if (!doneBlock) return { ok: false, detail: "missing .g.done rule" };
+  if (!errBlock)  return { ok: false, detail: "missing .g.err rule" };
+  if (!unkBlock)  return { ok: false, detail: "missing .g.unk rule (mockup #8 honest-clock demotion)" };
+  // running glyph must carry the active/processing token — not muted or dim.
+  if (!/color:[^;]*var\(--state-processing\)/.test(runBlock)) return { ok: false, detail: ".g.run must use --state-processing so the running glyph signals an active worker" };
+  // error glyph must carry an error-semantic color so failed workers render red.
+  if (!/color:[^;]*var\(--error\)/.test(errBlock)) return { ok: false, detail: ".g.err must use --error so a failed worker is visually distinct" };
   return { ok: true };
 });
 
@@ -608,6 +617,7 @@ await scenario("expanded subagent row lazy-loads bounded preview", [
   if (!requested.includes("local%3Achild-preview")) return { ok: false, detail: "preview endpoint not requested: " + requested };
   if (!preview) return { ok: false, detail: "missing preview container" };
   if (!preview.textContent.includes("found three callers") || !preview.textContent.includes("search billing")) return { ok: false, detail: "missing preview snippets: " + preview.textContent };
+  if (!preview.textContent.includes("recommended fix")) return { ok: false, detail: "preview should render third item (lower bound of limit is 3): " + preview.textContent };
   if (preview.textContent.includes("extra item should not render")) return { ok: false, detail: "preview rendered more than bounded limit" };
   return { ok: true };
 });

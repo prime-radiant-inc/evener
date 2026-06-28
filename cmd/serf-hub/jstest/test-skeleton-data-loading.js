@@ -38,17 +38,28 @@ pass(!sidebar.hasAttribute("data-loading"), "sidebar should not get data-loading
 dispatch("htmx:afterSwap", sidebar, { target: sidebar });
 pass(!sidebar.hasAttribute("data-loading"), "sidebar data-loading should be cleared after htmx:afterSwap");
 
-// htmx:responseError also clears it.
+// htmx:responseError no-op guard for sidebar: sidebar never receives
+// data-loading (set() skips it), so this pair confirms the handler does not
+// accidentally set the attribute on error paths. It is NOT meaningful coverage
+// of clear() — see the workspace case below for that.
 dispatch("htmx:beforeRequest", sidebar, { target: sidebar });
 dispatch("htmx:responseError", sidebar, { target: sidebar });
-pass(!sidebar.hasAttribute("data-loading"), "sidebar data-loading should be cleared after htmx:responseError");
+pass(!sidebar.hasAttribute("data-loading"), "sidebar data-loading should remain absent after htmx:responseError (no-op guard)");
 
-// Workspace target.
+// Workspace target — happy path via afterSwap.
 const workspace = window.document.getElementById("workspace");
 dispatch("htmx:beforeRequest", workspace, { target: workspace });
 pass(workspace.hasAttribute("data-loading"), "workspace should have data-loading");
 dispatch("htmx:afterSwap", workspace, { target: workspace });
-pass(!workspace.hasAttribute("data-loading"), "workspace data-loading cleared");
+pass(!workspace.hasAttribute("data-loading"), "workspace data-loading cleared after htmx:afterSwap");
+
+// Workspace target — error path via responseError. This is the real coverage
+// of clear(): data-loading is set first, then an error clears it. Breaking
+// clear() would leave data-loading on workspace and this assertion would fail.
+dispatch("htmx:beforeRequest", workspace, { target: workspace });
+pass(workspace.hasAttribute("data-loading"), "workspace should have data-loading before error");
+dispatch("htmx:responseError", workspace, { target: workspace });
+pass(!workspace.hasAttribute("data-loading"), "workspace data-loading cleared after htmx:responseError");
 
 if (failures.length === 0) {
   console.log("PASS: skeleton data-loading toggle");

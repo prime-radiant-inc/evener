@@ -562,9 +562,16 @@ async function testDropAddsChips() {
 }
 
 async function testRemoveChip() {
-  // Should still have 2 from the drop test; click × on the first.
+  resetComposerState();
+  // Drop two files explicitly so this test does not depend on testDropAddsChips.
+  const dropEvent = new window.Event("drop", { bubbles: true, cancelable: true });
+  Object.defineProperty(dropEvent, "dataTransfer", {
+    value: { files: [makePngFile("c.png"), makePngFile("d.png")] },
+  });
+  dropZone.dispatchEvent(dropEvent);
+  await waitForReads();
   const removeBtns = attContainer.querySelectorAll("[data-attachment-remove]");
-  pass(removeBtns.length === 2, "expected 2 remove buttons, got " + removeBtns.length);
+  pass(removeBtns.length === 2, "expected 2 remove buttons after self-contained drop, got " + removeBtns.length);
   removeBtns[0].click();
   pass(pendingItems().length === 1,
     "expected queue length 1 after remove, got " + pendingItems().length);

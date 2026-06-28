@@ -6,13 +6,59 @@ const css = fs.readFileSync(path.resolve(__dirname, "../assets/style.css"), "utf
 const failures = [];
 const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
-function ruleContains(selector, pattern) {
-  const re = /([^{}]+)\{([^}]*)\}/gm;
-  for (const m of css.matchAll(re)) {
-    const selectors = m[1].split(",").map((s) => s.trim());
-    if (selectors.includes(selector) && pattern.test(m[2])) return true;
+// Parse top-level { selector, body } blocks from cssText, counting nested braces
+// so that multi-rule @media/@supports bodies are correctly bounded.
+function parseTopLevelBlocks(cssText) {
+  const blocks = [];
+  let i = 0;
+  const n = cssText.length;
+  while (i < n) {
+    const start = i;
+    // Advance to the next '{', skipping /* … */ comments.
+    while (i < n && cssText[i] !== "{") {
+      if (cssText[i] === "/" && cssText[i + 1] === "*") {
+        const end = cssText.indexOf("*/", i + 2);
+        i = end === -1 ? n : end + 2;
+      } else {
+        i++;
+      }
+    }
+    if (i >= n) break;
+    // Strip inline comments from the selector fragment so they don't corrupt
+    // the selector string we compare against.
+    const selector = cssText.slice(start, i).replace(/\/\*[\s\S]*?\*\//g, "").trim();
+    i++; // skip '{'
+    // Read the body, counting nested braces to find the matching '}'.
+    let depth = 1;
+    const bodyStart = i;
+    while (i < n && depth > 0) {
+      if (cssText[i] === "{") depth++;
+      else if (cssText[i] === "}") depth--;
+      i++;
+    }
+    const body = cssText.slice(bodyStart, i - 1);
+    if (selector) blocks.push({ selector, body });
+  }
+  return blocks;
+}
+
+// Recursively search cssText for a rule whose comma-separated selectors include
+// `selector` and whose declaration block matches `pattern`.  Descends into
+// @media / @supports / @layer blocks so inner rules are reachable.
+function searchInBlocks(cssText, selector, pattern) {
+  for (const block of parseTopLevelBlocks(cssText)) {
+    if (block.selector.startsWith("@")) {
+      if (searchInBlocks(block.body, selector, pattern)) return true;
+    } else {
+      const selectors = block.selector.split(",").map((s) => s.trim());
+      if (selectors.includes(selector) && pattern.test(block.body)) return true;
+    }
   }
   return false;
+}
+
+function ruleContains(selector, pattern) {
+  return searchInBlocks(css, selector, pattern);
 }
 
 // Right-pane compact footer/input: no extra rule or full-line gap above metadata.
