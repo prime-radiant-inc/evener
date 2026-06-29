@@ -34,7 +34,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			source, ok = sources.Source(sourceID)
 			if !ok {
 				if cfg.CodexLauncher == nil {
-					return appwire.ThreadStartResponse{}, fmt.Errorf("source not found: %s", sourceID)
+					return appwire.ThreadStartResponse{}, appwire.Unavailable("spawn source is not available: " + sourceID)
 				}
 				launched, err := cfg.CodexLauncher.EnsureSource(ctx, sourceID, sources)
 				if err != nil {
@@ -44,7 +44,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 			}
 		}
 		if source == nil {
-			return appwire.ThreadStartResponse{}, fmt.Errorf("source not found: %s", sourceID)
+			return appwire.ThreadStartResponse{}, appwire.Unavailable("spawn source is not available: " + sourceID)
 		}
 		return source.StartThread(ctx, params)
 	}
