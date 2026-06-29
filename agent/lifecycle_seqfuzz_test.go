@@ -51,26 +51,38 @@ import (
 //     parent's ScriptedAdapter: an injected childClientFactory gives each child
 //     its OWN client + Responder playing a pre-recorded per-child script, so the
 //     child's concurrent turn never races the parent's draw sequence. opDelegate
-//     spawns a foreground leaf delegate (delegation_allowance 0, MaxSubagentDepth
-//     1), drawn synchronously on the parent op goroutine so child-script
-//     assignment is deterministic.
+//     spawns a leaf delegate (delegation_allowance 0, MaxSubagentDepth 1); the
+//     child client factory is invoked synchronously on the parent op goroutine
+//     inside createDelegate so child-script assignment is deterministic. The
+//     delegate tool defaults to background (no max_wait_ms), so opDelegate returns
+//     while the child runs concurrently and does NOT quiesce it — that exercises
+//     the spawn-and-interleave path. Driving a background delegate all the way to
+//     terminal is opBackgroundDelegate's job (C3, below).
+//
 //   - Background shell jobs (C2). opBackgroundShell launches a shell job with
 //     background=true and then quiesces it deterministically: the async finalize
 //     goroutine reads the deny env's instant Wait, the fake clock is advanced past
 //     any finalize backoff, and the harness joins each job's done channel (the
-//     BlockUntil/Advance + done-join handshake). The root session has no
-//     notifyFunc, so a completed job closes its done channel without driving any
-//     concurrent turn.
+//     advance + done-join handshake). The root session has no notifyFunc, so a
+//     completed job closes its done channel without driving any concurrent turn.
+//
+//   - Background delegates (C3). opBackgroundDelegate spawns a delegate that runs
+//     in the background (the delegate tool defaults to background when no
+//     max_wait_ms is given): createDelegate returns immediately and a
+//     fire-and-forget finalize-bridge goroutine settles the child off the op
+//     goroutine. The harness quiesces it deterministically by JOINING the
+//     delegate job's done channel (which closes only after the child finishes AND
+//     the bridge finalizes — the bridge enqueues the owner notification BEFORE
+//     closing done) and then DRAINING the notification rail: with a nil notifyFunc
+//     nothing else consumes the owner notification, so drainJobNotificationTurns
+//     runs an EntryNotification turn to surface it exactly once. The quiet-watchdog
+//     ticker runs on the SAME injected clock (jm.clock.NewTicker), so it cannot fire
+//     on wall time and is stopped at finalize; its firing is covered deterministically
+//     by the dedicated TestLifecycleBackgroundDelegateWatchdogFires (a gated child +
+//     BlockUntil handshake + advance past the quiet window).
 //
 // All of it is fully deterministic: deny env, fake clock, per-child scripted
 // adapters, bounded contexts, and a wall-time wedge backstop.
-//
-// Scoped out (honest): a BACKGROUND delegate (delegate background=true) is not
-// driven here. Unlike a background shell job — whose finalize just closes a done
-// channel — a background delegate adds the quiet-watchdog ticker and a
-// fire-and-forget finalize-bridge goroutine that the root session's nil
-// notifyFunc never drives to a notification turn; making that quiescence
-// deterministic is a scoped extension of the same per-child seam, not a blocker.
 //
 // A discovered failure is routed through fuzz/promoter (mirroring the Phase-2
 // appwire target): a deterministic reproduction survives the flake-guard and is
@@ -206,6 +218,7 @@ const (
 	opAdvanceClock
 	opDelegate
 	opBackgroundShell
+	opBackgroundDelegate
 	opObserve
 	opClose
 )
@@ -213,7 +226,7 @@ const (
 var allLifecycleOps = []lifecycleOpCode{
 	opProcessInput, opProcessInterrupted, opSteer, opEnqueue, opFollowUp,
 	opSetGoal, opClearGoal, opAdvanceClock, opDelegate, opBackgroundShell,
-	opObserve, opClose,
+	opBackgroundDelegate, opObserve, opClose,
 }
 
 // opContainsCompact reports whether the op's scripted responses include a
@@ -282,6 +295,19 @@ func drawLifecycleArtifact(rt *rapid.T) lifecycleArtifact {
 		case opBackgroundShell:
 			rec.Script = []int{int(kindShellBackground)}
 			rec.Text = rapid.SampledFrom(inputTexts).Draw(rt, "text")
+		case opBackgroundDelegate:
+			// One delegate tool call in the parent's turn. The delegate tool defaults
+			// to background (no max_wait_ms), so the parent returns immediately and the
+			// fire-and-forget finalize bridge settles the child off the parent goroutine.
+			// The child plays a short pre-recorded script (no delegate/background kinds,
+			// so the leaf child cannot itself spawn).
+			rec.Script = []int{int(kindDelegate)}
+			rec.Text = rapid.SampledFrom(inputTexts).Draw(rt, "text")
+			csLen := rapid.IntRange(1, 4).Draw(rt, "bgChildScriptLen")
+			rec.ChildScript = make([]int, csLen)
+			for j := range rec.ChildScript {
+				rec.ChildScript[j] = drawResponseKind(rt)
+			}
 		}
 		ops = append(ops, rec)
 	}
@@ -487,8 +513,11 @@ func applyOp(sess *Session, clk *agenttest.FakeClock, op opRecord, cancelAt *int
 		// so this is safe even when the count is zero.
 		clk.Advance(time.Duration(op.Dur))
 	case opDelegate:
-		// A foreground leaf delegate: the parent turn issues one delegate tool
-		// call that blocks until the child completes its own pre-recorded script.
+		// A leaf delegate: the parent turn issues one delegate tool call. The
+		// delegate tool defaults to background (no max_wait_ms), so the call returns
+		// while the child runs its own pre-recorded script concurrently; opDelegate
+		// deliberately does NOT quiesce it (the spawn-and-interleave path). The
+		// child is settled by the next op's quiesce, or at Close.
 		ctx, cancel := context.WithTimeout(context.Background(), lifecycleCallTimeout)
 		defer cancel()
 		_, _ = sess.ProcessInput(ctx, op.Text, nil)
@@ -500,6 +529,19 @@ func applyOp(sess *Session, clk *agenttest.FakeClock, op opRecord, cancelAt *int
 		defer cancel()
 		_, _ = sess.ProcessInput(ctx, op.Text, nil)
 		quiesceJobs(sess, clk)
+	case opBackgroundDelegate:
+		// Spawn a background delegate, then quiesce it: the parent turn returns
+		// immediately, so the child + finalize bridge run off the op goroutine.
+		// quiesceJobs joins every running job's done channel (the delegate job's done
+		// closes only after the child finishes AND the bridge finalizes it), and
+		// drainJobNotificationTurns drives the owner notification the bridge enqueues
+		// to a notification turn — the C3 advance + done-join + notification-drain
+		// handshake. The root session's nil notifyFunc never drives this otherwise.
+		ctx, cancel := context.WithTimeout(context.Background(), lifecycleCallTimeout)
+		defer cancel()
+		_, _ = sess.ProcessInput(ctx, op.Text, nil)
+		quiesceJobs(sess, clk)
+		drainJobNotificationTurns(sess)
 	case opObserve:
 		_ = sess.State()
 		_ = sess.QueueDepth()
@@ -547,11 +589,14 @@ func checkLifecycleOracles(sess *Session, m *lifecycleModel, op opRecord, art li
 		return lifecycleFailure(promoter.Invariant, art, step, fmt.Sprintf("history-shrank-without-compaction:%d->%d", m.prevHistLen, histLen))
 	}
 
-	// Oracle 6 (jobs): a background shell job, once quiesced, reaches a terminal
-	// status — no job is left stuck Running, and every recorded job is terminal.
-	// This is the deterministic observation the C2 advance+done-join handshake
-	// makes possible.
-	if lifecycleOpCode(op.Code) == opBackgroundShell {
+	// Oracle 6 (jobs): a background job, once quiesced, reaches a terminal status —
+	// no job is left stuck Running, and every recorded job is terminal. This is the
+	// deterministic observation the C2 (shell) / C3 (delegate) advance + done-join
+	// handshake makes possible. quiesceJobs joins EVERY running job's done channel,
+	// so a background delegate left running by an earlier opDelegate is also settled
+	// here before the check.
+	switch lifecycleOpCode(op.Code) {
+	case opBackgroundShell, opBackgroundDelegate:
 		if f := checkJobsQuiesced(sess, art, step); f != nil {
 			return f
 		}
@@ -624,6 +669,30 @@ func quiesceJobs(sess *Session, clk *agenttest.FakeClock) {
 		case <-time.After(lifecycleCallTimeout):
 			return
 		}
+	}
+}
+
+// notificationDrainCap bounds the notification-drain loop so a degenerate
+// requeue (a notification turn that re-enqueues its own input) can never spin
+// forever. One EntryNotification turn drains the entire pending queue at once
+// (acceptNotificationInput consumes the whole slice), so the happy path needs a
+// single iteration; the cap is pure insurance.
+const notificationDrainCap = 8
+
+// drainJobNotificationTurns drives the notification rail to quiescence: while the
+// session has a pending job-completion notification (the owner notification a
+// background job's finalize bridge enqueues, plus any quiet-watchdog notification),
+// it runs an EntryNotification turn so the notification is surfaced into the
+// transcript and consumed exactly once. The root harness has a nil notifyFunc, so
+// nothing else ever drains the queue; without this, a completed background
+// delegate's notification would sit pending and be surfaced nondeterministically
+// by some later op's drive loop. The per-op responder's Final fallback answers the
+// notification turn, so the drain never draws from rapid and never blocks.
+func drainJobNotificationTurns(sess *Session) {
+	ctx, cancel := context.WithTimeout(context.Background(), lifecycleCallTimeout)
+	defer cancel()
+	for i := 0; i < notificationDrainCap && sess.peekNotifications() > 0; i++ {
+		_, _ = sess.ProcessInputKind(ctx, "", nil, EntryNotification)
 	}
 }
 
@@ -744,6 +813,8 @@ func opName(c lifecycleOpCode) string {
 		return "delegate"
 	case opBackgroundShell:
 		return "background_shell"
+	case opBackgroundDelegate:
+		return "background_delegate"
 	case opObserve:
 		return "observe"
 	case opClose:

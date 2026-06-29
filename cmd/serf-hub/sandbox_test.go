@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -46,13 +47,14 @@ const sandboxGitBranch = "sandbox-branch"
 // against this config; B3 pairs the same temp dirs with agenttest.DenyEnv for
 // tool-handler execution (see sandbox_selftest_test.go for the DenyEnv wiring).
 type sandbox struct {
-	Web     *WebServer
-	Config  hubcore.WebConfig
-	Spawner *recordingSpawner
-	Mkdir   *recordingMkdir
-	Root    string // temp root; the only filesystem subtree the hub may mutate
-	CWD     string // the seeded session's working dir, inside Root
-	Secret  []byte // planted ABOVE CWD; the path-escape oracle's tripwire
+	Web           *WebServer
+	Config        hubcore.WebConfig
+	Spawner       *recordingSpawner
+	Mkdir         *recordingMkdir
+	Root          string // temp root; the only filesystem subtree the hub may mutate
+	CWD           string // the seeded session's working dir, inside Root
+	Secret        []byte // planted ABOVE CWD; the path-escape oracle's tripwire
+	ProvidersPath string // providers.toml the instances controller mutates, inside Root
 }
 
 // newSandbox builds the contained hub. It accepts testing.TB so both the B0
@@ -91,16 +93,32 @@ func newSandbox(tb testing.TB) *sandbox {
 		tb.Fatal(err)
 	}
 
+	// Seed a providers.toml inside Root so the serf/instance/* methods register
+	// (they are gated on ProvidersConfigPath != "") and so the instances
+	// controller's atomic writes land in the sandbox temp tree, never on the real
+	// providers.toml. Two instances give Edit/Remove/SetDefault real targets.
+	providersPath := filepath.Join(root, "providers.toml")
+	if err := providercfg.WriteFile(providersPath, providercfg.Config{
+		Default: "work",
+		Instances: []providercfg.InstanceConfig{
+			{Name: "work", Type: "openai"},
+			{Name: "key", Type: "anthropic"},
+		},
+	}); err != nil {
+		tb.Fatal(err)
+	}
+
 	spawner := &recordingSpawner{}
 	mkdir := &recordingMkdir{}
 	cfg := hubcore.WebConfig{
-		HubAddr:      "127.0.0.1:9180",
-		HubStateRoot: filepath.Join(root, "state"),
-		Past:         idx,
-		Roster:       hubcore.NewRoster(filepath.Join(root, "roster"), nil),
-		RunDir:       filepath.Join(root, "run"), // empty rendezvous dir → no live daemons to reach
-		StateDir:     filepath.Join(root, "projects"),
-		Spawner:      spawner,
+		HubAddr:             "127.0.0.1:9180",
+		HubStateRoot:        filepath.Join(root, "state"),
+		Past:                idx,
+		Roster:              hubcore.NewRoster(filepath.Join(root, "roster"), nil),
+		RunDir:              filepath.Join(root, "run"), // empty rendezvous dir → no live daemons to reach
+		StateDir:            filepath.Join(root, "projects"),
+		ProvidersConfigPath: providersPath,
+		Spawner:             spawner,
 		GitHeadBranch: func(context.Context, string) (string, error) {
 			return sandboxGitBranch, nil
 		},
@@ -112,13 +130,14 @@ func newSandbox(tb testing.TB) *sandbox {
 		// the real routes (per the Phase 4 spec).
 	}
 	return &sandbox{
-		Web:     NewWebServer(cfg),
-		Config:  cfg,
-		Spawner: spawner,
-		Mkdir:   mkdir,
-		Root:    root,
-		CWD:     cwd,
-		Secret:  secret,
+		Web:           NewWebServer(cfg),
+		Config:        cfg,
+		Spawner:       spawner,
+		Mkdir:         mkdir,
+		Root:          root,
+		CWD:           cwd,
+		Secret:        secret,
+		ProvidersPath: providersPath,
 	}
 }
 

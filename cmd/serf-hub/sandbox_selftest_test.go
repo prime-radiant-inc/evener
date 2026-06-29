@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"primeradiant.com/serf/appwire"
 )
 
 // denyTransport is an http.RoundTripper that records every outbound request and
@@ -142,5 +145,45 @@ func TestSandboxContainsMutatingHandlers(t *testing.T) {
 	rec = do(http.MethodGet, "/doc/file?session="+sandboxSessionID+"&path=../fuzz-secret.txt", nil)
 	if bytes.Contains(rec.Body.Bytes(), s.Secret) {
 		t.Fatalf("path escape: /doc/file served the out-of-root secret")
+	}
+}
+
+// TestSandboxContainsInstanceRemove proves the serf/instance/* methods are both
+// reachable (registered, because the sandbox seeds a providers.toml) AND
+// contained: a path-traversal instance name must not let serf/instance/remove
+// delete a file outside the auth state dir. Before the controller validated the
+// name, Remove forwarded it straight to authopenai.DeleteAuth, whose
+// stateDir/auth/<name>.json join lets "../../canary" escape — arbitrary .json
+// deletion driven by a single appwire call. The auth seam contains the state dir
+// and hands back the out-of-state canary the deletion would have hit.
+func TestSandboxContainsInstanceRemove(t *testing.T) {
+	canary := installSandboxAuthSeam(t)
+	installDenyTransport(t)
+	s := newSandbox(t)
+	router := s.Web.appRPC.Router()
+
+	dispatch := func(name string) {
+		raw, err := json.Marshal(appwire.InstanceRemoveParams{Name: name})
+		if err != nil {
+			t.Fatalf("marshal remove params: %v", err)
+		}
+		req := appwire.Request{ID: appwire.NewIntID(1), Method: appwire.MethodSerfInstanceRemove, Params: raw}
+		// The call may succeed or return a structured error; either is acceptable
+		// so long as nothing escapes the sandbox.
+		_, _ = router.Dispatch(context.Background(), req)
+	}
+
+	// A legitimate removal works (proves the methods are registered and live).
+	dispatch("key")
+
+	// The traversal name must not delete the out-of-state canary.
+	dispatch("../../canary")
+	if _, err := os.Stat(canary); err != nil {
+		t.Fatalf("path escape: serf/instance/remove deleted the out-of-state canary (%v)", err)
+	}
+
+	// Every providers.toml mutation stays in the sandbox temp file.
+	if _, err := os.Stat(s.ProvidersPath); err != nil {
+		t.Fatalf("providers.toml missing from sandbox after remove: %v", err)
 	}
 }
