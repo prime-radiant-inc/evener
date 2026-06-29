@@ -125,6 +125,7 @@ TARGETS=(
 	# tool no longer needs a parallel hardcoded list.
 	"rapid:agent:.:TestToolArgsSchemaFuzz"
 	"rapid:agent:.:TestLifecycleSeqFuzz"
+	"rapid:agent:./internal/jobstore:TestJobstoreSeqFuzz"
 	"rapid:.:./internal/appserver:TestRouterSeqFuzz"
 )
 
