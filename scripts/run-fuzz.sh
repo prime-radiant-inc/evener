@@ -40,6 +40,7 @@ set -uo pipefail
 TARGETS=(
 	"native:llm:.:FuzzParseSSE::sse.go"
 	"native:.:./appwire:FuzzMessageDecode::jsonrpc.go"
+	"native:.:./appwire:FuzzMessageDecodeStructured::jsonrpc.go"
 	"native:.:./appwire:FuzzMethodParams::"
 	"native:.:./appwire:FuzzWireTypes::"
 	"native:agent:.:FuzzToolArgsValidate:./internal/tool,.:internal/tool/definitions.go"
