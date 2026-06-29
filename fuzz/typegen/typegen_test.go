@@ -60,7 +60,7 @@ func (c customLayer) MarshalJSON() ([]byte, error) {
 type holder struct {
 	Layer customLayer            `json:"layer"`
 	Ptr   *customLayer           `json:"ptr,omitempty"`
-	ByMap map[string]customLayer `json:"byMap,omitempty"`
+	ByMap map[string]customLayer `json:"by_map,omitempty"`
 }
 
 func TestSchemaFromType_Scalars(t *testing.T) {
@@ -183,7 +183,7 @@ func TestOverrideFiresAtNestedDepth(t *testing.T) {
 		t.Errorf("ptr lost the override's properties: %#v", ptr)
 	}
 	// Map value schema is the override.
-	byMap := props["byMap"].(map[string]any)
+	byMap := props["by_map"].(map[string]any)
 	if !reflect.DeepEqual(byMap["additionalProperties"], override) {
 		t.Errorf("byMap value schema = %#v, want override", byMap["additionalProperties"])
 	}
