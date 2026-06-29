@@ -136,6 +136,7 @@ TARGETS=(
 	# each provider's wire format, decoded via the real adapters, asserted
 	# equivalent. coverpkg spans the 4 real decoders it exercises; no single focus.
 	"native:llm:./providers/difftest:FuzzCrossProviderDifferential:./providers/anthropic,./providers/google,./providers/openai,./providers/openaicompat:"
+	"native:llm:./providers/difftest:FuzzStreamVsNonStreamDifferential:./providers/anthropic,./providers/google,./providers/openai,./providers/openaicompat:"
 	"rapid:agent:.:TestToolArgsSchemaFuzz"
 	"rapid:agent:.:TestLifecycleSeqFuzz"
 	"rapid:agent:./internal/jobstore:TestJobstoreSeqFuzz"
