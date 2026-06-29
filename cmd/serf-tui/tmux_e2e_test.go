@@ -706,13 +706,13 @@ func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 	// Positive gate: session must still be alive after the settling window.
 	app.WaitFor("serf / session / ended maintenance")
 	app.SendKeys("C-c")
-	app.WaitForExit()
-	history := app.CaptureHistory()
-	for _, want := range []string{"Restore this session:", "serf-tui --hub-addr " + hub.URL(), "local:01PAST"} {
-		if !strings.Contains(history, want) {
-			t.Fatalf("normal scrollback missing %q after alt-screen exit:\n%s", want, history)
-		}
-	}
+	// serf-tui exits the alternate screen and prints the restore instructions
+	// to the normal screen on its way out. The pane is kept alive past
+	// serf-tui's exit (see startTUITmuxAltScreen) so tmux reliably drains that
+	// trailing output instead of dropping it when freezing a just-dead pane —
+	// then we poll the scrollback until the message renders rather than racing
+	// a single post-exit capture.
+	app.WaitForHistory("Restore this session:", "serf-tui --hub-addr "+hub.URL(), "local:01PAST")
 }
 
 func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
@@ -1005,7 +1005,15 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	t.Helper()
 	acquireTmuxSlot(t)
 	session := uniqueTmuxSessionName()
-	command := shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
+	// Keep the pane's shell alive past serf-tui's own exit. serf-tui leaves the
+	// alternate screen and prints its restore instructions to the normal screen
+	// as the very last thing it does before exiting; if the process then dies
+	// immediately, a detached tmux pane under CPU starvation can freeze on death
+	// before draining that trailing output, dropping the message entirely (the
+	// scrollback comes back blank). Blocking the shell on a read it never
+	// receives holds the pty open so tmux drains and renders the message; the
+	// test reads it via WaitForHistory and Close() tears the session down.
+	command := shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + "; read _"
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	pinTmuxWindowSize(t, session, width, height)
@@ -1092,6 +1100,33 @@ func (a *tmuxTUI) WaitFor(wants ...string) string {
 		time.Sleep(tuiE2EPollInterval)
 	}
 	a.t.Fatalf("timed out waiting for %q\nvisible pane:\n%s\nrecent history:\n%s", wants, screen, a.CaptureHistory())
+	return ""
+}
+
+// WaitForHistory polls the scrollback until every wanted substring is present,
+// returning the settled history. Mirrors WaitFor but reads scrollback so it can
+// assert on content a program prints as it exits the alternate screen on its way
+// out, returning the instant the message lands rather than racing a single
+// post-exit capture.
+func (a *tmuxTUI) WaitForHistory(wants ...string) string {
+	a.t.Helper()
+	deadline := time.Now().Add(tuiE2EWaitTimeout)
+	var history string
+	for time.Now().Before(deadline) {
+		history = a.CaptureHistory()
+		ok := true
+		for _, want := range wants {
+			if !strings.Contains(history, want) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return history
+		}
+		time.Sleep(tuiE2EPollInterval)
+	}
+	a.t.Fatalf("timed out waiting for scrollback %q\nrecent history:\n%s", wants, history)
 	return ""
 }
 
