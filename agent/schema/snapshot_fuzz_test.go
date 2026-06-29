@@ -3,6 +3,8 @@ package schema
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -81,6 +83,22 @@ func FuzzSessionMetaRoundTrip(f *testing.F) {
 		}
 		if got := mustMarshalMeta(t, m3); !bytes.Equal(baseline, got) {
 			t.Fatalf("session meta save/load round-trip diverged:\n saved=%s\n loaded=%s", baseline, got)
+		}
+
+		// Display-name resolution (name → original prompt → id) must not panic.
+		_ = SessionDisplayName(m1)
+
+		// Directory listing must scan, sort, and silently skip a corrupt or
+		// non-meta entry without panicking.
+		sessDir := filepath.Join(dir, "sessions")
+		if err := os.WriteFile(filepath.Join(sessDir, "corrupt.meta.json"), []byte("{not json"), 0o644); err != nil {
+			t.Fatalf("write corrupt meta: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(sessDir, "ignored.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write non-meta file: %v", err)
+		}
+		if _, err := ListSessionMetas(dir); err != nil {
+			t.Fatalf("ListSessionMetas: %v", err)
 		}
 	})
 }
