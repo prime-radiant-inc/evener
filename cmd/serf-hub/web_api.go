@@ -474,7 +474,11 @@ func (s *WebServer) handleAPIDirCreate(w http.ResponseWriter, r *http.Request) {
 		writeAPIJSON(w, http.StatusOK, map[string]any{"path": path, "created": false})
 		return
 	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	mkdirAll := os.MkdirAll
+	if s.cfg.MkdirAll != nil {
+		mkdirAll = s.cfg.MkdirAll
+	}
+	if err := mkdirAll(path, 0o755); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -508,13 +512,17 @@ func (s *WebServer) handleApiGitHead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cwd := strings.TrimSpace(r.URL.Query().Get("cwd"))
+	gitHead := gitHeadBranch
+	if s.cfg.GitHeadBranch != nil {
+		gitHead = s.cfg.GitHeadBranch
+	}
 	branch := ""
 	if cwd != "" {
 		if abs, err := filepath.Abs(cwd); err == nil {
 			cwd = abs
 		}
 		if _, err := os.Stat(cwd); err == nil {
-			if out, err := gitHeadBranch(r.Context(), cwd); err == nil {
+			if out, err := gitHead(r.Context(), cwd); err == nil {
 				branch = out
 			}
 		}

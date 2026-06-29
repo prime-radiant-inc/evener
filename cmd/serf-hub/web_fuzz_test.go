@@ -5,23 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"testing"
-	"time"
-
-	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 )
 
 // fuzzSessionID is the local past session the handler fuzz seeds so the
-// /doc/file route has a real session cwd to resolve against.
-const fuzzSessionID = "01FUZZDOCSESSION0000000000"
-
-// fuzzOutOfRootSecret is planted ONE LEVEL ABOVE the seeded session's cwd. A
-// correct hub must never serve it through any path or query the fuzzer supplies;
-// finding it in a response body is a path-escape defect.
-const fuzzOutOfRootSecret = "FUZZ-OUT-OF-ROOT-SECRET-do-not-serve-9c1f2a"
+// /doc/file route has a real session cwd to resolve against. It is the session
+// the shared sandbox seeds (see sandbox_test.go).
+const fuzzSessionID = sandboxSessionID
 
 // fuzzReadOnlyRoutes is the allowlist of hub routes the handler fuzz drives.
 // Every entry is a GET-only endpoint that, when the hub is built offline (no
@@ -51,52 +41,13 @@ var fuzzReadOnlyRoutes = []string{
 	"/settings",                  // 16
 }
 
-// newFuzzWebServer builds an offline hub: a temp state dir, one local past
-// session whose cwd is a temp directory, and a secret file planted outside that
-// cwd. It returns the server and the secret bytes the path-escape oracle guards.
+// newFuzzWebServer builds the contained sandbox hub and returns the server and
+// the secret bytes the path-escape oracle guards. The read-only handler fuzz
+// shares the same construction as the mutating-route sandbox (see newSandbox).
 func newFuzzWebServer(f *testing.F) (*WebServer, []byte) {
 	f.Helper()
-	root := f.TempDir()
-	cwd := filepath.Join(root, "cwd")
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
-		f.Fatal(err)
-	}
-	// A benign file inside the cwd so /doc/file has something legitimate to serve.
-	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), []byte("hello"), 0o644); err != nil {
-		f.Fatal(err)
-	}
-	// The secret lives ABOVE the cwd and must never be reachable.
-	secret := []byte(fuzzOutOfRootSecret)
-	if err := os.WriteFile(filepath.Join(root, "fuzz-secret.txt"), secret, 0o600); err != nil {
-		f.Fatal(err)
-	}
-
-	proj := filepath.Join(root, "projects", "x")
-	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
-		f.Fatal(err)
-	}
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID:             fuzzSessionID,
-		UpdatedAt:      time.Now(),
-		OriginalPrompt: "fuzz session",
-		EnvInfo:        schema.EnvironmentInfo{WorkingDir: cwd},
-	}); err != nil {
-		f.Fatal(err)
-	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
-		f.Fatal(err)
-	}
-
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Past:    idx,
-		Roster:  hubcore.NewRoster(f.TempDir(), nil),
-		RunDir:  f.TempDir(), // empty rendezvous dir → no live daemons to reach
-		// AuthToken empty: the auth guard is disabled, so the fuzz reaches the
-		// real routes (per the Phase 4 spec).
-	})
-	return web, secret
+	s := newSandbox(f)
+	return s.Web, s.Secret
 }
 
 // buildFuzzRequest turns (base, suffix) into a GET request. The suffix reaches
