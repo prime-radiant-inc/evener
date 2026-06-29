@@ -2401,12 +2401,17 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	now := time.Unix(3400, 0).UTC()
 	appendSessionJobEvents(t, s.stateDir, childID, restoredWatchSendPendingEvents(childID, "job_child_observed", "caller", now)...)
 	preflight := requireDelegateRestorePreflight(t, s, rec)
-	// Caller sends restore as wake tokens, not synchronous steering frames; count
-	// how many caller tokens the winning reconstruction enqueues. Restore side
-	// effects run exactly once, so exactly one token is surfaced. The hook runs on
-	// the winning child only; install the counter on its jobManager there.
+	// This seam fires once per restore-side-effects run, and only on the WINNING
+	// reconstruction (restoreTerminalDelegateChildClaimed reaches it only for the
+	// goroutine that claimed the rebuild; the loser parks in pending.wait). So the
+	// seam-invocation count is the race-free measure of "side effects run once".
+	// Inside the seam we also wrap the winning child's enqueue to count caller
+	// watch-send tokens: the winner surfaces the seeded pending token exactly once,
+	// before it runs the SessionStart hook (the final, FIFO-blocking side effect).
+	var sideEffectsRuns int32
 	var callerTokens int32
 	s.delegateRestoreBeforeSideEffects = func(child *Session) {
+		atomic.AddInt32(&sideEffectsRuns, 1)
 		origEnqueue := child.jobManager.enqueue
 		child.jobManager.enqueue = func(n jobNotification) {
 			if n.WatchSend != nil && n.WatchSend.Key.ResolvedSendTo == runtimeMessageAliasCaller {
@@ -2447,6 +2452,14 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	}
 	if got := countFileLines(t, hookMarker); got != 1 {
 		t.Fatalf("SessionStart hook executions while restore hook is in flight = %d, want 1", got)
+	}
+	// The winner surfaces the seeded caller watch-send token before it runs the
+	// SessionStart hook (token at the head of runDeferredRestoreSideEffects, hook
+	// at the tail), so the hook-in-flight signal proves the token is already
+	// enqueued. The loser is parked in pending.wait and surfaces nothing, and the
+	// first user turn is not launched yet, so this count is race-free: exactly one.
+	if got := atomic.LoadInt32(&callerTokens); got != 1 {
+		t.Fatalf("caller watch-send tokens enqueued while restore hook is in flight = %d, want exactly one (side effects run once)", got)
 	}
 
 	tracked := s.subagents.get(childID)
@@ -2528,8 +2541,16 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 	if first.sub.sess != child {
 		t.Fatalf("tracked child changed after restore: got %p, want %p", first.sub.sess, child)
 	}
-	if got := atomic.LoadInt32(&callerTokens); got != 1 {
-		t.Fatalf("caller watch-send tokens enqueued = %d, want exactly one (side effects run once)", got)
+	// Side effects run exactly once: the loser reuses the winner's child without
+	// re-running the restore-side-effects path. The cumulative caller-token count
+	// is NOT a valid measure here — the first user turn (launched above, released
+	// with the hook) drives the child's run loop, which re-tokens the still-pending
+	// caller frame onto the child's own rail every drive (idempotent by key,
+	// deduped at render; see drainJobManagerWatchSends). That re-tokening races
+	// reconstruction completion under load. The seam invocation count is the
+	// race-free proof, and the in-flight assertion above proved exactly one token.
+	if got := atomic.LoadInt32(&sideEffectsRuns); got != 1 {
+		t.Fatalf("restore side-effects runs = %d, want exactly one (loser reuses winner without re-running side effects)", got)
 	}
 	if got := countFileLines(t, hookMarker); got != 1 {
 		t.Fatalf("SessionStart hook executions after restore completed = %d, want 1", got)
