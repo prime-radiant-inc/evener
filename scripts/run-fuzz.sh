@@ -26,6 +26,7 @@ TARGETS=(
 	"agent:.:FuzzToolArgsValidate"
 	"agent:./schema:FuzzSessionMetaRoundTrip"
 	"agent:./internal/jobstore:FuzzJobEventLogReplay"
+	"agent:.:FuzzTranscriptReplay"
 	"llm:./providers/openai:FuzzOpenAIResponsesMetamorphic"
 	"llm:./providers/openai:FuzzOpenAIChatCompletionsMetamorphic"
 	"llm:./providers/anthropic:FuzzAnthropicStreamMetamorphic"
