@@ -1,9 +1,14 @@
 // Package schemagen turns a JSON Schema (the subset serf's tool and protocol
 // surfaces actually use: type/properties/required/enum/additionalProperties/
-// items) into a rapid generator of values. It generates BOTH schema-conforming
-// values (Valid mode) and schema-adjacent ones (Adjacent mode: wrong types,
+// items) into generated values. It generates BOTH schema-conforming values
+// (Valid mode) and schema-adjacent ones (Adjacent mode: wrong types,
 // missing-required, out-of-enum, extra-when-closed) so a property test can feed
 // a real validator/handler adversarial-but-structured input.
+//
+// The same generator definitions draw entropy from a Source (source.go), so one
+// rule set drives both a rapid.Check target (rapid-backed Source, via
+// FromJSONSchema/Generator) and a coverage-guided testing.F target (byte-backed
+// Source, via Value/NewByteSource).
 //
 // Like the promoter, this package is the portable core of the fuzzing toolkit:
 // it imports only the standard library and pgregory.net/rapid, and NOTHING here
@@ -37,57 +42,66 @@ const maxDepth = 4
 // Generator.
 func FromJSONSchema(schema map[string]any) *rapid.Generator[any] {
 	return rapid.Custom(func(t *rapid.T) any {
+		s := rapidSource{t}
 		mode := Valid
-		if rapid.Bool().Draw(t, "schemagen_adjacent") {
+		if s.Bool("schemagen_adjacent") {
 			mode = Adjacent
 		}
-		return genValue(t, schema, mode, 0)
+		return genValue(s, schema, mode, 0)
 	})
 }
 
 // Generator builds a generator that yields values in a single mode.
 func Generator(schema map[string]any, mode Mode) *rapid.Generator[any] {
 	return rapid.Custom(func(t *rapid.T) any {
-		return genValue(t, schema, mode, 0)
+		return genValue(rapidSource{t}, schema, mode, 0)
 	})
 }
 
+// Value produces a single value for schema in the given mode, drawing entropy
+// from an arbitrary Source. It is the source-driven core behind both the rapid
+// entry points (via a rapid-backed Source) and the byte-fed testing.F targets
+// (via NewByteSource).
+func Value(s Source, schema map[string]any, mode Mode) any {
+	return genValue(s, schema, mode, 0)
+}
+
 // genValue is the recursive core: produce one value for schema in the given mode.
-func genValue(t *rapid.T, schema map[string]any, mode Mode, depth int) any {
+func genValue(s Source, schema map[string]any, mode Mode, depth int) any {
 	if schema == nil {
 		schema = map[string]any{}
 	}
 
 	if enum := enumValues(schema); len(enum) > 0 {
 		if mode == Valid {
-			return rapid.SampledFrom(enum).Draw(t, "enum")
+			return draw(s, enum, "enum")
 		}
-		return genEnumViolation(t, enum)
+		return genEnumViolation(s, enum)
 	}
 
 	types := schemaTypes(schema)
 
-	if mode == Adjacent && rapid.Bool().Draw(t, "wrong_type") {
-		return genWrongType(t, types)
+	if mode == Adjacent && s.Bool("wrong_type") {
+		return genWrongType(s, types)
 	}
 
-	switch chooseType(t, types, depth) {
+	switch chooseType(s, types, depth) {
 	case "object":
-		return genObject(t, schema, mode, depth)
+		return genObject(s, schema, mode, depth)
 	case "array":
-		return genArray(t, schema, mode, depth)
+		return genArray(s, schema, mode, depth)
 	case "string":
-		return genString(t, mode)
+		return genString(s, mode)
 	case "integer":
-		return genInteger(t, schema, mode)
+		return genInteger(s, schema, mode)
 	case "number":
-		return genNumber(t, schema, mode)
+		return genNumber(s, schema, mode)
 	case "boolean":
-		return rapid.Bool().Draw(t, "bool")
+		return s.Bool("bool")
 	case "null":
 		return nil
 	default:
-		return genArbitraryJSON(t, depth)
+		return genArbitraryJSON(s, depth)
 	}
 }
 
@@ -96,7 +110,7 @@ func genValue(t *rapid.T, schema map[string]any, mode Mode, depth int) any {
 // and no extra key is added when additionalProperties is false. In Adjacent mode
 // one structural violation is introduced where a lever exists (drop a required
 // key, add an unknown key under a closed schema, or corrupt one property).
-func genObject(t *rapid.T, schema map[string]any, mode Mode, depth int) any {
+func genObject(s Source, schema map[string]any, mode Mode, depth int) any {
 	props := asSchemaMap(schema["properties"])
 	required := stringList(schema["required"])
 	open := additionalPropsAllowed(schema)
@@ -105,17 +119,17 @@ func genObject(t *rapid.T, schema map[string]any, mode Mode, depth int) any {
 
 	// Adjacent levers available for this object, chosen up front so exactly one
 	// fires (a second corruption could cancel the first).
-	dropRequired := mode == Adjacent && len(required) > 0 && rapid.Bool().Draw(t, "drop_required")
-	addUnknown := mode == Adjacent && !open && !dropRequired && rapid.Bool().Draw(t, "add_unknown")
+	dropRequired := mode == Adjacent && len(required) > 0 && s.Bool("drop_required")
+	addUnknown := mode == Adjacent && !open && !dropRequired && s.Bool("add_unknown")
 	corruptProp := mode == Adjacent && len(props) > 0 && !dropRequired && !addUnknown
 
 	skip := ""
 	if dropRequired {
-		skip = rapid.SampledFrom(required).Draw(t, "drop_which")
+		skip = draw(s, required, "drop_which")
 	}
 	corrupt := ""
 	if corruptProp {
-		corrupt = rapid.SampledFrom(sortedKeys(props)).Draw(t, "corrupt_which")
+		corrupt = draw(s, sortedKeys(props), "corrupt_which")
 	}
 
 	for _, name := range sortedKeys(props) {
@@ -124,42 +138,42 @@ func genObject(t *rapid.T, schema map[string]any, mode Mode, depth int) any {
 		if name == skip {
 			continue
 		}
-		if !isRequired && mode != Adjacent && !rapid.Bool().Draw(t, "include_"+name) {
+		if !isRequired && mode != Adjacent && !s.Bool("include_"+name) {
 			continue // optional property omitted in a valid object
 		}
-		if !isRequired && mode == Adjacent && !rapid.Bool().Draw(t, "include_"+name) {
+		if !isRequired && mode == Adjacent && !s.Bool("include_"+name) {
 			continue
 		}
 		propMode := Valid
 		if name == corrupt {
 			propMode = Adjacent
 		}
-		obj[name] = genValue(t, sub, propMode, depth+1)
+		obj[name] = genValue(s, sub, propMode, depth+1)
 	}
 
 	if addUnknown {
-		obj[unknownKey(t)] = genArbitraryJSON(t, depth+1)
+		obj[unknownKey(s)] = genArbitraryJSON(s, depth+1)
 	}
 	// An open schema in Valid mode may still carry extra keys (allowed); add some
 	// to exercise additionalProperties:true pass-throughs.
-	if open && mode == Valid && rapid.Bool().Draw(t, "extra_open") {
-		obj[unknownKey(t)] = genArbitraryJSON(t, depth+1)
+	if open && mode == Valid && s.Bool("extra_open") {
+		obj[unknownKey(s)] = genArbitraryJSON(s, depth+1)
 	}
 	return obj
 }
 
 // genArray generates an array value using the items subschema (or arbitrary JSON
 // when items is absent).
-func genArray(t *rapid.T, schema map[string]any, mode Mode, depth int) any {
+func genArray(s Source, schema map[string]any, mode Mode, depth int) any {
 	items := asSchemaMap(schema["items"])
-	n := rapid.IntRange(0, 4).Draw(t, "array_len")
+	n := s.IntRange(0, 4, "array_len")
 	out := make([]any, 0, n)
 	for i := 0; i < n; i++ {
 		if len(items) == 0 {
-			out = append(out, genArbitraryJSON(t, depth+1))
+			out = append(out, genArbitraryJSON(s, depth+1))
 			continue
 		}
-		out = append(out, genValue(t, items, mode, depth+1))
+		out = append(out, genValue(s, items, mode, depth+1))
 	}
 	return out
 }
@@ -173,41 +187,41 @@ var adversarialStrings = []string{
 	"\u00a0", "\ufeff", "\U0001f4a5", "a\x00b",
 }
 
-func genString(t *rapid.T, mode Mode) any {
-	if rapid.Bool().Draw(t, "string_corpus") {
-		return rapid.SampledFrom(adversarialStrings).Draw(t, "string_seed")
+func genString(s Source, mode Mode) any {
+	if s.Bool("string_corpus") {
+		return draw(s, adversarialStrings, "string_seed")
 	}
 	_ = mode
-	return rapid.String().Draw(t, "string")
+	return s.String("string")
 }
 
 // adversarialInts seeds the integer generator with boundary magnitudes.
 var adversarialInts = []int{0, 1, -1, 2, 100, -100, 1 << 31, -(1 << 31), 1 << 53}
 
-func genInteger(t *rapid.T, schema map[string]any, mode Mode) any {
+func genInteger(s Source, schema map[string]any, mode Mode) any {
 	lo, hi := intBounds(schema)
-	if mode == Adjacent && rapid.Bool().Draw(t, "int_boundary") {
+	if mode == Adjacent && s.Bool("int_boundary") {
 		// A fractional number is integer-adjacent: same numeric type, not an int.
-		return rapid.SampledFrom([]float64{0.5, -0.5, 1e308}).Draw(t, "int_frac")
+		return draw(s, []float64{0.5, -0.5, 1e308}, "int_frac")
 	}
 	corpus := inRangeInts(lo, hi)
-	if len(corpus) > 0 && rapid.Bool().Draw(t, "int_corpus") {
-		return rapid.SampledFrom(corpus).Draw(t, "int")
+	if len(corpus) > 0 && s.Bool("int_corpus") {
+		return draw(s, corpus, "int")
 	}
-	return rapid.IntRange(lo, hi).Draw(t, "int_range")
+	return s.IntRange(lo, hi, "int_range")
 }
 
 // adversarialFloats seeds the number generator with boundary magnitudes.
 var adversarialFloats = []float64{0, 1, -1, 0.5, -0.5, 3.14, 1e6, -1e6, 1e308}
 
-func genNumber(t *rapid.T, schema map[string]any, mode Mode) any {
+func genNumber(s Source, schema map[string]any, mode Mode) any {
 	_ = mode
 	lo, hi := floatBounds(schema)
 	corpus := inRangeFloats(lo, hi)
-	if len(corpus) > 0 && rapid.Bool().Draw(t, "num_corpus") {
-		return rapid.SampledFrom(corpus).Draw(t, "number")
+	if len(corpus) > 0 && s.Bool("num_corpus") {
+		return draw(s, corpus, "number")
 	}
-	return rapid.Float64Range(lo, hi).Draw(t, "num_range")
+	return s.Float64Range(lo, hi, "num_range")
 }
 
 func inRangeInts(lo, hi int) []int {
@@ -232,51 +246,51 @@ func inRangeFloats(lo, hi float64) []float64 {
 
 // genArbitraryJSON produces any JSON value, bounded by depth. Used for untyped
 // subschemas and additionalProperties:true pass-throughs.
-func genArbitraryJSON(t *rapid.T, depth int) any {
+func genArbitraryJSON(s Source, depth int) any {
 	kinds := []string{"string", "integer", "number", "boolean", "null"}
 	if depth < maxDepth {
 		kinds = append(kinds, "object", "array")
 	}
-	switch rapid.SampledFrom(kinds).Draw(t, "json_kind") {
+	switch draw(s, kinds, "json_kind") {
 	case "object":
-		n := rapid.IntRange(0, 3).Draw(t, "obj_len")
+		n := s.IntRange(0, 3, "obj_len")
 		m := map[string]any{}
 		for i := 0; i < n; i++ {
-			m[unknownKey(t)] = genArbitraryJSON(t, depth+1)
+			m[unknownKey(s)] = genArbitraryJSON(s, depth+1)
 		}
 		return m
 	case "array":
-		n := rapid.IntRange(0, 3).Draw(t, "arr_len")
+		n := s.IntRange(0, 3, "arr_len")
 		out := make([]any, 0, n)
 		for i := 0; i < n; i++ {
-			out = append(out, genArbitraryJSON(t, depth+1))
+			out = append(out, genArbitraryJSON(s, depth+1))
 		}
 		return out
 	case "integer":
-		return genInteger(t, nil, Valid)
+		return genInteger(s, nil, Valid)
 	case "number":
-		return genNumber(t, nil, Valid)
+		return genNumber(s, nil, Valid)
 	case "boolean":
-		return rapid.Bool().Draw(t, "json_bool")
+		return s.Bool("json_bool")
 	case "null":
 		return nil
 	default:
-		return genString(t, Valid)
+		return genString(s, Valid)
 	}
 }
 
 // genWrongType returns a value whose JSON kind is, where possible, NOT among the
 // schema's allowed types — a guaranteed type violation for a closed type set.
-func genWrongType(t *rapid.T, allowed []string) any {
+func genWrongType(s Source, allowed []string) any {
 	for _, kind := range []string{"boolean", "string", "array", "object", "null"} {
 		if !typeCovers(allowed, kind) {
 			switch kind {
 			case "boolean":
-				return rapid.Bool().Draw(t, "wt_bool")
+				return s.Bool("wt_bool")
 			case "string":
-				return genString(t, Adjacent)
+				return genString(s, Adjacent)
 			case "array":
-				return []any{genString(t, Valid)}
+				return []any{genString(s, Valid)}
 			case "object":
 				return map[string]any{"wrong": true}
 			case "null":
@@ -285,20 +299,20 @@ func genWrongType(t *rapid.T, allowed []string) any {
 		}
 	}
 	// Every common kind is allowed (very open schema): fall back to a number.
-	return genNumber(t, nil, Adjacent)
+	return genNumber(s, nil, Adjacent)
 }
 
 // genEnumViolation returns a value unlikely to be a member of enum.
-func genEnumViolation(t *rapid.T, enum []any) any {
+func genEnumViolation(s Source, enum []any) any {
 	candidates := []any{
 		"__not_in_enum__", "", 0, -1, true, false, nil,
 		map[string]any{}, []any{},
 	}
 	for _, c := range candidates {
 		if !containsAny(enum, c) {
-			// rapid needs a deterministic draw to stay reproducible; bias toward
-			// the sentinel string but let the seed pick among safe non-members.
-			if rapid.Bool().Draw(t, "enum_pick") {
+			// A deterministic draw keeps the rapid backend reproducible; bias toward
+			// the sentinel string but let the source pick among safe non-members.
+			if s.Bool("enum_pick") {
 				return c
 			}
 		}

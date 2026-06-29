@@ -6,8 +6,6 @@ import (
 	"math"
 	"reflect"
 	"sort"
-
-	"pgregory.net/rapid"
 )
 
 // Default numeric ranges for unbounded integer/number schemas. The integer
@@ -54,18 +52,18 @@ func additionalPropsAllowed(schema map[string]any) bool {
 // chooseType picks one type to generate from the allowed set. An empty set means
 // the schema is untyped, so any kind is fair game; at max depth the choice is
 // restricted to scalars to bound recursion.
-func chooseType(t *rapid.T, types []string, depth int) string {
+func chooseType(s Source, types []string, depth int) string {
 	if len(types) == 0 {
 		scalars := []string{"string", "integer", "number", "boolean", "null"}
 		if depth < maxDepth {
 			scalars = append(scalars, "object", "array")
 		}
-		return rapid.SampledFrom(scalars).Draw(t, "anytype")
+		return draw(s, scalars, "anytype")
 	}
 	if len(types) == 1 {
 		return types[0]
 	}
-	return rapid.SampledFrom(types).Draw(t, "uniontype")
+	return draw(s, types, "uniontype")
 }
 
 // asSchemaMap coerces a subschema value to map[string]any. JSON-decoded schemas
@@ -230,8 +228,8 @@ func toFloat(v any) (float64, bool) {
 
 // unknownKey draws a property name that is unlikely to collide with a declared
 // property, for additionalProperties exploration.
-func unknownKey(t *rapid.T) string {
-	return rapid.SampledFrom([]string{
+func unknownKey(s Source) string {
+	return draw(s, []string{
 		"__extra__", "x", "unexpected", "0", "$ref", "constructor", "__proto__",
-	}).Draw(t, "unknown_key")
+	}, "unknown_key")
 }
