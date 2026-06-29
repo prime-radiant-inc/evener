@@ -28,12 +28,11 @@ func FuzzSummarizeTool(f *testing.F) {
 		{"some_mcp__op", `{"a":"b","n":3,"flag":true}`},
 		{"", ""},
 		{"unknown", `not json`},
-		// NOTE: a task_list update element lacking a numeric "id"
-		// (e.g. `{"action":"update","updates":[{}]}`) currently PANICS via the
-		// unchecked m["id"].(float64) assertion in renderTaskUpdate. That seed is
-		// deliberately omitted so the corpus stays green; the no-panic oracle below
-		// still rediscovers the crash under `-fuzz` until the production bug is
-		// fixed (see report: id, _ := m["id"].(float64)).
+		// A task_list update element lacking a numeric "id" once panicked via an
+		// unchecked m["id"].(float64) assertion in renderTaskUpdate; the fix
+		// (idF, _ := m["id"].(float64)) makes it a no-op. Kept as a seed so the
+		// fix stays regression-guarded by the corpus, not only under -fuzz.
+		{"task_list", `{"action":"update","updates":[{}]}`},
 	}
 	for _, s := range seeds {
 		f.Add(s.tool, s.args)

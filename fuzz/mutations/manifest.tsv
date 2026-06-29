@@ -1,2 +1,3 @@
 frontmatter-determinism-naive	agent:FuzzFrontmatterParse	frontmatter-determinism-naive.patch	revert NaN-aware determinism check to reflect.DeepEqual (NaN!=NaN false-flags .nan)
 apptranscript-reload-echo-dup	.:FuzzHubReplayLiveVsReload	apptranscript-reload-echo-dup.patch	reload no longer collapses a communicate echo matching the assistant text (dup on reload)
+toolsummary-taskupdate-panic	.:FuzzSummarizeTool	toolsummary-taskupdate-panic.patch	unchecked m[id].(float64) in renderTaskUpdate panics on a task-update lacking a numeric id
