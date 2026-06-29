@@ -1,0 +1,13 @@
+diff --git a/agent/internal/frontmatter/parse_fuzz_test.go b/agent/internal/frontmatter/parse_fuzz_test.go
+index 03aedb88..c68bfd89 100644
+--- a/agent/internal/frontmatter/parse_fuzz_test.go
++++ b/agent/internal/frontmatter/parse_fuzz_test.go
+@@ -67,7 +67,7 @@ func FuzzFrontmatterParse(f *testing.F) {
+ 		// parse is perfectly deterministic — so a plain DeepEqual would
+ 		// false-flag any input that yields a NaN-valued field.
+ 		doc2, err2 := Parse(raw)
+-		if err2 != nil || doc.Body != doc2.Body || !yamlValueEqual(doc.Meta, doc2.Meta) {
++		if err2 != nil || !reflect.DeepEqual(doc, doc2) {
+ 			t.Fatalf("Parse not deterministic for %q", raw)
+ 		}
+ 	})
