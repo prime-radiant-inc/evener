@@ -1,6 +1,7 @@
 package jobstore
 
 import (
+	"bytes"
 	"encoding/json"
 	"strconv"
 	"testing"
@@ -459,6 +460,7 @@ func (m *seqModel) checkInvariants(rt *rapid.T, step int) {
 		rec := fold[jm.id]
 		if rec == nil {
 			rt.Fatalf("step %d: job %s missing from Fold", step, jm.id)
+			continue // rapid.T.Fatalf halts the test; continue satisfies nil-flow analysis.
 		}
 		if rec.Status != jm.status {
 			rt.Fatalf("step %d: job %s status=%s, model=%s", step, jm.id, rec.Status, jm.status)
@@ -486,6 +488,7 @@ func (m *seqModel) checkInvariants(rt *rapid.T, step int) {
 		d := delg[dm.id]
 		if d == nil {
 			rt.Fatalf("step %d: delegate %s missing from FoldDelegates", step, dm.id)
+			continue // rapid.T.Fatalf halts the test; continue satisfies nil-flow analysis.
 		}
 		if d.CurrentJobID != dm.currentJobID {
 			rt.Fatalf("step %d: delegate %s currentJob=%q, model=%q", step, dm.id, d.CurrentJobID, dm.currentJobID)
@@ -499,6 +502,7 @@ func (m *seqModel) checkInvariants(rt *rapid.T, step int) {
 			cur := fold[d.CurrentJobID]
 			if cur == nil {
 				rt.Fatalf("step %d: delegate %s currentJob %s absent from Fold", step, id, d.CurrentJobID)
+				continue // rapid.T.Fatalf halts the test; continue satisfies nil-flow analysis.
 			}
 			if cur.Status.IsTerminal() {
 				rt.Fatalf("step %d: delegate %s currentJob %s is terminal (%s) but still current", step, id, d.CurrentJobID, cur.Status)
@@ -511,6 +515,7 @@ func (m *seqModel) checkInvariants(rt *rapid.T, step int) {
 			l := fold[d.LatestJobID]
 			if l == nil {
 				rt.Fatalf("step %d: delegate %s latestJob %s absent from Fold", step, id, d.LatestJobID)
+				continue // rapid.T.Fatalf halts the test; continue satisfies nil-flow analysis.
 			}
 			if l.DelegateID != id {
 				rt.Fatalf("step %d: delegate %s latestJob %s points at delegate %q", step, id, d.LatestJobID, l.DelegateID)
@@ -525,6 +530,7 @@ func (m *seqModel) checkInvariants(rt *rapid.T, step int) {
 		w := watches[wm.id]
 		if w == nil {
 			rt.Fatalf("step %d: watch %s missing from FoldWatches", step, wm.id)
+			continue // rapid.T.Fatalf halts the test; continue satisfies nil-flow analysis.
 		}
 		if w.Active != wm.active {
 			rt.Fatalf("step %d: watch %s active=%v, model=%v", step, wm.id, w.Active, wm.active)
@@ -559,6 +565,7 @@ func (m *seqModel) checkInvariants(rt *rapid.T, step int) {
 		st := ws.Pending[key]
 		if st == nil {
 			rt.Fatalf("step %d: watch-send key %+v expected pending, absent", step, key)
+			continue // rapid.T.Fatalf halts the test; continue satisfies nil-flow analysis.
 		}
 		if st.UpdateSeq != seq {
 			rt.Fatalf("step %d: watch-send key %+v pending seq=%d, model=%d", step, key, st.UpdateSeq, seq)
@@ -612,5 +619,5 @@ func (m *seqModel) finalChecks(rt *rapid.T) {
 func marshalEqual(a, b any) (bool, string, string) {
 	ab, _ := json.Marshal(a)
 	bb, _ := json.Marshal(b)
-	return string(ab) == string(bb), string(ab), string(bb)
+	return bytes.Equal(ab, bb), string(ab), string(bb)
 }

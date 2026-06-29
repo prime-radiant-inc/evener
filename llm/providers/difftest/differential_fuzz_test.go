@@ -40,7 +40,7 @@ func driveStream(stream func(ctx context.Context, req llm.Request) (llm.Stream, 
 	acc := llm.NewStreamAccumulator()
 	for ev := range s.Events() {
 		if ev.Type == llm.StreamEventError {
-			return nil, fmt.Errorf("%s stream error: %v", srv.label, ev.Err)
+			return nil, fmt.Errorf("%s stream error: %w", srv.label, ev.Err)
 		}
 		acc.Process(ev)
 	}
