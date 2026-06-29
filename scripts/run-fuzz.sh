@@ -92,8 +92,8 @@ TARGETS=(
 	"llm:./providers/internal/openaichat:FuzzToolArgumentsString::openaichat.go#ToolArgumentsString"
 	"llm:./providers/internal/openaichat:FuzzParseChatUsage::openaichat.go#ParseChatUsage"
 	"llm:./providers/kimi:FuzzCountInputTokensResponse::adapter.go#CountInputTokens"
-	"auth:.:FuzzParseIDTokenClaims::claims.go#ParseIDTokenClaims"
-	"auth:.:FuzzTokenEndpointResponse::tokens.go"
+	"auth:./openai:FuzzParseIDTokenClaims::claims.go#ParseIDTokenClaims"
+	"auth:./openai:FuzzTokenEndpointResponse::tokens.go"
 )
 
 duration="60s"
