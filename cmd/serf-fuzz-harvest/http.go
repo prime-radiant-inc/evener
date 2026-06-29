@@ -5,32 +5,14 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"primeradiant.com/serf/internal/fuzzroutes"
 )
 
-// fuzzReadOnlyRoutes MUST stay in lockstep with the allowlist of the same name
-// in cmd/serf-hub/web_fuzz_test.go: FuzzWebHandler indexes it by routeIdx, so a
-// harvested (routeIdx, suffix) seed only addresses the right route if the order
-// here matches the target's. (The list lives in a _test file, unimportable from
-// this module, hence the deliberate copy.)
-var fuzzReadOnlyRoutes = []string{
-	"/",                          // 0
-	"/new",                       // 1
-	"/assets/",                   // 2
-	"/doc/file",                  // 3
-	"/manifest.webmanifest",      // 4
-	"/_partials/sidebar",         // 5
-	"/_partials/workspace/empty", // 6
-	"/_partials/workspace/spawn", // 7
-	"/_partials/s/",              // 8
-	"/_partials/settings",        // 9
-	"/s/",                        // 10
-	"/thread/",                   // 11
-	"/api/tree",                  // 12
-	"/api/health",                // 13
-	"/api/search",                // 14
-	"/api/sessions/",             // 15
-	"/settings",                  // 16
-}
+// fuzzReadOnlyRoutes is the canonical, order-significant hub-route allowlist
+// shared with FuzzWebHandler (cmd/serf-hub) via internal/fuzzroutes, so the
+// harvester's index reverse-mapping can't drift from the target's.
+var fuzzReadOnlyRoutes = fuzzroutes.ReadOnly
 
 // recordedHTTPRequest mirrors the hub HTTP recorder's JSONL line.
 type recordedHTTPRequest struct {
