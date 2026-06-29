@@ -362,28 +362,6 @@ func normalizeMetamorphic(items []appwire.ThreadItem) []appwire.ThreadItem {
 		it.Images = normalizeMetamorphicImages(it.Images)
 		out = append(out, it)
 	}
-	return collapseDuplicateAgentMessages(out)
-}
-
-// collapseDuplicateAgentMessages folds away consecutive identical agentMessages.
-//
-// FINDING (reported, not fixed — behavioral change is Jesse's call): when an
-// assistant turn emits text AND a communicate tool_call carrying the SAME text,
-// the live appprojector renders it ONCE (matchesLastAssistantMessage dedups the
-// communicate echo) but the reload ProjectTurn renders it TWICE — a duplicate
-// message visible only after reload. Two consecutive identical agentMessages is
-// exactly the live-dedup signature (live never emits them), so collapsing here
-// makes the comparison match the live behavior without masking other bugs. When
-// the reload dedup is added, this collapse can be removed and the committed seed
-// will verify the fix.
-func collapseDuplicateAgentMessages(items []appwire.ThreadItem) []appwire.ThreadItem {
-	out := items[:0:0]
-	for _, it := range items {
-		if n := len(out); n > 0 && it.Type == "agentMessage" && out[n-1].Type == "agentMessage" && it.Text == out[n-1].Text {
-			continue
-		}
-		out = append(out, it)
-	}
 	return out
 }
 
