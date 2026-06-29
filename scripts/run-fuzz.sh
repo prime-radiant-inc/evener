@@ -17,32 +17,41 @@
 #   scripts/run-fuzz.sh llm:FuzzParseSSE     # just the SSE target, 60s
 set -uo pipefail
 
-# Each entry is "module:package-relpath:FuzzName". module is the go.work module
-# dir; package-relpath is relative to that module.
+# Each entry is "module:package-relpath:FuzzName[:coverpkg[:focus]]". module is
+# the go.work module dir; package-relpath is relative to that module. The two
+# optional trailing fields are consumed only by the coverage tooling
+# (scripts/fuzz-coverage.sh + cmd/serf-fuzzcov), never by the campaign run below:
+#   coverpkg  go test -coverpkg value for the coverage replay; defaults to the
+#             package-relpath. Only FuzzToolArgsValidate overrides it, because its
+#             real SUT is agent/internal/tool, not the agent root package.
+#   focus     ";"-separated focus set — the decode/parse seam whose coverage % is
+#             the surface's primary, drivable-to-100 metric. Each spec is a file
+#             ("sse.go", relative to the SUT package dir) or a function
+#             ("adapter.go#decodeStream"). Empty means "the whole SUT package".
 TARGETS=(
-	"llm:.:FuzzParseSSE"
-	".:./appwire:FuzzMessageDecode"
-	".:./appwire:FuzzMethodParams"
-	".:./appwire:FuzzWireTypes"
-	"agent:.:FuzzToolArgsValidate"
-	"agent:./schema:FuzzSessionMetaRoundTrip"
-	"agent:./internal/jobstore:FuzzJobEventLogReplay"
-	"agent:.:FuzzTranscriptReplay"
-	".:./cmd/serf-hub:FuzzHubReplayCarryThrough"
-	".:./cmd/serf-hub:FuzzHubReplayLiveVsReload"
-	"llm:./providers/openai:FuzzOpenAIResponsesMetamorphic"
-	"llm:./providers/openai:FuzzOpenAIChatCompletionsMetamorphic"
-	"llm:./providers/anthropic:FuzzAnthropicStreamMetamorphic"
-	"llm:./providers/google:FuzzGeminiStreamMetamorphic"
-	"llm:./providers/openaicompat:FuzzOpenAICompatStreamMetamorphic"
-	".:./cmd/serf-hub:FuzzWebHandler"
+	"llm:.:FuzzParseSSE::sse.go"
+	".:./appwire:FuzzMessageDecode::jsonrpc.go"
+	".:./appwire:FuzzMethodParams::protocol.go"
+	".:./appwire:FuzzWireTypes::"
+	"agent:.:FuzzToolArgsValidate:./internal/tool,.:internal/tool/definitions.go"
+	"agent:./schema:FuzzSessionMetaRoundTrip::snapshot.go"
+	"agent:./internal/jobstore:FuzzJobEventLogReplay::fold.go"
+	"agent:.:FuzzTranscriptReplay::transcript_read.go"
+	".:./cmd/serf-hub:FuzzHubReplayCarryThrough::app_threadread.go#replayTurnToAgentTurn"
+	".:./cmd/serf-hub:FuzzHubReplayLiveVsReload::app_threadread.go#replayTurnToAgentTurn"
+	"llm:./providers/openai:FuzzOpenAIResponsesMetamorphic::responses.go#decodeResponsesStream"
+	"llm:./providers/openai:FuzzOpenAIChatCompletionsMetamorphic::chatcompletions.go#decodeChatCompletionsStream"
+	"llm:./providers/anthropic:FuzzAnthropicStreamMetamorphic::adapter.go#decodeStream"
+	"llm:./providers/google:FuzzGeminiStreamMetamorphic::adapter.go#decodeStream"
+	"llm:./providers/openaicompat:FuzzOpenAICompatStreamMetamorphic::adapter.go#decodeStream"
+	".:./cmd/serf-hub:FuzzWebHandler::web.go"
 	# 8.2 — codex-compat item + config decode targets.
-	".:./appwire:FuzzCodexItemDecode"
-	"llm:./providercfg:FuzzProvidersTOMLLoad"
-	".:./cmd/serf-hub/internal/launchconfig:FuzzLaunchConfigDecode"
-	"agent:./plugin:FuzzPluginManifestParse"
-	".:./internal/credentials:FuzzCredentialsStoreDecode"
-	"agent:./plugin:FuzzPluginLoad"
+	".:./appwire:FuzzCodexItemDecode::types.go"
+	"llm:./providercfg:FuzzProvidersTOMLLoad::load.go"
+	".:./cmd/serf-hub/internal/launchconfig:FuzzLaunchConfigDecode::io.go"
+	"agent:./plugin:FuzzPluginManifestParse::plugin.go#ParseManifest"
+	".:./internal/credentials:FuzzCredentialsStoreDecode::store.go"
+	"agent:./plugin:FuzzPluginLoad::plugin.go#Load"
 )
 
 duration="60s"
@@ -51,6 +60,7 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 		--time) duration="$2"; shift 2 ;;
 		--time=*) duration="${1#*=}"; shift ;;
+		--list) printf '%s\n' "${TARGETS[@]}"; exit 0 ;;
 		-h|--help) sed -n '2,20p' "$0"; exit 0 ;;
 		*) only+=("$1"); shift ;;
 	esac
@@ -69,7 +79,7 @@ want() {
 }
 
 for t in "${TARGETS[@]}"; do
-	IFS=: read -r module pkg name <<<"$t"
+	IFS=: read -r module pkg name cover focus <<<"$t"
 	want "$module:$name" || continue
 	echo "=== fuzzing $module:$name for $duration ==="
 	( cd "$repo_root/$module" && go test -run '^$' -fuzz "^${name}\$" -fuzztime "$duration" "$pkg" ) || fail=1
