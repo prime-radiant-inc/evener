@@ -127,12 +127,13 @@ type SessionConfig struct {
 	// default time.Sleep. A test-injection point (see LLMRetryPolicy above).
 	LLMSleep llm.SleepFunc `json:"-"`
 
-	// Clock is the session's sole source of time: every time.Now read, sleep,
+	// clock is the session's sole source of time: every time.Now read, sleep,
 	// timer, ticker, and watchdog in the turn / job / goal lifecycle routes
-	// through it. Nil defaults to clock.Real() (the standard library). Tests
-	// inject a deterministically-advanceable fake; not set by app callers and
-	// never persisted (json:"-").
-	Clock clock.Clock `json:"-"`
+	// through it. Nil defaults to clock.Real() (the standard library). It is
+	// unexported because the only injector is the package-internal fuzz harness
+	// (a deterministically-advanceable fake); production always uses Real(). It
+	// is never persisted.
+	clock clock.Clock
 
 	// ModelFallbacks is a literal-order chain of "provider/model" identifiers
 	// to try when the primary model returns a Permanent-class provider error
@@ -328,8 +329,8 @@ func (c *SessionConfig) applyDefaults() {
 	if c.LoopDetectionWindow <= 0 {
 		c.LoopDetectionWindow = 10
 	}
-	if c.Clock == nil {
-		c.Clock = clock.Real()
+	if c.clock == nil {
+		c.clock = clock.Real()
 	}
 }
 
