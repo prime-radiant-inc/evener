@@ -120,6 +120,71 @@ func TestDeterminism(t *testing.T) {
 	}
 }
 
+// TestByteSourceDeterminism is the byte-backed equivalent of TestDeterminism:
+// the same byte stream must always produce a byte-identical value (the property
+// a coverage-guided testing.F target's regression seeds depend on).
+func TestByteSourceDeterminism(t *testing.T) {
+	streams := [][]byte{
+		{},
+		{0x00},
+		{0xff, 0x01, 0x80, 0x42, 0x13, 0x37},
+		[]byte("the quick brown fox jumps over 0123456789"),
+	}
+	for name, schema := range fixtures {
+		for _, mode := range []Mode{Valid, Adjacent} {
+			for _, data := range streams {
+				a := Value(NewByteSource(data), schema, mode)
+				b := Value(NewByteSource(data), schema, mode)
+				if !reflect.DeepEqual(a, b) {
+					t.Fatalf("%s mode=%v data=%x not deterministic:\n a=%#v\n b=%#v",
+						name, mode, data, a, b)
+				}
+			}
+		}
+	}
+}
+
+// TestByteSourceValidConforms proves the byte-backed Source drives the SAME
+// generation rules as the rapid backend: every Valid value it produces, across
+// many byte streams, conforms to the schema.
+func TestByteSourceValidConforms(t *testing.T) {
+	for name, schema := range fixtures {
+		for seed := 0; seed < 300; seed++ {
+			data := pseudoBytes(seed, 64)
+			v := Value(NewByteSource(data), schema, Valid)
+			if ok, why := conforms(v, schema); !ok {
+				t.Fatalf("%s data=%x: byte-source valid value does not conform: %s\nvalue=%#v",
+					name, data, why, v)
+			}
+		}
+	}
+}
+
+// TestByteSourceExhaustionTerminates proves an empty stream still yields a
+// well-formed value for every fixture (the exhaustion-default path) rather than
+// looping or panicking.
+func TestByteSourceExhaustionTerminates(t *testing.T) {
+	for name, schema := range fixtures {
+		v := Value(NewByteSource(nil), schema, Valid)
+		if ok, why := conforms(v, schema); !ok {
+			t.Fatalf("%s: exhausted byte source produced non-conforming value: %s\nvalue=%#v",
+				name, why, v)
+		}
+	}
+}
+
+// pseudoBytes derives a deterministic byte stream from seed (a tiny LCG) so
+// byte-source tests sweep many distinct streams without a rapid dependency.
+func pseudoBytes(seed, n int) []byte {
+	x := uint64(seed)*2862933555777941757 + 3037000493
+	out := make([]byte, n)
+	for i := range out {
+		x = x*6364136223846793005 + 1442695040888963407
+		out[i] = byte(x >> 33)
+	}
+	return out
+}
+
 // TestEnum_ValidIsMember confirms enum-typed Valid values are always members.
 func TestEnum_ValidIsMember(t *testing.T) {
 	schema := map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}}
