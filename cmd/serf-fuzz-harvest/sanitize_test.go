@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A planted OpenAI key in a normal string value must be scrubbed away by
@@ -151,5 +152,30 @@ func TestShapeScrubDeterministicAndCollapsing(t *testing.T) {
 	again, _ := scrubJSON(a)
 	if !bytes.Equal(sa, again) {
 		t.Fatalf("scrub not deterministic:\n once=%s\n twice=%s", sa, again)
+	}
+}
+
+// TestShapeScrubKeepsTimestampsDecodable proves a timestamp leaf is scrubbed to
+// a valid RFC3339 instant (not an unparseable x-fill), so jobstore/transcript
+// seeds still decode and exercise their deeper oracles after scrubbing.
+func TestShapeScrubKeepsTimestampsDecodable(t *testing.T) {
+	in := []byte(`{"kind":"job_started","ts":"2026-06-01T10:00:01.123Z","note":"some private detail"}`)
+	out, err := scrubJSON(in)
+	if err != nil {
+		t.Fatalf("scrubJSON: %v", err)
+	}
+	var m struct {
+		Kind string `json:"kind"`
+		TS   string `json:"ts"`
+		Note string `json:"note"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("scrubbed JSON did not decode: %v\n %s", err, out)
+	}
+	if _, err := time.Parse(time.RFC3339, m.TS); err != nil {
+		t.Fatalf("scrubbed ts %q is not a valid RFC3339 timestamp: %v", m.TS, err)
+	}
+	if strings.Contains(string(out), "private detail") {
+		t.Fatalf("free-text value leaked through scrub: %s", out)
 	}
 }

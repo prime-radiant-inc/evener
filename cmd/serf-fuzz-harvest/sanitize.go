@@ -7,6 +7,7 @@ import (
 	"math"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Sanitizer turns recorded traffic into committable seed bytes. Its default
@@ -118,6 +119,9 @@ func scrubValue(key string, v any) any {
 		if enumKeys[key] {
 			return val
 		}
+		if isTimestamp(val) {
+			return scrubbedTimestamp
+		}
 		return placeholder(len(val))
 	case json.Number:
 		return scrubNumber(val)
@@ -125,6 +129,24 @@ func scrubValue(key string, v any) any {
 		// bool, nil — structurally meaningful, kept as-is.
 		return val
 	}
+}
+
+// scrubbedTimestamp is a fixed, structurally-valid RFC3339 instant substituted
+// for any timestamp-shaped string leaf. Length-bucketing a timestamp to "xxxx"
+// makes it unparseable, so a consumer that decodes times (jobstore Event,
+// transcript headers) rejects the whole seed and never reaches its deeper
+// fold/round-trip oracles. A fixed valid instant keeps the seed decodable while
+// carrying no real data.
+const scrubbedTimestamp = "2000-01-01T00:00:00Z"
+
+// isTimestamp reports whether s is an RFC3339 timestamp, so it can be replaced
+// with a valid placeholder instead of an unparseable x-fill.
+func isTimestamp(s string) bool {
+	if len(s) < 20 || len(s) > 40 {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339, s)
+	return err == nil
 }
 
 // placeholder returns a synthetic string sized to its length bucket so inputs
