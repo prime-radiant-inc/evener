@@ -1,5 +1,15 @@
 # Phase 8 — beyond coverage: dramatically improve the fuzzers' bug-finding
 
+> **Update (2026-06-29): EXECUTED — merged to main.** All four levers below shipped:
+> 8.1 internal invariants, 8.2 differential (golden · cross-provider · two-path ·
+> stream-vs-non-stream), 8.3 stateful (jobstore · compaction · hub-multi-session),
+> 8.4 structure-aware generators (appwire · transcript · all four provider SSE
+> streams) — finding **2 real decoder bugs** (anthropic streaming finish-reason,
+> gemini usage-on-finish-chunk). The supporting tail (8.5 dictionaries / OSS-Fuzz
+> seeds; continuous-fuzzing infra) was deliberately deferred as lower-value. This
+> is the original plan, preserved as written; for current usage see
+> [`docs/fuzzing.md`](../../fuzzing.md).
+
 **Status:** plan, ready to fan out. **Premise:** the 10× deeper campaign found *nothing
 new*. That is the **oracle ceiling, not the time ceiling** — more hours and more targets
 won't help. Almost every real bug we found came from the few *semantic* oracles
