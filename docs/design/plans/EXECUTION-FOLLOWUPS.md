@@ -27,3 +27,30 @@ is a quality/robustness refinement to schedule after the roadmap lands.
   search (T3 ~10²–10³ execs/s). Fine for the seed gate; the nightly/local search is
   slower but bounded. Consider a batched/no-sync test writer if search depth there
   matters.
+
+### 8.7 (local triage) tool-efficacy notes
+- **Rapid promoter targets are invisible to `run-fuzz.sh`.** `run-fuzz.sh`'s
+  `TARGETS` are all `testing.F` targets driven by `go test -fuzz`; the three rapid
+  promoter surfaces are `Test*` funcs driven by `rapid.Check` during ordinary
+  `go test`, so `fuzz-triage.sh` has to drive them with a separate hardcoded list.
+  The two-world split (Go-native vs promoter) costs a parallel code path in every
+  triage stage (discover, flake-guard, dedup, reproduce). A unified target registry
+  that tags each surface `native|rapid` and is consumed by `run-fuzz.sh`,
+  `fuzz-coverage.sh`, and `fuzz-triage.sh` alike would collapse that duplication —
+  the `--list` source-of-truth pattern already wants this.
+- **`SERF_FUZZ_PERSIST` can't use the `envvars` registry.** The portability
+  boundary (the `fuzz` module imports no serf package) means `promoter.PersistPaths`
+  reads the raw env string, and the `envvars_audit_test.go` "use a registry row"
+  check would actively reject registering it (the literal would then be flagged in
+  non-test code). Documented in `fuzz/README.md` instead. If more toolkit-internal
+  env vars appear, consider an audit-test allowlist for the `fuzz/` module so they
+  can still be registered for discoverability.
+- **No remote/`gh` here means the PR-open path is self-test-only.** The PR push +
+  `gh pr create` tail is covered by stubbed-`gh` + throwaway-git scenarios, never a
+  live PR. A developer's first real `--no-pr` run is the right smoke test before
+  trusting the default PR mode; worth calling out in onboarding.
+- **Corpus promotion is best-effort and lightly tested.** Copying Go's fuzz-cache
+  entries into `testdata/fuzz` depends on `go env GOCACHE` + `go list` import-path
+  layout, which is brittle across toolchain versions and can't be exercised without
+  a real search. It no-ops safely when the cache is absent, but real minimization
+  (vs. a raw diversity cap) is a follow-up.
