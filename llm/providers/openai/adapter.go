@@ -16,6 +16,7 @@ import (
 
 	authopenai "primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
@@ -997,5 +998,8 @@ func parseUsage(u map[string]any) llm.Usage {
 		ct := cachedRead
 		usage.CacheReadTokens = &ct
 	}
+	// InputTokens is new uncached input; the input-minus-cached subtraction above
+	// is clamped at zero, so a negative value would mean that clamp regressed.
+	invariant.Hold(usage.InputTokens >= 0, "openai parseUsage produced negative InputTokens: %d", usage.InputTokens)
 	return usage
 }

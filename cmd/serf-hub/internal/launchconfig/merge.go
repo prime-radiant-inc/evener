@@ -208,8 +208,9 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 		// ModelFallbacks: higher-precedence layers REPLACE rather than append.
 		// A user explicitly setting a fallback chain at the launch layer means
 		// "use this exact chain", not "extend the global default chain."
-		if len(l.ModelFallbacks) > 0 || l.ModelFallbacksSet {
-			eff.ModelFallbacks = append(make([]string, 0, len(l.ModelFallbacks)), l.ModelFallbacks...)
+		if l.ModelFallbacks != nil {
+			cp := append([]string{}, (*l.ModelFallbacks)...)
+			eff.ModelFallbacks = &cp
 			prov["model_fallbacks"] = name
 			nonEmpty = true
 		}

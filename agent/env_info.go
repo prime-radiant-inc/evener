@@ -1,15 +1,14 @@
 package agent
 
 import (
-	"time"
-
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/schema"
 )
 
 // envInfoFromEnv builds a schema.EnvironmentInfo from the execution environment,
-// stamping today's date and the detected workspace layout.
-func envInfoFromEnv(env execenv.ExecutionEnvironment) schema.EnvironmentInfo {
+// stamping today's date (read from clk) and the detected workspace layout.
+func envInfoFromEnv(env execenv.ExecutionEnvironment, clk clock.Clock) schema.EnvironmentInfo {
 	wd := ""
 	plat := ""
 	osv := ""
@@ -22,7 +21,7 @@ func envInfoFromEnv(env execenv.ExecutionEnvironment) schema.EnvironmentInfo {
 		WorkingDir: wd,
 		Platform:   plat,
 		OSVersion:  osv,
-		Today:      time.Now().UTC().Format("2006-01-02"),
+		Today:      clk.Now().UTC().Format("2006-01-02"),
 		Workspace:  ScanWorkspace(wd),
 	}
 }

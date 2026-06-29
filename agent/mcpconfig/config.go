@@ -66,6 +66,9 @@ func LoadFile(path string) ([]ServerConfig, error) {
 func ParseServerMap(servers map[string]json.RawMessage, source string) ([]ServerConfig, error) {
 	var configs []ServerConfig
 	for name, raw := range servers {
+		if strings.TrimSpace(name) == "" {
+			return nil, fmt.Errorf("MCP server name must not be empty in %s", source)
+		}
 		var sj mcpServerJSON
 		if err := json.Unmarshal(raw, &sj); err != nil {
 			return nil, fmt.Errorf("parsing MCP server %q in %s: %w", name, source, err)

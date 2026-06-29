@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/internal/diagnostic"
+	"primeradiant.com/serf/invariant"
 )
 
 type AppNotification struct {
@@ -679,6 +680,10 @@ func skillActivationRaw(name string) json.RawMessage {
 }
 
 func (p *AppEventProjector) notification(method string, params any) AppNotification {
+	// Every notification carries an AppWire method name the hub routes on. The
+	// callers all pass a non-empty appwire.Notify* constant; an empty method
+	// would produce an unroutable wire frame.
+	invariant.Hold(method != "", "appprojector: notification with empty method (threadID=%q)", p.threadID)
 	return AppNotification{ThreadID: p.threadID, Method: method, Params: params}
 }
 
@@ -908,6 +913,10 @@ func (p *AppEventProjector) startTurn() string {
 	}
 	p.assistantItem = ""
 	p.assistantText = ""
+	// startTurn always yields a usable turn id (a promoted reservation or a
+	// freshly minted turn_N); the item-emitting paths rely on activeTurnID being
+	// non-empty after this returns.
+	invariant.Hold(p.activeTurnID != "", "appprojector: startTurn left activeTurnID empty")
 	return p.activeTurnID
 }
 

@@ -99,7 +99,7 @@ func TestBuildResumeArgsOmitAmbientModelKnobs(t *testing.T) {
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
 			Model:           "openai/gpt-env",
 			FastCheapModel:  "openai/gpt-4.1-nano",
-			ModelFallbacks:  []string{"openai/gpt-fallback"},
+			ModelFallbacks:  &[]string{"openai/gpt-fallback"},
 			Agent:           "default",
 			ReasoningEffort: "medium",
 			MaxRounds:       &maxRounds,

@@ -32,8 +32,7 @@ type Layer struct {
 	SystemPromptAppendFile      string            `toml:"system_prompt_append_file,omitempty"`
 	SystemPromptAppendText      string            `toml:"system_prompt_append_text,omitempty"`
 	SystemPromptAppend          []string          `toml:"system_prompt_append,omitempty"`
-	ModelFallbacks              []string          `toml:"model_fallbacks,omitempty"`
-	ModelFallbacksSet           bool              `toml:"-" json:"-"`
+	ModelFallbacks              *[]string         `toml:"model_fallbacks,omitempty"`
 	MCPs                        []MCPServerSpec   `toml:"mcps,omitempty"`
 	Env                         map[string]string `toml:"env,omitempty"`
 	Verbose                     *bool             `toml:"verbose,omitempty"`

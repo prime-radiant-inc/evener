@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providers/internal/openaichat"
 )
@@ -1087,5 +1088,8 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 	if u, ok := raw["usage"].(map[string]any); ok {
 		r.Usage = parseUsage(u)
 	}
+	// The status switch above assigns one of a fixed set of non-empty reasons in
+	// every branch, so a decoded response always carries a finish reason.
+	invariant.Hold(r.Finish.Reason != "", "fromResponses produced an empty finish reason (status %q)", status)
 	return r
 }

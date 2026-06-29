@@ -279,10 +279,15 @@ func parseAllowedDecisions(raw string) []string {
 	if strings.HasPrefix(raw, "[") {
 		var keys []string
 		if err := json.Unmarshal([]byte(raw), &keys); err == nil && len(keys) > 0 {
-			return keys
+			return trimNonEmpty(keys)
 		}
 	}
-	parts := strings.Split(raw, ",")
+	return trimNonEmpty(strings.Split(raw, ","))
+}
+
+// trimNonEmpty trims each element and drops the empties, so the JSON and CSV
+// forms of an allowed-decisions list normalize identically.
+func trimNonEmpty(parts []string) []string {
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		p = strings.TrimSpace(p)

@@ -520,7 +520,14 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		subProfile = provider.WithCommunicateOutputSchema(subProfile, schema)
 	}
 
-	subSess, err := NewSession(s.client, subProfile, subEnv, subCfg)
+	// Each child gets its own client when a factory is injected (the fuzz
+	// harness's per-child adapter seam); production leaves it nil and shares the
+	// parent's client.
+	childClient := s.client
+	if factory := s.cfg.testOnly.childClientFactory; factory != nil {
+		childClient = factory()
+	}
+	subSess, err := NewSession(childClient, subProfile, subEnv, subCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -576,7 +583,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		return nil, errTreeAtCapacity
 	}
 
-	now := time.Now()
+	now := s.sclock().Now()
 	sub := &subagent{
 		id:           subSess.id,
 		sess:         subSess,
@@ -728,7 +735,7 @@ func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, er
 	// sendersWG under s.mu (gated on closing) so it joins the same teardown
 	// barrier as the initial spawn.
 	runCtx, runCancel := context.WithCancel(context.Background())
-	resumeTime := time.Now()
+	resumeTime := s.sclock().Now()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -880,7 +887,7 @@ func (s *Session) cancelAgent(agentID string) (any, error) {
 	}
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-s.sclock().After(5 * time.Second):
 		return "", fmt.Errorf("timed out cancelling subagent %s", agentID)
 	}
 	sub.mu.Lock()
@@ -944,7 +951,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	a.sess.mu.Unlock()
 
 	runProvenance := a.followUpProvenance(inputProvenance)
-	finalizeTime := time.Now()
+	finalizeTime := a.sess.sclock().Now()
 	a.mu.Lock()
 	a.result = res
 	a.err = err

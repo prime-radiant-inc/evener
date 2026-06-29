@@ -10,6 +10,7 @@ import (
 
 type WSTransport struct {
 	conn *websocket.Conn
+	rec  *FrameRecorder // nil unless SERF_RECORD_APPWIRE selected recording
 }
 
 const appWireWebSocketReadLimit = 128 << 20
@@ -32,7 +33,7 @@ func DialWebSocketWithHeaders(ctx context.Context, url string, client *http.Clie
 
 func NewWSTransport(conn *websocket.Conn) *WSTransport {
 	conn.SetReadLimit(appWireWebSocketReadLimit)
-	return &WSTransport{conn: conn}
+	return &WSTransport{conn: conn, rec: appwireFrameRecorder}
 }
 
 func (t *WSTransport) Send(ctx context.Context, msg Message) error {
@@ -40,6 +41,7 @@ func (t *WSTransport) Send(ctx context.Context, msg Message) error {
 	if err != nil {
 		return err
 	}
+	t.rec.RecordSend(data)
 	return t.conn.Write(ctx, websocket.MessageText, data)
 }
 
@@ -48,6 +50,7 @@ func (t *WSTransport) Recv(ctx context.Context) (Message, error) {
 	if err != nil {
 		return Message{}, err
 	}
+	t.rec.RecordRecv(data)
 	var msg Message
 	if err := json.Unmarshal(data, &msg); err != nil {
 		return Message{}, err

@@ -555,7 +555,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	roundCap := goalRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 
 	for round := 0; roundCap < 0 || round < roundCap; round++ {
-		roundStart := time.Now()
+		roundStart := s.sclock().Now()
 		var timings events.RoundTimings
 		timings.Round = round
 
@@ -577,7 +577,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		// --- Phase: LLMCall ---
-		tPhaseStart := time.Now()
+		tPhaseStart := s.sclock().Now()
 
 		s.noteParentJobActivity(jobPhaseAwaitingModel)
 		modelResp, req, attempt, err := s.callModelWithFallback(ctx, profile, req, reqEffort, round)
@@ -708,7 +708,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		// --- Phase: ToolExec ---
-		tPhaseStart = time.Now()
+		tPhaseStart = s.sclock().Now()
 
 		// Execute tool calls (possibly in parallel) and send results back.
 		s.noteParentJobActivity(jobPhaseToolRunning)
@@ -720,7 +720,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		timings.ToolExec = time.Since(tPhaseStart)
 
 		// --- Phase: Persistence ---
-		tPhaseStart = time.Now()
+		tPhaseStart = s.sclock().Now()
 
 		if persistErr := s.persistToolResults(ctx, calls, results); persistErr != nil {
 			return "", progressed, persistErr
@@ -729,7 +729,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		timings.Persistence = time.Since(tPhaseStart)
 
 		// --- Phase: AfterAction ---
-		tPhaseStart = time.Now()
+		tPhaseStart = s.sclock().Now()
 
 		// Notify the context strategy that a tool round completed.
 		if afterErr := s.notifyStrategyAfterAction(ctx); afterErr != nil {

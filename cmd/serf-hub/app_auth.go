@@ -40,6 +40,15 @@ type hubAuthController struct {
 	deviceFlows map[string]deviceFlow
 }
 
+// hubAuthControllerSetup, when non-nil, is invoked on every hub auth controller
+// built by newHubAuthControllerWithStore (the constructor newHubAppServer uses),
+// just before it is returned. It exists solely so a fuzz/test sandbox can
+// redirect the controller's real-machine seams — the OAuth state directory, the
+// credentials store, and the device/login HTTP calls — into a contained
+// environment before any handler runs. Production leaves it nil, so the
+// controller is byte-for-byte identical to before this hook existed.
+var hubAuthControllerSetup func(*hubAuthController)
+
 type hubAuthFlow struct {
 	Provider     string
 	State        string
@@ -94,7 +103,7 @@ func newHubAuthControllerWithStore(_ string, store *credentials.Store) *hubAuthC
 	if store == nil {
 		store, _ = credentials.LoadStore(filepath.Join(filepath.Dir(stateDir), "credentials.toml"))
 	}
-	return &hubAuthController{
+	c := &hubAuthController{
 		stateDir:          stateDir,
 		authEnv:           authEnv,
 		creds:             store,
@@ -108,6 +117,10 @@ func newHubAuthControllerWithStore(_ string, store *credentials.Store) *hubAuthC
 		flows:             map[string]hubAuthFlow{},
 		deviceFlows:       map[string]deviceFlow{},
 	}
+	if hubAuthControllerSetup != nil {
+		hubAuthControllerSetup(c)
+	}
+	return c
 }
 
 func (c *hubAuthController) Status(params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {

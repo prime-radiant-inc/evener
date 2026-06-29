@@ -1,0 +1,45 @@
+# Shared gitleaks ruleset for serf.
+#
+# Used by `make secret-scan` (whole repo) and `make fuzz-corpus-scan` (the fuzz
+# seed corpora the harvester writes). The harvester's write-time barrier shells
+# out to the same engine, so the writer and the repo gate cannot drift.
+#
+# It extends gitleaks' built-in rules and allowlists the deliberately-planted
+# FAKE secrets in the fuzz test fixtures (which prove the scrubber strips a real
+# key) plus the shape-scrubbed seed corpora (all placeholders / structural enum
+# values — never real secrets by construction).
+
+title = "serf"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "fuzz-toolkit test fixtures and shape-scrubbed seed corpora"
+
+# Deliberately-planted fake keys in the sanitizer/harvester adversarial tests,
+# plus pre-existing non-secret content the generic-api-key rule mis-flags: a
+# domain-separation scope label in production code, a benign test phrase, and the
+# fake "sk-LIVETEST…" key used in subagent test fixtures and design docs.
+regexTarget = "match"
+regexes = [
+  '''sk-proj-PLANT3D[A-Za-z0-9]+''',
+  '''sk-proj-abcdefABCDEF[A-Za-z0-9]+''',
+  '''sk-ant-api03-abcdefABCDEF[A-Za-z0-9]+''',
+  '''AIzaSyA1234567890123456789012345678901234''',
+  '''FUZZ-OUT-OF-ROOT-SECRET[A-Za-z0-9-]+''',
+  '''serf-continuation-scope-v1''', # domain-separation label in llm/continuation_secret.go, not a secret
+  '''observation/drains''',         # benign phrase mis-flagged in agent/job_delegate_send_test.go
+  '''sk-LIVETEST[0-9a-f]*''',       # fake illustrative key in subagent fixtures + design docs
+]
+
+# The seed corpora are deliberately NOT path-allowlisted: that would make
+# `make fuzz-corpus-scan` (which points gitleaks AT testdata/fuzz) a no-op. The
+# corpora are shape-scrubbed (placeholders / structural enums), and the regexes
+# above allowlist the few deliberately-planted fake keys, so the corpus scan
+# genuinely verifies no real secret was committed.
+# docs/superpowers/** are internal design/planning docs that carry illustrative
+# example keys (e.g. the package path "internal/hubapi" the generic rule trips on).
+paths = [
+  '''docs/superpowers/.*''',
+]

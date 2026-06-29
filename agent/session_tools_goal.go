@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/goal"
@@ -55,7 +54,7 @@ func registerGoalTools(reg *tool.Registry, deps *toolDeps) {
 				return nil, fmt.Errorf("update_goal: invalid status %q (must be \"complete\" or \"blocked\")", statusStr)
 			}
 
-			if !store.SetTerminal(st, "", time.Now()) {
+			if !store.SetTerminal(st, "", deps.now()) {
 				return tool.StateResult{Output: "No active goal to update."}, nil
 			}
 

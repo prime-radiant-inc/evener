@@ -123,6 +123,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		delegationAllowance:           delegationAllowance,
 		treeCounter:                   tc,
 		env:                           env,
+		clock:                         cfg.clock,
 		stateDir:                      cfg.StateDir,
 		installID:                     installid.LoadOrCreateInstallationID(cfg.StateDir),
 		state:                         SessionIdle,
@@ -149,6 +150,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	jm.wake = s.notify
 	jm.emit = s.emitWithProvenance
 	jm.currentProvenance = s.activeCausalProvenance
+	jm.clock = s.clock
+	jm.now = s.clock.Now
 	s.jobManager = jm
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, true)
@@ -193,7 +196,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			ParentSessionID:  cfg.spawn.parentSessionID,
 			ParentToolCallID: cfg.spawn.parentToolCallID,
 			Task:             cfg.spawn.subagentTask,
-			CreatedAt:        time.Now().UTC(),
+			CreatedAt:        s.sclock().Now().UTC(),
 			ProfileID:        profile.ID(),
 			Model:            profile.Model(),
 			WorkingDir:       s.envInfo.WorkingDir,
@@ -348,6 +351,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		delegationAllowance: delegationAllowance,
 		treeCounter:         tc,
 		env:                 env,
+		clock:               cfg.clock,
 		stateDir:            cfg.StateDir,
 		installID:           installid.LoadOrCreateInstallationID(cfg.StateDir),
 		state:               SessionIdle,
@@ -386,6 +390,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	jm.wake = s.notify
 	jm.emit = s.emitWithProvenance
 	jm.currentProvenance = s.activeCausalProvenance
+	jm.clock = s.clock
+	jm.now = s.clock.Now
 	s.jobManager = jm
 	if !restoreCfg.deferRestoreSideEffects {
 		if err := jm.reconcileLostJobs(); err != nil {
@@ -503,7 +509,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 // The Session struct fields (client, profile, env, cfg) must already be set.
 // Returns the prompt sources so the caller can emit events after SessionStart.
 func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) ([]promptSource, error) {
-	ei := envInfoFromEnv(s.env)
+	ei := envInfoFromEnv(s.env, s.sclock())
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
 	if inRepo, branch, mod, untracked, commits := snapshotGit(s.env, ei.WorkingDir); inRepo {
 		ei.IsGitRepo = true

@@ -9,7 +9,10 @@ require (
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	gopkg.in/yaml.v3 v3.0.1
+	pgregory.net/rapid v1.3.0
 	primeradiant.com/serf/auth v0.0.0
+	primeradiant.com/serf/fuzz v0.0.0
+	primeradiant.com/serf/invariant v0.0.0
 	primeradiant.com/serf/llm v0.0.0
 )
 

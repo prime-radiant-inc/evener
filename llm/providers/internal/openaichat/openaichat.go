@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 
+	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
 )
 
@@ -104,5 +105,8 @@ func ParseChatUsage(raw map[string]any) llm.Usage {
 	if cachedRead > 0 {
 		usage.CacheReadTokens = &cachedRead
 	}
+	// InputTokens is new uncached input; the prompt-minus-cached subtraction above
+	// is clamped at zero, so a negative value would mean that clamp regressed.
+	invariant.Hold(usage.InputTokens >= 0, "ParseChatUsage produced negative InputTokens: %d", usage.InputTokens)
 	return usage
 }

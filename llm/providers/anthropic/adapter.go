@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/transport"
@@ -546,6 +547,9 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 							if args == "" {
 								args = "{}"
 							}
+							// Empty tool arguments are normalized to "{}" just above, so an
+							// assembled tool call always carries a non-empty arguments string.
+							invariant.Hold(args != "", "anthropic assembled tool call %q has empty arguments", st.toolID)
 							parts = append(parts, llm.ContentPart{
 								Kind: llm.ContentToolCall,
 								ToolCall: &llm.ToolCallData{

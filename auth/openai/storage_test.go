@@ -304,3 +304,18 @@ func TestAuthRecordValidateAcceptsEmptyProvider(t *testing.T) {
 		t.Fatalf("Validate() error = %v, want nil for empty provider", err)
 	}
 }
+
+// TestAuthFilePathContainsTraversal pins that AuthFilePath cannot be steered
+// outside the auth dir by a name carrying path separators or "..": the result
+// always sits directly under <stateDir>/auth. Defense-in-depth for the
+// serf/instance/remove traversal fix.
+func TestAuthFilePathContainsTraversal(t *testing.T) {
+	stateDir := "/var/lib/serf"
+	authDir := filepath.Join(stateDir, authDirName)
+	for _, name := range []string{"../../canary", "../escape", "a/b/c", "/abs/path", "openai"} {
+		got := AuthFilePath(stateDir, name)
+		if filepath.Dir(got) != authDir {
+			t.Errorf("AuthFilePath(%q) = %q; want a file directly under %q", name, got, authDir)
+		}
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/transport"
@@ -483,6 +484,9 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 						} else if r.Finish.Reason == "" {
 							r.Finish = llm.FinishReason{Reason: "stop"}
 						}
+						// The branches above force a tool_calls or stop fallback, so a
+						// finished google response always carries a finish reason.
+						invariant.Hold(r.Finish.Reason != "", "google finished response has an empty finish reason")
 						rp := r
 						if sseBuf != nil {
 							rp.RawRequestBody = rawReqBody

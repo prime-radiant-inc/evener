@@ -1,0 +1,3 @@
+go test fuzz v1
+int(1)
+[]byte("{\"await_reply\":false,\"message\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"output\":{\"artifacts\":[\"xxxxxxxx\"],\"data\":{\"content\":\"xxxxxxxx\",\"file_path\":\"xxxxxxxx\"},\"message\":\"\"}}")

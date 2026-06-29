@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+
+	"primeradiant.com/serf/invariant"
 )
 
 type MessageKind int
@@ -37,6 +39,10 @@ func (id *ID) UnmarshalJSON(data []byte) error {
 		return errors.New("request id must not be null")
 	}
 	id.raw = append(id.raw[:0], data...)
+	// A successful decode rejected empty and null above, so raw now holds the
+	// id token. Int64/String and the marshal-omits-empty-id logic all depend on
+	// raw being non-empty for a decoded id.
+	invariant.Hold(len(id.raw) > 0, "appwire: ID.UnmarshalJSON left raw empty after accepting %q", data)
 	return nil
 }
 
@@ -70,9 +76,41 @@ type Response struct {
 	Result any `json:"result"`
 }
 
+// MarshalJSON omits the id field when the id is empty so an id-less frame
+// received off the wire round-trips faithfully. ID.MarshalJSON would otherwise
+// render an empty id as `null`, which ID.UnmarshalJSON rejects — leaving the
+// codec unable to re-read its own output. A frame built with a real id is
+// unaffected (identical bytes and field order).
+func (r Response) MarshalJSON() ([]byte, error) {
+	if len(r.ID.raw) == 0 {
+		return json.Marshal(struct {
+			Result any `json:"result"`
+		}{r.Result})
+	}
+	return json.Marshal(struct {
+		ID     ID  `json:"id"`
+		Result any `json:"result"`
+	}{r.ID, r.Result})
+}
+
 type ErrorResponse struct {
 	ID    ID        `json:"id"`
 	Error WireError `json:"error"`
+}
+
+// MarshalJSON omits the id field when the id is empty, mirroring Response: an
+// id-less error frame must round-trip rather than re-encode to an unreadable
+// `null` id.
+func (e ErrorResponse) MarshalJSON() ([]byte, error) {
+	if len(e.ID.raw) == 0 {
+		return json.Marshal(struct {
+			Error WireError `json:"error"`
+		}{e.Error})
+	}
+	return json.Marshal(struct {
+		ID    ID        `json:"id"`
+		Error WireError `json:"error"`
+	}{e.ID, e.Error})
 }
 
 type Message struct {
@@ -151,6 +189,25 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		m.Notification = &notif
 	default:
 		return errors.New("invalid JSON-RPC message")
+	}
+	// Every non-error branch above populates exactly one frame pointer, so a
+	// cleanly decoded Message has a single populated field and Kind() resolves it
+	// unambiguously.
+	if invariant.Enabled {
+		set := 0
+		if m.Request != nil {
+			set++
+		}
+		if m.Notification != nil {
+			set++
+		}
+		if m.Response != nil {
+			set++
+		}
+		if m.Error != nil {
+			set++
+		}
+		invariant.Hold(set == 1, "appwire: decoded Message has %d populated frames, want exactly 1", set)
 	}
 	return nil
 }

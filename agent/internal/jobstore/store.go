@@ -24,6 +24,12 @@ type Store struct {
 	f      *os.File
 	seq    int64
 	closed bool
+
+	// disableSync, when set, skips the per-append fsync. It exists ONLY for the
+	// coverage-guided fuzzer (openNoSync), whose search is otherwise fsync-bound;
+	// production opens via Open, which leaves this false, so the durable write
+	// path is unchanged. The on-disk bytes are identical either way.
+	disableSync bool
 }
 
 // Open opens (creating if needed) the jobs.jsonl at path and recovers the next
@@ -67,7 +73,7 @@ func (s *Store) Append(e Event) error {
 	if err := s.writeLineLocked(append(b, '\n')); err != nil {
 		return s.appendFailureLocked("write event", err, startOffset)
 	}
-	if err := s.f.Sync(); err != nil {
+	if err := s.syncLocked(); err != nil {
 		return s.appendFailureLocked("sync event", err, startOffset)
 	}
 	s.seq = nextSeq
@@ -103,7 +109,7 @@ func (s *Store) AppendBatch(events []Event) error {
 			return s.appendFailureLocked("write event", err, startOffset)
 		}
 	}
-	if err := s.f.Sync(); err != nil {
+	if err := s.syncLocked(); err != nil {
 		return s.appendFailureLocked("sync event", err, startOffset)
 	}
 	s.seq = nextSeq
@@ -312,7 +318,7 @@ func (s *Store) recoverTrailingJSONLineLocked(line []byte, offset int64) error {
 	if _, err := s.f.Seek(0, io.SeekEnd); err != nil {
 		return fmt.Errorf("jobstore: seek after trailing recovery: %w", err)
 	}
-	if err := s.f.Sync(); err != nil {
+	if err := s.syncLocked(); err != nil {
 		return fmt.Errorf("jobstore: sync trailing recovery: %w", err)
 	}
 	return nil
@@ -325,7 +331,7 @@ func (s *Store) finishTrailingJSONLineLocked() error {
 	if err := s.writeLineLocked([]byte{'\n'}); err != nil {
 		return fmt.Errorf("jobstore: terminate trailing event: %w", err)
 	}
-	if err := s.f.Sync(); err != nil {
+	if err := s.syncLocked(); err != nil {
 		return fmt.Errorf("jobstore: sync trailing recovery: %w", err)
 	}
 	return nil
@@ -361,6 +367,15 @@ func (s *Store) ensureOpenLocked() error {
 	return nil
 }
 
+// syncLocked fsyncs the underlying file, unless the store was opened with sync
+// disabled (the fuzz-only fast path). Production stores always sync.
+func (s *Store) syncLocked() error {
+	if s.disableSync {
+		return nil
+	}
+	return s.f.Sync()
+}
+
 func (s *Store) writeLineLocked(line []byte) error {
 	for len(line) > 0 {
 		n, err := s.f.Write(line)
@@ -387,7 +402,7 @@ func (s *Store) rollbackAppendLocked(startOffset int64) error {
 	_, seekErr := s.f.Seek(0, io.SeekEnd)
 	syncErr := error(nil)
 	if truncateErr == nil && seekErr == nil {
-		syncErr = s.f.Sync()
+		syncErr = s.syncLocked()
 	}
 	if truncateErr != nil && seekErr != nil {
 		return fmt.Errorf("truncate to %d: %w; seek eof: %w", startOffset, truncateErr, seekErr)

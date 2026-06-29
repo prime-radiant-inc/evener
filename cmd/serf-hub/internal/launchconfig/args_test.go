@@ -32,7 +32,7 @@ func TestToArgs_AllFields(t *testing.T) {
 		PluginDirs:                  []string{"/p"},
 		MCPConfigs:                  []string{"/m.json"},
 		SystemPromptAppend:          []string{"/sp"},
-		ModelFallbacks:              []string{"openai/gpt-5.4", "anthropic/claude-haiku-4-5"},
+		ModelFallbacks:              &[]string{"openai/gpt-5.4", "anthropic/claude-haiku-4-5"},
 		MCPs: []MCPServerSpec{
 			{Name: "github", Command: "gh-mcp", Args: []string{"--token-from-env", "GITHUB_TOKEN"}},
 		},

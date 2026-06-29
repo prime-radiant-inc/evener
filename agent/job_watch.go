@@ -2550,12 +2550,12 @@ func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-
 	interval := time.Duration(cfg.progressIntervalMS) * time.Millisecond
 
 	go func() {
-		ticker := time.NewTicker(interval)
+		ticker := jm.clock.NewTicker(interval)
 		defer ticker.Stop()
 
 		for {
 			select {
-			case <-ticker.C:
+			case <-ticker.C():
 				if !jm.fireProgressTick(key, cfg) {
 					return
 				}
@@ -2652,11 +2652,11 @@ func (jm *jobManager) startQuietWatchdog(jobID string, stop <-chan struct{}) {
 	window := jm.quietWindow
 	checkInterval := jm.quietCheckInterval
 	go func() {
-		ticker := time.NewTicker(checkInterval)
+		ticker := jm.clock.NewTicker(checkInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ticker.C:
+			case <-ticker.C():
 				if !jm.fireQuietWatchdogTick(jobID, window) {
 					return
 				}

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/contextmgr"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
@@ -126,6 +127,14 @@ type SessionConfig struct {
 	// default time.Sleep. A test-injection point (see LLMRetryPolicy above).
 	LLMSleep llm.SleepFunc `json:"-"`
 
+	// clock is the session's sole source of time: every time.Now read, sleep,
+	// timer, ticker, and watchdog in the turn / job / goal lifecycle routes
+	// through it. Nil defaults to clock.Real() (the standard library). It is
+	// unexported because the only injector is the package-internal fuzz harness
+	// (a deterministically-advanceable fake); production always uses Real(). It
+	// is never persisted.
+	clock clock.Clock
+
 	// ModelFallbacks is a literal-order chain of "provider/model" identifiers
 	// to try when the primary model returns a Permanent-class provider error
 	// (403/404/422/etc — see llm.Classify). Empty means no fallback. Kata cxw8.
@@ -194,6 +203,15 @@ type testConfig struct {
 	// responsesContinuationShadowEstimateFunc makes shadow-estimate failure
 	// deterministic in package-agent tests.
 	responsesContinuationShadowEstimateFunc func(llm.Request) (int, bool)
+
+	// childClientFactory, when non-nil, supplies the llm.Client a spawned child
+	// (subagent/delegate) session uses instead of reusing the parent's. The fuzz
+	// lifecycle harness uses it to give each child its OWN scripted adapter — and
+	// thus its own deterministic, pre-recorded response script — so a child's
+	// concurrent turn never races the parent's Responder draw sequence (the exact
+	// hazard the offline-harness design flags). It is inherited by the child's own
+	// config (subCfg := s.cfg), so a grandchild would likewise get a fresh client.
+	childClientFactory func() *llm.Client
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the
@@ -319,6 +337,9 @@ func (c *SessionConfig) applyDefaults() {
 	}
 	if c.LoopDetectionWindow <= 0 {
 		c.LoopDetectionWindow = 10
+	}
+	if c.clock == nil {
+		c.clock = clock.Real()
 	}
 }
 

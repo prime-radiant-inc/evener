@@ -171,7 +171,11 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 	}
 	models := modelDescriptorsToAPIModels(launchResp.Data)
 	if len(models) == 0 && !hasSerfLaunchModelLister(s.cfg) {
-		models = s.fetchLiveModels(r.Context())
+		liveModels := s.fetchLiveModels
+		if s.cfg.LiveModels != nil {
+			liveModels = s.cfg.LiveModels
+		}
+		models = liveModels(r.Context())
 	}
 	writeModelsResponse(w, models, launchResp.Diagnostics, includeDiagnostics)
 }

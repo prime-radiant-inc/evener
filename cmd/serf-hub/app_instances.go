@@ -144,6 +144,17 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 // state, and reassigns the default if the removed instance was the default.
 // Reloads from disk before mutating.
 func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) error {
+	// Validate the name before touching the filesystem: it is forwarded verbatim
+	// to authopenai.DeleteAuth, which joins it into stateDir/auth/<name>.json. An
+	// unvalidated name containing path separators (e.g. "../../x") would escape
+	// the state dir and delete an arbitrary .json file. ValidateInstanceName
+	// rejects '/' (and any name that could never have been created), closing that
+	// path-traversal surface. Create already validates; Edit/SetDefault only act
+	// on names already present in the config, so Remove was the lone gap.
+	if err := providercfg.ValidateInstanceName(params.Name); err != nil {
+		return fmt.Errorf("invalid instance name: %w", err)
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

@@ -217,13 +217,13 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	}
 
 	done := delegateDone(sub)
-	timer := time.NewTimer(blockTimeout)
+	timer := s.sclock().NewTimer(blockTimeout)
 	defer timer.Stop()
 	select {
 	case <-done:
 		finalizeErr := s.bridgeDelegateFinalizationWithDone(run.rec.JobID, childID, sub, done, false)
 		return waitForDelegateFinalization(ctx, jm, run, finalizeErr)
-	case <-timer.C:
+	case <-timer.C():
 		s.bridgeDelegateFinalizationWithDone(run.rec.JobID, childID, sub, done, true)
 		output, _, truncated, readErr := tailOutput(run.output, shellInlineOutputBytes)
 		res := delegateResult{
@@ -737,7 +737,7 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 		child.discardRestoredCandidate()
 		return nil, err
 	}
-	now := time.Now()
+	now := s.sclock().Now()
 	status := subagentStatusFromJobStatus(rec.Status)
 	sub := &subagent{
 		id:           childID,
@@ -1095,7 +1095,7 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 	}
 
 	runCtx, runCancel := context.WithCancel(context.Background())
-	resumeTime := time.Now()
+	resumeTime := s.sclock().Now()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -1168,7 +1168,7 @@ func delegateJobRecordForJobID(jm *jobManager, jobID string) (*jobstore.JobRecor
 }
 
 func waitForDelegateFinalization(ctx context.Context, jm *jobManager, run *runningJob, finalizeErr <-chan error) delegateResult {
-	timer := time.NewTimer(delegateFinalizeWaitTimeout)
+	timer := jm.clock.NewTimer(delegateFinalizeWaitTimeout)
 	defer timer.Stop()
 
 	select {
@@ -1181,14 +1181,14 @@ func waitForDelegateFinalization(ctx context.Context, jm *jobManager, run *runni
 		return delegateTerminalResult(jm, run)
 	case <-ctx.Done():
 		return delegateFinalizeFailedResult(run, "cancelled", ctx.Err())
-	case <-timer.C:
+	case <-timer.C():
 		return delegateFinalizeFailedResult(run, "finalize_timeout", errors.New("delegate finalization timed out"))
 	}
 }
 
 func waitForResumedDelegateResult(ctx context.Context, jm *jobManager, target, resumedFromJobID string, run *runningJob, finalizeErr <-chan error, blockTimeoutMS int) sendMessageResult {
 	blockTimeout := time.Duration(clampShellBlockTimeoutMS(blockTimeoutMS)) * time.Millisecond
-	timer := time.NewTimer(blockTimeout)
+	timer := jm.clock.NewTimer(blockTimeout)
 	defer timer.Stop()
 
 	var res delegateResult
@@ -1201,7 +1201,7 @@ func waitForResumedDelegateResult(ctx context.Context, jm *jobManager, target, r
 			break
 		}
 		res = delegateTerminalResult(jm, run)
-	case <-timer.C:
+	case <-timer.C():
 		output, _, truncated, readErr := tailOutput(run.output, shellInlineOutputBytes)
 		return sendMessageResult{
 			Target:              target,
@@ -1675,7 +1675,7 @@ func (s *Session) finalizeDelegateWithNotification(jobID, childID string, sub *s
 			jm.abandonRunningJob(jobID)
 			return err
 		}
-		time.Sleep(delegateFinalizeRetryDelay)
+		jm.clock.Sleep(delegateFinalizeRetryDelay)
 	}
 }
 

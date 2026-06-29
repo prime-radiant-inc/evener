@@ -214,3 +214,19 @@ func TestSummarizeTool_InvalidJSON(t *testing.T) {
 		t.Errorf("invalid JSON should return raw: %q", desc)
 	}
 }
+
+// TestSummarizeTool_TaskUpdate_MissingID guards against a panic when a task_list
+// "update" element lacks a numeric id (unchecked type assertion on m["id"]).
+// Surfaced by FuzzSummarizeTool.
+func TestSummarizeTool_TaskUpdate_MissingID(t *testing.T) {
+	cases := []string{
+		`{"action":"update","updates":[{}]}`,
+		`{"action":"update","updates":[{"status":"completed"}]}`,
+		`{"action":"update","updates":[{"id":"not-a-number"}]}`,
+		`{"action":"update","updates":[{"id":3,"status":"completed"}]}`,
+	}
+	for _, args := range cases {
+		// Must not panic; we only assert it returns.
+		_, _ = SummarizeTool("task_list", args)
+	}
+}

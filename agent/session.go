@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/contextmgr"
 	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/internal/hooks"
@@ -38,6 +39,7 @@ type Session struct {
 	profile        *provider.Profile
 	resolveProfile func(ref string) (*provider.Profile, error) // cross-provider resolver; may be nil
 	env            execenv.ExecutionEnvironment
+	clock          clock.Clock
 	stateDir       string
 	installID      string
 	// strictTranscriptMaxLineBytes caps a child transcript line during resumability
@@ -361,7 +363,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 	s.jobNotifyRetry.active = true
 	s.jobNotifyRetry.generation++
 	generation := s.jobNotifyRetry.generation
-	time.AfterFunc(delay, func() {
+	s.sclock().AfterFunc(delay, func() {
 		s.pendingJobNotifsMu.Lock()
 		if s.jobNotifyRetry.generation != generation {
 			s.pendingJobNotifsMu.Unlock()
@@ -670,13 +672,25 @@ func (s *Session) appendTurnDurably(kind schema.TurnKind, m llm.Message) error {
 	return nil
 }
 
+// sclock returns the session's injected clock. Production always sets s.clock
+// via NewSession/loadSession (defaulting to clock.Real()); a few tests build a
+// *Session struct literal directly without one, so this falls back to a real
+// clock rather than nil-panicking. The fuzz harness always injects a fake, so it
+// never sees the fallback.
+func (s *Session) sclock() clock.Clock {
+	if s.clock == nil {
+		return clock.Real()
+	}
+	return s.clock
+}
+
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
 func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata) {
 	t := schema.Turn{
 		Kind:                            schema.TurnAssistant,
 		Message:                         resp.Message,
-		Timestamp:                       time.Now().UTC(),
+		Timestamp:                       s.sclock().Now().UTC(),
 		Usage:                           resp.Usage,
 		ResponseID:                      resp.ID,
 		ResponseIDHash:                  finalAttempt.ResponseIDHash,

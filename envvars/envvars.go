@@ -74,6 +74,9 @@ var (
 	SERFProvider                    = Var{Name: "SERF_PROVIDER", Summary: "Fallback provider for llmcall when --provider and LLM_PROVIDER are unset.", Visibility: Public}
 	SERFProvidersConfig             = Var{Name: "SERF_PROVIDERS_CONFIG", Summary: "Path to providers.toml.", Visibility: Public}
 	SERFReasoningEffort             = Var{Name: "SERF_REASONING_EFFORT", Summary: "Default reasoning effort: minimal|low|medium|high|xhigh|max|none.", Visibility: Public}
+	SERFRecordAppwire               = Var{Name: "SERF_RECORD_APPWIRE", Summary: "Records raw AppWire WebSocket frames to appwire-frames.jsonl for fuzz-corpus harvesting when set to 1/true/yes/on.", Visibility: Tooling}
+	SERFRecordHTTP                  = Var{Name: "SERF_RECORD_HTTP", Summary: "Records inbound hub HTTP requests to hub-http.jsonl for fuzz-corpus harvesting when set to 1/true/yes/on.", Visibility: Tooling}
+	SERFFuzzCaptureEnv              = Var{Name: "SERF_FUZZ_CAPTURE_ENV", Summary: "Marks a dedicated capture box so serf-fuzz-harvest --keep-values is permitted (real, unscrubbed values; local-only).", Visibility: Tooling}
 	SERFRunDir                      = Var{Name: "SERF_RUN_DIR", Summary: "Rendezvous directory passed by serf-hub to spawned daemons.", Visibility: Internal}
 	SERFStateDir                    = Var{Name: "SERF_STATE_DIR", Summary: "Overrides the Serf state root.", Visibility: Public}
 	SERFTUILogFile                  = Var{Name: "SERF_TUI_LOG_FILE", Summary: "Writes serf-tui startup diagnostics to this file.", Visibility: Public}
@@ -174,6 +177,9 @@ var allVars = []Var{
 	SERFProvider,
 	SERFProvidersConfig,
 	SERFReasoningEffort,
+	SERFRecordAppwire,
+	SERFRecordHTTP,
+	SERFFuzzCaptureEnv,
 	SERFRunDir,
 	SERFStateDir,
 	SERFTUILogFile,
