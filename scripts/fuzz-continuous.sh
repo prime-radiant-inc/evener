@@ -75,8 +75,8 @@ to_seconds() {
 
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--total) total="$(to_seconds "$2")"; shift 2 ;;
-		--total=*) total="$(to_seconds "${1#*=}")"; shift ;;
+		--total) total="$(to_seconds "$2")" || exit 2; shift 2 ;;
+		--total=*) total="$(to_seconds "${1#*=}")" || exit 2; shift ;;
 		--time) duration="$2"; shift 2 ;;
 		--time=*) duration="${1#*=}"; shift ;;
 		--sweep) sweep=true; shift ;;
@@ -160,7 +160,7 @@ one_turn() {
 	after="$(crasher_keys | sort)"
 	local new
 	new="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')"
-	[ -n "$new" ] && echo "fuzz-continuous: NEW crasher signature(s) this turn:" && printf '    %s\n' $new
+	[ -n "$new" ] && echo "fuzz-continuous: NEW crasher signature(s) this turn:" && printf '%s\n' "$new" | sed 's/^/    /'
 }
 
 budget_left() {
@@ -201,7 +201,7 @@ for target in "${rotation[@]}"; do
 done
 if [ -n "$new_session" ]; then
 	echo "    NEW crasher signature(s) this session:"
-	printf '      %s\n' $new_session
+	printf '%s\n' "$new_session" | sed 's/^/      /'
 	exit 1
 fi
 echo "    no new crashers this session"

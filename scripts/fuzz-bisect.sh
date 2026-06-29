@@ -35,7 +35,6 @@ target=""
 crasher=""
 good=""
 bad="HEAD"
-probe_mode=false # internal: print the reproduce status at the current checkout
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -47,15 +46,14 @@ while [ $# -gt 0 ]; do
 		--good=*) good="${1#*=}"; shift ;;
 		--bad) bad="$2"; shift 2 ;;
 		--bad=*) bad="${1#*=}"; shift ;;
-		--__probe) probe_mode=true; shift ;;
-		-h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+		-h|--help) sed -n '2,26p' "$0"; exit 0 ;;
 		*) echo "fuzz-bisect: unexpected argument $1" >&2; exit 2 ;;
 	esac
 done
 
 [ -n "$target" ]  || { echo "fuzz-bisect: --target is required" >&2; exit 2; }
 [ -n "$crasher" ] || { echo "fuzz-bisect: --crasher is required" >&2; exit 2; }
-$probe_mode || [ -n "$good" ] || { echo "fuzz-bisect: --good is required" >&2; exit 2; }
+[ -n "$good" ]    || { echo "fuzz-bisect: --good is required" >&2; exit 2; }
 [ -f "$crasher" ] || { echo "fuzz-bisect: crasher file not found: $crasher" >&2; exit 2; }
 crasher="$(cd "$(dirname "$crasher")" && pwd)/$(basename "$crasher")" # absolutise
 if ! head -n1 "$crasher" | grep -q '^go test fuzz v1'; then
@@ -63,7 +61,10 @@ if ! head -n1 "$crasher" | grep -q '^go test fuzz v1'; then
 	exit 2
 fi
 
-# Resolve module + package + FuzzName from the registry.
+# Resolve module + package + FuzzName from the registry ONCE, at the current
+# checkout (where the registry exists). These resolved values get baked into the
+# self-contained probe below, so the per-step replay never re-reads a repo script
+# that a checkout might have removed.
 module="" pkg="" name=""
 while IFS=: read -r tag m p n _rest; do
 	[ "$tag" = native ] || continue
@@ -76,34 +77,38 @@ seed_dir="$repo_root/$module/${pkg#./}/testdata/fuzz/$name"
 [ "$pkg" = "." ] && seed_dir="$repo_root/$module/testdata/fuzz/$name"
 probe_name="__bisect_probe"
 
-# reproduce_status replays just the crasher at the CURRENT checkout and prints
-# one of: good (passes), bad (crashes), skip (does not build / target absent).
-reproduce_status() {
-	mkdir -p "$seed_dir"
-	cp "$crasher" "$seed_dir/$probe_name"
-	local out rc
-	out="$(cd "$repo_root/$module" && "$go_bin" test -tags "$tags" -run "^${name}\$/${probe_name}\$" -count=1 "$pkg" 2>&1)"
-	rc=$?
-	rm -f "$seed_dir/$probe_name"
-	rmdir "$seed_dir" 2>/dev/null || true
-	if printf '%s' "$out" | grep -qiE 'build failed|cannot find|undefined:|no required module|no tests to run|unknown'; then
-		echo skip; return
-	fi
-	[ "$rc" -eq 0 ] && echo good || echo bad
-}
+# Generate a SELF-CONTAINED probe. `git bisect run` checks out each candidate
+# commit in $repo_root, which DELETES any tracked file that did not exist at that
+# commit — including this script and run-fuzz.sh, both new. So the probe must
+# depend on NOTHING in the repo except git's checkout of the target package
+# itself: every path, the crasher file (which lives outside the repo), the go
+# binary, and the build tags are baked in as literals, and it never re-invokes
+# this script or the registry. It classifies the current checkout for git bisect:
+#   exit 0 = good (seed passes), 1 = bad (it crashes), 125 = skip (the target does
+#   not build or does not exist here). Skip is judged off go's OWN markers, never
+#   off arbitrary words in a panic/oracle message — 'unknown', 'cannot find', etc.
+#   appear in real failure text and must not be read as "did not build".
+probe="$(mktemp -t fuzz-bisect-probe.XXXXXX.sh)"
+cat >"$probe" <<PROBE
+#!/usr/bin/env bash
+seed_dir='$seed_dir'
+mkdir -p "\$seed_dir" 2>/dev/null || exit 125
+cp '$crasher' "\$seed_dir/$probe_name" 2>/dev/null || exit 125
+out="\$(cd '$repo_root/$module' 2>/dev/null && '$go_bin' test ${tags:+-tags '$tags'} -run '^${name}\$/${probe_name}\$' -count=1 '$pkg' 2>&1)"
+rc=\$?
+rm -f "\$seed_dir/$probe_name"; rmdir "\$seed_dir" 2>/dev/null
+# Target/package does not build, or is absent, at this commit -> skip.
+if printf '%s' "\$out" | grep -qE '\[build failed\]|\[setup failed\]'; then exit 125; fi
+if printf '%s' "\$out" | grep -qF 'no tests to run'; then exit 125; fi
+# Module directory absent at this commit: the cd failed, go never ran, output empty.
+if [ -z "\$out" ] && [ "\$rc" -ne 0 ]; then exit 125; fi
+[ "\$rc" -eq 0 ] && exit 0 || exit 1
+PROBE
+chmod +x "$probe"
 
-# Probe mode (invoked by `git bisect run` at each checkout): just print the
-# status at the current tree and exit — never touch the checkout itself.
-if $probe_mode; then
-	reproduce_status
-	exit 0
-fi
-
-# Bracket sanity: the crash must reproduce at --bad and not at --good, or the
-# bisection has nothing to find.
 orig_ref="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null)"
 [ "$orig_ref" = HEAD ] && orig_ref="$(git -C "$repo_root" rev-parse HEAD)"
-restore() { git -C "$repo_root" bisect reset >/dev/null 2>&1 || true; git -C "$repo_root" checkout -q "$orig_ref" 2>/dev/null || true; }
+restore() { git -C "$repo_root" bisect reset >/dev/null 2>&1 || true; git -C "$repo_root" checkout -q "$orig_ref" 2>/dev/null || true; rm -f "$probe"; }
 trap restore EXIT
 
 # Pin the endpoints to concrete commits NOW: the bracket checks below move HEAD,
@@ -112,40 +117,27 @@ trap restore EXIT
 bad="$(git -C "$repo_root" rev-parse "$bad")"   || { echo "fuzz-bisect: bad ref not found" >&2; exit 2; }
 good="$(git -C "$repo_root" rev-parse "$good")" || { echo "fuzz-bisect: good ref not found" >&2; exit 2; }
 
-echo "fuzz-bisect: confirming the bracket for $target …"
-git -C "$repo_root" checkout -q "$bad"
-b="$(reproduce_status)"
-git -C "$repo_root" checkout -q "$good"
-g="$(reproduce_status)"
-echo "    $bad → $b ;  $good → $g"
-if [ "$b" != bad ]; then
-	echo "fuzz-bisect: crasher does NOT reproduce at --bad ($bad); nothing to bisect." >&2
-	exit 1
-fi
-if [ "$g" != good ]; then
-	echo "fuzz-bisect: crasher already present (or unbuildable) at --good ($good); widen --good." >&2
-	exit 1
-fi
+# Classify a checkout with the SAME self-contained probe git bisect will use.
+status_word() { case "$1" in 0) echo good ;; 1) echo bad ;; *) echo skip ;; esac; }
 
-# The probe git bisect runs at each step: exit 0=good, 1=bad, 125=skip.
-probe="$(mktemp -t fuzz-bisect-probe.XXXXXX.sh)"
-cat >"$probe" <<PROBE
-#!/usr/bin/env bash
-s="\$(SERF_FUZZ_REPO_ROOT='$repo_root' SERF_FUZZ_RUNNER='$runner' SERF_FUZZ_GO='$go_bin' SERF_FUZZ_TAGS='$tags' bash '$0' --__probe --target '$target' --crasher '$crasher')"
-case "\$s" in
-	good) exit 0 ;;
-	bad)  exit 1 ;;
-	*)    exit 125 ;;
-esac
-PROBE
-chmod +x "$probe"
+echo "fuzz-bisect: confirming the bracket for $target …"
+git -C "$repo_root" checkout -q "$bad"  || { echo "fuzz-bisect: cannot check out --bad ($bad)" >&2; exit 2; }
+bash "$probe"; b=$?
+git -C "$repo_root" checkout -q "$good" || { echo "fuzz-bisect: cannot check out --good ($good)" >&2; exit 2; }
+bash "$probe"; g=$?
+echo "    $bad → $(status_word "$b") ;  $good → $(status_word "$g")"
+if [ "$b" -ne 1 ]; then
+	echo "fuzz-bisect: crasher does NOT reproduce at --bad ($bad) [$(status_word "$b")]; nothing to bisect." >&2
+	exit 1
+fi
+if [ "$g" -ne 0 ]; then
+	echo "fuzz-bisect: crasher already present, or unbuildable, at --good ($good) [$(status_word "$g")]; widen --good." >&2
+	exit 1
+fi
 
 echo "fuzz-bisect: bisecting $good..$bad …"
 git -C "$repo_root" bisect start "$bad" "$good" >/dev/null
-set +e
 bisect_out="$(git -C "$repo_root" bisect run "$probe" 2>&1)"
-set -e
-rm -f "$probe"
 
 culprit="$(printf '%s\n' "$bisect_out" | grep -iE 'is the first bad commit' | head -n1)"
 echo "==============================================================="
