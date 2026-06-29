@@ -45,6 +45,34 @@ make fuzz-gap-check  # FAST static gate (the blocking CI floor): every decode/pa
 make fuzz-coverage   # measure focus-set coverage per target + print the gap map
 ```
 
+## Memory safety (don't take the host down)
+
+A coverage-guided search accumulates its corpus in memory, and a long run on a
+target with large inputs — or several runs at once — can climb into tens of GB.
+Left unbounded, that fires the kernel's **global** OOM killer, which has twice
+taken the whole host (and its network) down, requiring a manual reboot.
+
+So every heavy target runs under a hard memory ceiling, enforced by cgroup-v2 via
+`scripts/run-capped.sh` and wired into the Makefile (`make test`, `make fuzz`,
+`make fuzz-nightly`, `make fuzz-coverage`, `make fuzz-triage`) and into
+`scripts/run-fuzz.sh` itself, so even a **direct** `scripts/run-fuzz.sh` is
+protected. There are two ceilings:
+
+- **per run** (`SERF_MEM_MAX`, default 16G) — one runaway is OOM-killed alone;
+- **shared total** (`SERF_MEM_TOTAL`, default 32G) — all concurrent serf runs
+  join one slice, so launching several at once still can't exhaust the host.
+
+A runaway now shows up as a *scope/slice* OOM in `journalctl --user`, never
+`global_oom`, and `tailscale`/SSH stay up throughout. Tune the ceilings for a
+bigger box (`SERF_MEM_MAX=24G make fuzz-nightly`) or disable entirely with
+`SERF_MEM_MAX=0`. Where systemd user scopes aren't available (some CI
+containers) the wrapper prints a warning and runs uncapped — CI runners impose
+their own cgroup limit.
+
+If a *single* target legitimately needs more than the per-run cap, that is a
+signal worth a `go test -memprofile` pass: a search that grows without bound is
+usually retaining inputs/state it should free between iterations.
+
 ## Reading the coverage map
 
 `make fuzz-coverage` replays each target's committed corpus under `-coverprofile`

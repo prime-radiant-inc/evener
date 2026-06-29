@@ -78,17 +78,25 @@ test-install:
 # agent/llm/auth library test suites and lint).
 GO_MODULES := . agent llm auth fuzz invariant
 
+# MEMCAP runs a recipe under a hard per-run memory ceiling (a systemd user scope)
+# so a leaky test or fuzz run is OOM-killed individually instead of firing the
+# kernel's global OOM killer and taking the whole host — and its network — down.
+# Tune or disable via SERF_MEM_MAX (default 16G; SERF_MEM_MAX=0 turns it off).
+# Degrades to running uncapped (with a warning) where user scopes are unavailable.
+# See scripts/run-capped.sh and docs/fuzzing.md ("Memory safety").
+MEMCAP := scripts/run-capped.sh
+
 test:
-	@MODULES="$(GO_MODULES)" scripts/run-module-tests.sh -count=1
+	@MODULES="$(GO_MODULES)" $(MEMCAP) scripts/run-module-tests.sh -count=1
 
 test-short:
-	@MODULES="$(GO_MODULES)" scripts/run-module-tests.sh -short -count=1
+	@MODULES="$(GO_MODULES)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
 
 # The permanent -race gate (CI), across every module. AGENT_PARALLEL= leaves the
 # agent wave at GOMAXPROCS: under -race (~10x slower) extra parallelism just
 # oversubscribes few-core CI and starves real per-test work past its timeouts.
 test-race:
-	@MODULES="$(GO_MODULES)" AGENT_PARALLEL= scripts/run-module-tests.sh -race -short -count=1
+	@MODULES="$(GO_MODULES)" AGENT_PARALLEL= $(MEMCAP) scripts/run-module-tests.sh -race -short -count=1
 
 vet:
 	@for m in $(GO_MODULES); do (cd $$m && go vet ./...) || exit 1; done
@@ -104,13 +112,13 @@ vet:
 # never-panic oracle catches it. The first step verifies the mechanism itself
 # fires under the tag; production builds and `make test` stay tag-free.
 fuzz:
-	@cd invariant && go test -tags serffuzz ./...
-	@for m in $(GO_MODULES); do (cd $$m && go test -run '^Fuzz' -tags serffuzz ./...) || exit 1; done
+	@$(MEMCAP) sh -c 'cd invariant && go test -tags serffuzz ./...'
+	@for m in $(GO_MODULES); do ($(MEMCAP) sh -c "cd $$m && go test -run '^Fuzz' -tags serffuzz ./...") || exit 1; done
 
 # fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
 # per-target time budget. Manual / nightly only — never in the gate.
 fuzz-nightly:
-	@scripts/run-fuzz.sh $(FUZZ_ARGS)
+	@$(MEMCAP) scripts/run-fuzz.sh $(FUZZ_ARGS)
 
 # fuzz-triage is the local, on-demand campaign + auto-triage tool (8.7): it
 # searches each surface, flake-guards and dedups any crasher, and opens ONE
@@ -118,7 +126,7 @@ fuzz-nightly:
 # Pass flags through FUZZ_ARGS, e.g. `make fuzz-triage FUZZ_ARGS="--time 5m"`,
 # `make fuzz-triage FUZZ_ARGS=--no-pr`, or `make fuzz-triage FUZZ_ARGS=--dry-run`.
 fuzz-triage:
-	@scripts/fuzz-triage.sh $(FUZZ_ARGS)
+	@$(MEMCAP) scripts/fuzz-triage.sh $(FUZZ_ARGS)
 
 # fuzz-triage-selftest verifies the triage flake-guard / dedup / ledger / PR
 # logic deterministically with synthetic failures and stubbed go/gh — no real
@@ -143,7 +151,7 @@ FUZZCOV_ARGS := $(if $(CHECK),--check) $(if $(BLESS),--bless)
 # (decode/parse packages with zero fuzz coverage). Advisory by default; pass
 # CHECK=1 to fail on a ratchet regression or a gap breach, BLESS=1 to raise floors.
 fuzz-coverage:
-	@scripts/fuzz-coverage.sh $(FUZZCOV_ARGS)
+	@$(MEMCAP) scripts/fuzz-coverage.sh $(FUZZCOV_ARGS)
 
 # fuzz-gap-check is the FAST, STATIC gap gate (the blocking CI floor): it asserts
 # every decode/parse package has a registered fuzz target (or a reasoned ignore),
