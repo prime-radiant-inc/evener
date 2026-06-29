@@ -111,7 +111,7 @@ reconcile_ledger() {
 		pkg="$(ledger_get "$key" pkg)"
 		run="$(ledger_get "$key" run)"
 		[ -n "$pkg" ] && [ -n "$run" ] || continue
-		if ( cd "$repo_root/$pkg" && go test -run "$run" -count=1 . ) >/dev/null 2>&1; then
+		if ( cd "$repo_root/$pkg" && go test -tags serffuzz -run "$run" -count=1 . ) >/dev/null 2>&1; then
 			if $dry_run; then
 				log "reconcile $key -> fixed (dry-run)"
 			else

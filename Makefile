@@ -76,7 +76,7 @@ test-install:
 # libraries. Under go.work, `./...` resolves per-module, so the gates must loop
 # over each module to cover the whole repo (root-only `./...` silently skips the
 # agent/llm/auth library test suites and lint).
-GO_MODULES := . agent llm auth fuzz
+GO_MODULES := . agent llm auth fuzz invariant
 
 test:
 	@MODULES="$(GO_MODULES)" scripts/run-module-tests.sh -count=1
@@ -98,8 +98,14 @@ vet:
 # -fuzz does NOT random-search, so it is fast and safe for the gate. `make test`
 # already executes these seeds (go test runs Fuzz seed corpora as subtests); this
 # target is the explicit entry point and the one used to verify saved crashers.
+#
+# Everything here builds with -tags serffuzz so the internal/invariant assertions
+# (primeradiant.com/serf/invariant) are live: a tripped invariant panics and the
+# never-panic oracle catches it. The first step verifies the mechanism itself
+# fires under the tag; production builds and `make test` stay tag-free.
 fuzz:
-	@for m in $(GO_MODULES); do (cd $$m && go test -run '^Fuzz' ./...) || exit 1; done
+	@cd invariant && go test -tags serffuzz ./...
+	@for m in $(GO_MODULES); do (cd $$m && go test -run '^Fuzz' -tags serffuzz ./...) || exit 1; done
 
 # fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
 # per-target time budget. Manual / nightly only — never in the gate.
