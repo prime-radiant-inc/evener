@@ -26,8 +26,7 @@ func FromWire(in appwire.LaunchConfigLayer) Layer {
 		SystemPromptAppendFile:      in.SystemPromptAppendFile,
 		SystemPromptAppendText:      in.SystemPromptAppendText,
 		SystemPromptAppend:          in.SystemPromptAppend,
-		ModelFallbacks:              in.ModelFallbacks,
-		ModelFallbacksSet:           in.ModelFallbacks != nil,
+		ModelFallbacks:              copyStringSlicePtr(in.ModelFallbacks),
 		Env:                         in.Env,
 		Verbose:                     copyBoolPtr(in.Verbose),
 		RawHTTPLogging:              copyBoolPtr(in.RawHTTPLogging),
@@ -69,7 +68,7 @@ func ToWire(in Layer) appwire.LaunchConfigLayer {
 		SystemPromptAppendFile:      in.SystemPromptAppendFile,
 		SystemPromptAppendText:      in.SystemPromptAppendText,
 		SystemPromptAppend:          in.SystemPromptAppend,
-		ModelFallbacks:              in.ModelFallbacks,
+		ModelFallbacks:              derefStringSlicePtr(in.ModelFallbacks),
 		Env:                         in.Env,
 		Verbose:                     copyBoolPtr(in.Verbose),
 		RawHTTPLogging:              copyBoolPtr(in.RawHTTPLogging),
@@ -77,9 +76,6 @@ func ToWire(in Layer) appwire.LaunchConfigLayer {
 		CPUProfile:                  in.CPUProfile,
 		ExportATIFPath:              in.ExportATIFPath,
 		ExportATIFProviderHandles:   in.ExportATIFProviderHandles,
-	}
-	if in.ModelFallbacksSet && out.ModelFallbacks == nil {
-		out.ModelFallbacks = []string{}
 	}
 	if in.Schema != 0 {
 		s := in.Schema
@@ -126,6 +122,27 @@ func copyIntPtr(v *int) *int {
 	}
 	out := *v
 	return &out
+}
+
+// copyStringSlicePtr wraps a wire []string into the Layer's three-state
+// pointer: nil stays nil (unset); a non-nil slice (including empty, the
+// explicit-clear state) becomes a fresh non-nil pointer.
+func copyStringSlicePtr(v []string) *[]string {
+	if v == nil {
+		return nil
+	}
+	out := append([]string{}, v...)
+	return &out
+}
+
+// derefStringSlicePtr is the inverse of copyStringSlicePtr: nil pointer
+// (unset) stays nil; a non-nil pointer becomes a non-nil slice so the wire
+// carries the explicit-clear state as a non-nil empty array.
+func derefStringSlicePtr(v *[]string) []string {
+	if v == nil {
+		return nil
+	}
+	return append([]string{}, (*v)...)
 }
 
 func copyBoolPtr(v *bool) *bool {

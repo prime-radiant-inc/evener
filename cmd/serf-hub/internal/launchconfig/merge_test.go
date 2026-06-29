@@ -177,11 +177,11 @@ func TestMerge_ModelFallbacksReplaceNotAppend(t *testing.T) {
 	// Kata cxw8: ModelFallbacks REPLACES rather than appends. Setting a
 	// fallback chain at a higher-precedence layer (e.g. launch) replaces
 	// any chain inherited from a lower layer.
-	g := Layer{ModelFallbacks: []string{"openai/gpt-5.2", "anthropic/claude-opus-4-6"}}
-	l := Layer{ModelFallbacks: []string{"openai/gpt-5.4"}}
+	g := Layer{ModelFallbacks: &[]string{"openai/gpt-5.2", "anthropic/claude-opus-4-6"}}
+	l := Layer{ModelFallbacks: &[]string{"openai/gpt-5.4"}}
 	got, _ := mergeLayers(map[LayerName]Layer{LayerGlobal: g, LayerLaunch: l})
 	want := []string{"openai/gpt-5.4"}
-	if !reflect.DeepEqual(got.Effective.ModelFallbacks, want) {
+	if got.Effective.ModelFallbacks == nil || !reflect.DeepEqual(*got.Effective.ModelFallbacks, want) {
 		t.Errorf("ModelFallbacks = %v, want %v (replace, not append)", got.Effective.ModelFallbacks, want)
 	}
 	if got.Provenance["model_fallbacks"] != LayerLaunch {
@@ -190,23 +190,23 @@ func TestMerge_ModelFallbacksReplaceNotAppend(t *testing.T) {
 }
 
 func TestMerge_ModelFallbacksGlobalOnly(t *testing.T) {
-	g := Layer{ModelFallbacks: []string{"openai/gpt-5.4"}}
+	g := Layer{ModelFallbacks: &[]string{"openai/gpt-5.4"}}
 	got, _ := mergeLayers(map[LayerName]Layer{LayerGlobal: g})
 	want := []string{"openai/gpt-5.4"}
-	if !reflect.DeepEqual(got.Effective.ModelFallbacks, want) {
+	if got.Effective.ModelFallbacks == nil || !reflect.DeepEqual(*got.Effective.ModelFallbacks, want) {
 		t.Errorf("ModelFallbacks = %v, want %v", got.Effective.ModelFallbacks, want)
 	}
 }
 
 func TestMerge_EmptyModelFallbacksClearsInherited(t *testing.T) {
-	g := Layer{ModelFallbacks: []string{"openai/gpt-5.4"}}
-	l := Layer{ModelFallbacks: []string{}, ModelFallbacksSet: true}
+	g := Layer{ModelFallbacks: &[]string{"openai/gpt-5.4"}}
+	l := Layer{ModelFallbacks: &[]string{}}
 	got, _ := mergeLayers(map[LayerName]Layer{LayerGlobal: g, LayerLaunch: l})
 	if got.Effective.ModelFallbacks == nil {
 		t.Fatalf("ModelFallbacks = nil, want explicit empty slice")
 	}
-	if len(got.Effective.ModelFallbacks) != 0 {
-		t.Fatalf("ModelFallbacks = %v, want empty", got.Effective.ModelFallbacks)
+	if len(*got.Effective.ModelFallbacks) != 0 {
+		t.Fatalf("ModelFallbacks = %v, want empty", *got.Effective.ModelFallbacks)
 	}
 	if got.Provenance["model_fallbacks"] != LayerLaunch {
 		t.Errorf("provenance[model_fallbacks] = %q, want %q", got.Provenance["model_fallbacks"], LayerLaunch)

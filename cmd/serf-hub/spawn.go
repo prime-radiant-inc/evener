@@ -258,7 +258,6 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 	resumeResolved.Effective.Model = ""
 	resumeResolved.Effective.FastCheapModel = ""
 	resumeResolved.Effective.ModelFallbacks = nil
-	resumeResolved.Effective.ModelFallbacksSet = false
 	args = append(args, launchconfig.ToArgs(resumeResolved)...)
 	return args
 }
