@@ -5,7 +5,9 @@
 #
 # The target list is NOT redefined here: it is read verbatim from
 # `scripts/run-fuzz.sh --list`, the single source of truth. Each entry is
-# "module:pkg:name[:coverpkg[:focus]]"; coverpkg defaults to pkg.
+# "tag:module:pkg:name[:coverpkg[:focus]]"; coverpkg defaults to pkg. Only the
+# "native" (testing.F) targets carry a focus-set coverage % and ratchet floor, so
+# rapid surfaces are skipped here.
 #
 # Usage:
 #   scripts/fuzz-coverage.sh            # advisory: print the report, exit 0
@@ -20,7 +22,8 @@ manifest="$profiles_dir/manifest.tsv"
 trap 'rm -rf "$profiles_dir"' EXIT
 
 fail=0
-while IFS=: read -r module pkg name cover focus; do
+while IFS=: read -r tag module pkg name cover focus; do
+	[ "$tag" = native ] || continue
 	[ -n "$name" ] || continue
 	coverpkg="${cover:-$pkg}"
 	profile="$profiles_dir/$name.cov"

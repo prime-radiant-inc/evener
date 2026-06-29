@@ -39,16 +39,6 @@ gh="${SERF_FUZZ_GH:-gh}"
 K="${SERF_FUZZ_K:-5}"            # flake-guard: a crasher must fail all K replays
 max_seeds="${SERF_FUZZ_MAX_SEEDS:-8}"
 
-# The rapid promoter targets are NOT in run-fuzz.sh (they are Test* funcs driven
-# by rapid during ordinary `go test`, not `go test -fuzz`). The triage run drives
-# them under SERF_FUZZ_PERSIST=1 so a live-found failure persists durably. Each
-# entry is "repo-relative-pkgdir|TestName".
-rapid_targets=(
-	"agent|TestToolArgsSchemaFuzz"
-	"agent|TestLifecycleSeqFuzz"
-	"internal/appserver|TestRouterSeqFuzz"
-)
-
 duration=""
 dry_run=false
 no_pr=false
@@ -145,17 +135,10 @@ run_search() {
 	local -a runner_args=()
 	[ -n "$duration" ] && runner_args+=(--time "$duration")
 	[ ${#targets[@]} -gt 0 ] && runner_args+=("${targets[@]}")
+	# run-fuzz.sh drives both the native (go test -fuzz) and rapid (go test -run)
+	# surfaces from the unified registry; SERF_FUZZ_PERSIST=1 is inherited by the
+	# rapid promoter targets so a live-found failure persists durably.
 	SERF_FUZZ_PERSIST=1 bash "$runner" "${runner_args[@]}" || true
-
-	# Drive the rapid promoter targets only on an unfiltered (all-surfaces) run.
-	if [ ${#targets[@]} -eq 0 ]; then
-		local entry pkg test
-		for entry in "${rapid_targets[@]}"; do
-			pkg="${entry%%|*}"; test="${entry##*|}"
-			log "=== rapid $pkg:$test ==="
-			( cd "$repo_root/$pkg" && SERF_FUZZ_PERSIST=1 go test -run "^${test}\$" -count=1 . ) || true
-		done
-	fi
 }
 
 # --- step 3: discover new crashers (snapshot diff over git status) ------------
@@ -359,8 +342,10 @@ promote_corpus() {
 	$dry_run && return 0
 	local gocache; gocache="$(go env GOCACHE 2>/dev/null || echo "")"
 	[ -n "$gocache" ] || return 0
-	local module pkg name cover focus
-	while IFS=: read -r module pkg name cover focus; do
+	local tag module pkg name cover focus
+	while IFS=: read -r tag module pkg name cover focus; do
+		# Only native targets keep a go-fuzz cache to promote seeds from.
+		[ "$tag" = native ] || continue
 		[ -n "$name" ] || continue
 		want_target "$module:$name" || continue
 		local pkgdir="$repo_root/$module/${pkg#./}"

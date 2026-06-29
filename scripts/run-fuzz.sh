@@ -17,9 +17,18 @@
 #   scripts/run-fuzz.sh llm:FuzzParseSSE     # just the SSE target, 60s
 set -uo pipefail
 
-# Each entry is "module:package-relpath:FuzzName[:coverpkg[:focus]]". module is
-# the go.work module dir; package-relpath is relative to that module. The two
-# optional trailing fields are consumed only by the coverage tooling
+# This is the SINGLE source of truth for every fuzz surface, consumed verbatim
+# (via `--list`) by scripts/fuzz-coverage.sh, scripts/fuzz-triage.sh, and the
+# static gap gate (cmd/serf-fuzzcov -gap-only). Each entry is
+# "tag:module:package-relpath:name[:coverpkg[:focus]]":
+#   tag       "native" — a testing.F target driven by `go test -fuzz`; or
+#             "rapid"  — a Test* func driven by rapid.Check during ordinary
+#             `go test -run`. Both kinds share this one registry so the consumers
+#             have a single list instead of a parallel hardcoded rapid set.
+#   module    the go.work module dir ("." or "agent"/"llm"/"auth").
+#   package-relpath  the package relative to that module.
+#   name      the FuzzXxx (native) or TestXxx (rapid) function name.
+# The two optional trailing fields are consumed only by the coverage tooling
 # (scripts/fuzz-coverage.sh + cmd/serf-fuzzcov), never by the campaign run below:
 #   coverpkg  go test -coverpkg value for the coverage replay; defaults to the
 #             package-relpath. Only FuzzToolArgsValidate overrides it, because its
@@ -29,88 +38,94 @@ set -uo pipefail
 #             ("sse.go", relative to the SUT package dir) or a function
 #             ("adapter.go#decodeStream"). Empty means "the whole SUT package".
 TARGETS=(
-	"llm:.:FuzzParseSSE::sse.go"
-	".:./appwire:FuzzMessageDecode::jsonrpc.go"
-	".:./appwire:FuzzMethodParams::protocol.go"
-	".:./appwire:FuzzWireTypes::"
-	"agent:.:FuzzToolArgsValidate:./internal/tool,.:internal/tool/definitions.go"
-	"agent:./schema:FuzzSessionMetaRoundTrip::snapshot.go"
-	"agent:./internal/jobstore:FuzzJobEventLogReplay::fold.go"
-	"agent:.:FuzzTranscriptReplay::transcript_read.go"
-	".:./cmd/serf-hub:FuzzHubReplayCarryThrough::app_threadread.go#replayTurnToAgentTurn"
-	".:./cmd/serf-hub:FuzzHubReplayLiveVsReload::app_threadread.go#replayTurnToAgentTurn"
-	"llm:./providers/openai:FuzzOpenAIResponsesMetamorphic::responses.go#decodeResponsesStream"
-	"llm:./providers/openai:FuzzOpenAIChatCompletionsMetamorphic::chatcompletions.go#decodeChatCompletionsStream"
-	"llm:./providers/anthropic:FuzzAnthropicStreamMetamorphic::adapter.go#decodeStream"
-	"llm:./providers/google:FuzzGeminiStreamMetamorphic::adapter.go#decodeStream"
-	"llm:./providers/openaicompat:FuzzOpenAICompatStreamMetamorphic::adapter.go#decodeStream"
-	".:./cmd/serf-hub:FuzzWebHandler::web.go"
+	"native:llm:.:FuzzParseSSE::sse.go"
+	"native:.:./appwire:FuzzMessageDecode::jsonrpc.go"
+	"native:.:./appwire:FuzzMethodParams::protocol.go"
+	"native:.:./appwire:FuzzWireTypes::"
+	"native:agent:.:FuzzToolArgsValidate:./internal/tool,.:internal/tool/definitions.go"
+	"native:agent:./schema:FuzzSessionMetaRoundTrip::snapshot.go"
+	"native:agent:./internal/jobstore:FuzzJobEventLogReplay::fold.go"
+	"native:agent:.:FuzzTranscriptReplay::transcript_read.go"
+	"native:.:./cmd/serf-hub:FuzzHubReplayCarryThrough::app_threadread.go#replayTurnToAgentTurn"
+	"native:.:./cmd/serf-hub:FuzzHubReplayLiveVsReload::app_threadread.go#replayTurnToAgentTurn"
+	"native:llm:./providers/openai:FuzzOpenAIResponsesMetamorphic::responses.go#decodeResponsesStream"
+	"native:llm:./providers/openai:FuzzOpenAIChatCompletionsMetamorphic::chatcompletions.go#decodeChatCompletionsStream"
+	"native:llm:./providers/anthropic:FuzzAnthropicStreamMetamorphic::adapter.go#decodeStream"
+	"native:llm:./providers/google:FuzzGeminiStreamMetamorphic::adapter.go#decodeStream"
+	"native:llm:./providers/openaicompat:FuzzOpenAICompatStreamMetamorphic::adapter.go#decodeStream"
+	"native:.:./cmd/serf-hub:FuzzWebHandler::web.go"
 	# 8.2 — codex-compat item + config decode targets.
-	".:./appwire:FuzzCodexItemDecode::types.go"
-	"llm:./providercfg:FuzzProvidersTOMLLoad::load.go"
-	".:./cmd/serf-hub/internal/launchconfig:FuzzLaunchConfigDecode::io.go"
-	"agent:./plugin:FuzzPluginManifestParse::plugin.go#ParseManifest"
-	".:./internal/credentials:FuzzCredentialsStoreDecode::store.go"
-	"agent:./plugin:FuzzPluginLoad::plugin.go#Load"
+	"native:.:./appwire:FuzzCodexItemDecode::types.go"
+	"native:llm:./providercfg:FuzzProvidersTOMLLoad::load.go"
+	"native:.:./cmd/serf-hub/internal/launchconfig:FuzzLaunchConfigDecode::io.go"
+	"native:agent:./plugin:FuzzPluginManifestParse::plugin.go#ParseManifest"
+	"native:.:./internal/credentials:FuzzCredentialsStoreDecode::store.go"
+	"native:agent:./plugin:FuzzPluginLoad::plugin.go#Load"
 	# Phase 7 Wave 1 — a decode/parse target for every remaining package.
 	# Lane A1 (agent module)
-	"agent:./transcript:FuzzTranscriptWriterRoundTrip::transcript.go"
-	"agent:./task:FuzzTaskStoreLoad::task_store.go#Load"
-	"agent:./doctor:FuzzDoctorLoadTranscript::transcript.go#loadTranscript"
-	"agent:./mcpconfig:FuzzMCPConfigLoad::config.go"
-	"agent:./provider:FuzzResolveProfileFromConfig::resolve.go"
-	"agent:./internal/atif:FuzzATIFConvert::atif.go"
-	"agent:./internal/sessionlog:FuzzSessionLogLoad::sessionlog.go"
-	"agent:./internal/contextmgr:FuzzCheckpointExtract::checkpoint_format.go"
-	"agent:./internal/hooks:FuzzParseHookOutput::hooks.go#parseHookOutput"
-	"agent:./internal/mcp:FuzzMCPSchemaToParams::manager.go#mcpSchemaToParams"
-	"agent:./internal/frontmatter:FuzzFrontmatterParse::frontmatter.go"
+	"native:agent:./transcript:FuzzTranscriptWriterRoundTrip::transcript.go"
+	"native:agent:./task:FuzzTaskStoreLoad::task_store.go#Load"
+	"native:agent:./doctor:FuzzDoctorLoadTranscript::transcript.go#loadTranscript"
+	"native:agent:./mcpconfig:FuzzMCPConfigLoad::config.go"
+	"native:agent:./provider:FuzzResolveProfileFromConfig::resolve.go"
+	"native:agent:./internal/atif:FuzzATIFConvert::atif.go"
+	"native:agent:./internal/sessionlog:FuzzSessionLogLoad::sessionlog.go"
+	"native:agent:./internal/contextmgr:FuzzCheckpointExtract::checkpoint_format.go"
+	"native:agent:./internal/hooks:FuzzParseHookOutput::hooks.go#parseHookOutput"
+	"native:agent:./internal/mcp:FuzzMCPSchemaToParams::manager.go#mcpSchemaToParams"
+	"native:agent:./internal/frontmatter:FuzzFrontmatterParse::frontmatter.go"
 	# Lane A2 (root module: protocol/server/hub-internal)
-	".:./frontmatter:FuzzParse::frontmatter.go"
-	".:./hubapi:FuzzParseRef::refs.go"
-	".:./rendezvous:FuzzList::rendezvous.go#List"
-	".:./server:FuzzAppTurnsFromNotifications::appwire_turns.go#appTurnsFromNotifications"
-	".:./internal/appserver:FuzzHandleMessage::server.go#HandleMessage"
-	".:./internal/appprojector:FuzzProject::appwire_projection.go#Project"
-	".:./internal/apptranscript:FuzzProjectTurn::apptranscript.go#ProjectTurn"
-	".:./cmd/serf-hub/internal/appsource:FuzzMapCodexTurn::codex_mapping.go#mapCodexTurn"
-	".:./cmd/serf-hub/internal/codexlaunch:FuzzParseCodexEndpoint::codex_launch.go#ParseCodexEndpoint"
-	".:./cmd/serf-hub/internal/hubcore:FuzzBuildTree::tree.go#BuildTreeAt"
+	"native:.:./frontmatter:FuzzParse::frontmatter.go"
+	"native:.:./hubapi:FuzzParseRef::refs.go"
+	"native:.:./rendezvous:FuzzList::rendezvous.go#List"
+	"native:.:./server:FuzzAppTurnsFromNotifications::appwire_turns.go#appTurnsFromNotifications"
+	"native:.:./internal/appserver:FuzzHandleMessage::server.go#HandleMessage"
+	"native:.:./internal/appprojector:FuzzProject::appwire_projection.go#Project"
+	"native:.:./internal/apptranscript:FuzzProjectTurn::apptranscript.go#ProjectTurn"
+	"native:.:./cmd/serf-hub/internal/appsource:FuzzMapCodexTurn::codex_mapping.go#mapCodexTurn"
+	"native:.:./cmd/serf-hub/internal/codexlaunch:FuzzParseCodexEndpoint::codex_launch.go#ParseCodexEndpoint"
+	"native:.:./cmd/serf-hub/internal/hubcore:FuzzBuildTree::tree.go#BuildTreeAt"
 	# Lane A3 (root module: CLI/TUI glue)
-	".:./cmd/serf:FuzzRunFlagParse::main.go#newRunFlagSet"
-	".:./cmd/llmcall:FuzzLLMCallParsers::main.go#parseMetadata"
-	".:./cmdutil:FuzzCmdutilParsers::cmdutil.go#ParseModelRef"
-	".:./cmd/serf-tui:FuzzApplyHubNotification::hub_notifications.go#applyHubNotification"
-	".:./cmd/serf-tui/internal/clipboard:FuzzNormalizePastedPath::clipboard_paste.go#NormalizePastedPath"
-	".:./cmd/serf-tui/internal/hubstart:FuzzParseStartup::hub_start.go#ParseTUIStartupOptions"
-	".:./cmd/serf-tui/internal/launchconfig:FuzzApplyEdit::launch_settings_panel.go#applyEdit"
-	".:./cmd/serf-tui/internal/msgrender:FuzzRenderToolCall::tool_renderers.go#toolArgsFromJSON"
-	".:./cmd/serf-tui/internal/toolsummary:FuzzSummarizeTool::tool_summary.go"
-	".:./cmd/serf-tui/internal/transcript:FuzzApplyThreadItem::reducer.go#subagentRunFromToolItem"
-	".:./cmd/serf-tui/internal/tuitheme:FuzzColorParsing::terminal_bg.go#relativeLuminanceHex"
+	"native:.:./cmd/serf:FuzzRunFlagParse::main.go#newRunFlagSet"
+	"native:.:./cmd/llmcall:FuzzLLMCallParsers::main.go#parseMetadata"
+	"native:.:./cmdutil:FuzzCmdutilParsers::cmdutil.go#ParseModelRef"
+	"native:.:./cmd/serf-tui:FuzzApplyHubNotification::hub_notifications.go#applyHubNotification"
+	"native:.:./cmd/serf-tui/internal/clipboard:FuzzNormalizePastedPath::clipboard_paste.go#NormalizePastedPath"
+	"native:.:./cmd/serf-tui/internal/hubstart:FuzzParseStartup::hub_start.go#ParseTUIStartupOptions"
+	"native:.:./cmd/serf-tui/internal/launchconfig:FuzzApplyEdit::launch_settings_panel.go#applyEdit"
+	"native:.:./cmd/serf-tui/internal/msgrender:FuzzRenderToolCall::tool_renderers.go#toolArgsFromJSON"
+	"native:.:./cmd/serf-tui/internal/toolsummary:FuzzSummarizeTool::tool_summary.go"
+	"native:.:./cmd/serf-tui/internal/transcript:FuzzApplyThreadItem::reducer.go#subagentRunFromToolItem"
+	"native:.:./cmd/serf-tui/internal/tuitheme:FuzzColorParsing::terminal_bg.go#relativeLuminanceHex"
 	# Lane A4 (llm + auth modules)
-	"llm:./providers/internal/openaichat:FuzzToolArgumentsString::openaichat.go#ToolArgumentsString"
-	"llm:./providers/internal/openaichat:FuzzParseChatUsage::openaichat.go#ParseChatUsage"
-	"llm:./providers/kimi:FuzzCountInputTokensResponse::adapter.go#CountInputTokens"
-	"auth:./openai:FuzzParseIDTokenClaims::claims.go#ParseIDTokenClaims"
-	"auth:./openai:FuzzTokenEndpointResponse::tokens.go"
+	"native:llm:./providers/internal/openaichat:FuzzToolArgumentsString::openaichat.go#ToolArgumentsString"
+	"native:llm:./providers/internal/openaichat:FuzzParseChatUsage::openaichat.go#ParseChatUsage"
+	"native:llm:./providers/kimi:FuzzCountInputTokensResponse::adapter.go#CountInputTokens"
+	"native:auth:./openai:FuzzParseIDTokenClaims::claims.go#ParseIDTokenClaims"
+	"native:auth:./openai:FuzzTokenEndpointResponse::tokens.go"
 	# Phase 7 Wave 3 — behavioral API fuzzing (under the B0 sandbox) + tool execution.
 	# B1/B2 (hub)
-	".:./cmd/serf-hub:FuzzAppWireDispatch::app_rpc.go#newHubAppServer"
-	".:./cmd/serf-hub:FuzzWebMutatingHandler::web_spawn.go#handleApiSpawn"
+	"native:.:./cmd/serf-hub:FuzzAppWireDispatch::app_rpc.go#newHubAppServer"
+	"native:.:./cmd/serf-hub:FuzzWebMutatingHandler::web_spawn.go#handleApiSpawn"
 	# B3 (tool execution via DenyEnv)
-	"agent:.:FuzzToolExecution:./internal/tool,.:internal/tool/registry.go#ExecuteCall"
+	"native:agent:.:FuzzToolExecution:./internal/tool,.:internal/tool/registry.go#ExecuteCall"
 	# B4 (provider request-build / non-stream Complete / error mapping)
-	"llm:./providers/anthropic:FuzzAnthropicRequestBuild::request.go#buildRequestBody"
-	"llm:./providers/anthropic:FuzzAnthropicComplete::adapter.go#Complete"
-	"llm:./providers/google:FuzzGoogleRequestBuild::request.go#buildRequestBody"
-	"llm:./providers/google:FuzzGoogleComplete::adapter.go#Complete"
-	"llm:./providers/openaicompat:FuzzOpenAICompatRequestBuild::request.go#buildRequestBody"
-	"llm:./providers/openaicompat:FuzzOpenAICompatComplete::adapter.go#completeViaChatCompletions"
-	"llm:./providers/openai:FuzzOpenAIResponsesRequestBuild::responses.go#buildRequestBody"
-	"llm:./providers/openai:FuzzOpenAIChatCompletionsRequestBuild::chatcompletions.go#buildChatCompletionsBody"
-	"llm:./providers/openai:FuzzOpenAIResponsesDecode::responses.go#fromResponses"
-	"llm:.:FuzzErrorFromHTTPStatus::errors.go#errorFromHTTPStatus"
+	"native:llm:./providers/anthropic:FuzzAnthropicRequestBuild::request.go#buildRequestBody"
+	"native:llm:./providers/anthropic:FuzzAnthropicComplete::adapter.go#Complete"
+	"native:llm:./providers/google:FuzzGoogleRequestBuild::request.go#buildRequestBody"
+	"native:llm:./providers/google:FuzzGoogleComplete::adapter.go#Complete"
+	"native:llm:./providers/openaicompat:FuzzOpenAICompatRequestBuild::request.go#buildRequestBody"
+	"native:llm:./providers/openaicompat:FuzzOpenAICompatComplete::adapter.go#completeViaChatCompletions"
+	"native:llm:./providers/openai:FuzzOpenAIResponsesRequestBuild::responses.go#buildRequestBody"
+	"native:llm:./providers/openai:FuzzOpenAIChatCompletionsRequestBuild::chatcompletions.go#buildChatCompletionsBody"
+	"native:llm:./providers/openai:FuzzOpenAIResponsesDecode::responses.go#fromResponses"
+	"native:llm:.:FuzzErrorFromHTTPStatus::errors.go#errorFromHTTPStatus"
+	# Rapid promoter surfaces — Test* funcs driven by rapid.Check during ordinary
+	# `go test -run` (not `go test -fuzz`). They share this registry so the triage
+	# tool no longer needs a parallel hardcoded list.
+	"rapid:agent:.:TestToolArgsSchemaFuzz"
+	"rapid:agent:.:TestLifecycleSeqFuzz"
+	"rapid:.:./internal/appserver:TestRouterSeqFuzz"
 )
 
 duration="60s"
@@ -138,10 +153,24 @@ want() {
 }
 
 for t in "${TARGETS[@]}"; do
-	IFS=: read -r module pkg name cover focus <<<"$t"
+	IFS=: read -r tag module pkg name cover focus <<<"$t"
 	want "$module:$name" || continue
-	echo "=== fuzzing $module:$name for $duration ==="
-	( cd "$repo_root/$module" && go test -run '^$' -fuzz "^${name}\$" -fuzztime "$duration" "$pkg" ) || fail=1
+	case "$tag" in
+		native)
+			echo "=== fuzzing $module:$name for $duration ==="
+			( cd "$repo_root/$module" && go test -run '^$' -fuzz "^${name}\$" -fuzztime "$duration" "$pkg" ) || fail=1
+			;;
+		rapid)
+			# rapid surfaces are property checks driven by `go test -run`; the
+			# search depth is governed by -rapid.checks, not -fuzztime, so the
+			# --time budget does not apply to them.
+			echo "=== rapid $module:$name ==="
+			( cd "$repo_root/$module" && go test -run "^${name}\$" -count=1 "$pkg" ) || fail=1
+			;;
+		*)
+			echo "run-fuzz: unknown tag '$tag' in entry '$t'" >&2; fail=1
+			;;
+	esac
 done
 
 exit "$fail"
