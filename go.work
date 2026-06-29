@@ -6,6 +6,7 @@ use (
 	./auth
 	./envvars
 	./fuzz
+	./invariant
 	./llm
 )
 
@@ -18,3 +19,5 @@ replace primeradiant.com/serf/agent v0.0.0 => ./agent
 replace primeradiant.com/serf/envvars v0.0.0 => ./envvars
 
 replace primeradiant.com/serf/fuzz v0.0.0 => ./fuzz
+
+replace primeradiant.com/serf/invariant v0.0.0 => ./invariant

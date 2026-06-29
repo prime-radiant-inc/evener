@@ -28,7 +28,7 @@ while IFS=: read -r tag module pkg name cover focus; do
 	coverpkg="${cover:-$pkg}"
 	profile="$profiles_dir/$name.cov"
 	printf '=== %-44s ' "$module:$name"
-	if out="$(cd "$repo_root/$module" && go test -run "^${name}\$" \
+	if out="$(cd "$repo_root/$module" && go test -tags serffuzz -run "^${name}\$" \
 		-coverpkg="$coverpkg" -coverprofile="$profile" "$pkg" 2>&1)"; then
 		# Echo just the "coverage: N% of statements" tail for a quick eyeball.
 		printf '%s\n' "$(printf '%s\n' "$out" | grep -oE 'coverage: [0-9.]+% of statements[^,]*' | tail -1)"
