@@ -42,3 +42,6 @@ jobs:
 
       - name: Test (race detector — the permanent -race gate, all go.work modules)
         run: make test-race
+
+      - name: Fuzz seed-corpus replay (committed crashers — no search, deterministic)
+        run: make fuzz

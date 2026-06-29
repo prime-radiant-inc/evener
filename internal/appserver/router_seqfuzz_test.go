@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -55,8 +56,16 @@ import (
 // reproduction becomes a flake-guarded regression test (emitted to a temp dir;
 // promotion into the tree is the human/opt-in step), mirroring Phase 1.
 func TestRouterSeqFuzz(t *testing.T) {
-	adapter := &seqAdapter{table: liveOpTable, registrar: registerSeqStubs, emitDir: t.TempDir()}
-	store, err := promoter.OpenBucketStore(filepath.Join(t.TempDir(), "buckets.json"))
+	// Default-off: PersistPaths returns the temp fallbacks (no tree writes) for
+	// every gate run; the local triage tool sets SERF_FUZZ_PERSIST to capture a
+	// live-found crasher durably (see fuzz/promoter/persist.go).
+	pkgDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	emitDir, bucketsPath, _ := promoter.PersistPaths(pkgDir, t.TempDir(), filepath.Join(t.TempDir(), "buckets.json"))
+	adapter := &seqAdapter{table: liveOpTable, registrar: registerSeqStubs, emitDir: emitDir}
+	store, err := promoter.OpenBucketStore(bucketsPath)
 	if err != nil {
 		t.Fatalf("OpenBucketStore: %v", err)
 	}
