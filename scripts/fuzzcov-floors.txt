@@ -1,0 +1,22 @@
+# fuzzcov focus-set ratchet floors — one line per fuzz target: "FuzzName PCT".
+# A target's focus-set coverage may never drop below its floor (serf-fuzzcov --check).
+# Raised upward only, by `make fuzz-coverage CHECK=1` with --bless; never edit downward.
+FuzzAnthropicStreamMetamorphic 79.4
+FuzzGeminiStreamMetamorphic 85.6
+FuzzHubReplayCarryThrough 78.1
+FuzzHubReplayLiveVsReload 78.1
+FuzzJobEventLogReplay 77.4
+FuzzLaunchConfigDecode 1.5
+FuzzMessageDecode 72.2
+FuzzOpenAIChatCompletionsMetamorphic 97.1
+FuzzOpenAICompatStreamMetamorphic 93.8
+FuzzOpenAIResponsesMetamorphic 57.8
+FuzzParseSSE 87.3
+FuzzPluginLoad 77.8
+FuzzPluginManifestParse 100.0
+FuzzProvidersTOMLLoad 72.9
+FuzzSessionMetaRoundTrip 41.5
+FuzzToolArgsValidate 82.6
+FuzzTranscriptReplay 39.6
+FuzzWebHandler 56.7
+FuzzWireTypes 1.0
