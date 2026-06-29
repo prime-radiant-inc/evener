@@ -520,7 +520,14 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		subProfile = provider.WithCommunicateOutputSchema(subProfile, schema)
 	}
 
-	subSess, err := NewSession(s.client, subProfile, subEnv, subCfg)
+	// Each child gets its own client when a factory is injected (the fuzz
+	// harness's per-child adapter seam); production leaves it nil and shares the
+	// parent's client.
+	childClient := s.client
+	if factory := s.cfg.testOnly.childClientFactory; factory != nil {
+		childClient = factory()
+	}
+	subSess, err := NewSession(childClient, subProfile, subEnv, subCfg)
 	if err != nil {
 		return nil, err
 	}

@@ -43,16 +43,34 @@ import (
 //	                      len(history) never decreases except across a compaction —
 //	                      the one sanctioned shrink.
 //
-// SCOPE (honest): v1 drives the single-session lifecycle including foreground
-// shell jobs (deny-env backed, on the fake clock), forced compaction, and the
-// goal store. Delegate/subagent spawning is OUT of v1: a spawned child session
-// reuses the parent's llm.Client and therefore its ScriptedAdapter, so a child
-// turn running on its own goroutine would race the parent's Responder draw
-// sequence — the exact concurrency hazard the design flags. Driving subagents
-// deterministically needs a per-child adapter seam; it is a scoped follow-up.
-// Background shell jobs are likewise deferred (their async finalize goroutine is
-// not yet wired into the quiescence handshake). What is in scope is already a
-// large, previously-unfuzzed surface, and it is fully deterministic.
+// SCOPE: the harness drives the single-session lifecycle (turn loop, tool
+// execution, foreground shell jobs, forced compaction, the goal store) PLUS the
+// two pieces that were deferred from 8.3 and are now landed:
+//
+//   - Delegate/subagent spawning (C1). A spawned child no longer reuses the
+//     parent's ScriptedAdapter: an injected childClientFactory gives each child
+//     its OWN client + Responder playing a pre-recorded per-child script, so the
+//     child's concurrent turn never races the parent's draw sequence. opDelegate
+//     spawns a foreground leaf delegate (delegation_allowance 0, MaxSubagentDepth
+//     1), drawn synchronously on the parent op goroutine so child-script
+//     assignment is deterministic.
+//   - Background shell jobs (C2). opBackgroundShell launches a shell job with
+//     background=true and then quiesces it deterministically: the async finalize
+//     goroutine reads the deny env's instant Wait, the fake clock is advanced past
+//     any finalize backoff, and the harness joins each job's done channel (the
+//     BlockUntil/Advance + done-join handshake). The root session has no
+//     notifyFunc, so a completed job closes its done channel without driving any
+//     concurrent turn.
+//
+// All of it is fully deterministic: deny env, fake clock, per-child scripted
+// adapters, bounded contexts, and a wall-time wedge backstop.
+//
+// Scoped out (honest): a BACKGROUND delegate (delegate background=true) is not
+// driven here. Unlike a background shell job — whose finalize just closes a done
+// channel — a background delegate adds the quiet-watchdog ticker and a
+// fire-and-forget finalize-bridge goroutine that the root session's nil
+// notifyFunc never drives to a notification turn; making that quiescence
+// deterministic is a scoped extension of the same per-child seam, not a blocker.
 //
 // A discovered failure is routed through fuzz/promoter (mirroring the Phase-2
 // appwire target): a deterministic reproduction survives the flake-guard and is
@@ -145,6 +163,10 @@ func buildResponse(kind responseKind, callSeq int) llm.Response {
 		return lifecycleToolCall(id, "shell", map[string]any{"command": "echo " + strconv.Itoa(callSeq)})
 	case kindCompact:
 		return lifecycleToolCall(id, "compact", map[string]any{"instructions": "tighten"})
+	case kindShellBackground:
+		return lifecycleToolCall(id, "shell", map[string]any{"command": "echo bg " + strconv.Itoa(callSeq), "background": true})
+	case kindDelegate:
+		return lifecycleToolCall(id, "delegate", map[string]any{"task": "child task " + strconv.Itoa(callSeq), "delegation_allowance": 0})
 	case kindBoom:
 		return lifecycleToolCall(id, lifecycleBoomTool, map[string]any{})
 	default:
@@ -152,10 +174,15 @@ func buildResponse(kind responseKind, callSeq int) llm.Response {
 	}
 }
 
-// kindBoom calls the injected panicking fixture tool. It is past the drawn range
-// (drawResponseKind never produces it), so the live fuzzer never emits it; only
-// the determinism tests script it, paired with the panicTool injection.
-const kindBoom responseKind = numResponseKinds
+// The kinds below are past the drawn range (drawResponseKind never produces
+// them), so the live fuzzer never emits them as ordinary round responses. They
+// are scripted only by their dedicated ops (opBackgroundShell, opDelegate) or,
+// for kindBoom, by the determinism tests paired with the panicTool injection.
+const (
+	kindShellBackground responseKind = numResponseKinds + iota
+	kindDelegate
+	kindBoom
+)
 
 const lifecycleBoomTool = "boom"
 
@@ -177,13 +204,16 @@ const (
 	opSetGoal
 	opClearGoal
 	opAdvanceClock
+	opDelegate
+	opBackgroundShell
 	opObserve
 	opClose
 )
 
 var allLifecycleOps = []lifecycleOpCode{
 	opProcessInput, opProcessInterrupted, opSteer, opEnqueue, opFollowUp,
-	opSetGoal, opClearGoal, opAdvanceClock, opObserve, opClose,
+	opSetGoal, opClearGoal, opAdvanceClock, opDelegate, opBackgroundShell,
+	opObserve, opClose,
 }
 
 // opContainsCompact reports whether the op's scripted responses include a
@@ -200,11 +230,12 @@ func (r opRecord) opContainsCompact() bool {
 // opRecord is one drawn operation with every parameter it needs, so the artifact
 // is self-contained and a replay never touches rapid.
 type opRecord struct {
-	Code   int    `json:"c"`
-	Script []int  `json:"s,omitempty"` // per-round response kinds (ProcessInput family)
-	Text   string `json:"t,omitempty"` // input/steer/followup/goal text
-	Dur    int64  `json:"d,omitempty"` // advance duration (ns) for opAdvanceClock
-	IntAt  int    `json:"i,omitempty"` // round at which to cancel ctx (interrupt)
+	Code        int    `json:"c"`
+	Script      []int  `json:"s,omitempty"`  // per-round response kinds (ProcessInput family)
+	Text        string `json:"t,omitempty"`  // input/steer/followup/goal text
+	Dur         int64  `json:"d,omitempty"`  // advance duration (ns) for opAdvanceClock
+	IntAt       int    `json:"i,omitempty"`  // round at which to cancel ctx (interrupt)
+	ChildScript []int  `json:"cs,omitempty"` // delegate child's per-round response kinds
 }
 
 // lifecycleArtifact is the minimized reproducer: the op sequence plus the env
@@ -237,6 +268,20 @@ func drawLifecycleArtifact(rt *rapid.T) lifecycleArtifact {
 			rec.Text = rapid.SampledFrom(inputTexts).Draw(rt, "text")
 		case opAdvanceClock:
 			rec.Dur = int64(rapid.IntRange(0, int(5*time.Minute)).Draw(rt, "durNS"))
+		case opDelegate:
+			// One delegate tool call in the parent's turn; the child plays a
+			// short pre-recorded script drawn from the ordinary vocabulary (no
+			// delegate/background kinds, so the leaf child cannot itself spawn).
+			rec.Script = []int{int(kindDelegate)}
+			rec.Text = rapid.SampledFrom(inputTexts).Draw(rt, "text")
+			csLen := rapid.IntRange(1, 4).Draw(rt, "childScriptLen")
+			rec.ChildScript = make([]int, csLen)
+			for j := range rec.ChildScript {
+				rec.ChildScript[j] = drawResponseKind(rt)
+			}
+		case opBackgroundShell:
+			rec.Script = []int{int(kindShellBackground)}
+			rec.Text = rapid.SampledFrom(inputTexts).Draw(rt, "text")
 		}
 		ops = append(ops, rec)
 	}
@@ -281,8 +326,9 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 
 	var script []int
 	var callSeq int
-	var cancelAt int    // -1 disables interrupt cancellation
-	var cancelFn func() // set per interrupt op
+	var cancelAt int             // -1 disables interrupt cancellation
+	var cancelFn func()          // set per interrupt op
+	var pendingChildScript []int // consumed by the next child the factory builds
 	cancelAt = -1
 
 	responder := func(req llm.Request) llm.Response {
@@ -309,6 +355,18 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 		MaxSubagentDepth:      1,
 		MaxToolRoundsPerInput: 10,
 		LLMSleep:              func(_ context.Context, d time.Duration) error { clk.Sleep(d); return nil },
+	}
+	// C1 per-child adapter seam: each spawned child gets its own client whose
+	// Responder plays the op's pre-recorded child script (a pure function of the
+	// recorded kinds), so the child's concurrent turn never races the parent draw.
+	// The factory is invoked synchronously on the parent op goroutine inside
+	// createDelegate, so consuming pendingChildScript here is race-free.
+	cfg.testOnly.childClientFactory = func() *llm.Client {
+		childScript := pendingChildScript
+		pendingChildScript = nil
+		cc := llm.NewClient()
+		cc.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: newChildResponder(childScript)})
+		return cc
 	}
 	sess, err := NewSession(client, profile, env, cfg)
 	if err != nil {
@@ -347,6 +405,7 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 		callSeq = 0
 		cancelAt = -1
 		cancelFn = nil
+		pendingChildScript = op.ChildScript
 
 		res := runOpSafely(sess, clk, op, &cancelAt, &cancelFn)
 		if res.wedged {
@@ -427,6 +486,20 @@ func applyOp(sess *Session, clk *agenttest.FakeClock, op opRecord, cancelAt *int
 		// notification retry, etc.) fires. No timers are required to be parked,
 		// so this is safe even when the count is zero.
 		clk.Advance(time.Duration(op.Dur))
+	case opDelegate:
+		// A foreground leaf delegate: the parent turn issues one delegate tool
+		// call that blocks until the child completes its own pre-recorded script.
+		ctx, cancel := context.WithTimeout(context.Background(), lifecycleCallTimeout)
+		defer cancel()
+		_, _ = sess.ProcessInput(ctx, op.Text, nil)
+	case opBackgroundShell:
+		// Launch a background shell job, then quiesce it: advance the fake clock
+		// past any finalize backoff and join each job's done channel so the async
+		// finalize is observed deterministically (C2).
+		ctx, cancel := context.WithTimeout(context.Background(), lifecycleCallTimeout)
+		defer cancel()
+		_, _ = sess.ProcessInput(ctx, op.Text, nil)
+		quiesceJobs(sess, clk)
 	case opObserve:
 		_ = sess.State()
 		_ = sess.QueueDepth()
@@ -474,9 +547,37 @@ func checkLifecycleOracles(sess *Session, m *lifecycleModel, op opRecord, art li
 		return lifecycleFailure(promoter.Invariant, art, step, fmt.Sprintf("history-shrank-without-compaction:%d->%d", m.prevHistLen, histLen))
 	}
 
+	// Oracle 6 (jobs): a background shell job, once quiesced, reaches a terminal
+	// status — no job is left stuck Running, and every recorded job is terminal.
+	// This is the deterministic observation the C2 advance+done-join handshake
+	// makes possible.
+	if lifecycleOpCode(op.Code) == opBackgroundShell {
+		if f := checkJobsQuiesced(sess, art, step); f != nil {
+			return f
+		}
+	}
+
 	m.prevTurns = turns
 	m.prevModelResp = modelResp
 	m.prevHistLen = histLen
+	return nil
+}
+
+// checkJobsQuiesced asserts every job has reached a terminal status after a
+// background-shell op's quiescence.
+func checkJobsQuiesced(sess *Session, art lifecycleArtifact, step int) *promoter.Failure {
+	jm := sess.jobManager
+	if jm == nil {
+		return nil
+	}
+	if running := jm.runningJobIDs(); len(running) != 0 {
+		return lifecycleFailure(promoter.Invariant, art, step, fmt.Sprintf("background-job-not-quiesced:%d-running", len(running)))
+	}
+	for _, rec := range jm.list(listFilter{}) {
+		if !rec.Status.IsTerminal() {
+			return lifecycleFailure(promoter.Invariant, art, step, "job-nonterminal-after-quiesce:"+string(rec.Status))
+		}
+	}
 	return nil
 }
 
@@ -484,6 +585,57 @@ func snapshotHistoryLen(sess *Session) int {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	return len(sess.history)
+}
+
+// newChildResponder returns a Responder that plays a pre-recorded child script.
+// It is a pure function of the script (its own call counter, the same hard cap
+// and Final fallback as the parent), so a child turn running concurrently on its
+// own goroutine is fully deterministic and never draws from rapid.
+func newChildResponder(script []int) func(llm.Request) llm.Response {
+	var seq int
+	return func(req llm.Request) llm.Response {
+		idx := seq
+		seq++
+		if idx >= responderHardCap {
+			return agenttest.FinalResponse("child done")
+		}
+		if idx < len(script) {
+			return buildResponse(responseKind(script[idx]), idx)
+		}
+		return agenttest.FinalResponse("child done")
+	}
+}
+
+// quiesceJobs deterministically drives every running job to terminal: it advances
+// the fake clock past any finalize backoff (the success path parks on nothing,
+// but a retry would Sleep on the clock) and joins each job's done channel — the
+// C2 advance + done-join handshake. The wall-time bound is only a wedge backstop;
+// the deny env's instant Wait means finalize completes promptly.
+func quiesceJobs(sess *Session, clk *agenttest.FakeClock) {
+	jm := sess.jobManager
+	if jm == nil {
+		return
+	}
+	dones := runningJobDones(jm)
+	clk.Advance(shellFinalizeMaxRetryDelay)
+	for _, d := range dones {
+		select {
+		case <-d:
+		case <-time.After(lifecycleCallTimeout):
+			return
+		}
+	}
+}
+
+// runningJobDones snapshots the done channel of every currently-running job.
+func runningJobDones(jm *jobManager) []chan struct{} {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	out := make([]chan struct{}, 0, len(jm.running))
+	for _, run := range jm.running {
+		out = append(out, run.done)
+	}
+	return out
 }
 
 // --- promoter wiring (mirrors the Phase-2 seqAdapter) ---
@@ -588,6 +740,10 @@ func opName(c lifecycleOpCode) string {
 		return "clear_goal"
 	case opAdvanceClock:
 		return "advance_clock"
+	case opDelegate:
+		return "delegate"
+	case opBackgroundShell:
+		return "background_shell"
 	case opObserve:
 		return "observe"
 	case opClose:

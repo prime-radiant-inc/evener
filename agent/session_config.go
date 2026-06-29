@@ -203,6 +203,15 @@ type testConfig struct {
 	// responsesContinuationShadowEstimateFunc makes shadow-estimate failure
 	// deterministic in package-agent tests.
 	responsesContinuationShadowEstimateFunc func(llm.Request) (int, bool)
+
+	// childClientFactory, when non-nil, supplies the llm.Client a spawned child
+	// (subagent/delegate) session uses instead of reusing the parent's. The fuzz
+	// lifecycle harness uses it to give each child its OWN scripted adapter — and
+	// thus its own deterministic, pre-recorded response script — so a child's
+	// concurrent turn never races the parent's Responder draw sequence (the exact
+	// hazard the offline-harness design flags). It is inherited by the child's own
+	// config (subCfg := s.cfg), so a grandchild would likewise get a fresh client.
+	childClientFactory func() *llm.Client
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the

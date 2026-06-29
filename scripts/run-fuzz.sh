@@ -94,6 +94,23 @@ TARGETS=(
 	"llm:./providers/kimi:FuzzCountInputTokensResponse::adapter.go#CountInputTokens"
 	"auth:./openai:FuzzParseIDTokenClaims::claims.go#ParseIDTokenClaims"
 	"auth:./openai:FuzzTokenEndpointResponse::tokens.go"
+	# Phase 7 Wave 3 — behavioral API fuzzing (under the B0 sandbox) + tool execution.
+	# B1/B2 (hub)
+	".:./cmd/serf-hub:FuzzAppWireDispatch::app_rpc.go#newHubAppServer"
+	".:./cmd/serf-hub:FuzzWebMutatingHandler::web.go#handleApiSpawn"
+	# B3 (tool execution via DenyEnv)
+	"agent:.:FuzzToolExecution:./internal/tool,.:internal/tool/registry.go#ExecuteCall"
+	# B4 (provider request-build / non-stream Complete / error mapping)
+	"llm:./providers/anthropic:FuzzAnthropicRequestBuild::request.go#buildRequestBody"
+	"llm:./providers/anthropic:FuzzAnthropicComplete::adapter.go#Complete"
+	"llm:./providers/google:FuzzGoogleRequestBuild::request.go#buildRequestBody"
+	"llm:./providers/google:FuzzGoogleComplete::adapter.go#Complete"
+	"llm:./providers/openaicompat:FuzzOpenAICompatRequestBuild::request.go#buildRequestBody"
+	"llm:./providers/openaicompat:FuzzOpenAICompatComplete::adapter.go#completeViaChatCompletions"
+	"llm:./providers/openai:FuzzOpenAIResponsesRequestBuild::responses.go#buildRequestBody"
+	"llm:./providers/openai:FuzzOpenAIChatCompletionsRequestBuild::chatcompletions.go#buildChatCompletionsBody"
+	"llm:./providers/openai:FuzzOpenAIResponsesDecode::responses.go#fromResponses"
+	"llm:.:FuzzErrorFromHTTPStatus::errors.go#errorFromHTTPStatus"
 )
 
 duration="60s"
