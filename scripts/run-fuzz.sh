@@ -132,6 +132,7 @@ TARGETS=(
 	"rapid:agent:.:TestToolArgsSchemaFuzz"
 	"rapid:agent:.:TestLifecycleSeqFuzz"
 	"rapid:agent:./internal/jobstore:TestJobstoreSeqFuzz"
+	"rapid:agent:./internal/contextmgr:TestCompactionSeqFuzz"
 	"rapid:.:./internal/appserver:TestRouterSeqFuzz"
 )
 
