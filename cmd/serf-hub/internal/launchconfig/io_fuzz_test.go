@@ -30,11 +30,14 @@ func FuzzLaunchConfigDecode(f *testing.F) {
 	f.Add(0, []byte(""))
 	f.Add(0, []byte("= = ="))
 	f.Add(0, []byte("max_rounds = \"not an int\""))
-	// Generic TOML decoder stressors, fed to both the Layer and Meta arms.
+	// Generic TOML decoder stressors, fed to both the Layer and Meta arms, plus
+	// the all-features document from BurntSushi/toml's own fuzz seed.
 	for _, s := range edgeseeds.TOML() {
 		f.Add(0, s)
 		f.Add(1, s)
 	}
+	f.Add(0, edgeseeds.TOMLFeatureDoc())
+	f.Add(1, edgeseeds.TOMLFeatureDoc())
 
 	f.Fuzz(func(t *testing.T, which int, raw []byte) {
 		if which&1 == 0 {

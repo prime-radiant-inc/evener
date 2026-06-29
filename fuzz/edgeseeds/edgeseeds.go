@@ -107,6 +107,108 @@ func FrontmatterYAML() []string {
 	}
 }
 
+// YAMLDoSCase is a YAML payload that gopkg.in/yaml.v3 rejects to resist denial
+// of service, paired with a substring of the rejection error it produces.
+type YAMLDoSCase struct {
+	Name      string
+	YAML      []byte
+	ErrSubstr string
+}
+
+// YAMLDoS returns the denial-of-service payloads from gopkg.in/yaml.v3@v3.0.1
+// limit_test.go — the library's own resistance suite: an alias-expansion bomb
+// and three past-max-depth nestings. A consumer feeds these through its YAML
+// decode path to prove it inherits yaml.v3's limits (a bounded error) rather
+// than panicking, hanging, or exhausting memory. The payloads are ~1 MB each,
+// so a test using them should gate behind testing.Short() as the original does.
+func YAMLDoS() []YAMLDoSCase {
+	const kb = 1024
+	return []YAMLDoSCase{
+		{
+			Name:      "excessive-aliasing",
+			YAML:      []byte(`{a: &a [{a}` + strings.Repeat(`,{a}`, 1000*kb/4-100) + `], b: &b [*a` + strings.Repeat(`,*a`, 99) + `]}`),
+			ErrSubstr: "excessive aliasing",
+		},
+		{
+			Name:      "deep-nested-slices",
+			YAML:      []byte(strings.Repeat(`[`, 1000*kb)),
+			ErrSubstr: "exceeded max depth",
+		},
+		{
+			Name:      "deep-nested-maps",
+			YAML:      []byte("x: " + strings.Repeat(`{`, 1000*kb)),
+			ErrSubstr: "exceeded max depth",
+		},
+		{
+			Name:      "deep-nested-indents",
+			YAML:      []byte(strings.Repeat(`- `, 1000*kb)),
+			ErrSubstr: "exceeded max depth",
+		},
+	}
+}
+
+// TOMLFeatureDoc is the seed input from BurntSushi/toml@v1.6.0 fuzz_test.go
+// FuzzDecode: one document exercising most TOML features at once — string and
+// multiline-string forms, every integer/float base, the full datetime/date/time
+// zoo, inline tables, nested implicit tables, arrays of tables, and unicode
+// escapes. It drives a decoder's whole lexer/parser in a single decode.
+func TOMLFeatureDoc() []byte {
+	return []byte(`
+# This is an example TOML document which shows most of its features.
+
+# Simple key/value with a string.
+title = "TOML example \U0001F60A"
+
+desc = """
+An example TOML document. \
+"""
+
+# Array with integers and floats in the various allowed formats.
+integers = [42, 0x42, 0o42, 0b0110]
+floats   = [1.42, 1e-02]
+
+# Array with supported datetime formats.
+times = [
+	2021-11-09T15:16:17+01:00,  # datetime with timezone.
+	2021-11-09T15:16:17Z,       # UTC datetime.
+	2021-11-09T15:16:17,        # local datetime.
+	2021-11-09,                 # local date.
+	15:16:17,                   # local time.
+]
+
+# Durations.
+duration = ["4m49s", "8m03s", "1231h15m55s"]
+
+# Table with inline tables.
+distros = [
+	{name = "Arch Linux", packages = "pacman"},
+	{name = "Void Linux", packages = "xbps"},
+	{name = "Debian",     packages = "apt"},
+]
+
+# Create new table; note the "servers" table is created implicitly.
+[servers.alpha]
+	ip        = '10.0.0.1'
+	hostname  = 'server1'
+	enabled   = false
+[servers.beta]
+	ip        = '10.0.0.2'
+	hostname  = 'server2'
+	enabled   = true
+
+# Start a new table array; the "characters" table is created implicitly.
+[[characters.star-trek]]
+	name = "James Kirk"
+	rank = "Captain \t"
+[[characters.star-trek]]
+	name = "Spock"
+	rank = "Science officer"
+
+[undecoded]
+	key = "This table intentionally left undecoded"
+`)
+}
+
 func toBytes(ss []string) [][]byte {
 	out := make([][]byte, len(ss))
 	for i, s := range ss {
