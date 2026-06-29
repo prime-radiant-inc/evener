@@ -1,0 +1,3 @@
+go test fuzz v1
+int(1)
+[]byte("{\"await_reply\":false,\"message\":\"xxxxxxxx\",\"output\":{\"artifacts\":[],\"data\":{\"command\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"exit_code\":0,\"stdout\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"},\"message\":\"xxxxxxxx\"},\"purpose\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}")
