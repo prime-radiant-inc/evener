@@ -97,7 +97,7 @@ TARGETS=(
 	# Phase 7 Wave 3 — behavioral API fuzzing (under the B0 sandbox) + tool execution.
 	# B1/B2 (hub)
 	".:./cmd/serf-hub:FuzzAppWireDispatch::app_rpc.go#newHubAppServer"
-	".:./cmd/serf-hub:FuzzWebMutatingHandler::web.go#handleApiSpawn"
+	".:./cmd/serf-hub:FuzzWebMutatingHandler::web_spawn.go#handleApiSpawn"
 	# B3 (tool execution via DenyEnv)
 	"agent:.:FuzzToolExecution:./internal/tool,.:internal/tool/registry.go#ExecuteCall"
 	# B4 (provider request-build / non-stream Complete / error mapping)
