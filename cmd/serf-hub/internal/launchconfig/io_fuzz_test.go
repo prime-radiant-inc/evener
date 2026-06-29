@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
+	"primeradiant.com/serf/fuzz/edgeseeds"
 )
 
 // FuzzLaunchConfigDecode drives the in-package TOML decoders for Layer
@@ -29,6 +30,11 @@ func FuzzLaunchConfigDecode(f *testing.F) {
 	f.Add(0, []byte(""))
 	f.Add(0, []byte("= = ="))
 	f.Add(0, []byte("max_rounds = \"not an int\""))
+	// Generic TOML decoder stressors, fed to both the Layer and Meta arms.
+	for _, s := range edgeseeds.TOML() {
+		f.Add(0, s)
+		f.Add(1, s)
+	}
 
 	f.Fuzz(func(t *testing.T, which int, raw []byte) {
 		if which&1 == 0 {

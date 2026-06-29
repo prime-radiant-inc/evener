@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"primeradiant.com/serf/fuzz/edgeseeds"
 )
 
 // FuzzCredentialsStoreDecode drives the REAL LoadStore seam: it writes the
@@ -25,6 +27,10 @@ func FuzzCredentialsStoreDecode(f *testing.F) {
 	f.Add([]byte("schema = \"x\"\n"))               // type mismatch
 	f.Add([]byte("[providers.x]\napi_key = 123\n")) // api_key type mismatch
 	f.Add([]byte("[providers]\nx = \"y\"\n"))       // providers as scalar
+	// Generic TOML decoder stressors (dup keys/tables, datetimes, BOM, …).
+	for _, s := range edgeseeds.TOML() {
+		f.Add(s)
+	}
 
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		dir := t.TempDir()

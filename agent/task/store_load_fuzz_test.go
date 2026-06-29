@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/serf/fuzz/edgeseeds"
 )
 
 // FuzzTaskStoreLoad drives TaskStore.Load — the package's real on-disk decode
@@ -27,6 +29,10 @@ func FuzzTaskStoreLoad(f *testing.F) {
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
+	}
+	// Generic JSON decoder stressors (deep nesting, surrogates, dup keys, …).
+	for _, s := range edgeseeds.JSON() {
+		f.Add(s)
 	}
 
 	f.Fuzz(func(t *testing.T, raw []byte) {

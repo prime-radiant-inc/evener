@@ -24,6 +24,12 @@ func FuzzProvidersTOMLLoad(f *testing.F) {
 	f.Add([]byte(""))                                                             // empty -> no instances
 	f.Add([]byte("not = toml = ["))                                               // parse error
 	f.Add([]byte("[instances.a/b]\ntype=\"openai\"\n"))                           // '/' in name
+	// Generic TOML decoder stressors. These mirror fuzz/edgeseeds.TOML() but are
+	// inlined: the llm module does not depend on the fuzz module, and wiring it
+	// in just to share ~dozen byte literals would pull rapid into llm's graph.
+	for _, s := range tomlEdgeSeeds() {
+		f.Add(s)
+	}
 
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		cfg, err := Load(raw)
@@ -63,4 +69,33 @@ func FuzzProvidersTOMLLoad(f *testing.F) {
 				cfg.Default, names, raw)
 		}
 	})
+}
+
+// tomlEdgeSeeds returns generic TOML decoder stressors (dup keys/tables,
+// datetime and number extremes, multiline strings, inline tables, BOM prefix).
+// Kept in lockstep with fuzz/edgeseeds.TOML().
+func tomlEdgeSeeds() [][]byte {
+	ss := []string{
+		"a = 1\na = 2\n",                            // duplicate bare key (rejected)
+		"[t]\nx = 1\n[t]\ny = 2\n",                  // duplicate table (rejected)
+		"[a.b.c.d.e.f.g.h]\nx = 1\n",                // deep dotted table
+		"a = 9999999999999999999999999\n",           // integer overflow
+		"a = nan\n",                                 // float NaN
+		"a = inf\n",                                 // float +inf
+		"a = 2020-01-01T00:00:00.999999999+05:30\n", // offset datetime, nanos
+		"a = 2020-01-01\n",                          // local date
+		"a = \"\"\"\nline1\nline2\n\"\"\"\n",        // multiline basic string
+		"a = \"\\U0001F600\"\n",                     // astral unicode escape
+		"\"a.b\" = 1\n'k k' = 2\n",                  // quoted/dotted keys
+		"a = {b = 1, c = [1, 2]}\n",                 // inline table
+		"[[t]]\nx = 1\n[[t]]\nx = 2\n",              // array of tables
+		"a = [1, \"x\", true]\n",                    // mixed-type array (rejected)
+		"\ufeff" + "a = 1\n",                        // BOM prefix
+		"\"\" = 1\n",                                // empty key
+	}
+	out := make([][]byte, len(ss))
+	for i, s := range ss {
+		out[i] = []byte(s)
+	}
+	return out
 }

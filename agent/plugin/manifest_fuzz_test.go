@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
+
+	"primeradiant.com/serf/fuzz/edgeseeds"
 )
 
 // FuzzPluginManifestParse drives plugin.ParseManifest over arbitrary JSON. The
@@ -23,6 +25,10 @@ func FuzzPluginManifestParse(f *testing.F) {
 	f.Add([]byte(`{"name":"-x"}`))       // leading hyphen
 	f.Add([]byte(`not json`))
 	f.Add([]byte(`{"name":123}`)) // type mismatch
+	// Generic JSON decoder stressors (deep nesting, surrogates, dup keys, …).
+	for _, s := range edgeseeds.JSON() {
+		f.Add(s)
+	}
 
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		m, err := ParseManifest(raw)
