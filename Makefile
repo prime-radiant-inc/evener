@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-goldens secret-scan fuzz-corpus-scan
+.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-bisect fuzz-bisect-selftest fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-goldens secret-scan fuzz-corpus-scan
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -143,6 +143,30 @@ fuzz-triage:
 # search, crash, or PR. Run it after editing scripts/fuzz-triage.sh.
 fuzz-triage-selftest:
 	@scripts/fuzz-triage-selftest.sh
+
+# fuzz-continuous is the LOCAL, on-demand continuous loop: it rotates over every
+# native target, giving each a bounded search turn round after round (the corpus
+# deepens across turns via $GOCACHE/fuzz), and routes any new crasher through
+# fuzz-triage's flake-guard / dedup / PR pipeline. Runs until Ctrl-C or --total.
+# Pass flags through FUZZ_ARGS, e.g. `make fuzz-continuous FUZZ_ARGS="--total 2h"`.
+fuzz-continuous:
+	@scripts/fuzz-continuous.sh $(FUZZ_ARGS)
+
+# fuzz-continuous-selftest verifies the loop's rotation / stop-condition /
+# crasher-delta logic with stubbed runner+triage — no real fuzzing.
+fuzz-continuous-selftest:
+	@scripts/fuzz-continuous-selftest.sh
+
+# fuzz-bisect pinpoints the commit that introduced a crasher via git bisect,
+# replaying one saved corpus entry per step. Supply args through FUZZ_ARGS, e.g.
+# `make fuzz-bisect FUZZ_ARGS="--target llm:FuzzParseSSE --crasher <file> --good <ref>"`.
+fuzz-bisect:
+	@scripts/fuzz-bisect.sh $(FUZZ_ARGS)
+
+# fuzz-bisect-selftest verifies bisection end-to-end against a throwaway git repo
+# whose fuzz target crashes only after a known commit (real git bisect + replay).
+fuzz-bisect-selftest:
+	@scripts/fuzz-bisect-selftest.sh
 
 # fuzz-ledger pretty-prints the triage ledger (found/fixed/quarantined counts and
 # the open-bug list) from fuzz/state/ledger.json.
