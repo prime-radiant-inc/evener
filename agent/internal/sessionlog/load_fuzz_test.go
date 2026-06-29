@@ -43,6 +43,15 @@ func FuzzSessionLogLoad(f *testing.F) {
 		}
 		entries := log.Entries()
 
+		// Read accessors a caller reaches for must never panic, including the
+		// EntriesRange clamp branches (negative start, over-long end, empty range)
+		// and the advisory-skipping String renderer.
+		n := log.Len()
+		_ = log.String()
+		_ = log.EntriesRange(0, n)
+		_ = log.EntriesRange(-1, n+1)
+		_ = log.EntriesRange(n, 0)
+
 		// Re-append into a fresh log and reload: a fixed point.
 		path2 := filepath.Join(dir, "sessionlog2.jsonl")
 		log2, err := NewSessionLog(path2)
