@@ -37,7 +37,8 @@ buckets="$state_dir/buckets.json"
 runner="${SERF_FUZZ_RUNNER:-$repo_root/scripts/run-fuzz.sh}"
 gh="${SERF_FUZZ_GH:-gh}"
 K="${SERF_FUZZ_K:-5}"            # flake-guard: a crasher must fail all K replays
-max_seeds="${SERF_FUZZ_MAX_SEEDS:-8}"
+max_seeds="${SERF_FUZZ_MAX_SEEDS:-8}"           # promoted-corpus diversity cap
+max_seed_bytes="${SERF_FUZZ_MAX_SEED_BYTES:-32768}" # drop promoted seeds larger than this
 
 duration=""
 dry_run=false
@@ -332,10 +333,20 @@ handle_promoter() { # path to an emitted testregression_*_test.go
 	open_pr "$sig12" "$sigkey" "$surface" "$oracle" "$detail" promoter "$pkgdir" "$run" "$path" "$path" "$repro"
 }
 
-# --- step 6: promote the coverage-expanding corpus ---------------------------
-# Best-effort: copy up to max_seeds NEW inputs Go kept in its fuzz cache into the
-# target's committed testdata/fuzz seeds, so future runs start richer. A no-op
-# when the cache is empty/absent. Skipped in --dry-run.
+# --- step 6: promote a MINIMIZED coverage-expanding corpus -------------------
+# Fold the NEW inputs Go kept in its fuzz cache into the target's committed
+# testdata/fuzz seeds so future runs start richer — but MINIMIZED, so the
+# committed corpus stays small and high-signal rather than a raw cache dump:
+#   * content-dedup: an input whose bytes already match a committed seed (under
+#     ANY filename, not just the same one) is skipped, never re-committed;
+#   * size-prefer: candidates are taken smallest-first, so the diversity cap
+#     keeps the most-reduced inputs Go discovered (Go already minimizes the
+#     crashers it writes; the coverage cache is what needs shrinking here);
+#   * size-cap: an input larger than max_seed_bytes is dropped — a giant cache
+#     entry is low-signal as a permanent seed and bloats the repo.
+# A no-op when the cache is empty/absent. Skipped in --dry-run.
+
+content_hash() { shasum "$1" 2>/dev/null | cut -d' ' -f1; }
 
 promote_corpus() {
 	$no_corpus && return 0
@@ -356,16 +367,35 @@ promote_corpus() {
 		[ -d "$cachedir" ] || continue
 		local dest="$pkgdir/testdata/fuzz/$name"
 		mkdir -p "$dest"
-		local copied=0 f base
-		for f in "$cachedir"/*; do
+
+		# Index the committed seeds by content hash so a cache entry Go already has
+		# (under a different filename) is not re-committed as a duplicate.
+		local -A have=()
+		local f h
+		for f in "$dest"/*; do
 			[ -f "$f" ] || continue
-			[ "$copied" -lt "$max_seeds" ] || break
-			base="$(basename "$f")"
-			[ -e "$dest/$base" ] && continue
-			cp "$f" "$dest/$base"
-			copied=$((copied + 1))
+			h="$(content_hash "$f")"
+			[ -n "$h" ] && have["$h"]=1
 		done
-		[ "$copied" -gt 0 ] && log "corpus: promoted $copied seed(s) into $module/${pkg#./}/testdata/fuzz/$name"
+
+		# Walk candidates smallest-first; dedup by content, drop oversized, cap count.
+		local copied=0 base sz path
+		while IFS=$'\t' read -r sz path; do
+			[ -n "$path" ] || continue
+			[ "$copied" -lt "$max_seeds" ] || break
+			[ "$((sz))" -le "$max_seed_bytes" ] || continue
+			h="$(content_hash "$path")"
+			[ -n "$h" ] || continue
+			[ -n "${have[$h]:-}" ] && continue
+			base="$(basename "$path")"
+			[ -e "$dest/$base" ] && continue
+			cp "$path" "$dest/$base"
+			have["$h"]=1
+			copied=$((copied + 1))
+		done < <(for f in "$cachedir"/*; do
+				[ -f "$f" ] && printf '%s\t%s\n' "$(wc -c <"$f" | tr -d ' ')" "$f"
+			done | sort -n)
+		[ "$copied" -gt 0 ] && log "corpus: promoted $copied minimized seed(s) into $module/${pkg#./}/testdata/fuzz/$name"
 	done < <(bash "$runner" --list)
 }
 

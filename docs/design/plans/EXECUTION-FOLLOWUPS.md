@@ -50,11 +50,15 @@ is a quality/robustness refinement to schedule after the roadmap lands.
   `gh pr create` tail is covered by stubbed-`gh` + throwaway-git scenarios, never a
   live PR. A developer's first real `--no-pr` run is the right smoke test before
   trusting the default PR mode; worth calling out in onboarding.
-- **Corpus promotion is best-effort and lightly tested.** Copying Go's fuzz-cache
-  entries into `testdata/fuzz` depends on `go env GOCACHE` + `go list` import-path
-  layout, which is brittle across toolchain versions and can't be exercised without
-  a real search. It no-ops safely when the cache is absent, but real minimization
-  (vs. a raw diversity cap) is a follow-up.
+- **Corpus promotion is best-effort and lightly tested.** *(MINIMIZATION DONE.)*
+  Copying Go's fuzz-cache entries into `testdata/fuzz` still depends on
+  `go env GOCACHE` + `go list` import-path layout (brittle across toolchains;
+  no-ops safely when the cache is absent), but promotion now MINIMIZES the
+  committed set instead of dumping a raw diversity cap: content-dedup (skip bytes
+  that already match a committed seed under any name), size-prefer (smallest-first
+  so the cap keeps the most-reduced inputs), and a per-seed size cap
+  (`SERF_FUZZ_MAX_SEED_BYTES`, default 32 KiB). Exercised by self-test scenario 8
+  (stub gocache, asserts dedup + both caps).
 
 ## Pre-existing flake (surfaced during Phase 7 Wave 1, NOT caused by it)
 - `TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit` (cmd/serf-tui) is a

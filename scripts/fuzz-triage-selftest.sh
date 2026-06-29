@@ -165,5 +165,27 @@ out=$(run_triage "$r" STUB_MAKE_CRASHER=1 STUB_GO_TEST_EXIT=1 STUB_GH_AUTH=1 -- 
 assert_has "$out" "gh unavailable/unauthenticated" "s7: missing gh auth degrades gracefully"
 assert_not "$out" "opened PR" "s7: no PR opened without gh auth"
 
+# Scenario 8: corpus promotion MINIMIZES the promoted set — content-dedup,
+# size-prefer, size-cap, count-cap. A stub gocache holds five candidate cache
+# entries; with max_seeds=2 / max_seed_bytes=100 only the two smallest UNIQUE
+# ones land. (go list -> example.com/stub/pkg, so the cache path is fixed.)
+r=$(fresh_repo s8)
+cache="$work/gocache-s8/fuzz/example.com/stub/pkg/FuzzFoo"
+mkdir -p "$cache"
+cp "$r/agent/testdata/fuzz/FuzzFoo/seed0000" "$cache/dup"   # identical bytes -> skipped
+printf 'go test fuzz v1\n[]byte("a")\n'  >"$cache/small_a"  # smallest unique
+printf 'go test fuzz v1\n[]byte("bb")\n' >"$cache/small_b"  # next smallest unique
+printf 'go test fuzz v1\n[]byte("ccc")\n' >"$cache/small_c" # unique but over the count cap
+head -c 200 /dev/zero | tr '\0' 'x' >"$cache/big"           # over the byte cap -> dropped
+out=$(run_triage "$r" STUB_MAKE_CRASHER=0 STUB_GOCACHE="$work/gocache-s8" \
+	SERF_FUZZ_MAX_SEEDS=2 SERF_FUZZ_MAX_SEED_BYTES=100 -- --no-pr agent:FuzzFoo)
+dest="$r/agent/testdata/fuzz/FuzzFoo"
+assert_has "$out" "promoted 2 minimized seed(s)" "s8: promotes exactly the count cap"
+[ -f "$dest/small_a" ] && [ -f "$dest/small_b" ] && ok "s8: the two smallest unique seeds were promoted" \
+	|| bad "s8: smallest unique seeds missing"
+[ -e "$dest/small_c" ] && bad "s8: count cap not enforced (small_c promoted)" || ok "s8: count cap drops the extra unique seed"
+[ -e "$dest/big" ]     && bad "s8: size cap not enforced (big promoted)"     || ok "s8: size cap drops the oversized seed"
+[ -e "$dest/dup" ]     && bad "s8: content-dedup failed (dup promoted)"      || ok "s8: content-dedup skips a byte-identical seed"
+
 echo "== $pass passed, $fail failed =="
 [ "$fail" -eq 0 ]
