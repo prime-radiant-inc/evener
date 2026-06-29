@@ -47,6 +47,7 @@ TARGETS=(
 	"native:agent:./schema:FuzzSessionMetaRoundTrip::snapshot.go"
 	"native:agent:./internal/jobstore:FuzzJobEventLogReplay::fold.go"
 	"native:agent:.:FuzzTranscriptReplay::transcript_read.go"
+	"native:agent:.:FuzzTranscriptReplayStructured::transcript_read.go"
 	"native:.:./cmd/serf-hub:FuzzHubReplayCarryThrough::app_threadread.go#replayTurnToAgentTurn"
 	"native:.:./cmd/serf-hub:FuzzHubReplayLiveVsReload::app_threadread.go#replayTurnToAgentTurn"
 	"native:llm:./providers/openai:FuzzOpenAIResponsesMetamorphic::responses.go#decodeResponsesStream"
