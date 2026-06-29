@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -55,8 +56,17 @@ func TestToolArgsSchemaFuzz(t *testing.T) {
 	for _, td := range tools {
 		schemas[td.name] = td.schema
 	}
-	adapter := &toolArgsAdapter{schemas: schemas, emitDir: t.TempDir()}
-	store, err := promoter.OpenBucketStore(filepath.Join(t.TempDir(), "buckets.json"))
+	// Default-off: PersistPaths returns the temp fallbacks (no tree writes) for
+	// every gate run. The local triage tool sets SERF_FUZZ_PERSIST so a live-found
+	// crasher's regression test and bucket land durably in the tree (see
+	// fuzz/promoter/persist.go).
+	pkgDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	emitDir, bucketsPath, _ := promoter.PersistPaths(pkgDir, t.TempDir(), filepath.Join(t.TempDir(), "buckets.json"))
+	adapter := &toolArgsAdapter{schemas: schemas, emitDir: emitDir}
+	store, err := promoter.OpenBucketStore(bucketsPath)
 	if err != nil {
 		t.Fatalf("OpenBucketStore: %v", err)
 	}
