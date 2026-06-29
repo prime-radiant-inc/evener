@@ -2,6 +2,7 @@ package hubcore
 
 import (
 	"context"
+	"os"
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
@@ -45,6 +46,16 @@ type WebConfig struct {
 	Archive *ArchiveStore // archive decision store; nil when not configured (tree uses empty decisions)
 
 	RelayHooks RelayLifecycleHooks // test-only relay lifecycle seams; nil in production
+
+	// Sandbox seams. Each is nil in production (the real implementation runs);
+	// a fuzz/test sandbox sets them so the matching mutating handler runs without
+	// shelling out, hitting the network, or mutating the real filesystem. These
+	// are the escapes a read-only harness cannot drive: the live-git probe
+	// (/api/git/head), the live-provider model query (/api/models), and the
+	// directory creator (/api/dirs/create). See cmd/serf-hub's sandbox_test.go.
+	GitHeadBranch func(ctx context.Context, dir string) (string, error) // nil → real `git`
+	LiveModels    func(ctx context.Context) []map[string]any            // nil → real provider query
+	MkdirAll      func(path string, perm os.FileMode) error             // nil → os.MkdirAll
 }
 
 // Spawner forks a serf serve subprocess and waits for its rendezvous file to appear.

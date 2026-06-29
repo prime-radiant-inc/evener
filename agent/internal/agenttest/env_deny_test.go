@@ -2,6 +2,8 @@ package agenttest
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -49,6 +51,50 @@ func TestDenyEnvSeedVariation(t *testing.T) {
 	}
 	if !differ {
 		t.Fatal("seed had no effect on ExecCommand outputs")
+	}
+}
+
+// TestDenyEnvTouchesNoFilesystem is the exec-sandbox containment proof: the
+// mutating filesystem methods report success but create, modify, and delete
+// nothing on the real disk. A B3 tool-execution fuzz target relies on exactly
+// this — a tool handler may call WriteFile/EditFile with any fuzzed path and the
+// real filesystem stays untouched. The assertions are falsifiable: if DenyEnv
+// were ever backed by the real os package, the planted paths would appear.
+func TestDenyEnvTouchesNoFilesystem(t *testing.T) {
+	dir := t.TempDir()
+	d := &DenyEnv{WorkDir: dir, Seed: 7}
+
+	target := filepath.Join(dir, "written.txt")
+	if _, err := d.WriteFile(target, "payload that must never hit disk"); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("WriteFile escaped the sandbox: %s exists on disk (err=%v)", target, err)
+	}
+
+	if _, err := d.EditFile(target, "old", "new", false); err != nil {
+		// An edit "no match" error is fine; what matters is no file was created.
+		_ = err
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("EditFile escaped the sandbox: %s exists on disk", target)
+	}
+
+	// FileExists is fabricated from the seed, never the real disk: it reports a
+	// path that does not exist as present (proving it consulted no filesystem).
+	missing := filepath.Join(dir, "definitely-absent")
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("test precondition: %s should not exist", missing)
+	}
+	reported := false
+	for _, p := range []string{"a", "b", "c", "d", "e", "f"} {
+		if d.FileExists(filepath.Join(dir, p)) {
+			reported = true
+			break
+		}
+	}
+	if !reported {
+		t.Fatal("FileExists never reported a (fabricated) hit; cannot prove it ignores the real disk")
 	}
 }
 
