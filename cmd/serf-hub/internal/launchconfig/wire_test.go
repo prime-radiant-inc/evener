@@ -95,7 +95,7 @@ func TestToWire(t *testing.T) {
 }
 
 func TestToWirePreservesExplicitEmptyModelFallbacks(t *testing.T) {
-	got := ToWire(Layer{ModelFallbacksSet: true, ModelFallbacks: []string{}})
+	got := ToWire(Layer{ModelFallbacks: &[]string{}})
 	if got.ModelFallbacks == nil || len(got.ModelFallbacks) != 0 {
 		t.Fatalf("ModelFallbacks = %#v, want explicit empty slice", got.ModelFallbacks)
 	}
@@ -185,8 +185,8 @@ func TestLaunchConfigLayer_ConfigPlumbingRoundtrip(t *testing.T) {
 		ModelFallbacks: []string{"openai/gpt-5.4", "anthropic/claude-haiku-4-5"},
 	}
 	internal := FromWire(wireLayer)
-	if got, want := internal.ModelFallbacks, wireLayer.ModelFallbacks; !reflect.DeepEqual(got, want) {
-		t.Errorf("FromWire ModelFallbacks: got %v want %v", got, want)
+	if internal.ModelFallbacks == nil || !reflect.DeepEqual(*internal.ModelFallbacks, wireLayer.ModelFallbacks) {
+		t.Errorf("FromWire ModelFallbacks: got %v want %v", internal.ModelFallbacks, wireLayer.ModelFallbacks)
 	}
 
 	// Internal → wire roundtrip.
@@ -232,8 +232,11 @@ func TestToWire_WithSchemaAndMCPs(t *testing.T) {
 	}
 }
 
-func TestToWire_NilModelFallbacksSet(t *testing.T) {
-	in := Layer{ModelFallbacksSet: true, ModelFallbacks: nil}
+func TestToWire_NonNilPtrToNilSliceClears(t *testing.T) {
+	// A non-nil pointer to a nil slice is still the explicit-clear state:
+	// ToWire must surface it as a non-nil empty array on the wire.
+	mf := []string(nil)
+	in := Layer{ModelFallbacks: &mf}
 	got := ToWire(in)
 	if got.ModelFallbacks == nil || len(got.ModelFallbacks) != 0 {
 		t.Fatalf("ModelFallbacks = %#v, want explicit empty slice", got.ModelFallbacks)

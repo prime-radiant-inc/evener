@@ -41,14 +41,11 @@ func TestLoadLayer_TracksExplicitEmptyModelFallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLayer: %v", err)
 	}
-	if !got.ModelFallbacksSet {
-		t.Fatal("ModelFallbacksSet = false, want true")
-	}
 	if got.ModelFallbacks == nil {
 		t.Fatal("ModelFallbacks = nil, want explicit empty slice")
 	}
-	if len(got.ModelFallbacks) != 0 {
-		t.Fatalf("ModelFallbacks = %v, want empty", got.ModelFallbacks)
+	if len(*got.ModelFallbacks) != 0 {
+		t.Fatalf("ModelFallbacks = %v, want empty", *got.ModelFallbacks)
 	}
 }
 
@@ -81,7 +78,7 @@ func TestSaveLayer_AtomicAndPermissions(t *testing.T) {
 
 func TestSaveLayer_PersistsExplicitEmptyModelFallbacks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "launch.toml")
-	if err := SaveLayer(path, Layer{Model: "mentions model_fallbacks", ModelFallbacksSet: true, ModelFallbacks: []string{}}); err != nil {
+	if err := SaveLayer(path, Layer{Model: "mentions model_fallbacks", ModelFallbacks: &[]string{}}); err != nil {
 		t.Fatalf("SaveLayer: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -95,10 +92,7 @@ func TestSaveLayer_PersistsExplicitEmptyModelFallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLayer: %v", err)
 	}
-	if !got.ModelFallbacksSet {
-		t.Fatal("ModelFallbacksSet = false, want true")
-	}
-	if got.ModelFallbacks == nil || len(got.ModelFallbacks) != 0 {
+	if got.ModelFallbacks == nil || len(*got.ModelFallbacks) != 0 {
 		t.Fatalf("ModelFallbacks = %#v, want explicit empty slice", got.ModelFallbacks)
 	}
 }

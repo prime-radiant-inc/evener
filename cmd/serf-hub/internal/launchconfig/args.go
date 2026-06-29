@@ -81,8 +81,10 @@ func ToArgs(r Resolved) []string {
 	for _, d := range e.SystemPromptAppend {
 		add("--system-prompt-append", d)
 	}
-	for _, m := range e.ModelFallbacks {
-		add("--model-fallback", m)
+	if e.ModelFallbacks != nil {
+		for _, m := range *e.ModelFallbacks {
+			add("--model-fallback", m)
+		}
 	}
 	for _, m := range e.MCPs {
 		spec := m.Name + ":" + m.Command
