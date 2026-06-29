@@ -469,6 +469,13 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 						}
 						// Finish on explicit finishReason chunk.
 						flushTextPart()
+						// Usage commonly rides the finish chunk (the dominant Gemini
+						// shape) rather than arriving in a separate earlier chunk.
+						// This branch returns before the separate-chunk usageMetadata
+						// parse below, so capture the finish chunk's usage here too.
+						if um, ok := raw["usageMetadata"].(map[string]any); ok {
+							usage = parseUsage(um)
+						}
 						msg := llm.Message{Role: llm.RoleAssistant, Content: contentParts}
 						r := llm.Response{
 							Provider: "google",
