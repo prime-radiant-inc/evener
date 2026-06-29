@@ -39,9 +39,22 @@ func FuzzCredentialsStoreDecode(f *testing.F) {
 			return // rejected input (parse/type error) — nothing further to assert
 		}
 
-		// Accessors on a loaded store must never panic.
+		// Read accessors a caller reaches for must never panic — across the
+		// well-known providers AND the names actually present in the loaded file,
+		// so the file-hit and env-fallback branches of each resolver are driven.
 		_ = s.List()
-		_, _ = s.Get("openai")
+		names := []string{"openai", "anthropic", "openai-compatible", "ollama"}
+		for name := range s.data.Providers {
+			names = append(names, name)
+		}
+		for _, name := range names {
+			_ = EnvVars(name)
+			_, _ = s.Get(name)
+			_, _ = s.Layers(name)
+			_, _ = s.InstanceLayers(name, "openai")
+			_, _ = s.ResolveKey(name, "openai")
+			_, _ = s.APIKeyFor(name)
+		}
 
 		// Round-trip through the real save encoder: re-save to a fresh 0600 file,
 		// reload, and compare. Exercises both LoadStore and Store.save.
@@ -57,6 +70,14 @@ func FuzzCredentialsStoreDecode(f *testing.F) {
 		if !reflect.DeepEqual(s.data, s2.data) {
 			t.Fatalf("store data round-trip not stable:\n input=%q\n once=%#v\n twice=%#v",
 				raw, s.data, s2.data)
+		}
+
+		// Mutators must round-trip through save without error (s.path is path2).
+		if err := s.Set("openai", "set-by-fuzz"); err != nil {
+			t.Fatalf("Set failed: %v\n input=%q", err, raw)
+		}
+		if err := s.Clear("openai"); err != nil {
+			t.Fatalf("Clear failed: %v\n input=%q", err, raw)
 		}
 	})
 }
