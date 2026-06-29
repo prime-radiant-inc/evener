@@ -47,12 +47,14 @@ TARGETS=(
 	"native:agent:./schema:FuzzSessionMetaRoundTrip::snapshot.go"
 	"native:agent:./internal/jobstore:FuzzJobEventLogReplay::fold.go"
 	"native:agent:.:FuzzTranscriptReplay::transcript_read.go"
+	"native:agent:.:FuzzTranscriptReplayStructured::transcript_read.go"
 	"native:.:./cmd/serf-hub:FuzzHubReplayCarryThrough::app_threadread.go#replayTurnToAgentTurn"
 	"native:.:./cmd/serf-hub:FuzzHubReplayLiveVsReload::app_threadread.go#replayTurnToAgentTurn"
 	"native:llm:./providers/openai:FuzzOpenAIResponsesMetamorphic::responses.go#decodeResponsesStream"
 	"native:llm:./providers/openai:FuzzOpenAIResponsesStructured::responses.go#decodeResponsesStream"
 	"native:llm:./providers/openai:FuzzOpenAIChatCompletionsMetamorphic::chatcompletions.go#decodeChatCompletionsStream"
 	"native:llm:./providers/anthropic:FuzzAnthropicStreamMetamorphic::adapter.go#decodeStream"
+	"native:llm:./providers/anthropic:FuzzAnthropicStreamStructured::adapter.go#decodeStream"
 	"native:llm:./providers/google:FuzzGeminiStreamMetamorphic::adapter.go#decodeStream"
 	"native:llm:./providers/openaicompat:FuzzOpenAICompatStreamMetamorphic::adapter.go#decodeStream"
 	"native:.:./cmd/serf-hub:FuzzWebHandler::web.go"
@@ -134,6 +136,7 @@ TARGETS=(
 	"rapid:agent:./internal/jobstore:TestJobstoreSeqFuzz"
 	"rapid:agent:./internal/contextmgr:TestCompactionSeqFuzz"
 	"rapid:.:./internal/appserver:TestRouterSeqFuzz"
+	"rapid:.:./internal/appserver:TestHubMultiSessionSeqFuzz"
 )
 
 duration="60s"
