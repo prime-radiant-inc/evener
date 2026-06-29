@@ -2,6 +2,7 @@
 # A target's focus-set coverage may never drop below its floor (serf-fuzzcov --check).
 # Raised upward only, by `make fuzz-coverage CHECK=1` with --bless; never edit downward.
 FuzzAnthropicStreamMetamorphic 79.4
+FuzzCredentialsStoreDecode 35.3
 FuzzGeminiStreamMetamorphic 85.6
 FuzzHubReplayCarryThrough 78.1
 FuzzHubReplayLiveVsReload 78.1
