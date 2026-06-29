@@ -602,3 +602,55 @@ func TestTurnsFromFile(t *testing.T) {
 		t.Errorf("missing file turns = %+v", turns)
 	}
 }
+
+// TestProjectTurnDedupsCommunicateEcho pins that an assistant turn emitting text
+// AND a communicate tool_call carrying the SAME message renders the message once
+// (mirroring the live projector's matchesLastAssistantMessage dedup), so a
+// transcript reload doesn't show a duplicate. A communicate with DIFFERENT text
+// is still rendered. (Surfaced by FuzzHubReplayLiveVsReload.)
+func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
+	mkTurn := func(text, communicate string) schema.Turn {
+		return schema.Turn{
+			Kind: schema.TurnAssistant,
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: text},
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID:        "c1",
+						Name:      "communicate",
+						Arguments: json.RawMessage(`{"message":` + mustJSON(communicate) + `}`),
+					}},
+				},
+			},
+		}
+	}
+
+	agentMsgs := func(items []appwire.ThreadItem) []string {
+		var out []string
+		for _, it := range items {
+			if it.Type == "agentMessage" {
+				out = append(out, it.Text)
+			}
+		}
+		return out
+	}
+
+	echo := agentMsgs(ProjectTurn("t1", 0, mkTurn("Done.", "Done."), nil, nil))
+	if len(echo) != 1 || echo[0] != "Done." {
+		t.Fatalf("echoed communicate: got agentMessages %q, want exactly [\"Done.\"]", echo)
+	}
+
+	distinct := agentMsgs(ProjectTurn("t2", 0, mkTurn("Working...", "All set."), nil, nil))
+	if len(distinct) != 2 || distinct[0] != "Working..." || distinct[1] != "All set." {
+		t.Fatalf("distinct communicate: got agentMessages %q, want [\"Working...\" \"All set.\"]", distinct)
+	}
+}
+
+func mustJSON(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}

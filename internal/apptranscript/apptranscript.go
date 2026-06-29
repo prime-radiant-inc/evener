@@ -238,6 +238,11 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 		}}
 	case schema.TurnAssistant:
 		var items []appwire.ThreadItem
+		// lastAssistantText mirrors the live projector's dedup: a communicate
+		// tool call whose message echoes the assistant text already shown in this
+		// turn is rendered once, not twice (see matchesLastAssistantMessage in
+		// internal/appprojector). Reload must collapse the echo the same way.
+		var lastAssistantText string
 		for i, part := range turn.Message.Content {
 			switch part.Kind {
 			case llm.ContentText:
@@ -249,6 +254,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 						Text:   part.Text,
 						Status: appwire.TurnStatusCompleted,
 					})
+					lastAssistantText = strings.TrimSpace(part.Text)
 				}
 			case llm.ContentThinking:
 				if part.Thinking != nil && part.Thinking.Text != "" {
@@ -294,7 +300,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				}
 				toolNames[part.ToolCall.ID] = part.ToolCall.Name
 				if part.ToolCall.Name == "communicate" {
-					if text := CommunicateMessageFromArguments(part.ToolCall.Arguments); text != "" {
+					if text := CommunicateMessageFromArguments(part.ToolCall.Arguments); text != "" && strings.TrimSpace(text) != lastAssistantText {
 						items = append(items, appwire.ThreadItem{
 							Type:   "agentMessage",
 							ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
@@ -302,6 +308,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 							Text:   text,
 							Status: appwire.TurnStatusCompleted,
 						})
+						lastAssistantText = strings.TrimSpace(text)
 					}
 					continue
 				}
