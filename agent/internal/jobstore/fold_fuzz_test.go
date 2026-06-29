@@ -74,6 +74,20 @@ func bySeqAscStripped(events []Event) []Event {
 	return sorted
 }
 
+// openNoSync opens a store with the per-append fsync disabled. The coverage
+// search over this target is otherwise fsync-bound (each Append durably syncs,
+// capping the explorer at ~10²–10³ execs/s); the fold/reload oracles depend only
+// on the bytes written, which are identical with or without the sync, so dropping
+// it just lets the fuzzer explore deeper. Production never takes this path.
+func openNoSync(path string) (*Store, error) {
+	s, err := Open(path)
+	if err != nil {
+		return nil, err
+	}
+	s.disableSync = true
+	return s, nil
+}
+
 // FuzzJobEventLogReplay drives the jobstore event-log persistence and reducer
 // seam. Input is a raw jobs.jsonl blob (one Event per line). Beyond no-panic it
 // asserts, for the in-memory reducers and their on-disk loaders:
@@ -134,7 +148,7 @@ func FuzzJobEventLogReplay(f *testing.F) {
 		// Persist → reload idempotence for all six reducer/loader pairs.
 		sorted := bySeqAscStripped(events)
 		dir := t.TempDir()
-		s, err := Open(filepath.Join(dir, "jobs.jsonl"))
+		s, err := openNoSync(filepath.Join(dir, "jobs.jsonl"))
 		if err != nil {
 			t.Fatalf("open store: %v", err)
 		}
@@ -232,7 +246,7 @@ func assertReloadMatchesFold(t *testing.T, s *Store, sorted []Event) {
 func assertAppendEqualsBatch(t *testing.T, sorted []Event) {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := Open(filepath.Join(dir, "jobs.jsonl"))
+	s, err := openNoSync(filepath.Join(dir, "jobs.jsonl"))
 	if err != nil {
 		t.Fatalf("open single-append store: %v", err)
 	}
