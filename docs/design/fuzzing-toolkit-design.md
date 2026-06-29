@@ -1,5 +1,8 @@
 # Fuzzing + failure-to-regression toolkit — detailed design
 
+> Looking to *use* or *run* the fuzzer rather than understand its design? See the
+> developer's guide [`docs/fuzzing.md`](../fuzzing.md). This doc is the architecture.
+
 **Status:** Phases 0–5 BUILT on `wip/fuzzing-toolkit`; Phase 6+ (§8) is the full-coverage roadmap, each item planned under `docs/design/plans/`. **Date:** 2026-06-28. **Branch:** `wip/fuzzing-toolkit` (worktree `.worktrees/fuzzing-toolkit`).
 **Builds on:** [`docs/research/api-fuzzing-toolkit.md`](../research/api-fuzzing-toolkit.md) — read that first for prior art, the four API surfaces, and why serf is unusually fuzz-ready. This doc is the *how*: package layout, Go signatures, the promoter internals, and a file-by-file build plan.
 

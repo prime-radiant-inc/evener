@@ -1,5 +1,9 @@
 # serf fuzzing + failure-to-regression toolkit
 
+> New to the fuzzer? Start at [`docs/fuzzing.md`](../docs/fuzzing.md) — the
+> developer's guide (running, reading coverage, triaging a crasher). This file is
+> the operational reference it points back to.
+
 This module (`primeradiant.com/serf/fuzz`) is the **serf-agnostic core** of the
 toolkit: the failure→regression promoter (and, later, the schema→generator).
 Nothing here imports any `primeradiant.com/serf` package — `go.mod` declares no
