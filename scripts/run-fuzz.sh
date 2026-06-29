@@ -28,6 +28,7 @@ TARGETS=(
 	"agent:./internal/jobstore:FuzzJobEventLogReplay"
 	"agent:.:FuzzTranscriptReplay"
 	".:./cmd/serf-hub:FuzzHubReplayCarryThrough"
+	".:./cmd/serf-hub:FuzzHubReplayLiveVsReload"
 	"llm:./providers/openai:FuzzOpenAIResponsesMetamorphic"
 	"llm:./providers/openai:FuzzOpenAIChatCompletionsMetamorphic"
 	"llm:./providers/anthropic:FuzzAnthropicStreamMetamorphic"
