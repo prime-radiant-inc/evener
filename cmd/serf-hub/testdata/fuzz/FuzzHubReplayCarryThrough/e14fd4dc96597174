@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"turn\":{\"kind\":\"ASSISTANT\",\"messAge\":{\"Content\":[{},{\"kind\":\"tool_call\",\"tool_CAll\":{}}]}}}")
