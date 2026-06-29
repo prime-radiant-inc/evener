@@ -54,3 +54,10 @@ is a quality/robustness refinement to schedule after the roadmap lands.
   layout, which is brittle across toolchain versions and can't be exercised without
   a real search. It no-ops safely when the cache is absent, but real minimization
   (vs. a raw diversity cap) is a follow-up.
+
+## Pre-existing flake (surfaced during Phase 7 Wave 1, NOT caused by it)
+- `TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit` (cmd/serf-tui) is a
+  timing-based tmux end-to-end test that fails ~1 in 3 runs. Unrelated to the
+  parse fixes in Wave 1 (it exercises Ctrl-C / alt-screen restore, no parse path).
+  Historically flaky. Deflake separately (tmux readiness/settle wait), out of
+  scope for the fuzzing roadmap.
