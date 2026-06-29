@@ -156,7 +156,7 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 // phases only emit warnings.
 func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, reasoningEffort string) {
 	// --- Phase: SystemPrompt ---
-	tPhaseStart := time.Now()
+	tPhaseStart := s.sclock().Now()
 
 	effortOverride := ""
 	if s.taskStore != nil {
@@ -177,7 +177,7 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.
 	t.SystemPrompt = time.Since(tPhaseStart)
 
 	// --- Phase: ContextMgmt ---
-	tPhaseStart = time.Now()
+	tPhaseStart = s.sclock().Now()
 
 	// Copy history once for both context management and message expansion.
 	s.mu.Lock()
@@ -219,7 +219,7 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.
 	t.ContextMgmt = time.Since(tPhaseStart)
 
 	// --- Phase: HistoryExpand ---
-	tPhaseStart = time.Now()
+	tPhaseStart = s.sclock().Now()
 
 	// Reuse historyTurns from context management — no redundant copy.
 	history = expandHistory(historyTurns)

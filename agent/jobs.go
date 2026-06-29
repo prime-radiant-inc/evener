@@ -18,6 +18,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/clock"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
 )
@@ -74,6 +75,11 @@ type jobManager struct {
 	// persisting watch-send intent; they never deliver (spec §3).
 	wake func()
 	now  func() time.Time
+	// clock is the manager's source of timers/tickers/sleeps for the finalize,
+	// delegate, shell, and quiet-watchdog paths. Defaulted to clock.Real() at
+	// construction and overridden (alongside now) by the owning session so the
+	// whole job lifecycle runs on one injectable clock.
+	clock clock.Clock
 	// closeGrace bounds how long closeRuntimeState waits for each still-running
 	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
 	// construction so tests can shrink the graceful-shutdown window.
@@ -335,6 +341,7 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 		appendEvents:       store.AppendBatch,
 		enqueue:            enqueue,
 		now:                time.Now,
+		clock:              clock.Real(),
 		closeGrace:         defaultCloseGrace,
 		quietWindow:        delegateQuietWindow,
 		quietCheckInterval: delegateQuietCheckInterval,
@@ -409,14 +416,14 @@ func (jm *jobManager) closeRuntimeState() error {
 			run.signal()
 		}
 	}
-	deadline := time.NewTimer(jm.closeGrace)
+	deadline := jm.clock.NewTimer(jm.closeGrace)
 	defer deadline.Stop()
 	var waitErr error
 waitLoop:
 	for _, run := range running {
 		select {
 		case <-run.done:
-		case <-deadline.C:
+		case <-deadline.C():
 			waitErr = errors.New("job manager close timed out waiting for running jobs")
 			jm.abandonRunningJobs()
 			break waitLoop

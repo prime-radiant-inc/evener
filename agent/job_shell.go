@@ -117,11 +117,11 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	if args.MaxRuntimeMS > 0 {
 		timeoutCh := make(chan struct{})
 		runtimeTimeoutCh = timeoutCh
-		timer := time.NewTimer(time.Duration(args.MaxRuntimeMS) * time.Millisecond)
+		timer := jm.clock.NewTimer(time.Duration(args.MaxRuntimeMS) * time.Millisecond)
 		go func() {
 			defer timer.Stop()
 			select {
-			case <-timer.C:
+			case <-timer.C():
 				runtimeTimedOut.Store(true)
 				handle.Signal()
 				close(timeoutCh)
@@ -149,7 +149,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 		}
 	}
 
-	timer := time.NewTimer(blockTimeout)
+	timer := jm.clock.NewTimer(blockTimeout)
 	defer timer.Stop()
 	var ctxDone <-chan struct{}
 	if ctx != nil {
@@ -197,7 +197,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	case <-runtimeTimeoutCh:
 		wait := <-waitCh
 		return jm.finishForegroundRuntimeTimeout(run, wait)
-	case <-timer.C:
+	case <-timer.C():
 		if runtimeTimedOut.Load() {
 			wait := <-waitCh
 			return jm.finishForegroundRuntimeTimeout(run, wait)
@@ -545,7 +545,7 @@ func (jm *jobManager) finalizeShellWithRetry(jobID string, status jobstore.Statu
 			return nil
 		}
 		if attempt+1 < shellFinalizeAttempts {
-			time.Sleep(shellFinalizeBackoff(attempt))
+			jm.clock.Sleep(shellFinalizeBackoff(attempt))
 		}
 	}
 	return err
@@ -557,7 +557,7 @@ func (jm *jobManager) finalizeShellUntilDurable(jobID string, status jobstore.St
 		if err := jm.finalize(jobID, status, reason, exitCode); err == nil || errors.Is(err, jobstore.ErrStoreClosed) {
 			return
 		}
-		time.Sleep(shellFinalizeBackoff(attempt))
+		jm.clock.Sleep(shellFinalizeBackoff(attempt))
 		attempt++
 	}
 }
@@ -568,7 +568,7 @@ func (jm *jobManager) finalizeKeptSyncUntilDurable(run *runningJob, status jobst
 		if err := jm.finalizeKeptSync(run, status, reason, exitCode); err == nil || errors.Is(err, jobstore.ErrStoreClosed) {
 			return
 		}
-		time.Sleep(shellFinalizeBackoff(attempt))
+		jm.clock.Sleep(shellFinalizeBackoff(attempt))
 		attempt++
 	}
 }
