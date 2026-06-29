@@ -146,9 +146,74 @@ without crashing. Pick the strongest oracle the surface admits:
 | any | **never panic** (floor) | every target |
 | a codec (decode↔encode) | **round-trip / fixed point** — decode→encode→decode is stable | `FuzzMessageDecode`, `FuzzSessionMetaRoundTrip` |
 | a parser with a semantics-preserving transform | **metamorphic** — re-chunking / whitespace / reordering must not change the result | `FuzzParseSSE`, `FuzzOpenAIResponsesMetamorphic` |
-| a state machine / replayed log | **invariant / monotonicity** — status only advances, history doesn't shrink, no orphaned state | `FuzzJobEventLogReplay`, `TestRouterSeqFuzz`, `TestLifecycleSeqFuzz` |
+| a state machine / replayed log | **external invariant / monotonicity** (rapid sequences) — status only advances, history doesn't shrink, no orphaned state | `FuzzJobEventLogReplay`, `TestRouterSeqFuzz`, `TestLifecycleSeqFuzz`, `TestJobstoreSeqFuzz`, `TestCompactionSeqFuzz`, `TestHubMultiSessionSeqFuzz` |
+| any subsystem with a load-bearing internal assumption | **internal invariant** — `invariant.Hold()` asserts it at the point logic could first go wrong; live only under `-tags serffuzz`, so the never-panic oracle catches it (see [Internal invariants under serffuzz](#internal-invariants-under-serffuzz)) | the `invariant.Hold` sites in `appprojector`, `apptranscript`, `appwire`, `jobstore`, the llm decoders |
 | an HTTP / RPC handler | **never 5xx**, **never wedge**, **never escape** the sandbox FS | `FuzzWebHandler`, `FuzzWebMutatingHandler`, `FuzzAppWireDispatch` |
-| a decoder whose output must not silently drift | **golden / snapshot differential** — the decoded output of the committed corpus, canonically re-encoded and pinned; a refactor that changes it (no panic, round-trip still holds) fails the gate | `appwire/golden_test.go` (`TestMessageDecodeGolden`, `TestMethodParamsGolden`, `TestCodexItemDecodeGolden`) |
+| a decoder whose output must not silently drift | **golden / snapshot differential** — the decoded corpus output, canonically re-encoded and pinned; a refactor that changes it (no panic, round-trip still holds) fails the gate | `appwire/golden_test.go` |
+| two code paths that must compute the same thing | **differential** — drive both from one input, assert they agree modulo an allow-list (the strongest class; it found both real decoder bugs) | `FuzzCrossProviderDifferential`, `FuzzStreamVsNonStreamDifferential`, `FuzzTranscriptReadersAgree`, `FuzzTurnPagingEquivalence` |
+
+## Internal invariants under serffuzz
+
+External oracles (round-trip, no-panic) only see a bug once it reaches a surface.
+Internal invariants catch a *logic* bug at the point it first happens. The
+`primeradiant.com/serf/invariant` module exposes:
+
+```go
+invariant.Hold(cond bool, format string, args ...any)  // assert cond; else panic with the message
+invariant.Enabled                                      // untyped const: false in prod, true under serffuzz
+```
+
+`Hold` is **zero-cost in a normal build**: the no-op form is inlined away — the
+condition is not evaluated and the args are not boxed (verified by disassembly), so
+production binaries are byte-unchanged. Built with **`-tags serffuzz`** a violated
+invariant panics, so the existing never-panic oracle reports it for free. The whole
+fuzz path (`make fuzz`, `run-fuzz.sh`, `fuzz-coverage`, `fuzz-triage`) builds with
+that tag automatically; `make test` and `go build` stay tag-free.
+
+To add one: import the module and assert a load-bearing assumption where it must
+hold (e.g. a folded job status never leaves a terminal state; an emitted item
+carries its turn id). Conditions and args must be **side-effect-free** (they don't
+run in production). For an invariant whose *condition* is expensive to compute,
+guard it with `if invariant.Enabled { ... }` so that cost compiles out too. Verify
+the invariant is actually TRUE before asserting it — a wrong invariant is a
+false-positive crash — and prove it's reached (flip it false, watch a fuzz target
+trip it, restore).
+
+## Differential oracles
+
+The strongest class: drive two things that must agree from one input and assert
+they match. serf has several flavors — both real decoder bugs this codebase has
+found came from here:
+
+- **golden / snapshot** — a decoder vs a committed picture of its own past output
+  (below).
+- **cross-provider** (`FuzzCrossProviderDifferential`) — one canonical logical
+  response encoded to each provider's wire format, decoded by each real adapter,
+  asserted equivalent modulo an allow-list. Found the anthropic streaming
+  finish-reason bug.
+- **stream vs non-stream** (`FuzzStreamVsNonStreamDifferential`) — a provider's
+  streaming decoder vs its non-streaming decoder for the same content. The axis
+  both real bugs lived on; a standing regression guard for them.
+- **two-path equivalence** — independent code paths over the same data:
+  `FuzzTranscriptReadersAgree` (the three transcript scanners),
+  `FuzzTurnPagingEquivalence` (`WindowTurns` vs `PageTurns`),
+  `FuzzLineWindowExtractors`.
+
+Each carries a documented **allow-list** of legitimately path-specific fields
+(raw payloads, provider ids, reasoning encoding, …) excluded from the comparison;
+a divergence outside the allow-list is a real bug — investigate it, don't widen
+the allow-list to hide it.
+
+### Structure-aware generators
+
+Most raw-byte execs die at the first `json.Unmarshal`. The `Fuzz…Structured`
+targets instead turn fuzz bytes (via the `fuzz/schemagen` byte `Source`) into a
+*valid-but-adversarial* input — an appwire frame, a transcript, a provider SSE
+event sequence — so coverage-guided search explores the structured space. Measured
+input acceptance rises from ~0% (raw) to ~90–100% (structured). Add one when a
+target's surface has a rich grammar and the raw-byte target mostly bounces off the
+parser; keep the generator deterministic for the same bytes (no map-range / time /
+rand).
 
 ## The golden / snapshot differential
 

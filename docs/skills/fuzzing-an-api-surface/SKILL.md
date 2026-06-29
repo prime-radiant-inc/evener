@@ -120,6 +120,30 @@ serf target:
 - **Never wedge** (`Wedge`). A call that should return makes no progress. Spot it
   on synchronous seams that could hang: `TestRouterSeqFuzz` runs each dispatch
   under a bounded context in a goroutine and reports a wedge on timeout.
+- **Internal invariant** (`Panic`, under `-tags serffuzz`). A load-bearing
+  assumption asserted *inside* production code with `invariant.Hold()` so a logic
+  bug trips at its origin, not at a distant surface. Zero-cost in a normal build;
+  panics under `-tags serffuzz` (the fuzz build), so it surfaces via the Panic
+  oracle. Spot it wherever a subsystem relies on a property a reader assumes —
+  e.g. a folded job status never leaves a terminal state; an emitted item carries
+  its turn id. Conditions must be side-effect-free; verify the invariant is TRUE
+  and reached before trusting it.
+- **Differential** (`Invariant`/`ErrorShape`). Two code paths that must compute the
+  same thing, driven from one input and compared modulo an allow-list. The
+  strongest class — it found both real decoder bugs this codebase has caught. Spot
+  it wherever a value is produced two ways: per-provider streaming vs non-streaming
+  decode (`FuzzStreamVsNonStreamDifferential`), one logical response across all
+  providers (`FuzzCrossProviderDifferential`), a decoder vs a committed snapshot of
+  its own output (`appwire/golden_test.go`), or independent readers of one format
+  (`FuzzTranscriptReadersAgree`). A divergence outside the allow-list is a real
+  bug — never widen the allow-list to silence it.
+
+**Generation technique — structure-aware inputs.** Independent of which oracle you
+pick: if the surface has a rich grammar, most raw-byte execs die at the first
+parse. Drive the target from a deterministic byte-`Source` generator
+(`fuzz/schemagen`) that emits *valid-but-adversarial* inputs (the `Fuzz…Structured`
+targets), so coverage-guided search reaches deep logic. It typically lifts input
+acceptance from ~0% to ~90%+.
 
 ## The portable core
 

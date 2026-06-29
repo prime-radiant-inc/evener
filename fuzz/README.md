@@ -34,6 +34,22 @@ scripts/run-fuzz.sh llm:FuzzParseSSE     # one target
 scripts/run-fuzz.sh --list               # the target list (single source of truth)
 ```
 
+Two cross-cutting facts about every run above:
+
+- **`-tags serffuzz` is on automatically.** The whole fuzz path builds with it so
+  the internal `invariant.Hold()` assertions (`primeradiant.com/serf/invariant`)
+  are live — a tripped invariant panics and the never-panic oracle catches it.
+  `make test` / `go build` stay tag-free and byte-unchanged. See
+  [`docs/fuzzing.md`](../docs/fuzzing.md) → *Internal invariants*.
+- **Runs are memory-capped.** A coverage-guided search can balloon into tens of GB
+  and fire the kernel's global OOM killer (it has taken the host's network down).
+  `scripts/run-capped.sh` bounds every run via a cgroup-v2 systemd user scope —
+  per-run `SERF_MEM_MAX` (default 16G) plus a shared-slice `SERF_MEM_TOTAL`
+  (default 32G) so concurrent runs can't sum past the host. Default-on across the
+  Makefile and inside `run-fuzz.sh`; degrades to a warning + uncapped where user
+  scopes aren't available (CI imposes its own cgroup limit). `SERF_MEM_MAX=0`
+  disables. See [`docs/fuzzing.md`](../docs/fuzzing.md) → *Memory safety*.
+
 ## Coverage measurement (`make fuzz-coverage`)
 
 `make fuzz-coverage` answers the question `make fuzz` cannot: *how much of each
@@ -176,6 +192,18 @@ gate, not the triage tool's.
   recover-wrapped at runtime. The target drives decode+validate only; it does not
   execute tools (shell/web/job are non-deterministic and unsandboxable by a
   temp-dir env).
+- **Internal invariants** — `invariant.Hold()` assertions in production code, live
+  under `-tags serffuzz`, caught by the no-panic oracle (the `…SeqFuzz` rapid
+  models also assert sequence invariants externally).
+- **Differential** — two paths that must agree: cross-provider, stream-vs-non-stream,
+  golden/snapshot, and two-path equivalence. This class found both real decoder
+  bugs this codebase has caught.
+- **Structure-aware generation** — the `Fuzz…Structured` targets generate
+  valid-but-adversarial inputs so search reaches deep logic instead of bouncing off
+  the parser.
+
+See [`docs/fuzzing.md`](../docs/fuzzing.md) → *Choosing an oracle* for the full
+table and when to use each.
 
 ## Seed corpus
 
