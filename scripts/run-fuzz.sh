@@ -53,6 +53,7 @@ TARGETS=(
 	"native:llm:./providers/openai:FuzzOpenAIResponsesStructured::responses.go#decodeResponsesStream"
 	"native:llm:./providers/openai:FuzzOpenAIChatCompletionsMetamorphic::chatcompletions.go#decodeChatCompletionsStream"
 	"native:llm:./providers/anthropic:FuzzAnthropicStreamMetamorphic::adapter.go#decodeStream"
+	"native:llm:./providers/anthropic:FuzzAnthropicStreamStructured::adapter.go#decodeStream"
 	"native:llm:./providers/google:FuzzGeminiStreamMetamorphic::adapter.go#decodeStream"
 	"native:llm:./providers/openaicompat:FuzzOpenAICompatStreamMetamorphic::adapter.go#decodeStream"
 	"native:.:./cmd/serf-hub:FuzzWebHandler::web.go"
