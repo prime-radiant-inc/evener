@@ -97,6 +97,16 @@ func FuzzTranscriptReplay(f *testing.F) {
 		assertTranscriptWriteReadRoundTrip(t, dir, data)
 		assertResumeHistoryIdempotent(t, data.Entries)
 		assertAPICallRoundTrip(t, dir, data)
+
+		// Also drive the strict child-transcript reader/validator — a separate,
+		// size-bounded, session-pinned decode seam the round-trip path skips. Hit
+		// the session-match success, the session-mismatch rejection, and the
+		// per-line size-limit branch, none of which may panic.
+		sid := data.Header.SessionID
+		_, _ = readStrictChildTranscript(inPath, sid, transcriptJSONLMaxLineBytes)
+		_, _ = validateStrictChildTranscript(inPath, sid, transcriptJSONLMaxLineBytes)
+		_, _ = readStrictChildTranscript(inPath, sid+"_mismatch", transcriptJSONLMaxLineBytes)
+		_, _ = readStrictChildTranscript(inPath, sid, 4)
 	})
 }
 
