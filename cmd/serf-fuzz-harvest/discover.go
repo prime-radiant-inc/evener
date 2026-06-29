@@ -89,6 +89,5 @@ const (
 	dirMessageDecode      = "appwire/testdata/fuzz/FuzzMessageDecode"
 	dirMethodParams       = "appwire/testdata/fuzz/FuzzMethodParams"
 	dirWebHandler         = "cmd/serf-hub/testdata/fuzz/FuzzWebHandler"
-	dirJobstoreEvent      = "testdata/fuzz-jobs-staging/JobstoreEventDecode"   // staging until 8.1 names its target
-	dirJobstoreSequence   = "testdata/fuzz-jobs-staging/JobstoreEventSequence" // staging until 8.1 names its Fold target
+	dirJobstoreReplay     = "agent/internal/jobstore/testdata/fuzz/FuzzJobEventLogReplay"
 )

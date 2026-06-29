@@ -4,18 +4,20 @@ Non-blocking items found during autonomous execution. None breaks the gate; each
 is a quality/robustness refinement to schedule after the roadmap lands.
 
 ## Corpus quality
-- **Regenerate the committed jobs corpus with the fixed scrubber.** The harvested
-  `jobs.jsonl` seeds were committed (staging dir `testdata/fuzz-jobs-staging/` +
-  the live `agent/internal/jobstore/testdata/fuzz/FuzzJobEventLogReplay/`, 386
-  each) BEFORE the scrubber timestamp fix (`eb04f686`), so their `ts`/`started_at`/
-  `ended_at` are x-fill and fail `Event` decode — they reach only the decode floor,
-  not the fold/replay oracles (8.1 T2). The scrubber now emits valid RFC3339, so a
-  fresh end-to-end harvest fixes this; it needs 8.1's staging→live transform re-run
-  (or fold that transform into the harvester so `--surface jobs` writes the live
-  `FuzzJobEventLogReplay` corpus directly). 8.1's deep oracles already run on inline
-  seeds, so this is purely added corpus depth. Re-check transcript/turn seeds
-  (`Turn.Timestamp`, `Header.CreatedAt`) for the same issue when 8.4 delivers them
-  for Targets 3/4.
+- **Regenerate the committed jobs corpus with the fixed scrubber.** *(DONE.)* The
+  staging→live transform is folded into the harvester: `--surface jobs` now writes
+  both the per-event and full-sequence seeds DIRECTLY into the live
+  `agent/internal/jobstore/testdata/fuzz/FuzzJobEventLogReplay/` corpus (the
+  `testdata/fuzz-jobs-staging/` dir is gone), and the scrubber emits valid RFC3339
+  timestamps, so the seeds DECODE and reach the fold/replay oracles instead of the
+  decode-rejection floor. Re-harvested from local state (3770 lines → 386 deduped
+  seeds, 0 secret-aborts); `FuzzJobEventLogReplay` focus-set coverage rose
+  accordingly (`FoldDelegates` 61.9→91.7%, `applyEvent` 76.6→97.9%,
+  `notificationMatchesTerminalGeneration` 0→100%). Transcript/turn seeds were
+  re-checked: the only transcript target (`FuzzTranscriptWriterRoundTrip`) ships no
+  committed corpus (inline `f.Add` seeds only), and the x-fill timestamps in
+  `FuzzToolArgsValidate` seeds sit inside tool-call arguments that are never
+  time-parsed, so neither needed regeneration.
 
 ## Tooling ergonomics (from item tool-efficacy notes)
 - **Shared fuzz route allowlist.** 8.4 had to duplicate `fuzzReadOnlyRoutes` from a

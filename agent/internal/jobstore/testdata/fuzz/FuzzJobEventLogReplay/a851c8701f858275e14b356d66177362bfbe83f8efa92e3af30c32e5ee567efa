@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"ended_at\":\"2000-01-01T00:00:00Z\",\"exit_code\":0,\"job_id\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"kind\":\"job_finished\",\"output_bytes\":0,\"reason\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"seq\":0,\"status\":\"completed\",\"terminal_generation\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"ts\":\"2000-01-01T00:00:00Z\"}")

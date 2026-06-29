@@ -37,7 +37,7 @@ case "${mode}" in
     while IFS= read -r dir; do
       scan_dir "${dir}" || status=1
     done < <(find "${root}" -type d \
-      \( -path '*/testdata/fuzz' -o -name 'fuzz-jobs-staging' -o -path '*/fuzz/corpus' \) )
+      \( -path '*/testdata/fuzz' -o -path '*/fuzz/corpus' \) )
     exit "${status}"
     ;;
   *)
