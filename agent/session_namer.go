@@ -333,7 +333,7 @@ func (s *Session) nameSessionFromText(ctx context.Context, source, text string) 
 	}
 	s.naming.value = result.Name
 	s.naming.source = result.Source
-	s.naming.updated = time.Now().UTC()
+	s.naming.updated = s.sclock().Now().UTC()
 	s.naming.set = true
 	s.mu.Unlock()
 

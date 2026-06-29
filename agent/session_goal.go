@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/goal"
@@ -42,7 +41,7 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 	// first goal set as a turn ends is then either kicked here (idle) or picked up
 	// by the settle re-check (turn-tail window) — never stranded (spec §7).
 	s.mu.Lock()
-	store.Set(objective, time.Now())
+	store.Set(objective, s.sclock().Now())
 	inTurn := s.goalInTurn
 	kick := s.kickFunc
 	s.mu.Unlock()
@@ -177,7 +176,7 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		// count toward those (/par #4).
 		return goal.Render(snap.Objective), true
 	}
-	snap, stillActive := store.RecordContinuation(progressed, time.Now())
+	snap, stillActive := store.RecordContinuation(progressed, s.sclock().Now())
 	if !stillActive {
 		// The no-progress breaker fired this turn. Persist the terminal transition:
 		// it happens after processOneInput's defer-save, so without this a blocked
@@ -243,7 +242,7 @@ func (s *Session) terminateGoalOnError(ctx context.Context, err error) {
 		// persists terminal transitions (/par B3, surfaced once blocks are saved).
 		return
 	}
-	if store.SetTerminal(goal.StatusBlocked, err.Error(), time.Now()) {
+	if store.SetTerminal(goal.StatusBlocked, err.Error(), s.sclock().Now()) {
 		s.reportGoalEnded()
 		// Persist the block: terminateGoalOnError runs after processOneInput's
 		// defer-save, so without this the goal is saved as still-active and would

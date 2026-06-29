@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
@@ -51,6 +52,10 @@ type toolDeps struct {
 
 	// goalGuard exposes goal-store access. The goal store has its own mutex.
 	goalGuard goalGuard
+
+	// now reports the session's current time through its injected clock, so
+	// goal-terminal timestamps run on the same clock as the rest of the lifecycle.
+	now func() time.Time
 
 	// web exposes the web tools with the profile and client hidden behind them.
 	web webDeps
@@ -176,6 +181,7 @@ func newToolDeps(s *Session) *toolDeps {
 		goalGuard: goalGuard{
 			getOrCreateGoalStore: s.getOrCreateGoalStore,
 		},
+		now: s.sclock().Now,
 		web: webDeps{
 			fetch:  s.webFetch,
 			search: s.webSearch,

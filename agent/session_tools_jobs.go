@@ -1963,12 +1963,12 @@ func waitForJobDone(ctx context.Context, jm *jobManager, jobID string, timeout t
 	if !ok {
 		return true
 	}
-	timer := time.NewTimer(timeout)
+	timer := jm.clock.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case <-done:
 		return true
-	case <-timer.C:
+	case <-timer.C():
 		return false
 	case <-ctx.Done():
 		return false
@@ -1981,20 +1981,20 @@ func waitForJobDoneOrOutput(ctx context.Context, jm *jobManager, jobID string, t
 	if !ok {
 		return
 	}
-	timer := time.NewTimer(timeout)
+	timer := jm.clock.NewTimer(timeout)
 	defer timer.Stop()
-	ticker := time.NewTicker(20 * time.Millisecond)
+	ticker := jm.clock.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-done:
 			return
-		case <-ticker.C:
+		case <-ticker.C():
 			current, err := jobOutputBytes(jm, jobID)
 			if err == nil && current > initial {
 				return
 			}
-		case <-timer.C:
+		case <-timer.C():
 			return
 		case <-ctx.Done():
 			return
@@ -2019,19 +2019,19 @@ func waitForJobGrepMatch(ctx context.Context, jm *jobManager, jobID string, re *
 	if !ok {
 		return
 	}
-	timer := time.NewTimer(timeout)
+	timer := jm.clock.NewTimer(timeout)
 	defer timer.Stop()
-	ticker := time.NewTicker(20 * time.Millisecond)
+	ticker := jm.clock.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-done:
 			return
-		case <-ticker.C:
+		case <-ticker.C():
 			if scan.step(jm, jobID, re, maxLineBytes) {
 				return
 			}
-		case <-timer.C:
+		case <-timer.C():
 			return
 		case <-ctx.Done():
 			return
@@ -2235,6 +2235,9 @@ func projectJobRecordForViewer(viewer *Session, assessor *Session, rec *jobstore
 		assessor = viewer
 	}
 	now := time.Now()
+	if viewer != nil && viewer.clock != nil {
+		now = viewer.clock.Now()
+	}
 	if assessor != nil && assessor.jobManager != nil {
 		now = assessor.jobManager.now()
 	}

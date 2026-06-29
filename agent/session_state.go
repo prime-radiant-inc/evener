@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
@@ -33,7 +32,7 @@ func (s *Session) Meta() schema.SessionMeta {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now().UTC()
+	now := s.sclock().Now().UTC()
 	parentID := s.cfg.spawn.parentSessionID
 	divergence := 0
 	isSubagent := s.cfg.spawn.parentSessionID != ""

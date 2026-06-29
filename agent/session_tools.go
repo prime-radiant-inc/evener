@@ -355,7 +355,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	if call.ItemID != "" {
 		ctx = context.WithValue(ctx, ctxToolItemID, call.ItemID)
 	}
-	toolStart := time.Now()
+	toolStart := s.sclock().Now()
 	if err := s.abortIfClosing(ctx); err != nil {
 		emitCanceledEnd(err)
 		return skippedToolResult(call, err)
