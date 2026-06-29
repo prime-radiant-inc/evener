@@ -24,6 +24,8 @@ TARGETS=(
 	".:./appwire:FuzzMessageDecode"
 	".:./appwire:FuzzMethodParams"
 	"agent:.:FuzzToolArgsValidate"
+	"agent:./schema:FuzzSessionMetaRoundTrip"
+	"agent:./internal/jobstore:FuzzJobEventLogReplay"
 	"llm:./providers/openai:FuzzOpenAIResponsesMetamorphic"
 	"llm:./providers/openai:FuzzOpenAIChatCompletionsMetamorphic"
 	"llm:./providers/anthropic:FuzzAnthropicStreamMetamorphic"
