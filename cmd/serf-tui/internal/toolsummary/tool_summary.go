@@ -325,7 +325,8 @@ func renderTaskUpdate(updates []any) string {
 		if m == nil {
 			continue
 		}
-		id := int(m["id"].(float64))
+		idF, _ := m["id"].(float64)
+		id := int(idF)
 		status, _ := m["status"].(string)
 		icon := statusIcon[status]
 		if icon == "" {
