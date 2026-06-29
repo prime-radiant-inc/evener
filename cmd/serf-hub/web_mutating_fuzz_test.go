@@ -98,6 +98,15 @@ func FuzzWebMutatingHandler(f *testing.F) {
 		body     string
 	}{
 		{"/api/spawn", "", `{"harness":"serf","working_dir":"` + s.CWD + `","model":"openai/gpt-5.5"}`},
+		// Spawn with a prompt + a single valid image attachment + the optional
+		// launch fields, so the full handleApiSpawn body (item loop, launch-overrides
+		// plumbing) runs rather than the bare model-only shape.
+		{"/api/spawn", "", `{"harness":"serf","working_dir":"` + s.CWD + `","model":"openai/gpt-5.5","prompt":"hi","agent":"engineer","reasoning_effort":"high","non_interactive":true,"launch_overrides":{"maxRounds":3},"items":[{"type":"input_image","mediaType":"image/png","data":"aGVsbG8="}]}`},
+		// Nine image items trips the SendMaxImageItems (8) count limit in
+		// validateAppWireInputItems → the 413 rejection branch handleApiSpawn never
+		// otherwise reaches. Empty Data keeps the seed small (the per-image byte
+		// limit is 8 MiB, not worth a multi-MiB corpus entry).
+		{"/api/spawn", "", `{"harness":"serf","working_dir":"` + s.CWD + `","items":[{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"}]}`},
 		{"/api/dirs/create", "", `{"path":"` + s.CWD + `/new"}`},
 		{"/api/upgrade", "", `{"requested":"latest"}`},
 		{"/api/git/head?cwd={id}", s.CWD, ""},
