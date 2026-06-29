@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+
+	"primeradiant.com/serf/internal/fuzzroutes"
 )
 
 // fuzzSessionID is the local past session the handler fuzz seeds so the
@@ -13,33 +15,13 @@ import (
 // the shared sandbox seeds (see sandbox_test.go).
 const fuzzSessionID = sandboxSessionID
 
-// fuzzReadOnlyRoutes is the allowlist of hub routes the handler fuzz drives.
-// Every entry is a GET-only endpoint that, when the hub is built offline (no
-// Roster entries, no codex sources, an empty RunDir), neither spawns a session,
-// nor mutates state, nor makes a network call. Mutating routes (/api/spawn,
-// /api/upgrade, /api/dirs/create, the POST /api/sessions/.../action verbs),
-// routes that shell out (/api/git/head), and routes that probe providers over
-// the network (/api/models) are deliberately excluded so a fuzzed request can
-// never touch the real environment.
-var fuzzReadOnlyRoutes = []string{
-	"/",                          // 0
-	"/new",                       // 1
-	"/assets/",                   // 2  file server — path-escape surface
-	"/doc/file",                  // 3  custom file resolver — path-escape surface
-	"/manifest.webmanifest",      // 4
-	"/_partials/sidebar",         // 5
-	"/_partials/workspace/empty", // 6
-	"/_partials/workspace/spawn", // 7
-	"/_partials/s/",              // 8
-	"/_partials/settings",        // 9
-	"/s/",                        // 10
-	"/thread/",                   // 11
-	"/api/tree",                  // 12
-	"/api/health",                // 13
-	"/api/search",                // 14
-	"/api/sessions/",             // 15 GET reads a session detail; POST verbs excluded
-	"/settings",                  // 16
-}
+// fuzzReadOnlyRoutes is the allowlist of GET-only, non-mutating, non-networked
+// hub routes the handler fuzz drives — the single canonical list in
+// internal/fuzzroutes, shared with the corpus harvester so the two can't drift.
+// Mutating routes (/api/spawn, /api/upgrade, /api/dirs/create, the action verbs),
+// routes that shell out (/api/git/head), and provider-probing routes (/api/models)
+// are excluded so a fuzzed request can never touch the real environment.
+var fuzzReadOnlyRoutes = fuzzroutes.ReadOnly
 
 // newFuzzWebServer builds the contained sandbox hub and returns the server and
 // the secret bytes the path-escape oracle guards. The read-only handler fuzz
