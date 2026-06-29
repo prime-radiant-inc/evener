@@ -13,6 +13,7 @@ FuzzApplyThreadItem 81.8
 FuzzBuildTree 87.3
 FuzzCheckpointExtract 88.8
 FuzzCmdutilParsers 100.0
+FuzzCodexItemDecode 1.0
 FuzzColorParsing 100.0
 FuzzCountInputTokensResponse 84.6
 FuzzCredentialsStoreDecode 76.5
@@ -33,6 +34,7 @@ FuzzMCPConfigLoad 48.1
 FuzzMCPSchemaToParams 84.6
 FuzzMapCodexTurn 100.0
 FuzzMessageDecode 72.2
+FuzzMethodParams 1.0
 FuzzNormalizePastedPath 95.2
 FuzzOpenAIChatCompletionsMetamorphic 97.1
 FuzzOpenAIChatCompletionsRequestBuild 84.6

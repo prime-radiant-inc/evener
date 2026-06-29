@@ -40,7 +40,7 @@ set -uo pipefail
 TARGETS=(
 	"native:llm:.:FuzzParseSSE::sse.go"
 	"native:.:./appwire:FuzzMessageDecode::jsonrpc.go"
-	"native:.:./appwire:FuzzMethodParams::protocol.go"
+	"native:.:./appwire:FuzzMethodParams::"
 	"native:.:./appwire:FuzzWireTypes::"
 	"native:agent:.:FuzzToolArgsValidate:./internal/tool,.:internal/tool/definitions.go"
 	"native:agent:./schema:FuzzSessionMetaRoundTrip::snapshot.go"
@@ -55,7 +55,7 @@ TARGETS=(
 	"native:llm:./providers/openaicompat:FuzzOpenAICompatStreamMetamorphic::adapter.go#decodeStream"
 	"native:.:./cmd/serf-hub:FuzzWebHandler::web.go"
 	# 8.2 — codex-compat item + config decode targets.
-	"native:.:./appwire:FuzzCodexItemDecode::types.go"
+	"native:.:./appwire:FuzzCodexItemDecode::"
 	"native:llm:./providercfg:FuzzProvidersTOMLLoad::load.go"
 	"native:.:./cmd/serf-hub/internal/launchconfig:FuzzLaunchConfigDecode::io.go"
 	"native:agent:./plugin:FuzzPluginManifestParse::plugin.go#ParseManifest"
