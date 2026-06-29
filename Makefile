@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly
+.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly secret-scan fuzz-corpus-scan
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -106,6 +106,17 @@ fuzz:
 fuzz-nightly:
 	@scripts/run-fuzz.sh $(FUZZ_ARGS)
 
+# secret-scan runs gitleaks over the whole working tree using the committed
+# .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
+# when gitleaks is not installed (required in CI).
+secret-scan:
+	@scripts/gitleaks-scan.sh repo
+
+# fuzz-corpus-scan runs gitleaks over only the fuzz seed corpora — the
+# corpus-scoped subset of secret-scan, for fast harvester feedback.
+fuzz-corpus-scan:
+	@scripts/gitleaks-scan.sh corpus
+
 # lint-naming enforces JSON=snake_case, TOML=snake_case across every Go
 # struct tag and TOML file in the repo. Fast (well under a second) and
 # safe to run as a separate `go vet`-style gate.
@@ -140,7 +151,7 @@ lint-generated: generate
 	@git diff --exit-code -- docs/appwire-protocol.md || \
 	  { echo "docs/appwire-protocol.md is stale; run 'make generate' and commit."; exit 1; }
 
-lint: lint-naming lint-internal lint-docs lint-golangci lint-generated
+lint: lint-naming lint-internal lint-docs lint-golangci lint-generated secret-scan
 
 clean:
 	rm -f serf serf-hub serf-tui serf-doctor llmcall serf-namingcheck serf-internalcheck
