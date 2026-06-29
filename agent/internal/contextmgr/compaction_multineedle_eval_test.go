@@ -255,9 +255,9 @@ func retention(out string, facts []string) float64 {
 }
 
 type mnRow struct {
-	name                                   string
-	aRet, cSummaryRet                      float64 // baseline summary, steered summary (no note)
-	judgeA, judgeB, judgeC                 int
+	name                   string
+	aRet, cSummaryRet      float64 // baseline summary, steered summary (no note)
+	judgeA, judgeB, judgeC int
 }
 
 func TestCompactionMultiNeedle(t *testing.T) {
