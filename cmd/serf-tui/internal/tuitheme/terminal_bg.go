@@ -98,7 +98,9 @@ func relativeLuminanceHex(hex string) float64 {
 		return 0.5
 	}
 	channel := func(s string) float64 {
-		v, err := strconv.ParseInt(s, 16, 32)
+		// ParseUint (not ParseInt) so a sign char like "-1" is rejected rather
+		// than yielding a negative channel and a luminance outside [0,1].
+		v, err := strconv.ParseUint(s, 16, 32)
 		if err != nil {
 			return 0
 		}
