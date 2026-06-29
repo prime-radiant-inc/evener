@@ -3,6 +3,8 @@ package frontmatter
 import (
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/fuzz/edgeseeds"
 )
 
 // FuzzParse drives the real frontmatter.Parse seam over arbitrary documents.
@@ -22,6 +24,11 @@ func FuzzParse(f *testing.F) {
 	f.Add("")
 	f.Add("---\n")
 	f.Add("------\n")
+	// Generic YAML-frontmatter decoder stressors (anchors, merge keys, the
+	// boolean/null/number coercion zoo, framing-boundary probes, …).
+	for _, s := range edgeseeds.FrontmatterYAML() {
+		f.Add(s)
+	}
 
 	f.Fuzz(func(t *testing.T, raw string) {
 		doc, err := Parse(raw)

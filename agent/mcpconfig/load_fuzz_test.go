@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/serf/fuzz/edgeseeds"
 )
 
 // FuzzMCPConfigLoad drives LoadFile — the package's real .mcp.json decode seam
@@ -26,6 +28,10 @@ func FuzzMCPConfigLoad(f *testing.F) {
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
+	}
+	// Generic JSON decoder stressors (deep nesting, surrogates, dup keys, …).
+	for _, s := range edgeseeds.JSON() {
+		f.Add(s)
 	}
 
 	f.Fuzz(func(t *testing.T, raw []byte) {

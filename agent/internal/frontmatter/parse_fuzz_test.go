@@ -1,8 +1,11 @@
 package frontmatter
 
 import (
+	"math"
 	"reflect"
 	"testing"
+
+	"primeradiant.com/serf/fuzz/edgeseeds"
 )
 
 // FuzzFrontmatterParse drives Parse — the package's real YAML-frontmatter decode
@@ -27,6 +30,11 @@ func FuzzFrontmatterParse(f *testing.F) {
 		"---\n",
 	}
 	for _, s := range seeds {
+		f.Add(s)
+	}
+	// Generic YAML-frontmatter decoder stressors (anchors, merge keys, the
+	// boolean/null/number coercion zoo, framing-boundary probes, …).
+	for _, s := range edgeseeds.FrontmatterYAML() {
 		f.Add(s)
 	}
 
@@ -54,12 +62,56 @@ func FuzzFrontmatterParse(f *testing.F) {
 			}
 		}
 
-		// Determinism.
+		// Determinism. Use a NaN-aware equality: YAML's .nan decodes to a
+		// float64 NaN, and reflect.DeepEqual(NaN, NaN) is false even though the
+		// parse is perfectly deterministic — so a plain DeepEqual would
+		// false-flag any input that yields a NaN-valued field.
 		doc2, err2 := Parse(raw)
-		if err2 != nil || !reflect.DeepEqual(doc, doc2) {
+		if err2 != nil || doc.Body != doc2.Body || !yamlValueEqual(doc.Meta, doc2.Meta) {
 			t.Fatalf("Parse not deterministic for %q", raw)
 		}
 	})
+}
+
+// yamlValueEqual is reflect.DeepEqual extended to treat two NaN float64 values
+// as equal, recursing through the map / slice shapes a yaml.v3 decode produces.
+func yamlValueEqual(a, b any) bool {
+	switch av := a.(type) {
+	case float64:
+		bv, ok := b.(float64)
+		if !ok {
+			return false
+		}
+		if math.IsNaN(av) && math.IsNaN(bv) {
+			return true
+		}
+		return av == bv
+	case map[string]any:
+		bv, ok := b.(map[string]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for k, va := range av {
+			vb, ok := bv[k]
+			if !ok || !yamlValueEqual(va, vb) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		bv, ok := b.([]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for i := range av {
+			if !yamlValueEqual(av[i], bv[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(a, b)
+	}
 }
 
 // indexAfter reports whether a closing "---\n" delimiter exists after the
