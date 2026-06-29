@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-coverage secret-scan fuzz-corpus-scan
+.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-ledger fuzz-coverage secret-scan fuzz-corpus-scan
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -105,6 +105,27 @@ fuzz:
 # per-target time budget. Manual / nightly only — never in the gate.
 fuzz-nightly:
 	@scripts/run-fuzz.sh $(FUZZ_ARGS)
+
+# fuzz-triage is the local, on-demand campaign + auto-triage tool (8.7): it
+# searches each surface, flake-guards and dedups any crasher, and opens ONE
+# reviewable PR per distinct deterministic bug via the developer's local `gh`.
+# Pass flags through FUZZ_ARGS, e.g. `make fuzz-triage FUZZ_ARGS="--time 5m"`,
+# `make fuzz-triage FUZZ_ARGS=--no-pr`, or `make fuzz-triage FUZZ_ARGS=--dry-run`.
+fuzz-triage:
+	@scripts/fuzz-triage.sh $(FUZZ_ARGS)
+
+# fuzz-triage-selftest verifies the triage flake-guard / dedup / ledger / PR
+# logic deterministically with synthetic failures and stubbed go/gh — no real
+# search, crash, or PR. Run it after editing scripts/fuzz-triage.sh.
+fuzz-triage-selftest:
+	@scripts/fuzz-triage-selftest.sh
+
+# fuzz-ledger pretty-prints the triage ledger (found/fixed/quarantined counts and
+# the open-bug list) from fuzz/state/ledger.json.
+fuzz-ledger:
+	@jq -r 'to_entries | "found:     \([.[]|select(.value.status=="found")]|length)\nfixed:     \([.[]|select(.value.status=="fixed")]|length)\nquarantined: \([.[]|select(.value.status=="quarantined")]|length)"' fuzz/state/ledger.json
+	@echo "--- open bugs (found) ---"
+	@jq -r 'to_entries[] | select(.value.status=="found") | "  \(.key)\t\(.value.pr // "(no PR)")"' fuzz/state/ledger.json
 
 # FUZZCOV_ARGS forwards CHECK=1 -> --check and BLESS=1 -> --bless to the reporter.
 FUZZCOV_ARGS := $(if $(CHECK),--check) $(if $(BLESS),--bless)

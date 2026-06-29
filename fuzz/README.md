@@ -24,6 +24,7 @@ targets to sit in the package under test (they call unexported seams and their
 make fuzz           # seed corpus + saved crashers as deterministic tests (gate-safe)
 make fuzz-nightly   # bounded coverage-guided search per target (60s each by default)
 make fuzz-coverage  # focus-set coverage map + gap map (committed corpus, deterministic)
+make fuzz-triage    # local campaign + auto-triage: search, flake-guard, dedup, open a PR
 scripts/run-fuzz.sh --time 5m            # all targets, 5 min each
 scripts/run-fuzz.sh llm:FuzzParseSSE     # one target
 scripts/run-fuzz.sh --list               # the target list (single source of truth)
@@ -83,6 +84,83 @@ is committed and re-runs forever as a deterministic regression test — no promo
 needed for single-input `testing.F` targets. The promoter in `promoter/` exists
 for the surfaces Go does *not* auto-promote (stateful sequences, non-`testing.F`
 runners).
+
+## Local campaign + auto-triage (`make fuzz-triage`)
+
+`scripts/fuzz-triage.sh` is the on-demand capstone: a developer runs it at a
+time of their choosing and it turns a found, *deterministic* crash into exactly
+one reviewable PR — never a flake, never a duplicate, never an auto-merge. There
+is **no scheduler and no bot**; the only standing CI change is the fast `make
+fuzz` seed replay in the existing PR gate, which makes an auto-filed crasher's
+red-until-fixed regression test keep its PR un-mergeable-green until the bug is
+fixed.
+
+```sh
+make fuzz-triage                              # search all surfaces, open a PR per new deterministic bug
+make fuzz-triage FUZZ_ARGS="--time 5m"        # longer per-target budget
+make fuzz-triage FUZZ_ARGS=--no-pr            # commit artifacts to a local branch, stop before the PR
+make fuzz-triage FUZZ_ARGS=--dry-run          # discover + decide, write nothing, open nothing
+scripts/fuzz-triage.sh llm:FuzzParseSSE       # restrict to one target (run-fuzz.sh TARGETS entry)
+```
+
+What a run does, in order:
+
+1. **Reconcile the ledger** — replay every `found` entry on the current tree; any
+   that now passes flips to `fixed` (the cheap, scheduler-free fixed-count).
+2. **Search** under `SERF_FUZZ_PERSIST=1` (see below) for `--time` per target.
+3. **Discover** new crashers as files that appeared since a pre-run `git status`
+   snapshot: Go-native `…/testdata/fuzz/<FuzzName>/<hash>` files, and promoter
+   `testregression_*_test.go` files.
+4. **Flake-guard** each Go-native crasher — re-run the saved corpus entry **K=5**
+   times; deterministic only if it fails all K. A crasher that passes any replay
+   is reverted, logged `quarantined`, and never filed. (Promoter crashers already
+   passed `Promote`'s K-replay guard, so the emitted test's mere existence is the
+   proof.)
+5. **Dedup**, three layers: the committed bucket store, Go's content-addressed
+   corpus (a re-found input produces no new file), and `gh pr list` + the ledger
+   by the deterministic branch name `fuzz/crash-<sig12>`.
+6. **Open one PR** (default) per surviving, novel, deterministic crash, via the
+   developer's **local `gh`** auth — no `GH_TOKEN`, no CI permissions. If `gh` is
+   missing/unauthenticated the tool stops before any push and leaves the artifacts
+   on a local branch (same as `--no-pr`).
+7. **Promote the coverage-expanding corpus** — copy up to `SERF_FUZZ_MAX_SEEDS`
+   (default 8 per target per run) new inputs from Go's fuzz cache into the
+   committed `testdata/fuzz/<FuzzName>/` seeds.
+
+### `SERF_FUZZ_PERSIST` (default off)
+
+The two rapid-runner surfaces emit their regression test + bucket record through
+`promoter.Promote`. In the gate they construct it against throwaway temp dirs so
+a fuzz run never dirties the tree. `promoter.PersistPaths` (in `promoter/`,
+stdlib-only — it reads the env directly rather than via serf's `envvars` registry
+to keep the no-serf-deps boundary) switches the emit dir to the surface's package
+and the bucket store to the committed **`fuzz/state/buckets.json`** only when
+`SERF_FUZZ_PERSIST` is truthy — which `fuzz-triage.sh` sets for the search. Unset
+(every `make fuzz` / `make test` / gate run), behavior is byte-identical to
+before: the promoter still runs and is still tested, but writes nothing.
+
+### Triage ledger (`fuzz/state/ledger.json`)
+
+A committed, signature-keyed record of every distinct finding — `found` (PR
+filed), `fixed` (reconciled), `quarantined` (failed the flake-guard, with
+`survived_runs`). `make fuzz-ledger` pretty-prints the counts and the open-bug
+list. The bucket store and ledger live under `fuzz/state/` and ride into a
+crasher's PR branch, so dedup memory survives across runs and across developers
+who pull `main`.
+
+### Testing the triage logic
+
+`scripts/fuzz-triage-selftest.sh` (`make fuzz-triage-selftest`) exercises the
+flake-guard, all three dedup layers, quarantine, reconcile, the commit path, and
+graceful `gh` degradation **deterministically** — synthetic failures and stubbed
+`go`/`gh` against a throwaway git repo, with no real search, crash, or PR.
+
+### Secret handling
+
+The tool only persists fuzzer-generated bytes (synthetic, from `testdata/fuzz`)
+and the promoter's minimized artifacts — low secret risk. If real-traffic corpus
+harvesting (`serf-fuzz-harvest`, above) ever feeds this tool, scrubbing is *its*
+gate, not the triage tool's.
 
 ## Oracles (never bare "no panic")
 
