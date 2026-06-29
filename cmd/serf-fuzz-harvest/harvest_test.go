@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -102,14 +103,18 @@ func TestHarvestEndToEnd(t *testing.T) {
 		dirMessageDecode,
 		dirMethodParams,
 		dirWebHandler,
-		dirJobstoreEvent,
-		dirJobstoreSequence,
+		dirJobstoreReplay,
 	} {
 		assertNonEmptyCorpusDir(t, filepath.Join(out, rel))
 	}
 
 	// The planted secret never reaches a committed seed.
 	walkAssertNoSecret(t, out)
+
+	// The jobstore seeds land in the live FuzzJobEventLogReplay corpus with
+	// DECODABLE timestamps (the scrubber's RFC3339 fix), so they reach the
+	// fold/replay oracles rather than only the decode-rejection floor.
+	assertJobstoreTimestampsDecode(t, filepath.Join(out, dirJobstoreReplay))
 
 	// FuzzWebHandler dropped the POST and kept the two GETs (health + doc/file).
 	if n := countFiles(t, filepath.Join(out, dirWebHandler)); n != 2 {
@@ -190,6 +195,47 @@ func parseCorpusArg(line string) bool {
 		return err == nil
 	default:
 		return false
+	}
+}
+
+// assertJobstoreTimestampsDecode unquotes every seed in the jobstore replay
+// corpus and asserts each "ts"/"started_at"/"ended_at"/"created_at" field is a
+// valid RFC3339 instant. A stale x-fill timestamp would fail the jobstore Event
+// decode and starve the deep oracles — exactly the regression this corpus regen
+// closes.
+func assertJobstoreTimestampsDecode(t *testing.T, dir string) {
+	t.Helper()
+	tsKeys := []string{"ts", "started_at", "ended_at", "created_at"}
+	tsField := regexp.MustCompile(`"(` + strings.Join(tsKeys, "|") + `)":"([^"]*)"`)
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("expected jobstore seeds in %s (err=%v)", dir, err)
+	}
+	checked := 0
+	for _, e := range entries {
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+			arg, ok := strings.CutPrefix(line, "[]byte(")
+			if !ok {
+				continue
+			}
+			data, err := strconv.Unquote(strings.TrimSuffix(arg, ")"))
+			if err != nil {
+				t.Fatalf("%s: unquote: %v", e.Name(), err)
+			}
+			for _, m := range tsField.FindAllStringSubmatch(data, -1) {
+				if _, err := time.Parse(time.RFC3339, m[2]); err != nil {
+					t.Fatalf("%s: %s=%q is not RFC3339 (stale x-fill?): %v", e.Name(), m[1], m[2], err)
+				}
+				checked++
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no timestamp fields found in jobstore seeds; fixture or wiring drifted")
 	}
 }
 
