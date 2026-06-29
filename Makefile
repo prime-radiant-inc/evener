@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly secret-scan fuzz-corpus-scan
+.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-coverage secret-scan fuzz-corpus-scan
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -106,6 +106,18 @@ fuzz:
 fuzz-nightly:
 	@scripts/run-fuzz.sh $(FUZZ_ARGS)
 
+# FUZZCOV_ARGS forwards CHECK=1 -> --check and BLESS=1 -> --bless to the reporter.
+FUZZCOV_ARGS := $(if $(CHECK),--check) $(if $(BLESS),--bless)
+
+# fuzz-coverage replays every fuzz target's COMMITTED corpus under -coverprofile
+# (no -fuzz, so deterministic), computes each target's FOCUS-SET coverage %
+# (primary, drivable to 100%) plus its whole-package % (secondary), enforces the
+# no-regression ratchet against scripts/fuzzcov-floors.txt, and prints the gap map
+# (decode/parse packages with zero fuzz coverage). Advisory by default; pass
+# CHECK=1 to fail on a ratchet regression or a gap breach, BLESS=1 to raise floors.
+fuzz-coverage:
+	@scripts/fuzz-coverage.sh $(FUZZCOV_ARGS)
+
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
 # when gitleaks is not installed (required in CI).
@@ -154,4 +166,4 @@ lint-generated: generate
 lint: lint-naming lint-internal lint-docs lint-golangci lint-generated secret-scan
 
 clean:
-	rm -f serf serf-hub serf-tui serf-doctor llmcall serf-namingcheck serf-internalcheck
+	rm -f serf serf-hub serf-tui serf-doctor llmcall serf-namingcheck serf-internalcheck serf-fuzzcov

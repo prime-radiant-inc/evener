@@ -1,0 +1,9 @@
+# fuzzcov gap-map ignore-list. One package import path per line, each REQUIRING a
+# reason comment: "<import-path>  # <reason>". serf-fuzzcov errors on a reasonless
+# entry, so this file is reviewed like code. Use only for genuinely out-of-scope
+# parse surfaces (test helpers, generated code, the serf-agnostic toolkit, and the
+# fuzz tooling itself). Real runtime decode surfaces are left in the gap map as
+# the honest record of fuzz work still to do.
+primeradiant.com/serf/fuzz/promoter  # serf-agnostic toolkit core (failure->regression promoter); decodes its own jobs.jsonl shape, exercised by the fuzz module's own unit tests, not a serf wire surface
+primeradiant.com/serf/cmd/serf-fuzz-harvest  # the corpus harvester that PRODUCES fuzz seeds; tooling, not a shipped runtime decode surface
+primeradiant.com/serf/tools/tool-fluency/cmd/serf-fluency  # dev/eval tool, not shipped runtime
