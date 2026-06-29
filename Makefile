@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-ledger fuzz-coverage secret-scan fuzz-corpus-scan
+.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-ledger fuzz-coverage fuzz-gap-check secret-scan fuzz-corpus-scan
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -138,6 +138,13 @@ FUZZCOV_ARGS := $(if $(CHECK),--check) $(if $(BLESS),--bless)
 # CHECK=1 to fail on a ratchet regression or a gap breach, BLESS=1 to raise floors.
 fuzz-coverage:
 	@scripts/fuzz-coverage.sh $(FUZZCOV_ARGS)
+
+# fuzz-gap-check is the FAST, STATIC gap gate (the blocking CI floor): it asserts
+# every decode/parse package has a registered fuzz target (or a reasoned ignore),
+# derived from scripts/run-fuzz.sh --list without replaying any corpus. Seconds,
+# deterministic. The slow ratchet (fuzz-coverage CHECK=1) stays local/manual.
+fuzz-gap-check:
+	@scripts/fuzz-gap-check.sh
 
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning

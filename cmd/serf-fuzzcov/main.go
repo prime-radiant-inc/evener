@@ -39,6 +39,7 @@ import (
 // its profile. The first five fields mirror scripts/run-fuzz.sh's TARGETS entry;
 // profile is the path to that target's replayed -coverprofile.
 type target struct {
+	tag      string // "native" (testing.F) or "rapid" (rapid.Check Test func)
 	module   string // go.work module dir, e.g. "agent" or "."
 	pkg      string // package relpath within the module, e.g. "./appwire" or "."
 	name     string // FuzzName
@@ -80,7 +81,13 @@ func main() {
 	check := flag.Bool("check", false, "exit non-zero on a focus-set regression or a gap breach")
 	bless := flag.Bool("bless", false, "raise each floor upward to the current measured focus %")
 	tolerance := flag.Float64("tolerance", 0.5, "ratchet tolerance band (percentage points) absorbing nondeterministic wobble")
+	gapOnly := flag.Bool("gap-only", false, "STATIC gap gate: derive the fuzzed set from the registry (no coverage replay) and exit non-zero on any unfuzzed, unignored parse package")
+	registry := flag.String("registry", "", "path to scripts/run-fuzz.sh --list output (required with -gap-only)")
 	flag.Parse()
+
+	if *gapOnly {
+		os.Exit(runGapOnly(*registry, *repoRoot, strings.Fields(*modulesArg), *ignorePath))
+	}
 
 	if *manifest == "" {
 		fatal("--manifest is required")
@@ -154,6 +161,72 @@ func main() {
 	if *check {
 		os.Exit(checkExit(results, gaps, *tolerance))
 	}
+}
+
+// runGapOnly is the fast STATIC gap gate. It never replays a corpus: it derives
+// the fuzzed package set from the registry's declared target packages, scans the
+// parse-signature universe, subtracts the ignore-list, and exits non-zero if any
+// parse package is left un-fuzzed and un-ignored. Seconds, deterministic — safe
+// for the PR gate, unlike the slow coverage-driven --check.
+func runGapOnly(registryPath, repoRoot string, modules []string, ignorePath string) int {
+	if registryPath == "" {
+		fatal("-gap-only requires -registry (the scripts/run-fuzz.sh --list output)")
+	}
+	targets, err := readRegistry(registryPath)
+	if err != nil {
+		fatal("read registry: %v", err)
+	}
+	modulePaths, err := readModulePaths(repoRoot, modules)
+	if err != nil {
+		fatal("read module paths: %v", err)
+	}
+	fuzzed := staticFuzzedPackages(targets, modulePaths)
+	universe, err := scanUniverse(repoRoot, modulePaths)
+	if err != nil {
+		fatal("scan parse universe: %v", err)
+	}
+	ignore, err := readIgnore(ignorePath)
+	if err != nil {
+		fatal("read ignore-list: %v", err)
+	}
+	gaps := gapMap(universe, fuzzed, ignore)
+
+	if len(gaps) == 0 {
+		fmt.Printf("fuzz gap check: all %d decode/parse package(s) have a registered target or a reasoned ignore\n", len(universe))
+		return 0
+	}
+	fmt.Fprintln(os.Stderr, "GAP MAP — decode/parse packages with NO registered fuzz target")
+	for _, g := range gaps {
+		fmt.Fprintf(os.Stderr, "  %-52s (%s)\n", g[0], g[1])
+	}
+	fmt.Fprintf(os.Stderr, "serf-fuzzcov: GAP BREACH: %d decode/parse package(s) have no fuzz target and are not ignored\n", len(gaps))
+	return 1
+}
+
+// staticFuzzedPackages returns the package import paths a target registry claims
+// to fuzz, derived purely from each entry's declared package (its coverpkg, or
+// the package relpath when no coverpkg is set). The coverpkg may name several
+// comma-separated packages. No coverage data is consulted.
+func staticFuzzedPackages(targets []target, modulePaths map[string]string) map[string]bool {
+	out := map[string]bool{}
+	for _, t := range targets {
+		modulePath := modulePaths[t.module]
+		if modulePath == "" {
+			continue
+		}
+		claimed := t.coverpkg
+		if claimed == "" {
+			claimed = t.pkg
+		}
+		for _, part := range strings.Split(claimed, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			out[joinImport(modulePath, pkgSubdir(part))] = true
+		}
+	}
+	return out
 }
 
 // computeTarget resolves the focus set, attributes the target's profile to it,
@@ -427,6 +500,38 @@ func readManifest(p string) ([]target, error) {
 			module: fields[0], pkg: fields[1], name: fields[2],
 			coverpkg: fields[3], focus: fields[4], profile: fields[5],
 		})
+	}
+	return out, sc.Err()
+}
+
+// readRegistry parses scripts/run-fuzz.sh --list output: one colon-separated
+// "tag:module:pkg:name[:coverpkg[:focus]]" entry per line. Comments and blank
+// lines are skipped. Profiles are not part of a registry entry.
+func readRegistry(p string) ([]target, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	var out []target
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, ":")
+		if len(fields) < 4 {
+			return nil, fmt.Errorf("malformed registry line (want \"tag:module:pkg:name[:coverpkg[:focus]]\"): %q", line)
+		}
+		t := target{tag: fields[0], module: fields[1], pkg: fields[2], name: fields[3]}
+		if len(fields) > 4 {
+			t.coverpkg = fields[4]
+		}
+		if len(fields) > 5 {
+			t.focus = fields[5]
+		}
+		out = append(out, t)
 	}
 	return out, sc.Err()
 }
