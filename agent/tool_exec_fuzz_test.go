@@ -58,6 +58,17 @@ var sandboxableExecTools = []string{
 //     env's working directory) stays empty across every call, proving the handler
 //     touched no real filesystem. This is the guard that would catch a tool that
 //     bypassed the env to call os.* directly.
+//
+// Unreachable ExecuteCall branches, by construction of this harness (so the focus
+// % plateaus below 100 for sound reasons, not missing seeds):
+//   - the unknown-tool branch: execFuzzSetup asserts every driven name is
+//     registered, so the lookup never misses;
+//   - the middleware loop body: the fuzz Session registers no tool middleware, so
+//     there is nothing to iterate;
+//   - the ImageResult / StateResult / TextResult result-type branches: none of the
+//     six env-backed sandboxable tools returns those types (read_file only yields
+//     an ImageResult for an env "[image:" payload, which DenyEnv never emits), so
+//     every success lands on the plain-string formatting path.
 func FuzzToolExecution(f *testing.F) {
 	reg, env, witnessDir := execFuzzSetup(f)
 
@@ -83,6 +94,15 @@ func FuzzToolExecution(f *testing.F) {
 		{4, `{"pattern":"a","output_mode":"files_with_matches"}`},
 		{0, `not json`},
 		{3, `{"pattern":"\ud800"}`},
+		// Empty/`null` args leave the decoded map nil, exercising the nil→{} guard;
+		// the empty-args case also drives the empty-callID → shortHash branch below.
+		{0, ``},
+		{0, `null`},
+		// Paths whose DenyEnv draw lands on the failure modulus (read h%5==0,
+		// edit h%3==0): these drive ExecuteCall's handler-error formatting path,
+		// which the success-returning seeds above never reach.
+		{0, `{"file_path":"r0.txt"}`},
+		{2, `{"file_path":"e2.txt","old_string":"x","new_string":"y"}`},
 	}
 	for _, s := range seeds {
 		f.Add(s.tool, []byte(s.args))
@@ -91,8 +111,15 @@ func FuzzToolExecution(f *testing.F) {
 	f.Fuzz(func(t *testing.T, toolIdx int, argsBytes []byte) {
 		name := sandboxableExecTools[((toolIdx%len(sandboxableExecTools))+len(sandboxableExecTools))%len(sandboxableExecTools)]
 
+		// An empty argument blob carries no call ID, exercising ExecuteCall's
+		// "synthesize a callID from a hash of the arguments" branch; a non-empty
+		// blob carries a fixed ID so the common path is the labeled one.
+		callID := "fuzz-call"
+		if len(argsBytes) == 0 {
+			callID = ""
+		}
 		res := reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
-			ID:        "fuzz-call",
+			ID:        callID,
 			Name:      name,
 			Arguments: argsBytes,
 			Type:      "function",

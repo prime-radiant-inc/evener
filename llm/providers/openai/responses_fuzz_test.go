@@ -117,15 +117,50 @@ func FuzzOpenAIResponsesMetamorphic(f *testing.F) {
 		`data: {"type":"response.output_text.delta","delta":"answer"}` + "\n\n" +
 		`data: {"type":"response.completed","response":{"id":"resp_3","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"answer"}]}]}}` + "\n\n"
 
+	// itemIDToolStream exercises the id-mapping fallbacks the call_id-keyed seeds
+	// above skip: an output_item.added that carries only an item "id" (no call_id),
+	// then a delta/done addressed by item_id, with arguments arriving via the
+	// "arguments" field rather than "delta".
+	itemIDToolStream := `data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_9","name":"grep"}}` + "\n\n" +
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_9","arguments":"{\"q\":1}"}` + "\n\n" +
+		`data: {"type":"response.function_call_arguments.done","item_id":"fc_9","arguments":"{\"q\":1}"}` + "\n\n" +
+		`data: {"type":"response.completed","id":"resp_4","status":"completed","output":[]}` + "\n\n"
+
+	// itemDoneToolStream drives the response.output_item.done function_call path
+	// (carried under the alternate "output_item" key) end-to-end.
+	itemDoneToolStream := `data: {"type":"response.output_item.done","output_item":{"type":"function_call","call_id":"call_z","id":"fc_z","name":"shell","arguments":"{}"}}` + "\n\n"
+
+	// textThenItemDone starts a text segment then closes it via a non-function_call
+	// output_item.done (the best-effort end-of-text branch).
+	textThenItemDone := `data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n" +
+		`data: {"type":"response.output_item.done","item":{"type":"message"}}` + "\n\n"
+
 	seeds := []string{
 		textStream,
 		toolStream,
 		reasoningStream,
+		itemIDToolStream,
+		itemDoneToolStream,
+		textThenItemDone,
 		"data: not-json\n\n",
 		": just a comment\n\n",
 		"\n\n\n",
 		"",
 		`data: {"type":"response.completed","response":{"id":"r","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}` + "\n\n",
+		// The event type taken from the SSE `event:` line when the data has no "type".
+		"event: response.output_text.delta\n" + `data: {"delta":"viaEvent"}` + "\n\n",
+		// output_text.delta whose text rides the "text" field, not "delta".
+		`data: {"type":"response.output_text.delta","text":"viaText"}` + "\n\n",
+		// Empty deltas: the text and reasoning early-return guards.
+		`data: {"type":"response.output_text.delta"}` + "\n\n" +
+			`data: {"type":"response.reasoning_summary_text.delta"}` + "\n\n",
+		// A standalone function_call_arguments.done keyed by call_id (no prior added).
+		`data: {"type":"response.function_call_arguments.done","call_id":"call_d","arguments":"{\"a\":1}"}` + "\n\n",
+		// An output_item.done with no item payload, after text started.
+		`data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n" +
+			`data: {"type":"response.output_item.done"}` + "\n\n",
+		// An unrecognized event type → the default raw-passthrough branch.
+		`data: {"type":"response.totally_unknown_event"}` + "\n\n",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))

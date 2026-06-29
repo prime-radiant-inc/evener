@@ -157,6 +157,15 @@ func pinSandboxCWD(raw []byte, cwd string) []byte {
 //   - a success result must JSON-serialize and must never carry the out-of-root
 //     secret (path-escape);
 //   - zero network attempts (the deny-transport tripwire).
+//
+// Focus note: the focus seam newHubAppServer is a constructor whose bulk is the
+// per-thread RELAY closures (startRelay / startTurn / the idle-exit + broadcast
+// goroutine). Those run only across a live, send-capable subscription lifecycle —
+// a source that returns "send" as available, a real SubscribeThread channel, and
+// the 250ms idle ticker firing — none of which a single-shot Dispatch replay
+// reaches. The focus % therefore plateaus at the dispatch-reachable construction
+// and method-routing lines; the relay machinery is exercised by the live hub, not
+// this target.
 func FuzzAppWireDispatch(f *testing.F) {
 	stubSelfUpgrade(f)
 	canary := installSandboxAuthSeam(f)
