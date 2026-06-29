@@ -124,6 +124,47 @@ applies a flake-guard (a failure must reproduce K times to count), dedups agains
 prior findings, and opens a PR by default carrying the generated regression test.
 See [`fuzz/README.md`](../fuzz/README.md) for its flags and `SERF_FUZZ_PERSIST`.
 
+## Continuous fuzzing (local, on-demand)
+
+`make fuzz-continuous` rotates over every native target, giving each a bounded
+search turn round after round, until you Ctrl-C or a `--total` budget elapses.
+It is deliberately **local and on-demand — there is no scheduled CI**: you start
+it when you want cycles and stop it when you don't. Each turn delegates to
+`fuzz-triage`, so a new deterministic crash is flake-guarded, deduped, and turned
+into one reviewable PR — the same pipeline, driven continuously.
+
+A loop beats one long run because Go's coverage-guided corpus persists in
+`$GOCACHE/fuzz` across invocations: each turn a target gets **resumes** where the
+last left off and goes deeper, while rotation keeps every target progressing
+instead of spending the whole budget on the first.
+
+```sh
+make fuzz-continuous                                   # all native targets, until Ctrl-C
+make fuzz-continuous FUZZ_ARGS="--total 2h --time 5m"  # 2h session, 5m per target per turn
+make fuzz-continuous FUZZ_ARGS="--sweep llm:FuzzParseSSE agent:FuzzPluginManifestParse"
+```
+
+Rapid targets are excluded from the rotation — they are bounded property checks
+the normal suite runs, not coverage-guided searches that deepen with corpus. Per
+turn the loop passes `--no-corpus` (the committed corpus is promoted by an
+explicit `make fuzz-triage`); the `$GOCACHE` corpus still accumulates regardless.
+
+## Pinpointing a regression with bisect
+
+Once you have a saved crasher file, `make fuzz-bisect` finds the commit that
+introduced it. It drives `git bisect run`, replaying that one corpus entry at
+each step (a commit where the target does not build, or does not yet exist, is
+skipped, not misjudged), and confirms the crash reproduces at `--bad` but not at
+`--good` before bisecting. The working tree is restored afterward.
+
+```sh
+make fuzz-bisect FUZZ_ARGS="--target llm:FuzzParseSSE \
+  --crasher llm/testdata/fuzz/FuzzParseSSE/<hash> --good <ref>"
+```
+
+`--crasher` must be the Go fuzz corpus file (it begins `go test fuzz v1`) — the
+file the toolchain saved when it found the crash. `--bad` defaults to `HEAD`.
+
 ## When the gap gate fails on your PR
 
 `make fuzz-gap-check` blocks a PR that adds a **decode/parse package with no fuzz

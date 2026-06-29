@@ -182,6 +182,40 @@ and the promoter's minimized artifacts — low secret risk. If real-traffic corp
 harvesting (`serf-fuzz-harvest`, above) ever feeds this tool, scrubbing is *its*
 gate, not the triage tool's.
 
+## Continuous loop (`make fuzz-continuous`)
+
+`scripts/fuzz-continuous.sh` wraps the triage capstone in a rotation: it gives
+each native target a bounded search turn, round after round, until `--total`
+elapses or Ctrl-C. Same no-scheduler stance — you start and stop it. Each turn is
+a `fuzz-triage` run for one target (with per-turn `--no-corpus`), so crashers are
+flake-guarded, deduped, and PR'd by the same pipeline; the loop adds rotation, a
+total budget, and a session summary that lists any new ledger signatures.
+
+```sh
+make fuzz-continuous                                   # all native targets, until Ctrl-C
+make fuzz-continuous FUZZ_ARGS="--total 2h --time 5m"  # bounded session, 5m per turn
+make fuzz-continuous FUZZ_ARGS="--sweep agent:FuzzPluginManifestParse"  # one-pass over a subset
+```
+
+Round-robin (default, one target per turn) or `--sweep` (all selected targets per
+round). Rapid targets are excluded — they are bounded property checks, not
+coverage-guided searches that deepen across turns via `$GOCACHE/fuzz`. Seams
+`SERF_FUZZ_RUNNER` (registry) and `SERF_FUZZ_TRIAGE` (per-turn engine) let the
+self-test (`make fuzz-continuous-selftest`) drive it with stubs.
+
+## Regression bisect (`make fuzz-bisect`)
+
+`scripts/fuzz-bisect.sh` finds the commit that introduced a crasher. Given a
+target, a saved Go corpus file (`--crasher`, begins `go test fuzz v1`), and a
+known-good ref (`--good`; `--bad` defaults to `HEAD`), it confirms the crash
+reproduces at `--bad` and not at `--good`, then drives `git bisect run`, replaying
+that one corpus entry at each step under `-tags serffuzz`. A commit where the
+target does not build or does not yet exist is **skipped** (exit 125), not
+misjudged; the working tree is restored on exit. Seams `SERF_FUZZ_GO` and
+`SERF_FUZZ_TAGS` (plus `SERF_FUZZ_RUNNER`) back the self-test
+(`make fuzz-bisect-selftest`), which bisects a throwaway repo whose target crashes
+only after a known commit — real `git bisect`, no stubbed search.
+
 ## Oracles (never bare "no panic")
 
 - **SSE** — chunk-invariance (the parser must yield identical events whether fed
