@@ -24,6 +24,13 @@ var codexItemTypes = []any{
 // panic" plus a decode→encode→decode fixed point for any cleanly-decoding input
 // (these are plain structs: the first marshal normalizes, then re-decode and
 // re-marshal must be byte-stable).
+//
+// Focus note: ThreadItem/Thread/Turn/InputItem are plain struct-tag types with
+// no custom (un)marshalers, so the focus file types.go (whose only func is the
+// unrelated LaunchConfigLayer.MarshalJSON) carries no executable decode
+// statements to credit. The focus-set % sits at the floor by construction — the
+// value is the no-panic + fixed-point oracles over the codex item shapes, not
+// types.go line coverage.
 func FuzzCodexItemDecode(f *testing.F) {
 	f.Add(0, []byte(`{"type":"userMessage","id":"i","turnId":"t","text":"hi","status":"completed"}`))
 	f.Add(0, []byte(`{"type":"commandExecution","id":"i","command":"git status","cwd":"/w","aggregatedOutput":"","status":"inProgress"}`))

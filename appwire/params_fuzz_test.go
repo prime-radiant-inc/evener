@@ -14,6 +14,13 @@ import (
 // floor "no panic" plus a decode→encode→decode fixed point for any input that
 // decodes cleanly — this exercises all 46 methods' Params structs (field types,
 // tags, any custom UnmarshalJSON) through one harness, not the generic decoder.
+//
+// Focus note: the Params decode is stdlib struct-tag reflection, so the focus
+// file protocol.go (var-declaration catalog plus three catalog helpers this
+// target never calls) carries no executable decode statements to credit. The
+// focus-set % therefore sits at the floor by construction — the value here is
+// the no-panic + fixed-point oracles over every Params type, not protocol.go
+// line coverage.
 func FuzzMethodParams(f *testing.F) {
 	// Seed with a couple of method/params pairs so coverage starts inside the
 	// real structs rather than at the JSON tokenizer.

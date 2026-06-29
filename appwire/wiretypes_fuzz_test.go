@@ -118,6 +118,12 @@ func buildRegistry() (*typegen.Registry, func(string) reflect.Type) {
 // It complements (does not replace) the byte-level FuzzMethodParams, which still
 // hunts tokenizer / custom-UnmarshalJSON panics that structured values never
 // reach.
+//
+// Focus note: the whole-package focus is low by construction — appwire is almost
+// entirely var-declaration catalogs and struct-tag types whose (un)marshaling is
+// stdlib reflection, so there are few executable decode statements to credit
+// (LaunchConfigLayer.MarshalJSON is the lone marshaler). The value is the
+// catalog-wide no-panic + fixed-point oracles, not appwire line coverage.
 func FuzzWireTypes(f *testing.F) {
 	reg, typeFor := buildRegistry()
 	names := reg.Names()
