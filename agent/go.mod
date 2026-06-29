@@ -12,6 +12,7 @@ require (
 	pgregory.net/rapid v1.3.0
 	primeradiant.com/serf/auth v0.0.0
 	primeradiant.com/serf/fuzz v0.0.0
+	primeradiant.com/serf/invariant v0.0.0
 	primeradiant.com/serf/llm v0.0.0
 )
 

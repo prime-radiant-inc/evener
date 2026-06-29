@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
 )
 
@@ -63,6 +64,15 @@ func repairOrphanedToolResults(history []schema.Turn) ([]schema.Turn, int) {
 
 	if repairs == 0 {
 		return history, 0
+	}
+	// Repair must produce well-formed history: every assistant tool call now has a
+	// matching tool result, so a second pass finds nothing left to repair. If this
+	// trips, the synthetic-result insertion missed a call and a downstream provider
+	// would reject the transcript. The re-scan is a full pass, so it is gated out of
+	// production builds.
+	if invariant.Enabled {
+		_, again := repairOrphanedToolResults(out)
+		invariant.Hold(again == 0, "repairOrphanedToolResults left %d orphaned tool call(s) after repair", again)
 	}
 	return out, repairs
 }

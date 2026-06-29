@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+
+	"primeradiant.com/serf/invariant"
 )
 
 type MessageKind int
@@ -37,6 +39,10 @@ func (id *ID) UnmarshalJSON(data []byte) error {
 		return errors.New("request id must not be null")
 	}
 	id.raw = append(id.raw[:0], data...)
+	// A successful decode rejected empty and null above, so raw now holds the
+	// id token. Int64/String and the marshal-omits-empty-id logic all depend on
+	// raw being non-empty for a decoded id.
+	invariant.Hold(len(id.raw) > 0, "appwire: ID.UnmarshalJSON left raw empty after accepting %q", data)
 	return nil
 }
 
@@ -183,6 +189,25 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		m.Notification = &notif
 	default:
 		return errors.New("invalid JSON-RPC message")
+	}
+	// Every non-error branch above populates exactly one frame pointer, so a
+	// cleanly decoded Message has a single populated field and Kind() resolves it
+	// unambiguously.
+	if invariant.Enabled {
+		set := 0
+		if m.Request != nil {
+			set++
+		}
+		if m.Notification != nil {
+			set++
+		}
+		if m.Response != nil {
+			set++
+		}
+		if m.Error != nil {
+			set++
+		}
+		invariant.Hold(set == 1, "appwire: decoded Message has %d populated frames, want exactly 1", set)
 	}
 	return nil
 }

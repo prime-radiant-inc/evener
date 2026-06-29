@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/invariant"
 )
 
 // Fold reconstructs the current JobRecord for each job by applying events in
@@ -288,6 +289,23 @@ func FoldGrants(events []Event) map[string]map[string]bool {
 }
 
 func applyEvent(r *JobRecord, e Event) {
+	// A job's lifecycle only advances: once its status is terminal the first
+	// terminal write is final (no later event reopens it), and the
+	// notification state climbs not_armed -> pending -> delivered and never
+	// falls back. These are the reducer's load-bearing monotonicity guarantees;
+	// asserting them at the mutation point traps a regression here rather than at
+	// some distant reader. The condition re-reads r after the switch, so it is
+	// guarded out of production builds along with the no-op Hold.
+	if invariant.Enabled {
+		prevStatus := r.Status
+		prevNotify := notifyRank(r.NotifyState)
+		defer func() {
+			invariant.Hold(!prevStatus.IsTerminal() || r.Status == prevStatus,
+				"job %s terminal status regressed: %s -> %s", r.JobID, prevStatus, r.Status)
+			invariant.Hold(notifyRank(r.NotifyState) >= prevNotify,
+				"job %s notification state regressed: rank %d -> %d", r.JobID, prevNotify, notifyRank(r.NotifyState))
+		}()
+	}
 	switch e.Kind {
 	case EventJobStarted:
 		r.Type = e.Type
@@ -357,4 +375,20 @@ func applyEvent(r *JobRecord, e Event) {
 
 func notificationMatchesTerminalGeneration(r *JobRecord, e Event) bool {
 	return r.TerminalGen != "" && e.TerminalGen == r.TerminalGen
+}
+
+// notifyRank orders the notification states so the reducer's monotonicity
+// invariant can compare them: not_armed (0) precedes pending (1) precedes
+// delivered (2). NotifyState is only ever set to one of these constants by the
+// reducer, never read from event bytes, so the default is unreachable in
+// practice and ranks the zero value conservatively as the lowest state.
+func notifyRank(s NotifyState) int {
+	switch s {
+	case NotifyPending:
+		return 1
+	case NotifyDelivered:
+		return 2
+	default:
+		return 0
+	}
 }

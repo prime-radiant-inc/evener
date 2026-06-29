@@ -11,6 +11,7 @@ require github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 require (
 	pgregory.net/rapid v1.3.0
 	primeradiant.com/serf/fuzz v0.0.0
+	primeradiant.com/serf/invariant v0.0.0
 )
 
 require (

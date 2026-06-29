@@ -74,6 +74,12 @@ func FuzzTranscriptReplay(f *testing.F) {
 		// Orphaned tool result (no preceding tool_call) exercises orphan repair.
 		`{"kind":"header","format_version":1,"session_id":"s3","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}
 {"kind":"entry","seq":0,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"orphan","content":"dangling"}}]},"timestamp":"2026-06-01T10:00:00Z"}}`,
+		// Orphaned tool CALL (assistant tool_call with no following tool_result)
+		// forces ResumeHistory to insert a synthetic result (repairs > 0), which
+		// exercises the post-repair re-scan invariant.
+		`{"kind":"header","format_version":1,"session_id":"s5","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}
+{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[{"kind":"text","text":"go"}]},"timestamp":"2026-06-01T10:00:00Z"}}
+{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c9","name":"shell","arguments":{"command":"ls"}}}]},"timestamp":"2026-06-01T10:00:01Z"}}`,
 		// Header only.
 		`{"kind":"header","format_version":1,"session_id":"s4","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}`,
 		`not a transcript`,

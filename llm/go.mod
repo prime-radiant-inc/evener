@@ -8,4 +8,5 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	primeradiant.com/serf/auth v0.1.0
 	primeradiant.com/serf/envvars v0.0.0
+	primeradiant.com/serf/invariant v0.0.0
 )

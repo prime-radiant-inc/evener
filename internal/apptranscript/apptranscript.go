@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
+	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
 )
 
@@ -187,12 +188,26 @@ func DefaultImageProjector(image llm.ImageData) appwire.InputItem {
 }
 
 // ProjectTurn maps a typed transcript turn into AppWire transcript items.
-func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector) []appwire.ThreadItem {
+func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector) (out []appwire.ThreadItem) {
 	if imageProjector == nil {
 		imageProjector = DefaultImageProjector
 	}
 	if toolNames == nil {
 		toolNames = map[string]string{}
+	}
+	if invariant.Enabled {
+		// Every item ProjectTurn emits belongs to the turn it was asked to
+		// project (TurnID == the turnID argument) and carries a non-empty id the
+		// client can address it by. Each construction below sets TurnID: turnID
+		// and an item_..._N id, so these hold across all turn kinds.
+		defer func() {
+			for _, item := range out {
+				invariant.Hold(item.TurnID == turnID,
+					"apptranscript: ProjectTurn item %q has TurnID %q, want %q", item.ID, item.TurnID, turnID)
+				invariant.Hold(item.ID != "",
+					"apptranscript: ProjectTurn emitted item with empty ID (type=%s, turnID=%s)", item.Type, turnID)
+			}
+		}()
 	}
 	switch turn.Kind {
 	case schema.TurnCheckpoint, schema.TurnSummary:
