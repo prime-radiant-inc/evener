@@ -119,6 +119,16 @@ out="$(run_loop --total 0s)"
 assert_eq "$(wc -l <"$work/triage.log" | tr -d ' ')" "0" "zero budget: no turns run"
 assert_has "$out" "turns: 0" "zero budget: summary reports 0 turns"
 
+# --- scenario 7: a malformed --total ABORTS, never runs unbounded -------------
+# Regression guard: the exit inside to_seconds' command substitution must abort
+# the whole script, not just the subshell (which would leave total="" = unlimited).
+: >"$work/triage.log"
+set +e
+out="$(run_loop --total 2hr --max-turns 1)"; rc=$?
+set -e
+assert_eq "$rc" "2" "bad --total: aborts with exit 2"
+assert_eq "$(wc -l <"$work/triage.log" | tr -d ' ')" "0" "bad --total: runs no turns (not unbounded)"
+
 # --- summary -----------------------------------------------------------------
 echo "----"
 echo "fuzz-continuous-selftest: $pass passed, $fail failed"

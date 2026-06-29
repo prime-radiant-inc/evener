@@ -38,7 +38,7 @@ func JSON() [][]byte {
 		`-0.0`,                        // negative zero float
 		`"\ud800"`,                    // lone high surrogate
 		`"\udc00"`,                    // lone low surrogate
-		`"😀"`,                         // valid surrogate pair (emoji)
+		`"\ud83d\ude00"`,              // surrogate-pair escape (decodes to an emoji)
 		`"\u0000"`,                    // NUL via \u escape (decodes to NUL)
 		`{"a":1,"a":2}`,               // duplicate keys
 		bom + "{}",                    // UTF-8 BOM prefix
@@ -76,7 +76,7 @@ func TOML() [][]byte {
 		"\"a.b\" = 1\n'k k' = 2\n",                  // quoted/dotted keys
 		"a = {b = 1, c = [1, 2]}\n",                 // inline table
 		"[[t]]\nx = 1\n[[t]]\nx = 2\n",              // array of tables
-		"a = [1, \"x\", true]\n",                    // mixed-type array (rejected)
+		"a = [1, \"x\", true]\n",                    // heterogeneous array (TOML 1.0 accepts)
 		"a = [[[[[]]]]]\n",                          // deep nested arrays
 		bom + "a = 1\n",                             // BOM prefix
 		"\"\" = 1\n",                                // empty key

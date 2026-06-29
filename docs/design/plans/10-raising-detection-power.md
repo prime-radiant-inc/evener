@@ -40,9 +40,16 @@ each bug we've already fixed into a permanent "the detector still works" check.
 
 **Mechanism (recommended: patch-based, SUT stays pristine).** A mutation is a
 known fault — typically the inverse of a fix we shipped — expressed as a small
-git patch. The audit applies each patch in a *throwaway git worktree at HEAD*,
-runs the corresponding target's seed corpus under `-tags serffuzz`, and asserts
-the run **fails** (the oracle caught the fault). A clean HEAD must pass (sanity).
+git patch, **paired with a corpus seed that reaches the fault** (for a
+fuzzer-found bug, the regression seed the toolchain already saved; otherwise a
+seed shipped with the mutation). The audit applies each patch in a *throwaway git
+worktree at HEAD*, runs the corresponding target's seed corpus under
+`-tags serffuzz`, and asserts the run **fails** (the oracle caught the fault). A
+clean HEAD must pass (sanity). On authoring, each mutation is confirmed to flip
+its seed clean→failing, which proves both that the seed reaches the fault and
+that the oracle fires — without that pairing, a seed-only run could leave a
+genuinely sensitive oracle reading "blind" simply because no committed seed
+exercises the mutated path.
 
 Keeping the fault out of the production tree matters for the codebase's
 cleanliness bar, and patch *rot* becomes a **loud** failure, not a silent skip:
@@ -98,10 +105,13 @@ the gap report lists the unaudited targets; self-test passes; gate green.
 
 **Effort.** ~200–300 LoC (harness + self-test) + ~8–12 small patches + manifest.
 
-**Risks.** Patch rot (mitigated: loud failure). A mutation that is *equivalent*
-(does not actually change behavior) would falsely read as "oracle blind" — each
-mutation's patch must be confirmed to change a real output, which the self-test's
-"caught" case demonstrates per mutation on first authoring.
+**Risks.** Patch rot (mitigated: loud failure). Two ways an audit can falsely
+read "oracle blind," both addressed by the authoring-time clean→failing
+confirmation above: an *equivalent* mutation (changes no real output), and a
+mutation whose fault **no committed seed reaches** under a seed-only run (the
+oracle is fine; the input never gets there). The seed-pairing requirement closes
+both — if the mutation does not flip its seed on authoring, it is rejected until a
+reaching seed (or a bounded `-fuzz` step for that one target) is added.
 
 **Recursion.** W2's and W3's new oracles each get a mutation here. W1 thereby
 becomes the standing meta-gate for the whole toolkit's detection power.
@@ -231,8 +241,8 @@ What is actually left:
      scheduling nondeterministic. Give the fuzzer a synchronous-drain seam or
      route draining through the fake clock's quiescence handshake.
    - the background **namer goroutine** (`agent/session_namer.go:186`
-     `launchInitialPromptNamer`, joined via `sendersWG` at
-     `session_lifecycle.go:73`) — route its scheduling through the injectable
+     `launchInitialPromptNamer`, joined via `sendersWG.Wait()` in `Close()` at
+     `session_lifecycle.go:174,219`) — route its scheduling through the injectable
      clock so a stateful run is deterministic with the namer *enabled* (today it
      is avoided).
 2. **Cross-subsystem invariants** the isolated models cannot see: assert
