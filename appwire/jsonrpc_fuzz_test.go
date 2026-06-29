@@ -11,29 +11,32 @@ import (
 // decodes cleanly must re-marshal and re-decode to an equal value. The
 // accessors that callers reach for on a decoded frame (Kind, IDString, and the
 // ID conversions) must also never panic.
+// messageDecodeSeeds is FuzzMessageDecode's committed corpus, shared with the
+// snapshot oracle (TestMessageDecodeGolden) so both replay one source of truth.
+var messageDecodeSeeds = []string{
+	`{"id":1,"method":"thread/list","params":{}}`,
+	`{"id":"abc","method":"ping"}`,
+	`{"method":"some/notification","params":{"x":1}}`,
+	`{"id":2,"result":{"ok":true}}`,
+	`{"id":3,"error":{"code":-32600,"message":"bad"}}`,
+	`{"jsonrpc":"2.0","id":1,"method":"x"}`,
+	`{"id":null,"method":"x"}`,
+	`{"id":9999999999999999999999,"method":"x"}`,
+	`{"id":{"nested":"object"},"method":"x"}`,
+	// Id-less error/result frames: the decoder accepts them (it only probes
+	// for the error/result field), and Response/ErrorResponse.MarshalJSON
+	// omit the empty id so they re-encode to an id-less frame and round-trip
+	// cleanly. Kept as seeds so that fixed point stays pinned.
+	`{"error":{}}`,
+	`{"result":{}}`,
+	`{}`,
+	`null`,
+	`not json`,
+	``,
+}
+
 func FuzzMessageDecode(f *testing.F) {
-	seeds := []string{
-		`{"id":1,"method":"thread/list","params":{}}`,
-		`{"id":"abc","method":"ping"}`,
-		`{"method":"some/notification","params":{"x":1}}`,
-		`{"id":2,"result":{"ok":true}}`,
-		`{"id":3,"error":{"code":-32600,"message":"bad"}}`,
-		`{"jsonrpc":"2.0","id":1,"method":"x"}`,
-		`{"id":null,"method":"x"}`,
-		`{"id":9999999999999999999999,"method":"x"}`,
-		`{"id":{"nested":"object"},"method":"x"}`,
-		// Id-less error/result frames: the decoder accepts them (it only probes
-		// for the error/result field), and Response/ErrorResponse.MarshalJSON
-		// omit the empty id so they re-encode to an id-less frame and round-trip
-		// cleanly. Kept as seeds so that fixed point stays pinned.
-		`{"error":{}}`,
-		`{"result":{}}`,
-		`{}`,
-		`null`,
-		`not json`,
-		``,
-	}
-	for _, s := range seeds {
+	for _, s := range messageDecodeSeeds {
 		f.Add([]byte(s))
 	}
 

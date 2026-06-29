@@ -1,0 +1,77 @@
+[
+  {
+    "input": "{\"protocolVersion\":\"1\",\"clientInfo\":{\"name\":\"x\"}}",
+    "detail": "initialize",
+    "decoded": true,
+    "output": {
+      "clientInfo": {
+        "name": "x",
+        "version": ""
+      },
+      "capabilities": {
+        "experimentalApi": false
+      }
+    }
+  },
+  {
+    "input": "{}",
+    "detail": "ping",
+    "decoded": true,
+    "output": {}
+  },
+  {
+    "input": "{\"includeArchived\":true}",
+    "detail": "thread/list",
+    "decoded": true,
+    "output": {}
+  },
+  {
+    "input": "{\"threadId\":\"abc\",\"subscribe\":true}",
+    "detail": "thread/read",
+    "decoded": true,
+    "output": {
+      "threadId": "abc",
+      "includeTurns": false,
+      "subscribe": true
+    }
+  },
+  {
+    "input": "{\"threadId\":\"t\",\"turnLimit\":5}",
+    "detail": "thread/resume",
+    "decoded": true,
+    "output": {}
+  },
+  {
+    "input": "null",
+    "detail": "initialize",
+    "decoded": true,
+    "output": {
+      "clientInfo": {
+        "name": "",
+        "version": ""
+      },
+      "capabilities": {
+        "experimentalApi": false
+      }
+    }
+  },
+  {
+    "input": "not json",
+    "detail": "initialize",
+    "decoded": false
+  },
+  {
+    "input": "{\"unknownField\":[1,2,3]}",
+    "detail": "initialize",
+    "decoded": true,
+    "output": {
+      "clientInfo": {
+        "name": "",
+        "version": ""
+      },
+      "capabilities": {
+        "experimentalApi": false
+      }
+    }
+  }
+]

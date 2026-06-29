@@ -1,0 +1,112 @@
+[
+  {
+    "input": "{\"id\":1,\"method\":\"thread/list\",\"params\":{}}",
+    "decoded": true,
+    "output": {
+      "id": 1,
+      "method": "thread/list",
+      "params": {}
+    }
+  },
+  {
+    "input": "{\"id\":\"abc\",\"method\":\"ping\"}",
+    "decoded": true,
+    "output": {
+      "id": "abc",
+      "method": "ping"
+    }
+  },
+  {
+    "input": "{\"method\":\"some/notification\",\"params\":{\"x\":1}}",
+    "decoded": true,
+    "output": {
+      "method": "some/notification",
+      "params": {
+        "x": 1
+      }
+    }
+  },
+  {
+    "input": "{\"id\":2,\"result\":{\"ok\":true}}",
+    "decoded": true,
+    "output": {
+      "id": 2,
+      "result": {
+        "ok": true
+      }
+    }
+  },
+  {
+    "input": "{\"id\":3,\"error\":{\"code\":-32600,\"message\":\"bad\"}}",
+    "decoded": true,
+    "output": {
+      "id": 3,
+      "error": {
+        "code": -32600,
+        "message": "bad"
+      }
+    }
+  },
+  {
+    "input": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"x\"}",
+    "decoded": false
+  },
+  {
+    "input": "{\"id\":null,\"method\":\"x\"}",
+    "decoded": true,
+    "output": {
+      "method": "x"
+    }
+  },
+  {
+    "input": "{\"id\":9999999999999999999999,\"method\":\"x\"}",
+    "decoded": true,
+    "output": {
+      "id": 9999999999999999999999,
+      "method": "x"
+    }
+  },
+  {
+    "input": "{\"id\":{\"nested\":\"object\"},\"method\":\"x\"}",
+    "decoded": true,
+    "output": {
+      "id": {
+        "nested": "object"
+      },
+      "method": "x"
+    }
+  },
+  {
+    "input": "{\"error\":{}}",
+    "decoded": true,
+    "output": {
+      "error": {
+        "code": 0,
+        "message": ""
+      }
+    }
+  },
+  {
+    "input": "{\"result\":{}}",
+    "decoded": true,
+    "output": {
+      "result": {}
+    }
+  },
+  {
+    "input": "{}",
+    "decoded": false
+  },
+  {
+    "input": "null",
+    "decoded": false
+  },
+  {
+    "input": "not json",
+    "decoded": false
+  },
+  {
+    "input": "",
+    "decoded": false
+  }
+]
