@@ -35,6 +35,13 @@ TARGETS=(
 	"llm:./providers/google:FuzzGeminiStreamMetamorphic"
 	"llm:./providers/openaicompat:FuzzOpenAICompatStreamMetamorphic"
 	".:./cmd/serf-hub:FuzzWebHandler"
+	# 8.2 — codex-compat item + config decode targets.
+	".:./appwire:FuzzCodexItemDecode"
+	"llm:./providercfg:FuzzProvidersTOMLLoad"
+	".:./cmd/serf-hub/internal/launchconfig:FuzzLaunchConfigDecode"
+	"agent:./plugin:FuzzPluginManifestParse"
+	".:./internal/credentials:FuzzCredentialsStoreDecode"
+	"agent:./plugin:FuzzPluginLoad"
 )
 
 duration="60s"
