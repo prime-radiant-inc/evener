@@ -135,6 +135,7 @@ TARGETS=(
 	"rapid:agent:./internal/jobstore:TestJobstoreSeqFuzz"
 	"rapid:agent:./internal/contextmgr:TestCompactionSeqFuzz"
 	"rapid:.:./internal/appserver:TestRouterSeqFuzz"
+	"rapid:.:./internal/appserver:TestHubMultiSessionSeqFuzz"
 )
 
 duration="60s"
