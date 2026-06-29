@@ -20,15 +20,18 @@ is a quality/robustness refinement to schedule after the roadmap lands.
   time-parsed, so neither needed regeneration.
 
 ## Tooling ergonomics (from item tool-efficacy notes)
-- **Shared fuzz route allowlist.** 8.4 had to duplicate `fuzzReadOnlyRoutes` from a
-  `_test.go` to reverse-map recorded HTTP paths. Expose it once.
+- **Shared fuzz route allowlist.** *(DONE.)* Extracted to the package
+  `internal/fuzzroutes` (`ReadOnly`), now imported by both `web_fuzz_test.go` and
+  the harvester (`cmd/serf-fuzz-harvest/http.go`) instead of a duplicated test
+  literal.
 - **gitleaks in the dev image.** The secret-scan gate + the harvester's write-time
   barrier skip when gitleaks isn't installed; install it so the gate is exercised
-  end-to-end rather than warning-skipped.
+  end-to-end rather than warning-skipped. (Installed locally via `go install`
+  during the campaign; the dev/CI image itself is the remaining open piece.)
 - **fsync-per-append makes jobstore/transcript fuzz I/O-bound** under coverage
-  search (T3 ~10²–10³ execs/s). Fine for the seed gate; the nightly/local search is
-  slower but bounded. Consider a batched/no-sync test writer if search depth there
-  matters.
+  search (T3 ~10²–10³ execs/s). *(DONE.)* `jobstore/store.go` has a fuzz-only
+  `openNoSync` writer (default-off; production fsync untouched) that the
+  coverage search uses, ~1.9× execs/s.
 
 ### 8.7 (local triage) tool-efficacy notes
 - **Rapid promoter targets are invisible to `run-fuzz.sh`.** *(RESOLVED — unified
@@ -64,5 +67,7 @@ is a quality/robustness refinement to schedule after the roadmap lands.
 - `TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit` (cmd/serf-tui) is a
   timing-based tmux end-to-end test that fails ~1 in 3 runs. Unrelated to the
   parse fixes in Wave 1 (it exercises Ctrl-C / alt-screen restore, no parse path).
-  Historically flaky. Deflake separately (tmux readiness/settle wait), out of
-  scope for the fuzzing roadmap.
+  *(DONE.)* Root-caused to a detached dying tmux pane dropping serf-tui's final
+  stdout under CPU starvation (not a settle race); fixed test-only by keeping the
+  pane alive (`; read _`) plus polling `WaitForHistory`. 204 full-suite-under-load
+  runs, 0 fails.
