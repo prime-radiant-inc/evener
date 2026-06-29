@@ -123,6 +123,10 @@ TARGETS=(
 	# Rapid promoter surfaces — Test* funcs driven by rapid.Check during ordinary
 	# `go test -run` (not `go test -fuzz`). They share this registry so the triage
 	# tool no longer needs a parallel hardcoded list.
+	# 8.2b cross-provider differential — one canonical logical response encoded to
+	# each provider's wire format, decoded via the real adapters, asserted
+	# equivalent. coverpkg spans the 4 real decoders it exercises; no single focus.
+	"native:llm:./providers/difftest:FuzzCrossProviderDifferential:./providers/anthropic,./providers/google,./providers/openai,./providers/openaicompat:"
 	"rapid:agent:.:TestToolArgsSchemaFuzz"
 	"rapid:agent:.:TestLifecycleSeqFuzz"
 	"rapid:agent:./internal/jobstore:TestJobstoreSeqFuzz"
