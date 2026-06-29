@@ -79,11 +79,19 @@ func FuzzToolArgsValidate(f *testing.F) {
 
 // coreToolSchemas stands up a real Session over a temp dir so registerCoreTools
 // wires the full tool set, then returns each tool's name and compiled schema.
+// The name order is sourced from agent.CoreToolNames — the same ordered set the
+// corpus harvester (cmd/serf-fuzz-harvest) maps recorded tool-call names against
+// — so the target's table index and the harvester's emitted index cannot drift.
 // The Session is built once per fuzz run and closed when the run ends.
 func coreToolSchemas(f *testing.F) ([]string, []schemaValidator) {
 	f.Helper()
-	dir := f.TempDir()
 
+	names, err := CoreToolNames()
+	if err != nil {
+		f.Fatalf("CoreToolNames: %v", err)
+	}
+
+	dir := f.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
@@ -93,18 +101,15 @@ func coreToolSchemas(f *testing.F) ([]string, []schemaValidator) {
 	}
 	f.Cleanup(sess.Close)
 
-	names := sess.reg.Names()
-	schemas := make([]schemaValidator, 0, len(names))
-	kept := names[:0:0]
-	for _, name := range names {
+	schemas := make([]schemaValidator, len(names))
+	for i, name := range names {
 		rt := sess.reg.Get(name)
 		if rt == nil || rt.Schema == nil {
-			continue
+			f.Fatalf("CoreToolNames returned %q but the live registry has no compiled schema for it", name)
 		}
-		kept = append(kept, name)
-		schemas = append(schemas, rt.Schema)
+		schemas[i] = rt.Schema
 	}
-	return kept, schemas
+	return names, schemas
 }
 
 // schemaValidator is the slice of *jsonschema.Schema the harness depends on:
