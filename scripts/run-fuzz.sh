@@ -23,6 +23,7 @@ TARGETS=(
 	"llm:.:FuzzParseSSE"
 	".:./appwire:FuzzMessageDecode"
 	".:./appwire:FuzzMethodParams"
+	".:./appwire:FuzzWireTypes"
 	"agent:.:FuzzToolArgsValidate"
 	"agent:./schema:FuzzSessionMetaRoundTrip"
 	"agent:./internal/jobstore:FuzzJobEventLogReplay"
