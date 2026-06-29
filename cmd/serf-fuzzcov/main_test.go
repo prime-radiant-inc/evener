@@ -115,6 +115,67 @@ func TestGapMap(t *testing.T) {
 	}
 }
 
+func TestReadRegistry(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "registry.txt")
+	content := "" +
+		"# a comment\n" +
+		"\n" +
+		"native:llm:.:FuzzParseSSE::sse.go\n" +
+		"native:.:./appwire:FuzzWireTypes::\n" +
+		"native:agent:.:FuzzToolArgsValidate:./internal/tool,.:internal/tool/definitions.go\n" +
+		"rapid:.:./internal/appserver:TestRouterSeqFuzz\n"
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readRegistry(p)
+	if err != nil {
+		t.Fatalf("readRegistry: %v", err)
+	}
+	want := []target{
+		{tag: "native", module: "llm", pkg: ".", name: "FuzzParseSSE", coverpkg: "", focus: "sse.go"},
+		{tag: "native", module: ".", pkg: "./appwire", name: "FuzzWireTypes", coverpkg: "", focus: ""},
+		{tag: "native", module: "agent", pkg: ".", name: "FuzzToolArgsValidate", coverpkg: "./internal/tool,.", focus: "internal/tool/definitions.go"},
+		{tag: "rapid", module: ".", pkg: "./internal/appserver", name: "TestRouterSeqFuzz", coverpkg: "", focus: ""},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("readRegistry =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+func TestReadRegistryRejectsShortLine(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "registry.txt")
+	if err := os.WriteFile(p, []byte("native:llm:.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRegistry(p); err == nil {
+		t.Fatal("expected readRegistry to reject a line with fewer than 4 fields")
+	}
+}
+
+func TestStaticFuzzedPackages(t *testing.T) {
+	modulePaths := map[string]string{".": "m", "agent": "m/agent", "llm": "m/llm"}
+	targets := []target{
+		{tag: "native", module: "llm", pkg: ".", name: "FuzzParseSSE"},
+		{tag: "native", module: ".", pkg: "./appwire", name: "FuzzWireTypes"},
+		// coverpkg overrides pkg, and is comma-split into multiple packages.
+		{tag: "native", module: "agent", pkg: ".", name: "FuzzToolArgsValidate", coverpkg: "./internal/tool,."},
+		{tag: "rapid", module: ".", pkg: "./internal/appserver", name: "TestRouterSeqFuzz"},
+	}
+	got := staticFuzzedPackages(targets, modulePaths)
+	want := map[string]bool{
+		"m/llm":                 true,
+		"m/appwire":             true,
+		"m/agent/internal/tool": true,
+		"m/agent":               true, // the trailing ",." in the coverpkg
+		"m/internal/appserver":  true,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("staticFuzzedPackages =\n%v\nwant\n%v", got, want)
+	}
+}
+
 // TestComputeTargetFocusAttribution builds a tiny module on disk plus a synthetic
 // profile and verifies the focus % is computed over the named function's line
 // range only, while the package % spans the whole file.
