@@ -17,7 +17,10 @@ useDefault = true
 [allowlist]
 description = "fuzz-toolkit test fixtures and shape-scrubbed seed corpora"
 
-# Deliberately-planted fake keys in the sanitizer/harvester adversarial tests.
+# Deliberately-planted fake keys in the sanitizer/harvester adversarial tests,
+# plus pre-existing non-secret content the generic-api-key rule mis-flags: a
+# domain-separation scope label in production code, a benign test phrase, and the
+# fake "sk-LIVETEST…" key used in subagent test fixtures and design docs.
 regexTarget = "match"
 regexes = [
   '''sk-proj-PLANT3D[A-Za-z0-9]+''',
@@ -25,12 +28,18 @@ regexes = [
   '''sk-ant-api03-abcdefABCDEF[A-Za-z0-9]+''',
   '''AIzaSyA1234567890123456789012345678901234''',
   '''FUZZ-OUT-OF-ROOT-SECRET[A-Za-z0-9-]+''',
+  '''serf-continuation-scope-v1''', # domain-separation label in llm/continuation_secret.go, not a secret
+  '''observation/drains''',         # benign phrase mis-flagged in agent/job_delegate_send_test.go
+  '''sk-LIVETEST[0-9a-f]*''',       # fake illustrative key in subagent fixtures + design docs
 ]
 
-# Seed corpora are shape-scrubbed (or hand-written OWASP vectors): never real
-# secrets. The write-time abort gate + the regexes above are the real protection.
+# The seed corpora are deliberately NOT path-allowlisted: that would make
+# `make fuzz-corpus-scan` (which points gitleaks AT testdata/fuzz) a no-op. The
+# corpora are shape-scrubbed (placeholders / structural enums), and the regexes
+# above allowlist the few deliberately-planted fake keys, so the corpus scan
+# genuinely verifies no real secret was committed.
+# docs/superpowers/** are internal design/planning docs that carry illustrative
+# example keys (e.g. the package path "internal/hubapi" the generic rule trips on).
 paths = [
-  '''.*/testdata/fuzz/.*''',
-  '''testdata/fuzz-jobs-staging/.*''',
-  '''fuzz/corpus/.*''',
+  '''docs/superpowers/.*''',
 ]

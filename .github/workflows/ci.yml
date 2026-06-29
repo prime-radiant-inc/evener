@@ -48,3 +48,10 @@ jobs:
 
       - name: Fuzz gap check (every decode/parse package has a target — static, fast)
         run: make fuzz-gap-check
+
+      - name: Secret scan (gitleaks — repo + committed fuzz corpora)
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          make secret-scan
+          make fuzz-corpus-scan
