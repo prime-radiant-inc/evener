@@ -50,6 +50,7 @@ TARGETS=(
 	"native:.:./cmd/serf-hub:FuzzHubReplayCarryThrough::app_threadread.go#replayTurnToAgentTurn"
 	"native:.:./cmd/serf-hub:FuzzHubReplayLiveVsReload::app_threadread.go#replayTurnToAgentTurn"
 	"native:llm:./providers/openai:FuzzOpenAIResponsesMetamorphic::responses.go#decodeResponsesStream"
+	"native:llm:./providers/openai:FuzzOpenAIResponsesStructured::responses.go#decodeResponsesStream"
 	"native:llm:./providers/openai:FuzzOpenAIChatCompletionsMetamorphic::chatcompletions.go#decodeChatCompletionsStream"
 	"native:llm:./providers/anthropic:FuzzAnthropicStreamMetamorphic::adapter.go#decodeStream"
 	"native:llm:./providers/google:FuzzGeminiStreamMetamorphic::adapter.go#decodeStream"
