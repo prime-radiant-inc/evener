@@ -296,7 +296,7 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 	client.Register(adapter)
 	profile := NewOpenAIProfile("gpt-5.2")
 	cfg := SessionConfig{
-		Clock:                 clk,
+		clock:                 clk,
 		MaxSubagentDepth:      1,
 		MaxToolRoundsPerInput: 10,
 		LLMSleep:              func(_ context.Context, d time.Duration) error { clk.Sleep(d); return nil },
