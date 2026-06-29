@@ -29,15 +29,14 @@ is a quality/robustness refinement to schedule after the roadmap lands.
   matters.
 
 ### 8.7 (local triage) tool-efficacy notes
-- **Rapid promoter targets are invisible to `run-fuzz.sh`.** `run-fuzz.sh`'s
-  `TARGETS` are all `testing.F` targets driven by `go test -fuzz`; the three rapid
-  promoter surfaces are `Test*` funcs driven by `rapid.Check` during ordinary
-  `go test`, so `fuzz-triage.sh` has to drive them with a separate hardcoded list.
-  The two-world split (Go-native vs promoter) costs a parallel code path in every
-  triage stage (discover, flake-guard, dedup, reproduce). A unified target registry
-  that tags each surface `native|rapid` and is consumed by `run-fuzz.sh`,
-  `fuzz-coverage.sh`, and `fuzz-triage.sh` alike would collapse that duplication —
-  the `--list` source-of-truth pattern already wants this.
+- **Rapid promoter targets are invisible to `run-fuzz.sh`.** *(RESOLVED — unified
+  registry.)* `run-fuzz.sh`'s `TARGETS` now tags every surface `native` (a
+  `testing.F` target driven by `go test -fuzz`) or `rapid` (a `Test*` func driven
+  by `rapid.Check` via `go test -run`), and is the single `--list` source of truth
+  consumed by `fuzz-coverage.sh` (native-only, for the focus-set ratchet),
+  `fuzz-triage.sh` (both kinds, via the runner — its hardcoded rapid list is gone),
+  and the static gap gate (`serf-fuzzcov -gap-only`). The three rapid promoter
+  surfaces are registered with the `rapid` tag.
 - **`SERF_FUZZ_PERSIST` can't use the `envvars` registry.** The portability
   boundary (the `fuzz` module imports no serf package) means `promoter.PersistPaths`
   reads the raw env string, and the `envvars_audit_test.go` "use a registry row"

@@ -35,7 +35,7 @@ mkdir -p "$bindir"
 # snapshot-diff discovers it.
 cat >"$bindir/run-fuzz-stub.sh" <<'STUB'
 #!/usr/bin/env bash
-for a in "$@"; do [ "$a" = "--list" ] && { echo "agent:.:FuzzFoo"; exit 0; }; done
+for a in "$@"; do [ "$a" = "--list" ] && { echo "native:agent:.:FuzzFoo"; exit 0; }; done
 if [ "${STUB_MAKE_CRASHER:-0}" = "1" ]; then
 	d="$STUB_REPO/agent/testdata/fuzz/FuzzFoo"
 	mkdir -p "$d"
