@@ -1,0 +1,13 @@
+diff --git a/cmd/serf-tui/internal/toolsummary/tool_summary.go b/cmd/serf-tui/internal/toolsummary/tool_summary.go
+index b1d46d84..53722f93 100644
+--- a/cmd/serf-tui/internal/toolsummary/tool_summary.go
++++ b/cmd/serf-tui/internal/toolsummary/tool_summary.go
+@@ -325,7 +325,7 @@ func renderTaskUpdate(updates []any) string {
+ 		if m == nil {
+ 			continue
+ 		}
+-		idF, _ := m["id"].(float64)
++		idF := m["id"].(float64)
+ 		id := int(idF)
+ 		status, _ := m["status"].(string)
+ 		icon := statusIcon[status]

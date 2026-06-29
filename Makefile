@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-bisect fuzz-bisect-selftest fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-goldens secret-scan fuzz-corpus-scan
+.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-goldens secret-scan fuzz-corpus-scan
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -167,6 +167,19 @@ fuzz-bisect:
 # whose fuzz target crashes only after a known commit (real git bisect + replay).
 fuzz-bisect-selftest:
 	@scripts/fuzz-bisect-selftest.sh
+
+# fuzz-oracle-audit proves every fuzz oracle reddens on its bug class (Phase 9 W1):
+# each mutation in fuzz/mutations/ reintroduces a known fault in a throwaway
+# worktree and the audit asserts the target FAILS. `FUZZ_ARGS=--gap-only` lists
+# native targets that have no mutation yet; pass ids to audit only those.
+fuzz-oracle-audit:
+	@scripts/fuzz-oracle-audit.sh $(FUZZ_ARGS)
+
+# fuzz-oracle-audit-selftest verifies the audit's caught/blind/rot/build-failure
+# classification against a throwaway module (real worktree + go test, stubbed
+# registry).
+fuzz-oracle-audit-selftest:
+	@scripts/fuzz-oracle-audit-selftest.sh
 
 # fuzz-ledger pretty-prints the triage ledger (found/fixed/quarantined counts and
 # the open-bug list) from fuzz/state/ledger.json.
