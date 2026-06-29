@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -39,14 +40,27 @@ func installDenyTransportTB(tb testing.TB) *denyTransport {
 
 // installSandboxAuthSeam points a freshly built hub auth controller at contained
 // temp dirs and replaces its four OAuth network seams with offline stubs, so the
-// device/login methods exercise their param/flow logic without ever dialing a
-// provider or writing into the real OAuth state/credentials files. The hook is
-// default-off in production (newHubAuthControllerWithStore leaves it nil); the
-// fuzz sets it before the hub is built and clears it on cleanup.
-func installSandboxAuthSeam(f *testing.F) {
-	f.Helper()
-	stateDir := f.TempDir()
-	credsPath := filepath.Join(f.TempDir(), "credentials.toml")
+// device/login methods (and the instances controller, which shares this auth
+// controller's stateDir + creds store) exercise their real logic without ever
+// dialing a provider or writing into the real OAuth state/credentials files. The
+// hook is default-off in production (newHubAuthControllerWithStore leaves it nil);
+// the test sets it before the hub is built and clears it on cleanup.
+//
+// It returns the path of a path-traversal canary: a .json file planted ONE LEVEL
+// ABOVE the contained OAuth state dir. serf/instance/remove forwards its fuzzed
+// name into authopenai.DeleteAuth, which joins it straight into a filesystem path
+// (stateDir/auth/<name>.json); a name like "../../canary" therefore resolves to
+// this canary. The oracle re-arms it before every input and fails if a handler
+// deleted it — that is an arbitrary-file-deletion path escape.
+func installSandboxAuthSeam(tb testing.TB) (canaryPath string) {
+	tb.Helper()
+	base := tb.TempDir()
+	stateDir := filepath.Join(base, "state")
+	credsPath := filepath.Join(base, "credentials.toml")
+	canaryPath = filepath.Join(base, "canary.json")
+	if err := os.WriteFile(canaryPath, []byte("canary"), 0o600); err != nil {
+		tb.Fatal(err)
+	}
 	hubAuthControllerSetup = func(c *hubAuthController) {
 		c.stateDir = stateDir
 		if store, err := credentials.LoadStore(credsPath); err == nil {
@@ -65,7 +79,8 @@ func installSandboxAuthSeam(f *testing.F) {
 			return authopenai.TokenSet{}, errSandboxAuthOffline
 		}
 	}
-	f.Cleanup(func() { hubAuthControllerSetup = nil })
+	tb.Cleanup(func() { hubAuthControllerSetup = nil })
+	return canaryPath
 }
 
 // stubSelfUpgrade replaces the serf/upgrade seam with an offline stub for the
@@ -144,7 +159,7 @@ func pinSandboxCWD(raw []byte, cwd string) []byte {
 //   - zero network attempts (the deny-transport tripwire).
 func FuzzAppWireDispatch(f *testing.F) {
 	stubSelfUpgrade(f)
-	installSandboxAuthSeam(f)
+	canary := installSandboxAuthSeam(f)
 	deny := installDenyTransportTB(f)
 
 	s := newSandbox(f)
@@ -195,6 +210,15 @@ func FuzzAppWireDispatch(f *testing.F) {
 		{appwire.MethodSerfThreadTranscriptsList, `{"ref":"` + ref + `"}`},
 		{appwire.MethodSerfSubagentPreview, `{"ref":"` + ref + `"}`},
 		{appwire.MethodSerfInstanceList, `{}`},
+		{appwire.MethodSerfInstanceCreate, `{"name":"new","type":"anthropic"}`},
+		{appwire.MethodSerfInstanceEdit, `{"name":"work","apiStyle":"chat_completions"}`},
+		{appwire.MethodSerfInstanceSetDefault, `{"name":"key"}`},
+		{appwire.MethodSerfInstanceRemove, `{"name":"key"}`},
+		// Path-traversal attack shape: serf/instance/remove forwards this name to
+		// authopenai.DeleteAuth, which joins it into a filesystem path. "../../canary"
+		// resolves to the canary planted above the contained auth state dir; a hub
+		// that does not reject the name deletes a file outside its sandbox.
+		{appwire.MethodSerfInstanceRemove, `{"name":"../../canary"}`},
 		{appwire.MethodInitialize, `{}`},
 		{"totally/unknown", `{}`},
 	}
@@ -206,6 +230,12 @@ func FuzzAppWireDispatch(f *testing.F) {
 		method := methods[int(methodIdx)%len(methods)]
 		raw := pinSandboxCWD(params, s.CWD)
 		req := appwire.Request{ID: appwire.NewIntID(1), Method: method, Params: raw}
+
+		// Re-arm the path-traversal canary so every input is judged independently:
+		// each iteration starts with the out-of-state file present.
+		if err := os.WriteFile(canary, []byte("canary"), 0o600); err != nil {
+			t.Fatalf("re-arm canary: %v", err)
+		}
 
 		// Oracle: never wedge. Run Dispatch under a bounded ctx, and fail if it
 		// does not return promptly even so (a handler ignoring ctx would hang the
@@ -251,6 +281,13 @@ func FuzzAppWireDispatch(f *testing.F) {
 		// Oracle: no handler may have dialed the network.
 		if att := deny.Attempts(); len(att) != 0 {
 			t.Fatalf("network attempt during %s: %v", method, att)
+		}
+
+		// Oracle: no handler may have deleted a file outside the contained auth
+		// state dir. A missing canary means a fuzzed name escaped through a
+		// filesystem path join (the serf/instance/remove → DeleteAuth surface).
+		if _, err := os.Stat(canary); err != nil {
+			t.Fatalf("path escape via %s: out-of-state canary was deleted (%v)", method, err)
 		}
 	})
 }

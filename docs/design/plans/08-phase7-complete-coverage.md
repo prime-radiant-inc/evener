@@ -83,6 +83,23 @@ then add the delegate/subagent ops to the lifecycle harness.
 **C2 — background shell jobs:** model async-finalize quiescence (advance-clock +
 BlockUntil handshake) so background jobs are deterministic; add the op.
 
+**C3 — background delegates (done):** drive a background delegate to terminal
+deterministically. The delegate tool defaults to background (no `max_wait_ms`), so
+`createDelegate` returns immediately and a fire-and-forget finalize bridge settles
+the child off the op goroutine. `opBackgroundDelegate` spawns one, then quiesces it
+by JOINING the delegate job's done channel (closed only after the child finishes
+AND the bridge finalizes — the bridge enqueues the owner notification before
+closing done) and DRAINING the notification rail (`drainJobNotificationTurns` runs
+an `EntryNotification` turn so the owner notification the nil-`notifyFunc` root
+would otherwise never consume is surfaced exactly once). Oracle 6 then asserts no
+running job + every job terminal. The quiet-watchdog ticker runs on the injected
+clock (`jm.clock.NewTicker`), so it never fires on wall time and is stopped at
+finalize; its firing is exercised deterministically by
+`TestLifecycleBackgroundDelegateWatchdogFires` (gated child + `BlockUntil`
+handshake + advance past the quiet window). No production seam was needed — the
+8.3 clock seam already threads `jm.clock` through the watchdog, finalize backoff,
+and delegate timers.
+
 ## Workstream D — drive to 100 and lock it
 
 **D1** — per target, use `serf-fuzzcov`'s uncovered-line output to add seeds/oracles

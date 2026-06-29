@@ -46,8 +46,15 @@ type AuthRecord struct {
 // AuthFilePath returns the path to the OAuth record for the given instance.
 // instanceName is the provider instance name (e.g. "openai", "work"); it
 // maps directly to the filename: auth/<instanceName>.json.
+//
+// instanceName is contained to a single path component (filepath.Base) so a
+// name carrying path separators or ".." can never escape the auth dir and have
+// a caller read/write/delete an arbitrary file. Callers validate names upstream;
+// this is the last-line guard at the filesystem sink (a missing controller-level
+// check let serf/instance/remove delete arbitrary .json files — see the
+// ValidateInstanceName fix in cmd/serf-hub/app_instances.go).
 func AuthFilePath(stateDir, instanceName string) string {
-	return filepath.Join(stateDir, authDirName, instanceName+".json")
+	return filepath.Join(stateDir, authDirName, filepath.Base(instanceName)+".json")
 }
 
 // DefaultStateDir returns the default Serf state directory, resolving the state
