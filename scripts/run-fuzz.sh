@@ -40,6 +40,7 @@ set -uo pipefail
 TARGETS=(
 	"native:llm:.:FuzzParseSSE::sse.go"
 	"native:.:./appwire:FuzzMessageDecode::jsonrpc.go"
+	"native:.:./appwire:FuzzMessageDecodeStructured::jsonrpc.go"
 	"native:.:./appwire:FuzzMethodParams::"
 	"native:.:./appwire:FuzzWireTypes::"
 	"native:agent:.:FuzzToolArgsValidate:./internal/tool,.:internal/tool/definitions.go"
@@ -49,6 +50,7 @@ TARGETS=(
 	"native:.:./cmd/serf-hub:FuzzHubReplayCarryThrough::app_threadread.go#replayTurnToAgentTurn"
 	"native:.:./cmd/serf-hub:FuzzHubReplayLiveVsReload::app_threadread.go#replayTurnToAgentTurn"
 	"native:llm:./providers/openai:FuzzOpenAIResponsesMetamorphic::responses.go#decodeResponsesStream"
+	"native:llm:./providers/openai:FuzzOpenAIResponsesStructured::responses.go#decodeResponsesStream"
 	"native:llm:./providers/openai:FuzzOpenAIChatCompletionsMetamorphic::chatcompletions.go#decodeChatCompletionsStream"
 	"native:llm:./providers/anthropic:FuzzAnthropicStreamMetamorphic::adapter.go#decodeStream"
 	"native:llm:./providers/google:FuzzGeminiStreamMetamorphic::adapter.go#decodeStream"
@@ -123,8 +125,14 @@ TARGETS=(
 	# Rapid promoter surfaces — Test* funcs driven by rapid.Check during ordinary
 	# `go test -run` (not `go test -fuzz`). They share this registry so the triage
 	# tool no longer needs a parallel hardcoded list.
+	# 8.2b cross-provider differential — one canonical logical response encoded to
+	# each provider's wire format, decoded via the real adapters, asserted
+	# equivalent. coverpkg spans the 4 real decoders it exercises; no single focus.
+	"native:llm:./providers/difftest:FuzzCrossProviderDifferential:./providers/anthropic,./providers/google,./providers/openai,./providers/openaicompat:"
 	"rapid:agent:.:TestToolArgsSchemaFuzz"
 	"rapid:agent:.:TestLifecycleSeqFuzz"
+	"rapid:agent:./internal/jobstore:TestJobstoreSeqFuzz"
+	"rapid:agent:./internal/contextmgr:TestCompactionSeqFuzz"
 	"rapid:.:./internal/appserver:TestRouterSeqFuzz"
 )
 

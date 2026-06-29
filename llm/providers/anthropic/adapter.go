@@ -517,8 +517,15 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 					}
 				}
 			case "message_delta":
-				if sr, _ := payload["stop_reason"].(string); sr != "" {
-					finish = llm.NormalizeFinishReason("anthropic", sr)
+				// The streaming message_delta event nests the stop reason under
+				// "delta" ({"delta":{"stop_reason":...}}), unlike the non-streaming
+				// message object which carries it at the top level. Read the nested
+				// path so a streamed response reports its true finish reason (e.g.
+				// max_tokens -> length) instead of always defaulting to stop.
+				if delta, ok := payload["delta"].(map[string]any); ok {
+					if sr, _ := delta["stop_reason"].(string); sr != "" {
+						finish = llm.NormalizeFinishReason("anthropic", sr)
+					}
 				}
 				if u, ok := payload["usage"].(map[string]any); ok {
 					u2 := parseUsage(u)

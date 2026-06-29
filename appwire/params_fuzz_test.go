@@ -21,17 +21,24 @@ import (
 // focus-set % therefore sits at the floor by construction — the value here is
 // the no-panic + fixed-point oracles over every Params type, not protocol.go
 // line coverage.
+// methodParamsSeeds is FuzzMethodParams's committed corpus, shared with the
+// snapshot oracle (TestMethodParamsGolden). Each pair seeds a method/params
+// shape so coverage starts inside the real structs, not at the JSON tokenizer.
+var methodParamsSeeds = []indexedSeed{
+	{0, `{"protocolVersion":"1","clientInfo":{"name":"x"}}`},
+	{1, `{}`},
+	{2, `{"includeArchived":true}`},
+	{3, `{"threadId":"abc","subscribe":true}`},
+	{7, `{"threadId":"t","turnLimit":5}`},
+	{0, `null`},
+	{0, `not json`},
+	{0, `{"unknownField":[1,2,3]}`},
+}
+
 func FuzzMethodParams(f *testing.F) {
-	// Seed with a couple of method/params pairs so coverage starts inside the
-	// real structs rather than at the JSON tokenizer.
-	f.Add(0, []byte(`{"protocolVersion":"1","clientInfo":{"name":"x"}}`))
-	f.Add(1, []byte(`{}`))
-	f.Add(2, []byte(`{"includeArchived":true}`))
-	f.Add(3, []byte(`{"threadId":"abc","subscribe":true}`))
-	f.Add(7, []byte(`{"threadId":"t","turnLimit":5}`))
-	f.Add(0, []byte(`null`))
-	f.Add(0, []byte(`not json`))
-	f.Add(0, []byte(`{"unknownField":[1,2,3]}`))
+	for _, s := range methodParamsSeeds {
+		f.Add(s.shape, []byte(s.raw))
+	}
 
 	f.Fuzz(func(t *testing.T, methodIndex int, paramsBytes []byte) {
 		if len(Methods) == 0 {

@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-ledger fuzz-coverage fuzz-gap-check secret-scan fuzz-corpus-scan
+.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-goldens secret-scan fuzz-corpus-scan
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -114,6 +114,16 @@ vet:
 fuzz:
 	@$(MEMCAP) sh -c 'cd invariant && go test -tags serffuzz ./...'
 	@for m in $(GO_MODULES); do ($(MEMCAP) sh -c "cd $$m && go test -run '^Fuzz' -tags serffuzz ./...") || exit 1; done
+	@$(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire"
+
+# fuzz-goldens regenerates the decode SNAPSHOT goldens — serf's differential
+# oracle. Each decode target's committed seed corpus is replayed and its decoded
+# output canonically re-encoded into appwire/testdata/golden/. A code change that
+# silently alters a decoder's output (no panic, round-trip still holds) fails the
+# `make fuzz` golden check; run this ONLY after an INTENDED decoder change, then
+# commit the diff. See docs/fuzzing.md ("Choosing an oracle").
+fuzz-goldens:
+	@$(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire -update-goldens"
 
 # fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
 # per-target time budget. Manual / nightly only — never in the gate.

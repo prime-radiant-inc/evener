@@ -148,10 +148,34 @@ without crashing. Pick the strongest oracle the surface admits:
 | a parser with a semantics-preserving transform | **metamorphic** — re-chunking / whitespace / reordering must not change the result | `FuzzParseSSE`, `FuzzOpenAIResponsesMetamorphic` |
 | a state machine / replayed log | **invariant / monotonicity** — status only advances, history doesn't shrink, no orphaned state | `FuzzJobEventLogReplay`, `TestRouterSeqFuzz`, `TestLifecycleSeqFuzz` |
 | an HTTP / RPC handler | **never 5xx**, **never wedge**, **never escape** the sandbox FS | `FuzzWebHandler`, `FuzzWebMutatingHandler`, `FuzzAppWireDispatch` |
+| a decoder whose output must not silently drift | **golden / snapshot differential** — the decoded output of the committed corpus, canonically re-encoded and pinned; a refactor that changes it (no panic, round-trip still holds) fails the gate | `appwire/golden_test.go` (`TestMessageDecodeGolden`, `TestMethodParamsGolden`, `TestCodexItemDecodeGolden`) |
 
-Known gap worth knowing: there are **no differential oracles** yet (comparing two
-implementations that should agree — e.g. across provider adapters or across a
-refactor). That's a planned improvement, not a current capability.
+## The golden / snapshot differential
+
+The round-trip and never-panic oracles catch a decoder that *crashes* or
+*can't re-read its own output*. Neither notices a refactor that quietly changes
+**what** a clean decode produces — a dropped field, a remapped value, a reordered
+shape — when nothing panics and the fixed point still holds. The golden snapshot
+is that missing **differential** oracle: it compares the current decoders against
+a committed picture of their own past behavior.
+
+For each appwire decode target, `appwire/golden_test.go` replays the **committed
+seed corpus** (shared verbatim with the fuzz target via a package-level seed
+slice, so there is one source of truth), decodes each input, canonically
+re-encodes the decoded value (`encoding/json` sorts map keys, so the bytes are
+stable run-to-run), and stores the result under
+`appwire/testdata/golden/<Target>.json`. The check runs in `make test` and
+`make fuzz`; it fails on any diff.
+
+```sh
+make fuzz-goldens   # REGEN: rewrite the snapshots from the current decoders.
+                    # Run ONLY after an INTENDED decoder change, then commit the diff.
+```
+
+A decode that *errors* records only `"decoded": false`, never the error text:
+stdlib error strings are not part of our decoder's contract and churn across Go
+toolchains, so snapshotting them would flake on a compiler upgrade instead of
+flagging a real behavior change.
 
 ## Secret scanning & corpus harvesting
 

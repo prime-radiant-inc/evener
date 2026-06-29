@@ -1,0 +1,177 @@
+[
+  {
+    "input": "{\"type\":\"userMessage\",\"id\":\"i\",\"turnId\":\"t\",\"text\":\"hi\",\"status\":\"completed\"}",
+    "detail": "appwire.ThreadItem",
+    "decoded": true,
+    "output": {
+      "type": "userMessage",
+      "id": "i",
+      "turnId": "t",
+      "text": "hi",
+      "status": "completed"
+    }
+  },
+  {
+    "input": "{\"type\":\"commandExecution\",\"id\":\"i\",\"command\":\"git status\",\"cwd\":\"/w\",\"aggregatedOutput\":\"\",\"status\":\"inProgress\"}",
+    "detail": "appwire.ThreadItem",
+    "decoded": true,
+    "output": {
+      "type": "commandExecution",
+      "id": "i",
+      "status": "inProgress"
+    }
+  },
+  {
+    "input": "{\"type\":\"dynamicToolCall\",\"id\":\"i\",\"tool\":\"web_search\",\"status\":\"inProgress\",\"arguments\":{\"query\":\"x\"}}",
+    "detail": "appwire.ThreadItem",
+    "decoded": true,
+    "output": {
+      "type": "dynamicToolCall",
+      "id": "i",
+      "status": "inProgress"
+    }
+  },
+  {
+    "input": "{\"id\":\"thr\",\"sessionId\":\"thr\",\"status\":{\"type\":\"active\",\"activeFlags\":[\"waitingOnApproval\"]},\"turns\":[]}",
+    "detail": "appwire.Thread",
+    "decoded": true,
+    "output": {
+      "id": "thr",
+      "sessionId": "thr",
+      "preview": "",
+      "ephemeral": false,
+      "modelProvider": "",
+      "createdAt": 0,
+      "updatedAt": 0,
+      "status": {
+        "type": "active",
+        "activeFlags": [
+          "waitingOnApproval"
+        ]
+      },
+      "cwd": "",
+      "cliVersion": "",
+      "source": "",
+      "serf": {
+        "ref": "",
+        "capabilities": {
+          "send": false,
+          "steer": false,
+          "interrupt": false,
+          "compact": false,
+          "clear": false,
+          "forkFromTurn": false,
+          "shutdown": false,
+          "changeModel": false,
+          "queue": false,
+          "goal": false
+        },
+        "queue": {}
+      }
+    }
+  },
+  {
+    "input": "{\"id\":\"turn\",\"status\":\"inProgress\",\"items\":[],\"error\":null}",
+    "detail": "appwire.Turn",
+    "decoded": true,
+    "output": {
+      "id": "turn",
+      "itemsView": "",
+      "status": "inProgress"
+    }
+  },
+  {
+    "input": "{\"type\":\"input_image\",\"data\":\"aGVsbG8=\",\"mediaType\":\"image/png\"}",
+    "detail": "appwire.InputItem",
+    "decoded": true,
+    "output": {
+      "type": "input_image",
+      "mediaType": "image/png",
+      "data": "aGVsbG8="
+    }
+  },
+  {
+    "input": "{\"type\":\"text\",\"text\":\"x\",\"metadata\":{\"k\":\"v\"}}",
+    "detail": "appwire.InputItem",
+    "decoded": true,
+    "output": {
+      "type": "text",
+      "text": "x",
+      "metadata": {
+        "k": "v"
+      }
+    }
+  },
+  {
+    "input": "null",
+    "detail": "appwire.ThreadItem",
+    "decoded": true,
+    "output": {
+      "type": "",
+      "id": ""
+    }
+  },
+  {
+    "input": "{}",
+    "detail": "appwire.ThreadItem",
+    "decoded": true,
+    "output": {
+      "type": "",
+      "id": ""
+    }
+  },
+  {
+    "input": "not json",
+    "detail": "appwire.ThreadItem",
+    "decoded": false
+  },
+  {
+    "input": "{\"turns\":[{\"items\":[{\"type\":\"x\"}]}]}",
+    "detail": "appwire.Thread",
+    "decoded": true,
+    "output": {
+      "id": "",
+      "sessionId": "",
+      "preview": "",
+      "ephemeral": false,
+      "modelProvider": "",
+      "createdAt": 0,
+      "updatedAt": 0,
+      "status": {
+        "type": ""
+      },
+      "cwd": "",
+      "cliVersion": "",
+      "source": "",
+      "turns": [
+        {
+          "id": "",
+          "items": [
+            {
+              "type": "x",
+              "id": ""
+            }
+          ],
+          "itemsView": "",
+          "status": ""
+        }
+      ],
+      "serf": {
+        "ref": "",
+        "capabilities": {
+          "send": false,
+          "steer": false,
+          "interrupt": false,
+          "compact": false,
+          "clear": false,
+          "forkFromTurn": false,
+          "shutdown": false,
+          "changeModel": false,
+          "queue": false,
+          "goal": false
+        },
+        "queue": {}
+      }
+    }
+  }
+]

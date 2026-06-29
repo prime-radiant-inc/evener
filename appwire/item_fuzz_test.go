@@ -31,19 +31,27 @@ var codexItemTypes = []any{
 // statements to credit. The focus-set % sits at the floor by construction — the
 // value is the no-panic + fixed-point oracles over the codex item shapes, not
 // types.go line coverage.
+// codexItemDecodeSeeds is FuzzCodexItemDecode's committed corpus, shared with
+// the snapshot oracle (TestCodexItemDecodeGolden). shape selects the concrete
+// type from codexItemTypes; the trailing four are degenerate shapes.
+var codexItemDecodeSeeds = []indexedSeed{
+	{0, `{"type":"userMessage","id":"i","turnId":"t","text":"hi","status":"completed"}`},
+	{0, `{"type":"commandExecution","id":"i","command":"git status","cwd":"/w","aggregatedOutput":"","status":"inProgress"}`},
+	{0, `{"type":"dynamicToolCall","id":"i","tool":"web_search","status":"inProgress","arguments":{"query":"x"}}`},
+	{1, `{"id":"thr","sessionId":"thr","status":{"type":"active","activeFlags":["waitingOnApproval"]},"turns":[]}`},
+	{2, `{"id":"turn","status":"inProgress","items":[],"error":null}`},
+	{3, `{"type":"input_image","data":"aGVsbG8=","mediaType":"image/png"}`},
+	{3, `{"type":"text","text":"x","metadata":{"k":"v"}}`},
+	{0, `null`},
+	{0, `{}`},
+	{0, `not json`},
+	{1, `{"turns":[{"items":[{"type":"x"}]}]}`},
+}
+
 func FuzzCodexItemDecode(f *testing.F) {
-	f.Add(0, []byte(`{"type":"userMessage","id":"i","turnId":"t","text":"hi","status":"completed"}`))
-	f.Add(0, []byte(`{"type":"commandExecution","id":"i","command":"git status","cwd":"/w","aggregatedOutput":"","status":"inProgress"}`))
-	f.Add(0, []byte(`{"type":"dynamicToolCall","id":"i","tool":"web_search","status":"inProgress","arguments":{"query":"x"}}`))
-	f.Add(1, []byte(`{"id":"thr","sessionId":"thr","status":{"type":"active","activeFlags":["waitingOnApproval"]},"turns":[]}`))
-	f.Add(2, []byte(`{"id":"turn","status":"inProgress","items":[],"error":null}`))
-	f.Add(3, []byte(`{"type":"input_image","data":"aGVsbG8=","mediaType":"image/png"}`))
-	f.Add(3, []byte(`{"type":"text","text":"x","metadata":{"k":"v"}}`))
-	// Degenerate shapes.
-	f.Add(0, []byte(`null`))
-	f.Add(0, []byte(`{}`))
-	f.Add(0, []byte(`not json`))
-	f.Add(1, []byte(`{"turns":[{"items":[{"type":"x"}]}]}`))
+	for _, s := range codexItemDecodeSeeds {
+		f.Add(s.shape, []byte(s.raw))
+	}
 
 	f.Fuzz(func(t *testing.T, shapeIndex int, raw []byte) {
 		idx := shapeIndex % len(codexItemTypes)
