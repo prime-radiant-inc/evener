@@ -56,7 +56,9 @@ TARGETS=(
 	"native:llm:./providers/anthropic:FuzzAnthropicStreamMetamorphic::adapter.go#decodeStream"
 	"native:llm:./providers/anthropic:FuzzAnthropicStreamStructured::adapter.go#decodeStream"
 	"native:llm:./providers/google:FuzzGeminiStreamMetamorphic::adapter.go#decodeStream"
+	"native:llm:./providers/google:FuzzGeminiStreamStructured::adapter.go#decodeStream"
 	"native:llm:./providers/openaicompat:FuzzOpenAICompatStreamMetamorphic::adapter.go#decodeStream"
+	"native:llm:./providers/openaicompat:FuzzOpenAICompatStreamStructured::adapter.go#decodeStream"
 	"native:.:./cmd/serf-hub:FuzzWebHandler::web.go"
 	# 8.2 — codex-compat item + config decode targets.
 	"native:.:./appwire:FuzzCodexItemDecode::"
