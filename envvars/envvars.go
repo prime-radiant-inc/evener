@@ -74,8 +74,9 @@ var (
 	SERFProvider                    = Var{Name: "SERF_PROVIDER", Summary: "Fallback provider for llmcall when --provider and LLM_PROVIDER are unset.", Visibility: Public}
 	SERFProvidersConfig             = Var{Name: "SERF_PROVIDERS_CONFIG", Summary: "Path to providers.toml.", Visibility: Public}
 	SERFReasoningEffort             = Var{Name: "SERF_REASONING_EFFORT", Summary: "Default reasoning effort: minimal|low|medium|high|xhigh|max|none.", Visibility: Public}
-	SERFRecordAppwire               = Var{Name: "SERF_RECORD_APPWIRE", Summary: "Records raw AppWire WebSocket frames to appwire-frames.jsonl for fuzz-corpus harvesting when set to 1/true/yes/on.", Visibility: Tooling}
-	SERFRecordHTTP                  = Var{Name: "SERF_RECORD_HTTP", Summary: "Records inbound hub HTTP requests to hub-http.jsonl for fuzz-corpus harvesting when set to 1/true/yes/on.", Visibility: Tooling}
+	SERFRecordAppwire               = Var{Name: "SERF_RECORD_APPWIRE", Summary: "Records raw AppWire WebSocket frames to appwire-frames.jsonl for fuzz-corpus harvesting when set to 1/true/yes/on; overrides SERF_FUZZ_RECORD for this recorder.", Visibility: Tooling}
+	SERFRecordHTTP                  = Var{Name: "SERF_RECORD_HTTP", Summary: "Records inbound hub HTTP requests to hub-http.jsonl for fuzz-corpus harvesting when set to 1/true/yes/on; overrides SERF_FUZZ_RECORD for this recorder.", Visibility: Tooling}
+	SERFFuzzRecord                  = Var{Name: "SERF_FUZZ_RECORD", Summary: "Master switch: enables all fuzz-corpus recorders (provider, AppWire, HTTP) by default when set to 1/true/yes/on. A per-recorder var (SERF_LOG_RAW_HTTP/SERF_RECORD_APPWIRE/SERF_RECORD_HTTP) overrides it. Intended for local dev; unset everywhere else.", Visibility: Tooling}
 	SERFFuzzCaptureEnv              = Var{Name: "SERF_FUZZ_CAPTURE_ENV", Summary: "Marks a dedicated capture box so serf-fuzz-harvest --keep-values is permitted (real, unscrubbed values; local-only).", Visibility: Tooling}
 	SERFRunDir                      = Var{Name: "SERF_RUN_DIR", Summary: "Rendezvous directory passed by serf-hub to spawned daemons.", Visibility: Internal}
 	SERFStateDir                    = Var{Name: "SERF_STATE_DIR", Summary: "Overrides the Serf state root.", Visibility: Public}
@@ -179,6 +180,7 @@ var allVars = []Var{
 	SERFReasoningEffort,
 	SERFRecordAppwire,
 	SERFRecordHTTP,
+	SERFFuzzRecord,
 	SERFFuzzCaptureEnv,
 	SERFRunDir,
 	SERFStateDir,
@@ -235,4 +237,27 @@ var allVars = []Var{
 	User,
 	UserProfile,
 	WaylandDisplay,
+}
+
+// recordTruthy reports whether an env value selects recording (1/true/yes/on,
+// case-insensitive, trimmed).
+func recordTruthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// RecorderEnabled reports whether a fuzz-corpus recorder gated by the per-recorder
+// variable `specific` should run. An explicitly-set per-recorder value always wins
+// (so it can force one recorder on or off); when that variable is unset, the
+// recorder follows the SERF_FUZZ_RECORD master switch. With nothing set, recording
+// is off — the safe default for shipped binaries, CI, and production.
+func RecorderEnabled(specific Var) bool {
+	if raw, ok := specific.LookupEnv(); ok {
+		return recordTruthy(raw)
+	}
+	return recordTruthy(SERFFuzzRecord.Getenv())
 }

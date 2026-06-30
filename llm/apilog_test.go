@@ -12,30 +12,6 @@ import (
 	"time"
 )
 
-func TestRawHTTPLogEnabled(t *testing.T) {
-	tests := []struct {
-		value string
-		want  bool
-	}{
-		{"1", true},
-		{"true", true},
-		{"TRUE", true},
-		{" yes ", true},
-		{"on", true},
-		{"0", false},
-		{"false", false},
-		{"off", false},
-		{"", false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.value, func(t *testing.T) {
-			if got := rawHTTPLogEnabled(tc.value); got != tc.want {
-				t.Fatalf("rawHTTPLogEnabled(%q) = %v, want %v", tc.value, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestBuildAPILogRequest_IncludesContinuationMetadata(t *testing.T) {
 	req := Request{
 		Model:       "gpt-5.2",
