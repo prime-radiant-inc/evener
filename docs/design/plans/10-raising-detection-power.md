@@ -1,18 +1,20 @@
 # Phase 9 — Raising detection power
 
-> **Status (2026-06-30): W1–W3 DONE + merged; W4 cross-subsystem invariant done,
-> namer-determinism deferred.** W1 oracle mutation-audit engine shipped (6
-> mutations, 5 oracle classes). W2 found+fixed **two real Anthropic 400 bugs**
-> (provider-option forced `tool_choice` under thinking; `max_tokens` ≤ budget);
-> other-provider contracts deferred rather than invented. W3 added the
+> **Status (2026-06-30): W1–W4 DONE + merged.** W1 oracle mutation-audit engine
+> shipped (6 mutations, 5 oracle classes). W2 found+fixed **two real Anthropic
+> 400 bugs** (provider-option forced `tool_choice` under thinking; `max_tokens` ≤
+> budget); other-provider contracts deferred rather than invented. W3 added the
 > structure-aware live-vs-reload differential (~85× deeper, no divergence). W4
-> added a sound cross-subsystem invariant (job terminal-state finality under the
-> full interleaving — Oracle 7, validated over 8000+`-race` checks); the namer/
-> events-channel determinism refactor was investigated and **deferred with
-> rationale**: enabling it requires turning on `StateDir` (autosave + session
-> logging + persistence) inside the carefully-tuned deterministic lifecycle
-> model, a destabilizing change for low-yield coverage that the
-> detection-not-coverage diagnosis does not justify unsupervised.
+> added a cross-subsystem invariant (job terminal-state finality under the full
+> interleaving — Oracle 7) AND closed the namer determinism trap: two test-only
+> seams (`forceSessionNamer` launches the namer without `StateDir` so it never
+> autosaves per op; `namerClient` gives its detached goroutine its own scripted
+> client off the shared Responder) let the lifecycle model run the namer
+> concurrently with delegation/compaction/close, plus Oracle 8 pinning naming
+> monotonicity. Both validated over 8000 `-race` rapid checks (no data race, no
+> flaky). The earlier deferral was wrong — it conflated a test-only seam with a
+> production refactor and misapplied the diagnosis (the namer goroutine is
+> *unfuzzed* concurrency, not over-searched coverage).
 >
 > **Status (2026-06-29): PROPOSED, not started.** Point-in-time design + plan.
 > Successor to `09-fuzzer-bug-finding-improvements.md` (Phase 8, complete). Scopes

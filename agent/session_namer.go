@@ -184,7 +184,7 @@ func sanitizeSessionName(name string) string {
 func ptrString(s string) *string { return &s }
 
 func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
-	if s.stateDir == "" {
+	if s.stateDir == "" && !s.cfg.testOnly.forceSessionNamer {
 		return
 	}
 	if !sessionNamerEnabled(s.currentProfile()) {
@@ -310,7 +310,11 @@ func (s *Session) nameSessionFromText(ctx context.Context, source, text string) 
 		return s.nameSessionFromTextFunc(ctx, source, text)
 	}
 
-	result, err := nameSession(ctx, s.client, s.currentProfile(), source, text)
+	namerClient := s.client
+	if s.cfg.testOnly.namerClient != nil {
+		namerClient = s.cfg.testOnly.namerClient
+	}
+	result, err := nameSession(ctx, namerClient, s.currentProfile(), source, text)
 	if err != nil {
 		s.appendSessionNamerLog(sessionlog.SessionLogEntry{
 			Kind:     "advisory",

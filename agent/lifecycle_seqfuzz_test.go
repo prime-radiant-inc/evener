@@ -335,6 +335,8 @@ type lifecycleModel struct {
 	prevModelResp int
 	prevHistLen   int
 	terminalJobs  map[string]string // job ID -> the terminal status first observed (Oracle 7)
+	namerSeen     bool              // the session name has been observed set (Oracle 8)
+	namerValue    string            // the name value first observed (Oracle 8)
 }
 
 // lifecycleInject configures a fault for the determinism tests. The zero value
@@ -376,7 +378,10 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: responder}
 	client := llm.NewClient()
 	client.Register(adapter)
-	profile := NewOpenAIProfile("gpt-5.2")
+	// WithCheapModel configures the auxiliary "cheap" model the session namer
+	// runs on; without it sessionNamerEnabled is false and the namer never
+	// launches (so W4's namer coverage below would be vacuous).
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5.2")
 	cfg := SessionConfig{
 		clock:                 clk,
 		MaxSubagentDepth:      1,
@@ -395,6 +400,19 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 		cc.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: newChildResponder(childScript)})
 		return cc
 	}
+	// W4: exercise the background session-namer goroutine alongside the other ops.
+	// forceSessionNamer launches it without StateDir (so it never autosaves a meta
+	// file per op — disk churn the search can't afford); namerClient gives it its
+	// OWN scripted adapter so its detached draw never races the shared Responder
+	// (the same race childClientFactory avoids for children). The goroutine runs
+	// concurrently with delegation/compaction/close and is joined by Close
+	// (sendersWG); -race validates its concurrent access to session state.
+	cfg.testOnly.forceSessionNamer = true
+	namerClient := llm.NewClient()
+	namerClient.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant(`{"name":"fuzz session"}`), Usage: llm.Usage{TotalTokens: 7}}
+	}})
+	cfg.testOnly.namerClient = namerClient
 	sess, err := NewSession(client, profile, env, cfg)
 	if err != nil {
 		return &promoter.Failure{Surface: lifecycleSurface, Oracle: promoter.Invariant, Detail: "NewSession: " + err.Error(), Artifact: lifecycleJSON(art)}
@@ -571,6 +589,8 @@ func checkLifecycleOracles(sess *Session, m *lifecycleModel, op opRecord, art li
 	modelResp := sess.modelResponses
 	histLen := len(sess.history)
 	histCopy := append([]schema.Turn(nil), sess.history...)
+	namingSet := sess.naming.set
+	namingValue := sess.naming.value
 	sess.mu.Unlock()
 
 	// Oracle 4: the turns and modelResponses counters never decrease.
@@ -626,6 +646,25 @@ func checkLifecycleOracles(sess *Session, m *lifecycleModel, op opRecord, art li
 				m.terminalJobs[rec.JobID] = string(rec.Status)
 			}
 		}
+	}
+
+	// Oracle 8 (cross-subsystem): the background namer goroutine's effect is
+	// monotonic and stable through the full interleaving — once the session name
+	// is observed set it stays set and never changes value, regardless of what
+	// delegation / compaction / close ran concurrently with the namer. (The
+	// primary win is -race coverage of the namer's concurrent session-state
+	// access; this invariant additionally pins the state it mutates.)
+	if m.namerSeen {
+		if !namingSet {
+			return lifecycleFailure(promoter.Invariant, art, step, "session-name-unset-after-set")
+		}
+		if namingValue != m.namerValue {
+			return lifecycleFailure(promoter.Invariant, art, step,
+				fmt.Sprintf("session-name-changed:%q->%q", m.namerValue, namingValue))
+		}
+	} else if namingSet {
+		m.namerSeen = true
+		m.namerValue = namingValue
 	}
 
 	m.prevTurns = turns
