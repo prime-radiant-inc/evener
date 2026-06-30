@@ -1,0 +1,1 @@
+Create a file calc.py with add, sub, and mul functions. Then edit it to add a divide function that returns an error string on division by zero. Run a quick python check that all four work.

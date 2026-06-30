@@ -1,0 +1,1 @@
+Create a file config.ini with several key = value lines. Write a command that changes every value to uppercase while keeping the keys unchanged, and show the result.

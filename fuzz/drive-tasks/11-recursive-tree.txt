@@ -1,0 +1,1 @@
+Create a nested directory structure src/a/b/c with a small file at each level, then write a command that lists every regular file with its relative path and size.

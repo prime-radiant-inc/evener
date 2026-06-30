@@ -1,0 +1,1 @@
+Write a bash script report.sh that prints the current directory, the number of files in it, and today's date, then make it executable and run it.

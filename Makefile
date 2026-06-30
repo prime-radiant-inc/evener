@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-goldens secret-scan fuzz-corpus-scan
+.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-goldens secret-scan fuzz-corpus-scan
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -157,6 +157,18 @@ fuzz-continuous:
 # crasher-delta logic with stubbed runner+triage — no real fuzzing.
 fuzz-continuous-selftest:
 	@scripts/fuzz-continuous-selftest.sh
+
+# fuzz-drive generates REAL provider traffic (varied coding tasks through the
+# serf one-shot CLI, recorders on) and harvests it into the seed corpus. Makes
+# live, paid provider calls — run on demand, not in CI. Flags via FUZZ_ARGS, e.g.
+# `make fuzz-drive FUZZ_ARGS="--providers openai/gpt-5.4-mini --runs 5"`.
+fuzz-drive:
+	@scripts/fuzz-drive.sh $(FUZZ_ARGS)
+
+# fuzz-drive-selftest exercises the driver's contract (drive/retry/skip/harvest/
+# PR) against a throwaway repo with stubbed serf+harvest+gh — no real calls.
+fuzz-drive-selftest:
+	@scripts/fuzz-drive-selftest.sh
 
 # fuzz-bisect pinpoints the commit that introduced a crasher via git bisect,
 # replaying one saved corpus entry per step. Supply args through FUZZ_ARGS, e.g.

@@ -1,0 +1,1 @@
+Create a markdown file notes.md with three sections (Intro, Details, Conclusion) of a few sentences each. Read it back and summarize each section in one line.

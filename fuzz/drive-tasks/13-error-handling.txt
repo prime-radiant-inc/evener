@@ -1,0 +1,1 @@
+Write a Go program safediv.go with a function that divides two ints and returns (result, error), returning an error for divide-by-zero. Add a main that exercises both the success and error cases and run it.

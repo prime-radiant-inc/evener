@@ -1,0 +1,1 @@
+Create a small Go package with two files: greet.go (a Greet function) and main.go that calls it. Then rename Greet to Welcome everywhere and verify it still builds.

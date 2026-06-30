@@ -1,0 +1,1 @@
+Create data.json with an array of 5 objects each having name and age fields. Write a small script that reads it and prints the names of everyone older than 30, sorted alphabetically.

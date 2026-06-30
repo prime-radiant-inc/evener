@@ -1,0 +1,1 @@
+Create a Go function IsPalindrome(s string) bool in pal.go plus a table-driven test pal_test.go covering empty, single-char, palindrome, and non-palindrome cases. Run 'go test'.

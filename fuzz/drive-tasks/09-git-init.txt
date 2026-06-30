@@ -1,0 +1,1 @@
+Initialize a git repository here, create a .gitignore that ignores *.log and a tmp/ directory, add a README, and make an initial commit. Show the git log.
