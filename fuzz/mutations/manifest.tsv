@@ -4,3 +4,4 @@ toolsummary-taskupdate-panic	.:FuzzSummarizeTool	toolsummary-taskupdate-panic.pa
 anthropic-maxtokens-budget	llm:FuzzAnthropicRequestBuild	anthropic-maxtokens-budget.patch	max_tokens reconcile no longer floors a <=0 output, yielding budget==max_tokens (Anthropic 400)
 anthropic-thinking-toolchoice-forced	llm:FuzzAnthropicRequestBuild	anthropic-thinking-toolchoice-forced.patch	no downgrade of a forced tool_choice while thinking enabled (Anthropic 400)
 apptranscript-reload-echo-dup-structured	.:FuzzHubReplayLiveVsReloadStructured	apptranscript-reload-echo-dup.patch	reload echo dedup removed — caught by the structure-aware differential too
+jobstore-terminal-overwrite	agent:TestJobstoreSeqFuzz	jobstore-terminal-overwrite.patch	remove first-terminal-write-wins guard so a later terminal event overwrites (terminal-stickiness regression)

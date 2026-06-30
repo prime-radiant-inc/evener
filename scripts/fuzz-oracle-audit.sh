@@ -76,9 +76,14 @@ want() {
 	return 1
 }
 
-# pkg_for resolves "module:FuzzName" to "module<TAB>pkg<TAB>name" via the registry.
+# pkg_for resolves "module:Name" to "module<TAB>pkg<TAB>name" via the registry.
+# Tag-agnostic: a rapid target (a Test* driven by rapid.Check) is audited exactly
+# like a native one — run_seeds drives it with `go test -run`, and a mutation that
+# breaks a property the rapid model checks makes that run fail. (W5: the audit is
+# no longer native-only; the gap report below stays native-focused since that is
+# the decode-coverage metric.)
 pkg_for() {
-	bash "$runner" --list | awk -F: -v t="$1" '$1=="native" && ($2":"$4)==t {print $2"\t"$3"\t"$4; exit}'
+	bash "$runner" --list | awk -F: -v t="$1" '($2":"$4)==t {print $2"\t"$3"\t"$4; exit}'
 }
 
 # run_seeds runs the target's seed corpus in the worktree, capturing output in

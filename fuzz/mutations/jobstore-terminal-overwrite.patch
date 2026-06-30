@@ -1,0 +1,15 @@
+diff --git a/agent/internal/jobstore/fold.go b/agent/internal/jobstore/fold.go
+index f979529d..fe1c3d7a 100644
+--- a/agent/internal/jobstore/fold.go
++++ b/agent/internal/jobstore/fold.go
+@@ -335,10 +335,6 @@ func applyEvent(r *JobRecord, e Event) {
+ 		r.Resumable = e.Resumable
+ 		r.NotResumableWhy = e.NotResumableWhy
+ 	case EventJobFinished:
+-		// First terminal write wins; later ones are duplicates/reconstructions.
+-		if r.Status.IsTerminal() {
+-			return
+-		}
+ 		r.Status = e.Status
+ 		r.Reason = e.Reason
+ 		r.ExitCode = e.ExitCode
