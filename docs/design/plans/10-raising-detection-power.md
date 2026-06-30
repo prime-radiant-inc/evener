@@ -1,5 +1,19 @@
 # Phase 9 — Raising detection power
 
+> **Status (2026-06-30): W1–W3 DONE + merged; W4 cross-subsystem invariant done,
+> namer-determinism deferred.** W1 oracle mutation-audit engine shipped (6
+> mutations, 5 oracle classes). W2 found+fixed **two real Anthropic 400 bugs**
+> (provider-option forced `tool_choice` under thinking; `max_tokens` ≤ budget);
+> other-provider contracts deferred rather than invented. W3 added the
+> structure-aware live-vs-reload differential (~85× deeper, no divergence). W4
+> added a sound cross-subsystem invariant (job terminal-state finality under the
+> full interleaving — Oracle 7, validated over 8000+`-race` checks); the namer/
+> events-channel determinism refactor was investigated and **deferred with
+> rationale**: enabling it requires turning on `StateDir` (autosave + session
+> logging + persistence) inside the carefully-tuned deterministic lifecycle
+> model, a destabilizing change for low-yield coverage that the
+> detection-not-coverage diagnosis does not justify unsupervised.
+>
 > **Status (2026-06-29): PROPOSED, not started.** Point-in-time design + plan.
 > Successor to `09-fuzzer-bug-finding-improvements.md` (Phase 8, complete). Scopes
 > the next round of fuzzing work after the toolkit's breadth (Phases 0–7), four
