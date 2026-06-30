@@ -1,1 +1,29 @@
-{}
+{
+  "FuzzToolExecution:73e90e608a9dac18": {
+    "first_seen": "2026-06-30T17:27:15Z",
+    "surface": "FuzzToolExecution",
+    "oracle": "crash",
+    "sig": "73e90e608a9d",
+    "status": "quarantined",
+    "last_seen": "2026-06-30T17:27:15Z",
+    "survived_runs": 0,
+    "kind": "native",
+    "pkg": "agent",
+    "run": "FuzzToolExecution/73e90e608a9dac18",
+    "detail": "go-native fuzz crasher in FuzzToolExecution"
+  },
+  "FuzzNormalizePastedPath:745ddcbba884d600": {
+    "surface": "FuzzNormalizePastedPath",
+    "oracle": "crash",
+    "sig": "745ddcbba884",
+    "status": "found",
+    "first_seen": "2026-06-30T17:27:16Z",
+    "last_seen": "2026-06-30T17:27:16Z",
+    "kind": "native",
+    "pkg": "cmd/serf-tui/internal/clipboard",
+    "run": "FuzzNormalizePastedPath/745ddcbba884d600",
+    "test_path": "",
+    "detail": "go-native fuzz crasher in FuzzNormalizePastedPath",
+    "pr": ""
+  }
+}
