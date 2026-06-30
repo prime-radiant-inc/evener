@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -220,13 +221,14 @@ const (
 	opBackgroundShell
 	opBackgroundDelegate
 	opObserve
+	opLLMError // fault op: the first model call of this input fails once (W1)
 	opClose
 )
 
 var allLifecycleOps = []lifecycleOpCode{
 	opProcessInput, opProcessInterrupted, opSteer, opEnqueue, opFollowUp,
 	opSetGoal, opClearGoal, opAdvanceClock, opDelegate, opBackgroundShell,
-	opBackgroundDelegate, opObserve, opClose,
+	opBackgroundDelegate, opObserve, opLLMError, opClose,
 }
 
 // opContainsCompact reports whether the op's scripted responses include a
@@ -267,7 +269,7 @@ func drawLifecycleArtifact(rt *rapid.T) lifecycleArtifact {
 		code := rapid.SampledFrom(allLifecycleOps).Draw(rt, "op")
 		rec := opRecord{Code: int(code)}
 		switch code {
-		case opProcessInput, opProcessInterrupted:
+		case opProcessInput, opProcessInterrupted, opLLMError:
 			scriptLen := rapid.IntRange(1, 5).Draw(rt, "scriptLen")
 			rec.Script = make([]int, scriptLen)
 			for j := range rec.Script {
@@ -358,6 +360,7 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 	var cancelAt int             // -1 disables interrupt cancellation
 	var cancelFn func()          // set per interrupt op
 	var pendingChildScript []int // consumed by the next child the factory builds
+	var armFault bool            // W1: when set, the next model call fails once
 	cancelAt = -1
 
 	responder := func(req llm.Request) llm.Response {
@@ -376,6 +379,16 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 	}
 
 	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: responder}
+	// W1 fault injection: opLLMError arms this so the next model call fails once,
+	// exercising the turn loop's error/retry recovery under the full interleaving.
+	// One-shot (disarms itself) so the session can recover on a retry.
+	adapter.FaultResponder = func(llm.Request) error {
+		if armFault {
+			armFault = false
+			return errors.New("lifecycle-fuzz: injected model-call fault")
+		}
+		return nil
+	}
 	client := llm.NewClient()
 	client.Register(adapter)
 	// WithCheapModel configures the auxiliary "cheap" model the session namer
@@ -386,7 +399,11 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 		clock:                 clk,
 		MaxSubagentDepth:      1,
 		MaxToolRoundsPerInput: 10,
-		LLMSleep:              func(_ context.Context, d time.Duration) error { clk.Sleep(d); return nil },
+		// Non-blocking: retry/backoff waits return instantly so the deterministic
+		// harness never deadlocks on the frozen fake clock (the backoff DELAY is
+		// irrelevant to the state oracle; the retry LOGIC still runs). W1's
+		// opLLMError exercises exactly this retry path.
+		LLMSleep: func(_ context.Context, _ time.Duration) error { return nil },
 	}
 	// C1 per-child adapter seam: each spawned child gets its own client whose
 	// Responder plays the op's pre-recorded child script (a pure function of the
@@ -451,6 +468,7 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 		cancelAt = -1
 		cancelFn = nil
 		pendingChildScript = op.ChildScript
+		armFault = lifecycleOpCode(op.Code) == opLLMError // W1: fail this op's first model call
 
 		res := runOpSafely(sess, clk, op, &cancelAt, &cancelFn)
 		if res.wedged {
@@ -502,7 +520,9 @@ func runOpSafely(sess *Session, clk *agenttest.FakeClock, op opRecord, cancelAt 
 
 func applyOp(sess *Session, clk *agenttest.FakeClock, op opRecord, cancelAt *int, cancelFn *func()) {
 	switch lifecycleOpCode(op.Code) {
-	case opProcessInput:
+	case opProcessInput, opLLMError:
+		// opLLMError is opProcessInput with a one-shot model-call fault armed by
+		// the caller (W1): the turn's first Complete fails, exercising recovery.
 		ctx, cancel := context.WithTimeout(context.Background(), lifecycleCallTimeout)
 		defer cancel()
 		_, _ = sess.ProcessInput(ctx, op.Text, nil)
@@ -882,6 +902,8 @@ func opName(c lifecycleOpCode) string {
 		return "background_delegate"
 	case opObserve:
 		return "observe"
+	case opLLMError:
+		return "llm_error"
 	case opClose:
 		return "close"
 	default:

@@ -21,6 +21,13 @@ type ScriptedAdapter struct {
 	Provider  string
 	Responder func(req llm.Request) llm.Response
 
+	// FaultResponder, when non-nil and it returns a non-nil error, makes Complete
+	// return that error INSTEAD of calling Responder — the fault-injection fuzz
+	// harness uses it to fail a model call at a chosen point and assert the
+	// session recovers (retries or fails the turn cleanly, never wedges). Nil for
+	// every ordinary user, so Complete behaves exactly as before.
+	FaultResponder func(req llm.Request) error
+
 	mu       sync.Mutex
 	requests []llm.Request
 }
@@ -34,6 +41,11 @@ func (a *ScriptedAdapter) Complete(_ context.Context, req llm.Request) (llm.Resp
 	a.mu.Lock()
 	a.requests = append(a.requests, req)
 	a.mu.Unlock()
+	if a.FaultResponder != nil {
+		if err := a.FaultResponder(req); err != nil {
+			return llm.Response{}, err
+		}
+	}
 	resp := a.Responder(req)
 	resp.Provider = a.Provider
 	if resp.Model == "" {
