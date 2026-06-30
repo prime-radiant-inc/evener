@@ -102,4 +102,9 @@ func TestPageTurnsEmptyAndClamped(t *testing.T) {
 	if r := PageTurns(all, "garbage", 10); len(r.Data) != 3 {
 		t.Fatalf("garbage cursor: data=%d, want 3 (from newest)", len(r.Data))
 	}
+	// A negative cursor clamps the high bound to 0, yielding an empty page with
+	// no further cursor. This exercises the hi < 0 branch.
+	if r := PageTurns(all, "-5", 10); len(r.Data) != 0 || r.NextCursor != "" {
+		t.Fatalf("negative cursor: data=%d cursor=%q, want empty page and no cursor", len(r.Data), r.NextCursor)
+	}
 }
