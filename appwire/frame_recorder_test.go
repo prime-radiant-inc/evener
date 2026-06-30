@@ -63,6 +63,18 @@ func TestNilFrameRecorderIsNoOp(t *testing.T) {
 	}
 }
 
+// A zero-value recorder (non-nil receiver, but f == nil) must also be a safe
+// no-op — record() and Close() guard on r.f == nil, not just r == nil. Without
+// this guard a zero-value recorder would dereference a nil *os.File and panic.
+func TestZeroValueFrameRecorderIsNoOp(t *testing.T) {
+	rec := &FrameRecorder{} // f is nil
+	rec.RecordRecv([]byte("x"))
+	rec.RecordSend([]byte("y"))
+	if err := rec.Close(); err != nil {
+		t.Fatalf("zero-value Close: %v", err)
+	}
+}
+
 // With the recorder attached, a live transport round-trip records both the
 // inbound (recv) and outbound (send) frames byte-for-byte.
 func TestWSTransportRecordsFrames(t *testing.T) {
