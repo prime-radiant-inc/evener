@@ -1404,21 +1404,43 @@
       return "";
     },
 
+    fileOpenBesideSpec(tool, args) {
+      const abs = this.fileOpenBesideArg(tool, args);
+      const rel = this.cwdRelative(abs);
+      if (!rel) return null;
+      const href = "/doc/file?session=" + encodeURIComponent(this.sessionId) +
+        "&path=" + encodeURIComponent(rel);
+      return { href: href, title: rel.split("/").pop() || rel };
+    },
+
+    bindFileTargetOpenBeside(target, spec) {
+      if (!target || !spec || !spec.href) return;
+      target.setAttribute("role", "button");
+      target.setAttribute("tabindex", "0");
+      target.setAttribute("aria-label", "open file beside");
+      target.title = "open beside";
+      const renderer = this;
+      function openTarget(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        renderer.openBeside(spec);
+      }
+      target.addEventListener("click", openTarget);
+      target.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") openTarget(e);
+      });
+    },
+
     // attachFileOpenBeside adds the ⇲ "open beside" control to a file-
     // referencing tool card. The control opens /doc/file for the referenced
     // file (path relativized against the session cwd) in a side pane. Skipped
     // when the tool doesn't reference a single in-cwd file.
     attachFileOpenBeside(el, tool, args) {
       if (!el || el.querySelector(".open-beside-btn")) return;
-      const abs = this.fileOpenBesideArg(tool, args);
-      const rel = this.cwdRelative(abs);
-      if (!rel) return;
-      const sessionId = this.sessionId;
-      const href = "/doc/file?session=" + encodeURIComponent(sessionId) +
-        "&path=" + encodeURIComponent(rel);
-      const title = rel.split("/").pop() || rel;
+      const spec = this.fileOpenBesideSpec(tool, args);
+      if (!spec) return;
       const beside = this.makeOpenBesideButton("open file beside", function () {
-        return { href: href, title: title };
+        return spec;
       });
       if (beside) el.appendChild(beside);
     },
@@ -2145,6 +2167,7 @@
       const target = document.createElement("span");
       target.className = "target";
       target.textContent = renderer.target ? this.relativizePath(renderer.target(args, data)) : "";
+      this.bindFileTargetOpenBeside(target, this.fileOpenBesideSpec(tool, args));
       command.appendChild(target);
       const result = document.createElement("span");
       result.className = "result-detail";

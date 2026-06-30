@@ -158,18 +158,29 @@ func TestDocFile_RejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
-func TestDocFile_RequiresHXRequest(t *testing.T) {
+func TestDocFile_ServesWorktreeRelativePathForPaneNavigation(t *testing.T) {
 	web, cwd, session := docServeTestServer(t)
-	if err := os.WriteFile(filepath.Join(cwd, "plain.txt"), []byte("hi"), 0o644); err != nil {
+	rel := filepath.Join(".worktrees", "sandbox-mode", "agent", "job_delegate_test.go")
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(cwd, rel)), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// No HX-Request header: like other partials, direct navigation is refused.
-	req := httptest.NewRequest(http.MethodGet, "/doc/file?session="+session+"&path=plain.txt", nil)
+	if err := os.WriteFile(filepath.Join(cwd, rel), []byte("package agent\n\nfunc TestDelegate() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Side panes load /doc/file through an iframe src. Browser iframe navigations
+	// cannot attach the HX-Request header, so /doc/file must serve valid in-cwd
+	// file paths as normal GET document requests.
+	req := httptest.NewRequest(http.MethodGet, "/doc/file?session="+session+"&path=.worktrees%2Fsandbox-mode%2Fagent%2Fjob_delegate_test.go", nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
-	if rec.Code == http.StatusOK {
-		t.Fatalf("non-HX request should be refused, got 200")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "job_delegate_test.go") || !strings.Contains(body, "package agent") {
+		t.Fatalf("worktree file document missing title/content: %q", body)
 	}
 }
 

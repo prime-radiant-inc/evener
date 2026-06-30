@@ -18,10 +18,10 @@ import (
 const docFileMaxBytes = 512 * 1024
 
 // handleDocFile serves a read-only document pane for a file inside a LOCAL
-// session's working directory. It is HTML-over-the-wire like the /_partials
-// family (HX-gated, same auth) but lives under /doc so a pane iframe can frame
-// it. Markdown renders via marked; other text renders escaped in <pre>; binary
-// gets a notice.
+// session's working directory. It is a standalone document route: side-pane
+// iframes navigate to it directly, so it cannot require htmx-only request
+// headers. Markdown renders via marked; other text renders escaped in <pre>;
+// binary gets a notice.
 //
 // Security: the only file paths we serve are ones that resolve to a location
 // inside the session's cwd. We clean the request path, reject any residual
@@ -30,10 +30,6 @@ const docFileMaxBytes = 512 * 1024
 func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
-		return
-	}
-	if r.Header.Get("HX-Request") != "true" {
-		http.NotFound(w, r)
 		return
 	}
 	session := canonicalRouteID(r.URL.Query().Get("session"))

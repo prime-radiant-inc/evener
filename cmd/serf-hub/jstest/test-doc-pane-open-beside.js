@@ -8,6 +8,8 @@
 //     filename) with the path relativized against the session cwd.
 //  Guard: when window.SerfPanes is absent, no button is added (iframe guard).
 const { JSDOM } = require("jsdom");
+const fs = require("fs");
+const path = require("path");
 
 function newHarness(opts) {
   opts = opts || {};
@@ -25,6 +27,9 @@ function newHarness(opts) {
   if (opts.withPanes !== false) {
     window.SerfPanes = { open: opts.panesOpen || (() => {}) };
   }
+  const style = window.document.createElement("style");
+  style.textContent = fs.readFileSync(path.resolve(__dirname, "../assets/style.css"), "utf8");
+  window.document.head.appendChild(style);
   require("./load-renderer").evalRenderer(window);
   const conv = window.document.getElementById("conversation");
   window.SerfRenderer.init(conv);
@@ -117,6 +122,42 @@ await scenario("read_file tool card gains an ⇲ that opens /doc/file with relat
   if (openedWith.href.indexOf("session=01TEST") < 0) return { ok: false, detail: "missing session: " + openedWith.href };
   if (openedWith.href.indexOf("path=src%2Fmain.go") < 0) return { ok: false, detail: "path not relativized/encoded: " + openedWith.href };
   if (openedWith.title !== "main.go") return { ok: false, detail: "wrong title: " + openedWith.title };
+  return { ok: true };
+});
+
+
+await scenario("read_file filename opens /doc/file when tapped", async () => {
+  let openedWith = null;
+  const { window } = newHarness({ panesOpen: (href, title) => { openedWith = { href, title }; } });
+  await new Promise(r => setTimeout(r, 30));
+  window.SerfRenderer.handleData("TOOL_CALL_START", { call_id: "r-name", tool_name: "read_file", arguments_json: JSON.stringify({ file_path: "/work/repo/src/named.go" }) });
+  window.SerfRenderer.handleData("TOOL_CALL_END", { call_id: "r-name", tool_name: "read_file", output: "package main" });
+  await new Promise(r => setTimeout(r, 10));
+  const target = window.document.querySelector(".tool-call.read_file .target");
+  if (!target) return { ok: false, detail: "no read_file filename target" };
+  if (target.getAttribute("role") !== "button" || target.getAttribute("tabindex") !== "0") {
+    return { ok: false, detail: "filename target is not keyboard/tap activatable" };
+  }
+  target.click();
+  if (!openedWith) return { ok: false, detail: "clicking filename did not call SerfPanes.open" };
+  if (openedWith.href.indexOf("/doc/file?") !== 0 || openedWith.href.indexOf("path=src%2Fnamed.go") < 0) {
+    return { ok: false, detail: "wrong href: " + openedWith.href };
+  }
+  if (openedWith.title !== "named.go") return { ok: false, detail: "wrong title: " + openedWith.title };
+  return { ok: true };
+});
+
+await scenario("read_file ⇲ is ordered to the right of the filename", async () => {
+  const { window } = newHarness();
+  await new Promise(r => setTimeout(r, 30));
+  window.SerfRenderer.handleData("TOOL_CALL_START", { call_id: "r-order", tool_name: "read_file", arguments_json: JSON.stringify({ file_path: "/work/repo/src/right.go" }) });
+  window.SerfRenderer.handleData("TOOL_CALL_END", { call_id: "r-order", tool_name: "read_file", output: "package main" });
+  await new Promise(r => setTimeout(r, 10));
+  const call = window.document.querySelector(".tool-call.read_file");
+  const btn = call && call.querySelector(".open-beside-btn");
+  if (!btn) return { ok: false, detail: "no ⇲ button" };
+  const style = window.getComputedStyle(btn);
+  if (!(Number(style.order) > 1)) return { ok: false, detail: "⇲ flex order should place it after .tool-command; got " + style.order };
   return { ok: true };
 });
 

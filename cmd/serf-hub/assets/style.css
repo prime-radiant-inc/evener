@@ -2421,6 +2421,16 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .tool-call:hover .open-beside-btn,
 .image-beside-wrap:hover .open-beside-btn,
 .open-beside-btn:focus-visible { opacity: 1; color: var(--text-muted); }
+.tool-call > .open-beside-btn {
+  order: 3;
+}
+.tool-call .target[role="button"] {
+  cursor: pointer;
+}
+.tool-call .target[role="button"]:hover,
+.tool-call .target[role="button"]:focus-visible {
+  color: var(--accent);
+}
 
 /* Image cards are <button>s, so the ⇲ sits as a sibling inside a relative
    wrapper and floats over the card's top-right corner. */
