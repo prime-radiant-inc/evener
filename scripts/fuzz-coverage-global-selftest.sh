@@ -85,6 +85,12 @@ has "$out" "REGRESSION" "regression reported for alpha"
 set +e; run "alpha=797 1000,beta=3 10" --check >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" -eq 0 ] && ok "check tolerates sub-floor wobble within 0.5pp" || bad "tolerance band not applied (rc=$rc)"
 
+echo "== --with-full prints the context column =="
+# The stub returns the same coverage for both passes, so fuzz==full -> ratio 100%.
+out="$(run "alpha=8 10,beta=3 10" --with-full)"
+has "$out" "fuzz/full" "with-full: header has the fuzz/full column"
+has "$out" "100%" "with-full: fuzz/full ratio computed (100% when fuzz==full in the stub)"
+
 echo "----"
 echo "fuzz-coverage-global-selftest: $checks checks, $fails failed"
 [ "$fails" -eq 0 ]
