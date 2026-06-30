@@ -16,6 +16,21 @@
 # small; a default coefficient makes legitimate mutants spuriously "time out"),
 # so the coefficient defaults to 20 — tune via SERF_MUTATION_TIMEOUT_COEFF.
 #
+# READING THE NUMBERS — two gremlins artifacts make "mutator coverage" understate
+# real test coverage, especially for switch/codec-heavy packages (e.g. appwire):
+#   1. SWITCH-CASE CONDITIONS. Go's coverage blocks for `switch { case C: }` start
+#      at the case BODY, so the case-expression position C has no counter. gremlins
+#      mutates C and, finding no covering block, reports NOT COVERED even when the
+#      branch is fully exercised (confirm with `go test -cover`: the func reads
+#      100%). Same for tagless-switch dispatch (Kind/IDString-style methods).
+#   2. CONST DECLARATIONS. `const X = -32602` is not an executable statement, so a
+#      mutated constant is always NOT COVERED — assert against the literal value in
+#      a test to pin it, but gremlins still can't credit coverage.
+# So judge a package by its LIVED (covered-but-survived = the weak-oracle worklist)
+# and by `go test -cover`, NOT by mutator-coverage alone. Equivalent mutants
+# (clamp-to-boundary no-ops, always-true invariant.Hold guards, cosmetic 0-basing)
+# legitimately LIVE and are not gaps.
+#
 # Usage:
 #   scripts/fuzz-mutation-score.sh [module:./pkg ...]   # default: the curated set
 set -uo pipefail
@@ -37,6 +52,8 @@ if [ ${#targets[@]} -eq 0 ]; then
 		"llm:./providercfg"
 		"agent:./internal/frontmatter"
 		"agent:./plugin"
+		"agent:./task"
+		"agent:./internal/contextmgr"
 		".:./frontmatter"
 	)
 fi
