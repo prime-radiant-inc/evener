@@ -1,8 +1,18 @@
 # Phase 10 — Deeper fuzzing: failure paths, real concurrency, and detection sufficiency
 
-> **Status (2026-06-30): PROPOSED, not started.** Point-in-time design + plan.
-> Successor to `10-raising-detection-power.md` (Phase 9, complete). Effort is in
-> lines-of-code assuming a frontier LLM does the work, not wall time.
+> **Status (2026-06-30): DONE (W1, W3, W5, W4, W2; W6 skipped).** Point-in-time
+> design + plan. Successor to `10-raising-detection-power.md` (Phase 9, complete).
+> W1 fault-injection (model-call-failure recovery, FaultResponder seam + opLLMError;
+> 8000 -race clean). W3 coverage-guided stateful (FuzzLifecycleSeq). W5
+> mutation-audit extended to rapid targets AND mutation-score-at-scale via
+> gremlins (`make fuzz-mutation-score`; providercfg 91.89%, 3 survivors; others
+> 100%). W4 conformance golden-replay for the provider decoders. W2
+> true-concurrency stress under -race WITH the go.uber.org/goleak goroutine-leak
+> oracle (8x -race clean). No new product bug — the failure/concurrency paths
+> newly fuzzed are sound. The "offline-blocked" goleak/gremlins deferrals were
+> resolved (network works; the friction was the go.work local-module setup, worked
+> around). Remaining follow-up: the disk-fault op (quiesceJobs loop-advance) and
+> the anthropic assembled-reasoning section-break the W4 conformance golden pins.
 
 ## Why this phase exists
 

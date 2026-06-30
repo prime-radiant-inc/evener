@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/goleak"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
@@ -23,9 +24,9 @@ import (
 // Oracles (the concurrency-appropriate set): the race detector (run under -race in
 // the nightly — the headline) finds data races the deterministic models can't;
 // the deadline watchdog turns a deadlock into a loud panic with the stuck
-// goroutines; and a clean Close afterwards proves no wedge / no panic. (Goroutine-
-// leak detection — go.uber.org/goleak — is the intended addition once that dep is
-// vendored; it is not available offline yet.)
+// goroutines; a clean Close afterwards proves no wedge / no panic; and a
+// goleak.VerifyNone guard (go.uber.org/goleak, baselined at start) fails if any
+// session goroutine outlived the concurrent stress + Close.
 //
 // Gated behind -short: it is a nightly/-race stress run, not a fast-gate test, and
 // being inherently nondeterministic it must never gate a PR.
@@ -33,7 +34,12 @@ func TestSession_ConcurrencyStress(t *testing.T) {
 	if testing.Short() {
 		t.Skip("concurrency stress is a nightly/-race run; skipped under -short")
 	}
-	t.Parallel()
+	// Goroutine-leak oracle: IgnoreCurrent() is evaluated now (defer-time), so it
+	// baselines the goroutines present BEFORE the session exists; VerifyNone runs
+	// LAST (this is the first defer), after Close below, and fails if any session
+	// goroutine outlived the concurrent stress + Close. Not t.Parallel(): a leak
+	// baseline can't tolerate other parallel tests spawning goroutines.
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"}) // Stream unsupported -> Complete path
