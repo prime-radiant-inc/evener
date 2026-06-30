@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-goldens secret-scan fuzz-corpus-scan
+.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-goldens secret-scan fuzz-corpus-scan
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -169,6 +169,17 @@ fuzz-drive:
 # PR) against a throwaway repo with stubbed serf+harvest+gh — no real calls.
 fuzz-drive-selftest:
 	@scripts/fuzz-drive-selftest.sh
+
+# fuzz-coverage-global measures WHOLE-MODULE fuzz-reachable coverage (the focus-set
+# tool fuzz-coverage measures per-target seams) and ratchets it against
+# scripts/fuzzcov-global-floors.txt. Heavy + local. CHECK=1 enforces the ratchet;
+# BLESS=1 raises floors to current.
+fuzz-coverage-global:
+	@scripts/fuzz-coverage-global.sh $(if $(CHECK),--check) $(if $(BLESS),--bless) $(FUZZ_ARGS)
+
+# fuzz-coverage-global-selftest verifies the parse + ratchet logic with stubbed go.
+fuzz-coverage-global-selftest:
+	@scripts/fuzz-coverage-global-selftest.sh
 
 # fuzz-bisect pinpoints the commit that introduced a crasher via git bisect,
 # replaying one saved corpus entry per step. Supply args through FUZZ_ARGS, e.g.
