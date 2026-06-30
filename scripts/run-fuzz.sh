@@ -53,6 +53,7 @@ TARGETS=(
 	"native:agent:.:FuzzLineWindowExtractors::job_output_digest.go"
 	"native:.:./cmd/serf-hub:FuzzHubReplayCarryThrough::app_threadread.go#replayTurnToAgentTurn"
 	"native:.:./cmd/serf-hub:FuzzHubReplayLiveVsReload::app_threadread.go#replayTurnToAgentTurn"
+	"native:.:./cmd/serf-hub:FuzzHubReplayLiveVsReloadStructured::app_threadread.go#replayTurnToAgentTurn"
 	"native:llm:./providers/openai:FuzzOpenAIResponsesMetamorphic::responses.go#decodeResponsesStream"
 	"native:llm:./providers/openai:FuzzOpenAIResponsesStructured::responses.go#decodeResponsesStream"
 	"native:llm:./providers/openai:FuzzOpenAIChatCompletionsMetamorphic::chatcompletions.go#decodeChatCompletionsStream"

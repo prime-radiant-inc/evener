@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
@@ -146,37 +147,46 @@ func FuzzHubReplayLiveVsReload(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, raw []byte) {
-		var e transcript.Entry
-		if json.Unmarshal(raw, &e) != nil {
-			return
-		}
-		canon, canonBytes := canonicalEntry(t, e)
-
-		liveEvents, supported := synthesizeLiveEvents(canon.Turn)
-		if !supported {
-			return // turn kind has no clean item-producing live path (see synthesizer)
-		}
-
-		// Live side: drive a fresh projector and fold its notifications.
-		proj := appprojector.NewAppEventProjector("thread", "local:thread")
-		var notes []appprojector.AppNotification
-		for _, ev := range liveEvents {
-			notes = append(notes, proj.Project(ev)...)
-		}
-		live := normalizeMetamorphic(foldLiveItems(notes))
-
-		// Reload side: the same path as 4a.
-		var re hubcore.ReplayEntry
-		if err := json.Unmarshal(canonBytes, &re); err != nil {
-			t.Fatalf("decode ReplayEntry: %v", err)
-		}
-		reconstructed, _ := replayTurnToAgentTurn(re.Turn)
-		reload := normalizeMetamorphic(apptranscript.ProjectTurn("turn_1", 1, reconstructed, map[string]string{}, nil))
-
-		if eq, a, b := jsonEqItems(t, live, reload); !eq {
-			t.Fatalf("live-vs-reload metamorphic diverged:\n live  =%s\n reload=%s\n entry=%s", a, b, canonBytes)
-		}
+		checkLiveVsReload(t, raw)
 	})
+}
+
+// checkLiveVsReload runs the live-vs-reload metamorphic on one entry's JSON: a
+// content kind that survives one projection path but not the other (or shifts
+// position) makes the two item lists diverge. Shared by the raw-byte target
+// above and the structure-aware target below.
+func checkLiveVsReload(t *testing.T, raw []byte) {
+	t.Helper()
+	var e transcript.Entry
+	if json.Unmarshal(raw, &e) != nil {
+		return
+	}
+	canon, canonBytes := canonicalEntry(t, e)
+
+	liveEvents, supported := synthesizeLiveEvents(canon.Turn)
+	if !supported {
+		return // turn kind has no clean item-producing live path (see synthesizer)
+	}
+
+	// Live side: drive a fresh projector and fold its notifications.
+	proj := appprojector.NewAppEventProjector("thread", "local:thread")
+	var notes []appprojector.AppNotification
+	for _, ev := range liveEvents {
+		notes = append(notes, proj.Project(ev)...)
+	}
+	live := normalizeMetamorphic(foldLiveItems(notes))
+
+	// Reload side: the same path as 4a.
+	var re hubcore.ReplayEntry
+	if err := json.Unmarshal(canonBytes, &re); err != nil {
+		t.Fatalf("decode ReplayEntry: %v", err)
+	}
+	reconstructed, _ := replayTurnToAgentTurn(re.Turn)
+	reload := normalizeMetamorphic(apptranscript.ProjectTurn("turn_1", 1, reconstructed, map[string]string{}, nil))
+
+	if eq, a, b := jsonEqItems(t, live, reload); !eq {
+		t.Fatalf("live-vs-reload metamorphic diverged:\n live  =%s\n reload=%s\n entry=%s", a, b, canonBytes)
+	}
 }
 
 // synthesizeLiveEvents builds the SessionEvent stream the live path would have
@@ -380,4 +390,73 @@ func normalizeMetamorphicImages(images []appwire.InputItem) []appwire.InputItem 
 		out = append(out, appwire.InputItem{MediaType: img.MediaType})
 	}
 	return out
+}
+
+// FuzzHubReplayLiveVsReloadStructured drives the live-vs-reload differential with
+// ALWAYS-VALID entries built across the content kinds, so the search explores
+// kind COMBINATIONS instead of stalling on the broken JSON that raw-byte mutation
+// mostly produces. buildReplayEntry matches content kinds to the turn kind that
+// can carry them and routes the fuzzer into the renderable text fields.
+func FuzzHubReplayLiveVsReloadStructured(f *testing.F) {
+	f.Add(byte(0), byte(0xff), "answer", "reasoning", "serf query", "shell", "ls -la")
+	f.Add(byte(1), byte(0xff), "look", "", "", "", "")
+	f.Add(byte(2), byte(1), "tool output", "", "", "", "")
+	f.Add(byte(3), byte(1), "summary text", "", "", "", "")
+
+	f.Fuzz(func(t *testing.T, turnSel, partsSel byte, text, think, query, name, cmd string) {
+		checkLiveVsReload(t, buildReplayEntry(turnSel, partsSel, text, think, query, name, cmd))
+	})
+}
+
+// buildReplayEntry assembles a valid transcript-entry JSON for one turn kind,
+// selecting a subset of that kind's content parts via partsSel and filling the
+// renderable fields from the fuzzer's strings (JSON-escaped).
+func buildReplayEntry(turnSel, partsSel byte, text, think, query, name, cmd string) []byte {
+	js := func(s string) string { b, _ := json.Marshal(s); return string(b) }
+	turnKinds := []string{"ASSISTANT", "USER_INPUT", "TOOL_RESULTS", "SUMMARY"}
+	turnKind := turnKinds[int(turnSel)%len(turnKinds)]
+
+	var role string
+	var menu []string
+	switch turnKind {
+	case "ASSISTANT":
+		role = "assistant"
+		menu = []string{
+			`{"kind":"text","text":` + js(text) + `}`,
+			`{"kind":"thinking","thinking":{"text":` + js(think) + `}}`,
+			`{"kind":"redacted_thinking","thinking":{"redacted":true}}`,
+			`{"kind":"web_search","web_search":{"query":` + js(query) + `,"raw":{"content":[{"type":"web_search_result","url":"https://x","title":` + js(query) + `}]}}}`,
+			`{"kind":"tool_call","tool_call":{"id":"c1","name":` + js(name) + `,"arguments":{"command":` + js(cmd) + `}}}`,
+			`{"kind":"tool_call","tool_call":{"id":"c2","name":"communicate","arguments":{"message":` + js(text) + `}}}`,
+		}
+	case "USER_INPUT":
+		role = "user"
+		menu = []string{
+			`{"kind":"text","text":` + js(text) + `}`,
+			`{"kind":"image","image":{"data":"aGVsbG8=","media_type":"image/png"}}`,
+			`{"kind":"audio","audio":{"url":"https://a","media_type":"audio/mp3"}}`,
+			`{"kind":"document","document":{"url":"https://d","media_type":"application/pdf","file_name":"r.pdf"}}`,
+		}
+	case "TOOL_RESULTS":
+		role = "tool"
+		menu = []string{
+			`{"kind":"tool_result","tool_result":{"tool_call_id":"c1","name":"shell","content":` + js(text) + `,"is_error":false}}`,
+		}
+	default: // SUMMARY
+		role = "assistant"
+		menu = []string{`{"kind":"text","text":` + js(text) + `}`}
+	}
+
+	var parts []string
+	for i := range menu {
+		if partsSel&(1<<uint(i)) != 0 {
+			parts = append(parts, menu[i])
+		}
+	}
+	if len(parts) == 0 {
+		parts = append(parts, menu[0]) // content must be non-empty
+	}
+	return []byte(`{"kind":"entry","seq":1,"turn":{"kind":"` + turnKind +
+		`","message":{"role":"` + role + `","content":[` + strings.Join(parts, ",") +
+		`]},"timestamp":"2026-06-01T10:00:00Z"}}`)
 }
