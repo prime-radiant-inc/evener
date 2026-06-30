@@ -131,6 +131,9 @@ TARGETS=(
 	"native:llm:./providers/openai:FuzzOpenAIChatCompletionsRequestBuild::chatcompletions.go#buildChatCompletionsBody"
 	"native:llm:./providers/openai:FuzzOpenAIResponsesDecode::responses.go#fromResponses"
 	"native:llm:.:FuzzErrorFromHTTPStatus::errors.go#errorFromHTTPStatus"
+	"native:llm:.:FuzzClassify::classify.go#Classify"
+	"native:llm:.:FuzzAPILogBuilders::apilog.go#BuildAPILogRequest"
+	"native:llm:.:FuzzClientDispatch::client.go#Complete"
 	# Rapid promoter surfaces — Test* funcs driven by rapid.Check during ordinary
 	# `go test -run` (not `go test -fuzz`). They share this registry so the triage
 	# tool no longer needs a parallel hardcoded list.
