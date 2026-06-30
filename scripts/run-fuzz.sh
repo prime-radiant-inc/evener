@@ -68,6 +68,7 @@ TARGETS=(
 	"native:.:./appwire:FuzzCodexItemDecode::"
 	"native:llm:./providercfg:FuzzProvidersTOMLLoad::load.go"
 	"native:.:./cmd/serf-hub/internal/launchconfig:FuzzLaunchConfigDecode::io.go"
+	"native:.:./cmd/serf-hub/internal/launchconfig:FuzzLaunchConfigResolve::resolver.go#Resolve"
 	"native:agent:./plugin:FuzzPluginManifestParse::plugin.go#ParseManifest"
 	"native:.:./internal/credentials:FuzzCredentialsStoreDecode::store.go"
 	"native:agent:./plugin:FuzzPluginLoad::plugin.go#Load"
