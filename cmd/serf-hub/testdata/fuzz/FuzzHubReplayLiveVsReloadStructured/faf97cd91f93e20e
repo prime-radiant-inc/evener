@@ -1,0 +1,8 @@
+go test fuzz v1
+byte('\f')
+byte('ù')
+string("0")
+string("")
+string("")
+string("")
+string("")
