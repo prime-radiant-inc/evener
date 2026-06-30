@@ -1,0 +1,142 @@
+[
+  {
+    "name": "anthropic_text_full",
+    "provider": "anthropic",
+    "source": "llm/providers/anthropic/adapter_test.go TestStream_CapturesIDAndModel",
+    "text": "hi",
+    "finish": "stop",
+    "finish_raw": "end_turn",
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "total_tokens": 10
+  },
+  {
+    "name": "anthropic_thinking_tooluse",
+    "provider": "anthropic",
+    "source": "llm/providers/anthropic/adapter_test.go TestAdapter_Stream_TranslatesToolUseAndThinkingBlocks",
+    "reasoning": "Plan",
+    "finish": "tool_calls",
+    "finish_raw": "tool_use",
+    "input_tokens": 1,
+    "output_tokens": 2,
+    "total_tokens": 0,
+    "tools": [
+      {
+        "Name": "get_weather",
+        "Args": "{\"n\":1}"
+      }
+    ]
+  },
+  {
+    "name": "anthropic_reasoning_sectionbreak",
+    "provider": "anthropic",
+    "source": "llm/providers/anthropic/adapter_test.go TestAdapter_Stream_EmitsReasoningDeltas_SectionBreakBetweenBlocks",
+    "text": "Answer",
+    "reasoning": "Let me think.Then verify.",
+    "finish": "stop",
+    "input_tokens": 1,
+    "output_tokens": 2,
+    "total_tokens": 0
+  },
+  {
+    "name": "google_text_finish",
+    "provider": "google",
+    "source": "llm/providers/google/adapter_test.go TestAdapter_Stream_YieldsTextDeltasAndFinish",
+    "text": "Hello",
+    "finish": "stop",
+    "finish_raw": "STOP",
+    "input_tokens": 1,
+    "output_tokens": 2,
+    "total_tokens": 3
+  },
+  {
+    "name": "google_functioncall",
+    "provider": "google",
+    "source": "llm/providers/google/adapter_test.go TestAdapter_Stream_TranslatesFunctionCalls",
+    "text": "ok",
+    "finish": "tool_calls",
+    "finish_raw": "STOP",
+    "input_tokens": 1,
+    "output_tokens": 2,
+    "total_tokens": 3,
+    "tools": [
+      {
+        "Name": "get_weather",
+        "Args": "{\"n\":1}"
+      }
+    ]
+  },
+  {
+    "name": "google_usage_on_finish_chunk",
+    "provider": "google",
+    "source": "llm/providers/google/usage_finish_chunk_test.go TestStream_UsageOnFinishChunk",
+    "text": "hi",
+    "finish": "stop",
+    "finish_raw": "STOP",
+    "input_tokens": 11,
+    "output_tokens": 22,
+    "total_tokens": 33
+  },
+  {
+    "name": "openai_text",
+    "provider": "openai",
+    "source": "llm/providers/openai/adapter_test.go TestAdapter_Stream_YieldsTextDeltasAndFinish",
+    "text": "Hello",
+    "finish": "stop",
+    "input_tokens": 1,
+    "output_tokens": 2,
+    "total_tokens": 3
+  },
+  {
+    "name": "openai_reasoning_summary",
+    "provider": "openai",
+    "source": "llm/providers/openai/adapter_test.go TestAdapter_Stream_EmitsReasoningSummaryDeltas",
+    "text": "Answer",
+    "finish": "stop",
+    "input_tokens": 1,
+    "output_tokens": 2,
+    "total_tokens": 3
+  },
+  {
+    "name": "openai_toolcall",
+    "provider": "openai",
+    "source": "llm/providers/openai/adapter_test.go TestAdapter_Stream_TranslatesToolCalls",
+    "finish": "tool_calls",
+    "input_tokens": 1,
+    "output_tokens": 2,
+    "total_tokens": 3,
+    "tools": [
+      {
+        "Name": "get_weather",
+        "Args": "{\"n\":1}"
+      }
+    ]
+  },
+  {
+    "name": "openaicompat_text",
+    "provider": "openaicompat",
+    "source": "llm/providers/openaicompat/adapter_test.go TestAdapter_Stream_YieldsTextDeltasAndFinish",
+    "text": "Hello",
+    "finish": "stop",
+    "finish_raw": "stop",
+    "input_tokens": 5,
+    "output_tokens": 3,
+    "total_tokens": 8
+  },
+  {
+    "name": "openaicompat_toolcall",
+    "provider": "openaicompat",
+    "source": "llm/providers/openaicompat/adapter_test.go TestAdapter_Stream_ToolCalls",
+    "finish": "tool_calls",
+    "finish_raw": "tool_calls",
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "total_tokens": 15,
+    "tools": [
+      {
+        "Name": "get_weather",
+        "Args": "{\"city\":\"SF\"}"
+      }
+    ]
+  }
+]

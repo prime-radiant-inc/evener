@@ -124,6 +124,7 @@ fuzz:
 # commit the diff. See docs/fuzzing.md ("Choosing an oracle").
 fuzz-goldens:
 	@$(MEMCAP) sh -c "go test -run '^Test.*Golden\$$' ./appwire -update-goldens"
+	@$(MEMCAP) sh -c "cd llm && go test -run '^Test.*Golden\$$' ./providers/difftest -update-goldens"
 
 # fuzz-nightly runs the unbounded coverage-guided search per target, bounded by a
 # per-target time budget. Manual / nightly only — never in the gate.
