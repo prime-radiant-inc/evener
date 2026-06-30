@@ -16,6 +16,11 @@
 # This is HEAVY (whole-module instrumentation + the full seed corpus) and LOCAL /
 # on-demand — not a CI gate. Memory-capped via run-capped.sh.
 #
+# REQUIREMENT: -coverpkg=./... needs Go's prebuilt `covdata` tool to attribute
+# coverage to packages without tests. Some downloaded toolchains omit it; if a
+# module reports `no such tool "covdata"`, build it once into a writable GOTOOLDIR:
+#   go build -o "$(go env GOTOOLDIR)/covdata" cmd/covdata
+#
 # Usage:
 #   scripts/fuzz-coverage-global.sh                 # advisory report (exit 0)
 #   scripts/fuzz-coverage-global.sh --check         # ratchet: exit non-zero on a drop
@@ -75,9 +80,15 @@ for m in $modules; do
 	# give it a generous test timeout (override the go default 10m).
 	if ! out="$( cd "$repo_root/$m" && "$capped" "$go_bin" test -tags serffuzz \
 			-timeout 45m -run '^Fuzz' -coverpkg=./... -coverprofile="$prof" ./... 2>&1 )"; then
-		# A build/test failure is fatal to the measurement — report and keep going.
-		printf '%-10s %s\n' "$m" "MEASUREMENT FAILED (see below)"
-		printf '%s\n' "$out" | tail -5 | sed 's/^/    /'
+		# A build/test failure is fatal to the measurement. Surface the actual
+		# cause (the FAIL/panic/error line), not just the trailing output.
+		printf '%-10s %s\n' "$m" "MEASUREMENT FAILED:"
+		if printf '%s\n' "$out" | grep -q 'no such tool "covdata"'; then
+			echo "    go is missing the prebuilt 'covdata' tool that -coverpkg=./... needs for" >&2
+			echo "    packages without tests. Build it into the toolchain (writable GOTOOLDIR):" >&2
+			echo "      go build -o \"\$(go env GOTOOLDIR)/covdata\" cmd/covdata" >&2
+		fi
+		printf '%s\n' "$out" | grep -iE '^(FAIL|--- FAIL|panic|# )|build failed|no such tool|signal: killed|timed out' | head -6 | sed 's/^/    /'
 		fail=1
 		continue
 	fi
