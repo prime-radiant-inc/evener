@@ -1,0 +1,1 @@
+Write a Go file broken.go that fails to compile (an undefined variable). Run 'go build broken.go' to see the error, then fix the file so it compiles and runs.

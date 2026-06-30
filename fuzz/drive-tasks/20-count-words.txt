@@ -1,0 +1,1 @@
+Create a paragraph of text in essay.txt, then write a command that reports the total word count and the three most frequent words with their counts.

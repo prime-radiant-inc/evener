@@ -1,0 +1,1 @@
+Implement a generic stack in Go (Push, Pop, Len) in stack.go and a short main that pushes 5 ints and pops them, printing each. Run it.

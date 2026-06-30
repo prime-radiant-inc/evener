@@ -14,21 +14,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-func TestEnvRecordEnabled(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"1", true}, {"true", true}, {"TRUE", true}, {"yes", true}, {"on", true}, {" on ", true},
-		{"0", false}, {"false", false}, {"", false}, {"off", false}, {"nope", false},
-	}
-	for _, c := range cases {
-		if got := envRecordEnabled(c.in); got != c.want {
-			t.Errorf("envRecordEnabled(%q)=%v, want %v", c.in, got, c.want)
-		}
-	}
-}
-
 func TestFrameRecorderWritesJSONL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "appwire-frames.jsonl")
 	rec, err := NewFrameRecorder(path)

@@ -1,0 +1,1 @@
+Create five files named img1.dat through img5.dat, then batch-rename them to photo_01.dat through photo_05.dat with zero-padded numbers and list the result.

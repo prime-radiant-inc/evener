@@ -1,0 +1,1 @@
+Create a YAML file service.yaml describing a service with a name, port, and a list of three environment variables. Then write a command that extracts just the port number.

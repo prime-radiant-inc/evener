@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"primeradiant.com/serf/envvars"
@@ -73,7 +72,7 @@ func (r *FrameRecorder) Close() error {
 var appwireFrameRecorder = newEnvFrameRecorder()
 
 func newEnvFrameRecorder() *FrameRecorder {
-	if !envRecordEnabled(envvars.SERFRecordAppwire.Getenv()) {
+	if !envvars.RecorderEnabled(envvars.SERFRecordAppwire) {
 		return nil
 	}
 	rec, err := NewFrameRecorder(filepath.Join(recorderStateRoot(), "appwire-frames.jsonl"))
@@ -94,14 +93,4 @@ func recorderStateRoot() string {
 		return filepath.Join(home, ".serf")
 	}
 	return ".serf"
-}
-
-// envRecordEnabled reports whether a recorder env value selects recording.
-func envRecordEnabled(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
 }

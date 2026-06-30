@@ -1,0 +1,1 @@
+Create a CSV file people.csv with header name,city,age and 6 rows. Write a script that groups people by city and prints the count per city.

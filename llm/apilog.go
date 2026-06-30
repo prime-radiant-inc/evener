@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -195,18 +194,7 @@ type APIRawLogEntry struct {
 // Adapters check this before populating RawRequestBody/RawResponseBody.
 func RawBodyEnabled() bool { return rawBodyEnabled }
 
-var rawBodyEnabled = func() bool {
-	return rawHTTPLogEnabled(envvars.SERFLogRawHTTP.Getenv())
-}()
-
-func rawHTTPLogEnabled(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
-}
+var rawBodyEnabled = envvars.RecorderEnabled(envvars.SERFLogRawHTTP)
 
 // APILogger is middleware that logs every LLM API call to a JSONL file.
 type APILogger struct {

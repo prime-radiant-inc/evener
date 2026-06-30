@@ -1,0 +1,1 @@
+Create a file words.txt with about 20 words including several duplicates and mixed case. Produce a sorted, case-insensitive, de-duplicated list and count how many unique words remain.

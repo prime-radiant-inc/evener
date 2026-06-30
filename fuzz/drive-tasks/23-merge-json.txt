@@ -1,0 +1,1 @@
+Create two JSON files defaults.json and overrides.json with overlapping keys. Write a script that merges them with overrides winning, and prints the merged result.

@@ -1,0 +1,1 @@
+Create a script that reads three name/score pairs you invent and prints them as an aligned ASCII table with a header row and a separator line.

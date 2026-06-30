@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"primeradiant.com/serf/envvars"
@@ -38,7 +37,7 @@ type recordedHTTPRequest struct {
 // and never changes the response.
 func newHTTPRequestRecorder(stateRoot string) func(http.Handler) http.Handler {
 	identity := func(next http.Handler) http.Handler { return next }
-	if !envRecordHTTPEnabled(envvars.SERFRecordHTTP.Getenv()) {
+	if !envvars.RecorderEnabled(envvars.SERFRecordHTTP) {
 		return identity
 	}
 	f, err := os.OpenFile(filepath.Join(stateRoot, "hub-http.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -77,15 +76,5 @@ func newHTTPRequestRecorder(stateRoot string) func(http.Handler) http.Handler {
 			write(rec)
 			next.ServeHTTP(w, r)
 		})
-	}
-}
-
-// envRecordHTTPEnabled reports whether SERF_RECORD_HTTP selects recording.
-func envRecordHTTPEnabled(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
 	}
 }

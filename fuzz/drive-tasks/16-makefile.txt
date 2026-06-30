@@ -1,0 +1,1 @@
+Create a tiny C program hello.c and a Makefile with build and clean targets. Run make to build it, run the binary, then run make clean.

@@ -106,5 +106,6 @@ process environments.
 | `SERF_FLUENCY_MODEL` | Default model for the tool-fluency development harness. |
 | `SERF_RECORD_APPWIRE` | Records raw AppWire WebSocket frames to `appwire-frames.jsonl` (under the state root) for fuzz-corpus harvesting when set to `1`, `true`, `yes`, or `on`. Default off; no behavior change when unset. |
 | `SERF_RECORD_HTTP` | Records inbound hub HTTP requests to `hub-http.jsonl` (under the state root) for fuzz-corpus harvesting when set to `1`, `true`, `yes`, or `on`. Default off; no behavior change when unset. |
+| `SERF_FUZZ_RECORD` | Master switch enabling all fuzz-corpus recorders (provider `api-raw.jsonl`, AppWire frames, hub HTTP) by default when set to `1`, `true`, `yes`, or `on`. A per-recorder variable (`SERF_LOG_RAW_HTTP`/`SERF_RECORD_APPWIRE`/`SERF_RECORD_HTTP`) overrides it. Intended for local dev; unset everywhere else, so recording is off by default in shipped binaries, CI, and production. |
 | `SERF_FUZZ_CAPTURE_ENV` | Marks a dedicated capture box so `serf-fuzz-harvest --keep-values` is permitted (real, unscrubbed values; local-only, never committed). Ignored for a personal `~/.serf` source. |
 | `OPENAI_CHATGPT_CLIENT_ID` | OpenAI OAuth client id override for tests and development. |

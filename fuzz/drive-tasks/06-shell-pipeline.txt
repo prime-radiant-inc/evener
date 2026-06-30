@@ -1,0 +1,1 @@
+Use shell commands to create a file numbers.txt containing the numbers 1 to 100 one per line, then compute their sum and the count of even numbers using a pipeline.
