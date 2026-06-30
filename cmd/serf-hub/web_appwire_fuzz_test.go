@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/appwire"
 	authopenai "primeradiant.com/serf/auth/openai"
+	"primeradiant.com/serf/fuzz/schemagen"
+	"primeradiant.com/serf/fuzz/typegen"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/internal/selfupdate"
@@ -95,6 +98,26 @@ func stubSelfUpgrade(f *testing.F) {
 	f.Cleanup(func() { runHubSelfUpgrade = selfupdate.Upgrade })
 }
 
+// buildParamsRegistry reflects every catalog method's Params type into a
+// serf-free typegen Registry keyed by "<method>#params". FuzzAppWireDispatch
+// uses it to generate schema-shaped Params values (Valid and schema-adjacent)
+// for the selected method, so dispatch exercises typed param shapes that the
+// fuzzer's raw bytes rarely form cleanly — driving the real handler logic past
+// the json.Unmarshal decode boundary. Reflection is sufficient here: there is no
+// round-trip fixed-point oracle on this path (that lives in appwire's decode-only
+// FuzzWireTypes), only the dispatch post-condition oracles, so the lone custom
+// marshaler in the catalog (LaunchConfigLayer, nested in setLayer params) needs
+// no hand-authored schema override — its reflected field shape decodes fine.
+func buildParamsRegistry() *typegen.Registry {
+	reg := typegen.NewRegistry()
+	for _, m := range appwire.Methods {
+		if t := reflect.TypeOf(m.Params); t != nil {
+			reg.RegisterType(m.Name+"#params", t)
+		}
+	}
+	return reg
+}
+
 // hubMethodNames returns the wire names of every catalog method, in order. The
 // B1 fuzz indexes into this so every one of the 46 appwire.Methods is reachable:
 // the routed hub methods run their real app_*.go handler; connection-level
@@ -174,6 +197,7 @@ func FuzzAppWireDispatch(f *testing.F) {
 	s := newSandbox(f)
 	router := s.Web.appRPC.Router()
 	methods := hubMethodNames()
+	paramsReg := buildParamsRegistry()
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: sandboxSessionID}.String()
 	idx := func(name string) int {
@@ -235,13 +259,17 @@ func FuzzAppWireDispatch(f *testing.F) {
 		f.Add(uint8(idx(seed.method)), []byte(seed.params))
 	}
 
-	f.Fuzz(func(t *testing.T, methodIdx uint8, params []byte) {
-		method := methods[int(methodIdx)%len(methods)]
+	// dispatchAndCheck runs one (method, params) pair through the real
+	// Router.Dispatch under the full sandbox oracle gauntlet. It is invoked twice
+	// per fuzz input: once with the fuzzer's raw bytes as JSON params, and once
+	// with a schema-shaped value built from the same bytes by the wire-type
+	// generator.
+	dispatchAndCheck := func(t *testing.T, method string, params []byte) {
 		raw := pinSandboxCWD(params, s.CWD)
 		req := appwire.Request{ID: appwire.NewIntID(1), Method: method, Params: raw}
 
-		// Re-arm the path-traversal canary so every input is judged independently:
-		// each iteration starts with the out-of-state file present.
+		// Re-arm the path-traversal canary so every dispatch is judged
+		// independently: each starts with the out-of-state file present.
 		if err := os.WriteFile(canary, []byte("canary"), 0o600); err != nil {
 			t.Fatalf("re-arm canary: %v", err)
 		}
@@ -297,6 +325,30 @@ func FuzzAppWireDispatch(f *testing.F) {
 		// filesystem path join (the serf/instance/remove → DeleteAuth surface).
 		if _, err := os.Stat(canary); err != nil {
 			t.Fatalf("path escape via %s: out-of-state canary was deleted (%v)", method, err)
+		}
+	}
+
+	f.Fuzz(func(t *testing.T, methodIdx uint8, params []byte) {
+		method := methods[int(methodIdx)%len(methods)]
+
+		// Raw-byte path: the fuzzer's own bytes as JSON params — the tokenizer and
+		// custom-UnmarshalJSON surface a structured value never reaches.
+		dispatchAndCheck(t, method, params)
+
+		// Structured path: feed the same bytes to the wire-type generator to build
+		// a schema-shaped Params value for this method, so dispatch exercises typed
+		// param shapes — valid and schema-adjacent — that raw bytes rarely form
+		// cleanly, reaching handler logic past the json.Unmarshal decode boundary.
+		// The low bit of the first byte steers valid vs adjacent, the rest is
+		// generator entropy.
+		mode := schemagen.Valid
+		if len(params) > 0 && params[0]&1 == 1 {
+			mode = schemagen.Adjacent
+		}
+		if val, ok := paramsReg.Value(method+"#params", mode, schemagen.NewByteSource(params)); ok {
+			if structured, err := json.Marshal(val); err == nil {
+				dispatchAndCheck(t, method, structured)
+			}
 		}
 	})
 }
