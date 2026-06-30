@@ -9,6 +9,14 @@
 # -coverpkg=./... (Go merges the coverage of all targets into a single profile),
 # then reports covered/total statements per module and across the repo.
 #
+# READ THIS NUMBER CORRECTLY: it is FUZZ-REACHABLE coverage — what the fuzz corpus
+# ALONE drives — NOT total test coverage. It is intentionally a minority of the
+# module: fuzzing targets decode/parse/dispatch seams, while UNIT TESTS cover the
+# request-building, client, error-handling, UI, and CLI code fuzzing never touches.
+# The full test suite covers far more (measured: llm 39% fuzz vs 85% full-suite;
+# agent 26% vs 86%). Use --with-full to print both side by side. The fuzz number's
+# job is as a RATCHET (don't let fuzz reach regress), not a quality score.
+#
 # It enforces a no-regression ratchet against scripts/fuzzcov-global-floors.txt
 # (per-module floors, raised only upward) so new code that isn't fuzz-reachable
 # visibly lowers the global number instead of slipping in unnoticed.
@@ -37,6 +45,7 @@ modules=". agent llm"
 tolerance="0.5" # percentage-point band absorbing nondeterministic wobble
 check=false
 bless=false
+with_full=false
 go_bin="${SERF_FUZZ_GO:-go}"
 capped="${SERF_FUZZ_CAPPED:-$repo_root/scripts/run-capped.sh}"
 
@@ -47,6 +56,7 @@ while [ $# -gt 0 ]; do
 		--tolerance) tolerance="$2"; shift 2 ;;
 		--check) check=true; shift ;;
 		--bless) bless=true; shift ;;
+		--with-full) with_full=true; shift ;;
 		-h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		*) echo "fuzz-coverage-global: unknown arg $1" >&2; exit 2 ;;
 	esac
@@ -74,10 +84,15 @@ stmt_counts() {
 	           printf "%d %d", c+0, t+0 }' "$1"
 }
 
-echo "=== global fuzz-reachable coverage (modules: $modules) ==="
-printf '%-10s %12s %12s %8s %8s\n' "module" "covered" "total" "pct" "floor"
+echo "=== global FUZZ-REACHABLE coverage — what the corpus alone drives, NOT total"
+echo "    test coverage (the full suite covers far more); modules: $modules ==="
+if $with_full; then
+	printf '%-10s %10s %10s %9s %9s %7s\n' "module" "fuzz%" "full%" "fuzz/full" "floor" ""
+else
+	printf '%-10s %12s %12s %8s %8s\n' "module" "covered" "total" "fuzz%" "floor"
+fi
 
-repo_c=0 repo_t=0 fail=0
+repo_c=0 repo_t=0 repo_fc=0 repo_ft=0 fail=0
 declare -A measured=()
 for m in $modules; do
 	prof="$profiles_dir/${m//\//_}.cov"
@@ -106,9 +121,25 @@ for m in $modules; do
 	pct="$(awk -v c="$c" -v t="$t" 'BEGIN{printf "%.1f", 100*c/t}')"
 	measured["$m"]="$pct"
 	repo_c=$((repo_c + c)); repo_t=$((repo_t + t))
-
 	floor="$(floor_for "$m")"
-	printf '%-10s %12d %12d %7s%% %7s\n' "$m" "$c" "$t" "$pct" "${floor:-—}"
+
+	if $with_full; then
+		# Best-effort full-suite pass for CONTEXT (not ratcheted): a flaky/env-gated
+		# test failing here must not block the fuzz ratchet, so on failure show "—".
+		fullprof="$profiles_dir/${m//\//_}.full.cov"
+		if ( cd "$repo_root/$m" && "$capped" "$go_bin" test -timeout 45m \
+				-coverpkg=./... -coverprofile="$fullprof" ./... ) >/dev/null 2>&1 && [ -f "$fullprof" ]; then
+			read -r fc ft < <(stmt_counts "$fullprof")
+			full_pct="$(awk -v c="$fc" -v t="$ft" 'BEGIN{ printf "%.1f", (t>0)?(100*c/t):0 }')"
+			ratio="$(awk -v f="$pct" -v u="$full_pct" 'BEGIN{ r=(u>0)?(100*f/u):0; printf "%.0f%%", r }')"
+			repo_fc=$((repo_fc + fc)); repo_ft=$((repo_ft + ft))
+		else
+			full_pct="—"; ratio="—"
+		fi
+		printf '%-10s %9s%% %9s%% %9s %8s\n' "$m" "$pct" "$full_pct" "$ratio" "${floor:-—}"
+	else
+		printf '%-10s %12d %12d %7s%% %7s\n' "$m" "$c" "$t" "$pct" "${floor:-—}"
+	fi
 
 	if $check && [ -n "$floor" ]; then
 		below="$(awk -v p="$pct" -v f="$floor" -v tol="$tolerance" 'BEGIN{print (p < f - tol) ? 1 : 0}')"
@@ -121,7 +152,13 @@ done
 
 if [ "$repo_t" -gt 0 ]; then
 	repo_pct="$(awk -v c="$repo_c" -v t="$repo_t" 'BEGIN{printf "%.1f", 100*c/t}')"
-	printf '%-10s %12d %12d %7s%%\n' "REPO" "$repo_c" "$repo_t" "$repo_pct"
+	if $with_full && [ "$repo_ft" -gt 0 ]; then
+		repo_full="$(awk -v c="$repo_fc" -v t="$repo_ft" 'BEGIN{printf "%.1f", 100*c/t}')"
+		repo_ratio="$(awk -v f="$repo_pct" -v u="$repo_full" 'BEGIN{ r=(u>0)?(100*f/u):0; printf "%.0f%%", r }')"
+		printf '%-10s %9s%% %9s%% %9s\n' "REPO" "$repo_pct" "$repo_full" "$repo_ratio"
+	else
+		printf '%-10s %12d %12d %7s%%\n' "REPO" "$repo_c" "$repo_t" "$repo_pct"
+	fi
 fi
 
 if $bless; then
