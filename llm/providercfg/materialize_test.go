@@ -8,7 +8,7 @@ import (
 func TestMarshalDescriptorsOnly(t *testing.T) {
 	cfg := Config{Default: "openai", Instances: []InstanceConfig{
 		{Name: "openai", Type: "openai", APIStyle: StyleResponses, APIKey: "sk-LEAK"},
-		{Name: "vllm", Type: "openai", APIStyle: StyleChatCompletions, BaseURL: "https://vllm.local/v1"},
+		{Name: "vllm", Type: "openai", APIStyle: StyleChatCompletions, BaseURL: "https://vllm.local/v1", Quirks: "vllm-quirk"},
 	}}
 	data, err := Marshal(cfg)
 	if err != nil {
@@ -44,6 +44,9 @@ func TestMarshalDescriptorsOnly(t *testing.T) {
 		}
 		if found.BaseURL != orig.BaseURL {
 			t.Errorf("instance %q: BaseURL = %q, want %q", orig.Name, found.BaseURL, orig.BaseURL)
+		}
+		if found.Quirks != orig.Quirks {
+			t.Errorf("instance %q: Quirks = %q, want %q", orig.Name, found.Quirks, orig.Quirks)
 		}
 	}
 }
