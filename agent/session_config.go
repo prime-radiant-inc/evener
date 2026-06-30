@@ -212,6 +212,24 @@ type testConfig struct {
 	// hazard the offline-harness design flags). It is inherited by the child's own
 	// config (subCfg := s.cfg), so a grandchild would likewise get a fresh client.
 	childClientFactory func() *llm.Client
+
+	// namerClient, when non-nil, is the llm.Client the background session namer
+	// uses instead of the session's own. The namer runs on a detached goroutine,
+	// so routing it through a separate scripted client keeps its draw off the
+	// shared Responder — the same race childClientFactory avoids for children —
+	// letting the fuzz lifecycle harness exercise the namer goroutine
+	// deterministically (launch, decode, state mutation, join) alongside the other
+	// ops. Nil in production: the namer uses s.client unchanged.
+	namerClient *llm.Client
+
+	// forceSessionNamer, when true, launches the background namer even with an
+	// empty StateDir, so the fuzz lifecycle harness can exercise the namer
+	// goroutine WITHOUT enabling StateDir (which would autosave a meta file on
+	// nearly every op — disk churn the search cannot afford). With StateDir empty,
+	// the namer's own persistence (maybeAutoSave, appendSessionNamerLog) no-ops,
+	// so only the in-memory goroutine + decode + naming-state mutation run. False
+	// in production: the StateDir gate is unchanged.
+	forceSessionNamer bool
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the
