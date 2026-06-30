@@ -334,6 +334,7 @@ type lifecycleModel struct {
 	prevTurns     int
 	prevModelResp int
 	prevHistLen   int
+	terminalJobs  map[string]string // job ID -> the terminal status first observed (Oracle 7)
 }
 
 // lifecycleInject configures a fault for the determinism tests. The zero value
@@ -423,7 +424,7 @@ func lifecycleOracleRunInjected(art lifecycleArtifact, inj lifecycleInject) *pro
 		<-drainDone
 	}()
 
-	model := &lifecycleModel{prevHistLen: snapshotHistoryLen(sess)}
+	model := &lifecycleModel{prevHistLen: snapshotHistoryLen(sess), terminalJobs: map[string]string{}}
 
 	for i, op := range art.Ops {
 		// Reset per-op responder state.
@@ -599,6 +600,31 @@ func checkLifecycleOracles(sess *Session, m *lifecycleModel, op opRecord, art li
 	case opBackgroundShell, opBackgroundDelegate:
 		if f := checkJobsQuiesced(sess, art, step); f != nil {
 			return f
+		}
+	}
+
+	// Oracle 7 (cross-subsystem): a job's terminal state is FINAL through the full
+	// interleaving. Once observed terminal, a job must never be seen non-terminal
+	// again (terminal-stickiness), nor flip to a DIFFERENT terminal status (e.g.
+	// Done -> Failed) — no matter what compaction / delegation / goal churn ran
+	// between observations. The isolated jobstore model establishes these only
+	// without that churn; this asserts they survive it. Only currently-present
+	// jobs are checked, so eviction is not a violation; a reappearing-changed
+	// record is.
+	if jm := sess.jobManager; jm != nil {
+		for _, rec := range jm.list(listFilter{}) {
+			if prev, seen := m.terminalJobs[rec.JobID]; seen {
+				if !rec.Status.IsTerminal() {
+					return lifecycleFailure(promoter.Invariant, art, step,
+						fmt.Sprintf("job-terminal-unstuck:%s:%s->%s", rec.JobID, prev, rec.Status))
+				}
+				if string(rec.Status) != prev {
+					return lifecycleFailure(promoter.Invariant, art, step,
+						fmt.Sprintf("job-terminal-status-changed:%s:%s->%s", rec.JobID, prev, rec.Status))
+				}
+			} else if rec.Status.IsTerminal() {
+				m.terminalJobs[rec.JobID] = string(rec.Status)
+			}
 		}
 	}
 
