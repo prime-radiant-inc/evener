@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
 )
 
@@ -147,17 +148,6 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 			body["output_config"] = map[string]any{"effort": effort}
 		}
 	}
-	// Anthropic rejects a forced tool_choice ("any"/"tool") when extended thinking
-	// is enabled — "Thinking may not be enabled when tool_choice forces tool use".
-	// When effort turned thinking on, downgrade forcing to "auto" so the request
-	// is accepted; the model still reasons and then chooses its tools.
-	if _, thinking := body["thinking"]; thinking {
-		if tc, ok := body["tool_choice"].(map[string]any); ok {
-			if t, _ := tc["type"].(string); t == "any" || t == "tool" {
-				body["tool_choice"] = map[string]any{"type": "auto"}
-			}
-		}
-	}
 	if req.ProviderOptions != nil {
 		if ov, ok := req.ProviderOptions["anthropic"].(map[string]any); ok {
 			for k, v := range ov {
@@ -168,17 +158,52 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 			}
 		}
 	}
+	// Anthropic rejects a forced tool_choice ("any"/"tool") when extended thinking
+	// is enabled — "Thinking may not be enabled when tool_choice forces tool use".
+	// When effort turned thinking on, downgrade forcing to "auto" so the request
+	// is accepted; the model still reasons and then chooses its tools. Done AFTER
+	// the provider-option merge, which can itself set a forcing tool_choice (or
+	// thinking) that would otherwise slip past this guard and 400.
+	if _, thinking := body["thinking"]; thinking {
+		if tc, ok := body["tool_choice"].(map[string]any); ok {
+			if t, _ := tc["type"].(string); t == "any" || t == "tool" {
+				body["tool_choice"] = map[string]any{"type": "auto"}
+			}
+		}
+	}
 	// Anthropic requires max_tokens > thinking.budget_tokens. Reconcile AFTER
 	// provider options, which may set their own max_tokens floor that would
 	// otherwise drop below the budget. max_tokens carries the desired output, so
 	// the budget is added on top of it.
 	if thinkingBudget > 0 {
 		out, ok := body["max_tokens"].(int)
-		if !ok {
+		if !ok || out < 1 {
+			// No usable output budget (unset, non-int, or a provider option set it
+			// to <= 0). Fall back to the default so the sum strictly exceeds the
+			// thinking budget — budget + 0 == budget would itself 400.
 			out = maxTokens
 		}
 		if out <= thinkingBudget {
 			body["max_tokens"] = thinkingBudget + out
+		}
+	}
+	if invariant.Enabled {
+		// Anthropic rejects (HTTP 400) a request that BOTH enables extended
+		// thinking and forces tool use, or whose max_tokens does not strictly
+		// exceed the thinking budget. The guards above establish both contracts;
+		// assert they survived everything that runs after them (notably the
+		// provider-option merge, which can re-set tool_choice / max_tokens).
+		if _, thinking := body["thinking"]; thinking {
+			if tc, ok := body["tool_choice"].(map[string]any); ok {
+				t, _ := tc["type"].(string)
+				invariant.Hold(t != "any" && t != "tool",
+					"anthropic request contract: tool_choice %q forces tool use while thinking is enabled", t)
+			}
+		}
+		if thinkingBudget > 0 {
+			mt, _ := body["max_tokens"].(int)
+			invariant.Hold(mt > thinkingBudget,
+				"anthropic request contract: max_tokens %d does not exceed thinking budget %d", mt, thinkingBudget)
 		}
 	}
 	return body, nil

@@ -71,6 +71,19 @@ func buildFuzzRequest(model, system, user string, toolArgs, toolParams []byte, s
 	}
 	req.WebSearch = sel&4 == 4
 	req.StopSequences = []string{system, user}
+
+	// Provider options are merged into the body AFTER the contract guards run, so
+	// route the fuzzer into anthropic overrides that can re-set tool_choice /
+	// max_tokens — the spot a forced choice or a sub-budget max_tokens could slip
+	// past the guards and produce a request Anthropic would 400.
+	switch (sel >> 5) % 4 {
+	case 1:
+		req.ProviderOptions = map[string]any{"anthropic": map[string]any{"tool_choice": map[string]any{"type": "any"}}}
+	case 2:
+		req.ProviderOptions = map[string]any{"anthropic": map[string]any{"tool_choice": map[string]any{"type": "tool", "name": "t"}}}
+	case 3:
+		req.ProviderOptions = map[string]any{"anthropic": map[string]any{"max_tokens": 0}}
+	}
 	return req
 }
 
