@@ -1,0 +1,3 @@
+# Global fuzz-reachable coverage floors (whole-module statement %).
+# Managed by scripts/fuzz-coverage-global.sh --bless. Raised upward only.
+llm 4.4

@@ -59,11 +59,23 @@ exit 0
 STUB
 chmod +x "$triage"
 
+# Stub corpus driver: logs its argument vector once per invocation, so the test
+# can assert --drive-every cadence and flag mapping without any live calls.
+drive="$work/drive-stub.sh"
+cat >"$drive" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >>"$DRIVE_LOG"
+exit 0
+STUB
+chmod +x "$drive"
+
 run_loop() {
 	TRIAGE_LOG="$work/triage.log" \
+	DRIVE_LOG="$work/drive.log" \
 	SERF_FUZZ_REPO_ROOT="$repo" \
 	SERF_FUZZ_RUNNER="$runner" \
 	SERF_FUZZ_TRIAGE="$triage" \
+	SERF_FUZZ_DRIVE="$drive" \
 		bash "$loop" "$@" 2>&1
 }
 target_of() { sed -n "${1}p" "$work/triage.log" | awk '{print $NF}'; }
@@ -128,6 +140,27 @@ out="$(run_loop --total 2hr --max-turns 1)"; rc=$?
 set -e
 assert_eq "$rc" "2" "bad --total: aborts with exit 2"
 assert_eq "$(wc -l <"$work/triage.log" | tr -d ' ')" "0" "bad --total: runs no turns (not unbounded)"
+
+# --- scenario 8: --drive-every cadence + flag mapping ------------------------
+echo '{}' >"$repo/fuzz/state/ledger.json"
+: >"$work/triage.log"; : >"$work/drive.log"
+run_loop --drive-every 2 --max-turns 4 >/dev/null
+assert_eq "$(wc -l <"$work/drive.log" | tr -d ' ')" "2" "drive-every 2: ran the driver at turns 2 and 4"
+assert_has "$(sed -n '1p' "$work/drive.log")" "--pr" "drive-every: opens a PR by default"
+# --no-pr -> inspect-first (no --pr); --dry-run -> --no-harvest.
+: >"$work/drive.log"
+run_loop --drive-every 1 --no-pr --max-turns 1 >/dev/null
+if grep -q -- "--pr" "$work/drive.log"; then bad "drive-every --no-pr: must not pass --pr"; else ok "drive-every --no-pr: inspect-first (no --pr)"; fi
+: >"$work/drive.log"
+run_loop --drive-every 1 --dry-run --max-turns 1 >/dev/null
+assert_has "$(cat "$work/drive.log")" "--no-harvest" "drive-every --dry-run: records without harvesting"
+# Default (no --drive-every): the driver is never called.
+: >"$work/drive.log"
+run_loop --max-turns 3 >/dev/null
+assert_eq "$(wc -l <"$work/drive.log" | tr -d ' ')" "0" "no --drive-every: driver never runs"
+# Malformed --drive-every aborts.
+set +e; run_loop --drive-every 0 --max-turns 1 >/dev/null 2>&1; rc=$?; set -e
+assert_eq "$rc" "2" "bad --drive-every: aborts with exit 2"
 
 # --- summary -----------------------------------------------------------------
 echo "----"

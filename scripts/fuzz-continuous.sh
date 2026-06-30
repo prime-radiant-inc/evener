@@ -26,8 +26,13 @@
 #                    "do some rounds" run; also used by the self-test).
 #     --dry-run      pass through to fuzz-triage: discover/guard/dedup only, no
 #                    writes and no PR.
-#     --no-pr        pass through to fuzz-triage: commit crashers to a local
-#                    branch but do not push / open a PR.
+#     --no-pr        pass through to fuzz-triage (and fuzz-drive): commit to a
+#                    local branch but do not push / open a PR.
+#     --drive-every N  every N turns, run scripts/fuzz-drive.sh to refresh the
+#                    seed corpus from real provider traffic (LIVE, paid calls;
+#                    default off). Honors --no-pr (inspect-first) and --dry-run
+#                    (record without harvesting).
+#     --drive-providers "p/m ..."  providers for the refresh (passed to fuzz-drive).
 #     target ...     restrict the rotation to these "module:FuzzName" entries
 #                    from run-fuzz.sh's registry; default is every native target.
 #
@@ -38,15 +43,23 @@
 # Ctrl-C stops the session promptly: the in-flight `go test` exits (saving its
 # corpus), and the loop prints a session summary before exiting.
 #
+# Real-traffic corpus refresh (Plan 12 Phase E): with --drive-every N, every N
+# turns the loop runs scripts/fuzz-drive.sh to drive the real serf CLI against a
+# provider, harvest the recorded traffic into seeds, and (unless --no-pr) open a
+# corpus PR — so the seed corpus keeps deepening from real provider shapes, not
+# just coverage-guided mutation. Default off (driving makes live, paid calls).
+#
 # Env seams (defaults are the production values; used by the self-test):
 #   SERF_FUZZ_REPO_ROOT  repo root (default: the parent of this script's dir)
 #   SERF_FUZZ_RUNNER     the registry source (default: scripts/run-fuzz.sh)
 #   SERF_FUZZ_TRIAGE     the per-turn engine  (default: scripts/fuzz-triage.sh)
+#   SERF_FUZZ_DRIVE      the corpus driver    (default: scripts/fuzz-drive.sh)
 set -uo pipefail
 
 repo_root="${SERF_FUZZ_REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 runner="${SERF_FUZZ_RUNNER:-$repo_root/scripts/run-fuzz.sh}"
 triage="${SERF_FUZZ_TRIAGE:-$repo_root/scripts/fuzz-triage.sh}"
+drive="${SERF_FUZZ_DRIVE:-$repo_root/scripts/fuzz-drive.sh}"
 ledger="$repo_root/fuzz/state/ledger.json"
 
 total=""          # total budget in seconds (empty = unlimited)
@@ -55,6 +68,8 @@ sweep=false
 max_turns=""
 dry_run=false
 no_pr=false
+drive_every=""    # run the corpus driver every N turns (empty = never)
+drive_providers=""
 declare -a only=()
 
 # to_seconds turns a Go-style duration (2h, 90m, 3600s, or a bare integer of
@@ -84,11 +99,21 @@ while [ $# -gt 0 ]; do
 		--max-turns=*) max_turns="${1#*=}"; shift ;;
 		--dry-run) dry_run=true; shift ;;
 		--no-pr) no_pr=true; shift ;;
-		-h|--help) sed -n '2,57p' "$0"; exit 0 ;;
+		--drive-every) drive_every="$2"; shift 2 ;;
+		--drive-every=*) drive_every="${1#*=}"; shift ;;
+		--drive-providers) drive_providers="$2"; shift 2 ;;
+		--drive-providers=*) drive_providers="${1#*=}"; shift ;;
+		-h|--help) sed -n '2,65p' "$0"; exit 0 ;;
 		--*) echo "fuzz-continuous: unknown flag $1" >&2; exit 2 ;;
 		*) only+=("$1"); shift ;;
 	esac
 done
+
+if [ -n "$drive_every" ]; then
+	case "$drive_every" in
+		''|*[!0-9]*|0) echo "fuzz-continuous: --drive-every needs a positive integer" >&2; exit 2 ;;
+	esac
+fi
 
 # Resolve the rotation: every native target from the registry, filtered to the
 # requested subset. Rapid targets are bounded property checks (run by `go test`
@@ -163,6 +188,23 @@ one_turn() {
 	[ -n "$new" ] && echo "fuzz-continuous: NEW crasher signature(s) this turn:" && printf '%s\n' "$new" | sed 's/^/    /'
 }
 
+# maybe_drive runs the corpus driver when --drive-every is set and the turn count
+# is a multiple of it. The driver harvests real provider traffic into seeds and
+# (unless --no-pr) opens a corpus PR; --dry-run records without harvesting.
+maybe_drive() {
+	[ -n "$drive_every" ] || return 0
+	[ $(( turn % drive_every )) -eq 0 ] || return 0
+	echo "--- turn $turn | corpus refresh (fuzz-drive) ---"
+	local args=()
+	[ -n "$drive_providers" ] && args+=(--providers "$drive_providers")
+	if $dry_run; then
+		args+=(--no-harvest)
+	elif ! $no_pr; then
+		args+=(--pr)
+	fi
+	bash "$drive" "${args[@]}" || echo "fuzz-continuous: corpus refresh exited non-zero (continuing)"
+}
+
 budget_left() {
 	[ -z "$total" ] && return 0
 	[ "$(elapsed)" -lt "$total" ] && return 0
@@ -182,10 +224,12 @@ while ! $stop && budget_left && turns_left; do
 			budget_left || break
 			turns_left || break
 			one_turn "$target"
+			maybe_drive
 		done
 	else
 		one_turn "${rotation[$idx]}"
 		idx=$(( (idx + 1) % ${#rotation[@]} ))
+		maybe_drive
 	fi
 done
 
