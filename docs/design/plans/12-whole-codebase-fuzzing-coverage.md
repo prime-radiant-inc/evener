@@ -86,7 +86,28 @@ safety boundary before any PR; a leak aborts with non-zero exit and no PR.
 
 ---
 
-## Phase A — Real-traffic corpus bootstrap (FIRST)
+## Phase A — Real-traffic corpus bootstrap (FIRST) — A1/A2/A3 DONE 2026-06-30
+
+**Status: A1, A2, and a first A3 validation run landed on `wip/fuzzing-toolkit`.**
+A1 = `SERF_FUZZ_RECORD` master switch (`envvars.RecorderEnabled`, `e1c43b9b`).
+A2 = `scripts/fuzz-drive.sh` + 24-task corpus + offline self-test (`8c2e008b`).
+A3 = drove 6 tasks live through **gpt-5.4-mini** (6/6 ok) → 45 scrubbed seeds
+(`871c52e8` windowing fix, `0bebd959` seeds); `decodeResponsesStream` replay
+coverage 85.9%→89.4%, clean through the metamorphic oracle.
+
+A3 findings (carried forward):
+- **SSE seeds must be windowed.** Real streams are 150–250 KB, far over the 32 KB
+  cap, so the whole-stream harvest dropped 100% of them. Fixed: `harvestSSE` now
+  windows each stream into bounded sub-streams of whole SSE events.
+- **kimi (and the other providers) need their keys.** Only `openai` authenticated
+  in the dev session here; a box with `KIMI_CODING_API_KEY` etc. must run
+  `scripts/fuzz-drive.sh` to seed the anthropic/gemini/openaicompat/chat decoders.
+- **appwire/http frames need a hub-mode driver.** The one-shot CLI doesn't use the
+  WS transport, so `appwire-frames.jsonl`/`hub-http.jsonl` stayed empty — a Phase A
+  follow-on that drives a `serf serve` + hub client to record those surfaces.
+- The full 24-task × multi-provider run (and `--pr`) is the next live invocation.
+
+
 
 Highest cheap leverage: real inputs reach states random generation never will. The harvest
 path exists; we need the local-record default and a driver.
