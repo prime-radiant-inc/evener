@@ -61,10 +61,17 @@ floor_for() {
 	awk -v m="$1" '$1==m {print $2}' "$floors_file"
 }
 
-# stmt_counts parses a Go text coverprofile and prints "covered total" statements
-# (a block reads "file:range numStmts count"; covered = sum numStmts where count>0).
+# stmt_counts parses a Go text coverprofile and prints "covered total" statements.
+# A block reads "file:range numStmts count". Under -coverpkg=./..., go test emits
+# the SAME block once per package test binary (a block at a given position recurs
+# with different counts), so we MUST dedupe by position: count each block's
+# statements once, and treat it covered if ANY occurrence ran (the union, matching
+# `go tool cover`). Summing every line instead inflates the total ~Nx (N = number
+# of test binaries) and badly understates coverage.
 stmt_counts() {
-	awk 'NR>1 {t+=$2; if ($3>0) c+=$2} END {printf "%d %d", c+0, t+0}' "$1"
+	awk 'NR>1 { pos=$1; stmts[pos]=$2; if ($3>0) cov[pos]=1 }
+	     END { for (p in stmts) { t+=stmts[p]; if (p in cov) c+=stmts[p] }
+	           printf "%d %d", c+0, t+0 }' "$1"
 }
 
 echo "=== global fuzz-reachable coverage (modules: $modules) ==="

@@ -36,8 +36,13 @@ cov="${pair%% *}"; tot="${pair##* }"
 uncov=$((tot - cov))
 {
   echo "mode: set"
-  [ "$cov" -gt 0 ] && echo "x/$mod/a.go:1.1,2.1 $cov 1"
-  [ "$uncov" -gt 0 ] && echo "x/$mod/b.go:3.1,4.1 $uncov 0"
+  # Emit each block TWICE, as `go test -coverpkg=./... ./...` does (once per
+  # package test binary): the covered block recurs with count 0 from a binary
+  # that didn't run it. The parser MUST dedupe by position (count once, covered
+  # if any occurrence ran) — a naive per-line sum would inflate these totals and
+  # fail the percentage assertions below. This is the regression guard for that.
+  [ "$cov" -gt 0 ] && { echo "x/$mod/a.go:1.1,2.1 $cov 1"; echo "x/$mod/a.go:1.1,2.1 $cov 0"; }
+  [ "$uncov" -gt 0 ] && { echo "x/$mod/b.go:3.1,4.1 $uncov 0"; echo "x/$mod/b.go:3.1,4.1 $uncov 0"; }
 } >"$prof"
 exit 0
 STUB
