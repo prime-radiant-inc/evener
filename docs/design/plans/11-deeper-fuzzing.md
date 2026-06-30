@@ -11,8 +11,17 @@
 > oracle (8x -race clean). No new product bug — the failure/concurrency paths
 > newly fuzzed are sound. The "offline-blocked" goleak/gremlins deferrals were
 > resolved (network works; the friction was the go.work local-module setup, worked
-> around). Remaining follow-up: the disk-fault op (quiesceJobs loop-advance) and
-> the anthropic assembled-reasoning section-break the W4 conformance golden pins.
+> around). The anthropic assembled-reasoning section-break the W4 golden pinned
+> was fixed (ReasoningText now matches the stream); the providercfg Quirks
+> mutation gap was closed (91.89%→94.59%, the 2 remaining survivors are
+> equivalent mutants). Remaining follow-up: the disk-fault op (opLLMError's
+> sibling — fail a job's JobFinished append). Its RECOVERY is sound (passes 1500
+> lifecycle checks + the dedicated finalize test), but driving it under the fake
+> clock needs more than quiesceJobs' single advance: a naive loop-advance with a
+> 1ms real sleep makes the 8000-check -race run exceed 20 min (and risks the
+> per-job backstop on some inputs). The right fix is a FakeClock.BlockUntil-based
+> quiescence handshake (advance only once the finalize goroutine has parked),
+> not a real-time poll — deferred until that handshake is built.
 
 ## Why this phase exists
 
