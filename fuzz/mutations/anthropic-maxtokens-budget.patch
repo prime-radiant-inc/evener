@@ -1,0 +1,13 @@
+diff --git a/llm/providers/anthropic/request.go b/llm/providers/anthropic/request.go
+index 3a6728ee..73111821 100644
+--- a/llm/providers/anthropic/request.go
++++ b/llm/providers/anthropic/request.go
+@@ -177,7 +177,7 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
+ 	// the budget is added on top of it.
+ 	if thinkingBudget > 0 {
+ 		out, ok := body["max_tokens"].(int)
+-		if !ok || out < 1 {
++		if !ok {
+ 			// No usable output budget (unset, non-int, or a provider option set it
+ 			// to <= 0). Fall back to the default so the sum strictly exceeds the
+ 			// thinking budget — budget + 0 == budget would itself 400.
