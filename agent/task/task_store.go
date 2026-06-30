@@ -2,6 +2,7 @@ package task
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -475,6 +476,40 @@ func (s *TaskStore) Update(updates []TaskUpdate) error {
 		return fmt.Errorf("only one task may be in_progress at a time; update would result in %d", inProgressCount)
 	}
 
+	// Validate dependency changes against the PROJECTED graph up front — like the
+	// status and single-in_progress checks above — so a bad or cycle-forming
+	// dependency in any update can't leave earlier updates half-applied. Validating
+	// inside the apply loop (the previous behavior) both mutated before validating
+	// AND could miss a cycle formed jointly by several updates in one batch, because
+	// it saw only the dep changes applied so far.
+	known := make(map[int]bool, len(s.tasks))
+	projDeps := make(map[int][]int, len(s.tasks))
+	for _, t := range s.tasks {
+		known[t.ID] = true
+		projDeps[t.ID] = t.DependsOn
+	}
+	for _, u := range updates {
+		if u.DependsOn != nil {
+			projDeps[u.ID] = *u.DependsOn
+		}
+	}
+	for _, u := range updates {
+		if u.DependsOn == nil {
+			continue
+		}
+		for _, dep := range *u.DependsOn {
+			if dep == u.ID {
+				return fmt.Errorf("task %d cannot depend on itself", u.ID)
+			}
+			if !known[dep] {
+				return fmt.Errorf("task %d depends on unknown task %d", u.ID, dep)
+			}
+		}
+	}
+	if hasCycle(projDeps) {
+		return errors.New("update would create a dependency cycle")
+	}
+
 	for _, u := range updates {
 		found := false
 		for i := range s.tasks {
@@ -484,9 +519,6 @@ func (s *TaskStore) Update(updates []TaskUpdate) error {
 					s.tasks[i].Notes = append(s.tasks[i].Notes, u.Notes)
 				}
 				if u.DependsOn != nil {
-					if err := s.validateDependencies(u.ID, *u.DependsOn, nil); err != nil {
-						return err
-					}
 					s.tasks[i].DependsOn = *u.DependsOn
 				}
 				if u.ReasoningEffort != "" {
