@@ -1,0 +1,8 @@
+go test fuzz v1
+byte('|')
+byte('ÿ')
+string("0")
+string("&")
+string("0")
+string("0")
+string("0")

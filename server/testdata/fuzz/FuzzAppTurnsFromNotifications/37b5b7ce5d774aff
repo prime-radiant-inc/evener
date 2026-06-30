@@ -1,0 +1,5 @@
+go test fuzz v1
+int(9)
+[]byte("f")
+int(-5)
+[]byte("f")

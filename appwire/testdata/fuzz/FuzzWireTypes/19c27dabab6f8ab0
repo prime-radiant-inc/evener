@@ -1,0 +1,4 @@
+go test fuzz v1
+int(1)
+bool(false)
+[]byte("0")
