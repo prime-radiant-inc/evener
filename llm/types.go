@@ -486,11 +486,17 @@ func (r Response) ToolCalls() []ToolCallData {
 	return calls
 }
 
-// ReasoningText returns the concatenated text of the response's thinking content parts.
+// ReasoningText returns the response's thinking content, distinct thinking blocks
+// joined by a blank line — matching the section break the streaming path emits
+// between blocks, so the assembled/reloaded reasoning reads the same as the live
+// view.
 func (r Response) ReasoningText() string {
 	var b strings.Builder
 	for _, p := range r.Message.Content {
 		if p.Kind == ContentThinking && p.Thinking != nil && p.Thinking.Text != "" {
+			if b.Len() > 0 {
+				b.WriteString("\n\n")
+			}
 			b.WriteString(p.Thinking.Text)
 		}
 	}
