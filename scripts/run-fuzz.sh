@@ -143,6 +143,7 @@ TARGETS=(
 	"native:llm:./providers/openaicompat:FuzzOpenaicompatCompleteRoundTrip::adapter.go#Complete"
 	"native:llm:./providers/openaicompat:FuzzOpenaicompatStreamRoundTrip::adapter.go#Stream"
 	"native:agent:./internal/jobstore:FuzzStorePersistence::store.go#openFs"
+	"native:agent:./internal/jobstore:FuzzStoreFaultTolerance::store.go#rollbackAppendLocked"
 	"native:agent:./internal/sessionlog:FuzzSessionLogPersistence::sessionlog.go#appendToDisk"
 	"native:llm:./providercfg:FuzzProvidersTOMLPersistence::mutate.go#WriteFile"
 	"native:.:./internal/credentials:FuzzCredentialsStorePersistence::store.go#save"

@@ -7,4 +7,9 @@ module primeradiant.com/serf/fuzz
 
 go 1.25.0
 
-require pgregory.net/rapid v1.3.0
+require (
+	github.com/spf13/afero v1.15.0
+	pgregory.net/rapid v1.3.0
+)
+
+require golang.org/x/text v0.36.0 // indirect
