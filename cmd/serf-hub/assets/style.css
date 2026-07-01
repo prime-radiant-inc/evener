@@ -2200,7 +2200,40 @@ button.composer-model-value .caret { color: var(--text-dim); }
 }
 .tool-body summary { cursor: pointer; color: var(--text-muted); padding: 0; user-select: none; }
 .tool-body summary:hover { color: var(--text); }
-.shell-output { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-body--terminal {
+  margin: 0 0 var(--space-4) var(--tool-indent);
+  padding: var(--space-2) 0 var(--space-2) var(--space-3);
+  border-left: 1px solid var(--rule);
+  color: var(--text-muted);
+}
+.terminal-command {
+  margin: 0 0 var(--space-2) 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.shell-output {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3) var(--space-3);
+  background: var(--bg);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.terminal-footer {
+  margin-top: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}
+.terminal-footer-bad { color: var(--error); }
 .cheap-tool-args { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .cheap-tool-output { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .read-tool-body .cheap-tool-output { margin-top: 0; }

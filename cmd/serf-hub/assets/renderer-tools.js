@@ -470,37 +470,80 @@
     },
   };
 
+  function shellCommandText(args) {
+    args = args || {};
+    return String(args.command || args.cmd || "");
+  }
+
+  function shellTerminalBody(args, el) {
+    const wrap = document.createElement("div");
+    wrap.className = "tool-body shell-body tool-body--terminal";
+
+    const commandEl = document.createElement("div");
+    commandEl.className = "terminal-command";
+    commandEl.textContent = "$ " + shellCommandText(args);
+    wrap.appendChild(commandEl);
+
+    const pre = document.createElement("pre");
+    pre.className = "shell-output terminal-output";
+    wrap.appendChild(pre);
+
+    const footerEl = document.createElement("div");
+    footerEl.className = "terminal-footer";
+    footerEl.textContent = "running";
+    wrap.appendChild(footerEl);
+
+    el.appendChild(wrap);
+    return { wrap, commandEl, pre, footerEl };
+  }
+
+  function shellFooterText(data, state) {
+    const st = parseToolState(data && data.tool_state);
+    const parts = [];
+    if (st && st.exit_code != null) parts.push("exit " + st.exit_code);
+    else if (data && data.error) parts.push("error");
+    if (state && state.durationMs != null) parts.push(formatDurationForTerminal(state.durationMs));
+    return parts.join(" · ");
+  }
+
+  function formatDurationForTerminal(ms) {
+    const n = Number(ms);
+    if (!Number.isFinite(n) || n < 0) return "";
+    if (n < 1000) return Math.round(n) + "ms";
+    if (n < 10000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "s";
+    return Math.round(n / 1000) + "s";
+  }
+
   // Card renderer for shell with collapsible stdout/stderr.
   const shellRenderer = {
-    mode: "card", friendly: "shell",
-    target: (a) => clip(a.command || a.cmd || "", 200),
+    mode: "card", friendly: "$",
+    target: (a) => clip(shellCommandText(a), 200),
     result: (data) => {
       const st = parseToolState(data.tool_state);
-      // Success is the expected state — the ✓ status glyph already conveys it,
-      // so a clean exit shows no result text. Only a nonzero exit (or an error)
-      // is worth the eye.
       if (st && st.exit_code != null) return st.exit_code === 0 ? "" : "exit " + st.exit_code;
       return data.error ? "error" : "";
     },
-    body: (args, conversation) => {
-      return outputPreviewBody("shell-body", "shell-output", conversation);
-    },
+    body: (args, el) => shellTerminalBody(args, el),
     bodyDelta: (state, out) => {
       if (state.body && state.body.pre) {
-        setExpandableOutput(state.body, clip(out, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output" });
+        setExpandableOutput(state.body, clip(out, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output terminal-output" });
       }
     },
     bodyEnd: (state, data, out) => {
       if (!state.body) return;
       const text = data.error || out || "";
-      setExpandableOutput(state.body, clip(text, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output" });
-      // Auto-open if non-empty and exit non-zero or output >2 lines.
+      setExpandableOutput(state.body, clip(text, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output terminal-output" });
       const st = parseToolState(data.tool_state);
       const failed = data.error || (st && st.exit_code && st.exit_code !== 0);
-      if (text.trim() === "") {
-        state.body.wrap.style.display = "none";
-      } else if (failed && state.body.moreWrap) {
-        state.body.moreWrap.open = true;
+      if (state.body.footerEl) {
+        state.body.footerEl.textContent = shellFooterText(data, state) || "done";
+        state.body.footerEl.classList.toggle("terminal-footer-bad", !!failed);
+      }
+      if (failed && state.el) state.el.dataset.expanded = "true";
+      if (failed && state.caretEl) {
+        state.caretEl.textContent = "▾";
+        state.caretEl.setAttribute("aria-label", "collapse tool details");
+        state.caretEl.setAttribute("aria-expanded", "true");
       }
     },
   };
