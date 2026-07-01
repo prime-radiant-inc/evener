@@ -1,6 +1,7 @@
 # Plan 13 — Structural refactors for super-linear fuzz coverage
 
-**Status: PROPOSED (2026-06-30).** Author: Bot, with Jesse. Follows Plan 12
+**Status: READY (2026-07-01) — decisions resolved, execution kickoff defined.**
+Author: Bot, with Jesse. Follows Plan 12
 (which raised fuzz-reachable coverage via per-function harnesses: llm 52%, agent
 29.5%, root 9.8% as of `46514302`). Point-in-time design doc.
 
@@ -30,19 +31,33 @@ finish the set.
 | --- | --- | --- |
 | Clock | **done** — `agent/internal/clock`, advanceable fake | thread it into the remaining direct `time.Now()` sites the lanes worked around |
 | LLM network | **done** — `llm.ProviderAdapter` + stub adapters | — |
-| **HTTP (non-LLM + provider transport)** | not abstracted — adapters hold an `*http.Client`; the hub holds clients | an injectable `HTTPDoer` (`Do(*http.Request)`), so a provider's full `Complete/Stream` runs over a **fake transport returning fuzzed wire bytes** |
-| **Filesystem** | not abstracted — direct `os.ReadFile/WriteFile/MkdirAll` (TaskStore.save, apilog write, config/credential/plugin/skill loaders) | a `Filesystem` interface (or `io/fs` + a writable fake), so the fs-bound config/store/discovery code fuzzes against an in-memory tree |
-| **Process spawn** | not abstracted — MCP server spawn, subagent spawn, shell exec | a `ProcessSpawner`/exec seam, so the MCP manager, subagent orchestration, and shell-tool arg handling fuzz without real processes |
+| **HTTP (non-LLM + provider transport)** | not abstracted — adapters hold an `*http.Client` | **no new interface** — make the `*http.Client` (or its `http.RoundTripper`) injectable; fuzz passes a client with a fake `Transport` returning fuzzed wire bytes, so a provider's full `Complete/Stream` runs end to end |
+| **Filesystem** | not abstracted — direct `os.ReadFile/WriteFile/MkdirAll` (TaskStore.save, apilog write, config/credential/plugin/skill loaders) | **adopt Afero (`afero.Fs`)** — production `afero.NewOsFs()`, fuzz `afero.NewMemMapFs()` wrapped in `afero.NewBasePathFs` to sandbox against path escape; threaded through the fs-touching code |
+| **Process spawn** | not abstracted — MCP server spawn, subagent spawn, shell exec | a **tiny bespoke interface** (the 1–2 `os/exec` methods actually used), discovered from the call sites |
 | Randomness | partly (ID minting) | finish where determinism matters |
 
-**Highest-leverage first: the `HTTPDoer`.** It unlocks fuzzing the *entire*
-provider round-trip (request build → transport → response/stream decode) end to
-end from one harness per provider — the single biggest reachable block, and the
-exact wall lane 2 hit. **Filesystem** is second (unblocks the fs-bound logic lanes
-1 & 4 couldn't reach). Spawn and the last randomness sites are a later batch.
+**Design taste (D1, resolved):** the guiding rule is Pike's "the bigger the
+interface, the weaker the abstraction / discover interfaces, don't design them" and
+Francia's "reuse the established abstraction, let testability drive it." So: **reuse
+the stdlib seam where one exists** (HTTP needs *no new type* — inject the
+`*http.Client`/`http.RoundTripper`; reads can take `io/fs.FS`), and **invent only
+tiny bespoke interfaces** for boundaries with no stdlib fit (process spawn). The one
+place a full library beats a hand-rolled interface is the **filesystem**: rather
+than a bespoke `Filesystem`, adopt **Afero** — it's Francia's os-mirroring drop-in
+built for exactly this (fake the FS in tests), with `NewMemMapFs` for fuzzing and
+`NewBasePathFs` to sandbox writes against escape. That's the deliberate exception to
+"a little copying beats a little dependency," justified because serf's fs-write
+surface is broad and Afero is the canonical, stable answer.
 
-This is a **production refactor**, not test-only — it changes real APIs. Design
-the interface and get agreement before threading it broadly (see Execution).
+**Order (D2, resolved):** HTTP + Filesystem first — the *demonstrated* need (the
+capped harnesses lanes 1/2/4 couldn't push past); spawn + the last randomness sites
+are a second batch.
+
+This is a **production refactor**, not test-only — it changes real constructors.
+**Stage each seam behind a differential** (WS3): a fuzzer that runs the same inputs
+through the old hard-coded path and the injected-seam path and asserts identical
+behavior, so the refactor provably changes nothing. Land the seam + its differential
+together, one subsystem at a time.
 
 ## WS2 — Entry-point ("front door") fuzzers (cash in WS1)
 
@@ -133,17 +148,48 @@ No WS1 dependency. Pure additive infra.
   risk). Lanes report registry lines + any prod-seam need; the parent serializes
   `scripts/run-fuzz.sh`, `go.mod`, and the floors.
 
-## Decisions to resolve before WS1
+## Decisions (RESOLVED 2026-07-01)
 
-- **D1 — seam interface style.** Explicit interfaces threaded through call sites
-  (clear, but API churn) vs a context-carried environment struct (less churn, more
-  magic) vs build-tag-swapped implementations (zero prod-API change, but two code
-  paths). The Clock used explicit injection; recommend matching it (explicit
-  interface, constructor-injected) for consistency and testability.
-- **D2 — WS1 scope/order.** Confirm HTTPDoer + Filesystem first; spawn + randomness
-  as a second batch.
-- **D3 — WS4 aggressiveness.** Opportunistic-only (recommended) vs a dedicated
-  extraction pass on the few worst tangled hotspots.
+- **D1 — seam interface style: explicit constructor injection; reuse stdlib where
+  it exists, adopt Afero for the filesystem, invent tiny bespoke interfaces only
+  where nothing fits.** No context-carried environment struct, no build-tag swaps
+  (both hide the seam / add magic). Concretely: HTTP = inject `*http.Client` /
+  `http.RoundTripper` (no new type); reads = `io/fs.FS`; **filesystem writes =
+  `afero.Fs`** (production `NewOsFs`, fuzz `NewMemMapFs`+`NewBasePathFs`); process
+  spawn = a ≤2-method bespoke interface discovered from usage.
+- **D2 — order: HTTP + Filesystem (Afero) first**, spawn + randomness second. Driven
+  by demonstrated need (the capped harnesses), not speculation.
+- **D3 — functional core: opportunistic-only.** Extract a pure core whenever we
+  touch a tangled high-value function; no standalone big-bang extraction program.
+
+## First cut (execution kickoff)
+
+Grounded in the actual surface (surveyed 2026-07-01): **~25 prod packages call
+`os.WriteFile/MkdirAll/Rename/...` directly** (agent, internal/jobstore,
+internal/credentials, providercfg, cmd/serf-hub/internal/launchconfig+hubcore,
+cmdutil, selfupdate, …) — broad, which is what settles the Afero-vs-bespoke call in
+Afero's favor. **~10 provider adapters each hold an `*http.Client`** (openai,
+anthropic, google, openaicompat, kimi_anthropic, minimax, ollama) — a bounded
+injection surface. Afero is **not yet a dependency**.
+
+Start with two thin end-to-end slices that prove the pattern before fanning out:
+
+1. **Afero slice — `agent/task` + `agent/internal/jobstore` + `internal/credentials`.**
+   Add `github.com/spf13/afero`; give each store a constructor-injected `afero.Fs`
+   (default `NewOsFs()`); replace the direct `os.*` calls. Differential guard: a
+   fuzzer that runs the same store operations against a real temp-dir `NewOsFs` and a
+   `NewMemMapFs`, asserting byte-identical persisted state — proves the refactor is
+   behavior-preserving *and* is itself the new in-memory fuzz harness.
+2. **HTTP slice — the `openai` adapter.** Make its `*http.Client` injectable (no new
+   type). Add one entry-point fuzzer: fuzzed wire bytes → a fake `http.RoundTripper`
+   → the adapter's full `Complete`/`Stream` → `Response`, asserting the request built
+   is identical to the pre-refactor path and the decode never panics.
+
+Each slice = one worktree-isolated lane, seam + differential landed together, ~1
+subsystem. Once the pattern is proven, fan out the remaining fs packages and
+adapters. In PARALLEL (no dependency): kick off WS5 (typegen-for-every-input +
+oracle combinators) and WS3 (differential pairs — starting with the reference
+implementations the Plan-12 lanes already wrote, e.g. jobstore `OutputMatcher`).
 
 ## Risks / honest caveats
 
@@ -159,10 +205,12 @@ No WS1 dependency. Pure additive infra.
 
 ## Anchors
 
-- Seams to add against: `llm/providers/*/adapter.go` (http.Client), `agent/task/
-  task_store.go` + `llm/apilog.go` + the config/credential/plugin loaders (fs),
-  `agent/internal/mcp` + subagent spawn + shell tool (process). Existing seams to
-  match: `agent/internal/clock`, `llm.ProviderAdapter`.
+- Seams: HTTP → inject `*http.Client` in `llm/providers/*/adapter.go` (~10; no new
+  type). Filesystem → `afero.Fs` (`github.com/spf13/afero`) threaded through the ~25
+  `os.*`-writing packages, starting with `agent/task`, `agent/internal/jobstore`,
+  `internal/credentials`. Process → a tiny bespoke exec interface at
+  `agent/internal/mcp` + subagent spawn + shell tool. Existing seams to match:
+  `agent/internal/clock`, `llm.ProviderAdapter`.
 - Front doors: `agent` session loop (`FuzzLifecycleSeq`), `cmd/serf-hub`
   (`FuzzAppWireDispatch`/`FuzzWebHandler`), provider `Complete/Stream`.
 - Infra: `fuzz/typegen`, `fuzz/schemagen`, `FuzzWireTypes`; differentials in
