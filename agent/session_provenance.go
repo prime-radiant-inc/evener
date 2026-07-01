@@ -3,36 +3,24 @@ package agent
 import "primeradiant.com/serf/agent/provenance"
 
 func (s *Session) setActiveEntryKind(kind EntryKind) {
-	if s == nil {
-		return
-	}
 	s.mu.Lock()
 	s.activeEntryKind = kind
 	s.mu.Unlock()
 }
 
 func (s *Session) currentEntryKind() EntryKind {
-	if s == nil {
-		return EntryUserInput
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.activeEntryKind
 }
 
 func (s *Session) markWatchCallbackDeliveredForCurrentTurn() {
-	if s == nil {
-		return
-	}
 	s.mu.Lock()
 	s.watchCallbackDelivered = true
 	s.mu.Unlock()
 }
 
 func (s *Session) watchCallbackDeliveredForCurrentTurn() bool {
-	if s == nil {
-		return false
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.watchCallbackDelivered
@@ -42,18 +30,12 @@ func (s *Session) watchCallbackDeliveredForCurrentTurn() bool {
 // currently being processed, or nil when the active set is empty. Emitted events
 // are stamped with this value (see sendEvent).
 func (s *Session) activeCausalProvenance() *provenance.Causal {
-	if s == nil {
-		return nil
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return provenance.Clone(provenance.NilIfEmpty(&s.activeProvenance))
 }
 
 func (s *Session) completedCausalProvenance() *provenance.Causal {
-	if s == nil {
-		return nil
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return provenance.Clone(provenance.NilIfEmpty(&s.completedInputProvenance))
@@ -63,9 +45,6 @@ func (s *Session) completedCausalProvenance() *provenance.Causal {
 // top-level input calls this with nil to reset provenance so a fresh turn does not
 // inherit a prior watch origin.
 func (s *Session) replaceActiveProvenance(p *provenance.Causal) {
-	if s == nil {
-		return
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.activeProvenance = provenance.Causal{}
@@ -76,9 +55,6 @@ func (s *Session) replaceActiveProvenance(p *provenance.Causal) {
 }
 
 func (s *Session) finishActiveProvenance() {
-	if s == nil {
-		return
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.completedInputProvenance = provenance.Causal{}
