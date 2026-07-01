@@ -41,6 +41,42 @@ func GeneratorForType(t reflect.Type, mode schemagen.Mode) *rapid.Generator[any]
 	return schemagen.Generator(SchemaFromType(t), mode)
 }
 
+// ValueFromBytes generates one value of the concrete Go type T straight from a
+// byte slice — the "give me a valid T from these fuzz bytes" helper. It reflects
+// T's schema, draws a structured value from a byte Source (so go's fuzzer steers
+// the structured search and persists crashers for free), then marshals and
+// decodes it into a real T. This collapses the schema→generate→marshal→unmarshal
+// dance a per-type harness would otherwise hand-write (see appwire's
+// FuzzWireTypes) into a single call in a testing.F body:
+//
+//	f.Fuzz(func(t *testing.T, data []byte) {
+//	    req, ok := typegen.ValueFromBytes[llm.Request](data, schemagen.Valid)
+//	    if !ok {
+//	        return // an Adjacent value may not decode into T; that is not a bug
+//	    }
+//	    // ... drive the code under test with req ...
+//	})
+//
+// ok is false when the generated value does not decode into T. In schemagen.Valid
+// mode a round-trippable T always decodes; in Adjacent mode (deliberately
+// off-schema) it legitimately may not, so a false ok is a skip, not a failure.
+// T must be a round-trippable type for Valid mode to reliably yield ok — the same
+// constraint SchemaFromType documents (a custom json.Marshaler with no override
+// has an unmodelled shape).
+func ValueFromBytes[T any](data []byte, mode schemagen.Mode) (T, bool) {
+	var zero T
+	schema := SchemaFromType(reflect.TypeOf(&zero).Elem())
+	raw, err := json.Marshal(schemagen.Value(schemagen.NewByteSource(data), schema, mode))
+	if err != nil {
+		return zero, false
+	}
+	var out T
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return zero, false
+	}
+	return out, true
+}
+
 // schemaFromType is the recursive core. overrides (may be nil) is consulted at
 // every node before the kind switch, so a per-type override fires at nested
 // depth. visited collapses a self-referential / mutually-recursive type to an
