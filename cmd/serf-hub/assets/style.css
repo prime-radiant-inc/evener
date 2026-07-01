@@ -2089,11 +2089,9 @@ button.composer-model-value .caret { color: var(--text-dim); }
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   white-space: nowrap;
-  opacity: 0;
+  opacity: 1;
   transition: opacity var(--motion-fast);
 }
-.tool-call:hover .tool-meta,
-.tool-call:focus-within .tool-meta { opacity: 1; }
 .tool-call .tool-body,
 .tool-call .diff-body,
 .tool-call .output-preview-body { order: 5; }
@@ -3986,10 +3984,9 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
      narrow viewports (flex child default min-width: auto blocks shrink). */
   .tool-call .target { min-width: 0; }
 
-  /* The per-row timing meta (timestamp · duration) is a hover-only desktop
-     detail. Phones have no hover, so it never shows — yet it still reserved
-     ~112px and squeezed the command/path into a narrow, mid-word-wrapping
-     column. Drop it here so the command gets the full row width. */
+  /* Compact phone layout drops per-row timing meta (timestamp · duration) so it
+     does not reserve ~112px and squeeze command/path text into a narrow,
+     mid-word-wrapping column. Desktop keeps this metadata readable by default. */
   .tool-call .tool-meta { display: none; }
 
   /* Phone reading scale. A clear hierarchy, sized to actually read on a phone:

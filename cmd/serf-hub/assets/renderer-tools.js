@@ -568,10 +568,13 @@
       target: (a) => a.file_path || a.path || "",
       result: diffResult,
       body: (args, conversation) => {
+        const div = document.createElement("div");
+        div.className = "tool-body " + friendly + "-body tool-body--diff";
         const pre = document.createElement("pre");
         pre.className = "diff-body";
-        conversation.appendChild(pre);
-        return { pre };
+        div.appendChild(pre);
+        conversation.appendChild(div);
+        return { div, pre };
       },
       bodyDelta: (state, out) => { if (state.body) renderDiff(state.body.pre, out); },
       bodyEnd: (state, data, out) => { if (state.body) renderDiff(state.body.pre, out); },
@@ -661,7 +664,7 @@
     result: (data, out) => data.error ? "error" : (out.length + " bytes"),
     body: (args, conversation) => {
       const div = document.createElement("div");
-      div.className = "tool-body fetch-body";
+      div.className = "tool-body fetch-body tool-body--preview";
       conversation.appendChild(div);
       return { div };
     },

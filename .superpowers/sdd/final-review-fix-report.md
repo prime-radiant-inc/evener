@@ -1,129 +1,82 @@
-# Final Review Fix Report: Job Notification Renderer
+# Final review fix report: shell/tool renderer branch
 
-Status: DONE
+## Summary
 
-Commit hash(es):
-- 5ba29c1e52168ef12e841cd550751434053adeb9
+Addressed the final whole-branch review findings for `wip/shell-tool-renderer`.
 
-## What changed
+### Important 1: Tool metadata hover/focus-only on desktop
 
-- `cmd/serf-hub/assets/renderer-format.js`
-  - Fixed `notificationTone()` so outer job notification failure/error signals take precedence over parsed `communicate.status` success values.
-  - Failure is now detected from outer `attrs.status`, outer `attrs.event`, or nonzero `exit_code` before considering `communicate.status` for success.
-  - Updated the stale `classifySteering` comment from a temporary minimal notification card to a structured notification card.
+Changed `cmd/serf-hub/assets/style.css` so desktop `.tool-call .tool-meta` is readable by default:
 
-- `cmd/serf-hub/assets/renderer.js`
-  - Updated notification metadata rendering for numeric `output_bytes` to use the existing `formatBytes()` helper.
-  - Preserved the fallback for unexpected nonnumeric `output_bytes` values as `<value> B`.
+- `.tool-call .tool-meta` now uses `opacity: 1` by default.
+- Removed the desktop hover/focus-only reveal rules for `.tool-call:hover .tool-meta` and `.tool-call:focus-within .tool-meta`.
+- Kept the existing mobile overflow protection that hides `.tool-call .tool-meta` inside the compact mobile `@media (max-width: 767px)` block.
+- Updated the mobile CSS comment to describe this as compact mobile overflow behavior, not a hover-only metadata contract.
 
-- `cmd/serf-hub/jstest/test-renderer-notifications.js`
-  - Added a regression scenario for `<job-notification status="failed">` with excerpt JSON `{"data":{"status":"DONE"}}`, asserting it renders `.notification-card-error` while still displaying the communicate status.
-  - Added an assertion that `.notification-card-raw pre` contains the exact original raw notification block.
-  - Updated the existing shell failure byte assertion to match the existing `formatBytes()` output (`128 bytes`).
+Updated tests:
 
-## Exact commands and output
+- `cmd/serf-hub/jstest/test-pane-and-sidebar-css.js` now asserts desktop `.tool-meta` is readable by default and does not depend on hover/focus reveal rules.
+- `cmd/serf-hub/jstest/test-mobile-css.js` now documents/asserts the mobile hide as compact mobile overflow behavior.
 
-### Focused notification renderer test
+### Important 2: Body variant contract for `write_file` and `web_fetch`
 
-```bash
-node cmd/serf-hub/jstest/test-renderer-notifications.js
-```
+Changed `cmd/serf-hub/assets/renderer-tools.js`:
 
-Output:
+- `diffRenderer(friendly)` now creates a standardized wrapper:
+  - `div.tool-body.<friendly>-body.tool-body--diff`
+  - containing `pre.diff-body`
+- This gives `write_file` a `div.tool-body.write-body.tool-body--diff` wrapper while preserving the existing `pre.diff-body` diff rendering path.
+- `webFetchRenderer` now renders `div.tool-body.fetch-body.tool-body--preview`.
 
-```text
-PASS — delegate completion notification parses
-PASS — raw notification remains inspectable
-PASS — watch notification parses as warning with non-json excerpt
-PASS — watch notification renders minimal warning card
-PASS — watch-send notification parses concerns and warning tone
-PASS — watch-send notification renders minimal warning card
-PASS — observer callback coerces success tone to warning
-PASS — observer callback renders minimal warning card
-PASS — malformed excerpt remains raw inspectable text
-PASS — malformed excerpt is not injected as HTML
-PASS — nonzero exit code gives error tone
-PASS — nonzero exit code renders minimal error card
-PASS — outer failure overrides successful communicate status
-PASS — shell failure notification shows failure metadata
-PASS — watch event notification renders as watch card
-PASS — watch-send notification renders delivery metadata
-PASS — observer callback renders in notification family
-PASS — malformed notification falls back with raw evidence
-PASS — notification text is escaped
-PASS: notification renderer assertions
-[exit 0]
-```
+Updated tests in `cmd/serf-hub/jstest/test-tool-renderers.js`:
 
-### Advanced renderer regression test
+- Added deterministic `write_file` assertions for `.write-body`, `.tool-body`, `.tool-body--diff`, and nested `pre.diff-body` content.
+- Added deterministic `web_fetch` assertions for `.fetch-body`, `.tool-body`, `.tool-body--preview`, and existing three-line preview behavior.
 
-```bash
-node cmd/serf-hub/jstest/test-renderer-advanced.js
-```
+### Minor low-risk fixes included
 
-Output:
+- Added a Space-key assertion to the existing disclosure keyboard accessibility test. The test now verifies Enter expands and Space collapses.
+- Added a shell alias smoke test covering both `exec_command` and `run_shell_command`, asserting they use the terminal renderer contract and command prompt output.
 
-```text
-PASS — system transcript blocks
-PASS — slim system line
-PASS — system status preferences reveal saved transcript statuses
-PASS — append 3 tasks
-PASS — multi-update in one call (descriptions seeded via full-list)
-PASS — full-list steering renders as pointer
-PASS — loop steering still renders
-PASS — view action suppressed
-PASS — same-verb runs collapse
-PASS — cancelled tasks get distinct verb
-PASS — full-list parses descriptions ending in [TBD]
-PASS — full-list strips [high] reasoning-effort suffix
-PASS — full-list strips [minimal]/[max] reasoning-effort suffixes
-PASS — task-nudge steering suppressed
-PASS — auto-advance steering becomes 'now on X'
-PASS — update with no seeded description falls back to #N
-PASS — active status avoids stale idle send capability
-[exit 0]
-```
+## Files changed intentionally
 
-### Hub package test
+- `cmd/serf-hub/assets/style.css`
+- `cmd/serf-hub/assets/renderer-tools.js`
+- `cmd/serf-hub/jstest/test-pane-and-sidebar-css.js`
+- `cmd/serf-hub/jstest/test-mobile-css.js`
+- `cmd/serf-hub/jstest/test-tool-renderers.js`
+- `.superpowers/sdd/final-review-fix-report.md`
 
-```bash
-go test ./cmd/serf-hub -count=1
-```
+## Files intentionally not staged
 
-Output:
+- `.superpowers/sdd/task-1-report.md` was already modified before this fix and was not staged.
 
-```text
-ok  	primeradiant.com/serf/cmd/serf-hub	4.583s
-[exit 0]
-```
+## Verification
 
-### Required diff whitespace check
+All required verification commands passed from `/home/jesse/git/prime-radiant/serf/.worktrees/shell-tool-renderer`.
 
-```bash
-git diff --check -- cmd/serf-hub/assets/renderer-format.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-notifications.js
-```
+1. `node cmd/serf-hub/jstest/test-tool-renderers.js`
+   - Exit code: 0
+   - Result: all scenario checks passed, including new `write_file`, `web_fetch`, shell alias, and Space-key checks.
 
-Output:
+2. `node cmd/serf-hub/jstest/test-pane-and-sidebar-css.js`
+   - Exit code: 0
+   - Output: `PASS: pane compact and full-border sidebar resize CSS contracts`
 
-```text
-[exit 0]
-```
+3. `node cmd/serf-hub/jstest/test-mobile-css.js`
+   - Exit code: 0
+   - Output: `PASS: mobile search palette CSS contract + layout guards`
 
-### Commit
+4. `cd cmd/serf-hub && ./jstest/run-all.sh`
+   - Exit code: 0
+   - Output ended with: `jstest: all tests passed`
 
-```bash
-git add cmd/serf-hub/assets/renderer-format.js cmd/serf-hub/assets/renderer.js cmd/serf-hub/jstest/test-renderer-notifications.js && git commit -m "fix(web): respect job notification failure tone" && git rev-parse HEAD
-```
+5. `go test ./cmd/serf-hub -count=1`
+   - Exit code: 0
+   - Output: `ok  	primeradiant.com/serf/cmd/serf-hub	4.695s`
 
-Output:
+## Commit
 
-```text
-[main 5ba29c1e] fix(web): respect job notification failure tone
- 3 files changed, 30 insertions(+), 5 deletions(-)
-5ba29c1e52168ef12e841cd550751434053adeb9
-[exit 0]
-```
+Created commit:
 
-## Concerns
-
-None.
+- `fix(hub): address tool renderer review findings`

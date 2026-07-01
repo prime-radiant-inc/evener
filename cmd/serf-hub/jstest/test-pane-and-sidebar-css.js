@@ -122,20 +122,18 @@ pass(
   "thread-document main should remove legacy page padding and max-width"
 );
 
-// Transcript tool timing metadata should stay out of the visual scan path until
-// the user shows row-level intent, while remaining available to assistive tech.
+// Transcript tool timing metadata is readable by default on desktop; it must not
+// rely on hover/focus-only reveal behavior.
 pass(
-  ruleContains(".tool-call .tool-meta", /opacity:\s*0\b/) &&
+  ruleContains(".tool-call .tool-meta", /opacity:\s*1\b/) &&
+    !ruleContains(".tool-call .tool-meta", /opacity:\s*0\b/) &&
     !ruleContains(".tool-call .tool-meta", /visibility:\s*hidden\b/),
-  "tool timing metadata should be visually hidden by default without visibility:hidden"
+  "tool timing metadata should be readable by default without visibility:hidden"
 );
 pass(
-  ruleContains(".tool-call:hover .tool-meta", /opacity:\s*1\b/),
-  "tool timing metadata should reveal on row hover"
-);
-pass(
-  ruleContains(".tool-call:focus-within .tool-meta", /opacity:\s*1\b/),
-  "tool timing metadata should reveal on keyboard focus within the row"
+  !ruleContains(".tool-call:hover .tool-meta", /opacity:\s*1\b/) &&
+    !ruleContains(".tool-call:focus-within .tool-meta", /opacity:\s*1\b/),
+  "desktop tool timing metadata should not depend on hover/focus reveal rules"
 );
 
 // Job notification communicate output is already HTML rendered from markdown.

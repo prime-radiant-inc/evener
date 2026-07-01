@@ -555,6 +555,23 @@ await scenario("apply_patch diff body with five-line preview", [
   return { ok: true };
 });
 
+await scenario("write_file uses standardized diff body variant", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "w1", tool_name: "write_file", arguments_json: JSON.stringify({ file_path: "new.go", content: "package main\n" }) }],
+  ["TOOL_CALL_END", { call_id: "w1", output: "+package main\n", tool_name: "write_file" }],
+], ({ conv }) => {
+  const card = conv.querySelector(".tool-call.write_file");
+  if (!card) return { ok: false, detail: "no write_file tool-call" };
+  const body = card.querySelector(".write-body");
+  if (!body) return { ok: false, detail: "no write body wrapper" };
+  if (!body.classList.contains("tool-body")) return { ok: false, detail: "write body should use base tool-body class" };
+  if (!body.classList.contains("tool-body--diff")) return { ok: false, detail: "write body should use diff body variant" };
+  const diff = body.querySelector("pre.diff-body");
+  if (!diff) return { ok: false, detail: "write body should contain pre.diff-body" };
+  if (!diff.textContent.includes("+package main")) return { ok: false, detail: "write diff output missing" };
+  return { ok: true };
+});
+
 // shell — standardized row, terminal body, exit code footer.
 await scenario("shell row uses prompt glyph, inline disclosure, terminal body, and right-side timing", [
   ["SESSION_START", { session_id: "01TEST" }],
@@ -584,6 +601,24 @@ await scenario("shell row uses prompt glyph, inline disclosure, terminal body, a
   if (!pre || !pre.textContent.includes("file1")) return { ok: false, detail: "stdout missing" };
   const footer = body.querySelector(".terminal-footer");
   if (!footer || !footer.textContent.includes("exit 0") || !footer.textContent.includes("1.3s")) return { ok: false, detail: "terminal footer missing exit/runtime: " + (footer && footer.textContent) };
+  return { ok: true };
+});
+
+await scenario("shell aliases use terminal renderer contract", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "x1", tool_name: "exec_command", arguments_json: JSON.stringify({ command: "pwd" }) }],
+  ["TOOL_CALL_END", { call_id: "x1", output: "/tmp\n", tool_state: JSON.stringify({ exit_code: 0 }), tool_name: "exec_command" }],
+  ["TOOL_CALL_START", { call_id: "r1", tool_name: "run_shell_command", arguments_json: JSON.stringify({ command: "whoami" }) }],
+  ["TOOL_CALL_END", { call_id: "r1", output: "serf\n", tool_state: JSON.stringify({ exit_code: 0 }), tool_name: "run_shell_command" }],
+], ({ conv }) => {
+  const execCard = conv.querySelector(".tool-call.exec_command");
+  if (!execCard) return { ok: false, detail: "no exec_command card" };
+  if (!execCard.querySelector(".shell-body.tool-body--terminal")) return { ok: false, detail: "exec_command should use terminal body" };
+  if (!execCard.querySelector(".terminal-command") || execCard.querySelector(".terminal-command").textContent !== "$ pwd") return { ok: false, detail: "exec_command terminal prompt missing command" };
+  const runCard = conv.querySelector(".tool-call.run_shell_command");
+  if (!runCard) return { ok: false, detail: "no run_shell_command card" };
+  if (!runCard.querySelector(".shell-body.tool-body--terminal")) return { ok: false, detail: "run_shell_command should use terminal body" };
+  if (!runCard.querySelector(".terminal-command") || runCard.querySelector(".terminal-command").textContent !== "$ whoami") return { ok: false, detail: "run_shell_command terminal prompt missing command" };
   return { ok: true };
 });
 
@@ -651,6 +686,22 @@ await scenario("web_search renders top results", [
   if (!ul) return { ok: false, detail: "no search body" };
   const items = ul.querySelectorAll("li");
   if (items.length !== 3) return { ok: false, detail: "expected 3 result items, got " + items.length };
+  return { ok: true };
+});
+
+await scenario("web_fetch uses preview body variant", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "f1", tool_name: "web_fetch", arguments_json: JSON.stringify({ url: "https://example.com" }) }],
+  ["TOOL_CALL_END", { call_id: "f1", output: "Line one\nLine two\nLine three\nLine four\n", tool_name: "web_fetch" }],
+], ({ conv }) => {
+  const card = conv.querySelector(".tool-call.web_fetch");
+  if (!card) return { ok: false, detail: "no web_fetch card" };
+  const body = card.querySelector(".fetch-body");
+  if (!body) return { ok: false, detail: "no fetch body" };
+  if (!body.classList.contains("tool-body")) return { ok: false, detail: "fetch body should use base tool-body class" };
+  if (!body.classList.contains("tool-body--preview")) return { ok: false, detail: "fetch body should use preview body variant" };
+  if (!body.textContent.includes("Line one / Line two / Line three")) return { ok: false, detail: "fetch preview content missing" };
+  if (body.textContent.includes("Line four")) return { ok: false, detail: "fetch preview should stay capped to first three lines" };
   return { ok: true };
 });
 
@@ -945,6 +996,9 @@ await (async function () {
     readCaret.dispatchEvent(enterEvt);
     // keydown listener calls .click(), which toggles.
     check("read_file expanded after Enter", readCall.dataset.expanded, "true");
+    const spaceEvt = new window.KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true });
+    readCaret.dispatchEvent(spaceEvt);
+    check("read_file collapsed after Space", readCall.dataset.expanded, "false");
   }
 
   if (failures.length === 0) {
