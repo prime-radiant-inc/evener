@@ -32,7 +32,7 @@ func TestS2Cov_NotifyStrategyAfterAction_WarnsOnError(t *testing.T) {
 		MaxSubagentDepth: 1,
 		testOnly:         testConfig{contextStrategyOverride: s2cov_afterActionErrStrategy{}},
 	}))
-	var col chanCollector
+	col := newChanCollector()
 	go col.drain(sess)
 
 	if err := sess.notifyStrategyAfterAction(context.Background()); err != nil {
@@ -40,6 +40,7 @@ func TestS2Cov_NotifyStrategyAfterAction_WarnsOnError(t *testing.T) {
 	}
 
 	sess.Close()
+	<-col.done // wait for the drain goroutine to consume every event before asserting
 	if !col.contains("strategy AfterAction error") {
 		t.Fatalf("no AfterAction warning; got %v", col.messages())
 	}

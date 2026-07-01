@@ -62,7 +62,7 @@ func TestS2Cov_MaybeElicitNoteBeforeCompaction_PinsElicitedNote(t *testing.T) {
 func TestS2Cov_MaybeElicitNoteBeforeCompaction_ErrorWarns(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t)
-	var mu chanCollector
+	mu := newChanCollector()
 	go mu.drain(sess)
 
 	sess.contextMgr.CheckpointThreshold = 0
@@ -76,6 +76,7 @@ func TestS2Cov_MaybeElicitNoteBeforeCompaction_ErrorWarns(t *testing.T) {
 		t.Fatalf("PinnedNote = %q, want empty after elicit error", got)
 	}
 	sess.Close()
+	<-mu.done // wait for the drain goroutine to consume every event before asserting
 	if !mu.contains("note elicitation failed") {
 		t.Fatalf("no elicitation-failed warning; warnings = %v", mu.messages())
 	}
@@ -106,9 +107,20 @@ func TestS2Cov_MaybeNudgeSelfCompact_NudgesOnceThenLatches(t *testing.T) {
 }
 
 // chanCollector accumulates warning messages from a session's event stream.
+// done closes when drain has consumed every event (after the session's Events
+// channel closes on Close), so a test can wait for all warnings to be recorded
+// before asserting rather than racing the drain goroutine.
 type chanCollector struct {
 	mu   sync.Mutex
 	msgs []string
+	done chan struct{}
+}
+
+// newChanCollector returns a collector whose done channel is ready, so a test
+// can Close the session and then wait on done for drain to finish before it
+// asserts on the accumulated warnings.
+func newChanCollector() *chanCollector {
+	return &chanCollector{done: make(chan struct{})}
 }
 
 func (c *chanCollector) drain(sess *Session) {
@@ -121,6 +133,7 @@ func (c *chanCollector) drain(sess *Session) {
 			}
 		}
 	}
+	close(c.done)
 }
 
 func (c *chanCollector) contains(sub string) bool {

@@ -39,7 +39,7 @@ func TestS2Cov_RecordResponseUsage(t *testing.T) {
 func TestS2Cov_MaybeWarnContextUsage(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t)
-	var col chanCollector
+	col := newChanCollector()
 	go col.drain(sess)
 
 	// A tiny context window makes even a small request cross the 80% threshold.
@@ -60,6 +60,7 @@ func TestS2Cov_MaybeWarnContextUsage(t *testing.T) {
 	}
 
 	sess.Close()
+	<-col.done // wait for the drain goroutine to consume every event before asserting
 	if !col.contains("Context usage at") {
 		t.Fatalf("no context-usage warning emitted; got %v", col.messages())
 	}
