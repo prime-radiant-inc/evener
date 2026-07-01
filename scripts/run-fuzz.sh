@@ -198,6 +198,7 @@ TARGETS=(
 	"native:llm:./providers/openai:FuzzOresp_Builders::responses.go#buildRequestBody"
 	"native:llm:./providers/openai:FuzzOresp_CompleteFallback::adapter.go#Complete"
 	"native:llm:./providers/openai:FuzzOresp_NewForInstance::adapter.go#NewForInstance"
+	"native:llm:./providers/openai:FuzzNewForInstanceOAuth::adapter.go#NewForInstance"
 	"native:llm:./providers/openai:FuzzOresp_StreamChat::chatcompletions.go#streamViaChatCompletions"
 	"native:llm:./providers/openai:FuzzOresp_StreamResponses::responses.go#streamResponses"
 	"native:agent:./internal/sessionlog:FuzzSessionLogPersistence::sessionlog.go#appendToDisk"
