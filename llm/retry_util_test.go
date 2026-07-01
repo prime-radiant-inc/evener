@@ -248,3 +248,36 @@ func TestDefaultRetryPolicy_Values(t *testing.T) {
 		t.Fatal("Jitter should be true")
 	}
 }
+
+// TestRetryDelay_SaturatesInsteadOfWrappingNegative is the regression for a
+// latent overflow the retry fuzzer found: base*mult^n exceeding MaxInt64 ns (or a
+// 0*+Inf=NaN when BaseDelay clamps to 0) wrapped through time.Duration(f) to a
+// NEGATIVE Duration, which slipped under the `d > MaxDelay` cap check — bypassing
+// the cap and collapsing backoff into a zero-wait busy loop. retryDelay must now
+// saturate and honor the cap. Not reachable via DefaultRetryPolicy (MaxRetries=10),
+// but reachable from any policy with a high MaxRetries/multiplier.
+func TestRetryDelay_SaturatesInsteadOfWrappingNegative(t *testing.T) {
+	err := ErrorFromHTTPStatus("openai", 429, "boom", nil, nil)
+	cases := []struct {
+		name   string
+		policy RetryPolicy
+		n      int
+	}{
+		{"overflow_positive_base", RetryPolicy{MaxRetries: 97, BaseDelay: 58 * time.Millisecond, MaxDelay: 99 * time.Millisecond, BackoffMultiplier: 10}, 20},
+		{"nan_from_clamped_base_inf_mult", RetryPolicy{MaxRetries: 500, BaseDelay: -1, MaxDelay: 50 * time.Millisecond, BackoffMultiplier: 10}, 400},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d, ok := retryDelay(tc.policy, func() float64 { return 0 }, err, tc.n)
+			if !ok {
+				t.Fatal("expected a delay, got ok=false")
+			}
+			if d < 0 {
+				t.Fatalf("negative delay %v: overflow wrapped past the cap", d)
+			}
+			if tc.policy.MaxDelay > 0 && d > tc.policy.MaxDelay {
+				t.Fatalf("delay %v exceeds MaxDelay %v: cap bypassed", d, tc.policy.MaxDelay)
+			}
+		})
+	}
+}
