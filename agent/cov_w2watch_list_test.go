@@ -41,7 +41,7 @@ func TestW2Watch_watchListToolResultVisibleToSession(t *testing.T) {
 
 	got := jm.watchListToolResult()
 
-	// liveA, liveB (visible) + flushFresh (detached) = 3.
+	// Two visible live watches plus one detached fresh flush make three.
 	if got.Count != 3 {
 		t.Fatalf("watch count = %d, want 3 (%+v)", got.Count, got.Watches)
 	}

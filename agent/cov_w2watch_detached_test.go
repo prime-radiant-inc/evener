@@ -47,14 +47,14 @@ func w2watch_seedDetachedPending(t *testing.T, jm *jobManager, watchID, target, 
 }
 
 func w2watch_failAppendEventsOnKind(jm *jobManager, kind jobstore.EventKind, err error) {
-	real := jm.appendEvents
+	prev := jm.appendEvents
 	jm.appendEvents = func(events []jobstore.Event) error {
 		for _, e := range events {
 			if e.Kind == kind {
 				return err
 			}
 		}
-		return real(events)
+		return prev(events)
 	}
 }
 
