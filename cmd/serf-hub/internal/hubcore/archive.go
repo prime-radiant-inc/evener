@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/spf13/afero"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
 )
 
@@ -20,11 +21,29 @@ type ArchiveKey struct {
 // stored here — only deliberate user decisions are recorded.
 type ArchiveStore struct {
 	dbPath string
+
+	// fs mediates the directory-scaffolding and existence-check filesystem ops
+	// (MkdirAll, Stat) around the SQLite database. It defaults to
+	// afero.NewOsFs() (identical to direct os calls). NOTE: the SQLite driver
+	// (sql.Open) opens dbPath on the real OS filesystem directly and does NOT
+	// route through fs — so injecting a non-OS filesystem here only redirects
+	// the surrounding dir/stat ops, not the database read/write itself.
+	fs afero.Fs
 }
 
 // NewArchiveStore returns a store backed by the SQLite file at dbPath. An empty
 // dbPath yields a store whose Decisions() is always empty (graceful no-op).
-func NewArchiveStore(dbPath string) *ArchiveStore { return &ArchiveStore{dbPath: dbPath} }
+func NewArchiveStore(dbPath string) *ArchiveStore {
+	return &ArchiveStore{dbPath: dbPath, fs: afero.NewOsFs()}
+}
+
+// SetFs overrides the store's filesystem for the dir-scaffolding and
+// existence-check ops (see the fs field note about the SQLite boundary).
+// Returns the store for call chaining.
+func (s *ArchiveStore) SetFs(fs afero.Fs) *ArchiveStore {
+	s.fs = fs
+	return s
+}
 
 const createArchiveTable = `
 CREATE TABLE IF NOT EXISTS archive (
@@ -36,7 +55,7 @@ CREATE TABLE IF NOT EXISTS archive (
 )`
 
 func (s *ArchiveStore) open() (*sql.DB, error) {
-	if err := os.MkdirAll(filepath.Dir(s.dbPath), 0o700); err != nil {
+	if err := s.fs.MkdirAll(filepath.Dir(s.dbPath), 0o700); err != nil {
 		return nil, err
 	}
 	db, err := sql.Open("sqlite", s.dbPath)
@@ -77,7 +96,7 @@ func (s *ArchiveStore) Decisions() (map[ArchiveKey]bool, error) {
 	if s.dbPath == "" {
 		return out, nil
 	}
-	if _, err := os.Stat(s.dbPath); os.IsNotExist(err) {
+	if _, err := s.fs.Stat(s.dbPath); os.IsNotExist(err) {
 		return out, nil
 	}
 	db, err := s.open()

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"unicode"
 
+	"github.com/spf13/afero"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
@@ -27,6 +28,14 @@ type PastEntry struct {
 type PastIndex struct {
 	stateGlob string
 	dbPath    string
+
+	// fs mediates the directory-scaffolding, chmod, and sessions-dir scan
+	// filesystem ops. It defaults to afero.NewOsFs() (identical to direct os
+	// calls). NOTE: the SQLite FTS index (sql.Open on dbPath) opens the file on
+	// the real OS filesystem directly and does NOT route through fs — injecting
+	// a non-OS filesystem redirects only the surrounding dir/chmod/readdir ops,
+	// not the database itself.
+	fs afero.Fs
 
 	mu   sync.RWMutex
 	all  []PastEntry // sorted by the Hub session ordering contract
@@ -50,8 +59,17 @@ type PastIndex struct {
 func NewPastIndex(projectGlob string) *PastIndex {
 	return &PastIndex{
 		stateGlob: projectGlob,
+		fs:        afero.NewOsFs(),
 		byID:      make(map[string]PastEntry),
 	}
+}
+
+// SetFs overrides the index's filesystem for the dir-scaffolding, chmod, and
+// sessions-dir scan ops (see the fs field note about the SQLite boundary).
+// Returns the index for call chaining.
+func (i *PastIndex) SetFs(fs afero.Fs) *PastIndex {
+	i.fs = fs
+	return i
 }
 
 // NewPastIndexWithDB returns a PastIndex that mirrors rebuilt metadata into a
@@ -90,7 +108,7 @@ func (i *PastIndex) Rebuild() error {
 			all = append(all, pe)
 			byID[m.ID] = pe
 		}
-		foldProjectObserverGrants(observers, project)
+		foldProjectObserverGrants(observers, i.fs, project)
 	}
 	sort.SliceStable(all, func(a, b int) bool {
 		return sessionMetaLess(all[a].Meta, all[b].Meta)
@@ -197,7 +215,7 @@ sort_rank UNINDEXED
 
 func (i *PastIndex) rebuildFTS(entries []PastEntry) error {
 	dbDir := filepath.Dir(i.dbPath)
-	if err := os.MkdirAll(dbDir, 0o700); err != nil {
+	if err := i.fs.MkdirAll(dbDir, 0o700); err != nil {
 		return err
 	}
 	db, err := sql.Open("sqlite", i.dbPath)
@@ -242,12 +260,20 @@ func (i *PastIndex) rebuildFTS(entries []PastEntry) error {
 		return err
 	}
 	closed = true
-	return chmodSQLiteIndexFiles(i.dbPath)
+	return chmodSQLiteIndexFilesFS(i.fs, i.dbPath)
 }
 
+// chmodSQLiteIndexFiles chmods the SQLite index file and its sidecars on the OS
+// filesystem. It is the direct-os entry point; chmodSQLiteIndexFilesFS is the
+// filesystem-seam variant that production (rebuildFTS) drives through the
+// index's injected fs.
 func chmodSQLiteIndexFiles(dbPath string) error {
+	return chmodSQLiteIndexFilesFS(afero.NewOsFs(), dbPath)
+}
+
+func chmodSQLiteIndexFilesFS(fs afero.Fs, dbPath string) error {
 	for _, path := range []string{dbPath, dbPath + "-journal", dbPath + "-wal", dbPath + "-shm"} {
-		if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
+		if err := fs.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -362,8 +388,8 @@ func (i *PastIndex) ObserversOf(workerSessionID string) []string {
 // link. Best-effort — a session with no log or an unreadable log contributes
 // nothing rather than failing the rebuild. Lists may carry duplicates across
 // sessions until dedupObserverLists.
-func foldProjectObserverGrants(into map[string][]string, project string) {
-	entries, err := os.ReadDir(filepath.Join(project, "sessions"))
+func foldProjectObserverGrants(into map[string][]string, fs afero.Fs, project string) {
+	entries, err := afero.ReadDir(fs, filepath.Join(project, "sessions"))
 	if err != nil {
 		return // no sessions dir (or unreadable): nothing to fold
 	}
