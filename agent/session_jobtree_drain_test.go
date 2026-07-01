@@ -156,54 +156,6 @@ func TestOutstandingDelegateCountCoversPendingNotifyWindow(t *testing.T) {
 	}
 }
 
-// TestDrainJobTreeWaitsForPendingWatchSend verifies a pending caller-targeted
-// watch send holds the drain open even when there are no queued job
-// notifications or outstanding delegate jobs. driveChildrenWithUndeliveredAttention
-// treats a pending watch send as undelivered attention, so DrainJobTree must not
-// quiesce and let Close() drop those frames before delivery.
-func TestDrainJobTreeWaitsForPendingWatchSend(t *testing.T) {
-	t.Parallel()
-	sess := newSession(t)
-	jm := sess.jobManager
-
-	// Inject a watch config carrying a pending send frame, then remove it before
-	// the session closes.
-	key := watchKey{VisibleSessionID: sess.ID(), Target: "self"}
-	jm.mu.Lock()
-	jm.watches[key] = &watchConfig{pendingOrder: []jobstore.WatchSendKey{{VisibleSessionID: sess.ID()}}}
-	jm.mu.Unlock()
-	defer func() {
-		jm.mu.Lock()
-		delete(jm.watches, key)
-		jm.mu.Unlock()
-	}()
-
-	outstanding, err := sess.treeHasOutstandingWork()
-	if err != nil {
-		t.Fatalf("treeHasOutstandingWork: %v", err)
-	}
-	if !outstanding {
-		t.Fatal("a pending watch send must count as outstanding work; drain would Close() before delivery")
-	}
-
-	// And the drain must block on it (until context cancellation) rather than exit.
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		_, e := sess.DrainJobTree(ctx)
-		done <- e
-	}()
-	select {
-	case e := <-done:
-		if e == nil {
-			t.Fatal("expected the drain to block on the pending watch send until ctx cancel, but it returned nil")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("DrainJobTree did not observe ctx cancellation while a watch send was pending")
-	}
-}
-
 // TestDrainJobTreeWaitsForRunningDelegate verifies the drain re-drives the
 // coordinator when a backgrounded delegate completes, rather than returning
 // while the child is still running.

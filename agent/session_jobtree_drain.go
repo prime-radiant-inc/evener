@@ -142,6 +142,14 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 
 	lastResult := ""
 	for {
+		// Deliver any pending caller-targeted watch sends across this session and
+		// its subagents (the sole watch-send executor). Caller sends render as a
+		// token on the owning session's own rail, so this converts them into
+		// queued notifications the loop then drains — a one-shot run must not
+		// Close() before an observer sidecar's findings reach their caller.
+		if err := s.drainPendingWatchSends(ctx); err != nil {
+			return lastResult, err
+		}
 		if s.peekNotifications() > 0 {
 			// A completion is queued on this (root) rail: run a notification turn so
 			// the coordinator's model receives it and can dispatch more work or wrap
