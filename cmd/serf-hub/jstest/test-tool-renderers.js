@@ -503,8 +503,8 @@ await scenario("edit_file collapses to a stat with the diff one click away", [
   if (!diff.querySelector(".del")) return { ok: false, detail: "no .del lines" };
   if (!card.querySelector(".tool-status-good")) return { ok: false, detail: "missing left success icon" };
   // Caret button should exist and default to ▸ (collapsed); clicking expands.
-  const caret = card.querySelector(".tool-expand-btn");
-  if (!caret) return { ok: false, detail: "no expand caret button" };
+  const caret = card.querySelector(".tool-disclosure[data-expand-toggle]");
+  if (!caret) return { ok: false, detail: "no inline disclosure button" };
   if (caret.textContent !== "▸") return { ok: false, detail: "caret should be ▸ when collapsed, got " + caret.textContent };
   caret.dispatchEvent(new conv.ownerDocument.defaultView.MouseEvent("click", { bubbles: true, cancelable: true }));
   if (card.dataset.expanded !== "true" || caret.textContent !== "▾") return { ok: false, detail: "caret click should expand to ▾" };
@@ -896,31 +896,31 @@ await (async function () {
     if (got !== want) failures.push(desc + ": expected " + JSON.stringify(want) + " got " + JSON.stringify(got));
   };
 
-  // read_file: data-expanded="false", caret shows ▸.
+  // read_file: data-expanded="false", disclosure shows ▸.
   const readCall = conv.querySelector(".tool-call.read_file");
   check("read_file data-expanded false", readCall && readCall.dataset.expanded, "false");
-  const readCaret = readCall && readCall.querySelector(".tool-expand-btn");
-  check("read_file caret exists", !!readCaret, true);
-  check("read_file caret glyph collapsed", readCaret && readCaret.textContent, "▸");
+  const readCaret = readCall && readCall.querySelector(".tool-disclosure[data-expand-toggle]");
+  check("read_file disclosure exists", !!readCaret, true);
+  check("read_file disclosure glyph collapsed", readCaret && readCaret.textContent, "▸");
 
-  // write_file: collapsed by default (alt A), data-expanded="false", caret ▸.
+  // write_file: collapsed by default (alt A), data-expanded="false", disclosure ▸.
   const writeCall = conv.querySelector(".tool-call.write_file");
   check("write_file data-expanded false", writeCall && writeCall.dataset.expanded, "false");
-  const writeCaret = writeCall && writeCall.querySelector(".tool-expand-btn");
-  check("write_file caret glyph collapsed", writeCaret && writeCaret.textContent, "▸");
+  const writeCaret = writeCall && writeCall.querySelector(".tool-disclosure[data-expand-toggle]");
+  check("write_file disclosure glyph collapsed", writeCaret && writeCaret.textContent, "▸");
 
-  // Click read_file caret to expand.
+  // Click read_file disclosure to expand.
   if (readCaret) {
     readCaret.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     check("read_file expanded after click", readCall.dataset.expanded, "true");
-    check("read_file caret glyph after expand", readCaret.textContent, "▾");
+    check("read_file disclosure glyph after expand", readCaret.textContent, "▾");
     // Click again to collapse.
     readCaret.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     check("read_file collapsed after second click", readCall.dataset.expanded, "false");
-    check("read_file caret glyph after collapse", readCaret.textContent, "▸");
+    check("read_file disclosure glyph after collapse", readCaret.textContent, "▸");
   }
 
-  // Keyboard: Enter on caret triggers expand.
+  // Keyboard: Enter on disclosure triggers expand.
   if (readCaret) {
     const enterEvt = new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
     readCaret.dispatchEvent(enterEvt);
@@ -929,7 +929,7 @@ await (async function () {
   }
 
   if (failures.length === 0) {
-    console.log("PASS — tool-call body collapsed by default; caret toggles; edit/write/patch collapse to a +N −N stat (x1gj)");
+    console.log("PASS — tool-call body collapsed by default; disclosure toggles; edit/write/patch collapse to a +N −N stat (x1gj)");
   } else {
     allPass = false;
     for (const f of failures) console.log("FAIL — " + f);

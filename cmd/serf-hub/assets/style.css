@@ -2089,11 +2089,8 @@ button.composer-model-value .caret { color: var(--text-dim); }
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   white-space: nowrap;
-  opacity: 0;
-  transition: opacity var(--motion-fast);
+  opacity: 1;
 }
-.tool-call:hover .tool-meta,
-.tool-call:focus-within .tool-meta { opacity: 1; }
 .tool-call .tool-body,
 .tool-call .diff-body,
 .tool-call .output-preview-body { order: 5; }
@@ -2145,26 +2142,29 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .tool-call[data-expanded="false"] .tool-body,
 .tool-call[data-expanded="false"] .diff-body,
 .tool-call[data-expanded="false"] .output-preview-body { display: none; }
-/* Expand caret button on tool-call row. */
-/* The expand caret sits at the RIGHT of the header line (order 3 — after the
-   command/meta, before the wrapping demoted-command/body). This lets the status
-   glyph lead a clean, aligned left edge; the disclosure affordance reads as a
-   quiet "there's more →" on the right rather than offsetting every row. */
-.tool-expand-btn {
-  order: 3;
-  background: none;
+/* Inline expandable-tool disclosure. The chevron belongs to the action text it
+   expands, not to a separate right-side column. It stays quiet but visible, with
+   a hit target larger than the glyph. */
+.tool-disclosure {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: var(--space-1);
   border: none;
-  padding: 0;
-  margin: 0;
-  cursor: pointer;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--text-dim);
+  cursor: pointer;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   line-height: 1;
-  flex-shrink: 0;
+  flex: none;
 }
-.tool-expand-btn:hover { color: var(--text-muted); }
-.tool-expand-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tool-disclosure:hover { color: var(--text-muted); background: var(--surface-secondary); }
+.tool-disclosure:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tool-call[data-expanded="true"] .tool-disclosure { color: var(--text-muted); }
 .diff-body {
   margin: 0 0 var(--space-4) var(--tool-indent);
   padding: var(--space-3) var(--space-4);

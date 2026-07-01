@@ -76,7 +76,8 @@
     const next = !expanded;
     toolCall.dataset.expanded = next ? "true" : "false";
     btn.textContent = next ? "▾" : "▸";
-    btn.setAttribute("aria-label", next ? "collapse body" : "expand body");
+    btn.setAttribute("aria-label", next ? "collapse tool details" : "expand tool details");
+    btn.setAttribute("aria-expanded", next ? "true" : "false");
   });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Enter" && e.key !== " ") return;
