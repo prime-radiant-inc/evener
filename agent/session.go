@@ -38,10 +38,14 @@ type Session struct {
 	client         *llm.Client
 	profile        *provider.Profile
 	resolveProfile func(ref string) (*provider.Profile, error) // cross-provider resolver; may be nil
-	env            execenv.ExecutionEnvironment
-	clock          clock.Clock
-	stateDir       string
-	installID      string
+	// httpClient issues the web_fetch HTTP GET. Nil means the production default
+	// (http.DefaultClient); tests set it on their own session to serve a fabricated
+	// response through an injected transport without touching the network.
+	httpClient httpDoer
+	env        execenv.ExecutionEnvironment
+	clock      clock.Clock
+	stateDir   string
+	installID  string
 	// strictTranscriptMaxLineBytes caps a child transcript line during resumability
 	// checks. Zero means the production default (transcriptJSONLMaxLineBytes); tests
 	// set a small value on their own session to exercise the oversized-line path

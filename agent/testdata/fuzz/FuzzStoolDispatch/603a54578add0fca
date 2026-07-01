@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("\tc15%X5b)5\x00$")

@@ -39,6 +39,22 @@ func webFetchCachePath(rawURL string) string {
 	return filepath.Join(CacheDir(), "web_cache", date, key)
 }
 
+// httpDoer is the injectable seam for web_fetch's HTTP GET. *http.Client
+// satisfies it; tests supply a fake transport so the fetch never hits the
+// network. Nil on the session means the production default (http.DefaultClient).
+type httpDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+// webFetchClient returns the session's injected HTTP client, or the process
+// default when none was set (the production path).
+func (s *Session) webFetchClient() httpDoer {
+	if s.httpClient != nil {
+		return s.httpClient
+	}
+	return http.DefaultClient
+}
+
 // webFetch performs the full web_fetch operation: HTTP GET, cache files, cheap model Q&A.
 func (s *Session) webFetch(ctx context.Context, rawURL string, question string) (any, error) {
 	// Validate URL scheme.
@@ -60,7 +76,7 @@ func (s *Session) webFetch(ctx context.Context, rawURL string, question string) 
 	}
 	req.Header.Set("User-Agent", "serf/1.0")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.webFetchClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching URL: %w", err)
 	}
