@@ -206,16 +206,16 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 
 // kickDriveTree delivers pending watch sends and kicks drive-down at every level
 // of the live delegate subtree, skipping stop-gated children (which are never
-// driven). Driving each session's own children directly — rather than relying on
-// a mid-level session running a turn — is what lets outstanding work isolated in
-// a grandchild subtree make progress even when the intervening session's own rail
+// driven). drainPendingWatchSends already drives THIS session's direct children
+// (its trailing driveChildrenWithUndeliveredAttention pass), and recursing into
+// each child repeats that at every level — so outstanding work isolated in a
+// grandchild subtree makes progress even when the intervening session's own rail
 // carries no immediate signal. All the underlying operations are idempotent and
 // self-terminating, so repeated kicks are safe.
 func (s *Session) kickDriveTree(ctx context.Context) error {
 	if err := s.drainPendingWatchSends(ctx); err != nil {
 		return err
 	}
-	s.driveChildrenWithUndeliveredAttention()
 	for _, sub := range s.liveDirectSubagents() {
 		child := sub.sess
 		if child == nil || s.childStopGated(child.id) {
