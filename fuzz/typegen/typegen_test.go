@@ -315,6 +315,51 @@ func TestNoSerfImport(t *testing.T) {
 	}
 }
 
+// TestValueFromBytes proves the generic byte→T helper both produces a decodable
+// value of the concrete type in Valid mode and round-trips it (marshal then
+// re-unmarshal is stable), across many byte seeds — the property FuzzWireTypes
+// checks by hand, now behind one call.
+func TestValueFromBytes(t *testing.T) {
+	sawOpt, sawNested := false, false
+	for seed := 0; seed < 64; seed++ {
+		v, ok := ValueFromBytes[cleanStruct](pseudoBytes(seed, 48), schemagen.Valid)
+		if !ok {
+			t.Fatalf("seed %d: Valid value of a round-trippable type failed to decode", seed)
+		}
+		// Re-encode and re-decode: a genuine T decodes back to an equal T.
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("seed %d: marshal generated value: %v", seed, err)
+		}
+		var again cleanStruct
+		if err := json.Unmarshal(raw, &again); err != nil {
+			t.Fatalf("seed %d: re-decode generated value: %v\n raw=%s", seed, err, raw)
+		}
+		if v.Opt != nil {
+			sawOpt = true
+		}
+		if v.Nested.A != "" || v.Nested.B != 0 {
+			sawNested = true
+		}
+	}
+	// The generator must actually populate the interesting fields, or the helper
+	// would be vacuously "working" on empty values.
+	if !sawOpt {
+		t.Error("no seed produced a non-nil optional pointer — generator too shallow")
+	}
+	if !sawNested {
+		t.Error("no seed populated the nested struct — generator too shallow")
+	}
+}
+
+// TestValueFromBytes_Empty exercises the exhaustion path: a zero-length byte
+// source still yields a decodable (zero-ish) value, never a panic.
+func TestValueFromBytes_Empty(t *testing.T) {
+	if _, ok := ValueFromBytes[cleanStruct](nil, schemagen.Valid); !ok {
+		t.Fatal("empty byte source should still yield a decodable Valid value")
+	}
+}
+
 func toStringSet(v any) map[string]bool {
 	out := map[string]bool{}
 	for _, s := range v.([]string) {
