@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -68,6 +69,73 @@ func TestS1Cov_classifyRestoredWatchSendTarget_NotControllable(t *testing.T) {
 	class, reason := s.classifyRestoredWatchSendTarget("dlg_other")
 	if class != watchSendHardFailure || !strings.Contains(reason, "not_controllable") {
 		t.Fatalf("class/reason = %v/%q, want hard failure not_controllable", class, reason)
+	}
+}
+
+// A delegate whose concrete job is owned by a descendant session is not
+// controllable from the owning session.
+func TestS1Cov_classifyRestoredWatchSendTarget_JobOwnedByDescendant(t *testing.T) {
+	jm := newTestJM(t)
+	now := jm.now()
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: "dlg_desc",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "child_d",
+			TranscriptRef:    encodeRef("", "child_d"),
+			OwnerSessionID:   jm.sessionID,
+			VisibleSessionID: jm.sessionID,
+			Generation:       "dg_1",
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append delegate: %v", err)
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               now,
+		JobID:            "job_desc",
+		Type:             jobstore.JobDelegate,
+		DelegateID:       "dlg_desc",
+		OwnerSessionID:   "DESCENDANT",
+		VisibleToSession: jm.sessionID,
+		TranscriptRef:    encodeRef("", "child_d"),
+		StartedAt:        &now,
+	}); err != nil {
+		t.Fatalf("append job: %v", err)
+	}
+	s := &Session{id: jm.sessionID, jobManager: jm}
+	class, reason := s.classifyRestoredWatchSendTarget("dlg_desc")
+	if class != watchSendHardFailure || !strings.Contains(reason, "not_controllable") {
+		t.Fatalf("class/reason = %v/%q, want hard failure not_controllable", class, reason)
+	}
+}
+
+// A corrupt delegate log classifies as busy (keep the frame pending), never a
+// hard failure.
+func TestS1Cov_classifyRestoredWatchSendTarget_LoadDelegatesError(t *testing.T) {
+	jm := newTestJM(t)
+	now := jm.now()
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:       jobstore.EventDelegateCreated,
+		TS:         now,
+		DelegateID: "dlg_corrupt",
+		Delegate: &jobstore.DelegateEvent{
+			ChildSessionID:   "child_c",
+			TranscriptRef:    encodeRef("", "child_c"),
+			OwnerSessionID:   jm.sessionID,
+			VisibleSessionID: jm.sessionID,
+			Generation:       "dg_1",
+			Resumable:        true,
+		},
+	}); err != nil {
+		t.Fatalf("append delegate: %v", err)
+	}
+	s1cov_corruptJobLog(t, filepath.Join(jm.dir, "jobs.jsonl"))
+	s := &Session{id: jm.sessionID, jobManager: jm}
+	if class, _ := s.classifyRestoredWatchSendTarget("dlg_corrupt"); class != watchSendBusy {
+		t.Fatalf("corrupt log → %v, want busy", class)
 	}
 }
 
