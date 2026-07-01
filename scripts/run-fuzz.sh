@@ -267,6 +267,25 @@ TARGETS=(
 	"rapid:agent:./internal/contextmgr:TestCompactionSeqFuzz"
 	"rapid:.:./internal/appserver:TestRouterSeqFuzz"
 	"rapid:.:./internal/appserver:TestHubMultiSessionSeqFuzz"
+	# Wave 2: next-tier agent-package surface — doctor rendering, ctx/jobstore
+	# output, execenv fs, watch/observer, session-tool dispatch, lifecycle slots.
+	"native:agent:./doctor:FuzzDr2BuildWatchReport::watches.go#buildWatchReport"
+	"native:agent:./doctor:FuzzDr2APILog::apilog.go#APILog"
+	"native:agent:./internal/contextmgr:FuzzCxjsObsMaskManageContext::strategy_obs_mask.go#ManageContext"
+	"native:agent:./internal/jobstore:FuzzCxjsGrepReaderLimit::output.go#grepReaderLimit"
+	"native:agent:./execenv:FuzzExfsListDirectory::local.go#ListDirectory"
+	"native:agent:./execenv:FuzzExfsInjectLocalVenvPath::local.go#injectLocalVenvPath"
+	"native:agent:.:FuzzWobsClassifyRestoredTarget::job_watch.go#classifyRestoredWatchSendTarget"
+	"native:agent:.:FuzzWobsBuildWatchFrame::job_watch.go#buildWatchFrame"
+	"native:agent:.:FuzzWobsRestoreWatchSendPending::job_watch.go#restoreWatchSendPending"
+	"native:agent:.:FuzzWobsConfigureWatchSession::job_watch.go#configureWatch"
+	"native:agent:.:FuzzWobsLoadObserverGrants::observer_grants.go#LoadSessionObserverGrants"
+	"native:agent:.:FuzzStoolDispatch::session_tools.go#execTool"
+	"native:agent:.:FuzzStoolWebFetch::tool_web_fetch.go#webFetch"
+	"native:agent:.:FuzzLcyc_DrainAsSteer::session_queue.go#DrainAsSteerWithInput"
+	"native:agent:.:FuzzLcyc_DiscardRestoredCandidate::session_lifecycle.go#discardRestoredCandidate"
+	"native:agent:.:FuzzLcyc_ReserveSlot::subagent_manager.go#reserveSlot"
+	"native:agent:.:FuzzLcyc_InitPlugins::session_init.go#initPlugins"
 )
 
 duration="60s"
