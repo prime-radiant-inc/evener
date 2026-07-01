@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+
+	"github.com/spf13/afero"
 )
 
 // ErrOutputPruned is returned by output reads when the durable record remains
@@ -35,7 +37,8 @@ type OutputStore struct {
 	mu            sync.Mutex
 	path          string
 	metaPath      string
-	f             *os.File
+	fs            afero.Fs
+	f             afero.File
 	capBytes      int64
 	total         int64
 	retainedStart int64
@@ -51,7 +54,16 @@ type outputMeta struct {
 // retained-tail cap. Existing oversized files are treated as unpruned lifetime
 // output and reduced to their capped tail.
 func OpenOutput(path string, capBytes int64) (*OutputStore, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
+	return openOutputFs(afero.NewOsFs(), path, capBytes)
+}
+
+// openOutputFs opens the output store on the given filesystem. OpenOutput
+// delegates here with afero.NewOsFs(), which forwards every call straight to the
+// os package, so production behavior is byte-identical to direct os calls. Tests
+// and fuzzers inject an in-memory or fault-injecting filesystem to drive the
+// prune/persist error arms off real disk.
+func openOutputFs(fs afero.Fs, path string, capBytes int64) (*OutputStore, error) {
+	f, err := fs.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("jobstore: open output %s: %w", path, err)
 	}
@@ -61,12 +73,12 @@ func OpenOutput(path string, capBytes int64) (*OutputStore, error) {
 		return nil, err
 	}
 	metaPath := outputMetaPath(path)
-	total, retainedStart, err := readOutputMetaForFile(metaPath, path, info.Size())
+	total, retainedStart, err := readOutputMetaForFile(fs, metaPath, path, info.Size())
 	if err != nil {
 		_ = f.Close()
 		return nil, err
 	}
-	o := &OutputStore{path: path, metaPath: metaPath, f: f, capBytes: capBytes, total: total, retainedStart: retainedStart}
+	o := &OutputStore{path: path, metaPath: metaPath, fs: fs, f: f, capBytes: capBytes, total: total, retainedStart: retainedStart}
 	if err := o.pruneLocked(); err != nil {
 		_ = f.Close()
 		return nil, err
@@ -124,7 +136,7 @@ func (o *OutputStore) Tail(maxBytes int) (buf []byte, total int64, truncated boo
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	info, err := os.Stat(o.path)
+	info, err := o.fs.Stat(o.path)
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("jobstore: stat output: %w", err)
 	}
@@ -138,7 +150,7 @@ func (o *OutputStore) Tail(maxBytes int) (buf []byte, total int64, truncated boo
 	if o.retainedStart > 0 {
 		truncated = true
 	}
-	f, err := os.Open(o.path)
+	f, err := o.fs.Open(o.path)
 	if err != nil {
 		return nil, total, truncated, fmt.Errorf("jobstore: open output: %w", err)
 	}
@@ -170,7 +182,7 @@ func (o *OutputStore) Head(maxBytes int) (buf []byte, total int64, truncated boo
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	info, err := os.Stat(o.path)
+	info, err := o.fs.Stat(o.path)
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("jobstore: stat output: %w", err)
 	}
@@ -184,7 +196,7 @@ func (o *OutputStore) Head(maxBytes int) (buf []byte, total int64, truncated boo
 	if o.retainedStart > 0 {
 		truncated = true
 	}
-	f, err := os.Open(o.path)
+	f, err := o.fs.Open(o.path)
 	if err != nil {
 		return nil, total, truncated, fmt.Errorf("jobstore: open output: %w", err)
 	}
@@ -226,7 +238,7 @@ func (o *OutputStore) GrepLimitLineBytes(re *regexp.Regexp, limitBytes int, maxM
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	f, err := os.Open(o.path)
+	f, err := o.fs.Open(o.path)
 	if err != nil {
 		return nil, fmt.Errorf("jobstore: open output: %w", err)
 	}
@@ -283,7 +295,7 @@ func OutputFileStats(path string) (total int64, retainedStart int64, err error) 
 	if err != nil {
 		return 0, 0, fmt.Errorf("jobstore: stat output: %w", err)
 	}
-	total, retainedStart, err = readOutputMetaForFile(outputMetaPath(path), path, info.Size())
+	total, retainedStart, err = readOutputMetaForFile(afero.NewOsFs(), outputMetaPath(path), path, info.Size())
 	if err != nil {
 		return 0, 0, err
 	}
@@ -329,7 +341,7 @@ func (o *OutputStore) pruneLocked() error {
 		return fmt.Errorf("jobstore: read output prune tail: %w", err)
 	}
 	retainedStart := o.total - keep
-	if err := writeOutputMetaFile(outputPendingMetaPath(o.metaPath), outputMeta{
+	if err := writeOutputMetaFileFs(o.fs, outputPendingMetaPath(o.metaPath), outputMeta{
 		TotalBytes:     o.total,
 		RetainedStart:  retainedStart,
 		RetainedSHA256: outputBytesSHA256(tail),
@@ -368,21 +380,28 @@ func (o *OutputStore) persistMetaLocked() error {
 		TotalBytes:    o.total,
 		RetainedStart: o.retainedStart,
 	}
-	hash, err := outputFileSHA256(o.path)
+	hash, err := outputFileSHA256(o.fs, o.path)
 	if err != nil {
 		return err
 	}
 	meta.RetainedSHA256 = hash
-	if err := writeOutputMetaFile(o.metaPath, meta); err != nil {
+	if err := writeOutputMetaFileFs(o.fs, o.metaPath, meta); err != nil {
 		return err
 	}
-	if err := os.Remove(outputPendingMetaPath(o.metaPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := o.fs.Remove(outputPendingMetaPath(o.metaPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("jobstore: remove pending output metadata: %w", err)
 	}
 	return nil
 }
 
+// writeOutputMetaFile atomically writes meta on the OS filesystem.
+// writeOutputMetaFileFs carries the injectable seam; this preserves the
+// os-backed signature the package's callers and tests already use.
 func writeOutputMetaFile(path string, meta outputMeta) error {
+	return writeOutputMetaFileFs(afero.NewOsFs(), path, meta)
+}
+
+func writeOutputMetaFileFs(fs afero.Fs, path string, meta outputMeta) error {
 	if path == "" {
 		return nil
 	}
@@ -392,40 +411,40 @@ func writeOutputMetaFile(path string, meta outputMeta) error {
 	}
 	b = append(b, '\n')
 	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	f, err := fs.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("jobstore: open output metadata: %w", err)
 	}
 	if n, err := f.Write(b); err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmp)
+		_ = fs.Remove(tmp)
 		return fmt.Errorf("jobstore: write output metadata: %w", err)
 	} else if n != len(b) {
 		_ = f.Close()
-		_ = os.Remove(tmp)
+		_ = fs.Remove(tmp)
 		return fmt.Errorf("jobstore: write output metadata: %w", io.ErrShortWrite)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmp)
+		_ = fs.Remove(tmp)
 		return fmt.Errorf("jobstore: sync output metadata: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
+		_ = fs.Remove(tmp)
 		return fmt.Errorf("jobstore: close output metadata: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := fs.Rename(tmp, path); err != nil {
+		_ = fs.Remove(tmp)
 		return fmt.Errorf("jobstore: replace output metadata: %w", err)
 	}
-	if err := syncParentDir(path); err != nil {
+	if err := syncParentDir(fs, path); err != nil {
 		return err
 	}
 	return nil
 }
 
-func syncParentDir(path string) error {
-	dir, err := os.Open(filepath.Dir(path))
+func syncParentDir(fs afero.Fs, path string) error {
+	dir, err := fs.Open(filepath.Dir(path))
 	if err != nil {
 		return fmt.Errorf("jobstore: open output metadata directory: %w", err)
 	}
@@ -446,15 +465,15 @@ func outputPendingMetaPath(metaPath string) string {
 	return metaPath + ".pending"
 }
 
-func readOutputMetaForFile(path string, outputPath string, retained int64) (total int64, retainedStart int64, err error) {
-	pending, ok, err := readValidPendingOutputMeta(outputPendingMetaPath(path), path, outputPath, retained)
+func readOutputMetaForFile(fs afero.Fs, path string, outputPath string, retained int64) (total int64, retainedStart int64, err error) {
+	pending, ok, err := readValidPendingOutputMeta(fs, outputPendingMetaPath(path), path, outputPath, retained)
 	if err != nil {
 		return 0, 0, err
 	}
 	if ok {
 		return pending.TotalBytes, pending.RetainedStart, nil
 	}
-	meta, ok, err := readValidOutputMeta(path, outputPath, retained)
+	meta, ok, err := readValidOutputMetaFs(fs, path, outputPath, retained)
 	if ok {
 		return meta.TotalBytes, meta.RetainedStart, nil
 	}
@@ -464,8 +483,8 @@ func readOutputMetaForFile(path string, outputPath string, retained int64) (tota
 	return retained, 0, nil
 }
 
-func readOutputMeta(path string) (outputMeta, bool, error) {
-	b, err := os.ReadFile(path)
+func readOutputMeta(fs afero.Fs, path string) (outputMeta, bool, error) {
+	b, err := afero.ReadFile(fs, path)
 	if errors.Is(err, os.ErrNotExist) {
 		return outputMeta{}, false, nil
 	}
@@ -479,8 +498,8 @@ func readOutputMeta(path string) (outputMeta, bool, error) {
 	return meta, true, nil
 }
 
-func readValidPendingOutputMeta(path string, finalMetaPath string, outputPath string, retained int64) (outputMeta, bool, error) {
-	meta, ok, err := readOutputMeta(path)
+func readValidPendingOutputMeta(fs afero.Fs, path string, finalMetaPath string, outputPath string, retained int64) (outputMeta, bool, error) {
+	meta, ok, err := readOutputMeta(fs, path)
 	if err != nil || !ok {
 		return outputMeta{}, ok, err
 	}
@@ -489,7 +508,7 @@ func readValidPendingOutputMeta(path string, finalMetaPath string, outputPath st
 		return outputMeta{}, false, err
 	}
 	if metaRetained < retained {
-		if ok, err := outputFileHasSuffixSHA256(outputPath, retained-metaRetained, metaRetained, meta.RetainedSHA256); err != nil {
+		if ok, err := outputFileHasSuffixSHA256(fs, outputPath, retained-metaRetained, metaRetained, meta.RetainedSHA256); err != nil {
 			return outputMeta{}, false, err
 		} else if !ok {
 			return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
@@ -497,7 +516,7 @@ func readValidPendingOutputMeta(path string, finalMetaPath string, outputPath st
 		if meta.TotalBytes < retained {
 			return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 		}
-		finalMeta, ok, err := readOutputMeta(finalMetaPath)
+		finalMeta, ok, err := readOutputMeta(fs, finalMetaPath)
 		if err != nil {
 			return outputMeta{}, false, err
 		}
@@ -514,12 +533,12 @@ func readValidPendingOutputMeta(path string, finalMetaPath string, outputPath st
 			meta.TotalBytes-retained != finalMeta.RetainedStart {
 			return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 		}
-		if ok, err := outputFileHasPrefixSHA256(outputPath, finalRetained, finalMeta.RetainedSHA256); err != nil {
+		if ok, err := outputFileHasPrefixSHA256(fs, outputPath, finalRetained, finalMeta.RetainedSHA256); err != nil {
 			return outputMeta{}, false, err
 		} else if !ok {
 			return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 		}
-		hash, err := outputFileSHA256(outputPath)
+		hash, err := outputFileSHA256(fs, outputPath)
 		if err != nil {
 			return outputMeta{}, false, err
 		}
@@ -530,7 +549,7 @@ func readValidPendingOutputMeta(path string, finalMetaPath string, outputPath st
 	if metaRetained != retained {
 		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 	}
-	hash, err := outputFileSHA256(outputPath)
+	hash, err := outputFileSHA256(fs, outputPath)
 	if err != nil {
 		return outputMeta{}, false, err
 	}
@@ -540,8 +559,15 @@ func readValidPendingOutputMeta(path string, finalMetaPath string, outputPath st
 	return meta, true, nil
 }
 
+// readValidOutputMeta validates final output metadata on the OS filesystem.
+// readValidOutputMetaFs carries the injectable seam; this preserves the
+// os-backed signature the package's tests already use.
 func readValidOutputMeta(path string, outputPath string, retained int64) (outputMeta, bool, error) {
-	meta, ok, err := readOutputMeta(path)
+	return readValidOutputMetaFs(afero.NewOsFs(), path, outputPath, retained)
+}
+
+func readValidOutputMetaFs(fs afero.Fs, path string, outputPath string, retained int64) (outputMeta, bool, error) {
+	meta, ok, err := readOutputMeta(fs, path)
 	if err != nil || !ok {
 		return outputMeta{}, ok, err
 	}
@@ -550,12 +576,12 @@ func readValidOutputMeta(path string, outputPath string, retained int64) (output
 		return outputMeta{}, false, err
 	}
 	if metaRetained < retained {
-		if ok, err := outputFileHasPrefixSHA256(outputPath, metaRetained, meta.RetainedSHA256); err != nil {
+		if ok, err := outputFileHasPrefixSHA256(fs, outputPath, metaRetained, meta.RetainedSHA256); err != nil {
 			return outputMeta{}, false, err
 		} else if !ok {
 			return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 		}
-		hash, err := outputFileSHA256(outputPath)
+		hash, err := outputFileSHA256(fs, outputPath)
 		if err != nil {
 			return outputMeta{}, false, err
 		}
@@ -566,7 +592,7 @@ func readValidOutputMeta(path string, outputPath string, retained int64) (output
 	if metaRetained != retained {
 		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 	}
-	hash, err := outputFileSHA256(outputPath)
+	hash, err := outputFileSHA256(fs, outputPath)
 	if err != nil {
 		return outputMeta{}, false, err
 	}
@@ -583,8 +609,8 @@ func outputMetaRetainedBytes(meta outputMeta) (int64, error) {
 	return meta.TotalBytes - meta.RetainedStart, nil
 }
 
-func outputFileHasPrefixSHA256(path string, n int64, want string) (bool, error) {
-	f, err := os.Open(path)
+func outputFileHasPrefixSHA256(fs afero.Fs, path string, n int64, want string) (bool, error) {
+	f, err := fs.Open(path)
 	if err != nil {
 		return false, fmt.Errorf("jobstore: open output for metadata hash: %w", err)
 	}
@@ -598,8 +624,8 @@ func outputFileHasPrefixSHA256(path string, n int64, want string) (bool, error) 
 	return hex.EncodeToString(h.Sum(nil)) == want, nil
 }
 
-func outputFileHasSuffixSHA256(path string, start int64, n int64, want string) (bool, error) {
-	f, err := os.Open(path)
+func outputFileHasSuffixSHA256(fs afero.Fs, path string, start int64, n int64, want string) (bool, error) {
+	f, err := fs.Open(path)
 	if err != nil {
 		return false, fmt.Errorf("jobstore: open output for metadata hash: %w", err)
 	}
@@ -616,8 +642,8 @@ func outputFileHasSuffixSHA256(path string, start int64, n int64, want string) (
 	return hex.EncodeToString(h.Sum(nil)) == want, nil
 }
 
-func outputFileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
+func outputFileSHA256(fs afero.Fs, path string) (string, error) {
+	f, err := fs.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("jobstore: open output for metadata hash: %w", err)
 	}
