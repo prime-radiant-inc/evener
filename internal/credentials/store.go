@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/spf13/afero"
 	"primeradiant.com/serf/envvars"
 )
 
@@ -56,13 +57,23 @@ type providerSection struct {
 type Store struct {
 	path string
 	data fileShape
+	fs   afero.Fs
 }
 
 // LoadStore reads path. Missing returns an empty Store. Non-missing files
 // must have mode 0600 (group/world bits unset).
 func LoadStore(path string) (*Store, error) {
-	s := &Store{path: path, data: fileShape{Schema: 1, Providers: map[string]providerSection{}}}
-	info, err := os.Stat(path)
+	return loadStoreFS(afero.NewOsFs(), path)
+}
+
+// loadStoreFS is the construction seam beneath LoadStore: it builds a Store over
+// an injected afero.Fs. Production passes afero.NewOsFs(), whose methods forward
+// straight to the os package, so behavior is byte-identical to direct os calls.
+// Tests and fuzzers inject an in-memory or sandboxed filesystem to drive
+// persistence off real disk.
+func loadStoreFS(fs afero.Fs, path string) (*Store, error) {
+	s := &Store{path: path, data: fileShape{Schema: 1, Providers: map[string]providerSection{}}, fs: fs}
+	info, err := fs.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return s, nil
@@ -72,7 +83,7 @@ func LoadStore(path string) (*Store, error) {
 	if info.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("credentials: %s has mode %o; require 0600", path, info.Mode().Perm())
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := afero.ReadFile(fs, path)
 	if err != nil {
 		return nil, fmt.Errorf("credentials: read %s: %w", path, err)
 	}
@@ -214,27 +225,27 @@ func (s *Store) save() error {
 	if s.path == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	if err := s.fs.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("credentials: mkdir: %w", err)
 	}
 	tmp := s.path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	f, err := s.fs.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("credentials: open: %w", err)
 	}
 	if err := toml.NewEncoder(f).Encode(s.data); err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmp)
+		_ = s.fs.Remove(tmp)
 		return fmt.Errorf("credentials: encode: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmp)
+		_ = s.fs.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
+		_ = s.fs.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	return s.fs.Rename(tmp, s.path)
 }

@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/BurntSushi/toml"
+	"github.com/spf13/afero"
 )
 
 // knownTypes is the set of valid provider type values.
@@ -122,7 +123,16 @@ func Load(data []byte) (Config, error) {
 // LoadFile reads path and parses it. If the file is absent, exists=false and
 // err=nil are returned. If the file exists but is invalid, err is non-nil.
 func LoadFile(path string) (cfg Config, exists bool, err error) {
-	data, err := os.ReadFile(path)
+	return loadFileFS(afero.NewOsFs(), path)
+}
+
+// loadFileFS is the filesystem seam beneath LoadFile: it reads path through an
+// injected afero.Fs. Production passes afero.NewOsFs(), whose methods delegate
+// directly to os, so behavior is byte-identical to using os calls; tests and
+// fuzzers inject an in-memory or sandboxed filesystem to exercise persistence
+// without touching real disk.
+func loadFileFS(fs afero.Fs, path string) (cfg Config, exists bool, err error) {
+	data, err := afero.ReadFile(fs, path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Config{}, false, nil
