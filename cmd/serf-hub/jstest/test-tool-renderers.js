@@ -97,8 +97,13 @@ await scenario("read_file in cheap cluster with inline range, purpose, and five-
   if (call.querySelector(".cheap-tool-args")) return { ok: false, detail: "read_file should not render JSON args" };
   const body = call.querySelector(".read-tool-body");
   if (!body) return { ok: false, detail: "no read tool body" };
+  if (!body.classList.contains("tool-body--preview")) return { ok: false, detail: "read body should use preview body variant" };
   const intent = call.querySelector(".tool-intent");
   if (!intent || intent.textContent !== "Inspect main entry point.") return { ok: false, detail: "read intent missing" };
+  const readCommand = call.querySelector(".tool-command");
+  if (!readCommand) return { ok: false, detail: "read_file should have a standardized command row" };
+  const readDisclosure = readCommand.querySelector(".tool-disclosure[data-expand-toggle]");
+  if (!readDisclosure) return { ok: false, detail: "read_file disclosure should be inline with the command row" };
   const preview = body.querySelector(".read-tool-preview");
   if (!preview || preview.textContent !== "one\ntwo\nthree\nfour\nfive") return { ok: false, detail: "read preview should contain first five lines" };
   if (preview.textContent.includes("six")) return { ok: false, detail: "read preview includes more than five lines" };
@@ -126,6 +131,11 @@ await scenario("tool purpose leads as the prominent line; command is demoted ben
   const command = card.querySelector(".tool-command");
   if (!command) return { ok: false, detail: "command should be wrapped in .tool-command" };
   if (!command.querySelector(".target") || !command.textContent.includes("go test ./...")) return { ok: false, detail: "command missing the verb/target line" };
+  const disclosure = command.querySelector(".tool-disclosure[data-expand-toggle]");
+  if (!disclosure) return { ok: false, detail: "purpose rows should place disclosure inline in demoted command" };
+  if (intent.querySelector(".tool-disclosure")) return { ok: false, detail: "purpose line should not own the disclosure when a demoted command exists" };
+  const meta = card.querySelector(".tool-meta");
+  if (!meta) return { ok: false, detail: "purpose row should keep timing metadata" };
   const body = card.querySelector(".shell-body");
   if (!body) return { ok: false, detail: "missing shell body" };
   const children = Array.from(card.children);
@@ -208,7 +218,21 @@ await scenario("job_read_output renders status, truncation, and output preview",
   if (!result.textContent.includes("128 bytes")) return { ok: false, detail: "missing byte summary: " + (result && result.textContent) };
   if (!result.textContent.includes("truncated")) return { ok: false, detail: "missing truncation summary" };
   const output = call.querySelector(".job-output");
+  const jobBody = call.querySelector(".job-output-body");
+  if (!jobBody || !jobBody.classList.contains("tool-body--preview")) return { ok: false, detail: "job output body should use preview body variant" };
   if (!output || !output.textContent.includes("line one\nline two")) return { ok: false, detail: "missing job output preview" };
+  return { ok: true };
+});
+
+await scenario("empty preview body removes disclosure after finalization", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "jr-empty", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_empty" }) }],
+  ["TOOL_CALL_END", { call_id: "jr-empty", tool_name: "job_read_output", output: "", tool_state: JSON.stringify({ job_id: "job_empty", type: "shell", status: "completed", output: "", total_bytes: 0 }) }],
+], ({ conv }) => {
+  const call = conv.querySelector(".tool-call.job_read_output");
+  if (!call) return { ok: false, detail: "no job_read_output card" };
+  if (call.querySelector(".tool-disclosure")) return { ok: false, detail: "empty preview body should not keep disclosure" };
+  if (call.hasAttribute("data-expanded")) return { ok: false, detail: "empty preview body should remove data-expanded" };
   return { ok: true };
 });
 
@@ -486,6 +510,7 @@ await scenario("edit_file collapses to a stat with the diff one click away", [
   if (!stat || stat.textContent.trim() !== "+2 -2") return { ok: false, detail: "collapsed stat should be '+2 -2', got " + (stat && JSON.stringify(stat.textContent)) };
   const body = card.querySelector(".edit-body");
   if (!body) return { ok: false, detail: "no edit body" };
+  if (!body.classList.contains("tool-body--diff")) return { ok: false, detail: "edit body should use diff body variant" };
   const diff = body.querySelector(".diff-body");
   if (!diff) return { ok: false, detail: "no diff body" };
   if (diff.textContent.includes("edited x.go")) return { ok: false, detail: "edit output shown instead of diff" };
@@ -494,8 +519,8 @@ await scenario("edit_file collapses to a stat with the diff one click away", [
   if (!diff.querySelector(".del")) return { ok: false, detail: "no .del lines" };
   if (!card.querySelector(".tool-status-good")) return { ok: false, detail: "missing left success icon" };
   // Caret button should exist and default to ▸ (collapsed); clicking expands.
-  const caret = card.querySelector(".tool-expand-btn");
-  if (!caret) return { ok: false, detail: "no expand caret button" };
+  const caret = card.querySelector(".tool-disclosure[data-expand-toggle]");
+  if (!caret) return { ok: false, detail: "no inline disclosure button" };
   if (caret.textContent !== "▸") return { ok: false, detail: "caret should be ▸ when collapsed, got " + caret.textContent };
   caret.dispatchEvent(new conv.ownerDocument.defaultView.MouseEvent("click", { bubbles: true, cancelable: true }));
   if (card.dataset.expanded !== "true" || caret.textContent !== "▾") return { ok: false, detail: "caret click should expand to ▾" };
@@ -512,6 +537,7 @@ await scenario("apply_patch diff body with five-line preview", [
   if (!card.textContent.includes("x.go")) return { ok: false, detail: "missing patch target" };
   const body = card.querySelector(".patch-body");
   if (!body) return { ok: false, detail: "no patch body" };
+  if (!body.classList.contains("tool-body--diff")) return { ok: false, detail: "patch body should use diff body variant" };
   const preview = body.querySelector(".patch-preview");
   if (!preview) return { ok: false, detail: "no patch preview" };
   if (!preview.textContent.includes("*** Begin Patch")) return { ok: false, detail: "preview should render patch content, not apply_patch stdout" };
@@ -529,8 +555,25 @@ await scenario("apply_patch diff body with five-line preview", [
   return { ok: true };
 });
 
-// shell — collapsible details body, exit code result.
-await scenario("shell with stdout, exit code, and right-aligned timing", [
+await scenario("write_file uses standardized diff body variant", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "w1", tool_name: "write_file", arguments_json: JSON.stringify({ file_path: "new.go", content: "package main\n" }) }],
+  ["TOOL_CALL_END", { call_id: "w1", output: "+package main\n", tool_name: "write_file" }],
+], ({ conv }) => {
+  const card = conv.querySelector(".tool-call.write_file");
+  if (!card) return { ok: false, detail: "no write_file tool-call" };
+  const body = card.querySelector(".write-body");
+  if (!body) return { ok: false, detail: "no write body wrapper" };
+  if (!body.classList.contains("tool-body")) return { ok: false, detail: "write body should use base tool-body class" };
+  if (!body.classList.contains("tool-body--diff")) return { ok: false, detail: "write body should use diff body variant" };
+  const diff = body.querySelector("pre.diff-body");
+  if (!diff) return { ok: false, detail: "write body should contain pre.diff-body" };
+  if (!diff.textContent.includes("+package main")) return { ok: false, detail: "write diff output missing" };
+  return { ok: true };
+});
+
+// shell — standardized row, terminal body, exit code footer.
+await scenario("shell row uses prompt glyph, inline disclosure, terminal body, and right-side timing", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "s1", tool_name: "shell", arguments_json: JSON.stringify({ command: "ls -la" }), startedAt: 1763714096 }],
   ["TOOL_CALL_OUTPUT_DELTA", { call_id: "s1", delta: "total 8\nfile1\nfile2\n" }],
@@ -538,21 +581,44 @@ await scenario("shell with stdout, exit code, and right-aligned timing", [
 ], ({ conv }) => {
   const card = conv.querySelector(".tool-call.shell");
   if (!card) return { ok: false, detail: "no shell card" };
-  if (!card.textContent.includes("ls -la")) return { ok: false, detail: "missing command" };
-  // Success recedes fully: no "exit 0", and no ✓ glyph either — only failures
-  // are worth the eye. The status slot stays (class) so content aligns.
-  if (card.textContent.includes("exit 0")) return { ok: false, detail: "successful shell should not print 'exit 0'" };
-  const sgood = card.querySelector(".tool-status-good");
-  if (!sgood) return { ok: false, detail: "missing shell success status slot" };
-  if (sgood.textContent.trim() !== "") return { ok: false, detail: "successful row should show NO checkmark, got " + JSON.stringify(sgood.textContent) };
+  const verb = card.querySelector(".verb");
+  if (!verb || verb.textContent.trim() !== "$") return { ok: false, detail: "shell row should use $ verb, got " + (verb && JSON.stringify(verb.textContent)) };
+  if (/\bshell\b/.test(card.querySelector(".tool-command").textContent.replace("ls -la", ""))) return { ok: false, detail: "collapsed shell row should not expose internal tool name: " + card.querySelector(".tool-command").textContent };
+  const command = card.querySelector(".tool-command");
+  if (!command || !command.textContent.includes("ls -la")) return { ok: false, detail: "missing command" };
+  const disclosure = command.querySelector(".tool-disclosure[data-expand-toggle]");
+  if (!disclosure) return { ok: false, detail: "disclosure should be inline inside .tool-command" };
+  if (disclosure.getAttribute("aria-expanded") !== "false") return { ok: false, detail: "collapsed disclosure should start aria-expanded=false" };
   const meta = card.querySelector(".tool-meta");
   if (!meta) return { ok: false, detail: "missing tool metadata" };
   if (!meta.textContent.includes("1.3s")) return { ok: false, detail: "missing duration metadata: " + meta.textContent };
   if (!/\d{1,2}:\d{2}:\d{2}/.test(meta.textContent)) return { ok: false, detail: "missing timestamp metadata: " + meta.textContent };
-  const body = conv.querySelector(".shell-body");
-  if (!body) return { ok: false, detail: "no shell body" };
+  const body = card.querySelector(".shell-body.tool-body--terminal");
+  if (!body) return { ok: false, detail: "no terminal shell body" };
+  const prompt = body.querySelector(".terminal-command");
+  if (!prompt || prompt.textContent !== "$ ls -la") return { ok: false, detail: "terminal command should repeat full command, got " + (prompt && JSON.stringify(prompt.textContent)) };
   const pre = body.querySelector(".shell-output");
   if (!pre || !pre.textContent.includes("file1")) return { ok: false, detail: "stdout missing" };
+  const footer = body.querySelector(".terminal-footer");
+  if (!footer || !footer.textContent.includes("exit 0") || !footer.textContent.includes("1.3s")) return { ok: false, detail: "terminal footer missing exit/runtime: " + (footer && footer.textContent) };
+  return { ok: true };
+});
+
+await scenario("shell aliases use terminal renderer contract", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "x1", tool_name: "exec_command", arguments_json: JSON.stringify({ command: "pwd" }) }],
+  ["TOOL_CALL_END", { call_id: "x1", output: "/tmp\n", tool_state: JSON.stringify({ exit_code: 0 }), tool_name: "exec_command" }],
+  ["TOOL_CALL_START", { call_id: "r1", tool_name: "run_shell_command", arguments_json: JSON.stringify({ command: "whoami" }) }],
+  ["TOOL_CALL_END", { call_id: "r1", output: "serf\n", tool_state: JSON.stringify({ exit_code: 0 }), tool_name: "run_shell_command" }],
+], ({ conv }) => {
+  const execCard = conv.querySelector(".tool-call.exec_command");
+  if (!execCard) return { ok: false, detail: "no exec_command card" };
+  if (!execCard.querySelector(".shell-body.tool-body--terminal")) return { ok: false, detail: "exec_command should use terminal body" };
+  if (!execCard.querySelector(".terminal-command") || execCard.querySelector(".terminal-command").textContent !== "$ pwd") return { ok: false, detail: "exec_command terminal prompt missing command" };
+  const runCard = conv.querySelector(".tool-call.run_shell_command");
+  if (!runCard) return { ok: false, detail: "no run_shell_command card" };
+  if (!runCard.querySelector(".shell-body.tool-body--terminal")) return { ok: false, detail: "run_shell_command should use terminal body" };
+  if (!runCard.querySelector(".terminal-command") || runCard.querySelector(".terminal-command").textContent !== "$ whoami") return { ok: false, detail: "run_shell_command terminal prompt missing command" };
   return { ok: true };
 });
 
@@ -573,16 +639,18 @@ await scenario("failed shell shows error output", [
   return { ok: true };
 });
 
-// The expand caret sits on the RIGHT of the header line (order 3), so the status
-// glyph leads a clean, aligned left edge; the disclosure recedes to the right.
-await scenario("expand caret is right-aligned; card disclosures use a right chevron", [], () => {
-  if (!/\.tool-expand-btn\s*\{[^}]*order:\s*3/.test(styleSrc)) {
-    return { ok: false, detail: "expand caret must be order: 3 (right of the header line)" };
+await scenario("tool disclosure is inline, visible, and not a separate right-side column", [], () => {
+  if (!/\.tool-disclosure\s*\{[^}]*display:\s*inline-flex/.test(styleSrc)) {
+    return { ok: false, detail: "tool disclosure should be inline-flex" };
   }
-  // Card disclosures (raw notification / excerpt / show raw error) put the
-  // chevron on the right via a removed native marker + a right ::after.
+  if (/\.tool-expand-btn\s*\{[^}]*order:\s*3/.test(styleSrc)) {
+    return { ok: false, detail: "old right-column tool-expand-btn order:3 rule should be removed" };
+  }
+  if (!/\.tool-call \.tool-meta\s*\{[^}]*margin-left:\s*auto/.test(styleSrc)) {
+    return { ok: false, detail: "tool metadata should remain right-side timing context" };
+  }
   if (!/\.notification-card-raw > summary::after/.test(styleSrc) || !/\.notification-card-raw > summary[\s\S]{0,400}justify-content:\s*space-between/.test(styleSrc)) {
-    return { ok: false, detail: "card disclosures must put a right ▸ chevron on .notification-card-raw summary" };
+    return { ok: false, detail: "non-tool card disclosures must keep their right chevrons" };
   }
   return { ok: true };
 });
@@ -618,6 +686,22 @@ await scenario("web_search renders top results", [
   if (!ul) return { ok: false, detail: "no search body" };
   const items = ul.querySelectorAll("li");
   if (items.length !== 3) return { ok: false, detail: "expected 3 result items, got " + items.length };
+  return { ok: true };
+});
+
+await scenario("web_fetch uses preview body variant", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "f1", tool_name: "web_fetch", arguments_json: JSON.stringify({ url: "https://example.com" }) }],
+  ["TOOL_CALL_END", { call_id: "f1", output: "Line one\nLine two\nLine three\nLine four\n", tool_name: "web_fetch" }],
+], ({ conv }) => {
+  const card = conv.querySelector(".tool-call.web_fetch");
+  if (!card) return { ok: false, detail: "no web_fetch card" };
+  const body = card.querySelector(".fetch-body");
+  if (!body) return { ok: false, detail: "no fetch body" };
+  if (!body.classList.contains("tool-body")) return { ok: false, detail: "fetch body should use base tool-body class" };
+  if (!body.classList.contains("tool-body--preview")) return { ok: false, detail: "fetch body should use preview body variant" };
+  if (!body.textContent.includes("Line one / Line two / Line three")) return { ok: false, detail: "fetch preview content missing" };
+  if (body.textContent.includes("Line four")) return { ok: false, detail: "fetch preview should stay capped to first three lines" };
   return { ok: true };
 });
 
@@ -701,14 +785,16 @@ await scenario("cheap cluster collapses to a mutating-step-first summary once do
   if (!cluster.classList.contains("done")) return { ok: false, detail: "finished cluster should be marked done" };
   const summary = cluster.querySelector(".tool-cluster-summary");
   if (!summary) return { ok: false, detail: "no cluster summary line" };
+  if (summary.getAttribute("aria-expanded") !== "false") return { ok: false, detail: "collapsed cluster summary should expose aria-expanded=false" };
+  summary.click();
+  if (summary.getAttribute("aria-expanded") !== "true") return { ok: false, detail: "expanded cluster summary should expose aria-expanded=true" };
   if (!/2 steps/.test(summary.textContent)) return { ok: false, detail: "summary should count steps: " + summary.textContent };
   if (!/cache\.go/.test(summary.textContent)) return { ok: false, detail: "summary should name a target: " + summary.textContent };
   // The rows are hidden behind the summary until expanded.
   const body = cluster.querySelector(".tool-cluster-body");
   if (!body) return { ok: false, detail: "no cluster body" };
   if (cluster.querySelectorAll(".tool-cluster-body .tool-call").length !== 2) return { ok: false, detail: "body should hold both rows" };
-  // Clicking the summary expands the rows.
-  summary.click();
+  // The summary click above expands the rows.
   if (!cluster.classList.contains("open")) return { ok: false, detail: "summary click should open the cluster" };
   return { ok: true };
 });
@@ -880,40 +966,43 @@ await (async function () {
     if (got !== want) failures.push(desc + ": expected " + JSON.stringify(want) + " got " + JSON.stringify(got));
   };
 
-  // read_file: data-expanded="false", caret shows ▸.
+  // read_file: data-expanded="false", disclosure shows ▸.
   const readCall = conv.querySelector(".tool-call.read_file");
   check("read_file data-expanded false", readCall && readCall.dataset.expanded, "false");
-  const readCaret = readCall && readCall.querySelector(".tool-expand-btn");
-  check("read_file caret exists", !!readCaret, true);
-  check("read_file caret glyph collapsed", readCaret && readCaret.textContent, "▸");
+  const readCaret = readCall && readCall.querySelector(".tool-disclosure[data-expand-toggle]");
+  check("read_file disclosure exists", !!readCaret, true);
+  check("read_file disclosure glyph collapsed", readCaret && readCaret.textContent, "▸");
 
-  // write_file: collapsed by default (alt A), data-expanded="false", caret ▸.
+  // write_file: collapsed by default (alt A), data-expanded="false", disclosure ▸.
   const writeCall = conv.querySelector(".tool-call.write_file");
   check("write_file data-expanded false", writeCall && writeCall.dataset.expanded, "false");
-  const writeCaret = writeCall && writeCall.querySelector(".tool-expand-btn");
-  check("write_file caret glyph collapsed", writeCaret && writeCaret.textContent, "▸");
+  const writeCaret = writeCall && writeCall.querySelector(".tool-disclosure[data-expand-toggle]");
+  check("write_file disclosure glyph collapsed", writeCaret && writeCaret.textContent, "▸");
 
-  // Click read_file caret to expand.
+  // Click read_file disclosure to expand.
   if (readCaret) {
     readCaret.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     check("read_file expanded after click", readCall.dataset.expanded, "true");
-    check("read_file caret glyph after expand", readCaret.textContent, "▾");
+    check("read_file disclosure glyph after expand", readCaret.textContent, "▾");
     // Click again to collapse.
     readCaret.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     check("read_file collapsed after second click", readCall.dataset.expanded, "false");
-    check("read_file caret glyph after collapse", readCaret.textContent, "▸");
+    check("read_file disclosure glyph after collapse", readCaret.textContent, "▸");
   }
 
-  // Keyboard: Enter on caret triggers expand.
+  // Keyboard: Enter on disclosure triggers expand.
   if (readCaret) {
     const enterEvt = new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
     readCaret.dispatchEvent(enterEvt);
     // keydown listener calls .click(), which toggles.
     check("read_file expanded after Enter", readCall.dataset.expanded, "true");
+    const spaceEvt = new window.KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true });
+    readCaret.dispatchEvent(spaceEvt);
+    check("read_file collapsed after Space", readCall.dataset.expanded, "false");
   }
 
   if (failures.length === 0) {
-    console.log("PASS — tool-call body collapsed by default; caret toggles; edit/write/patch collapse to a +N −N stat (x1gj)");
+    console.log("PASS — tool-call body collapsed by default; disclosure toggles; edit/write/patch collapse to a +N −N stat (x1gj)");
   } else {
     allPass = false;
     for (const f of failures) console.log("FAIL — " + f);

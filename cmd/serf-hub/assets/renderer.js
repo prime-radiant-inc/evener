@@ -2185,15 +2185,18 @@
         // Default expanded for diffs (edit/write/patch); collapsed for all others.
         const defaultExpanded = renderer.expand === true;
         el.dataset.expanded = defaultExpanded ? "true" : "false";
-        // Caret button — keyboard accessible, toggles data-expanded.
-        const caret = document.createElement("button");
-        caret.type = "button";
-        caret.className = "tool-expand-btn";
-        caret.setAttribute("aria-label", defaultExpanded ? "collapse body" : "expand body");
-        caret.dataset.expandToggle = "";
-        caret.textContent = defaultExpanded ? "▾" : "▸";
-        el.insertBefore(caret, el.firstChild);
-        state.caretEl = caret;
+        // Inline disclosure button — keyboard accessible, visually belongs to the
+        // action/command it expands. Purpose rows put it on the demoted command line;
+        // rows without a purpose put it on the main command/action line.
+        const disclosure = document.createElement("button");
+        disclosure.type = "button";
+        disclosure.className = "tool-disclosure";
+        disclosure.setAttribute("aria-label", defaultExpanded ? "collapse tool details" : "expand tool details");
+        disclosure.setAttribute("aria-expanded", defaultExpanded ? "true" : "false");
+        disclosure.dataset.expandToggle = "";
+        disclosure.textContent = defaultExpanded ? "▾" : "▸";
+        command.appendChild(disclosure);
+        state.caretEl = disclosure;
       }
       // Cluster bookkeeping for the collapsed summary (mockup #6 alt A): record
       // each call's verb, target, and whether it mutated state so the summary

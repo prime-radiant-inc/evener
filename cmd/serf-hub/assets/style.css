@@ -84,7 +84,7 @@
   /* Radius scale — two only (design-system §3): a single small rectangle
      radius and a pill. --radius-md is the rectangle radius (golden --r 5px);
      --radius-pill (999px) rounds chips fully and, on a square element, also
-     yields the dot/circle the old --radius-full carried. The retired
+     yields the dot/circle the retired full radius carried. The retired
      sm/lg/xl/full names all remap to these two. */
   --radius-md:   5px;
   --radius-pill: 999px;
@@ -2089,11 +2089,9 @@ button.composer-model-value .caret { color: var(--text-dim); }
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   white-space: nowrap;
-  opacity: 0;
+  opacity: 1;
   transition: opacity var(--motion-fast);
 }
-.tool-call:hover .tool-meta,
-.tool-call:focus-within .tool-meta { opacity: 1; }
 .tool-call .tool-body,
 .tool-call .diff-body,
 .tool-call .output-preview-body { order: 5; }
@@ -2145,26 +2143,29 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .tool-call[data-expanded="false"] .tool-body,
 .tool-call[data-expanded="false"] .diff-body,
 .tool-call[data-expanded="false"] .output-preview-body { display: none; }
-/* Expand caret button on tool-call row. */
-/* The expand caret sits at the RIGHT of the header line (order 3 — after the
-   command/meta, before the wrapping demoted-command/body). This lets the status
-   glyph lead a clean, aligned left edge; the disclosure affordance reads as a
-   quiet "there's more →" on the right rather than offsetting every row. */
-.tool-expand-btn {
-  order: 3;
-  background: none;
+/* Inline expandable-tool disclosure. The chevron belongs to the action text it
+   expands, not to a separate right-side column. It stays quiet but visible, with
+   a hit target larger than the glyph. */
+.tool-disclosure {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: var(--space-1);
   border: none;
-  padding: 0;
-  margin: 0;
-  cursor: pointer;
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--text-dim);
+  cursor: pointer;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   line-height: 1;
-  flex-shrink: 0;
+  flex: none;
 }
-.tool-expand-btn:hover { color: var(--text-muted); }
-.tool-expand-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tool-disclosure:hover { color: var(--text-muted); background: var(--surface-secondary); }
+.tool-disclosure:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tool-call[data-expanded="true"] .tool-disclosure { color: var(--text-muted); }
 .diff-body {
   margin: 0 0 var(--space-4) var(--tool-indent);
   padding: var(--space-3) var(--space-4);
@@ -2198,9 +2199,47 @@ button.composer-model-value .caret { color: var(--text-dim); }
   font-size: var(--text-sm);
   color: var(--text-muted);
 }
+.tool-body--preview,
+.tool-body--diff,
+.tool-body--list {
+  flex: 0 0 100%;
+}
 .tool-body summary { cursor: pointer; color: var(--text-muted); padding: 0; user-select: none; }
 .tool-body summary:hover { color: var(--text); }
-.shell-output { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-body--terminal {
+  margin: 0 0 var(--space-4) var(--tool-indent);
+  padding: var(--space-2) 0 var(--space-2) var(--space-3);
+  border-left: 1px solid var(--rule);
+  color: var(--text-muted);
+}
+.terminal-command {
+  margin: 0 0 var(--space-2) 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.shell-output {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3) var(--space-3);
+  background: var(--bg);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.terminal-footer {
+  margin-top: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}
+.terminal-footer-bad { color: var(--error); }
 .cheap-tool-args { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .cheap-tool-output { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .read-tool-body .cheap-tool-output { margin-top: 0; }
@@ -3945,10 +3984,9 @@ details[open] > .diagnostic-detail-summary::after { content: "▾"; }
      narrow viewports (flex child default min-width: auto blocks shrink). */
   .tool-call .target { min-width: 0; }
 
-  /* The per-row timing meta (timestamp · duration) is a hover-only desktop
-     detail. Phones have no hover, so it never shows — yet it still reserved
-     ~112px and squeezed the command/path into a narrow, mid-word-wrapping
-     column. Drop it here so the command gets the full row width. */
+  /* Compact phone layout drops per-row timing meta (timestamp · duration) so it
+     does not reserve ~112px and squeeze command/path text into a narrow,
+     mid-word-wrapping column. Desktop keeps this metadata readable by default. */
   .tool-call .tool-meta { display: none; }
 
   /* Phone reading scale. A clear hierarchy, sized to actually read on a phone:

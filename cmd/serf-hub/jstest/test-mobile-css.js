@@ -93,11 +93,11 @@ const toolCallSizeOverride = blocks.find(
 );
 pass(!toolCallSizeOverride, "no mobile rule must override .tool-call font-size away from --text-sm (inverts reading hierarchy)");
 
-// The hover-only timing meta has no hover target on phone, so it's hidden here —
-// otherwise it reserves ~112px and squeezes the command/path into a narrow,
-// mid-word-wrapping column.
+// Compact phone layout hides timing meta narrowly to avoid reserving ~112px and
+// squeezing command/path text into a narrow, mid-word-wrapping column. This is a
+// mobile overflow guard, not a desktop hover-only metadata contract.
 const metaHidden = blocks.find((b) => /\.tool-call \.tool-meta/.test(b.split("{")[0]) && /display:\s*none/.test(b));
-pass(!!metaHidden, "mobile must hide the hover-only .tool-call .tool-meta so the command gets full width");
+pass(!!metaHidden, "compact mobile may hide .tool-call .tool-meta so the command gets full width");
 
 if (failures.length === 0) {
   console.log("PASS: mobile search palette CSS contract + layout guards");

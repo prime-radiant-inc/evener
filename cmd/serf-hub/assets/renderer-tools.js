@@ -45,7 +45,7 @@
   // Cheap renderers — read/grep/list_dir/glob — share a common shape.
   function cheapToolBody(args, el) {
     const wrap = document.createElement("details");
-    wrap.className = "tool-body cheap-tool-body";
+    wrap.className = "tool-body cheap-tool-body tool-body--preview";
     const summary = document.createElement("summary");
     summary.textContent = "details";
     const argsPre = document.createElement("pre");
@@ -85,7 +85,7 @@
 
   function outputPreviewBody(className, outputClassName, el) {
     const wrap = document.createElement("div");
-    wrap.className = "tool-body output-preview-body " + className;
+    wrap.className = "tool-body output-preview-body tool-body--preview " + className;
     const pre = document.createElement("pre");
     pre.className = outputClassName + " output-preview";
     wrap.appendChild(pre);
@@ -207,7 +207,7 @@
 
   function readToolBody(args, el) {
     const wrap = document.createElement("div");
-    wrap.className = "tool-body cheap-tool-body read-tool-body";
+    wrap.className = "tool-body cheap-tool-body read-tool-body tool-body--preview";
     const outputPre = document.createElement("pre");
     outputPre.className = "cheap-tool-output read-tool-preview";
     wrap.appendChild(outputPre);
@@ -470,37 +470,80 @@
     },
   };
 
+  function shellCommandText(args) {
+    args = args || {};
+    return String(args.command || args.cmd || "");
+  }
+
+  function shellTerminalBody(args, el) {
+    const wrap = document.createElement("div");
+    wrap.className = "tool-body shell-body tool-body--terminal";
+
+    const commandEl = document.createElement("div");
+    commandEl.className = "terminal-command";
+    commandEl.textContent = "$ " + shellCommandText(args);
+    wrap.appendChild(commandEl);
+
+    const pre = document.createElement("pre");
+    pre.className = "shell-output terminal-output";
+    wrap.appendChild(pre);
+
+    const footerEl = document.createElement("div");
+    footerEl.className = "terminal-footer";
+    footerEl.textContent = "running";
+    wrap.appendChild(footerEl);
+
+    el.appendChild(wrap);
+    return { wrap, commandEl, pre, footerEl };
+  }
+
+  function shellFooterText(data, state) {
+    const st = parseToolState(data && data.tool_state);
+    const parts = [];
+    if (st && st.exit_code != null) parts.push("exit " + st.exit_code);
+    else if (data && data.error) parts.push("error");
+    if (state && state.durationMs != null) parts.push(formatDurationForTerminal(state.durationMs));
+    return parts.join(" · ");
+  }
+
+  function formatDurationForTerminal(ms) {
+    const n = Number(ms);
+    if (!Number.isFinite(n) || n < 0) return "";
+    if (n < 1000) return Math.round(n) + "ms";
+    if (n < 10000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "s";
+    return Math.round(n / 1000) + "s";
+  }
+
   // Card renderer for shell with collapsible stdout/stderr.
   const shellRenderer = {
-    mode: "card", friendly: "shell",
-    target: (a) => clip(a.command || a.cmd || "", 200),
+    mode: "card", friendly: "$",
+    target: (a) => clip(shellCommandText(a), 200),
     result: (data) => {
       const st = parseToolState(data.tool_state);
-      // Success is the expected state — the ✓ status glyph already conveys it,
-      // so a clean exit shows no result text. Only a nonzero exit (or an error)
-      // is worth the eye.
       if (st && st.exit_code != null) return st.exit_code === 0 ? "" : "exit " + st.exit_code;
       return data.error ? "error" : "";
     },
-    body: (args, conversation) => {
-      return outputPreviewBody("shell-body", "shell-output", conversation);
-    },
+    body: (args, el) => shellTerminalBody(args, el),
     bodyDelta: (state, out) => {
       if (state.body && state.body.pre) {
-        setExpandableOutput(state.body, clip(out, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output" });
+        setExpandableOutput(state.body, clip(out, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output terminal-output" });
       }
     },
     bodyEnd: (state, data, out) => {
       if (!state.body) return;
       const text = data.error || out || "";
-      setExpandableOutput(state.body, clip(text, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output" });
-      // Auto-open if non-empty and exit non-zero or output >2 lines.
+      setExpandableOutput(state.body, clip(text, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output terminal-output" });
       const st = parseToolState(data.tool_state);
       const failed = data.error || (st && st.exit_code && st.exit_code !== 0);
-      if (text.trim() === "") {
-        state.body.wrap.style.display = "none";
-      } else if (failed && state.body.moreWrap) {
-        state.body.moreWrap.open = true;
+      if (state.body.footerEl) {
+        state.body.footerEl.textContent = shellFooterText(data, state) || "done";
+        state.body.footerEl.classList.toggle("terminal-footer-bad", !!failed);
+      }
+      if (failed && state.el) state.el.dataset.expanded = "true";
+      if (failed && state.caretEl) {
+        state.caretEl.textContent = "▾";
+        state.caretEl.setAttribute("aria-label", "collapse tool details");
+        state.caretEl.setAttribute("aria-expanded", "true");
       }
     },
   };
@@ -525,10 +568,13 @@
       target: (a) => a.file_path || a.path || "",
       result: diffResult,
       body: (args, conversation) => {
+        const div = document.createElement("div");
+        div.className = "tool-body " + friendly + "-body tool-body--diff";
         const pre = document.createElement("pre");
         pre.className = "diff-body";
-        conversation.appendChild(pre);
-        return { pre };
+        div.appendChild(pre);
+        conversation.appendChild(div);
+        return { div, pre };
       },
       bodyDelta: (state, out) => { if (state.body) renderDiff(state.body.pre, out); },
       bodyEnd: (state, data, out) => { if (state.body) renderDiff(state.body.pre, out); },
@@ -557,7 +603,7 @@
       result: (data, out, state) => diffResult(data, editDiffText(state && state.args, out)),
       body: (args, conversation) => {
         const wrap = document.createElement("div");
-        wrap.className = "tool-body edit-body";
+        wrap.className = "tool-body edit-body tool-body--diff";
         const pre = document.createElement("pre");
         pre.className = "diff-body";
         wrap.appendChild(pre);
@@ -576,7 +622,7 @@
       result: (data, out, state) => diffResult(data, state && state.args && state.args.patch || out || ""),
       body: (args, conversation) => {
         const wrap = document.createElement("div");
-        wrap.className = "tool-body output-preview-body patch-body";
+        wrap.className = "tool-body output-preview-body patch-body tool-body--diff";
         const pre = document.createElement("pre");
         pre.className = "diff-body patch-preview";
         wrap.appendChild(pre);
@@ -618,7 +664,7 @@
     result: (data, out) => data.error ? "error" : (out.length + " bytes"),
     body: (args, conversation) => {
       const div = document.createElement("div");
-      div.className = "tool-body fetch-body";
+      div.className = "tool-body fetch-body tool-body--preview";
       conversation.appendChild(div);
       return { div };
     },
@@ -638,7 +684,7 @@
     },
     body: (args, conversation) => {
       const ul = document.createElement("ul");
-      ul.className = "tool-body search-body";
+      ul.className = "tool-body search-body tool-body--list";
       conversation.appendChild(ul);
       return { ul };
     },
@@ -688,7 +734,7 @@
     target: (a) => a.skill_name || a.name || "",
     body: (args, conversation) => {
       const div = document.createElement("div");
-      div.className = "tool-body use-skill-body";
+      div.className = "tool-body use-skill-body tool-body--preview";
       div.style.display = "none";
       conversation.appendChild(div);
       return { div };
