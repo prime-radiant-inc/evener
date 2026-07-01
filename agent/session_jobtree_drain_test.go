@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/llm"
 )
 
 // TestDrainJobTreeNoJobsReturnsImmediately verifies the drain is a no-op when
@@ -242,7 +243,14 @@ func TestOutstandingDelegateCountIgnoresForwardedDescendantPending(t *testing.T)
 // while the child is still running.
 func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 	t.Parallel()
-	sess := newSession(t, withConfig(SessionConfig{
+	// Every turn (the delegate child's, then this session's notification turns)
+	// cleanly communicates end_turn, so the delegate completes via the real
+	// result-tool path rather than a bare-text turn error.
+	steps := make([]func(llm.Request) llm.Response, 12)
+	for i := range steps {
+		steps[i] = func(llm.Request) llm.Response { return finalResponse("done") }
+	}
+	sess := newSession(t, withSteps(steps...), withConfig(SessionConfig{
 		MaxSubagentDepth: 2,
 		NoProjectPrompts: true,
 	}))
