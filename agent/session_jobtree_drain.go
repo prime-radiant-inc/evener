@@ -159,12 +159,14 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 
 	lastResult := ""
 	for {
-		// Deliver any pending caller-targeted watch sends across this session and
-		// its subagents (the sole watch-send executor). Caller sends render as a
-		// token on the owning session's own rail, so this converts them into
-		// queued notifications the loop then drains — a one-shot run must not
-		// Close() before an observer sidecar's findings reach their caller.
-		if err := s.drainPendingWatchSends(ctx); err != nil {
+		// Deliver pending watch sends and kick drive-down at EVERY level of the
+		// subtree, not just direct children: outstanding work isolated in a
+		// grandchild (e.g. a restored or lost-wake watch send whose signal never
+		// reached the mid-level rail) must still be driven, or the drain hangs.
+		// Caller sends render as a token on the owning session's own rail, so this
+		// converts them into queued notifications the loop then drains — a one-shot
+		// run must not Close() before that delivery.
+		if err := s.kickDriveTree(ctx); err != nil {
 			return lastResult, err
 		}
 		if s.peekNotifications() > 0 {
@@ -191,10 +193,8 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 			return lastResult, nil
 		}
 		// Work is still in flight in the subtree but this rail has not been
-		// signalled yet. Kick drive-down so a descendant that completed while this
-		// session was idle is not stranded, then block until a completion wakes us,
-		// the periodic re-check fires, or the caller's context is cancelled.
-		s.driveChildrenWithUndeliveredAttention()
+		// signalled yet. Block until a completion wakes us, the periodic re-check
+		// fires, or the caller's context is cancelled; the next iteration re-kicks.
 		select {
 		case <-wake:
 		case <-ticker.C:
@@ -202,4 +202,28 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 			return lastResult, ctx.Err()
 		}
 	}
+}
+
+// kickDriveTree delivers pending watch sends and kicks drive-down at every level
+// of the live delegate subtree, skipping stop-gated children (which are never
+// driven). Driving each session's own children directly — rather than relying on
+// a mid-level session running a turn — is what lets outstanding work isolated in
+// a grandchild subtree make progress even when the intervening session's own rail
+// carries no immediate signal. All the underlying operations are idempotent and
+// self-terminating, so repeated kicks are safe.
+func (s *Session) kickDriveTree(ctx context.Context) error {
+	if err := s.drainPendingWatchSends(ctx); err != nil {
+		return err
+	}
+	s.driveChildrenWithUndeliveredAttention()
+	for _, sub := range s.liveDirectSubagents() {
+		child := sub.sess
+		if child == nil || s.childStopGated(child.id) {
+			continue
+		}
+		if err := child.kickDriveTree(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
