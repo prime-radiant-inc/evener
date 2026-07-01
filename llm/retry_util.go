@@ -119,15 +119,38 @@ func retryDelay(policy RetryPolicy, randFloat func() float64, err error, n int) 
 	if mult <= 1 {
 		mult = 2
 	}
-	f := float64(base) * math.Pow(mult, float64(n))
-	d := time.Duration(f)
+	// Convert base*mult^n with saturation: a bare time.Duration(f) wraps an
+	// overflowing or NaN f to a NEGATIVE value, which then slips past the
+	// MaxDelay cap below (negative is not > MaxDelay) and collapses backoff into
+	// a zero-wait busy-retry loop — the opposite of the cap's intent. Saturate to
+	// the max Duration instead so the cap always applies.
+	d := saturatingDelay(base, float64(base)*math.Pow(mult, float64(n)))
 	if policy.MaxDelay > 0 && d > policy.MaxDelay {
 		d = policy.MaxDelay
 	}
 	if policy.Jitter && d > 0 {
 		// Spec: +/- 50% jitter.
 		j := 0.5 + randFloat() // [0.5, 1.5] assuming randFloat in [0,1]
-		d = time.Duration(float64(d) * j)
+		d = saturatingDelay(d, float64(d)*j)
 	}
 	return d, true
+}
+
+// saturatingDelay converts f nanoseconds to a Duration without the int64 wrap a
+// bare time.Duration(f) produces on overflow or NaN. A zero base means no delay
+// regardless of the exponential term (including the 0*Inf=NaN case that a
+// negative or zero BaseDelay produces); an overflowing positive delay saturates
+// to the max Duration so the MaxDelay cap can clamp it rather than being bypassed
+// by a wrapped-negative value.
+func saturatingDelay(base time.Duration, f float64) time.Duration {
+	if base <= 0 {
+		return 0
+	}
+	if math.IsNaN(f) || f >= float64(math.MaxInt64) {
+		return time.Duration(math.MaxInt64)
+	}
+	if f < 0 {
+		return 0
+	}
+	return time.Duration(f)
 }
