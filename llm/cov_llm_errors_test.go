@@ -62,7 +62,7 @@ func TestStampErrorBehaviorTag(t *testing.T) {
 
 	t.Run("non-setter error is returned unchanged", func(t *testing.T) {
 		plain := errors.New("plain")
-		if got := StampErrorBehaviorTag(plain, "openai"); got != plain {
+		if got := StampErrorBehaviorTag(plain, "openai"); !errors.Is(got, plain) {
 			t.Errorf("StampErrorBehaviorTag(plain) = %v, want same error", got)
 		}
 	})

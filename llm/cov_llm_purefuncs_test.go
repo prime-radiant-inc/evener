@@ -35,8 +35,9 @@ func TestExpandTilde(t *testing.T) {
 	})
 
 	t.Run("tilde expands to home", func(t *testing.T) {
-		t.Setenv("HOME", "/home/coverage")
-		want := filepath.Join("/home/coverage", "sub/dir")
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		want := filepath.Join(home, "sub", "dir")
 		if got := ExpandTilde("~/sub/dir"); got != want {
 			t.Errorf("ExpandTilde = %q, want %q", got, want)
 		}
