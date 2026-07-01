@@ -98,6 +98,14 @@ test-short:
 test-race:
 	@MODULES="$(GO_MODULES)" AGENT_PARALLEL= $(MEMCAP) scripts/run-module-tests.sh -race -short -count=1
 
+# e2e-cover measures END-TO-END coverage of the real serf/serf-tui binaries via
+# `go build -cover` + GOCOVERDIR — the main()/CLI/dispatch/serve paths unit tests
+# structurally can't reach. --merge-unit unions it with the unit profile for a
+# combined whole-repo number; SERF_E2E_LIVE=1 additionally runs the live provider
+# scripts (needs real credentials). Local/on-demand, not a gate.
+e2e-cover:
+	@scripts/e2e-cover.sh --merge-unit
+
 vet:
 	@for m in $(GO_MODULES); do (cd $$m && go vet ./...) || exit 1; done
 
