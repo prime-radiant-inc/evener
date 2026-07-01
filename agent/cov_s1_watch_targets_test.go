@@ -132,4 +132,3 @@ func TestS1Cov_terminalWatchTargetStatus(t *testing.T) {
 		}
 	})
 }
-
