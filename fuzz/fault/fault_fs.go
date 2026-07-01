@@ -126,8 +126,9 @@ func (f *faultFS) Chtimes(name string, atime, mtime time.Time) error {
 }
 
 // faultFile embeds afero.File so unoverridden methods delegate; Read/Write and
-// their positional variants consult the schedule so a decode loop can hit an
-// error partway through an otherwise-openable file.
+// their positional variants, plus Seek/Truncate/Sync, consult the schedule so a
+// decode loop can hit an error partway through an otherwise-openable file and a
+// durable-write path can fail at its seek, rewrite, truncate, or fsync step.
 type faultFile struct {
 	afero.File
 	s *Schedule
@@ -159,4 +160,25 @@ func (f *faultFile) WriteAt(p []byte, off int64) (int, error) {
 		return 0, err
 	}
 	return f.File.WriteAt(p, off)
+}
+
+func (f *faultFile) Seek(offset int64, whence int) (int64, error) {
+	if err := f.s.trip(); err != nil {
+		return 0, err
+	}
+	return f.File.Seek(offset, whence)
+}
+
+func (f *faultFile) Truncate(size int64) error {
+	if err := f.s.trip(); err != nil {
+		return err
+	}
+	return f.File.Truncate(size)
+}
+
+func (f *faultFile) Sync() error {
+	if err := f.s.trip(); err != nil {
+		return err
+	}
+	return f.File.Sync()
 }
