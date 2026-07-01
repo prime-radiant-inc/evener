@@ -8,24 +8,44 @@ import (
 )
 
 // drainRecheckInterval bounds how long DrainJobTree blocks between explicit
-// completion wakes. A finished delegate is removed from the running map only
-// after its completion notification is enqueued, so the wake normally arrives
-// first; this periodic re-check only backstops the microscopic window where the
-// running-map delete lands without its own wake.
+// completion wakes. The outstanding count is race-free, so a re-check can never
+// return prematurely; this ticker is only a lost-wake backstop.
 const drainRecheckInterval = 50 * time.Millisecond
 
-// inFlightDelegateCount reports how many delegate jobs are still in this
-// session's running map. A delegate stays there until finalization has enqueued
-// its completion notification and released it (jobs.go armFinalizedJob), so a
-// non-zero count means the coordinator still owes at least one notification
-// turn. Background shell jobs are intentionally excluded: a one-shot run must
-// not block on a long-lived shell the model left running.
-func (jm *jobManager) inFlightDelegateCount() int {
+// outstandingDelegateCount reports how many delegate jobs still owe this session
+// a completion notification turn. A delegate counts while it is either still in
+// the running map (not yet finalized) or recorded terminal with an owner
+// notification that is pending but not yet delivered.
+//
+// Both halves are needed to be race-free against the finalization sequence
+// (jobs.go armFinalizedJob): the running-map membership covers the window from
+// EventJobFinished until the durable EventJobNotificationPending is written; the
+// NotifyPending record covers the later window after the job is deleted from the
+// running map but before its in-memory notification is enqueued. A suppressed
+// (watch-origin) notification never reaches NotifyPending, so it correctly stops
+// counting once the job leaves the running map — the drain must not wait on a
+// notification that will never arrive. Background shell jobs are excluded
+// entirely: a one-shot run must not block on a long-lived shell.
+func (jm *jobManager) outstandingDelegateCount() int {
+	recs, err := jm.store.Load()
+	if err != nil {
+		recs = nil
+	}
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
+	counted := make(map[string]bool)
 	n := 0
-	for _, run := range jm.running {
+	for id, run := range jm.running {
 		if run.rec != nil && run.rec.Type == jobstore.JobDelegate {
+			counted[id] = true
+			n++
+		}
+	}
+	for id, rec := range recs {
+		if counted[id] {
+			continue
+		}
+		if rec.Type == jobstore.JobDelegate && rec.NotifyState == jobstore.NotifyPending {
 			n++
 		}
 	}
@@ -33,12 +53,12 @@ func (jm *jobManager) inFlightDelegateCount() int {
 }
 
 // DrainJobTree keeps re-driving the coordinator on delegate completions until no
-// delegate remains in flight, then returns the last notification turn's result
-// (empty when no drain turn ran). It is the one-shot analogue of the serve
-// loop's notification pump: a coordinator that fires a fire-and-return delegate
-// (max_wait_ms=0) ends its turn while the child is still running, so without
-// this drain the caller's Close() would SIGKILL the child before it finishes
-// (PRI-2441).
+// delegate still owes a notification turn, then returns the last notification
+// turn's result (empty when no drain turn ran). It is the one-shot analogue of
+// the serve loop's notification pump: a coordinator that fires a fire-and-return
+// delegate (max_wait_ms=0) ends its turn while the child is still running, so
+// without this drain the caller's Close() would SIGKILL the child before it
+// finishes (PRI-2441).
 //
 // The wait is bounded by ctx: a coordinator whose delegated work never completes
 // blocks until the caller's context is cancelled. Individual delegate turns
@@ -75,8 +95,8 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 			}
 			continue
 		}
-		if s.jobManager.inFlightDelegateCount() == 0 {
-			// Nothing pending and no delegate still finalizing: the tree quiesced.
+		if s.jobManager.outstandingDelegateCount() == 0 {
+			// Nothing pending and no delegate still owes a notification: quiesced.
 			return lastResult, nil
 		}
 		// A delegate is still in flight but has not signalled yet. Block until a

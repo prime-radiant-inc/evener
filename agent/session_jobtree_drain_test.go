@@ -62,7 +62,7 @@ func TestDrainJobTreeIgnoresBackgroundShell(t *testing.T) {
 		jm.mu.Unlock()
 	}()
 
-	if n := jm.inFlightDelegateCount(); n != 0 {
+	if n := jm.outstandingDelegateCount(); n != 0 {
 		t.Fatalf("background shell must not count as an in-flight delegate, got %d", n)
 	}
 
@@ -119,6 +119,43 @@ func TestDrainJobTreeReturnsOnContextCancel(t *testing.T) {
 	}
 }
 
+// TestOutstandingDelegateCountCoversPendingNotifyWindow is the roborev
+// regression: finalization deletes a delegate from the running map (jobs.go
+// armFinalizedJob) BEFORE enqueueing its in-memory owner notification, leaving a
+// window where the job is neither running nor pending in memory. The durable
+// EventJobNotificationPending is written before that delete, so a delegate whose
+// notification is NotifyPending but not yet in the in-memory queue must still
+// count as outstanding — otherwise DrainJobTree could return in that window and
+// let Close() skip the coordinator's final turn.
+func TestOutstandingDelegateCountCoversPendingNotifyWindow(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+	jm := sess.jobManager
+
+	// Reproduce the post-delete/pre-enqueue state durably: the delegate finished
+	// and its notification-pending event is recorded, but it is not in the running
+	// map and not yet in the in-memory notification queue.
+	started := frozenTestTime.Add(-time.Second)
+	ended := frozenTestTime
+	code := 0
+	for _, ev := range []jobstore.Event{
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: "del-window", Type: jobstore.JobDelegate, OwnerSessionID: sess.ID(), VisibleToSession: sess.ID(), StartedAt: &started},
+		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "del-window", Status: jobstore.StatusCompleted, Reason: "communicated", ExitCode: &code, EndedAt: &ended, TerminalGen: "gen-window"},
+		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "del-window", TerminalGen: "gen-window"},
+	} {
+		if err := jm.appendEvent(ev); err != nil {
+			t.Fatalf("append %s: %v", ev.Kind, err)
+		}
+	}
+
+	if p := sess.peekNotifications(); p != 0 {
+		t.Fatalf("precondition: expected empty in-memory queue, got %d", p)
+	}
+	if n := jm.outstandingDelegateCount(); n != 1 {
+		t.Fatalf("a NotifyPending delegate absent from the running map must still count as outstanding, got %d", n)
+	}
+}
+
 // TestDrainJobTreeWaitsForRunningDelegate verifies the drain re-drives the
 // coordinator when a backgrounded delegate completes, rather than returning
 // while the child is still running.
@@ -146,7 +183,7 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 	}
 
 	// After draining, no delegate may remain in flight and nothing may be pending.
-	if n := sess.jobManager.inFlightDelegateCount(); n != 0 {
+	if n := sess.jobManager.outstandingDelegateCount(); n != 0 {
 		t.Fatalf("expected 0 in-flight delegates after drain, got %d", n)
 	}
 	if p := sess.peekNotifications(); p != 0 {
