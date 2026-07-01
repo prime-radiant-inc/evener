@@ -118,6 +118,37 @@ func TestW2Conc_DeliverPendingWatchSendRacedAwayAfterDeliver(t *testing.T) {
 	}
 }
 
+// TestW2Conc_DeliverPendingWatchSendStaleCheckErrorSurfaces pins the
+// stale-gate error arm: when the delegate-stop gate check fails (its store read
+// errors), the primitive enqueues a diagnostic notification and returns the
+// error rather than delivering.
+func TestW2Conc_DeliverPendingWatchSendStaleCheckErrorSurfaces(t *testing.T) {
+	t.Parallel()
+	jm, cfg, state := w2conc_recordedWatchSend(t)
+
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	// Close the underlying store so the delegate-stop gate check's LoadDelegates
+	// fails; the in-memory pending state remains current.
+	if err := jm.store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	sent := 0
+	delivered, err := jm.deliverPendingWatchSend(context.Background(), cfg, state, false,
+		func(context.Context, sendMessageArgs) sendMessageResult { sent++; return sendMessageResult{} })
+	if err == nil {
+		t.Fatal("deliver with a failing stale-gate check returned nil error, want the read failure")
+	}
+	if delivered || sent != 0 {
+		t.Fatalf("deliver = (%v), sent=%d; want no delivery when the stale check errors", delivered, sent)
+	}
+	if len(notified) == 0 {
+		t.Fatal("stale-gate check failure did not enqueue a diagnostic notification")
+	}
+}
+
 // TestW2Conc_DeliverPendingWatchSendUnknownClassNoOps pins the defensive
 // default arm of the delivery-class switch: an unrecognized delivery class is
 // treated as a no-op (neither settled nor dropped).
