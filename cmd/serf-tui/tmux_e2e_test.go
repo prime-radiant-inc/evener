@@ -964,7 +964,15 @@ func buildTUIBinary(t *testing.T) string {
 			return
 		}
 		bin := filepath.Join(dir, "serf-tui")
-		cmd := exec.Command("go", "build", "-o", bin, "./cmd/serf-tui")
+		buildArgs := []string{"build", "-o", bin}
+		// SERF_E2E_COVER=<dir>: build an instrumented binary so the tmux'd TUI
+		// subprocess emits coverage into that GOCOVERDIR (see tuiCoverEnvPrefix).
+		// Unset (the default) leaves the build and the launch command unchanged.
+		if os.Getenv("SERF_E2E_COVER") != "" {
+			buildArgs = append(buildArgs, "-cover")
+		}
+		buildArgs = append(buildArgs, "./cmd/serf-tui")
+		cmd := exec.Command("go", buildArgs...)
 		cmd.Dir = repoRoot
 		if out, err := cmd.CombinedOutput(); err != nil {
 			errTUIBinary = fmt.Errorf("build serf-tui: %w\n%s", err, out)
@@ -988,11 +996,22 @@ func startTUITmux(t *testing.T, bin, hubURL string) *tmuxTUI {
 	return startTUITmuxSized(t, bin, hubURL, 140, 40)
 }
 
+// tuiCoverEnvPrefix returns a "GOCOVERDIR=<dir> " shell prefix when
+// SERF_E2E_COVER is set, so the tmux-launched TUI (built with -cover, see
+// buildTUIBinary) writes its coverage counters there; empty otherwise, leaving
+// the launch command byte-identical on the default path.
+func tuiCoverEnvPrefix() string {
+	if dir := os.Getenv("SERF_E2E_COVER"); dir != "" {
+		return "GOCOVERDIR=" + shellQuote(dir) + " "
+	}
+	return ""
+}
+
 func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmuxTUI {
 	t.Helper()
 	acquireTmuxSlot(t)
 	session := uniqueTmuxSessionName()
-	command := shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
+	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	pinTmuxWindowSize(t, session, width, height)
@@ -1013,7 +1032,7 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	// scrollback comes back blank). Blocking the shell on a read it never
 	// receives holds the pty open so tmux drains and renders the message; the
 	// test reads it via WaitForHistory and Close() tears the session down.
-	command := shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + "; read _"
+	command := tuiCoverEnvPrefix() + shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL) + "; read _"
 	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	pinTmuxWindowSize(t, session, width, height)
