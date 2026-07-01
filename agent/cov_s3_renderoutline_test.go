@@ -27,7 +27,7 @@ func TestS3Cov_RenderOutline_ToolCallsAndStatus(t *testing.T) {
 			&llm.ToolCallData{ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"purpose":"inspect"}`)},
 			&llm.ToolCallData{ID: "c2", Name: "grep"},
 		),
-		schema.NewTurn(schema.TurnToolResults, twoResults("c1", "ok content", false, "c2", "match", false)),
+		schema.NewTurn(schema.TurnToolResults, s3cov_twoResults("c1", "ok content", false, "c2", "match", false)),
 	)
 
 	content, truncated, elided := renderOutline(entries, 0, len(entries)-1)
@@ -79,8 +79,8 @@ func TestS3Cov_RenderOutline_ErrorStatus(t *testing.T) {
 	}
 }
 
-// twoResults builds a single TOOL_RESULTS message answering two calls.
-func twoResults(id1, c1 string, e1 bool, id2, c2 string, e2 bool) llm.Message {
+// s3cov_twoResults builds a single TOOL_RESULTS message answering two calls.
+func s3cov_twoResults(id1, c1 string, e1 bool, id2, c2 string, e2 bool) llm.Message {
 	m := llm.ToolResult(id1, c1, e1)
 	r2 := llm.ToolResult(id2, c2, e2)
 	m.Content = append(m.Content, r2.Content...)
