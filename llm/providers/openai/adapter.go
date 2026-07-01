@@ -76,6 +76,11 @@ type OpenAIInstanceParams struct {
 	ChatGPTBaseURL     string
 	StateHome          string
 	ContinuationHasher *llm.ContinuationHasher
+	// AuthHTTPClient, when non-nil, is the http.Client the OAuth resolution path
+	// (token refresh) uses. Production leaves it nil, so NewService builds its own
+	// default client and behavior is byte-identical; tests inject a fake transport
+	// to exercise the OAuth branch without a real network call.
+	AuthHTTPClient *http.Client
 }
 
 // NewForInstance constructs an Adapter from explicit parameters.
@@ -88,7 +93,7 @@ func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 	// the key-based API. This mirrors the preference order in NewFromEnv.
 	authStateDir := authopenai.DefaultStateDirWithStateHome(params.StateHome)
 	instanceName := params.Name
-	service := authopenai.NewService(authopenai.DefaultConfig(), nil)
+	service := authopenai.NewService(authopenai.DefaultConfig(), params.AuthHTTPClient)
 	status, err := service.Status(authStateDir, instanceName)
 	if err != nil {
 		return nil, fmt.Errorf("load OpenAI auth: %w", err)
