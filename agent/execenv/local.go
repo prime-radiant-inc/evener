@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
+	"github.com/spf13/afero"
 	"primeradiant.com/serf/envvars"
 )
 
@@ -61,6 +62,7 @@ type LocalExecutionEnvironment struct {
 	EnvPolicy   EnvVarPolicy // which env vars child processes inherit
 	runningPIDs *sync.Map    // pid (int) → struct{}
 	gitRoots    *gitRootCache
+	fs          afero.Fs // filesystem backing ReadFile/WriteFile/EditFile; defaults to the OS
 }
 
 // gitRootCache memoizes git-root lookups per working dir. A session resolves the
@@ -91,7 +93,27 @@ func NewLocalExecutionEnvironment(rootDir string) *LocalExecutionEnvironment {
 		RootDir:     rootDir,
 		runningPIDs: &sync.Map{},
 		gitRoots:    &gitRootCache{m: map[string]string{}},
+		fs:          afero.NewOsFs(),
 	}
+}
+
+// SetFs overrides the filesystem backing ReadFile/WriteFile/EditFile.
+// Production defaults to afero.NewOsFs() (byte-identical to direct os calls);
+// tests and fuzzers inject an in-memory or sandboxed filesystem. It returns the
+// environment for call chaining. The subprocess paths (ExecCommand,
+// StreamCommand, OSVersion) are unaffected — they always use the real OS.
+func (e *LocalExecutionEnvironment) SetFs(fs afero.Fs) *LocalExecutionEnvironment {
+	e.fs = fs
+	return e
+}
+
+// filesystem returns the environment's filesystem, defaulting to the OS
+// filesystem when one was never injected (e.g. a zero-value environment).
+func (e *LocalExecutionEnvironment) filesystem() afero.Fs {
+	if e.fs == nil {
+		e.fs = afero.NewOsFs()
+	}
+	return e.fs
 }
 
 // WithWorkingDirectory returns a new LocalExecutionEnvironment that uses the
@@ -102,6 +124,7 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 		EnvPolicy:   e.EnvPolicy,
 		runningPIDs: e.runningPIDs,
 		gitRoots:    &gitRootCache{m: map[string]string{}},
+		fs:          e.fs,
 	}
 }
 
@@ -112,6 +135,9 @@ func (e *LocalExecutionEnvironment) Initialize() error {
 	}
 	if e.gitRoots == nil {
 		e.gitRoots = &gitRootCache{m: map[string]string{}}
+	}
+	if e.fs == nil {
+		e.fs = afero.NewOsFs()
 	}
 	return nil
 }
@@ -201,7 +227,7 @@ func resolveOSVersion() string {
 // normalized to LF.
 func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limitLines *int) (string, error) {
 	abs := e.resolve(path)
-	b, err := os.ReadFile(abs)
+	b, err := afero.ReadFile(e.filesystem(), abs)
 	if err != nil {
 		return "", err
 	}
@@ -252,10 +278,10 @@ func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (stri
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	if err := e.filesystem().MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+	if err := afero.WriteFile(e.filesystem(), abs, []byte(content), 0o644); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
@@ -271,7 +297,7 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 	if err != nil {
 		return "", err
 	}
-	b, err := os.ReadFile(abs)
+	b, err := afero.ReadFile(e.filesystem(), abs)
 	if err != nil {
 		return "", err
 	}
@@ -299,7 +325,7 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 		s = strings.Replace(s, oldString, newString, 1)
 		n = 1
 	}
-	if err := os.WriteFile(abs, []byte(s), 0o644); err != nil {
+	if err := afero.WriteFile(e.filesystem(), abs, []byte(s), 0o644); err != nil {
 		return "", err
 	}
 	plural := "s"
