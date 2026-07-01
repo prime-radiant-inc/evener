@@ -13,13 +13,12 @@ import (
 // the unknown-strategy error path.
 func TestS2Cov_SelectStrategy_AllNamedStrategies(t *testing.T) {
 	t.Parallel()
-	for _, strat := range []string{"", "compact", "recall", "session-log", "ooda", "obs-mask", "checkpoint-pred", "memory-crystals", "recursive-distill"} {
-		strat := strat
-		t.Run("strategy="+strat, func(t *testing.T) {
+	for _, name := range []string{"", "compact", "recall", "session-log", "ooda", "obs-mask", "checkpoint-pred", "memory-crystals", "recursive-distill"} {
+		t.Run("strategy="+name, func(t *testing.T) {
 			t.Parallel()
-			sess := newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1, ContextStrategy: strat}))
+			sess := newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1, ContextStrategy: name}))
 			if sess == nil {
-				t.Fatalf("nil session for strategy %q", strat)
+				t.Fatalf("nil session for strategy %q", name)
 			}
 		})
 	}

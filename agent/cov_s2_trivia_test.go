@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/provider"
 )
 
 // s2cov_ tests for small pure helpers with defensive branches that the
@@ -130,5 +129,4 @@ func TestS2Cov_SessionNamerModelGuards(t *testing.T) {
 	if got := sessionNamerModel(p); got != "gpt-5.2" {
 		t.Fatalf("sessionNamerModel = %q, want gpt-5.2 fallback", got)
 	}
-	var _ *provider.Profile = p
 }
