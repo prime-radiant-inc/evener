@@ -83,3 +83,38 @@ func TestStampErrorBehaviorTag(t *testing.T) {
 		}
 	})
 }
+
+func TestNonHTTPBaseErrorMessage(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"provider and message", NewStreamError("openai", "boom", nil), "openai error: boom"},
+		{"message without provider", NewAbortError("cancelled by user", nil), "cancelled by user"},
+		{"empty message without provider", NewAbortError("", nil), "request failed"},
+		{"empty message with provider", NewStreamError("openai", "   ", nil), "openai error: request failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.Error(); got != tt.want {
+				t.Errorf("Error() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewUnsupportedToolChoiceError(t *testing.T) {
+	t.Run("empty mode is labeled", func(t *testing.T) {
+		err := NewUnsupportedToolChoiceError("openai", "  ")
+		if got := err.Error(); got != "openai error: unsupported tool_choice mode: (empty)" {
+			t.Errorf("Error() = %q", got)
+		}
+	})
+	t.Run("named mode", func(t *testing.T) {
+		err := NewUnsupportedToolChoiceError("anthropic", "required")
+		if got := err.Error(); got != "anthropic error: unsupported tool_choice mode: required" {
+			t.Errorf("Error() = %q", got)
+		}
+	})
+}
