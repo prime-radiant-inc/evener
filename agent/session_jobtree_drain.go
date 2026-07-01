@@ -67,20 +67,29 @@ func (jm *jobManager) outstandingDelegateCount() (int, error) {
 
 // treeHasOutstandingWork reports whether this session or any live descendant in
 // its delegate subtree still owes drain work: an outstanding delegate job, a
-// pending job notification, or an in-flight drive turn. Close() cancels the
-// whole subtree, so the one-shot drain must settle all of it — a root whose
-// direct delegate finished after spawning its own fire-and-return delegate is
-// not quiescent until that descendant's work drains too. A store read error is
-// treated conservatively as outstanding (keep waiting), never as quiescence.
-func (s *Session) treeHasOutstandingWork() bool {
+// pending job notification, a pending caller-targeted watch send, or an
+// in-flight drive turn. These are the same "undelivered attention" signals
+// driveChildrenWithUndeliveredAttention acts on, so the drain settles exactly
+// what the drive machinery can still deliver. Close() cancels the whole subtree,
+// so the one-shot drain must settle all of it — a root whose direct delegate
+// finished after spawning its own fire-and-return delegate is not quiescent
+// until that descendant's work drains too.
+//
+// A store read error is propagated (not folded into quiescence): the drain must
+// neither Close() on an unreadable store nor spin on it forever, so the loop
+// surfaces the failure instead.
+func (s *Session) treeHasOutstandingWork() (bool, error) {
 	if s.jobManager != nil {
 		n, err := s.jobManager.outstandingDelegateCount()
-		if err != nil || n > 0 {
-			return true
+		if err != nil {
+			return false, err
+		}
+		if n > 0 || s.jobManager.hasPendingWatchSends() {
+			return true, nil
 		}
 	}
 	if s.peekNotifications() > 0 {
-		return true
+		return true, nil
 	}
 	for _, sub := range s.liveDirectSubagents() {
 		sub.mu.Lock()
@@ -88,13 +97,19 @@ func (s *Session) treeHasOutstandingWork() bool {
 		child := sub.sess
 		sub.mu.Unlock()
 		if driving {
-			return true
+			return true, nil
 		}
-		if child != nil && child.treeHasOutstandingWork() {
-			return true
+		if child != nil {
+			outstanding, err := child.treeHasOutstandingWork()
+			if err != nil {
+				return false, err
+			}
+			if outstanding {
+				return true, nil
+			}
 		}
 	}
-	return false
+	return false, nil
 }
 
 // DrainJobTree keeps re-driving the coordinator on delegate completions until no
@@ -142,7 +157,11 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 			}
 			continue
 		}
-		if !s.treeHasOutstandingWork() {
+		outstanding, err := s.treeHasOutstandingWork()
+		if err != nil {
+			return lastResult, err
+		}
+		if !outstanding {
 			// Nothing pending and nothing outstanding anywhere in the subtree.
 			return lastResult, nil
 		}
