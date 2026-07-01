@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/spf13/afero"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/rendezvous"
@@ -40,6 +41,12 @@ type Roster struct {
 	runDir string
 	prober Prober
 
+	// fs is the filesystem the roster creates runDir through. It defaults to
+	// afero.NewOsFs() (whose calls forward straight to the os package, so
+	// behavior is identical to a direct os.MkdirAll); tests and fuzzers inject
+	// an in-memory or sandboxed filesystem via SetFs.
+	fs afero.Fs
+
 	mu     sync.RWMutex
 	bySess map[string]LiveEntry // session_id -> entry
 	byPID  map[int]LiveEntry    // pid -> entry (for fsnotify event correlation)
@@ -62,10 +69,19 @@ func NewRoster(runDir string, prober Prober) *Roster {
 	return &Roster{
 		runDir:    runDir,
 		prober:    prober,
+		fs:        afero.NewOsFs(),
 		bySess:    make(map[string]LiveEntry),
 		byPID:     make(map[int]LiveEntry),
 		procAlive: processAlive,
 	}
+}
+
+// SetFs overrides the roster's filesystem. Production defaults to
+// afero.NewOsFs() (identical to direct os calls); tests and fuzzers inject an
+// in-memory or sandboxed filesystem. Returns the roster for call chaining.
+func (r *Roster) SetFs(fs afero.Fs) *Roster {
+	r.fs = fs
+	return r
 }
 
 // processAlive reports whether a process with the given PID currently exists.
@@ -215,8 +231,8 @@ func (r *Roster) Find(sessionID string) (LiveEntry, bool) {
 	return e, ok
 }
 
-func ensureDir(dir string) error {
-	return os.MkdirAll(dir, 0o700)
+func ensureDir(fs afero.Fs, dir string) error {
+	return fs.MkdirAll(dir, 0o700)
 }
 
 // Watch blocks: it scans once, then refreshes on every fsnotify event and
@@ -233,7 +249,7 @@ func (r *Roster) Watch(ctx context.Context) error {
 	defer w.Close() //nolint:errcheck // watcher cleanup; close error is not actionable
 
 	// Add the runDir; create it if absent so the watcher can attach.
-	_ = ensureDir(r.runDir)
+	_ = ensureDir(r.fs, r.runDir)
 	if err := w.Add(r.runDir); err != nil {
 		return err
 	}
