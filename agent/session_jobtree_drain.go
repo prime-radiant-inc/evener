@@ -9,8 +9,10 @@ import (
 
 // drainRecheckInterval bounds how long DrainJobTree blocks between explicit
 // completion wakes. The outstanding count is race-free, so a re-check can never
-// return prematurely; this ticker is only a lost-wake backstop.
-const drainRecheckInterval = 50 * time.Millisecond
+// return prematurely; this ticker is only a lost-wake backstop, so it is kept
+// well above the completion-wake rate to avoid re-scanning the durable log
+// under jm.mu more often than necessary.
+const drainRecheckInterval = 250 * time.Millisecond
 
 // outstandingDelegateCount reports how many delegate jobs still owe this session
 // a completion notification turn. A delegate counts while it is either still in
@@ -26,13 +28,22 @@ const drainRecheckInterval = 50 * time.Millisecond
 // counting once the job leaves the running map — the drain must not wait on a
 // notification that will never arrive. Background shell jobs are excluded
 // entirely: a one-shot run must not block on a long-lived shell.
+//
+// The durable snapshot and the running-map read are taken under the SAME jm.mu
+// hold. armFinalizedJob deletes from the running map under jm.mu and appends
+// EventJobNotificationPending before that delete, so while this holds jm.mu a
+// finalizing delegate is either still in the running map (delete blocked) or its
+// NotifyPending record is already durable (delete done, its earlier append
+// visible to Load). Loading the store outside the lock would reopen the
+// stale-snapshot window. Store never acquires jm.mu, so jm.mu -> store.mu is a
+// consistent order with no inverse.
 func (jm *jobManager) outstandingDelegateCount() int {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
 	recs, err := jm.store.Load()
 	if err != nil {
 		recs = nil
 	}
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
 	counted := make(map[string]bool)
 	n := 0
 	for id, run := range jm.running {
