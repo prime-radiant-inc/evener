@@ -229,6 +229,18 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 
 	result, err := sess.ProcessInput(ctx, prompt, nil)
+	if err == nil {
+		// Drain any fire-and-return delegates before Close() SIGKILLs them: keep
+		// re-driving the coordinator on child completions until the job tree is
+		// terminal. The coordinator's real final answer is produced on the
+		// post-completion notification turn, so prefer it over the "waiting on
+		// delegate" turn that ended ProcessInput (PRI-2441).
+		if drained, derr := sess.DrainJobTree(ctx); derr != nil {
+			err = derr
+		} else if drained != "" {
+			result = drained
+		}
+	}
 	sess.Close()
 	<-done
 
