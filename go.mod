@@ -9,6 +9,7 @@ require gopkg.in/yaml.v3 v3.0.1
 require github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 
 require (
+	github.com/spf13/afero v1.15.0
 	pgregory.net/rapid v1.3.0
 	primeradiant.com/serf/fuzz v0.0.0
 	primeradiant.com/serf/invariant v0.0.0
