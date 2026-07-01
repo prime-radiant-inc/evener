@@ -2,10 +2,9 @@
 # Managed by scripts/fuzz-coverage-global.sh --bless. Raised upward only, EXCEPT a
 # documented downward reset when a REFACTOR grows the statement denominator (adding
 # production-only plumbing) rather than a coverage regression — a bare %-ratchet
-# can't distinguish those, so we reset to reality and note why. agent has absorbed
-# three afero-seam batches (SetFs setters + OsFs delegators = production-only
-# plumbing); its % dipped 29.5->28.8->28.5 on denominator growth while fuzz-reachable
-# statement count actually ROSE (5136 -> 5982). llm rose 39.3->53.8 on new targets.
+# can't distinguish those, so we reset to reality and note why. agent absorbed
+# afero-seam plumbing (SetFs/OsFs delegators) so dipped 29.5->28.5 on denominator
+# growth while fuzz-reachable count rose. llm 39.3->53.8->68.2 on new logic targets.
 . 9.8
 agent 28.5
-llm 53.8
+llm 68.2
