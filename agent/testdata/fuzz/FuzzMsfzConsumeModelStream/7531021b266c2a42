@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("9*1\x04A.xx")
