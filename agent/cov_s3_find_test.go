@@ -118,6 +118,58 @@ func TestS3Cov_FindBuckets(t *testing.T) {
 	})
 }
 
+func TestS3Cov_ClampFindLimit(t *testing.T) {
+	t.Parallel()
+	if got := clampFindLimit(nil); got != findLimitDefault {
+		t.Fatalf("nil => %d, want %d", got, findLimitDefault)
+	}
+	zero := 0
+	if got := clampFindLimit(&zero); got != findLimitDefault {
+		t.Fatalf("zero => %d, want default", got)
+	}
+	over := findLimitMax + 100
+	if got := clampFindLimit(&over); got != findLimitMax {
+		t.Fatalf("over => %d, want max", got)
+	}
+	mid := 7
+	if got := clampFindLimit(&mid); got != 7 {
+		t.Fatalf("mid => %d, want 7", got)
+	}
+}
+
+func TestS3Cov_SessionKind(t *testing.T) {
+	t.Parallel()
+	if got := sessionKind(schema.SessionMeta{IsSubagent: true}); got != kindSubagent {
+		t.Fatalf("subagent => %q", got)
+	}
+	if got := sessionKind(schema.SessionMeta{ParentSessionID: "p"}); got != kindFork {
+		t.Fatalf("fork(parent) => %q", got)
+	}
+	if got := sessionKind(schema.SessionMeta{DivergenceTurn: 3}); got != kindFork {
+		t.Fatalf("fork(divergence) => %q", got)
+	}
+	if got := sessionKind(schema.SessionMeta{}); got != kindRoot {
+		t.Fatalf("root => %q", got)
+	}
+}
+
+func TestS3Cov_ProjectName(t *testing.T) {
+	t.Parallel()
+	m := schema.SessionMeta{}
+	m.EnvInfo.GitOriginURL = "git@github.com:owner/serf.git"
+	if got := projectName(m); got != "serf" {
+		t.Fatalf("origin => %q", got)
+	}
+	m2 := schema.SessionMeta{}
+	m2.EnvInfo.WorkingDir = "/home/jesse/git/thing"
+	if got := projectName(m2); got != "thing" {
+		t.Fatalf("workdir => %q", got)
+	}
+	if got := projectName(schema.SessionMeta{}); got != "" {
+		t.Fatalf("empty => %q", got)
+	}
+}
+
 func TestS3Cov_TurnRoleLabel(t *testing.T) {
 	t.Parallel()
 	cases := map[schema.TurnKind]string{

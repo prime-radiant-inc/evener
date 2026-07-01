@@ -3,6 +3,8 @@ package agent
 import (
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/llm"
 )
 
 func TestS3Cov_NormalizeNodeOutput(t *testing.T) {
@@ -118,6 +120,49 @@ func TestS3Cov_CommunicateSchemaContains(t *testing.T) {
 	}
 	if communicateSchemaContains([]string{"x"}, "z") {
 		t.Fatal("expected not contains")
+	}
+}
+
+func TestS3Cov_UsesDefaultCommunicateOutputEnvelope(t *testing.T) {
+	t.Parallel()
+
+	envelope := func(required any) llm.ToolDefinition {
+		return llm.ToolDefinition{Parameters: map[string]any{
+			"properties": map[string]any{
+				"output": map[string]any{
+					"properties": map[string]any{
+						"message":   map[string]any{},
+						"data":      map[string]any{},
+						"artifacts": map[string]any{},
+					},
+					"required": required,
+				},
+			},
+		}}
+	}
+
+	if !usesDefaultCommunicateOutputEnvelope(envelope([]any{"message", "data", "artifacts"})) {
+		t.Fatal("full default envelope should be recognized")
+	}
+	// Missing a required name → not the default envelope.
+	if usesDefaultCommunicateOutputEnvelope(envelope([]any{"message"})) {
+		t.Fatal("partial required set is not the default envelope")
+	}
+	// No output props at all → false.
+	if usesDefaultCommunicateOutputEnvelope(llm.ToolDefinition{Parameters: map[string]any{}}) {
+		t.Fatal("missing output props should be false")
+	}
+}
+
+func TestS3Cov_PredictionMessage(t *testing.T) {
+	t.Parallel()
+	pinnedLight := predictionMessage(false, lowPressurePredict-0.1)
+	if !strings.HasPrefix(pinnedLight, "Note pinned.") || !strings.Contains(pinnedLight, "Context is light") {
+		t.Fatalf("pinned-light: %q", pinnedLight)
+	}
+	clearedHeavy := predictionMessage(true, lowPressurePredict+0.1)
+	if !strings.HasPrefix(clearedHeavy, "Note cleared.") || !strings.Contains(clearedHeavy, "compaction will run at the seam") {
+		t.Fatalf("cleared-heavy: %q", clearedHeavy)
 	}
 }
 
