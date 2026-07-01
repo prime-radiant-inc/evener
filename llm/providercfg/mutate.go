@@ -3,40 +3,50 @@ package providercfg
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/spf13/afero"
 )
 
 // WriteFile marshals cfg and atomically writes it to path (temp + rename),
 // mode 0644. It creates parent directories as needed. It never writes api_key
 // values even if cfg contains them.
 func WriteFile(path string, cfg Config) error {
+	return writeFileFS(afero.NewOsFs(), path, cfg)
+}
+
+// writeFileFS is the filesystem seam beneath WriteFile: it performs the atomic
+// temp+rename write through an injected afero.Fs. Production passes
+// afero.NewOsFs(), whose methods delegate directly to os, so behavior is
+// byte-identical to using os calls; tests and fuzzers inject an in-memory or
+// sandboxed filesystem to exercise persistence without touching real disk.
+func writeFileFS(fs afero.Fs, path string, cfg Config) error {
 	data, err := Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("providers.toml: marshal: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := fs.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("providers.toml: mkdir: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".providers-*.toml.tmp")
+	tmp, err := afero.TempFile(fs, filepath.Dir(path), ".providers-*.toml.tmp")
 	if err != nil {
 		return fmt.Errorf("providers.toml: create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
 	// Best-effort cleanup of the abandoned temp file on an error path; the
 	// caller already receives the real failure, so these errors are ignored.
-	cleanup := func() { _ = tmp.Close(); _ = os.Remove(tmpName) }
+	cleanup := func() { _ = tmp.Close(); _ = fs.Remove(tmpName) }
 
 	if _, err := tmp.Write(data); err != nil {
 		cleanup()
 		return fmt.Errorf("providers.toml: write temp file: %w", err)
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := fs.Chmod(tmpName, 0o644); err != nil {
 		cleanup()
 		return fmt.Errorf("providers.toml: chmod: %w", err)
 	}
@@ -45,11 +55,11 @@ func WriteFile(path string, cfg Config) error {
 		return fmt.Errorf("providers.toml: sync: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
+		_ = fs.Remove(tmpName)
 		return fmt.Errorf("providers.toml: close: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
+	if err := fs.Rename(tmpName, path); err != nil {
+		_ = fs.Remove(tmpName)
 		return fmt.Errorf("providers.toml: rename: %w", err)
 	}
 
