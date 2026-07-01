@@ -97,6 +97,7 @@ await scenario("read_file in cheap cluster with inline range, purpose, and five-
   if (call.querySelector(".cheap-tool-args")) return { ok: false, detail: "read_file should not render JSON args" };
   const body = call.querySelector(".read-tool-body");
   if (!body) return { ok: false, detail: "no read tool body" };
+  if (!body.classList.contains("tool-body--preview")) return { ok: false, detail: "read body should use preview body variant" };
   const intent = call.querySelector(".tool-intent");
   if (!intent || intent.textContent !== "Inspect main entry point.") return { ok: false, detail: "read intent missing" };
   const readCommand = call.querySelector(".tool-command");
@@ -217,6 +218,8 @@ await scenario("job_read_output renders status, truncation, and output preview",
   if (!result.textContent.includes("128 bytes")) return { ok: false, detail: "missing byte summary: " + (result && result.textContent) };
   if (!result.textContent.includes("truncated")) return { ok: false, detail: "missing truncation summary" };
   const output = call.querySelector(".job-output");
+  const jobBody = call.querySelector(".job-output-body");
+  if (!jobBody || !jobBody.classList.contains("tool-body--preview")) return { ok: false, detail: "job output body should use preview body variant" };
   if (!output || !output.textContent.includes("line one\nline two")) return { ok: false, detail: "missing job output preview" };
   return { ok: true };
 });
@@ -495,6 +498,7 @@ await scenario("edit_file collapses to a stat with the diff one click away", [
   if (!stat || stat.textContent.trim() !== "+2 -2") return { ok: false, detail: "collapsed stat should be '+2 -2', got " + (stat && JSON.stringify(stat.textContent)) };
   const body = card.querySelector(".edit-body");
   if (!body) return { ok: false, detail: "no edit body" };
+  if (!body.classList.contains("tool-body--diff")) return { ok: false, detail: "edit body should use diff body variant" };
   const diff = body.querySelector(".diff-body");
   if (!diff) return { ok: false, detail: "no diff body" };
   if (diff.textContent.includes("edited x.go")) return { ok: false, detail: "edit output shown instead of diff" };
@@ -521,6 +525,7 @@ await scenario("apply_patch diff body with five-line preview", [
   if (!card.textContent.includes("x.go")) return { ok: false, detail: "missing patch target" };
   const body = card.querySelector(".patch-body");
   if (!body) return { ok: false, detail: "no patch body" };
+  if (!body.classList.contains("tool-body--diff")) return { ok: false, detail: "patch body should use diff body variant" };
   const preview = body.querySelector(".patch-preview");
   if (!preview) return { ok: false, detail: "no patch preview" };
   if (!preview.textContent.includes("*** Begin Patch")) return { ok: false, detail: "preview should render patch content, not apply_patch stdout" };

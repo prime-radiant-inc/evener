@@ -45,7 +45,7 @@
   // Cheap renderers — read/grep/list_dir/glob — share a common shape.
   function cheapToolBody(args, el) {
     const wrap = document.createElement("details");
-    wrap.className = "tool-body cheap-tool-body";
+    wrap.className = "tool-body cheap-tool-body tool-body--preview";
     const summary = document.createElement("summary");
     summary.textContent = "details";
     const argsPre = document.createElement("pre");
@@ -85,7 +85,7 @@
 
   function outputPreviewBody(className, outputClassName, el) {
     const wrap = document.createElement("div");
-    wrap.className = "tool-body output-preview-body " + className;
+    wrap.className = "tool-body output-preview-body tool-body--preview " + className;
     const pre = document.createElement("pre");
     pre.className = outputClassName + " output-preview";
     wrap.appendChild(pre);
@@ -207,7 +207,7 @@
 
   function readToolBody(args, el) {
     const wrap = document.createElement("div");
-    wrap.className = "tool-body cheap-tool-body read-tool-body";
+    wrap.className = "tool-body cheap-tool-body read-tool-body tool-body--preview";
     const outputPre = document.createElement("pre");
     outputPre.className = "cheap-tool-output read-tool-preview";
     wrap.appendChild(outputPre);
@@ -600,7 +600,7 @@
       result: (data, out, state) => diffResult(data, editDiffText(state && state.args, out)),
       body: (args, conversation) => {
         const wrap = document.createElement("div");
-        wrap.className = "tool-body edit-body";
+        wrap.className = "tool-body edit-body tool-body--diff";
         const pre = document.createElement("pre");
         pre.className = "diff-body";
         wrap.appendChild(pre);
@@ -619,7 +619,7 @@
       result: (data, out, state) => diffResult(data, state && state.args && state.args.patch || out || ""),
       body: (args, conversation) => {
         const wrap = document.createElement("div");
-        wrap.className = "tool-body output-preview-body patch-body";
+        wrap.className = "tool-body output-preview-body patch-body tool-body--diff";
         const pre = document.createElement("pre");
         pre.className = "diff-body patch-preview";
         wrap.appendChild(pre);
@@ -681,7 +681,7 @@
     },
     body: (args, conversation) => {
       const ul = document.createElement("ul");
-      ul.className = "tool-body search-body";
+      ul.className = "tool-body search-body tool-body--list";
       conversation.appendChild(ul);
       return { ul };
     },
@@ -731,7 +731,7 @@
     target: (a) => a.skill_name || a.name || "",
     body: (args, conversation) => {
       const div = document.createElement("div");
-      div.className = "tool-body use-skill-body";
+      div.className = "tool-body use-skill-body tool-body--preview";
       div.style.display = "none";
       conversation.appendChild(div);
       return { div };

@@ -2198,6 +2198,11 @@ button.composer-model-value .caret { color: var(--text-dim); }
   font-size: var(--text-sm);
   color: var(--text-muted);
 }
+.tool-body--preview,
+.tool-body--diff,
+.tool-body--list {
+  flex: 0 0 100%;
+}
 .tool-body summary { cursor: pointer; color: var(--text-muted); padding: 0; user-select: none; }
 .tool-body summary:hover { color: var(--text); }
 .tool-body--terminal {
