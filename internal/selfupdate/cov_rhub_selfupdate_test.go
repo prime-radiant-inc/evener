@@ -44,7 +44,7 @@ func TestInstallPrefix(t *testing.T) {
 		t.Fatalf("explicit prefix=%q err=%v", got, err)
 	}
 	t.Setenv("HOME", "/home/tester")
-	if got, err := installPrefix(""); err != nil || got != filepath.Join("/home/tester", ".local") {
+	if got, err := installPrefix(""); err != nil || got != "/home/tester/.local" {
 		t.Fatalf("default prefix=%q err=%v", got, err)
 	}
 	// No HOME → error. Unset both HOME and (defensively) any fallback.

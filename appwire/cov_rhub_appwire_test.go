@@ -458,7 +458,7 @@ func TestRecorderStateRoot(t *testing.T) {
 
 	t.Setenv(envvars.SERFStateDir.Name, "")
 	t.Setenv("HOME", "/home/tester")
-	if got := recorderStateRoot(); got != filepath.Join("/home/tester", ".serf") {
+	if got := recorderStateRoot(); got != "/home/tester/.serf" {
 		t.Fatalf("recorderStateRoot home fallback=%q", got)
 	}
 }

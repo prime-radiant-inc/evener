@@ -132,26 +132,26 @@ func TestDefaultStateRoot(t *testing.T) {
 	}
 	t.Setenv(envvars.SERFStateDir.Name, "")
 	t.Setenv("HOME", "/home/tester")
-	if got := DefaultStateRoot(); got != filepath.Join("/home/tester", ".serf") {
+	if got := DefaultStateRoot(); got != "/home/tester/.serf" {
 		t.Fatalf("DefaultStateRoot home fallback=%q", got)
 	}
 }
 
 func TestDefaultConfigRootAndSubdirs(t *testing.T) {
 	t.Setenv(envvars.XDGConfigHome.Name, "/xdg")
-	if got := DefaultConfigRoot(); got != filepath.Join("/xdg", "serf") {
+	if got := DefaultConfigRoot(); got != "/xdg/serf" {
 		t.Fatalf("DefaultConfigRoot with XDG=%q", got)
 	}
-	if got := DefaultSkillsDir(); got != filepath.Join("/xdg", "serf", "skills") {
+	if got := DefaultSkillsDir(); got != "/xdg/serf/skills" {
 		t.Fatalf("DefaultSkillsDir=%q", got)
 	}
-	if got := DefaultPluginsRoot(); got != filepath.Join("/xdg", "serf", "plugins") {
+	if got := DefaultPluginsRoot(); got != "/xdg/serf/plugins" {
 		t.Fatalf("DefaultPluginsRoot=%q", got)
 	}
 
 	t.Setenv(envvars.XDGConfigHome.Name, "")
 	t.Setenv("HOME", "/home/tester")
-	if got := DefaultConfigRoot(); got != filepath.Join("/home/tester", ".config", "serf") {
+	if got := DefaultConfigRoot(); got != "/home/tester/.config/serf" {
 		t.Fatalf("DefaultConfigRoot home fallback=%q", got)
 	}
 }
