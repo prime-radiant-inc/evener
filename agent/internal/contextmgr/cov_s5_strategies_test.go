@@ -105,7 +105,9 @@ func TestCov_ShouldFallbackSummarizationModel(t *testing.T) {
 
 func TestCov_RecursiveDistill_MicroSummarize(t *testing.T) {
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("  did work; nothing left  ")} },
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("  did work; nothing left  ")}
+		},
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)
