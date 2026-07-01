@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/spf13/afero"
 )
 
 // Entry describes one live serf serve daemon.
@@ -46,10 +48,18 @@ func DefaultDir() string {
 // Write creates dir if necessary and writes <dir>/<pid>.json atomically.
 // Returns the absolute path that was written.
 func Write(dir string, entry Entry) (string, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	return writeFS(afero.NewOsFs(), dir, entry)
+}
+
+// writeFS is Write against an injected afero.Fs. Production passes
+// afero.NewOsFs(), whose methods delegate directly to the os package, so the
+// on-disk behavior is byte-identical; tests and fuzzers inject an in-memory or
+// sandboxed filesystem.
+func writeFS(fs afero.Fs, dir string, entry Entry) (string, error) {
+	if err := fs.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create rendezvous dir: %w", err)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := fs.Chmod(dir, 0o700); err != nil {
 		return "", fmt.Errorf("secure rendezvous dir: %w", err)
 	}
 	data, err := json.Marshal(entry)
@@ -58,15 +68,15 @@ func Write(dir string, entry Entry) (string, error) {
 	}
 	target := filepath.Join(dir, fmt.Sprintf("%d.json", entry.PID))
 	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := afero.WriteFile(fs, tmp, data, 0o600); err != nil {
 		return "", fmt.Errorf("write tmp: %w", err)
 	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
-		_ = os.Remove(tmp)
+	if err := fs.Chmod(tmp, 0o600); err != nil {
+		_ = fs.Remove(tmp)
 		return "", fmt.Errorf("secure tmp: %w", err)
 	}
-	if err := os.Rename(tmp, target); err != nil {
-		_ = os.Remove(tmp)
+	if err := fs.Rename(tmp, target); err != nil {
+		_ = fs.Remove(tmp)
 		return "", fmt.Errorf("rename: %w", err)
 	}
 	return target, nil
@@ -74,8 +84,13 @@ func Write(dir string, entry Entry) (string, error) {
 
 // Remove deletes <dir>/<pid>.json. A missing file is not an error.
 func Remove(dir string, pid int) error {
+	return removeFS(afero.NewOsFs(), dir, pid)
+}
+
+// removeFS is Remove against an injected afero.Fs (see writeFS).
+func removeFS(fs afero.Fs, dir string, pid int) error {
 	target := filepath.Join(dir, fmt.Sprintf("%d.json", pid))
-	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+	if err := fs.Remove(target); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove rendezvous file: %w", err)
 	}
 	return nil
@@ -84,7 +99,12 @@ func Remove(dir string, pid int) error {
 // List returns every parseable Entry in dir. Corrupt files are skipped.
 // A missing directory returns (nil, nil).
 func List(dir string) ([]Entry, error) {
-	entries, err := os.ReadDir(dir)
+	return listFS(afero.NewOsFs(), dir)
+}
+
+// listFS is List against an injected afero.Fs (see writeFS).
+func listFS(fs afero.Fs, dir string) ([]Entry, error) {
+	entries, err := afero.ReadDir(fs, dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -100,7 +120,7 @@ func List(dir string) ([]Entry, error) {
 		if _, err := strconv.Atoi(base); err != nil {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, de.Name()))
+		data, err := afero.ReadFile(fs, filepath.Join(dir, de.Name()))
 		if err != nil {
 			continue
 		}
