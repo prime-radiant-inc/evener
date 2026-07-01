@@ -1,10 +1,8 @@
 # Global fuzz-reachable coverage floors (whole-module statement %).
 # Managed by scripts/fuzz-coverage-global.sh --bless. Raised upward only, EXCEPT a
-# documented downward reset when a REFACTOR grows the statement denominator (adding
-# production-only plumbing) rather than a coverage regression — a bare %-ratchet
-# can't distinguish those, so we reset to reality and note why. agent absorbed
-# afero-seam plumbing (SetFs/OsFs delegators) so dipped 29.5->28.5 on denominator
-# growth while fuzz-reachable count rose. llm 39.3->53.8->68.2 on new logic targets.
+# documented downward reset when a REFACTOR grows the denominator (production-only
+# plumbing) rather than a coverage regression. agent dipped 29.5->28.5 on afero-seam
+# plumbing; llm rose 39.3 -> 53.8 -> 68.2 -> 77.9 across the logic-fuzz campaigns.
 . 9.8
 agent 28.5
-llm 68.2
+llm 77.9
