@@ -113,6 +113,7 @@ TARGETS=(
 	"native:llm:./providers/internal/openaichat:FuzzParseChatUsage::openaichat.go#ParseChatUsage"
 	"native:llm:./providers/kimi:FuzzCountInputTokensResponse::adapter.go#CountInputTokens"
 	"native:auth:./openai:FuzzParseIDTokenClaims::claims.go#ParseIDTokenClaims"
+	"native:auth:./openai:FuzzResolveRuntimeCredentials::service.go#ResolveRuntimeCredentials"
 	"native:auth:./openai:FuzzTokenEndpointResponse::tokens.go"
 	# Phase 7 Wave 3 — behavioral API fuzzing (under the B0 sandbox) + tool execution.
 	# B1/B2 (hub)
