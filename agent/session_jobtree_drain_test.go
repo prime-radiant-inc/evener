@@ -62,8 +62,8 @@ func TestDrainJobTreeIgnoresBackgroundShell(t *testing.T) {
 		jm.mu.Unlock()
 	}()
 
-	if n := jm.outstandingDelegateCount(); n != 0 {
-		t.Fatalf("background shell must not count as an in-flight delegate, got %d", n)
+	if n, err := jm.outstandingDelegateCount(); err != nil || n != 0 {
+		t.Fatalf("background shell must not count as an in-flight delegate, got %d (err %v)", n, err)
 	}
 
 	done := make(chan struct{})
@@ -151,8 +151,8 @@ func TestOutstandingDelegateCountCoversPendingNotifyWindow(t *testing.T) {
 	if p := sess.peekNotifications(); p != 0 {
 		t.Fatalf("precondition: expected empty in-memory queue, got %d", p)
 	}
-	if n := jm.outstandingDelegateCount(); n != 1 {
-		t.Fatalf("a NotifyPending delegate absent from the running map must still count as outstanding, got %d", n)
+	if n, err := jm.outstandingDelegateCount(); err != nil || n != 1 {
+		t.Fatalf("a NotifyPending delegate absent from the running map must still count as outstanding, got %d (err %v)", n, err)
 	}
 }
 
@@ -183,8 +183,8 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 	}
 
 	// After draining, no delegate may remain in flight and nothing may be pending.
-	if n := sess.jobManager.outstandingDelegateCount(); n != 0 {
-		t.Fatalf("expected 0 in-flight delegates after drain, got %d", n)
+	if n, err := sess.jobManager.outstandingDelegateCount(); err != nil || n != 0 {
+		t.Fatalf("expected 0 in-flight delegates after drain, got %d (err %v)", n, err)
 	}
 	if p := sess.peekNotifications(); p != 0 {
 		t.Fatalf("expected 0 pending notifications after drain, got %d", p)
