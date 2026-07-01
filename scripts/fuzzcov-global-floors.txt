@@ -1,8 +1,12 @@
 # Global fuzz-reachable coverage floors (whole-module statement %).
 # Managed by scripts/fuzz-coverage-global.sh --bless. Raised upward only, EXCEPT a
-# documented downward reset when a REFACTOR grows the denominator (production-only
-# plumbing) rather than a coverage regression (see the afero-seam batches).
-# Arc: llm 39.3 -> 77.9 ; agent 26.4 -> 28.5(dip) -> 40.7 -> 41.7 via logic-fuzz campaigns.
+# documented downward reset when the DENOMINATOR changes (a refactor adds
+# production-only plumbing, or a measurement-completeness correction) rather than
+# a coverage regression. agent dipped on afero-seam plumbing. llm reset 77.9->73.0
+# is a measurement correction, NOT a regression: covered statements ROSE
+# (4620->4656) while the counted denominator grew 5933->6382 (a package's fuzz
+# test now builds+counts under -tags serffuzz that the 77.9 bless had dropped).
+# Arc: llm 39.3 -> 73.0 (honest, complete-denominator) ; agent 26.4 -> 45.9.
 . 9.8
-agent 41.7
-llm 77.9
+agent 45.9
+llm 73.0
