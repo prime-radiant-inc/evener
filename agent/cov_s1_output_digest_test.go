@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ func s1cov_windowReader(headSnap, tailSnap jobReadOutputSnapshot, headErr, tailE
 
 func TestS1Cov_readJobOutputDigest(t *testing.T) {
 	// Head read error propagates.
-	if _, err := readJobOutputDigest(s1cov_windowReader(jobReadOutputSnapshot{}, jobReadOutputSnapshot{}, fmt.Errorf("boom"), nil), 1, 1); err == nil {
+	if _, err := readJobOutputDigest(s1cov_windowReader(jobReadOutputSnapshot{}, jobReadOutputSnapshot{}, errors.New("boom"), nil), 1, 1); err == nil {
 		t.Fatal("head read error must propagate")
 	}
 
@@ -77,7 +78,7 @@ func TestS1Cov_readJobOutputDigest(t *testing.T) {
 	}
 
 	// Tail read error propagates.
-	if _, err := readJobOutputDigest(s1cov_windowReader(head, jobReadOutputSnapshot{}, nil, fmt.Errorf("tail boom")), 1, 1); err == nil {
+	if _, err := readJobOutputDigest(s1cov_windowReader(head, jobReadOutputSnapshot{}, nil, errors.New("tail boom")), 1, 1); err == nil {
 		t.Fatal("tail read error must propagate")
 	}
 }
