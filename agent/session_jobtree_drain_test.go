@@ -4,12 +4,14 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
 // TestDrainJobTreeNoJobsReturnsImmediately verifies the drain is a no-op when
-// the session never delegated: no pending notifications and no running jobs
-// means the tree is already terminal, so DrainJobTree returns at once with an
-// empty result rather than blocking.
+// the session never delegated: no pending notifications and no in-flight
+// delegates means the tree is already terminal, so DrainJobTree returns at once
+// with an empty result rather than blocking.
 func TestDrainJobTreeNoJobsReturnsImmediately(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t)
@@ -35,11 +37,91 @@ func TestDrainJobTreeNoJobsReturnsImmediately(t *testing.T) {
 	}
 }
 
+// TestDrainJobTreeIgnoresBackgroundShell verifies the drain does not block on a
+// long-lived background shell job: only delegates hold it open. A one-shot run
+// whose model leaves a background shell running (e.g. a dev server) and then
+// communicates must still exit promptly rather than hang until the shell dies.
+func TestDrainJobTreeIgnoresBackgroundShell(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+
+	// Inject a running background shell job into the manager's running map, then
+	// remove it before the session closes (the bare record has none of the
+	// lifecycle channels Close() would touch).
+	jm := sess.jobManager
+	jm.mu.Lock()
+	jm.running["sh-1"] = &runningJob{rec: &jobstore.JobRecord{
+		JobID:  "sh-1",
+		Type:   jobstore.JobShell,
+		Status: jobstore.StatusRunning,
+	}}
+	jm.mu.Unlock()
+	defer func() {
+		jm.mu.Lock()
+		delete(jm.running, "sh-1")
+		jm.mu.Unlock()
+	}()
+
+	if n := jm.inFlightDelegateCount(); n != 0 {
+		t.Fatalf("background shell must not count as an in-flight delegate, got %d", n)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = sess.DrainJobTree(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainJobTree blocked on a background shell job; expected immediate return")
+	}
+}
+
+// TestDrainJobTreeReturnsOnContextCancel verifies the wait is bounded: a
+// delegate that never completes (never signals, never leaves the running map)
+// must not hang the drain forever — a cancelled context releases it. This is
+// the hang-safety backstop for a one-shot run whose delegated work stalls.
+func TestDrainJobTreeReturnsOnContextCancel(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+
+	// A delegate that will never signal completion.
+	jm := sess.jobManager
+	jm.mu.Lock()
+	jm.running["del-stuck"] = &runningJob{rec: &jobstore.JobRecord{
+		JobID:  "del-stuck",
+		Type:   jobstore.JobDelegate,
+		Status: jobstore.StatusRunning,
+	}}
+	jm.mu.Unlock()
+	defer func() {
+		jm.mu.Lock()
+		delete(jm.running, "del-stuck")
+		jm.mu.Unlock()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := sess.DrainJobTree(ctx)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected a context error when the delegate never completes, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainJobTree did not return after context cancellation; hang-safety backstop failed")
+	}
+}
+
 // TestDrainJobTreeWaitsForRunningDelegate verifies the drain re-drives the
 // coordinator when a backgrounded delegate completes, rather than returning
-// while the child is still running. It also asserts the delegate's terminal
-// completion is reflected as a drained notification turn (the fakeAdapter
-// receives the coordinator's re-drive request).
+// while the child is still running.
 func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withConfig(SessionConfig{
@@ -63,9 +145,9 @@ func TestDrainJobTreeWaitsForRunningDelegate(t *testing.T) {
 		t.Fatalf("DrainJobTree: %v", err)
 	}
 
-	// After draining, the tree must be terminal.
-	if n := sess.activeJobCount(); n != 0 {
-		t.Fatalf("expected 0 active jobs after drain, got %d", n)
+	// After draining, no delegate may remain in flight and nothing may be pending.
+	if n := sess.jobManager.inFlightDelegateCount(); n != 0 {
+		t.Fatalf("expected 0 in-flight delegates after drain, got %d", n)
 	}
 	if p := sess.peekNotifications(); p != 0 {
 		t.Fatalf("expected 0 pending notifications after drain, got %d", p)
