@@ -51,11 +51,11 @@ type cxjs_errReader struct {
 	i int
 }
 
-var cxjs_errReaderFault = errors.New("cxjs: injected read fault")
+var errCxjsReadFault = errors.New("cxjs: injected read fault")
 
 func (r *cxjs_errReader) Read(p []byte) (int, error) {
 	if r.i >= len(r.b) {
-		return 0, cxjs_errReaderFault
+		return 0, errCxjsReadFault
 	}
 	n := copy(p, r.b[r.i:])
 	r.i += n
@@ -92,9 +92,11 @@ func FuzzCxjsGrepReaderLimit(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data, pat []byte, patSel uint8, limitBytes, maxMatches, maxLineBytes int) {
 		// Bound the numeric knobs so the fuzzer can't drive gigantic allocations
-		// or plateau on identical huge budgets, while still spanning the guard
-		// values (0, negative, > limit).
-		limitBytes = cxjs_boundInt(limitBytes, -4, 1<<16)
+		// or plateau on identical huge budgets. grepReaderLimit's callers
+		// (GrepLimitLineBytes / GrepFileLimitAt) guarantee limitBytes >= 1 before
+		// reaching it, so the harness honors that precondition. maxMatches and
+		// maxLineBytes still span their guard values (0, negative, > limit).
+		limitBytes = cxjs_boundInt(limitBytes, 1, 1<<16)
 		maxMatches = cxjs_boundInt(maxMatches, -4, 4096)
 		maxLineBytes = cxjs_boundInt(maxLineBytes, -4, 1<<16)
 		if len(data) > 1<<16 {
@@ -121,18 +123,11 @@ func FuzzCxjsGrepReaderLimit(f *testing.F) {
 			t.Fatalf("grepReaderLimit not deterministic: err2=%v", err2)
 		}
 
-		if limitBytes <= 0 {
-			if matches != nil {
-				t.Fatalf("non-positive limit returned %d matches", len(matches))
-			}
-			return
-		}
-
 		effMax := cxjs_effMaxLine(limitBytes, maxLineBytes)
 		total := 0
 		prevOffset := int64(-1)
 		for _, m := range matches {
-			if !re.Match([]byte(m.Line)) {
+			if !re.MatchString(m.Line) {
 				t.Fatalf("returned line does not match regexp: %q", m.Line)
 			}
 			if strings.ContainsRune(m.Line, '\n') {
@@ -169,7 +164,7 @@ func FuzzCxjsGrepReaderLimit(f *testing.F) {
 			return grepReaderLimit(bufio.NewReader(&cxjs_errReader{b: data}), re, limitBytes, maxMatches, maxLineBytes)
 		}
 		fm, ferr := faultGrep()
-		if ferr != nil && !errors.Is(ferr, cxjs_errReaderFault) {
+		if ferr != nil && !errors.Is(ferr, errCxjsReadFault) {
 			t.Fatalf("unexpected fault error: %v", ferr)
 		}
 		if ferr == nil && !oracle.DeepEqual(fm, matches) {

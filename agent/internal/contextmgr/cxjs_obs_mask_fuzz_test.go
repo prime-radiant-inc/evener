@@ -1,6 +1,7 @@
 package contextmgr
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -129,6 +130,12 @@ func FuzzCxjsObsMaskManageContext(f *testing.F) {
 	f.Add(ctxmgr_richHistorySeed, uint8(0x0F), uint8(255), uint8(0x80), uint8(50))
 
 	f.Fuzz(func(t *testing.T, data []byte, edgeSel uint8, preserveSel uint8, cpSel uint8, sysSel uint8) {
+		// ctxmgr_buildHistory already caps at 60 turns; bounding the raw bytes
+		// keeps the fuzzer from ballooning inputs it cannot turn into more
+		// history, which otherwise slows execs without adding coverage.
+		if len(data) > 4096 {
+			data = data[:4096]
+		}
 		history := cxjs_buildObsHistory(data, edgeSel)
 		preserve := 1 + int(preserveSel)%12
 		sysChars := int(sysSel) * 32
@@ -252,5 +259,5 @@ func cxjs_turnJSON(turn schema.Turn) string {
 func cxjs_contentEqual(a, b any) bool {
 	ba, _ := json.Marshal(a)
 	bb, _ := json.Marshal(b)
-	return string(ba) == string(bb)
+	return bytes.Equal(ba, bb)
 }
