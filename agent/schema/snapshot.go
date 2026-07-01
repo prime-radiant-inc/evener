@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/spf13/afero"
 )
 
 // SessionMeta holds session metadata without the full conversation history.
@@ -119,8 +121,28 @@ const sessionsSubdir = "sessions"
 // SaveSessionMeta writes a SessionMeta to <dir>/sessions/<id>.meta.json using
 // atomic rename and compact JSON (no indentation).
 func SaveSessionMeta(dir string, meta SessionMeta) error {
+	return saveSessionMetaFS(afero.NewOsFs(), dir, meta)
+}
+
+// LoadSessionMeta reads a SessionMeta from <dir>/sessions/<id>.meta.json.
+func LoadSessionMeta(dir, id string) (SessionMeta, error) {
+	return loadSessionMetaFS(afero.NewOsFs(), dir, id)
+}
+
+// ListSessionMetas returns all valid session metas sorted by UpdatedAt descending.
+// Scans for .meta.json files. Corrupt files are silently skipped.
+func ListSessionMetas(dir string) ([]SessionMeta, error) {
+	return listSessionMetasFS(afero.NewOsFs(), dir)
+}
+
+// saveSessionMetaFS is the filesystem seam beneath SaveSessionMeta: it performs
+// the mkdir + atomic temp+rename write through an injected afero.Fs. Production
+// passes afero.NewOsFs(), whose methods delegate directly to os, so behavior is
+// byte-identical to using os calls; tests and fuzzers inject an in-memory or
+// sandboxed filesystem to exercise persistence without touching real disk.
+func saveSessionMetaFS(fs afero.Fs, dir string, meta SessionMeta) error {
 	sessDir := filepath.Join(dir, sessionsSubdir)
-	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+	if err := fs.MkdirAll(sessDir, 0o755); err != nil {
 		return fmt.Errorf("create sessions dir: %w", err)
 	}
 
@@ -132,20 +154,20 @@ func SaveSessionMeta(dir string, meta SessionMeta) error {
 	target := filepath.Join(sessDir, meta.ID+".meta.json")
 	tmp := target + ".tmp"
 
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := afero.WriteFile(fs, tmp, data, 0o644); err != nil {
 		return fmt.Errorf("write temp file: %w", err)
 	}
-	if err := os.Rename(tmp, target); err != nil {
-		_ = os.Remove(tmp)
+	if err := fs.Rename(tmp, target); err != nil {
+		_ = fs.Remove(tmp)
 		return fmt.Errorf("rename temp to target: %w", err)
 	}
 	return nil
 }
 
-// LoadSessionMeta reads a SessionMeta from <dir>/sessions/<id>.meta.json.
-func LoadSessionMeta(dir, id string) (SessionMeta, error) {
+// loadSessionMetaFS is the filesystem seam beneath LoadSessionMeta.
+func loadSessionMetaFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
 	path := filepath.Join(dir, sessionsSubdir, id+".meta.json")
-	data, err := os.ReadFile(path)
+	data, err := afero.ReadFile(fs, path)
 	if err != nil {
 		return SessionMeta{}, fmt.Errorf("read session meta %s: %w", id, err)
 	}
@@ -156,11 +178,10 @@ func LoadSessionMeta(dir, id string) (SessionMeta, error) {
 	return meta, nil
 }
 
-// ListSessionMetas returns all valid session metas sorted by UpdatedAt descending.
-// Scans for .meta.json files. Corrupt files are silently skipped.
-func ListSessionMetas(dir string) ([]SessionMeta, error) {
+// listSessionMetasFS is the filesystem seam beneath ListSessionMetas.
+func listSessionMetasFS(fs afero.Fs, dir string) ([]SessionMeta, error) {
 	sessDir := filepath.Join(dir, sessionsSubdir)
-	entries, err := os.ReadDir(sessDir)
+	entries, err := afero.ReadDir(fs, sessDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -174,7 +195,7 @@ func ListSessionMetas(dir string) ([]SessionMeta, error) {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".meta.json")
-		meta, err := LoadSessionMeta(dir, id)
+		meta, err := loadSessionMetaFS(fs, dir, id)
 		if err != nil {
 			continue // skip corrupt files
 		}

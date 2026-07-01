@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
@@ -86,7 +88,8 @@ type APICall struct {
 
 // Writer appends turns to an immutable JSONL transcript file.
 type Writer struct {
-	file      *os.File
+	fs        afero.Fs
+	file      afero.File
 	mu        sync.Mutex
 	seq       int
 	closeOnce sync.Once
@@ -104,14 +107,21 @@ type Writer struct {
 // NewWriter creates a transcript file at path, writes the header as the first line,
 // and returns a writer that keeps the file handle open for subsequent Append calls.
 func NewWriter(path string, header Header) (*Writer, error) {
+	return newWriterFS(afero.NewOsFs(), path, header)
+}
+
+// newWriterFS is the filesystem-injecting seam behind NewWriter. Production
+// passes afero.NewOsFs() (byte-identical to direct os calls); tests and the
+// persistence fuzzer inject an in-memory or sandboxed filesystem.
+func newWriterFS(fs afero.Fs, path string, header Header) (*Writer, error) {
 	header.Kind = "header"
 	header.FormatVersion = 1
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := fs.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create transcript dir: %w", err)
 	}
 
-	f, err := os.Create(path)
+	f, err := fs.Create(path)
 	if err != nil {
 		return nil, fmt.Errorf("create transcript file: %w", err)
 	}
@@ -132,7 +142,7 @@ func NewWriter(path string, header Header) (*Writer, error) {
 		return nil, fmt.Errorf("sync transcript header: %w", err)
 	}
 
-	return &Writer{file: f, lastSync: time.Now()}, nil
+	return &Writer{fs: fs, file: f, lastSync: time.Now()}, nil
 }
 
 // Append writes a turn as an Entry to the JSONL file.
@@ -323,7 +333,14 @@ func (w *Writer) Close() error {
 // Truncates any partial last line for crash recovery. Uses a single file handle
 // for the entire read-truncate-append sequence to avoid TOCTOU races.
 func OpenWriter(path string) (*Writer, error) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	return openWriterFS(afero.NewOsFs(), path)
+}
+
+// openWriterFS is the filesystem-injecting seam behind OpenWriter. Production
+// passes afero.NewOsFs() (byte-identical to direct os calls); tests and the
+// persistence fuzzer inject an in-memory or sandboxed filesystem.
+func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
+	f, err := fs.OpenFile(path, os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open transcript for resume: %w", err)
 	}
@@ -386,5 +403,5 @@ func OpenWriter(path string) (*Writer, error) {
 		return nil, fmt.Errorf("seek to end of transcript: %w", err)
 	}
 
-	return &Writer{file: f, seq: nextSeq, lastSync: time.Now()}, nil
+	return &Writer{fs: fs, file: f, seq: nextSeq, lastSync: time.Now()}, nil
 }
