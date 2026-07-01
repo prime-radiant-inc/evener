@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -70,7 +71,7 @@ func TestS5Cov_LiveModelInfoFor(t *testing.T) {
 }
 
 func TestS5Cov_ResolveLiveModelProfile_NilGuards(t *testing.T) {
-	if got := resolveLiveModelProfile(nil, nil, nil); got != nil {
+	if got := resolveLiveModelProfile(context.TODO(), nil, nil); got != nil {
 		t.Error("nil client+profile should return the (nil) profile")
 	}
 }
@@ -113,7 +114,7 @@ func TestS5Cov_ProviderCauseFromError(t *testing.T) {
 	if providerCauseFromError(nil, "m") != nil {
 		t.Error("nil error → nil cause")
 	}
-	if providerCauseFromError(errPlain("boom"), "m") != nil {
+	if providerCauseFromError(stubError("boom"), "m") != nil {
 		t.Error("non-llm error → nil cause")
 	}
 	le := llm.ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
@@ -124,14 +125,14 @@ func TestS5Cov_ProviderCauseFromError(t *testing.T) {
 }
 
 func TestS5Cov_SetAPICallDiagnostic(t *testing.T) {
-	setAPICallDiagnostic(nil, errPlain("x")) // must not panic
+	setAPICallDiagnostic(nil, stubError("x")) // must not panic
 	call := &transcript.APICall{}
-	setAPICallDiagnostic(call, errPlain("unknown provider: foo"))
+	setAPICallDiagnostic(call, stubError("unknown provider: foo"))
 	if call.Source == "" || call.Title == "" {
 		t.Errorf("api call diagnostic not set: %+v", call)
 	}
 }
 
-type errPlain string
+type stubError string
 
-func (e errPlain) Error() string { return string(e) }
+func (e stubError) Error() string { return string(e) }

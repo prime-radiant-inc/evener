@@ -1,7 +1,6 @@
 package mcpconfig
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -10,7 +9,7 @@ import (
 func TestCov_GlobalMCPConfigPath(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/xdg/config")
 	got := globalMCPConfigPath()
-	if !strings.HasPrefix(got, filepath.Join("/xdg/config")) {
+	if !strings.HasPrefix(got, "/xdg/config") {
 		t.Errorf("with XDG_CONFIG_HOME set, path = %q, want under /xdg/config", got)
 	}
 

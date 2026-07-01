@@ -153,7 +153,7 @@ func TestS5Cov_RenderEmbedded_MissingErrors(t *testing.T) {
 // sourceLabel distinguishes disk, embedded, and unknown sources.
 func TestS5Cov_SourceLabel(t *testing.T) {
 	r := &sectionResolver{}
-	if got := r.sourceLabel(diskSource{dir: "/d"}, "x.md"); got != "disk:"+filepath.Join("/d", "x.md") {
+	if got := r.sourceLabel(diskSource{dir: "dir"}, "x.md"); got != "disk:"+filepath.Join("dir", "x.md") {
 		t.Errorf("disk label = %q", got)
 	}
 	if got := r.sourceLabel(embedSource{prefix: "p/"}, "x.md"); got != "embedded:p/x.md" {
