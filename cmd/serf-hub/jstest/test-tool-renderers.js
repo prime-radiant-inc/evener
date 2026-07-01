@@ -224,6 +224,18 @@ await scenario("job_read_output renders status, truncation, and output preview",
   return { ok: true };
 });
 
+await scenario("empty preview body removes disclosure after finalization", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "jr-empty", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_empty" }) }],
+  ["TOOL_CALL_END", { call_id: "jr-empty", tool_name: "job_read_output", output: "", tool_state: JSON.stringify({ job_id: "job_empty", type: "shell", status: "completed", output: "", total_bytes: 0 }) }],
+], ({ conv }) => {
+  const call = conv.querySelector(".tool-call.job_read_output");
+  if (!call) return { ok: false, detail: "no job_read_output card" };
+  if (call.querySelector(".tool-disclosure")) return { ok: false, detail: "empty preview body should not keep disclosure" };
+  if (call.hasAttribute("data-expanded")) return { ok: false, detail: "empty preview body should remove data-expanded" };
+  return { ok: true };
+});
+
 await scenario("job_read_output grep state renders matches before the output window", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "jr1", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_A", grep: "needle" }) }],
@@ -722,14 +734,16 @@ await scenario("cheap cluster collapses to a mutating-step-first summary once do
   if (!cluster.classList.contains("done")) return { ok: false, detail: "finished cluster should be marked done" };
   const summary = cluster.querySelector(".tool-cluster-summary");
   if (!summary) return { ok: false, detail: "no cluster summary line" };
+  if (summary.getAttribute("aria-expanded") !== "false") return { ok: false, detail: "collapsed cluster summary should expose aria-expanded=false" };
+  summary.click();
+  if (summary.getAttribute("aria-expanded") !== "true") return { ok: false, detail: "expanded cluster summary should expose aria-expanded=true" };
   if (!/2 steps/.test(summary.textContent)) return { ok: false, detail: "summary should count steps: " + summary.textContent };
   if (!/cache\.go/.test(summary.textContent)) return { ok: false, detail: "summary should name a target: " + summary.textContent };
   // The rows are hidden behind the summary until expanded.
   const body = cluster.querySelector(".tool-cluster-body");
   if (!body) return { ok: false, detail: "no cluster body" };
   if (cluster.querySelectorAll(".tool-cluster-body .tool-call").length !== 2) return { ok: false, detail: "body should hold both rows" };
-  // Clicking the summary expands the rows.
-  summary.click();
+  // The summary click above expands the rows.
   if (!cluster.classList.contains("open")) return { ok: false, detail: "summary click should open the cluster" };
   return { ok: true };
 });
