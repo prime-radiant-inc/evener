@@ -58,7 +58,7 @@ await scenario("edit_file collapses to +N −N stat and expands to a unified dif
   if (!card) return { ok: false, detail: "no edit tool-call" };
   // Collapsed by default — the diff body is hidden until expanded.
   if (card.dataset.expanded !== "false") return { ok: false, detail: "edit should collapse by default, got data-expanded=" + card.dataset.expanded };
-  const caret = card.querySelector(".tool-expand-btn");
+  const caret = card.querySelector(".tool-disclosure[data-expand-toggle]");
   if (!caret || caret.textContent !== "▸") return { ok: false, detail: "caret should be ▸ when collapsed, got " + (caret && caret.textContent) };
 
   // The collapsed line carries the +N −N stat (computed from the diff): the

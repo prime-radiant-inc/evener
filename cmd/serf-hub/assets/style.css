@@ -84,7 +84,7 @@
   /* Radius scale — two only (design-system §3): a single small rectangle
      radius and a pill. --radius-md is the rectangle radius (golden --r 5px);
      --radius-pill (999px) rounds chips fully and, on a square element, also
-     yields the dot/circle the old --radius-full carried. The retired
+     yields the dot/circle the retired full radius carried. The retired
      sm/lg/xl/full names all remap to these two. */
   --radius-md:   5px;
   --radius-pill: 999px;
@@ -2089,8 +2089,11 @@ button.composer-model-value .caret { color: var(--text-dim); }
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   white-space: nowrap;
-  opacity: 1;
+  opacity: 0;
+  transition: opacity var(--motion-fast);
 }
+.tool-call:hover .tool-meta,
+.tool-call:focus-within .tool-meta { opacity: 1; }
 .tool-call .tool-body,
 .tool-call .diff-body,
 .tool-call .output-preview-body { order: 5; }
@@ -2153,7 +2156,7 @@ button.composer-model-value .caret { color: var(--text-dim); }
   height: 22px;
   margin-left: var(--space-1);
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
