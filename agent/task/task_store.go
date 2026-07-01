@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/spf13/afero"
 )
 
 // TaskTemplate defines a default task in an agent's workflow. When a session
@@ -104,6 +106,7 @@ type TaskStore struct {
 	nextID int
 	path   string
 	now    func() time.Time
+	fs     afero.Fs
 }
 
 // NewTaskStore creates a TaskStore that persists to <stateDir>/tasks/<sessionID>.json.
@@ -113,6 +116,7 @@ func NewTaskStore(stateDir, sessionID string) *TaskStore {
 		nextID: 1,
 		path:   filepath.Join(stateDir, "tasks", sessionID+".json"),
 		now:    time.Now,
+		fs:     afero.NewOsFs(),
 	}
 }
 
@@ -122,6 +126,16 @@ func (s *TaskStore) SetClock(now func() time.Time) *TaskStore {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.now = now
+	return s
+}
+
+// SetFs overrides the store's filesystem. Production defaults to afero.NewOsFs()
+// (identical to direct os calls); tests and fuzzers inject an in-memory or
+// sandboxed filesystem. Returns the store for call chaining.
+func (s *TaskStore) SetFs(fs afero.Fs) *TaskStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fs = fs
 	return s
 }
 
@@ -136,7 +150,7 @@ func (s *TaskStore) Load() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := os.ReadFile(s.path)
+	data, err := afero.ReadFile(s.fs, s.path)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -164,7 +178,7 @@ func (s *TaskStore) Load() error {
 // save writes the task list to disk atomically.
 func (s *TaskStore) save() error {
 	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := s.fs.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create tasks dir: %w", err)
 	}
 
@@ -174,11 +188,11 @@ func (s *TaskStore) save() error {
 	}
 
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := afero.WriteFile(s.fs, tmp, data, 0o644); err != nil {
 		return fmt.Errorf("write temp: %w", err)
 	}
-	if err := os.Rename(tmp, s.path); err != nil {
-		_ = os.Remove(tmp)
+	if err := s.fs.Rename(tmp, s.path); err != nil {
+		_ = s.fs.Remove(tmp)
 		return fmt.Errorf("rename: %w", err)
 	}
 	return nil
