@@ -3,6 +3,7 @@ package execenv
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"syscall"
@@ -110,7 +111,7 @@ func TestW2Conc_StreamCommandCtxAlreadyDone(t *testing.T) {
 }
 
 func errorsIsCanceled(err error) bool {
-	return err == context.Canceled
+	return errors.Is(err, context.Canceled)
 }
 
 // w2conc_pidGone reports whether pid no longer exists.
