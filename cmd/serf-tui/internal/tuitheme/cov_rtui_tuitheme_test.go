@@ -26,8 +26,9 @@ func TestThemePreferencePath_EmptyStateDir(t *testing.T) {
 	if got := themePreferencePath("  "); got != "" {
 		t.Fatalf("themePreferencePath(blank) = %q, want empty", got)
 	}
-	got := themePreferencePath("/state")
-	want := filepath.Join("/state", "tui", "preferences.json")
+	stateDir := filepath.Join(t.TempDir(), "state")
+	got := themePreferencePath(stateDir)
+	want := filepath.Join(stateDir, "tui", "preferences.json")
 	if got != want {
 		t.Fatalf("themePreferencePath = %q, want %q", got, want)
 	}

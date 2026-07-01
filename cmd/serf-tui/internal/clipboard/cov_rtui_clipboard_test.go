@@ -1,6 +1,7 @@
 package clipboard
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"testing"
@@ -160,7 +161,7 @@ func TestWriteTempPNG_WritesBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read temp png: %v", err)
 	}
-	if string(got) != string(data) {
+	if !bytes.Equal(got, data) {
 		t.Fatalf("temp png contents = %q, want %q", got, data)
 	}
 }

@@ -106,7 +106,7 @@ type recordingRoundTripper struct {
 
 func (rt *recordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	rt.seen = req
-	return &http.Response{StatusCode: 200, Body: http.NoBody, Header: make(http.Header)}, nil
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
 }
 
 func TestHTTPClientWithBearer(t *testing.T) {
