@@ -70,6 +70,35 @@ run "$tui" --help
 run "$tui" -h
 run "$tui" --bogus
 
+# Web-hub battery: start the real hub HTTP server (instrumented) on a loopback
+# port, drive its routes with curl, then stop it. Captures the web handler /
+# API / static-asset paths that only run inside the serving binary. Skipped if
+# curl is unavailable.
+if command -v curl >/dev/null 2>&1; then
+	echo "==> driving the web-hub HTTP battery"
+	hub="$workdir/serf-hub"
+	if go build -cover -o "$hub" ./cmd/serf-hub 2>/dev/null; then
+		hub_run="$workdir/hubrun"; mkdir -p "$hub_run"
+		port=$(( (RANDOM % 2000) + 9300 ))
+		GOCOVERDIR="$covdir" HOME="$workdir" "$hub" --addr "127.0.0.1:$port" >"$workdir/hub.log" 2>&1 &
+		hub_pid=$!
+		# wait up to ~5s for the listener line.
+		for _ in $(seq 1 50); do grep -q 'listening on' "$workdir/hub.log" 2>/dev/null && break; sleep 0.1; done
+		base="http://127.0.0.1:$port"
+		for route in / /api/health /api/dirs /api/models /api/tree "/api/search?q=x" \
+			/api/spawn-schema /credentials /auth /assets/style.css /assets/renderer.js \
+			/api/sessions/nonexistent /doc/file /nonexistent-route; do
+			curl -fsS --max-time 5 "$base$route" >/dev/null 2>&1 || true
+		done
+		# a couple of POSTs against validate/create (error paths, no real spawn).
+		curl -fsS --max-time 5 -X POST "$base/api/path/validate" -d '{}' >/dev/null 2>&1 || true
+		kill -TERM "$hub_pid" 2>/dev/null || true
+		wait "$hub_pid" 2>/dev/null || true
+	else
+		echo "    (serf-hub build failed; skipping hub battery)"
+	fi
+fi
+
 if [ "${SERF_E2E_LIVE:-0}" = "1" ]; then
 	echo "==> SERF_E2E_LIVE=1: running live provider scripts under GOCOVERDIR"
 	export GOCOVERDIR="$covdir" SERF_BIN="$serf"
