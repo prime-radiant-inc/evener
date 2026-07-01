@@ -150,6 +150,7 @@ TARGETS=(
 	"native:agent:./transcript:FuzzTranscriptWriterPersistence::transcript.go#newWriterFS"
 	"native:agent:./schema:FuzzSessionMetaPersistence::snapshot.go#saveSessionMetaFS"
 	"native:.:./rendezvous:FuzzRendezvousPersistence::rendezvous.go#writeFS"
+	"native:.:./cmd/serf-hub/internal/hubcore:FuzzHubcorePersistFS::past.go#chmodSQLiteIndexFilesFS"
 	"native:agent:./task:FuzzTaskStorePersistence::task_store.go#save;task_store.go#Load"
 	"native:llm:.:FuzzAPILogWrite::apilog.go#write"
 	"native:llm:.:FuzzClientCapabilities::client.go#BehaviorTagOf"
