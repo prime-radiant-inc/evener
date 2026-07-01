@@ -170,15 +170,6 @@ func removeRootOnlySubagentTools(items []string) []string {
 	return removeStrings(items, rootOnlySubagentTools())
 }
 
-func agentUsesRootOnlySubagentTools(agent plugin.Agent) bool {
-	for _, tool := range agent.Tools {
-		if isRootOnlySubagentTool(tool) {
-			return true
-		}
-	}
-	return false
-}
-
 func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools bool, allowed []string, denied []string) {
 	switch {
 	case agent != nil && agent.AllTools:
@@ -330,9 +321,6 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		a, ok := s.pluginAgents[agentType]
 		if !ok {
 			return nil, fmt.Errorf("unknown plugin agent type: %s", agentType)
-		}
-		if agentUsesRootOnlySubagentTools(a) && allowance <= 0 {
-			return nil, fmt.Errorf("agent_type %q is top-level only: it requires root-only tools", agentType)
 		}
 		agent = &a
 	}
