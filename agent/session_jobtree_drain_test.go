@@ -156,6 +156,57 @@ func TestOutstandingDelegateCountCoversPendingNotifyWindow(t *testing.T) {
 	}
 }
 
+// TestTreeHasOutstandingWorkSkipsStopGatedChild is the roborev regression: the
+// drive path (driveChildrenWithUndeliveredAttention) skips stop-gated children,
+// so the quiescence walk must too. A deliberately stopped child's leftover
+// attention is never delivered, so counting it would hang DrainJobTree until
+// ctx cancellation.
+func TestTreeHasOutstandingWorkSkipsStopGatedChild(t *testing.T) {
+	t.Parallel()
+	root := newSession(t)
+	child := newSession(t)
+	childID := child.ID()
+
+	// Give the child leftover child-local attention.
+	child.enqueueJobNotification(jobNotification{JobID: "leftover"})
+
+	// Track it as a live direct subagent of root, and untrack before close.
+	root.subagents.mu.Lock()
+	root.subagents.subs[childID] = &subagent{id: childID, sess: child}
+	root.subagents.mu.Unlock()
+	defer func() {
+		root.subagents.mu.Lock()
+		delete(root.subagents.subs, childID)
+		root.subagents.mu.Unlock()
+	}()
+
+	// Before stop-gating, the child's pending attention is outstanding.
+	if out, err := root.treeHasOutstandingWork(); err != nil || !out {
+		t.Fatalf("precondition: expected outstanding work from child pending attention, got out=%v err=%v", out, err)
+	}
+
+	// Stop-gate the child: its latest delegate record is Cancelled/stopped_by_parent.
+	started := frozenTestTime.Add(-time.Second)
+	ended := frozenTestTime
+	for _, ev := range []jobstore.Event{
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_sc", Type: jobstore.JobDelegate, OwnerSessionID: root.ID(), VisibleToSession: root.ID(), TranscriptRef: encodeRef("", childID), StartedAt: &started},
+		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_sc", Status: jobstore.StatusCancelled, Reason: "stopped_by_parent", EndedAt: &ended, TerminalGen: "gen_sc"},
+	} {
+		if err := root.jobManager.appendEvent(ev); err != nil {
+			t.Fatalf("append %s: %v", ev.Kind, err)
+		}
+	}
+	if !root.childStopGated(childID) {
+		t.Fatal("precondition: child should be stop-gated after Cancelled/stopped_by_parent")
+	}
+
+	// The stop-gated child's leftover attention must no longer count as
+	// outstanding — the drain would otherwise never deliver it and hang.
+	if out, err := root.treeHasOutstandingWork(); err != nil || out {
+		t.Fatalf("stop-gated child must not count as outstanding, got out=%v err=%v", out, err)
+	}
+}
+
 // TestDrainJobTreeWaitsForRunningDelegate verifies the drain re-drives the
 // coordinator when a backgrounded delegate completes, rather than returning
 // while the child is still running.

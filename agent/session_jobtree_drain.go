@@ -96,6 +96,13 @@ func (s *Session) treeHasOutstandingWork() (bool, error) {
 		driving := sub.driving
 		child := sub.sess
 		sub.mu.Unlock()
+		if child != nil && s.childStopGated(child.id) {
+			// A deliberately stopped child is never driven — driveChildrenWithUndeliveredAttention
+			// skips stop-gated children — so its pre-stop attention will never be
+			// delivered. Counting it (or its subtree) would hang the drain forever,
+			// so match the drive gate and skip it.
+			continue
+		}
 		if driving {
 			return true, nil
 		}
