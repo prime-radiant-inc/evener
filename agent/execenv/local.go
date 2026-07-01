@@ -201,17 +201,26 @@ func (e *LocalExecutionEnvironment) OSVersion() string {
 	return osVersionValue
 }
 
+// execLookPath and execCommandContext are the exec entry points execenv shells
+// out through. Production binds them to the real os/exec functions; a test swaps
+// them to force the ripgrep-present/absent branch or an OS-probe failure without
+// depending on the host's tools. Byte-identical to calling exec.* directly.
+var (
+	execLookPath       = exec.LookPath
+	execCommandContext = exec.CommandContext
+)
+
 func resolveOSVersion() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	switch runtime.GOOS {
 	case "darwin", "linux":
-		out, err := exec.CommandContext(ctx, "uname", "-rs").Output()
+		out, err := execCommandContext(ctx, "uname", "-rs").Output()
 		if err == nil {
 			return strings.TrimSpace(string(out))
 		}
 	case "windows":
-		out, err := exec.CommandContext(ctx, "cmd", "/c", "ver").Output()
+		out, err := execCommandContext(ctx, "cmd", "/c", "ver").Output()
 		if err == nil {
 			return strings.TrimSpace(string(out))
 		}
@@ -572,7 +581,7 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]str
 // outputMode selects the result format: "files_with_matches", "count", or
 // matching lines otherwise.
 func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
-	rg, err := exec.LookPath("rg")
+	rg, err := execLookPath("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
 		dir := strings.TrimSpace(path)
