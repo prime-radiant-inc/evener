@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/spf13/afero"
 )
 
 // SessionLogEntry is a structured summary of one action.
@@ -29,6 +31,7 @@ type SessionLogEntry struct {
 // SessionLog manages a structured, append-only log of session actions.
 type SessionLog struct {
 	path    string
+	fs      afero.Fs
 	mu      sync.RWMutex
 	entries []SessionLogEntry
 }
@@ -37,12 +40,22 @@ type SessionLog struct {
 // If the file exists, loads existing entries. Returns an error if an
 // existing log file cannot be read.
 func NewSessionLog(path string) (*SessionLog, error) {
+	return newSessionLogFS(path, afero.NewOsFs())
+}
+
+// newSessionLogFS is the construction seam beneath NewSessionLog: it builds a
+// SessionLog over an injected afero.Fs. Production passes afero.NewOsFs(), whose
+// methods delegate directly to os, so behavior is byte-identical to using os
+// calls; tests and fuzzers inject an in-memory or sandboxed filesystem so
+// persistence can be exercised without touching real disk.
+func newSessionLogFS(path string, fs afero.Fs) (*SessionLog, error) {
 	log := &SessionLog{
 		path:    path,
+		fs:      fs,
 		entries: []SessionLogEntry{},
 	}
 
-	if _, err := os.Stat(path); err == nil {
+	if _, err := fs.Stat(path); err == nil {
 		if loadErr := log.loadFromDisk(); loadErr != nil {
 			return nil, fmt.Errorf("load session log: %w", loadErr)
 		}
@@ -53,7 +66,7 @@ func NewSessionLog(path string) (*SessionLog, error) {
 
 // loadFromDisk reads entries from the log file.
 func (l *SessionLog) loadFromDisk() error {
-	f, err := os.Open(l.path)
+	f, err := l.fs.Open(l.path)
 	if err != nil {
 		return err
 	}
@@ -93,10 +106,10 @@ func (l *SessionLog) Append(entry SessionLogEntry) error {
 
 // appendToDisk writes a single entry to the log file.
 func (l *SessionLog) appendToDisk(entry SessionLogEntry) error {
-	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
+	if err := l.fs.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
 		return fmt.Errorf("create log directory: %w", err)
 	}
-	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := l.fs.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
