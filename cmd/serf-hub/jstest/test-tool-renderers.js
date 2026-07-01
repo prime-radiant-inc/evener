@@ -99,6 +99,10 @@ await scenario("read_file in cheap cluster with inline range, purpose, and five-
   if (!body) return { ok: false, detail: "no read tool body" };
   const intent = call.querySelector(".tool-intent");
   if (!intent || intent.textContent !== "Inspect main entry point.") return { ok: false, detail: "read intent missing" };
+  const readCommand = call.querySelector(".tool-command");
+  if (!readCommand) return { ok: false, detail: "read_file should have a standardized command row" };
+  const readDisclosure = readCommand.querySelector(".tool-disclosure[data-expand-toggle]");
+  if (!readDisclosure) return { ok: false, detail: "read_file disclosure should be inline with the command row" };
   const preview = body.querySelector(".read-tool-preview");
   if (!preview || preview.textContent !== "one\ntwo\nthree\nfour\nfive") return { ok: false, detail: "read preview should contain first five lines" };
   if (preview.textContent.includes("six")) return { ok: false, detail: "read preview includes more than five lines" };
@@ -126,6 +130,11 @@ await scenario("tool purpose leads as the prominent line; command is demoted ben
   const command = card.querySelector(".tool-command");
   if (!command) return { ok: false, detail: "command should be wrapped in .tool-command" };
   if (!command.querySelector(".target") || !command.textContent.includes("go test ./...")) return { ok: false, detail: "command missing the verb/target line" };
+  const disclosure = command.querySelector(".tool-disclosure[data-expand-toggle]");
+  if (!disclosure) return { ok: false, detail: "purpose rows should place disclosure inline in demoted command" };
+  if (intent.querySelector(".tool-disclosure")) return { ok: false, detail: "purpose line should not own the disclosure when a demoted command exists" };
+  const meta = card.querySelector(".tool-meta");
+  if (!meta) return { ok: false, detail: "purpose row should keep timing metadata" };
   const body = card.querySelector(".shell-body");
   if (!body) return { ok: false, detail: "missing shell body" };
   const children = Array.from(card.children);
@@ -529,8 +538,8 @@ await scenario("apply_patch diff body with five-line preview", [
   return { ok: true };
 });
 
-// shell — collapsible details body, exit code result.
-await scenario("shell with stdout, exit code, and right-aligned timing", [
+// shell — standardized row, terminal body, exit code footer.
+await scenario("shell row uses prompt glyph, inline disclosure, terminal body, and right-side timing", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "s1", tool_name: "shell", arguments_json: JSON.stringify({ command: "ls -la" }), startedAt: 1763714096 }],
   ["TOOL_CALL_OUTPUT_DELTA", { call_id: "s1", delta: "total 8\nfile1\nfile2\n" }],
@@ -538,21 +547,26 @@ await scenario("shell with stdout, exit code, and right-aligned timing", [
 ], ({ conv }) => {
   const card = conv.querySelector(".tool-call.shell");
   if (!card) return { ok: false, detail: "no shell card" };
-  if (!card.textContent.includes("ls -la")) return { ok: false, detail: "missing command" };
-  // Success recedes fully: no "exit 0", and no ✓ glyph either — only failures
-  // are worth the eye. The status slot stays (class) so content aligns.
-  if (card.textContent.includes("exit 0")) return { ok: false, detail: "successful shell should not print 'exit 0'" };
-  const sgood = card.querySelector(".tool-status-good");
-  if (!sgood) return { ok: false, detail: "missing shell success status slot" };
-  if (sgood.textContent.trim() !== "") return { ok: false, detail: "successful row should show NO checkmark, got " + JSON.stringify(sgood.textContent) };
+  const verb = card.querySelector(".verb");
+  if (!verb || verb.textContent.trim() !== "$") return { ok: false, detail: "shell row should use $ verb, got " + (verb && JSON.stringify(verb.textContent)) };
+  if (/\bshell\b/.test(card.querySelector(".tool-command").textContent.replace("ls -la", ""))) return { ok: false, detail: "collapsed shell row should not expose internal tool name: " + card.querySelector(".tool-command").textContent };
+  const command = card.querySelector(".tool-command");
+  if (!command || !command.textContent.includes("ls -la")) return { ok: false, detail: "missing command" };
+  const disclosure = command.querySelector(".tool-disclosure[data-expand-toggle]");
+  if (!disclosure) return { ok: false, detail: "disclosure should be inline inside .tool-command" };
+  if (disclosure.getAttribute("aria-expanded") !== "false") return { ok: false, detail: "collapsed disclosure should start aria-expanded=false" };
   const meta = card.querySelector(".tool-meta");
   if (!meta) return { ok: false, detail: "missing tool metadata" };
   if (!meta.textContent.includes("1.3s")) return { ok: false, detail: "missing duration metadata: " + meta.textContent };
   if (!/\d{1,2}:\d{2}:\d{2}/.test(meta.textContent)) return { ok: false, detail: "missing timestamp metadata: " + meta.textContent };
-  const body = conv.querySelector(".shell-body");
-  if (!body) return { ok: false, detail: "no shell body" };
+  const body = card.querySelector(".shell-body.tool-body--terminal");
+  if (!body) return { ok: false, detail: "no terminal shell body" };
+  const prompt = body.querySelector(".terminal-command");
+  if (!prompt || prompt.textContent !== "$ ls -la") return { ok: false, detail: "terminal command should repeat full command, got " + (prompt && JSON.stringify(prompt.textContent)) };
   const pre = body.querySelector(".shell-output");
   if (!pre || !pre.textContent.includes("file1")) return { ok: false, detail: "stdout missing" };
+  const footer = body.querySelector(".terminal-footer");
+  if (!footer || !footer.textContent.includes("exit 0") || !footer.textContent.includes("1.3s")) return { ok: false, detail: "terminal footer missing exit/runtime: " + (footer && footer.textContent) };
   return { ok: true };
 });
 
@@ -573,16 +587,18 @@ await scenario("failed shell shows error output", [
   return { ok: true };
 });
 
-// The expand caret sits on the RIGHT of the header line (order 3), so the status
-// glyph leads a clean, aligned left edge; the disclosure recedes to the right.
-await scenario("expand caret is right-aligned; card disclosures use a right chevron", [], () => {
-  if (!/\.tool-expand-btn\s*\{[^}]*order:\s*3/.test(styleSrc)) {
-    return { ok: false, detail: "expand caret must be order: 3 (right of the header line)" };
+await scenario("tool disclosure is inline, visible, and not a separate right-side column", [], () => {
+  if (!/\.tool-disclosure\s*\{[^}]*display:\s*inline-flex/.test(styleSrc)) {
+    return { ok: false, detail: "tool disclosure should be inline-flex" };
   }
-  // Card disclosures (raw notification / excerpt / show raw error) put the
-  // chevron on the right via a removed native marker + a right ::after.
+  if (/\.tool-expand-btn\s*\{[^}]*order:\s*3/.test(styleSrc)) {
+    return { ok: false, detail: "old right-column tool-expand-btn order:3 rule should be removed" };
+  }
+  if (!/\.tool-call \.tool-meta\s*\{[^}]*margin-left:\s*auto/.test(styleSrc)) {
+    return { ok: false, detail: "tool metadata should remain right-side timing context" };
+  }
   if (!/\.notification-card-raw > summary::after/.test(styleSrc) || !/\.notification-card-raw > summary[\s\S]{0,400}justify-content:\s*space-between/.test(styleSrc)) {
-    return { ok: false, detail: "card disclosures must put a right ▸ chevron on .notification-card-raw summary" };
+    return { ok: false, detail: "non-tool card disclosures must keep their right chevrons" };
   }
   return { ok: true };
 });
