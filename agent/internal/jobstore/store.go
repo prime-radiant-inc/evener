@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/spf13/afero"
 )
 
 // ErrStoreClosed is returned when an operation is attempted after Close.
@@ -21,7 +23,8 @@ var ErrStoreClosed = errors.New("jobstore: store closed")
 type Store struct {
 	mu     sync.Mutex
 	path   string
-	f      *os.File
+	fs     afero.Fs
+	f      afero.File
 	seq    int64
 	closed bool
 
@@ -35,11 +38,20 @@ type Store struct {
 // Open opens (creating if needed) the jobs.jsonl at path and recovers the next
 // sequence number from any existing content.
 func Open(path string) (*Store, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
+	return openFs(afero.NewOsFs(), path)
+}
+
+// openFs opens the store on the given filesystem. Open delegates here with
+// afero.NewOsFs(), which forwards every call straight to the os package, so
+// production behavior is byte-identical to direct os calls. Tests and fuzzers
+// inject an in-memory or sandboxed filesystem to drive persistence off real
+// disk.
+func openFs(fs afero.Fs, path string) (*Store, error) {
+	f, err := fs.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("jobstore: open %s: %w", path, err)
 	}
-	s := &Store{path: path, f: f}
+	s := &Store{path: path, fs: fs, f: f}
 	existing, err := s.readAllLocked()
 	if err != nil {
 		_ = f.Close()
@@ -229,7 +241,7 @@ func (s *Store) readAllLocked() (events []Event, err error) {
 	if err := s.recoverTrailingPartialLineLocked(); err != nil {
 		return nil, err
 	}
-	f, err := os.Open(s.path)
+	f, err := s.fs.Open(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -263,7 +275,7 @@ func (s *Store) readAllLocked() (events []Event, err error) {
 }
 
 func (s *Store) recoverTrailingPartialLineLocked() (err error) {
-	info, err := os.Stat(s.path)
+	info, err := s.fs.Stat(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -273,7 +285,7 @@ func (s *Store) recoverTrailingPartialLineLocked() (err error) {
 	if info.Size() == 0 {
 		return nil
 	}
-	f, err := os.Open(s.path)
+	f, err := s.fs.Open(s.path)
 	if err != nil {
 		return fmt.Errorf("jobstore: inspect %s: %w", s.path, err)
 	}
@@ -292,7 +304,7 @@ func (s *Store) recoverTrailingPartialLineLocked() (err error) {
 	if last[0] == '\n' {
 		return nil
 	}
-	raw, err := os.ReadFile(s.path)
+	raw, err := afero.ReadFile(s.fs, s.path)
 	if err != nil {
 		return fmt.Errorf("jobstore: read %s: %w", s.path, err)
 	}
