@@ -58,6 +58,16 @@ func (jm *jobManager) outstandingDelegateCount() (int, error) {
 		if counted[id] {
 			continue
 		}
+		// Only this session's OWN delegate notifications hold the drain open. A
+		// forwarded descendant copy (OwnerSessionID names a child, not this
+		// session) is a drive signal for that child's attention; the child is
+		// covered by the recursive tree walk — and skipped there when stop-gated.
+		// Counting the forwarded copy here would hang the drain on a stop-gated
+		// child that nothing will ever settle (matches the owned-records filter in
+		// armPendingTerminalNotifications).
+		if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
+			continue
+		}
 		if rec.Type == jobstore.JobDelegate && rec.NotifyState == jobstore.NotifyPending {
 			n++
 		}

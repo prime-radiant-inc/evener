@@ -207,6 +207,36 @@ func TestTreeHasOutstandingWorkSkipsStopGatedChild(t *testing.T) {
 	}
 }
 
+// TestOutstandingDelegateCountIgnoresForwardedDescendantPending verifies the
+// count only holds the drain open for THIS session's own delegate notifications.
+// A forwarded descendant pending copy (a drive signal owned by a child session)
+// must not count here — the descendant is covered by the recursive tree walk,
+// and counting the forwarded copy would hang the drain when that child is
+// stop-gated and nothing settles the copy.
+func TestOutstandingDelegateCountIgnoresForwardedDescendantPending(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+	jm := sess.jobManager
+
+	started := frozenTestTime.Add(-time.Second)
+	ended := frozenTestTime
+	// A pending delegate record owned by another (child) session, forwarded into
+	// this session's store as a drive signal.
+	for _, ev := range []jobstore.Event{
+		{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_fwd", Type: jobstore.JobDelegate, OwnerSessionID: "CHILD-SESSION", VisibleToSession: sess.ID(), TranscriptRef: encodeRef("", "grandchild"), StartedAt: &started},
+		{Kind: jobstore.EventJobFinished, TS: ended, JobID: "job_fwd", Status: jobstore.StatusCompleted, Reason: "communicated", EndedAt: &ended, TerminalGen: "gen_fwd"},
+		{Kind: jobstore.EventJobNotificationPending, TS: ended, JobID: "job_fwd", TerminalGen: "gen_fwd"},
+	} {
+		if err := jm.appendEvent(ev); err != nil {
+			t.Fatalf("append %s: %v", ev.Kind, err)
+		}
+	}
+
+	if n, err := jm.outstandingDelegateCount(); err != nil || n != 0 {
+		t.Fatalf("a forwarded descendant pending copy must not count as this session's own outstanding delegate, got %d (err %v)", n, err)
+	}
+}
+
 // TestDrainJobTreeWaitsForRunningDelegate verifies the drain re-drives the
 // coordinator when a backgrounded delegate completes, rather than returning
 // while the child is still running.
