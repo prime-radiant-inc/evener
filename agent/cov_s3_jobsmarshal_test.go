@@ -48,11 +48,36 @@ func TestS3Cov_MarshalBoundedDelegateResult(t *testing.T) {
 		}
 	})
 
-	// Note: the empty-output + structured-result drop fallbacks in
-	// marshalBoundedDelegateResult are not reachable via a non-nil Output whose
-	// tail can be shrunk — the binary-search keep=0 already yields the identical
-	// empty envelope, so the WithOutputLimit path succeeds there rather than
-	// falling through. Those arms are reported as deferred.
+	t.Run("drops structured result when it alone busts the cap", func(t *testing.T) {
+		t.Parallel()
+		bigStruct := map[string]any{"blob": strings.Repeat("z", 4000)}
+		out := delegateToolResult{
+			JobID:            "J1",
+			Type:             "delegate",
+			Status:           "completed",
+			Output:           s3cov_strptr("small"),
+			StructuredResult: bigStruct,
+		}
+		// The metadata envelope fits ~300 chars, but the structured result does
+		// not — forcing the empty-output fallback and then the structured drop.
+		got, err := marshalBoundedDelegateResult(out, 300)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var parsed delegateToolResult
+		if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+			t.Fatalf("not valid JSON: %v (%s)", err, got)
+		}
+		if parsed.StructuredResult != nil {
+			t.Fatalf("expected structured result dropped, got %v", parsed.StructuredResult)
+		}
+		if parsed.StructuredResultReason == "" {
+			t.Fatal("expected a structured-result-dropped reason")
+		}
+		if len(got) > 300 {
+			t.Fatalf("result %d exceeds cap 300", len(got))
+		}
+	})
 }
 
 func TestS3Cov_WatchSendArg(t *testing.T) {

@@ -2,12 +2,99 @@ package agent
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
+
+func TestS3Cov_FindBuckets_AllProjects(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	// Construct the <home>/serf/projects/<hash> layout stateHomeFor recognizes.
+	projects := filepath.Join(home, "serf", "projects")
+	current := filepath.Join(projects, "aaaa")
+	sibling := filepath.Join(projects, "bbbb")
+	for _, d := range []string{current, sibling} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	buckets, scope := findBuckets(current, scopeAllProjects)
+	if scope != scopeAllProjects {
+		t.Fatalf("scope = %q, want all_projects", scope)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("expected 2 buckets, got %v", buckets)
+	}
+}
+
+func TestS3Cov_FormatSessionFindings(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no matches", func(t *testing.T) {
+		t.Parallel()
+		got := formatSessionFindings(findSessionsEnvelope{ScopeApplied: scopeCurrentProject})
+		if !strings.Contains(got, "No matching sessions") {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("full record with parent, project, snippets, scan-truncated", func(t *testing.T) {
+		t.Parallel()
+		scanned := 3
+		truncated := true
+		env := findSessionsEnvelope{
+			ScopeApplied:  scopeAllProjects,
+			Scanned:       &scanned,
+			ScanTruncated: &truncated,
+			Matches: []sessionRecord{{
+				TranscriptRef: "local:abc",
+				Kind:          kindSubagent,
+				Title:         "A task",
+				UpdatedAt:     time.Unix(1000, 0).UTC(),
+				ApproxTurns:   7,
+				ParentRef:     "local:parent",
+				Project:       "proj",
+				IsCurrent:     true,
+				Snippets:      []snippet{{Seq: 4, Role: "assistant", Snippet: "hello needle"}},
+			}},
+		}
+		got := formatSessionFindings(env)
+		for _, want := range []string{
+			"1. local:abc — A task",
+			"project proj",
+			"· current",
+			"parent: local:parent",
+			"seq 4 (assistant): hello needle",
+			"1 match ",
+			"scanned 3",
+			"scan truncated",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("findings missing %q:\n%s", want, got)
+			}
+		}
+	})
+
+	t.Run("plural footer", func(t *testing.T) {
+		t.Parallel()
+		env := findSessionsEnvelope{
+			ScopeApplied: scopeCurrentProject,
+			Matches: []sessionRecord{
+				{TranscriptRef: "a", Kind: kindRoot, UpdatedAt: time.Unix(0, 0).UTC()},
+				{TranscriptRef: "b", Kind: kindRoot, UpdatedAt: time.Unix(0, 0).UTC()},
+			},
+		}
+		if got := formatSessionFindings(env); !strings.Contains(got, "2 matches") {
+			t.Fatalf("expected plural footer, got %q", got)
+		}
+	})
+}
 
 func TestS3Cov_FindBuckets(t *testing.T) {
 	t.Parallel()
