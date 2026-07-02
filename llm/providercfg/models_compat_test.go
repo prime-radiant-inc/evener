@@ -328,6 +328,26 @@ context_window = 100
 `,
 			wantErr: "model",
 		},
+		{
+			name: "max and xhigh keys collide",
+			src: `
+[instances.gw]
+type = "glm"
+[instances.gw.models."m"]
+thinking_levels = { max = "max", xhigh = "ultra" }
+`,
+			wantErr: "duplicate",
+		},
+		{
+			name: "case-folded duplicate level keys collide",
+			src: `
+[instances.gw]
+type = "glm"
+[instances.gw.models."m"]
+thinking_levels = { LOW = "high", low = "medium" }
+`,
+			wantErr: "duplicate",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

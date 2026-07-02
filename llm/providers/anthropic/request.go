@@ -443,10 +443,17 @@ func toAnthropicMessages(msgs []llm.Message) (system string, messages []map[stri
 					if p.Thinking == nil {
 						continue
 					}
+					sig := p.Thinking.Signature
+					if llm.IsOpenAICompatReasoningField(sig) {
+						// Thinking that arrived via an OpenAI-compatible
+						// provider carries its wire field name here, not an
+						// Anthropic cryptographic signature; replay unsigned.
+						sig = ""
+					}
 					blocks = append(blocks, map[string]any{
 						"type":      "thinking",
 						"thinking":  p.Thinking.Text,
-						"signature": p.Thinking.Signature,
+						"signature": sig,
 					})
 				case llm.ContentRedThinking:
 					if p.Thinking == nil {

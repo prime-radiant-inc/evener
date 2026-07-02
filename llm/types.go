@@ -198,12 +198,42 @@ type ToolResultData struct {
 
 // ThinkingData holds a model reasoning (thinking) content part.
 type ThinkingData struct {
-	ID               string   `json:"id,omitempty"`
-	Text             string   `json:"text"`
+	ID   string `json:"id,omitempty"`
+	Text string `json:"text"`
+	// Signature is provider-scoped replay metadata: Anthropic stores its
+	// cryptographic thinking signature; OpenAI-compatible providers store the
+	// wire field the reasoning arrived on (see OpenAICompatReasoningFields).
+	// Providers must guard against replaying a foreign provider's value.
 	Signature        string   `json:"signature,omitempty"`
 	Redacted         bool     `json:"redacted,omitempty"`
 	EncryptedContent string   `json:"encrypted_content,omitempty"`
 	Summary          []string `json:"summary,omitempty"`
+}
+
+// openAICompatReasoningFields is the canonical ordered list of wire fields
+// OpenAI-compatible providers use for assistant reasoning. Order matters:
+// parsers take the first non-empty variant per chunk.
+var openAICompatReasoningFields = []string{"reasoning_content", "reasoning", "reasoning_text"}
+
+// OpenAICompatReasoningFields returns the wire field names OpenAI-compatible
+// providers use for assistant reasoning. ThinkingData.Signature carries one of
+// these when thinking arrived from such a provider, so replay can route it
+// back to the same field.
+func OpenAICompatReasoningFields() []string {
+	return append([]string(nil), openAICompatReasoningFields...)
+}
+
+// IsOpenAICompatReasoningField reports whether sig names one of the
+// OpenAI-compatible reasoning wire fields. Providers whose thinking signatures
+// are cryptographic (Anthropic) use this to treat such a value as "no
+// signature" instead of replaying it as a signature the API would reject.
+func IsOpenAICompatReasoningField(sig string) bool {
+	for _, f := range openAICompatReasoningFields {
+		if sig == f {
+			return true
+		}
+	}
+	return false
 }
 
 // WebSearchData holds a web-search content part, including the query and the raw provider payload.

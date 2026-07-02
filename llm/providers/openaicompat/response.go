@@ -83,10 +83,11 @@ type chatDelta struct {
 }
 
 // reasoningFieldNames are the wire fields OpenAI-compatible providers use for
-// reasoning deltas. Providers pick one (llama.cpp: reasoning_content;
-// OpenRouter/chutes: reasoning; some gateways: reasoning_text); chutes.ai
-// duplicates identical content across two, so exactly one is read per chunk.
-var reasoningFieldNames = [...]string{"reasoning_content", "reasoning", "reasoning_text"}
+// reasoning deltas, in llm's canonical parse order. Providers pick one
+// (llama.cpp: reasoning_content; OpenRouter/chutes: reasoning; some gateways:
+// reasoning_text); chutes.ai duplicates identical content across two, so
+// exactly one is read per chunk.
+var reasoningFieldNames = llm.OpenAICompatReasoningFields()
 
 // reasoningFromDelta returns the chunk's reasoning text and the field it
 // arrived on — the first non-empty of reasoning_content/reasoning/
@@ -116,12 +117,7 @@ func reasoningFromDelta(d chatDelta) (text, field string) {
 // known reasoning wire fields (as opposed to a cryptographic signature from
 // another provider's transcript).
 func isReasoningFieldName(sig string) bool {
-	for _, f := range reasoningFieldNames {
-		if sig == f {
-			return true
-		}
-	}
-	return false
+	return llm.IsOpenAICompatReasoningField(sig)
 }
 
 type chatChunkToolCall struct {

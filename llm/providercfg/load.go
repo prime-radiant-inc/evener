@@ -146,6 +146,12 @@ func validateAndNormalizeModels(errs []string, instName string, models map[strin
 				if key == "max" {
 					key = "xhigh"
 				}
+				if _, dup := norm[key]; dup {
+					// Map iteration order would otherwise pick the survivor
+					// nondeterministically (e.g. max vs xhigh, LOW vs low).
+					errs = append(errs, fmt.Sprintf("instance %q: model %q: thinking_levels has duplicate entries for level %q after normalization (max aliases xhigh; keys are case-insensitive)", instName, id, key))
+					continue
+				}
 				if key == "off" {
 					errs = append(errs, fmt.Sprintf("instance %q: model %q: thinking_levels key \"off\" is not supported (serf's \"none\" effort clears to the provider default)", instName, id))
 					continue

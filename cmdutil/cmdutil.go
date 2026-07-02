@@ -66,7 +66,7 @@ func ResolveProfileWithLiveWindow(cfg providercfg.Config, ref string) (*provider
 	if err != nil {
 		return nil, err
 	}
-	if isOpenAICompatTag(p.BehaviorTag()) {
+	if isOpenAICompatTag(p.BehaviorTag()) && !instanceConfiguresContextWindow(cfg, p.ID(), p.Model()) {
 		// Query the instance's own endpoint: an instance may set base_url in
 		// providers.toml (e.g. the Kimi coding plan at api.kimi.com/coding/v1)
 		// that the provider-type default does not know about.
@@ -76,6 +76,18 @@ func ResolveProfileWithLiveWindow(cfg providercfg.Config, ref string) (*provider
 		}
 	}
 	return p, nil
+}
+
+// instanceConfiguresContextWindow reports whether the instance's providers.toml
+// models table pins a context window for this model. Explicit user config is
+// authoritative — the live /models probe must not override it.
+func instanceConfiguresContextWindow(cfg providercfg.Config, name, model string) bool {
+	for _, inst := range cfg.Instances {
+		if inst.Name == name {
+			return inst.Models[model].ContextWindow > 0
+		}
+	}
+	return false
 }
 
 // instanceEndpoint returns the base URL and inline api key configured for the

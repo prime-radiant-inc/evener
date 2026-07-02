@@ -3833,3 +3833,55 @@ func TestNewFromEnv_Anthropic_Name(t *testing.T) {
 		t.Fatalf("Name() = %q, want %q", a.Name(), "anthropic")
 	}
 }
+
+// Thinking that arrived via an OpenAI-compatible provider carries its wire
+// field name (reasoning_content/reasoning/reasoning_text) in Signature, not an
+// Anthropic cryptographic signature. Replaying such a transcript after a
+// cross-provider model switch must not send that field name as a signature.
+func TestBuildRequestBody_ForeignReasoningFieldSignatureReplaysUnsigned(t *testing.T) {
+	a := &Adapter{APIKey: "k"}
+	for _, sig := range []string{"reasoning_content", "reasoning", "reasoning_text"} {
+		body, err := a.buildRequestBody(llm.Request{
+			Model: "claude-opus-4-6",
+			Messages: []llm.Message{
+				llm.User("q"),
+				{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+					{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "pondered", Signature: sig}},
+					{Kind: llm.ContentText, Text: "a"},
+				}},
+				llm.User("q2"),
+			},
+		})
+		if err != nil {
+			t.Fatalf("buildRequestBody(sig=%s): %v", sig, err)
+		}
+		msgs := body["messages"].([]map[string]any)
+		blocks := msgs[1]["content"].([]map[string]any)
+		if blocks[0]["type"] != "thinking" {
+			t.Fatalf("first block = %v, want thinking", blocks[0])
+		}
+		if got := blocks[0]["signature"]; got != "" {
+			t.Errorf("sig=%s: replayed signature = %q, want empty", sig, got)
+		}
+	}
+
+	// A real Anthropic signature still round-trips.
+	body, err := a.buildRequestBody(llm.Request{
+		Model: "claude-opus-4-6",
+		Messages: []llm.Message{
+			llm.User("q"),
+			{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "pondered", Signature: "EqQBCgIYAhIk"}},
+			}},
+			llm.User("q2"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	msgs := body["messages"].([]map[string]any)
+	blocks := msgs[1]["content"].([]map[string]any)
+	if got := blocks[0]["signature"]; got != "EqQBCgIYAhIk" {
+		t.Errorf("anthropic signature = %q, want round-trip", got)
+	}
+}

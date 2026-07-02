@@ -242,10 +242,23 @@ func TestAdapter_CountInputTokens_UsesEstimateEndpoint(t *testing.T) {
 	if len(tools) != 1 {
 		t.Fatalf("len(tools) = %d, want 1", len(tools))
 	}
-	for _, key := range []string{"max_tokens", "temperature", "top_p", "stop", "stream", "stream_options"} {
+	for _, key := range []string{"max_tokens", "max_completion_tokens", "temperature", "top_p", "stop", "stream", "stream_options"} {
 		if _, ok := gotBody[key]; ok {
 			t.Fatalf("%s should be omitted from token-count body: %#v", key, gotBody)
 		}
+	}
+}
+
+// A model configured with max_tokens_field = "max_completion_tokens" must not
+// leak that output-cap field into the token-count request either.
+func TestStripKimiTokenCountOutputFields_StripsMaxCompletionTokens(t *testing.T) {
+	body := map[string]any{"model": "m", "max_tokens": 7, "max_completion_tokens": 42}
+	stripKimiTokenCountOutputFields(body)
+	if _, ok := body["max_tokens"]; ok {
+		t.Error("max_tokens survived the strip")
+	}
+	if _, ok := body["max_completion_tokens"]; ok {
+		t.Error("max_completion_tokens survived the strip")
 	}
 }
 

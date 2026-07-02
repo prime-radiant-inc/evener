@@ -95,8 +95,11 @@ The set of behavior tags is exactly the old set of distinct provider behaviors:
 `providers.toml` is the **always-on** model for instance configuration. Every
 client build goes through the config path — either loading the file when it
 exists, or seeding the config in memory from the environment when it does not.
-The `providers.toml` at `<state-root>/providers.toml` holds only **descriptors**
-(never credentials), which is what lets `name != type` exist:
+The `providers.toml` at `<state-root>/providers.toml` holds **descriptors**,
+which is what lets `name != type` exist. Serf itself never writes credentials
+into it (`Marshal` omits `api_key` even when set); a hand-authored instance MAY
+carry an `api_key` — a literal or, better, a `$ENV`/`${ENV}` reference resolved
+at point of use (see the compat section below):
 
 ```toml
 default = "work"          # optional; the default instance (else first by sorted name)
@@ -108,7 +111,9 @@ base_url  = "..."         # optional override (captured from env when seeded)
 quirks    = "..."         # optional; selects a quirks preset (openai-compatible types) —
                            # see "OpenAI-compatible compat & per-model config" below for the
                            # composable `[instances.X.compat]` / `[instances.X.models]` alternative
-# no api_key — credentials are resolved separately and injected in memory only
+# api_key = "$WORK_KEY"  # optional, hand-authored only: literal or $ENV reference;
+                          # omitted → credentials store / env resolution as below.
+                          # Serf never writes this field back when rewriting the file.
 ```
 
 - **Load or seed** — `cmdutil.LoadClient` (`cmdutil/load_client.go:31`):

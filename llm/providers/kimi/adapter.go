@@ -141,7 +141,7 @@ func (a *adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 }
 
 func stripKimiTokenCountOutputFields(body map[string]any) {
-	for _, key := range []string{"max_tokens", "temperature", "top_p", "stop", "stream", "stream_options"} {
+	for _, key := range []string{"max_tokens", "max_completion_tokens", "temperature", "top_p", "stop", "stream", "stream_options"} {
 		delete(body, key)
 	}
 }

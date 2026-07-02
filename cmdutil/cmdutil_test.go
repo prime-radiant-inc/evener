@@ -429,3 +429,45 @@ func TestQueryModelContextWindow_NonKimiOmitsCodingUserAgent(t *testing.T) {
 		t.Fatalf("User-Agent = %q, want %q (must not inject any explicit UA for non-kimi provider)", gotUA, "Go-http-client/1.1")
 	}
 }
+
+// TestResolveProfileWithLiveWindow_ConfiguredWindowSkipsLiveOverride verifies
+// that an explicit models.<id>.context_window in providers.toml beats the live
+// /models probe — user config is authoritative over provider metadata.
+func TestResolveProfileWithLiveWindow_ConfiguredWindowSkipsLiveOverride(t *testing.T) {
+	rec := stubQueryModelContextWindow(t, func(provider, model string) int {
+		return 999_999
+	})
+
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{
+				Name:     "gw",
+				Type:     "openai",
+				APIStyle: providercfg.StyleChatCompletions,
+				Models: map[string]providercfg.ModelConfig{
+					"glm-5.2-nvfp4": {ContextWindow: 1_048_576},
+				},
+			},
+		},
+	}
+	p, err := ResolveProfileWithLiveWindow(cfg, "gw/glm-5.2-nvfp4")
+	if err != nil {
+		t.Fatalf("ResolveProfileWithLiveWindow: %v", err)
+	}
+	if got := p.ContextWindowSize(); got != 1_048_576 {
+		t.Fatalf("ContextWindowSize() = %d, want configured 1048576 (live probe must not override)", got)
+	}
+	if rec.called {
+		t.Fatal("live lookup ran despite a configured context_window")
+	}
+
+	// A model on the same instance WITHOUT a configured window still refines
+	// from the live probe.
+	q, err := ResolveProfileWithLiveWindow(cfg, "gw/other-model")
+	if err != nil {
+		t.Fatalf("ResolveProfileWithLiveWindow(other): %v", err)
+	}
+	if got := q.ContextWindowSize(); got != 999_999 {
+		t.Fatalf("ContextWindowSize(other) = %d, want live 999999", got)
+	}
+}
