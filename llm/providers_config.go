@@ -92,15 +92,23 @@ func newFromProviders(cfg providercfg.Config, allowPartial bool, opts ...EnvOpti
 		}
 		// Expand $ENV references in the api_key here — the one choke point
 		// every instance adapter passes through — so a missing variable fails
-		// just this instance, with its name in the error.
+		// just this instance, with its name in the error. Exception: the
+		// openai (responses/auto) factory is OAuth-first and treats api_key
+		// as a fallback, so an unresolvable reference clears the key and
+		// lets the factory try stored OAuth; it fails with its own
+		// no-credentials error when neither exists.
 		apiKey, err := providercfg.ResolveAPIKey(inst.APIKey)
 		if err != nil {
-			wrapped := fmt.Errorf("provider %q: %w", inst.Name, err)
-			if allowPartial {
-				initErrs = append(initErrs, wrapped)
-				continue
+			if providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle)) == "openai" {
+				apiKey = ""
+			} else {
+				wrapped := fmt.Errorf("provider %q: %w", inst.Name, err)
+				if allowPartial {
+					initErrs = append(initErrs, wrapped)
+					continue
+				}
+				return nil, nil, wrapped
 			}
-			return nil, nil, wrapped
 		}
 		inst.APIKey = apiKey
 		// Resolve $ENV references in each header at the same choke point as

@@ -61,6 +61,13 @@ func writeFileFS(fs afero.Fs, path string, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("providers.toml: marshal: %w", err)
 	}
+	// Refuse to persist a config the next Load would reject (e.g. a hub edit
+	// that moves an instance out of the compat family while it still carries
+	// compat/models tables, or removing the last instance) — a loud write
+	// failure now beats bricking every future startup.
+	if _, err := Load(data); err != nil {
+		return fmt.Errorf("providers.toml: refusing to write a config that would fail to load: %w", err)
+	}
 
 	if err := fs.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("providers.toml: mkdir: %w", err)

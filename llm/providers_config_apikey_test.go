@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -66,5 +67,33 @@ func TestNewFromProviders_MissingEnvKeyFailsInstance(t *testing.T) {
 	}
 	if names := c.ProviderNames(); len(names) != 1 || names[0] != "good" {
 		t.Errorf("ProviderNames = %v, want [good]", names)
+	}
+}
+
+// An openai (responses/auto) instance with an unresolvable $ENV api_key must
+// NOT fail at resolution — the factory is OAuth-first and api_key is only its
+// fallback. Without OAuth either, the factory's own no-credentials error
+// surfaces; the point is that the error is about credentials, not about the
+// environment variable.
+func TestNewFromProviders_OpenAIUnresolvedKeyDefersToFactory(t *testing.T) {
+	cfg := providercfg.Config{
+		Default: "work",
+		Instances: []providercfg.InstanceConfig{
+			{Name: "work", Type: "openai", APIStyle: providercfg.StyleResponses, APIKey: "$SERF_TEST_OPENAI_KEY_UNSET"},
+		},
+	}
+	stateDir, err := os.MkdirTemp("", "serf-oauth-none")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(stateDir)
+	_, err = NewFromProviders(cfg, WithStateDir(stateDir))
+	if err == nil {
+		// OAuth may exist in exotic environments; the assertion below covers
+		// the common no-credentials case.
+		return
+	}
+	if strings.Contains(err.Error(), "SERF_TEST_OPENAI_KEY_UNSET") {
+		t.Fatalf("resolution hard-failed before the OAuth-first factory ran: %v", err)
 	}
 }

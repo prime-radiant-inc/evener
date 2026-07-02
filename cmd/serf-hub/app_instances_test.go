@@ -561,3 +561,46 @@ type = "anthropic"
 		}
 	}
 }
+
+// Switching an instance out of the compat family (chat-completions →
+// responses) while it still carries compat/models tables must fail LOUDLY at
+// edit time — silently writing that file would brick every future Load.
+func TestInstances_Edit_RejectsLeavingCompatFamilyWithTables(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+
+	content := `schema = 1
+default = "gw"
+
+[instances.gw]
+type = "openai"
+api_style = "chat-completions"
+base_url = "https://gw.example.com/v1"
+
+[instances.gw.compat]
+thinking_format = "zai"
+`
+	if err := os.WriteFile(tomlPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+
+	ctl := newTestInstancesController(t, tomlPath, dir, stateDir)
+	err := ctl.Edit(appwire.InstanceEditParams{
+		Name:     "gw",
+		APIStyle: "responses",
+		BaseURL:  "https://gw.example.com/v1",
+	})
+	if err == nil {
+		t.Fatal("Edit succeeded; want a refusal (compat table only valid for chat-completions)")
+	}
+	// The on-disk file must be untouched and still loadable.
+	cfg, exists, loadErr := providercfg.LoadFile(tomlPath)
+	if loadErr != nil || !exists {
+		t.Fatalf("providers.toml no longer loads after rejected edit: %v", loadErr)
+	}
+	if cfg.Instances[0].APIStyle != providercfg.StyleChatCompletions {
+		t.Fatalf("rejected edit mutated the file: %+v", cfg.Instances[0])
+	}
+}
