@@ -234,7 +234,7 @@ func modelDescriptorsToAPIModels(models []appwire.ModelDescriptor, providerCfg *
 			"model":    m.Model,
 		}
 		if cat != nil {
-			if mi := catalogModelInfo(cat, m.Model); mi != nil {
+			if mi := catalogModelInfo(cat, behaviorTagFor(providerCfg, m.Provider), m.Model); mi != nil {
 				entry["display_name"] = mi.DisplayName
 				entry["context_window"] = mi.ContextWindow
 				entry["supports_tools"] = mi.SupportsTools
@@ -343,7 +343,7 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 				strings.Contains(lower, "image") {
 				continue
 			}
-			mi := catalogModelInfo(cat, m.ID)
+			mi := catalogModelInfo(cat, tag, m.ID)
 			if tag == "openrouter" && (mi == nil || !mi.SupportsTools) {
 				continue
 			}
@@ -419,10 +419,42 @@ func (s *WebServer) overlayLiveEntries(entries []map[string]any) []map[string]an
 	return out
 }
 
-func catalogModelInfo(cat *llm.ModelCatalog, modelID string) *llm.ModelInfo {
-	// LookupModelInfo canonicalizes the "[1m]" suffix, a provider namespace
-	// (e.g. "anthropic/claude-opus-4-6" served by an openrouter-anthropic
-	// instance), and dated snapshots so per-model metadata (context window,
-	// effort levels) is found for qualified/dated/1M model refs.
-	return cat.LookupModelInfo(modelID)
+func catalogModelInfo(cat *llm.ModelCatalog, behaviorTag, modelID string) *llm.ModelInfo {
+	// Canonicalized bare lookup first: LookupModelInfo handles the "[1m]"
+	// suffix, provider namespaces, and dated snapshots, and resolves serf's
+	// curated overrides — LiteLLM's provider-qualified entries (e.g.
+	// "openrouter/deepseek/deepseek-chat") often carry NULL capability flags
+	// where the canonical entry is richer. The exact tag-qualified key is the
+	// FALLBACK so openrouter-only listings (entries keyed solely
+	// "openrouter/<model>") still resolve instead of being dropped as not
+	// tool-capable. (The adapter's fillFromCatalog uses the opposite,
+	// exact-qualified-first order — it wants the provider-specific WIRE
+	// behavior, not the richest display metadata.)
+	if behaviorTag == "ollama" {
+		// Local ollama models are unrelated to same-named upstream catalog
+		// entries — the same bare-lookup suppression the profile and adapter
+		// paths apply. Only an explicit ollama/<model> entry counts.
+		return cat.GetModelInfo("ollama/" + modelID)
+	}
+	if mi := cat.LookupModelInfo(modelID); mi != nil {
+		return mi
+	}
+	if behaviorTag != "" {
+		return cat.GetModelInfo(behaviorTag + "/" + modelID)
+	}
+	return nil
+}
+
+// behaviorTagFor resolves an instance name to its behavior tag via the loaded
+// providers.toml; env-seeded instances are named after their type, so the
+// name doubles as the tag when no config entry matches.
+func behaviorTagFor(providerCfg *providercfg.Config, name string) string {
+	if providerCfg != nil {
+		for i := range providerCfg.Instances {
+			if providerCfg.Instances[i].Name == name {
+				return providercfg.BehaviorTag(string(providerCfg.Instances[i].Type), string(providerCfg.Instances[i].APIStyle))
+			}
+		}
+	}
+	return name
 }

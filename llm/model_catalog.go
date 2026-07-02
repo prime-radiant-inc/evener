@@ -232,6 +232,12 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 		}
 
 		prov := normalizeCatalogProvider(fmt.Sprint(v["litellm_provider"]))
+		if v["litellm_provider"] == nil {
+			// Non-model top-level objects (the upstream file carries e.g.
+			// fallback_generalizations alongside sample_spec) have no
+			// provider; ingesting them would create a bogus "<nil>" model.
+			continue
+		}
 		ctxWindow := parseInt(v["max_input_tokens"])
 		if ctxWindow == 0 {
 			ctxWindow = parseInt(v["max_tokens"])

@@ -168,8 +168,8 @@ quirks    = "..."         # optional; selects a quirks preset (openai-compatible
 
 Beyond the four descriptor fields above, an instance whose type routes through
 the openai-compat adapter — `kimi`, `glm`, `openrouter`, `ollama`, or `openai`
-with `api_style = "chat-completions"` (`compatFamily`,
-`llm/providercfg/load.go:86`) — may also carry a `compat` table and a `models`
+with `api_style = "chat-completions"` (`providercfg.CompatFamily`,
+`llm/providercfg/load.go`) — may also carry a `compat` table and a `models`
 table. Any other type rejects them at load (`load.go:211-217`).
 
 ```toml
@@ -433,6 +433,14 @@ cross-provider transcript) falls back to `reasoning_content`.
 
 ### `[instances.X.headers]` — extra request headers (all types)
 
+> **Header-only authentication** is honored end-to-end for the
+> openai-compat family only (`providercfg.CompatFamily`): those adapters send
+> no bearer without a key, and a configured `Authorization` header suppresses
+> credential-store injection so nothing clobbers it. Other provider types
+> (openai responses, the anthropic family, google) cannot authenticate
+> header-only — they require an api_key/OAuth/store credential, and their
+> headers are supplementary (store injection still applies).
+
 Any instance — **not just the compat family** — may carry a `headers` table of
 extra HTTP headers sent on every request to its endpoint. This is how an
 instance sits behind a gateway (Portkey, Helicone, a Cloudflare worker) that
@@ -490,7 +498,7 @@ tool_stream               = true
 
 This is `type = "openai"` with `api_style = "chat-completions"` — a plain
 gateway, not serf's `glm` type — so it routes through the openai-compat
-adapter (`compatFamily`, `load.go:86`) but starts from the empty
+adapter (`providercfg.CompatFamily`) but starts from the empty
 `ProviderQuirks{}`, not the `glm-5` preset; every wire behavior here comes
 from the `compat` table. `glm-5.2-nvfp4` gets a 1M-token context window and a
 128K output cap from the model table (instead of the compat-family default of

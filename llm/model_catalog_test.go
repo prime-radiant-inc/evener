@@ -751,11 +751,18 @@ func TestEmbeddedCatalog_DeepSeekV4Models(t *testing.T) {
 		if mi.ContextWindow != 1000000 {
 			t.Errorf("%s ContextWindow = %d, want 1000000", id, mi.ContextWindow)
 		}
-		if mi.MaxOutputTokens == nil || *mi.MaxOutputTokens != 384000 {
-			t.Errorf("%s MaxOutputTokens = %v, want 384000", id, mi.MaxOutputTokens)
+		// Upstream now defines these models; the slimmed override defers the
+		// output cap to LiteLLM's 8192 (an over-cap 400s at the provider).
+		if mi.MaxOutputTokens == nil || *mi.MaxOutputTokens != 8192 {
+			t.Errorf("%s MaxOutputTokens = %v, want upstream's 8192", id, mi.MaxOutputTokens)
 		}
 		if !mi.SupportsEffortParameter {
 			t.Errorf("%s SupportsEffortParameter should be true", id)
+		}
+		// Upstream now defines these models WITHOUT the reasoning flag; the
+		// override must overlay it or the spawn UI hides the effort picker.
+		if !mi.SupportsReasoning {
+			t.Errorf("%s SupportsReasoning should be true (override overlays matched models)", id)
 		}
 		if got := mi.ReasoningEffortLevels; len(got) != 2 || got[0] != "high" || got[1] != "max" {
 			t.Errorf("%s ReasoningEffortLevels = %v, want [high max]", id, got)
@@ -800,5 +807,25 @@ func TestApplyOverrides_ContextWindowOverlaysMatchedModel(t *testing.T) {
 	}
 	if mi.ContextWindow != 999 {
 		t.Errorf("ContextWindow = %d, want 999 (override beats upstream)", mi.ContextWindow)
+	}
+}
+
+// Non-model top-level objects in the upstream file (fallback_generalizations,
+// alongside the already-skipped sample_spec) must not ingest as bogus models.
+func TestParseLiteLLMCatalog_SkipsNonModelObjects(t *testing.T) {
+	src := []byte(`{
+		"sample_spec": {"mode": "chat"},
+		"fallback_generalizations": {"rules": [{"name": "x"}]},
+		"real-model": {"litellm_provider": "openai", "mode": "chat", "max_input_tokens": 100}
+	}`)
+	cat, err := parseLiteLLMCatalog(src)
+	if err != nil {
+		t.Fatalf("parseLiteLLMCatalog: %v", err)
+	}
+	if cat.GetModelInfo("fallback_generalizations") != nil {
+		t.Error("fallback_generalizations ingested as a model")
+	}
+	if cat.GetModelInfo("real-model") == nil {
+		t.Error("real model dropped")
 	}
 }

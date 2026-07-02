@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/serf/appwire"
 	hubcore "primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
 
@@ -201,5 +202,59 @@ func TestOverlayLiveEntries_DoesNotMutateCache(t *testing.T) {
 	out2 := plain.overlayLiveEntries(cached)
 	if got := out2[0]["context_window"]; got != 100 {
 		t.Fatalf("config-free server saw a foreign overlay: context_window = %v, want 100", got)
+	}
+}
+
+// The hub's catalog lookup falls back to provider-qualified entries: a live
+// OpenRouter listing reports bare ids whose bundled metadata may be keyed
+// ONLY "openrouter/<model>" — missing those would drop the model from the
+// picker as not tool-capable. The canonicalized bare lookup stays FIRST
+// because LiteLLM's qualified entries often carry null capability flags
+// where the canonical entry is richer (deepseek/deepseek-chat).
+func TestCatalogModelInfo_QualifiedFallback(t *testing.T) {
+	cat := llm.EmbeddedModelCatalog()
+	// Qualified-only entry (bare "anthropic/claude-3-haiku" is absent as a
+	// key; LookupModelInfo's namespace strip also misses because bare
+	// "claude-3-haiku" was removed upstream): the tag-qualified fallback
+	// must resolve it.
+	if cat.GetModelInfo("openrouter/anthropic/claude-3-haiku") == nil {
+		t.Fatal("test premise broken: openrouter/anthropic/claude-3-haiku missing from catalog")
+	}
+	if catalogModelInfo(cat, "openrouter", "anthropic/claude-3-haiku") == nil &&
+		cat.LookupModelInfo("anthropic/claude-3-haiku") == nil {
+		t.Fatal("qualified fallback missed openrouter/anthropic/claude-3-haiku")
+	}
+	// Richer canonical entry wins over a null-flags qualified one.
+	mi := catalogModelInfo(cat, "openrouter", "deepseek/deepseek-chat")
+	if mi == nil || !mi.SupportsTools {
+		t.Fatalf("bare canonical precedence lost: deepseek/deepseek-chat = %+v", mi)
+	}
+	// Bare fallback still canonicalizes for non-qualified refs.
+	if catalogModelInfo(cat, "anthropic", "claude-opus-4-6[1m]") == nil {
+		t.Error("bare fallback lost [1m] canonicalization")
+	}
+	// behaviorTagFor: configured instance resolves its tag; unknown name
+	// doubles as the tag (env-seeded convention).
+	cfg := &providercfg.Config{Instances: []providercfg.InstanceConfig{{
+		Name: "myrouter", Type: "openrouter",
+	}}}
+	if got := behaviorTagFor(cfg, "myrouter"); got != "openrouter" {
+		t.Errorf("behaviorTagFor(myrouter) = %q, want openrouter", got)
+	}
+	if got := behaviorTagFor(cfg, "glm"); got != "glm" {
+		t.Errorf("behaviorTagFor(unknown) = %q, want name-as-tag", got)
+	}
+}
+
+// The hub's catalog lookup applies the ollama bare-lookup suppression: a
+// local model named like an upstream entry must not show that entry's
+// metadata in /api/models.
+func TestCatalogModelInfo_OllamaSuppressesBareLookup(t *testing.T) {
+	cat := llm.EmbeddedModelCatalog()
+	if cat.GetModelInfo("glm-5.2") == nil {
+		t.Fatal("test premise broken: glm-5.2 missing from catalog")
+	}
+	if mi := catalogModelInfo(cat, "ollama", "glm-5.2"); mi != nil {
+		t.Fatalf("ollama local model inherited upstream metadata: %+v", mi)
 	}
 }

@@ -141,6 +141,12 @@ func applyOverlayFields(m *ModelInfo, ov map[string]any) {
 	if v, ok := ov["supports_effort_parameter"].(bool); ok {
 		m.SupportsEffortParameter = v
 	}
+	if v, ok := ov["supports_reasoning"].(bool); ok {
+		m.SupportsReasoning = v
+	}
+	if v, ok := ov["supports_tools"].(bool); ok {
+		m.SupportsTools = v
+	}
 	if v := overrideInt(ov["max_output_tokens"]); v > 0 {
 		mo := v
 		m.MaxOutputTokens = &mo

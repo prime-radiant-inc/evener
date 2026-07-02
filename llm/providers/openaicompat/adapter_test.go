@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 func TestAdapter_Complete_MapsToChatCompletionsAPI(t *testing.T) {
@@ -2819,5 +2820,24 @@ func TestComplete_TopLevelUsageWinsOverChoice(t *testing.T) {
 	}
 	if resp.Usage.InputTokens != 7 || resp.Usage.OutputTokens != 2 {
 		t.Fatalf("top-level usage should win: %+v", resp.Usage)
+	}
+}
+
+// An openai + chat-completions instance without base_url targets OpenAI's own
+// endpoint instead of sending requests to relative URLs.
+func TestNewOpenAIChatCompletionsInstance_DefaultBaseURL(t *testing.T) {
+	a, err := newOpenAIChatCompletionsInstance(providercfg.InstanceConfig{Name: "work", Type: "openai", APIStyle: providercfg.StyleChatCompletions}, "")
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if got := a.(*Adapter).BaseURL; got != "https://api.openai.com/v1" {
+		t.Fatalf("BaseURL = %q, want the OpenAI default", got)
+	}
+	b, err := newOpenAIChatCompletionsInstance(providercfg.InstanceConfig{Name: "gw", Type: "openai", APIStyle: providercfg.StyleChatCompletions, BaseURL: "https://gw.example.com/v1"}, "")
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if got := b.(*Adapter).BaseURL; got != "https://gw.example.com/v1" {
+		t.Fatalf("BaseURL = %q, want the configured gateway", got)
 	}
 }

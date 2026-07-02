@@ -58,15 +58,34 @@ func LoadProviderConfig(opts ...llm.EnvOption) (providercfg.Config, bool, error)
 	}
 
 	for i := range cfg.Instances {
-		if cfg.Instances[i].APIKey != "" || hasAuthorizationHeader(cfg.Instances[i].Headers) {
-			// A configured Authorization header IS the instance's
-			// authentication: injecting a type-level fallback key would make
-			// the adapter's bearer clobber that header on every request,
-			// sending an unrelated secret to the gateway.
+		inst := &cfg.Instances[i]
+		if inst.APIKey != "" {
 			continue
 		}
-		if key, _ := store.ResolveKey(cfg.Instances[i].Name, string(cfg.Instances[i].Type)); key != "" {
-			cfg.Instances[i].APIKey = key
+		if hasAuthorizationHeader(inst.Headers) && providercfg.CompatFamily(inst.Type, inst.APIStyle) {
+			// For the openai-compat family a configured Authorization header
+			// IS the instance's authentication (those adapters send no bearer
+			// without a key): injecting a type-level fallback key would make
+			// the bearer clobber that header on every request, sending an
+			// unrelated secret to the gateway. Other provider types cannot
+			// authenticate header-only (openai-responses requires OAuth/key,
+			// anthropic hard-wires x-api-key), so their headers are
+			// supplementary and store injection still applies.
+			continue
+		}
+		typ := string(inst.Type)
+		if providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle)) == "openai-compatible" && strings.TrimSpace(inst.BaseURL) != "" {
+			// A custom chat-completions gateway is NOT the type's own
+			// endpoint: falling back to the type-level env key
+			// (OPENAI_API_KEY) would send that secret to an arbitrary
+			// base_url — the injection-side twin of the live-probe guard.
+			// File entries and name-scoped env keys still resolve; an
+			// instance WITHOUT base_url targets api.openai.com, where the
+			// type key is exactly right.
+			typ = ""
+		}
+		if key, _ := store.ResolveKey(inst.Name, typ); key != "" {
+			inst.APIKey = key
 		}
 	}
 
