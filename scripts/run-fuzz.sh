@@ -286,6 +286,22 @@ TARGETS=(
 	"native:agent:.:FuzzLcyc_DiscardRestoredCandidate::session_lifecycle.go#discardRestoredCandidate"
 	"native:agent:.:FuzzLcyc_ReserveSlot::subagent_manager.go#reserveSlot"
 	"native:agent:.:FuzzLcyc_InitPlugins::session_init.go#initPlugins"
+	# Render/format/text-transform surface — data→bounded-text renderers.
+	"native:agent:.:FuzzArBoundOutline::session_outline.go#boundOutline"
+	"native:agent:.:FuzzArResultSizeNote::session_outline.go#resultSizeNote"
+	"native:agent:.:FuzzArShellInlineDigest::job_output_digest.go#shellInlineDigest"
+	"native:agent:.:FuzzArAssembleOutputDigest::job_output_digest.go#assembleOutputDigest"
+	"native:agent:.:FuzzArHumanBytes::job_output_digest.go#humanBytes"
+	"native:agent:.:FuzzArTruncRunes::transcript_render.go#truncRunes"
+	"native:agent:.:FuzzArFirstLineClamp::transcript_util.go#firstLineClamp"
+	"native:agent:.:FuzzArMakeSnippet::session_tools_find.go#makeSnippet"
+	"native:agent:.:FuzzArTruncateBody::transcript_render.go#truncateBody"
+	"native:agent:.:FuzzArMarshalBoundedDelegateResult::session_tools_jobs.go#marshalBoundedDelegateResult"
+	"native:agent:.:FuzzArParseMakefileTargets::workspace_info.go#parseMakefileTargets"
+	"native:agent:.:FuzzArParsePackageJsonScripts::workspace_info.go#parsePackageJsonScripts"
+	"native:agent:.:FuzzArScanSegment::session_tools_jobs.go#scanSegment"
+	"native:agent:.:FuzzArJobResultBody::transcript_render.go#jobResultBody"
+	"native:agent:./doctor:FuzzArRenderTranscript::transcript.go#RenderTranscript"
 )
 
 duration="60s"

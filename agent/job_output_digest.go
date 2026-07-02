@@ -35,18 +35,21 @@ func assembleOutputDigest(head, tail []byte, total, dropped int64) string {
 	return b.String()
 }
 
-// humanBytes formats a byte count as a short human-readable string.
+// humanBytes formats a byte count as a short human-readable string. Counts past
+// the largest named unit (TB) stay in TB rather than overflowing the unit table,
+// so an extreme int64 renders honestly instead of panicking.
 func humanBytes(n int64) string {
 	const unit = 1024
 	if n < unit {
 		return fmt.Sprintf("%d B", n)
 	}
+	const units = "KMGT"
 	div, exp := int64(unit), 0
-	for v := n / unit; v >= unit; v /= unit {
+	for v := n / unit; v >= unit && exp < len(units)-1; v /= unit {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGT"[exp])
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), units[exp])
 }
 
 // shellDigestHalfBytes bounds the bytes taken from each end for the inline shell
