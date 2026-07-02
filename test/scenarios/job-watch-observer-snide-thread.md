@@ -9,6 +9,22 @@ frame, but the observer uses `communicate`, not `delegate_send(to="caller")`.
 Contract anchor: `docs/job-control.md` "Observer and sidecar
 composition" plus the caller-event rail.
 
+> **Live validation 2026-07-02 (re-land):** the inform+breaker loop ran
+> end-to-end on merged main (isolated hub, anthropic/claude-opus-4-6):
+> observer via `delegate(watch_parent:true)` + `job_watch(source:"parent",
+> events:["communicate"])` received 9 frames (12 pending lines coalesced to
+> 6 distinct deliveries), injected on `actually` triggers, and each
+> acknowledgement re-fired the watch with the gradient escalating
+> `responded to your last message` → `~2` → `~3` → `~4 exchanges deep —
+> consider disengaging`; the participants then disengaged and cleared the
+> watch themselves. `serf-doctor watches` read back `breaker: bounded
+> self-influence, max depth 4 (no runaway)`; `--self-loops` correctly
+> returned none. NOTE: the Steps below still use the June-era public
+> `send:{to:...}` watch shape; today's tool is source-owned (delivery
+> implicit, `watch_parent` for observers) — modernize the steps before the
+> next scripted run.
+
+
 ## Pre-state
 
 - Fresh binaries from the branch under test; hub on `127.0.0.1:9180`
