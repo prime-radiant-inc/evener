@@ -823,3 +823,51 @@ func TestCompatFor_DeclaredEntryStillGetsCatalogGapFill(t *testing.T) {
 		t.Errorf("reasoning=false entry got an effort gate from the catalog: %v", *mcOff.Quirks.SupportsReasoningEffort)
 	}
 }
+
+// Prior assistant thinking must not replay to a reasoning=false model — a
+// fallback or model switch can carry another model's thinking in the
+// transcript, and the declared non-reasoning model accepts no reasoning
+// fields at all.
+func TestReasoningOff_SuppressesThinkingReplay(t *testing.T) {
+	req := llm.Request{Model: "m", Messages: []llm.Message{
+		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "q"}}},
+		{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+				Text:             "pondered",
+				EncryptedContent: `[{"type":"reasoning.encrypted","id":"rc_1","data":"OPAQUE"}]`,
+			}},
+			{Kind: llm.ContentText, Text: "a"},
+		}},
+		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "q2"}}},
+	}}
+	body, err := buildRequestBody(req, false, ModelCompat{
+		Quirks:       ProviderQuirks{EmptyReasoningContentOnAssistant: true},
+		ReasoningOff: true,
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	msgs := body["messages"].([]map[string]any)
+	assistant := msgs[1]
+	for _, f := range []string{"reasoning_content", "reasoning", "reasoning_text", "reasoning_details"} {
+		if v, ok := assistant[f]; ok {
+			t.Errorf("assistant[%q] = %v, want absent for a reasoning=false model", f, v)
+		}
+	}
+	if assistant["content"] != "a" {
+		t.Errorf("assistant content = %v, want plain answer text", assistant["content"])
+	}
+
+	// ThinkingAsText is the deliberate exception: it rides ordinary text.
+	body, err = buildRequestBody(req, false, ModelCompat{
+		Quirks:       ProviderQuirks{ThinkingAsText: true},
+		ReasoningOff: true,
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	msgs = body["messages"].([]map[string]any)
+	if got := msgs[1]["content"]; got != "pondered\n\na" {
+		t.Errorf("ThinkingAsText content = %q, want thinking flattened into text", got)
+	}
+}

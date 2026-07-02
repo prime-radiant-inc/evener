@@ -148,7 +148,7 @@ func FuzzMiscOpenAICompatBuilder(f *testing.F) {
 		// A passthrough key named "messages" legitimately overwrites the field, so
 		// only assert the differential when the passthrough did not touch it.
 		if passKey != "messages" {
-			wantMsgs, msgErr := toChatMessages(req.Messages, quirks, miscUseReasoningDetails(req))
+			wantMsgs, msgErr := toChatMessages(req.Messages, ModelCompat{Quirks: quirks}, miscUseReasoningDetails(req))
 			if msgErr == nil {
 				if !reflect.DeepEqual(body["messages"], wantMsgs) {
 					t.Fatalf("messages differential: buildRequestBody body != toChatMessages\n got: %#v\nwant: %#v", body["messages"], wantMsgs)
@@ -220,12 +220,12 @@ func FuzzMiscOpenAICompatMessages(f *testing.F) {
 		useReasoning := sel&1 == 1
 		req := miscBuilderRequest("m", sys, user, imgData, thinking, "high", sel, useReasoning, "", "")
 
-		out, err := toChatMessages(req.Messages, quirks, useReasoning)
+		out, err := toChatMessages(req.Messages, ModelCompat{Quirks: quirks}, useReasoning)
 		if err != nil {
 			t.Fatalf("toChatMessages returned an error for a contract-honoring request: %v", err)
 		}
 
-		out2, _ := toChatMessages(req.Messages, quirks, useReasoning)
+		out2, _ := toChatMessages(req.Messages, ModelCompat{Quirks: quirks}, useReasoning)
 		if !reflect.DeepEqual(out, out2) {
 			t.Fatalf("toChatMessages nondeterministic:\n a=%#v\n b=%#v", out, out2)
 		}

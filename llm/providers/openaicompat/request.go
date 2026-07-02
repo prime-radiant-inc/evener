@@ -29,7 +29,7 @@ func buildRequestBody(req llm.Request, stream bool, mc ModelCompat) (map[string]
 		}
 	}
 
-	msgs, err := toChatMessages(req.Messages, quirks, useReasoningDetails)
+	msgs, err := toChatMessages(req.Messages, mc, useReasoningDetails)
 	if err != nil {
 		return nil, err
 	}
@@ -252,7 +252,8 @@ func applyThinkingFormat(body map[string]any, req llm.Request, mc ModelCompat) {
 	}
 }
 
-func toChatMessages(messages []llm.Message, quirks ProviderQuirks, useReasoningDetails bool) ([]map[string]any, error) {
+func toChatMessages(messages []llm.Message, mc ModelCompat, useReasoningDetails bool) ([]map[string]any, error) {
+	quirks := mc.Quirks
 	systemRole := "system"
 	if quirks.UseDeveloperRole {
 		systemRole = "developer"
@@ -310,6 +311,15 @@ func toChatMessages(messages []llm.Message, quirks ProviderQuirks, useReasoningD
 			text := textFromParts(content)
 			calls := toolCallsFromParts(content)
 			reasoning := thinkingFromParts(content)
+			if mc.ReasoningOff {
+				// A declared non-reasoning model accepts no reasoning fields —
+				// prior-turn thinking (a fallback or model switch can carry it)
+				// is dropped from replay entirely. ThinkingAsText below is the
+				// deliberate exception: it rides ordinary text content.
+				if !quirks.ThinkingAsText {
+					reasoning = ""
+				}
+			}
 			if reasoning != "" && quirks.ThinkingAsText {
 				// Replay thinking as ordinary text (no tags — tagged thinking
 				// teaches the model to mimic the tags). The reasoning field
@@ -321,7 +331,10 @@ func toChatMessages(messages []llm.Message, quirks ProviderQuirks, useReasoningD
 				}
 				reasoning = ""
 			}
-			encrypted := encryptedDetailsFromParts(content)
+			var encrypted []map[string]any
+			if !mc.ReasoningOff {
+				encrypted = encryptedDetailsFromParts(content)
+			}
 			// Encrypted reasoning (OpenRouter Gemini/o-series) must round-trip
 			// through reasoning_details regardless of the useReasoningDetails
 			// flag. When present, text rides the same array (text first, then
@@ -343,7 +356,7 @@ func toChatMessages(messages []llm.Message, quirks ProviderQuirks, useReasoningD
 				} else {
 					msg[reasoningReplayField(content)] = reasoning
 				}
-			} else if quirks.EmptyReasoningContentOnAssistant && !useReasoningDetails {
+			} else if quirks.EmptyReasoningContentOnAssistant && !useReasoningDetails && !mc.ReasoningOff {
 				msg["reasoning_content"] = ""
 			}
 			if len(calls) > 0 {

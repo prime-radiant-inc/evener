@@ -109,7 +109,7 @@ commits. Rules learned the hard way this session:
   anthropic `cache_control` ttl "1h" tie-in. Mirror Pi buildParams:551-568 +
   createClient:521-525. Config surface + docs + tests.
 
-## Wave 4 — wrap-up (gate/e2e/docs done; refine loop + final report remain)
+## Wave 4 — DONE (gate/e2e/docs complete; refine loop ran to convergence — see review-loop state above for every job)
 
 1. Full gate: `go build ./... && go test ./...` (+ `-race` touched), full
    `make lint`, jstests, e2e re-run: fake-gateway wire assertions script
@@ -118,7 +118,8 @@ commits. Rules learned the hard way this session:
    smoke (`--reasoning-effort xhigh` and `none`; key: tomllib-parse
    `~/.serf/credentials.toml` providers.lunaroute.api_key into
    LUNAROUTE_API_KEY, never echo).
-2. roborev refine loop to PASS (close 2116 first if not yet).
+2. roborev refine loop — ran to convergence; every job in the review-loop
+   state above is closed.
 3. Update the base spec §5/§8 + docs/llm-providers.md for D/E/F/G surfaces.
 4. Update memory
    (`~/.claude/projects/-home-jesse-git-prime-radiant-serf/memory/`) and
