@@ -4,19 +4,16 @@
 # production-only plumbing, or a measurement-completeness correction) rather than
 # a coverage regression.
 #
-# agent 54.9->52.1 (2026-07-01) is a measurement-completeness reset, NOT a
-# regression: fuzz-reachable COVERED held stable (10745->10730; the -15 is the 8
-# deleted session_provenance nil-guard condition-checks) while the covdata
-# complete denominator grew 19562->20586 (+1024) after the full-suite coverage
-# push landed well-formed tests across every agent sub-package, so more packages'
-# serffuzz test binaries build and covdata now counts their production statements
-# in the whole-module denominator. Same class as the llm reset below.
-#
-# llm 77.9->73.0 is a measurement correction, NOT a regression: covered ROSE
-# (4620->4656) while the counted denominator grew 5933->6382 (a package's fuzz
-# test now builds+counts under -tags serffuzz that the 77.9 bless had dropped).
-# Arc: llm 39.3 -> 73.0 (honest, complete-denominator) ; agent 26.4 -> 45.9 ->
-# 54.9 (wave 2) -> 52.1 (complete-denominator reset after the coverage push).
+# 2026-07-02 fuzz-harness wave: COVERED rose in both modules from new fuzz targets
+# (agent codecs/render/config + llm transforms) — the honest gain:
+#   agent covered 10730->11203 (+473); floor 52.1->53.0 (measured total 21152).
+#   llm   covered  4656-> 4743 (+87).
+# The llm floor is set from the COMPLETE denominator (6382): 4743/6382 = 74.3% ->
+# floor 74.0. A raw --bless run measured 78.5% against an INCOMPLETE denominator
+# (6045) because some packages' serffuzz test binaries intermittently drop out of
+# covdata; 78.5 would false-alarm the next complete-denominator run, so we do NOT
+# bless it. Arc: llm 39.3 -> 73.0 -> 74.3 (honest, complete-denominator);
+# agent 26.4 -> 45.9 -> 54.9 -> 52.1 -> 53.0.
 . 9.8
-agent 52.1
-llm 73.0
+agent 53.0
+llm 74.0
